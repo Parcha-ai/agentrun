@@ -380,15 +380,17 @@ that digest under it.
 
 **Promotion.** `usesSettler` is the curator's `SettleUses` port: it copies main's `trial.json` of each name used, and the
 records of its superseded revisions, into a scratch directory, and folds the run's uses in, appending each to its workflow's
-`trial.json` and settling after each one (`settleWorkflowUses`, `foldUses`, `promotionDecision`). A trial is promoted when its
-last 3 uses all finished `frozen`; the live revision is demoted when its last 2 uses both failed or escalated, and the most
-recent superseded revision that the store can still load comes back, with `latest`, its preconditions and its skill's
+`trial.json` and settling after each one (`settleWorkflowUses`, `foldUses`, `promotionDecision`). Promotion rests on
+independent evidence: a run's uses of one revision are one use, the worst outcome winning (failed over escalated over frozen,
+so one bad case in a run counts against the run), however many inputs the run gave it. A trial is promoted when its last 3
+uses, which are 3 distinct runs, all finished `frozen`; the live revision is demoted when its last 2 uses, the last 2 runs that
+used it, both failed or escalated, and the most recent superseded revision that the store can still load comes back, with `latest`, its preconditions and its skill's
 description. With none to restore the name is demoted whole, its skill is deleted so the agent is no longer told about it, and
 `trial.json` stays, so a demoted revision is never promoted or tried again; only a changed document, with a new digest, is
 tried under the name again. A standing counts the uses folded since it began, in the order they were folded, never a clock: a
 use that arrives after a decision counts toward the standing the decision gave, and a restored revision's failures from before
 it was superseded never demote it again. Only the newest 30 uses are kept, and receipts for other revisions never push out the live
-revision's own newest uses. The run that wrote a revision is no evidence for it, and a run already folded for a
+revision's own newest uses. The run that wrote a revision is no evidence for it, however many cases it ran, and a run already folded for a
 revision is not folded again. The thresholds are the host's: `usesSettler({ thresholds: { promoteAfter, demoteAfter } })`,
 1 to 15. A frozen workflow never fails a case: the agent is the fallback, and a use only moves the workflow's own standing.
 The decisions come back one per promotion, demotion or name held, each with a reason that names no value from the case; a

@@ -143,37 +143,48 @@ export function admitRevision(trial: Trial | undefined, input: AdmitRevision): A
   return { status: "admitted", trial: { name: input.name, status: "trial", when: input.when, revisions: [...revisions, fresh], uses: trial?.uses ?? [] } };
 }
 
-export type IgnoredUse = { readonly use: Use; readonly reason: "unknown_revision" | "author" | "duplicate" };
+export type IgnoredUse = { readonly use: Use; readonly reason: "unknown_revision" | "author" | "duplicate" | "same_run" };
 export type Applied = { readonly decision: Exclude<Decision, { action: "hold" }>; readonly at: string };
 export type Folded = { readonly trial: Trial; readonly applied: readonly Applied[]; readonly ignored: readonly IgnoredUse[] };
 
 const order = (a: Use, b: Use) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.run < b.run ? -1 : a.run > b.run ? 1 : a.sha256 < b.sha256 ? -1 : a.sha256 > b.sha256 ? 1 : a.outcome < b.outcome ? -1 : a.outcome > b.outcome ? 1 : 0);
+const SEVERITY = { frozen: 0, escalated: 1, failed: 2 } as const;
 
 /**
- * Appends one run's uses to a trial and settles after each one, as if a curator had run between them. The uses of one call
- * are folded in the order they happened; calls are folded in the order they are made, and that order, not any clock, decides
- * which uses count toward a standing: a use that arrives after a decision counts toward the standing the decision gave. A use
- * of a revision the trial does not hold is left out, and so is one by the run that proposed the revision (the author's run is
- * not evidence for its own work) and one by a run already folded for that revision. At most `LIMITS.uses` are kept, the newest
- * first, and always the newest few of the live revision's standing (`pruneUses`).
+ * Appends a run's uses to a trial and settles after each one, as if a curator had run between runs. Promotion rests on
+ * independent evidence: a run's uses of one revision are one use, the worst outcome winning (failed over escalated over
+ * frozen, so one bad case in a run counts against the run) and the latest time standing, which makes 3 clean uses 3 distinct
+ * runs and the last 2 uses of a demotion the last 2 runs. The uses of one call are folded in the order they happened; calls are
+ * folded in the order they are made, and that order, not any clock, decides which uses count toward a standing: a use that
+ * arrives after a decision counts toward the standing the decision gave. A use of a revision the trial does not hold is left
+ * out, and so is one by the run that proposed the revision (the author's run is not evidence for its own work) and one by a run
+ * already folded for that revision. At most `LIMITS.uses` are kept, the newest first, and always the newest few of the live
+ * revision's standing (`pruneUses`).
  */
 export function foldUses(trial: Trial, incoming: readonly Use[], options: DecisionOptions = {}): Folded {
   let current = trial;
   const applied: Applied[] = [];
   const ignored: IgnoredUse[] = [];
   const folded = new Set(trial.uses.map((use) => `${use.run}\n${use.sha256}`));
+  const runs = new Map<string, Use>();
   for (const use of [...incoming].sort(order)) {
     const revision = current.revisions.find((r) => r.sha256 === use.sha256);
+    const key = `${use.run}\n${use.sha256}`;
     if (!revision) ignored.push({ use, reason: "unknown_revision" });
     else if (revision.run === use.run) ignored.push({ use, reason: "author" });
-    else if (folded.has(`${use.run}\n${use.sha256}`)) ignored.push({ use, reason: "duplicate" });
+    else if (folded.has(key)) ignored.push({ use, reason: "duplicate" });
     else {
-      current = pruneUses({ ...current, uses: [...current.uses, use] }, LIMITS.uses);
-      const decision = promotionDecision(current, options);
-      if (decision.action !== "hold") {
-        current = applyDecision(current, decision, use.at);
-        applied.push({ decision, at: use.at });
-      }
+      const held = runs.get(key);
+      if (held) ignored.push({ use, reason: "same_run" });
+      runs.set(key, held ? { ...held, outcome: SEVERITY[use.outcome] > SEVERITY[held.outcome] ? use.outcome : held.outcome, at: use.at } : use);
+    }
+  }
+  for (const use of [...runs.values()].sort(order)) {
+    current = pruneUses({ ...current, uses: [...current.uses, use] }, LIMITS.uses);
+    const decision = promotionDecision(current, options);
+    if (decision.action !== "hold") {
+      current = applyDecision(current, decision, use.at);
+      applied.push({ decision, at: use.at });
     }
   }
   return { trial: current, applied, ignored };

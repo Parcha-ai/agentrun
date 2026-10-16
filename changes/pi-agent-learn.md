@@ -58,8 +58,8 @@ a run saved with the DSL's `agentrun` tool: it validates the run's records throu
 and returns the files that admit it: the skill (`.agents/skills/<name>/SKILL.md`, whose description is the agent's when-to-use text)
 and `trial.json`, `{ name, status, when, revisions, uses }`, where `when` is optional typed checks on the run's input (a JSON pointer
 and `eq`, `in`, `exists`, `gte` or `lte`; `schemaWhen` derives them from a workflow's input schema). `usesSettler` is the `SettleUses`
-port: it folds a run's uses into `trial.json` by the rules of the archived harness. A trial is promoted after 3 clean uses in a row,
-the live revision is demoted after 2 failed or escalated ones and the previous active revision comes back with its checks and its
+port: it folds a run's uses into `trial.json` by the rules of the archived harness. Promotion rests on independent evidence: a run's uses of one revision are one use, the worst outcome winning, so a trial is promoted after 3 clean runs in a row,
+the live revision is demoted after 2 runs that failed or escalated and the previous active revision comes back with its checks and its
 description, a demoted revision is never tried again, the run that wrote a revision is no evidence for it, and uses count in the
 order they were folded, never a clock. `collectWorkflows` and `inboxWorkflowFiles` hand a run's new revisions to its inbox,
 `collectUses` reads from the run's store (read only, through `recordingLines`; or from the receipts of a pi session with
