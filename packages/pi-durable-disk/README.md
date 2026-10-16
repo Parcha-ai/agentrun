@@ -770,6 +770,48 @@ A local run works on macOS for development, and is weaker there than on Linux in
 the no-key quickstart, the local run's tests (its command records, `run --dir` and `status --dir`, the lease watchdog,
 the file tools' confinement) and the keyless examples on macOS.
 
+### A short claim on any path, and a read of what it released
+
+`withClaim` holds one path of a disk exclusively for a moment, outside any run: pi-durable-agent carries an agent's home
+(`agent/agent.sqlite`) back at a run's end this way. `readReleased` reads a file such a claim released over the S3 API,
+with no mount, so a reader never blocks a writer. Both are supervisor side: they take the `control` of
+`archilControl({ apiKey, disk, region })`.
+
+```ts
+await withClaim({ control, disk: "dsk-...", region: "aws-us-east-1", path: "agent" }, async (held) => {
+  const db = new DatabaseSync(join(held.root, "agent.sqlite"));
+  db.exec("INSERT INTO runs (id) VALUES ('job-1'); PRAGMA wal_checkpoint(TRUNCATE)");
+  db.close();
+});
+const store = await readReleased({ control, path: "agent" }, "agent.sqlite", { sqlite: true }); // null: none yet
+```
+
+A claim is one exclusive mount, about 0.4 to 1 s with its release, so it is for a run's end, never a turn.
+- **Exclusive by the mount.** Archil refuses a second client's mount of the path, an ancestor or a descendant. The call
+  mounts at a fresh `<mountRoot>/runs/<pid>-<uuid>` (default `/mnt/archil/.claims`; the shape `archil-scoped`'s cleanup
+  takes on a host that cannot unmount) and never shares a mount. Archil mounts no path whose directory is missing, so it
+  first makes the path's directories the disk lacks, over S3, as the calling process's own (0700; `owner` sets them). It writes
+  `.claim` with its deadline (`holdMs`, default 60 s), runs `fn`, then barriers, unmounts and gives its mount token back,
+  whether `fn` resolved or threw.
+- **Lost holders are revoked first.** A holder whose client is gone (orphaned) is revoked before the mount, and so is a
+  holder of exactly the path whose `.claim` names a deadline that has passed and stays the same for 3 s (a holder that
+  just mounted rewrites it at once; a holder of a path above or below is never revoked by this path's `.claim`). A live holder within its deadline is waited for (`waitMs`, default 30 s), never
+  revoked. A holder revoked while still alive fails its next fsync, so its commit rolls back and its own call is FENCED:
+  the deadline never decides what is durable, the fence does.
+- **What it refuses.** A path that is not relative and of safe segments, or that is under `runs/` (a run's own) or
+  `.archil/`, is `ClaimError` `INVALID_ARGUMENT`, before any call. A live holder after `waitMs` is `HeldError`
+  `CLAIM_HELD` (exit 76). The control API failing, or a delegation with no path it cannot attribute, is
+  `CONTROL_API_FAILED`. A claim revoked from under `fn` is `FencedError` (exit 75), and `fn`'s writes are then not
+  durable.
+- **`CLAIM_HELD` is retryable.** The path is not released yet: retry within `waitMs`, and never fall back to an older
+  release.
+
+`readReleased` returns the bytes only when the read is of a released file. Nothing holds the path (or an ancestor or a
+descendant) before or after the read, and the object is unchanged across it (its etag, else its size and time). For
+SQLite (`sqlite: true`), its `-wal` must also be absent or empty, so its writer checkpointed with `TRUNCATE` and closed. A
+held path is `CLAIM_HELD`, retryable as above, and a WAL with content is `NOT_RELEASED`. A file that changed during every
+one of `attempts` reads (default 3) is `CLAIM_HELD`. Open the bytes as a local file, read-only (`?immutable=1`).
+
 ### Places: a run a supervisor can kill and bring back
 
 A place is where one run lives and how its instance starts, is killed and comes back, for a supervisor that decides when
