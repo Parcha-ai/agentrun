@@ -288,7 +288,15 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 					const runner = await place.start(orderOf(made, place, 1, { PARK_AT: "2" }));
 					await firstSignal(place, 1, "kill-request");
 					const lost = ((await place.status()).record.holder as { host: string }).host;
-					expect(await place.checkpoint()).toEqual({ taken: true });
+					// A supervisor that asks again while a checkpoint is being taken gets that one: the session is held once.
+					expect(await Promise.all([place.checkpoint(), place.checkpoint()])).toEqual([
+						{ taken: true },
+						{ taken: true },
+					]);
+					expect({ taken: place.stats.taken, skipped: place.stats.skipped.failed }).toEqual({
+						taken: 1,
+						skipped: 0,
+					});
 					expect(await firstSignal(place, 1, "crossing")).toMatchObject({
 						kind: "crossing",
 						crossing: {

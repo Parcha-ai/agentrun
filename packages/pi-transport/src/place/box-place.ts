@@ -245,6 +245,8 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 	let epoch = 0;
 	let handle: HomeHandle | undefined;
 	let released = false;
+	// The checkpoint being taken: a call while one runs gets its answer, and never holds the session a second time.
+	let taking: Promise<{ taken: boolean; heldBy?: string }> | undefined;
 
 	const crossing: Crossing = (point, info) => {
 		const { release: _release, ...told } = info;
@@ -440,6 +442,42 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 		return { start, exited, handle: () => held };
 	};
 
+	/** One checkpoint at rest, tried again while the session is busy, as many times as the options say. */
+	const takeCheckpoint = async (): Promise<{ taken: boolean; heldBy?: string }> => {
+		if (handle === undefined) return { taken: false, heldBy: "no runner" };
+		const tries = options.checkpoint?.tries ?? 5;
+		let heldBy = "busy";
+		for (let n = 0; n < tries; n += 1) {
+			const pulled = await pullCheckpoint(
+				{
+					session,
+					place: homePlace(),
+					home: handle,
+					epoch,
+					vault: options.vault,
+					stats,
+					crossing,
+					crossingCount: counter,
+					...(options.checkpoint?.drain === undefined ? {} : { drain: options.checkpoint.drain }),
+					...(options.checkpoint?.holdMs === undefined ? {} : { holdMs: options.checkpoint.holdMs }),
+					...(options.checkpoint?.workspace === undefined ? {} : { workspace: options.checkpoint.workspace }),
+					...(options.checkpoint?.maxPullBytes === undefined
+						? {}
+						: { maxPullBytes: options.checkpoint.maxPullBytes }),
+				},
+				context,
+			);
+			if (pulled.ok) return { taken: true };
+			heldBy =
+				pulled.error.holdouts.length === 0
+					? pulled.error.reason
+					: `${pulled.error.reason}: ${pulled.error.holdouts.map(({ kind, count }) => `${count} ${kind}`).join(", ")}`;
+			if (pulled.error.reason !== "busy") break;
+			await new Promise((resolve) => setTimeout(resolve, options.checkpoint?.waitMs ?? 500));
+		}
+		return { taken: false, heldBy };
+	};
+
 	const holder = (): Holder => ({ environment, provider: options.provider.name, box: box.id, host });
 
 	const place: BoxPlace = {
@@ -596,39 +634,11 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 				...(replayed === undefined ? {} : { replayed: { from: replayed.from, to: replayed.to } }),
 			};
 		},
-		async checkpoint() {
-			if (handle === undefined) return { taken: false, heldBy: "no runner" };
-			const tries = options.checkpoint?.tries ?? 5;
-			let heldBy = "busy";
-			for (let n = 0; n < tries; n += 1) {
-				const pulled = await pullCheckpoint(
-					{
-						session,
-						place: homePlace(),
-						home: handle,
-						epoch,
-						vault: options.vault,
-						stats,
-						crossing,
-						crossingCount: counter,
-						...(options.checkpoint?.drain === undefined ? {} : { drain: options.checkpoint.drain }),
-						...(options.checkpoint?.holdMs === undefined ? {} : { holdMs: options.checkpoint.holdMs }),
-						...(options.checkpoint?.workspace === undefined ? {} : { workspace: options.checkpoint.workspace }),
-						...(options.checkpoint?.maxPullBytes === undefined
-							? {}
-							: { maxPullBytes: options.checkpoint.maxPullBytes }),
-					},
-					context,
-				);
-				if (pulled.ok) return { taken: true };
-				heldBy =
-					pulled.error.holdouts.length === 0
-						? pulled.error.reason
-						: `${pulled.error.reason}: ${pulled.error.holdouts.map(({ kind, count }) => `${count} ${kind}`).join(", ")}`;
-				if (pulled.error.reason !== "busy") break;
-				await new Promise((resolve) => setTimeout(resolve, options.checkpoint?.waitMs ?? 500));
-			}
-			return { taken: false, heldBy };
+		checkpoint() {
+			taking ??= takeCheckpoint().finally(() => {
+				taking = undefined;
+			});
+			return taking;
 		},
 		async release() {
 			if (released) return;

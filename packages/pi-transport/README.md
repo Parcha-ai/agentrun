@@ -586,7 +586,9 @@ It makes the box, and
   same box where the store left off (`recoverHome`, same epoch); `recover(last, "box", order)` makes a new box, restores
   the newest checkpoint into it and replays the shipped commits (`recoverHome` with `vault` and `replace`), at the next
   epoch, and says what it restored. `checkpoint()` takes one at rest (`pullCheckpoint`, tried again while the session
-  is busy) and announces `transport.checkpoint.taken`.
+  is busy) and announces `transport.checkpoint.taken`; a call while one is being taken gets that one, so the session
+  is held once. The hold admits no new tool call or model request and waits for the ones in flight up to
+  `checkpoint.drain.timeoutMs` (10 s by default): a session whose effects run longer than that is skipped as busy.
 - `signals(attempt)` reads the runner's kill request from `requestFile(attempt)` in the box, with the nonce it wrote,
   and passes on the transport's crossings; its iterator's `return()` ends a pending `next()`. `status()` is the run's
   record: `run`, the epoch as `generation`, the box in `holder.host`, the home's state, and `sealedSeq` when sealed.
