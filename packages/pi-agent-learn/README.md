@@ -360,7 +360,8 @@ description. With none to restore the name is demoted whole, its skill is delete
 `trial.json` stays, so a demoted revision is never promoted or tried again; only a changed document, with a new digest, is
 tried under the name again. A standing counts the uses folded since it began, in the order they were folded, never a clock: a
 use that arrives after a decision counts toward the standing the decision gave, and a restored revision's failures from before
-it was superseded never demote it again. The run that wrote a revision is no evidence for it, and a run already folded for a
+it was superseded never demote it again. Only the newest 30 uses are kept, and receipts for other revisions never push out the live
+revision's own newest uses. The run that wrote a revision is no evidence for it, and a run already folded for a
 revision is not folded again. The thresholds are the host's: `usesSettler({ thresholds: { promoteAfter, demoteAfter } })`,
 1 to 15. A frozen workflow never fails a case: the agent is the fallback, and a use only moves the workflow's own standing.
 The decisions come back one per promotion, demotion or name held, each with a reason that names no value from the case; a
