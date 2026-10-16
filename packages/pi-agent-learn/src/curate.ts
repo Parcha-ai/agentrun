@@ -5,8 +5,8 @@ import { type Learning, learningId, renderLearning } from "./entry.js";
 import { LearnError } from "./errors.js";
 import { guard } from "./guard.js";
 import { InboxFormatError, parseInbox } from "./inbox.js";
-import { assertNotRulesLocked, CAPS, inboxPath, isRulesLocked, LAYOUT, LEARNING_ID, learningPath, RUN_ID } from "./layout.js";
-import { byUse, indexLine, renderSection, WORKFLOW_NAME } from "./section.js";
+import { assertNotRulesLocked, CAPS, inboxPath, isRulesLocked, LAYOUT, LEARNING_ID, learningPath, RUN_ID, WORKFLOW_NAME } from "./layout.js";
+import { byUse, indexLine, renderSection } from "./section.js";
 import { learningsAt } from "./seed.js";
 import type { Candidate, Refusal } from "./types.js";
 
