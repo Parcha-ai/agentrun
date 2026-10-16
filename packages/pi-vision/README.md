@@ -163,27 +163,27 @@ cap on pages, frames or price: a host that wants one wraps `execute`. The planne
 ## For a host: `vision.judge`, Jev in code mode
 
 `handle.judge(env, call)` is `vision.judge`, built per call beside `vision.see`. It reaches Jev, TypeSafe's System One
-model, through `VisionOptions.jev`: a client with the SDK's `systemOne` and the SDK's `image`, so a host with
-`@typesafe-ai/sdk` passes them as they are. pi-vision imports nothing of the SDK, sends the
-`TypeSafe-Danger-Zone-Images: true` header itself, and asks `jev-1.14.0`, the first Jev that answers box questions,
-unless `jev.model` names another:
+model, through `VisionOptions.jev`: the judge `createJevRunner` from `@parcha/agentrun-jev` returns, which owns the
+transport, the images header and the price, and the model to ask (`jev-1.14.0` unless `jev.model` names another; it is
+the first Jev that answers box questions). pi-vision imports neither that package nor the TypeSafe SDK; it hands the
+judge each image as PNG or JPEG bytes under a reference written in the request:
 
 ```ts
-import { image, TypeSafeClient } from "@typesafe-ai/sdk";
+import { createJevRunner } from "@parcha/agentrun-jev";
 
-const vision = createVisionExtension({ evidence, scope, eyesModel, jev: { client: new TypeSafeClient(), image } });
+const vision = createVisionExtension({ evidence, scope, eyesModel, jev: { judge: createJevRunner({ apiKey }) } });
 // Inside the host's code-mode tool:
 const call = await callContext(api, context);
 const sandbox = new CodemodeSandbox({ tools, globals: [vision.see(api.env, call), vision.judge(api.env, call)] });
 ```
 
-One call is one System One request. Every image is fitted to Jev's limits first (PNG or baseline JPEG, turned upright,
-each side 280 to 1,568 px: grown, or padded when it cannot grow, and shrunk), since Jev rejects an image out of range
-rather than resizing it. A box answer also has `fragment`, its region as `file#xywh=percent:x,y,w,h` of the image it was
-found in, mapped back through the fit and through the region a crop names. Each judgment is filed and told like a look
-(`via: jev`), priced from its input tokens at `jev.usdPerMTok` (default $0.042 a million; output is free), kept as a
-memo before it is told, and a miss throws a `SeeMiss` with its code. Without `jev`, every judgment is a
-`no_vision_route` miss.
+One call is one Jev request. Every image is fitted to Jev's limits first (PNG or baseline JPEG, turned upright, each
+side 280 to 1,568 px: grown, or padded when it cannot grow, and shrunk), since Jev rejects an image out of range rather
+than resizing it. A box answer also has `fragment`, its region as `file#xywh=percent:x,y,w,h` of the image it was found
+in, mapped back through the fit and through the region a crop names. Each judgment is filed and told like a look
+(`via: jev`) at the price the judge gives (none known is filed as unknown, never $0), kept as a memo before it is told,
+and a miss throws a `SeeMiss` with its code; a box asked of a model that has none is an `unsupported` miss before any
+request. Without `jev`, every judgment is a `no_vision_route` miss.
 
 ## For a host: what a program is started with
 

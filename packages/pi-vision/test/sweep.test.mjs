@@ -244,7 +244,7 @@ const CASES = [
     id: ".#judge",
     run: async (sink) => {
       let n = 0;
-      const jev = { client: { systemOne: async () => { throw failure(FIRST_LINES[n++]); } }, image: (bytes) => ({ bytes }) };
+      const jev = { judge: async () => { throw failure(FIRST_LINES[n++]); } };
       for (let i = 0; i < FIRST_LINES.length; i++) sink.out("thrown", await judge({ images: [png(300, 300 + i)], questions: { q: { type: "noul", instructions: "Is it a chart?" } } }, undefined, CALL, { ...guardSetup(sink, LIMITS), jev }).catch((error) => error));
     },
   },
@@ -287,8 +287,8 @@ const CASES = [
       sink.echoes.push(path, basename(path));
       await writeFile(path, pngBytes(3000, 1000));
       let calls = 0;
-      const client = { systemOne: async (request) => { if (calls++ === 0) throw failure(lineWith(1, 1)); return { model: "jev-1.14.0", answers: { where: { type: "box", box: { top: 0, bottom: 1, left: 0, right: 0.5 }, confidence: 0.5 } }, usage: { input_tokens: 10, output_tokens: 0 }, sent: request.state.images.length }; } };
-      const global = createVisionExtension({ jev: { client, image: (bytes) => ({ bytes }) }, evidence: { file: async (label, record) => { sink.out("receipt", { label, record }); return { path: `evidence/${label}.md` }; } }, scope: () => ({ label: "sweep", deriveDir: sink.deriveDir }), onLook: (event) => sink.out("look event", event), onMiss: (event) => sink.out("miss event", event) }).judge(nodeVisionEnv({ cwd: sink.workDir }), CALL);
+      const judge = async () => { if (calls++ === 0) throw failure(lineWith(1, 1)); return { model: "jev-1.14.0", answers: { where: { type: "box", box: { top: 0, bottom: 1, left: 0, right: 0.5 }, confidence: 0.5 } }, usage: { input_tokens: 10, output_tokens: 0 }, cost_usd: null }; };
+      const global = createVisionExtension({ jev: { judge }, evidence: { file: async (label, record) => { sink.out("receipt", { label, record }); return { path: `evidence/${label}.md` }; } }, scope: () => ({ label: "sweep", deriveDir: sink.deriveDir }), onLook: (event) => sink.out("look event", event), onMiss: (event) => sink.out("miss event", event) }).judge(nodeVisionEnv({ cwd: sink.workDir }), CALL);
       const ask = { paths: [path], questions: { where: { type: "box", instructions: "the total" } } };
       sink.out("thrown", await global.execute(ask).catch((error) => error));
       sink.out("answer", await global.execute(ask));

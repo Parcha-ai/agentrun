@@ -4,6 +4,7 @@
 // `npm run test:binaries` runs it, `npm test` does not.
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { after, test } from "node:test";
@@ -36,14 +37,15 @@ const bash = { name: "bash", execute: ({ command }) => new Promise((resolve, rej
 async function example(code, answer) {
   const eyes = fakeEyes({ answers: [(request) => `saw ${request.parts.filter((p) => p.type === "image").map((p) => p.fragment).join(", ")}`] });
   const jev = fakeJev(answer ? { answer } : {});
+  const examples = (params) => Object.keys(params.assets).filter((ref) => !ref.startsWith("<vision.judge image"));
   const looks = [];
-  const vision = createVisionExtension({ eyes, jev, evidence: { file: async (label) => ({ path: `evidence/${label}/${looks.length + 1}.md` }) }, scope: () => ({ label: "skill", deriveDir: ".vision" }), onLook: (look) => looks.push(look) });
+  const vision = createVisionExtension({ eyes, jev: { judge: jev.judge }, evidence: { file: async (label) => ({ path: `evidence/${label}/${looks.length + 1}.md` }) }, scope: () => ({ label: "skill", deriveDir: ".vision" }), onLook: (look) => looks.push(look) });
   const call = { conversationId: "skill", callId: "1", model: undefined, signal: undefined };
   const sandbox = new CodemodeSandbox({ tools: [bash], globals: [vision.see(nodeVisionEnv({ cwd }), call), vision.judge(nodeVisionEnv({ cwd }), call)] });
   try {
     const run = await sandbox.execute(code);
     assert.ok(run.ok, run.ok ? "" : run.error.message);
-    return { value: run.value, requests: eyes.ledger.map((r) => r.parts.filter((p) => p.type === "image").map((p) => p.fragment)), judged: jev.requests.map((r) => r.request), looks };
+    return { value: run.value, requests: eyes.ledger.map((r) => r.parts.filter((p) => p.type === "image").map((p) => p.fragment)), judged: jev.requests.map((r) => ({ ...r.params, examples: examples(r.params) })), looks };
   } finally { await sandbox.close(); }
 }
 
@@ -107,7 +109,7 @@ test("Jev before and after the eyes: only the pages worth a look go to the eyes,
 test("Jev: photos classified by example images in the criteria", async () => {
   const { value, judged } = await example(byExample);
   assert.deepEqual(value, { "attic.png": "roof", "hall.png": "roof", "roof.png": "roof" });
-  assert.deepEqual(judged.map((r) => Object.keys(r.assets)), [["<roof>", "<hall>"], ["<roof>", "<hall>"], ["<roof>", "<hall>"]]);
+  assert.deepEqual(judged.map((r) => r.examples), [["<roof>", "<hall>"], ["<roof>", "<hall>"], ["<roof>", "<hall>"]]);
   assert.deepEqual(judged[0].questions.room.criteria, { roof: "A roof seen from outside, like <roof>", hall: "A hallway indoors, like <hall>", neither: "Neither of these." });
 });
 
@@ -119,7 +121,7 @@ test("Jev: a presence noul beside the box, and the box as a region of the scan",
 
 test("Jev: tiles as the choice's options, then a box on the chosen tile, given back as a region of the whole scan", async () => {
   const { value, judged } = await example(tiles);
-  assert.deepEqual(Object.keys(judged[0].assets), ["<tile top_left>", "<tile top_right>", "<tile bottom_left>", "<tile bottom_right>"]);
+  assert.deepEqual(judged[0].examples, ["<tile top_left>", "<tile top_right>", "<tile bottom_left>", "<tile bottom_right>"]);
   assert.deepEqual(judged[0].state.images.map((i) => i.source), ["scan.png"]);
   for (const t of ["top_left", "top_right", "bottom_left", "bottom_right"]) assert.deepEqual(imageHeader(fs.readFileSync(path.join(cwd, ".look", "tiles", `${t}.png`))), { mimeType: "image/png", width: 400, height: 500, orientation: 1 });
   assert.deepEqual(judged[1].state.images.map((i) => i.source), ["scan.png#xywh=percent:0,0,50,50"], "the first tile, named by where it was cut");
@@ -132,4 +134,18 @@ test("Jev: the box's crop asked about its four edges", async () => {
   assert.deepEqual(Object.keys(judged[1].questions), ["left", "right", "top", "bottom"]);
   assert.deepEqual(judged[1].state.images.map((i) => i.source), ["scan.png#xywh=percent:50,25,50,50"]);
   assert.deepEqual(value, ["left", "right", "top", "bottom"], "every edge the fake says yes to");
+});
+
+test("the skill's window cut is the same bytes when it is made again, a WebM copy too, so its look is found again", async () => {
+  const cut = SKILL.match(/`(mkdir -p \.look\/clips && ffmpeg [^`]*-c copy[^`]*)`/)[1];
+  assert.match(cut, /-fflags \+bitexact/);
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=70:size=160x120:rate=5", "-c:v", "libvpx", "-b:v", "100k", path.join(cwd, "talk.webm")]);
+  const webm = cut.replaceAll("talk.mp4", "talk.webm").replace(".look/clips/60.mp4", ".look/clips/60.webm");
+  const sha = async (command) => {
+    await new Promise((resolve, reject) => execFile("bash", ["-c", command], { cwd }, (error) => (error ? reject(error) : resolve())));
+    return createHash("sha256").update(fs.readFileSync(path.join(cwd, ".look", "clips", "60.webm"))).digest("hex");
+  };
+  assert.equal(await sha(webm), await sha(webm), "cut twice with the skill's flags: the same bytes");
+  const plain = webm.replace(" -fflags +bitexact", "");
+  assert.notEqual(await sha(plain), await sha(plain), "without the flag the muxer writes a fresh id each time");
 });

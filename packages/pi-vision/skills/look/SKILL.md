@@ -62,8 +62,9 @@ return `${seen.text}\n(receipts: ${seen.receipts.join(", ")}; $${seen.costUsd})`
 ```
 
 Look again more closely where the answer points: frames every second over that minute. When the vision model takes
-video, cut windows instead (`mkdir -p .look/clips && ffmpeg -y -ss 60 -t 30 -i talk.mp4 -c copy .look/clips/60.mp4`), pass the clips as paths and name
-them `talk.mp4#t=60,90`.
+video, cut windows instead (`mkdir -p .look/clips && ffmpeg -y -ss 60 -t 30 -i talk.mp4 -c copy -fflags +bitexact .look/clips/60.mp4`), pass the
+clips as paths and name them `talk.mp4#t=60,90`. `-fflags +bitexact` makes a window you cut again the same bytes (a WebM
+copy otherwise gets a new id each time), so an answer already paid for is found again.
 
 ## Many images
 

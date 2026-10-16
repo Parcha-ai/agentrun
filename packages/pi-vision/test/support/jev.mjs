@@ -1,5 +1,6 @@
-// A fake Jev in the shape of TypeSafe's SDK: a client whose `systemOne` keeps every request it is given and answers
-// each question with its type's shape, and an `image` that keeps the bytes it is given. No network, no key.
+// A fake Jev port in the shape `@parcha/agentrun-jev`'s `createJevRunner` returns: a `judge` that keeps every request
+// it is given and answers each question with its type's shape, priced like Jev ($0.042 a million input tokens) unless a
+// test says it does not know the price. No network, no key.
 import { appendFileSync } from "node:fs";
 import { imageHeader } from "@parcha/pi-vision";
 
@@ -10,22 +11,21 @@ export const ANSWERS = {
   score: (q) => ({ type: "score", score: 1, confidence: 0.7, legend: Object.fromEntries(q.criteria.map((c, i) => [i, c])), probabilities: Object.fromEntries(q.criteria.map((_, i) => [i, i === 1 ? 0.7 : 0.3 / (q.criteria.length - 1)])) }),
   box: () => ({ type: "box", box: { top: 0.25, bottom: 0.75, left: 0.5, right: 1 }, confidence: 0.9 }),
 };
+export const USD_PER_MTOK = 0.042;
 
-/** `answer(question, request)` overrides the defaults; `fail` makes every request throw it; `ledgerPath` gets one JSON
- *  line a request, before it is answered, so a parent counts the requests of a child it killed. */
-export function fakeJev({ answer = (q) => ANSWERS[q.type](q), fail, ledgerPath, inputTokens = 1000 } = {}) {
+/** `answer(question, params)` overrides the defaults; `fail` makes every request throw it; `priced: false` answers with
+ *  no price; `ledgerPath` gets one JSON line a request, before it is answered, so a parent counts a killed child's. */
+export function fakeJev({ answer = (q) => ANSWERS[q.type](q), fail, ledgerPath, priced = true } = {}) {
   const requests = [];
-  const image = (bytes) => ({ fakeImage: true, bytes: Uint8Array.from(bytes) });
-  const client = {
-    async systemOne(request, options) {
-      const sizes = request.state.images.map(({ image: { bytes } }) => imageHeader(bytes));
-      requests.push({ request, options, sizes });
-      if (ledgerPath) appendFileSync(ledgerPath, `${JSON.stringify({ n: requests.length, sources: request.state.images.map((i) => i.source) })}\n`);
-      if (options?.signal?.aborted) throw options.signal.reason;
-      if (fail) throw fail;
-      const answers = Object.fromEntries(Object.entries(request.questions).map(([name, q]) => [name, answer(q, request)]));
-      return { model: "jev-1.14.0", answers, usage: { input_tokens: inputTokens * request.state.images.length, output_tokens: 0 } };
-    },
+  const judge = async (params) => {
+    const sizes = params.state.images.map(({ image }) => imageHeader(params.assets[image].bytes));
+    requests.push({ params, sizes });
+    if (ledgerPath) appendFileSync(ledgerPath, `${JSON.stringify({ n: requests.length, sources: params.state.images.map((i) => i.source) })}\n`);
+    if (params.signal?.aborted) throw params.signal.reason;
+    if (fail) throw fail;
+    const input = 1000 * Object.keys(params.assets).length;
+    const answers = Object.fromEntries(Object.entries(params.questions).map(([name, q]) => [name, answer(q, params)]));
+    return { answers, model: params.model, usage: { input_tokens: input, output_tokens: 0 }, cost_usd: priced ? (input * USD_PER_MTOK) / 1e6 : null };
   };
-  return { client, image, requests };
+  return { judge, requests };
 }

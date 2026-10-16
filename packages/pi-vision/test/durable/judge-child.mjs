@@ -13,18 +13,16 @@ import { ctx, open, transcript } from "./rig.mjs";
 const { DB, CWD, OUT, LEDGER, MODE } = process.env;
 const log = (file, row) => fs.appendFileSync(path.join(OUT, file), `${JSON.stringify(row)}\n`);
 const fake = fakeJev({ ledgerPath: LEDGER });
-const client = {
-  async systemOne(request, options) {
-    if (MODE === "first" && fake.requests.length === 1) {
-      fs.writeFileSync(path.join(CWD, ".cut"), "");
-      // A timer keeps the process alive until the parent's SIGKILL, so it never exits on its own.
-      await new Promise(() => setInterval(() => {}, 60_000));
-    }
-    return fake.client.systemOne(request, options);
-  },
+const judge = async (params) => {
+  if (MODE === "first" && fake.requests.length === 1) {
+    fs.writeFileSync(path.join(CWD, ".cut"), "");
+    // A timer keeps the process alive until the parent's SIGKILL, so it never exits on its own.
+    await new Promise(() => setInterval(() => {}, 60_000));
+  }
+  return fake.judge(params);
 };
 const vision = createVisionExtension({
-  jev: { client, image: fake.image },
+  jev: { judge },
   evidence: { file: async (label, record) => ({ path: `${label}/${record.facts.key.slice(0, 16)}.md` }) },
   onLook: (look) => log("looks.jsonl", { by: MODE, key: look.record.facts.key, kept: look.kept ?? false }),
   scope: () => ({ label: "vision", deriveDir: ".vision" }),

@@ -124,6 +124,7 @@
     "@earendil-works/pi-ai": "1.1.0",
     "@earendil-works/pi-codemode": "1.1.0",
     "@earendil-works/pi-durable": "1.1.0",
+    "@parcha/agentrun-jev": "0.1.0-beta.14",
     "@silvia-odwyer/photon-node": "0.3.4",
     "sharp": "0.35.5"
   },

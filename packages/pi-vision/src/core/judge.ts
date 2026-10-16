@@ -1,9 +1,9 @@
 // `vision.judge`, a code-mode global beside `vision.see`: Jev, TypeSafe's System One model, answers typed questions
-// (choice, noul, score, box) about images the agent's code made or holds, in one request. The images go in
-// `state.images`, each fitted to Jev's limits and named by its fragment; example images go in the questions'
-// instructions or criteria by reference. The answer is kept as the call's memo before it is filed and told, so a call run
-// again pays and tells once. A box answer also names its region as a fragment of its image (`#xywh=percent:`), mapped
-// back through the fit and through the region the image itself was cut from.
+// (choice, noul, score, box) about images the agent's code made or holds, in one request through the host's Jev port.
+// The images go in `state.images`, each fitted to Jev's limits and named by its fragment; example images go in the
+// questions' instructions or criteria by reference. The answer is kept as the call's memo before it is filed and told,
+// so a call run again pays and tells once. A box answer also names its region as a fragment of its image
+// (`#xywh=percent:`), mapped back through the fit and through the region the image itself was cut from.
 
 import { VISION_JUDGE } from "./contract.js";
 import type { VisionEnv } from "./env.js";
@@ -11,7 +11,7 @@ import { blocksSha256, fileLook, fileTold, keptAnswer, lookKey, type Filing, typ
 import { citation, parseCitation } from "./fragments.js";
 import type { CallContext, CallSetup, ImageContent, Json, Usage } from "./host.js";
 import { fitImage, type FitLimits, type PixelSize } from "./image.js";
-import { JEV_IMAGE_BYTES, JEV_MAX_EDGE, JEV_MIN_EDGE, JEV_MODEL, JEV_REQUEST_BYTES, JEV_USD_PER_MTOK } from "./limits.js";
+import { JEV_IMAGE_BYTES, JEV_MAX_EDGE, JEV_MIN_EDGE, JEV_MODEL, JEV_REQUEST_BYTES } from "./limits.js";
 import { AS_IS, gatherMedia, namesMedia, once, throwMiss, type MediaRequest } from "./media.js";
 import { firstLine, type Miss } from "./misses.js";
 import type { CodeGlobal } from "./see.js";
@@ -26,21 +26,22 @@ export type JudgeRequest = MediaRequest & {
   readonly examples?: Readonly<Record<string, string | ImageContent>>;
   readonly state?: Readonly<Record<string, Json>>;
 };
-/** Jev's answers as it gives them (a box answer with `fragment` too), its model, the price (null when the tokens are not
- *  known), the receipt filed, and `kept` when this request asked nothing. */
+/** Jev's answers as it gives them (a box answer with `fragment` too), its model, the price (null when the port does not
+ *  know it), the receipt filed, and `kept` when this request asked nothing. */
 export type JudgeAnswer = { readonly answers: Readonly<Record<string, Json>>; readonly model: string; readonly costUsd: number | null; readonly receipts: readonly string[]; readonly kept?: true };
 export type JudgeGlobal = CodeGlobal<typeof VISION_JUDGE, JudgeAnswer>;
 
-/** One System One request and its result, as TypeSafe's SDK shapes them. */
-export type JevRequest = { readonly model?: string; readonly state: unknown; readonly questions: unknown; readonly assets?: unknown };
-export type JevResult = { readonly model: string; readonly answers: unknown; readonly usage: { readonly input_tokens: number | null; readonly output_tokens: number | null } };
-/** Jev as the host reaches it: a System One client (the SDK's `TypeSafeClient` as it is) and the SDK's `image`, which
- *  makes an image the SDK sends; the model (default `JEV_MODEL`) and its price per million input tokens. */
-export type JevSeam = {
-  readonly client: { systemOne(request: JevRequest, options?: { readonly signal?: AbortSignal; readonly headers?: Record<string, string> }): PromiseLike<JevResult> };
-  readonly image: (bytes: Uint8Array) => unknown;
+/** One image a request carries: PNG or JPEG file bytes and their type. */
+export type JevImage = { readonly bytes: Uint8Array; readonly mime: "image/png" | "image/jpeg" };
+/** Jev's answer to one request as the port gives it: the typed answers, the model, its tokens, and its price, null when
+ *  the port does not know it. */
+export type JevResult = { readonly answers: unknown; readonly model?: string | null; readonly usage?: { readonly input_tokens: number; readonly output_tokens: number } | null; readonly cost_usd?: number | null };
+/** Jev as the host reaches it: `judge` is the port `@parcha/agentrun-jev`'s `createJevRunner` returns, which owns the
+ *  transport, the images header and the price; `assets` maps each reference written in the state or a question to its
+ *  image. `model` is the one to ask (default `JEV_MODEL`). */
+export type JevPort = {
+  judge(params: { readonly label: string; readonly kind: string; readonly state: unknown; readonly questions: Readonly<Record<string, unknown>>; readonly assets?: Readonly<Record<string, JevImage>>; readonly model?: string; readonly signal?: AbortSignal }): Promise<JevResult>;
   readonly model?: string;
-  readonly usdPerMTok?: number;
 };
 
 const TYPES = ["choice", "noul", "score", "box"];
@@ -60,7 +61,9 @@ function checked(input: unknown): JudgeRequest {
   return r as JudgeRequest;
 }
 
-type Fitted = { readonly bytes: Uint8Array; readonly data: string; readonly fragment: string; readonly sent: PixelSize; readonly content: PixelSize };
+type Fitted = { readonly bytes: Uint8Array; readonly data: string; readonly mime: JevImage["mime"]; readonly fragment: string; readonly sent: PixelSize; readonly content: PixelSize };
+/** The reference an image of the state goes under: a string no script writes by chance. */
+const reference = (i: number) => `<vision.judge image ${i + 1}>`;
 type Box = { readonly top: number; readonly bottom: number; readonly left: number; readonly right: number };
 
 /** A box on a fitted image as a region of the image it came from: the padding taken off, and the region the source
@@ -91,7 +94,7 @@ export async function judge(input: unknown, env: VisionEnv | undefined, call: Ca
   };
   const fail = (cause: Miss, spent: Partial<LookRecord["facts"]> = { tokens_in: 0, tokens_out: 0, cost_usd: 0 }): Promise<never> =>
     throwMiss(filing, VISION_JUDGE.name, call, cause, record(cause.model ?? "no vision route", "", spent));
-  if (!jev) return fail({ code: "no_vision_route", reason: "this host gives vision.judge no Jev client" });
+  if (!jev) return fail({ code: "no_vision_route", reason: "this host gives vision.judge no Jev port" });
 
   // Every image within Jev's limits, the examples after the images; a video goes as frames cut from it.
   const fitted = async (media: MediaRequest): Promise<Fitted[]> => {
@@ -101,7 +104,7 @@ export async function judge(input: unknown, env: VisionEnv | undefined, call: Ca
       const fit = await fitImage(setup.images ?? AS_IS, bytes, mimeType, JEV_FIT, { tiles: false });
       if (fit.fit === "refused") return fail({ code: setup.images ? fit.code : "needs", reason: `${fragment}: ${fit.limit}, and ${setup.images ? fit.why : "no image processor is installed to fit it (Photon or sharp)"}`, model });
       const [block] = fit.blocks;
-      out.push({ bytes: Buffer.from(block!.data, "base64"), data: block!.data, fragment, sent: block!, content: (fit.fit === "resized" && fit.content) || block! });
+      out.push({ bytes: Buffer.from(block!.data, "base64"), data: block!.data, mime: block!.mimeType as JevImage["mime"], fragment, sent: block!, content: (fit.fit === "resized" && fit.content) || block! });
     }
     return out;
   };
@@ -118,10 +121,10 @@ export async function judge(input: unknown, env: VisionEnv | undefined, call: Ca
   }));
   const ask = async (): Promise<JevResult> => {
     const questions = Object.fromEntries(Object.entries(request.questions).map(([name, { image: _image, ...question }]) => [name, question]));
-    const state = { ...request.state, images: items.map((item) => ({ source: item.fragment, image: jev.image(item.bytes) })) };
-    const assets = Object.fromEntries(examples.map(([ref, item]) => [ref, jev.image(item.bytes)]));
-    const result = await jev.client.systemOne({ model, state, questions, ...(examples.length ? { assets } : {}) }, { ...(call.signal ? { signal: call.signal } : {}), headers: { "TypeSafe-Danger-Zone-Images": "true" } });
-    return { model: result.model, answers: result.answers, usage: result.usage };
+    const state = { ...request.state, images: items.map((item, i) => ({ source: item.fragment, image: reference(i) })) };
+    const assets = Object.fromEntries([...items.map((item, i) => [reference(i), item] as const), ...examples].map(([ref, item]) => [ref, { bytes: item.bytes, mime: item.mime }]));
+    const result = await jev.judge({ label: VISION_JUDGE.name, kind: "judge", state, questions, assets, model, ...(call.signal ? { signal: call.signal } : {}) });
+    return { answers: result.answers, model: result.model ?? null, usage: result.usage ?? null, cost_usd: result.cost_usd ?? null };
   };
   const { value: { result, readBack, receipt, costUsd }, shared } = await once(call, at.facts.key, async () => {
     let result: JevResult, readBack: boolean;
@@ -129,17 +132,19 @@ export async function judge(input: unknown, env: VisionEnv | undefined, call: Ca
       ({ answer: result, readBack } = await keptAnswer<JevResult>(call.memo, at.facts.key, ask));
     } catch (error) {
       if (call.signal?.aborted) throw error;
-      // A request that threw may still have been billed: its price is not known, so none is filed.
-      return fail({ code: (error as { status?: unknown })?.status === 413 ? "over_budget" : "look_failed", reason: `Jev failed: ${firstLine(error)}`, model }, {});
+      // A request that threw may still have been billed: its price is not known, so none is filed. A box asked of a
+      // model that has none is refused by the port before any request.
+      const { status, requestDiagnostic } = (error ?? {}) as { status?: unknown; requestDiagnostic?: { reason?: unknown } };
+      const code = requestDiagnostic?.reason === "unsupported_model" ? "unsupported" : status === 413 ? "over_budget" : "look_failed";
+      return fail({ code, reason: `Jev failed: ${firstLine(error)}`, model }, code === "unsupported" ? undefined : {});
     }
-    const [tokensIn, tokensOut] = [result.usage.input_tokens, result.usage.output_tokens];
-    const costUsd = tokensIn === null ? null : (tokensIn * (jev.usdPerMTok ?? JEV_USD_PER_MTOK)) / 1_000_000;
-    const usage: Usage = { input: tokensIn ?? 0, output: tokensOut ?? 0, cacheRead: 0, cacheWrite: 0, totalTokens: (tokensIn ?? 0) + (tokensOut ?? 0), cost: { input: costUsd ?? 0, output: 0, cacheRead: 0, cacheWrite: 0, total: costUsd ?? 0 } };
-    const facts = { ...(tokensIn !== null ? { tokens_in: tokensIn } : {}), ...(tokensOut !== null ? { tokens_out: tokensOut } : {}), cost_usd: costUsd, ...(readBack ? { kept: true as const } : {}) };
-    const filed = { ...at, args: { ...at.args, model: result.model }, body: JSON.stringify(mapped(result)), facts: { ...at.facts, ...facts } };
+    const costUsd = result.cost_usd ?? null;
+    const usage: Usage | null = result.usage ? { input: result.usage.input_tokens, output: result.usage.output_tokens, cacheRead: 0, cacheWrite: 0, totalTokens: result.usage.input_tokens + result.usage.output_tokens, cost: { input: costUsd ?? 0, output: 0, cacheRead: 0, cacheWrite: 0, total: costUsd ?? 0 } } : null;
+    const facts = { ...(result.usage ? { tokens_in: result.usage.input_tokens, tokens_out: result.usage.output_tokens } : {}), cost_usd: costUsd, ...(readBack ? { kept: true as const } : {}) };
+    const filed = { ...at, args: { ...at.args, model: result.model ?? model }, body: JSON.stringify(mapped(result)), facts: { ...at.facts, ...facts } };
     const receipt = await fileTold(call.memo, at.facts.key, filing, (to, told) => fileLook(to, VISION_JUDGE.name, filed, { usage, costUsd, ...(told ? { kept: true } : {}) }));
     return { result, readBack, receipt, costUsd };
   });
 
-  return { answers: mapped(result), model: result.model, costUsd, receipts: receipt ? [receipt] : [], ...(readBack || shared ? { kept: true } : {}) };
+  return { answers: mapped(result), model: result.model ?? model, costUsd, receipts: receipt ? [receipt] : [], ...(readBack || shared ? { kept: true } : {}) };
 }

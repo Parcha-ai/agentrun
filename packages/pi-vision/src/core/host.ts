@@ -5,7 +5,7 @@
 import type { EvidenceSink, LookEvent } from "./evidence.js";
 import type { VisionEnv } from "./env.js";
 import type { ImageProcessor } from "./image.js";
-import type { JevSeam } from "./judge.js";
+import type { JevPort } from "./judge.js";
 import type { Kind } from "./kinds.js";
 import type { Limits, LimitsOverride } from "./limits.js";
 import type { MissEvent } from "./misses.js";
@@ -110,8 +110,9 @@ export type VisionOptions = {
   readonly sources?: Readonly<Record<string, SourceProvider>>;
   /** Host policy: true, or the refusal the model reads. Absent: everything is allowed. */
   readonly allow?: (request: { readonly path: string; readonly kind: Kind; readonly tool: "read" | "vision.see" | "vision.judge" }) => true | string;
-  /** Jev, for `vision.judge`. Absent: every judgment is a `no_vision_route` miss. */
-  readonly jev?: JevSeam;
+  /** Jev, for `vision.judge`: the port `@parcha/agentrun-jev`'s `createJevRunner` returns. Absent: every judgment is a
+   *  `no_vision_route` miss. */
+  readonly jev?: JevPort;
   /** The host's rows and spend. A throw here never fails a call. */
   readonly onLook?: (look: LookEvent) => void | Promise<void>;
   readonly onMiss?: (miss: MissEvent) => void | Promise<void>;
@@ -132,7 +133,7 @@ export type CallSetup = {
   readonly providers: readonly Provider[];
   readonly sources: Readonly<Record<string, SourceProvider>>;
   readonly allow?: VisionOptions["allow"];
-  readonly jev?: JevSeam;
+  readonly jev?: JevPort;
   readonly onLook?: (look: LookEvent) => void | Promise<void>;
   readonly onMiss?: (miss: MissEvent) => void | Promise<void>;
 };

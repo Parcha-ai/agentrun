@@ -66,8 +66,6 @@ export const JEV_IMAGE_BYTES = 16 * MiB;
 export const JEV_REQUEST_BYTES = 24 * MiB;
 /** The model `vision.judge` asks unless the host names one: Jev 1.14, the first that answers box questions (read 2026-10-16). */
 export const JEV_MODEL = "jev-1.14.0";
-/** Jev's price in dollars per million input tokens, images included; output tokens are free (read 2026-10-16). */
-export const JEV_USD_PER_MTOK = 0.042;
 /** Source bytes read into this process; a larger file needs a provider that works on it in its environment: pdf.js held 455 MB for a 200 page file (measured 2026-10-09). */
 export const SOURCE_BYTES_IN_PROCESS = 64 * MiB;
 
