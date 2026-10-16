@@ -12,6 +12,7 @@ import { replayCommits } from "./commit-log.ts";
 import type { DrainOptions } from "./gate.ts";
 import type { CallRecord, HomeHandle } from "./host.ts";
 import type { Holder, LeaseRecord, Ownership } from "./ownership.ts";
+import type { MoveFacts, MoveWhere } from "./run.ts";
 import { type StopRunner, stopRunner } from "./stop.ts";
 import { type Seal, sealStore, verifyStore } from "./store.ts";
 import { manifestOf, moveFile, moveWorkspace, type WorkspaceOptions } from "./workspace.ts";
@@ -24,7 +25,17 @@ export type Place = {
 	/** The store's file in the box. Outside the workspace: the workspace moves on its own. */
 	readonly store: string;
 	readonly workspace: string;
+	/**
+	 * How a recording names the box: a label the host gives (`box-1`), never the provider's id. A move's durable record
+	 * names its places by it. Default: the box's id, for a host that records nothing.
+	 */
+	readonly label?: string;
 };
+
+/** A place as a move's record names it. */
+export function whereOf(place: Place): MoveWhere {
+	return { environment: place.environment, provider: place.provider, box: place.label ?? place.box.id };
+}
 
 /** How a host starts the runner at a place and holds it, at the given epoch. */
 export type StartRunner = (place: Place, epoch: number, context: Context) => Promise<Result<HomeHandle, MoveError>>;
@@ -228,6 +239,7 @@ export async function moveHome(options: MoveOptions, context: Context): Promise<
 	const shipMs = Math.round(performance.now() - shipStarted);
 
 	await step("take");
+	const takeStarted = performance.now();
 	// The point of no return: only with a target that still answers.
 	const alive = await target.status(context);
 	if (!alive.ok) {
@@ -269,11 +281,23 @@ export async function moveHome(options: MoveOptions, context: Context): Promise<
 		}
 	}
 	const next = epoch + 1;
+	const takeMs = Math.round(performance.now() - takeStarted);
+	const bytes = seal.bytes + (shipped.ok ? shipped.value.bytes : 0);
 
 	await step("resume");
 	target.setEpoch(next);
+	const record: MoveFacts = {
+		from: whereOf(from.place),
+		to: whereOf(to),
+		drainMs,
+		shipMs,
+		takeMs,
+		bytes,
+		stopped: [],
+		seal,
+	};
 	const resumed = await target.resume(
-		{ epoch: next, seal, move: { id, notice: options.notice, kind: "move", head: seal.head } },
+		{ epoch: next, seal, move: { id, notice: options.notice, kind: "move", head: seal.head, record } },
 		context,
 	);
 	if (!resumed.ok) {
@@ -290,7 +314,7 @@ export async function moveHome(options: MoveOptions, context: Context): Promise<
 		drainMs,
 		shipMs,
 		totalMs: Math.round(performance.now() - started),
-		bytes: seal.bytes + (shipped.ok ? shipped.value.bytes : 0),
+		bytes,
 		retired: retired.ok,
 		home: target,
 	});

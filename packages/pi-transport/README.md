@@ -395,6 +395,15 @@ line names this store), and a call that runner had in flight is cut, at most onc
 store into its hold, so a runner refused with `busy` never hides the one that holds it. A host whose runners a
 launcher keeps passes the launcher's stop as `stop`.
 
+Each move leaves a durable record in the session's store, so a recording proves the hop from durable lines: the
+document `transport.moves`, keyed by the move id, written once by the target in the first commit it makes when it
+opens the moved store (`MoveRecord`: `kind`, `epoch`, `head`, `from` and `to` as `{ environment, provider, box }`,
+`drainMs`, `shipMs`, `takeMs`, `bytes`, `stopped`, and a move's `seal`, a restore's `checkpoint` or `replayed`).
+`head` is the sequence that commit takes: a move's `seal.head`, a restore's `replayed.to + 1` or its checkpoint's
+head. The host sends what only it knows in `ResumeOrder.move.record` (`MoveFacts`); `moveHome` does. A place names
+its box by its `label` (the host's `box-1`), never the provider's id; a place with no label is named by the id. An
+order that carries no record writes none, and an open after the first finds the record and writes nothing.
+
 `registerMoveConformance(runner, name, withPair)` (`./testing`) runs the handoff on two places of a provider: a move
 with nothing cut, a move given up at the drain and at the ship, a move there and back, a take whose answer was lost,
 a take another host won (to another place, and to the same place), a kill of the host,

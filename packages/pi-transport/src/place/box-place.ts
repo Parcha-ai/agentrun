@@ -294,6 +294,8 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 		box,
 		store: paths.store,
 		workspace: paths.work,
+		// A move's or a restore's durable record names the box as the place's lines do.
+		label: labelOf(box),
 	});
 	const counter: CrossingCounter = crossingCounter();
 	const stats = checkpointStats();

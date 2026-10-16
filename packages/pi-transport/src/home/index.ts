@@ -86,6 +86,7 @@ export {
 	type RecoverOptions,
 	recoverHome,
 	type StartRunner,
+	whereOf,
 } from "./move.ts";
 export { type LinesSync, type OutboxEntry, openOutbox } from "./outbox.ts";
 export {
@@ -110,6 +111,10 @@ export {
 	type HomeOptions,
 	type HomeState,
 	MOVE_ENTRY,
+	type MoveFacts,
+	type MoveRecord,
+	MovesDoc,
+	type MoveWhere,
 	openHome,
 	type ResumeOrder,
 	type WrappedStore,
