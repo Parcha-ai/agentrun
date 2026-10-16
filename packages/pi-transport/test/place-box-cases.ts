@@ -3,7 +3,9 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
+import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { describe, expect, it } from "vitest";
 import type { BoxProvider, BoxSpec } from "../src/box/box.ts";
@@ -30,6 +32,8 @@ export type BoxPlaceSetup = {
 	readonly timeoutMs?: number;
 	/** The box's programs can write this machine's files (local boxes): a job's effects can land outside its box. */
 	readonly hostFiles?: boolean;
+	/** A runner with one pi agent turn on the host's faux model (the fixture `place-box-agent.fixture.ts`). */
+	readonly agentProgram?: RunnerProgram;
 };
 
 /** A host's directory (lease, vault, the recording's spool with its clock) and the setup's boxes. */
@@ -49,7 +53,7 @@ function world(setup: BoxPlaceSetup) {
 }
 type World = ReturnType<typeof world>;
 
-async function placeIn(made: World): Promise<BoxPlace> {
+async function placeIn(made: World, more: { models?: Models; program?: RunnerProgram } = {}): Promise<BoxPlace> {
 	return getOrThrow(
 		await boxPlace(
 			{
@@ -58,8 +62,8 @@ async function placeIn(made: World): Promise<BoxPlace> {
 				spec: made.setup.spec,
 				environment: "box",
 				ownership: leaseIn(dirStore(join(made.host, "lease"))),
-				program: made.setup.program,
-				models: createModels(),
+				program: more.program ?? made.setup.program,
+				models: more.models ?? createModels(),
 				vault: localVault(join(made.host, "vault")),
 				carry: ["CROSS_LOG"],
 				recording: "RECORD_DIR",
@@ -88,6 +92,23 @@ const orderOf = (made: World, place: BoxPlace, gen: number, more: Record<string,
 /** The commits the place's vault holds from commit 1, read as a host that starts again reads them. */
 async function logFrom1(made: World) {
 	return getOrThrow(await localVault(join(made.host, "vault")).readLog("run-1", 1, context));
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The host's model: a faux one whose answers stream slowly, numbered by the call, and how often it was asked. */
+function slowModel() {
+	const faux = fauxProvider({ api: "faux", tokensPerSecond: 40 });
+	const models = createModels();
+	models.setProvider(faux.provider);
+	let asked = 0;
+	faux.setResponses(
+		Array.from({ length: 5 }, () => () => {
+			asked += 1;
+			return fauxAssistantMessage(`answer number ${asked}: ${"slowly ".repeat(60).trim()}`);
+		}),
+	);
+	return { models, asked: () => asked };
 }
 
 /** The spool files the recording's directory holds on the host. */
@@ -384,6 +405,39 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 					const missing = Array.from({ length: steps }, (_, n) => n + 1).filter((step) => !each.includes(step));
 					expect(missing.every((step) => step === record.interrupted)).toBe(true);
 					expect(new Set(ran.map((line) => line.generation))).toEqual(new Set([1, 2]));
+					await place.release();
+				} finally {
+					made.remove();
+				}
+			},
+			(setup.timeoutMs ?? 60_000) * 1.5,
+		);
+
+		it.skipIf(setup.agentProgram === undefined)(
+			"answers a turn's model request once across a lost box: the restored runner asks again by key, the host answers what it paid for",
+			async () => {
+				const made = world(setup);
+				try {
+					const model = slowModel();
+					const place = await placeIn(made, { models: model.models, program: setup.agentProgram });
+					const runner = await place.start(orderOf(made, place, 1));
+					// The generation's intent reached the host before its request did. The box is lost while the answer streams.
+					while (model.asked() === 0) await sleep(20);
+					await sleep(300);
+					await place.kill(runner, "box");
+					await runner.exited;
+					const recovered = await place.recover(runner, "box", orderOf(made, place, 2));
+					expect({ epoch: recovered.runner.epoch, restored: recovered.restored }).toEqual({
+						epoch: 2,
+						restored: undefined,
+					});
+					const exit = await recovered.runner.exited;
+					expect(exit.outcome?.generation).toBe(2);
+					const record = exit.outcome?.record as { answer: string | null; questions: number };
+					// Paid calls repeated 0: the provider was asked once across both runners, and the restored turn has that answer.
+					expect(model.asked()).toBe(1);
+					expect(record.answer?.startsWith("answer number 1:")).toBe(true);
+					expect(record.questions).toBe(1);
 					await place.release();
 				} finally {
 					made.remove();
