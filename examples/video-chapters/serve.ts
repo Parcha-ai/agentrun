@@ -9,7 +9,7 @@
 //   GET  /runs/<id>/status              { id, film, live, state, processes, kills, pid }
 //   POST /runs/<id>/kill                kills the run's current process (SIGKILL, exactly that pid)
 //   GET  /runs/<id>/recording/<file>    events.jsonl (grows by whole lines; Range: bytes=N-), manifest.json (once finished), blobs/
-//   GET  /viewer/<file>                 the viewer
+//   GET  /viewer/<file>                 the viewer (index.html?follow=/runs/<id>/recording/ follows a run)
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, closeSync, createReadStream, createWriteStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
@@ -91,15 +91,18 @@ const parentOf = (pid: number) => Number(readFileSync(`/proc/${pid}/stat`, 'utf8
 
 /** Starts the server; `npm run demo:video-chapters -- --serve` keeps it up until the process ends. */
 export async function serve(options: DemoOptions, argv: string[]): Promise<Served> {
-  const { values } = parseArgs({ args: argv, options: { serve: { type: 'boolean' }, host: { type: 'string' }, port: { type: 'string' }, live: { type: 'boolean' }, 'max-usd': { type: 'string' }, runs: { type: 'string' } }, strict: true });
+  const { values } = parseArgs({ args: argv, options: { serve: { type: 'boolean' }, host: { type: 'string' }, port: { type: 'string' }, live: { type: 'boolean' }, 'max-usd': { type: 'string' }, runs: { type: 'string' }, viewer: { type: 'string' } }, strict: true });
   const live = values.live === true;
   const maxUsd = values['max-usd'] ?? String(2 * Number(options.spec.expectedCost ?? 0.5));
   const root = resolve(values.runs ?? join(tmpdir(), 'video-chapters-runs'));
   mkdirSync(join(root, 'runs'), { recursive: true });
-  // The viewer's files, built from this checkout with no recording bundled: each run's recording is served beside it.
-  const viewer = join(root, 'viewer');
-  const { build } = await import(new URL('../../apps/viewer/build.mjs', import.meta.url).href) as { build(target: string, recordingsDir: string): unknown };
-  build(viewer, join(root, 'no-recordings'));
+  // The viewer's files: a build `--viewer` names, else one built from this checkout with no recording bundled. Each run's
+  // recording is served beside it, on the same origin.
+  const viewer = values.viewer ? resolve(values.viewer) : join(root, 'viewer');
+  if (!values.viewer) {
+    const { build } = await import(new URL('../../apps/viewer/build.mjs', import.meta.url).href) as { build(target: string, recordingsDir: string): unknown };
+    build(viewer, join(root, 'no-recordings'));
+  }
   const page = readFileSync(join(import.meta.dirname, 'serve-page.html'), 'utf8');
   const fill = (run?: Run) => page.replaceAll('{{MODE}}', (run?.live ?? live) ? 'live' : 'fakes, $0').replaceAll('{{CAP}}', maxUsd).replaceAll('{{RUN}}', run?.id ?? '');
   const runs = new Map<string, Run>();
@@ -117,7 +120,7 @@ export async function serve(options: DemoOptions, argv: string[]): Promise<Serve
     runs.set(id, run);
     return run;
   };
-  const created = (response: ServerResponse, run: Run) => json(response, 201, { id: run.id, page: `/runs/${run.id}/`, follow: `/viewer/?src=/runs/${run.id}/recording/&follow=1` });
+  const created = (response: ServerResponse, run: Run) => json(response, 201, { id: run.id, page: `/runs/${run.id}/`, follow: `/viewer/index.html?follow=/runs/${run.id}/recording/` });
 
   const handle = async (request: IncomingMessage, response: ServerResponse) => {
     const url = new URL(request.url ?? '/', 'http://localhost');

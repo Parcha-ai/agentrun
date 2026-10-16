@@ -62,7 +62,7 @@ if (!RUN) {
 } else {
   $('run').hidden = false;
   const base = '/runs/' + RUN + '/';
-  $('viewer').src = '/viewer/?src=' + encodeURIComponent(base + 'recording/') + '&follow=1';
+  $('viewer').src = '/viewer/index.html?follow=' + encodeURIComponent(base + 'recording/');
   let offset = 0;
   const lines = [];
   const say = (line) => {
@@ -85,7 +85,6 @@ if (!RUN) {
       $('log').scrollTop = $('log').scrollHeight;
     }
     if (status.state === 'running') setTimeout(tick, 1500);
-    else if (status.state === 'finished') $('viewer').src = '/viewer/?src=' + encodeURIComponent(base + 'recording/');
   }
   $('kill').onclick = async () => { $('kill').disabled = true; const r = await fetch(base + 'kill', { method: 'POST' }); if (!r.ok) alert((await r.json()).error); };
   tick();
