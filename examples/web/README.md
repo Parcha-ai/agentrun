@@ -109,8 +109,9 @@ The page is at `/`. The data follows Grep's job routes.
   back to small once they answer. It is one frame for the run, kept while the run sleeps so a person can sign in after the
   agent's turn ended, and reloaded only when the view's address changes; no tab change reloads it.
 - **Browser tab.** Once the run is not live, a player of what its browser showed: the frame at each time, play and
-  pause, a scrubber with times, and each gap drawn on it and named. The sign-in is one: **You signed in here (not
-  recorded)**. While the live view is up, the tab points at the panel.
+  pause, a scrubber with times, and each gap drawn on it and named, from where the frames stopped to the next frame, or to
+  the end when none came after. The sign-in is one: **You signed in here (not recorded)**. The session's release ends the
+  track. While the live view is up, the tab points at the panel.
 - **Chat.** One message box under every tab, above the live browser, so a person can sign in and answer "done" without
   leaving the page.
 

@@ -496,7 +496,13 @@ test("a run that is not live plays back what its browser showed: the frame at ea
   assert.equal(view.find("play").textContent, "Play");
 
   const track = page.frameTrack([...FRAMES, { kind: "frame.gap", t: 70_000, data: { from: 61_500, reason: "session_released" } }]);
-  assert.deepEqual(track.gaps.map((g) => [g.from, g.to, g.label]), [[1_500, 61_500, page.SIGNED_IN_GAP]], "a gap with no frame after it ends the track");
+  assert.deepEqual(track.gaps.map((g) => [g.from, g.to, g.label]), [[1_500, 61_500, page.SIGNED_IN_GAP]], "the release is no gap");
+  assert.equal(track.end, 70_000, "the release ends the track: the page showed its last frame until then");
+  // A live run's shape: the page did not change after the sign-in, so no frame came after the hold; the recorder's own
+  // check paused it once more while a password was typed, and the session was released at the end.
+  const still = page.frameTrack([frameLine(1, 1_000, SHA.a), frameLine(2, 4_000, SHA.b), signInGap(3, 5_000, 4_000), { kind: "frame.gap", t: 200_000, data: { from: 4_000, reason: "credential_on_page", detail: "field" } }, { kind: "frame.gap", t: 380_000, data: { from: 4_000, reason: "session_released" } }]);
+  assert.deepEqual(still.gaps.map((g) => [g.from, g.to, g.label]), [[4_000, 380_000, page.SIGNED_IN_GAP]], "with no frame after it, the sign-in runs to the end, and the check's pause inside it is part of it");
+  assert.deepEqual([still.start, still.end], [1_000, 380_000]);
 
   const live = await mount(t, { ...source, run: async () => summary({ status: "running", live: true, frames: true, liveView: { key: "k1" } }) }, "#/run/r1");
   assert.equal(live.find("frame-img"), null, "a live run shows its live browser, not the player");

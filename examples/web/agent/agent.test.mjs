@@ -168,10 +168,10 @@ test('the hold starts when request_sign_in is called, before its result exists: 
   const api = { conversationId: 1, snapshot: () => gate.then(() => undefined), commit: async () => assert.fail('no ready profile, nothing to record') };
   const result = tool.execute({ site: 'https://the-internet.herokuapp.com/login', reason: 'The secure page needs a sign-in.' }, api, ctx);
   assert.equal(frames.held, true, 'held as the call starts');
-  await frames.sink(...frame(1_500, 2));
+  await assert.rejects(frames.sink(...frame(1_500, 2)), /not kept/, 'refused, so the recorder counts it dropped and no gap starts from it');
   open();
   assert.equal((await result).control.terminate, true);
-  await frames.sink(...frame(2_000, 3));
+  await assert.rejects(frames.sink(...frame(2_000, 3)), /not kept/, 'and still held once the run waits');
   frames.hold();
   await frames.flush();
   const lines = await linesOf(one.run.dir);
@@ -205,7 +205,7 @@ test('frames are owner-only beside the run; the file tools cannot reach them; th
 
   await frames.sink(a, aBlob);
   assert.equal((await (await root.submit({ type: 'input', content: 'Log in and report.', requestId: 'ask-1' }, ctx)).wait(ctx)).status, 'done');
-  await frames.sink(...frame(5_000, 2));
+  await assert.rejects(frames.sink(...frame(5_000, 2)), /not kept/);
   assert.equal(frames.held, true, 'the run waits for the person: held');
   const asked = await harness.snapshot(Profiles, PROFILE, ctx);
   assert.deepEqual([asked.ref, asked.allowedOrigins, asked.startUrl, asked.verifiedAt], ['ctx-1', ['https://the-internet.herokuapp.com'], 'https://the-internet.herokuapp.com/login', undefined]);

@@ -84,11 +84,13 @@ The app records the browser for the page's replay player with pi-browser's frame
 `<run>/frames/` (`frames.ts`): owner-only, beside the run, outside `work/`. While the person signs in nothing is kept.
 `request_sign_in` holds the frames as the call starts, before its first await, so before its result exists and the run
 can say it waits; every other tool lifts the hold before it runs, and since `request_sign_in` ends the turn, that is the
-agent's first step after the person's next message. While held, every frame is dropped, and one `frame.gap`
-(`credential_on_page`, detail `host`) marks where the frames stopped. The recorder's own check for a password or a code
-on the page stays on. A process started again while the person signs in starts without the hold, and records nothing
-either: the recorder captures a session only from its next attach, which only a browser call makes. When pi-browser's
-`FrameRecorderOptions.hold` reaches this repo, this hold moves to it.
+agent's first step after the person's next message. While held, the sink refuses every frame, so the recorder counts
+it dropped and no later gap starts from it, and one `frame.gap` (`credential_on_page`, detail `host`) marks where the
+frames stopped. The recorder's own check for a password or a code on the page stays on. The recorder sends a frame only
+when the page changes, so a page that did not change after the sign-in (the person's own sign-in already opened it)
+leaves no frame after the gap until it does. A process started again while the person signs in starts without the hold,
+and records nothing either: the recorder captures a session only from its next attach, which only a browser call makes.
+When pi-browser's `FrameRecorderOptions.hold` reaches this repo, this hold moves to it.
 
 ## A local Chrome
 

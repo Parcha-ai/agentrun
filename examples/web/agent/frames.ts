@@ -5,8 +5,9 @@
 // of the agent's reaches it, and nothing that packs, exports or replays a run reads it.
 //
 // While the person drives the browser the store is held: from `hold()` (request_sign_in calls it before its result
-// exists) until `lift()` (the agent's next tool call), it drops every frame, and it writes one `frame.gap`
-// (`credential_on_page`, detail `host`) where the frames stopped. The recorder's own credential check runs as well.
+// exists) until `lift()` (the agent's next tool call), it refuses every frame, and it writes one `frame.gap`
+// (`credential_on_page`, detail `host`) where the frames stopped. A refused frame is one the recorder counts as dropped,
+// so it never becomes the place a later gap starts from. The recorder's own credential check runs as well.
 import { createHash } from "node:crypto";
 import { appendFile, chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -68,7 +69,7 @@ export function frameStore(runDir: string, clock: () => number): FrameStore {
   return {
     sink(line, bytes) {
       if (line.kind === "frame") {
-        if (held) return;
+        if (held) return Promise.reject(new Error("not kept: the person is driving the browser"));
         last = { session: line.data.session, conv: line.conv, t: line.t };
       }
       return enqueue(line, bytes);

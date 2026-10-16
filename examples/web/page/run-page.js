@@ -14,7 +14,7 @@ const TEXT_CAP = 512 * 1024;
 const RELEASED = new Set(["sleeping", "paused", "done", "failed"]);
 export const REPLAY_NOTICE = "This is a replay: the run is recorded, nothing here acts on it, and its live browser is not part of it.";
 export const SIGNED_IN_GAP = "You signed in here (not recorded)";
-const GAPS = { process_killed: "Not recorded: the run's process stopped here", session_released: "The browser was closed here", credential_on_page: "Not recorded: a password or a code was on the page" };
+const GAPS = { process_killed: "Not recorded: the run's process stopped here", credential_on_page: "Not recorded: a password or a code was on the page" };
 const PROVIDERS = { browserbase: "Browserbase", chrome: "Chrome" };
 /** How long the player shows a gap's note before it goes on, and the longest it waits between two frames. */
 const GAP_MS = 1500;
@@ -67,23 +67,26 @@ export function startedLine(signedIn) {
 
 /**
  * A run's frames as the player plays them: the frames in time order, and each gap from where the frames stopped to the
- * next frame after it. A gap with no frame after it is the end of the track, drawn only when it is the sign-in (up to its
- * own time). `start` and `end` bound the scrubber.
+ * next frame after it, or to the end of the recording when none came after (a page that did not change after a sign-in
+ * sends none). A gap that starts inside another is part of it, named by the first. The session's release is the end of
+ * the track, not a gap: the page showed its last frame until then. `start` and `end` bound the scrubber.
  * @param {import("./source.js").FrameLine[]} lines
  */
 export function frameTrack(lines) {
   const frames = lines.filter((l) => l.kind === "frame").sort((a, b) => a.t - b.t || (a.seq ?? 0) - (b.seq ?? 0));
-  const gaps = lines
-    .filter((l) => l.kind === "frame.gap")
-    .map((g) => {
-      const from = Number.isFinite(g.data?.from) ? g.data.from : g.t;
-      const next = frames.find((f) => f.t > g.t);
-      const signIn = g.data?.reason === "credential_on_page" && g.data?.detail === "host";
-      return { from, to: next?.t ?? (signIn ? g.t : from), label: signIn ? SIGNED_IN_GAP : (GAPS[g.data?.reason] ?? "Not recorded") };
-    })
-    .filter((g) => g.to > g.from);
-  const times = [...frames.map((f) => f.t), ...gaps.flatMap((g) => [g.from, g.to])];
-  return { frames, gaps, start: times.length ? Math.min(...times) : 0, end: times.length ? Math.max(...times) : 0 };
+  const times = lines.map((l) => l.t);
+  const end = times.length ? Math.max(...times) : 0;
+  const gaps = [];
+  for (const g of lines.filter((l) => l.kind === "frame.gap" && l.data?.reason !== "session_released").sort((a, b) => a.t - b.t)) {
+    const from = Number.isFinite(g.data?.from) ? g.data.from : g.t;
+    const to = frames.find((f) => f.t > g.t)?.t ?? end;
+    const signIn = g.data?.reason === "credential_on_page" && g.data?.detail === "host";
+    const before = gaps.at(-1);
+    if (before && from < before.to) before.to = Math.max(before.to, to);
+    else if (to > from) gaps.push({ from, to, label: signIn ? SIGNED_IN_GAP : (GAPS[g.data?.reason] ?? "Not recorded") });
+  }
+  const start = times.length ? Math.min(...frames.map((f) => f.t), ...gaps.map((g) => g.from), end) : 0;
+  return { frames, gaps, start, end };
 }
 
 /** Markdown, escaped first: headings, lists, fences, code, bold, italic and http(s) links. */
