@@ -65,10 +65,12 @@ export function researcher(messages: readonly Message[]) {
 export const fakes: Fakes = {
   model: researcher,
   tools: {
+    // The issue as the classifier may see it: no maintainers' labels (`github_labels` hands those over after the judgments).
     github_issue: ({ number }) => {
-      const { prs: _prs, paths: _paths, ...issue } = byNumber.get(Number(number)) ?? (() => { throw new Error(`no issue ${String(number)}`); })();
+      const { prs: _prs, paths: _paths, labels: _labels, ...issue } = byNumber.get(Number(number)) ?? (() => { throw new Error(`no issue ${String(number)}`); })();
       return issue;
     },
+    github_labels: ({ number }) => ({ labels: byNumber.get(Number(number))?.labels ?? [] }),
     github_linked_prs: ({ number }) => ({ prs: (byNumber.get(Number(number))?.prs ?? []) }),
   },
   // Scripted: no model, so $0. A label question gets the scripted label at 0.8 and the rest share what is left; a good-first-issue question gets 0.9 or 0.1.

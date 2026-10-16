@@ -53,12 +53,6 @@
         "body": {
           "type": "string"
         },
-        "labels": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
         "url": {
           "type": "string"
         }
@@ -67,7 +61,6 @@
         "number",
         "title",
         "body",
-        "labels",
         "url"
       ]
     },
@@ -337,6 +330,20 @@
         "agreement"
       ],
       "additionalProperties": false
+    },
+    "MaintainerLabels": {
+      "type": "object",
+      "properties": {
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "labels"
+      ]
     }
   },
   "input": {
@@ -424,7 +431,7 @@
                 "ls"
               ],
               "effort": "low",
-              "instructions": "You triage one issue of a public repository. Its record is in `issue` (title, body, the maintainers' labels are NOT shown to you) and the pull requests that mention it are in `linked_prs`. Read the code the issue or those pull requests name with the read-only tools you have (read, grep, find, ls): the repository's files are under `repo/` in your workspace. Report what the issue asks, whether it gives a way to reproduce what it reports, the paths you read, and at least one short quotation from each source you rely on (the issue itself, a pull request's title, a file). Quote; never paraphrase a quotation. If a path you want does not exist, say so in the summary and do not invent its contents. You decide nothing about labels here."
+              "instructions": "You triage one issue of a public repository. Its record is in `issue` (its number, title, body and URL) and the pull requests that mention it are in `linked_prs`. Read the code the issue or those pull requests name with the read-only tools you have (read, grep, find, ls): the repository's files are under `repo/` in your workspace. Report what the issue asks, whether it gives a way to reproduce what it reports, the paths you read, and at least one short quotation from each source you rely on (the issue itself, a pull request's title, a file). Quote; never paraphrase a quotation. If a path you want does not exist, say so in the summary and do not invent its contents. You decide nothing about labels here."
             },
             {
               "node": "judge",
@@ -453,10 +460,33 @@
               "as": "starter"
             },
             {
+              "node": "call",
+              "label": "read-maintainer-labels",
+              "via": "tool",
+              "tool": "github_labels",
+              "args": {
+                "repo": "{repo}",
+                "number": "{item}"
+              },
+              "out": "MaintainerLabels",
+              "as": "maintainer",
+              "deadline_s": 30,
+              "retry": {
+                "attempts": 3,
+                "backoff_s": 1,
+                "on": [
+                  "timeout",
+                  "http_5xx",
+                  "http_429",
+                  "connection"
+                ]
+              }
+            },
+            {
               "node": "code",
               "label": "row",
               "as": "row",
-              "code": "(s) => { const label = s.decision.label; const mapped = (s.issue.labels || []).map((name) => s.label_map[name]).filter((value) => value !== undefined); const maintainer = mapped.length ? mapped[0] : null; return { number: s.issue.number, title: s.issue.title, url: s.issue.url, label, label_confidence: s['decision$answers'].answers.label.confidence, good_first_issue: s.starter.good_first_issue, good_first_confidence: Math.abs(s['starter$answers'].answers.good_first_issue.noul - 0.5) * 2, evidence: s.research.evidence, maintainer_label: maintainer, agrees: maintainer === null ? null : maintainer === label }; }"
+              "code": "(s) => { const label = s.decision.label; const mapped = (s.maintainer.labels || []).map((name) => s.label_map[name]).filter((value) => value !== undefined); const maintainer = mapped.length ? mapped[0] : null; return { number: s.issue.number, title: s.issue.title, url: s.issue.url, label, label_confidence: s['decision$answers'].answers.label.confidence, good_first_issue: s.starter.good_first_issue, good_first_confidence: Math.abs(s['starter$answers'].answers.good_first_issue.noul - 0.5) * 2, evidence: s.research.evidence, maintainer_label: maintainer, agrees: maintainer === null ? null : maintainer === label }; }"
             }
           ]
         }

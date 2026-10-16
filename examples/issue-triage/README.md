@@ -6,7 +6,7 @@ An agent drafts a workflow that triages a public repository's twenty newest open
 npm ci --ignore-scripts && npm run build && npm run demo:issue-triage
 ```
 
-It runs on scripted fakes: no key, no network, $0. The twenty issues are fictional, in the shape of the Express repository's, so no real person's text is in the recording. The flags are the reference entry's (`--record <dir>`, `--kill`, `--dir`, `--json`; see `examples/reference/README.md`).
+It runs on scripted fakes: no key, no network, $0. **The twenty issues are synthetic, written for the scripted run: they are not a real repository's issues** (they borrow the Express repository's label vocabulary and nothing else), so no real person's text is in the recording. The live takes use a real public repository's issues; see below. The flags are the reference entry's (`--record <dir>`, `--kill`, `--dir`, `--json`; see `examples/reference/README.md`).
 
 | File | What |
 |---|---|
@@ -36,6 +36,10 @@ It runs on scripted fakes: no key, no network, $0. The twenty issues are fiction
 - **No**: the change spans several modules, needs a design decision from a maintainer, depends on an unreleased change or an unclear ask, or needs knowledge of the project's internals.
 
 The row's confidence is the distance of the yes-probability from one half, doubled. A threshold on it, if a host wants one, belongs in the workflow, not in the question.
+
+## The maintainers' labels are the truth, and the classifier never sees them
+
+The label an issue carries is what the run is scored against, so nothing the research agent or either Jev question reads may contain it. The workflow enforces that by structure, not by an instruction: `github_issue` hands over the issue's number, title, body and URL and no labels; the research agent and both judges are given explicit state maps built from that; and the maintainers' labels are fetched by their own call, `github_labels`, after both judgments, and used only by the last step to compute the row's agreement. A test (`examples/issue-triage.test.mjs`) holds a run to it: no state, instruction or question handed to the agent or a judge contains a maintainer's label.
 
 ## Choosing the repository for a live take
 
