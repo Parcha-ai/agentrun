@@ -603,6 +603,22 @@ It makes the box, and
   box is made.
 - `release()` closes the link and destroys every box the place made.
 
+## What a box cost: receipts
+
+`boxReceipts({ prices, write })` keeps a ledger of the boxes its providers make: `ledger.wrap(provider)` is the same
+provider, and each box it makes gets one receipt when it ends, destroyed through it, found ended by `status`, or found
+gone by `attach` (a lifetime that ran out, or a sweep). The host writes each receipt as a live line, source
+`transport`, kind `box.receipt`: `{ box, provider, kind, from, to, seconds, usd_per_second, cost_usd, source, priced }`.
+`box` is a label, `box-1`, `box-2` by first appearance, never the provider's id. Hand the wrapped providers to
+everything that makes boxes: a box place, and the transport's hands pools (`TransportHost.providers`).
+
+The prices are the host's (`prices: [{ provider, kind, usdPerSecond, source, priced }]`, with `source` the page a price
+was read from and `priced` the date it was read): this package holds no price table. A box's `kind` is found from its
+facts (`gpu:<gpu>` for a box with a GPU, else its isolation), or by the host's `kindOf`. A box with no price writes no
+receipt, so its cost stays unknown, never 0. `cost_usd` is an estimate at list price, `seconds` times the price per
+second: not the provider's invoice, which bills by its own rounding, minimums and discounts. A box another process or
+host made is its maker's to receipt.
+
 ## Home: a program kept alive in a box
 
 A box has no init system, and a host's `exec` ends when the host goes away. `launch` keeps one program running in a box
