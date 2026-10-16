@@ -49,6 +49,8 @@ export type DemoOptions = {
   argv?: string[];
   /** The root of the repository, for the recording's `code` (default: two directories above the entry). */
   root?: string;
+  /** The recovery driver's layout for the run (`v4`: the keyed one); the driver's default when absent. A host's choice, so it is not the job's. */
+  layout?: 'v3' | 'v4';
 };
 
 export type DemoResult = {
@@ -157,7 +159,7 @@ async function child(options: DemoOptions) {
     composeHost(local.host, parts.host, cross, window, join(place.root, 'judge-spent.jsonl'));
     if (boxes && options.spec.boxes?.runIn) box = await inBox(boxes, options.spec.boxes.kind, place, options.job.files ?? {});
     const input = env.INPUT ? (JSON.parse(env.INPUT) as Record<string, unknown>) : options.job.input;
-    const result = await run(place, local.host, { ...options.job, input }, { ...(box ? { env: box.env } : {}), ...(parts.vision ? { vision: parts.vision } : {}) });
+    const result = await run(place, local.host, { ...options.job, input }, { ...(box ? { env: box.env } : {}), ...(parts.vision ? { vision: parts.vision } : {}), ...(options.layout ? { layout: options.layout } : {}) });
     await recorder?.detach();
     console.log(JSON.stringify({ outcome: { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 240) } : {}) } }));
   } catch (error) {

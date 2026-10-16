@@ -24,6 +24,20 @@ export {
 	type TransportConfigInput,
 	TransportConfigSchema,
 } from "./config.ts";
+export { isPlacementRecord, PlacementsDoc, writePlacement } from "./place/log.ts";
+export {
+	type EnvironmentFacts,
+	environmentFacts,
+	type JevPlacerOptions,
+	jevPlacer,
+	type PlacementAsked,
+	PlacementError,
+	type PlacementErrorCode,
+	type PlacementPhase,
+	type PlacementQuery,
+	type PlacementRecord,
+	type Placer,
+} from "./place/placer.ts";
 export {
 	HandsDoc,
 	SessionBoxesDoc,

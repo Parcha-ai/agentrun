@@ -26,7 +26,7 @@ test("two copies of the README quick start run at once against real Chromes, eac
     for (const pid of chromes()) { try { process.kill(Number(pid), "SIGKILL"); } catch { /* gone */ } }
     await site.close();
     await rm(dir, { recursive: true, force: true });
-  });
+  }, { timeout: 30_000 });
   const script = path.join(dir, "quick-start.mjs");
   fs.writeFileSync(script, code);
   fs.symlinkSync(path.join(PACKAGE, "..", "..", "node_modules"), path.join(dir, "node_modules"));

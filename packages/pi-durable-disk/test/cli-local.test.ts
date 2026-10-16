@@ -2,7 +2,7 @@
 // disk and no key, to its end and across a kill -9; and the Archil flags refused beside --dir.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
@@ -219,6 +219,20 @@ describe("the CLI on a local directory", () => {
       assert.equal(await status(table("boot-1", { start: 78 })), "stopped");
       assert.equal(await status(table("boot-1", "gone")), "stopped");
       assert.equal(await status(table("boot-2", "fails")), "gone", "another boot, whatever the listing");
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("the app's factory runs once the claim is held, before this incarnation's run.json, and what it writes under ctx.root is in the run", async () => {
+    const dir = scratchRoot("cli-factory");
+    try {
+      const run = join(dir.root, "run");
+      const saw = join(dir.root, "saw");
+      const r = spawnSync(process.execPath, [CLI, "run", "--dir", run, "--app", fileURLToPath(new URL("./fixtures/factory-on-claim.ts", import.meta.url))], { env: { ...process.env, FACTORY_SAW: saw }, encoding: "utf8", timeout: 60_000 });
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual(JSON.parse(readFileSync(saw, "utf8")), { runJson: "absent", ownerLock: true, work: true }, "the claim was held (owner lock, layout) and nothing of the run published yet");
+      assert.equal(readFileSync(join(run, "factory.txt"), "utf8"), "written by the factory\n");
     } finally {
       dir.remove();
     }

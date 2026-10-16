@@ -22,4 +22,5 @@ export { closeNodeAttempt, hostScope, NodeBindingMismatch, NodeIndex, runNodeAtt
 export type { NodeAttempt, NodeOutcome, NodeScope, NodeSettlement } from "./node.js";
 export { NodeDoc, NodeFailure, nodeRunner } from "./node-runner.js";
 export type { NodeHost, NodeRecord, NodeRequest } from "./node-runner.js";
-export { createWorkflowExtension, type WorkflowEnding, type WorkflowHostParts, type WorkflowInvocation, type WorkflowOutcome, type WorkflowRequest, type WorkflowRun, type WorkflowStop, type WorkflowTaskHost } from "./task.js";
+export { createWorkflowExtension, type WorkflowCaller, type WorkflowEnding, type WorkflowHostParts, type WorkflowInvocation, type WorkflowOutcome, type WorkflowRequest, type WorkflowRun, type WorkflowStop, type WorkflowTaskHost } from "./task.js";
+export { createWorkflowTool, DURABLE_HOST_ADDENDUM, type WorkflowToolHost } from "./workflow-tool.js";

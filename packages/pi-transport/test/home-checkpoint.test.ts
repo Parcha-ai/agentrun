@@ -1,0 +1,1135 @@
+import {
+	appendFileSync,
+	chmodSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { createSession } from "@earendil-works/pi-durable";
+import { err, getOrThrow, ok, type Result } from "@earendil-works/pi-durable/env";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { afterAll, describe, expect, it } from "vitest";
+import { type Box, BoxError } from "../src/box/box.ts";
+import { localBoxes } from "../src/box/local.ts";
+import { checkpointStats, localVault, pullCheckpoint, recordSink, restoreNotice } from "../src/home/checkpoint.ts";
+import type { LogEntry } from "../src/home/commit-log.ts";
+import { crossingCounter } from "../src/home/crossing.ts";
+import { dirStore } from "../src/home/dir-store.ts";
+import { connectHome, type HomeHandle, RemoteError } from "../src/home/host.ts";
+import { linkPair } from "../src/home/link.ts";
+import { MoveError, type Place, recoverHome, type StartRunner } from "../src/home/move.ts";
+import { leaseIn } from "../src/home/ownership.ts";
+import type { CheckpointTaken } from "../src/home/run.ts";
+import { checkpointStore, sealStore } from "../src/home/store.ts";
+import { tapStorage } from "./commit-tap.ts";
+import { walk } from "./home-support.ts";
+
+const context = BACKGROUND_CONTEXT;
+const root = mkdtempSync(join(tmpdir(), "pi-transport-ckpt-"));
+const provider = localBoxes({ root });
+const boxes: Box[] = [];
+afterAll(async () => {
+	for (const box of boxes) await box.destroy(context);
+	rmSync(root, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 });
+}, 120_000);
+
+let counter = 0;
+const fresh = (name: string) => join(root, `${name}-${counter++}`);
+
+async function makeBox(): Promise<Box> {
+	const box = getOrThrow(await provider.create({ maxLifetimeMs: 600_000 }, context));
+	boxes.push(box);
+	return box;
+}
+
+/** A store with `commits` entries, closed: a stand-in for a session's store at rest. */
+async function writeStore(path: string, commits: number) {
+	mkdirSync(join(path, ".."), { recursive: true });
+	const session = createSession(await openNodeSqliteStorage(path));
+	const conversation = await session.commit(
+		(tx) => tx.createConversation({ ownership: { kind: "ownerless" } }),
+		context,
+	);
+	for (let index = 0; index < commits; index++) {
+		await session.commit((tx) => tx.appendEntry(conversation.id, { kind: "note", data: { index } }), context);
+	}
+	await session.close(context);
+}
+
+/** Commits made to the store after a checkpoint, as the runner would ship them. */
+async function moreCommits(path: string, commits: number): Promise<LogEntry[]> {
+	const shipped: LogEntry[] = [];
+	const session = createSession(tapStorage(await openNodeSqliteStorage(path), (entry) => shipped.push(entry)));
+	for (let index = 0; index < commits; index++) {
+		await session.commit((tx) => tx.createConversation({ ownership: { kind: "ownerless" } }), context);
+	}
+	await session.close(context);
+	return shipped;
+}
+
+type Fixture = {
+	readonly place: Place;
+	readonly home: HomeHandle;
+	/** Whether the home is held now, and every time it was let go. */
+	state(): { held: boolean; released: number; checkpoints: number };
+	/** Runs when the home is asked for a checkpoint, after it is held. */
+	onHeld: (() => void) | undefined;
+	/** Makes the next `checkpoint` order fail. */
+	failWith: RemoteError | undefined;
+};
+
+/** A source box with a store and a workspace, and a home that does what `Home.checkpoint` does. */
+async function source(commits = 5): Promise<Fixture> {
+	const box = await makeBox();
+	const workspace = join(box.facts().workspace, "work");
+	mkdirSync(join(workspace, "dir"), { recursive: true });
+	const place: Place = { environment: "a", provider: "local", box, workspace, store: join(fresh("s"), "run.sqlite") };
+	await writeStore(place.store, commits);
+	let held = false;
+	let released = 0;
+	let checkpoints = 0;
+	const fixture: Fixture = {
+		place,
+		onHeld: undefined,
+		failWith: undefined,
+		state: () => ({ held, released, checkpoints }),
+		home: {
+			async checkpoint() {
+				if (fixture.failWith !== undefined) return err(fixture.failWith);
+				checkpoints += 1;
+				const path = `${place.store}.checkpoint`;
+				rmSync(path, { force: true });
+				const copied = getOrThrow(await checkpointStore(place.store, path, context));
+				held = true;
+				fixture.onHeld?.();
+				return ok({ seal: copied, path } satisfies CheckpointTaken);
+			},
+			async abandon() {
+				held = false;
+				released += 1;
+				return ok(undefined);
+			},
+			calls: () => [],
+		} as unknown as HomeHandle,
+	};
+	return fixture;
+}
+
+const noContext = context;
+
+describe("pulling a checkpoint", () => {
+	it("takes the store and the workspace of one moment, holds the session until both are on the host, and lets it go", async () => {
+		const fx = await source();
+		writeFileSync(join(fx.place.workspace, "a.txt"), "alpha");
+		writeFileSync(join(fx.place.workspace, "dir", "b.bin"), Buffer.alloc(3000, 7));
+		const vault = localVault(fresh("vault"));
+		const stats = checkpointStats();
+		const seenHeldDuringPull: boolean[] = [];
+		const watching: Box = {
+			...fx.place.box,
+			id: fx.place.box.id,
+			facts: () => fx.place.box.facts(),
+			upload: (files, ctx) => fx.place.box.upload(files, ctx),
+			download: (paths, ctx) => fx.place.box.download(paths, ctx),
+			status: (ctx) => fx.place.box.status(ctx),
+			destroy: (ctx) => fx.place.box.destroy(ctx),
+			exec: (command, options, ctx) => {
+				seenHeldDuringPull.push(fx.state().held);
+				return fx.place.box.exec(command, options, ctx);
+			},
+		};
+		const taken = getOrThrow(
+			await pullCheckpoint(
+				{ session: "s", place: { ...fx.place, box: watching }, home: fx.home, epoch: 1, vault, stats },
+				noContext,
+			),
+		);
+		expect(taken.n).toBe(1);
+		expect(taken.epoch).toBe(1);
+		expect(walk(taken.filesRoot)).toEqual(walk(fx.place.workspace));
+		const sealed = getOrThrow(await sealStore(taken.storeFile, context));
+		expect(sealed).toEqual(taken.seal);
+		// Every program the pull ran in the box ran while the session was held, and the session is let go after.
+		expect(seenHeldDuringPull.length).toBeGreaterThan(2);
+		expect(seenHeldDuringPull.every(Boolean)).toBe(true);
+		expect(fx.state()).toMatchObject({ held: false, released: 1 });
+		expect(stats.taken).toBe(1);
+		expect(stats.last?.n).toBe(1);
+		expect(getOrThrow(await vault.latest("s", context))?.n).toBe(1);
+	});
+
+	it("moves only what changed after the first, keeps the older generation as it was, and keeps the newest `keep`", async () => {
+		const fx = await source();
+		writeFileSync(join(fx.place.workspace, "a.txt"), "alpha");
+		writeFileSync(join(fx.place.workspace, "big.bin"), Buffer.alloc(200_000, 1));
+		const vault = localVault(fresh("vault"));
+		const stats = checkpointStats();
+		const pull = async (keep = 2) =>
+			getOrThrow(
+				await pullCheckpoint(
+					{ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, stats, keep },
+					noContext,
+				),
+			);
+		const first = await pull();
+		const firstBytes = stats.last?.bytes ?? 0;
+		writeFileSync(join(fx.place.workspace, "a.txt"), "alpha edited");
+		const second = await pull();
+		const secondBytes = stats.last?.bytes ?? 0;
+		// The big file was not sent again; the store copy and the one small file were.
+		expect(secondBytes).toBeLessThan(firstBytes - 150_000);
+		expect(readFileSync(join(second.filesRoot, "a.txt"), "utf8")).toBe("alpha edited");
+		expect(readFileSync(join(first.filesRoot, "a.txt"), "utf8")).toBe("alpha");
+		writeFileSync(join(fx.place.workspace, "c.txt"), "third");
+		const third = await pull();
+		expect(third.n).toBe(3);
+		// Two kept: the first generation is gone, and its record with it.
+		expect(getOrThrow(await vault.get("s", 1, context))).toBeUndefined();
+		expect(getOrThrow(await vault.get("s", 2, context))?.n).toBe(2);
+		expect(readdirSync(join(fx.place.workspace, "..")).length).toBeGreaterThan(0);
+	});
+
+	it("is skipped as busy, with what held the session, and leaves the previous checkpoint the latest", async () => {
+		const fx = await source();
+		const vault = localVault(fresh("vault"));
+		const stats = checkpointStats();
+		const first = getOrThrow(
+			await pullCheckpoint({ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, stats }, noContext),
+		);
+		const holdouts = [{ kind: "ToolTask", count: 1 }];
+		fx.failWith = new RemoteError(
+			"timeout",
+			"the session did not come to rest in 10000 ms: still running, 1 ToolTask",
+			"DrainError",
+			holdouts,
+		);
+		const skipped = await pullCheckpoint(
+			{ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, stats },
+			noContext,
+		);
+		expect(skipped.ok ? "" : skipped.error.reason).toBe("busy");
+		expect(skipped.ok ? [] : skipped.error.holdouts).toEqual(holdouts);
+		expect(stats.skipped.busy).toBe(1);
+		expect(stats.lastSkip?.reason).toBe("busy");
+		expect(stats.lastSkip?.holdouts).toEqual(holdouts);
+		expect(stats.taken).toBe(1);
+		expect(getOrThrow(await vault.latest("s", context))?.n).toBe(first.n);
+	});
+
+	it("is skipped as changed when a file moves on while it is pulled, leaves no half generation, and lets the session go", async () => {
+		const fx = await source();
+		writeFileSync(join(fx.place.workspace, "a.txt"), "alpha");
+		const vault = localVault(fresh("vault"));
+		const stats = checkpointStats();
+		const first = getOrThrow(
+			await pullCheckpoint({ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, stats }, noContext),
+		);
+		writeFileSync(join(fx.place.workspace, "a.txt"), "beta!");
+		// After the manifest is taken and before the files move, the file changes (a session that was not held would do so).
+		let first_exec = true;
+		const racing: Box = {
+			id: fx.place.box.id,
+			facts: () => fx.place.box.facts(),
+			upload: (files, ctx) => fx.place.box.upload(files, ctx),
+			download: (paths, ctx) => fx.place.box.download(paths, ctx),
+			status: (ctx) => fx.place.box.status(ctx),
+			destroy: (ctx) => fx.place.box.destroy(ctx),
+			exec: (command, options, ctx) => {
+				if (command.some((part) => part.includes("tar -c")) && first_exec) {
+					first_exec = false;
+					writeFileSync(join(fx.place.workspace, "a.txt"), "gamma");
+				}
+				return fx.place.box.exec(command, options, ctx);
+			},
+		};
+		const skipped = await pullCheckpoint(
+			{ session: "s", place: { ...fx.place, box: racing }, home: fx.home, epoch: 1, vault, stats },
+			noContext,
+		);
+		expect(skipped.ok ? "" : skipped.error.reason).toBe("changed");
+		expect(skipped.ok ? "" : skipped.error.message).toMatch(/a\.txt/);
+		expect(getOrThrow(await vault.latest("s", context))?.n).toBe(first.n);
+		expect(readFileSync(join(first.filesRoot, "a.txt"), "utf8")).toBe("alpha");
+		// The generation that was begun is gone, and its number is not reused for a record.
+		expect(fx.state().held).toBe(false);
+		const again = getOrThrow(
+			await pullCheckpoint({ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, stats }, noContext),
+		);
+		expect(again.n).toBeGreaterThan(first.n);
+		expect(readFileSync(join(again.filesRoot, "a.txt"), "utf8")).toBe("gamma");
+	});
+
+	it("is skipped as too_large over maxBytes, and as failed for a store copy that does not match its seal", async () => {
+		const fx = await source();
+		writeFileSync(join(fx.place.workspace, "big.bin"), Buffer.alloc(50_000, 2));
+		const vault = localVault(fresh("vault"));
+		const stats = checkpointStats();
+		const big = await pullCheckpoint(
+			{ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, stats, workspace: { maxBytes: 1000 } },
+			noContext,
+		);
+		expect(big.ok ? "" : big.error.reason).toBe("too_large");
+		expect(fx.state().held).toBe(false);
+		// A home whose seal does not describe the copy it made.
+		const lying = {
+			...fx.home,
+			async checkpoint(options: unknown, ctx: typeof context) {
+				const taken = await (fx.home as HomeHandle).checkpoint(options as never, ctx);
+				if (!taken.ok) return taken;
+				return ok({ ...taken.value, seal: { ...taken.value.seal, sha256: "0".repeat(64) } });
+			},
+		} as unknown as HomeHandle;
+		const bad = await pullCheckpoint(
+			{ session: "s", place: fx.place, home: lying, epoch: 1, vault, stats },
+			noContext,
+		);
+		expect(bad.ok ? "" : bad.error.reason).toBe("failed");
+		expect(getOrThrow(await vault.latest("s", context))).toBeUndefined();
+		expect(stats.skipped).toMatchObject({ too_large: 1, failed: 1 });
+	});
+
+	it("tells the model server to let go of the paid answers below the oldest generation it keeps", async () => {
+		const fx = await source();
+		const vault = localVault(fresh("vault"));
+		const covered: number[] = [];
+		const heads: number[] = [];
+		for (let round = 0; round < 3; round++) {
+			const taken = getOrThrow(
+				await pullCheckpoint(
+					{
+						session: "s",
+						place: fx.place,
+						home: fx.home,
+						epoch: 1,
+						vault,
+						keep: 2,
+						answers: { covered: (head) => covered.push(head) },
+					},
+					noContext,
+				),
+			);
+			heads.push(taken.seal.head);
+			await writeStore(fx.place.store, 2);
+		}
+		// With two kept, the oldest kept is the first generation after the first pull, the second after the third.
+		expect(covered).toEqual([heads[0], heads[0], heads[1]]);
+		expect(heads[1]).toBeGreaterThan(heads[0] as number);
+	});
+
+	it("never pulls an excluded path, however large, and keeps the pull's hold and bytes small", async () => {
+		const fx = await source();
+		mkdirSync(join(fx.place.workspace, "media", "cache"), { recursive: true });
+		writeFileSync(join(fx.place.workspace, "media", "cache", "footage.bin"), Buffer.alloc(50_000_000, 9));
+		writeFileSync(join(fx.place.workspace, "notes.txt"), "keep me");
+		const pulled = async (workspace: { exclude?: string[] }) => {
+			const stats = checkpointStats();
+			const vault = localVault(fresh("vault"));
+			const taken = getOrThrow(
+				await pullCheckpoint(
+					{ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, stats, workspace },
+					noContext,
+				),
+			);
+			return { taken, stats, vault };
+		};
+		const control = await pulled({});
+		expect(control.stats.last?.bytes).toBeGreaterThan(50_000_000);
+		const left = await pulled({ exclude: ["media"] });
+		expect(readdirSync(left.taken.filesRoot).sort()).toEqual(["dir", "notes.txt"]);
+		expect(left.taken.manifest.entries.map((entry) => entry.path).sort()).toEqual(["dir", "notes.txt"]);
+		expect(left.stats.last?.bytes).toBeLessThan(1_000_000);
+		expect(left.stats.last?.heldMs).toBeLessThan(5_000);
+		expect(left.taken.excluded).toMatchObject({
+			patterns: ["media"],
+			entries: ["media"],
+			more: 0,
+			files: 1,
+			bytes: 50_000_000,
+		});
+		// The record survives the vault: a later reader sees what was left out.
+		expect(getOrThrow(await left.vault.latest("s", context))?.excluded).toEqual(left.taken.excluded);
+	});
+
+	it("skips a pull over maxPullBytes as too_large before any file moves, and lets the session go", async () => {
+		const fx = await source();
+		const vault = localVault(fresh("vault"));
+		const stats = checkpointStats();
+		const first = getOrThrow(
+			await pullCheckpoint({ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, stats }, noContext),
+		);
+		writeFileSync(join(fx.place.workspace, "new.bin"), Buffer.alloc(2_000_000, 3));
+		const over = await pullCheckpoint(
+			{ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, stats, maxPullBytes: 1_000_000 },
+			noContext,
+		);
+		expect(over.ok ? "" : over.error.reason).toBe("too_large");
+		expect(over.ok ? "" : over.error.message).toMatch(/limit is 1000000/);
+		expect(fx.state().held).toBe(false);
+		expect(getOrThrow(await vault.latest("s", context))?.n).toBe(first.n);
+		// Inside the budget, the same pull goes through.
+		const inside = await pullCheckpoint(
+			{ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, stats, maxPullBytes: 10_000_000 },
+			noContext,
+		);
+		expect(inside.ok).toBe(true);
+	});
+
+	it("announces transport.checkpoint.taken once per taken checkpoint, after it is the latest and the session is let go, and never for a skipped pull", async () => {
+		const fx = await source();
+		const vault = localVault(fresh("vault"));
+		const stats = checkpointStats();
+		const told: {
+			n: number;
+			box: string;
+			epoch: number;
+			session: string;
+			latest: number | undefined;
+			held: boolean;
+		}[] = [];
+		const crossing = async (point: string, info: { n: number; box: string; epoch: number; session: string }) => {
+			expect(point).toBe("transport.checkpoint.taken");
+			told.push({ ...info, latest: getOrThrow(await vault.latest("s", context))?.n, held: fx.state().held });
+		};
+		const pull = (extra: object = {}) =>
+			pullCheckpoint(
+				{ session: "s", place: fx.place, home: fx.home, epoch: 4, vault, stats, crossing, ...extra } as never,
+				noContext,
+			);
+		getOrThrow(await pull());
+		getOrThrow(await pull());
+		// A pull the home refuses announces nothing.
+		fx.failWith = new RemoteError("timeout", "still running", "DrainError", []);
+		const skipped = await pull();
+		expect(skipped.ok).toBe(false);
+		expect(told.map((one) => one.n)).toEqual([1, 2]);
+		expect(told.every((one) => one.box === fx.place.box.id && one.epoch === 4 && one.session === "s")).toBe(true);
+		expect(told.map((one) => one.latest)).toEqual([1, 2]);
+		expect(told.every((one) => !one.held)).toBe(true);
+	});
+
+	it("keeps the checkpoint when the crossing handler fails, and says so", async () => {
+		const fx = await source();
+		const vault = localVault(fresh("vault"));
+		const failed = await pullCheckpoint(
+			{
+				session: "s",
+				place: fx.place,
+				home: fx.home,
+				epoch: 1,
+				vault,
+				crossing: () => {
+					throw new Error("the kill failed");
+				},
+			},
+			noContext,
+		);
+		expect(failed.ok ? "" : failed.error.reason).toBe("failed");
+		expect(failed.ok ? "" : failed.error.message).toMatch(/crossing handler failed: the kill failed/);
+		expect(getOrThrow(await vault.latest("s", context))?.n).toBe(1);
+	});
+
+	it("counts with the place's counter when it gives one", async () => {
+		const fx = await source();
+		const vault = localVault(fresh("vault"));
+		const count = crossingCounter();
+		count("transport.tool.started");
+		const seen: number[] = [];
+		for (let round = 0; round < 2; round++) {
+			getOrThrow(
+				await pullCheckpoint(
+					{
+						session: "s",
+						place: fx.place,
+						home: fx.home,
+						epoch: 1,
+						vault,
+						crossingCount: count,
+						crossing: (_point, info) => void seen.push(info.n),
+					},
+					noContext,
+				),
+			);
+		}
+		expect(seen).toEqual([1, 2]);
+	});
+
+	it("reads the newest record that parses: a damaged newest one does not hide the generations before it", async () => {
+		const fx = await source();
+		const directory = fresh("vault");
+		const vault = localVault(directory);
+		const first = getOrThrow(
+			await pullCheckpoint({ session: "s", place: fx.place, home: fx.home, epoch: 1, vault }, noContext),
+		);
+		writeFileSync(join(fx.place.workspace, "a.txt"), "second");
+		const second = getOrThrow(
+			await pullCheckpoint({ session: "s", place: fx.place, home: fx.home, epoch: 1, vault }, noContext),
+		);
+		writeFileSync(join(directory, "s", `gen-${String(second.n).padStart(8, "0")}.json`), "{ this is not json");
+		const latest = getOrThrow(await vault.latest("s", context));
+		expect(latest?.n).toBe(first.n);
+	});
+
+	it("reports the time the session was held from when it came to rest, not from when the pull asked", async () => {
+		const fx = await source();
+		const slow = {
+			...fx.home,
+			async checkpoint(options: unknown, ctx: typeof context) {
+				// The drain waits for running work: that time is the session's own, not a pause the pull causes.
+				await new Promise((resolve) => setTimeout(resolve, 400));
+				return (fx.home as HomeHandle).checkpoint(options as never, ctx);
+			},
+		} as unknown as HomeHandle;
+		const stats = checkpointStats();
+		getOrThrow(
+			await pullCheckpoint(
+				{ session: "s", place: fx.place, home: slow, epoch: 1, vault: localVault(fresh("vault")), stats },
+				noContext,
+			),
+		);
+		expect(stats.last?.ms).toBeGreaterThanOrEqual(400);
+		expect(stats.last?.heldMs).toBeLessThan(300);
+		expect(stats.longestHeldMs).toBeLessThan(300);
+	});
+
+	it("counts toward maxPullBytes every file the pull will copy: also one whose time or mode changed with the same content", async () => {
+		const fx = await source();
+		const vault = localVault(fresh("vault"));
+		writeFileSync(join(fx.place.workspace, "big.bin"), Buffer.alloc(2_000_000, 4));
+		getOrThrow(await pullCheckpoint({ session: "s", place: fx.place, home: fx.home, epoch: 1, vault }, noContext));
+		// The same bytes, a new time: the pull copies it again, so the budget must see it.
+		const later = new Date(Date.now() + 60_000);
+		utimesSync(join(fx.place.workspace, "big.bin"), later, later);
+		const over = await pullCheckpoint(
+			{ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, maxPullBytes: 1_000_000 },
+			noContext,
+		);
+		expect(over.ok ? "" : over.error.reason).toBe("too_large");
+		expect(fx.state().held).toBe(false);
+	});
+
+	it("ends a pull whose phases outrun holdMs together, lets the session go and keeps the previous checkpoint", async () => {
+		const fx = await source();
+		const vault = localVault(fresh("vault"));
+		const first = getOrThrow(
+			await pullCheckpoint({ session: "s", place: fx.place, home: fx.home, epoch: 1, vault }, noContext),
+		);
+		const slowBox: Box = {
+			id: fx.place.box.id,
+			facts: () => fx.place.box.facts(),
+			upload: (files, ctx) => fx.place.box.upload(files, ctx),
+			download: (paths, ctx) => fx.place.box.download(paths, ctx),
+			status: (ctx) => fx.place.box.status(ctx),
+			destroy: (ctx) => fx.place.box.destroy(ctx),
+			// Each program the pull starts in the box takes 150 ms: no single call is long, all of them together are.
+			exec: async (command, options, ctx) => {
+				await new Promise((resolve) => setTimeout(resolve, 150));
+				return fx.place.box.exec(command, options, ctx);
+			},
+		};
+		writeFileSync(join(fx.place.workspace, "b.txt"), "changed");
+		const stats = checkpointStats();
+		const result = await pullCheckpoint(
+			{ session: "s", place: { ...fx.place, box: slowBox }, home: fx.home, epoch: 1, vault, stats, holdMs: 400 },
+			noContext,
+		);
+		expect(result.ok).toBe(false);
+		expect(result.ok ? "" : result.error.reason).toBe("failed");
+		expect(fx.state().held).toBe(false);
+		expect(getOrThrow(await vault.latest("s", context))?.n).toBe(first.n);
+		// The pause is bounded near holdMs (the one call in flight may end a little after it), not by the sum of the phases.
+		expect(stats.longestHeldMs).toBeLessThan(1_500);
+	});
+
+	it("does not call a generation latest before its record is written", async () => {
+		const vault = localVault(fresh("vault"));
+		const pending = getOrThrow(await vault.begin("s", context));
+		writeFileSync(pending.storeFile, "half");
+		// The host dies here: nothing was committed.
+		expect(getOrThrow(await vault.latest("s", context))).toBeUndefined();
+		const next = getOrThrow(await vault.begin("s", context));
+		expect(next.n).toBeGreaterThan(pending.n);
+	});
+});
+
+describe("the calls a host saw", () => {
+	it("are kept as they are reported, with their end, and a report from another epoch is ignored", async () => {
+		const [left, right] = linkPair();
+		const handle = connectHome(left, { models: createModels(), epoch: 3 });
+		right.send({ t: "call", epoch: 3, phase: "start", id: "c1", tool: "bash", replay: "unsafe" });
+		right.send({ t: "call", epoch: 3, phase: "start", id: "c2", tool: "read", replay: "safe" });
+		right.send({ t: "call", epoch: 3, phase: "end", id: "c2", tool: "read", replay: "safe" });
+		right.send({ t: "call", epoch: 2, phase: "start", id: "old", tool: "write", replay: "unsafe" });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const calls = handle.calls();
+		expect(calls.map((call) => [call.id, call.tool, call.replay, call.endedAt !== undefined])).toEqual([
+			["c1", "bash", "unsafe", false],
+			["c2", "read", "safe", true],
+		]);
+		handle.close("done");
+	});
+});
+
+describe("the record sink of a vault", () => {
+	const entry = (commit: number): LogEntry => ({ commit, writes: [] });
+
+	it("holds nothing for a new session, keeps what the stream gives it, and holds from the checkpoint's head", async () => {
+		const fx = await source();
+		const vault = localVault(fresh("vault"));
+		const sink = recordSink(vault, "s", context);
+		// A new session: nothing held, a store's first commit is 1.
+		expect(sink.held()).toEqual({ after: 0, linesAfter: 0 });
+		await sink.append(1, entry(1).writes);
+		await sink.append(2, entry(2).writes);
+		expect(sink.held()).toEqual({ after: 2, linesAfter: 2 });
+		const taken = getOrThrow(
+			await pullCheckpoint({ session: "s", place: fx.place, home: fx.home, epoch: 1, vault }, noContext),
+		);
+		// The checkpoint covers up to its head: the runner is to send from there.
+		expect(sink.held().after).toBe(Math.max(2, taken.seal.head - 1));
+		await expect(sink.append(taken.seal.head + 5, [])).rejects.toMatchObject({ code: "gap" });
+	});
+
+	it("passes the lines to the recorder that keeps them and says how far it holds them", async () => {
+		const vault = localVault(fresh("vault"));
+		const seen: [number, boolean][] = [];
+		const sink = recordSink(vault, "s", context, {
+			held: () => 4,
+			lines: async (commit, _lines, snapshot) => {
+				seen.push([commit, snapshot]);
+			},
+		});
+		await sink.append(1, []);
+		await sink.lines(1, ["a"], false);
+		expect(seen).toEqual([[1, false]]);
+		expect(sink.held()).toEqual({ after: 1, linesAfter: 4 });
+	});
+});
+
+describe("the notice a restored session gets", () => {
+	const at = Date.parse("2026-10-14T12:00:00.000Z");
+	it("says when the checkpoint was taken and what did not survive", () => {
+		const text = restoreNotice({ at }, []);
+		expect(text).toContain("restored from a checkpoint taken at 2026-10-14T12:00:00.000Z");
+		expect(text).toContain("did not survive");
+		expect(text).toContain("check before you repeat one");
+		expect(text).not.toContain("tool call");
+	});
+
+	it("names the calls since: those that may have had an effect and those safe to run again, and not the ones before", () => {
+		const text = restoreNotice({ at }, [
+			{ id: "1", tool: "old", replay: "unsafe", startedAt: at - 1000 },
+			{ id: "2", tool: "bash", replay: "unsafe", startedAt: at + 1000 },
+			{ id: "3", tool: "bash", replay: "unsafe", startedAt: at + 2000 },
+			{ id: "4", tool: "read", replay: "safe", startedAt: at + 3000 },
+		]);
+		expect(text).toContain("3 tool calls");
+		expect(text).toMatch(/may have had an effect[^.]*: bash\./);
+		expect(text).toMatch(/safe to run again: read\./);
+		expect(text).not.toContain("old");
+	});
+});
+
+describe("recovering a session whose box is gone", () => {
+	const NOTICE = "restored";
+	const holder = (box: Box, environment: string) => ({ environment, provider: "local", box: box.id, host: "host-1" });
+
+	async function lost() {
+		const fx = await source();
+		writeFileSync(join(fx.place.workspace, "a.txt"), "alpha");
+		const vault = localVault(fresh("vault"));
+		getOrThrow(await pullCheckpoint({ session: "s", place: fx.place, home: fx.home, epoch: 1, vault }, noContext));
+		const directory = fresh("lease");
+		const lease = leaseIn(dirStore(directory));
+		getOrThrow(await lease.take("s", holder(fx.place.box, "a"), 0, undefined, context));
+		const box = await makeBox();
+		const target: Place = {
+			environment: "x",
+			provider: "local",
+			box,
+			workspace: join(box.facts().workspace, "work"),
+			store: join(fresh("t"), "run.sqlite"),
+		};
+		const orders: unknown[] = [];
+		const start: StartRunner = async (at, epoch) =>
+			ok({
+				ready: Promise.resolve(ok({ session: "s", state: "closed" as const })),
+				async resume(order: unknown) {
+					orders.push({ at: at.environment, epoch, order });
+					return ok(undefined);
+				},
+				async status() {
+					return ok({ state: "closed" as const, epoch: null });
+				},
+			} as unknown as HomeHandle);
+		let replaced = 0;
+		const replace = async (): Promise<Result<Place, MoveError>> => {
+			replaced += 1;
+			return ok(target);
+		};
+		return { fx, vault, lease, target, orders, start, replace, replaced: () => replaced };
+	}
+
+	it("rebuilds it in the box the caller makes: store and files copied and checked, the lease taken one epoch on with the checkpoint's seal", async () => {
+		const r = await lost();
+		getOrThrow(await r.fx.place.box.destroy(context));
+		const recovered = getOrThrow(
+			await recoverHome(
+				{
+					session: "s",
+					ownership: r.lease,
+					places: { a: r.fx.place },
+					start: r.start,
+					notice: "unused",
+					vault: r.vault,
+					replace: r.replace,
+					noticeOfRestore: () => NOTICE,
+				},
+				context,
+			),
+		);
+		const checkpoint = recovered.restored;
+		expect(checkpoint?.n).toBe(1);
+		expect(recovered.lease).toMatchObject({ epoch: 2, holder: { box: r.target.box.id }, seal: checkpoint?.seal });
+		expect(recovered.lease.move).toBe("restore-2");
+		expect(readFileSync(join(r.target.workspace, "a.txt"), "utf8")).toBe("alpha");
+		expect(getOrThrow(await sealStore(r.target.store, context))).toEqual(checkpoint?.seal);
+		expect(r.orders).toEqual([
+			{
+				at: "x",
+				epoch: 2,
+				order: {
+					epoch: 2,
+					seal: checkpoint?.seal,
+					move: { id: "restore-2", notice: NOTICE, kind: "restore", head: checkpoint?.seal.head },
+				},
+			},
+		]);
+	});
+
+	it("tells the restored session what was left out of its checkpoints, and does not bring it back", async () => {
+		const fx = await source();
+		mkdirSync(join(fx.place.workspace, "media"), { recursive: true });
+		writeFileSync(join(fx.place.workspace, "media", "footage.bin"), Buffer.alloc(1_000_000, 5));
+		writeFileSync(join(fx.place.workspace, "a.txt"), "alpha");
+		const vault = localVault(fresh("vault"));
+		getOrThrow(
+			await pullCheckpoint(
+				{ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, workspace: { exclude: ["media"] } },
+				noContext,
+			),
+		);
+		const directory = fresh("lease");
+		const lease = leaseIn(dirStore(directory));
+		getOrThrow(await lease.take("s", holder(fx.place.box, "a"), 0, undefined, context));
+		const box = await makeBox();
+		const target: Place = {
+			environment: "x",
+			provider: "local",
+			box,
+			workspace: join(box.facts().workspace, "work"),
+			store: join(fresh("t"), "run.sqlite"),
+		};
+		const orders: { order: { move?: { notice: string } } }[] = [];
+		getOrThrow(await fx.place.box.destroy(context));
+		getOrThrow(
+			await recoverHome(
+				{
+					session: "s",
+					ownership: lease,
+					places: { a: fx.place },
+					start: async () =>
+						ok({
+							ready: Promise.resolve(ok({ session: "s", state: "closed" as const })),
+							async resume(order: unknown) {
+								orders.push({ order: order as { move?: { notice: string } } });
+								return ok(undefined);
+							},
+							async status() {
+								return ok({ state: "closed" as const, epoch: null });
+							},
+						} as unknown as HomeHandle),
+					notice: "unused",
+					vault,
+					replace: async (): Promise<Result<Place, MoveError>> => ok(target),
+				},
+				context,
+			),
+		);
+		const notice = orders[0]?.order.move?.notice ?? "";
+		expect(notice).toContain("Not restored: media (1 file, 1000000 bytes)");
+		expect(notice).toContain("Fetch them again");
+		expect(readFileSync(join(target.workspace, "a.txt"), "utf8")).toBe("alpha");
+		expect(readdirSync(target.workspace).sort()).toEqual(["a.txt", "dir"]);
+	});
+
+	it("restores from the previous generation when the latest no longer checks out", async () => {
+		const r = await lost();
+		writeFileSync(join(r.fx.place.workspace, "a.txt"), "second");
+		const second = getOrThrow(
+			await pullCheckpoint(
+				{ session: "s", place: r.fx.place, home: r.fx.home, epoch: 1, vault: r.vault },
+				noContext,
+			),
+		);
+		// The newest generation's file is damaged on the host's disk.
+		writeFileSync(join(second.filesRoot, "a.txt"), "dama!");
+		getOrThrow(await r.fx.place.box.destroy(context));
+		const recovered = getOrThrow(
+			await recoverHome(
+				{
+					session: "s",
+					ownership: r.lease,
+					places: { a: r.fx.place },
+					start: r.start,
+					notice: "unused",
+					vault: r.vault,
+					replace: r.replace,
+				},
+				context,
+			),
+		);
+		expect(recovered.restored?.n).toBe(1);
+		expect(readFileSync(join(r.target.workspace, "a.txt"), "utf8")).toBe("alpha");
+	});
+
+	it("replays the commits shipped after the checkpoint into the restored store before it opens, and says so in the order", async () => {
+		const r = await lost();
+		const checkpoint = getOrThrow(await r.vault.latest("s", context));
+		const shipped = await moreCommits(r.fx.place.store, 3);
+		getOrThrow(await r.vault.appendLog("s", shipped, context));
+		const liveSeal = getOrThrow(await sealStore(r.fx.place.store, context));
+		getOrThrow(await r.fx.place.box.destroy(context));
+		const recovered = getOrThrow(
+			await recoverHome(
+				{
+					session: "s",
+					ownership: r.lease,
+					places: { a: r.fx.place },
+					start: r.start,
+					notice: "unused",
+					vault: r.vault,
+					replace: r.replace,
+				},
+				context,
+			),
+		);
+		const restoredSeal = getOrThrow(await sealStore(r.target.store, context));
+		expect(restoredSeal.head).toBe(liveSeal.head);
+		expect(restoredSeal.head).toBe((checkpoint?.seal.head ?? 0) + 3);
+		expect(recovered.lease.seal).toMatchObject({ head: liveSeal.head, sha256: restoredSeal.sha256 });
+		const move = (
+			r.orders[0] as { order: { seal: unknown; move: { head: number; replayed: unknown; notice: string } } }
+		).order;
+		expect(move.seal).toEqual(restoredSeal);
+		expect(move.move.head).toBe(liveSeal.head);
+		expect(move.move.replayed).toEqual({ from: checkpoint?.seal.head, to: liveSeal.head - 1 });
+		expect(move.move.notice).toContain("3 commits made after the checkpoint");
+		// The checkpoint's own copy in the vault is as it was: the replay was made on a copy.
+		expect(getOrThrow(await sealStore(checkpoint?.storeFile ?? "", context))).toEqual(checkpoint?.seal);
+	});
+
+	it("restores the checkpoint as it is when the log does not start where the checkpoint ends", async () => {
+		const r = await lost();
+		const checkpoint = getOrThrow(await r.vault.latest("s", context));
+		const shipped = await moreCommits(r.fx.place.store, 3);
+		// The host never got the first commit after the checkpoint: the later ones cannot be applied.
+		const held = await r.vault.appendLog("s", shipped.slice(1), context);
+		expect(held.ok ? "" : held.error.code).toBe("gap");
+		getOrThrow(await r.fx.place.box.destroy(context));
+		const recovered = getOrThrow(
+			await recoverHome(
+				{
+					session: "s",
+					ownership: r.lease,
+					places: { a: r.fx.place },
+					start: r.start,
+					notice: "unused",
+					vault: r.vault,
+					replace: r.replace,
+				},
+				context,
+			),
+		);
+		expect(getOrThrow(await sealStore(r.target.store, context))).toEqual(checkpoint?.seal);
+		const order = (r.orders[0] as { order: { move: { head: number; replayed?: unknown } } }).order;
+		expect(order.move.head).toBe(checkpoint?.seal.head);
+		expect(order.move.replayed).toBeUndefined();
+		expect(recovered.restored?.n).toBe(checkpoint?.n);
+	});
+
+	for (const [what, damage] of [
+		[
+			"a link whose target changed",
+			(files: string) => {
+				rmSync(join(files, "link"));
+				symlinkSync("elsewhere.txt", join(files, "link"));
+			},
+		],
+		[
+			"a file whose permissions changed",
+			(files: string) => {
+				// Replaced, not changed in place: the generations share their unchanged files' inodes.
+				rmSync(join(files, "a.txt"));
+				writeFileSync(join(files, "a.txt"), "alpha");
+				chmodSync(join(files, "a.txt"), 0o755);
+			},
+		],
+	] as const) {
+		it(`falls back to the previous generation when the latest has ${what}`, async () => {
+			const r = await lost();
+			symlinkSync("a.txt", join(r.fx.place.workspace, "link"));
+			const second = getOrThrow(
+				await pullCheckpoint(
+					{ session: "s", place: r.fx.place, home: r.fx.home, epoch: 1, vault: r.vault },
+					noContext,
+				),
+			);
+			damage(second.filesRoot);
+			getOrThrow(await r.fx.place.box.destroy(context));
+			const recovered = getOrThrow(
+				await recoverHome(
+					{
+						session: "s",
+						ownership: r.lease,
+						places: { a: r.fx.place },
+						start: r.start,
+						notice: "unused",
+						vault: r.vault,
+						replace: r.replace,
+					},
+					context,
+				),
+			);
+			expect(recovered.restored?.n).toBe(second.n - 1);
+		});
+	}
+
+	it("forgets the shipped commits a restore did not replay, so the runner at the new epoch is not told the host holds them", async () => {
+		const r = await lost();
+		const checkpoint = getOrThrow(await r.vault.latest("s", context));
+		const shipped = await moreCommits(r.fx.place.store, 3);
+		getOrThrow(await r.vault.appendLog("s", shipped, context));
+		const head = checkpoint?.seal.head ?? 0;
+		expect(r.vault.through("s")).toBe(head + 2);
+		getOrThrow(await r.fx.place.box.destroy(context));
+		// A log that can only be replayed as far as its first commit (the rest is a branch the restore leaves).
+		const partial: typeof r.vault = Object.create(r.vault, {
+			readLog: {
+				value: async (session: string, from: number, ctx: typeof context) => {
+					const whole = getOrThrow(await r.vault.readLog(session, from, ctx));
+					return ok({ entries: whole.entries.slice(0, 1), gap: true });
+				},
+			},
+		});
+		getOrThrow(
+			await recoverHome(
+				{
+					session: "s",
+					ownership: r.lease,
+					places: { a: r.fx.place },
+					start: r.start,
+					notice: "unused",
+					vault: partial,
+					replace: r.replace,
+				},
+				context,
+			),
+		);
+		// The restored store holds commit `head` only: the host says it holds nothing more.
+		expect(r.vault.through("s")).toBe(head);
+		expect(getOrThrow(await r.vault.readLog("s", head, context)).entries.map((e) => e.commit)).toEqual([head]);
+	});
+
+	it("tells a restore that was retried after its start failed that it was restored, with the checkpoint's time", async () => {
+		const r = await lost();
+		getOrThrow(await r.fx.place.box.destroy(context));
+		let starts = 0;
+		const failing: typeof r.start = async (at, epoch, ctx) => {
+			starts += 1;
+			if (starts === 1) return err(new MoveError("prepare", "the runner could not start"));
+			return r.start(at, epoch, ctx);
+		};
+		const options = {
+			session: "s",
+			ownership: r.lease,
+			start: failing,
+			notice: "the plain notice",
+			vault: r.vault,
+			replace: r.replace,
+		};
+		const first = await recoverHome({ ...options, places: { a: r.fx.place } }, context);
+		expect(first.ok).toBe(false);
+		// The lease was taken, and the replacement box is alive: the retry finishes the restore there.
+		expect(getOrThrow(await r.lease.current("s", context))?.move).toBe("restore-2");
+		getOrThrow(await recoverHome({ ...options, places: { x: r.target } }, context));
+		const order = (r.orders.at(-1) as { order: { move: { notice: string; kind: string } } }).order;
+		expect(order.move.kind).toBe("restore");
+		expect(order.move.notice).toContain("restored from a checkpoint taken at");
+		expect(order.move.notice).not.toContain("the plain notice");
+	});
+
+	it("restores from the previous generation when the latest store no longer matches its seal", async () => {
+		const r = await lost();
+		const second = getOrThrow(
+			await pullCheckpoint(
+				{ session: "s", place: r.fx.place, home: r.fx.home, epoch: 1, vault: r.vault },
+				noContext,
+			),
+		);
+		appendFileSync(second.storeFile, "damage");
+		getOrThrow(await r.fx.place.box.destroy(context));
+		const recovered = getOrThrow(
+			await recoverHome(
+				{
+					session: "s",
+					ownership: r.lease,
+					places: { a: r.fx.place },
+					start: r.start,
+					notice: "unused",
+					vault: r.vault,
+					replace: r.replace,
+				},
+				context,
+			),
+		);
+		expect(recovered.restored?.n).toBe(1);
+	});
+
+	it("says no_checkpoint when none checks out, makes no box and leaves the lease", async () => {
+		const r = await lost();
+		const only = getOrThrow(await r.vault.latest("s", context));
+		writeFileSync(join(only?.filesRoot ?? "", "a.txt"), "dama!");
+		getOrThrow(await r.fx.place.box.destroy(context));
+		const recovered = await recoverHome(
+			{
+				session: "s",
+				ownership: r.lease,
+				places: { a: r.fx.place },
+				start: r.start,
+				notice: "unused",
+				vault: r.vault,
+				replace: r.replace,
+			},
+			context,
+		);
+		expect(recovered.ok ? "" : recovered.error.code).toBe("no_checkpoint");
+		expect(r.replaced()).toBe(0);
+		expect(getOrThrow(await r.lease.current("s", context))?.epoch).toBe(1);
+	});
+
+	it("does not rebuild a box that is only slow to answer, or one that lives", async () => {
+		const r = await lost();
+		const slow: Box = {
+			...r.fx.place.box,
+			id: r.fx.place.box.id,
+			facts: () => r.fx.place.box.facts(),
+			upload: (files, ctx) => r.fx.place.box.upload(files, ctx),
+			download: (paths, ctx) => r.fx.place.box.download(paths, ctx),
+			exec: (command, options, ctx) => r.fx.place.box.exec(command, options, ctx),
+			destroy: (ctx) => r.fx.place.box.destroy(ctx),
+			status: async () => err(new BoxError("timeout", "the provider did not answer")),
+		};
+		const started: string[] = [];
+		const recovered = await recoverHome(
+			{
+				session: "s",
+				ownership: r.lease,
+				places: { a: { ...r.fx.place, box: slow } },
+				start: async (at, epoch) => {
+					started.push(`${at.environment}@${epoch}`);
+					return r.start(at, epoch, context);
+				},
+				stop: async () => ok(undefined),
+				notice: "unused",
+				vault: r.vault,
+				replace: r.replace,
+			},
+			context,
+		);
+		expect(recovered.ok).toBe(true);
+		expect(r.replaced()).toBe(0);
+		expect(started).toEqual(["a@1"]);
+		expect(getOrThrow(await r.lease.current("s", context))?.epoch).toBe(1);
+	});
+});
+
+describe("the commits a host keeps beside its vault", () => {
+	const entry = (commit: number): LogEntry => ({ commit, writes: [] });
+
+	it("keeps them in order on disk, ignores a repeat, and refuses a gap with what it holds", async () => {
+		const directory = fresh("vault");
+		const vault = localVault(directory);
+		expect(getOrThrow(await vault.appendLog("s", [entry(10), entry(11)], context))).toEqual({ through: 11 });
+		expect(getOrThrow(await vault.appendLog("s", [entry(11), entry(12)], context))).toEqual({ through: 12 });
+		const gapped = await vault.appendLog("s", [entry(13), entry(15)], context);
+		expect(gapped.ok ? "" : gapped.error.code).toBe("gap");
+		expect(gapped.ok ? -1 : gapped.error.through).toBe(13);
+		// What was whole before the gap was kept, in a vault opened again from the same directory.
+		const again = localVault(directory);
+		const read = getOrThrow(await again.readLog("s", 10, context));
+		expect(read.entries.map((kept) => kept.commit)).toEqual([10, 11, 12, 13]);
+		expect(read.gap).toBe(false);
+		expect(getOrThrow(await again.appendLog("s", [entry(14)], context))).toEqual({ through: 14 });
+	});
+
+	it("reads the unbroken run from where it is asked, and says when more was held beyond a break", async () => {
+		const directory = fresh("vault");
+		const vault = localVault(directory);
+		getOrThrow(await vault.appendLog("s", [entry(3), entry(4), entry(5)], context));
+		expect(getOrThrow(await vault.readLog("s", 4, context)).entries.map((kept) => kept.commit)).toEqual([4, 5]);
+		// Asked from a commit the log does not start at: nothing, and it says there was more.
+		const early = getOrThrow(await vault.readLog("s", 2, context));
+		expect(early.entries).toEqual([]);
+		expect(early.gap).toBe(true);
+		expect(getOrThrow(await vault.readLog("s", 9, context))).toEqual({ entries: [], gap: false });
+	});
+
+	it("starts at the latest checkpoint's head, drops what the checkpoint covers, and cuts below the oldest kept head", async () => {
+		const fx = await source();
+		const vault = localVault(fresh("vault"));
+		const first = getOrThrow(
+			await pullCheckpoint({ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, keep: 2 }, noContext),
+		);
+		const head = first.seal.head;
+		// Commits the checkpoint covers are not kept; the first one it wants is.
+		const kept = getOrThrow(await vault.appendLog("s", [entry(head - 1), entry(head), entry(head + 1)], context));
+		expect(kept.through).toBe(head + 1);
+		const afterGap = await vault.appendLog("s", [entry(head + 3)], context);
+		expect(afterGap.ok ? "" : afterGap.error.code).toBe("gap");
+		expect(getOrThrow(await vault.readLog("s", head, context)).entries.map((e) => e.commit)).toEqual([
+			head,
+			head + 1,
+		]);
+		// Two more checkpoints with the log growing between them: with 2 kept, the first generation's commits go.
+		await moreCommits(fx.place.store, 2);
+		getOrThrow(await vault.appendLog("s", [entry(head + 2)], context));
+		const second = getOrThrow(
+			await pullCheckpoint({ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, keep: 2 }, noContext),
+		);
+		getOrThrow(await vault.appendLog("s", [entry(second.seal.head)], context));
+		await moreCommits(fx.place.store, 1);
+		const third = getOrThrow(
+			await pullCheckpoint({ session: "s", place: fx.place, home: fx.home, epoch: 1, vault, keep: 2 }, noContext),
+		);
+		expect(getOrThrow(await vault.get("s", first.n, context))).toBeUndefined();
+		const rest = getOrThrow(await vault.readLog("s", 0, context));
+		const oldest = second.seal.head;
+		expect(rest.entries.every((e) => e.commit >= oldest) || rest.entries.length === 0).toBe(true);
+		expect(getOrThrow(await vault.readLog("s", oldest, context)).entries[0]?.commit).toBe(oldest);
+		expect(third.seal.head).toBeGreaterThan(second.seal.head);
+		// Nothing below the oldest kept generation's head is on disk any more: asked from the first generation's head, the
+		// log has nothing (and says what it holds lies beyond).
+		const old = getOrThrow(await vault.readLog("s", first.seal.head, context));
+		expect(old.entries).toEqual([]);
+		expect(old.gap).toBe(true);
+	});
+});

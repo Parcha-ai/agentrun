@@ -89,7 +89,8 @@ and lays out the tiles; the viewer draws the picture.
 ## Focus and the shell
 
 The shell gives `view` a context: `t`, the time of the current point; `focus`, the focused path if there is one;
-`cite`, the selected citation if there is one (a node with `cite` selects it, `?cite=` opens with it, and selecting one
+`following` when the run is followed while it goes and has not finished (its cost is not known yet: a view shows cost
+as unknown); `cite`, the selected citation if there is one (a node with `cite` selects it, `?cite=` opens with it, and selecting one
 moves no stop, so the screen it was clicked on stays); `json(sha)`, the parsed JSON of a blob the manifest's `result`
 or a `result` line names, undefined until the shell has read it; and `baseline` when the manifest names one (`BaselineView`: its label, the counters of that other recording at its end,
 and how long it ran in ms, or null; another real recording, opened beside this one, never typed-in numbers). When
