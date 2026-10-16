@@ -13,10 +13,8 @@ const control = await archilControl({ apiKey: process.env.ARCHIL_API_KEY!, disk:
 const done = await withClaim(
   { control, disk: disk!, region: region!, path: path! },
   async (held) => {
-    if (mode === "hold") {
-      process.stdout.write(`holding ${held.root}\n`);
-      await new Promise(() => {}); // until killed
-    }
+    process.stdout.write(`held ${held.root}\n`); // the suite's ledger records the mountpoint
+    if (mode === "hold") await new Promise(() => {}); // until killed
     const db = new DatabaseSync(join(held.root, "agent.sqlite"));
     db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; CREATE TABLE IF NOT EXISTS carried (label TEXT PRIMARY KEY)");
     db.prepare("INSERT INTO carried (label) VALUES (?)").run(label!);

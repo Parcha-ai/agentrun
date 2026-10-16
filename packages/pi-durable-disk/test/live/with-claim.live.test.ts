@@ -1,17 +1,19 @@
 // Live withClaim and readReleased on the scratch disk: two carry backs to one path queue and both commit; a holder lost
 // with its host (its process and its archil daemon killed) is revoked by the next carry back, which commits; and
 // readReleased reads back a database that opens and holds exactly the committed rows. Everything lives under
-// withclaim-live/<stamp>/ and /mnt/pda/p10/, and is removed in `after`, also on failure. Skips without PDA_LIVE=1.
+// withclaim-live/<stamp>/ and /mnt/pda/p10/, is recorded in P10-STATE.json as it is made (the live check's sweep unmounts a
+// mount it lists and reports the directory), and is removed in `after`, also on failure. Skips without PDA_LIVE=1.
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { LIVE, REGION, scratchDiskId } from "./_archil.ts";
+import { statePath } from "./_paths.ts";
 import { archilControl, type ArchilControl } from "../../src/supervise.ts";
 import { readReleased } from "../../src/with-claim.ts";
 
@@ -22,16 +24,37 @@ const PATH = `withclaim-live/${STAMP}`;
 let control: ArchilControl;
 const children: ChildProcess[] = [];
 
+// The ledger: what this suite made, written the moment it exists and stamped when it is gone.
+const LEDGER = statePath("PDA_P10_STATE", "P10-STATE.json");
+type Entry = Record<string, unknown>;
+const ledger: { lane: "P10"; disk: string | null; subpaths: Entry[]; mounts: Entry[] } = { lane: "P10", disk: null, subpaths: [], mounts: [] };
+const save = () => {
+  mkdirSync(dirname(LEDGER), { recursive: true });
+  writeFileSync(LEDGER, `${JSON.stringify(ledger, null, 2)}\n`);
+};
+const stamp = (entries: Entry[], field: string, match: (e: Entry) => boolean) => {
+  for (const e of entries) if (match(e) && e[field] === undefined) e[field] = new Date().toISOString();
+  save();
+};
+
 /** A carry back in a process of its own; resolves with its exit code and what it printed. */
 function carry(label: string, mode: "commit" | "hold", holdMs?: number) {
   const child = spawn(process.execPath, [CHILD, scratchDiskId(), REGION, PATH, BASE, label, mode, ...(holdMs ? [String(holdMs)] : [])], { stdio: ["ignore", "pipe", "inherit"] });
   children.push(child);
   const lines: string[] = [];
+  let root = "";
   const holding = new Promise<string>((resolve) => createInterface({ input: child.stdout! }).on("line", (line) => {
     lines.push(line);
-    if (line.startsWith("holding ")) resolve(line.slice("holding ".length));
+    if (!line.startsWith("held ")) return;
+    root = line.slice("held ".length);
+    ledger.mounts.push({ mountpoint: root, label, createdAt: new Date().toISOString() });
+    save();
+    resolve(root);
   }));
-  const exited = new Promise<number | null>((resolve) => child.on("close", (code) => resolve(code)));
+  const exited = new Promise<number | null>((resolve) => child.on("close", (code) => {
+    if (code === 0 && root) stamp(ledger.mounts, "unmountedAt", (e) => e.mountpoint === root); // withClaim unmounted it
+    resolve(code);
+  }));
   return { child, lines, holding, exited };
 }
 
@@ -50,6 +73,9 @@ function daemonsOf(mountpoint: string): number[] {
 before(async () => {
   if (!LIVE) return;
   control = await archilControl({ apiKey: process.env.ARCHIL_API_KEY!, disk: scratchDiskId(), region: REGION });
+  ledger.disk = scratchDiskId();
+  ledger.subpaths.push({ key: PATH, createdAt: new Date().toISOString() });
+  save();
 });
 
 after(async () => {
@@ -60,7 +86,10 @@ after(async () => {
     const mountpoint = line.split(" ")[1];
     if (mountpoint?.startsWith(`${BASE}/`)) spawnSync("sudo", ["-n", "fusermount", "-u", mountpoint]);
   }
-  await control.exec?.(`rm -rf ${PATH}`).catch(() => undefined);
+  const mounted = new Set(readFileSync("/proc/mounts", "utf8").split("\n").map((line) => line.split(" ")[1]));
+  stamp(ledger.mounts, "unmountedAt", (e) => !mounted.has(e.mountpoint as string));
+  const removed = await control.exec?.(`rm -rf ${PATH} && { rmdir withclaim-live 2>/dev/null; true; }`).catch(() => undefined);
+  if (removed?.exitCode === 0) stamp(ledger.subpaths, "deletedAt", (e) => e.key === PATH);
 });
 
 test("two carry backs to one path queue on the claim, and both commit", { skip: !LIVE && "PDA_LIVE=1 runs the live suites", timeout: 300_000 }, async () => {
