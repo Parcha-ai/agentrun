@@ -1,10 +1,9 @@
 import { observerSnapshot } from "./observer-snapshot.js";
-import { compileSchema as Compile, isDeepStrictEqual, isProxy, sha256Hex } from "#platform";
+import { compileSchema as Compile, compileTransform, compileTransformSyntax, isDeepStrictEqual, isProxy, sha256Hex } from "#platform";
 import { predicateMatches, getPath, MECHANICAL_PREDICATE_NAMES, type AcceptPredicate } from "./predicates.js";
 import { WORKFLOW_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
 import { validateAnswers, answerConfidence, answersSidecar, answersToValue, compileQuestions, SYSTEM_ONE_LIMITS, type AnswersSidecar, type CompiledQuestions, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
 import { DECISION_RECEIPT_VERSION, type DecisionKind, type DecisionReceipt, type DecisionRule } from "./decision-receipts.js";
-import { compileTransform, compileTransformSyntax } from "./code-exec.js";
 import { workflowShapeErrors } from "./workflow-shape.js";
 import { resolveSchemaForWorkflow } from "./schema-references.js";
 export { resolveSchemaForWorkflow } from "./schema-references.js";

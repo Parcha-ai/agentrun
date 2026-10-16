@@ -19,7 +19,7 @@ const bundle = async (specifier, format = 'esm', globalName) => {
 test('the executor bundles for the browser platform with no node: import and no Buffer, and it is the code that compiles with new Function', async () => {
   const { text } = await bundle('@parcha/agentrun-dsl/browser/executor');
   assert.doesNotMatch(text, /["']node:/);
-  assert.doesNotMatch(text, /\bBuffer\b/);
+  assert.doesNotMatch(text, /(?<!["'])\bBuffer\b(?!["'])/, 'Buffer appears only as a denied name in a string');
   assert.match(text, /new Function\(/, 'the executor is a new Function: it says so');
   const module = await import('@parcha/agentrun-dsl/browser/executor');
   assert.deepEqual(Object.keys(module).sort(), ['DENIED_GLOBALS', 'compileTransform', 'deniedGlobalReferences']);
@@ -88,8 +88,9 @@ parentPort.postMessage({
 }
 
 test('in a worker the executor answers what Node answers: the same outputs, the same refusals, the same denied-global errors, over the corpus\'s code nodes and the refusals', async () => {
-  const sources = [...new Set([...corpus.flatMap((workflow) => codeOf(workflow)), ...REFUSALS])];
-  assert.ok(sources.length >= 60, `${sources.length} code sources`);
+  const fromCorpus = [...new Set(corpus.flatMap((workflow) => codeOf(workflow)))];
+  assert.ok(fromCorpus.length >= 15, `${fromCorpus.length} code nodes in the conformance corpus`);
+  const sources = [...new Set([...fromCorpus, ...REFUSALS])];
   const viaWorker = await inWorker(sources);
   const viaNode = sources.map((source) => attempt(compileTransform, source));
   for (const [index, source] of sources.entries()) {

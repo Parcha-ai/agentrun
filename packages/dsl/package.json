@@ -20,6 +20,10 @@
       "types": "./dist/browser/worker.d.ts",
       "import": "./dist/browser/worker.js"
     },
+    "./browser/executor": {
+      "types": "./dist/browser/executor.d.ts",
+      "import": "./dist/browser/executor.js"
+    },
     "./demo": {
       "types": "./dist/demo.d.ts",
       "import": "./dist/demo.js"
@@ -38,6 +42,10 @@
     "#platform": {
       "browser": "./dist/platform/browser.js",
       "default": "./dist/platform/node.js"
+    },
+    "#guards": {
+      "browser": "./dist/platform/guards-browser.js",
+      "default": "./dist/platform/guards-node.js"
     }
   },
   "files": [
