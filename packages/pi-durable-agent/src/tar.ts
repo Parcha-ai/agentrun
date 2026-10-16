@@ -17,6 +17,8 @@ export type TarEntry = {
   mtime: number;
   /** The file to copy from, for a file whose bytes are not in `data`. */
   source?: string;
+  /** Opens the file to copy from, for a caller that checks what it opens; it is closed after the copy. */
+  open?: () => Promise<FileHandle>;
   data?: Buffer;
 };
 
@@ -87,8 +89,8 @@ export async function writeTar(file: string, entries: readonly TarEntry[]): Prom
       if (entry.data) {
         await out.write(entry.data);
         written = entry.data.length;
-      } else if (entry.source !== undefined) {
-        const input = await open(entry.source, "r");
+      } else if (entry.open || entry.source !== undefined) {
+        const input = entry.open ? await entry.open() : await open(entry.source!, "r");
         try {
           const chunk = Buffer.alloc(64 * 1024);
           while (written < entry.size) {
@@ -154,12 +156,16 @@ const KINDS: Record<string, string> = { "1": "a hard link", "2": "a symbolic lin
 /** The members of the tar in `file` (`size` bytes), without reading their data, or the problems that make it unreadable:
  *  a bad checksum, a truncated member, a link, a device or any type but a regular file and a directory, bytes after the
  *  end. Parsing stops at the first problem it cannot step over. */
-export async function listTar(file: FileHandle, size: number): Promise<{ members: TarMember[]; problems: string[] }> {
+export async function listTar(file: FileHandle, size: number, maxMembers = Number.POSITIVE_INFINITY): Promise<{ members: TarMember[]; problems: string[] }> {
   const members: TarMember[] = [];
   const problems: string[] = [];
   let position = 0;
   let pax: Map<string, string> | undefined;
   for (;;) {
+    if (members.length > maxMembers) {
+      problems.push(`the pack has more than ${maxMembers} members`);
+      break;
+    }
     if (position + BLOCK > size) {
       problems.push("the tar ends without its two zero blocks");
       break;

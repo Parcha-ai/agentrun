@@ -2,6 +2,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createSession, type Cursor, type JsonObject, type Session, type SessionDocFamilyToken, type Storage } from "@earendil-works/pi-durable";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { openNodeSqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { existsSync } from "node:fs";
+import { open, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -135,6 +137,78 @@ async function takeLock(file: string, waitMs: number): Promise<() => void> {
 
 const queues = new Map<string, Promise<void>>();
 
+/** The record of an import in progress, kept in the home. An import moves run directories before the store commits,
+ *  so a crash between the two leaves this file for the next lock taker to settle: `recoverImport`. */
+export const IMPORT_JOURNAL = ".import-journal";
+/** One run directory an import replaces: whether the home had one (it is set aside in `<staging>/backup/<id>`) and
+ *  whether the pack brought one (extracted under the staging directory's `home` folder, in `runs/<id>`). */
+export type ImportMove = { id: string; hadOld: boolean; hasNew: boolean };
+/** `from` is the store's head commit before the import; `staging` is the directory beside the home that holds the extracted pack and the set-aside run directories. */
+export type ImportJournal = { version: 1; staging: string; from: number; moves: ImportMove[] };
+const AGENT_STORE = "agent.sqlite"; // AGENT_STORE_FILE, which home.ts defines and imports this file for
+
+/** Write the journal, whole or not at all, and on disk before the first run directory moves. */
+export async function writeJournal(home: string, journal: ImportJournal): Promise<void> {
+  const file = path.join(home, IMPORT_JOURNAL);
+  const part = `${file}.part`;
+  try {
+    const handle = await open(part, "w", 0o600);
+    try {
+      await handle.write(JSON.stringify(journal));
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(part, file);
+  } catch (error) {
+    await rm(part, { force: true });
+    throw error;
+  }
+}
+
+const RUN_DIR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+function parseJournal(text: string): ImportJournal | undefined {
+  try {
+    const value = JSON.parse(text) as Partial<ImportJournal> | null;
+    const moves = value?.moves;
+    if (value?.version !== 1 || typeof value.staging !== "string" || !Number.isSafeInteger(value.from) || !Array.isArray(moves)) return undefined;
+    if (!moves.every((move) => move && typeof move.id === "string" && RUN_DIR.test(move.id) && typeof move.hadOld === "boolean" && typeof move.hasNew === "boolean")) return undefined;
+    return value as ImportJournal;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Settle an import that did not finish, under the home's lock. When the store's head moved past `from` the commit
+ *  landed: only the clean-up is left. Otherwise every run directory is put back as it was, newest move first, from
+ *  `<staging>/backup`; the pack's directories are removed. Safe to repeat, so a crash during recovery is recovered next time. */
+export async function recoverImport(home: string): Promise<void> {
+  const file = path.join(home, IMPORT_JOURNAL);
+  const journal = parseJournal(await readFile(file, "utf8").catch(() => ""));
+  if (!journal) throw new AgentHomeError("format", `the import journal ${IMPORT_JOURNAL} in the agent home is not one this version wrote; check runs/ against the directory it names, then remove it`);
+  const staging = path.resolve(journal.staging);
+  if (path.dirname(staging) !== path.dirname(home) || !path.basename(staging).startsWith(`.${path.basename(home)}.import-`)) {
+    throw new AgentHomeError("format", `the import journal names ${staging}, which is not a staging directory beside the home; nothing was removed`);
+  }
+  const store = await openStore(path.join(home, AGENT_STORE));
+  let head: number;
+  try { head = await store.head(); } finally { await store.close(); }
+  if (head <= journal.from) {
+    for (const move of [...journal.moves].reverse()) {
+      const target = path.join(home, "runs", move.id);
+      const backup = path.join(staging, "backup", move.id);
+      if (existsSync(backup)) {
+        await rm(target, { recursive: true, force: true });
+        await rename(backup, target);
+      } else if (!move.hadOld && move.hasNew && !existsSync(path.join(staging, "home", "runs", move.id))) {
+        await rm(target, { recursive: true, force: true });
+      }
+    }
+  }
+  await rm(staging, { recursive: true, force: true });
+  await rm(file, { force: true });
+}
+
 /** Run `work` as the agent home's only writer: in turn with this process's other callers, then under the home's
  *  cross-process lock. Every open of `agent.sqlite` happens inside, because a SqliteStorage mints ids from what it read
  *  at open: two open writers would collide. */
@@ -148,7 +222,12 @@ export async function withHome<T>(dir: string, work: () => Promise<T>, waitMs = 
   await before;
   try {
     const release = await takeLock(path.join(key, LOCK_FILE), waitMs);
-    try { return await work(); } finally { release(); }
+    try {
+      if (existsSync(path.join(key, IMPORT_JOURNAL))) await recoverImport(key);
+      return await work();
+    } finally {
+      release();
+    }
   } finally {
     done();
     if (queues.get(key) === tail) queues.delete(key);

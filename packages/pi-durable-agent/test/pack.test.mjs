@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -10,6 +10,7 @@ import {
 import { buildSignedInHome, checkExportClean, SIGN_IN_MARKER, signedInHomeSkip } from "./fixtures/signed-in-home.mjs";
 import { tarSize } from "../dist/tar.js";
 import { listTar, manifestOf, tamper, withManifest, writeTarFile } from "./pack-support.mjs";
+import { defineDoc } from "@earendil-works/pi-durable";
 import { ctx, openSession, scratch } from "./support.mjs";
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
@@ -30,7 +31,7 @@ const rejects = (promise, code) => assert.rejects(promise, (error) => error inst
 
 /** The signed-in fixture home, plus a source sha, work files of every kind a pack must or must not carry, and a
  *  `chrome/`, `repo/` and `tmp/` beside the run directories. With `live`, a second run that has not been carried back. */
-async function fixture({ live = false } = {}) {
+async function fixture({ live = false, second = false } = {}) {
   const dir = await scratch();
   const built = await buildSignedInHome(dir);
   const { home, runId } = built;
@@ -47,6 +48,11 @@ async function fixture({ live = false } = {}) {
   writeFileSync(path.join(home.dir, "repo", "README.md"), "# repo\n");
   writeFileSync(path.join(home.dir, "tmp", "scratch.txt"), "scratch\n");
   linkSync(path.join(home.dir, "chrome", "Cookies"), path.join(work, "stolen"));
+  if (second) {
+    const other = await startRun(home, { runId: "second", host: "fixture-host" });
+    writeFileSync(path.join(other.workspace, "second.txt"), "second\n");
+    await carryBack(home, other, { outcome: "completed" });
+  }
   if (live) {
     await startRun(home, { runId: "live-1", host: "fixture-host" });
     writeFileSync(path.join(home.dir, "runs", "live-1", "work", "partial.txt"), "in progress\n");
@@ -60,7 +66,11 @@ test("a pack holds its allowlist in a fixed order, and the manifest says what th
   const f = await fixture();
   const { manifest, skipped } = await packHome(f.home, { out: f.out, now: NOW });
   assert.deepEqual(names(f.out), CLEAN);
-  assert.deepEqual(skipped.sort(), ["runs/signed-in/work/.agents", "runs/signed-in/work/.env", "runs/signed-in/work/link", "runs/signed-in/work/stolen"]);
+  assert.deepEqual(skipped.map((entry) => entry.path).sort(), ["runs/signed-in/work/.agents", "runs/signed-in/work/.env", "runs/signed-in/work/link", "runs/signed-in/work/stolen"]);
+  const why = Object.fromEntries(skipped.map((entry) => [path.basename(entry.path), entry.reason]));
+  assert.match(why.link, /symbolic link/);
+  assert.match(why.stolen, /hard link/);
+  assert.match(why[".env"], /starts with "\."/);
   const state = await readAgentHome(f.home);
   assert.deepEqual(manifest, {
     format: "agentrun.home/1", agent_id: state.identity.id, definition: state.definition,
@@ -280,7 +290,7 @@ test("replace keeps the target's own sign-ins, aliases, bindings, chrome/ and re
   assert.equal(readFileSync(path.join(f.home.dir, "repo", "README.md"), "utf8"), "# repo\n");
   assert.equal(existsSync(path.join(f.work, ".env")), false, "the old run's files are replaced");
   assert.equal(existsSync(f.runStore), false, "its store did not travel");
-  assert.equal(existsSync(path.join(f.home.dir, "tmp")), false);
+  assert.equal(readFileSync(path.join(f.home.dir, "tmp", "scratch.txt"), "utf8"), "scratch\n", "the rest of the home is not touched");
   const { host, ...stripped } = before.runs["signed-in"];
   assert.equal(host, "fixture-host");
   assert.deepEqual(after.runs["signed-in"], stripped);
@@ -331,6 +341,7 @@ const TAMPERED = {
   "a SQLite side file": [(m) => [...m, { name: "runs/signed-in/store/run.sqlite-wal", data: Buffer.from("x") }], "format", /side file/],
   "a run the index does not list": [(m) => [...m, { name: "runs/ghost/work/a.txt", data: Buffer.from("x") }], "format", /ghost/],
   "a duplicate member": [(m) => [...m, m[1]], "format", /appears twice/],
+  "a member inside a file": [(m) => [...m, { name: "runs/signed-in/work/notes.txt/inner", data: Buffer.from("x") }], "format", /is inside runs\/signed-in\/work\/notes\.txt, which is a file/],
   "the manifest not first": [(m) => [...m.slice(1), m[0]], "format", /first member/],
   "a higher format": [(m) => withManifest(m, (manifest) => { manifest.format = "agentrun.home/2"; }), "format", /this version reads agentrun\.home\/1/],
   "an unknown manifest field": [(m) => withManifest(m, (manifest) => { manifest.extra = 1; }), "format", /fields it does not keep: extra/],
@@ -426,4 +437,214 @@ test("a size over 8 GiB is a pax record, and a pax size is read in place of the 
   const read = await readPack(viaPax);
   assert.equal(read.checks.find((check) => check.name === "format").status, "ok");
   assert.equal(read.checks.find((check) => check.name === "definition").status, "ok");
+});
+
+/** A target whose runs and store have moved on from the pack's, so an import has directories to move and a commit to make. */
+async function diverged() {
+  const f = await fixture({ second: true });
+  await packHome(f.home, { out: f.out, now: NOW });
+  writeFileSync(path.join(f.work, "OLD.txt"), "old signed-in\n");
+  writeFileSync(path.join(f.home.dir, "runs", "second", "work", "OLD.txt"), "old second\n");
+  const state = await readAgentHome(f.home);
+  await refreshAgentHome(f.home, { sha: "f".repeat(40), definition: state.definition, skills: Object.fromEntries(Object.entries(state.skills).map(([key, skill]) => [key, skill.content])) });
+  return f;
+}
+
+test("an import into a home is in place: its lock, store, chrome/ and repo/ stay where they are, and the revision only goes up", skip, async () => {
+  const f = await diverged();
+  const inode = (name) => statSync(path.join(f.home.dir, name)).ino;
+  const before = ["owner.lock", "agent.sqlite", "chrome", "repo", "runs"].map(inode);
+  const revision = await homeRevision(f.home);
+  await importPack(f.out, f.home.dir, { replace: true, ifRevision: revision });
+  assert.deepEqual(["owner.lock", "agent.sqlite", "chrome", "repo", "runs"].map(inode), before);
+  const after = await homeRevision(f.home);
+  assert.ok(after > revision, `the head moved from ${revision} to ${after}`);
+  await unchanged(f.home.dir, () => rejects(importPack(f.out, f.home.dir, { replace: true, ifRevision: revision }), "stale"));
+  const state = await readAgentHome(f.home);
+  assert.equal(state.source.sha, SHA, "the pack's source replaced the newer one");
+  for (const old of [path.join(f.work, "OLD.txt"), path.join(f.home.dir, "runs", "second", "work", "OLD.txt")]) assert.equal(existsSync(old), false, "the old run directories were replaced");
+  assert.equal(readFileSync(path.join(f.home.dir, "runs", "second", "work", "second.txt"), "utf8"), "second\n");
+  assert.deepEqual(readdirSync(f.home.dir).filter((name) => name.startsWith(".")), [], "no journal");
+  assert.deepEqual(readdirSync(path.dirname(f.home.dir)).filter((name) => name.startsWith(".")), [], "no staging directory");
+  const again = await importPack(f.out, f.home.dir, { replace: true });
+  assert.equal(await homeRevision(f.home), after, "a pack that changes nothing leaves the revision as it is");
+  assert.equal(again.report.replaces, true);
+});
+
+const killed = (at) => (step) => {
+  if (step.name === at.name && step.index === at.index) throw Object.assign(new Error("killed"), { crash: true });
+};
+const failing = (at) => (step) => {
+  if (step.name === at.name && step.index === at.index) throw new Error("boom");
+};
+
+test("a failure between the moves puts every run directory back, and leaves the home as it was", skip, async () => {
+  for (const index of [0, 1]) {
+    const f = await diverged();
+    const revision = await homeRevision(f.home);
+    await unchanged(f.home.dir, () => assert.rejects(importPack(f.out, f.home.dir, { replace: true, inject: failing({ name: "moved", index }) }), /boom/));
+    assert.equal(await homeRevision(f.home), revision);
+    assert.equal(readFileSync(path.join(f.work, "OLD.txt"), "utf8"), "old signed-in\n");
+    assert.deepEqual(readdirSync(f.home.dir).filter((name) => name.startsWith(".")), []);
+  }
+});
+
+test("a crash before the commit is settled by the next lock taker: the old home, every directory back", skip, async () => {
+  for (const index of [0, 1]) {
+    const f = await diverged();
+    const before = tree(f.home.dir);
+    const revision = await homeRevision(f.home);
+    await assert.rejects(importPack(f.out, f.home.dir, { replace: true, inject: killed({ name: "moved", index }) }), /killed/);
+    assert.ok(existsSync(path.join(f.home.dir, ".import-journal")), "the journal is left, as a crash would leave it");
+    assert.ok(readdirSync(path.dirname(f.home.dir)).some((name) => name.includes(".import-")), "and the staging directory");
+    assert.equal(statSync(path.join(f.home.dir, ".import-journal")).mode & 0o777, 0o600);
+    await readAgentHome(f.home);
+    assert.deepEqual(tree(f.home.dir), before);
+    assert.equal(await homeRevision(f.home), revision);
+    assert.deepEqual(readdirSync(path.dirname(f.home.dir)).filter((name) => name.includes(".import-")), []);
+    const { home } = await importPack(f.out, f.home.dir, { replace: true });
+    assert.equal(existsSync(path.join(home.dir, "runs", "signed-in", "work", "OLD.txt")), false, "and the import can be done again");
+  }
+});
+
+test("a crash after the commit, before the clean-up, is settled as the new home", skip, async () => {
+  const f = await diverged();
+  const revision = await homeRevision(f.home);
+  await assert.rejects(importPack(f.out, f.home.dir, { replace: true, inject: killed({ name: "committed", index: 2 }) }), /killed/);
+  assert.ok(existsSync(path.join(f.home.dir, ".import-journal")));
+  const state = await readAgentHome(f.home);
+  assert.equal(state.source.sha, SHA);
+  assert.ok(await homeRevision(f.home) > revision);
+  assert.equal(existsSync(path.join(f.home.dir, ".import-journal")), false);
+  assert.deepEqual(readdirSync(path.dirname(f.home.dir)).filter((name) => name.includes(".import-")), []);
+  for (const old of [path.join(f.work, "OLD.txt"), path.join(f.home.dir, "runs", "second", "work", "OLD.txt")]) assert.equal(existsSync(old), false);
+  assert.equal(readFileSync(path.join(f.home.dir, "runs", "second", "work", "second.txt"), "utf8"), "second\n");
+});
+
+test("a new home is made in an absent or an empty directory, and not in one that holds something else", skip, async () => {
+  const f = await fixture();
+  await packHome(f.home, { out: f.out, now: NOW });
+  const empty = path.join(f.dir, "empty");
+  mkdirSync(empty);
+  const { home } = await importPack(f.out, empty);
+  assert.equal(home.identity.id, (await readAgentHome(f.home)).identity.id);
+  assert.deepEqual(readdirSync(path.dirname(empty)).filter((name) => name.includes(".import-")), []);
+  const busy = path.join(f.dir, "busy");
+  mkdirSync(busy);
+  writeFileSync(path.join(busy, "mine.txt"), "mine\n");
+  await rejects(importPack(f.out, busy), "invalid");
+  assert.deepEqual(readdirSync(busy), ["mine.txt"]);
+});
+
+test("a pack over maxBytes, or whose manifest says it is, is refused before anything is extracted or written", skip, async () => {
+  const f = await fixture();
+  const { manifest } = await packHome(f.home, { out: f.out, now: NOW });
+  const parent = path.join(f.dir, "dest");
+  const target = path.join(parent, "target");
+  const steps = [];
+  const refused = (maxBytes, file = f.out) => assert.rejects(importPack(file, target, { maxBytes, inject: (step) => steps.push(step.name) }), (error) => error.code === "check" && error.checks.find((check) => check.name === "size").status === "fail");
+  await refused(manifest.size_bytes - 1);
+  const lying = tamper(f.out, path.join(f.dir, "lying.tar"), (members) => withManifest(members, (edited) => { edited.size_bytes = 10 ** 9; }));
+  await refused(manifest.size_bytes + 1000, lying);
+  assert.deepEqual(steps, [], "not one member was extracted");
+  await importPack(f.out, path.join(parent, "ok"), { maxBytes: manifest.size_bytes, inject: (step) => steps.push(step.name) });
+  assert.ok(steps.includes("extract"), "and a pack within the limit is");
+  rmSync(path.join(parent, "ok"), { recursive: true });
+  assert.equal(existsSync(target), false);
+  assert.deepEqual(readdirSync(parent), [], "not even a staging directory is left");
+});
+
+test("a work file swapped for a link after it was listed is left out; one swapped while the pack is written stops the pack", skip, async () => {
+  const f = await fixture();
+  const secret = path.join(f.dir, "outside-secret.txt");
+  writeFileSync(secret, "TOP-SECRET-OUTSIDE");
+  const notes = path.join(f.work, "notes.txt");
+  const swap = (when, file) => (target, phase) => {
+    if (phase === when && target === file) {
+      rmSync(file);
+      symlinkSync(secret, file);
+    }
+  };
+  const planned = await packHome(f.home, { out: f.out, now: NOW, beforeOpen: swap("plan", notes) });
+  assert.ok(planned.skipped.some((entry) => entry.path.endsWith("/notes.txt") && /without following a link/.test(entry.reason)), JSON.stringify(planned.skipped));
+  assert.ok(!names(f.out).includes("runs/signed-in/work/notes.txt"));
+  assert.ok(!readFileSync(f.out).includes("TOP-SECRET-OUTSIDE"));
+
+  rmSync(notes);
+  writeFileSync(notes, "hello\n");
+  rmSync(f.out);
+  await assert.rejects(packHome(f.home, { out: f.out, now: NOW, beforeOpen: swap("write", notes) }), (error) => error.code === "check" && /notes\.txt changed while the pack was written/.test(error.message));
+  assert.equal(existsSync(f.out), false);
+  assert.deepEqual(readdirSync(f.dir).filter((name) => name.includes(".part-")), []);
+
+  rmSync(notes);
+  writeFileSync(notes, "hello\n");
+  const outside = path.join(f.dir, "outside-dir");
+  mkdirSync(path.join(outside, "deep"), { recursive: true });
+  writeFileSync(path.join(outside, "deep", "a.md"), "# deep\n");
+  const deep = path.join(f.work, "sub", "deep", "a.md");
+  const dirSwap = await packHome(f.home, {
+    out: path.join(f.dir, "dir-swap.tar"), now: NOW,
+    beforeOpen: (file, phase) => {
+      if (phase === "plan" && file === deep) {
+        renameSync(path.join(f.work, "sub"), path.join(f.work, "sub-real"));
+        symlinkSync(outside, path.join(f.work, "sub"));
+      }
+    },
+  });
+  assert.ok(dirSwap.skipped.some((entry) => entry.path.endsWith("/sub/deep/a.md")), JSON.stringify(dirSwap.skipped));
+});
+
+test("a work directory that cannot be read fails the pack, naming it", { skip: signedInHomeSkip ?? (process.getuid?.() === 0 ? "root reads every directory" : undefined) }, async () => {
+  const f = await fixture();
+  const sub = path.join(f.work, "sub");
+  chmodSync(sub, 0o000);
+  try {
+    await assert.rejects(packHome(f.home, { out: f.out, now: NOW }), (error) => error.code === "check" && /runs\/signed-in\/work\/sub cannot be read/.test(error.message));
+    assert.equal(existsSync(f.out), false);
+  } finally {
+    chmodSync(sub, 0o755);
+  }
+});
+
+test("a work file the reader would refuse is left out with its reason; a pack over the member limit is refused", skip, async () => {
+  const f = await fixture();
+  writeFileSync(path.join(f.work, "cache.sqlite-wal"), "orphan");
+  writeFileSync(path.join(f.work, "notes.sqlite"), "plain text");
+  const { skipped } = await packHome(f.home, { out: f.out, now: NOW });
+  const why = Object.fromEntries(skipped.map((entry) => [path.basename(entry.path), entry.reason]));
+  assert.match(why["cache.sqlite-wal"], /side file/);
+  assert.match(why["notes.sqlite"], /named \.sqlite but is not a SQLite database/);
+  assert.deepEqual(names(f.out), CLEAN);
+  assert.equal((await readPack(f.out)).ok, true);
+
+  await rejects(packHome(f.home, { out: path.join(f.dir, "few.tar"), now: NOW, maxMembers: 5 }), "too_large");
+  const few = await readPack(f.out, { maxMembers: 5 });
+  assert.equal(few.ok, false);
+  assert.match(few.checks.find((check) => check.name === "format").message, /more than 5 members/);
+});
+
+test("a SQLite file in work/ with a -wal beside it is refused, not packed half written", skip, async () => {
+  const f = await fixture();
+  const db = new DatabaseSync(path.join(f.work, "data.db"));
+  try {
+    db.exec("PRAGMA journal_mode = WAL; CREATE TABLE t (x); INSERT INTO t VALUES (1)");
+    assert.ok(existsSync(path.join(f.work, "data.db-wal")));
+    await assert.rejects(packHome(f.home, { out: f.out, now: NOW }), (error) => error.code === "check" && /data\.db has a -wal file beside it/.test(error.message));
+  } finally {
+    db.close();
+  }
+  assert.equal(existsSync(f.out), false);
+});
+
+test("a pack its own reader refuses is not written", skip, async () => {
+  const f = await fixture();
+  // A definition with a field the format does not keep, as an older or buggy writer could have stored it.
+  const Definition = defineDoc({ kind: "agent.definition", version: 1, scope: "session", initial: () => ({}) });
+  const session = await openSession(f.agentStore);
+  await session.commit(async (tx) => { Object.assign(await tx.doc(Definition), { model: "gpt-x" }); }, ctx);
+  await session.close(ctx);
+  await assert.rejects(packHome(f.home, { out: f.out, now: NOW }), (error) => error.code === "check" && /its own reader refuses it: the manifest's definition is refused/.test(error.message) && error.checks.some((check) => check.status === "fail"));
+  assert.equal(existsSync(f.out), false);
+  assert.deepEqual(readdirSync(f.dir).filter((name) => name.includes(".part-")), []);
 });
