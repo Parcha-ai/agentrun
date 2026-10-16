@@ -13,6 +13,11 @@ process.env.PDA_P9_STATE = join(dir, "P9-STATE.json");
 const { buildSnapshot, DEMO_EXTRA, DEMO_PACKS, deleteSnapshot, demoClosure, ledger, NotOursError, SNAPSHOT_BASE, snapshotDockerfile } = await import("./live/_p9.ts");
 /** This checkout's own commit: the demo closure is read from its lockfile with git, which a shallow clone has too. */
 const HEAD = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+/**
+ * A file as HEAD has it, which is what the recipe pins. CI's pi legs rewrite package.json files in the working tree (the
+ * pi floor's versions), so the working tree is not the reference.
+ */
+const committed = (path: string) => JSON.parse(spawnSync("git", ["show", `HEAD:${path}`], { encoding: "utf8", maxBuffer: 64 << 20 }).stdout) as Record<string, Record<string, string>>;
 
 const COMMIT = "c91bbb9cc0dd9485fe857bb00940bde07eaad1e7";
 
@@ -57,7 +62,7 @@ it("the demo variant: one more layer with the packs' stand-ins and pi-codemode o
   const layer = demo.find((l) => l.includes("--install-links"))!;
   const decoded = [...layer.matchAll(/echo ([A-Za-z0-9+/=]+) \| base64 -d > ([^\s;]+)/g)].map(([, b64, to]) => ({ to, json: JSON.parse(Buffer.from(b64!, "base64").toString()) as Record<string, Record<string, string>> }));
   const root = decoded.find((d) => d.to.endsWith("pi-durable-disk/package.json"))!.json;
-  const disk = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as Record<string, Record<string, string>>;
+  const disk = committed("packages/pi-durable-disk/package.json");
   for (const [name, spec] of Object.entries({ ...disk.dependencies, ...disk.devDependencies })) assert.equal(root.dependencies![name], spec, `the package's own ${name} stays as declared`);
   assert.equal(root.dependencies!["@earendil-works/pi-codemode"], DEMO_EXTRA[0]!.split("@").at(-1));
   for (const dir of DEMO_PACKS) assert.ok(Object.values(root.dependencies!).includes(`file:/opt/pda-demo/stubs/${dir}`), dir);
@@ -68,7 +73,7 @@ it("the demo variant: one more layer with the packs' stand-ins and pi-codemode o
 
 it("the demo closure: each pack's dependency fields, every single-version package of their closure at the lockfile's version, a version the lockfile holds twice left to npm", () => {
   const { stubs, pins } = demoClosure(HEAD);
-  const pack = (dir: string) => JSON.parse(readFileSync(new URL(`../../${dir}/package.json`, import.meta.url), "utf8")) as Record<string, unknown>;
+  const pack = (dir: string) => committed(`packages/${dir}/package.json`) as Record<string, unknown>;
   for (const dir of DEMO_PACKS) {
     const p = pack(dir);
     assert.deepEqual(stubs[dir], Object.fromEntries(["name", "version", "dependencies", "peerDependencies", "peerDependenciesMeta", "optionalDependencies"].filter((k) => p[k] !== undefined).map((k) => [k, p[k]])), dir);
@@ -76,7 +81,7 @@ it("the demo closure: each pack's dependency fields, every single-version packag
   for (const dir of DEMO_PACKS) assert.equal(pins[String(pack(dir).name)], undefined, `${dir} comes from the box's own tarball`);
   assert.equal(pins.typebox, undefined, "typebox is pinned exactly by two packs at two versions: npm nests it");
   assert.equal(pins["@parcha/agentrun-jev"], String(pack("jev").version), "jev is not a pack: npm, at the workspace's version");
-  const lock = JSON.parse(readFileSync(new URL("../../../package-lock.json", import.meta.url), "utf8")) as { packages: Record<string, { version?: string }> };
+  const lock = committed("package-lock.json") as unknown as { packages: Record<string, { version?: string }> };
   assert.equal(pins["@browserbasehq/stagehand"], lock.packages["node_modules/@browserbasehq/stagehand"]!.version, "a direct dependency of a pack, at the lockfile's version");
   assert.ok(Object.keys(pins).length > 50, "the closure, not only the direct dependencies");
 });

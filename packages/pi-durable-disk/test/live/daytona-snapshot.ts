@@ -62,8 +62,11 @@ async function boot(snapshot: string, prepare: (client: DaytonaClient, box: Sand
     // Each import on its own, as the run user, from the package directory: which ones load, and why one does not.
     const list = imports.map((m) => `'${m}'`).join(", ");
     const probe = `for (const m of [${list}]) { try { const x = await import(m); console.log('ok', m, Object.keys(x).length); } catch (e) { console.log('FAIL', m, String(e.message).split('\\n')[0].slice(0, 240)); } }`;
-    const imported = (await client.exec(box, `cd ${PACKAGE_DIR} && sudo -n -u pda ${NODE} --input-type=module -e "${probe}"`, 120)).result.trim().split("\n");
-    return { snapshot, startedMs, prepareMs: prepared.ms, steps: prepared.steps, versions: prepared.versions, readyMs, imported };
+    const ran = await client.exec(box, `cd ${PACKAGE_DIR} && sudo -n -u pda ${NODE} --input-type=module -e "${probe}"`, 120);
+    const imported = ran.result.trim().split("\n");
+    // Every import is listed, and the command still fails after: a snapshot whose package does not load never passes.
+    const importsOk = ran.exitCode === 0 && imports.every((m) => imported.some((line) => line.startsWith(`ok ${m} `)));
+    return { snapshot, startedMs, prepareMs: prepared.ms, steps: prepared.steps, versions: prepared.versions, readyMs, imported, importsOk, probeExit: ran.exitCode };
   } catch (error) {
     failed = true;
     throw error;
@@ -97,6 +100,7 @@ switch (command) {
     const result = await boot(arg, prepareOnSnapshot, "snapcheck");
     record("snapshot-check", result);
     console.log(JSON.stringify({ ...result, spendUsd: ledger.spend() }));
+    if (!result.importsOk) throw new Error(`the box did not load every import (probe exit ${result.probeExit}): see "imported" above`);
     break;
   }
   case "check-demo": {
@@ -127,6 +131,7 @@ switch (command) {
       }, online ? "snapdemo-online" : "snapdemo", imports);
       record(online ? "snapshot-check-demo-online" : "snapshot-check-demo", result);
       console.log(JSON.stringify({ ...result, online, spendUsd: ledger.spend() }));
+      if (!result.importsOk) throw new Error(`the box did not load every import (probe exit ${result.probeExit}): see "imported" above`);
     } finally {
       rmSync(packs, { recursive: true, force: true });
     }
@@ -137,6 +142,7 @@ switch (command) {
     const result = await boot("daytona-medium", prepareBox, "snapbase");
     record("snapshot-baseline", result);
     console.log(JSON.stringify({ ...result, spendUsd: ledger.spend() }));
+    if (!result.importsOk) throw new Error(`the box did not load every import (probe exit ${result.probeExit}): see "imported" above`);
     break;
   }
   case "delete": {
