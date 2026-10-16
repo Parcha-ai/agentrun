@@ -50,8 +50,15 @@ export type PlaceRecovery = {
   revoked?: Pick<Delegation, "clientId" | "inodeId" | "path" | "isOrphaned">[];
   ms?: number;
 };
-/** What a runner announces to its supervisor: a crossing it took, or a request to be killed at one (it parks there until the kill). */
-export type PlaceSignal = { kind: "crossing" | "kill-request"; crossing: { point: string; n: number; pid?: number; info?: Record<string, unknown> } };
+/**
+ * What a runner announces to its supervisor: a crossing it took, or a request to be killed at one (it parks there until
+ * the kill). `signals-failed` is the place's own last word when it could not read the requests: it ends the iterator,
+ * which never rejects. `code` is the failing read's error code when it has one (CONTROL_API_FAILED for a read that timed
+ * out), else SIGNALS_FAILED.
+ */
+export type PlaceSignal =
+  | { kind: "crossing" | "kill-request"; crossing: { point: string; n: number; pid?: number; info?: Record<string, unknown> } }
+  | { kind: "signals-failed"; code: string; message: string };
 /**
  * What the supervisor hands a place factory: the run's paths as it computed them, how to take the boxes the run made,
  * and where attempt n's runner writes its kill request (a file of the supervisor's machine).
@@ -88,7 +95,7 @@ export interface Place {
   release(): Promise<void>;
 }
 
-export type PlaceErrorCode = "INVALID_ARGUMENT" | "HELD" | "START_TIMED_OUT" | "STATUS_FAILED" | "KILL_UNSUPPORTED" | "RELEASE_FAILED" | "SIGNALS_FAILED";
+export type PlaceErrorCode = "INVALID_ARGUMENT" | "HELD" | "START_TIMED_OUT" | "STATUS_FAILED" | "KILL_UNSUPPORTED" | "RELEASE_FAILED";
 
 export class PlaceError extends PdaError {
   constructor(code: PlaceErrorCode, message: string, options: { cause?: unknown } = {}) {
@@ -291,8 +298,9 @@ export function localPlace(options: LocalPlaceOptions): (ctx: PlaceContext) => P
 /**
  * The kill request a runner writes whole when it parks at its planned crossing, as one signal, read with `read` every
  * `pollMs` until it names a crossing. `read` answers undefined while there is no request yet; a read that fails is tried
- * again, and once reads have failed for `failMs` without a break, `next()` rejects with SIGNALS_FAILED (a runner parked
- * at its crossing would otherwise wait with no word of why). A custom iterator, not a generator: `return()` must end a
+ * again, and once reads have failed for `failMs` without a break, the iterator yields one `signals-failed` and ends (a
+ * runner parked at its crossing would otherwise wait with no word of why). It never rejects. A custom iterator, not a
+ * generator: `return()` must end a
  * pending `next()`, which a generator would queue behind the poll, and it does even while a read is in flight (a read
  * over the network can hang). Each wait has its own wake, dropped after it, so a long poll attaches nothing to anything
  * that lives as long as the iterator.
@@ -320,9 +328,11 @@ function requestSignals(read: () => Promise<string | undefined>, pollMs: number,
               failingSince = undefined;
             } catch (error) {
               failingSince ??= Date.now();
-              if (Date.now() - failingSince >= failMs) {
+              if (!closed && Date.now() - failingSince >= failMs) {
                 closed = true;
-                throw new PlaceError("SIGNALS_FAILED", `reading the kill request failed for ${failMs} ms: ${(error as Error)?.message ?? error}`, { cause: error });
+                const code = (error as { code?: unknown } | null)?.code;
+                const message = `reading the kill request failed for ${failMs} ms: ${String((error as Error | null)?.message ?? error).slice(0, 240)}`;
+                return { done: false, value: { kind: "signals-failed", code: typeof code === "string" && code ? code : "SIGNALS_FAILED", message } };
               }
             }
             const crossing = closed || text === undefined ? undefined : requestIn(text);
@@ -344,15 +354,18 @@ function requestSignals(read: () => Promise<string | undefined>, pollMs: number,
   };
 }
 
+/** The crossing a kill request names. */
+type RequestCrossing = Extract<PlaceSignal, { crossing: unknown }>["crossing"];
+
 /**
  * The crossing a request names: `point` and `n` at least, with every other field it carries (the per-attempt nonce the
  * supervisor put in the order and checks; never the place's token); anything else (a half write, another file) is not
  * one yet.
  */
-function requestIn(text: string): PlaceSignal["crossing"] | undefined {
+function requestIn(text: string): RequestCrossing | undefined {
   try {
-    const v = JSON.parse(text) as Partial<PlaceSignal["crossing"]> | null;
-    return v && typeof v.point === "string" && typeof v.n === "number" && Number.isFinite(v.n) ? (v as PlaceSignal["crossing"]) : undefined;
+    const v = JSON.parse(text) as Partial<RequestCrossing> | null;
+    return v && typeof v.point === "string" && typeof v.n === "number" && Number.isFinite(v.n) ? (v as RequestCrossing) : undefined;
   } catch {
     return undefined;
   }
@@ -394,8 +407,8 @@ export interface ArchilPlaceOptions {
   /** How often `signals` reads the attempt's kill request over S3. Default 500 ms (the runner waits at its crossing). */
   signalPollMs?: number;
   /**
-   * How long those reads may fail (anything but a missing object) without a break before `next()` rejects with
-   * SIGNALS_FAILED. Default 60 s.
+   * How long those reads may fail (anything but a missing object) without a break before the iterator yields one
+   * `signals-failed` and ends. Default 60 s.
    */
   signalFailMs?: number;
 }

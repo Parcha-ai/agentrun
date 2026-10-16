@@ -790,8 +790,10 @@ id and directory as the supervisor computed them.
     `signals(attempt)` reads `runs/<id>/signals/kill-<attempt>.json` over S3 every 500 ms (`signalPollMs`). A runner on
     a box of its own can't reach the supervisor's files, so its request travels through the disk. The runner must write
     it durably for S3 to see it: a temporary file, fsync, rename, fsync of the directory. A missing object is a request
-    not written yet; any other read failure is retried, and once reads have failed for `signalFailMs` (60 s) without a
-    break, `next()` rejects with `SIGNALS_FAILED`, so a parked runner never waits with no word of why.
+    not written yet; any other read failure is retried. Once reads have failed for `signalFailMs` (60 s) without a
+    break, the iterator yields one `{ kind: "signals-failed", code, message }` and ends, so a parked runner never waits
+    with no word of why. `code` is the failing read's own error code when it has one (`CONTROL_API_FAILED` for a read
+    that timed out), else `SIGNALS_FAILED`. The iterator never rejects.
   - A request names `point` and `n`; every other field passes through unchanged, so a per-attempt nonce the supervisor
     put in the order's env reaches its check. The place's token never goes into a request: on a disk it is the mount
     token, and the app never holds it.

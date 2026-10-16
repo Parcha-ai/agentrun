@@ -534,36 +534,47 @@ describe("archilPlace", () => {
     assert.ok(after - before < 1_000_000, `the heap grew ${after - before} bytes over 3000 polls`);
   });
 
-  it("signals: a missing request is waited for; a read that keeps failing otherwise rejects next() with SIGNALS_FAILED, and a short failure does not", async () => {
+  it("signals never reject: a lasting read failure is one signals-failed and then done; a short one is retried; a missing request is waited for", async () => {
     const control = new FakeControl();
     const { host } = fakeHost(control);
     const at = makePlace({ ...REF, control, host, signalPollMs: 5, signalFailMs: 200 });
     const prefix = `runs/${ID}/signals/`;
+    /** The next result, or the rejection as a value (which must never come), or "no word" after 5 s. */
+    const nextOf = (it: AsyncIterator<unknown>) =>
+      Promise.race([it.next().then((r) => r, (e: unknown) => ({ rejected: e })), new Promise((r) => setTimeout(() => r("no word after 5 s"), 5_000).unref())]);
 
     // A failure shorter than signalFailMs, then the request: it is yielded.
     const it1 = at.signals!(1)[Symbol.asyncIterator]();
-    const first = it1.next();
+    const first = nextOf(it1);
     control.failUnder = { prefix, error: Object.assign(new Error("503 Slow Down"), { status: 503 }) };
     await sleep(60);
     control.failUnder = null;
     control.objects.set(`${prefix}kill-1.json`, JSON.stringify({ point: "p", n: 1 }));
-    assert.deepEqual((await first).value, { kind: "kill-request", crossing: { point: "p", n: 1 } });
+    assert.deepEqual(await first, { done: false, value: { kind: "kill-request", crossing: { point: "p", n: 1 } } });
 
-    // A read refused for good: next() says so once signalFailMs has passed.
-    const it2 = at.signals!(2)[Symbol.asyncIterator]();
-    control.failUnder = { prefix, error: Object.assign(new Error("AccessDenied"), { status: 403 }) };
-    const refused = await Promise.race([it2.next().then(() => "yielded", (e: unknown) => e), sleep(5_000).then(() => "no word after 5 s")]);
-    await it2.return!();
-    assert.ok(refused instanceof PlaceError && refused.code === "SIGNALS_FAILED" && /AccessDenied/.test(refused.message), String(refused));
-    control.failUnder = null;
+    // A read refused for good: one signals-failed (the read's own code when it has one, else SIGNALS_FAILED), then done.
+    for (const [error, code] of [
+      [Object.assign(new Error("AccessDenied"), { status: 403 }), "SIGNALS_FAILED"],
+      [Object.assign(new Error("getObject did not answer in 10000 ms"), { code: "CONTROL_API_FAILED" }), "CONTROL_API_FAILED"],
+    ] as const) {
+      const it2 = at.signals!(2)[Symbol.asyncIterator]();
+      control.failUnder = { prefix, error };
+      const failed = (await nextOf(it2)) as { done: boolean; value: { kind: string; code: string; message: string } };
+      assert.equal(failed.done, false, JSON.stringify(failed));
+      assert.equal(failed.value.kind, "signals-failed");
+      assert.equal(failed.value.code, code);
+      assert.match(failed.value.message, new RegExp(`failed for 200 ms: ${error.message}`));
+      assert.deepEqual(await nextOf(it2), { done: true, value: undefined }, "then the iterator ends");
+      control.failUnder = null;
+    }
 
     // No request at all for longer than signalFailMs: a missing object is not a failure.
     const it3 = at.signals!(3)[Symbol.asyncIterator]();
-    const pending = it3.next();
+    const pending = nextOf(it3);
     let settled = false;
-    void pending.then(() => (settled = true), () => (settled = true));
+    void pending.then(() => (settled = true));
     await sleep(300);
-    assert.equal(settled, false, "still waiting, no rejection");
+    assert.equal(settled, false, "still waiting, no signal and no rejection");
     await it3.return!();
     assert.deepEqual(await pending, { done: true, value: undefined });
   });
