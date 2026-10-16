@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CAPS, checkTrial, currentRevision, deriveWhen, fitTrial, LearnError, matches, parseTrial, renderTrial, skillName, TRIAL_LIMITS, trialPath, whenSize } from "../dist/index.js";
+import { CAPS, checkPreconditions, checkTrial, currentRevision, deriveWhen, fitTrial, LearnError, matches, parseTrial, pruneUses, renderTrial, skillName, TRIAL_LIMITS, trialPath, whenSize } from "../dist/index.js";
 
 const sha = (c) => c.repeat(64);
 const at = (n) => `2026-10-16T${String(n).padStart(2, "0")}:00:00.000Z`;
@@ -134,6 +134,8 @@ test("deriveWhen states what a workflow's input schema requires, read from the d
   assert.deepEqual(deriveWhen(doc({ c: { enum: ["us", "ca"] } }, ["c"])), [{ pointer: "/c", op: "exists" }, { pointer: "/c", op: "in", value: ["us", "ca"] }]);
   const states = Array.from({ length: 12 }, (_, i) => `s${i}`);
   assert.deepEqual(deriveWhen(doc({ c: { enum: states } }, ["c"])), [{ pointer: "/c", op: "exists" }, { pointer: "/c", op: "in", value: states }], "a longer enumeration keeps its check");
+  const wide = Array.from({ length: 12 }, (_, i) => `${"w".repeat(44)}${String(i).padStart(1, "0")}`);
+  assert.deepEqual(deriveWhen(doc({ c: { enum: wide } }, ["c"])), [{ pointer: "/c", op: "exists" }], "an enumeration too big for a trial to keep adds no check, and never an unwritable one");
   assert.deepEqual(deriveWhen(doc({ k: { const: "kyb" } }, ["k"])), [{ pointer: "/k", op: "exists" }, { pointer: "/k", op: "eq", value: "kyb" }]);
   assert.deepEqual(deriveWhen(doc({ n: { type: "number", minimum: 0, maximum: 5 } }, ["n"])), [{ pointer: "/n", op: "exists" }, { pointer: "/n", op: "gte", value: 0 }, { pointer: "/n", op: "lte", value: 5 }]);
   assert.deepEqual(deriveWhen(doc({ "a/b": { type: "string" } }, ["a/b"])), [{ pointer: "/a~1b", op: "exists" }]);
@@ -144,4 +146,27 @@ test("deriveWhen states what a workflow's input schema requires, read from the d
   assert.deepEqual(deriveWhen(null), []);
   const many = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`f${i}`, { type: "string" }]));
   assert.equal(deriveWhen(doc(many, Object.keys(many))).length, TRIAL_LIMITS.preconditions);
+});
+
+test("checkPreconditions refuses what a trial cannot keep, so a host's own checks fail at admission, never at render", () => {
+  checkPreconditions([{ pointer: "/a", op: "exists" }, { pointer: "/b", op: "in", value: ["x", "y"] }]);
+  assert.throws(() => checkPreconditions([{ pointer: "/a", op: "eq", value: "x".repeat(513) }]), (e) => e.code === "format");
+  assert.throws(() => checkPreconditions([{ pointer: "/a", op: "eq", value: undefined }]), (e) => e.code === "format");
+  assert.throws(() => checkPreconditions(Array.from({ length: 16 }, (_, i) => ({ pointer: `/field-with-a-long-name-${i}`, op: "eq", value: "v".repeat(100) }))), (e) => e.code === "format");
+});
+
+test("pruneUses keeps the newest uses of the live revision's standing whatever else arrives, and moves every boundary", () => {
+  const uses = [
+    ...Array.from({ length: 5 }, (_, i) => ({ run: `old-${i}`, sha256: sha("a"), outcome: "frozen", at: at(2) })),
+    ...Array.from({ length: 40 }, (_, i) => ({ run: `other-${i}`, sha256: sha("b"), outcome: "frozen", at: at(3) })),
+    { run: "mine-1", sha256: sha("a"), outcome: "failed", at: at(4) },
+  ];
+  const t = trial({ revisions: [{ sha256: sha("a"), status: "trial", since: at(1), run: "run-1", after: 2 }, { sha256: sha("b"), status: "retired", since: at(1), run: "run-2", after: 30 }], uses });
+  const cut = pruneUses(t, 20);
+  assert.equal(cut.uses.length, 20);
+  assert.deepEqual(cut.uses.filter((u) => u.sha256 === sha("a")).map((u) => u.run), ["old-2", "old-3", "old-4", "mine-1"], "the live revision's uses since its boundary stay; the ones before it go");
+  assert.equal(cut.revisions[0].after, 0, "nothing of its before-boundary uses is left, so its boundary is the start");
+  assert.ok(cut.revisions[1].after <= cut.uses.length);
+  assert.equal(pruneUses(t, 100), t, "nothing to cut, nothing changed");
+  checkTrial(cut);
 });

@@ -226,6 +226,18 @@ test("a run already folded for a revision is not folded again, but distinct uses
   assert.equal(again.trial.uses.length, 3);
 });
 
+test("receipts for other revisions never push out the evidence the live revision's decision still needs", () => {
+  let trial = proven(undefined, "a", 1);
+  trial = admit(trial, "b", 5);
+  trial = foldUses(trial, [use("r1", "b", "failed", at(6))]).trial;
+  const crowd = Array.from({ length: TRIAL_LIMITS.uses + 5 }, (_, i) => use(`other-${i}`, "a", "frozen", at(7, i % 60)));
+  trial = foldUses(trial, crowd).trial;
+  assert.equal(live(trial), "b", "one failure, however many receipts for the old revision follow");
+  assert.equal(trial.uses.length, TRIAL_LIMITS.uses);
+  const folded = foldUses(trial, [use("r2", "b", "failed", at(9))]);
+  assert.deepEqual([folded.applied.map((a) => a.decision.action), live(folded.trial)], [["demote"], "a"], "the first failure was kept, so the second demotes");
+});
+
 test("the boundaries move when the oldest uses are dropped, so a standing still counts exactly its own uses", () => {
   let trial = admit(undefined, "a", 1);
   for (let i = 0; i < TRIAL_LIMITS.uses + 5; i += 1) trial = foldUses(trial, [use(`run-${i}`, "a", i % 2 ? "frozen" : "escalated", at(2, i % 60))]).trial;

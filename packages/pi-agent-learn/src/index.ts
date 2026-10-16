@@ -25,7 +25,7 @@ export {
   type IgnoredUse, periodUses, PROMOTION_DEFAULTS, promotionDecision, type Thresholds as PromotionThresholds, thresholdsOf,
 } from "./promotion.js";
 export {
-  checkTrial, currentRevision, deriveWhen, fitTrial, type Json, LIMITS as TRIAL_LIMITS, matches, parseTrial, type Precondition, PRECONDITION_OPS, PreconditionSchema,
+  checkPreconditions, checkTrial, currentRevision, deriveWhen, fitTrial, type Json, LIMITS as TRIAL_LIMITS, matches, parseTrial, type Precondition, PRECONDITION_OPS, PreconditionSchema, pruneUses,
   readTrial, renderTrial, type Revision, REVISION_STATUSES, type RevisionStatus, skillName, skillPath, type Trial, trialPath, TrialSchema, TRIAL_STATUSES,
   type TrialStatus, type Use, USE_OUTCOMES, type UseOutcome, whenSize, workflowDir, WORKFLOW_SKILL_NAME,
 } from "./trial.js";

@@ -18,8 +18,8 @@ import { MAX_WORKFLOW_HINTS, type WorkflowHint } from "./section.js";
 import { readSeed } from "./seed.js";
 import type { AdmitWorkflow, AdmitWorkflowInput, AdmitWorkflowResult, RepoRead, SettleUses, SettleUsesInput, SettleUsesResult, WorkflowUse } from "./types.js";
 import {
-  currentRevision, deriveWhen, fitTrial, LIMITS, matches, MAX_NAME, parseTrial, type Precondition, readTrial, renderTrial, skillName, skillPath, type Trial, trialPath,
-  type Use, type UseOutcome, whenSize, workflowDir, WORKFLOW_SKILL_NAME,
+  checkPreconditions, currentRevision, deriveWhen, fitTrial, matches, MAX_NAME, parseTrial, type Precondition, readTrial, renderTrial, skillName, skillPath, type Trial, trialPath,
+  type Use, type UseOutcome, workflowDir, WORKFLOW_SKILL_NAME,
 } from "./trial.js";
 
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -512,7 +512,12 @@ export async function admitInDir(input: AdmitInDirInput): Promise<AdmitInDirResu
       return refuse(name, "code", "the workflow runs code (a code node, or a shell or executor call), and nothing a person reviewed admits it");
     }
     const when = typeof input.when === "function" ? input.when(stored.workflow) : input.when ?? [];
-    if (whenSize(when) > LIMITS.whenChars) return refuse(name, "when", `preconditions are at most ${LIMITS.whenChars} characters as the file prints them`);
+    try {
+      checkPreconditions(when);
+    } catch (error) {
+      if (!(error instanceof LearnError)) throw error;
+      return refuse(name, "when", `the preconditions do not fit what a trial keeps: ${error.message}`);
+    }
     const skillText = await readRegular(path.join(dir, skillPath(name)));
     const admitted: Admission = admitRevision(held, { name, sha256, run: runId, at, when, ...(skillText === undefined ? {} : { replacedDescription: skillDescription(skillText) }) });
     if (admitted.status === "refused") return refuse(name, admitted.reason, admitted.detail);

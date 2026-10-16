@@ -335,6 +335,21 @@ test("a revision admitted without a description is offered under no one else's: 
   assert.deepEqual(await workflowsToTry({ repo, sha: described.sha }, { sku: "A", amount: 1 }), [{ name: kyb.name, status: "trial" }]);
 });
 
+test("a workflow whose input schema has a wide enumeration is admitted, with the checks a trial can keep and no more", async () => {
+  const root = await scratch();
+  const { repo } = await agentRepo(root);
+  const doc = workflowDoc();
+  const wide = Array.from({ length: 12 }, (_, i) => `${"w".repeat(44)}${i}`);
+  doc.schemas.In.required.push("kind");
+  doc.schemas.In.properties.kind = { enum: wide };
+  const step = await admitted(repo, { doc, checks: schemaWhen });
+  assert.equal(step.result.status, "admitted", "it does not stop curation");
+  const trial = await readTrial(repo, kyb.name, step.sha);
+  assert.ok(trial.when.some((c) => c.pointer === "/kind" && c.op === "exists") && !trial.when.some((c) => c.pointer === "/kind" && c.op === "in"));
+  const refused = await admitted(repo, { doc: workflowDoc({ limit: 3 }), run: "author-2", when: at(9), checks: () => [{ pointer: "/k", op: "eq", value: "x".repeat(600) }] });
+  assert.deepEqual([refused.result.status, refused.result.reason], ["refused", "when"], "a host's own checks that a trial cannot keep are refused, not thrown");
+});
+
 test("the ports a curator calls: admitting, settling, and what each says", async () => {
   const root = await scratch();
   const { repo } = await agentRepo(root);

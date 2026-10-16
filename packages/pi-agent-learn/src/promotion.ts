@@ -1,5 +1,5 @@
 import { LearnError } from "./errors.js";
-import { currentRevision, LIMITS, type Precondition, type Revision, type Trial, type Use } from "./trial.js";
+import { currentRevision, LIMITS, type Precondition, pruneUses, type Revision, type Trial, type Use } from "./trial.js";
 
 /** Promote a trial after this many clean uses in a row; demote after this many failed or escalated ones in a row. */
 export const PROMOTION_DEFAULTS = Object.freeze({ promoteAfter: 3, demoteAfter: 2 });
@@ -154,7 +154,8 @@ const order = (a: Use, b: Use) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.run < 
  * are folded in the order they happened; calls are folded in the order they are made, and that order, not any clock, decides
  * which uses count toward a standing: a use that arrives after a decision counts toward the standing the decision gave. A use
  * of a revision the trial does not hold is left out, and so is one by the run that proposed the revision (the author's run is
- * not evidence for its own work) and one by a run already folded for that revision. Only the newest `LIMITS.uses` are kept.
+ * not evidence for its own work) and one by a run already folded for that revision. At most `LIMITS.uses` are kept, the newest
+ * first, and always the newest few of the live revision's standing (`pruneUses`).
  */
 export function foldUses(trial: Trial, incoming: readonly Use[], options: DecisionOptions = {}): Folded {
   let current = trial;
@@ -167,11 +168,7 @@ export function foldUses(trial: Trial, incoming: readonly Use[], options: Decisi
     else if (revision.run === use.run) ignored.push({ use, reason: "author" });
     else if (folded.has(`${use.run}\n${use.sha256}`)) ignored.push({ use, reason: "duplicate" });
     else {
-      current = { ...current, uses: [...current.uses, use] };
-      if (current.uses.length > LIMITS.uses) {
-        const drop = current.uses.length - LIMITS.uses;
-        current = { ...current, uses: current.uses.slice(drop), revisions: current.revisions.map((r) => ({ ...r, after: Math.max(0, r.after - drop) })) };
-      }
+      current = pruneUses({ ...current, uses: [...current.uses, use] }, LIMITS.uses);
       const decision = promotionDecision(current, options);
       if (decision.action !== "hold") {
         current = applyDecision(current, decision, use.at);

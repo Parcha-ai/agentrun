@@ -119,6 +119,15 @@ function isJson(value: unknown, depth = 0): value is Json {
   return false;
 }
 
+/** Throws a `format` error unless `when` is plain JSON within the limits a revision's preconditions keep. */
+export function checkPreconditions(when: readonly Precondition[]): void {
+  for (const { op, value: operand } of when as readonly { op: string; value?: unknown }[]) {
+    if (op !== "exists" && !isJson(operand)) throw bad("a precondition's value is not plain JSON");
+    if (op !== "exists" && JSON.stringify(operand).length > 512) throw bad("a precondition's value is over 512 characters");
+  }
+  if (whenSize(when) > LIMITS.whenChars) throw bad(`preconditions are over ${LIMITS.whenChars} characters`);
+}
+
 /** Throws a `format` error unless `value` is a well formed trial: the schema, then what a schema cannot say. */
 export function checkTrial(value: unknown): asserts value is Trial {
   if (!checker.Check(value)) {
@@ -126,14 +135,7 @@ export function checkTrial(value: unknown): asserts value is Trial {
     throw bad(`trial.json does not match its schema${first ? ` at ${first.instancePath || "/"} (${first.keyword})` : ""}`);
   }
   const trial = value as Trial;
-  const checkWhen = (when: readonly Precondition[]) => {
-    for (const { op, value: operand } of when as readonly { op: string; value?: unknown }[]) {
-      if (op !== "exists" && !isJson(operand)) throw bad("a precondition's value is not plain JSON");
-      if (op !== "exists" && JSON.stringify(operand).length > 512) throw bad("a precondition's value is over 512 characters");
-    }
-    if (whenSize(when) > LIMITS.whenChars) throw bad(`preconditions are over ${LIMITS.whenChars} characters`);
-  };
-  checkWhen(trial.when);
+  checkPreconditions(trial.when);
   const seen = new Set<string>();
   let live: Revision | undefined;
   for (const revision of trial.revisions) {
@@ -142,7 +144,7 @@ export function checkTrial(value: unknown): asserts value is Trial {
     if (!validStamp(revision.since)) throw bad("a revision's since is not a time");
     if (revision.after > trial.uses.length) throw bad("a revision's after is past the uses held");
     if (revision.status !== "superseded" && (revision.when !== undefined || revision.description !== undefined)) throw bad("only a superseded revision keeps preconditions and a description");
-    if (revision.when) checkWhen(revision.when);
+    if (revision.when) checkPreconditions(revision.when);
     if (revision.description !== undefined && (revision.description.trim() === "" || Buffer.byteLength(revision.description, "utf8") > CAPS.text)) throw bad("a revision's description is text of 1 to 1000 bytes");
     if (revision.status === "trial" || revision.status === "active") {
       if (live) throw bad("more than one revision is live");
@@ -168,15 +170,34 @@ export function skillName(name: string): string {
   return name;
 }
 
+/**
+ * The trial with its uses cut to at most `target`, oldest first, except that the newest `LIMITS.threshold` uses of the live
+ * revision's current standing are always kept: the evidence a decision about it can still need must not be pushed out by
+ * receipts for other revisions. Each revision's `after` becomes the number of kept uses before its boundary.
+ */
+export function pruneUses(trial: Trial, target: number): Trial {
+  if (trial.uses.length <= target) return trial;
+  const live = currentRevision(trial);
+  const kept = new Set<number>();
+  if (live) {
+    for (let i = trial.uses.length - 1; i >= live.after && kept.size < LIMITS.threshold; i -= 1) if (trial.uses[i]!.sha256 === live.sha256) kept.add(i);
+  }
+  for (let i = trial.uses.length - 1; i >= 0 && kept.size < target; i -= 1) kept.add(i);
+  const indexes = [...kept].sort((a, b) => a - b);
+  return {
+    ...trial, uses: indexes.map((i) => trial.uses[i]!),
+    revisions: trial.revisions.map((r) => ({ ...r, after: indexes.filter((i) => i < r.after).length })),
+  };
+}
+
 const sizeOf = (trial: Trial) => Buffer.byteLength(`${JSON.stringify(trial, null, 2)}\n`, "utf8");
 
-/** The trial with its oldest uses dropped, as far as `LIMITS.threshold` uses remain, until it fits the curator's file cap. The
- *  limits are set so a trial fits at their maximum; this is the net under them. */
+/** The trial with its oldest uses dropped (`pruneUses`), as far as `LIMITS.threshold` uses remain, until it fits the curator's
+ *  file cap. The limits are set so a trial fits at their maximum; this is the net under them. */
 export function fitTrial(trial: Trial): Trial {
   let current = trial;
   while (sizeOf(current) > CAPS.file && current.uses.length > LIMITS.threshold) {
-    const drop = Math.min(current.uses.length - LIMITS.threshold, Math.max(1, Math.ceil(current.uses.length / 4)));
-    current = { ...current, uses: current.uses.slice(drop), revisions: current.revisions.map((r) => ({ ...r, after: Math.max(0, r.after - drop) })) };
+    current = pruneUses(current, Math.max(LIMITS.threshold, Math.ceil((current.uses.length * 3) / 4)));
   }
   return current;
 }
@@ -275,7 +296,7 @@ export function deriveWhen(workflow: unknown, resolveSchema?: (schema: Record<st
     if (property === null || typeof property !== "object") continue;
     const p = property as Record<string, unknown>;
     if (Object.hasOwn(p, "const") && isJson(p.const) && JSON.stringify(p.const).length <= 512) out.push({ pointer, op: "eq", value: p.const });
-    else if (Array.isArray(p.enum) && p.enum.length >= 1 && p.enum.length <= LIMITS.inValues && p.enum.every(scalar) && p.enum.every((item) => isJson(item))) out.push({ pointer, op: "in", value: p.enum as Json[] });
+    else if (Array.isArray(p.enum) && p.enum.length >= 1 && p.enum.length <= LIMITS.inValues && p.enum.every(scalar) && p.enum.every((item) => isJson(item)) && JSON.stringify(p.enum).length <= 512) out.push({ pointer, op: "in", value: p.enum as Json[] });
     if (typeof p.minimum === "number" && Number.isFinite(p.minimum)) out.push({ pointer, op: "gte", value: p.minimum });
     if (typeof p.maximum === "number" && Number.isFinite(p.maximum)) out.push({ pointer, op: "lte", value: p.maximum });
   }
