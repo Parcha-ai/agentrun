@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { reconcileEffects } from './reference/assemble.ts';
-import { classesOf, CLASSES, cutBrowserAction, cutInEffectWindow, isReduced, killAnywhere, planNext, progress, random, render } from './reference/kill-anywhere.ts';
+import { classesOf, CLASSES, cutBrowserAction, cutBrowserCrossing, cutInEffectWindow, isReduced, killAnywhere, planNext, progress, random, render } from './reference/kill-anywhere.ts';
 
 const failed = (ledger) => ledger.checks.filter((check) => !check.ok).map((check) => ({ check: check.name, detail: check.detail }));
 
@@ -49,6 +49,24 @@ test('the browser\'s page action is cut before and after it is applied: applied 
   assert.equal(after.pageRuns, 1, 'cut after it was applied and before its answer left: it ran once and was not applied again');
   for (const cut of [before, after]) assert.deepEqual(cut.committedTurns, ['run', 'snapshot', 'read', 'submit']);
   assert.ok(classesOf([{ landed: { side: 'supervisor', point: after.landed } }]).includes('browser action'));
+});
+
+test('the browser\'s own crossings (pi-browser\'s `crossing` option): a kill at browser.between-actions and one at browser.action-returned each land, the run resumes to the end, and no page action is repeated', { timeout: 200_000 }, async () => {
+  // The uninterrupted runs, for what a run makes: one page action, and (with a second) two.
+  const one = await cutBrowserCrossing();
+  const two = await cutBrowserCrossing(undefined, { twoActions: true });
+  assert.deepEqual([one.pageRuns, two.pageRuns], [1, 2]);
+  // Between two page actions (the first one's answer committed, the next not dispatched): it lands, and the resume does not repeat the first.
+  const between = await cutBrowserCrossing('browser.between-actions', { twoActions: true });
+  assert.equal(between.killed, 'SIGKILL');
+  assert.equal(between.resumed.status, 'complete');
+  assert.ok(between.pageRuns >= 1 && between.pageRuns <= two.pageRuns, `a page action ran at most as often as in the uninterrupted run: ${between.pageRuns}`);
+  // After the driver returned and before pi committed its answer: it lands, the action had been made once, and the resume does not make it again (the lost answer is committed as an error and the lead looks before it decides).
+  const returned = await cutBrowserCrossing('browser.action-returned');
+  assert.equal(returned.killed, 'SIGKILL');
+  assert.equal(returned.resumed.status, 'complete');
+  assert.equal(returned.pageRuns, one.pageRuns, 'made once, not again');
+  assert.deepEqual(returned.errored, ['run']);
 });
 
 test('a page action that errored is printed with the kill behind it and the ask that followed', () => {
