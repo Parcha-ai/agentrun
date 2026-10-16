@@ -1184,3 +1184,25 @@ test('a stop given while a dry run reads its SOP file is taken: the trusted dry 
     assert.ok(globalThis.__dryRunStopProbe > 0);
   } finally { await app.shutdown(); delete globalThis.__dryRunStopProbe; await rm(cwd, { recursive: true, force: true }); }
 });
+
+test('in an interactive session /agentrun dry-run returns at once, as /agentrun run does, so /agentrun stop reaches it and its answer comes after', async () => {
+  // Interactive Pi takes one command at a time: the next is read only once the last one's handler returns.
+  const app = await harness({ hasUI: true });
+  const endless = { v: 2, name: 'Check until done', schemas: { Done: { type: 'object', additionalProperties: false, required: ['done'], properties: { done: { type: 'boolean' } } } },
+    output: { schemaId: 'Done', path: 'check' },
+    root: { node: 'loop', label: 'until-done', maxIters: 200000, until: { predicate: 'field_true', path: 'check.done' },
+      body: { node: 'extract', label: 'check', instructions: 'Say whether the fictional task is done.', out: 'Done', as: 'check' } } };
+  try {
+    await app.tool({ action: 'inspect', workflow: endless });
+    const before = app.messages.length;
+    const answered = () => app.messages.slice(before).find(message => message.details?.dryRun);
+    await app.command('dry-run');
+    assert.equal(answered(), undefined, 'the command returned before the dry run ended');
+    await app.command('stop');
+    assert.match(app.messages.at(-1).content, /Dry run stopped/);
+    await waitUntil(() => answered());
+    assert.equal(answered().details.dryRun.status, 'not_run');
+    assert.match(answered().details.dryRun.skipped.join('\n'), /stopped before it finished/);
+    assert.equal(app.calls.length, 0);
+  } finally { await app.shutdown(); }
+});
