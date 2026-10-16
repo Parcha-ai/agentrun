@@ -13,6 +13,8 @@ import { scratchSync } from "./fixtures/scratch.mjs";
 
 const START = "https://shop.example.test/";
 const PAGE = { url: START, title: "Shop", text: "Raspberry Pi 5 8GB costs $80", html: "<html><body><h1>Shop</h1><p>Raspberry Pi 5 8GB costs $80</p></body></html>" };
+const NEWS = "https://news.example.test/";
+const SITES = { shop: { title: "The shop", description: "Prices of the store's products.", startUrl: START }, news: { title: "The news", description: "Today's headlines.", startUrl: NEWS } };
 const CONFIG = { label: "node-a", run: "run-sites", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0, batchTimeoutMs: 60_000 } };
 const textOf = (message) => typeof message?.content === "string" ? message.content : (message?.content ?? []).filter((part) => part.type === "text").map((part) => part.text).join("");
 const toolUse = (name, args) => fauxAssistantMessage([fauxToolCall(name, args, { id: `call-${name}-${randomUUID().slice(0, 8)}` })], { stopReason: "toolUse" });
@@ -36,8 +38,7 @@ function script(requestIds, { childTurn } = {}) {
   return { seen, responses: () => Array.from({ length: 40 }, () => respond) };
 }
 
-async function open(storage, backend, responses) {
-  const sites = localSites({ shop: { title: "The shop", description: "Prices of the store's products.", startUrl: START } });
+async function open(storage, backend, responses, sites = localSites({ shop: SITES.shop })) {
   const browser = createBrowserExtension({
     provider: () => backend.provider, driver: fakeDriver(backend),
     evidence: { file: async (label, record) => ({ path: `evidence/${label}/${record.tool}.md`, bodyLine: 1 }) },
@@ -125,4 +126,123 @@ test("after a crash mid-child, the replayed use_website re-awaits the same child
   for (let i = 0; i < 400 && (await results(again)).length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
   assert.deepEqual(await results(again), [{ ok: true, site: "shop", request_id: requestId, report: "The 8 GB board costs $80." }]);
   assert.deepEqual((await two.harness.snapshot(two.browser.docs.Children, again.id, ctx)).byRequest, { [`shop:${requestId}`]: childBefore }, "the same child, no second one");
+});
+
+// Forced race: each call waits here until `n` calls are in flight, or `ms` passes; it answers whether all `n` met.
+function rendezvous(n, ms = 2_000) {
+  let arrived = 0;
+  let open;
+  const met = new Promise((resolve) => { open = resolve; });
+  return () => {
+    arrived += 1;
+    if (arrived === n) open(true);
+    return Promise.race([met, new Promise((resolve) => setTimeout(resolve, ms, false).unref())]);
+  };
+}
+
+/** The parent asks every `calls` entry in one turn; a child snapshots once, then reports the site it started at. */
+function fanout(calls, { childTurn } = {}) {
+  const turns = new Map();
+  const respond = async (context, options) => {
+    const asked = textOf(context.messages.find((message) => message.role === "user"));
+    const site = Object.values(SITES).find((entry) => asked.includes(`Start at ${entry.startUrl}`));
+    if (site) {
+      const turn = (turns.get(site.startUrl) ?? 0) + 1;
+      turns.set(site.startUrl, turn);
+      await childTurn?.(site.startUrl, turn, options?.signal);
+      return context.messages.at(-1).role === "toolResult" ? fauxAssistantMessage([fauxText(`Read ${site.startUrl}`)], { stopReason: "stop" }) : toolUse("snapshot", {});
+    }
+    return context.messages.some((message) => message.role === "toolResult")
+      ? fauxAssistantMessage([fauxText("done")], { stopReason: "stop" })
+      : fauxAssistantMessage(calls.map((call, i) => fauxToolCall("use_website", { site: call.site, request_id: call.requestId, instructions: "Read the start page." }, { id: `call-${i}-${randomUUID().slice(0, 8)}` })), { stopReason: "toolUse" });
+  };
+  return { turns, responses: () => Array.from({ length: 40 }, () => respond) };
+}
+
+/** A port that counts how many of its calls overlap; `run` answers one call. */
+function overlapping(run, n) {
+  const meet = rendezvous(n);
+  const port = { overlapped: [], list: async () => Object.entries(SITES).map(([site, entry]) => ({ site, title: entry.title, description: entry.description })) };
+  port.use = async (input, ctx) => { port.overlapped.push(await meet()); return run(input, ctx); };
+  return port;
+}
+
+const backendFor = () => new FakeBackend({ start: START, pages: { [START]: PAGE, [NEWS]: { url: NEWS, title: "News", text: "Headlines", html: "<html><body><h1>News</h1></body></html>" } } });
+const settle = async (harness) => { for (let i = 0; i < 200 && (await harness.inspect(ctx)).tasks.length > 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 25)); };
+
+test("two use_website calls in one turn run at once, and each child is recorded in the children doc with no lost write", async (t) => {
+  const calls = [{ site: "shop", requestId: randomUUID() }, { site: "news", requestId: randomUUID() }];
+  const backend = backendFor();
+  const local = localSites(SITES);
+  const port = overlapping((input, ctx) => local.use(input, ctx), 2);
+  const { turns, responses } = fanout(calls);
+  const { harness, browser } = await open(new MemoryStorage(), backend, responses(), port);
+  t.after(() => harness.close(ctx));
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), CONFIG); } });
+  await (await root.submit({ type: "input", content: "Read both sites." }, ctx)).wait(ctx);
+
+  assert.deepEqual(port.overlapped, [true, true], "both calls were in flight at once");
+  assert.deepEqual(await results(root), calls.map(({ site, requestId }) => ({ ok: true, site, request_id: requestId, report: `Read ${SITES[site].startUrl}` })));
+  const byRequest = (await harness.snapshot(browser.docs.Children, root.id, ctx)).byRequest;
+  assert.deepEqual(Object.keys(byRequest).sort(), calls.map(({ site, requestId }) => `${site}:${requestId}`).sort(), "both children are recorded");
+  assert.equal(new Set(Object.values(byRequest)).size, 2, "in two conversations");
+  assert.deepEqual([...turns.values()], [2, 2]);
+  await settle(harness);
+  assert.deepEqual([backend.tally().creates, backend.tally().releases], [2, 2], "each child had its own browser, released");
+});
+
+test("two overlapping use_website calls with the same request_id share one child", async (t) => {
+  const requestId = randomUUID();
+  const calls = [{ site: "shop", requestId }, { site: "shop", requestId }];
+  const backend = backendFor();
+  // No localSites here: both calls reach the adapter's child runner, so its own request_id record is what dedupes them.
+  const port = overlapping(async ({ site, requestId: id, instructions }, ctx) => ({ report: await ctx.runChild({ site, requestId: id, prompt: `Start at ${SITES[site].startUrl}. ${instructions}` }, ctx.signal) }), 2);
+  const { turns, responses } = fanout(calls);
+  const { harness, browser } = await open(new MemoryStorage(), backend, responses(), port);
+  t.after(() => harness.close(ctx));
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), CONFIG); } });
+  await (await root.submit({ type: "input", content: "Read the shop, twice at once." }, ctx)).wait(ctx);
+
+  assert.deepEqual(port.overlapped, [true, true], "both calls were in flight at once");
+  const answers = await results(root);
+  assert.deepEqual(answers, [0, 1].map(() => ({ ok: true, site: "shop", request_id: requestId, report: `Read ${START}` })));
+  assert.deepEqual(Object.keys((await harness.snapshot(browser.docs.Children, root.id, ctx)).byRequest), [`shop:${requestId}`]);
+  assert.deepEqual([...turns.values()], [2], "the child ran once");
+  await settle(harness);
+  assert.equal(backend.tally().creates, 1);
+});
+
+test("after a crash mid-fan-out, each replayed use_website re-awaits its own child, once", async (t) => {
+  const calls = [{ site: "shop", requestId: randomUUID() }, { site: "news", requestId: randomUUID() }];
+  const dir = scratchSync(t, "use-website-fanout-crash-");
+  const backend = backendFor();
+  const local = localSites(SITES);
+  const meet = rendezvous(2);
+  let crash;
+  const crashed = new Promise((resolve) => { crash = resolve; });
+  const first = fanout(calls, { childTurn: async (_url, turn, signal) => {
+    if (turn !== 2) return;
+    // Forced race: the process dies once both children are mid-task, or after the rendezvous gives up.
+    void meet().then(crash);
+    await new Promise((resolve, reject) => signal.addEventListener("abort", () => reject(new Error("the process died")), { once: true }));
+  } });
+  const one = await open(await openNodeJsonlStorage(dir, ctx), backend, first.responses(), local);
+  const root = await one.harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(one.browser.docs.Config, id), CONFIG); } });
+  root.submit({ type: "input", content: "Read both sites." }, ctx).then((submission) => submission.wait(ctx)).catch(() => undefined);
+  await crashed;
+  const before = (await one.harness.snapshot(one.browser.docs.Children, root.id, ctx)).byRequest;
+  await one.harness.close(ctx);
+  await one.browser.close();
+  assert.equal(Object.keys(before).length, 2, "both children were running when the process died");
+
+  const second = fanout(calls);
+  const relisted = localSites(SITES);
+  const two = await open(await openNodeJsonlStorage(dir, ctx), backend, second.responses(), relisted);
+  t.after(() => two.harness.close(ctx));
+  two.harness.resume();
+  const again = await two.harness.root(ctx);
+  for (let i = 0; i < 400 && (await results(again)).length < 2; i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.deepEqual(await results(again), calls.map(({ site, requestId }) => ({ ok: true, site, request_id: requestId, report: `Read ${SITES[site].startUrl}` })));
+  assert.deepEqual((await two.harness.snapshot(two.browser.docs.Children, again.id, ctx)).byRequest, before, "the same two children, no new one");
+  assert.deepEqual(Object.fromEntries(second.turns), { [START]: 1, [NEWS]: 1 }, "each child finished its task once, from where it stopped");
 });

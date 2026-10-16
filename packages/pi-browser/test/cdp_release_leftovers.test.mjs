@@ -22,7 +22,7 @@ test("a profile that cannot be removed is reported by name, never swallowed; ask
   // A directory its files cannot be unlinked from: the removal fails however often it is tried.
   const locked = path.join(profile, "Default");
   chmodSync(locked, 0o500);
-  t.after(() => { try { chmodSync(locked, 0o700); } catch {} });
+  t.after(() => { try { chmodSync(locked, 0o700); } catch {} }, { timeout: 30_000 });
   const failure = await provider.release(ref).then(() => null, (error) => error);
   assert.ok(failure instanceof ProfileNotRemovedError, String(failure));
   assert.equal(failure.code, "profile_not_removed");
@@ -50,14 +50,14 @@ test("Chrome's singleton socket directory that cannot be removed is reported by 
   mkdirSync(tmp);
   const outer = process.env.TMPDIR;
   process.env.TMPDIR = tmp;
-  t.after(() => { process.env.TMPDIR = outer; });
+  t.after(() => { process.env.TMPDIR = outer; }, { timeout: 30_000 });
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: path.join(root, "profiles") } });
   const ref = await provider.create(spec("cdp-socket-1"), new AbortController().signal);
   process.env.TMPDIR = outer;
   const socket = readlinkSync(path.join(root, "profiles", "cdp-socket-1", "SingletonSocket"));
   const socketDir = path.dirname(socket);
   chmodSync(socketDir, 0o500);
-  t.after(() => { try { chmodSync(socketDir, 0o700); } catch {} });
+  t.after(() => { try { chmodSync(socketDir, 0o700); } catch {} }, { timeout: 30_000 });
   const failure = await provider.release(ref).then(() => null, (error) => error);
   assert.ok(failure instanceof ProfileNotRemovedError, String(failure));
   assert.equal(failure.dir, socketDir);
@@ -80,7 +80,7 @@ for (const [what, executablePath, why] of [
     mkdirSync(inner, { recursive: true });
     writeFileSync(path.join(inner, "file"), "x");
     chmodSync(inner, 0o500);
-    t.after(() => { try { chmodSync(inner, 0o700); } catch {} });
+    t.after(() => { try { chmodSync(inner, 0o700); } catch {} }, { timeout: 30_000 });
     const failure = await provider.create(spec("cdp-create-1"), new AbortController().signal).then(() => null, (error) => error);
     assert.ok(failure instanceof ProfileNotRemovedError, String(failure));
     assert.equal(failure.dir, inner.replace(/\/locked$/, ""), "it names the downloads directory it could not remove");
@@ -112,7 +112,7 @@ test("every leftover is reported together: the profile and the socket directory 
   mkdirSync(tmp);
   const outer = process.env.TMPDIR;
   process.env.TMPDIR = tmp;
-  t.after(() => { process.env.TMPDIR = outer; });
+  t.after(() => { process.env.TMPDIR = outer; }, { timeout: 30_000 });
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: path.join(root, "profiles") } });
   const ref = await provider.create(spec("cdp-both-1"), new AbortController().signal);
   process.env.TMPDIR = outer;
@@ -121,7 +121,7 @@ test("every leftover is reported together: the profile and the socket directory 
   const locked = path.join(profile, "Default");
   chmodSync(locked, 0o500);
   chmodSync(socketDir, 0o500);
-  t.after(() => { for (const dir of [locked, socketDir]) { try { chmodSync(dir, 0o700); } catch {} } });
+  t.after(() => { for (const dir of [locked, socketDir]) { try { chmodSync(dir, 0o700); } catch {} } }, { timeout: 30_000 });
   const failure = await provider.release(ref).then(() => null, (error) => error);
   assert.ok(failure instanceof ProfileNotRemovedError, String(failure));
   // Both are named. When the path leaves room for it (Chrome's socket path may not pass 107 bytes, so how long this test's root is decides), the
@@ -149,7 +149,7 @@ for (const [what, executablePath, why] of [
     mkdirSync(locked, { recursive: true });
     writeFileSync(path.join(locked, "file"), "x");
     chmodSync(locked, 0o500);
-    t.after(() => { try { chmodSync(locked, 0o700); } catch {} });
+    t.after(() => { try { chmodSync(locked, 0o700); } catch {} }, { timeout: 30_000 });
     const downloads = path.join(root, "cdp-both-1.downloads");
     mkdirSync(downloads);
     writeFileSync(path.join(downloads, "file"), "x");
@@ -168,7 +168,7 @@ test("a release that does not own the browser and whose profile names a port tha
   const stalled = net.createServer((socket) => { held.add(socket); socket.on("error", () => undefined); });
   await new Promise((resolve) => stalled.listen(0, "127.0.0.1", resolve));
   const { port } = stalled.address();
-  t.after(() => { for (const socket of held) socket.destroy(); stalled.close(); });
+  t.after(() => { for (const socket of held) socket.destroy(); stalled.close(); }, { timeout: 30_000 });
   const profile = path.join(root, "stalled-1");
   mkdirSync(profile);
   writeFileSync(path.join(profile, "DevToolsActivePort"), `${port}\n/devtools/browser/held\n`);
@@ -201,7 +201,7 @@ function writerInto(t, profile) {
     let n = 0, last = 0;
     for (;;) { const now = performance.now(); if (now - last < 0.2) continue; last = now; try { fs.writeFileSync(path.join(dir, "new-" + n++), "x"); } catch {} }
   `], { stdio: ["ignore", "pipe", "ignore"] });
-  t.after(() => { writer.kill("SIGKILL"); });
+  t.after(() => { writer.kill("SIGKILL"); }, { timeout: 30_000 });
   return new Promise((resolve, reject) => {
     writer.stdout.once("data", () => resolve(() => writer.kill("SIGKILL")));
     writer.once("exit", () => reject(new Error("the writer ended without writing")));

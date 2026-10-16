@@ -50,7 +50,7 @@ export function uploadOnce<T>(uploads: Map<string, Promise<T>>, account: string,
 export async function releaseAndConfirm(o: {
   request: () => Promise<"gone" | void>;
   status: () => Promise<ResourceStatus>;
-  forget: () => void;
+  forget: () => void | Promise<void>;
   confirm: { polls: number; intervalMs: number };
   sleep: (ms: number) => Promise<void>;
   stillRunning: string;

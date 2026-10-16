@@ -173,6 +173,10 @@ from an `agent.runs` record (it is the caller's own name for itself), or `undefi
 `EXPORTABLE_KINDS`. Kinds this package does not define, pi's own documents and another extension's, are not on the
 list, so they are dropped too.
 
+The three are also the subpath `@parcha/pi-durable-agent/export`, which imports no module: a writer that only filters
+kinds (a replay of exported stores, for one) loads them with `node:sqlite` alone, not the root, which loads
+pi-durable, chord and pi-ai.
+
 ## The timeline
 
 `@parcha/pi-durable-agent/timeline` turns a run into one human-readable timeline. It has no dependency and uses no Node
@@ -212,7 +216,7 @@ origin, path and query keys but drops its query values, fragment and userinfo. `
 | `refreshAgentHome(home, { sha, from?, ifRevision?, definition, skills })` | The cached definition and skills replaced by the ones at `sha` ([Following the agent's repo](#following-the-agents-repo)) |
 | `runPaths(home, runId)` | A run's `dir` (what `pi-durable-disk run --dir` takes), `storePath` (`store/run.sqlite`) and `workspace` (`work/`) |
 | `durableProfileStore(target, { provider?, signal? })` | pi-browser's `ProfileStore` over a run store; `target` is the host's Harness or any Session on the file |
-| `EXPORTABLE_KINDS`, `SECRET_KINDS`, `projectForExport(kind, value)` | What an exporter may copy, what never leaves the home, and one document as an exporter writes it ([Exporting a home](#exporting-a-home)) |
+| `EXPORTABLE_KINDS`, `SECRET_KINDS`, `projectForExport(kind, value)` | What an exporter may copy, what never leaves the home, and one document as an exporter writes it ([Exporting a home](#exporting-a-home)). Also from `@parcha/pi-durable-agent/export`, which loads no other module, so an exporter or a site build needs neither pi-durable nor pi-ai |
 | `timelineOf`, `timelineReducer`, `groupTimeline`, `renderText` | The timeline above, from `@parcha/pi-durable-agent/timeline` |
 | `AgentHomeError` | `code` is `invalid`, `exists`, `missing`, `busy`, `format` or `stale` |
 

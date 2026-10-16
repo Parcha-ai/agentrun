@@ -74,6 +74,7 @@ Loading starts with empty input and does not execute. A save retains the definit
 | `/agentrun` | Inspect the current workflow, or show help if there is none. |
 | `/agentrun input <case or JSON>` | Set new input without changing the definition or running it. |
 | `/agentrun run` | Repeat the current workflow with its last supplied input. Scripted demos stay scripted; authored workflows use real adapters. |
+| `/agentrun dry-run` | Run the current workflow on synthetic values, with no model, Jev or tool call. |
 | `/agentrun save <name>` | Save an immutable, project-local definition revision. |
 | `/agentrun load <name> [digest]` | Load the newest or exact revision; input starts empty. |
 | `/agentrun list` | List saved revisions. |
@@ -88,6 +89,19 @@ Pi 1.1.0 cannot export a fresh session containing only slash-command results. To
 A live run is durable. Its journal is kept in `.pi/agentrun/runs/<run id>/journal.json`, and `/agentrun run` after an interruption (`/agentrun stop`, a closed session, a killed process) or a failure continues the same run: committed steps are answered from the journal, a tool call that completed is answered from its receipt and is not made again, and the next step runs. The run is bound to its workflow, input, SOP text and tool names; a change to any of them starts a new run. A tool call that was in flight when the run stopped has an unknown outcome and is never made again: the resumed run fails naming it, and the person who knows whether it happened reconciles it before a new run. An agent step that was interrupted starts over from its first turn. A run that completed or escalated is not resumed; `/agentrun run` starts a new one. Scripted demos keep no journal.
 
 One workflow runs at a time. Named definitions are durable across sessions in the same project. Pi run receipts belong to the current branch and may remain in memory until Pi persists its session; saving a definition does not save a receipt.
+
+A host that does not run the extension can save, load and list the same definitions with `@parcha/agentrun-pi/workflows`, which loads nothing from pi:
+
+```ts
+import { WorkflowStore } from '@parcha/agentrun-pi/workflows';
+
+const store = new WorkflowStore(projectDirectory);   // records go to <projectDirectory>/.pi/agentrun/workflows/<name>/
+const saved = await store.save('release-review', workflow);   // an immutable revision, named by its SHA-256
+const again = await store.load('release-review');             // the last one saved; pass a digest for an exact revision
+const revisions = await store.list();                         // every revision, newest first
+```
+
+The argument is a project directory, not the workflows directory: the extension keeps its records for `ctx.cwd` in the same place, so a host that passes that directory and the extension read each other's records. Storage needs real directories and regular files (a symbolic link in the path or among the records fails with `WorkflowStoreError` code `unsafe_path`), and every load checks the record's metadata and the SHA-256 of its workflow. A `<name>/` directory copied into the workflows directory loads. A saved workflow is a procedure, not authority: the host still checks it against its current capabilities before it runs.
 
 ### Three demo modes
 
@@ -104,6 +118,8 @@ Live mode uses your active Pi model and requires configured TypeSafe access for 
 By default, the extension exposes currently active Pi built-in `read`, `grep`, `find`, and `ls` tools. A workflow can narrow that set; it cannot enable a tool that the host has not supplied. The additional `search` tool reads only the bundled fictional demo sources.
 
 The user must issue `/agentrun run --trusted` for each run that needs code nodes or active built-in `bash`, `edit`, or `write` tools. This permits local, unsandboxed execution; authorization does not carry into the next run. A model cannot grant itself that permission with a tool argument.
+
+A dry run (`/agentrun dry-run`, the inspector's Dry-run action, or the tool's `dry-run` action, which also takes an `input`) runs the inspected workflow on synthetic values: agent and judge answers and tool results are synthesized from their schemas, so it makes no model, Jev or tool call, writes no run journal and leaves the last run's receipt as it was. Its `status` is `passed`, `failed` (`problems` say why), or `not_run`: a check could not run, for example a schema the generator cannot satisfy (`pattern`, `format`), a synthetic answer that escalated, or SOP text that was not supplied, and `skipped` says which. A `not_run` dry run proves nothing. A workflow with code nodes is `not_run` unless the user issues `/agentrun dry-run --trusted`, which runs its code in this process for that dry run only; a code node that throws is reported by its label, without what it threw. A dry run stops after 10,000 synthetic steps, or at `/agentrun stop`, as `not_run`.
 
 A workflow that names `sopSection`s needs SOP text. `/agentrun sop <file>` reads a Markdown file inside the project (up to 512 KiB) and checks that it has a `## <section>` heading for each section the workflow names; `/agentrun sop` shows what is set. The file's digest is kept with the session, and a run is refused if the file changed since it was supplied. A host that passes `sop` to `createAgentRunExtension` supplies the text itself and `/agentrun sop` is not used.
 
