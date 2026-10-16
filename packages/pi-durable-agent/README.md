@@ -128,6 +128,9 @@ lowercase hex digits, a SHA-1 or a SHA-256 commit).
 - `refreshAgentHome(home, { sha, from, ... })` is a compare-and-swap: the home must be at `from` (`null`: no sha yet),
   or the refresh is refused (`stale`) before anything is written. A host that read an older commit then cannot move
   the cache back over a newer one; whether one commit follows another is for the host to judge, from git.
+- `refreshAgentHome(home, { ..., ifRevision })` is a compare-and-swap on `homeRevision`: a home whose head commit is
+  not `ifRevision` is refused (`stale`) before anything is written. An API checks an `If-Match` this way, under the
+  home's lock, instead of racing a separate read. The order is: the input, `ifRevision`, `from`, the same-sha no-op.
 - `startRun` records the home's sha on the run (`agent.runs`, and `sha` on what it returns), read under the same lock
   as the skills it copies into the workspace. A run already started keeps its sha and its copy of the skills when the
   home is refreshed.
@@ -205,7 +208,7 @@ origin, path and query keys but drops its query values, fragment and userinfo. `
 | `homeRevision(home)` | The agent store's head commit number: every write that changes the home moves it, reads do not. With the identity's id it is the home's version, an ETag |
 | `setAlias(home, host, externalId)`, `setBindings(home, host, bindings)` | A host's id for the agent, and where its tools run there |
 | `startRun`, `carryBack` | A run's start and end, above |
-| `refreshAgentHome(home, { sha, from?, definition, skills })` | The cached definition and skills replaced by the ones at `sha` ([Following the agent's repo](#following-the-agents-repo)) |
+| `refreshAgentHome(home, { sha, from?, ifRevision?, definition, skills })` | The cached definition and skills replaced by the ones at `sha` ([Following the agent's repo](#following-the-agents-repo)) |
 | `runPaths(home, runId)` | A run's `dir` (what `pi-durable-disk run --dir` takes), `storePath` (`store/run.sqlite`) and `workspace` (`work/`) |
 | `durableProfileStore(target, { provider?, signal? })` | pi-browser's `ProfileStore` over a run store; `target` is the host's Harness or any Session on the file |
 | `EXPORTABLE_KINDS`, `SECRET_KINDS`, `projectForExport(kind, value)` | What an exporter may copy, what never leaves the home, and one document as an exporter writes it ([Exporting a home](#exporting-a-home)) |

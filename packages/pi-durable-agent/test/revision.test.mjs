@@ -55,3 +55,26 @@ test("homeRevision refuses a directory that is not an agent home", async () => {
   const dir = await scratch();
   await assert.rejects(homeRevision({ dir, identity: { id: "x", name: "x", formatVersion: 1 } }), refused("missing"));
 });
+
+test("refresh with ifRevision is a compare-and-swap on homeRevision, checked before from and the same-sha no-op", async () => {
+  const skills = { "cite/SKILL.md": "# Cite\n" };
+  const home = await createAgentHome(await scratch(), { definition: DEFINITION, skills, sha: SHA_1 });
+  await setAlias(home, "host-a", "ext-1");
+  const revision = await homeRevision(home);
+  const before = await readAgentHome(home);
+  const stale = (expected) => refused("stale", new RegExp(`at revision ${revision}, not ${expected} as the refresh expected; nothing was written`));
+  await assert.rejects(refreshAgentHome(home, { sha: SHA_2, ifRevision: revision - 1, definition: DEFINITION, skills }), stale(revision - 1));
+  await assert.rejects(refreshAgentHome(home, { sha: SHA_2, ifRevision: revision + 1, from: SHA_2, definition: DEFINITION, skills }), stale(revision + 1), "ifRevision is checked before from");
+  await assert.rejects(refreshAgentHome(home, { sha: SHA_1, ifRevision: revision + 1, definition: DEFINITION, skills }), stale(revision + 1), "and before the same-sha no-op");
+  for (const bad of [-1, 1.5, "3", null]) {
+    await assert.rejects(refreshAgentHome(home, { sha: SHA_2, ifRevision: bad, definition: DEFINITION, skills }), refused("invalid", /not a home revision/), String(bad));
+  }
+  assert.equal(await homeRevision(home), revision, "the head did not move");
+  assert.deepEqual(await readAgentHome(home), before, "nothing written");
+
+  assert.deepEqual(await refreshAgentHome(home, { sha: SHA_2, ifRevision: revision, from: SHA_1, definition: DEFINITION, skills }), { changed: true });
+  assert.equal(await homeRevision(home), revision + 1);
+  assert.deepEqual(await refreshAgentHome(home, { sha: SHA_2, ifRevision: revision + 1, definition: DEFINITION, skills }), { changed: false }, "a matching revision at the same sha is the no-op");
+  assert.deepEqual(await refreshAgentHome(home, { sha: SHA_1, definition: DEFINITION, skills }), { changed: true }, "without ifRevision, no check");
+  assert.equal(await homeRevision(home), revision + 2);
+});

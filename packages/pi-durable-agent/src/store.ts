@@ -17,7 +17,24 @@ export class AgentHomeError extends Error {
   }
 }
 
-export type Store = { readonly storage: Storage; readonly session: Session; close(): Promise<void> };
+export type Store = {
+  readonly storage: Storage;
+  readonly session: Session;
+  /** The store's head commit number, read on its own connection. */
+  head(): Promise<number>;
+  close(): Promise<void>;
+};
+
+/** The SQL that reads pi's next commit number. pi's Storage has no head query; its SQLite storage gives each commit
+ *  `durable_metadata.next_seq` and stores the successor in the same transaction, so the head is `next_seq - 1`. */
+export const HEAD_SQL = "SELECT next_seq FROM durable_metadata WHERE singleton = 1";
+
+/** The head commit number from `HEAD_SQL`'s row; a store without a usable row fails closed (`format`). */
+export function headOf(row: { next_seq?: unknown } | undefined): number {
+  const next = typeof row?.next_seq === "bigint" ? Number(row.next_seq) : row?.next_seq;
+  if (typeof next !== "number" || !Number.isSafeInteger(next) || next < 1) throw new AgentHomeError("format", `the agent store has no usable head commit (${JSON.stringify(row ?? null)})`);
+  return next - 1;
+}
 
 const SYNCHRONOUS_FULL = 2;
 
@@ -34,7 +51,7 @@ export async function openStore(file: string): Promise<Store> {
   }
   const storage = await SqliteStorage.open(database);
   const session = createSession(storage);
-  return { storage, session, close: () => session.close(BACKGROUND_CONTEXT) };
+  return { storage, session, head: async () => headOf(await database.get<{ next_seq?: unknown }>(HEAD_SQL)), close: () => session.close(BACKGROUND_CONTEXT) };
 }
 
 /** Every current member of a session-scoped family, by key. */
