@@ -24,6 +24,14 @@ export type PlaceSignal = { kind: 'crossing' | 'kill-request'; crossing: { point
 /** A delegation of the run's own path (an Archil place): who holds it and whether it is orphaned or still pending. */
 export type PlaceDelegation = { clientId: string; inodeId: string | number; path: string; isOrphaned: boolean; isPending?: boolean };
 
+/** A box place's recording, brought home (the one seam for a place whose child writes its spool inside the place: a disk place, a transport box). `dir(attempt)` is the recording directory as the child sees it inside the place (the place rewrites the
+ *  order's `RECORD_DIR` to it, and puts the host's `.spool/started`, the recording's clock, into it before a runner starts). `bringHome(into)` is idempotent: it pulls what is new from the place into the host recording directory `into`: first the blobs not
+ *  yet home (hash-checked, written to a temporary name beside their final one, synced, renamed), then the new bytes of `.spool/*.jsonl` up to the last whole line. It throws an error with a `code`: `BOX_GONE` (the box is gone), `CARRY_FAILED` (a transfer
+ *  failed in a box that is still there), `BLOB_MISMATCH` (a blob whose bytes do not hash to its name; it is skipped and the rest comes home first). The supervisor drives it: every status tick while a runner runs, and once with `final: true` after the runner
+ *  has exited, before the follower closes, the manifest and the release. A place reads its `dir` by any means that never takes the run's claim. The child's recorder syncs its spool after each batch of lines, so a lost box loses less. For a disk place `dir(attempt)`
+ *  sits inside the run's directory (`runs/<id>/record/<attempt>/`), so the delegation covers it and the sweep removes it. */
+export type RecordHome = { dir(attempt: number): string; bringHome(into: string, options?: { final?: boolean }): Promise<void> };
+
 export type Place = {
   /** For the recording's lines and the README: `local`, `box:docker`, `archil`. */
   name: string;
@@ -38,6 +46,10 @@ export type Place = {
   signals?(attempt: number): AsyncIterable<PlaceSignal>;
   /** Where attempt n's runner writes its kill request: the place answers it (the child never derives it), and a place that has `signals(attempt)` has `requestFile(attempt)`; the two agree. */
   requestFile?(attempt: number): string;
+  /** A place whose child writes its recording inside the place brings it home through this; without it (the local place) the child writes straight into the host's recording directory. */
+  recordHome?: RecordHome;
+  /** A hint: how far this place's clock may be from the host's, in ms (a remote box). The live recorder holds a line longer before placing it: max(1 s, 2 x this). */
+  clockSkewMs?: number;
   /** Kills the runner: `process` ends the runner, `box` takes the place's machine away. The supervisor has written the kill line before it calls this. Safe on a runner that is already gone. */
   kill(runner: Runner, kind: 'process' | 'box'): Promise<void>;
   /** How the session stands, read the way the place reads it (a package's status reader), never from the store or `work/`: the supervisor is control-plane only. */
