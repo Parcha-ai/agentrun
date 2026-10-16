@@ -357,6 +357,75 @@ describe("the model proxy", () => {
 		expect(replies.at(-1)).toEqual({ t: "model-unknown", id: "runner-9.9" });
 	});
 
+	it("asks the provider again for a key whose call failed: a failed call is no answer to take over", async () => {
+		const faux = fauxProvider({ api: "faux" });
+		const models = createModels();
+		models.setProvider(faux.provider);
+		faux.setResponses([
+			fauxAssistantMessage("", { stopReason: "error", errorMessage: "the provider is overloaded" }),
+			fauxAssistantMessage("The answer."),
+		]);
+		const server = serveModels(models);
+		const heard: Frame[] = [];
+		const reply = (frame: Frame) => heard.push(frame) > 0;
+		const ended = async (id: string) => {
+			const end = () =>
+				heard.some((frame) => frame.id === id && (frame.t === "model-end" || frame.t === "model-error"));
+			for (let waited = 0; waited < 5_000 && !end(); waited += 10) await sleep(10);
+			return heard.filter((frame) => frame.id === id).at(-1)?.t;
+		};
+		const ask = (id: string) =>
+			server.receive(
+				{
+					t: "model",
+					id,
+					key: "sha256:one-request",
+					model: { provider: "faux", modelId: "faux-1" },
+					messages: [{ role: "user", content: "hi", timestamp: 0 }],
+					options: {},
+				},
+				reply,
+			);
+		ask("runner-1.1");
+		expect(await ended("runner-1.1")).toBe("model-error");
+		// pi asks again after the error, under the same key: the provider is asked again, and answers this time.
+		ask("runner-1.2");
+		expect(await ended("runner-1.2")).toBe("model-end");
+		expect(server.paid).toBe(2);
+		server.close();
+	});
+
+	it("sends a call it is still answering to the runner that takes it over under its key, from the first frame", async () => {
+		const faux = fauxProvider({ api: "faux", tokensPerSecond: 200 });
+		const models = createModels();
+		models.setProvider(faux.provider);
+		faux.setResponses([fauxAssistantMessage("An answer of some length, streamed. ".repeat(20))]);
+		const server = serveModels(models);
+		const first: Frame[] = [];
+		const second: Frame[] = [];
+		const request = (id: string): Frame => ({
+			t: "model",
+			id,
+			key: "sha256:one-request",
+			model: { provider: "faux", modelId: "faux-1" },
+			messages: [{ role: "user", content: "hi", timestamp: 0 }],
+			options: {},
+		});
+		server.receive(request("runner-1.1"), (frame) => first.push(frame) > 0);
+		for (let waited = 0; waited < 5_000 && first.length < 3; waited += 10) await sleep(10);
+		// The runner's process dies in the middle of the answer, and a new one asks again under the same key.
+		const toFirst = (frame: Frame) => first.push(frame) > 0;
+		server.down(toFirst);
+		server.receive(request("runner-2.1"), (frame) => second.push(frame) > 0);
+		for (let waited = 0; waited < 5_000 && second.at(-1)?.t !== "model-end"; waited += 10) await sleep(10);
+		// What was sent before, then the rest as it comes, all on the new runner's link and under its id.
+		expect(second.at(-1)?.t).toBe("model-end");
+		expect(second.every((frame) => frame.id === "runner-2.1")).toBe(true);
+		expect(second.map((frame) => frame.seq)).toEqual(Array.from({ length: second.length }, (_, n) => n + 1));
+		expect(server.paid).toBe(1);
+		server.close();
+	});
+
 	it("sends a resumed answer on the new link only once the runner asks, what it missed first, and pays once", async () => {
 		const faux = fauxProvider({ api: "faux", tokensPerSecond: 200 });
 		const models = createModels();

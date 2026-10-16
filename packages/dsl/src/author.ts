@@ -113,7 +113,7 @@ Typed questions answered by the host's judge in one request each: no tools, no s
 ### Control nodes
 
 - ${code("chain")}: non-empty ${code("steps")}, run in order.
-- ${code("map")}: ${code("itemsPath")} (an upstream list), ${code("body")} and ${code("as")}. The body sees ${code("item")} and ${code("item_index")}; ${code("maxConcurrency")} is a positive integer (default 4); ${code("resultPath")} selects one path from each completed item's state.
+- ${code("map")}: ${code("itemsPath")} (an upstream list), ${code("body")} and ${code("as")}. The body sees ${code("item")} and ${code("item_index")}; ${code("maxConcurrency")} is a positive integer (default 4); ${code("resultPath")} selects one path from each completed item's state. Without ${code("resultPath")}, and with no ${code("as")} in the body, each item's result is its whole state, the mapped list included: set ${code("resultPath")} (or an ${code("as")} in the body) for a large map; the validator warns.
 - ${code("parallel")}: at least two ${code("branches")}, each starting from the state before the parallel node. Branches write disjoint keys and never read a sibling's writes.
 - ${code("loop")}: ${code("body")}, ${code("until")} (a predicate) and an integer ${code("maxIters")} of at least 1 (no maximum), optionally an integer ${code("expect_iters")} of at least 1 (priced passes). At the bound the state passes through with ${code("until")} unmet; follow the loop with an escalate or gate on that condition.
 - ${code("escalate")}: ${code("when")} (a predicate), and non-empty ${code("kind")}, ${code("stage")} and ${code("summary")}. When the predicate holds the run stops without output and returns the escalation with its interpolated summary.
