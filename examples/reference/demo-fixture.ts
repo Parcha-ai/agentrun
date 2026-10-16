@@ -25,7 +25,9 @@ const boxTool = process.env.DEMO_BOX_TOOL ? {
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       const made = await context!.boxes!.create({ maxLifetimeMs: 60_000, labels: { 'agentrun-demo': 'install' } }, ctx);
       if (!made.ok) throw made.error;
-      const ran = await made.value.exec([process.execPath, '-e', 'setTimeout(() => console.log("installed"), 400)'], undefined, ctx);
+      // When the demo plans to lose the install box, its first command WAITS UNTIL IT IS KILLED (no timer at all): the loss always lands mid-command, however slow the machine, and the second attempt's short command completes. Without a planned loss the command completes normally.
+      const losing = attempt === 1 && (spec.kills ?? []).some((kill: { target?: string }) => kill.target === 'tool');
+      const ran = await made.value.exec([process.execPath, '-e', losing ? 'setInterval(() => {}, 1000)' : `setTimeout(() => console.log("installed"), ${attempt === 1 ? 400 : 50})`], undefined, ctx);
       const done = ran.ok ? await finish(ran.value, undefined) : undefined;
       await made.value.destroy(ctx);
       if (done?.ok && done.value.exitCode === 0) return { attempts: attempt };
