@@ -92,34 +92,43 @@ test('the page draws the chapters\' keyframes in their rows and on the film, fro
   assert.ok(dom.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').includes('keyframe: A shadow crosses'));
 });
 
-test('over HTTP, where blobs/ cannot be listed, a picture only the result names is found when a view first draws it, opened or followed', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` }, async (t) => {
+/** A static host's policy: pictures may be data: or blob: URLs, but the page fetches only from its own origin. */
+const POLICY = "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self'; base-uri 'none'; object-src 'none'";
+
+test('over HTTP, with a host policy that fetches only from its own origin, the chapters draw with their keyframes: embedded, opened by URL, or followed', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` }, async (t) => {
   const out = mkdtempSync(join(tmpdir(), 'viewer-keyframes-http-'));
   t.after(() => rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));
-  writeRecording(join(out, 'rec'), frameless);
-  deliverInstead(join(out, 'rec'), CHAPTERS as unknown as Json);
+  writeRecording(join(out, 'recordings', 'vision-chapters'), frameless);
+  deliverInstead(join(out, 'recordings', 'vision-chapters'), CHAPTERS as unknown as Json);
   mkdirSync(join(out, 'none'));
   build(join(out, 'dist'), join(out, 'none'));
+  // A published site: the recording embedded, each blob a data: URL the page must read without fetching it.
+  build(join(out, 'site'), join(out, 'recordings'));
   const asked: string[] = [];
   // The recording's files by their paths, a 200 for the whole file (no ranges), and no listing of blobs/.
   const server = createServer((request, response) => {
     const path = new URL(request.url!, 'http://localhost').pathname;
     asked.push(`${request.method} ${path}`);
-    const file = path.startsWith('/viewer/') ? join(out, 'dist', path.slice(8)) : path.startsWith('/rec/') ? join(out, 'rec', path.slice(5)) : '';
+    const file = path.startsWith('/viewer/') ? join(out, 'dist', path.slice(8)) : path.startsWith('/site/') ? join(out, 'site', path.slice(6))
+      : path.startsWith('/rec/') ? join(out, 'recordings', 'vision-chapters', path.slice(5)) : '';
     if (!file || !existsSync(file) || statSync(file).isDirectory()) { response.writeHead(404).end(); return; }
-    response.writeHead(200, { 'content-type': typeOfName(file) ?? (file.endsWith('.html') ? 'text/html' : file.endsWith('.js') ? 'text/javascript' : 'text/plain') }).end(request.method === 'HEAD' ? undefined : readFileSync(file));
+    response.writeHead(200, { 'content-type': typeOfName(file) ?? (file.endsWith('.html') ? 'text/html' : file.endsWith('.js') ? 'text/javascript' : 'text/plain'), 'content-security-policy': POLICY })
+      .end(request.method === 'HEAD' ? undefined : readFileSync(file));
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => server.close());
-  const dump = (query: string) => new Promise<string>((resolve) => {
+  const dump = (page: string) => new Promise<string>((resolve) => {
     const browser = spawn(chrome, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${join(out, `profile-${asked.length}`)}`,
-      '--virtual-time-budget=8000', '--dump-dom', `http://127.0.0.1:${(server.address() as AddressInfo).port}/viewer/index.html?${query}`], { stdio: ['ignore', 'pipe', 'ignore'] });
+      '--virtual-time-budget=8000', '--dump-dom', `http://127.0.0.1:${(server.address() as AddressInfo).port}/${page}`], { stdio: ['ignore', 'pipe', 'ignore'] });
     let text = '';
     browser.stdout.on('data', (chunk: Buffer) => { text += chunk; });
     browser.on('close', () => resolve(text));
   });
   const drawn = (dom: string, className: string) => (dom.match(new RegExp(`<img [^>]*class="${className}"[^>]*>`, 'g')) ?? []).filter((img) => /src="[^"]+"/.test(img));
-  for (const opened of ['src=/rec/', 'follow=/rec/']) {
-    const dom = await dump(`${opened}&cite=${K.film}&t=999999`);
+  // At the end, with no citation: the film lane shows the window it read last, and its keyframes.
+  for (const opened of ['site/index.html?r=vision-chapters', 'viewer/index.html?src=/rec/', 'viewer/index.html?follow=/rec/']) {
+    const dom = await dump(`${opened}&t=999999`);
+    assert.match(dom, /film\.mp4, in 2 chapters/, `${opened}: the result is read`);
     assert.doesNotMatch(dom, /breaks the format/);
     assert.equal(drawn(dom, 'vz-keyframe').length, 3, `${opened}: the three keyframes in their rows`);
     assert.equal(drawn(dom, 'vz-frame').length, 3, `${opened}: and on the film`);

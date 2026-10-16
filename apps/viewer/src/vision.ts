@@ -468,8 +468,10 @@ function visionPhotos(looks: VisionLook[], chosen: VisionLook | undefined, accou
       const verdict = photo?.truth === undefined ? '' : photo.truth === photo.label ? ' right' : ' wrong';
       const dim = focus !== undefined && look.path !== undefined && !under(look.path, focus) ? ' dim' : '';
       return h('span', { class: `vz-tile${photo ? ` vz-c${classes.indexOf(photo.label) % 5}${verdict}` : ''}${chosen?.key === look.key ? ' cited' : ''}${look.status === 'failed' ? ' missed' : ''}${dim}`,
-        title: `${look.item ?? look.source}${photo ? `: ${photo.label}${photo.truth !== undefined ? ` (caption: ${photo.truth})` : ''}` : ''}`, ...(look.path ? { path: look.path } : {}) },
-        visionPicture(look.images[0], look.item ?? look.source, 'vz-thumb', true), photo && h('span', { class: 'vz-label' }, photo.label));
+        title: `${look.item ?? (look.source || 'a look')}${photo ? `: ${photo.label}${photo.truth !== undefined ? ` (caption: ${photo.truth})` : ''}` : ''}${look.miss ? `: ${look.miss.code}${look.miss.reason ? `, ${look.miss.reason}` : ''}` : ''}`, ...(look.path ? { path: look.path } : {}) },
+        visionPicture(look.images[0], look.item ?? look.source, 'vz-thumb', true), photo ? h('span', { class: 'vz-label' }, photo.label)
+          // A miss is labelled by its code: a tile with no picture says why.
+          : look.status === 'failed' && h('span', { class: 'vz-label' }, look.miss?.code.replaceAll('_', ' ') ?? 'missed'));
     })));
 }
 

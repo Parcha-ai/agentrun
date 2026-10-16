@@ -106,6 +106,7 @@ async function digestOf(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
 function blobsAt(root: string, whole = false) {
   const urls: Record<string, string> = {};
   const types: Record<string, string | undefined> = {};
+  const texts: Record<string, string> = {};
   const missing = new Map<string, { tries: number; at: number }>();
   let round = 0;
   const found = async (sha: string, url: string): Promise<boolean> => {
@@ -121,11 +122,14 @@ function blobsAt(root: string, whole = false) {
     const type = typeOfName(url) ?? 'application/octet-stream';
     urls[sha] = URL.createObjectURL(new Blob([bytes], { type: opensInPage(type) || type.startsWith('image/') ? type : 'application/octet-stream' }));
     types[sha] = type;
+    // Its JSON is kept as read: a page served with `connect-src 'self'` may not fetch the blob: URL.
+    if (type.split(';')[0] === 'application/json') texts[sha] = new TextDecoder().decode(bytes);
     return true;
   };
   return {
     url: (sha: string) => urls[sha],
     type: (sha: string) => (types[sha] ?? (urls[sha] ? typeOfName(urls[sha]!) : undefined)),
+    text: (sha: string): string | undefined => texts[sha],
     /** Looks for the blobs not found yet, and those due again; says how many it found. */
     async find(shas: readonly string[]): Promise<number> {
       round += 1;
@@ -408,6 +412,15 @@ export function restorePlace(root: HTMLElement, place: ReturnType<typeof placeIn
   if (place.focus !== undefined) (all.find((node) => placeKey(node, root) === place.focus) as HTMLElement | undefined)?.focus({ preventScroll: true });
 }
 
+/** A blob's text. An embedded blob's data: URL is decoded in the page: a page served with `connect-src 'self'` may not
+ *  fetch one. */
+async function textAt(url: string): Promise<string> {
+  const data = /^data:[^,]*?(;base64)?,/.exec(url);
+  if (!data) return (await fetch(url)).text();
+  const body = url.slice(data[0].length);
+  return data[1] ? new TextDecoder().decode(Uint8Array.from(atob(body), (each) => each.charCodeAt(0))) : decodeURIComponent(body);
+}
+
 /** The JSON blobs a recording's result names (the manifest's and each `result` line's), parsed. One that does not load
  *  or parse is left out, and the views say they cannot read it. */
 async function resultJson(recording: Recording): Promise<Map<string, Json>> {
@@ -420,7 +433,7 @@ async function resultJson(recording: Recording): Promise<Map<string, Json>> {
   await Promise.all([...named].map(async (sha) => {
     const url = recording.blobUrl(sha);
     if (!url || recording.blobType(sha)?.split(';')[0] !== 'application/json') return;
-    try { parsed.set(sha, await (await fetch(url)).json() as Json); } catch { /* not readable here */ }
+    try { parsed.set(sha, JSON.parse(recording.heldText?.(sha) ?? await textAt(url)) as Json); } catch { /* not readable here */ }
   }));
   return parsed;
 }
@@ -885,7 +898,7 @@ async function followRun(target: string, root: HTMLElement, params: URLSearchPar
   const base = url.href;
   const tail = tailOf(`${base}events.jsonl`);
   const blobs = blobsAt(base, true);
-  const recording: Recording = { id: base, lines: [], blobUrl: blobs.url, blobType: blobs.type, find: blobs.find, manifest: {
+  const recording: Recording = { id: base, lines: [], blobUrl: blobs.url, blobType: blobs.type, heldText: blobs.text, find: blobs.find, manifest: {
     format: FORMAT, title: 'A run, followed live', task: '', recorded: { started: '', ended: '' }, code: { repo: '', commit: '', packages: {} },
     model: '', generations: 0, kills: 0, cost: { usd: null, parts: {} }, source: { run: '', store_sha256: '' },
   } };
