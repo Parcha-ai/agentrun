@@ -589,6 +589,9 @@ It makes the box, and
   is busy) and announces `transport.checkpoint.taken`; a call while one is being taken gets that one, so the session
   is held once. The hold admits no new tool call or model request and waits for the ones in flight up to
   `checkpoint.drain.timeoutMs` (10 s by default): a session whose effects run longer than that is skipped as busy.
+- Every runner of the session ships its commits into `vault`'s log (`recordSink`) and asks one model server: the log a
+  lost box is restored from is always the one the runners wrote, and a runner that comes back is answered what was
+  paid for, not charged again. The host passes only where the recorder's lines go (`recorder`).
 - `signals(attempt)` reads the runner's kill request from `requestFile(attempt)` in the box, with the nonce it wrote,
   and passes on the transport's crossings; its iterator's `return()` ends a pending `next()`. `status()` is the run's
   record: `run`, the epoch as `generation`, the box in `holder.host`, the home's state, and `sealedSeq` when sealed.

@@ -7,10 +7,17 @@ import type { Models } from "@earendil-works/pi-ai";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import type { Box, BoxProcess, BoxProvider, BoxSpec } from "../box/box.ts";
 import { finish } from "../box/files.ts";
-import { type CheckpointStats, type CheckpointVault, checkpointStats, pullCheckpoint } from "../home/checkpoint.ts";
+import {
+	type CheckpointStats,
+	type CheckpointVault,
+	checkpointStats,
+	pullCheckpoint,
+	recordSink,
+} from "../home/checkpoint.ts";
 import { type Crossing, type CrossingCounter, crossingCounter } from "../home/crossing.ts";
 import type { DrainOptions } from "../home/gate.ts";
 import type { HomeHandle } from "../home/host.ts";
+import { serveModels } from "../home/models.ts";
 import { type Place as HomePlace, MoveError, recoverHome, type StartRunner } from "../home/move.ts";
 import type { Holder, Ownership } from "../home/ownership.ts";
 import type { RecordSink } from "../home/records.ts";
@@ -87,9 +94,16 @@ export type BoxPlaceOptions = {
 	readonly program: RunnerProgram;
 	/** The host's models: the runner asks for them over the link, and no key goes into the box. */
 	readonly models: Models;
-	/** Where the session's record stream goes, for every runner of the session. */
-	readonly records?: RecordSink;
-	/** Where checkpoints are kept: a box that is lost is restored from the newest. */
+	/**
+	 * Where the recorder's lines go, and how far it holds them. The commits themselves always go to `vault`'s log
+	 * (`recordSink`), the one log a lost box is restored from: the host passes the lines side only.
+	 */
+	readonly recorder?: Pick<RecordSink, "lines"> & { held(): number };
+	/**
+	 * Where checkpoints and the session's shipped commits are kept. A lost box is restored from the newest checkpoint and
+	 * the commits since, or, before any checkpoint, from the commits alone: a box kill needs no checkpoint at rest, which
+	 * only brings the workspace's files along.
+	 */
 	readonly vault: CheckpointVault;
 	/** Who this host is, in the lease. Default `host`. */
 	readonly host?: string;
@@ -240,6 +254,10 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 	});
 	const counter: CrossingCounter = crossingCounter();
 	const stats = checkpointStats();
+	// One record stream and one model server for every runner of the session, whatever box it runs in: the vault's log
+	// holds every commit, and a runner that comes back is answered what was paid for, not charged again.
+	const records = recordSink(options.vault, session, BACKGROUND_CONTEXT, options.recorder);
+	const server = serveModels(options.models);
 	const queues = new Map<number, PlaceSignal[]>();
 	let attempt = 0;
 	let epoch = 0;
@@ -387,7 +405,8 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 			program: options.program,
 			session,
 			models: options.models,
-			...(options.records === undefined ? {} : { records: options.records }),
+			server,
+			records,
 			crossing,
 			crossingCount: counter,
 			onProcess: (process) => {
@@ -455,6 +474,7 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 					home: handle,
 					epoch,
 					vault: options.vault,
+					answers: server,
 					stats,
 					crossing,
 					crossingCount: counter,
@@ -644,6 +664,7 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 			if (released) return;
 			released = true;
 			handle?.close("the place is released");
+			server.close();
 			for (const made of boxes) await made.destroy(context).catch(() => {});
 		},
 	};

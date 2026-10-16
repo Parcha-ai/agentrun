@@ -9,4 +9,5 @@ registerBoxPlaceCases("a session's place in a local box", {
 	provider: (root) => localBoxes({ root: join(root, "boxes") }),
 	spec: { maxLifetimeMs: 10 * 60_000 },
 	program: { argv: [process.execPath, "--experimental-strip-types", "--no-warnings", FIXTURE] },
+	hostFiles: true,
 });

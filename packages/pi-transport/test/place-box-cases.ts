@@ -28,6 +28,8 @@ export type BoxPlaceSetup = {
 	readonly spec: BoxSpec;
 	readonly program: RunnerProgram;
 	readonly timeoutMs?: number;
+	/** The box's programs can write this machine's files (local boxes): a job's effects can land outside its box. */
+	readonly hostFiles?: boolean;
 };
 
 /** A host's directory (lease, vault, the recording's spool with its clock) and the setup's boxes. */
@@ -82,6 +84,11 @@ const orderOf = (made: World, place: BoxPlace, gen: number, more: Record<string,
 		...more,
 	},
 });
+
+/** The commits the place's vault holds from commit 1, read as a host that starts again reads them. */
+async function logFrom1(made: World) {
+	return getOrThrow(await localVault(join(made.host, "vault")).readLog("run-1", 1, context));
+}
 
 /** The spool files the recording's directory holds on the host. */
 const spoolFiles = (made: World) => readdirSync(join(made.record, ".spool")).filter((name) => name.endsWith(".jsonl"));
@@ -297,6 +304,8 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 						taken: 1,
 						skipped: 0,
 					});
+					// The commits the checkpoint covers are let go, and at rest none follow it: the log holds nothing from commit 1.
+					expect(await logFrom1(made)).toEqual({ entries: [], gap: false });
 					expect(await firstSignal(place, 1, "crossing")).toMatchObject({
 						kind: "crossing",
 						crossing: {
@@ -323,6 +332,58 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 					const status = await place.status();
 					expect((status.record.holder as { host: string }).host).not.toBe(lost);
 					expect(status.record.generation).toBe(2);
+					await place.release();
+				} finally {
+					made.remove();
+				}
+			},
+			(setup.timeoutMs ?? 60_000) * 1.5,
+		);
+
+		it.skipIf(setup.hostFiles !== true)(
+			"restores a job that never rests from the record stream alone when its box is lost, and runs no effect twice",
+			async () => {
+				const made = world(setup);
+				try {
+					const place = await placeIn(made);
+					const effects = join(made.host, "effects.jsonl");
+					writeFileSync(effects, "");
+					const steps = 30;
+					const runner = await place.start(
+						orderOf(made, place, 1, { STEPS: String(steps), STEP_MS: "30", EFFECTS: effects }),
+					);
+					// Mid-run: the job never rests, and no checkpoint is ever taken.
+					while (lines(effects).length < 3) await new Promise((resolve) => setTimeout(resolve, 20));
+					await place.kill(runner, "box");
+					await runner.exited;
+					expect(place.stats.taken).toBe(0);
+					// The vault holds every commit the lost box shipped, from 1 and without a gap.
+					const held = await logFrom1(made);
+					expect({ first: held.entries[0]?.commit, gap: held.gap }).toEqual({ first: 1, gap: false });
+					const recovered = await place.recover(
+						runner,
+						"box",
+						orderOf(made, place, 2, { STEPS: String(steps), EFFECTS: effects }),
+					);
+					expect({ epoch: recovered.runner.epoch, restored: recovered.restored }).toEqual({
+						epoch: 2,
+						restored: undefined,
+					});
+					expect(recovered.replayed).toEqual({ from: 1, to: expect.any(Number) });
+					const exit = await recovered.runner.exited;
+					expect(exit.outcome?.generation).toBe(2);
+					const record = exit.outcome?.record as { done: number; resumedFrom: number; interrupted: number | null };
+					expect(record.done).toBe(steps);
+					// Three effects ran in the lost box, so the host held their intents and the steps before them.
+					expect(record.resumedFrom).toBeGreaterThanOrEqual(2);
+					// Repeated 0: no step's effect ran twice, across the kill and the restore.
+					const ran = lines(effects);
+					const each = ran.map((line) => line.step as number);
+					expect(each).toHaveLength(new Set(each).size);
+					// Every step ran its effect, but the one the kill cut between its intent and its commit, which may have.
+					const missing = Array.from({ length: steps }, (_, n) => n + 1).filter((step) => !each.includes(step));
+					expect(missing.every((step) => step === record.interrupted)).toBe(true);
+					expect(new Set(ran.map((line) => line.generation))).toEqual(new Set([1, 2]));
 					await place.release();
 				} finally {
 					made.remove();
