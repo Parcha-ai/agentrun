@@ -126,8 +126,7 @@ export function moveRecords(value, found = []) {
 
 const blobFiles = dir => {
   const folder = join(dir, 'blobs');
-  // A blob still being written (`.<sha>.<ext>.tmp-<pid>`, renamed into place when whole) is not part of the recording yet.
-  const files = (existsSync(folder) ? readdirSync(folder) : []).filter(file => !/^\..*\.tmp-\d+$/.test(file));
+  const files = existsSync(folder) ? readdirSync(folder) : [];
   return new Map(files.map(file => [file.split('.')[0], join(folder, file)]));
 };
 
