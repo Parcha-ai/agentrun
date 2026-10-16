@@ -46,9 +46,16 @@ function processesIn(directory: string): number[] {
 	return found;
 }
 
-async function until(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
+/**
+ * Wait for `condition`, polling, and fail the test when it did not come true in time: a wait that ends quietly leaves
+ * the assertion after it to say something misleading (a count of 0, on a machine too slow to have started the program).
+ */
+async function until(condition: () => boolean, timeoutMs = 10_000): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
-	while (!condition() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+	while (!condition()) {
+		if (Date.now() >= deadline) throw new Error(`the condition did not come true in ${timeoutMs} ms: ${condition}`);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+	}
 }
 
 /** The members of a process group that are alive: not gone, not zombies. */
@@ -68,6 +75,15 @@ function groupOf(pgid: number): number[] {
 
 const programsOf = (id: string) => processesWith(`PI_TRANSPORT_BOX=${id}`);
 const watchdogsOf = (id: string) => processesWith(`PI_TRANSPORT_WATCHDOG=${id}`);
+/** Whether the box's `sleep 300` itself is running: not the shell that is about to start it, which carries the marker too. */
+const sleeping = (id: string) =>
+	programsOf(id).some((pid) => {
+		try {
+			return readFileSync(`/proc/${pid}/cmdline`, "latin1").startsWith("sleep\u0000300");
+		} catch {
+			return false;
+		}
+	});
 
 let conformanceRoot = "";
 
@@ -220,9 +236,10 @@ describe.skipIf(!HAS_PROC)("local boxes: programs that outlive the program that 
 		withProvider(async (provider) => {
 			const box = await create(provider);
 			await output(box, ["sh", "-c", "sleep 300 >/dev/null 2>&1 &"]);
-			await until(() => programsOf(box.id).length > 0);
+			await until(() => sleeping(box.id));
 			expect(programsOf(box.id).length).toBeGreaterThan(0);
 			await box.destroy(context);
+			await until(() => programsOf(box.id).length === 0);
 			expect(programsOf(box.id)).toEqual([]);
 		}));
 
@@ -230,23 +247,58 @@ describe.skipIf(!HAS_PROC)("local boxes: programs that outlive the program that 
 		withProvider(async (provider) => {
 			const box = await create(provider);
 			await output(box, ["sh", "-c", "setsid sleep 300 >/dev/null 2>&1 &"]);
-			await until(() => programsOf(box.id).length > 0);
+			await until(() => sleeping(box.id));
 			expect(programsOf(box.id).length).toBeGreaterThan(0);
 			await box.destroy(context);
+			await until(() => programsOf(box.id).length === 0);
 			expect(programsOf(box.id)).toEqual([]);
 		}));
 
-	it("destroy ends a program the box started that replaced its environment", () =>
+	it("destroy ends a program that left its process group and started late, once it is alive", () =>
 		withProvider(async (provider) => {
 			const box = await create(provider);
-			const started = await box.exec(["env", "-i", "/bin/sleep", "300"], undefined, context);
-			if (!started.ok) throw started.error;
-			await until(() => processesIn(box.facts().workspace).length > 0);
-			expect(programsOf(box.id)).toEqual([]);
+			// The program is not running when the starter exits: a loaded machine starts it late.
+			await output(box, ["sh", "-c", "(sleep 2; setsid sleep 300 >/dev/null 2>&1) >/dev/null 2>&1 &"]);
+			await until(() =>
+				programsOf(box.id).some((pid) =>
+					readFileSync(`/proc/${pid}/cmdline`, "latin1").startsWith("sleep\u0000300"),
+				),
+			);
 			await box.destroy(context);
-			await until(() => processesIn(box.facts().workspace).length === 0);
-			expect(processesIn(box.facts().workspace)).toEqual([]);
+			await until(() => programsOf(box.id).length === 0);
+			expect(programsOf(box.id)).toEqual([]);
 		}));
+
+	// The program has replaced its environment once its own command line is what runs in the workspace: before that, the
+	// process there is the one that has not executed it yet, and it still carries the box's marker.
+	const replacedYet = (workspace: string) =>
+		processesIn(workspace).some((pid) => {
+			try {
+				return readFileSync(`/proc/${pid}/cmdline`, "latin1").startsWith("/bin/sleep\u0000300");
+			} catch {
+				return false;
+			}
+		});
+
+	for (const [label, argv] of [
+		["at once", ["env", "-i", "/bin/sleep", "300"]],
+		// The replacement comes a second after the start, as it does when a loaded machine is slow to execute it.
+		["a second after it started", ["sh", "-c", "sleep 1; exec env -i /bin/sleep 300"]],
+	] as const) {
+		it(`destroy ends a program the box started that replaced its environment ${label}`, () =>
+			withProvider(async (provider) => {
+				const box = await create(provider);
+				const started = await box.exec(argv, undefined, context);
+				if (!started.ok) throw started.error;
+				const workspace = box.facts().workspace;
+				await until(() => replacedYet(workspace), 10_000);
+				expect(replacedYet(workspace), "the program replaced its environment").toBe(true);
+				expect(programsOf(box.id)).toEqual([]);
+				await box.destroy(context);
+				await until(() => processesIn(workspace).length === 0, 10_000);
+				expect(processesIn(workspace)).toEqual([]);
+			}));
+	}
 
 	it("the watchdog ends such a program too", () =>
 		withProvider(async (provider) => {
@@ -266,6 +318,7 @@ describe.skipIf(!HAS_PROC)("local boxes: programs that outlive the program that 
 			await until(() => watchdogsOf(box.id).length > 0);
 			expect(watchdogsOf(box.id).length).toBeGreaterThan(0);
 			await box.destroy(context);
+			await until(() => watchdogsOf(box.id).length === 0);
 			expect(watchdogsOf(box.id)).toEqual([]);
 		}));
 
@@ -296,6 +349,7 @@ describe.skipIf(!HAS_PROC)("local boxes: programs that outlive the program that 
 					if (stress) await new Promise((resolve) => setTimeout(resolve, 5_000));
 					expect(groupOf(pgid).length, `round ${round}`).toBeGreaterThan(1);
 					await box.destroy(context);
+					await until(() => groupOf(pgid).length === 0);
 					expect(groupOf(pgid), `round ${round}`).toEqual([]);
 				}
 			}),
@@ -312,15 +366,17 @@ describe.skipIf(!HAS_PROC)("local boxes: programs that outlive the program that 
 					const pids = watchdogsOf(box.id);
 					expect(pids.length).toBeGreaterThan(0);
 					await box.destroy(context);
-					const running = pids.filter((pid) => {
-						try {
-							const stat = readFileSync(`/proc/${pid}/stat`, "latin1");
-							return stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3) !== "Z";
-						} catch {
-							return false;
-						}
-					});
-					expect(running, `round ${round}`).toEqual([]);
+					const alive = () =>
+						pids.filter((pid) => {
+							try {
+								const stat = readFileSync(`/proc/${pid}/stat`, "latin1");
+								return stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3) !== "Z";
+							} catch {
+								return false;
+							}
+						});
+					await until(() => alive().length === 0);
+					expect(alive(), `round ${round}`).toEqual([]);
 				}
 			}),
 		60_000,
@@ -331,7 +387,7 @@ describe.skipIf(!HAS_PROC)("local boxes: programs that outlive the program that 
 			// Long enough that a loaded machine still sees the program start before the box expires.
 			const box = await create(provider, 4_000);
 			await output(box, ["sh", "-c", "sleep 300 >/dev/null 2>&1 &"]);
-			await until(() => programsOf(box.id).length > 0);
+			await until(() => sleeping(box.id));
 			expect(programsOf(box.id).length).toBeGreaterThan(0);
 			await new Promise((resolve) => setTimeout(resolve, 6_500));
 			await until(
