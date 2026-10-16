@@ -61,6 +61,10 @@ const isInt = (value: unknown, min = 0) => Number.isInteger(value) && (value as 
 /** The supervisor's lines: every live `host` line (`process.started`, `kill`, `result`), written outside the run's
  *  processes, with no event-level gen and their own seq. */
 export const isSupervisor = (line: Line) => line.channel === 'live' && line.source === 'host';
+/** The supervisor's line kinds whose fields name the process they are about (`data.gen`, RECORDING.md section 5's host
+ *  row). The others name none (a `picture`, a `box.receipt`), and a kind this viewer does not know is not checked for it. */
+export const GEN_HOST_KINDS: ReadonlySet<string> = new Set(['process.started', 'kill', 'result', 'kill.failed', 'kill.request.ignored', 'signals.failed',
+  'recording.carry.failed', 'run.json', 'delegation', 'revoke', 'fenced']);
 /** The process a supervisor line is about, from its data (an earlier recording put it on the line). */
 export const processOf = (line: Line): number | undefined => {
   const gen = (line.data as { gen?: unknown } | null)?.gen;
@@ -217,7 +221,7 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
     if (typeof line.kind !== 'string' || line.kind === '') note(`${at}: no kind`);
     if (isSupervisor(line)) {
       if (line.gen !== undefined) note(`${at}: a supervisor line (${line.kind}) has no event-level gen`);
-      if (!isInt((line.data as { gen?: unknown } | null)?.gen, 1)) note(`${at}: a supervisor line (${line.kind}) names its process in data.gen`);
+      if (GEN_HOST_KINDS.has(line.kind) && !isInt((line.data as { gen?: unknown } | null)?.gen, 1)) note(`${at}: a supervisor line (${line.kind}) names its process in data.gen`);
       const crossing = line.kind === 'kill' ? (line.data as { crossing?: { point?: unknown; n?: unknown } | null } | null)?.crossing : null;
       if (crossing !== null && crossing !== undefined && !(typeof crossing.point === 'string' && isInt(crossing.n))) note(`${at}: a kill's crossing is { point, n } or null`);
       const result = line.kind === 'result' ? (line.data as { blob?: unknown; title?: unknown } | null) : undefined;
