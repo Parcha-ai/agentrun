@@ -1,13 +1,18 @@
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
-import { type AgentHome, checkSha, homeDir, ID_PATTERN, inHome, isSkillPath, readState, sha256, uuidv7 } from "./home.js";
+import {
+  type AgentHome, checkSha, homeDir, type HomeAccess, ID_PATTERN, inClaimedHome, isSkillPath, localAccess, readState, RUN_STORE_FILE,
+  runStoreIn, sha256, uuidv7,
+} from "./home.js";
 import { type BrowserProfile, LeasesDoc, type ProfileLease, ProfilesDoc, put, type RunRecord, RunsDoc } from "./kinds.js";
 import { AgentHomeError, openStore, readFamily } from "./store.js";
 
-export const RUN_STORE_FILE = "run.sqlite";
+export { RUN_STORE_FILE };
 const DEFAULT_LEASE_MS = 6 * 60 * 60 * 1000;
 
 /** Where a run lives, in pi-durable-disk's run layout, so the run directory is one `pi-durable-disk run --dir` takes.
@@ -21,7 +26,7 @@ export type RunPaths = {
   workspace: string;
 };
 
-const layout = (dir: string): RunPaths => ({ dir, storePath: path.join(dir, "store", RUN_STORE_FILE), workspace: path.join(dir, "work") });
+const layout = (dir: string): RunPaths => ({ dir, storePath: runStoreIn(dir), workspace: path.join(dir, "work") });
 
 /** The paths of run `runId` in `home`. */
 export function runPaths(home: AgentHome, runId: string): RunPaths {
@@ -38,6 +43,18 @@ export type RunStart = RunPaths & {
    *  write to and the only ones it saves back. Every other profile reaches it `held`, with no `ref`. */
   leases: string[];
   /** The repo commit of the skills the workspace got (the home's `agent.source`); absent for a home not tied to a repo. */
+  sha?: string;
+};
+
+/** The home-side half of a run's start, as plain data for the run-side half (`seedRun`) to write: the profiles (each
+ *  one this run leases with its `ref`, every other one `held` without), the skill files, the root agent, the sha the
+ *  skills come from and the profiles it may save back. */
+export type RunSeed = {
+  runId: string;
+  agent: { instructions: string; tools: string[] };
+  leases: string[];
+  profiles: Record<string, BrowserProfile>;
+  skills: Record<string, string>;
   sha?: string;
 };
 
@@ -58,84 +75,146 @@ const withoutRef = (profile: BrowserProfile, holder: string): BrowserProfile => 
 const isFree = (lease: ProfileLease | undefined, runs: Record<string, RunRecord>, now: number) =>
   !lease || Date.parse(lease.expiresAt) <= now || own(runs, lease.runId)?.endedAt !== undefined;
 
-/** Start a run of the agent: `runs/<runId>/` with `store/run.sqlite` and `work/`, the skills written into `work/`, the
- *  save lease taken for every profile no live run holds, the agent's `browser.profiles` copied into the run store (a
- *  profile another run holds without its `ref`), and the run recorded in `agent.runs` with the home's `agent.source`
- *  sha, read under the same lock as the skills. With `sha`, a home whose cache is at another commit, or at none, is
- *  refused (`stale`) until the host refreshes it. Seeding is this host step, never a tool. */
-export async function startRun(home: AgentHome, options: { runId?: string; host: string; sha?: string; now?: number; leaseMs?: number }): Promise<RunStart> {
-  const now = options.now ?? Date.now();
-  const runId = options.runId ?? uuidv7(now);
-  const paths = runPaths(home, runId);
+/** A start's host, lease and sha, checked before the home is touched. */
+function checkStart(options: { host: string; sha?: string; leaseMs?: number }): { leaseMs: number; wanted: string | undefined } {
   if (typeof options.host !== "string" || options.host === "") throw invalid("the host is not a non-empty string");
   const leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
   if (!Number.isSafeInteger(leaseMs) || leaseMs < 1) throw invalid("leaseMs is not a positive integer");
-  const wanted = options.sha === undefined ? undefined : checkSha(options.sha);
-  const dir = homeDir(home.dir);
-  const { dir: runDir, storePath, workspace } = paths;
-  return inHome(dir, async (store) => {
+  return { leaseMs, wanted: options.sha === undefined ? undefined : checkSha(options.sha) };
+}
+
+/** The home-side half of a run's start, in one commit under the home's claim: with `sha`, a home whose cache is at
+ *  another commit, or at none, is refused (`stale`); each skill is checked against its SHA-256; the save lease is taken
+ *  for every profile no live run holds; the run is recorded in `agent.runs` (`runs/<runId>`) with the home's
+ *  `agent.source` sha. It touches nothing under `runs/`: `seedRun` writes the run's directory from the seed. */
+export async function prepareRun(home: AgentHome, options: { runId?: string; host: string; sha?: string; now?: number; leaseMs?: number; access?: HomeAccess }): Promise<RunSeed> {
+  const now = options.now ?? Date.now();
+  const runId = options.runId ?? uuidv7(now);
+  if (typeof runId !== "string" || !ID_PATTERN.test(runId)) throw invalid(`the run id ${JSON.stringify(runId)} is not letters, digits, ".", "_" or "-" (at most 128)`);
+  const { leaseMs, wanted } = checkStart(options);
+  return inClaimedHome(home, options.access, async (store) => {
     const state = await readState(store);
-    if (own(state.runs, runId) || existsSync(runDir)) throw new AgentHomeError("exists", `the run ${runId} already exists`);
+    if (own(state.runs, runId)) throw new AgentHomeError("exists", `the run ${runId} already exists`);
     const sha = state.source?.sha;
     if (wanted !== undefined && wanted !== sha) {
       throw new AgentHomeError("stale", `the agent home's cache is at ${sha ?? "no commit"} and must be refreshed to ${wanted} before a run starts there`);
     }
+    const skills = Object.fromEntries(Object.entries(state.skills).map(([file, skill]) => {
+      if (!isSkillPath(file) || sha256(skill.content) !== skill.sha256) throw new AgentHomeError("format", `the skill ${file} does not match its sha256`);
+      return [file, skill.content];
+    }));
     const leases = Object.keys(state.profiles).filter((key) => isFree(own(state.leases, key), state.runs, now));
-    await mkdir(path.dirname(runDir), { recursive: true });
-    await mkdir(runDir);
-    try {
-      await mkdir(path.dirname(storePath));
-      await mkdir(workspace);
-      for (const [file, skill] of Object.entries(state.skills)) {
-        if (!isSkillPath(file) || sha256(skill.content) !== skill.sha256) throw new AgentHomeError("format", `the skill ${file} does not match its sha256`);
-        const target = path.join(workspace, ".agents", "skills", ...file.split("/"));
-        await mkdir(path.dirname(target), { recursive: true });
-        await writeFile(target, skill.content);
-      }
-      const run = await openStore(storePath);
-      try {
-        await run.session.commit(async (tx) => {
-          for (const [key, profile] of Object.entries(state.profiles)) {
-            put(await tx.doc(ProfilesDoc, key, null), leases.includes(key) ? profile : withoutRef(profile, own(state.leases, key)!.runId));
-          }
-        }, BACKGROUND_CONTEXT);
-      } finally {
-        await run.close();
-      }
-      const record: RunRecord = { path: `runs/${runId}`, host: options.host, startedAt: iso(now), ...(sha !== undefined ? { sha } : {}) };
-      const lease: ProfileLease = { runId, expiresAt: iso(now + leaseMs) };
-      await store.session.commit(async (tx) => {
-        put(await tx.doc(RunsDoc, runId, null), record);
-        for (const key of leases) put(await tx.doc(LeasesDoc, key, null), lease);
-      }, BACKGROUND_CONTEXT);
-    } catch (error) {
-      await rm(runDir, { recursive: true, force: true });
-      throw error;
-    }
-    return { runId, ...paths, agent: { instructions: state.definition.instructions, tools: [...state.definition.tools] }, leases, ...(sha !== undefined ? { sha } : {}) };
+    const profiles = Object.fromEntries(Object.entries(state.profiles).map(([key, profile]) => [key, leases.includes(key) ? profile : withoutRef(profile, own(state.leases, key)!.runId)]));
+    const record: RunRecord = { path: `runs/${runId}`, host: options.host, startedAt: iso(now), ...(sha !== undefined ? { sha } : {}) };
+    const lease: ProfileLease = { runId, expiresAt: iso(now + leaseMs) };
+    await store.session.commit(async (tx) => {
+      put(await tx.doc(RunsDoc, runId, null), record);
+      for (const key of leases) put(await tx.doc(LeasesDoc, key, null), lease);
+    }, BACKGROUND_CONTEXT);
+    return { runId, agent: { instructions: state.definition.instructions, tools: [...state.definition.tools] }, leases, profiles, skills, ...(sha !== undefined ? { sha } : {}) };
   });
 }
 
-/** Carry a finished run back into its agent home, in one commit under the home's lock: each profile the run holds the
- *  save lease for (and each new profile no other run owns) is copied from the run store, the run's leases are released,
- *  and its `agent.runs` entry is completed. A second call for the same run changes nothing. It reads only the run's
- *  store, so the files pi-durable-disk adds do not matter; call it after the run's Harness has closed (pi-durable-disk:
- *  after `release()`). */
-export async function carryBack(home: AgentHome, run: Pick<RunStart, "runId">, options: { outcome: string; finalAnswer?: JsonValue; cost?: number; now?: number }): Promise<CarryBack> {
+/** The run-side half: the run's pi-durable store with the seed's profiles, and its skill files under
+ *  `.agents/skills/` in `workDir`. Safe to run again on a half-written directory: the skills are written again and the
+ *  store is replaced, written beside its place and renamed in last, so a store that is there is a whole one. A seed
+ *  that hands a profile's `ref` to a run that does not lease it is refused, and nothing is written. */
+export async function seedRun(dir: { storePath: string; workDir: string }, seed: RunSeed): Promise<void> {
+  for (const [key, profile] of Object.entries(seed.profiles)) {
+    if (profile.ref && !seed.leases.includes(key)) throw invalid(`the seed gives the run ${seed.runId} the sign-in of ${key}, which it does not lease`);
+  }
+  for (const file of Object.keys(seed.skills)) if (!isSkillPath(file)) throw invalid(`the skill path ${JSON.stringify(file)} is not a relative path inside .agents/skills/`);
+  await mkdir(dir.workDir, { recursive: true });
+  const skills = path.join(dir.workDir, ".agents", "skills");
+  await rm(skills, { recursive: true, force: true });
+  for (const [file, content] of Object.entries(seed.skills)) {
+    const target = path.join(skills, ...file.split("/"));
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, content);
+  }
+  await mkdir(path.dirname(dir.storePath), { recursive: true });
+  for (const suffix of ["", "-wal", "-shm", "-journal"]) await rm(`${dir.storePath}${suffix}`, { force: true });
+  const next = `${dir.storePath}.seed-${randomBytes(4).toString("hex")}`;
+  try {
+    const run = await openStore(next);
+    try {
+      await run.session.commit(async (tx) => {
+        for (const [key, profile] of Object.entries(seed.profiles)) put(await tx.doc(ProfilesDoc, key, null), profile);
+      }, BACKGROUND_CONTEXT);
+    } finally {
+      await run.close();
+    }
+    await rename(next, dir.storePath);
+  } finally {
+    for (const suffix of ["", "-wal", "-shm", "-journal"]) await rm(`${next}${suffix}`, { force: true });
+  }
+}
+
+/** Start a run of the agent on this machine: `prepareRun`, then `seedRun` into `runs/<runId>/` (`store/run.sqlite`
+ *  and `work/`). A start that fails leaves no run directory, no run record and no lease. Seeding is this host step,
+ *  never a tool. */
+export async function startRun(home: AgentHome, options: { runId?: string; host: string; sha?: string; now?: number; leaseMs?: number }): Promise<RunStart> {
+  const now = options.now ?? Date.now();
+  const runId = options.runId ?? uuidv7(now);
+  const paths = runPaths(home, runId);
+  checkStart(options);
+  homeDir(home.dir);
+  if (existsSync(paths.dir)) throw new AgentHomeError("exists", `the run ${runId} already exists`);
+  const seed = await prepareRun(home, { ...options, runId, now });
+  try {
+    await seedRun({ storePath: paths.storePath, workDir: paths.workspace }, seed);
+  } catch (error) {
+    await rm(paths.dir, { recursive: true, force: true });
+    await unprepare(home, seed).catch(() => undefined);
+    throw error;
+  }
+  return { runId, ...paths, agent: seed.agent, leases: seed.leases, ...(seed.sha !== undefined ? { sha: seed.sha } : {}) };
+}
+
+/** Undo a `prepareRun` whose seed never landed: its run record and the leases it took. */
+async function unprepare(home: AgentHome, seed: RunSeed): Promise<void> {
+  await inClaimedHome(home, undefined, async (store) => {
+    const state = await readState(store);
+    await store.session.commit(async (tx) => {
+      for (const key of seed.leases) if (own(state.leases, key)?.runId === seed.runId) await tx.retireDoc(LeasesDoc, key);
+      if (own(state.runs, seed.runId)) await tx.retireDoc(RunsDoc, seed.runId);
+    }, BACKGROUND_CONTEXT);
+  });
+}
+
+/** The `browser.profiles` of a run's store, read from a private copy, so the file is only read. */
+async function readRunProfiles(file: string): Promise<Record<string, BrowserProfile>> {
+  const dir = await mkdtemp(path.join(tmpdir(), "pi-durable-agent-run-"));
+  try {
+    const copy = path.join(dir, RUN_STORE_FILE);
+    await copyFile(file, copy);
+    if (existsSync(`${file}-wal`)) await copyFile(`${file}-wal`, `${copy}-wal`);
+    for (const target of [copy, `${copy}-wal`]) if (existsSync(target)) await chmod(target, 0o600);
+    const store = await openStore(copy);
+    try { return await readFamily(store, ProfilesDoc); } finally { await store.close(); }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/** Carry a finished run back into its agent home, in one commit inside the home's claim: each profile the run holds
+ *  the save lease for (and each new profile no other run owns) is copied from the run store, the run's leases are
+ *  released, and its `agent.runs` entry is completed. A second call for the same run changes nothing. The run store
+ *  (`access.runStore`, by default the run's own file) is only read, from a copy, so the files pi-durable-disk adds do not
+ *  matter; call it after the run's Harness has closed (pi-durable-disk: after `release()`). */
+export async function carryBack(home: AgentHome, run: Pick<RunStart, "runId">, options: { outcome: string; finalAnswer?: JsonValue; cost?: number; now?: number; access?: HomeAccess }): Promise<CarryBack> {
   if (typeof options?.outcome !== "string" || options.outcome === "") throw invalid("the outcome is not a non-empty string");
   if (options.cost !== undefined && !(typeof options.cost === "number" && Number.isFinite(options.cost) && options.cost >= 0)) throw invalid("the cost is not a non-negative number");
   const now = options.now ?? Date.now();
-  const dir = homeDir(home.dir);
-  return inHome(dir, async (store) => {
+  const access = options.access ?? localAccess(home);
+  return inClaimedHome(home, access, async (store) => {
     const state = await readState(store);
     const record = own(state.runs, run.runId);
     if (!record) throw new AgentHomeError("missing", `${String(run.runId)} is not a run of this agent`);
     if (record.endedAt !== undefined) return { changed: false, profiles: [], released: [] };
-    const { storePath } = layout(path.join(dir, record.path));
-    if (!existsSync(storePath)) throw new AgentHomeError("missing", `the run ${run.runId} has no store at ${path.relative(dir, storePath)}`);
-    const runStore = await openStore(storePath);
-    let profiles: Record<string, BrowserProfile>;
-    try { profiles = await readFamily(runStore, ProfilesDoc); } finally { await runStore.close(); }
+    const storePath = await access.runStore({ runId: run.runId, path: record.path });
+    if (!existsSync(storePath)) throw new AgentHomeError("missing", `the run ${run.runId} has no store at ${record.path}/store/${RUN_STORE_FILE}`);
+    const profiles = await readRunProfiles(storePath);
     const holds = (key: string) => own(state.leases, key)?.runId === run.runId;
     const unowned = (key: string) => !own(state.profiles, key) && isFree(own(state.leases, key), state.runs, now);
     const copied = Object.keys(profiles).filter((key) => holds(key) || unowned(key));

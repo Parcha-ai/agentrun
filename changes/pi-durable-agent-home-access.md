@@ -1,0 +1,5 @@
+---
+packages: @parcha/pi-durable-agent
+kind: feature
+---
+An agent home on a disk, first step: `carryBack`, `readAgentHome`, `homeRevision` and the new `prepareRun` take `{ access }`, a `HomeAccess` of `claim(fn)` (run `fn` on the directory that holds `agent.sqlite` while the host holds it alone; the package takes `owner.lock` inside it) and `runStore(run)` (a local, closed copy of the released run's store, which the package only reads, from a copy of its own). Without it, `localAccess(home)` is today's local directory. A start is now two halves: `prepareRun` checks the sha, takes the save leases and records the run inside the claim, touching nothing under `runs/`, and returns a `RunSeed`; `seedRun({ storePath, workDir }, seed)` writes the run's store and skills and can run again on a half-written directory, and refuses a seed that gives a sign-in to a run that does not lease it. `startRun` is the two in a row, its results unchanged, and a start whose seeding fails still leaves no run directory, record or lease. The package takes no dependency on pi-durable-disk; the README shows binding the access and the seed to it.
