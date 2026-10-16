@@ -151,9 +151,11 @@ export function nodeStatus(graph: WorkflowGraph, source: StatusSource, options: 
   }
   // A node inside a map's or a loop's body stands for every item or iteration, and the record names only those that started: it is
   // done only when the map or loop is. Parents come before their descendants in the node list, so the container is settled first.
-  // The map or loop an `item` belongs to is the exception: that item is the instance.
+  // The map or loop an `item` belongs to is the exception, and so is every one that encloses it: that item is the instance, and
+  // the source holds nothing of the items around it. A map or loop inside the item still stands for its own items.
   const owner = typeof options.item === "string" ? definitionPath(options.item.replace(/\/(?:items|iterations)\/\d+$/, "")) : undefined;
-  const containers = graph.nodes.filter((node) => (node.kind === "map" || node.kind === "loop") && node.path !== owner);
+  const containers = graph.nodes.filter((node) => (node.kind === "map" || node.kind === "loop")
+    && !(owner !== undefined && (node.path === owner || owner.startsWith(`${node.path}/body`))));
   for (const node of graph.nodes) {
     if (out[node.path] !== "done") continue;
     if (containers.some((container) => node.path.startsWith(`${container.path}/body`) && out[container.path] !== "done")) out[node.path] = "working";
