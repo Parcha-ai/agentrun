@@ -26,4 +26,5 @@ terminal: it collects the run's candidates, renders `inbox/<run id>.md`, adds th
 collected (`inbox/<run id>/workflows/<name>/`), guards the whole proposal, and makes one commit on
 `runs/<run id>` through `@parcha/pi-git-remote`, pushed by sha. A guard hit refuses all of it and commits nothing; a second
 call, including one from a restarted host with an empty local repository, commits nothing. `renderInbox` and `parseInbox`
-are the inbox's format.
+are the inbox's format: the run, the commit it was seeded from (`seed`, from its `learn.seed` record) and, on each candidate,
+an `untrusted` mark that `proposeLearning({ untrusted: true })` sets when the run read untrusted content.

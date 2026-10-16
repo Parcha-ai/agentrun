@@ -13,5 +13,5 @@ export {
   type Role,
 } from "./types.js";
 export { type Caps, createGuard, guard } from "./guard.js";
-export { type Inbox, InboxFormatError, parseInbox, renderInbox } from "./inbox.js";
+export { type Inbox, type InboxCandidate, InboxFormatError, type InboxOptions, parseInbox, renderInbox } from "./inbox.js";
 export { type ProposeFilesOptions, type ProposeOptions, type ProposeResult, type ProposeTarget, proposeFiles, proposeLearning, type UsesSource, type WorkflowRecords } from "./propose.js";

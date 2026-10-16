@@ -230,8 +230,12 @@ sha. The result is one of:
   object holds the refused value.
 
 A push the remote refuses throws a `GitRemoteError`. `proposeFiles` is the same guard-commit-push for files the caller
-has already rendered. `renderInbox` and `parseInbox` are the inbox's format: front matter, the candidates for a person to
-read, and the candidates as one JSON line in the last fenced block, which is all a reader trusts.
+has already rendered. `renderInbox` and `parseInbox` are the inbox's format: front matter (the run, and `seed`, the commit the run was seeded from,
+read from its `learn.seed` record, so a curator can stamp a learning with what the run actually saw; a run that was not
+seeded has none), the candidates for a person to read, and the candidates as one JSON line in the last fenced block, each
+with an `untrusted` mark. `proposeLearning({ untrusted: true })` marks every candidate untrusted: the host sets it when the run read
+untrusted content. `parseInbox` returns `{ run, seed?, candidates }` with `untrusted: boolean` on each candidate, and
+refuses a seed that is not a commit id.
 
 ## Versions
 
