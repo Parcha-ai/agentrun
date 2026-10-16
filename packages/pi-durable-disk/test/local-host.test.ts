@@ -199,10 +199,16 @@ test("kill in child mode: SIGKILL of the instance's process group, at once", asy
   const w = world();
   const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
   const pid = child.pid!;
+  const startTicks = procStartTicks(pid)!;
   const exited = new Promise<NodeJS.Signals | null>((resolve) => child.once("exit", (_code, signal) => resolve(signal)));
-  const host = localHost({ mode: "child", hostName: "host-a", procMounts: w.procMounts, mountRoot: w.mountRoot });
-  await host.kill({ driver: "local", mode: "child", host: "host-a", bootId: currentBootId(), pid, startTicks: procStartTicks(pid)!, mountpoint: w.mp });
-  assert.equal(await exited, "SIGKILL");
+  try {
+    const host = localHost({ mode: "child", hostName: "host-a", procMounts: w.procMounts, mountRoot: w.mountRoot });
+    await host.kill({ driver: "local", mode: "child", host: "host-a", bootId: currentBootId(), pid, startTicks, mountpoint: w.mp });
+    assert.equal(await Promise.race([exited, sleep(5_000).then(() => "still running")]), "SIGKILL");
+  } finally {
+    // A kill that did not happen must not leave the child for good: end its group here, only while the pid is still it.
+    if (procStartTicks(pid) === startTicks) process.kill(-pid, "SIGKILL");
+  }
 });
 
 test("stop: the unit's mount left behind is checked in by archil unmount when its daemon answers", async () => {
