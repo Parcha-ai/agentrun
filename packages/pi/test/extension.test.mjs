@@ -1159,3 +1159,28 @@ test('a dry run is bounded: an endless synthetic loop stops at its step budget, 
     assert.equal(app.calls.length, 0);
   } finally { await app.shutdown(); }
 });
+
+test('a stop given while a dry run reads its SOP file is taken: the trusted dry run runs no code and is not run', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'agentrun-dry-run-sop-'));
+  const app = await harness({ cwd, withModel: false });
+  globalThis.__dryRunStopProbe = 0;
+  const definition = { ...workflow(), root: { node: 'chain', steps: [
+    { node: 'agent', label: 'read-note', instructions: 'Read the supplied file with read and submit its exact text.', tools: ['read'], out: 'Result', as: 'result', sopSection: 'Policy' },
+    { node: 'code', label: 'count', code: '((function(){}).constructor("globalThis.__dryRunStopProbe++")(), s => ({ result: s.result }))' },
+  ] } };
+  try {
+    await app.tool({ action: 'inspect', workflow: definition });
+    await writeFile(join(cwd, 'policy.md'), '# Policy\n\n## Policy\nRead the note.\n');
+    await app.command('sop policy.md');
+    const pending = app.command('dry-run --trusted');
+    await app.command('stop');
+    assert.match(app.messages.at(-1).content, /Dry run stopped/);
+    await pending;
+    assert.equal(app.messages.at(-1).details.dryRun.status, 'not_run');
+    assert.match(app.messages.at(-1).details.dryRun.skipped.join('\n'), /stopped before it/);
+    assert.equal(globalThis.__dryRunStopProbe, 0, 'no code ran after the stop');
+    await app.command('dry-run --trusted');
+    assert.equal(app.messages.at(-1).details.dryRun.status, 'passed', 'a later dry run is not stopped');
+    assert.ok(globalThis.__dryRunStopProbe > 0);
+  } finally { await app.shutdown(); delete globalThis.__dryRunStopProbe; await rm(cwd, { recursive: true, force: true }); }
+});
