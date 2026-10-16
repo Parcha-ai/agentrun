@@ -4,16 +4,17 @@
     "map": "/root/steps/0",
     "index": 0,
     "base": "5a8962bce76d21ad55ca04896aaa6aa0efca355c2e730a913108cdea40dd5e95",
-    "revision": 21,
-    "status": "running",
+    "revision": 9,
+    "status": "committed",
     "frame": {
       "done": [
         "/root/steps/0/items/0/body/steps/0/workflow/root/steps/0",
         "/root/steps/0/items/0/body/steps/0/workflow/root/steps/1",
-        "/root/steps/0/items/0/body/steps/0"
+        "/root/steps/0/items/0/body/steps/0",
+        "/root/steps/0/items/0/body/steps/1"
       ],
       "states": {
-        "/root/steps/0/items/0/body/steps/0": {
+        "/root/steps/0/items/0/body/steps/1": {
           "set": {
             "item": {
               "id": "i0"
@@ -21,23 +22,22 @@
             "item_index": 0,
             "sub": {
               "ok": true
-            }
+            },
+            "done": true
           },
           "unset": [],
-          "sha256": "05c48f259d0c689d7b023888a0f9eb379909ae38fd6415aacff090f0924bd9f3"
+          "sha256": "5946e44ce0829676b5de7999383824f82145fbdfbdd6c1f931bcbc68660e37bc"
         }
       },
       "chains": {
         "/root/steps/0/items/0/body": {
-          "index": 0,
-          "path": "/root/steps/0/items/0/body/steps/0"
+          "index": 1,
+          "path": "/root/steps/0/items/0/body/steps/1"
         }
       },
       "loops": {},
       "routes": {},
-      "inputs": {
-        "/root/steps/0/items/0/body/steps/1": "05c48f259d0c689d7b023888a0f9eb379909ae38fd6415aacff090f0924bd9f3"
-      },
+      "inputs": {},
       "steps": {}
     },
     "effects": [
@@ -55,7 +55,7 @@
     "map": "/root/steps/0",
     "index": 1,
     "base": "5a8962bce76d21ad55ca04896aaa6aa0efca355c2e730a913108cdea40dd5e95",
-    "revision": 21,
+    "revision": 15,
     "status": "running",
     "frame": {
       "done": [
@@ -86,9 +86,7 @@
       },
       "loops": {},
       "routes": {},
-      "inputs": {
-        "/root/steps/0/items/1/body/steps/1": "5ba4020bf7efac304517eb8b62fcdf34faa2c3ba78111f1afea13c8c07c5042d"
-      },
+      "inputs": {},
       "steps": {}
     },
     "effects": [
@@ -96,57 +94,6 @@
     ],
     "clocks": {
       "attempt:step:/root/steps/0/items/1/body/steps/0/workflow/root/steps/0#call:0": 1792000000000
-    },
-    "files": {},
-    "unknownResponses": {},
-    "maps": {}
-  },
-  {
-    "driver": "graph-fixture",
-    "map": "/root/steps/0",
-    "index": 2,
-    "base": "5a8962bce76d21ad55ca04896aaa6aa0efca355c2e730a913108cdea40dd5e95",
-    "revision": 21,
-    "status": "running",
-    "frame": {
-      "done": [
-        "/root/steps/0/items/2/body/steps/0/workflow/root/steps/0",
-        "/root/steps/0/items/2/body/steps/0/workflow/root/steps/1",
-        "/root/steps/0/items/2/body/steps/0"
-      ],
-      "states": {
-        "/root/steps/0/items/2/body/steps/0": {
-          "set": {
-            "item": {
-              "id": "i2"
-            },
-            "item_index": 2,
-            "sub": {
-              "ok": true
-            }
-          },
-          "unset": [],
-          "sha256": "32b281b4050f1ac6acf73bb8664e80eeb68e490bfe2f9a234154b6c85f1a7866"
-        }
-      },
-      "chains": {
-        "/root/steps/0/items/2/body": {
-          "index": 0,
-          "path": "/root/steps/0/items/2/body/steps/0"
-        }
-      },
-      "loops": {},
-      "routes": {},
-      "inputs": {
-        "/root/steps/0/items/2/body/steps/1": "32b281b4050f1ac6acf73bb8664e80eeb68e490bfe2f9a234154b6c85f1a7866"
-      },
-      "steps": {}
-    },
-    "effects": [
-      "step:/root/steps/0/items/2/body/steps/0/workflow/root/steps/0#call:0"
-    ],
-    "clocks": {
-      "attempt:step:/root/steps/0/items/2/body/steps/0/workflow/root/steps/0#call:0": 1792000000000
     },
     "files": {},
     "unknownResponses": {},

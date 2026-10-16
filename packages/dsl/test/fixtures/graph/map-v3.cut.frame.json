@@ -2,11 +2,11 @@
   "input": "dab4ea9d49bbc250f9477d3e5e413b64e1c92e63b24b811399e65cf6e0b8b4b7",
   "done": [
     "/root/steps/0/items/0/body/steps/0",
-    "/root/steps/0/items/1/body/steps/0",
-    "/root/steps/0/items/2/body/steps/0"
+    "/root/steps/0/items/0/body/steps/1",
+    "/root/steps/0/items/1/body/steps/0"
   ],
   "states": {
-    "/root/steps/0/items/0/body/steps/0": {
+    "/root/steps/0/items/0/body/steps/1": {
       "items": [
         {
           "id": "a"
@@ -25,7 +25,8 @@
       "look": {
         "id": "a",
         "score": 1
-      }
+      },
+      "score": 2
     },
     "/root/steps/0/items/1/body/steps/0": {
       "items": [
@@ -47,59 +48,22 @@
         "id": "b",
         "score": 1
       }
-    },
-    "/root/steps/0/items/2/body/steps/0": {
-      "items": [
-        {
-          "id": "a"
-        },
-        {
-          "id": "b"
-        },
-        {
-          "id": "c"
-        }
-      ],
-      "item": {
-        "id": "c"
-      },
-      "item_index": 2,
-      "look": {
-        "id": "c",
-        "score": 1
-      }
     }
   },
   "chains": {
     "/root/steps/0/items/0/body": {
-      "index": 0,
-      "path": "/root/steps/0/items/0/body/steps/0"
+      "index": 1,
+      "path": "/root/steps/0/items/0/body/steps/1"
     },
     "/root/steps/0/items/1/body": {
       "index": 0,
       "path": "/root/steps/0/items/1/body/steps/0"
-    },
-    "/root/steps/0/items/2/body": {
-      "index": 0,
-      "path": "/root/steps/0/items/2/body/steps/0"
     }
   },
   "loops": {},
   "routes": {},
   "inputs": {
-    "/root/steps/0": "dab4ea9d49bbc250f9477d3e5e413b64e1c92e63b24b811399e65cf6e0b8b4b7",
-    "/root/steps/0/items/0/body/steps/1": "c2dc4332f6286a8d824bdea5601dfe4c8ba1ffc74d15aed306324f56b15f5392",
-    "/root/steps/0/items/1/body/steps/1": "8632c22f63d4694a26001e3acdd457f09040c8913648cfd204349ab30b2b2462",
-    "/root/steps/0/items/2/body/steps/1": "750f3befe9a22b748a022154421ea6e16c91b10e56128cc70ef86dd571868589"
+    "/root/steps/0": "dab4ea9d49bbc250f9477d3e5e413b64e1c92e63b24b811399e65cf6e0b8b4b7"
   },
-  "steps": {},
-  "partial": {
-    "path": "/root/steps/0",
-    "as": "found",
-    "results": [
-      null,
-      null,
-      null
-    ]
-  }
+  "steps": {}
 }

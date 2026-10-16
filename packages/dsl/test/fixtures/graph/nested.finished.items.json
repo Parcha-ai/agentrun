@@ -4,7 +4,7 @@
     "map": "/root/steps/0",
     "index": 0,
     "base": "5a8962bce76d21ad55ca04896aaa6aa0efca355c2e730a913108cdea40dd5e95",
-    "revision": 21,
+    "revision": 9,
     "status": "committed",
     "frame": {
       "done": [
@@ -55,7 +55,7 @@
     "map": "/root/steps/0",
     "index": 1,
     "base": "5a8962bce76d21ad55ca04896aaa6aa0efca355c2e730a913108cdea40dd5e95",
-    "revision": 22,
+    "revision": 16,
     "status": "committed",
     "frame": {
       "done": [

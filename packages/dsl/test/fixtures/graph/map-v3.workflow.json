@@ -37,6 +37,7 @@
         "itemsPath": "items",
         "as": "found",
         "resultPath": "score",
+        "maxConcurrency": 1,
         "body": {
           "node": "chain",
           "steps": [

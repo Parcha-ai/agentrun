@@ -37,6 +37,7 @@
         "itemsPath": "items",
         "as": "outs",
         "resultPath": "sub",
+        "maxConcurrency": 1,
         "body": {
           "node": "chain",
           "steps": [

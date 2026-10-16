@@ -110,7 +110,7 @@ function inspectable() {
   };
   return { store: { open: (bound) => openJournal(backend, bound) }, record: () => record };
 }
-async function ran(workflow, input, { layout, cut } = {}) {
+async function ran(workflow, input, { layout, cut, cutNth, fails } = {}) {
   const kept = inspectable();
   const driver = await openRecovery(kept.store, workflow, { key: KEY, ...(layout ? { layout } : {}) });
   const deps = withRecovery(driver, {
@@ -118,7 +118,9 @@ async function ran(workflow, input, { layout, cut } = {}) {
     runJudge: async () => { throw new Error('no judge'); },
   });
   if (cut) deps.recovery = { ...deps.recovery, commit: (node, ...rest) => (node.label === cut ? Promise.reject(new Error(`cut at ${cut}`)) : driver.recovery.commit(node, ...rest)) };
-  try { await runWorkflow(workflow, input, deps); } catch (error) { if (!cut) throw error; } finally { await driver.close(); }
+  // The process ends at the nth commit of a node: the commits before it landed, that one and every later one did not.
+  if (cutNth) { let seen = 0; deps.recovery = { ...deps.recovery, commit: (node, ...rest) => (node.label === cutNth.label && ++seen >= cutNth.nth ? Promise.reject(new Error(`cut at ${cutNth.label} #${cutNth.nth}`)) : driver.recovery.commit(node, ...rest)) }; }
+  try { await runWorkflow(workflow, input, deps); } catch (error) { if (!cut && !cutNth && !fails) throw error; } finally { await driver.close(); }
   return kept.record();
 }
 const statuses = (graph, state) => Object.fromEntries(graph.nodes.map((node) => [node.label === 'chain' ? node.path : node.label, state[node.path]]));
@@ -156,9 +158,10 @@ test('a nested map with a child workflow, whole-state and keyed layouts alike: t
   const keyed = await ran(nested, { items: [1, 2, 3] }, { layout: 'v4' });
   assert.ok(Object.keys(keyed.items ?? {}).length > 0, 'the keyed layout keeps the map items beside the frame');
   assert.deepEqual(nodeStatus(graph, { pin: keyed.state.pin, items: Object.values(keyed.items) }), whole);
-  // The items alone say what ran inside the map, and nothing about the nodes around it.
+  // The items alone say what ran inside the map and nothing about the map: it is not recorded done, so what is inside it is working.
   const alone = nodeStatus(graph, Object.values(keyed.items));
-  assert.equal(alone['/root/steps/0/body'], 'done');
+  assert.equal(alone['/root/steps/0/body'], 'working');
+  assert.equal(alone['/root/steps/0/body/steps/1'], 'working');
   assert.equal(alone['/root/steps/1'], 'not-run');
   assert.equal(alone['/root'], 'working');
 });
@@ -191,4 +194,58 @@ test('an agent step that failed, and a map item that failed, show failed up thei
   const running = nodeStatus(graph, items.filter((item) => item.status !== 'failed'));
   assert.equal(running['/root/steps/0/body'], 'working');
   assert.equal(running['/root/steps/0'], 'working');
+});
+
+const failing = flow('failing', { node: 'chain', steps: [
+  { node: 'map', label: 'each', itemsPath: 'items', as: 'outs', resultPath: 'score', body: { node: 'chain', steps: [code('score', '(s.item === 2 ? (() => { throw new Error("item 2 failed"); })() : { score: s.item })')] } },
+  code('finish', '({ final: { n: s.outs.length } })'),
+] }, { input: { schemaId: 'Item' } });
+
+test('a map that ended on an item\'s failure is failed, and so is what holds it, in both layouts; what comes after it has not run', async () => {
+  const graph = workflowGraph(failing);
+  for (const layout of [undefined, 'v4']) {
+    const record = await ran(failing, { items: [1, 2, 3] }, { layout, fails: true });
+    assert.ok(record.state.pin.partial, `the driver kept the map's failure (${layout ?? 'v3'})`);
+    const state = nodeStatus(graph, layout ? { pin: record.state.pin, items: Object.values(record.items ?? {}) } : record.state);
+    assert.equal(state['/root/steps/0'], 'failed', layout);
+    assert.equal(state['/root'], 'failed', layout);
+    assert.equal(state['/root/steps/1'], 'not-run', layout);
+  }
+});
+
+const looped = flow('looped', { node: 'chain', steps: [
+  { node: 'loop', label: 'again', maxIters: 3, until: { predicate: 'gte', path: 'n', n: 2 }, body: { node: 'chain', steps: [code('first', '({ n: (s.n || 0) + 1 })'), code('second', '({ m: (s.n || 0) })')] } },
+  code('finish', '({ final: { n: s.n } })'),
+] });
+
+test('a loop whose second pass stopped after its first step is not done, and neither is anything in its body: the first pass\'s marks do not stand for the second', async () => {
+  const graph = workflowGraph(looped);
+  const record = await ran(looped, {}, { cutNth: { label: 'second', nth: 2 } });
+  const state = nodeStatus(graph, record.state);
+  assert.ok(record.state.pin.done.some((path) => path.includes('/iterations/0/')), 'the first pass committed');
+  assert.notEqual(state['/root/steps/0'], 'done');
+  assert.notEqual(state['/root/steps/0/body'], 'done');
+  assert.notEqual(state['/root/steps/0/body/steps/1'], 'done');
+  assert.equal(state['/root/steps/1'], 'not-run');
+  const finished = nodeStatus(graph, (await ran(looped, {})).state);
+  assert.ok(Object.values(finished).every((value) => value === 'done'), JSON.stringify(finished));
+});
+
+test('a document nested as deep as inspectWorkflow accepts is walked to its innermost node, and every edge names two nodes of the graph', () => {
+  let root = code('innermost');
+  for (let level = 0; level < 60; level += 1) root = { node: 'map', label: `m${level}`, itemsPath: 'items', as: 'x', body: root };
+  const workflow = flow('deep', root);
+  const inspected = inspectWorkflow(workflow);
+  const graph = workflowGraph(workflow);
+  assert.equal(graph.nodes.length, 61);
+  assert.equal(graph.nodes.length, inspected.nodes.length);
+  assert.equal(graph.nodes.at(-1).label, 'innermost');
+  const paths = new Set(graph.nodes.map((node) => node.path));
+  assert.ok(graph.edges.every((edge) => paths.has(edge.from) && paths.has(edge.to)));
+  // Past the bound validateWorkflow refuses, the walk stops, and no edge is left pointing at a node it did not include.
+  let tooDeep = code('last');
+  for (let level = 0; level < 140; level += 1) tooDeep = { node: 'map', label: `m${level}`, itemsPath: 'items', as: 'x', body: tooDeep };
+  const cut = workflowGraph(flow('too-deep', tooDeep));
+  const there = new Set(cut.nodes.map((node) => node.path));
+  assert.ok(cut.nodes.length <= 129 && cut.edges.every((edge) => there.has(edge.from) && there.has(edge.to)));
 });
