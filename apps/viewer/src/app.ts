@@ -1,7 +1,7 @@
 // The page: load a recording, draw its timeline and counters, and replay it. Everything on screen at a stop is a
 // reduce of the lines before that stop; the DOM is redrawn from those reduces, never patched by events.
 import { FORMAT, parseLines, processOf, under, validate, type Json, type Line, type Manifest, type Recording } from './format.ts';
-import { askedTwiceLabel, counterFold, countersOf, repeatedLabel, type Counters } from './counters.ts';
+import { askedTwiceLabel, costLabel, counterFold, countersOf, repeatedLabel, type Counters } from './counters.ts';
 import { lanesOf, type Lanes, type Span } from './lanes.ts';
 import { animatedPanels, featuredPanel, panelsFor, type BaselineView, type Node, type Panel, type Props, type ViewContext } from './panels.ts';
 import { frameFold, gapTitle, pictureAt, type FrameState } from './frames.ts';
@@ -154,14 +154,6 @@ function cachedReduce<S>(fold: Fold<S>, lines: Line[], p: number, cache: Map<num
 
 /** The strip. `measured`: the recording has durable lines; without them every count from the store is not measured
  *  and cost is unknown, never 0 (processes and kills still come from the supervisor's lines). */
-/** The cost on the strip: unknown when it is; a scripted run (its manifest's `providers`: at least one priced part was a
- *  fake, a cassette or a script) says so, and its zero is "$0", never "$0.0000", since that is not a provider's bill; a
- *  real run's in dollars to four places. */
-export const costLabel = (cost: number | null, lowerBound: boolean, providers?: 'real' | 'scripted'): string => {
-  if (cost === null) return 'unknown';
-  const dollars = providers === 'scripted' && cost === 0 ? '$0' : `$${cost.toFixed(4)}`;
-  return `${lowerBound ? 'at least ' : ''}${providers === 'scripted' ? `scripted, ${dollars}` : dollars}`;
-};
 
 function drawCounters(counters: Counters, measured = counters.measured, providers?: 'real' | 'scripted'): HTMLElement {
   const reasked = counters.modelTurns.reasked;
@@ -187,8 +179,8 @@ function drawCounters(counters: Counters, measured = counters.measured, provider
       reasked?.proven.reasks ? ' alarm' : ''),
     item('processes', String(counters.processes), 'From the supervisor\'s process lines.'),
     item('kills', String(counters.kills), 'From the supervisor\'s kill lines.'),
-    item('cost', costLabel(counters.cost, counters.costLowerBound, providers),
-      `Unknown until a durable line prices a part, and when any priced part is unknown: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}${providers === 'scripted' ? ' Scripted: at least one priced part was served by a fake, a cassette or a script, so this is not a provider\'s bill, though it may include real charges for the other parts.' : ''}`),
+    item('cost', costLabel(counters.cost, counters.costLowerBound, providers, counters.costParts),
+      `Unknown until a line prices a part, and when any priced part is unknown: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}${providers === 'scripted' ? ' Scripted: at least one priced part was served by a fake, a cassette or a script, so this is not a provider\'s bill, though it may include real charges for the other parts.' : ''}${counters.costParts.boxes !== undefined ? ' Boxes: each box\'s time at its provider\'s published list price, an estimate, not the provider\'s invoice; unknown while a box has no receipt or its kind has no published price.' : ''}`),
     stored('journal opens', String(counters.journalOpens), 'A fact of the store: agentrun.driver\'s generation. It counts journal opens, which can exceed processes.', ' fact'),
   );
 }
