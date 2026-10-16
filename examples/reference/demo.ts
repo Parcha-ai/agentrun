@@ -40,7 +40,7 @@ import { inputOf, declaredEnv, childPlansOf, chooseBrowser, effectiveBoxes, kill
 import { cost } from './fold.ts';
 import { checkItems, fetchSources, missingCommitted, readSources, withSources } from './sources.ts';
 import { localHost, type BrowserPlane, type Fakes, type Host, type RunPlace } from './host.ts';
-import { codeOf, finishRecording, openRecorder, openSupervisor } from './record.ts';
+import { codeOf, finishRecording, followRecording, keepBlob, openRecorder, openSupervisor } from './record.ts';
 import { packageCommitRecorder } from './record-store.ts';
 import { scanRecording, signInFile, trackSecrets } from './secrets.ts';
 
@@ -343,6 +343,11 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   options.fakes.backend?.(backend);
   const served = await backend.serve();
   const supervisor = openSupervisor({ dir: recordDir, ...(redact ? { redact } : {}) });
+  // A live run and its replay are one file: events.jsonl is appended to as the run goes (whole lines, section 3's order), and finishRecording completes it. The job is a blob from the start, so a viewer can draw the workflow graph at once.
+  const follower = followRecording(recordDir, { ...(redact ? { redact } : {}) });
+  const following = setInterval(() => follower.poll(), 100);
+  const jobText = JSON.stringify({ workflow: job.workflow, input: input ?? (live ? undefined : options.fakes.input) ?? job.input, files: Object.keys(job.files ?? {}) });
+  const jobBlob = keepBlob(recordDir, Buffer.from(redact ? redact(jobText) : jobText), 'json');
   // A label no other run shares, on every box this run makes: cleanup finds these and no others.
   const runLabel = randomUUID();
   const base: Record<string, string> = { ...(values.record ? { AGENTRUN_HOME: dirname(signInFile(process.env)) } : {}), DEMO_ENTRY: options.self, DEMO_NAME: spec.name, RUN_LABEL: runLabel, HOME: scratch, TMPDIR: scratch, DIR: dir, RECORD_DIR: recordDir, BACKEND: served.url, BROWSER: browser, ...(live ? { LIVE: '1' } : {}), ...(Object.keys(models).length ? { MODELS: JSON.stringify(models) } : {}), ...(values['fetch-sources'] ? { FETCH_SOURCES: '1' } : {}), CACHE_DIR: values.cache ?? join(tmpdir(), 'agentrun-sources'), ...(input ? { INPUT: JSON.stringify(input) } : {}) };
@@ -497,8 +502,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     const chosen = [...processes].reverse().find((entry) => entry.outcome?.models)?.outcome?.models;
     const extra = options.manifest ? options.manifest({ dir, record: delivered?.record ?? null, input, live, ...(chosen ? { models: chosen } : {}) }) : undefined;
     for (const name of Object.keys(extra ?? {})) if (RESERVED.has(name)) throw new Error(`manifest(): "${name}" is written by the entry; use another name`);
+    follower.close();
     finishRecording(recordDir, {
-      ...(redact ? { redact } : {}),
+      ...(redact ? { redact } : {}), job: { blob: jobBlob, sha256: jobBlob },
       title: spec.title ?? spec.name, task: job.workflow.name ?? spec.name, model: live ? 'live' : 'faux/faux-1', generations: processesStarted, kills: kills.length,
       code: codeOf(options.root ?? ROOT), cost, source: { run: runName, ...(last?.storeSha256 ? { store_sha256: last.storeSha256 } : {}) }, ...(seeAlso.length ? { see_also: seeAlso } : {}), ...(extra ? { extra } : {}), ...(resultBlob ? { result: resultBlob } : {}), ...(live ? { providers: 'real' as const } : {}),
     });
@@ -507,6 +513,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     const usd = cost(readEventsOf(recordDir)).usd;
     return { processes, kills, record: delivered?.record ?? null, dir, runId, ...(values.record ? { recording: values.record } : {}), usd, maxUsd, overBudget, failedKills, failedSignals, unlanded };
   } finally {
+    clearInterval(following);
     if (meterTimer) clearInterval(meterTimer);
     await place.release();
     await served.close();
