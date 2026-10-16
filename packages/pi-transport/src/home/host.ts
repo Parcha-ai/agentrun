@@ -1,6 +1,7 @@
 import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
+import type { PlacementRecord } from "../place/placer.ts";
 import type { Drained, DrainOptions } from "./gate.ts";
 import { type Frame, LINK_VERSION, type Link } from "./link.ts";
 import { catalogOf, type ModelServer, serveModels } from "./models.ts";
@@ -48,6 +49,11 @@ export interface HomeHandle {
 	idle(context: Context): Promise<Result<void, RemoteError>>;
 	/** Where the home is: its state, its epoch, and the seal of a store it sealed and has not opened again. */
 	status(context: Context): Promise<Result<HomeStatus, RemoteError>>;
+	/**
+	 * Keep a placement decision in the session's store, in a commit of the runner that runs it: before a move, so the
+	 * moved store has it. A record whose `by` is not `jev` or `config` is refused (`invalid`).
+	 */
+	recordPlacement(record: PlacementRecord, context: Context): Promise<Result<void, RemoteError>>;
 	/**
 	 * The epoch of the lease that names this runner. A model frame from any other epoch is refused, and the runner
 	 * then ends: a home the lease has left behind has no model.
@@ -267,6 +273,7 @@ export function connectHome(link: Link, options: ConnectOptions): HomeHandle {
 			order("submit", { content, ...(requestId === undefined ? {} : { requestId }) }, context),
 		idle: (context) => order("idle", {}, context),
 		status: async (context) => checked(await order<unknown>("status", {}, context), isStatus, "status"),
+		recordPlacement: (record, context) => order("placement", { record }, context),
 		setEpoch(to) {
 			epoch = to;
 		},

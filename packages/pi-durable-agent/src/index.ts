@@ -1,6 +1,6 @@
 export {
   AGENT_STORE_FILE, type AgentDefinitionInput, type AgentHome, type AgentHomeState, createAgentHome, openAgentHome,
-  readAgentHome, refreshAgentHome, setAlias, setBindings,
+  homeRevision, readAgentHome, refreshAgentHome, setAlias, setBindings,
 } from "./home.js";
 export type { AgentAlias, AgentDefinition, AgentIdentity, AgentSource, BrowserProfile, ProfileLease, RunRecord, SkillFile, ToolBindings } from "./kinds.js";
 export { EXPORTABLE_KINDS, projectForExport, SECRET_KINDS } from "./export.js";

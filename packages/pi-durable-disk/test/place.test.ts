@@ -65,13 +65,13 @@ describe("localPlace", () => {
     await place.kill(first, "process");
     const killed = await first.exited;
     assert.deepEqual([killed.exit, killed.signal], ["SIGKILL", "SIGKILL"]);
-    assert.deepEqual([killed.outcome?.status, killed.outcome?.generation], ["running", 1], "no line: run.json as the killed instance left it");
+    assert.deepEqual([killed.outcome?.status, killed.outcome?.generation], ["failed", 1], "no line: run.json as the killed instance left it (running), in the run's word: not delivered");
     await waitFor("the sleeper to die with its group", () => !alive(sleeper), 5_000);
 
     const { runner } = await place.recover(first, "process", { gen: 2, env: { PLACE_ORDER: "two", PLACE_SILENT: "1" } });
     const done = await runner.exited;
     assert.equal(done.exit, 0, done.stderr);
-    assert.deepEqual(done.outcome, { status: "done", generation: 2, code: null, record: { order: "two" } }, "the record from the detail of the last status");
+    assert.deepEqual(done.outcome, { status: "complete", generation: 2, code: null, record: { order: "two" } }, "done with the record from the detail of the last status: complete");
     assert.equal(readFileSync(join(root, "work", "gen-2"), "utf8"), "two");
     assert.deepEqual([(await place.status!()).record?.status, (await place.status!()).record?.generation], ["done", 2]);
   });
@@ -106,6 +106,23 @@ describe("localPlace", () => {
     await Promise.race([commandGone, sleep(5_000)]);
     assert.ok(!alive(mark.pid), "release ended the run's recorded command");
     assert.ok(!existsSync(join(root2, "commands")), "and cleared its records");
+  });
+});
+
+describe("localPlace outcome", () => {
+  it("run.json's outcome is in the run's word: complete when done with a delivered record, failed for done with none or a failed run", { timeout: 120_000 }, async () => {
+    const cases = [
+      [{}, "complete"],
+      [{ PLACE_NO_RECORD: "1" }, "failed"],
+      [{ PLACE_FAIL: "1" }, "failed"],
+    ] as const;
+    for (const [env, status] of cases) {
+      const place = localPlace({ app: APP })({ paths: pathsAt(scratch()) });
+      const runner = await place.start({ gen: 1, env: { PLACE_FINISH: "1", PLACE_SILENT: "1", ...env } });
+      const ended = await runner.exited;
+      assert.equal(ended.exit, 0, ended.stderr);
+      assert.equal(ended.outcome?.status, status, JSON.stringify({ env, outcome: ended.outcome }));
+    }
   });
 });
 
@@ -341,7 +358,7 @@ describe("archilPlace", () => {
 
     await at.kill(first, "box");
     const ended = await first.exited;
-    assert.deepEqual([ended.exit, ended.signal, ended.outcome?.status, ended.outcome?.generation], ["SIGKILL", "SIGKILL", "running", 1]);
+    assert.deepEqual([ended.exit, ended.signal, ended.outcome?.status, ended.outcome?.generation], ["SIGKILL", "SIGKILL", "failed", 1]);
     assert.deepEqual(control.ops, ["kill box-1"]);
     control.ops.length = 0;
 
@@ -364,9 +381,29 @@ describe("archilPlace", () => {
     const runner = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
     control.runJson({ status: "done", generation: 1, detail: { record: { n: 3 }, storeSha256: "ab", code: "OK" } });
     states.set("box-1", "stopped");
-    assert.deepEqual(await runner.exited, { exit: "stopped", signal: null, outcome: { status: "done", generation: 1, code: "OK", record: { n: 3 }, storeSha256: "ab" }, stderr: "" });
+    assert.deepEqual(await runner.exited, { exit: "stopped", signal: null, outcome: { status: "complete", generation: 1, code: "OK", record: { n: 3 }, storeSha256: "ab" }, stderr: "" });
     await at.kill(runner, "box");
     assert.ok(!control.ops.includes("kill box-1"));
+  });
+
+  it("run.json's outcome is in the run's word: complete only when done with a delivered record; done with none, failed or abandoned is failed", async () => {
+    const cases = [
+      [{ status: "done", detail: { record: { n: 1 } } }, "complete"],
+      [{ status: "done", detail: { steps: 4 } }, "failed"],
+      [{ status: "done", detail: { record: null } }, "failed"],
+      [{ status: "done", detail: null }, "failed"],
+      [{ status: "failed", detail: { code: "APP_GAVE_UP", record: { n: 1 } } }, "failed"],
+      [{ status: "running" }, "failed"],
+    ] as const;
+    for (const [record, status] of cases) {
+      const control = new FakeControl();
+      const { host, states } = fakeHost(control);
+      const at = makePlace({ ...REF, control, host });
+      const runner = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
+      control.runJson({ generation: 1, ...record });
+      states.set("box-1", "stopped");
+      assert.equal((await runner.exited).outcome?.status, status, JSON.stringify(record));
+    }
   });
 
   it("a done run starts nothing: the token goes, and the runner ends as it begins", async () => {
@@ -377,7 +414,7 @@ describe("archilPlace", () => {
     const runner = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
     assert.equal(starts.length, 0);
     assert.deepEqual(control.users.size, 0, "the unused token user was removed");
-    assert.deepEqual((await runner.exited).outcome, { status: "done", generation: 4, code: null, record: "r" });
+    assert.deepEqual((await runner.exited).outcome, { status: "complete", generation: 4, code: null, record: "r" });
     await at.release();
   });
 
