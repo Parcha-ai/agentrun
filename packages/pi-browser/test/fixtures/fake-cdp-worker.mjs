@@ -12,8 +12,12 @@ const frame = (text) => {
   return Buffer.concat([header, data]);
 };
 
-/** A browser's CDP endpoint that answers each command with `handle(method, params, { sessionId, emit, drop })` and
- *  records every command; `emit(method, params, sessionId)` sends an event and `drop()` cuts the connection. */
+/** What a handler returns for a command the browser never answers. */
+export const NO_REPLY = Symbol("no reply");
+
+/** A browser's CDP endpoint that answers each command with `handle(method, params, { sessionId, emit, drop })` (a
+ *  promise is answered once it settles, NO_REPLY never) and records every command; `emit(method, params, sessionId)`
+ *  sends an event and `drop()` cuts the connection. */
 export async function fakeCdp(handle) {
   const calls = [];
   const sockets = new Set();
@@ -45,8 +49,9 @@ export async function fakeCdp(handle) {
         calls.push(message);
         const emit = (method, params, sessionId) => socket.write(frame(JSON.stringify({ method, params, ...(sessionId ? { sessionId } : {}) })));
         const drop = () => socket.destroy();
+        const reply = (result) => { if (result !== NO_REPLY && !socket.destroyed) socket.write(frame(JSON.stringify({ id: message.id, result }))); };
         const result = handle(message.method, message.params ?? {}, { sessionId: message.sessionId, emit, drop });
-        if (!socket.destroyed) socket.write(frame(JSON.stringify({ id: message.id, result })));
+        if (result instanceof Promise) result.then(reply); else reply(result);
       }
     });
   });

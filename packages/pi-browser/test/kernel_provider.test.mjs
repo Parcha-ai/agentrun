@@ -340,3 +340,84 @@ test("the fake counts only requests that carry the test's key", async (t) => {
   assert.equal(fake.only("GET /browsers").length, 0);
   assert.equal(fake.calls.at(-1).authorized, false);
 });
+
+const PROFILE = { name: "work", save: true };
+
+test("a profile reaches Kernel exactly as asked, is created first when Kernel does not know it, and only then", async (t) => {
+  const { fake, provider, env } = await rig(t);
+  assert.equal(provider.caps.profiles, true);
+  await provider.create(spec({ profile: PROFILE }), signal());
+  assert.deepEqual(fake.calls.filter((c) => c.authorized && /profiles|POST \/browsers/.test(c.op)).map((c) => c.op), ["GET /profiles/{name}", "POST /profiles", "POST /browsers"]);
+  assert.deepEqual(fake.only("POST /profiles")[0].body, { name: "work" });
+  assert.deepEqual(fake.only("POST /browsers")[0].body.profile, { name: "work", save_changes: true });
+
+  const before = fake.calls.length;
+  await kernelProvider({ env, sleep: async () => {}, confirm: { polls: 3, intervalMs: 0 } }).create(spec({ tag: "ar-run1-2-1", profile: { name: "work", save: false } }), signal());
+  assert.deepEqual(fake.calls.slice(before).filter((c) => c.authorized && /profiles|POST \/browsers/.test(c.op)).map((c) => c.op), ["GET /profiles/{name}", "POST /browsers"], "a profile Kernel already knows is not created again");
+  assert.deepEqual(fake.only("POST /browsers")[1].body.profile, { name: "work", save_changes: false });
+});
+
+test("without a profile the create body has none; a profile that cannot be created fails the create before any browser; a conflict means another process made it", async (t) => {
+  const plain = await rig(t);
+  await plain.provider.create(spec(), signal());
+  assert.equal("profile" in plain.fake.only("POST /browsers")[0].body, false);
+  assert.equal(plain.fake.only("GET /profiles/{name}").length, 0);
+
+  const broken = await rig(t, { knobs: { profileCreateStatus: 500 } });
+  await assert.rejects(broken.provider.create(spec({ profile: PROFILE }), signal()), (error) => error instanceof KernelError && error.status === 500 && /POST \/profiles/.test(error.message));
+  assert.equal(broken.fake.only("POST /browsers").length, 0, "no browser was started");
+
+  const raced = await rig(t, { knobs: { profileMissOnce: new Set(["work"]) } });
+  raced.fake.profiles.set("work", { id: "prof_x", name: "work" });
+  const ref = await raced.provider.create(spec({ profile: PROFILE }), signal());
+  assert.ok(ref.id, "a 409 on the profile create is not a failure");
+});
+
+test("one session at a time saves to a profile; the next may once the first is released", async (t) => {
+  const { fake, provider } = await rig(t);
+  fake.knobs.createStatus = 500;
+  await assert.rejects(provider.create(spec({ profile: PROFILE }), signal()), KernelError);
+  fake.knobs.createStatus = 0;
+  const first = await provider.create(spec({ profile: PROFILE }), signal());
+  await assert.rejects(provider.create(spec({ tag: "ar-run1-2-1", metadata: { run: "run 2", label: "other" }, profile: PROFILE }), signal()), (error) => error.failure?.code === "refused" && /one session at a time/.test(error.failure.message));
+  const reader = await provider.create(spec({ tag: "ar-run1-3-1", profile: { name: "work", save: false } }), signal());
+  assert.ok(reader.id, "a session that does not save is not held back");
+  await provider.release(first);
+  const next = await provider.create(spec({ tag: "ar-run1-4-1", profile: PROFILE }), signal());
+  assert.ok(next.id);
+});
+
+test("a relaunch on a saving profile waits for the old browser's release; an ended browser, or a create whose answer was lost and found nothing, no longer holds the profile", async (t) => {
+  const { fake, provider } = await rig(t);
+  const old = await provider.create(spec({ profile: PROFILE }), signal());
+  const next = provider.create(spec({ tag: "ar-run1-2-1", profile: PROFILE }), signal());
+  setTimeout(() => { void provider.release(old); }, 250);
+  assert.ok((await next).id, "the same owner's replacement waited for the release and was not refused");
+
+  const taken = await provider.create(spec({ tag: "ar-run1-3-1", metadata: { run: "run 2", label: "other" }, profile: { name: "second", save: true } }), signal());
+  fake.browsers.get(taken.id).deletedAt = new Date().toISOString();
+  assert.ok((await provider.create(spec({ tag: "ar-run1-4-1", metadata: { run: "run 3", label: "other" }, profile: { name: "second", save: true } }), signal())).id, "a browser that ended on its own is not a writer any more");
+
+  fake.knobs.createStatus = 500;
+  await assert.rejects(provider.create(spec({ tag: "ar-run1-5-1", metadata: { run: "run 4", label: "other" }, profile: { name: "third", save: true } }), signal()), KernelError);
+  fake.knobs.createStatus = 0;
+  await assert.rejects(provider.create(spec({ tag: "ar-run1-6-1", metadata: { run: "run 5", label: "other" }, profile: { name: "third", save: true } }), signal()), (error) => error.failure?.code === "refused", "the failed create keeps its claim until custody has looked for the browser");
+  assert.deepEqual(await provider.findByTag("ar-run1-5-1"), []);
+  assert.ok((await provider.create(spec({ tag: "ar-run1-7-1", metadata: { run: "run 5", label: "other" }, profile: { name: "third", save: true } }), signal())).id);
+});
+
+test("a holder whose status does not answer is taken for running after a short wait, and a cancelled waiter stops waiting", async (t) => {
+  const { fake, provider } = await rig(t);
+  await provider.create(spec({ profile: PROFILE }), signal());
+  fake.knobs.lookupDelayMs = 4_000;
+  const started = Date.now();
+  await assert.rejects(provider.create(spec({ tag: "ar-run1-2-1", metadata: { run: "run 2", label: "other" }, profile: PROFILE }), signal()), (error) => error.failure?.code === "refused");
+  assert.ok(Date.now() - started < 3_500, `the refusal came before the status call would have (${Date.now() - started} ms)`);
+
+  const cancel = new AbortController();
+  const waiting = provider.create(spec({ tag: "ar-run1-3-1", profile: PROFILE }), cancel.signal);
+  setTimeout(() => cancel.abort(), 300);
+  const waited = Date.now();
+  await assert.rejects(waiting);
+  assert.ok(Date.now() - waited < 3_500, "cancelling ends the wait");
+});

@@ -264,11 +264,11 @@ test("Chrome's singleton socket directory, and everything else it writes to its 
   await mkdir(tmp);
   const outer = process.env.TMPDIR;
   process.env.TMPDIR = tmp;
-  t.after(() => { process.env.TMPDIR = outer; });
+  t.after(() => { process.env.TMPDIR = outer; }, { timeout: 30_000 });
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: path.join(root, "profiles") } });
   let ref;
   try { ref = await provider.create(spec("singleton-1"), new AbortController().signal); } catch (error) { if (skipIncapable(t, error)) return; throw error; }
-  t.after(() => provider.release(ref).catch(() => undefined));
+  t.after(() => provider.release(ref).catch(() => undefined), { timeout: 30_000 });
   process.env.TMPDIR = outer;
   const made = await readdir(tmp);
   // The host's TMPDIR holds the lease's private directory and nothing else: Chrome was given that directory as its TMPDIR, so what it makes goes in it.

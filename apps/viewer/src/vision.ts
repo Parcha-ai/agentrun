@@ -11,7 +11,8 @@
 //     counted. `shown`: the images a read returned
 //     before the eyes looked (the lead never receives them), each with the caption before it: the lanes' pictures,
 //     joined to a look by its conversation, source and selector.
-//   host: `process.started`, `kill`, and `result`, whose JSON blob is the account (`apollo11.account/1`).
+//   host: `process.started`, `kill`, and `result`, whose JSON blob is the account (`apollo11.account/1`) or a generic
+//     cited result (`agentrun.cited/1`).
 // The meters are the shell's own vision fold (`counterFold`, RECORDING.md section 6), so the panel and the counters strip
 // agree; a possible payment, from live lines, is labelled observed and makes spend a lower bound.
 // Pure: `accepts`, `reduce` and `view` read only their arguments. Kinds it does not know are skipped.
@@ -73,6 +74,12 @@ export type VisionAccount = {
   weak?: { model: string; times: VisionTimes; source?: string; photos?: { right: number; total: number } };
 };
 export const ACCOUNT_FORMAT = 'apollo11.account/1';
+
+/** The generic cited result any run may deliver (`agentrun.cited/1`, RECORDING.md): rows of a label and a value,
+ *  each citing what it was read from: a file in `blobs/`, a look by its key, and where in it. */
+export type VisionCitedRow = { label: string; value: string; note?: string; cites: { blob?: string; look?: string; fragment: string; url?: string; at?: string; note?: string }[] };
+export type VisionCitedResult = { title?: string; rows: VisionCitedRow[] };
+export const CITED_FORMAT = 'agentrun.cited/1';
 
 const visionImages = (value: Json | undefined): VisionImage[] => (Array.isArray(value) ? value.flatMap((each): VisionImage[] => {
   if (typeof each === 'string') return [{ blob: each }];
@@ -329,6 +336,33 @@ export function visionAccountOf(value: Json | undefined): VisionAccount | string
   };
 }
 
+/** The generic cited result in a result blob, or undefined when it is not one. A cite names a blob, a look or both, and
+ *  may say the page it was read from and when (`url`, `at`); one with a url alone is linked, not kept; one that names none
+ *  of them is left out, and a row may cite nothing. */
+export function visionCitedOf(value: Json | undefined): VisionCitedResult | undefined {
+  const result = visionObj(value);
+  if (result?.format !== CITED_FORMAT) return undefined;
+  const rows = (Array.isArray(result.rows) ? result.rows : []).flatMap((each): VisionCitedRow[] => {
+    const row = visionObj(each);
+    const label = visionStr(row?.label);
+    const value = typeof row?.value === 'number' ? String(row.value) : visionStr(row?.value);
+    if (!row || label === undefined || value === undefined) return [];
+    const cites = (Array.isArray(row.cites) ? row.cites : []).flatMap((one) => {
+      const cite = visionObj(one);
+      const blob = visionStr(cite?.blob);
+      const look = visionStr(cite?.look);
+      const note = visionStr(cite?.note);
+      const url = visionStr(cite?.url);
+      const at = visionStr(cite?.at);
+      return blob || look || url ? [{ ...(blob ? { blob } : {}), ...(look ? { look } : {}), fragment: visionStr(cite?.fragment) ?? '', ...(url ? { url } : {}), ...(at ? { at } : {}), ...(note ? { note } : {}) }] : [];
+    });
+    const note = visionStr(row.note);
+    return [{ label, value, ...(note ? { note } : {}), cites }];
+  });
+  const title = visionStr(result.title);
+  return { ...(title ? { title } : {}), rows };
+}
+
 /** Which characters of `truth` the reading kept, by a longest common subsequence: a dropped digit is one it did not. */
 export function visionKeptChars(truth: string, read: string): boolean[] {
   const rows = truth.length;
@@ -468,6 +502,26 @@ function visionAccountView(account: VisionAccount, cite: string | undefined, eye
   ].filter((node): node is Node => node !== false && node !== undefined);
 }
 
+/** A cited result's rows, one a line: its label, its value, its note, and a chip per cite: a look's opens its receipt
+ *  and moves its lane, a file's opens the file, a page known only by its address is linked. A row that cites nothing
+ *  says so. */
+function visionCitedView(cited: VisionCitedResult, cite: string | undefined): Node {
+  const chip = (each: VisionCitedRow['cites'][number]): Node[] => {
+    const words = each.fragment ? visionChipText(each.fragment) : each.look ? 'look' : each.blob ? 'file' : 'page';
+    const about = [each.note, each.url, each.at].filter(Boolean).join(' · ');
+    return [
+      ...(each.look ? [h('span', { class: `vz-cite${each.look === cite ? ' hot' : ''}`, cite: each.look, title: about || 'the look that read it' }, words)] : []),
+      ...(each.blob ? [h('span', { ...(about ? { title: about } : {}) }, { tag: 'a', blob: each.blob, text: each.look ? 'file' : words, class: 'vz-cite', ...(each.fragment ? { fragment: each.fragment } : {}) })] : []),
+      // A page named only by its address was not kept in the recording: it is linked, and says so.
+      ...(!each.look && !each.blob && each.url ? [h('span', { ...(about ? { title: about } : {}) }, { tag: 'a', href: each.url, text: words, class: 'vz-cite' }, h('span', { class: 'vz-note' }, ' not kept'))] : []),
+    ];
+  };
+  return h('div', { class: 'vz-account' },
+    ...cited.rows.map((row) => h('p', { class: `vz-entry${row.cites.some((each) => each.look !== undefined && each.look === cite) ? ' cited' : ''}` },
+      h('span', { class: 'vz-name' }, row.label), ' ', h('b', {}, row.value), row.note !== undefined && h('span', { class: 'vz-note' }, ` · ${row.note}`), ' ',
+      ...(row.cites.length ? row.cites.flatMap(chip) : [h('span', { class: 'vz-note' }, 'cites nothing')]))));
+}
+
 function visionAccuracyView(accuracy: NonNullable<VisionAccount['accuracy']>): Node {
   return h('div', { class: 'vz-accuracy' },
     h('h5', {}, 'Photo sort against the captions'),
@@ -486,7 +540,7 @@ function visionReceipt(look: VisionLook, chosen: boolean): Node {
     row('filed', `${look.receipt ?? 'no receipt path'} · generation ${look.gen}${look.lost ? ' · lost branch' : ''}`));
 }
 
-function visionMetersView(state: VisionState, meters: VisionMeters): Node {
+function visionMetersView(state: VisionState, meters: VisionMeters, following = false): Node {
   const row = (name: string, value: string, title: string, extra = ''): Node => h('div', { class: `vz-meter${extra}`, title }, h('span', {}, name), h('b', {}, value));
   const measured = state.visionLines > 0;
   const stored = (name: string, value: string, title: string, extra = '') => row(name, measured ? value : 'not measured', measured ? title : 'No vision document line in this recording: nothing here can be counted.', extra);
@@ -497,23 +551,30 @@ function visionMetersView(state: VisionState, meters: VisionMeters): Node {
     meters.askedTwice > 0 && stored('asked twice', String(meters.askedTwice), 'A look key paid twice in one generation.', ' alarm'),
     row('possible extra payments', `${meters.possible} (observed)`, 'From live lines: a look started in a process that ended without filing it. Its eyes may have answered and been paid; no durable line says.', meters.possible > 0 ? ' alarm' : ''),
     stored('spend', measured ? `${meters.possible > 0 && meters.cost !== null ? 'at least ' : ''}${visionMoney(meters.cost)}` : 'unknown',
-      `Once per payment, with each failed look's own price; unknown when any is unknown.${meters.possible > 0 ? ' A lower bound: a possible payment is not in it.' : ''}`),
+      following ? 'A run followed while it goes: its spend is known once it finishes.'
+        : `Once per payment, with each failed look's own price; unknown when any is unknown.${meters.possible > 0 ? ' A lower bound: a possible payment is not in it.' : ''}`),
     stored('typed misses', meters.failed === 0 ? '0' : `${meters.failed}: ${meters.misses.map(([code, n]) => `${code} ${n}`).join(', ')}`, 'Failed LookRecords, by miss code.'));
 }
 
 function visionView(state: VisionState, context: ViewContext): Node {
   const meters = visionMeters(state);
-  const looked = state.looks.length > 0 || Object.keys(state.running).length > 0;
-  if (!looked) return h('div', { class: 'vz' }, h('p', { class: 'empty' }, 'The eyes have not looked at anything yet.'));
   const resultValue = state.result ? context.json?.(state.result.blob) : undefined;
   const parsed = state.result && resultValue !== undefined ? visionAccountOf(resultValue) : undefined;
   const account = typeof parsed === 'object' ? parsed : undefined;
+  const cited = account ? undefined : visionCitedOf(resultValue);
+  // A cited result shows with no look at all: its rows may cite only files, or nothing.
+  const looked = state.looks.length > 0 || Object.keys(state.running).length > 0;
+  if (!looked && !cited) return h('div', { class: 'vz' }, h('p', { class: 'empty' }, 'The eyes have not looked at anything yet.'));
   const kept = meters.kept;
   // A look's pictures: those its filing names, else those its read showed.
   const pictured = (look: VisionLook): VisionLook => (look.images.length ? look : { ...look, images: state.shown[visionShownKey(look.conv, look.source, look.page, look.fromS, look.toS)] ?? [] });
-  const cited = visionCited(state, context.cite);
-  const chosen = cited && pictured(cited);
-  const boxes = account && chosen ? account.entries.flatMap((entry) => entry.cites).filter((each) => each.receipt === chosen.key).flatMap((each) => { const box = visionRegion(each.fragment); return box ? [box] : []; }) : [];
+  const named = visionCited(state, context.cite);
+  const chosen = named && pictured(named);
+  // A box is where a cite of the chosen look says the line stands: the account's or a cited result's fragments.
+  const fragments = [...(account?.entries.flatMap((entry) => entry.cites).map((each) => ({ look: each.receipt, fragment: each.fragment })) ?? []),
+    ...(cited?.rows.flatMap((row) => row.cites).map((each) => ({ look: each.look, fragment: each.fragment })) ?? [])];
+  // Only the pages lane draws boxes, so only a chosen page has them.
+  const boxes = chosen && visionLane(chosen) === 'pages' ? fragments.filter((each) => each.look === chosen.key).flatMap((each) => { const box = visionRegion(each.fragment); return box ? [box] : []; }) : [];
   // The lanes draw the run's own eyes; a weaker model the account compares them with is drawn in its own scene.
   const lanes = state.looks.filter((look) => !look.native && look.model !== account?.weak?.model).map(pictured);
   const shown = chosen ?? lanes.at(-1);
@@ -527,12 +588,13 @@ function visionView(state: VisionState, context: ViewContext): Node {
     h('div', { class: 'vz-grid' },
       h('div', { class: 'vz-col' }, visionFilm(lanes, state, chosen), visionPages(lanes, state, chosen, boxes), visionPhotos(lanes, chosen, account, context.focus)),
       h('div', { class: 'vz-col' },
-        h('h5', {}, 'The account'),
+        h('h5', {}, cited ? cited.title ?? state.result?.title ?? 'The result' : 'The account'),
         !state.result ? h('p', { class: 'empty' }, 'Not delivered yet.')
           : account ? h('div', {}, ...visionAccountView(account, context.cite, meters.eyes.find((model) => model !== account.weak?.model)))
-            : h('p', { class: 'empty' }, typeof parsed === 'string' ? `${parsed}: ` : 'The account is in the result: ', { tag: 'a', blob: state.result.blob, text: state.result.title })),
+            : cited ? visionCitedView(cited, context.cite)
+              : h('p', { class: 'empty' }, typeof parsed === 'string' ? `${parsed}: ` : 'The account is in the result: ', { tag: 'a', blob: state.result.blob, text: state.result.title })),
       h('div', { class: 'vz-col' },
-        h('h5', {}, 'Meters'), visionMetersView(state, meters),
+        h('h5', {}, 'Meters'), visionMetersView(state, context.following ? { ...meters, cost: null } : meters, context.following === true),
         account?.accuracy && visionAccuracyView(account.accuracy),
         shown && visionReceipt(shown, chosen !== undefined),
         context.cite !== undefined && !chosen && h('p', { class: 'empty' }, 'The look this citation names is not filed at this point.'),

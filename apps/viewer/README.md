@@ -22,6 +22,21 @@ is JSON and opens in a tab; the store is a SQLite file and downloads.
 The page opens a recording three ways: a bundled one (`?r=<id>`), one at a URL beside the page (`?src=<url>`, on a
 static host), or a recording folder dropped on the page or chosen with its picker (works from `file://` too).
 
+It also follows a run while it goes (`?follow=<url>`, a URL on the page's own server only): a recording directory served
+over HTTP that grows. Its `events.jsonl` gains whole lines (asked for from the last byte read, with a `Range` header; a
+server that sends the whole file works too), each blob is in `blobs/` before a line names it, and `manifest.json` is
+written last, once the run finished. About once a second the page reads what is new, places it in the format's file
+order (section 3 of `RECORDING.md`, the order a recorder's merge writes), and redraws keeping the reader's place, with
+the time cursor on the newest line unless the reader scrubbed back; a file its writer replaced whole is read again from
+its start. While the run goes its cost reads unknown, and a
+blob not read yet shows as loading. When the manifest appears the page reads `events.jsonl` whole, as a fresh load
+does, checks it against the format, and plays it as any recording, at the time the reader was at.
+
+Add `&embed=1` to frame it in another page: no header (a recording that breaks the format still says so), the full
+width of its frame, and a small `postMessage` protocol (`PANELS.md`, "Embedding"): it posts `ready`, its `position`
+at each stop and its `focus`, and obeys `seek`, `focus` and `theme` only from the framing page whose origin its URL
+names with `&parent=<origin>`, each checked.
+
 - **Timeline.** The process lane comes from the supervisor's lines: a band per process, and a red mark with its label
   where a process was killed. The ticks under it are the journal's opens, a fact of the store. A restore (the run
   reopened a checkpoint after its box died) is a dashed mark: the commits after the checkpoint are a lost branch.
@@ -39,7 +54,10 @@ static host), or a recording folder dropped on the page or chosen with its picke
   asked twice are per call: an effect's outside calls the host reported as applied, in more than one process (repeated)
   or twice in one (asked twice), and an agent's tool call only when it is paid (the run holds a receipt for its tool
   and arguments). An effect whose host reports no calls makes repeated "not measured", never 0. A lost branch's calls
-  were paid, and its redo counts as repeated.
+  were paid, and its redo counts as repeated. The browser's page actions count the same way, per conversation, tool and
+  code: a dispatch after one that reached the page is an extra, and one after dispatches that never showed reaching it
+  reads "+ N possible" beside repeated; a recording whose session records are a bare export's (no line carries a `t`)
+  shows them not measured.
   When the manifest names a baseline (another real recording), its counters at its end show beside these.
 - **Panels.** The lines at the current point, by source, and the model's turns. Extensions add their own
   (`PANELS.md`). Click anything with a workflow path to focus that branch: every panel still holds the whole run and
@@ -59,7 +77,8 @@ The buttons deploy this replay viewer only: it plays recorded runs, never runs a
 A test (`test/deploy.test.ts`) holds both configs and both buttons to that: no variable, secret or binding.
 
 The hosted gallery is published by `.github/workflows/pages.yml` on each push to `main` that touches `apps/viewer/`.
-It builds the page, then refuses to publish unless what was built passes `scripts/recording/gate.mjs`: every recording
+It builds the page with `--files`, so the recordings ship as files with `recordings/index.json` and the page stays
+small however many runs it holds, then refuses to publish unless what was built passes `scripts/recording/gate.mjs`: every recording
 in it valid (`scripts/recording/validate.mjs`), holding only its manifest, its lines and its blobs; every text file
 free of credential shapes and machine paths; the gallery embedding exactly the recordings beside it. It deploys with the
 job's own token, scoped to Pages, and names no secret. `scripts/pages-workflow.test.mjs` holds the workflow to that.
