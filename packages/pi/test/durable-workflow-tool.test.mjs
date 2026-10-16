@@ -10,9 +10,10 @@ import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { createRegistry, Harness, MemoryStorage } from '@earendil-works/pi-durable';
+import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { compileTransform } from '@parcha/agentrun-dsl';
 import { workspaceFiles } from '@parcha/agentrun-dsl/recovery';
-import { createWorkflowTool } from '@parcha/agentrun-pi/durable';
+import { createWorkflowTool, durableDoc } from '@parcha/agentrun-pi/durable';
 import { WorkflowStore } from '@parcha/agentrun-pi/workflows';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-durable-tool-'));
@@ -38,27 +39,31 @@ const PATTERNED = { ...QUOTED, name: 'patterned', schemas: { ...schemas, Input: 
 /** The host's executor for code, as a trusted host would run it. */
 const runCode = async (node, state, at) => compileTransform(node.code)(state, { sop: at.sop });
 
-/** A Harness with the tool's extension, a root conversation that offers it, and what the model was sent. */
-async function rig(turns, host = {}) {
+let rigs = 0;
+/** A Harness with the tool's extension, a root conversation that offers it, and what the model was sent. A later rig
+ *  given the same `storage` file and `shared` project, workspace and effects stands for a later process. */
+async function rig(turns, host = {}, { storage, shared } = {}) {
   const requests = [];
   const faux = fauxProvider();
   faux.setResponses(turns.map((turn) => async (context) => { requests.push(JSON.parse(JSON.stringify(context.messages))); return turn; }));
   const models = createModels();
   models.setProvider(faux.provider);
-  const projectDir = mkdtempSync(join(root, 'project-'));
-  const files = workspaceFiles(mkdtempSync(join(root, 'cwd-')));
-  const effects = [];
+  const { projectDir, files, effects } = shared ?? { projectDir: mkdtempSync(join(root, 'project-')), files: workspaceFiles(mkdtempSync(join(root, 'cwd-'))), effects: [] };
+  // `taskAdapters` are what the host's task returns beside its effects; the rest is the tool's host.
+  const { taskAdapters = {}, ...given } = host;
   const tool = createWorkflowTool({
     projectDir, tools: [QUOTE],
-    task: { options: () => ({ files }), run: () => ({ adapters: { runEffect: async (params) => { effects.push(params.node.tool); return { price: 21 }; } } }) },
-    ...host,
+    task: { options: () => ({ files }), run: () => ({ adapters: { runEffect: async (params) => { effects.push(params.node.tool); return { price: 21 }; }, ...taskAdapters } }) },
+    ...given,
   });
   const registry = createRegistry();
   registry.install(tool.extension);
-  const harness = await Harness.open(new MemoryStorage(), { models, registry }, ctx);
+  const harness = await Harness.open(storage ? await openNodeSqliteStorage(storage) : new MemoryStorage(), { models, registry }, ctx);
   const conversation = await harness.root(ctx, { agent: { model: MODEL, extensions: [tool.extension] } });
+  // Request ids are per process: the same id again is the same submission.
+  const process = ++rigs;
   let asked = 0;
-  const ask = async (content) => (await (await conversation.submit({ type: 'input', content, requestId: `ask-${++asked}` }, ctx)).wait(ctx));
+  const ask = async (content) => (await (await conversation.submit({ type: 'input', content, requestId: `ask-${process}-${++asked}` }, ctx)).wait(ctx));
   /** The tool's answers the model read, in order, as text. */
   const answers = () => requests.at(-1).filter((message) => message.role === 'toolResult').map((message) => message.content.map((block) => block.text ?? '').join(''));
   return { harness, conversation, ask, answers, requests, effects, projectDir };
@@ -113,6 +118,7 @@ test('with the host\'s code executor, the code draft dry-runs and runs as one ba
   assert.equal(task.background, true);
   const second = JSON.parse(again);
   assert.deepEqual([second.run.started, second.run.taskId, second.outcome.output], ['settled', run.taskId, { total: 42 }], 'the same draft and input reach the same run');
+  assert.match(second.progress.join('\n'), /had ended; its progress is not kept/, 'a run that had ended reports no counts it does not have');
   assert.deepEqual(effects, ['prices.quote'], 'and make no effect again');
   await harness.close(ctx);
 });
@@ -130,4 +136,51 @@ test('save, list and load use the store in the project the host names, the recor
   const stored = await new WorkflowStore(projectDir).list();
   assert.deepEqual(stored.map((w) => [w.name, w.digest]), [['quote-flow', saved.digest]]);
   await harness.close(ctx);
+});
+
+test('after a restart a run asked for again is the same run; again: true starts a fresh one, which a later run then reaches', async () => {
+  const storage = join(mkdtempSync(join(root, 'session-')), 'session.sqlite');
+  const shared = { projectDir: mkdtempSync(join(root, 'project-')), files: workspaceFiles(mkdtempSync(join(root, 'cwd-'))), effects: [] };
+  const first = await rig([call({ action: 'inspect', workflow: DOUBLED, input: { sku: 'A-1' } }), call({ action: 'run' }), say('done')], { runCode }, { storage, shared });
+  await first.ask('Run it.');
+  const ran = JSON.parse(first.answers().at(-1));
+  assert.deepEqual([ran.run.started, ran.outcome.status], ['created', 'complete']);
+  await first.harness.close(ctx);
+  // A later process over the same session: the draft and the run are its documents.
+  const second = await rig([call({ action: 'run' }), call({ action: 'run', again: true }), call({ action: 'run' }), say('done')], { runCode }, { storage, shared });
+  await second.ask('And again.');
+  const [rejoined, fresh, latest] = second.answers().slice(-3).map((text) => JSON.parse(text));
+  assert.deepEqual([rejoined.run.started, rejoined.run.taskId], ['settled', ran.run.taskId], 'the same draft and input reach the same run after a restart');
+  assert.deepEqual([fresh.run.started, fresh.outcome.status], ['created', 'complete']);
+  assert.notEqual(fresh.run.taskId, ran.run.taskId, 'again: true is a new run');
+  assert.deepEqual([latest.run.started, latest.run.taskId], ['settled', fresh.run.taskId], 'a later run reaches the fresh one');
+  await second.harness.close(ctx);
+  // The count of fresh runs is a session document, read here from the file and not from any process's memory.
+  assert.ok(fresh.run.key.endsWith(':1'));
+  assert.deepEqual(durableDoc(storage, 'agentrun.runs', fresh.run.key.slice(0, -2)), { generation: 1 });
+  // After another restart, a run reaches the fresh one.
+  const third = await rig([call({ action: 'run' }), say('done')], { runCode }, { storage, shared });
+  await third.ask('Once more.');
+  const reached = JSON.parse(third.answers().at(-1));
+  assert.deepEqual([reached.run.started, reached.run.taskId], ['settled', fresh.run.taskId]);
+  assert.deepEqual(shared.effects, ['prices.quote', 'prices.quote'], 'one effect per run');
+  await third.harness.close(ctx);
+});
+
+test('a run uses the code executor the host gave the tool, whatever its task returns, and a failing async observer of the task does not escape', async () => {
+  const unhandled = [];
+  const onUnhandled = (reason) => { unhandled.push(String(reason)); };
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const { harness, ask, answers } = await rig([call({ action: 'inspect', workflow: DOUBLED, input: { sku: 'A-1' } }), call({ action: 'run' }), say('done')], {
+      runCode,
+      taskAdapters: { runCode: async () => { throw new Error('the task\'s own executor'); }, onEvent: async () => { throw new Error('a failed log write'); } },
+    });
+    await ask('Run it.');
+    const { outcome } = JSON.parse(answers().at(-1));
+    assert.deepEqual([outcome.status, outcome.output], ['complete', { total: 42 }], 'the code ran through the host\'s executor, as its dry run does');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(unhandled, [], 'the observer\'s rejections are consumed');
+    await harness.close(ctx);
+  } finally { process.off('unhandledRejection', onUnhandled); }
 });
