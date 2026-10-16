@@ -8,34 +8,47 @@ type Fetch = (url: string, init?: { headers?: Record<string, string>; cache?: 'n
 
 /** How many of the bytes already read each read asks for again, to tell a file that grew from one written anew. */
 const OVERLAP = 256;
+/** Every how many reads one asks for every byte already read again, to tell a line written anew earlier in the file. */
+const WHOLE_EVERY = 30;
 
 const sameBytes = (a: Uint8Array, b: Uint8Array) => a.byteLength === b.byteLength && a.every((byte, at) => byte === b[at]);
 
 /** Reads a growing events.jsonl: each `read` returns the whole lines written since the last one. A server that answers a
  *  range (206) sends only what is new; one that sends the whole file (200) is read from where the last read stopped. A
  *  writer may also replace the file whole (a recorder that puts a late line in its place): each read asks again for the
- *  last bytes it read, and when they differ, or the file is now shorter, it reads the new file from its start and says
- *  so (`replaced`). */
-export function tailOf(url: string, fetcher: Fetch = fetch as unknown as Fetch) {
+ *  last bytes it read, and every `every`th read for all of them; when they differ, or the file is now shorter, it reads
+ *  the new file from its start and says so (`replaced`). */
+export function tailOf(url: string, fetcher: Fetch = fetch as unknown as Fetch, every = WHOLE_EVERY) {
   let offset = 0;
   let carry = '';
   let decoder = new TextDecoder();
-  let seen = new Uint8Array(0);
+  // Every byte read so far, in a buffer that doubles as it fills.
+  let held = new Uint8Array(4096);
+  let reads = 0;
+  const keep = (bytes: Uint8Array) => {
+    if (offset + bytes.byteLength > held.byteLength) {
+      const more = new Uint8Array(Math.max(held.byteLength * 2, offset + bytes.byteLength));
+      more.set(held.subarray(0, offset));
+      held = more;
+    }
+    held.set(bytes, offset);
+    offset += bytes.byteLength;
+  };
   const read = async (): Promise<{ lines: Line[]; replaced: boolean }> => {
-    const back = seen.byteLength;
+    reads += 1;
+    const back = reads % every === 0 ? offset : Math.min(OVERLAP, offset);
+    const seen = held.subarray(offset - back, offset);
     const response = await fetcher(url, { headers: { Range: `bytes=${offset - back}-` }, cache: 'no-store' });
     // Nothing at all from before the offset: the file is shorter than what was read.
     if (response.status === 416) return offset > 0 ? restart() : { lines: [], replaced: false };
+    // Not written yet: a run that has not started.
+    if (response.status === 404 && offset === 0) return { lines: [], replaced: false };
     if (!response.ok) throw new Error(`events.jsonl answered ${response.status}`);
     const whole = new Uint8Array(await response.arrayBuffer());
     const from = response.status === 206 ? whole : whole.subarray(Math.min(offset - back, whole.byteLength));
     if (from.byteLength < back || !sameBytes(from.subarray(0, back), seen)) return restart();
     const fresh = from.subarray(back);
-    offset += fresh.byteLength;
-    const kept = new Uint8Array(seen.byteLength + fresh.byteLength);
-    kept.set(seen);
-    kept.set(fresh, seen.byteLength);
-    seen = kept.slice(Math.max(0, kept.byteLength - OVERLAP));
+    keep(fresh);
     // A UTF-8 character may be cut between two reads, and a line between two writes: both wait for the next read.
     const text = carry + decoder.decode(fresh, { stream: true });
     const end = text.lastIndexOf('\n');
@@ -46,7 +59,6 @@ export function tailOf(url: string, fetcher: Fetch = fetch as unknown as Fetch) 
     offset = 0;
     carry = '';
     decoder = new TextDecoder();
-    seen = new Uint8Array(0);
     return { lines: (await read()).lines, replaced: true };
   };
   return { get offset() { return offset; }, read };

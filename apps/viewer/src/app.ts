@@ -10,7 +10,7 @@ import { citeStop } from './cite.ts';
 import { workflowMapPanel } from './workflow-map.ts';
 import { opensInPage, typeOfName } from './blobs.ts';
 import { readAllEntries } from './folder.ts';
-import { sha256OfBytes } from './receipt-key.ts';
+import { sha256Paused } from './receipt-key.ts';
 import { finishedManifest, placeLines, tailOf } from './follow.ts';
 import { diskPanel } from './disk.ts';
 import { transportPanel } from './transport.ts';
@@ -95,6 +95,14 @@ export function blobsNamed(manifest: Manifest, lines: Line[]): string[] {
  *  draws a request for every type of every missing blob on every poll. `whole`: a run still being written may serve a
  *  blob half written, so each one is read and kept only when its bytes hash to its name; one that does not is not
  *  there yet. */
+/** A blob's SHA-256 without holding the page: the browser's own digest where the page has one (a secure origin), else
+ *  the viewer's, a MiB at a time. */
+async function digestOf(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) return sha256Paused(bytes);
+  return [...new Uint8Array(await subtle.digest('SHA-256', bytes))].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 function blobsAt(root: string, whole = false) {
   const urls: Record<string, string> = {};
   const types: Record<string, string | undefined> = {};
@@ -104,8 +112,11 @@ function blobsAt(root: string, whole = false) {
     if (!whole) return (await fetch(url, { method: 'HEAD' }).catch(() => undefined))?.ok === true;
     const response = await fetch(url, { cache: 'no-store' }).catch(() => undefined);
     if (!response?.ok) return false;
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (sha256OfBytes(bytes) !== sha) return false;
+    // A body cut off midway is a blob not there yet: the lines that name it are drawn, and it is asked for again.
+    const body = await response.arrayBuffer().catch(() => undefined);
+    if (!body) return false;
+    const bytes = new Uint8Array(body);
+    if (await digestOf(bytes) !== sha) return false;
     // A blob URL has the viewer's origin: a page in one must never render, so an active type becomes opaque bytes.
     const type = typeOfName(url) ?? 'application/octet-stream';
     urls[sha] = URL.createObjectURL(new Blob([bytes], { type: opensInPage(type) || type.startsWith('image/') ? type : 'application/octet-stream' }));
@@ -115,17 +126,20 @@ function blobsAt(root: string, whole = false) {
   return {
     url: (sha: string) => urls[sha],
     type: (sha: string) => (types[sha] ?? (urls[sha] ? typeOfName(urls[sha]!) : undefined)),
-    async find(shas: readonly string[]) {
+    /** Looks for the blobs not found yet, and those due again; says how many it found. */
+    async find(shas: readonly string[]): Promise<number> {
       round += 1;
       const due = [...missing].filter(([, wait]) => wait.at <= round).map(([sha]) => sha);
+      let count = 0;
       await Promise.all([...new Set([...shas, ...due])].filter((sha) => urls[sha] === undefined).map(async (sha) => {
         for (const ext of BLOB_TYPES) {
           const url = `${root}blobs/${sha}.${ext}`;
-          if (await found(sha, url)) { if (!whole) urls[sha] = url; missing.delete(sha); return; }
+          if (await found(sha, url)) { if (!whole) urls[sha] = url; missing.delete(sha); count += 1; return; }
         }
         const tries = (missing.get(sha)?.tries ?? 0) + 1;
         missing.set(sha, { tries, at: round + Math.min(32, 2 ** (tries - 1)) });
       }));
+      return count;
     },
   };
 }
@@ -494,7 +508,8 @@ export const fromParent = (origin: string, isParent: boolean, allowed: string | 
 
 /** A run the page follows while it goes: the lines that arrived since the last poll, the manifest once it is written (the
  *  run finished), and what the page says of the connection. */
-export type Follow = { grow(fresh: Line[]): void; restart(whole: Line[]): void; finish(manifest: Manifest, whole: Line[]): void; status(text: string): void };
+/** `grow`: `found`, a blob read whole since the last poll, which redraws (and reads the result again) with no new line. */
+export type Follow = { grow(fresh: Line[], found?: boolean): void; restart(whole: Line[]): void; finish(manifest: Manifest, whole: Line[]): void; status(text: string): void };
 
 function play(recording: Recording, root: HTMLElement, params: URLSearchParams, base?: string, live?: { url: string }): Follow {
   // A followed run is checked against the format once its manifest is written, when it is whole.
@@ -744,12 +759,12 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
    *  the end. */
   const rebase = (whole: Line[]) => {
     const atEnd = player.p >= last;
-    const at = player.p > 0 ? lines[player.p - 1]!.t : 0;
+    const clock = head.clock;
     lines = whole;
     recording.lines = lines;
     caches.clear();
     derive();
-    player.p = head.seek(atEnd ? last : stopAt(lines, player.stops, at));
+    player.p = atEnd ? head.seek(last) : head.seekTime(clock);
   };
   /** Everything drawn from the whole run, worked out again for the lines it has now. */
   const derive = () => {
@@ -769,18 +784,22 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     if (moved) layout();
   };
   return {
-    grow(fresh) {
-      if (fresh.length === 0) return;
-      const atEnd = player.p >= last;
-      const placed = placeLines(lines, fresh);
-      lines = placed.lines;
-      recording.lines = lines;
-      // A kept state is the reduce of the lines before its place: one past the first changed line is stale.
-      for (const cache of caches.values()) for (const key of [...cache.keys()]) if (key > placed.from) cache.delete(key);
-      derive();
-      // The time cursor stays on the newest line unless the reader scrubbed back.
-      player.p = head.seek(atEnd ? last : Math.min(player.p, last));
-      if (fresh.some((line) => line.source === 'host' && line.kind === 'result')) readResults();
+    grow(fresh, found = false) {
+      if (fresh.length === 0 && !found) return;
+      if (fresh.length > 0) {
+        const atEnd = player.p >= last;
+        const clock = head.clock;
+        const placed = placeLines(lines, fresh);
+        lines = placed.lines;
+        recording.lines = lines;
+        // A kept state is the reduce of the lines before its place: one past the first changed line is stale.
+        for (const cache of caches.values()) for (const key of [...cache.keys()]) if (key > placed.from) cache.delete(key);
+        derive();
+        // The time cursor stays on the newest line unless the reader scrubbed back; then on their time (a line placed
+        // before them moves no one back, and playing between stops keeps the time it played).
+        player.p = atEnd ? head.seek(last) : head.seekTime(clock);
+      }
+      if (found || fresh.some((line) => line.source === 'host' && line.kind === 'result')) readResults();
       draw();
     },
     restart(whole) {
@@ -859,8 +878,8 @@ async function followRun(target: string, root: HTMLElement, params: URLSearchPar
   const poll = async () => {
     const manifest = await finishedManifest(`${base}manifest.json`);
     const { lines: fresh, replaced } = await tail.read();
-    await blobs.find(blobsNamed(manifest ?? recording.manifest, fresh));
-    return { manifest, fresh, replaced };
+    const found = await blobs.find(blobsNamed(manifest ?? recording.manifest, fresh));
+    return { manifest, fresh, replaced, found };
   };
   /** The finished file, read whole: its writer may have given it its final order at the finish. */
   const whole = async (manifest: Manifest) => {
@@ -870,21 +889,19 @@ async function followRun(target: string, root: HTMLElement, params: URLSearchPar
     await blobs.find(blobsNamed(manifest, finished));
     return finished;
   };
-  const first = await poll();
-  recording.lines = placeLines([], first.fresh).lines;
+  // The page is up before the first read: a run not started yet, or a server that does not answer, is retried.
   const live = play(recording, root, params, base, { url: base });
   const step = async () => {
     try {
-      const { manifest, fresh, replaced } = await poll();
+      const { manifest, fresh, replaced, found } = await poll();
       if (manifest) { live.finish(manifest, await whole(manifest)); return; }
       // A writer that replaced the file gave every line its place again: the page reads it as a new start.
-      if (replaced) live.restart(fresh); else live.grow(fresh);
+      if (replaced) live.restart(fresh); else live.grow(fresh, found > 0);
       live.status('live');
     } catch { live.status('connection lost, retrying'); }
     setTimeout(step, FOLLOW_MS);
   };
-  if (first.manifest) { live.finish(first.manifest, await whole(first.manifest)); return; }
-  setTimeout(step, FOLLOW_MS);
+  await step();
 }
 
 async function main() {

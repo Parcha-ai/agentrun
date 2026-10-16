@@ -11,7 +11,9 @@ import { test } from 'node:test';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
 import { finishedManifest, placeLines, tailOf } from '../src/follow.ts';
+import { blobsNamed } from '../src/app.ts';
 import { fileOrder, type Line } from '../src/format.ts';
+import { stopsOf } from '../src/replay.ts';
 import { chrome, drivenPage } from './driven-page.ts';
 import { blobs, lines, manifest } from './vision-hand.ts';
 
@@ -74,6 +76,26 @@ test('a replaced events.jsonl is read again from its start: one as long with oth
   }
 });
 
+test('a line written anew earlier in the file, the last bytes read unchanged, is found by the read that asks for the whole file again', async () => {
+  for (const ranges of [true, false]) {
+    const file = growing(ranges);
+    const tail = tailOf('events.jsonl', file.fetch, 3);
+    const first = [line(1, 'a'), line(2, 'b'), line(3, 'c'), line(4, 'd'), line(5, 'e'), line(6, 'f'), line(7, 'g'), line(8, 'h')];
+    file.write(jsonl(first));
+    assert.equal((await tail.read()).lines.length, 8);
+    // The second line is written anew with other bytes of the same length: the last 256 bytes are as they were.
+    const edited = [first[0]!, line(2, 'x'), ...first.slice(2)];
+    assert.equal(jsonl(edited).length, jsonl(first).length);
+    assert.ok(jsonl(first).length - jsonl(first.slice(0, 2)).length > 256, 'the change is before the bytes each read asks for again');
+    file.replace(jsonl(edited));
+    assert.deepEqual(await tail.read(), { lines: [], replaced: false }, 'a read of the last bytes cannot see it');
+    const third = await tail.read();
+    assert.deepEqual({ kinds: third.lines.map((each) => each.kind), replaced: third.replaced }, { kinds: edited.map((each) => each.kind), replaced: true }, `every third read asks for the whole file, ranges ${ranges}`);
+    file.write(jsonl([line(9, 'i')]));
+    assert.deepEqual((await tail.read()).lines.map((each) => each.kind), ['i'], 'and then grows as before');
+  }
+});
+
 test('the manifest says the run finished: absent while it goes, read once it is written', async () => {
   const absent = async () => ({ ok: false, status: 404, arrayBuffer: async () => new ArrayBuffer(0), json: async () => ({}) });
   assert.equal(await finishedManifest('manifest.json', absent), undefined);
@@ -109,11 +131,15 @@ test('new lines take their place in the format\'s order: appended when they come
 /** A server for the viewer's page and a recording directory that grows: events.jsonl with ranges, blobs/ (one may be
  *  served half written), and manifest.json once written; at the finish the writer gives events.jsonl its final order, as
  *  the recorder's merge does. */
-function liveServer(dist: string) {
+function liveServer(dist: string, options: { absent?: boolean } = {}) {
   let events = Buffer.alloc(0);
   let arrived: Line[] = [];
   let finished: string | undefined;
+  // `absent`: events.jsonl is not there until its first line is written.
+  let absent = options.absent === true;
   const held = new Set<string>();
+  const cut = new Set<string>();
+  const failing = new Map<string, number>();
   const files = new Map<string, Buffer>([...blobs].map(([sha, { ext, bytes }]) => [`/run/blobs/${sha}.${ext}`, bytes]));
   const types: Record<string, string> = { html: 'text/html', js: 'text/javascript', json: 'application/json', png: 'image/png' };
   const server: Server = createServer((request, response) => {
@@ -122,7 +148,10 @@ function liveServer(dist: string) {
       response.writeHead(status, { 'content-type': type, 'cache-control': 'no-store', ...extra });
       response.end(request.method === 'HEAD' ? undefined : body);
     };
+    const fails = failing.get(path) ?? 0;
+    if (fails > 0) { failing.set(path, fails - 1); return send(503, 'busy'); }
     if (path === '/run/events.jsonl') {
+      if (absent) return send(404, 'not yet');
       const range = /bytes=(\d+)-/.exec(request.headers.range ?? '');
       if (!range) return send(200, events, 'text/plain');
       const from = Number(range[1]);
@@ -131,6 +160,12 @@ function liveServer(dist: string) {
     }
     if (path === '/run/manifest.json') return finished === undefined ? send(404, 'not yet') : send(200, finished, 'application/json');
     const blob = files.get(path);
+    // A cut blob's connection drops halfway through its body.
+    if (blob && [...cut].some((sha) => path.includes(sha))) {
+      response.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': String(blob.length) });
+      response.write(blob.subarray(0, blob.length >> 1), () => response.destroy());
+      return;
+    }
     if (blob) return send(200, [...held].some((sha) => path.includes(sha)) ? blob.subarray(0, blob.length >> 1) : blob, types[path.split('.').at(-1)!] ?? 'application/octet-stream');
     const file = join(dist, path.replace(/^\/viewer\//, '/'));
     if (path.startsWith('/viewer/') && existsSync(file)) return send(200, readFileSync(file), types[file.split('.').at(-1)!] ?? 'text/plain');
@@ -138,9 +173,13 @@ function liveServer(dist: string) {
   });
   return {
     server,
-    append(more: Line[]) { arrived = [...arrived, ...more]; events = Buffer.concat([events, Buffer.from(more.map((each) => `${JSON.stringify(each)}\n`).join(''))]); },
+    append(more: Line[]) { absent = false; arrived = [...arrived, ...more]; events = Buffer.concat([events, Buffer.from(more.map((each) => `${JSON.stringify(each)}\n`).join(''))]); },
     hold(sha: string) { held.add(sha); },
     release(sha: string) { held.delete(sha); },
+    cut(sha: string) { cut.add(sha); },
+    mend(sha: string) { cut.delete(sha); },
+    /** The next `times` requests for `path` are answered 503. */
+    fail(path: string, times: number) { failing.set(path, times); },
     /** The file written anew in the merge's order, as a recorder does when a line arrived after its hold. */
     rewrite() { events = Buffer.from(arrived.toSorted(fileOrder).map((each) => `${JSON.stringify(each)}\n`).join('')); },
     finish() { this.rewrite(); finished = JSON.stringify(manifest); },
@@ -236,6 +275,55 @@ test('the page follows a run as two writers grow it, through a kill and a second
   t.after(async () => { await framed.close(); });
   const embedded = await until((now) => now.panels.includes('What the eyes read'), 'the embedded page follows', framed);
   assert.equal(embedded.title, '', 'no header when embedded');
+});
+
+test('the page recovers: a run not started yet, a blob whose connection drops, blobs read with no new line, and a late line before a reader who scrubbed back', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` }, async (t) => {
+  const out = mkdtempSync(join(tmpdir(), 'viewer-follow-recover-'));
+  build(join(out, 'dist'), join(out, 'no-recordings'));
+  const live = liveServer(join(out, 'dist'), { absent: true });
+  const port = await listen(live.server);
+  live.fail('/run/manifest.json', 1);
+  const followed = await drivenPage(`http://127.0.0.1:${port}/viewer/index.html?follow=/run/`, join(out, 'profile'));
+  t.after(async () => { await followed.close(); live.server.close(); rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); });
+  const seen = async () => JSON.parse(String(await followed.evaluate(`JSON.stringify({ position: document.querySelector('.position')?.textContent ?? '', status: document.querySelector('.live-status')?.textContent ?? '',
+    missing: [...document.querySelectorAll('.missing')].map((each) => each.textContent).join(' | '), text: document.body.textContent })`))) as Record<string, string>;
+  const until = async (test: (now: Record<string, string>) => boolean, what: string) => {
+    let now = await seen();
+    for (let tries = 0; tries < 300 && !test(now); tries += 1) { await followed.sleep(100); now = await seen(); }
+    assert.ok(test(now), `${what}: ${JSON.stringify({ ...now, text: now.text!.slice(0, 300) })}`);
+    return now;
+  };
+  // Opened before the run wrote anything, its first manifest check failing: the page waits and retries.
+  await followed.sleep(2500);
+  assert.doesNotMatch((await seen()).text!, /could not be opened/, 'a run that has not started is waited for');
+  const first = 12;
+  live.append(lines.slice(0, first));
+  await until((now) => now.position.includes(`line ${first} of ${first}`) && now.status === 'live', 'its first lines, once written');
+  // A blob whose connection drops mid-body: the lines that name it are drawn, and it is read once it can be.
+  const named = new Set(blobsNamed(manifest, lines.slice(0, first)));
+  const second = lines.findIndex((each, at) => at >= first && (each.blobs ?? []).some((sha) => !named.has(sha))) + 1;
+  const dropped = lines[second - 1]!.blobs!.find((sha) => !named.has(sha))!;
+  live.cut(dropped);
+  live.append(lines.slice(first, second));
+  await until((now) => now.position.includes(`line ${second} of ${second}`) && now.status === 'live', 'the lines a dropped blob arrived with');
+  live.mend(dropped);
+  // The result and its blob, the blob served half written: then whole, with no line after it.
+  const result = lines.length - 1;
+  live.hold(lines[result]!.blobs![0]!);
+  live.append(lines.slice(second, result + 1));
+  await until((now) => now.position.includes(`line ${lines.length} of ${lines.length}`) && /loading/.test(now.missing), 'the result named, its blob not read yet');
+  live.release(lines[result]!.blobs![0]!);
+  const read = await until((now) => now.missing === '' && /An alarm is called out, number 9\./.test(now.text!), 'every blob read, the result drawn, with no new line');
+  assert.equal(read.status, 'live');
+  // The reader scrubs back; a line that happened before where they are arrives late: they stay at their time.
+  const stops = stopsOf(lines);
+  const back = stops.findIndex((stop, at) => stop && at > first + 4);
+  const at = String(await followed.evaluate(`(() => { const range = document.querySelector('.controls input[type=range]'); range.value = '${back}'; range.dispatchEvent(new Event('input')); return document.querySelector('.position').textContent; })()`));
+  assert.match(at, new RegExp(`line ${back} of ${lines.length}`));
+  const time = lines[back - 1]!.t;
+  live.append([line(time - 5, 'note', { seq: 10_000 })]);
+  const after = await until((now) => now.position.includes(`of ${lines.length + 1}`), 'the late line');
+  assert.match(after.position, new RegExp(`^${(time / 1000).toFixed(2)} s .* line ${back + 1} of ${lines.length + 1}$`), 'the same moment, one line further on');
 });
 
 test('a run on another server is never followed', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` }, async (t) => {

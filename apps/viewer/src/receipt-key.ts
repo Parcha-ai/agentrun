@@ -11,34 +11,72 @@ const SHA_K = [
 /** SHA-256 of a string's UTF-8 bytes, as lowercase hex. */
 export const sha256Hex = (text: string): string => sha256OfBytes(new TextEncoder().encode(text));
 
+/** One 64-byte block at `at` of `view` folded into the state `h`. */
+function sha256Block(h: Uint32Array, view: DataView, at: number, w: Uint32Array): void {
+  const rotr = (x: number, n: number) => (x >>> n) | (x << (32 - n));
+  for (let i = 0; i < 16; i += 1) w[i] = view.getUint32(at + i * 4);
+  for (let i = 16; i < 64; i += 1) {
+    const s0 = rotr(w[i - 15]!, 7) ^ rotr(w[i - 15]!, 18) ^ (w[i - 15]! >>> 3);
+    const s1 = rotr(w[i - 2]!, 17) ^ rotr(w[i - 2]!, 19) ^ (w[i - 2]! >>> 10);
+    w[i] = (w[i - 16]! + s0 + w[i - 7]! + s1) >>> 0;
+  }
+  let [a, b, c, d, e, f, g, hh] = h as unknown as [number, number, number, number, number, number, number, number];
+  for (let i = 0; i < 64; i += 1) {
+    const t1 = (hh + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + SHA_K[i]! + w[i]!) >>> 0;
+    const t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) >>> 0;
+    hh = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+  }
+  h[0] = h[0]! + a; h[1] = h[1]! + b; h[2] = h[2]! + c; h[3] = h[3]! + d; h[4] = h[4]! + e; h[5] = h[5]! + f; h[6] = h[6]! + g; h[7] = h[7]! + hh;
+}
+
+/** The bytes after the last whole block, padded and ending in the message's length in bits: one or two blocks. */
+function sha256Tail(bytes: Uint8Array): DataView {
+  const rest = bytes.length & 63;
+  const tail = new Uint8Array(rest + 9 > 64 ? 128 : 64);
+  tail.set(bytes.subarray(bytes.length - rest));
+  tail[rest] = 0x80;
+  const view = new DataView(tail.buffer);
+  view.setUint32(tail.length - 8, Math.floor((bytes.length * 8) / 0x100000000));
+  view.setUint32(tail.length - 4, (bytes.length * 8) >>> 0);
+  return view;
+}
+
+const SHA_INIT = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+/** Bytes hashed between two pauses: a MiB, a whole number of blocks. */
+const SHA_SLICE = 1 << 20;
+
+/** The whole blocks of `bytes` from `from` to `to` folded into `h`, read where they are (never copied). */
+function sha256Blocks(h: Uint32Array, bytes: Uint8Array, from: number, to: number, w: Uint32Array): void {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let at = from; at < to; at += 64) sha256Block(h, view, at, w);
+}
+
+/** The digest once every whole block is folded in: the padded tail, then the state as lowercase hex. */
+function sha256Finish(h: Uint32Array, bytes: Uint8Array, w: Uint32Array): string {
+  const tail = sha256Tail(bytes);
+  for (let at = 0; at < tail.byteLength; at += 64) sha256Block(h, tail, at, w);
+  return [...h].map((word) => word.toString(16).padStart(8, '0')).join('');
+}
+
 /** SHA-256 of bytes, as lowercase hex. */
 export function sha256OfBytes(bytes: Uint8Array): string {
-  const padded = new Uint8Array(((bytes.length + 9 + 63) >> 6) << 6);
-  padded.set(bytes);
-  padded[bytes.length] = 0x80;
-  const view = new DataView(padded.buffer);
-  view.setUint32(padded.length - 8, Math.floor((bytes.length * 8) / 0x100000000));
-  view.setUint32(padded.length - 4, (bytes.length * 8) >>> 0);
-  const h = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+  const h = Uint32Array.from(SHA_INIT);
   const w = new Uint32Array(64);
-  const rotr = (x: number, n: number) => (x >>> n) | (x << (32 - n));
-  for (let block = 0; block < padded.length; block += 64) {
-    for (let i = 0; i < 16; i += 1) w[i] = view.getUint32(block + i * 4);
-    for (let i = 16; i < 64; i += 1) {
-      const s0 = rotr(w[i - 15]!, 7) ^ rotr(w[i - 15]!, 18) ^ (w[i - 15]! >>> 3);
-      const s1 = rotr(w[i - 2]!, 17) ^ rotr(w[i - 2]!, 19) ^ (w[i - 2]! >>> 10);
-      w[i] = (w[i - 16]! + s0 + w[i - 7]! + s1) >>> 0;
-    }
-    let [a, b, c, d, e, f, g, hh] = h as [number, number, number, number, number, number, number, number];
-    for (let i = 0; i < 64; i += 1) {
-      const t1 = (hh + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + SHA_K[i]! + w[i]!) >>> 0;
-      const t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) >>> 0;
-      hh = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;
-    }
-    h[0] = (h[0]! + a) >>> 0; h[1] = (h[1]! + b) >>> 0; h[2] = (h[2]! + c) >>> 0; h[3] = (h[3]! + d) >>> 0;
-    h[4] = (h[4]! + e) >>> 0; h[5] = (h[5]! + f) >>> 0; h[6] = (h[6]! + g) >>> 0; h[7] = (h[7]! + hh) >>> 0;
+  sha256Blocks(h, bytes, 0, bytes.length - (bytes.length & 63), w);
+  return sha256Finish(h, bytes, w);
+}
+
+/** `sha256OfBytes` a MiB at a time, awaiting `pause` between slices: a large blob hashed on the page's own thread gives
+ *  the page back to draw and answer between them. */
+export async function sha256Paused(bytes: Uint8Array, pause: () => Promise<void> = () => new Promise((resolve) => setTimeout(resolve, 0))): Promise<string> {
+  const h = Uint32Array.from(SHA_INIT);
+  const w = new Uint32Array(64);
+  const whole = bytes.length - (bytes.length & 63);
+  for (let at = 0; at < whole; at += SHA_SLICE) {
+    if (at > 0) await pause();
+    sha256Blocks(h, bytes, at, Math.min(whole, at + SHA_SLICE), w);
   }
-  return h.map((word) => word.toString(16).padStart(8, '0')).join('');
+  return sha256Finish(h, bytes, w);
 }
 
 /** `canonicalHash` of the DSL: SHA-256 of the value's JSON with every object's keys sorted, independent of key order. */
