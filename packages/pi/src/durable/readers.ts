@@ -74,7 +74,10 @@ export function durableDoc<T = Record<string, unknown>>(file: string, kind: stri
 }
 
 /** The journal `key` holds in the run's store `file`, as the last commit left it; undefined when the file holds no
- *  such journal or none has bound it. */
+ *  such journal or none has bound it. `effects` are every effect the journal admitted, once each, in the order they were
+ *  admitted, in either layout: in the keyed one (`agentrun.frozen_run.v4`) the effects a map item owns, nested maps
+ *  included, are listed by that item's record, not the driver's, and are read from there. `state` is the driver's own
+ *  record: in the keyed layout what lies in each map item stays in the item's record. */
 export function readJournal(file: string, key: string): JournalView | undefined {
   return withDurableFile(file, (db): JournalView | undefined => {
     const doc = sessionDoc(db, "agentrun.driver", key) as DriverRecord | undefined;
