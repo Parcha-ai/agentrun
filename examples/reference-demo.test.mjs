@@ -1270,3 +1270,28 @@ test('an operator kill (a control file the supervisor watches, never the child\'
   writeFileSync(control, '');
   await assert.rejects(() => demo({ ...options, argv: ['--json', '--operator-kill', control] }), /already exists/);
 });
+
+// ---- code mode ---------------------------------------------------------------------------------------------------------------------------------
+
+test('code mode is off by default; on, the agent\'s `code` tool runs a script whose bash runs in work/, whose vision.see is the composed handle\'s, and which reaches nothing else', { timeout: 300_000 }, async (t) => {
+  // The script writes what it saw into work/ through its own bash: the proof is a file the run\'s environment made.
+  const script = [
+    'const ran = await tools.bash({ command: "echo hello > proof.txt; pwd > where.txt; echo $?" });',
+    'const reach = [typeof fetch, typeof process, typeof require, typeof WebAssembly, typeof setTimeout, typeof vision.see].join(",");',
+    'await tools.bash({ command: "printf %s " + JSON.stringify(reach) + " > reach.txt" });',
+    'text("ran " + ran.exitCode);',
+    'return ran.exitCode;',
+  ].join('\n');
+  const on = await run(t, {}, ['--json'], { DEMO_CODE: script, DEMO_CODE_ON: '1' });
+  assert.equal(on.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(on.result.processes.at(-1)));
+  const work = join(on.result.dir, 'work');
+  assert.equal(readFileSync(join(work, 'proof.txt'), 'utf8').trim(), 'hello', 'bash ran, in work/');
+  assert.equal(readFileSync(join(work, 'where.txt'), 'utf8').trim(), work, 'and its working directory is the run\'s work/');
+  assert.equal(readFileSync(join(work, 'reach.txt'), 'utf8'), 'undefined,undefined,undefined,undefined,undefined,function', 'the sandbox has no fetch, process, require, WebAssembly or timers; vision.see is there');
+  // Off: the same lead calls a tool that is not installed (the run may refuse for it), and nothing ran.
+  const off = await run(t, {}, ['--json'], { DEMO_CODE: script, DEMO_CODE_ON: '' });
+  assert.ok(!existsSync(join(off.result.dir, 'work', 'proof.txt')), 'off by default');
+  // demo.json\'s codeMode is the same switch.
+  const spec = await run(t, { codeMode: true }, ['--json'], { DEMO_CODE: script, DEMO_CODE_ON: '' });
+  assert.equal(readFileSync(join(spec.result.dir, 'work', 'proof.txt'), 'utf8').trim(), 'hello');
+});
