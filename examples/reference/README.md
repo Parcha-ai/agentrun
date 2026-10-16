@@ -268,7 +268,7 @@ A place that has `status()` reports its reading of the run (`{ record }`, a disk
 
 ### Blobs appear whole
 
-Each blob is written to a temporary name beside its final one (`blobs/.<sha>.<ext>.tmp-<pid>`), synced, and renamed into place, so a viewer following a live run finds it absent or whole; a blob already there is left alone. The validator, the gate and the record-time scan skip a temporary name.
+Each blob is written to a temporary file in the recording's `.spool/` (`blob-<sha>.<ext>.tmp-<pid>`), synced, and renamed into `blobs/`, so a viewer following a live run finds it absent or whole, and a process killed mid-write leaves a temporary file in `.spool/` and never a torn blob; a blob already there is left alone. No validator or gate change is needed: `.spool/` is never published.
 
 ### Code mode (opt-in; it runs model-written code)
 
