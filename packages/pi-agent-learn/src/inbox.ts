@@ -17,7 +17,7 @@ export function renderInbox(runId: string, candidates: readonly Candidate[]): st
     lines.push(`## ${i + 1}. ${c.type}${c.id === undefined ? "" : ` ${c.id}`}`, "", c.text, "");
     if (c.evidence.length) lines.push("Evidence:", ...c.evidence.map((item) => `- ${item}`), "");
   });
-  const exact = candidates.map(({ callId, type, text, evidence, id }) => ({ callId, type, text, evidence, ...(id === undefined ? {} : { id }) }));
+  const exact = candidates.map(({ callId, type, text, evidence, id, untrusted }) => ({ callId, type, text, evidence, ...(id === undefined ? {} : { id }), ...(untrusted === true ? { untrusted } : {}) }));
   lines.push(FENCE, JSON.stringify(exact), "~~~", "");
   return lines.join("\n");
 }
@@ -44,11 +44,15 @@ export function parseInbox(text: string): Inbox {
     const evidence = c?.evidence;
     if (
       c === null || typeof c !== "object" || typeof c.callId !== "string" || !LEARN_TYPES.includes(c.type as never) || typeof c.text !== "string" ||
-      !Array.isArray(evidence) || evidence.some((item) => typeof item !== "string") || (c.id !== undefined && typeof c.id !== "string")
+      !Array.isArray(evidence) || evidence.some((item) => typeof item !== "string") || (c.id !== undefined && typeof c.id !== "string") ||
+      (c.untrusted !== undefined && typeof c.untrusted !== "boolean")
     ) {
       throw new InboxFormatError(`candidate ${i} is not a candidate`);
     }
-    return { callId: c.callId, type: c.type as Candidate["type"], text: c.text, evidence: evidence as string[], ...(c.id === undefined ? {} : { id: c.id as string }) };
+    return {
+      callId: c.callId, type: c.type as Candidate["type"], text: c.text, evidence: evidence as string[], ...(c.id === undefined ? {} : { id: c.id as string }),
+      ...(c.untrusted === true ? { untrusted: true } : {}),
+    };
   });
   return { run, candidates };
 }

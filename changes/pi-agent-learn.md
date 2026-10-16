@@ -3,8 +3,9 @@ packages: @parcha/pi-agent-learn
 kind: feature
 ---
 New held package `@parcha/pi-agent-learn`: an agent that learns in its own git repository, on top of
-`@parcha/pi-git-remote`. `agentLearn()` is a pi-durable extension with one tool, `learn({ type, text, evidence?, id? })`,
-which stores one candidate per call id in the run's store, is replay safe and makes no model call, and the `<learned>`
+`@parcha/pi-git-remote`. `agentLearn()` is a pi-durable extension with one tool, `learn({ type, text, evidence?, id? })`
+(a lesson, a fact, a correction, a `used` mark on a learning that helped, or a `workflow` note on when to use a workflow
+the run saved), which stores one candidate per call id in the run's store, is replay safe and makes no model call, and the `<learned>`
 prompt section: the rules win, the active learnings at the commit the run was seeded from (most used first, at most
 4,096 bytes, with the count of those that did not fit), the workflows to try, and when to call `learn`. `seedLearning()`
 is the host step at run start: it resolves a ref, records `learn.seed` (the sha and the derived index) in the run's store
@@ -27,15 +28,31 @@ collected (`inbox/<run id>/workflows/<name>/`), guards the whole proposal, and m
 call, including one from a restarted host with an empty local repository, commits nothing. `renderInbox` and `parseInbox`
 are the inbox's format.
 
-Saved workflows are tried and promoted on receipts. `admitWorkflow` is curate's hook for a workflow candidate a run saved with the
-DSL's `agentrun` tool: it validates the run's records through the DSL's public store (`@parcha/agentrun-pi/workflows`), refuses a
-workflow with code in it unless the host admits it, saves the revision into the checkout through the store, and writes the skill
-(`.agents/skills/<name>/SKILL.md`, whose description is the `workflow` learning's text) and `trial.json`: `{ name, status, when,
-revisions, uses }`, where `when` is typed checks on the run's input (a JSON pointer and `eq`, `in`, `exists`, `gte` or `lte`, derived from
-the workflow's own input schema unless the host gives them). `collectWorkflows` and `inboxWorkflowFiles` hand a run's new revisions to
-its inbox, `collectUses` reads from the run's store (read only, through `recordingLines`; or from the receipts of a pi session with `readSessionUses`)
-which saved workflow each durable workflow task ran and whether it finished `frozen`, `escalated` or `failed`, and `settleWorkflowUses` folds those uses into `trial.json` by the rules
-of the archived harness: a trial is promoted after 3 clean uses in a row, the live revision is demoted after 2 failed or escalated
-ones and the previous active revision comes back, a demoted revision is never tried again, and the run that wrote a revision is no
-evidence for it. `workflowsToTry` lists the trial and active workflows whose checks hold on a run's input, for the `<learned>`
-section, and `seedWorkflows` puts them in the run's own store. The thresholds are the host's.
+`curate({ repo, judge, rules, thresholds, caps, now, secrets, admitWorkflow, settleUses })` is the host step that writes `main`, and
+the only one. It takes each `runs/<run id>` branch whose run no `Curated-Run` trailer on main names, guards everything
+the run changed again, and judges each candidate with the DSL's System One port (`WorkflowDeps["runJudge"]`; Jev is one),
+one question at a time over the candidate's own text: general or about this case, contradicts or narrows a rule in
+AGENTS.md, an instruction from content the run read (for a candidate marked `untrusted`), then duplicate, supersedes and
+contradicts against each active learning of its type. An answer between the cuts in `thresholds` holds the candidate;
+nothing uncertain is accepted. It writes new learnings, marks replaced ones `superseded` with `supersededBy`, counts
+duplicates and `used` marks as uses, hands proposed workflows to an `admitWorkflow` hook and a run's workflow uses
+to a `settleUses` hook (both ports are this package's types), archives the least-used learnings when the
+derived `<learned>` section would pass 4,096 bytes, and makes one commit per run on main with `Curated-Run` and
+`Learning-Id` trailers, pushed without force and rebuilt on a moved main at most five more times (then `contended`). A
+reverted learning stays reverted, a second curate changes nothing, and no reason in the report or a commit message names
+a value from the case. Learning files take an optional `supersededBy`; a candidate takes an optional `untrusted` mark.
+
+Saved workflows are tried and promoted on receipts. `workflowAdmitter` is the curator's `AdmitWorkflow` port for a workflow candidate
+a run saved with the DSL's `agentrun` tool: it validates the run's records through the DSL's public store
+(`@parcha/agentrun-pi/workflows`), holds a workflow with code in it unless the host admits it, saves the revision through the store,
+and returns the files that admit it: the skill (`.agents/skills/<name>/SKILL.md`, whose description is the agent's when-to-use text)
+and `trial.json`, `{ name, status, when, revisions, uses }`, where `when` is optional typed checks on the run's input (a JSON pointer
+and `eq`, `in`, `exists`, `gte` or `lte`; `schemaWhen` derives them from a workflow's input schema). `usesSettler` is the `SettleUses`
+port: it folds a run's uses into `trial.json` by the rules of the archived harness. A trial is promoted after 3 clean uses in a row,
+the live revision is demoted after 2 failed or escalated ones and the previous active revision comes back with its checks and its
+description, a demoted revision is never tried again, the run that wrote a revision is no evidence for it, and uses count in the
+order they were folded, never a clock. `collectWorkflows` and `inboxWorkflowFiles` hand a run's new revisions to its inbox,
+`collectUses` reads from the run's store (read only, through `recordingLines`; or from the receipts of a pi session with
+`readSessionUses`) which saved workflow each durable workflow task ran and whether it finished `frozen`, `escalated` or `failed`,
+`workflowsToTry` lists the trial and active workflows whose checks hold on a run's input, for the `<learned>` section, and
+`seedWorkflows` puts them in the run's own store. The thresholds are the host's.

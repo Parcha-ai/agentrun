@@ -7,7 +7,7 @@ import { inspectWorkflow, resolveSchemaForWorkflow, workflowSha256 } from "@parc
 import type { Session } from "@earendil-works/pi-durable";
 import { recordingLines } from "@parcha/agentrun-pi/durable";
 import { WorkflowStore, WorkflowStoreError } from "@parcha/agentrun-pi/workflows";
-import type { Repo, TreeEntry } from "@parcha/pi-git-remote";
+import type { Repo } from "@parcha/pi-git-remote";
 import { Type } from "typebox";
 import { Compile } from "typebox/compile";
 import { LearnError } from "./errors.js";
@@ -16,6 +16,7 @@ import { type Admission, admitRevision, type Decision, foldUses, type IgnoredUse
 import type { UsesSource } from "./propose.js";
 import { MAX_WORKFLOW_HINTS, type WorkflowHint } from "./section.js";
 import { readSeed } from "./seed.js";
+import type { AdmitWorkflow, AdmitWorkflowInput, AdmitWorkflowResult, RepoRead, SettleUses, SettleUsesInput, SettleUsesResult, WorkflowUse } from "./types.js";
 import {
   currentRevision, deriveWhen, fitTrial, LIMITS, matches, MAX_NAME, parseTrial, type Precondition, readTrial, renderTrial, skillName, skillPath, type Trial, trialPath,
   type Use, type UseOutcome, whenSize, workflowDir, WORKFLOW_SKILL_NAME,
@@ -208,7 +209,8 @@ export function inboxWorkflowFiles(runId: string, found: readonly FoundWorkflow[
 
 // ---------------------------------------------------------------- uses
 
-export type RunUse = { readonly name: string; readonly sha256: string; readonly outcome: UseOutcome; readonly at: string };
+/** One use in `uses/<run id>.json`: the curator's `WorkflowUse`. */
+export type RunUse = WorkflowUse;
 /** `uses/<run id>.json`. */
 export type RunUses = { readonly version: 1; readonly run: string; readonly uses: readonly RunUse[] };
 
@@ -722,15 +724,8 @@ export async function seedWorkflows(options: SeedWorkflowsOptions): Promise<Seed
 
 // ---------------------------------------------------------------- the curator's ports
 
-/** What the curator hands a port: main's commit and a way to read it. */
-type CurateRead = {
-  readonly main: string;
-  read(path: string, sha: string): Promise<string | undefined>;
-  list(prefix: string, sha: string): Promise<readonly TreeEntry[]>;
-};
-
 /** Copies `paths` at main into a fresh directory under `root`, as regular files, and hands it to `use`; removes it after. */
-async function staged<T>(root: string | undefined, from: CurateRead, paths: (dir: string) => Promise<readonly string[]>, use: (dir: string) => Promise<T>): Promise<T> {
+async function staged<T>(root: string | undefined, from: RepoRead, paths: (dir: string) => Promise<readonly string[]>, use: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(path.join(root ?? tmpdir(), "pi-agent-learn-stage-"));
   try {
     for (const file of await paths(dir)) {
@@ -762,9 +757,8 @@ export type WorkflowAdmitterOptions = {
  * record the store refuses, a demoted revision and the limits are `refused`. The curator's judgments of the `untrusted` text
  * have already been made when the port is called, so the flag changes nothing here.
  */
-export function workflowAdmitter(options: WorkflowAdmitterOptions = {}) {
-  return async (input: CurateRead & { readonly workflow: { readonly run: string; readonly name: string; readonly description?: string; readonly records: Readonly<Record<string, string>>; readonly untrusted: boolean } }):
-    Promise<{ status: "admitted"; files: Record<string, string | null>; reason: string } | { status: "unchanged"; reason: string } | { status: "held" | "refused"; reason: string }> => {
+export function workflowAdmitter(options: WorkflowAdmitterOptions = {}): AdmitWorkflow {
+  return async (input: AdmitWorkflowInput): Promise<AdmitWorkflowResult> => {
     const { workflow } = input;
     if (typeof workflow?.name !== "string" || !WORKFLOW_SKILL_NAME.test(workflow.name) || workflow.name.length > MAX_NAME) {
       return { status: "refused", reason: "a workflow name is lowercase letters and digits in words joined by single hyphens, so pi can load it as a skill" };
@@ -793,9 +787,8 @@ export type UsesSettlerOptions = {
  * returns the changed files and one decision per promotion, demotion or name held, each with a reason that names no value from
  * the case. A trial.json that does not parse holds its name, never the curation.
  */
-export function usesSettler(options: UsesSettlerOptions = {}) {
-  return async (input: CurateRead & { readonly run: string; readonly uses: readonly RunUse[] }):
-    Promise<{ files: Record<string, string | null>; decisions: { name: string; action: "promote" | "demote" | "hold"; reason: string; rollbackTo?: string }[] }> => {
+export function usesSettler(options: UsesSettlerOptions = {}): SettleUses {
+  return async (input: SettleUsesInput): Promise<SettleUsesResult> => {
     const decisions: { name: string; action: "promote" | "demote" | "hold"; reason: string; rollbackTo?: string }[] = [];
     let uses: RunUses;
     try {

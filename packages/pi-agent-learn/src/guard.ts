@@ -1,6 +1,5 @@
 import { pathRefusal as gitPathRefusal } from "@parcha/pi-git-remote";
-import { CAPS, inboxPath, isRulesLocked, LEARNING_ID, RUN_ID, usesPath } from "./layout.js";
-import { WORKFLOW_NAME } from "./section.js";
+import { CAPS, inboxPath, inboxWorkflowDir, isRulesLocked, LAYOUT, LEARNING_ID, learningPath, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
 import { type Guard, type GuardInput, LEARN_TYPES, type Refusal, type RefusalReason } from "./types.js";
 
 export type Caps = { -readonly [K in keyof typeof CAPS]: number };
@@ -12,7 +11,7 @@ const MIN_CASE_VALUE = 4;
 
 const bytes = (text: string) => Buffer.byteLength(text, "utf8");
 const squeeze = (text: string) => text.normalize("NFKC").replace(/\s+/gu, "");
-const foldCase = (text: string) => text.normalize("NFKC").toLowerCase().replace(/\s+/gu, " ").trim();
+const foldCase = (text: string) => squeeze(text).toLowerCase();
 
 // ---------------------------------------------------------------- secrets
 
@@ -111,6 +110,8 @@ function hiddenCharacter(text: string): { code: number; at: number } | undefined
 
 // ---------------------------------------------------------------- paths
 
+// A skill folder is named like a directory; a workflow folder by the DSL's workflow name rule.
+const SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const DIGEST_RECORD = /^(?:[0-9a-f]{64}\.json|latest)$/;
 
 type Hit = { readonly reason: RefusalReason; readonly detail: string };
@@ -126,23 +127,20 @@ function allowance(role: "run" | "curate", file: string, runId: string | undefin
     if (runId === undefined || !RUN_ID.test(runId)) return refuse("a run writes only paths named for its own valid run id");
     if (file === inboxPath(runId)) return { cap: caps.inbox };
     if (file === usesPath(runId)) return { cap: caps.file };
-    const [dir, id, workflows, name, record, ...deeper] = file.split("/");
+    const [, , , name = "", record = ""] = file.split("/");
     // The DSL's saved records, copied as they are: <sha256>.json and latest, one folder per workflow.
-    if (dir === "inbox" && id === runId && workflows === "workflows" && WORKFLOW_NAME.test(name ?? "") && DIGEST_RECORD.test(record ?? "") && deeper.length === 0) {
-      return { cap: caps.file };
-    }
+    if (WORKFLOW_NAME.test(name) && DIGEST_RECORD.test(record) && file === `${inboxWorkflowDir(runId, name)}${record}`) return { cap: caps.file };
     return refuse("a run writes only its own inbox, uses and workflow records");
   }
-  const parts = file.split("/");
-  const [root] = parts;
+  const within = (dir: string) => (file.startsWith(`${dir}/`) ? file.slice(dir.length + 1).split("/") : undefined);
   // The curator names each entry by its generated id; the index is derived at seed time and never stored.
-  if (root === "learnings" && parts.length === 2 && parts[1]!.endsWith(".md") && LEARNING_ID.test(parts[1]!.slice(0, -3))) return { cap: caps.learning };
-  if (root === ".agents" && parts[1] === "skills" && WORKFLOW_NAME.test(parts[2] ?? "") && parts.length === 4 && (parts[3] === "SKILL.md" || parts[3] === "trial.json")) {
-    return { cap: caps.file };
-  }
-  if (root === ".pi" && parts[1] === "agentrun" && parts[2] === "workflows" && WORKFLOW_NAME.test(parts[3] ?? "") && parts.length === 5 && DIGEST_RECORD.test(parts[4]!)) {
-    return { cap: caps.file };
-  }
+  const entry = within(LAYOUT.learnings);
+  const id = entry?.length === 1 && entry[0]!.endsWith(".md") ? entry[0]!.slice(0, -3) : "";
+  if (LEARNING_ID.test(id) && file === learningPath(id)) return { cap: caps.learning };
+  const skill = within(LAYOUT.skills);
+  if (skill?.length === 2 && SKILL_NAME.test(skill[0]!) && (skill[1] === "SKILL.md" || skill[1] === "trial.json")) return { cap: caps.file };
+  const record = within(LAYOUT.workflows);
+  if (record?.length === 2 && WORKFLOW_NAME.test(record[0]!) && DIGEST_RECORD.test(record[1]!)) return { cap: caps.file };
   return refuse("the path is outside what a curator writes: learnings/<id>.md, SKILL.md and trial.json in a skill folder, and the workflow store");
 }
 
@@ -264,7 +262,7 @@ export function createGuard(overrides?: Partial<Caps>): Guard {
         else check(candidate.callId, "callId");
         check(candidate.text, "text", caps.text);
         if (candidate.id !== undefined) {
-          const named = (candidate.type as string) === "workflow";
+          const named = candidate.type === "workflow";
           if (typeof candidate.id !== "string" || !(named ? WORKFLOW_NAME : LEARNING_ID).test(candidate.id)) add("invalid", named ? "not a workflow name" : "not a learning id", at("id"));
           else check(candidate.id, "id");
         }

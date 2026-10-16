@@ -33,7 +33,7 @@ export const CAPS = Object.freeze({
   /** One `learn` call's evidence, all items together. */
   evidence: 1000,
   evidenceItems: 8,
-  /** New learnings (lesson, fact, correction) one run may note. */
+  /** Notes of every type but `used` one run may make. */
   perRun: 8,
   /** `used` marks one run may note. */
   usedPerRun: 32,
@@ -46,7 +46,10 @@ export const CAPS = Object.freeze({
   files: 32,
 });
 
-export const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+/** A run id: also a valid branch name under `runs/` (no `..`, no trailing `.` or `.lock`). */
+export const RUN_ID = /^(?!.*\.\.)(?!.*\.lock$)[A-Za-z0-9][A-Za-z0-9._-]{0,127}(?<!\.)$/;
+/** The DSL's rule for a saved workflow's name. */
+export const WORKFLOW_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 export const LEARNING_ID = /^L-[0-9a-f]{12}$/;
 /** A commit id: SHA-1 or SHA-256. */
 export const COMMIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
@@ -90,13 +93,18 @@ export function tierOf(path: string): Tier {
 }
 
 function runId(id: string): string {
-  if (typeof id !== "string" || !RUN_ID.test(id)) throw new LearnError("invalid", "a run id is 1 to 128 letters, digits, dots, dashes or underscores, starting with a letter or digit");
+  if (typeof id !== "string" || !RUN_ID.test(id)) throw new LearnError("invalid", "a run id is 1 to 128 letters, digits, dots, dashes or underscores, starting with a letter or digit, with no \"..\" and no trailing \".\" or \".lock\"");
   return id;
 }
 
 export const runBranch = (id: string): string => `runs/${runId(id)}`;
 export const inboxPath = (id: string): string => `${LAYOUT.inbox}/${runId(id)}.md`;
 export const usesPath = (id: string): string => `${LAYOUT.uses}/${runId(id)}.json`;
+/** Where a run proposes a workflow it saved: the DSL's records for `name`, copied byte for byte. */
+export function inboxWorkflowDir(id: string, name: string): string {
+  if (typeof name !== "string" || !WORKFLOW_NAME.test(name)) throw new LearnError("invalid", "a workflow name is 1 to 64 lowercase letters, digits, dashes or underscores, starting with a letter or digit");
+  return `${LAYOUT.inbox}/${runId(id)}/workflows/${name}/`;
+}
 export function learningPath(id: string): string {
   if (typeof id !== "string" || !LEARNING_ID.test(id)) throw new LearnError("invalid", "a learning id is L- and 12 lowercase hex digits");
   return `${LAYOUT.learnings}/${id}.md`;
