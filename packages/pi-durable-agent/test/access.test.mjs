@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { copyFile, readdir, rm } from "node:fs/promises";
+import fsPromises, { copyFile, readdir, rm } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import { test } from "node:test";
 import {
   AgentHomeError, carryBack, createAgentHome, durableProfileStore, homeRevision, prepareRun, readAgentHome, refreshAgentHome, seedRun, startRun,
+  undoPrepare,
 } from "../dist/index.js";
 import { ctx, DEFINITION, openSession, Profiles, scratch } from "./support.mjs";
 
@@ -167,4 +170,111 @@ test("a startRun whose seeding fails leaves no run directory, no run record and 
   assert.equal(existsSync(path.join(home.dir, "runs", "broken")), false);
   assert.deepEqual(await readAgentHome(home), before, "no run record and no lease");
   assert.deepEqual((await readdir(path.join(home.dir, "runs"))).sort(), ["first"]);
+});
+
+const T0 = Date.parse("2026-10-16T09:00:00.000Z");
+const BROKEN = { x: "a file", "x/y.md": "and a file under it" };
+
+/** A local home whose acme profile a first run signed in to, then run-a holding acme's lease for one second from T0,
+ *  then the skills changed to a set no run can be seeded with. */
+async function leasedThenBroken() {
+  const home = await createAgentHome(await scratch(), { definition: DEFINITION, skills: SKILLS, sha: SHA_1 });
+  const first = await startRun(home, { runId: "first", host: "test", now: T0 - 10_000 });
+  const signIn = await openSession(first.storePath);
+  await durableProfileStore(signIn).resolve("acme", async () => "ctx_1");
+  await signIn.close(ctx);
+  await carryBack(home, first, { outcome: "completed", now: T0 - 5_000 });
+  const a = await startRun(home, { runId: "run-a", host: "test", now: T0, leaseMs: 1_000 });
+  await refreshAgentHome(home, { sha: SHA_2, definition: DEFINITION, skills: BROKEN });
+  return { home, a };
+}
+
+test("a failed start gives back the expired lease it took, exactly, and the run that held it still saves its profile", async () => {
+  const { home, a } = await leasedThenBroken();
+  const leaseA = (await readAgentHome(home)).leases.acme;
+  assert.deepEqual(leaseA, { runId: "run-a", expiresAt: new Date(T0 + 1_000).toISOString() });
+  await assert.rejects(startRun(home, { runId: "run-b", host: "test", now: T0 + 2_000 }), /ENOTDIR|EEXIST|not a directory/i);
+  const state = await readAgentHome(home);
+  assert.deepEqual(state.leases.acme, leaseA, "run-a's lease, its run id and its expiry, as they were");
+  assert.equal(state.runs["run-b"], undefined, "and no record of run-b");
+  const session = await openSession(a.storePath);
+  await session.commit(async (tx) => { Object.assign(await tx.doc(Profiles, "acme", null), { verifiedAt: "2026-10-16T09:00:03.000Z" }); }, ctx);
+  await session.close(ctx);
+  assert.deepEqual(await carryBack(home, a, { outcome: "completed", now: T0 + 3_000 }), { changed: true, profiles: ["acme"], released: ["acme"] });
+  assert.equal((await readAgentHome(home)).profiles.acme.verifiedAt, "2026-10-16T09:00:03.000Z");
+});
+
+test("a local start that fails is undone under the same hold of the home: another process waiting for the lock cannot get in between", { timeout: 60_000 }, async () => {
+  const { home } = await leasedThenBroken();
+  const before = await readAgentHome(home);
+  const lock = path.join(home.dir, "owner.lock");
+  const child = spawn(process.execPath, ["--input-type=module", "-e", `
+    const { DatabaseSync } = await import("node:sqlite");
+    let sawBusy = false;
+    console.log("polling");
+    for (const end = Date.now() + 30_000; Date.now() < end; ) {
+      const db = new DatabaseSync(${JSON.stringify(lock)}, { timeout: 0 });
+      try { db.exec("PRAGMA locking_mode = EXCLUSIVE"); db.exec("BEGIN EXCLUSIVE"); db.exec("COMMIT"); }
+      catch { db.close(); sawBusy = true; await new Promise((r) => setTimeout(r, 1)); continue; }
+      if (!sawBusy) { db.close(); await new Promise((r) => setTimeout(r, 1)); continue; }
+      console.log("held");
+      await new Promise((r) => setTimeout(r, 6_500));
+      db.close();
+      process.exit(0);
+    }
+    process.exit(3);
+  `], { stdio: ["ignore", "pipe", "inherit"] });
+  let out = "";
+  const polling = new Promise((resolve) => child.stdout.on("data", (chunk) => { out += chunk; if (out.includes("polling")) resolve(); }));
+  const exited = new Promise((resolve) => child.on("exit", resolve));
+  await polling;
+  await assert.rejects(startRun(home, { runId: "run-b", host: "test", now: T0 + 2_000 }));
+  assert.equal(await exited, 0, "the other process got the lock, once the start had let it go");
+  assert.match(out, /held/);
+  const after = await readAgentHome(home);
+  assert.equal(after.runs["run-b"], undefined, "no record");
+  assert.deepEqual(after.leases, before.leases, "the leases as they were");
+  assert.equal(existsSync(path.join(home.dir, "runs", "run-b")), false);
+});
+
+test("a start whose undo fails too throws both failures, never only one", async () => {
+  const { home } = await leasedThenBroken();
+  const real = fsPromises.rm;
+  const blocked = path.join("runs", "run-c");
+  fsPromises.rm = async (target, options) => {
+    if (String(target).endsWith(blocked)) throw Object.assign(new Error("EACCES: the run directory cannot be removed"), { code: "EACCES" });
+    return real(target, options);
+  };
+  syncBuiltinESMExports();
+  let error;
+  try {
+    error = await startRun(home, { runId: "run-c", host: "test", now: T0 + 2_000 }).then(() => null, (e) => e);
+  } finally {
+    fsPromises.rm = real;
+    syncBuiltinESMExports();
+  }
+  assert.ok(error instanceof AggregateError, String(error));
+  assert.equal(error.errors.length, 2);
+  assert.match(error.errors[0].message, /ENOTDIR|EEXIST|not a directory/i, "the seed's failure");
+  assert.match(error.errors[1].message, /the run directory cannot be removed/, "and the undo's");
+  assert.match(error.message, /run-c failed to start .* and undoing the start failed too/);
+  assert.equal((await readAgentHome(home)).runs["run-c"], undefined, "the part of the undo that could run, ran");
+});
+
+test("a host's start that fails is undone with undoPrepare inside the host's own claim: the prior lease back, no record", async () => {
+  const disk = await diskHome();
+  await signedInRun(disk, "first");
+  await carryBack(disk.home, { runId: "first" }, { outcome: "completed", access: disk.access });
+  const a = await prepareRun(disk.home, { runId: "run-a", host: "worker-1", now: T0, leaseMs: 1_000, access: disk.access });
+  await seedRun(disk.runDir("run-a"), a);
+  const leaseA = (await readAgentHome(disk.home, { access: disk.access })).leases.acme;
+  const b = await prepareRun(disk.home, { runId: "run-b", host: "worker-2", now: T0 + 2_000, access: disk.access });
+  assert.deepEqual(b.prior.leases, { acme: leaseA }, "the seed keeps what it replaced");
+  disk.claims.length = 0;
+  await undoPrepare(disk.home, b, { access: disk.access });
+  assert.deepEqual(disk.claims, [disk.agentDir], "one claim");
+  const state = await readAgentHome(disk.home, { access: disk.access });
+  assert.deepEqual(state.leases.acme, leaseA);
+  assert.equal(state.runs["run-b"], undefined);
+  assert.ok(state.runs["run-a"], "run-a's record stays");
 });

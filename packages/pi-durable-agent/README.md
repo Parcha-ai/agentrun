@@ -208,7 +208,7 @@ origin, path and query keys but drops its query values, fragment and userinfo. `
 | `homeRevision(home, { access? })` | The agent store's head commit number: every write that changes the home moves it, reads do not. With the identity's id it is the home's version, an ETag |
 | `setAlias(home, host, externalId)`, `setBindings(home, host, bindings)` | A host's id for the agent, and where its tools run there |
 | `startRun`, `carryBack` | A run's start and end, above; `carryBack` takes `{ access? }` |
-| `prepareRun`, `seedRun`, `HomeAccess`, `localAccess` | A start as its home and run halves, and how a host reaches a home on a disk ([An agent home on a disk](#an-agent-home-on-a-disk)) |
+| `prepareRun`, `seedRun`, `undoPrepare`, `HomeAccess`, `localAccess` | A start as its home and run halves, and how a host reaches a home on a disk ([An agent home on a disk](#an-agent-home-on-a-disk)) |
 | `refreshAgentHome(home, { sha, from?, ifRevision?, definition, skills })` | The cached definition and skills replaced by the ones at `sha` ([Following the agent's repo](#following-the-agents-repo)) |
 | `runPaths(home, runId)` | A run's `dir` (what `pi-durable-disk run --dir` takes), `storePath` (`store/run.sqlite`) and `workspace` (`work/`) |
 | `durableProfileStore(target, { provider?, signal? })` | pi-browser's `ProfileStore` over a run store; `target` is the host's Harness or any Session on the file |
@@ -239,7 +239,11 @@ A start is two halves. `prepareRun(home, { host, runId?, sha?, access })` is the
 checks the sha (`stale`), takes the save leases and records the run, and returns a `RunSeed` (the profiles, a leased
 one with its `ref` and every other `held`, the skill files, the root agent, the sha and the leases). It touches nothing
 under `runs/`. `seedRun({ storePath, workDir }, seed)` is the run's: it writes the run's store and its skills, and can run
-again on a half-written directory. `startRun` is the two in a row on this machine.
+again on a half-written directory. `startRun` is the two in a row on this machine, under one hold of the home: a start
+whose seeding fails is undone under the same hold, with no run directory, no record, and each lease it took back as it
+was (another run's expired lease included). When the undo fails too, the error is an `AggregateError` with both.
+`undoPrepare(home, seed, { access })` is that undo for a host's own start: the seed keeps what `prepareRun` replaced
+(`seed.prior`), and a lease another run has taken since is left alone.
 
 Binding the access and the seed to pi-durable-disk looks like this (a host's code, not part of this package):
 
@@ -259,6 +263,7 @@ const access = {
 
 const seed = await prepareRun(home, { host: "worker-1", sha, access });
 const run = await openDurableRun({ disk, region, id: seed.runId }, { harness, seed: (dir) => seedRun(dir, seed) });
+// (a run that will never start: await undoPrepare(home, seed, { access }) gives its leases back)
 // ... the run works, then:
 await run.release();
 await carryBack(home, { runId: seed.runId }, { outcome: "completed", access });

@@ -10,7 +10,7 @@ import {
   runStoreIn, sha256, uuidv7,
 } from "./home.js";
 import { type BrowserProfile, LeasesDoc, type ProfileLease, ProfilesDoc, put, type RunRecord, RunsDoc } from "./kinds.js";
-import { AgentHomeError, openStore, readFamily } from "./store.js";
+import { AgentHomeError, openStore, readFamily, type Store } from "./store.js";
 
 export { RUN_STORE_FILE };
 const DEFAULT_LEASE_MS = 6 * 60 * 60 * 1000;
@@ -56,6 +56,9 @@ export type RunSeed = {
   profiles: Record<string, BrowserProfile>;
   skills: Record<string, string>;
   sha?: string;
+  /** What `undoPrepare` puts back, not for the run: the start time of the record `prepareRun` wrote, and each lease it
+   *  took as it was before (null where there was none). */
+  prior: { startedAt: string; leases: Record<string, ProfileLease | null> };
 };
 
 /** What one carry back did. `changed` is false when the run had already been carried back. */
@@ -92,27 +95,31 @@ export async function prepareRun(home: AgentHome, options: { runId?: string; hos
   const runId = options.runId ?? uuidv7(now);
   if (typeof runId !== "string" || !ID_PATTERN.test(runId)) throw invalid(`the run id ${JSON.stringify(runId)} is not letters, digits, ".", "_" or "-" (at most 128)`);
   const { leaseMs, wanted } = checkStart(options);
-  return inClaimedHome(home, options.access, async (store) => {
-    const state = await readState(store);
-    if (own(state.runs, runId)) throw new AgentHomeError("exists", `the run ${runId} already exists`);
-    const sha = state.source?.sha;
-    if (wanted !== undefined && wanted !== sha) {
-      throw new AgentHomeError("stale", `the agent home's cache is at ${sha ?? "no commit"} and must be refreshed to ${wanted} before a run starts there`);
-    }
-    const skills = Object.fromEntries(Object.entries(state.skills).map(([file, skill]) => {
-      if (!isSkillPath(file) || sha256(skill.content) !== skill.sha256) throw new AgentHomeError("format", `the skill ${file} does not match its sha256`);
-      return [file, skill.content];
-    }));
-    const leases = Object.keys(state.profiles).filter((key) => isFree(own(state.leases, key), state.runs, now));
-    const profiles = Object.fromEntries(Object.entries(state.profiles).map(([key, profile]) => [key, leases.includes(key) ? profile : withoutRef(profile, own(state.leases, key)!.runId)]));
-    const record: RunRecord = { path: `runs/${runId}`, host: options.host, startedAt: iso(now), ...(sha !== undefined ? { sha } : {}) };
-    const lease: ProfileLease = { runId, expiresAt: iso(now + leaseMs) };
-    await store.session.commit(async (tx) => {
-      put(await tx.doc(RunsDoc, runId, null), record);
-      for (const key of leases) put(await tx.doc(LeasesDoc, key, null), lease);
-    }, BACKGROUND_CONTEXT);
-    return { runId, agent: { instructions: state.definition.instructions, tools: [...state.definition.tools] }, leases, profiles, skills, ...(sha !== undefined ? { sha } : {}) };
-  });
+  return inClaimedHome(home, options.access, (store) => prepareIn(store, { runId, now, host: options.host, leaseMs, wanted }));
+}
+
+/** `prepareRun`'s commit, on an agent store already held. */
+async function prepareIn(store: Store, { runId, now, host, leaseMs, wanted }: { runId: string; now: number; host: string; leaseMs: number; wanted: string | undefined }): Promise<RunSeed> {
+  const state = await readState(store);
+  if (own(state.runs, runId)) throw new AgentHomeError("exists", `the run ${runId} already exists`);
+  const sha = state.source?.sha;
+  if (wanted !== undefined && wanted !== sha) {
+    throw new AgentHomeError("stale", `the agent home's cache is at ${sha ?? "no commit"} and must be refreshed to ${wanted} before a run starts there`);
+  }
+  const skills = Object.fromEntries(Object.entries(state.skills).map(([file, skill]) => {
+    if (!isSkillPath(file) || sha256(skill.content) !== skill.sha256) throw new AgentHomeError("format", `the skill ${file} does not match its sha256`);
+    return [file, skill.content];
+  }));
+  const leases = Object.keys(state.profiles).filter((key) => isFree(own(state.leases, key), state.runs, now));
+  const profiles = Object.fromEntries(Object.entries(state.profiles).map(([key, profile]) => [key, leases.includes(key) ? profile : withoutRef(profile, own(state.leases, key)!.runId)]));
+  const record: RunRecord = { path: `runs/${runId}`, host, startedAt: iso(now), ...(sha !== undefined ? { sha } : {}) };
+  const lease: ProfileLease = { runId, expiresAt: iso(now + leaseMs) };
+  const prior = { startedAt: record.startedAt, leases: Object.fromEntries(leases.map((key) => [key, own(state.leases, key) ?? null])) };
+  await store.session.commit(async (tx) => {
+    put(await tx.doc(RunsDoc, runId, null), record);
+    for (const key of leases) put(await tx.doc(LeasesDoc, key, null), lease);
+  }, BACKGROUND_CONTEXT);
+  return { runId, agent: { instructions: state.definition.instructions, tools: [...state.definition.tools] }, leases, profiles, skills, ...(sha !== undefined ? { sha } : {}), prior };
 }
 
 /** The run-side half: the run's pi-durable store with the seed's profiles, and its skill files under
@@ -151,35 +158,56 @@ export async function seedRun(dir: { storePath: string; workDir: string }, seed:
 }
 
 /** Start a run of the agent on this machine: `prepareRun`, then `seedRun` into `runs/<runId>/` (`store/run.sqlite`
- *  and `work/`). A start that fails leaves no run directory, no run record and no lease. Seeding is this host step,
- *  never a tool. */
+ *  and `work/`), under one hold of the home, so a start that fails is undone under the same hold: no run directory, and
+ *  its record and leases as they were. When undoing fails too, the error carries both failures. Seeding is this host
+ *  step, never a tool. */
 export async function startRun(home: AgentHome, options: { runId?: string; host: string; sha?: string; now?: number; leaseMs?: number }): Promise<RunStart> {
   const now = options.now ?? Date.now();
   const runId = options.runId ?? uuidv7(now);
   const paths = runPaths(home, runId);
-  checkStart(options);
+  const { leaseMs, wanted } = checkStart(options);
   homeDir(home.dir);
   if (existsSync(paths.dir)) throw new AgentHomeError("exists", `the run ${runId} already exists`);
-  const seed = await prepareRun(home, { ...options, runId, now });
-  try {
-    await seedRun({ storePath: paths.storePath, workDir: paths.workspace }, seed);
-  } catch (error) {
-    await rm(paths.dir, { recursive: true, force: true });
-    await unprepare(home, seed).catch(() => undefined);
-    throw error;
-  }
-  return { runId, ...paths, agent: seed.agent, leases: seed.leases, ...(seed.sha !== undefined ? { sha: seed.sha } : {}) };
+  return inClaimedHome(home, undefined, async (store) => {
+    const seed = await prepareIn(store, { runId, now, host: options.host, leaseMs, wanted });
+    try {
+      await seedRun({ storePath: paths.storePath, workDir: paths.workspace }, seed);
+    } catch (error) {
+      const failed: unknown[] = [];
+      await undoIn(store, seed).catch((undo) => failed.push(undo));
+      await rm(paths.dir, { recursive: true, force: true }).catch((undo) => failed.push(undo));
+      if (failed.length) throw undoFailed(seed, error, failed);
+      throw error;
+    }
+    return { runId, ...paths, agent: seed.agent, leases: seed.leases, ...(seed.sha !== undefined ? { sha: seed.sha } : {}) };
+  });
 }
 
-/** Undo a `prepareRun` whose seed never landed: its run record and the leases it took. */
-async function unprepare(home: AgentHome, seed: RunSeed): Promise<void> {
-  await inClaimedHome(home, undefined, async (store) => {
-    const state = await readState(store);
-    await store.session.commit(async (tx) => {
-      for (const key of seed.leases) if (own(state.leases, key)?.runId === seed.runId) await tx.retireDoc(LeasesDoc, key);
-      if (own(state.runs, seed.runId)) await tx.retireDoc(RunsDoc, seed.runId);
-    }, BACKGROUND_CONTEXT);
-  });
+/** Undo a `prepareRun` whose seed never landed, inside the home's claim: each lease it took that is still this run's
+ *  goes back to what it was before (or away, where there was none), and the run's record goes away if it is still the
+ *  one `prepareRun` wrote. A lease another run has taken since, and a record that moved on, are left as they are. */
+export async function undoPrepare(home: AgentHome, seed: RunSeed, options: { access?: HomeAccess } = {}): Promise<void> {
+  await inClaimedHome(home, options.access, (store) => undoIn(store, seed));
+}
+
+async function undoIn(store: Store, seed: RunSeed): Promise<void> {
+  const state = await readState(store);
+  await store.session.commit(async (tx) => {
+    for (const key of seed.leases) {
+      if (own(state.leases, key)?.runId !== seed.runId) continue;
+      const before = own(seed.prior.leases, key) ?? null;
+      if (before) put(await tx.doc(LeasesDoc, key, null), before);
+      else await tx.retireDoc(LeasesDoc, key);
+    }
+    const record = own(state.runs, seed.runId);
+    if (record && record.endedAt === undefined && record.startedAt === seed.prior.startedAt) await tx.retireDoc(RunsDoc, seed.runId);
+  }, BACKGROUND_CONTEXT);
+}
+
+/** The error of a start that failed and whose undo failed too: both, so neither is lost. */
+function undoFailed(seed: RunSeed, error: unknown, failed: unknown[]): AggregateError {
+  const said = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  return new AggregateError([error, ...failed], `the run ${seed.runId} failed to start (${said(error)}), and undoing the start failed too (${failed.map(said).join("; ")}): its record or leases may still be in the home`);
 }
 
 /** The `browser.profiles` of a run's store, read from a private copy, so the file is only read. */
