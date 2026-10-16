@@ -111,12 +111,7 @@ function hiddenCharacter(text: string): { code: number; at: number } | undefined
 
 // ---------------------------------------------------------------- paths
 
-// A name under learnings/ is Latin letters, digits, marks, space, dot, hyphen and underscore, in NFKC form: a fullwidth
-// or Cyrillic look-alike of a locked name is not that.
-const PLAIN = /^[\p{Script=Latin}\p{N}][\p{Script=Latin}\p{N}\p{M} ._-]*$/u;
 const DIGEST_RECORD = /^(?:[0-9a-f]{64}\.json|latest)$/;
-
-const plain = (segment: string) => PLAIN.test(segment) && segment === segment.normalize("NFKC") && !/[. ]$/.test(segment);
 
 type Hit = { readonly reason: RefusalReason; readonly detail: string };
 
@@ -139,20 +134,16 @@ function allowance(role: "run" | "curate", file: string, runId: string | undefin
     return refuse("a run writes only its own inbox, uses and workflow records");
   }
   const parts = file.split("/");
-  const [root, ...rest] = parts;
-  if (root === "learnings" && rest.length > 0) {
-    if (rest.length === 1 && rest[0] === "INDEX.md") return { cap: caps.section };
-    if (rest.every(plain) && rest.at(-1)!.endsWith(".md")) return { cap: caps.learning };
-  }
-  if (root === ".agents" && parts[1] === "skills" && WORKFLOW_NAME.test(parts[2] ?? "")) {
-    const inside = parts.slice(3);
-    if (inside.length === 1 && (inside[0] === "SKILL.md" || inside[0] === "trial.json")) return { cap: caps.file };
-    if (inside.length === 2 && WORKFLOW_NAME.test(inside[0]!) && plain(inside[1]!) && inside[1]!.endsWith(".md")) return { cap: caps.file };
+  const [root] = parts;
+  // The curator names each entry by its generated id; the index is derived at seed time and never stored.
+  if (root === "learnings" && parts.length === 2 && parts[1]!.endsWith(".md") && LEARNING_ID.test(parts[1]!.slice(0, -3))) return { cap: caps.learning };
+  if (root === ".agents" && parts[1] === "skills" && WORKFLOW_NAME.test(parts[2] ?? "") && parts.length === 4 && (parts[3] === "SKILL.md" || parts[3] === "trial.json")) {
+    return { cap: caps.file };
   }
   if (root === ".pi" && parts[1] === "agentrun" && parts[2] === "workflows" && WORKFLOW_NAME.test(parts[3] ?? "") && parts.length === 5 && DIGEST_RECORD.test(parts[4]!)) {
     return { cap: caps.file };
   }
-  return refuse("the path is outside what a curator writes: learnings, skill folders and the workflow store");
+  return refuse("the path is outside what a curator writes: learnings/<id>.md, SKILL.md and trial.json in a skill folder, and the workflow store");
 }
 
 // ---------------------------------------------------------------- the guard
@@ -205,7 +196,7 @@ export function createGuard(overrides?: Partial<Caps>): Guard {
     }
     if (out.length) return out;
 
-    const ceiling = Math.max(caps.inbox, caps.file, caps.learning, caps.section);
+    const ceiling = Math.max(caps.inbox, caps.file, caps.learning);
     const hasSecret = secretMatcher(secrets);
     const hasCaseValue = caseMatcher(caseValues);
     const scan = (text: string): Hit[] => {

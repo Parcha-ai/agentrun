@@ -1,3 +1,8 @@
+// Spec changes, not edits to make code pass (rulings 11 to 14 of 2026-10-16): the curator writes learnings/L-<12 hex>.md
+// only (learnings/INDEX.md is refused: the index is derived, never stored) and SKILL.md and trial.json in a skill folder
+// (no subfolders); ZWJ and ZWNJ between letters pass only in scripts that use them; the curator may write the DSL store's
+// records, a run may not. Eleven corpus cases that expected a plain name or a skill subfolder to pass now expect refuse,
+// and their text sits in allow.moved.* cases on the run's own inbox path (test/fixtures/guard-corpus.mjs).
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -21,8 +26,10 @@ const FAMILY = {
   path: ["rules_locked", "path_not_allowed", "invisible_unicode"],
 };
 
-test("the corpus holds 190 cases with unique ids", () => {
-  assert.equal(cases.length, 190);
+test("the corpus holds 190 cases and the 11 that carry the content of closed paths, with unique ids", () => {
+  assert.equal(cases.length, 201);
+  assert.equal(cases.filter((c) => c.id.startsWith("allow.moved.")).length, 11);
+  assert.equal(cases.filter((c) => c.id.startsWith("path.strict.")).length, 11);
   assert.equal(new Set(cases.map((c) => c.id)).size, cases.length);
   for (const c of cases) {
     assert.ok(["secret", "path", "unicode", "size", "allow"].includes(c.kind), c.id);
@@ -269,4 +276,17 @@ test("a workflow candidate names a workflow, every other candidate a learning", 
   assert.deepEqual(named("workflow", "not a name"), [["candidates[0].id", "invalid"]]);
   assert.deepEqual(named("workflow", "../x"), [["candidates[0].id", "invalid"]]);
   assert.deepEqual(named("used", "kyb-us-registry"), [["candidates[0].id", "invalid"]]);
+});
+
+test("the curator writes learnings/L-<12 hex>.md, SKILL.md and trial.json, and nothing else (rulings 11 and 12)", () => {
+  const curate = (file) => guard({ role: "curate", files: { [file]: "x" } });
+  for (const file of ["learnings/L-0123456789ab.md", ".agents/skills/kyb/SKILL.md", ".agents/skills/my.skill/trial.json"]) assert.deepEqual(curate(file), [], file);
+  for (const file of [
+    "learnings/INDEX.md", "learnings/notes.md", "learnings/L-0123456789AB.md", "learnings/L-0123456789a.md", "learnings/L-0123456789abc.md",
+    "learnings/L-0123456789ab.txt", "learnings/sub/L-0123456789ab.md", "learnings/L-0123456789ab.md/x", "learnings/ L-0123456789ab.md",
+    ".agents/skills/kyb/references/checklist.md", ".agents/skills/kyb/refs/checklist.md", ".agents/skills/kyb/notes.md", ".agents/skills/kyb/skill.md",
+    ".agents/skills/SKILL.md", ".agents/skills/kyb/SKILL.md/x", ".agents/skills/not a name/SKILL.md", ".agents/config.toml",
+  ]) {
+    assert.ok(reasonsOf(curate(file)).has("path_not_allowed"), file);
+  }
 });
