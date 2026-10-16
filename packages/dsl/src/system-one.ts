@@ -2,12 +2,18 @@
 export type SystemOneQuestion =
   | { type: "choice"; instructions: string; criteria: Record<string, string | null> }
   | { type: "noul"; instructions: string; criteria?: { true?: string; false?: string } }
-  | { type: "score"; instructions: string; criteria: string[] };
+  | { type: "score"; instructions: string; criteria: string[] }
+  /** Locates what its instructions describe in the request's image. A host-side question: no workflow node declares one, and it needs an image sent with the request. */
+  | { type: "box"; instructions: string };
+
+/** A box's edges as fractions of the image's height (`top`, `bottom`) and width (`left`, `right`), from the top left corner. */
+export type SystemOneBox = { top: number; bottom: number; left: number; right: number };
 
 export type SystemOneAnswer =
   | { type: "choice"; choice: string; probabilities: Record<string, number>; confidence: number }
   | { type: "noul"; noul: number }
-  | { type: "score"; score: number; legend: Record<string, string>; probabilities: Record<string, number>; confidence: number };
+  | { type: "score"; score: number; legend: Record<string, string>; probabilities: Record<string, number>; confidence: number }
+  | { type: "box"; box: SystemOneBox; confidence: number | null };
 
 export type SystemOneResult = {
   answers: Record<string, SystemOneAnswer>;
@@ -95,6 +101,7 @@ export function answersToValue(answers: Record<string, SystemOneAnswer>, questio
     if (q.type === "choice" && a.type === "choice") out[id] = a.choice;
     else if (q.type === "noul" && a.type === "noul") out[id] = a.noul >= 0.5;
     else if (q.type === "score" && a.type === "score") out[id] = Math.max(0, Math.round(a.score));
+    else if (q.type === "box" && a.type === "box") out[id] = { ...a.box };
     else throw new Error(`System One answered question "${id}" with type "${a.type}", expected ${q.type}`);
   }
   return { ...out };
@@ -103,6 +110,7 @@ export function answersToValue(answers: Record<string, SystemOneAnswer>, questio
 export function answerConfidence(answer: SystemOneAnswer): number {
   if (!answer || typeof answer !== "object") throw new SystemOneError("System One answer missing for a question that was asked", null);
   if (answer.type === "noul") return Math.abs(answer.noul - 0.5) * 2;
+  // A box the provider reported no confidence for counts as none: unknown is never read as sure.
   return typeof answer.confidence === "number" ? answer.confidence : 0;
 }
 
@@ -125,7 +133,8 @@ export function synthesizeAnswers(questions: Record<string, SystemOneQuestion>):
     if (q.type === "choice") {
       const options = Object.keys(q.criteria);
       out[id] = { type: "choice", choice: options[0], probabilities: Object.fromEntries(options.map((o) => [o, 1 / options.length])), confidence: 0 };
-    } else if (q.type === "noul") out[id] = { type: "noul", noul: 0.5 };
+    } else if (q.type === "box") out[id] = { type: "box", box: { top: 0, bottom: 1, left: 0, right: 1 }, confidence: 0 };
+    else if (q.type === "noul") out[id] = { type: "noul", noul: 0.5 };
     else out[id] = { type: "score", score: (q.criteria.length - 1) / 2, legend: Object.fromEntries(q.criteria.map((l, i) => [String(i), l])), probabilities: Object.fromEntries(q.criteria.map((_, i) => [String(i), 1 / q.criteria.length])), confidence: 0 };
   }
   return { ...out };
@@ -134,7 +143,7 @@ export function synthesizeAnswers(questions: Record<string, SystemOneQuestion>):
 export type SystemOneRetryClass = "http_429" | "http_5xx" | "connection" | "timeout";
 
 const responseReasons = ["answers_shape", "answer_keys", "answer_shape", "answer_type", "noul_probability",
-  "confidence", "probabilities", "probability_keys", "probability_mass", "score_legend", "score_consistency", "choice_option", "score_range"] as const;
+  "confidence", "box_coordinates", "probabilities", "probability_keys", "probability_mass", "score_legend", "score_consistency", "choice_option", "score_range"] as const;
 export type SystemOneResponseReason = typeof responseReasons[number];
 export function isSystemOneResponseReason(value: unknown): value is SystemOneResponseReason {
   return typeof value === "string" && (responseReasons as readonly string[]).includes(value);
@@ -199,6 +208,12 @@ export function validateAnswers(questions: Record<string, SystemOneQuestion>, an
     const a = (answers as Record<string, any>)[id];
     if (!a || typeof a !== "object") throw new SystemOneError("System One returned no answer for a question", null, undefined, "answer_shape");
     if (a.type !== q.type) throw new SystemOneError("System One answer type does not match its question", null, undefined, "answer_type");
+    if (q.type === "box") {
+      const box = a.box;
+      if (!box || typeof box !== "object" || Array.isArray(box) || Object.keys(box).length !== 4 || !(["top", "bottom", "left", "right"] as const).every(edge => unit(box[edge]))) throw new SystemOneError("System One answer: a box's edges are not fractions in [0, 1]", null, undefined, "box_coordinates");
+      if (!(a.confidence === null || unit(a.confidence))) throw new SystemOneError("System One answer: confidence is not in [0, 1]", null, undefined, "confidence");
+      continue;
+    }
     if (q.type === "noul") { if (!unit(a.noul)) throw new SystemOneError("System One answer: noul is not a probability", null, undefined, "noul_probability"); continue; }
     if (!unit(a.confidence)) throw new SystemOneError("System One answer: confidence is not in [0, 1]", null, undefined, "confidence");
     if (!a.probabilities || typeof a.probabilities !== "object" || !Object.values(a.probabilities).every(unit)) throw new SystemOneError("System One answer: probabilities are not a distribution", null, undefined, "probabilities");
