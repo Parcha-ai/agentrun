@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { GitRemoteError, openRepo } from "../dist/index.js";
 import { createSessionCheckout, DEFAULT_BRANCH, sessionBranch } from "../dist/session.js";
-import { refsOf, scratch, seededRemote } from "./support.mjs";
+import { local } from "../dist/index.js";
+import { remoteWith } from "./plain-remote.mjs";
+import { rawGit, refsOf, scratch, seededRemote } from "./support.mjs";
 
 const refusal = (fn, why) => assert.throws(fn, (error) => error instanceof GitRemoteError && error.code === "refused" && (why === undefined || why.test(error.message)));
 
@@ -102,4 +104,64 @@ test("the seeded text of a file is the commit's, not the working copy's", async 
   await writeFile(path.join(options.checkoutDir, "notes/a.md"), "edited\n");
   assert.equal(await checkout.seeded("notes/a.md"), "alpha\n");
   assert.equal(await checkout.seeded("notes/none.md"), undefined);
+});
+
+test("a symlink the allowlist reaches refuses the whole end, and nothing is pushed", async (t) => {
+  const { options, bare, main } = await open(t);
+  const checkout = createSessionCheckout(options);
+  await checkout.seed();
+  await writeFile(path.join(options.checkoutDir, "notes/fine.md"), "fine\n");
+  await symlink("/etc/hostname", path.join(options.checkoutDir, "notes/leak.md"));
+  await assert.rejects(checkout.end(), (error) => error.code === "refused" && /notes\/leak\.md.*a symlink/.test(error.message));
+  assert.deepEqual(await refsOf(bare), { "refs/heads/main": main });
+});
+
+test("a change that no pattern names is never committed", async (t) => {
+  const { options, bare } = await open(t);
+  const checkout = createSessionCheckout({ ...options, allow: ["notes/*.md"] });
+  await checkout.seed();
+  await writeFile(path.join(options.checkoutDir, "notes/keep.md"), "keep\n");
+  await writeFile(path.join(options.checkoutDir, "notes/skip.txt"), "skip\n");
+  await writeFile(path.join(options.checkoutDir, "src/x.js"), "changed\n");
+  const outcome = await checkout.end();
+  assert.deepEqual(outcome.changed, ["notes/keep.md"]);
+  const reader = await openRepo({ dir: path.join(options.checkoutDir, "..", "reader"), remote: options.repo.remote });
+  assert.deepEqual((await reader.list("", outcome.sha)).map((e) => e.path).sort(), ["notes/a.md", "notes/keep.md", "src/x.js"]);
+  assert.equal(await reader.read("src/x.js", outcome.sha), "x\n");
+  assert.ok(await refsOf(bare));
+});
+
+test("a branch of the session's name that carries no Session-Id trailer is never added to", async (t) => {
+  const { options, bare, main } = await open(t);
+  const checkout = createSessionCheckout(options);
+  await checkout.seed();
+  await rawGit(["update-ref", "refs/heads/sessions/s1", main], { gitDir: bare });
+  await writeFile(path.join(options.checkoutDir, "notes/b.md"), "beta\n");
+  await assert.rejects(checkout.end(), (error) => error.code === "refused" && /not this session's/.test(error.message));
+  assert.equal((await refsOf(bare))["refs/heads/sessions/s1"], main);
+});
+
+test("a second end for the same session commits nothing", async (t) => {
+  const { options, bare } = await open(t);
+  const checkout = createSessionCheckout(options);
+  await checkout.seed();
+  await writeFile(path.join(options.checkoutDir, "notes/b.md"), "beta\n");
+  const first = await checkout.end();
+  const second = await checkout.end();
+  assert.deepEqual([first.created, second.created, second.sha], [true, false, first.sha]);
+  assert.equal((await refsOf(bare))["refs/heads/sessions/s1"], first.sha);
+});
+
+test("a seeded entry the checkout skipped is not seen as a deletion", async (t) => {
+  const root = await scratch();
+  const { bare } = await remoteWith(root, { "notes/a.md": "alpha\n", "notes/link.md": { link: "a.md" } });
+  const repo = await openRepo({ dir: path.join(root, "host"), remote: local(bare) });
+  const options = { repo, sessionId: "s1", ref: "main", checkoutDir: path.join(root, "checkout"), seedFile: path.join(root, "state", "s1.json"), allow: ["notes/**"] };
+  const checkout = createSessionCheckout(options);
+  const seeded = await checkout.seed();
+  assert.deepEqual(seeded.files, ["notes/a.md"]);
+  assert.deepEqual(seeded.skipped.map((s) => s.path), ["notes/link.md"]);
+  const outcome = await checkout.end();
+  assert.deepEqual([outcome.created, outcome.changed], [false, []]);
+  assert.deepEqual(Object.keys(await refsOf(bare)), ["refs/heads/main"]);
 });

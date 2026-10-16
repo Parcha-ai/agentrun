@@ -52,7 +52,8 @@ function checkPattern(pattern: unknown): string {
 
 /**
  * A set of globs over git paths: `*` is any run of characters inside one segment, `?` one character, `**` a whole
- * segment standing for any number of segments. Dotfiles are matched like any file, and case counts. Nothing else is
+ * segment standing for any number of segments (one or more when it ends the pattern, as in `notes/**`, which names what is in
+ * `notes` and not `notes` itself). Dotfiles are matched like any file, and case counts. Nothing else is
  * special, and a pattern that tries (a bracket, a brace, a leading `!`) is refused rather than read as literal text.
  */
 export function compileAllowlist(patterns: readonly string[]): Allowlist {
@@ -68,11 +69,12 @@ export function compileAllowlist(patterns: readonly string[]): Allowlist {
       let result: boolean;
       if (si === parts.length) {
         // For "below", the directory itself is consumed and one more segment must still be nameable.
-        result = below ? pi < pattern.length : pattern.slice(pi).every((s) => s === "**");
+        result = below ? pi < pattern.length : pi === pattern.length;
       } else if (pi === pattern.length) {
         result = false;
       } else if (pattern[pi] === "**") {
-        result = at(pi + 1, si) || at(pi, si + 1);
+        // A trailing ** names everything inside, never the directory itself: it takes one segment or more. Elsewhere it takes none or more.
+        result = pi === pattern.length - 1 || at(pi + 1, si) || at(pi, si + 1);
       } else {
         result = matchSegment(pattern[pi]!, parts[si]!) && at(pi + 1, si + 1);
       }

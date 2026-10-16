@@ -6,8 +6,8 @@ import { GitRemoteError } from "../dist/index.js";
 const refusal = (patterns) => assert.throws(() => compileAllowlist(patterns), (error) => error instanceof GitRemoteError && error.code === "refused");
 
 test("a pattern names whole segments: * stays in one segment, ** crosses any number, ? is one character", () => {
-  const { matches } = compileAllowlist(["notes/**", "docs/*.md", "skills/*/SKILL.md", "a?c.txt", "**/keep.json"]);
-  for (const yes of ["notes/a.md", "notes/deep/er/b.md", "notes/.hidden", "docs/x.md", "skills/s/SKILL.md", "abc.txt", "keep.json", "x/y/keep.json"]) assert.ok(matches(yes), yes);
+  const { matches } = compileAllowlist(["notes/**", "docs/*.md", "skills/*/SKILL.md", "a?c.txt", "**/keep.json", "a/**/z.md"]);
+  for (const yes of ["notes/a.md", "notes/deep/er/b.md", "notes/.hidden", "docs/x.md", "skills/s/SKILL.md", "abc.txt", "keep.json", "x/y/keep.json", "a/z.md", "a/b/c/z.md"]) assert.ok(matches(yes), yes);
   for (const no of ["notes", "other/notes/a.md", "docs/sub/x.md", "docs/x.txt", "skills/SKILL.md", "skills/a/b/SKILL.md", "ac.txt", "abbc.txt", "Notes/a.md", "keep.jsonx"]) assert.ok(!matches(no), no);
 });
 

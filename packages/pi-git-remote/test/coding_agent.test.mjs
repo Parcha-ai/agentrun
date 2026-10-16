@@ -235,6 +235,7 @@ test("a reload does not end the session: the new runtime keeps the directory and
 test("a session resumed later adds to its branch: the later end never removes what an earlier one committed", async (t) => {
   const { agent, checkout, bare, main, root } = await started(t);
   await writeFile(path.join(checkout, "notes/b.md"), "beta\n");
+  await agent.run(); // pi writes a session file with its first message
   const file = agent.sessionFile();
   const id = agent.sessionId();
   await agent.end();
@@ -252,6 +253,7 @@ test("a session resumed later adds to its branch: the later end never removes wh
 test("a resumed session whose directory is gone is seeded again and still adds to its branch", async (t) => {
   const { agent, checkout, bare, main, root } = await started(t);
   await writeFile(path.join(checkout, "notes/b.md"), "beta\n");
+  await agent.run();
   const file = agent.sessionFile();
   await agent.end();
   await rm(checkout, { recursive: true });

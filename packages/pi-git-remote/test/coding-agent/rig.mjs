@@ -1,38 +1,15 @@
-import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import { createGitRemoteExtension } from "../../dist/coding-agent.js";
-import { local } from "../../dist/index.js";
-import { rawGit, scratch } from "../support.mjs";
+import { scratch } from "../support.mjs";
+export { branchesOf, commitsOf, messageOf, remoteWith, showOn, treeOf } from "../plain-remote.mjs";
 
 const FAUX_KEY = "not-a-key"; // a fake value, named so the source export's credential scan reads it as one
 
 export const done = (text = "done") => fauxAssistantMessage(text);
 export const turn = (...calls) => fauxAssistantMessage(calls.map(([name, args], i) => fauxToolCall(name, args ?? {}, { id: `call-${name}-${i}` })), { stopReason: "toolUse" });
-
-/** A plain repository holding `files` (a string, or `{ link }` for a symlink), pushed to a new bare remote's main. */
-export async function remoteWith(root, files) {
-  const bare = path.join(root, "remote.git");
-  await rawGit(["init", "-q", "--bare", "--template=", "-b", "main", bare]);
-  const work = path.join(root, "seed-work");
-  await rawGit(["init", "-q", "-b", "main", work]);
-  for (const [file, content] of Object.entries(files)) {
-    await mkdir(path.dirname(path.join(work, file)), { recursive: true });
-    if (typeof content === "string") await writeFile(path.join(work, file), content);
-    else await symlink(content.link, path.join(work, file));
-  }
-  await rawGit(["add", "-A"], { cwd: work });
-  await rawGit(["commit", "-q", "-m", "seed"], { cwd: work });
-  await rawGit(["push", "-q", bare, "main"], { cwd: work });
-  return { bare, remote: local(bare), main: (await rawGit(["rev-parse", "main"], { gitDir: bare })).toString().trim() };
-}
-
-export const branchesOf = async (bare) => (await rawGit(["for-each-ref", "--format=%(refname:short)", "refs/heads"], { gitDir: bare })).toString().split("\n").filter(Boolean).sort();
-export const showOn = async (bare, ref, file) => (await rawGit(["show", `${ref}:${file}`], { gitDir: bare }).catch(() => null))?.toString() ?? null;
-export const treeOf = async (bare, ref) => (await rawGit(["ls-tree", "-r", "--name-only", ref], { gitDir: bare })).toString().split("\n").filter(Boolean);
-export const commitsOf = async (bare, ref, base) => (await rawGit(["rev-list", `${base}..${ref}`], { gitDir: bare })).toString().split("\n").filter(Boolean);
-export const messageOf = async (bare, ref) => (await rawGit(["log", "-1", "--format=%B", ref], { gitDir: bare })).toString();
 
 /**
  * A real pi session runtime with a fake model, the extension loaded as an extension factory. `options` go to
@@ -66,7 +43,17 @@ export async function startSession(t, { options = {}, flags = {}, settings, root
   let disposed = false;
   t.after(async () => { if (!disposed) await runtime.dispose().catch(() => undefined); });
   const prompts = [];
-  const system = (context) => (typeof context.systemPrompt === "string" ? context.systemPrompt : JSON.stringify(context.systemPrompt ?? ""));
+  // pi sends the system prompt as a message of named sections, or as one text when a handler forced it.
+  const system = (context) => {
+    const sections = {};
+    let content = "";
+    for (const message of context.messages ?? []) {
+      if (message.role !== "system") continue;
+      content = message.content || content;
+      for (const [name, text] of Object.entries(message.sections ?? {})) if (typeof text === "string") sections[name] = text;
+    }
+    return [content, ...Object.values(sections)].filter(Boolean).join("\n\n");
+  };
   return {
     runtime, work, root, reports, errors, prompts, core,
     state: path.join(root, "state"),

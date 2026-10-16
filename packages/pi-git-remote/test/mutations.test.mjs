@@ -47,6 +47,36 @@ const MUTATIONS = [
     file: "dist/git.js", from: '"-c", "credential.helper=",', to: "",
     fails: ["credential.test.mjs", "real git reads the credential through the fd-3 helper, and never runs a helper from the repository's config"],
   },
+  {
+    removes: "the refusal of a symlink the allowlist reaches",
+    file: "dist/session.js", from: 'if (reaches(p))', to: "if (false)",
+    fails: ["session.test.mjs", "a symlink the allowlist reaches refuses the whole end, and nothing is pushed"],
+  },
+  {
+    removes: "the allowlist's match on a file",
+    file: "dist/session.js", from: "else if (allow.matches(p)) {", to: "else if (true) {",
+    fails: ["session.test.mjs", "a change that no pattern names is never committed"],
+  },
+  {
+    removes: "the check that an existing session branch carries this session's trailer",
+    file: "dist/session.js", from: "if (mine.length === 0)", to: "if (false)",
+    fails: ["session.test.mjs", "a branch of the session's name that carries no Session-Id trailer is never added to"],
+  },
+  {
+    removes: "the refusal of main, master and HEAD as a session branch",
+    file: "dist/session.js", from: "PROTECTED.has(bare) ||", to: "false ||",
+    fails: ["session.test.mjs", "the session branch holds the id exactly once and is never a protected name or the seed's own branch"],
+  },
+  {
+    removes: "building a later end on the session branch's own tip",
+    file: "dist/session.js", from: "parent: tip ?? seededAt.sha,", to: "parent: seededAt.sha,",
+    fails: ["session.test.mjs", "a second end for the same session commits nothing"],
+  },
+  {
+    removes: "the seed record's list of the files the checkout copied",
+    file: "dist/session.js", from: "for (const p of seededAt.files)", to: "for (const p of entries.keys())",
+    fails: ["session.test.mjs", "a seeded entry the checkout skipped is not seen as a deletion"],
+  },
 ];
 
 /** Whether this git, with no attr.tree, reads HEAD's .gitattributes in a bare repository: a union merge it names then
