@@ -23,13 +23,37 @@ import {
 	type ShellExecOptions,
 } from "@earendil-works/pi-durable/env";
 import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { type Box, BoxError, type BoxExecOptions, type BoxProcess, type BoxStatus } from "../src/box/box.ts";
 import { finish } from "../src/box/files.ts";
 import { localBoxes } from "../src/box/local.ts";
 import { type BoxEnvOptions, boxEnv, type StoppedCommandError } from "../src/hands/box-env.ts";
+import { carriersOf, waitNotRunning } from "./box-env-support.ts";
 
 const context = BACKGROUND_CONTEXT;
+// This file marks its own process; every child it starts inherits the mark, so a `sleep` that outlives the file is found, named, and ended.
+const RUN_VARIABLE = "PI_TRANSPORT_TEST_RUN";
+const RUN = `${process.pid}-${Date.now()}`;
+process.env[RUN_VARIABLE] = RUN;
+/** What every box of this file is made with: the mark is in the box's own environment too, which a box's commands get in place of this process's. */
+const BOX_SPEC = { maxLifetimeMs: 10 * 60_000, env: { [RUN_VARIABLE]: RUN } };
+afterAll(async () => {
+	try {
+		await waitNotRunning(() => carriersOf(RUN_VARIABLE, RUN).length > 0, "a process this file started", 8_000);
+	} catch {
+		const left = carriersOf(RUN_VARIABLE, RUN);
+		for (const { pid } of left) {
+			try {
+				process.kill(pid, "SIGKILL");
+			} catch {
+				// Gone already.
+			}
+		}
+		throw new Error(
+			`this file left processes behind: ${left.map(({ pid, command }) => `${pid} ${command}`).join("; ")}`,
+		);
+	}
+}, 30_000);
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** How long a wait for something that must happen may take before it is a hang: far past any loaded runner. */
 const HANG_GUARD_MS = 60_000;
@@ -112,7 +136,7 @@ async function withEnv(
 ): Promise<void> {
 	const root = mkdtempSync(join(tmpdir(), "pi-transport-env-"));
 	const provider = localBoxes({ root, ...(path === undefined ? {} : { path }) });
-	const box = faulty(getOrThrow(await provider.create({ maxLifetimeMs: 10 * 60_000 }, context)));
+	const box = faulty(getOrThrow(await provider.create(BOX_SPEC, context)));
 	const env = boxEnv(box, options);
 	let boxDirectoryLeft = true;
 	try {
@@ -1222,19 +1246,30 @@ describe("boxEnv: a stop whose kill call fails", () => {
 			const holder = spawn("sh", ["-c", "setsid sh -c 'echo $$; exec sleep 3600'"], {
 				stdio: ["ignore", "pipe", "ignore"],
 			});
+			let group = 0;
 			try {
-				const group = await new Promise<string>((resolve) =>
-					holder.stdout.once("data", (chunk) => resolve(String(chunk).trim())),
+				group = Number(
+					await new Promise<string>((resolve) =>
+						holder.stdout.once("data", (chunk) => resolve(String(chunk).trim())),
+					),
 				);
 				const stateDir = join(root, box.id, "tmp", ".pi-transport");
 				mkdirSync(stateDir, { recursive: true });
-				writeFileSync(join(stateDir, `${id}.pid`), group);
+				writeFileSync(join(stateDir, `${id}.pid`), String(group));
 				const started = getOrThrow(await box.exec(["sh", "-c", stuck, "sh", id], undefined, context));
 				const answer = new TextDecoder().decode(getOrThrow(await finish(started)).stdout).trim();
 				expect(answer).toBe("alive");
 				expect(existsSync(join(stateDir, `${id}.pid`)), "the file stays while the group lives").toBe(true);
 			} finally {
-				holder.kill("SIGKILL");
+				// The shell that started the holder is not the holder: the group is.
+				// (a group of 0 would be this process's own)
+				for (const target of [group > 1 ? -group : 0, holder.pid ?? 0].filter((pid) => pid !== 0)) {
+					try {
+						process.kill(target, "SIGKILL");
+					} catch {
+						// Gone already.
+					}
+				}
 				rmSync(join(root, box.id, "tmp", ".pi-transport", `${id}.pid`), { force: true });
 			}
 		});

@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ExecutionEnv, FileError, FileInfo, Result } from "@earendil-works/pi-durable/env";
@@ -366,4 +366,24 @@ export async function waitNotRunning(
 		}
 		await new Promise((resolve) => setTimeout(resolve, pollMs));
 	}
+}
+
+/**
+ * The other processes of this machine that carry `name=value` in their environment: a test file marks its own process, every child it starts inherits the
+ * mark, and a child that outlives the file (a `sleep` reparented to init) still carries it. Each entry is a pid and its command line.
+ */
+export function carriersOf(name: string, value: string): { pid: number; command: string }[] {
+	const mark = `${name}=${value}`;
+	const found: { pid: number; command: string }[] = [];
+	for (const entry of readdirSync("/proc")) {
+		const pid = Number(entry);
+		if (!Number.isInteger(pid) || pid === process.pid) continue;
+		try {
+			if (!readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(mark)) continue;
+			found.push({ pid, command: readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").join(" ").trim() });
+		} catch {
+			// It ended, or it is not ours to read: not a leak of this file.
+		}
+	}
+	return found;
 }
