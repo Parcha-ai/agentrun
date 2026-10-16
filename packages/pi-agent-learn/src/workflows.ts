@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { inspectWorkflow, resolveSchemaForWorkflow, workflowSha256 } from "@parcha/agentrun-dsl";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Session } from "@earendil-works/pi-durable";
 import { recordingLines } from "@parcha/agentrun-pi/durable";
 import { WorkflowStore, WorkflowStoreError } from "@parcha/agentrun-pi/workflows";
@@ -242,12 +243,15 @@ export function parseRunUses(text: string, run?: string): RunUses {
 }
 
 export type ReadUsesOptions = {
-  /** The run's pi-durable store file, read only, once the run's Harness has closed it. */
-  readonly store: string;
   /** The run's working directory: the project directory of its workflow store, which names what a digest was saved as. */
   readonly workDir: string;
   readonly run: string;
-};
+} & (
+  /** The run's pi-durable store file, read only: once the run's Harness has closed it, or while it is open. */
+  | { readonly store: string }
+  /** The run's open Session, read without writing: a commit that only scans the workflow tasks. */
+  | { readonly target: Pick<Session, "commit"> }
+);
 export type ReadSessionUsesOptions = {
   /** The entries of the pi session the run's `agentrun` tool ran in (`sessionEntries` reads them from the session file). */
   readonly entries: readonly unknown[];
@@ -276,6 +280,20 @@ function outcomeOf(task: TaskRecord): UseOutcome | { skip: string } {
 }
 
 export type ReadUses = { readonly doc: RunUses | undefined; readonly skipped: readonly SkippedWorkflow[] };
+
+/** The run's workflow tasks from an open Session: one commit that only reads, which writes nothing. */
+async function liveTasks(target: Pick<Session, "commit">): Promise<TaskRecord[]> {
+  return target.commit(async (tx) => {
+    const out: TaskRecord[] = [];
+    let cursor: Awaited<ReturnType<typeof tx.scanTasks>>["next"];
+    do {
+      const page = await tx.scanTasks({ kind: "agentrun.workflow" }, 100, cursor);
+      out.push(...(page.items as unknown as TaskRecord[]));
+      cursor = page.next;
+    } while (cursor !== undefined);
+    return out;
+  }, BACKGROUND_CONTEXT);
+}
 
 /** What the run's own workflow store holds: the names a digest was saved under. Undefined, with why, when it cannot be read. */
 async function savedNames(workDir: string): Promise<{ byDigest: Map<string, string[]> } | { error: string }> {
@@ -318,14 +336,16 @@ const checkRun = (run: string) => {
  */
 export async function readUses(options: ReadUsesOptions): Promise<ReadUses> {
   checkRun(options.run);
-  if (typeof options.store !== "string" || !existsSync(options.store)) throw new LearnError("missing", "the run's store file is not there");
+  if ("store" in options && (typeof options.store !== "string" || !existsSync(options.store))) throw new LearnError("missing", "the run's store file is not there");
+  if (!("store" in options) && typeof options.target?.commit !== "function") throw new LearnError("invalid", "readUses needs a store file or an open Session");
   const saved = await savedNames(options.workDir);
   if ("error" in saved) return { doc: undefined, skipped: [{ reason: saved.error }] };
   const skipped: SkippedWorkflow[] = [];
   const last = new Map<string, TaskRecord>();
-  for (const line of recordingLines(options.store).lines) {
-    if (line.kind !== "agentrun.workflow") continue;
-    const task = line.data as TaskRecord;
+  const tasks = "store" in options
+    ? recordingLines(options.store).lines.filter((line) => line.kind === "agentrun.workflow").map((line) => line.data as TaskRecord)
+    : await liveTasks(options.target);
+  for (const task of tasks) {
     const key = task.input?.key;
     if (typeof key !== "string") continue;
     const held = last.get(key);
@@ -421,7 +441,7 @@ export async function readSessionUses(options: ReadSessionUsesOptions): Promise<
 
 /** The run's uses as `uses/<run id>.json` holds them, or undefined when it used no saved workflow. */
 export async function collectUses(options: ReadUsesOptions | ReadSessionUsesOptions): Promise<RunUses | undefined> {
-  return (await ("store" in options ? readUses(options) : readSessionUses(options))).doc;
+  return (await ("entries" in options ? readSessionUses(options) : readUses(options))).doc;
 }
 
 /** `collectUses` as the hook `proposeLearning` takes. */

@@ -3,12 +3,13 @@ import { GitRemoteError, modeRefusal, type Repo } from "@parcha/pi-git-remote";
 import { createHash } from "node:crypto";
 import { type Learning, learningId, parseLearning, renderLearning } from "./entry.js";
 import { LearnError } from "./errors.js";
-import { guard } from "./guard.js";
+import { createGuard, guard } from "./guard.js";
 import { InboxFormatError, parseInbox } from "./inbox.js";
 import { assertNotRulesLocked, CAPS, inboxPath, isRulesLocked, LAYOUT, LEARNING_ID, learningPath, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
 import { byUse, indexLine, renderSection } from "./section.js";
 import { learningsAt } from "./seed.js";
 import type { AdmitWorkflow, Candidate, Refusal, RepoRead, SettleUses, WorkflowCandidate, WorkflowUse } from "./types.js";
+import { usesSettler, workflowAdmitter } from "./workflows.js";
 
 /** The judge: the DSL's System One adapter, `WorkflowDeps["runJudge"]`. `createJevRunner` from `@parcha/agentrun-jev` is one. */
 export type Judge = NonNullable<WorkflowDeps["runJudge"]>;
@@ -59,6 +60,9 @@ export type CurateCaps = {
 
 export const CURATE_CAPS: Readonly<CurateCaps> = Object.freeze({ index: CAPS.section, questionsPerRun: 128, retries: 5 });
 
+/** The options with the ports settled: a function, or none. */
+type Resolved = Omit<CurateOptions, "admitWorkflow" | "settleUses"> & { readonly admitWorkflow: AdmitWorkflow | undefined; readonly settleUses: SettleUses | undefined };
+
 export type CurateOptions = {
   readonly repo: CurateRepo;
   readonly judge: Judge;
@@ -69,11 +73,12 @@ export type CurateOptions = {
   readonly now?: Date;
   /** Plaintext values the host holds as secrets now, for the guard. */
   readonly secrets?: Iterable<string>;
-  /** Takes a proposed workflow through the DSL's store; without it, every proposed workflow is held. */
-  readonly admitWorkflow?: AdmitWorkflow;
-  /** Folds a run's workflow uses into their trials; called for every run with a `uses/<run id>.json`. Without it, the
-   *  uses are held. */
-  readonly settleUses?: SettleUses;
+  /** Takes a proposed workflow through the DSL's store. Default: `workflowAdmitter()`, so a host cannot forget the workflow
+   *  pieces; `null` turns it off, and then every proposed workflow is held. */
+  readonly admitWorkflow?: AdmitWorkflow | null;
+  /** Folds a run's workflow uses into their trials; called for every run with a `uses/<run id>.json`. Default:
+   *  `usesSettler()`; `null` turns it off, and then the uses are held. */
+  readonly settleUses?: SettleUses | null;
   readonly signal?: AbortSignal;
 };
 
@@ -124,6 +129,11 @@ const RUNS = "runs/";
 const ENTRY_TYPES_COMPARED = ["lesson", "fact", "correction"] as const;
 const RECORD = /^(?:[0-9a-f]{64}\.json|latest)$/;
 const CONTENT_REASONS: readonly Refusal["reason"][] = ["secret_value", "secret_shape", "invisible_unicode", "case_data"];
+/** A learning lists at most this many proposing runs, so a popular one stays under the file cap; its uses keep counting. */
+const MAX_PROVENANCE_RUNS = 16;
+/** One curate commit can touch every learning a run's notes and marks reach, the archived ones and a workflow's files:
+ *  as many as one git commit takes here, not the 32 a run may write. */
+const curatorGuard = createGuard({ files: 256 });
 
 type Verdict = "yes" | "no" | "unsure" | "budget";
 type Asked = { readonly verdict: Verdict; readonly p?: number };
@@ -172,15 +182,19 @@ function exclusive<T>(key: object, fn: () => Promise<T>): Promise<T> {
 export async function curate(options: CurateOptions): Promise<CurateReport> {
   if (!options || typeof options !== "object" || !options.repo || typeof options.judge !== "function") throw new LearnError("invalid", "curate needs { repo, judge }");
   if (options.rules !== undefined && typeof options.rules !== "string") throw new LearnError("invalid", "rules is the text of AGENTS.md");
-  if (options.admitWorkflow !== undefined && typeof options.admitWorkflow !== "function") throw new LearnError("invalid", "admitWorkflow is a function");
-  if (options.settleUses !== undefined && typeof options.settleUses !== "function") throw new LearnError("invalid", "settleUses is a function");
+  if (options.admitWorkflow !== undefined && options.admitWorkflow !== null && typeof options.admitWorkflow !== "function") throw new LearnError("invalid", "admitWorkflow is a function");
+  if (options.settleUses !== undefined && options.settleUses !== null && typeof options.settleUses !== "function") throw new LearnError("invalid", "settleUses is a function");
   const thresholds = checkThresholds(options.thresholds);
   const caps = checkCaps(options.caps);
   const secrets = [...(options.secrets ?? [])];
-  return exclusive(options.repo, () => curateRuns(options, thresholds, caps, secrets));
+  const stamp = options.now === undefined ? {} : { now: () => options.now! };
+  const admitWorkflow = options.admitWorkflow === null ? undefined : (options.admitWorkflow ?? workflowAdmitter(stamp));
+  const settleUses = options.settleUses === null ? undefined : (options.settleUses ?? usesSettler());
+  const resolved: Resolved = { ...options, ...(admitWorkflow ? { admitWorkflow } : { admitWorkflow: undefined }), ...(settleUses ? { settleUses } : { settleUses: undefined }) };
+  return exclusive(options.repo, () => curateRuns(resolved, thresholds, caps, secrets));
 }
 
-async function curateRuns(options: CurateOptions, thresholds: Thresholds, caps: CurateCaps, secrets: string[]): Promise<CurateReport> {
+async function curateRuns(options: Resolved, thresholds: Thresholds, caps: CurateCaps, secrets: string[]): Promise<CurateReport> {
   const { repo } = options;
   const at = (options.now ?? new Date()).toISOString();
   const memo = new Map<string, number>();
@@ -206,19 +220,23 @@ async function curateRuns(options: CurateOptions, thresholds: Thresholds, caps: 
       skipped.push({ branch: branch.name, reason: "the name after runs/ is not a run id" });
       continue;
     }
+    // One question budget per run, across its retries: an answer already given is free, a new one is not.
+    const budget = { left: caps.questionsPerRun, asked: 0 };
     for (let attempt = 0; ; attempt++) {
       if (curated.at !== main) curated = { at: main, runs: await curatedRuns(repo, main) };
       if (curated.runs.has(runId)) break;
       const tip = await repo.resolve(branch.name);
       if (!tip) break;
-      const plan = await planRun({ options, thresholds, caps, secrets, memo, runId, tip, main });
+      const plan = await planRun({ options, thresholds, caps, secrets, memo, budget, runId, tip, main });
       if (plan === undefined) {
         skipped.push({ branch: branch.name, reason: "the branch proposes nothing beyond main" });
         break;
       }
       assertNotRulesLocked(Object.keys(plan.files));
-      const commit = await repo.commitTo("main", { files: plan.files, message: plan.message, trailers: plan.trailers, parent: main, allowEmpty: true });
+      let commit: { sha: string };
       try {
+        // commitTo fetches first: a main that moved since `main` was read is a conflict here, before any push.
+        commit = await repo.commitTo("main", { files: plan.files, message: plan.message, trailers: plan.trailers, parent: main, allowEmpty: true });
         pushes += 1;
         await repo.push(commit.sha, "main");
       } catch (error) {
@@ -281,8 +299,9 @@ export async function retireLearning(options: RetireOptions): Promise<RetireResu
       const files = { [path]: renderLearning({ ...entry, status: "retired" }) };
       const refusals = guard({ role: "curate", files, secrets });
       if (refusals.length) throw new LearnError("invalid", `the retired learning's file is refused: ${refusalReason(refusals)}`);
-      const commit = await repo.commitTo("main", { files, message: `retire ${id}: ${safeReason(options.reason, secrets)}`, trailers: { "Retired-Learning": id }, parent: main });
+      let commit: { sha: string };
       try {
+        commit = await repo.commitTo("main", { files, message: `retire ${id}: ${safeReason(options.reason, secrets)}`, trailers: { "Retired-Learning": id }, parent: main });
         await repo.push(commit.sha, "main");
       } catch (error) {
         if (!(error instanceof GitRemoteError) || error.code !== "conflict") throw error;
@@ -311,11 +330,12 @@ async function curatedRuns(repo: CurateRepo, main: string): Promise<Set<string>>
 }
 
 type PlanInput = {
-  readonly options: CurateOptions;
+  readonly options: Resolved;
   readonly thresholds: Thresholds;
   readonly caps: CurateCaps;
   readonly secrets: readonly string[];
   readonly memo: Map<string, number>;
+  readonly budget: { left: number; asked: number };
   readonly runId: string;
   readonly tip: string;
   readonly main: string;
@@ -338,7 +358,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
   const { options, runId, tip, main } = input;
   const { repo } = options;
   const lists: Lists = { accepted: [], superseded: [], duplicates: [], used: [], held: [], refused: [], archived: [], settled: [] };
-  const budget = { left: input.caps.questionsPerRun, asked: 0 };
+  const { budget } = input;
 
   const mainHistory = new Set((await repo.log({ ref: main })).map((c) => c.sha));
   const own = (await repo.log({ ref: tip })).filter((c) => !mainHistory.has(c.sha));
@@ -470,6 +490,10 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
         lists.refused.push({ candidate: at, reason: "a workflow candidate needs a workflow name as its id" });
         continue;
       }
+      if (workflows.has(name)) {
+        lists.refused.push({ candidate: at, workflow: name, reason: `a second description of the same workflow in this run (#${workflows.get(name)!.candidate} is the one judged)` });
+        continue;
+      }
       const verdict = await atomic({ type: "workflow", workflow: name, text: candidate.text }, candidate.untrusted === true);
       workflows.set(name, { description: candidate.text, candidate: at, untrusted: candidate.untrusted === true, ...(verdict ? { verdict: verdict.status, reason: verdict.reason } : {}) });
       continue;
@@ -539,7 +563,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     if (outcome?.kind === "duplicate") {
       const target = entries.get(outcome.of)!;
       if (!fresh.has(target.id)) {
-        const runs = target.provenance.runs.includes(runId) ? target.provenance.runs : [...target.provenance.runs, runId];
+        const runs = target.provenance.runs.includes(runId) || target.provenance.runs.length >= MAX_PROVENANCE_RUNS ? target.provenance.runs : [...target.provenance.runs, runId];
         entries.set(target.id, { ...target, uses: usedOnce.has(target.id) ? target.uses : target.uses + 1, provenance: { ...target.provenance, runs } });
         usedOnce.add(target.id);
         touched.add(target.id);
@@ -556,6 +580,20 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     } catch (error) {
       if (!(error instanceof LearnError)) throw error;
       lists.refused.push({ candidate: at, id, reason: `${error.code}: the learning file would not render` });
+      continue;
+    }
+    // A replacement lands only with every learning it replaces marked superseded, never beside one still active.
+    const stuck = replaces.find((old) => {
+      try {
+        renderLearning({ ...entries.get(old)!, status: "superseded", supersededBy: id });
+        return false;
+      } catch (error) {
+        if (!(error instanceof LearnError)) throw error;
+        return true;
+      }
+    });
+    if (stuck) {
+      lists.held.push({ candidate: at, id, of: stuck, reason: `${stuck} cannot be marked superseded within the file cap` });
       continue;
     }
     entries.set(id, made);
@@ -649,7 +687,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     }
   }
 
-  // The derived index stays under its cap: archive the least-used active learnings, this run's own last.
+  // The derived index stays under its cap: archive the least-used older learnings first, this run's own only after them.
   const indexBytes = () => {
     const lines = [...entries.values()].filter((l) => l.status === "active").sort(byUse).map(indexLine).filter((l): l is string => l !== undefined);
     return Buffer.byteLength(renderSection({ sha: main, index: lines, omitted: [], workflows: [], copied: true }), "utf8");
@@ -657,7 +695,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
   while (indexBytes() > input.caps.index) {
     const victim = [...entries.values()]
       .filter((l) => l.status === "active")
-      .sort((a, b) => a.uses - b.uses || Number(fresh.has(a.id)) - Number(fresh.has(b.id)) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))[0];
+      .sort((a, b) => Number(fresh.has(a.id)) - Number(fresh.has(b.id)) || a.uses - b.uses || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))[0];
     if (!victim) break;
     entries.set(victim.id, { ...victim, status: "archived" });
     touched.add(victim.id);
@@ -665,8 +703,16 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
   }
 
   const files: Record<string, string | null> = { ...workflowFiles };
-  for (const id of [...touched].sort()) files[learningPath(id)] = renderLearning(entries.get(id)!);
-  const refusals = guard({ role: "curate", files, secrets: input.secrets });
+  for (const id of [...touched].sort()) {
+    try {
+      files[learningPath(id)] = renderLearning(entries.get(id)!);
+    } catch (error) {
+      if (!(error instanceof LearnError)) throw error;
+      touched.delete(id);
+      lists.refused.push({ id, reason: `${error.code}: the change to ${id} would not render, so it was left as it is` });
+    }
+  }
+  const refusals = curatorGuard({ role: "curate", files, secrets: input.secrets });
   if (refusals.length) {
     const reason = `curation's own files are refused: ${refusalReason(refusals)}`;
     const all = Object.values(lists).flat();
@@ -716,9 +762,12 @@ function parseUses(text: string, runId: string): WorkflowUse[] | undefined {
 /** A reason from outside this package, kept only when it holds nothing the guard would refuse. */
 function safeReason(reason: unknown, secrets: readonly string[]): string {
   if (typeof reason !== "string" || reason.trim() === "") return "no reason given";
-  const line = oneLine(reason).slice(0, 200);
-  const hits = guard({ role: "curate", candidates: [{ callId: "reason", type: "lesson", text: line, evidence: [] }], secrets }).filter((r) => CONTENT_REASONS.includes(r.reason));
-  return hits.length ? `a reason was withheld (${[...new Set(hits.map((h) => h.reason))].join(", ")})` : line;
+  if (reason.length > 16_384) return "a reason was withheld (too long to check)";
+  // The whole text is checked before it is shortened: a cut can split a secret the guard would only match whole.
+  const line = oneLine(reason);
+  const check = createGuard({ text: Math.max(CAPS.text, Buffer.byteLength(line, "utf8")) });
+  const hits = check({ role: "curate", candidates: [{ callId: "reason", type: "lesson", text: line, evidence: [] }], secrets }).filter((r) => CONTENT_REASONS.includes(r.reason));
+  return hits.length ? `a reason was withheld (${[...new Set(hits.map((h) => h.reason))].join(", ")})` : Array.from(line).slice(0, 200).join("");
 }
 
 function finish(input: PlanInput, lists: Lists, files: Record<string, string | null>, ids: readonly string[], workflows: readonly string[], questions: number): Plan {

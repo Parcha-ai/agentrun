@@ -5,6 +5,7 @@ import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { workspaceFiles } from "@parcha/agentrun-dsl/recovery";
 import { createWorkflowExtension } from "@parcha/agentrun-pi/durable";
+import { agentLearn } from "../dist/index.js";
 import { WorkflowStore } from "@parcha/agentrun-pi/workflows";
 import { scratch } from "./support.mjs";
 
@@ -102,4 +103,23 @@ export async function runStoreWith(runs) {
     await harness.close(ctx);
   }
   return file;
+}
+
+/**
+ * A run's open Harness, on SQLite, with the learn extension and the DSL's workflow extension installed, and one workflow task
+ * per entry of `runs` finished in it. The Harness stays open: the caller closes it.
+ */
+export async function liveRun(runs) {
+  const root = await scratch();
+  await mkdir(path.join(root, "cwd"));
+  const flow = createWorkflowExtension({
+    options: () => ({ files: workspaceFiles(path.join(root, "cwd")) }),
+    run: () => ({ adapters: { runEffect: async () => ({ price: 21 }) } }),
+  });
+  const registry = createRegistry();
+  registry.install(agentLearn());
+  registry.install(flow.extension);
+  const harness = await Harness.open(await openNodeSqliteStorage(path.join(root, "run.sqlite")), { registry, models: {} }, ctx);
+  for (const run of runs) await (await flow.start(harness, { key: run.key, workflow: run.workflow, input: run.input }, ctx)).wait(ctx);
+  return { harness, close: () => harness.close(ctx) };
 }
