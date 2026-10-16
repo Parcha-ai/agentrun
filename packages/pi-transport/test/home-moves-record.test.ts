@@ -108,12 +108,30 @@ describe("a move's durable record (transport.moves)", () => {
 				seal,
 			});
 			await target.close(context);
-			// Opened again in its epoch, with the same order: the record is there, and nothing writes it again.
+			// Opened again in its epoch, by a host that knows less (a recovery's retry: from null, no times): the record
+			// the first open wrote is kept, and nothing writes it again.
 			made.commits.length = 0;
 			const again = getOrThrow(await openHome(b.options));
-			getOrThrow(await again.resume(order, context));
+			const retry = {
+				from: null,
+				to: FACTS.to,
+				drainMs: null,
+				shipMs: null,
+				takeMs: null,
+				bytes: null,
+				stopped: [],
+			};
+			getOrThrow(
+				await again.resume(
+					{ ...order, move: { ...order.move, id: "move-1", notice: "You moved.", record: retry } },
+					context,
+				),
+			);
 			expect(made.commits.flatMap(({ writes }) => movesIn(writes))).toEqual([]);
-			expect((await again.harness?.snapshot(MovesDoc, "move-1", context))?.epoch).toBe(2);
+			expect(await again.harness?.snapshot(MovesDoc, "move-1", context)).toMatchObject({
+				from: FACTS.from,
+				drainMs: 12,
+			});
 			await again.close(context);
 			// A host that sends no record gets none.
 			const plain = getOrThrow(await openHome(b.options));
