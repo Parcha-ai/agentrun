@@ -1,0 +1,31 @@
+{
+  "input": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+  "done": [
+    "/root/steps/0",
+    "/root/steps/1/branches/a~1b/body",
+    "/root/steps/1",
+    "/root/steps/2"
+  ],
+  "states": {
+    "/root/steps/2": {
+      "pick": "a/b",
+      "slash": {
+        "id": "s",
+        "score": 1
+      },
+      "final": {
+        "taken": "s"
+      }
+    }
+  },
+  "chains": {
+    "/root": {
+      "index": 2,
+      "path": "/root/steps/2"
+    }
+  },
+  "loops": {},
+  "routes": {},
+  "inputs": {},
+  "steps": {}
+}

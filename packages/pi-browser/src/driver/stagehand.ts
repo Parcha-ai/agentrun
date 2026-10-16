@@ -5,6 +5,7 @@ import type { ScreenshotOptions } from "../core/images.js";
 import type { PageDriver } from "../core/tools.js";
 import { StagehandFacadeTools } from "../vendor/stagehand-facade/tools.js";
 import { installedExtension } from "./extension-worker.js";
+import { documentReads } from "./new-document.js";
 import type { RefAction } from "../vendor/stagehand-facade/contract.js";
 
 /** A closed loopback port, so no span leaves the host: Stagehand 4.1.0 cannot turn its trace exporter off. */
@@ -17,15 +18,9 @@ export const SEALED_STAGEHAND = {
   telemetry: STAGEHAND_TELEMETRY,
 } as const;
 
-// A page's address is its document's (location.href): page.url() names a goto's target once Chrome starts it, so a
-// receipt could cite a page it does not hold. One evaluate reads all four, so they are one document's.
-const PAGE_CODE = `return await page.evaluate(() => ({
-  url: location.href,
-  title: document.title,
-  text: document.body ? document.body.innerText : "",
-  html: document.documentElement ? document.documentElement.outerHTML : "",
-}));`;
 const URL_READ_MS = 2_000;
+/** How long a read that landed in a document a navigation replaced waits for the new one's DOMContentLoaded. */
+const NEW_DOCUMENT_MS = 15_000;
 
 /** In a batch of its own, which the browser runs after any batch still running, so the read never lands inside a
  *  pending navigation (a page call issued then never returns). Past URL_READ_MS, Stagehand's page.url(). */
@@ -77,8 +72,11 @@ export function stagehandDriver(): DriverFactory<PageDriver> {
       if (!page) throw new Error("Stagehand has no active page.");
       return page;
     };
+    // In a batch of its own, which the browser runs once the new document is its page's.
+    const newDocument = async () => stagehand.experimentalBatch(async (batch: any, input: { ms: number }) => { await batch.page.waitForLoadState("domcontentloaded", input.ms); }, { ms: NEW_DOCUMENT_MS }, { page: await active(), timeout: NEW_DOCUMENT_MS + 1_000 });
+    const reads = documentReads(facade, newDocument);
     return {
-      snapshot: (snapshotOptions) => facade.snapshot(snapshotOptions),
+      snapshot: (snapshotOptions) => reads.snapshot(snapshotOptions),
       run: (input) => input.actions !== undefined ? facade.runActions(input.actions as RefAction[]) : facade.run(input.code ?? ""),
       url: async () => documentUrl(stagehand, await active()),
       screenshot: async ({ type = "png", quality, fullPage, scale }: ScreenshotOptions) => {
@@ -89,7 +87,7 @@ export function stagehandDriver(): DriverFactory<PageDriver> {
         });
         return { data: Buffer.from(bytes).toString("base64"), mimeType: type === "jpeg" ? "image/jpeg" : "image/png" };
       },
-      page: async () => await facade.run(PAGE_CODE) as { url: string; title: string; text: string; html: string },
+      page: () => reads.page(),
       // Stagehand's own close keeps the browser for another attach; the browser's close would end it.
       close: () => stagehand.close(),
     };
