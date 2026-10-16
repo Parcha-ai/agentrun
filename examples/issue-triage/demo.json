@@ -1,0 +1,87 @@
+{
+  "name": "issue-triage",
+  "title": "Triage a public repository's newest issues, scored against its maintainers' labels",
+  "claim": "Twenty issues are researched, labelled by Jev with one of four types, judged as good first issues and as actionable, and the type label is scored against the maintainers' own; a run killed mid-way finishes without repeating a paid call.",
+  "models": {
+    "lead": {
+      "needs": [
+        "text",
+        "tools"
+      ]
+    },
+    "judge": {
+      "jev": true,
+      "caps": {
+        "requests": 40,
+        "tokens": 80000
+      }
+    }
+  },
+  "keys": [
+    {
+      "oneOf": [
+        {
+          "env": "TYPESAFE_API_KEY",
+          "why": "Jev's typed judgments",
+          "where": "https://console.typesafe.ai/keys",
+          "required": true
+        },
+        {
+          "env": "OPENROUTER_API_KEY",
+          "why": "Jev through OpenRouter",
+          "where": "https://openrouter.ai/keys",
+          "required": true
+        }
+      ],
+      "why": "the judge is Jev",
+      "for": "live"
+    },
+    {
+      "env": "GITHUB_TOKEN",
+      "why": "read-only GitHub REST calls; without it GitHub allows 60 requests an hour, which twenty issues overrun",
+      "where": "https://github.com/settings/tokens (a token with no scopes reads public repositories)",
+      "required": false,
+      "for": "live"
+    },
+    {
+      "oneOf": [
+        {
+          "env": "OPENAI_API_KEY",
+          "why": "the lead model, gpt-6-luna on OpenAI",
+          "where": "https://platform.openai.com/api-keys",
+          "required": true
+        },
+        {
+          "env": "DEMO_MODEL_BASE_URL",
+          "why": "an OpenAI-compatible endpoint that holds its own credential, instead of a key",
+          "where": "your gateway's address",
+          "required": true
+        }
+      ],
+      "why": "the lead model",
+      "for": "live"
+    }
+  ],
+  "programs": [
+    {
+      "cmd": "node",
+      "why": "runs the demo",
+      "required": true,
+      "min": "22.19.0"
+    }
+  ],
+  "expectedCalls": 80,
+  "expectedCost": 1.5,
+  "kills": [
+    {
+      "point": "judge.asked triage",
+      "n": 10,
+      "why": "a typed question is in flight when the process dies; the resumed run asks that one question again (its answer was never recorded) and asks no answered question a second time"
+    }
+  ],
+  "model": {
+    "provider": "openai",
+    "id": "gpt-6-luna"
+  },
+  "browser": false
+}
