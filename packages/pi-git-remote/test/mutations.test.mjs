@@ -54,7 +54,7 @@ const MUTATIONS = [
   },
   {
     removes: "the allowlist's match on a file",
-    file: "dist/session.js", from: "else if (allow.matches(p)) {", to: "else if (true) {",
+    file: "dist/session.js", from: "else if (scope.matches(p)) {", to: "else if (true) {",
     fails: ["session.test.mjs", "a change that no pattern names is never committed"],
   },
   {
@@ -74,7 +74,7 @@ const MUTATIONS = [
   },
   {
     removes: "moving the saved state to the directory's state after each end",
-    file: "dist/session.js", from: "record = { ...seededAt, saved: Object.fromEntries(hashes) };", to: "record = seededAt;",
+    file: "dist/session.js", from: "record = { ...seededAt, saved: Object.fromEntries(next) };", to: "record = seededAt;",
     fails: ["session.test.mjs", "a file put back or removed after an earlier end is a change: the saved state moves with each end, and survives a restart"],
   },
   {
