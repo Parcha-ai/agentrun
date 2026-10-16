@@ -4,7 +4,7 @@
 // builds the whole run on it: the store, the seal check, pi's Harness, resume. A fence reported by the store, the claim,
 // a write of the run's own files or the lapsed lease kills the run's commands and ends the instance (exit 75). Nothing
 // is retried. The lease writes its own files through the claim directory (`ClaimDir`), never by path.
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Context, JsonValue } from "@earendil-works/chord";
@@ -24,10 +24,13 @@ import {
   DEFAULT_LEASE_EXPIRY_MS,
   DEFAULT_LEASE_MARGIN_MS,
   openClaimDir,
+  parseStartMark,
+  persistFile,
   persistRecord,
   readRunRecord,
   RUN_JSON,
   RunRecordError,
+  START_MARK,
   writeRunRecord,
   type ClaimDir,
   type PersistRecord,
@@ -633,7 +636,12 @@ class Lease implements RunLease {
       await step("seed", async () => {
         await this.#layout();
         await this.#dir!.assertMounted();
-        await seed({ root: claim.root, storePath: join(claim.store, STORE_FILE), workDir: claim.work });
+        const stop = this.#keepStartMark();
+        try {
+          await seed({ root: claim.root, storePath: join(claim.store, STORE_FILE), workDir: claim.work });
+        } finally {
+          stop();
+        }
         await this.#dir!.assertMounted();
         await claim.barrier();
       });
@@ -664,6 +672,34 @@ class Lease implements RunLease {
       });
     });
     await step("layout", () => this.#layout());
+  }
+
+  /**
+   * While a new run seeds it has no `run.json` heartbeat, and a supervisor keeps the start in its grace only while its start
+   * mark is younger than the grace. So when a supervisor's mark for generation 1 is there, its `at` is rewritten every
+   * heartbeat, through the held claim directory, with the rest of it as the supervisor wrote it; nothing is made when there
+   * is none. A seeder that dies stops, and the grace runs out as for any start. Best effort: a refused write leaves the grace
+   * to run out, and the seed's own writes meet the same fence. Returns the stop, called when the seed ends.
+   */
+  #keepStartMark(): () => void {
+    const dir = this.#dir!;
+    let stopped = false;
+    const refresh = async () => {
+      try {
+        const mark = parseStartMark(await readFile(join(dir.at, START_MARK), "utf8"));
+        if (stopped || mark === null || mark.generation !== 1) return;
+        await persistFile(dir.at, START_MARK, JSON.stringify({ ...mark, at: new Date().toISOString() }));
+      } catch {
+        // absent, unreadable or refused
+      }
+    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), this.#lease.heartbeatMs);
+    timer.unref();
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
   }
 
   /** `store/`, `work/` and `tmp/`, made through the held claim directory. */

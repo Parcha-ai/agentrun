@@ -731,10 +731,13 @@ await openDurableRun(ref, {
 - **When it fails.** A seed that throws fails the open with its own error. A process killed while it seeds leaves the run
   unpublished in the same way: no `run.json`, the claim let go. The next open seeds again, so a seed overwrites what an
   earlier attempt wrote.
-- **How long it may take.** Under a supervisor, a seed must end within the start grace (`--start-grace`,
-  `startGraceMs`; default the lease expiry, 90 s). Past it, `ensureRunning` takes the start as failed and revokes the
-  claim. The seed's next write or its barrier is then refused, the instance is fenced (exit 75) with nothing published,
-  and the next start seeds again. A deployment whose seeds can take longer raises the start grace.
+- **How long it may take.** A new run has no `run.json` heartbeat while it seeds. A supervisor keeps a start in its grace
+  (`--start-grace`, `startGraceMs`; default the lease expiry, 90 s) only while its start mark (`start.json`) is younger
+  than the grace. So while the seed runs, the instance rewrites the mark's time every heartbeat, through its claim, when a
+  supervisor's mark for generation 1 is there. A live seed of any length stays `starting`. A seeder that dies stops
+  rewriting, the grace runs out as for any start, and the claim is revoked. If the claim is revoked while the seed still
+  runs, its next write or its barrier is refused, the instance is fenced (exit 75) with nothing published, and the next
+  start seeds again.
 - **On a local directory** (`localRun`) it is the same. As with `work/`, the files it writes are the operating system's
   to flush; a SQLite database it commits with `synchronous = FULL` is durable when the commit returns.
 

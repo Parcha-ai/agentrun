@@ -189,6 +189,47 @@ export async function writeRunRecord(root: string | ClaimDir, record: RunRecord,
   }
 }
 
+// ---- the supervisor's start mark --------------------------------------------------------------------------------------
+
+/**
+ * The supervisor's record of its last start of a run, in the run's directory: the generation the instance will write,
+ * when, by whom, and the failed starts right before it (`failures`; `lastExit`, what the decision saw of the last one).
+ */
+export const START_MARK = "start.json";
+export type StartMark = { generation: number; at: string; by: string | null; failures: number; lastExit: string | null };
+
+/** A start mark's text as a mark, or null when it is not one (an unreadable mark gives no grace). */
+export function parseStartMark(text: string): StartMark | null {
+  try {
+    const v = JSON.parse(text) as Partial<StartMark>;
+    if (!Number.isSafeInteger(v.generation) || (v.generation as number) < 1 || typeof v.at !== "string" || !Number.isFinite(Date.parse(v.at))) return null;
+    const failures = Number.isSafeInteger(v.failures) && (v.failures as number) >= 0 ? (v.failures as number) : 0;
+    const lastExit = typeof v.lastExit === "string" ? v.lastExit : null;
+    return { generation: v.generation as number, at: v.at, by: typeof v.by === "string" ? v.by : null, failures, lastExit };
+  } catch {
+    return null;
+  }
+}
+
+/** Write `text` as `<dir>/<name>` the way `run.json` is written: a temp file, fsync, rename over it, fsync the directory. */
+export async function persistFile(dir: string, name: string, text: string): Promise<void> {
+  const temp = join(dir, `${name}.tmp`);
+  const file = await open(temp, "w", 0o644);
+  try {
+    await file.writeFile(text);
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+  await rename(temp, join(dir, name));
+  const handle = await open(dir, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 // ---- the claim directory ----------------------------------------------------------------------------------------------
 
 /** The FencedError code of a claim root that is no longer the mount the instance opened (unmounted, lazily or not). */
