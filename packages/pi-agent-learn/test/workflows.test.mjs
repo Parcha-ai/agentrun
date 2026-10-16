@@ -195,8 +195,15 @@ test("promotion on receipts through git: three clean uses promote, a changed rev
 
   // The restored one then fails twice since it came back: nothing is left to restore, the skill goes, the history stays.
   const nothing = [];
-  for (const [i, run] of ["r6", "r7"].entries()) nothing.push(await settle(repo, usesOf(run, [kyb.name, d1, "failed", at(15, i)])));
+  let checkedOut;
+  for (const [i, run] of ["r6", "r7"].entries()) {
+    nothing.push(await curateStep(repo, async (dir) => {
+      checkedOut = dir;
+      return settleWorkflowUses({ dir, uses: usesOf(run, [kyb.name, d1, "failed", at(15, i)]) });
+    }));
+  }
   const last = nothing.at(-1);
+  assert.equal(await readFile(path.join(checkedOut, `.agents/skills/${kyb.name}/SKILL.md`)).catch((e) => e.code), "ENOENT", "the checkout agrees with the files returned");
   assert.deepEqual(last.result.decisions.map((d) => [d.decision.action, d.decision.rollbackTo]), [["demote", null]]);
   assert.deepEqual(last.result.files[`.agents/skills/${kyb.name}/SKILL.md`], null);
   assert.deepEqual(guard({ role: "curate", files: last.result.files }), []);
