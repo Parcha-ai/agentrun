@@ -18,7 +18,7 @@ Requires Node 22.19+ and npm. In your project:
 
 ```sh
 npm install @parcha/agentrun-dsl@beta
-npx agentrun demo
+npx @parcha/agentrun-dsl@0.1.0-beta.14 demo
 ```
 
 This ticket-routing demo uses scripted decisions and needs no API key. Next, [run and change a workflow in your own app](examples/starter/README.md). To run the support workflow shown above, use the checkout below. To build workflows with your agent, [install the Pi extension](#use-it-in-pi).
@@ -64,9 +64,9 @@ Each package works on its own. Install the ones you need.
 
 | Package | What it does | What it needs | First command with no key | Status |
 | --- | --- | --- | --- | --- |
-| [`@parcha/agentrun-dsl`](packages/dsl/README.md) | Define, validate, inspect and run workflows | Node 22.19+ | `npx agentrun demo` | published (`@beta`) |
+| [`@parcha/agentrun-dsl`](packages/dsl/README.md) | Define, validate, inspect and run workflows | Node 22.19+ | `npx @parcha/agentrun-dsl@0.1.0-beta.14 demo` | published (`@beta`) |
 | [`@parcha/agentrun-jev`](packages/jev/README.md) | Jev typed decisions as a workflow's `runJudge` | the DSL; `TYPESAFE_API_KEY` for live calls | its README's [offline test](packages/jev/README.md#offline-tests) | published (`@beta`) |
-| [`@parcha/agentrun-pi`](packages/pi/README.md) | The `/agentrun` Pi extension and a Pi-backed node runner | Pi 1.1.0; a model for live runs; pi-durable for its `./durable` entry | `/agentrun demo` in Pi (scripted, no model calls) | published (`@beta`); the `./durable` entry is in this repository, not yet in the published beta |
+| [`@parcha/agentrun-pi`](packages/pi/README.md) | The `/agentrun` Pi extension and a Pi-backed node runner | Pi 1.0.4 to below 1.4 (CI tests 1.0.4, 1.1.0, 1.2.0 and 1.3.0); a model for live runs; pi-durable for its `./durable` entry | `/agentrun demo` in Pi (scripted, no model calls) | published (`@beta`); the `./durable` entry is in this repository, not yet in the published beta |
 | [`@parcha/pi-durable-disk`](packages/pi-durable-disk/README.md) | Run a pi-durable agent on a network disk: one owner per run, a fence, a supervisor | pi-durable and chord; an Archil account, a disk and an API key | none yet | published (`@beta`) |
 | [`@parcha/pi-browser`](packages/pi-browser/README.md) | A browser for pi agents: crash-safe session custody, evidence with SHA-256, typed failures | pi-durable and chord; a provider (a local Chrome needs no key, Browserbase needs its key) | its README's [no-key command](packages/pi-browser/README.md#try-it-without-a-key-or-a-chrome) | not yet published; a release publishes it |
 | [`@parcha/pi-vision`](packages/pi-vision/README.md) | Eyes for pi agents: documents, images, scans and video within the model's limits, a receipt for every look | nothing for a document's text; Photon or sharp for images; pi-durable, chord and pi-ai in pi; a model that looks, for questions about a file | its README's [first read](packages/pi-vision/README.md#a-first-read-with-no-key) | not yet published; a release publishes it |
@@ -125,7 +125,7 @@ The [support integration guide](docs/support-quickstart.md) has a config templat
 
 ## Use it in Pi
 
-With [Pi 1.1.0 installed](packages/pi/README.md#install), run these commands in your project:
+With [Pi installed](packages/pi/README.md#install) (1.0.4 to below 1.4; CI tests 1.0.4, 1.1.0, 1.2.0 and 1.3.0), run these commands in your project:
 
 ```sh
 pi install npm:@parcha/agentrun-pi@beta -l
@@ -180,7 +180,7 @@ It plans subquestions, researches them in parallel, screens evidence, and writes
 | [`@parcha/pi-vision`](packages/pi-vision/README.md) | Eyes for pi agents: documents, images, scans and video within the model's limits, typed misses, a priced receipt for every look (not yet published) |
 | [`@parcha/pi-transport`](packages/pi-transport/README.md) | Boxes for pi agents: one small interface over a directory, a container, a sandbox or a VM, providers for this machine and Docker, a strict config, and a conformance suite a vendor can run (not yet published) |
 
-This release is `0.1.0-beta.4`. See the [changelog](CHANGELOG.md) and [contracts and limits](docs/guide.md#limits).
+This release is `0.1.0-beta.14`. See the [changelog](CHANGELOG.md) and [contracts and limits](docs/guide.md#limits).
 
 Ordinary functions may be enough for a fixed sequence. AgentRun stores the steps in a workflow document that you can inspect, rerun, or call from an agent. Code nodes execute JavaScript with process privileges; untrusted workflow authors require a host-controlled sandbox. Typed decisions and validated output shapes do not prove that an answer is factually correct.
 
