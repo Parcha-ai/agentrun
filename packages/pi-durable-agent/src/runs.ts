@@ -3,7 +3,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { existsSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { type AgentHome, homeDir, inHome, isSkillPath, readState, sha256, uuidv7 } from "./home.js";
+import { type AgentHome, checkSha, homeDir, inHome, isSkillPath, readState, sha256, uuidv7 } from "./home.js";
 import { type BrowserProfile, LeasesDoc, type ProfileLease, ProfilesDoc, put, type RunRecord, RunsDoc } from "./kinds.js";
 import { AgentHomeError, openStore, readFamily } from "./store.js";
 
@@ -38,6 +38,8 @@ export type RunStart = RunPaths & {
   /** The profiles this run holds the save lease for: the only ones seeded with their `ref`, so the only ones it can
    *  write to and the only ones it saves back. Every other profile reaches it `held`, with no `ref`. */
   leases: string[];
+  /** The repo commit of the skills the workspace got (the home's `agent.source`); absent for a home not tied to a repo. */
+  sha?: string;
 };
 
 /** What one carry back did. `changed` is false when the run had already been carried back. */
@@ -59,20 +61,26 @@ const isFree = (lease: ProfileLease | undefined, runs: Record<string, RunRecord>
 
 /** Start a run of the agent: `runs/<runId>/` with `store/run.sqlite` and `work/`, the skills written into `work/`, the
  *  save lease taken for every profile no live run holds, the agent's `browser.profiles` copied into the run store (a
- *  profile another run holds without its `ref`), and the run recorded in `agent.runs`. Seeding is this host step, never
- *  a tool. */
-export async function startRun(home: AgentHome, options: { runId?: string; host: string; now?: number; leaseMs?: number }): Promise<RunStart> {
+ *  profile another run holds without its `ref`), and the run recorded in `agent.runs` with the home's `agent.source`
+ *  sha, read under the same lock as the skills. With `sha`, a home whose cache is at another commit, or at none, is
+ *  refused (`stale`) until the host refreshes it. Seeding is this host step, never a tool. */
+export async function startRun(home: AgentHome, options: { runId?: string; host: string; sha?: string; now?: number; leaseMs?: number }): Promise<RunStart> {
   const now = options.now ?? Date.now();
   const runId = options.runId ?? uuidv7(now);
   const paths = runPaths(home, runId);
   if (typeof options.host !== "string" || options.host === "") throw invalid("the host is not a non-empty string");
   const leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
   if (!Number.isSafeInteger(leaseMs) || leaseMs < 1) throw invalid("leaseMs is not a positive integer");
+  const wanted = options.sha === undefined ? undefined : checkSha(options.sha);
   const dir = homeDir(home.dir);
   const { dir: runDir, storePath, workspace } = paths;
   return inHome(dir, async (store) => {
     const state = await readState(store);
     if (own(state.runs, runId) || existsSync(runDir)) throw new AgentHomeError("exists", `the run ${runId} already exists`);
+    const sha = state.source?.sha;
+    if (wanted !== undefined && wanted !== sha) {
+      throw new AgentHomeError("stale", `the agent home's cache is at ${sha ?? "no commit"} and must be refreshed to ${wanted} before a run starts there`);
+    }
     const leases = Object.keys(state.profiles).filter((key) => isFree(own(state.leases, key), state.runs, now));
     await mkdir(path.dirname(runDir), { recursive: true });
     await mkdir(runDir);
@@ -95,7 +103,7 @@ export async function startRun(home: AgentHome, options: { runId?: string; host:
       } finally {
         await run.close();
       }
-      const record: RunRecord = { path: `runs/${runId}`, host: options.host, startedAt: iso(now) };
+      const record: RunRecord = { path: `runs/${runId}`, host: options.host, startedAt: iso(now), ...(sha !== undefined ? { sha } : {}) };
       const lease: ProfileLease = { runId, expiresAt: iso(now + leaseMs) };
       await store.session.commit(async (tx) => {
         put(await tx.doc(RunsDoc, runId, null), record);
@@ -105,7 +113,7 @@ export async function startRun(home: AgentHome, options: { runId?: string; host:
       await rm(runDir, { recursive: true, force: true });
       throw error;
     }
-    return { runId, ...paths, agent: { instructions: state.definition.instructions, tools: [...state.definition.tools] }, leases };
+    return { runId, ...paths, agent: { instructions: state.definition.instructions, tools: [...state.definition.tools] }, leases, ...(sha !== undefined ? { sha } : {}) };
   });
 }
 
