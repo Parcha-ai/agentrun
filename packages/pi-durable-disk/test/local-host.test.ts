@@ -204,7 +204,9 @@ test("kill in child mode: SIGKILL of the instance's process group, at once", asy
   try {
     const host = localHost({ mode: "child", hostName: "host-a", procMounts: w.procMounts, mountRoot: w.mountRoot });
     await host.kill({ driver: "local", mode: "child", host: "host-a", bootId: currentBootId(), pid, startTicks, mountpoint: w.mp });
-    assert.equal(await Promise.race([exited, sleep(5_000).then(() => "still running")]), "SIGKILL");
+    // An unreferenced timer: a passing run must not keep the process up for the bound.
+    const bound = new Promise<string>((resolve) => setTimeout(() => resolve("still running"), 5_000).unref());
+    assert.equal(await Promise.race([exited, bound]), "SIGKILL");
   } finally {
     // A kill that did not happen must not leave the child for good: end its group here, only while the pid is still it.
     if (procStartTicks(pid) === startTicks) process.kill(-pid, "SIGKILL");
