@@ -1,6 +1,7 @@
 // The live run's GitHub tools: read-only REST calls (GET only) for the five things the workflow asks. `GITHUB_TOKEN` is optional (without it GitHub allows 60 requests an hour,
 // which twenty issues overrun); it is read from the environment, sent only to api.github.com and never written anywhere. The tools take a fetch so a test can stand in for GitHub.
-import { mkdir, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, rename, writeFile } from 'node:fs/promises';
 import { dirname, join, normalize, sep } from 'node:path';
 
 const API = 'https://api.github.com';
@@ -23,7 +24,10 @@ export function githubTools(env: NodeJS.ProcessEnv, fetcher: Fetch = fetch) {
   const token = env.GITHUB_TOKEN?.trim();
   /** One GET. The failure names the status and the path, never a header. */
   const get = async (path: string): Promise<any> => {
-    const response = await fetcher(`${API}${path}`, { method: 'GET', headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'agentrun-issue-triage-demo', ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
+    let response: Response;
+    try { response = await fetcher(`${API}${path}`, { method: 'GET', headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'agentrun-issue-triage-demo', ...(token ? { Authorization: `Bearer ${token}` } : {}) } }); }
+    // A dropped connection is a failure the entry may send again, like a 5xx; the message names the path and nothing of the request.
+    catch { throw new GithubError(`GitHub could not be reached for GET ${path.split('?')[0]}`, 0, true); }
     if (!response.ok) throw new GithubError(`GitHub answered ${response.status} for GET ${path.split('?')[0]}`, response.status, response.status >= 500 || response.status === 429 || (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0'));
     return response.json();
   };
@@ -67,7 +71,10 @@ export function githubTools(env: NodeJS.ProcessEnv, fetcher: Fetch = fetch) {
         if (file.type !== 'file' || typeof file.content !== 'string' || (file.size ?? 0) > FILE_CAP) continue;
         const at = join(context.place.work, 'repo', clean);
         await mkdir(dirname(at), { recursive: true });
-        await writeFile(at, Buffer.from(file.content, 'base64'));
+        // Whole or not there: four issues run at once, and another's agent may read this path while it is written.
+        const part = `${at}.${randomUUID()}.part`;
+        await writeFile(part, Buffer.from(file.content, 'base64'));
+        await rename(part, at);
         written.push(clean);
       }
       return { paths: written };

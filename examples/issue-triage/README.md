@@ -71,7 +71,7 @@ The first is the pick unless a maintainer's labelling changes before the take; t
 
 ### Showing an issue's text in a published recording
 
-An issue's title and body are third-party text written by a named person, and a recording is published. The live take publishes the issue's number, its URL, the two labels and the verdicts (type, good first issue, actionable), and quotes at most 200 characters from a source (the evidence field already caps it), with the source named. It publishes no username, avatar or email, and it records no issue body past the cap. A run on the live repository is read-only (GitHub's read API; no comment, label or reaction is written). The scripted run above avoids the question: its issues are fictional.
+An issue's title and body are third-party text written by a named person, and a recording is published. A live recording **holds each issue's title and its body, up to 4,000 characters**, because the run reads them and the recorder keeps every tool answer; the research agent's cited quotations are schema-capped at 200 characters. It holds no username, avatar or email, and the run is read-only (GitHub's read API; no comment, label or reaction is written). Publishing a live take is therefore the owner's decision about that repository's public issue text. The scripted run avoids the question: its issues are synthetic.
 
 ### One request per issue
 

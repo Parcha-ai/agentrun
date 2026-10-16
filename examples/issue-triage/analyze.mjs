@@ -7,9 +7,12 @@ const spent = fs.readFileSync(`${run}/judge-spent.jsonl`, 'utf8').trim().split('
 const requests = spent.reduce((a, r) => a + r.requests, 0), tokens = spent.reduce((a, r) => a + r.tokens, 0);
 const hashes = new Set(); for (const l of L.filter((l) => l.kind === 'agentrun.decisions')) for (const r of l.data.value.receipts || []) hashes.add(r.request_sha256);
 const answered = {}; for (const l of L.filter((l) => l.kind === 'judge.answered')) answered[l.gen] = (answered[l.gen] || 0) + 1;
-const led = fs.readFileSync(`${run}/ledger.jsonl`, 'utf8').trim().split('\n').map((l) => JSON.parse(l)); const tools = {}; for (const r of led) if (r.kind === 'tool') tools[r.name] = (tools[r.name] || 0) + 1;
+const led = fs.readFileSync(`${run}/ledger.jsonl`, 'utf8').trim().split('\n').map((l) => JSON.parse(l)); const handled = {}; for (const r of led) if (r.kind === 'tool') handled[r.name] = (handled[r.name] || 0) + 1;
+// The ledger has one row for each call the host handled (a send that was retried counts once); the effects' own records say how each send ended, so a repeated send shows there.
+const last = new Map(); for (const l of L.filter((l) => l.kind === 'agentrun.effects')) last.set(l.data.key, l.data.value);
+const sends = {}; for (const v of last.values()) for (const c of v.calls || []) { const k = `${c.tool}: ${c.outcome}`; sends[k] = (sends[k] || 0) + 1; }
 console.log('JEV: requests sent', requests, 'tokens', tokens, '| distinct request hashes in receipts', hashes.size, '| judge.answered by generation', JSON.stringify(answered));
-console.log('TOOLS (ledger, calls made):', JSON.stringify(tools));
+console.log('TOOLS handled by the host (one per call, a retried send counts once):', JSON.stringify(handled), '| sends by outcome, from the effects records:', JSON.stringify(sends));
 const C = {}; const c = (k) => C[k] || (C[k] = { asked: { 1: 0, 2: 0 }, committed: { 1: 0, 2: 0 }, seen: new Set(), k });
 for (const l of L) { if (l.conv === undefined) continue; const o = c(l.conv);
   if (l.kind === 'message_start' && l.data.message && l.data.message.role === 'assistant') o.asked[l.gen]++;

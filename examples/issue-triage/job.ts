@@ -1,7 +1,8 @@
 // The issue-triage job and its scripted fakes. The workflow is `workflow.json`, the reference an agent drafts against; the fakes answer from
 // `fixtures.json`: twenty fictional issues in the shape of a real repository's, so the run is the same on every machine at $0 and no text of a
 // real person is in it. A live take replaces the fakes with GitHub's read-only API, a model and Jev (see README.md).
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type { Message, ToolCall, ToolResultMessage } from '@earendil-works/pi-ai';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import type { Workflow } from '@parcha/agentrun-dsl';
@@ -18,12 +19,12 @@ export const workflow = JSON.parse(readFileSync(new URL('./workflow.json', impor
 /** The maintainers' type labels (here the Express repository's) mapped onto the four types. A waiting-on-reporter state is not a type and is not here. */
 export const LABEL_MAP = { bug: 'bug', enhancement: 'feature', docs: 'docs', question: 'question' };
 export const REPO = 'fictional/widget-router';
-const encoder = new TextEncoder();
 
+// No `files`: the fixtures' source files are written into the workspace by the scripted `github_code` (below), so a live run, which the entry stages `job.files` for as well, never has a
+// fictional file where a real one is missing.
 export const job: Job = {
   workflow,
   input: { repo: REPO, numbers: fixtures.issues.map((issue) => issue.number), label_map: LABEL_MAP },
-  files: Object.fromEntries(Object.entries(fixtures.files).map(([path, text]) => [`repo/${path}`, encoder.encode(text)])),
 };
 
 const textOf = (message: Message) => (typeof message.content === 'string' ? message.content : message.content.map((block) => (block.type === 'text' ? block.text : '')).join(''));
@@ -71,8 +72,13 @@ export const fakes: Fakes = {
       return issue;
     },
     github_labels: ({ number }) => ({ labels: byNumber.get(Number(number))?.labels ?? [] }),
-    // The scripted run's files are staged in `job.files`; they are what the agent reads.
-    github_code: ({ number }) => ({ paths: (byNumber.get(Number(number))?.paths ?? []).filter((path) => path in fixtures.files) }),
+    // The scripted run's source files: this issue's, written into the workspace for the agent's read-only tools, as the live tool writes the repository's.
+    github_code: ({ number }, context) => {
+      const paths = (byNumber.get(Number(number))?.paths ?? []).filter((path) => path in fixtures.files);
+      if (!context?.place) throw new Error('github_code needs the run place');
+      for (const path of paths) { const at = join(context.place.work, 'repo', path); mkdirSync(dirname(at), { recursive: true }); writeFileSync(at, fixtures.files[path]!); }
+      return { paths };
+    },
     github_linked_prs: ({ number }) => ({ prs: (byNumber.get(Number(number))?.prs ?? []) }),
   },
   // Scripted: no model, so $0. A label question gets the scripted label at 0.8 and the rest share what is left; the good-first-issue and actionable questions get 0.9 or 0.1 from their own columns.

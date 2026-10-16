@@ -135,7 +135,8 @@
               },
               "quote": {
                 "type": "string",
-                "description": "A short quotation, at most 200 characters, copied from that source."
+                "description": "A short quotation, at most 200 characters, copied from that source.",
+                "maxLength": 200
               }
             },
             "required": [

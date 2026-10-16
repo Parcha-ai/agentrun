@@ -8,6 +8,7 @@ import test from 'node:test';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { githubTools, GithubError } from './issue-triage/github.ts';
 import { brokerProvider, MODEL } from './issue-triage/live.ts';
+import { fakes, job } from './issue-triage/job.ts';
 
 const TOKEN = 'github-token-test-value-0123456789';
 const json = (body, status = 200, headers = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
@@ -107,4 +108,40 @@ test("the model is pi-ai's own catalog entry for openai/gpt-6-luna, only its bas
     // 100,000 input tokens at $0.10 and 200,000 output tokens at $0.50 per million.
     assert.ok(Math.abs(message.usage.cost.total - 0.11) < 1e-9, `cost ${JSON.stringify(message.usage.cost)}`);
   } finally { await new Promise((resolve) => server.close(resolve)); }
+});
+
+test('a dropped connection is a failure the entry may send again, and it names the path and nothing of the request', async () => {
+  const tools = githubTools({ GITHUB_TOKEN: TOKEN }, async () => { throw new TypeError('fetch failed: ECONNRESET'); });
+  await assert.rejects(tools.github_issue({ repo: 'o/r', number: 7 }), (error) => {
+    assert.ok(error instanceof GithubError); assert.equal(error.retryable, true);
+    assert.match(error.message, /could not be reached for GET \/repos\/o\/r\/issues\/7/); assert.equal(error.message.includes(TOKEN), false);
+    return true;
+  });
+});
+
+test('a file is written whole or not at all: a reader never sees a part of it, and no partial file is left', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'triage-atomic-'));
+  try {
+    const place = { root, work: join(root, 'work') };
+    const big = 'x'.repeat(30_000);
+    const tools = githubTools({}, github({ '/repos/o/r/issues/7': () => json(ISSUE), '/repos/o/r/issues/7/timeline': () => json([]), '/repos/o/r/contents/lib/params.js': () => json({ type: 'file', size: big.length, content: Buffer.from(big).toString('base64') }), '/repos/o/r/contents/docs/guide/routing.md': () => json({ type: 'file', size: 3, content: Buffer.from('abc').toString('base64') }) }).fetcher);
+    const seen = new Set();
+    const watcher = (async () => { for (let i = 0; i < 400; i += 1) { try { seen.add((await readFile(join(place.work, 'repo/lib/params.js'), 'utf8')).length); } catch { /* not there yet */ } await new Promise((resolve) => setImmediate(resolve)); } })();
+    await Promise.all([tools.github_code({ repo: 'o/r', number: 7 }, { place }), tools.github_code({ repo: 'o/r', number: 7 }, { place }), watcher]);
+    assert.deepEqual([...seen].filter((length) => length !== big.length), [], 'a reader saw a file that was not whole');
+    const { readdir } = await import('node:fs/promises');
+    assert.deepEqual((await readdir(join(place.work, 'repo/lib'))).sort(), ['params.js']);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("a live run has no fictional file: the job stages none, and the scripted github_code writes this issue's files itself", async () => {
+  assert.equal(job.files, undefined);
+  const root = await mkdtemp(join(tmpdir(), 'triage-fixtures-'));
+  try {
+    const place = { root, work: join(root, 'work') };
+    const { paths } = fakes.tools.github_code({ number: 101 }, { place });
+    assert.deepEqual(paths, ['lib/params.js']);
+    assert.match(await readFile(join(place.work, 'repo/lib/params.js'), 'utf8'), /decodeParam/);
+    await assert.rejects(readFile(join(place.work, 'repo/lib/send-file.js'), 'utf8'), { code: 'ENOENT' });
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
