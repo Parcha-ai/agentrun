@@ -261,6 +261,7 @@ import * as transportTesting from '@parcha/pi-transport/testing';
 import * as piDurable from '@parcha/agentrun-pi/durable';
 import * as agentHome from '@parcha/pi-durable-agent';
 import * as gitRemote from '@parcha/pi-git-remote';
+import * as gitRemoteAgent from '@parcha/pi-git-remote/coding-agent';
 import { execFileSync } from 'node:child_process';
 const { createPiRunner } = pi;
 assert.equal('authorWorkflow' in pi, false);
@@ -295,6 +296,7 @@ assert.equal(typeof transportHands.transport,'function'); assert.equal(typeof tr
 assert.equal(piDurable.DECISION_RECEIPTS_DOC,'agentrun.decisions'); assert.equal(piDurable.DECISION_ROW_VERSION,1); { let opened=0; const writer=piDurable.createDecisionWriter({open:async()=>{opened++;throw new Error('never opened');}}); await writer.flush(); assert.equal(opened,0); }
 { const dir=await mkdtemp(join(tmpdir(),'agentrun-agent-home-')); try { const home=await agentHome.createAgentHome(join(dir,'acme'),{definition:{version:1,name:'consumer',instructions:'Answer.',skills:['s'],tools:[]},skills:{'s/SKILL.md':'# S'}}); const started=await agentHome.startRun(home,{runId:'r1',host:'consumer'}); assert.deepEqual(started,{...agentHome.runPaths(home,'r1'),runId:'r1',agent:{instructions:'Answer.',tools:[]},leases:[]}); assert.equal(await readFile(join(started.workspace,'.agents/skills/s/SKILL.md'),'utf8'),'# S'); assert.deepEqual(await agentHome.carryBack(home,started,{outcome:'completed'}),{changed:true,profiles:[],released:[]}); assert.equal((await agentHome.readAgentHome(home)).runs.r1.outcome,'completed'); } finally { await rm(dir,{recursive:true,force:true}); } }
 { const dir=await mkdtemp(join(tmpdir(),'agentrun-git-remote-')); try { const bare=join(dir,'remote.git'); execFileSync('git',['init','-q','--bare','--template=','-b','main',bare]); const repo=await gitRemote.openRepo({dir:join(dir,'host'),remote:gitRemote.local(bare)}); const made=await repo.commitTo('runs/r1',{files:{'inbox/r1.md':'a lesson\\n'},message:'r1',trailers:{'Run-Id':'r1'}}); await repo.push(made.sha,'runs/r1'); const fresh=await gitRemote.openRepo({dir:join(dir,'fresh'),remote:gitRemote.local(bare)}); assert.deepEqual(await fresh.commitTo('runs/r1',{files:{'inbox/r1.md':'again\\n'},message:'r1',trailers:{'Run-Id':'r1'}}),{sha:made.sha,created:false}); assert.equal(await fresh.read('inbox/r1.md',made.sha),'a lesson\\n'); const userinfo=new URL('https://git.example.test/a.git'); userinfo.username='user'; userinfo.password='pass'; await assert.rejects(gitRemote.openRepo({dir:join(dir,'h'),remote:{kind:'https',url:userinfo.href}}),e=>e instanceof gitRemote.GitRemoteError&&e.code==='refused'); } finally { await rm(dir,{recursive:true,force:true}); } }
+assert.equal(typeof gitRemoteAgent.createGitRemoteExtension,'function'); assert.equal(typeof gitRemoteAgent.default,'function'); assert.equal(typeof gitRemoteAgent.createGitRemoteExtension({}),'function');
 assert.ok(loadAuthorReference('language').includes(authorContract()));
 console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,git:true,network:'prohibited'}));
 `);
@@ -436,6 +438,12 @@ const propose = async (dir: string, remote: Remote, files: CommitOptions['files'
 const https = (url: string, token: () => GitCredential): Remote => ({ kind: 'https', url, credential: token });
 const code = (error: unknown) => (error instanceof GitRemoteError ? error.code : undefined);
 void [propose, https, code, local];
+// The coding-agent subpath: options a host writes, the report it hears, and the factory pi loads.
+import { createGitRemoteExtension, type EndOutcome, type GitRemoteOptions } from '@parcha/pi-git-remote/coding-agent';
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+const options: GitRemoteOptions = { remote: local('/srv/acme.git'), allow: ['notes/**'], onEnd: (report) => { if (report.ok) { const outcome: EndOutcome = report.outcome; void outcome.branch; } } };
+const extension: (pi: ExtensionAPI) => void = createGitRemoteExtension(options);
+void extension;
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'git-consumer.ts'], consumer);
   receipt.checks.push('Installed ESM imports, core execution, fake Jev/Pi adapters, and strict TypeScript consumer compilation passed.');
