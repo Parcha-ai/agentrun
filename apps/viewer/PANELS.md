@@ -44,7 +44,10 @@ Plain nodes, not DOM. The viewer draws them.
   panel's CSS positions).
 - A string: text.
 - `{ tag: 'img', blob, alt }`: an image from the recording's `blobs/`, by its SHA-256.
-- `{ tag: 'a', blob, text }`: a link to any file in `blobs/` (an evidence record, the result), opened beside the page.
+- `{ tag: 'a', blob, text, fragment? }`: a link to any file in `blobs/` (an evidence record, the result), opened beside
+  the page, at `fragment` when it has one (`page=2`, `t=30`).
+- `{ tag: 'a', href, text }`: a link to a page outside the recording, drawn as a link only when `href` is an `http` or
+  `https` address, and opened apart from the viewer (`noopener`, `noreferrer`); any other address is plain text.
   A view never reads a blob's bytes: the shell resolves the hash to a URL when it draws. The one exception is the
   result's JSON, which the shell reads and hands every view (`json`, below).
 - `{ tag: 'frame', session }`: a browser session's picture at the current point (below).
@@ -92,6 +95,10 @@ or a `result` line names, undefined until the shell has read it; and `baseline` 
 and how long it ran in ms, or null; another real recording, opened beside this one, never typed-in numbers). When
 `counters.measured` is false the recording has no durable line, so its counts are not measured and its cost is
 unknown: show that, never its zeros.
+
+A run's result is the demo's own JSON, and two formats are known to the vision panel: `apollo11.account/1`, and the
+generic cited result `agentrun.cited/1` (RECORDING.md: rows of a label and a value, each citing a blob, a look or
+both, and where and when it was read). A panel that shows what a run delivered reads the generic one and ignores fields it does not know.
 
 A redraw keeps the reader's place: each scrolled element's offset and the element with the keyboard focus, found again
 by place alone (at each step its tag, its first class and its rank among such siblings), never by its text.

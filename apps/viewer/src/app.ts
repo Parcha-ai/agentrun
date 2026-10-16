@@ -38,11 +38,12 @@ const svgEl = (tag: string, attrs: Record<string, string | number>) => {
 };
 
 /** A link to a blob: a passive type opens in a new tab, anything else (a page, an SVG, an unknown type) downloads, so
- *  a recording's file never runs with the viewer's origin. */
-function blobLink(recording: Recording, sha: string, text: string, className: string): HTMLAnchorElement | undefined {
+ *  a recording's file never runs with the viewer's origin. A fragment (`page=2`, `t=30`) is where in the file it opens. */
+function blobLink(recording: Recording, sha: string, text: string, className: string, fragment?: string): HTMLAnchorElement | undefined {
   const url = recording.blobUrl(sha);
   if (!url) return undefined;
-  const link = Object.assign(el('a', { class: className, text }), { href: url, rel: 'noopener' });
+  const at = fragment?.replace(/^#/, '');
+  const link = Object.assign(el('a', { class: className, text }), { href: at ? `${url.split('#')[0]}#${encodeURI(at)}` : url, rel: 'noopener' });
   if (opensInPage(recording.blobType(sha))) link.target = '_blank';
   else link.download = sha;
   return link;
@@ -265,8 +266,13 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
     const url = player.recording.blobUrl(node.blob);
     return url ? Object.assign(el('img', { class: node.class ?? 'blob' }), { src: url, alt: node.alt }) : el('span', { class: 'missing', text: `[${node.alt}: not in this recording]` });
   }
+  if (node.tag === 'a' && 'href' in node) {
+    // A page outside the recording: linked only when it is a web address, and opened apart from the viewer.
+    const web = URL.canParse(node.href) && ['http:', 'https:'].includes(new URL(node.href).protocol);
+    return web ? Object.assign(el('a', { class: node.class ?? 'blob', text: node.text }), { href: node.href, target: '_blank', rel: 'noopener noreferrer' }) : el('span', { class: node.class ?? 'blob', text: node.text });
+  }
   if (node.tag === 'a' && 'blob' in node && 'text' in node) {
-    return blobLink(player.recording, node.blob, node.text, node.class ?? 'blob') ?? el('span', { class: 'missing', text: `[${node.text}: not in this recording]` });
+    return blobLink(player.recording, node.blob, node.text, node.class ?? 'blob', 'fragment' in node ? node.fragment : undefined) ?? el('span', { class: 'missing', text: `[${node.text}: not in this recording]` });
   }
   if (node.tag === 'frame' && 'session' in node) {
     const picture = pictureAt(frames, node.session, t);
