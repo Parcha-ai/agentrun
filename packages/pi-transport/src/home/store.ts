@@ -129,6 +129,14 @@ async function walHasContent(path: string): Promise<boolean> {
 }
 
 /**
+ * The sequence the next commit of the store at `path` takes. One read, on a connection of its own that only reads: the
+ * store may be open in this process, and its owner's commits go on.
+ */
+export async function storeHead(path: string): Promise<Result<number, StoreError>> {
+	return withDatabase(path, readHead);
+}
+
+/**
  * Seal a store whose owner has closed it: its head, its hash and its size. A store with a write-ahead log that holds
  * content was not closed cleanly and is refused with `not_sealed`: its file alone is not the store.
  */

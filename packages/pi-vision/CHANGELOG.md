@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.1.0-beta.14 (2026-10-16)
+
+- Breaking: `look` is not a tool, and its exports are removed (`LOOK_TOOL`, `ToolContract`, `JsonSchema`, `VisionHandle.tools`, `install.look`, and the caps `LOOK_PAGES_PER_CALL`, `LOOK_FRAMES_PER_CALL`, `LOOK_MAX_USD`, `LOOK_CONCURRENCY`); no version built `look`, so only a host that imported these names changes, and it passes its own caps where it wants one (`plan(facts, selector, limits, "ask", { pages, frames })`, `priceLook(..., capUsd)`), since there is none by default.
+  - An agent looks at many pages, a long video or many images by writing code. `handle.see(env, call)` is `vision.see`, a global for a host's code-mode sandbox (`globals: [vision.see(api.env, await callContext(api, context))]` with pi-codemode), described to the model by `VISION_SEE`. It takes `{ ask, paths?, images?, fragments? }`, reads paths through the call's environment, fits each image to the eyes' limits, packs the images into as few requests as the eyes take (`packRequests`, which the guard uses too), and returns `{ text, model, costUsd, receipts, kept? }`: the text has one part a request when there are several, each headed by its fragments and receipt, and `receipts` holds one receipt a request, in order. Each request is a look filed and told once, its answer kept as the call's memo, so a call run again after a crash pays and tells once. A look that cannot be made throws `SeeMiss` with its miss code. `allow` is asked with `tool: "vision.see"`, and events name it.
+  - The `look` skill ships in the package (`skills/look/SKILL.md`, declared under `pi.skills`): many PDF pages with pdftoppm, a long video by frames with ffmpeg, many images, a cropped region, and installing poppler or ffmpeg.
+- Accept pi 1.3: the `@earendil-works/pi-durable` and `@earendil-works/chord` peer ranges now end below 1.4, with the floors unchanged (1.0.4, and 1.1.0 for `@parcha/pi-browser`). pi 1.3.0 pins its own packages to exact versions, so an install is all 1.2 or all 1.3; CI runs every package's whole suite on a 1.3.0 family as well as on 1.2.0.
+  - On pi-ai 1.3, a tool call whose arguments are not a JSON object reaches no tool: pi-durable refuses it and shows the model the text it sent. A durable node's `submit` then spends none of its submissions. Before 1.3 the tool ran with `{}`, so `submit` answered with the schema's violations and counted one submission.
+- A `vision.see` call that its code-mode script stopped (a deadline or an abort) files no miss and tells `onMiss` nothing: a path read that failed because the call was cancelled was filed as an `unreadable` miss of that file. The call now rejects with the stop's reason. The eyes request already stopped with the script, on pi-codemode 1.1, 1.2 and 1.3 alike: nothing is kept, filed or told for a request stopped before its answer, and the same call asked again pays once.
+
 ## 0.1.0-beta.13 (2026-10-14)
 
 First release of `@parcha/pi-vision`, versioned with the other packages of the repository it is published from (the release PR dates this section and gives it the workspace version).

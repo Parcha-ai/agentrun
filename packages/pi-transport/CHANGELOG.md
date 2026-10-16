@@ -32,3 +32,29 @@
   was running during each side's setup (the parts directory, the program's start), so a box that took longer than the
   limit to answer one call cut a healthy copy with `timeout` after 0 bytes; the hold is now taken before the first call
   and kept until the side is up. The default limit is 60 s, so only a smaller `stallMs` on a slow box was exposed.
+- Accept pi 1.3: the `@earendil-works/pi-durable` and `@earendil-works/chord` peer ranges now end below 1.4, with the floors unchanged (1.0.4, and 1.1.0 for `@parcha/pi-browser`). pi 1.3.0 pins its own packages to exact versions, so an install is all 1.2 or all 1.3; CI runs every package's whole suite on a 1.3.0 family as well as on 1.2.0.
+  - On pi-ai 1.3, a tool call whose arguments are not a JSON object reaches no tool: pi-durable refuses it and shows the model the text it sent. A durable node's `submit` then spends none of its submissions. Before 1.3 the tool ran with `{}`, so `submit` answered with the schema's violations and counted one submission.
+- The link of a home in a box (`./home`): `connectHome` on the host, `createRunner` and `runMain` in the box, frames
+  over the box's own `exec`. The runner's models mirror the host's catalog and hold no credential; the host answers
+  each request, refuses one from an epoch the lease left behind, and keeps an answer's frames so a link that drops
+  costs no second request (`connectHome`'s `server`: one `serveModels` server for every link to a runner). An order
+  the host gives up on is cancelled in the runner, and one whose context ended already is not sent. The runner says
+  ready only with its home open. A line longer than `maxLineLength` (64 Mi characters by default) closes a link.
+  `@earendil-works/pi-ai` is a peer dependency, `*` like every package Pi provides.
+- `moveHome` and `recoverHome` (`./home`): a session's home moves between boxes with no shared disk in seven
+  steps, the take of a numbered lease the one point of no return; a host that starts again finishes the move from
+  the lease, which keeps the move's id and the seal; the store keeps the workspace it last ran in. A home holds its
+  store alone: a second runner at the same place is `busy`, and `recoverHome` stops a runner still running there first
+  (`stopRunner`). `boxRunner` starts a runner in a box over its own `exec`. A session can move back to a place it left.
+  Recovering a home sealed at the lease's epoch first takes the next epoch for that place, so it moves the epoch; when a
+  move took that epoch first, recovery is `lost`, opens nothing, and says where the lease puts the session.
+  `registerMoveConformance` (`./testing`) kills the host, the source or the target before each step.
+- The model link no longer imports its frame encoder from pi-ai, which removed it in 1.3.0 (`@parcha/pi-transport/home`
+  failed to load there). The package carries its own `FrameEncoder` and `applyFrame`, written to the same wire format as
+  pi-ai 1.1 and 1.2 wrote, byte for byte: frames kept at rest and a home on an older build still link. The format is
+  pinned by streams captured from pi-ai 1.2.0 (text, thinking, tool calls, an error and an abort) as test data. Peer
+  ranges are unchanged.
+- The tests of "a phase that moves no byte is not a stall" no longer race on a loaded machine: once a slowed setup call ends, tar has the stall limit to move a first byte, and 25 or 400 ms is less than the spawn of a real process can take on a busy runner (a failure of the form "no byte moved for 25 ms, after 0 bytes" on other pull requests). The limit is now one second and the slowed phase is three times that, so the claim is tested with no scheduling noise. Tests only.
+- `boxEnv`'s abort and timeout no longer leave a command running when the call that kills it fails. The kill call's result used to be dropped, so a kill exec that failed fast or timed out on a loaded provider API left the command's process group running in the box after `exec` had answered `aborted` or `timeout`, and nothing ended it later. The kill now reads back that no live process of the group is left (a zombie is not counted: `kill -0` succeeds on one, and in a container whose first process does not reap, a killed group would have stayed "alive" for ever), and the call is sent again at 1, 2 and 4 seconds when it fails, times out or finds the group alive, within 10 seconds of wall time, a call in flight included. A stop whose kill call worked answers as fast as before; one that needed a retry answers later, by at most 10 seconds.
+  - A new optional property on that error: when no kill call could confirm the group gone within the bound, the `aborted` or `timeout` error is a `StoppedCommandError` (new type, exported from `@parcha/pi-transport/hands`) with `killUnconfirmed: true`, and the command stays tracked so `cleanup()` ends it with the rest. It is absent when the group was confirmed gone.
+  - The live and local tests of "the whole process group is killed on an abort and on a timeout" now poll for "not running" with a bound that fails, instead of reading absence once right after `exec` returns.
