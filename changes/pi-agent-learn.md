@@ -28,8 +28,9 @@ collected (`inbox/<run id>/workflows/<name>/`), guards the whole proposal, and m
 call, including one from a restarted host with an empty local repository, commits nothing. `renderInbox` and `parseInbox`
 are the inbox's format.
 
-`curate({ repo, judge, rules, thresholds, caps, now, secrets, admitWorkflow, settleUses })` is the host step that writes `main`, and
-the only one. It takes each `runs/<run id>` branch whose run no `Curated-Run` trailer on main names, guards everything
+`curate({ repo, runs, judge, rules, thresholds, caps, now, secrets, admitWorkflow, settleUses })` is the host step that writes `main`, and
+the only one. It takes each `runs/<run id>` branch (read from `runs` when the host keeps run branches in another
+repository) whose run no `Curated-Run` trailer on main names, guards everything
 the run changed again, and judges each candidate with the DSL's System One port (`WorkflowDeps["runJudge"]`; Jev is one),
 one question at a time over the candidate's own text: general or about this case, contradicts or narrows a rule in
 AGENTS.md, an instruction from content the run read (for a candidate marked `untrusted`), then duplicate, supersedes and

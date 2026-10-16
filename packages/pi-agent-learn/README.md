@@ -277,6 +277,9 @@ this package's types; the workflows lane implements them. When the
 `<learned>` section derived from the active learnings would pass 4,096 bytes, the least-used are archived first, this
 run's new ones last, and the report names each.
 
+Run branches are read from `runs` when the host keeps them apart from main (a hidden namespace for runs, as
+code.storage's ephemeral branches are); it defaults to `repo`. Curation only reads `runs` and only writes `repo`.
+
 `caps` sets the section cap (`index`), the questions one run may ask (`questionsPerRun`, 128; past it the run's
 remaining candidates are held) and the retries (`retries`, 5): a push that a moved main rejects is rebuilt from the new
 main, judged answers reused, and after the last retry curation stops with `contended`. A judge that fails or answers out
