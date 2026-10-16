@@ -23,6 +23,10 @@
     "./signin": {
       "types": "./dist/signin/index.d.ts",
       "import": "./dist/signin/index.js"
+    },
+    "./credentials": {
+      "types": "./dist/credentials.d.ts",
+      "import": "./dist/credentials.js"
     }
   },
   "bin": {
