@@ -166,6 +166,12 @@ when its store already holds a seed, that commit is used again and the record is
 run to a newer commit. `readSeed` returns the record; `collectCandidates` returns the run's candidates in order.
 `workflows` is a list of `{ name, status: "trial" | "active" }`, at most 8; it is empty until workflow trials land.
 
+With [`@parcha/pi-durable-agent`](../pi-durable-agent), the run starts at the same commit: the host reads `agent.json` and
+`.agents/skills/` at the sha with `repo.read` and `repo.list`, keeps the agent home on it (`createAgentHome(dir, {
+definition, skills, sha })`, then `refreshAgentHome(home, { sha, from, definition, skills })` when main moves), starts the
+run with `startRun(home, { host, sha })`, and seeds it with `seedLearning({ repo, ref: started.sha, target, into:
+started.workspace })`. The runs index, `learn.seed` and the section then all name that sha.
+
 Every failure is a `LearnError` with a `code`: `invalid`, `format`, `missing`, `rules_locked` or `too_large`.
 
 ## Versions
