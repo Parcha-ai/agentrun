@@ -580,7 +580,35 @@ export function workflowDocumentError(value: unknown): string | undefined {
  * trusted/default validation and runtime output checks remain authoritative. */
 const RETRY_ON_NAMES: readonly string[] = [...CALL_RETRY_CLASSES, ...EFFECT_FAILURE_CODES];
 
-export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: boolean; input?: Record<string, unknown>; inputKeys?: string[]; probeContext?: { references?: Record<string, string>; references_parsed?: Record<string, { header: string[]; rows: string[][] }> } }): { ok: true } | { ok: false; errors: string[] } {
+/** Advice the validator gives without refusing: a shape that runs and costs more than it needs to. A map with no
+ *  `resultPath` whose body writes no `as` returns each item's whole state, which holds the list the map ran over: the
+ *  map's result, and every state after it, grow with the square of its items. */
+function workflowWarnings(workflow: Workflow): string[] {
+  const warnings: string[] = [];
+  // Warnings are given for a document the validator refuses too, so a field may be missing or of the wrong kind.
+  const list = (value: unknown): WorkflowNode[] => (Array.isArray(value) ? value : []);
+  const visit = (node: WorkflowNode | undefined): void => {
+    if (!node || typeof node !== "object") return;
+    switch (node.node) {
+      case "chain": list(node.steps).forEach(visit); break;
+      case "parallel": list(node.branches).forEach(visit); break;
+      case "map":
+        if (node.resultPath === undefined && node.body && typeof node.body === "object" && !(node.body as { as?: unknown }).as) {
+          warnings.push(`map "${node.label}": each item's result is its whole state, including ${node.itemsPath}; set resultPath (or an as in the body) for a large map`);
+        }
+        visit(node.body); break;
+      case "loop": visit(node.body); break;
+      case "route": if (node.branches && typeof node.branches === "object") Object.values(node.branches).forEach((branch) => visit(branch?.body)); break;
+      case "workflow": visit(node.workflow?.root); break;
+      default: break;
+    }
+  };
+  visit(workflow.root);
+  return warnings;
+}
+
+/** Whether a workflow can run, checked without running it: `errors` refuse it, `warnings` advise and never refuse. */
+export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: boolean; input?: Record<string, unknown>; inputKeys?: string[]; probeContext?: { references?: Record<string, string>; references_parsed?: Record<string, { header: string[]; rows: string[][] }> } }): { ok: true; warnings?: string[] } | { ok: false; errors: string[]; warnings?: string[] } {
   const bounded = workflowDocumentError(workflow);
   if (bounded) return { ok: false, errors: [bounded] };
   const shapeErrors = workflowShapeErrors(workflow);
@@ -1254,7 +1282,8 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
     }
   }
   if (!errors.length) errors.push(...workflowShapeErrors(workflow, true));
-  return errors.length ? { ok: false, errors } : { ok: true };
+  const warnings = workflowWarnings(workflow);
+  return errors.length ? { ok: false, errors, ...(warnings.length ? { warnings } : {}) } : { ok: true, ...(warnings.length ? { warnings } : {}) };
 }
 
 function interpolate(template: string, state: Record<string, unknown>): string {

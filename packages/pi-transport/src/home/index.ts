@@ -14,9 +14,11 @@ export {
 	type ConnectOptions,
 	connectHome,
 	type HomeHandle,
+	type HomeStatus,
 	type Ready,
 	RemoteError,
 } from "./host.ts";
+export { KEYS_EXTENSION, type KeyedRequest, requestKey } from "./keys.ts";
 export {
 	LaunchError,
 	type LaunchErrorCode,
@@ -37,7 +39,7 @@ export {
 	processLink,
 	streamLink,
 } from "./link.ts";
-export { EXIT_USAGE, runMain } from "./main.ts";
+export { EXIT_USAGE, type RunMainOptions, runMain } from "./main.ts";
 export {
 	type Catalog,
 	catalogOf,
@@ -48,6 +50,19 @@ export {
 	proxyModels,
 	serveModels,
 } from "./models.ts";
+export {
+	MoveError,
+	type MoveErrorCode,
+	type MoveOptions,
+	type MoveReceipt,
+	type MoveStep,
+	moveHome,
+	type Place,
+	type RecoverOptions,
+	recoverHome,
+	type StartRunner,
+} from "./move.ts";
+export { type LinesSync, type OutboxEntry, openOutbox } from "./outbox.ts";
 export {
 	type ConditionalStore,
 	type Holder,
@@ -61,6 +76,7 @@ export {
 	type TakeDetails,
 } from "./ownership.ts";
 export { checkHomeHands } from "./place.ts";
+export { type Recording, type RecordLine, type RecordSink, receiveRecords } from "./records.ts";
 export {
 	type Home,
 	HomeError,
@@ -70,6 +86,7 @@ export {
 	MOVE_ENTRY,
 	openHome,
 	type ResumeOrder,
+	type WrappedStore,
 } from "./run.ts";
 export {
 	createRunner,
@@ -79,6 +96,9 @@ export {
 	type RunnerOptions,
 	type WireError,
 } from "./runner.ts";
+export { admitsTool, type Shipped, shippingStorage } from "./shipping.ts";
+export { type BoxRunnerOptions, boxRunner, type RunnerProgram } from "./start.ts";
+export { type StopRunner, stopRunner } from "./stop.ts";
 export { checkpointStore, type Seal, StoreError, type StoreErrorCode, sealStore, verifyStore } from "./store.ts";
 export {
 	type Manifest,
