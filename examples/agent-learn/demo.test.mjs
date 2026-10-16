@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
-import { gitRead, runDemo } from './demo.mjs';
+import { gitRead, ISSUES, runDemo, TRIAGE_WORKFLOW } from './demo.mjs';
 
 const RULE = /In this project an issue whose body has a stack trace is labeled bug and needs-repro/;
 
@@ -120,6 +120,27 @@ test('a correction and a workflow go through the repository: learned, curated, a
   assert.match(transcript, /^8\. Run 4 tries to learn a value the host holds as a secret$/m);
   assert.match(transcript, /proposed nothing; the secret \(raw, base64 or hex\) is in 0 of \d+ git objects/);
   assert.doesNotMatch(transcript, new RegExp(secret), 'the transcript never prints the secret');
+});
+
+test('step 5 says what curation did when run 2 saves a workflow without saying when to use it, or saves none', async (t) => {
+  const inspect = { call: 'agentrun', args: { action: 'inspect', workflow: TRIAGE_WORKFLOW, input: ISSUES.second.input } };
+  const save = { call: 'agentrun', args: { action: 'save', name: 'triage-crash' } };
+  const step5 = async (run2) => {
+    const lines = [];
+    const out = await runDemo({ dir: join(await scratch(t), 'demo'), log: (line) => lines.push(line), run2 });
+    const at = lines.findIndex((line) => line.startsWith('5. '));
+    return { out, text: lines.slice(at, lines.indexOf('', at)).join('\n') };
+  };
+
+  const undescribed = await step5([inspect, save, {}]);
+  assert.match(undescribed.text, /^5\. Curate admits the workflow as a trial skill$/m);
+  assert.match(undescribed.text, /^ {3}triage-crash has no skill: no learn\(workflow\) said when to use it, so later runs are not offered it$/m);
+  assert.doesNotMatch(undescribed.out.run3.learned.join('\n'), /Workflows to try/);
+
+  const none = await step5([{}]);
+  assert.match(none.text, /^5\. Curate changes nothing for run 2$/m);
+  assert.match(none.text, /^ {3}run 2 saved no workflow, so there is no trial to admit$/m);
+  assert.deepEqual(none.out.run2.savedWorkflows, []);
 });
 
 test('the command runs offline, prints the story and leaves nothing behind', async (t) => {

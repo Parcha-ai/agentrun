@@ -11,6 +11,7 @@ import { createRegistry, Harness } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { workspaceFiles } from '@parcha/agentrun-dsl/recovery';
 import { createWorkflowTool } from '@parcha/agentrun-pi/durable';
+import { WorkflowStore } from '@parcha/agentrun-pi/workflows';
 import { agentLearn, guard, retireLearning } from '@parcha/pi-agent-learn';
 import { local, openRepo } from '@parcha/pi-git-remote';
 import { execFileSync } from 'node:child_process';
@@ -241,7 +242,8 @@ async function agentFiles() {
   return files;
 }
 
-export async function runDemo({ dir, live = false, env = process.env, log = () => {} } = {}) {
+// `run2` replaces scripted run 2's steps, for tests of what the transcript says when a run saves less.
+export async function runDemo({ dir, live = false, env = process.env, log = () => {}, run2: run2Steps } = {}) {
   const root = dir ? resolve(dir) : await mkdtemp(join(tmpdir(), 'agent-learn-demo-'));
   await mkdir(root, { recursive: true });
   await chmod(root, 0o755);
@@ -300,7 +302,7 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
 
   // Run 2 applies the rule, and saves a workflow for the next runs to try.
   const run2 = await prepareRun({ home, repo, host: HOST, runId: 'run-2', input: ISSUES.second.input });
-  const r2 = await runOnce(run2, [ISSUES.second.text], modelFor([
+  const r2 = await runOnce(run2, [ISSUES.second.text], modelFor(run2Steps ?? [
     { call: 'learn', args: (context) => ({ type: 'used', id: ruleIn(context), text: 'It gave this issue its labels.' }) },
     { call: 'agentrun', args: { action: 'inspect', workflow: TRIAGE_WORKFLOW, input: ISSUES.second.input } },
     { call: 'agentrun', args: { action: 'save', name: WORKFLOW } },
@@ -319,8 +321,26 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
 
   const c2 = await curateNow({ repo, judge, secrets: vault });
   out.curate2 = c2;
-  say('5. Curate counts the use and admits the workflow as a trial skill');
+  const items = c2.runs.flatMap((r) => r.accepted.concat(r.used, r.held, r.refused, r.duplicates));
+  const admitted = c2.runs.flatMap((r) => r.accepted.filter((a) => a.workflow).map((a) => a.workflow));
+  const did = [
+    ...(c2.runs.some((r) => r.used.length) ? ['counts the use'] : []),
+    ...(c2.runs.some((r) => r.accepted.some((a) => !a.workflow)) ? ['accepts a learning'] : []),
+    ...(admitted.length ? [`admits the workflow${admitted.length > 1 ? 's' : ''} as a trial skill`] : []),
+  ];
+  say(`5. Curate ${did.length ? did.join(' and ') : 'changes nothing for run 2'}`);
   for (const r of c2.runs) say(`   ${runLine(r)}`);
+  const saved = [...new Set((await new WorkflowStore(run2.workspace).list()).map((w) => w.name))];
+  out.run2.savedWorkflows = saved;
+  if (!saved.length) say('   run 2 saved no workflow, so there is no trial to admit');
+  for (const name of saved.filter((n) => !admitted.includes(n))) {
+    const why = items.find((item) => item.workflow === name)?.reason
+      ?? (f2.proposal.status === 'proposed' ? 'curation made no decision on it' : `the run proposed nothing (${f2.proposal.status})`);
+    say(`   ${name} was not admitted: ${why}`);
+  }
+  for (const name of admitted) {
+    if ((await repo.read(`.agents/skills/${name}/SKILL.md`, c2.main)) === undefined) say(`   ${name} has no skill: no learn(workflow) said when to use it, so later runs are not offered it`);
+  }
   say(`   main ${short(c2.main)} ${changed(c1.main, c2.main)}`);
   say();
 
