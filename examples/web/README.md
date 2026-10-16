@@ -107,7 +107,8 @@ The page is at `/`. The data follows Grep's job routes.
 - **Live browser.** While the run has a live view, it floats over the page, docked bottom right, with Enlarge, Minimize
   and Close (a **Show browser** chip brings it back). It opens large when the run starts waiting for the person and goes
   back to small once they answer. It is one frame for the run, kept while the run sleeps so a person can sign in after the
-  agent's turn ended, and reloaded only when the view's address changes; no tab change reloads it.
+  agent's turn ended, and reloaded only when the view's address changes; no tab change reloads it. Leaving the run (a
+  new run, a search, another run) removes it, and its connection to the live view with it.
 - **Browser tab.** Once the run is not live, a player of what its browser showed: the frame at each time, play and
   pause, a scrubber with times, and each gap drawn on it and named, from where the frames stopped to the next frame, or to
   the end when none came after. The sign-in is one: **You signed in here (not recorded)**. The session's release ends the

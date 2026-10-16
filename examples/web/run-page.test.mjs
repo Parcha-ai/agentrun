@@ -508,6 +508,63 @@ test("a run that is not live plays back what its browser showed: the frame at ea
   assert.equal(live.find("frame-img"), null, "a live run shows its live browser, not the player");
 });
 
+test("leaving a live run takes its live browser with it: for a new run or a search, no panel, no frame, no chip is left", async (t) => {
+  const view = await mount(t, liveSource(), "#/run/r1");
+  assert.ok(shown(view.find("float")) && byTag(view.find("float"), "iframe").length === 1);
+  view.find("float-close").click();
+  assert.ok(shown(view.find("show-browser")));
+  for (const away of ["#/", "#/search/notes"]) {
+    view.window.navigate(away);
+    await settle();
+    assert.ok(!shown(view.find("float")) && !shown(view.find("show-browser")), `${away}: no panel and no chip`);
+    assert.equal(byTag(view.root, "iframe").length, 0, `${away}: the live view's frame is gone, and its connection with it`);
+    view.window.navigate("#/run/r1");
+    await settle();
+    assert.equal(byTag(view.find("float"), "iframe").length, 1, "back on the run, its live browser again");
+    assert.equal(view.find("float").getAttribute("data-size"), "large", "opened again as for a new wait");
+  }
+});
+
+test("playback runs to the track's end, the release after the last frame included, and Play then starts again from the first frame", async (t) => {
+  const lines = [frameLine(1, 1_000, SHA.a), frameLine(2, 1_200, SHA.b), { kind: "frame.gap", t: 1_500, data: { from: 1_200, reason: "session_released" } }];
+  const source = { ...liveSource(), run: async () => summary({ frames: true }), frames: async () => lines, frameSrc: (id, sha) => `runs/${id}/frames/${sha}.jpg` };
+  const view = await mount(t, source, "#/run/r1");
+  byTag(view.root, "button").find((b) => b.dataset.tab === "browser").click();
+  await settle();
+  const scrub = view.find("scrub");
+  assert.equal(scrub.getAttribute("max"), "1500");
+  view.find("play").click();
+  for (let i = 0; i < 100 && view.find("play").textContent === "Pause"; i++) await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual([scrub.value, view.find("play").textContent], ["1500", "Play"], "it stopped at the end, not at the last frame");
+  view.find("play").click();
+  assert.deepEqual([scrub.value, view.find("play").textContent], ["1000", "Pause"], "and plays again from the start");
+  view.find("play").click();
+});
+
+test("a run that turns live while its frames load keeps its live tab: the late player draws nothing", async (t) => {
+  let live = false;
+  let deliver;
+  const slow = new Promise((resolve) => (deliver = resolve));
+  const source = {
+    ...liveSource(),
+    run: async () => (live ? summary({ status: "running", live: true, state: "working", liveView: { key: "k1" }, frames: true }) : summary({ status: "sleeping", frames: true })),
+    frames: () => slow,
+    frameSrc: (id, sha) => `runs/${id}/frames/${sha}.jpg`,
+  };
+  const view = await mount(t, source, "#/run/r1");
+  assert.equal(view.find("frame-img"), null, "the frames are still loading");
+  live = true;
+  view.find("text").value = "wake up";
+  view.find("send").click();
+  await settle();
+  assert.match(view.find("browser").textContent, /in its own panel/, "the run is live: its tab points at the live browser");
+  deliver(FRAMES);
+  await settle();
+  assert.equal(view.find("frame-img"), null, "the frames that came late are not drawn");
+  assert.match(view.find("browser").textContent, /in its own panel/);
+  assert.ok(shown(view.find("float")));
+});
+
 test("a replay never carries a sign-in or a frame: writeReplay drops what a run started signed in to and refuses a frame or a run's own directory; staticSource never asks for one", async (t) => {
   const out = join(tmp, "no-frames", "data");
   await writeReplay(out, [{ summary: summary({ id: "r1", signedIn: [{ key: "default", provider: "browserbase", sites: ["https://the-internet.herokuapp.com"] }], frames: true }), rows, files: FILES }]);

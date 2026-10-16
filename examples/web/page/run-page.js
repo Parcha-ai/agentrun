@@ -418,17 +418,17 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
     ui.follow = null;
     win.clearTimeout(ui.timer);
     stopPlayer();
+    closePanel();
     dropBlobs();
   }
 
   function openRun() {
     closeRun();
-    Object.assign(ui, { info: null, rows: [], state: "idle", cost: null, sig: "", file: null, files: new Set(), filesSig: "", browserKey: "", frameKey: "", panel: "small", waited: false, secs: new Map(), liveSince: new Map() });
+    Object.assign(ui, { info: null, rows: [], state: "idle", cost: null, sig: "", file: null, files: new Set(), filesSig: "", browserKey: "", secs: new Map(), liveSince: new Map() });
     p.view.hidden = true;
     p.run.hidden = false;
-    for (const node of [p.steps, p.files, p.browser, p.title, p.pill, p.cost, p.err, p.started, p.floatBody].filter(Boolean)) node.replaceChildren();
+    for (const node of [p.steps, p.files, p.browser, p.title, p.pill, p.cost, p.err, p.started]) node.replaceChildren();
     p.started.hidden = true;
-    paintPanel(null);
     if (p.text) p.text.value = "";
     root.dataset.tab = "timeline";
     tick(ui.id);
@@ -509,16 +509,20 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
    * only when the view's address changes (its key). It opens large when the run starts waiting for the person and goes
    * back to small once they answer; minimize keeps only its bar, close leaves a "Show browser" chip.
    */
+  /** The panel and its chip hidden, and its frame removed, so the live view's connection closes with it. */
+  function closePanel() {
+    if (!p.float) return;
+    p.float.hidden = true;
+    p.chip.hidden = true;
+    p.floatBody.replaceChildren();
+    ui.frameKey = "";
+    ui.panel = "small";
+    ui.waited = false;
+  }
+
   function paintPanel(view) {
     if (!p.float) return;
-    const open = Boolean(view && ui.info && !finished(ui.info));
-    if (!open) {
-      p.float.hidden = true;
-      p.chip.hidden = true;
-      if (ui.frameKey) p.floatBody.replaceChildren();
-      ui.frameKey = "";
-      return;
-    }
+    if (!(view && ui.info && !finished(ui.info))) return closePanel();
     const local = ui.info.browser === "chrome";
     const key = `${ui.id}:${view.key}:${local}`;
     if (key !== ui.frameKey) {
@@ -576,8 +580,10 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
 
   /** The player: the frame at the scrubber's time, play and pause, and each gap drawn on the scrubber and named. */
   async function loadPlayer(id) {
+    // The tab this load is for: a run that turned live, or a run left, while the frames loaded draws something else there.
+    const key = ui.browserKey;
     const lines = await source.frames(id).catch(() => null);
-    if (id !== ui.id) return;
+    if (id !== ui.id || key !== ui.browserKey) return;
     const track = frameTrack(lines ?? []);
     if (!track.frames.length) return void p.browser.replaceChildren(el("div", { class: "note" }, "This run's browser left no frames to play back."));
     const img = el("img", { id: "frame-img", alt: "What the agent's browser showed" });
@@ -618,13 +624,15 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
     player.time.textContent = `${span(pos - track.start)} / ${span(track.end - track.start)}`;
   }
 
-  /** The next stop: the end of the gap it is in, else the next frame or the start of the next gap. */
+  /** The next stop: the end of the gap it is in, else the next frame, the start of the next gap, or the track's end (the
+   *  release can come after the last frame). Null at the end. */
   function nextStop(player) {
     const { track, pos } = player;
     const gap = track.gaps.find((g) => pos >= g.from && pos < g.to);
     if (gap) return { at: gap.to, wait: GAP_MS };
-    const at = Math.min(track.frames.find((f) => f.t > pos)?.t ?? Infinity, track.gaps.find((g) => g.from > pos)?.from ?? Infinity);
-    return Number.isFinite(at) ? { at, wait: Math.min(STEP_MS, at - pos) } : null;
+    if (pos >= track.end) return null;
+    const at = Math.min(track.frames.find((f) => f.t > pos)?.t ?? track.end, track.gaps.find((g) => g.from > pos)?.from ?? track.end);
+    return { at, wait: Math.min(STEP_MS, at - pos) };
   }
 
   function resume() {
