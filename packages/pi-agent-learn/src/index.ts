@@ -15,3 +15,8 @@ export {
 export { type Caps, createGuard, guard } from "./guard.js";
 export { type Inbox, InboxFormatError, parseInbox, renderInbox } from "./inbox.js";
 export { type ProposeFilesOptions, type ProposeOptions, type ProposeResult, type ProposeTarget, proposeFiles, proposeLearning, type UsesSource } from "./propose.js";
+export {
+  type AdmitWorkflow, type AdmitWorkflowInput, type AdmitWorkflowResult, curate, CURATE_CAPS, type CurateCaps, type CurateItem, type CurateOptions,
+  type CurateReport, type CurateRepo, type Cut, DEFAULT_THRESHOLDS, type Judge, type Question, QUESTIONS, type RunReport, type Thresholds,
+  type WorkflowCandidate,
+} from "./curate.js";
