@@ -58,6 +58,16 @@ function carry(label: string, mode: "commit" | "hold", holdMs?: number) {
   return { child, lines, holding, exited };
 }
 
+/** Delete `prefix` (a directory key, `.../`) over S3: files, then directories deepest first. Returns the objects left. */
+async function deleteTree(prefix: string): Promise<number> {
+  const keys = (await control.listObjects(prefix, { recursive: true })).objects.map((o) => o.key);
+  const dirs = [...new Set([...keys.filter((k) => k.endsWith("/")), prefix])];
+  const depth = (k: string) => k.split("/").length;
+  await control.deleteObjects(keys.filter((k) => !k.endsWith("/")), { quiet: true });
+  for (const d of [...new Set(dirs.map(depth))].sort((x, y) => y - x)) await control.deleteObjects(dirs.filter((k) => depth(k) === d), { quiet: true });
+  return (await control.listObjects(prefix, { recursive: true })).objects.length;
+}
+
 /** Pids of the archil daemons serving `mountpoint` (a mount names it as an argument), read from /proc. */
 function daemonsOf(mountpoint: string): number[] {
   return readdirSync("/proc").filter((n) => /^\d+$/.test(n)).filter((pid) => {
@@ -88,8 +98,11 @@ after(async () => {
   }
   const mounted = new Set(readFileSync("/proc/mounts", "utf8").split("\n").map((line) => line.split(" ")[1]));
   stamp(ledger.mounts, "unmountedAt", (e) => !mounted.has(e.mountpoint as string));
-  const removed = await control.exec?.(`rm -rf ${PATH} && { rmdir withclaim-live 2>/dev/null; true; }`).catch(() => undefined);
-  if (removed?.exitCode === 0) stamp(ledger.subpaths, "deletedAt", (e) => e.key === PATH);
+  const left = await deleteTree(`${PATH}/`).catch(() => -1);
+  if (left === 0) stamp(ledger.subpaths, "deletedAt", (e) => e.key === PATH);
+  // withclaim-live/ itself, once nothing else is under it.
+  const parent = await control.listObjects("withclaim-live/", { recursive: true }).catch(() => ({ objects: [{ key: "?" }] }));
+  if (parent.objects.every((o) => o.key === "withclaim-live/")) await control.deleteObjects(["withclaim-live/"], { quiet: true }).catch(() => undefined);
 });
 
 test("two carry backs to one path queue on the claim, and both commit", { skip: !LIVE && "PDA_LIVE=1 runs the live suites", timeout: 300_000 }, async () => {
