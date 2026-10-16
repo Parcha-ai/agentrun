@@ -459,12 +459,13 @@ def stops (O : Oracle) : Outcome → Bool
   | .escalated _ => true
   | .failed e => (itemCode O e).isNone
 
-/-- The rows of the items that ended on an item failure, `{item_index, label, code, message}`, in item order. -/
+/-- The rows of the items that ended on an item failure, `{item_index, label, code, message}`, in item order. A row's
+`message` is the failure's message, at most its first 300 characters, as the interpreter keeps it. -/
 def failureRows (O : Oracle) : Nat → List (Outcome × Option Value) → List Value
   | _, [] => []
   | i, (o, _) :: rest => (match o with
       | .failed e => (match itemCode O e with
-        | some c => [Value.obj [("item_index", .num i), ("label", .str e.label), ("code", .str c), ("message", .str (O.message i e))]]
+        | some c => [Value.obj [("item_index", .num i), ("label", .str e.label), ("code", .str c), ("message", .str (String.ofList ((O.message i e).toList.take 300)))]]
         | none => [])
       | _ => []) ++ failureRows O (i + 1) rest
 
