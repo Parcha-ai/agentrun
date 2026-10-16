@@ -9,7 +9,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import type { Box } from "../src/box/box.ts";
 import { daytonaBoxes } from "../src/box/daytona.ts";
 import { boxEnv } from "../src/hands/box-env.ts";
-import { normalize, random, randomOperation } from "./box-env-support.ts";
+import { normalize, random, randomOperation, waitNotRunning } from "./box-env-support.ts";
 
 const SEEDS = Number(process.env.PI_TRANSPORT_LIVE_SEEDS ?? 20);
 const STEPS = 25;
@@ -146,12 +146,13 @@ if (process.env.PI_TRANSPORT_LIVE_DAYTONA === "1") {
 				controller.abort();
 				const result = await pending;
 				expect(result.ok ? "" : result.error.code).toBe("aborted");
-				expect(await running(env, aborted)).toBe(false);
+				// `exec` has returned; a late-landing start is killed after that, so absence is polled, with a bound that fails.
+				await waitNotRunning(() => running(env, aborted), `the aborted command ${aborted.join("")}`);
 
 				const timed: [string, string] = ["pi-transport-timeout-", `${Date.now()}`];
 				const slow = await env.exec(`sleep 300 & sleep 300 # ${timed.join("")}\nwait`, { timeout: 1 }, context);
 				expect(slow.ok ? "" : slow.error.code).toBe("timeout");
-				expect(await running(env, timed)).toBe(false);
+				await waitNotRunning(() => running(env, timed), `the timed-out command ${timed.join("")}`);
 			});
 		});
 
