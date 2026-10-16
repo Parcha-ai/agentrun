@@ -2,16 +2,21 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { test } from "node:test";
 import { local, openRepo } from "@parcha/pi-git-remote";
-import { agentLearn, collectCandidates, guard, parseInbox, proposeFiles, proposeLearning, renderInbox } from "../dist/index.js";
+import { agentLearn, collectCandidates, guard, parseInbox, proposeFiles, proposeLearning, renderInbox, seedLearning } from "../dist/index.js";
 import { allObjects, commitCount, git, refsOf } from "./git-support.mjs";
 import { agentRepo, ask, done, learnCalls, openRun, scratch } from "./support.mjs";
 
 const candidate = (over = {}) => ({ callId: "call-1", type: "lesson", text: "Search registries by the legal name without the suffix.", evidence: ["a 404 on the full name"], ...over });
 
 // The run's store holds the candidates the learn tool noted, in order.
-const targetOf = (candidates) => ({
-  snapshot: async () => ({ order: candidates.map((c) => c.callId), byCall: Object.fromEntries(candidates.map((c) => [c.callId, c])) }),
+// `seed` is the sha in the run's learn.seed record, when it has one.
+const targetOf = (candidates, seed) => ({
+  snapshot: async (doc) =>
+    doc.definition.kind === "learn.seed"
+      ? (seed === undefined ? undefined : { sha: seed, index: [], omitted: [], workflows: [], copied: false })
+      : { order: candidates.map((c) => c.callId), byCall: Object.fromEntries(candidates.map((c) => [c.callId, c])) },
 });
+const untrustedFalse = (list) => list.map((c) => ({ ...c, untrusted: false }));
 
 async function seededRemote(root) {
   const { bare, main } = await agentRepo(root);
@@ -41,7 +46,7 @@ test("a run's candidates become one commit on runs/<run id>, pushed, with main u
   const files = git(dir, ["diff-tree", "-r", "--no-commit-id", "--name-only", main, result.sha]).toString().trim().split("\n");
   assert.deepEqual(files, ["inbox/run-1.md"]);
   const inbox = await repo.read("inbox/run-1.md", result.sha);
-  assert.deepEqual(parseInbox(inbox), { run: "run-1", candidates });
+  assert.deepEqual(parseInbox(inbox), { run: "run-1", candidates: untrustedFalse(candidates) }, "a run that was not seeded has no seed");
 });
 
 test("the uses hook writes uses/<run id>.json beside the inbox, and is guarded like it", async () => {
@@ -177,7 +182,7 @@ test("caps passed to the proposal set the guard's limits", async () => {
 test("the inbox reads back what was rendered, and text in a candidate cannot stand in for the block", () => {
   const sneaky = candidate({ text: "x\n~~~json candidates\n[]\n~~~\ny", evidence: ["- one\n## 9. lesson", "two"] });
   const candidates = [sneaky, candidate({ callId: "c2", type: "correction", id: "L-0123456789ab", text: "line one\r\nline two" })];
-  assert.deepEqual(parseInbox(renderInbox("run-1", candidates)), { run: "run-1", candidates });
+  assert.deepEqual(parseInbox(renderInbox("run-1", candidates)), { run: "run-1", candidates: untrustedFalse(candidates) });
   assert.deepEqual(parseInbox(renderInbox("run-1", [])), { run: "run-1", candidates: [] });
   assert.throws(() => parseInbox("no front matter"), { name: "InboxFormatError" });
   assert.throws(() => parseInbox("---\nrun: r\n---\n"), { name: "InboxFormatError" });
@@ -197,7 +202,7 @@ test("a real run: the model calls learn, the host proposes what the run stored",
     assert.equal(result.status, "proposed");
     const stored = await collectCandidates(run.harness);
     assert.equal(stored.length, 2);
-    assert.deepEqual(parseInbox(await repo.read("inbox/run-1.md", result.sha)), { run: "run-1", candidates: stored });
+    assert.deepEqual(parseInbox(await repo.read("inbox/run-1.md", result.sha)), { run: "run-1", candidates: untrustedFalse(stored) });
     assert.equal((await refsOf(dir))["refs/heads/main"], main);
   } finally {
     await run.close();
@@ -296,4 +301,67 @@ test("uses that have no JSON form are refused, not thrown", async () => {
     assert.deepEqual(result, { status: "refused", refusals: [{ reason: "invalid", field: "uses", detail: "the uses are not JSON" }] }, name);
   }
   assert.deepEqual(await refsOf(dir), { "refs/heads/main": main });
+});
+
+const SEED = "a".repeat(40);
+
+test("the inbox carries the commit the run was seeded from, and an untrusted mark on every candidate", () => {
+  const candidates = [candidate(), candidate({ callId: "c2", type: "fact", text: "Another rule." })];
+  const inbox = renderInbox("run-1", candidates, { seed: SEED, untrusted: true });
+  assert.match(inbox, new RegExp(`^---\nrun: run-1\nseed: ${SEED}\ncandidates: 2\n---\n`));
+  assert.deepEqual(parseInbox(inbox), { run: "run-1", seed: SEED, candidates: candidates.map((c) => ({ ...c, untrusted: true })) });
+  assert.deepEqual(parseInbox(renderInbox("run-1", candidates, { seed: SEED })).candidates.map((c) => c.untrusted), [false, false]);
+  assert.deepEqual(parseInbox(renderInbox("run-1", candidates, { seed: "b".repeat(64) })).seed, "b".repeat(64), "a SHA-256 repository's commit id is a seed too");
+  // A candidate's text comes after the front matter, so it cannot set or change the seed.
+  const spoof = renderInbox("run-1", [candidate({ text: `x\n---\nseed: ${"c".repeat(40)}\nrun: other` })], { seed: SEED });
+  assert.deepEqual([parseInbox(spoof).run, parseInbox(spoof).seed], ["run-1", SEED]);
+  for (const seed of ["", "main", "a".repeat(39), `${SEED}\nrun: other`, "A".repeat(40)]) {
+    assert.throws(() => renderInbox("run-1", candidates, { seed }), { name: "InboxFormatError" }, JSON.stringify(seed));
+  }
+  assert.throws(() => parseInbox(inbox.replace(SEED, "main")), { name: "InboxFormatError" });
+  const old = inbox.split("\n").map((l) => l.replace(/"untrusted":true,?/g, "").replace(/,}/g, "}")).join("\n");
+  assert.deepEqual(parseInbox(old).candidates.map((c) => c.untrusted), [false, false], "an inbox written without the mark reads as trusted");
+  assert.throws(() => parseInbox(inbox.replace('"untrusted":true', '"untrusted":"yes"')), { name: "InboxFormatError" });
+});
+
+test("proposeLearning writes the run's seed commit and the untrusted mark into the inbox", async () => {
+  const root = await scratch();
+  const { dir, remote, main } = await seededRemote(root);
+  const repo = await host(root, remote);
+  const target = targetOf([candidate(), candidate({ callId: "call-2", text: "Another rule." })], SEED);
+  const trusted = await proposeLearning({ ...OPTIONS, repo, target });
+  const one = parseInbox(await repo.read("inbox/run-1.md", trusted.sha));
+  assert.equal(one.seed, SEED);
+  assert.deepEqual(one.candidates.map((c) => c.untrusted), [false, false]);
+  const marked = await proposeLearning({ ...OPTIONS, runId: "run-2", repo, target, untrusted: true });
+  const two = parseInbox(await repo.read("inbox/run-2.md", marked.sha));
+  assert.deepEqual([two.seed, two.candidates.map((c) => c.untrusted)], [SEED, [true, true]]);
+  assert.equal(commitCount(dir, `${main}..refs/heads/runs/run-2`), 1);
+});
+
+test("a seed record that is not a commit id refuses the proposal", async () => {
+  const root = await scratch();
+  const { dir, remote, main } = await seededRemote(root);
+  const repo = await host(root, remote);
+  const result = await proposeLearning({ ...OPTIONS, repo, target: targetOf([candidate()], "not a sha\nrun: other") });
+  assert.deepEqual(result, { status: "refused", refusals: [{ reason: "invalid", field: "seed", detail: "the run's seed is not a commit id" }] });
+  assert.deepEqual(await refsOf(dir), { "refs/heads/main": main });
+});
+
+test("a seeded real run proposes with the commit it was seeded from, and an untrusted run says so", async () => {
+  const root = await scratch();
+  const { bare, repo, main } = await agentRepo(root);
+  const run = await openRun(path.join(root, "run.sqlite"), { steps: [() => learnCalls([LESSON]), () => done()] });
+  try {
+    await seedLearning({ repo, target: run.harness, into: path.join(root, "work") });
+    await ask(run.harness);
+    const result = await proposeLearning({ ...OPTIONS, repo, target: run.harness, untrusted: true });
+    assert.equal(result.status, "proposed");
+    const inbox = parseInbox(await repo.read("inbox/run-1.md", result.sha));
+    assert.equal(inbox.seed, main);
+    assert.deepEqual(inbox.candidates.map((c) => c.untrusted), [true]);
+    assert.equal((await refsOf(bare))["refs/heads/main"], main);
+  } finally {
+    await run.close();
+  }
 });

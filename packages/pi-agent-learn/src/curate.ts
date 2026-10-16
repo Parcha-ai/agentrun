@@ -4,11 +4,11 @@ import { createHash } from "node:crypto";
 import { type Learning, learningId, parseLearning, renderLearning } from "./entry.js";
 import { LearnError } from "./errors.js";
 import { createGuard, guard } from "./guard.js";
-import { InboxFormatError, parseInbox } from "./inbox.js";
+import { InboxFormatError, type InboxCandidate, parseInbox } from "./inbox.js";
 import { assertNotRulesLocked, CAPS, COMMIT_SHA, inboxPath, isRulesLocked, LAYOUT, LEARNING_ID, learningPath, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
 import { byUse, indexLine, renderSection } from "./section.js";
 import { learningsAt } from "./seed.js";
-import type { AdmitWorkflow, Candidate, Refusal, RepoRead, SettleUses, WorkflowCandidate, WorkflowUse } from "./types.js";
+import type { AdmitWorkflow, Refusal, RepoRead, SettleUses, WorkflowCandidate, WorkflowUse } from "./types.js";
 
 /** The judge: the DSL's System One adapter, `WorkflowDeps["runJudge"]`. `createJevRunner` from `@parcha/agentrun-jev` is one. */
 export type Judge = NonNullable<WorkflowDeps["runJudge"]>;
@@ -394,14 +394,14 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     runFiles[path] = (await runsRepo.read(path, tip)) ?? "";
   }
   const inboxText = runFiles[inboxPath(runId)];
-  let candidates: readonly Candidate[] = [];
+  let candidates: readonly InboxCandidate[] = [];
   let seed: unknown;
   if (typeof inboxText === "string") {
     try {
       const inbox = parseInbox(inboxText);
       if (inbox.run !== runId) return refuseRun("the inbox names another run");
       candidates = inbox.candidates;
-      seed = (inbox as { readonly seed?: unknown }).seed;
+      seed = inbox.seed;
     } catch (error) {
       if (!(error instanceof InboxFormatError)) throw error;
       return refuseRun("the inbox does not parse");

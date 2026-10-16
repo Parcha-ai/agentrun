@@ -162,9 +162,10 @@ const candidates = await collectCandidates(harness);
 
 `seedLearning` fetches, resolves `ref`, reads `learnings/*.md` at that commit, derives the index under the cap, records
 `{ sha, index, omitted, workflows, copied }` in the run's store as `learn.seed`, and copies the active learnings to
-`<into>/.agent/learnings/<id>.md` for the agent to read. Each copy is written to a temporary file and renamed over the
-name, so an interrupted copy never leaves a partial file, and seeding again restores the stored bytes over an edited copy
-or a link. Edits there are never committed. A file
+`<into>/.agent/learnings/<id>.md` for the agent to read. Each copy is written into a staging directory the call creates
+under `.agent/` and renamed over its name, so an interrupted copy never leaves a partial file there, and seeding again
+restores the stored bytes over an edited copy or a link. A call removes only its own staging directory, so two seeds
+into one directory at once both finish whole. Edits there are never committed. A file
 that is misnamed, does not parse, is a symlink or is over 4 KB is skipped and named in `skipped`. A run is seeded once:
 when its store already holds a seed, that commit is used again and the record is kept, so a restarted host never moves a
 run to a newer commit. `readSeed` returns the record; `collectCandidates` returns the run's candidates in order.
@@ -233,8 +234,12 @@ sha. The result is one of:
   object holds the refused value.
 
 A push the remote refuses throws a `GitRemoteError`. `proposeFiles` is the same guard-commit-push for files the caller
-has already rendered. `renderInbox` and `parseInbox` are the inbox's format: front matter, the candidates for a person to
-read, and the candidates as one JSON line in the last fenced block, which is all a reader trusts.
+has already rendered. `renderInbox` and `parseInbox` are the inbox's format: front matter (the run, and `seed`, the commit the run was seeded from,
+read from its `learn.seed` record, so a curator can stamp a learning with what the run actually saw; a run that was not
+seeded has none), the candidates for a person to read, and the candidates as one JSON line in the last fenced block, each
+with an `untrusted` mark. `proposeLearning({ untrusted: true })` marks every candidate untrusted: the host sets it when the run read
+untrusted content. `parseInbox` returns `{ run, seed?, candidates }` with `untrusted: boolean` on each candidate, and
+refuses a seed that is not a commit id.
 
 ## Curating
 
