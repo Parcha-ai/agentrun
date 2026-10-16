@@ -3,13 +3,12 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { existsSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { type AgentHome, checkSha, homeDir, inHome, isSkillPath, readState, sha256, uuidv7 } from "./home.js";
+import { type AgentHome, checkSha, homeDir, ID_PATTERN, inHome, isSkillPath, readState, sha256, uuidv7 } from "./home.js";
 import { type BrowserProfile, LeasesDoc, type ProfileLease, ProfilesDoc, put, type RunRecord, RunsDoc } from "./kinds.js";
 import { AgentHomeError, openStore, readFamily } from "./store.js";
 
 export const RUN_STORE_FILE = "run.sqlite";
 const DEFAULT_LEASE_MS = 6 * 60 * 60 * 1000;
-const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 /** Where a run lives, in pi-durable-disk's run layout, so the run directory is one `pi-durable-disk run --dir` takes.
  *  pi-durable-disk adds `run.json`, `owner.lock` and `tmp/` (and `commands/` on a local directory) beside these. */
@@ -26,7 +25,7 @@ const layout = (dir: string): RunPaths => ({ dir, storePath: path.join(dir, "sto
 
 /** The paths of run `runId` in `home`. */
 export function runPaths(home: AgentHome, runId: string): RunPaths {
-  if (typeof runId !== "string" || !RUN_ID.test(runId)) throw invalid(`the run id ${JSON.stringify(runId)} is not letters, digits, ".", "_" or "-" (at most 128)`);
+  if (typeof runId !== "string" || !ID_PATTERN.test(runId)) throw invalid(`the run id ${JSON.stringify(runId)} is not letters, digits, ".", "_" or "-" (at most 128)`);
   return layout(path.join(path.resolve(home.dir), "runs", runId));
 }
 

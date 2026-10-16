@@ -128,6 +128,9 @@ lowercase hex digits, a SHA-1 or a SHA-256 commit).
 - `refreshAgentHome(home, { sha, from, ... })` is a compare-and-swap: the home must be at `from` (`null`: no sha yet),
   or the refresh is refused (`stale`) before anything is written. A host that read an older commit then cannot move
   the cache back over a newer one; whether one commit follows another is for the host to judge, from git.
+- `refreshAgentHome(home, { ..., ifRevision })` is a compare-and-swap on `homeRevision`: a home whose head commit is
+  not `ifRevision` is refused (`stale`) before anything is written. An API checks an `If-Match` this way, under the
+  home's lock, instead of racing a separate read. The order is: the input, `ifRevision`, `from`, the same-sha no-op.
 - `startRun` records the home's sha on the run (`agent.runs`, and `sha` on what it returns), read under the same lock
   as the skills it copies into the workspace. A run already started keeps its sha and its copy of the skills when the
   home is refreshed.
@@ -143,7 +146,7 @@ fields are the stored format.
 
 | Kind | Store | Key | Value |
 |---|---|---|---|
-| `agent.identity` | agent | | `{ id, name, formatVersion }`. `id` is the definition's `id`, or a UUIDv7 minted at creation; never a host's id |
+| `agent.identity` | agent | | `{ id, name, formatVersion }`. `id` is the definition's `id`, or a UUIDv7 minted at creation; never a host's id. A given id is one URL segment, `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `agent.source` | agent | | `{ sha, refreshedAt }`: the repo commit the definition and skills were read from, written in their commit; absent for a home not tied to a repo |
 | `agent.definition` | agent | | `{ id, version, name, description?, instructions, skills, tools, input_schema?, output_schema?, workflow?, max_cost_usd? }`. `skills` and `tools` are names; `workflow` is an AgentRun workflow document. No model, no thinking level |
 | `agent.skills` | agent | path under `.agents/skills/` | `{ content, sha256 }` |
@@ -206,9 +209,10 @@ origin, path and query keys but drops its query values, fragment and userinfo. `
 | `createAgentHome(dir, { definition, skills? })` | A new agent home. A definition with a field it does not keep (a model, for one) is refused, and nothing is created |
 | `openAgentHome(dir)` | The home in `dir`, checked to be this format |
 | `readAgentHome(home)` | Everything the home holds, read in one pass |
+| `homeRevision(home)` | The agent store's head commit number: every write that changes the home moves it, reads do not. With the identity's id it is the home's version, an ETag |
 | `setAlias(home, host, externalId)`, `setBindings(home, host, bindings)` | A host's id for the agent, and where its tools run there |
 | `startRun`, `carryBack` | A run's start and end, above |
-| `refreshAgentHome(home, { sha, from?, definition, skills })` | The cached definition and skills replaced by the ones at `sha` ([Following the agent's repo](#following-the-agents-repo)) |
+| `refreshAgentHome(home, { sha, from?, ifRevision?, definition, skills })` | The cached definition and skills replaced by the ones at `sha` ([Following the agent's repo](#following-the-agents-repo)) |
 | `runPaths(home, runId)` | A run's `dir` (what `pi-durable-disk run --dir` takes), `storePath` (`store/run.sqlite`) and `workspace` (`work/`) |
 | `durableProfileStore(target, { provider?, signal? })` | pi-browser's `ProfileStore` over a run store; `target` is the host's Harness or any Session on the file |
 | `EXPORTABLE_KINDS`, `SECRET_KINDS`, `projectForExport(kind, value)` | What an exporter may copy, what never leaves the home, and one document as an exporter writes it ([Exporting a home](#exporting-a-home)). Also from `@parcha/pi-durable-agent/export`, which loads no other module, so an exporter or a site build needs neither pi-durable nor pi-ai |

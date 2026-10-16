@@ -22,7 +22,7 @@ test("a real Chrome's page is recorded as JPEG frames within the rate and width 
   const seen = [];
   const server = http.createServer((req, res) => { seen.push({ path: req.url, at: Date.now() }); res.setHeader("content-type", "text/html"); res.end(req.url === "/login" ? LOGIN : MOVING); });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => server.close());
+  t.after(() => server.close(), { timeout: 30_000 });
   const base = `http://127.0.0.1:${server.address().port}`;
   const root = await scratch(t, "frame-recorder-"); // removed last, after the Chrome is released and anything still naming it is killed
 
@@ -30,12 +30,12 @@ test("a real Chrome's page is recorded as JPEG frames within the rate and width 
   const lines = [];
   const blobs = new Map();
   const frames = frameRecorder({ sink: (line, bytes = {}) => { lines.push(line); for (const [hash, data] of Object.entries(bytes)) blobs.set(hash, data); }, clock: () => Date.now() - started, gen: () => 1 });
-  t.after(() => frames.close());
+  t.after(() => frames.close(), { timeout: 30_000 });
   const provider = frames.watch(cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root, headless: true, ...(process.env.CI || /nosandbox/.test(CHROME) ? { sandbox: false } : {}) } }), 5);
   const signal = new AbortController().signal;
   const ref = await provider.create({ tag: "ar-frames-5-1", maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1280, height: 800 }, metadata: {} }, signal);
   let released = false;
-  t.after(async () => { if (!released) await provider.release(ref, signal); });
+  t.after(async () => { if (!released) await provider.release(ref, signal); }, { timeout: 30_000 });
   const target = await provider.attach(ref, signal);
 
   // A page that moves: frames arrive without anyone driving it.
@@ -100,11 +100,11 @@ test("the credential probe calls a field a credential when it holds a value and 
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root, headless: true, ...(process.env.CI || /nosandbox/.test(CHROME) ? { sandbox: false } : {}) } });
   const signal = new AbortController().signal;
   const ref = await provider.create({ tag: "ar-probe-1-1", maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} }, signal);
-  t.after(() => provider.release(ref, signal));
+  t.after(() => provider.release(ref, signal), { timeout: 30_000 });
   const target = await provider.attach(ref, signal);
   const socket = new WebSocket(target.sdkCdpUrl);
   await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = () => reject(new Error("no socket")); });
-  t.after(() => socket.close());
+  t.after(() => socket.close(), { timeout: 30_000 });
   let id = 0;
   const waiting = new Map();
   socket.onmessage = (event) => { const m = JSON.parse(String(event.data)); waiting.get(m.id)?.(m); };
