@@ -71,7 +71,8 @@ test('a single large multiline field discloses the line bound', () => {
 test('short terminals scroll the action menu to keep the selected action visible', () => {
   const chosen = [], ui = new WorkflowInspector(fixture, theme, action => chosen.push(action), () => {}, () => 12);
   ui.render(40); ui.handleInput('a');
-  for (let i = 0; i < 5; i++) ui.handleInput(down);
+  // Down to the last of the seven actions.
+  for (let i = 0; i < 6; i++) ui.handleInput(down);
   const lines = ui.render(40);
   assert.ok(lines.length <= 10); assert.match(lines.join('\n'), /› Inspect run history/);
   ui.handleInput(enter); assert.deepEqual(chosen, ['history']);
@@ -124,4 +125,10 @@ test('inspector uses the full-width top-left opaque overlay, leaving only Pi sta
     assert.equal(lines.length, rows - 2);
     assert.ok(lines.every(line => visibleWidth(line) <= width));
   }
+});
+
+test('the actions page offers a dry run beside run, and choosing it returns dry-run', () => {
+  const view = fixture(), outcomes = [], ui = new WorkflowInspector(() => view, theme, result => outcomes.push(result));
+  ui.handleInput('a'); assert.match(ui.render(80).join('\n'), /Dry-run on synthetic values/);
+  ui.handleInput(down); ui.render(80); ui.handleInput(enter); assert.deepEqual(outcomes, ['dry-run']);
 });

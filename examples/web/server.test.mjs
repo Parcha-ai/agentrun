@@ -19,6 +19,7 @@ import { foldCalls, groupTimeline } from "@parcha/pi-durable-agent/timeline";
 import { PROFILE } from "./agent/app.ts";
 import { ensureAgentHome } from "./agent/home.mjs";
 import { assistant, call, fakeDoor, makeRun, result, text, transcript, user } from "./fixtures.mjs";
+import { httpSource } from "./page/source.js";
 import { startServer } from "./server.mjs";
 
 /** A server over a new agent home made from examples/web/agent; `root` is the home's runs directory. */
@@ -281,6 +282,18 @@ test("files: dotfiles are hidden, nothing outside work/ is reachable, html is sa
   assert.equal((await big.arrayBuffer()).byteLength, 512 * 1024);
 });
 
+test("httpSource reads a long text file cut short to show it, and whole to download it", async (t) => {
+  const { home, server } = await app(t);
+  await makeRun(home, "r1", { status: "done", files: { "big.txt": "x".repeat(600 * 1024) } });
+  const source = httpSource(`${server.url}/`);
+  const shown = await source.file("r1", "big.txt");
+  assert.equal(shown.headers.get("x-truncated"), "1");
+  assert.equal((await shown.arrayBuffer()).byteLength, 512 * 1024);
+  const whole = await source.file("r1", "big.txt", { download: true });
+  assert.equal(whole.headers.get("x-truncated"), null);
+  assert.equal((await whole.arrayBuffer()).byteLength, 600 * 1024);
+});
+
 test("search finds file contents, file names and a finished run's transcript, and skips dotfiles", async (t) => {
   const { home, root, json } = await app(t);
   await makeRun(home, "a", { status: "done", entries: [user(1, "Find the Quokka report"), assistant(2, [text("The quokka is a marsupial.")])], files: { "notes/animals.txt": "Zebra and QUOKKA live here", ".private": "quokka secret", "quokka-list.csv": "x\n" } });
@@ -358,7 +371,6 @@ test("the live view is a redirect to the host's file; its address never appears 
 test("a new run starts the start command on its own directory and sends the first message to its door; a parked run is woken by a message; close ends only those pids", async (t) => {
   const door = await fakeDoor();
   t.after(() => door.close());
-  process.env.FAKE_DOOR = door.url;
   const dir = await mkdtemp(join(tmpdir(), "web-start-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const script = join(dir, "start.mjs");
@@ -366,15 +378,15 @@ test("a new run starts the start command on its own directory and sends the firs
     script,
     `import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-const dir = process.argv[2];
+const [door, dir] = process.argv.slice(2);
 mkdirSync(join(dir, "work"), { recursive: true });
-const write = (status) => writeFileSync(join(dir, "run.json"), JSON.stringify({ run: "x", status, generation: 2, sealedSeq: null, wakeAt: null, holder: status === "running" ? { driver: "local", host: "h", bootId: null, pid: process.pid, since: new Date().toISOString(), serve: process.env.FAKE_DOOR } : null, heartbeatAt: status === "running" ? new Date().toISOString() : null, updatedAt: new Date().toISOString(), detail: null }));
+const write = (status) => writeFileSync(join(dir, "run.json"), JSON.stringify({ run: "x", status, generation: 2, sealedSeq: null, wakeAt: null, holder: status === "running" ? { driver: "local", host: "h", bootId: null, pid: process.pid, since: new Date().toISOString(), serve: door } : null, heartbeatAt: status === "running" ? new Date().toISOString() : null, updatedAt: new Date().toISOString(), detail: null }));
 write("running");
 process.on("SIGTERM", () => { write("sleeping"); process.exit(0); });
 setInterval(() => {}, 1000);
 `,
   );
-  const { home, server, root, post, json } = await app(t, { start: [process.execPath, script] });
+  const { home, server, root, post, json } = await app(t, { start: [process.execPath, script, door.url] });
   const bystander = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"]);
   t.after(() => bystander.kill());
 
@@ -399,58 +411,72 @@ setInterval(() => {}, 1000);
   assert.doesNotThrow(() => process.kill(bystander.pid, 0), "a process that is not a run is left alone");
 });
 
-/** A start command that plays a run's instance: run.json running with the door in FAKE_DOOR, sleeping on SIGTERM. */
+/**
+ * A start command that plays a run's instance: run.json running with a door, sleeping on SIGTERM. `next(config)` sets
+ * what the next instance started plays: `door`, and the `entries` its store holds when it is released, as pi would have
+ * committed them. An instance reads its config once, when it starts; after that it touches only its run's directory.
+ */
 function fakeInstance(dir) {
   const script = join(dir, "start.mjs");
+  const config = join(dir, "next.json");
   writeFileSync(
     script,
     `import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-const dir = process.argv[2];
-const door = process.env.FAKE_DOOR;
-// What the run's store holds when it is released: FAKE_ENTRIES names a file of entries, as pi would have committed them.
+const [config, dir] = process.argv.slice(2);
+const { door, entries = [] } = JSON.parse(readFileSync(config, "utf8"));
 const commit = () => {
-  if (!process.env.FAKE_ENTRIES) return;
   const db = new DatabaseSync(join(dir, "store", "run.sqlite"));
   const insert = db.prepare("INSERT INTO entries (id, conversation_id, head, commit_seq, record) VALUES (?, ?, NULL, ?, ?)");
-  for (const entry of JSON.parse(readFileSync(process.env.FAKE_ENTRIES, "utf8"))) insert.run(entry.id, entry.conversationId, entry.id, JSON.stringify(entry));
+  for (const entry of entries) insert.run(entry.id, entry.conversationId, entry.id, JSON.stringify(entry));
   db.close();
 };
 writeFileSync(join(dir, "origin.txt"), process.env.AGENT_PAGE_ORIGIN ?? "");
 const write = (status) => writeFileSync(join(dir, "run.json"), JSON.stringify({ run: "x", status, generation: 1, sealedSeq: null, wakeAt: null, holder: status === "running" ? { driver: "local", host: "h", bootId: null, pid: process.pid, since: new Date().toISOString(), serve: door } : null, heartbeatAt: status === "running" ? new Date().toISOString() : null, updatedAt: new Date().toISOString(), detail: null }));
 write("running");
-process.on("SIGTERM", () => { commit(); write("sleeping"); process.exit(0); });
+process.on("SIGTERM", () => {
+  try {
+    if (entries.length) commit();
+  } catch (error) {
+    writeFileSync(join(dir, "commit-failed.txt"), String(error));
+  }
+  write("sleeping");
+  process.exit(0);
+});
 setInterval(() => {}, 1000);
 `,
   );
-  return script;
+  return { start: [process.execPath, script, config], next: (next) => writeFileSync(config, JSON.stringify(next)) };
 }
 
 test("a run that answered is released and carried back once, with the sign-in it made and the answer its store holds; then it is finished; a run waiting for the person is left running", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "web-carry-"));
+  const fake = fakeInstance(dir);
+  const { home, server, post } = await app(t, { start: fake.start, watchMs: 50 });
+  // Registered after app(), so they run after the server has stopped the runs it started.
   const answered = await fakeDoor({ snapshot: transcript, hold: true, busy: true });
   const waiting = await fakeDoor({ snapshot: asking, hold: true });
-  t.after(() => Promise.all([answered.close(), waiting.close()]));
-  const dir = await mkdtemp(join(tmpdir(), "web-carry-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  const { home, server, post } = await app(t, { start: [process.execPath, fakeInstance(dir)], watchMs: 50 });
+  t.after(() => Promise.all([answered.close(), waiting.close(), rm(dir, { recursive: true, force: true })]));
 
   // The door showed the answer when the run was stopped; a follow-up was admitted and answered while it drained, so the
   // released store holds a later answer, and that is the one kept.
   const late = [...transcript, user(13, "And one more thing?"), assistant(14, [text("Here is the late answer.")])];
-  writeFileSync(join(dir, "late.json"), JSON.stringify(late));
-  process.env.FAKE_DOOR = answered.url;
-  process.env.FAKE_ENTRIES = join(dir, "late.json");
-  t.after(() => void delete process.env.FAKE_ENTRIES);
+  fake.next({ door: answered.url, entries: late });
   const { id } = await (await post("/runs", { content: "Log in to the practice site and save notes.md" })).json();
   // The run's own sign-in, as the agent app commits it while the run works: a Browserbase context in its store.
   const run = (await readAgentHome(home)).runs[id];
   const harness = await Harness.open(await openNodeSqliteStorage(join(home.dir, run.path, "store", "run.sqlite")), { models: createModels(), registry: createRegistry(), onReport: () => {} }, ctx);
   await durableProfileStore(harness).resolve(PROFILE, async () => "ctx-signed-in");
   await harness.close(ctx);
+  // The door already shows an answer: the run goes idle only once the first message is in, or the server releases it
+  // while that message is still on its way and the delivery starts the run again.
+  for (let i = 0; i < 100 && answered.submits.length < 1; i++) await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(answered.submits.map((s) => s.content), ["Log in to the practice site and save notes.md"]);
   answered.busy = false;
   for (let i = 0; i < 100 && server.children.has(id); i++) await new Promise((r) => setTimeout(r, 50));
   assert.ok(!server.children.has(id), "the run that answered was released");
+  assert.ok(!existsSync(join(home.dir, run.path, "commit-failed.txt")), "the released instance committed its entries");
   let state = await readAgentHome(home);
   for (let i = 0; i < 100 && !state.runs[id].endedAt; i++) await new Promise((r) => setTimeout(r, 50)), (state = await readAgentHome(home));
   assert.deepEqual([state.runs[id].outcome, state.runs[id].finalAnswer, state.runs[id].cost], ["completed", "Here is the late answer.", 0.06]);
@@ -462,10 +488,11 @@ test("a run that answered is released and carried back once, with the sign-in it
   assert.deepEqual([refused.status, (await refused.json()).error], [409, "RUN_FINISHED"]);
   assert.ok(!server.children.has(id), "a finished run is not started again");
   assert.equal((await (await fetch(`${server.url}/runs/${id}`)).json()).status, "done");
-  delete process.env.FAKE_ENTRIES;
 
-  process.env.FAKE_DOOR = waiting.url;
+  fake.next({ door: waiting.url });
   const second = await (await post("/runs", { content: "Log in again" })).json();
+  for (let i = 0; i < 100 && waiting.submits.length < 1; i++) await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(waiting.submits.map((s) => s.content), ["Log in again"]);
   const next = await startRun(home, { host: "test" });
   assert.deepEqual(next.leases, [], "the waiting run holds the profile's save lease");
   await new Promise((r) => setTimeout(r, 500));

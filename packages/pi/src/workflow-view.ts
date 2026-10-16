@@ -1,4 +1,5 @@
 import { inspectWorkflow, type WorkflowDeps } from '@parcha/agentrun-dsl';
+import { workflowGraph } from '@parcha/agentrun-dsl/graph';
 import type { ExtensionRunReport } from './extension-service.js';
 import { cleanText } from './presentation.js';
 import { types as utilTypes } from 'node:util';
@@ -164,7 +165,10 @@ export function workflowView(workflow: unknown, options: {
   const missing = required.filter((key: string) => !Object.hasOwn(options.input ?? {}, key));
   const tools = inspection.requires.tools;
   const unavailable = options.availableTools ? tools.filter(name => !options.availableTools!.includes(name)) : [];
-  const nodes = inspection.nodes.map(node => {
+  // The nodes are the graph's (`@parcha/agentrun-dsl/graph`, the one the viewer's graph panel draws); inspection only adds what a step writes.
+  const writes = new Map(inspection.nodes.map(node => [node.path, node.writes]));
+  const nodes = workflowGraph(workflow).nodes.map(graphNode => {
+    const node = { ...graphNode, writes: writes.get(graphNode.path) };
     const source = at(definition, node.path) ?? {};
     const childRoot = node.path.lastIndexOf('/workflow/root');
     const owner = childRoot < 0 ? definition : at(definition, node.path.slice(0, childRoot + '/workflow'.length));
