@@ -2,6 +2,8 @@ import type { Learning } from "./entry.js";
 import { LearnError } from "./errors.js";
 import { CAPS, LAYOUT, WORKFLOW_NAME } from "./layout.js";
 
+export { WORKFLOW_NAME } from "./layout.js";
+
 /** A saved workflow the host found for this run's input. The workflows lane fills these; none is the default. */
 export type WorkflowHint = {
   readonly name: string;
