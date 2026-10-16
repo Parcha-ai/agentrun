@@ -1649,7 +1649,7 @@ test('delegation lines are written from place.status() when a delegation appears
   const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
   const lines = (recording, kind) => readEvents(recording).filter((line) => line.source === 'host' && line.kind === kind);
   const recording = join(tmp, 'recording');
-  const first = { clientId: 'client-1', inodeId: 'inode-1', path: '/runs/the-run', isOrphaned: false, isPending: false };
+  const first = { clientId: 'c-9a41', inodeId: 7001, path: '/runs/the-run', isOrphaned: false, isPending: false };
   await demo({ ...options, argv: ['--kill', '--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
     const inner = localPlace({ self, paths, destroyBoxes, requestFile });
     let generation = 0;
@@ -1661,12 +1661,15 @@ test('delegation lines are written from place.status() when a delegation appears
       start: async (order) => { generation = 1; delegations = [first]; return inner.start(order); },
       // The old holder\'s delegation is orphaned the moment its box is gone; the takeover revokes it and a new holder has its own.
       kill: async (runner, kind) => { delegations = [{ ...first, isOrphaned: true }]; await inner.kill(runner, kind); },
-      recover: async (last, kind, order) => { const next = await inner.recover(last, kind, order); generation = 2; delegations = [{ clientId: 'client-2', inodeId: 'inode-2', path: '/runs/the-run', isOrphaned: false, isPending: true }]; return { ...next, revoked: [{ ...first, isOrphaned: true }], ms: 1234 }; },
+      recover: async (last, kind, order) => { const next = await inner.recover(last, kind, order); generation = 2; delegations = [{ clientId: 'c-b2e7', inodeId: 'f-7002', path: '/runs/the-run', isOrphaned: false, isPending: true }]; return { ...next, revoked: [{ ...first, isOrphaned: true }], ms: 1234 }; },
     };
   } });
   assert.deepEqual(lines(recording, 'delegation').map((line) => [line.data.gen, line.data.clientId, line.data.isOrphaned, line.data.isPending]), [[1, 'client-1', false, false], [1, 'client-1', true, false], [2, 'client-2', false, true]], 'one line when each appears, one more when the first became orphaned, none for a stable one');
   assert.deepEqual(Object.keys(lines(recording, 'delegation')[0].data).sort(), ['clientId', 'gen', 'inodeId', 'isOrphaned', 'isPending', 'path']);
   assert.deepEqual(lines(recording, 'revoke').map((line) => [line.data.gen, line.data.revoked, line.data.ms]), [[2, [{ clientId: 'client-1', inodeId: 'inode-1', path: '/runs/the-run', isOrphaned: true }], 1234]]);
+  assert.deepEqual(lines(recording, 'delegation').map((line) => line.data.inodeId), ['inode-1', 'inode-1', 'inode-2'], 'the same value the same label, a new one the next');
+  const text = readFileSync(join(recording, 'events.jsonl'), 'utf8');
+  for (const raw of ['c-9a41', 'c-b2e7', '7001', 'f-7002']) assert.ok(!text.includes(raw), `${raw} is not in the recording`);
   assert.deepEqual(validateRecording(recording), []);
   // A place without delegations or a revoke writes none.
   const plain = join(tmp, 'plain');
