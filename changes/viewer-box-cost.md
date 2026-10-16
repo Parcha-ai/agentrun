@@ -7,7 +7,8 @@ kind: feature
   `$0.0147 (boxes $0.0047 at list price)`. A restore keeps it: a box's time was spent whatever the store went back to.
 - The cost is unknown while a box pi-transport's own lines show started (`box.created`) has no receipt of its own
   (source `transport`), when a receipt's `cost_usd` is null (a kind with no published price), and, as before, when the
-  recording has no durable line.
+  recording has no durable line. Started boxes named by label (`box-N`, as a receipt names its box) are matched to their
+  own receipts; ones named by the provider's id, which no receipt carries, are counted against the transport receipts.
 - A scripted run whose boxes cost something reads `scripted lead, boxes $0.0047 at list price`, its other parts named
   scripted with their sum when they priced anything, never `scripted, $0`. A scripted run with no box, or whose boxes
   cost nothing, reads as before.

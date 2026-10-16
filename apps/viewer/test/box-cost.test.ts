@@ -54,6 +54,17 @@ test('a box pi-transport started is unknown until its own receipt; a receipt the
   assert.ok(Math.abs(priced.cost! - 0.002) < 1e-12, String(priced.cost));
 });
 
+test('started boxes named by label are matched to their own receipts; boxes named by the provider\'s id are counted against them', () => {
+  // A receipt names its box by label (box-1, box-2, ...), never by the provider's id. A box.created line that names a
+  // label too is matched to that label's receipt, so another box's receipt never covers it.
+  assert.equal(counters([lead(0), created('box-1'), receipt('box-2', 40, 0.00005, 'transport')]).cost, null, 'box-1 has no receipt of its own');
+  assert.ok(counters([lead(0), created('box-1'), created('box-2'), receipt('box-2', 40, 0.00005, 'transport'), receipt('box-1', 40, 0.00005, 'transport')]).cost !== null);
+  // A recording whose box.created lines name the provider's ids has no key to join on: each receipt counts for one box.
+  const priced = counters([lead(0), created('6f492bb9-d80f'), receipt('box-1', 40, 0.00005, 'transport')]);
+  assert.ok(Math.abs(priced.cost! - 0.002) < 1e-12, String(priced.cost));
+  assert.equal(counters([lead(0), created('6f492bb9-d80f'), created('8250834a-6c5b'), receipt('box-1', 40, 0.00005, 'transport')]).cost, null, 'two boxes, one receipt');
+});
+
 test('with no durable line the store\'s parts are not measured, so the boxes alone are not the cost', () => {
   assert.equal(counters([live('host', 'process.started', { gen: 1 }), receipt('box-1', 40, 0.00005)]).cost, null);
 });

@@ -129,6 +129,8 @@ export type Counters = {
 };
 
 
+/** How a `box.receipt` names its box (draft 33): `box-1`, `box-2`, ... by first appearance. */
+const BOX_LABEL = /^box-\d+$/;
 /** The parts of cost, in the order the strip names them. */
 export type CostPart = 'lead' | 'judge' | 'eyes' | 'browser' | 'boxes';
 export const COST_PARTS: CostPart[] = ['lead', 'judge', 'eyes', 'browser', 'boxes'];
@@ -451,7 +453,12 @@ export function countersOf(state: CounterState, ended: boolean): Counters {
   // Cost is null until a line prices a part (section 6: null, never 0), and null when any part is unknown. A box's
   // receipt is its time at list price; a box pi-transport's lines show started with no receipt (yet) leaves it unknown.
   const receipts = Object.values(state.boxes.receipts);
-  const unreceipted = Object.keys(state.boxes.started).length > receipts.filter((receipt) => receipt.source === 'transport').length;
+  // A receipt names its box by label (`box-N`), never by the provider's id. Started boxes named by label are matched to
+  // their own receipts; ones named by the provider's id leave no key to join on, so each transport receipt covers one.
+  const started = Object.keys(state.boxes.started);
+  const unreceipted = started.length > 0 && started.every((box) => BOX_LABEL.test(box))
+    ? started.some((box) => state.boxes.receipts[box]?.source !== 'transport')
+    : started.length > receipts.filter((receipt) => receipt.source === 'transport').length;
   const byPart: Record<CostPart, (number | null)[]> = {
     lead: state.modelPriced ? [state.modelCostKnown ? state.modelCost : null] : [],
     judge: tallies.flatMap((tally) => tally.cost),
