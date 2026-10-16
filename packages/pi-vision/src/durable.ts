@@ -78,8 +78,9 @@ const kept = () => (keptDocs ??= import("@earendil-works/pi-durable").then(({ de
   defineDocFamily<Kept, null>({ kind: "pi-vision.kept", version: 1, scope: "conversation", history: "latest", fork: "current", family: true, initial: () => ({ kept: false, value: null }) })));
 
 /** The call's memo port: a tool call's on its conversation, a hook's on pi's memos of its task (a hook runs inside its
- *  task, which a commit would wait on). The kept value when there is one, else `compute`'s, committed before it is
- *  returned; the first committed value wins, so two attempts that both computed agree on one. */
+ *  task, which a commit would wait on). The kept value when there is one, else the one the call's task holds (a value
+ *  kept on the task is never paid for again), else `compute`'s, committed before it is returned; the first committed
+ *  value wins, so two attempts that both computed agree on one. */
 function memoOf(api: Pick<HookApi, "conversationId" | "memo">, context: Context, tool?: Pick<ToolExecutionApi, "commit" | "snapshot">): NonNullable<CallContext["memo"]> {
   if (!tool) return async <T extends Json>(key: string, compute: () => Promise<T>) => {
     const done = await api.memo<JsonValue>(key, context);
@@ -89,7 +90,8 @@ function memoOf(api: Pick<HookApi, "conversationId" | "memo">, context: Context,
     const docs = await kept();
     const found = await tool.snapshot(docs, api.conversationId, key, context);
     if (found?.kept) return found.value as T;
-    const value = (await compute()) as JsonValue;
+    const held = await api.memo<JsonValue>(key, context);
+    const value = held !== undefined ? held : ((await compute()) as JsonValue);
     return tool.commit(async (tx) => {
       const doc = await tx.doc(docs, api.conversationId, key, null);
       if (doc.kept) return JSON.parse(JSON.stringify(doc.value)) as T;
