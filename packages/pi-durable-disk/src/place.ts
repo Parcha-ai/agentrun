@@ -88,7 +88,7 @@ export interface Place {
   release(): Promise<void>;
 }
 
-export type PlaceErrorCode = "INVALID_ARGUMENT" | "HELD" | "START_TIMED_OUT" | "STATUS_FAILED" | "KILL_UNSUPPORTED" | "RELEASE_FAILED";
+export type PlaceErrorCode = "INVALID_ARGUMENT" | "HELD" | "START_TIMED_OUT" | "STATUS_FAILED" | "KILL_UNSUPPORTED" | "RELEASE_FAILED" | "SIGNALS_FAILED";
 
 export class PlaceError extends PdaError {
   constructor(code: PlaceErrorCode, message: string, options: { cause?: unknown } = {}) {
@@ -103,6 +103,13 @@ const SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 const OUTPUT_GRACE_MS = 2_000;
 /** How often a local place looks for a kill request (a file of this machine). */
 const LOCAL_SIGNAL_POLL_MS = 20;
+/** How long reads of a kill request may fail without a break before `signals` says so. */
+const SIGNAL_FAIL_MS = 60_000;
+/** An S3 read of a key that is not there (yet): the only failure a request poll expects. */
+const notThere = (error: unknown): boolean => {
+  const e = error as { status?: unknown; statusCode?: unknown; code?: unknown };
+  return e.status === 404 || e.statusCode === 404 || e.code === "NoSuchKey";
+};
 const STDERR_KEEP = 600;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -243,7 +250,7 @@ export function localPlace(options: LocalPlaceOptions): (ctx: PlaceContext) => P
             requestFile: ctx.requestFile,
             signals: (attempt: number) => {
               const file = ctx.requestFile!(attempt);
-              return requestSignals(async () => (existsSync(file) ? readFileSync(file, "utf8") : undefined), LOCAL_SIGNAL_POLL_MS);
+              return requestSignals(async () => (existsSync(file) ? readFileSync(file, "utf8") : undefined), LOCAL_SIGNAL_POLL_MS, SIGNAL_FAIL_MS);
             },
           }
         : {}),
@@ -283,31 +290,53 @@ export function localPlace(options: LocalPlaceOptions): (ctx: PlaceContext) => P
 
 /**
  * The kill request a runner writes whole when it parks at its planned crossing, as one signal, read with `read` every
- * `pollMs` until it names a crossing. A custom iterator, not a generator: `return()` must end a pending `next()`, which a
- * generator would queue behind the poll, and it does even while a read is in flight (a read over the network can hang).
+ * `pollMs` until it names a crossing. `read` answers undefined while there is no request yet; a read that fails is tried
+ * again, and once reads have failed for `failMs` without a break, `next()` rejects with SIGNALS_FAILED (a runner parked
+ * at its crossing would otherwise wait with no word of why). A custom iterator, not a generator: `return()` must end a
+ * pending `next()`, which a generator would queue behind the poll, and it does even while a read is in flight (a read
+ * over the network can hang). Each wait has its own wake, dropped after it, so a long poll attaches nothing to anything
+ * that lives as long as the iterator.
  */
-function requestSignals(read: () => Promise<string | undefined>, pollMs: number): AsyncIterable<PlaceSignal> {
+function requestSignals(read: () => Promise<string | undefined>, pollMs: number, failMs: number): AsyncIterable<PlaceSignal> {
   return {
     [Symbol.asyncIterator]() {
       let closed = false;
-      let stop = () => {};
-      const stopped = new Promise<void>((r) => (stop = r));
+      let wake: (() => void) | undefined;
+      /** `work`, or undefined as soon as `return()` runs. */
+      const unlessReturned = <T>(work: Promise<T>): Promise<T | undefined> =>
+        new Promise<T | undefined>((resolve, reject) => {
+          wake = () => resolve(undefined);
+          work.then(resolve, reject);
+        }).finally(() => {
+          wake = undefined;
+        });
+      let failingSince: number | undefined;
       return {
         async next(): Promise<IteratorResult<PlaceSignal>> {
           while (!closed) {
-            const text = await Promise.race([read().catch(() => undefined), stopped.then(() => undefined)]);
+            let text: string | undefined;
+            try {
+              text = await unlessReturned(read());
+              failingSince = undefined;
+            } catch (error) {
+              failingSince ??= Date.now();
+              if (Date.now() - failingSince >= failMs) {
+                closed = true;
+                throw new PlaceError("SIGNALS_FAILED", `reading the kill request failed for ${failMs} ms: ${(error as Error)?.message ?? error}`, { cause: error });
+              }
+            }
             const crossing = closed || text === undefined ? undefined : requestIn(text);
             if (crossing) {
               closed = true;
               return { done: false, value: { kind: "kill-request", crossing } };
             }
-            await Promise.race([sleep(pollMs), stopped]);
+            if (!closed) await unlessReturned(sleep(pollMs));
           }
           return { done: true, value: undefined };
         },
         async return(): Promise<IteratorResult<PlaceSignal>> {
           closed = true;
-          stop();
+          wake?.();
           return { done: true, value: undefined };
         },
       };
@@ -364,6 +393,11 @@ export interface ArchilPlaceOptions {
   startTimeoutMs?: number;
   /** How often `signals` reads the attempt's kill request over S3. Default 500 ms (the runner waits at its crossing). */
   signalPollMs?: number;
+  /**
+   * How long those reads may fail (anything but a missing object) without a break before `next()` rejects with
+   * SIGNALS_FAILED. Default 60 s.
+   */
+  signalFailMs?: number;
 }
 
 type Minted = { token: string; identifier: string; nickname: string; removed: boolean };
@@ -395,6 +429,7 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
   const pollMs = options.pollMs ?? 1_000;
   const startTimeoutMs = options.startTimeoutMs ?? 60_000;
   const signalPollMs = options.signalPollMs ?? 500;
+  const signalFailMs = options.signalFailMs ?? SIGNAL_FAIL_MS;
   return (ctx) => {
     const ref: RunRef = { disk: options.disk, region: options.region, id: options.id ?? ctx.paths.id };
     runPath(ref.id);
@@ -540,7 +575,18 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
       requestFile: (attempt) => posix.join(root, REQUESTS, requestName(attempt)),
       signals: (attempt) => {
         const key = `${runPath(ref.id)}/${REQUESTS}/${requestName(attempt)}`;
-        return requestSignals(async () => new TextDecoder().decode(await control.getObject(key)), signalPollMs);
+        return requestSignals(
+          async () => {
+            try {
+              return new TextDecoder().decode(await control.getObject(key));
+            } catch (error) {
+              if (notThere(error)) return undefined;
+              throw error;
+            }
+          },
+          signalPollMs,
+          signalFailMs,
+        );
       },
       start: async (order) => (await ensure(order, false)).runner,
       kill,

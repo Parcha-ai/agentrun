@@ -4,6 +4,8 @@
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -194,6 +196,9 @@ class FakeControl implements SupervisorControl {
   ops: string[] = [];
   /** getObject of a key under this prefix never answers. */
   hangUnder: string | null = null;
+  /** getObject calls so far, and an error every getObject of a key under `failUnder` throws instead of answering. */
+  gets = 0;
+  failUnder: { prefix: string; error: Error } | null = null;
   /** The inode each run directory has, as the disk's `find -inum` reports it; and how many execs ran, and how many next fail. */
   inodes = new Map<string, number>();
   execs = 0;
@@ -205,7 +210,9 @@ class FakeControl implements SupervisorControl {
     this.objects.set(`runs/${ID}/run.json`, JSON.stringify({ run: ID, status: "running", generation: 1, sealedSeq: null, wakeAt: null, holder: null, heartbeatAt: new Date().toISOString(), updatedAt: new Date().toISOString(), detail: null, ...o }));
   }
   async getObject(key: string) {
+    this.gets++;
     if (this.hangUnder !== null && key.startsWith(this.hangUnder)) return new Promise<Uint8Array>(() => {});
+    if (this.failUnder !== null && key.startsWith(this.failUnder.prefix)) throw this.failUnder.error;
     const v = this.objects.get(key);
     if (v === undefined) throw Object.assign(new Error("NoSuchKey"), { status: 404, code: "NoSuchKey" });
     return new TextEncoder().encode(v);
@@ -504,6 +511,61 @@ describe("archilPlace", () => {
     await assert.rejects(other.status!(), (e: unknown) => (e as { code?: string }).code === "CONTROL_API_FAILED");
     assert.deepEqual((await other.status!()).delegations?.map((d) => d.clientId), ["c-1"], "the next call resolved it with a new resolver");
     assert.equal(control.execs, 2);
+  });
+
+  it("signals: a long poll attaches nothing to anything that lives as long as the iterator (the heap does not grow with polls)", { timeout: 120_000 }, async () => {
+    setFlagsFromString("--expose-gc");
+    const gc = runInNewContext("gc") as () => void;
+    const control = new FakeControl();
+    const { host } = fakeHost(control);
+    const at = makePlace({ ...REF, control, host, signalPollMs: 0 });
+    const it = at.signals!(9)[Symbol.asyncIterator]();
+    const pending = it.next();
+    const heapAfter = async (polls: number) => {
+      const until = control.gets + polls;
+      while (control.gets < until) await sleep(50);
+      gc();
+      return process.memoryUsage().heapUsed;
+    };
+    const before = await heapAfter(300);
+    const after = await heapAfter(3_000);
+    await it.return!();
+    assert.deepEqual(await pending, { done: true, value: undefined });
+    assert.ok(after - before < 1_000_000, `the heap grew ${after - before} bytes over 3000 polls`);
+  });
+
+  it("signals: a missing request is waited for; a read that keeps failing otherwise rejects next() with SIGNALS_FAILED, and a short failure does not", async () => {
+    const control = new FakeControl();
+    const { host } = fakeHost(control);
+    const at = makePlace({ ...REF, control, host, signalPollMs: 5, signalFailMs: 200 });
+    const prefix = `runs/${ID}/signals/`;
+
+    // A failure shorter than signalFailMs, then the request: it is yielded.
+    const it1 = at.signals!(1)[Symbol.asyncIterator]();
+    const first = it1.next();
+    control.failUnder = { prefix, error: Object.assign(new Error("503 Slow Down"), { status: 503 }) };
+    await sleep(60);
+    control.failUnder = null;
+    control.objects.set(`${prefix}kill-1.json`, JSON.stringify({ point: "p", n: 1 }));
+    assert.deepEqual((await first).value, { kind: "kill-request", crossing: { point: "p", n: 1 } });
+
+    // A read refused for good: next() says so once signalFailMs has passed.
+    const it2 = at.signals!(2)[Symbol.asyncIterator]();
+    control.failUnder = { prefix, error: Object.assign(new Error("AccessDenied"), { status: 403 }) };
+    const refused = await Promise.race([it2.next().then(() => "yielded", (e: unknown) => e), sleep(5_000).then(() => "no word after 5 s")]);
+    await it2.return!();
+    assert.ok(refused instanceof PlaceError && refused.code === "SIGNALS_FAILED" && /AccessDenied/.test(refused.message), String(refused));
+    control.failUnder = null;
+
+    // No request at all for longer than signalFailMs: a missing object is not a failure.
+    const it3 = at.signals!(3)[Symbol.asyncIterator]();
+    const pending = it3.next();
+    let settled = false;
+    void pending.then(() => (settled = true), () => (settled = true));
+    await sleep(300);
+    assert.equal(settled, false, "still waiting, no rejection");
+    await it3.return!();
+    assert.deepEqual(await pending, { done: true, value: undefined });
   });
 
   it("a driver with no kill: kills is empty and kill refuses", async () => {
