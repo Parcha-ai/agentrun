@@ -19,6 +19,10 @@
     "./durable": {
       "types": "./dist/durable/index.d.ts",
       "import": "./dist/durable/index.js"
+    },
+    "./workflows": {
+      "types": "./dist/workflows.d.ts",
+      "import": "./dist/workflows.js"
     }
   },
   "bin": {
