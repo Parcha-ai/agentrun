@@ -399,8 +399,9 @@ Each move leaves a durable record in the session's store, so a recording proves 
 document `transport.moves`, keyed by the move id, written once by the target in the first commit it makes when it
 opens the moved store (`MoveRecord`: `kind`, `epoch`, `head`, `from` and `to` as `{ environment, provider, box }`,
 `drainMs`, `shipMs`, `takeMs`, `bytes`, `stopped`, and a move's `seal`, a restore's `checkpoint` or `replayed`).
-`head` is the sequence that commit takes: a move's `seal.head`, a restore's `replayed.to + 1` or its checkpoint's
-head. The host sends what only it knows in `ResumeOrder.move.record` (`MoveFacts`); `moveHome` does. A place names
+`head` is the store's next commit at open: a move's `seal.head`, a restore's `replayed.to + 1` or its checkpoint's
+head. The record's commit is `head`, or `head + 1` when pi committed once as it opened the store (a generation was
+running, and pi recovers it first). The host sends what only it knows in `ResumeOrder.move.record` (`MoveFacts`); `moveHome` does. A place names
 its box by its `label` (the host's `box-1`), never the provider's id; a place with no label is named by the id. An
 order that carries no record writes none, and an open after the first finds the record and writes nothing.
 

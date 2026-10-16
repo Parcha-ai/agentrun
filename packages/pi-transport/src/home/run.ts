@@ -66,8 +66,9 @@ export type MoveFacts = {
 
 /**
  * A move's durable record (RECORDING.md 3.2): the document `transport.moves`, keyed by the move id, written once by the
- * target in the first commit it makes when it opens the moved store. `head` is the sequence that commit takes, after any
- * replay: a move's `seal.head`, a restore's `replayed.to + 1` or its checkpoint's head.
+ * target in the first commit it makes when it opens the moved store. `head` is the store's next commit at open, after any
+ * replay: a move's `seal.head`, a restore's `replayed.to + 1` or its checkpoint's head. The record's commit is `head`, or
+ * `head + 1` when pi committed once as it opened the store (a generation was running, which pi recovers first).
  */
 export type MoveRecord = MoveFacts & {
 	readonly v: 1;

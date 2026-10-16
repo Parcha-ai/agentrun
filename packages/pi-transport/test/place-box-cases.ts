@@ -554,6 +554,7 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 						stopped: [],
 					});
 					expect(restore?.value).not.toHaveProperty("checkpoint");
+					// No pi task was running: pi commits nothing at open, and the record is the restored process's first commit.
 					expect(restore?.commit).toBe(restore?.value.head);
 					for (const id of made.ids) expect(JSON.stringify(restore)).not.toContain(id);
 				} finally {
@@ -588,12 +589,19 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 					expect(model.asked()).toBe(1);
 					expect(record.answer?.startsWith("answer number 1:")).toBe(true);
 					expect(record.questions).toBe(1);
-					// pi reopens a store whose generation was running and commits that before anything else (measured: one commit,
-					// the record at head + 1). The record's head is the store's next commit at open, `replayed.to + 1`: the first
-					// commit of the restored process is at or above it.
+					// pi reopens a store whose generation was running and commits that once, at the store's next commit (the
+					// record's head, `replayed.to + 1`), before anything of the runner's: the record is at head + 1 exactly.
 					const [restore] = await movesInLog(made);
-					expect(restore?.value).toMatchObject({ kind: "restore", head: (recovered.replayed?.to ?? 0) + 1 });
-					expect(restore?.commit).toBeGreaterThanOrEqual(restore?.value.head as number);
+					const head = (recovered.replayed?.to ?? 0) + 1;
+					expect(restore?.value).toMatchObject({ kind: "restore", head });
+					expect(restore?.commit).toBe(head + 1);
+					const opened = getOrThrow(await localVault(join(made.host, "vault")).readLog("run-1", head, context))
+						.entries[0];
+					// That one commit is pi's recovery of the generation: one task record, at head.
+					expect({ commit: opened?.commit, writes: opened?.writes.map((write) => write.type) }).toEqual({
+						commit: head,
+						writes: ["task"],
+					});
 					await place.release();
 				} finally {
 					made.remove();
