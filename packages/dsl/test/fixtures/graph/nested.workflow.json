@@ -1,0 +1,137 @@
+{
+  "v": 2,
+  "name": "nested",
+  "schemas": {
+    "Any": {
+      "type": "object"
+    },
+    "Item": {
+      "type": "object"
+    },
+    "Found": {
+      "type": "object",
+      "required": [
+        "id",
+        "score"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "score": {
+          "type": "number"
+        }
+      }
+    }
+  },
+  "output": {
+    "schemaId": "Any",
+    "path": "final"
+  },
+  "root": {
+    "node": "chain",
+    "steps": [
+      {
+        "node": "map",
+        "label": "each",
+        "itemsPath": "items",
+        "as": "outs",
+        "resultPath": "sub",
+        "body": {
+          "node": "chain",
+          "steps": [
+            {
+              "node": "workflow",
+              "label": "sub",
+              "workflow": {
+                "v": 2,
+                "name": "child-lookup",
+                "schemas": {
+                  "Any": {
+                    "type": "object"
+                  },
+                  "Item": {
+                    "type": "object"
+                  },
+                  "Found": {
+                    "type": "object",
+                    "required": [
+                      "id",
+                      "score"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "score": {
+                        "type": "number"
+                      }
+                    }
+                  },
+                  "ChildIn": {
+                    "type": "object",
+                    "required": [
+                      "id"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "input": {
+                  "schemaId": "ChildIn"
+                },
+                "output": {
+                  "schemaId": "Any",
+                  "path": "res"
+                },
+                "root": {
+                  "node": "chain",
+                  "steps": [
+                    {
+                      "node": "call",
+                      "label": "fetch",
+                      "via": "tool",
+                      "tool": "lookup",
+                      "args": {
+                        "id": "{id}"
+                      },
+                      "out": "Found",
+                      "as": "fetch",
+                      "deadline_s": 30
+                    },
+                    {
+                      "node": "code",
+                      "label": "shape",
+                      "code": "s => (({ res: { ok: true } }))"
+                    }
+                  ]
+                }
+              },
+              "input": {
+                "id": "{item.id}"
+              },
+              "out": "Any",
+              "as": "sub"
+            },
+            {
+              "node": "code",
+              "label": "tail",
+              "code": "s => (({ done: true }))"
+            }
+          ]
+        }
+      },
+      {
+        "node": "code",
+        "label": "finish",
+        "code": "s => (({ final: { n: s.outs.length } }))"
+      }
+    ]
+  },
+  "input": {
+    "schemaId": "Item"
+  }
+}

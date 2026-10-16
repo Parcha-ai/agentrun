@@ -1,0 +1,73 @@
+{
+  "v": 2,
+  "name": "map-v3",
+  "schemas": {
+    "Any": {
+      "type": "object"
+    },
+    "Item": {
+      "type": "object"
+    },
+    "Found": {
+      "type": "object",
+      "required": [
+        "id",
+        "score"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "score": {
+          "type": "number"
+        }
+      }
+    }
+  },
+  "output": {
+    "schemaId": "Any",
+    "path": "final"
+  },
+  "root": {
+    "node": "chain",
+    "steps": [
+      {
+        "node": "map",
+        "label": "each",
+        "itemsPath": "items",
+        "as": "found",
+        "resultPath": "score",
+        "body": {
+          "node": "chain",
+          "steps": [
+            {
+              "node": "call",
+              "label": "look",
+              "via": "tool",
+              "tool": "lookup",
+              "args": {
+                "id": "{item.id}"
+              },
+              "out": "Found",
+              "as": "look",
+              "deadline_s": 30
+            },
+            {
+              "node": "code",
+              "label": "tally",
+              "code": "s => (({ score: s.look.score * 2 }))"
+            }
+          ]
+        }
+      },
+      {
+        "node": "code",
+        "label": "finish",
+        "code": "s => (({ final: { n: s.found.length } }))"
+      }
+    ]
+  },
+  "input": {
+    "schemaId": "Item"
+  }
+}
