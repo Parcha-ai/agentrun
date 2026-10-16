@@ -43,9 +43,11 @@ test('the disk panel is not a scroll box: it is as tall as its content', noChrom
   const evaluate = (expression: string) => within(new Promise<unknown>((resolve, reject) => { id += 1; waiting.set(id, { resolve, reject }); socket.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, returnByValue: true } })); }), 10_000, 'the probe');
   const probe = `(() => { const disk = document.querySelector('.panel .disk'); const panel = disk && disk.closest('.panel'); if (!panel) return null;
     const style = getComputedStyle(panel); return { maxHeight: style.maxHeight, overflowY: style.overflowY, scroll: panel.scrollHeight, client: panel.clientHeight, calls: panel.querySelectorAll('.dk-call').length }; })()`;
-  let got: { maxHeight: string; overflowY: string; scroll: number; client: number; calls: number } | null = null;
-  for (let tries = 0; tries < 100 && !got; tries += 1) { await sleep(100); got = await evaluate(probe) as typeof got; }
+  type Measured = { maxHeight: string; overflowY: string; scroll: number; client: number; calls: number };
+  let measured: Measured | null = null;
+  for (let tries = 0; tries < 100 && !measured; tries += 1) { await sleep(100); measured = await evaluate(probe) as Measured | null; }
   socket.close();
+  const got = measured as Measured | null;
   assert.ok(got, 'the disk panel is drawn for a recording with a claim on a disk');
   assert.ok(got.calls > 0, 'it lists paid calls');
   assert.equal(got.maxHeight, 'none', 'no height cap');
