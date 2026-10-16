@@ -10,7 +10,11 @@
       ]
     },
     "judge": {
-      "jev": true
+      "jev": true,
+      "caps": {
+        "requests": 40,
+        "tokens": 80000
+      }
     }
   },
   "keys": [
