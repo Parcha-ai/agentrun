@@ -1631,3 +1631,40 @@ test('a demo that names models.judge (Jev) without a Jev key group is refused at
   // A demo that names no Jev judge is not asked for the key.
   assert.equal((await run(t, { models: { lead: { needs: ['text'] } } }, ['--json'])).result.processes.at(-1).outcome.status, 'complete');
 });
+
+// ---- delegation and revoke lines ---------------------------------------------------------------------------------------------------------------
+
+test('delegation lines are written from place.status() when a delegation appears or its orphaned state changes (none for a stable one), a revoke line from recover()\'s { revoked, ms }, and a place without them writes none; the recording validates', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-delegations-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'spec.json');
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] }));
+  Object.assign(process.env, { DEMO_SPEC: file });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const lines = (recording, kind) => readEvents(recording).filter((line) => line.source === 'host' && line.kind === kind);
+  const recording = join(tmp, 'recording');
+  const first = { clientId: 'client-1', inodeId: 'inode-1', path: '/runs/the-run', isOrphaned: false, isPending: false };
+  await demo({ ...options, argv: ['--kill', '--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    let generation = 0;
+    let delegations = [];
+    const record = () => ({ run: paths.id, status: 'running', generation, sealedSeq: 0, holder: { driver: 'fake', host: 'h', bootId: 'b', pid: generation, since: 's' } });
+    return {
+      ...inner,
+      status: async () => ({ record: generation ? record() : null, delegations }),
+      start: async (order) => { generation = 1; delegations = [first]; return inner.start(order); },
+      // The old holder\'s delegation is orphaned the moment its box is gone; the takeover revokes it and a new holder has its own.
+      kill: async (runner, kind) => { delegations = [{ ...first, isOrphaned: true }]; await inner.kill(runner, kind); },
+      recover: async (last, kind, order) => { const next = await inner.recover(last, kind, order); generation = 2; delegations = [{ clientId: 'client-2', inodeId: 'inode-2', path: '/runs/the-run', isOrphaned: false, isPending: true }]; return { ...next, revoked: [{ ...first, isOrphaned: true }], ms: 1234 }; },
+    };
+  } });
+  assert.deepEqual(lines(recording, 'delegation').map((line) => [line.data.gen, line.data.clientId, line.data.isOrphaned, line.data.isPending]), [[1, 'client-1', false, false], [1, 'client-1', true, false], [2, 'client-2', false, true]], 'one line when each appears, one more when the first became orphaned, none for a stable one');
+  assert.deepEqual(Object.keys(lines(recording, 'delegation')[0].data).sort(), ['clientId', 'gen', 'inodeId', 'isOrphaned', 'isPending', 'path']);
+  assert.deepEqual(lines(recording, 'revoke').map((line) => [line.data.gen, line.data.revoked, line.data.ms]), [[2, [{ clientId: 'client-1', inodeId: 'inode-1', path: '/runs/the-run', isOrphaned: true }], 1234]]);
+  assert.deepEqual(validateRecording(recording), []);
+  // A place without delegations or a revoke writes none.
+  const plain = join(tmp, 'plain');
+  await demo({ ...options, argv: ['--kill', '--json', '--record', plain] });
+  assert.equal(lines(plain, 'delegation').length + lines(plain, 'revoke').length, 0);
+});

@@ -299,3 +299,7 @@ The judge and the model of a `--live` run have the crossings the fakes' have, by
 `models.judge.caps` in demo.json (`{ requests, tokens }`) sets the demo's own Jev caps. The defaults are 50 requests and 40,000 tokens; each given value is a positive integer at most 4 times the default (200 and 160,000), and anything else is refused at load, before any process starts. The judge seam still refuses the request after a cap is reached (`JEV_CAP_REACHED`, never sent), and `--max-usd` still applies.
 
 A model whose provider needs a key the demo does not declare is refused at load too, naming the group to add: no key is implied, and demo.json stays the one list the child's environment and the setup prompt read. The first case is `models.judge` (Jev): its demo needs a `keys` group with `TYPESAFE_API_KEY` or `OPENROUTER_API_KEY`.
+
+### Delegation and revoke lines
+
+A place whose `status()` also returns `delegations` (`[{ clientId, inodeId, path, isOrphaned, isPending }]`, the Archil delegations of the run's own path) gets a `delegation` host line each time one appears or its orphaned or pending state changes (`gen` is the run's current generation; the first line with `isOrphaned` marks the first reading that SAW the orphan, not the instant), and none while it is stable. A place whose `recover()` returns `{ revoked, ms }` (the old holder's delegations that the takeover revoked, and how long the whole takeover took) gets a `revoke` line `{ gen, revoked: [{ clientId, inodeId, path, isOrphaned }], ms }`. A place without them writes none.

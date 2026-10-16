@@ -378,6 +378,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   // The place's own reading of the run (`place.status()`), written as a `run.json` host line: `gen` is the record's generation and the rest is the record verbatim, only when its status, generation, holder or sealedSeq changes
   // (RECORDING.md's host row). Read at the boundaries (a runner's start and exit, a kill, a result) and on a slow tick while a runner runs; a place without `status()` writes none, and a reading never fails the run.
   let lastRunRecord = '';
+  let lastGeneration: number | undefined;
+  let currentGen = 0;
+  const delegationSeen = new Map<string, string>();
   const hostLabels = new Map<string, string>();
   const bootLabels = new Map<string, string>();
   const labelOf = (labels: Map<string, string>, prefix: string, value: string) => { let label = labels.get(value); if (!label) { label = `${prefix}-${labels.size + 1}`; labels.set(value, label); } return label; };
@@ -386,18 +389,32 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     if (!place.status) return Promise.resolve();
     reading = reading.then(async () => {
       try {
-        const record = ((await place.status!()) as { record?: Record<string, unknown> | null } | undefined)?.record;
-        if (!record || typeof record.run !== 'string' || !Number.isInteger(record.generation)) return;
-        const key = JSON.stringify([record.status, record.generation, record.holder, record.sealedSeq]);
-        if (key === lastRunRecord) return;
-        lastRunRecord = key;
-        // The line is an allowlist (RECORDING.md's host row): run, status, generation, sealedSeq, wakeAt, holder { driver, host, bootId, pid, since }, heartbeatAt, updatedAt, and a detail as text. Every other field is dropped (a sandbox id, a name, a mountpoint:
-        // what a place knows of its machine is not the recording's). A holder's host and boot id are labels (`host-1`, `boot-1`, ... in order of first appearance, the same label for the same value), so a takeover by a new box still shows a new holder.
-        const holder = record.holder && typeof record.holder === 'object' ? (record.holder as Record<string, unknown>) : undefined;
-        const kept = (source: Record<string, unknown>, names: readonly string[]) => Object.fromEntries(names.filter((name) => source[name] !== undefined).map((name) => [name, source[name]]));
-        const safeHolder = holder ? { ...kept(holder, ['driver', 'pid', 'since']), ...(typeof holder.host === 'string' ? { host: labelOf(hostLabels, 'host', holder.host) } : {}), ...(typeof holder.bootId === 'string' ? { bootId: labelOf(bootLabels, 'boot', holder.bootId) } : {}) } : undefined;
-        const detail = record.detail === undefined || record.detail === null ? undefined : plainText(record.detail);
-        supervisor.host('run.json', { gen: record.generation, ...kept(record, ['run', 'status', 'generation', 'sealedSeq', 'wakeAt', 'heartbeatAt', 'updatedAt']), ...(safeHolder ? { holder: safeHolder } : {}), ...(detail ? { detail } : {}) });
+        const status = (await place.status!()) as { record?: Record<string, unknown> | null; delegations?: unknown } | undefined;
+        const record = status?.record;
+        if (record && typeof record.run === 'string' && Number.isInteger(record.generation)) {
+          lastGeneration = record.generation as number;
+          const key = JSON.stringify([record.status, record.generation, record.holder, record.sealedSeq]);
+          if (key !== lastRunRecord) {
+            lastRunRecord = key;
+            // The line is an allowlist (RECORDING.md's host row): run, status, generation, sealedSeq, wakeAt, holder { driver, host, bootId, pid, since }, heartbeatAt, updatedAt, and a detail as text of at most 240 with every absolute path as `<path>`; every other field is dropped (a sandbox id, a name, a
+            // mountpoint: what a place knows of its machine is not the recording's). A holder's host and boot id are labels (`host-1`, `boot-1`, ... in order of first appearance, the same label for the same value), so a takeover by a new box still shows a new holder.
+            const holder = record.holder && typeof record.holder === 'object' ? (record.holder as Record<string, unknown>) : undefined;
+            const kept = (source: Record<string, unknown>, names: readonly string[]) => Object.fromEntries(names.filter((name) => source[name] !== undefined).map((name) => [name, source[name]]));
+            const safeHolder = holder ? { ...kept(holder, ['driver', 'pid', 'since']), ...(typeof holder.host === 'string' ? { host: labelOf(hostLabels, 'host', holder.host) } : {}), ...(typeof holder.bootId === 'string' ? { bootId: labelOf(bootLabels, 'boot', holder.bootId) } : {}) } : undefined;
+            const detail = record.detail === undefined || record.detail === null ? undefined : plainText(record.detail);
+            supervisor.host('run.json', { gen: record.generation, ...kept(record, ['run', 'status', 'generation', 'sealedSeq', 'wakeAt', 'heartbeatAt', 'updatedAt']), ...(safeHolder ? { holder: safeHolder } : {}), ...(detail ? { detail } : {}) });
+          }
+        }
+        // The place's delegations of the run's own path (an Archil place), one `delegation` line each time one appears or its orphaned or pending state changes: the first line with `isOrphaned` marks the first reading that SAW the orphan.
+        for (const entry of Array.isArray(status?.delegations) ? status!.delegations as unknown[] : []) {
+          const delegation = delegationOf(entry);
+          if (!delegation) continue;
+          const id = `${delegation.clientId}:${delegation.inodeId}`;
+          const state = JSON.stringify([delegation.isOrphaned, delegation.isPending, delegation.path]);
+          if (delegationSeen.get(id) === state) continue;
+          delegationSeen.set(id, state);
+          supervisor.host('delegation', { gen: lastGeneration ?? currentGen, ...delegation });
+        }
       } catch { /* a reading never fails the run */ }
     });
     return reading;
@@ -423,9 +440,14 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       const nonce = randomBytes(16).toString('hex');
       const order = { gen, env: { ...base, CROSS_LOG: log, KILL_REQUEST: request, KILL_NONCE: nonce, PLAN: JSON.stringify(plan) }, ...(token !== undefined ? { stdin: token } : {}) };
       if (previous && !place.kills.includes(previous.kind)) throw new Error(`the ${place.name} place cannot lose its ${previous.kind}: this kill is not one it can make`);
-      runner = previous ? (await place.recover(previous.runner, previous.kind, order)).runner : await place.start(order);
+      currentGen = gen;
+      const recovered = previous ? await place.recover(previous.runner, previous.kind, order) : undefined;
+      runner = recovered ? recovered.runner : await place.start(order);
       supervisor.host('process.started', { gen, pid: runner.pid });
       await readStatus();
+      // A takeover that revoked the old holder's delegations (an Archil place): what was revoked, and how long the whole takeover took.
+      const revoked = (Array.isArray(recovered?.revoked) ? recovered!.revoked : []).map(delegationOf).filter((entry) => entry !== undefined).map(({ clientId, inodeId, path, isOrphaned }) => ({ clientId, inodeId, path, isOrphaned }));
+      if (revoked.length) supervisor.host('revoke', { gen: lastGeneration ?? gen, revoked, ...(Number.isFinite(recovered?.ms) ? { ms: recovered!.ms } : {}) });
       // The supervisor decides when: a crossing asks to be killed (read through the place's signals), or the spend cap is passed. It writes the kill line, and only then does the place kill.
       // A kill the place cannot make is recorded and ends the attempt: it is never an unhandled rejection.
       let killed: { point: string | null; n: number | null; label: string | null; why: string; kind: 'process' | 'box' } | undefined;
@@ -538,6 +560,14 @@ export function messageOf(error: unknown, root: string): string {
   const own = resolve(root);
   const text = String((error as { message?: unknown } | null)?.message ?? error);
   return text.replace(/(?<![\w/:.-])\/(?:[\w.@%+~-]+\/?)+/g, (path) => (path === own || path.startsWith(`${own}/`) ? path : '<path>')).slice(0, 240);
+}
+
+/** One delegation as the recording holds it: the allowlisted fields, with the path clipped; anything that is not a delegation is not one. */
+function delegationOf(value: unknown): { clientId: string; inodeId: string | number; isOrphaned: boolean; isPending: boolean; path: string } | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const entry = value as Record<string, unknown>;
+  if (typeof entry.clientId !== 'string' || (typeof entry.inodeId !== 'string' && typeof entry.inodeId !== 'number') || typeof entry.path !== 'string') return undefined;
+  return { clientId: entry.clientId, inodeId: entry.inodeId, isOrphaned: entry.isOrphaned === true, isPending: entry.isPending === true, path: entry.path.slice(0, 240) };
 }
 
 /** A place's detail as the recording holds it: text of at most 240 characters, every absolute path replaced by `<path>`. */
