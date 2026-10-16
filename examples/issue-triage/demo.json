@@ -58,7 +58,7 @@
     {
       "point": "judge.asked triage",
       "n": 10,
-      "why": "a typed question is in flight when the process dies; the resumed run takes its recorded answer and asks no second time"
+      "why": "a typed question is in flight when the process dies; the resumed run asks that one question again (its answer was never recorded) and asks no answered question a second time"
     }
   ],
   "model": {
