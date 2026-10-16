@@ -17,6 +17,9 @@ export type Judge = NonNullable<WorkflowDeps["runJudge"]>;
 /** What curation needs of the agent repository. A `Repo` from `@parcha/pi-git-remote` is one. */
 export type CurateRepo = Pick<Repo, "fetch" | "resolve" | "branches" | "read" | "list" | "log" | "commitTo" | "push">;
 
+/** Where the run branches are read, when that is not main's repository (a hidden namespace for runs). */
+export type RunsRepo = Pick<Repo, "fetch" | "resolve" | "branches" | "read" | "list" | "log">;
+
 export type Question = "general" | "narrowsRules" | "fromContent" | "duplicate" | "supersedes" | "contradicts";
 
 /**
@@ -64,7 +67,10 @@ export const CURATE_CAPS: Readonly<CurateCaps> = Object.freeze({ index: CAPS.sec
 type Resolved = Omit<CurateOptions, "admitWorkflow" | "settleUses"> & { readonly admitWorkflow: AdmitWorkflow | undefined; readonly settleUses: SettleUses | undefined };
 
 export type CurateOptions = {
+  /** Main's repository: curation reads main here and is its only writer. */
   readonly repo: CurateRepo;
+  /** Where `runs/<run id>` branches are read; default `repo`. Curation never writes here. */
+  readonly runs?: RunsRepo;
   readonly judge: Judge;
   /** The agent's standing rules, the text of AGENTS.md, as the rules question's source. Default: AGENTS.md at main. */
   readonly rules?: string;
@@ -182,6 +188,7 @@ function exclusive<T>(key: object, fn: () => Promise<T>): Promise<T> {
 export async function curate(options: CurateOptions): Promise<CurateReport> {
   if (!options || typeof options !== "object" || !options.repo || typeof options.judge !== "function") throw new LearnError("invalid", "curate needs { repo, judge }");
   if (options.rules !== undefined && typeof options.rules !== "string") throw new LearnError("invalid", "rules is the text of AGENTS.md");
+  if (options.runs !== undefined && (!options.runs || typeof options.runs.branches !== "function")) throw new LearnError("invalid", "runs is a repository to read run branches from");
   if (options.admitWorkflow !== undefined && options.admitWorkflow !== null && typeof options.admitWorkflow !== "function") throw new LearnError("invalid", "admitWorkflow is a function");
   if (options.settleUses !== undefined && options.settleUses !== null && typeof options.settleUses !== "function") throw new LearnError("invalid", "settleUses is a function");
   const thresholds = checkThresholds(options.thresholds);
@@ -196,6 +203,7 @@ export async function curate(options: CurateOptions): Promise<CurateReport> {
 
 async function curateRuns(options: Resolved, thresholds: Thresholds, caps: CurateCaps, secrets: string[]): Promise<CurateReport> {
   const { repo } = options;
+  const runsRepo = options.runs ?? repo;
   const at = (options.now ?? new Date()).toISOString();
   const memo = new Map<string, number>();
   const runs: RunReport[] = [];
@@ -214,7 +222,7 @@ async function curateRuns(options: Resolved, thresholds: Thresholds, caps: Curat
   }
   let curated = { at: main, runs: await curatedRuns(repo, main) };
 
-  for (const branch of await repo.branches(RUNS)) {
+  for (const branch of await runsRepo.branches(RUNS)) {
     const runId = branch.name.slice(RUNS.length);
     if (!RUN_ID.test(runId)) {
       skipped.push({ branch: branch.name, reason: "the name after runs/ is not a run id" });
@@ -225,7 +233,7 @@ async function curateRuns(options: Resolved, thresholds: Thresholds, caps: Curat
     for (let attempt = 0; ; attempt++) {
       if (curated.at !== main) curated = { at: main, runs: await curatedRuns(repo, main) };
       if (curated.runs.has(runId)) break;
-      const tip = await repo.resolve(branch.name);
+      const tip = await runsRepo.resolve(branch.name);
       if (!tip) break;
       const plan = await planRun({ options, thresholds, caps, secrets, memo, budget, runId, tip, main });
       if (plan === undefined) {
@@ -357,11 +365,12 @@ const refusalReason = (refusals: readonly Refusal[]) => [...new Set(refusals.map
 async function planRun(input: PlanInput): Promise<Plan | undefined> {
   const { options, runId, tip, main } = input;
   const { repo } = options;
+  const runsRepo = options.runs ?? repo;
   const lists: Lists = { accepted: [], superseded: [], duplicates: [], used: [], held: [], refused: [], archived: [], settled: [] };
   const { budget } = input;
 
   const mainHistory = new Set((await repo.log({ ref: main })).map((c) => c.sha));
-  const own = (await repo.log({ ref: tip })).filter((c) => !mainHistory.has(c.sha));
+  const own = (await runsRepo.log({ ref: tip })).filter((c) => !mainHistory.has(c.sha));
   if (own.length === 0) return undefined;
 
   const refuseRun = (reason: string): Plan => {
@@ -376,8 +385,8 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
   if (!base || !mainHistory.has(base)) return refuseRun("the run branch does not start from main's history");
 
   // Everything the run's commits changed, read back and guarded as the run again, with the host's secrets of now.
-  const before = new Map((await repo.list("", base)).map((e) => [e.path, e]));
-  const after = new Map((await repo.list("", tip)).map((e) => [e.path, e]));
+  const before = new Map((await runsRepo.list("", base)).map((e) => [e.path, e]));
+  const after = new Map((await runsRepo.list("", tip)).map((e) => [e.path, e]));
   const changed = [...new Set([...before.keys(), ...after.keys()])].filter((p) => before.get(p)?.oid !== after.get(p)?.oid || before.get(p)?.mode !== after.get(p)?.mode).sort();
   if (changed.length > CAPS.files) return refuseRun(`too_many: the run changed ${changed.length} paths`);
   const runFiles: Record<string, string | null> = {};
@@ -391,7 +400,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     const mode = entry.type === "blob" ? modeRefusal(entry.mode) : `a ${entry.type}`;
     if (mode) return refuseRun(`path_not_allowed: the run wrote ${mode}`);
     if ((entry.size ?? 0) > CAPS.file) return refuseRun(`too_large: a file the run wrote is ${entry.size} bytes`);
-    runFiles[path] = (await repo.read(path, tip)) ?? "";
+    runFiles[path] = (await runsRepo.read(path, tip)) ?? "";
   }
   const inboxText = runFiles[inboxPath(runId)];
   let candidates: readonly Candidate[] = [];

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { test } from "node:test";
 import { GitRemoteError, local, openRepo } from "@parcha/pi-git-remote";
@@ -692,6 +693,26 @@ test("a replacement is held when the learning it replaces cannot be marked super
   assert.deepEqual(run.held.map((h) => [h.of, h.reason]), [[id, `${id} cannot be marked superseded within the file cap`]]);
   assert.deepEqual([run.accepted, run.superseded], [[], []]);
   assert.deepEqual(Object.values(await learningsOn(w.curator)).map((l) => [l.id, l.status]), [[id, "active"]]);
+});
+
+test("run branches read from a separate repository: curate writes main in one and only reads runs from the other", async () => {
+  const w = await world();
+  const hidden = path.join(w.root, "runs.git");
+  execFileSync("git", ["init", "-q", "--bare", "--template=", "-b", "main", hidden], { env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: w.root } });
+  const runHost = await openRepo({ dir: path.join(w.root, "run-host-hidden"), remote: { kind: "local", url: w.bare, pushUrl: hidden } });
+  const proposed = await proposeFiles({ repo: runHost, runId: "run-1", files: { [inboxPath("run-1")]: renderInbox("run-1", [candidate(LESSON)]) }, candidates: [candidate(LESSON)], secrets: [], caseValues: [] });
+  assert.equal(proposed.status, "proposed");
+  assert.equal(git(w.bare, ["for-each-ref", "refs/heads/runs/"]).toString(), "", "main's repository holds no run branch");
+  const runs = await openRepo({ dir: path.join(w.root, "curator-runs"), remote: local(hidden) });
+  const { judge } = fakeJudge();
+  assert.deepEqual((await curate({ repo: w.curator, judge })).runs, [], "without runs, main's repository has nothing to curate");
+  const report = await curate({ repo: w.curator, runs, judge });
+  assert.deepEqual(report.runs.map((r) => [r.run, r.accepted.map((a) => a.id)]), [["run-1", [learningId("run-1", LESSON)]]]);
+  assert.equal(git(w.bare, ["rev-parse", "main"]).toString().trim(), report.main);
+  assert.equal(git(hidden, ["for-each-ref", "refs/heads/main"]).toString(), "", "nothing was written to the runs repository");
+  assert.ok(await w.curator.read(learningPath(learningId("run-1", LESSON)), "main"));
+  assert.deepEqual((await curate({ repo: w.curator, runs, judge })).runs, [], "a second curate is a no-op");
+  await assert.rejects(curate({ repo: w.curator, runs: {}, judge }), { code: "invalid" });
 });
 
 test("renderLearning stays the only writer of learning files: every file curate writes parses back", async () => {
