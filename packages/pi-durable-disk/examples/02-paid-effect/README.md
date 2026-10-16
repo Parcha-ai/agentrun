@@ -20,6 +20,8 @@ Two ways to lose a host:
 
 ## Run it
 
+This demo needs a checkout of the repository (it imports `../lib/demo.ts` and `../../test/fixtures/paid-api.ts`), so it does not run from an install.
+
 You need the Quickstart's setup from the [top-level README](../../README.md#quickstart-on-a-linux-host-kill-a-host-watch-the-run-resume-on-another)
 (the root-owned wrapper and the two mount roots, once per machine), a scratch disk and its API key. No model key: the model is
 pi-ai's faux provider.

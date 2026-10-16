@@ -115,6 +115,12 @@ describe("a source that changes", () => {
 	});
 });
 
+// A phase that moves no byte is slowed to three times the stall limit, so the claim (a slow phase is not a stall) is tested with no scheduling noise. The
+// limit itself is the other half of the race: once the phase ends, the first byte of tar has this long to move, and the spawn of a real process on a loaded
+// runner can take far longer than a few tens of milliseconds, so it is one second, not 25 or 400 ms.
+const STALL_MS = 1000;
+const SETUP_MS = 3 * STALL_MS;
+
 describe("phases that move no byte", () => {
 	for (const [label, match, key] of [
 		["packing", "tar -c", "delaySource"],
@@ -125,7 +131,7 @@ describe("phases that move no byte", () => {
 			const src = join(from.facts().workspace, "tree");
 			mkdirSync(src);
 			writeFileSync(join(src, "f"), randomBytes(3000));
-			const slow = { match, ms: 1500 };
+			const slow = { match, ms: SETUP_MS };
 			const a = key === "delaySource" ? tampered(from, { delayExec: slow }) : from;
 			const b = key === "delayTarget" ? tampered(to, { delayExec: slow }) : to;
 			const dst = join(to.facts().workspace, "t");
@@ -133,7 +139,7 @@ describe("phases that move no byte", () => {
 				await moveWorkspace(
 					a,
 					b,
-					{ fromRoot: src, toRoot: dst, fromPipe: FILES, toPipe: FILES, stallMs: 400 },
+					{ fromRoot: src, toRoot: dst, fromPipe: FILES, toPipe: FILES, stallMs: STALL_MS },
 					context,
 				),
 			);
@@ -157,7 +163,7 @@ describe("phases that move no byte", () => {
 			writeFileSync(join(src, "f"), randomBytes(3000));
 			const slow = {
 				match: pipe.kind === "files" ? "pi-transport-move-" : side === "source" ? "tar -c" : "tar -x",
-				ms: 1500,
+				ms: SETUP_MS,
 			};
 			const a = side === "source" ? tampered(from, { delayExec: slow }) : from;
 			const b = side === "target" ? tampered(to, { delayExec: slow }) : to;
@@ -166,7 +172,7 @@ describe("phases that move no byte", () => {
 				await moveWorkspace(
 					a,
 					b,
-					{ fromRoot: src, toRoot: dst, fromPipe: pipe, toPipe: pipe, stallMs: 400 },
+					{ fromRoot: src, toRoot: dst, fromPipe: pipe, toPipe: pipe, stallMs: STALL_MS },
 					context,
 				),
 			);
@@ -174,7 +180,7 @@ describe("phases that move no byte", () => {
 		}, 60_000);
 	}
 
-	it("are not a stall at any limit: a setup call of 300 ms under a 25 ms limit still moves the workspace", async () => {
+	it("are not a stall at any limit: a setup call of three times the limit still moves the workspace", async () => {
 		const { from, to } = await pair();
 		const src = join(from.facts().workspace, "tree");
 		mkdirSync(src);
@@ -182,9 +188,9 @@ describe("phases that move no byte", () => {
 		const dst = join(to.facts().workspace, "t");
 		getOrThrow(
 			await moveWorkspace(
-				tampered(from, { delayExec: { match: "pi-transport-move-", ms: 300 } }),
+				tampered(from, { delayExec: { match: "pi-transport-move-", ms: SETUP_MS } }),
 				to,
-				{ fromRoot: src, toRoot: dst, fromPipe: FILES, toPipe: FILES, stallMs: 25 },
+				{ fromRoot: src, toRoot: dst, fromPipe: FILES, toPipe: FILES, stallMs: STALL_MS },
 				context,
 			),
 		);

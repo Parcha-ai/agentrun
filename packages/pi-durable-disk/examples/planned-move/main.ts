@@ -19,13 +19,10 @@ import {
   daytonaRest,
   deleteRunTree,
   ensureRunning,
-  findDelegations,
-  LABEL_FLEET,
   localHost,
   readRunStatus,
-  removeMountToken,
-  sweepSandboxes,
 } from "@parcha/pi-durable-disk";
+import { findDelegations, LABEL_FLEET, removeMountToken, sweepSandboxes } from "@parcha/pi-durable-disk/internals";
 import type { EnsureResult, HostHandle, RunRecord } from "@parcha/pi-durable-disk";
 import { BOX, prepareBox } from "./box.ts";
 import { STEPS } from "./app.ts";

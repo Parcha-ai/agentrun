@@ -21,6 +21,7 @@ import { counterFold, countersOf, repeatedLabel, type CounterState } from './cou
 import { docOf } from './durable.ts';
 import { isSupervisor, processOf, type Json, type Line } from './format.ts';
 import { h, register, type Node, type Panel } from './panels.ts';
+import { changedAt, stageView } from './transport-view.ts';
 
 type Obj = { [key: string]: Json };
 const obj = (value: Json | undefined): Obj | undefined => (typeof value === 'object' && value !== null && !Array.isArray(value) ? value : undefined);
@@ -50,7 +51,7 @@ export type Flight = {
   commit?: number;
   why?: string;
 };
-export type BoxLife = { box: string; environment: string; provider: string; isolation: string | null; gpu: string | null; cpus: number | null; from: number; to?: number; ended?: 'ended' | 'killed' };
+export type BoxLife = { box: string; environment: string; /** The lane it is drawn in: its environment, unless it was made while the session waited for a recovery, when it is the lane of the box that was lost (a rebuilt box is the same place). */ lane: string; provider: string; isolation: string | null; gpu: string | null; cpus: number | null; from: number; to?: number; ended?: 'ended' | 'killed' };
 export type Runner = { gen: number; environment: string; box: string; from: number; to?: number };
 export type Kill = { t: number; gen: number; kind: 'box' | 'process'; label: string; box: string | null; recovered?: { gen: number; box: string; afterMs: number } };
 export type Wait = { t: number; box: string; environment: string; ms: number; what: string };
@@ -68,6 +69,8 @@ export type TransportState = {
   token: { box: string; epoch: number | null; since: number; /** Its box ended or was killed: the session waits for a recovery. */ awaiting?: number } | undefined;
   tokens: { box: string; from: number; to?: number }[];
   tile: string | undefined;
+  /** The box the session was in when the tile's latest frame came: the lane the browser runs in. */
+  tileBox: string | undefined;
   result: { blob: string; title: string } | undefined;
   lastT: number;
   durableLines: number;
@@ -75,8 +78,6 @@ export type TransportState = {
   highest: number;
   inSnapshot: boolean;
   opened: boolean;
-  /** A line from the transport source has happened. Without one the recording has no transport story (a reference run's kills and processes are the shell's own strip), and the panel draws nothing. */
-  seen: boolean;
   counters: CounterState;
 };
 
@@ -98,7 +99,7 @@ const known = (line: Line): boolean => {
   return false;
 };
 
-const initial = (): TransportState => ({ boxes: [], runners: [], flights: [], kills: [], waits: [], checkpoints: [], pending: [], token: undefined, tokens: [], tile: undefined, result: undefined, lastT: 0, durableLines: 0, highest: -1, inSnapshot: false, opened: false, seen: false, counters: counterFold.init() });
+const initial = (): TransportState => ({ boxes: [], runners: [], flights: [], kills: [], waits: [], checkpoints: [], pending: [], token: undefined, tokens: [], tile: undefined, tileBox: undefined, result: undefined, lastT: 0, durableLines: 0, highest: -1, inSnapshot: false, opened: false, counters: counterFold.init() });
 
 const moveRecords = (line: Line): { id: string; value: Obj }[] => {
   const doc = docOf(line);
@@ -140,13 +141,16 @@ const tokenTo = (state: TransportState, box: string, epoch: number | null, t: nu
 export const transportPanel: Panel<TransportState> = {
   id: 'transport',
   title: 'Where the session lives',
+  animated: true,
+  // A recording of boxes and flights is this panel's story.
+  featured: (lines) => lines.some((line) => line.source === 'transport' && line.channel === 'live' && (line.kind === 'box.created' || line.kind === 'move')),
   init: initial,
   accepts: (line) => known(line) || counterFold.accepts(line),
   // It reduces the strip's lines for its own counters, but it is for a run with transport lines: a run without them has
   // no box, flight or token to draw (its processes and kills are the strip's).
   shows: (line) => line.source === 'transport',
   reduce(before, line) {
-    let state: TransportState = { ...before, lastT: Math.max(before.lastT, line.t), ...(line.source === 'transport' ? { seen: true } : {}) };
+    let state: TransportState = { ...before, lastT: Math.max(before.lastT, line.t) };
     if (counterFold.accepts(line)) state = { ...state, counters: counterFold.reduce(state.counters, line) };
     if (line.channel === 'durable') {
       if (line.commit === undefined) return state;
@@ -181,14 +185,17 @@ export const transportPanel: Panel<TransportState> = {
       if (line.kind === 'result') return { ...state, result: { blob: str(data.blob) ?? '', title: str(data.title) ?? 'The result' } };
       return state;
     }
-    if (line.source === 'browser') return typeof data.session === 'string' ? { ...state, tile: data.session } : state;
+    if (line.source === 'browser') return typeof data.session === 'string' ? { ...state, tile: data.session, tileBox: state.token?.box ?? state.tileBox } : state;
     if (line.source !== 'transport') return state;
     switch (line.kind) {
       case 'box.created': {
         const facts = obj(data.facts);
         const box = str(data.box);
         if (box === undefined) return state;
-        return { ...state, boxes: [...state.boxes.filter((each) => each.box !== box), { box, environment: str(data.environment) ?? '?', provider: str(data.provider) ?? '?', isolation: str(facts?.isolation) ?? null, gpu: str(facts?.gpu) ?? null, cpus: num(facts?.cpus) ?? null, from: line.t }] };
+        const environment = str(data.environment) ?? '?';
+        // A box made while the session waits for a recovery is the lane's rebuilt box, not a new place.
+        const lane = state.token?.awaiting !== undefined ? (state.boxes.find((each) => each.box === state.token!.box)?.lane ?? environment) : environment;
+        return { ...state, boxes: [...state.boxes.filter((each) => each.box !== box), { box, environment, lane, provider: str(data.provider) ?? '?', isolation: str(facts?.isolation) ?? null, gpu: str(facts?.gpu) ?? null, cpus: num(facts?.cpus) ?? null, from: line.t }] };
       }
       case 'box.ended':
       case 'box.killed': {
@@ -217,13 +224,12 @@ export const transportPanel: Panel<TransportState> = {
     }
   },
   view(state, context) {
-    return view(state, context.t);
+    return view(state, context.t, context.now ?? context.t);
   },
 };
 
 // ---- the screen ---------------------------------------------------------------------------------------------------
 
-const BUCKETS = 48;
 const seconds = (ms: number) => (ms >= 10_000 ? `${Math.round(ms / 1000)} s` : `${(ms / 1000).toFixed(1)} s`);
 const millis = (ms: number | null) => (ms === null ? 'not recorded' : ms >= 1000 ? seconds(ms) : `${Math.round(ms)} ms`);
 const size = (bytes: number | null) => (bytes === null ? 'not recorded' : bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MiB` : bytes >= 1024 ? `${(bytes / 1024).toFixed(0)} KiB` : `${bytes} B`);
@@ -232,26 +238,9 @@ const label = (state: TransportState, box: string | null | undefined): string =>
   return life ? `${life.environment} (${life.provider}${life.gpu ? `, ${life.gpu}` : life.isolation && life.isolation !== 'container' && life.isolation !== 'none' ? `, ${life.isolation}` : ''})` : box ? `box ${box.slice(0, 8)}` : 'a box not recorded';
 };
 
-/** The environments in the order they first appear: the lanes. */
-const environmentsOf = (state: TransportState): string[] => [...new Set(state.boxes.map((box) => box.environment))];
-
-const bucketOf = (t: number, end: number) => Math.min(BUCKETS - 1, Math.floor((t / Math.max(end, 1)) * BUCKETS));
-
-/** One lane drawn as cells over the run so far: a box alive, the session there, a kill, a wait the film skips. */
-function laneCells(state: TransportState, environment: string, end: number): Node[] {
-  const cells = Array.from({ length: BUCKETS }, () => new Set<string>());
-  const boxesHere = state.boxes.filter((box) => box.environment === environment);
-  for (const box of boxesHere) for (let at = bucketOf(box.from, end); at <= bucketOf(box.to ?? end, end); at += 1) cells[at]!.add('alive');
-  for (const segment of state.tokens) {
-    const env = state.boxes.find((box) => box.box === segment.box)?.environment;
-    if (env === environment) for (let at = bucketOf(segment.from, end); at <= bucketOf(segment.to ?? end, end); at += 1) cells[at]!.add('token');
-  }
-  for (const kill of state.kills) if (boxesHere.some((box) => box.box === kill.box)) cells[bucketOf(kill.t, end)]!.add(kill.kind === 'box' ? 'kill-box' : 'kill-process');
-  for (const wait of state.waits) if (wait.environment === environment) for (let at = bucketOf(Math.max(0, wait.t - wait.ms), end); at <= bucketOf(wait.t, end); at += 1) cells[at]!.add('wait');
-  return cells.map((flags) => h('span', { class: `cell ${[...flags].join(' ')}`.trim() }));
-}
-
-function counters(state: TransportState): Node {
+function counters(state: TransportState, now: number): Node {
+  const changed = changedAt(state);
+  const bump = (key: string): { class: string; vars: { age: number } } | {} => (changed[key] !== undefined && changed[key]! >= 0 && now >= changed[key]! && now - changed[key]! < 1500 ? { class: 'bump', vars: { age: (now - changed[key]!) / 1000 } } : {});
   const strip = countersOf(state.counters, false);
   const boxKills = state.kills.filter((kill) => kill.kind === 'box').length;
   const processKills = state.kills.filter((kill) => kill.kind === 'process').length;
@@ -263,13 +252,13 @@ function counters(state: TransportState): Node {
   const measured = state.durableLines > 0;
   const bytes = state.flights.reduce((sum, flight) => sum + (flight.bytes ?? 0), 0);
   const unknown = state.flights.filter((flight) => flight.bytes === null).length;
-  const row = (name: string, value: string, title?: string): Node => h('li', { ...(title ? { title } : {}) }, h('span', { class: 'k' }, name), h('b', {}, value));
+  const row = (name: string, value: string, title?: string, key?: string): Node => h('li', { ...(title ? { title } : {}) }, h('span', { class: 'k' }, name), h('b', key === undefined ? {} : bump(key), value));
   return h('ul', { class: 'tcounters' },
-    row('processes', String(state.runners.length), 'runners the host started: its own lines'),
-    row('kills survived', `${survived} of ${state.kills.length} (${boxKills} box, ${processKills} process)`, 'a kill is survived when a runner started after it'),
-    row('flights', flightText),
-    row('checkpoints', state.checkpoints.length === 0 ? '0' : `${state.checkpoints.length} (observed: live lines)`),
-    row('bytes shipped', state.flights.length === 0 ? 'none yet' : unknown === state.flights.length ? 'not recorded' : unknown > 0 ? `${size(bytes)} known, ${unknown} flight${unknown === 1 ? '' : 's'} not recorded (observed)` : `${size(bytes)} (observed)`),
+    row('processes', String(state.runners.length), 'runners the host started: its own lines', 'processes'),
+    row('kills survived', `${survived} of ${state.kills.length} · ${boxKills} box, ${processKills} process`, 'a kill is survived when a runner started after it', 'survived'),
+    row('flights', flightText, undefined, 'flights'),
+    row('checkpoints', state.checkpoints.length === 0 ? '0' : `${state.checkpoints.length} (observed: live lines)`, undefined, 'checkpoints'),
+    row('bytes shipped', state.flights.length === 0 ? 'none yet' : unknown === state.flights.length ? 'not recorded' : unknown > 0 ? `${size(bytes)} known, ${unknown} flight${unknown === 1 ? '' : 's'} not recorded (observed)` : `${size(bytes)} (observed)`, undefined, 'bytes'),
     row('paid calls', measured ? String(strip.paid.total) : 'not measured: no durable lines'),
     row('repeated', measured ? repeatedLabel(strip) : 'not measured: no durable lines'),
     // As the shell's strip: a cost nobody priced is unknown, with no durable line or with a part unknown, never $0.
@@ -298,30 +287,23 @@ function killNode(state: TransportState, kill: Kill): Node {
   return h('li', { class: `kill ${kill.kind}` }, h('b', {}, kill.kind === 'box' ? '✗ the whole box' : '✗ a process'), ` — ${kill.label}`, kill.box ? ` (${label(state, kill.box)}, process ${kill.gen})` : ` (process ${kill.gen})`, h('div', { class: 'back' }, back));
 }
 
-function view(state: TransportState, now: number): Node {
-  if (!state.seen) return h('div', { class: 'transport none' });
+function view(state: TransportState, t: number, now: number): Node {
   if (state.boxes.length === 0 && state.runners.length === 0 && state.flights.length === 0 && state.durableLines === 0) return h('div', { class: 'transport' }, h('p', { class: 'empty' }, 'The session has not started a box yet.'));
   const end = Math.max(state.lastT, now, 1);
-  const lanes = environmentsOf(state);
-  const home = state.token ? state.boxes.find((box) => box.box === state.token!.box) : undefined;
-  const why = state.flights.findLast((flight) => flight.why !== undefined)?.why;
   return h('div', { class: 'transport' },
-    h('div', { class: 'token' },
-      h('b', {}, state.token?.awaiting === undefined ? 'The session is at ' : 'The session was at '), home ? `${label(state, home.box)}${state.token!.epoch !== null ? `, epoch ${state.token!.epoch}` : ''}` : 'a place not recorded', state.token?.awaiting !== undefined && ' — its box is gone; awaiting recovery',
-      h('div', { class: 'why' }, `Why here: ${why ? `chosen by ${why}` : 'by config (no placement record in this recording)'}`)),
-    counters(state),
-    h('h4', {}, 'Lanes'),
-    h('div', { class: 'lanes' }, ...lanes.map((environment) => h('div', { class: 'lane' }, h('span', { class: 'lname' }, environment), h('span', { class: 'cells' }, ...laneCells(state, environment, end))))),
-    h('p', { class: 'legend' }, 'box alive · the session is here · ✗ killed · hatched: skipped waiting'),
-    state.tile && h('div', { class: 'tile' }, h('h4', {}, 'The browser, as the box showed it'), { tag: 'frame', session: state.tile }),
-    h('h4', {}, 'Flights'),
-    state.flights.length === 0 ? h('p', { class: 'empty' }, 'The session has not moved yet.') : h('ol', {}, ...state.flights.map((flight) => flightNode(state, flight))),
-    state.kills.length > 0 && h('h4', {}, 'Kills'),
-    ...(state.kills.length > 0 ? [h('ul', {}, ...state.kills.map((kill) => killNode(state, kill)))] : []),
-    state.waits.length > 0 && h('h4', {}, 'Skipped waiting'),
-    ...(state.waits.length > 0 ? [h('ul', {}, ...state.waits.map((wait) => h('li', { class: 'wait' }, `skipped ${seconds(wait.ms)} waiting for ${wait.what} (${wait.environment})`)))] : []),
-    h('h4', {}, 'Boxes'),
-    h('ul', {}, ...state.boxes.map((box) => h('li', { class: `box${box.ended === 'killed' ? ' killed' : ''}` }, `${box.environment} on ${box.provider}${box.gpu ? `, ${box.gpu}` : ''}${box.isolation ? `, ${box.isolation}` : ''}${box.cpus ? `, ${box.cpus} cpu` : ''}: ${box.to === undefined ? `alive since ${seconds(box.from)}` : `${seconds(box.to - box.from)}${box.ended === 'killed' ? ', killed' : ''}`}`))),
+    stageView(state, now, end),
+    counters(state, now),
+    state.tile !== undefined && state.tileBox === undefined && h('div', { class: 'tile' }, h('h4', {}, 'The browser, as the box showed it'), { tag: 'frame', session: state.tile }),
+    h('details', { class: 'tdetails' },
+      h('summary', {}, 'Every flight, kill and box, in words'),
+      h('h4', {}, 'Flights'),
+      state.flights.length === 0 ? h('p', { class: 'empty' }, 'The session has not moved yet.') : h('ol', {}, ...state.flights.map((flight) => flightNode(state, flight))),
+      state.kills.length > 0 && h('h4', {}, 'Kills'),
+      ...(state.kills.length > 0 ? [h('ul', {}, ...state.kills.map((kill) => killNode(state, kill)))] : []),
+      state.waits.length > 0 && h('h4', {}, 'Skipped waiting'),
+      ...(state.waits.length > 0 ? [h('ul', {}, ...state.waits.map((wait) => h('li', { class: 'wait' }, `skipped ${seconds(wait.ms)} waiting for ${wait.what} (${wait.environment})`)))] : []),
+      h('h4', {}, 'Boxes'),
+      h('ul', {}, ...state.boxes.map((box) => h('li', { class: `box${box.ended === 'killed' ? ' killed' : ''}` }, `${box.environment} on ${box.provider}${box.gpu ? `, ${box.gpu}` : ''}${box.isolation ? `, ${box.isolation}` : ''}${box.cpus ? `, ${box.cpus} cpu` : ''}: ${box.to === undefined ? `alive since ${seconds(box.from)}` : `${seconds(box.to - box.from)}${box.ended === 'killed' ? ', killed' : ''}`}`)))),
     state.result && h('p', { class: 'result' }, { tag: 'a', blob: state.result.blob, text: state.result.title }));
 }
 

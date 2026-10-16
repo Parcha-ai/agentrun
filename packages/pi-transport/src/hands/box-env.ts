@@ -40,6 +40,13 @@ const START_TIMEOUT_MS = 30_000;
 const CALL_BACKSTOP_MS = 5_000;
 const COMMAND_BACKSTOP_MS = 30_000;
 const KILL_TIMEOUT_MS = 5_000;
+/**
+ * The most WALL time a stop spends confirming its command's group is gone, including a kill call in flight: the call in flight is cut when it passes, so it is
+ * never this plus a call's own deadline. Past it the stop answers `aborted` or `timeout` all the same, with `killUnconfirmed` on the error.
+ */
+const KILL_BOUND_MS = 10_000;
+/** The pause before the next kill call after a failed or `alive` answer: 1 s, then 2 s, then 4 s, never past the bound. */
+const KILL_RETRY_MS = [1_000, 2_000, 4_000] as const;
 const CLEANUP_TIMEOUT_MS = 15_000;
 /** The longest delay a timer takes. */
 const MAX_TIMEOUT_MS = 2_147_483_647;
@@ -226,9 +233,15 @@ const RUN_SCRIPT = [
  */
 const KILL_SCRIPT = [
 	`${STATE_ROOT}; mkdir -p "$s"; f=$s/$1.pid`,
-	// dash, the usual /bin/sh, takes `kill -TERM -<group>` but not `kill -TERM -- -<group>`.
-	'stop() { g=$(cat "$f" 2>/dev/null); [ -n "$g" ] || return 1; kill -TERM "-$g" 2>/dev/null; i=0; while [ $i -lt 10 ] && kill -0 "-$g" 2>/dev/null; do sleep 0.1; i=$((i+1)); done; kill -KILL "-$g" 2>/dev/null; rm -f "$f"; }',
-	'stop && exit 0; touch "$s/$1.cancel"; stop; true',
+	// Whether a process of the group `$1` is still there, a zombie not counted: `kill -0` succeeds on a zombie, and in a container whose first process does not
+	// reap, a killed group would stay "alive" for ever. A process's state and group are the first and third words after its command name in /proc/<pid>/stat
+	// (the name may hold spaces and parentheses, so everything up to the last parenthesis is dropped first). One cat and one awk read every process, so a box
+	// with thousands of them pays two forks, not one for each.
+	`live() { if [ ! -r /proc/self/stat ]; then kill -0 "-$1" 2>/dev/null; return; fi; cat /proc/[0-9]*/stat 2>/dev/null | awk -v g="$1" '{ sub(/^[0-9]+ \\(.*\\) /, ""); if ($1 != "Z" && $3 == g) n++ } END { exit n > 0 ? 0 : 1 }'; }`,
+	// dash, the usual /bin/sh, takes `kill -TERM -<group>` but not `kill -TERM -- -<group>`. What it prints is the answer: `gone` once no live process
+	// of the group is left, `alive` when one is. The group's file stays until then, so a retry (and `cleanup`) still finds the group.
+	'stop() { g=$(cat "$f" 2>/dev/null); [ -n "$g" ] || return 1; kill -TERM "-$g" 2>/dev/null; i=0; while [ $i -lt 10 ] && live "$g"; do sleep 0.1; i=$((i+1)); done; kill -KILL "-$g" 2>/dev/null; i=0; while [ $i -lt 20 ] && live "$g"; do sleep 0.1; i=$((i+1)); done; if live "$g"; then echo alive; else rm -f "$f"; echo gone; fi; }',
+	'stop && exit 0; touch "$s/$1.cancel"; stop || echo gone; true',
 ].join("; ");
 /**
  * Ends every command named, at once. A command whose group is not written down yet gets a tombstone, as in
@@ -238,6 +251,15 @@ const CLEANUP_SCRIPT = [
 	`${STATE_ROOT}; mkdir -p "$s"`,
 	'for id in "$@"; do f=$s/$id.pid; g=$(cat "$f" 2>/dev/null); if [ -z "$g" ]; then touch "$s/$id.cancel"; g=$(cat "$f" 2>/dev/null); fi; [ -n "$g" ] && kill -KILL "-$g" 2>/dev/null; rm -f "$f"; done; true',
 ].join("; ");
+
+/**
+ * The error of a command stopped by an abort or a timeout, with what is known of its kill: `killUnconfirmed` is true when no kill call confirmed the
+ * command's whole process group gone within the stop's wall-time bound (10 s). The command stays tracked, so `cleanup` ends it later. Absent when the group was
+ * confirmed gone, which is the normal case.
+ */
+export type StoppedCommandError = ExecutionError & { readonly killUnconfirmed?: true };
+const unconfirmed = <E extends ExecutionError>(error: E, confirmed: boolean): E =>
+	confirmed ? error : Object.assign(error, { killUnconfirmed: true as const });
 
 /** How `boxEnv` talks to its box. Every field has a default. */
 export type BoxEnvOptions = {
@@ -435,8 +457,12 @@ class BoxEnv implements ExecutionEnv {
 	readonly #maxReaderBytes: number;
 	readonly #onLost: ((reason: string) => void) | undefined;
 	readonly #running = new Set<string>();
+	/** Commands whose group a stop could not confirm gone: `cleanup` ends them with the rest. */
+	readonly #unconfirmed = new Set<string>();
 	readonly #watchers = new Set<FileWatcher>();
 	#lost: string | undefined;
+	/** True when the box was seen to have ended: its processes are gone with it. An unreachable box is lost but not known to be empty. */
+	#ended = false;
 	#home: string | undefined;
 
 	constructor(box: Box, options: BoxEnvOptions) {
@@ -831,9 +857,12 @@ class BoxEnv implements ExecutionEnv {
 			...variables,
 			...(typeof command === "string" ? [command] : command),
 		];
-		// Best effort, and short: it is on the way out of a call.
-		const kill = async (): Promise<void> => {
-			await this.#call(["sh", "-c", KILL_SCRIPT, "sh", id], undefined, KILL_TIMEOUT_MS, withoutAbortSignal(context));
+		// Ends the command's group and reads back that it is gone, within KILL_BOUND_MS of wall time. A call that fails, times out or answers `alive` is sent
+		// again, never dropped; a stop that could not confirm leaves the command tracked, so `cleanup` ends it later, and says so on its error.
+		const kill = async (): Promise<boolean> => {
+			const confirmed = await this.#killGroup(id, context);
+			if (!confirmed) this.#unconfirmed.add(id);
+			return confirmed;
 		};
 		const spill =
 			options?.spill === undefined
@@ -951,14 +980,19 @@ class BoxEnv implements ExecutionEnv {
 					.then((late) => (late.ok ? Promise.all([kill(), finish(late.value)]) : undefined))
 					.catch(() => {});
 				if (started.error.code === "aborted") {
-					await kill();
-					return err(new ExecutionError("aborted", "aborted"));
+					const confirmed = await kill();
+					return err(unconfirmed(new ExecutionError("aborted", "aborted"), confirmed));
 				}
 				await this.#diagnose(started.error, context);
 				if (this.#lost !== undefined) return err(this.#goneError());
 				if (started.error.code === "timeout") {
-					await kill();
-					return err(new ExecutionError("timeout", `the box ${this.#box.id} did not start the command in time`));
+					const confirmed = await kill();
+					return err(
+						unconfirmed(
+							new ExecutionError("timeout", `the box ${this.#box.id} did not start the command in time`),
+							confirmed,
+						),
+					);
 				}
 				return err(
 					new ExecutionError(
@@ -1006,11 +1040,13 @@ class BoxEnv implements ExecutionEnv {
 							: this.#goneMessage();
 					return err(this.#lost === undefined ? new ExecutionError("unknown", message) : this.#goneError());
 				}
-				await kill();
-				const error =
+				const confirmed = await kill();
+				const error = unconfirmed(
 					exit.error.code === "aborted"
 						? new ExecutionError("aborted", "aborted")
-						: new ExecutionError("timeout", `timeout:${(timeoutMs ?? 0) / 1000}`);
+						: new ExecutionError("timeout", `timeout:${(timeoutMs ?? 0) / 1000}`),
+					confirmed,
+				);
 				const sent = await sendSpill();
 				if (sent.ok && sent.value !== undefined) error.spillPath = sent.value;
 				return err(error);
@@ -1032,9 +1068,11 @@ class BoxEnv implements ExecutionEnv {
 
 	async cleanup(context: Context): Promise<void> {
 		for (const watcher of [...this.#watchers]) await watcher.close(context);
-		if (this.#lost !== undefined || this.#running.size === 0) return;
-		const command = ["sh", "-c", CLEANUP_SCRIPT, "sh", ...this.#running];
-		await this.#call(command, undefined, CLEANUP_TIMEOUT_MS, withoutAbortSignal(context));
+		const ids = [...new Set([...this.#running, ...this.#unconfirmed])];
+		if (this.#lost !== undefined || ids.length === 0) return;
+		const command = ["sh", "-c", CLEANUP_SCRIPT, "sh", ...ids];
+		const ended = await this.#call(command, undefined, CLEANUP_TIMEOUT_MS, withoutAbortSignal(context));
+		if (ended.ok) this.#unconfirmed.clear();
 	}
 
 	/** The refusal of a file that passed the size check and then grew past what a reader holds. */
@@ -1070,6 +1108,7 @@ class BoxEnv implements ExecutionEnv {
 		} else if (status.value.state === "ended") {
 			const { exitCode } = status.value;
 			reason = exitCode === null ? "it ended" : `it ended with exit code ${exitCode}`;
+			this.#ended = true;
 		} else if (cause.code === "gone") {
 			reason = cause.message;
 		}
@@ -1080,6 +1119,33 @@ class BoxEnv implements ExecutionEnv {
 			this.#onLost?.(reason);
 		} catch {
 			// The owner's own failure does not change what this call reports.
+		}
+	}
+
+	/**
+	 * Ends the group of the command `id` and confirms it: true once a kill call answers `gone` (or the box is lost, so there is nothing left to end), false when
+	 * KILL_BOUND_MS of wall time passed without a confirmation. A call in flight when the bound passes is cut: each call gets only what is left of it.
+	 */
+	async #killGroup(id: string, context: Context): Promise<boolean> {
+		const stopped = withoutAbortSignal(context);
+		const deadline = Date.now() + KILL_BOUND_MS;
+		for (let attempt = 0; ; attempt++) {
+			const left = deadline - Date.now();
+			if (left <= 0) return false;
+			// The deadline covers everything the call awaits, its status check after a timeout included.
+			const answer = await bounded(
+				this.#call(["sh", "-c", KILL_SCRIPT, "sh", id], undefined, Math.min(KILL_TIMEOUT_MS, left), stopped),
+				left,
+				stopped,
+			);
+			if (answer.ok && new TextDecoder().decode(answer.value.stdout).trim().endsWith("gone")) return true;
+			if (this.#ended) return true;
+			const pause = Math.min(
+				KILL_RETRY_MS[Math.min(attempt, KILL_RETRY_MS.length - 1)] ?? 0,
+				Math.max(deadline - Date.now(), 0),
+			);
+			if (pause <= 0) return false;
+			await new Promise((resolve) => setTimeout(resolve, pause));
 		}
 	}
 

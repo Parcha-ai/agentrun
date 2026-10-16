@@ -70,6 +70,8 @@ export async function see(input: unknown, env: VisionEnv | undefined, call: Call
   };
   // A miss before any request cost nothing; one after a request says what it knows of that request.
   const fail = async (cause: Miss, items: readonly Item[] = [], spent: Partial<LookRecord["facts"]> = { tokens_in: 0, tokens_out: 0, cost_usd: 0 }): Promise<never> => {
+    // A stopped call files no miss: what failed was the stop (a cancelled read, say), not the source or the eyes.
+    if (call.signal?.aborted) throw call.signal.reason;
     const reason = linkSafe(cause.reason);
     await reportMiss(filing, VISION_SEE.name, record(items, cause.model ?? "no vision route", "", spent), { ...cause, reason });
     throw new SeeMiss(cause.code, reason);
