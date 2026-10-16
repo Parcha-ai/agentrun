@@ -82,7 +82,8 @@ export const linesPanel: Panel<{ bySource: Record<string, Line[]>; count: number
       h('ol', {}, ...[...lines].reverse().map((line) => h('li', { class: `${line.channel}${dimmed(line.path, focus)}`, ...(line.path ? { path: line.path, title: line.path } : {}) }, describe(line))))))),
 };
 
-/** `more`: a prompt's text parts after its first (a footer the job adds after the prompt), folded under one toggle. */
+/** `more`: what a prompt does not show at once, in full (the rest of its first text part, and every later part, such as a
+ *  footer the job adds after the prompt), folded under one toggle. */
 type Turn = { conv: number | undefined; role: string; text: string; more?: string[]; calls: string[]; images: string[]; error: boolean; path?: string };
 
 /** The agent's conversations as pi committed them: each turn's words, tool calls, results and images. */
@@ -99,11 +100,14 @@ export const turnsPanel: Panel<{ turns: Turn[]; streaming: Record<string, boolea
     const entry = entryOf(line);
     if (!entry) return state;
     const turns = entry.model.filter((message) => message.role === 'assistant' || message.role === 'toolResult' || message.role === 'user').map((message): Turn => {
-      // A prompt shows its first text part; the rest (a footer the job adds after it) folds under one toggle.
+      // A prompt shows the start of its first text part; everything else, the rest of that part and every later part (a
+      // footer the job adds after it), folds whole under one toggle, so opening it shows all of it.
       const parts = message.role === 'user' ? textPartsOf(message) : [];
+      const first = parts[0] ?? '';
+      const folded = [...(first.length > 600 ? [first.slice(600)] : []), ...parts.slice(1)];
       return {
-        conv: line.conv, role: message.role, text: (message.role === 'user' ? parts[0] ?? '' : textOf(message)).slice(0, 600),
-        ...(parts.length > 1 ? { more: parts.slice(1).map((part) => part.slice(0, 600)) } : {}),
+        conv: line.conv, role: message.role, text: message.role === 'user' ? first.slice(0, 600) : textOf(message).slice(0, 600),
+        ...(folded.length ? { more: folded } : {}),
         calls: toolCallsOf(message).map((call) => `${call.name}(${JSON.stringify(call.arguments)})`),
         images: imagesOf(message), error: message.isError === true, ...(line.path ? { path: line.path } : {}),
       };

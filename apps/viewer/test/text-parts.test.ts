@@ -37,3 +37,17 @@ test('a prompt of two text parts shows its first, with the second folded under o
   assert.equal(find(second!, 'details'), undefined, 'one part: nothing folded');
   assert.match(text(second!), /^prompt An older prompt, one part\.$/);
 });
+
+test('a long footer is folded whole, and a long first part shows its start with the rest folded: nothing is cut away', () => {
+  const footer = `Submit with submit(): ${'{"field": "string"}, '.repeat(60)}end of schema`;
+  const body = `${'Read the issue. '.repeat(50)}last words`;
+  const view = turnsPanel.view(reduceTo(turnsPanel, [entry(1, 'user', [{ type: 'text', text: body }, { type: 'text', text: footer }])], 1), { t: 0 });
+  const turn = (view as { children: Node[] }).children.find((child) => typeof child !== 'string' && child.tag === 'div')!;
+  const more = find(turn, 'details')!;
+  const folded = (more as { children: Node[] }).children.filter((child) => typeof child !== 'string' && child.tag === 'p').map(text);
+  assert.ok(footer.length > 600 && body.length > 600);
+  assert.deepEqual(folded, [body.slice(600), footer], 'the rest of the first part, then the whole footer');
+  const shown = (turn as { children: Node[] }).children.find((child) => typeof child !== 'string' && child.tag === 'p');
+  assert.equal(text(shown!), body.slice(0, 600));
+  assert.equal(text(shown!) + folded[0], body, 'the first part, all of it, between what is shown and what is folded');
+});
