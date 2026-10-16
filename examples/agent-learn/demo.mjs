@@ -12,7 +12,7 @@ import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite
 import { workspaceFiles } from '@parcha/agentrun-dsl/recovery';
 import { createWorkflowTool } from '@parcha/agentrun-pi/durable';
 import { WorkflowStore } from '@parcha/agentrun-pi/workflows';
-import { retireLearning } from '@parcha/pi-agent-learn';
+import { readTrial, retireLearning } from '@parcha/pi-agent-learn';
 import { local, openRepo } from '@parcha/pi-git-remote';
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -41,9 +41,18 @@ export const ISSUES = {
     'Running sync on a large folder stops with:\nTypeError: Cannot read properties of undefined (reading \'timeout\')\n    at runSync (sync.js:41:17)\n    at main (cli.js:12:3)'),
   second: issue(4907, 'lee-k', 'Can uploads retry on their own?',
     'Uploads over 2 GB fail every time:\nRangeError: Invalid array length\n    at chunk (upload.js:88:9)\n    at upload (upload.js:30:5)'),
+  // Issues that reach the trial after run 3: three with a stack trace, then two with no body at all.
+  third: issue(4950, 'sam-r', 'Why does export drop my last row?',
+    'Exporting 3 rows to CSV stops with:\nTypeError: Cannot read properties of undefined (reading \'length\')\n    at writeRows (export.js:57:12)\n    at exportCsv (export.js:20:3)'),
+  fourth: issue(4983, 'ana-t', 'Login loops after a password change',
+    'After changing my password the page reloads forever:\nError: Maximum call stack size exceeded\n    at refresh (session.js:14:5)\n    at refresh (session.js:16:7)'),
+  fifth: issue(5008, 'ravi-p', 'Search crashes on an empty query',
+    'Pressing enter in an empty search box throws:\nTypeError: query.trim is not a function\n    at search (search.js:9:21)\n    at onEnter (box.js:33:4)'),
+  bareA: issue(5011, 'omar-h', 'Sync crashes on startup', ''),
+  bareB: issue(5042, 'kim-l', 'Upload fails with no message', ''),
 };
 
-// The tools a saved workflow may call here; the demo never runs one.
+// The tools a saved workflow may call here. Runs 1 to 4 never run one; the runs of step 9 on do, and `labelIssue` answers it.
 const WORKFLOW_TOOLS = [{
   name: 'issues.label', description: 'Set the labels of an issue, comma separated.',
   parameters: { type: 'object', required: ['title', 'labels'], properties: { title: { type: 'string' }, labels: { type: 'string' } } },
@@ -61,6 +70,19 @@ export const TRIAGE_WORKFLOW = {
     steps: [{ node: 'call', label: 'label it bug and needs-repro', via: 'tool', tool: 'issues.label', args: { title: '{title}', labels: 'bug,needs-repro' }, out: 'Labeled', as: 'labeled', deadline_s: 20 }],
   },
 };
+
+// A second revision of the same workflow: it hands an issue with no body to a person before it labels anything.
+export const TRIAGE_WORKFLOW_V2 = {
+  ...TRIAGE_WORKFLOW,
+  root: {
+    node: 'chain',
+    steps: [
+      { node: 'escalate', label: 'no body to read', when: { predicate: 'empty', path: 'body' }, kind: 'review', stage: 'gate', summary: 'the issue has no body, so there is nothing to read' },
+      ...TRIAGE_WORKFLOW.root.steps,
+    ],
+  },
+};
+const WORKFLOW_V2_WHEN = 'Use it for an issue whose body holds a stack trace: it labels the issue bug and needs-repro, and hands an issue with no body to a person.';
 
 const JUDGE = { general: 0.94, narrowsRules: 0.03, fromContent: 0.03, duplicate: 0.04, supersedes: 0.04, contradicts: 0.03 };
 const ASKED = { general: 'general', narrowsRules: 'narrows a rule', fromContent: 'came from content', duplicate: 'a duplicate', supersedes: 'replaces one', contradicts: 'contradicts one' };
@@ -95,7 +117,7 @@ const ruleIn = (context) =>
 
 // `steps` are the model's responses in order, across every turn of the run: a tool call, or an answer (text, or the
 // label its <learned> section leads to).
-function scriptedModel(steps) {
+export function scriptedModel(steps) {
   const requests = [];
   const faux = fauxProvider({ models: [{ id: 'scripted' }] });
   const label = (context) => {
@@ -141,7 +163,10 @@ async function promptOf(run) {
   return [run.definition.instructions, run.rules.trim(), ...skills].join('\n\n');
 }
 
-async function runOnce(run, inputs, model, vault, caseValues) {
+// The one tool a workflow calls here: it answers with the labels it was given.
+const labelIssue = async ({ input }) => ({ labels: input.labels });
+
+export async function runOnce(run, inputs, model, vault, caseValues, effect = labelIssue) {
   const learn = learnExtension({ secrets: vault, caseValues });
   // The workflow tool keeps the run's saved workflows in the run's own workspace, where finishRun collects them.
   const workflowTool = createWorkflowTool({
@@ -149,7 +174,7 @@ async function runOnce(run, inputs, model, vault, caseValues) {
     tools: WORKFLOW_TOOLS,
     task: {
       options: () => ({ files: workspaceFiles(run.workspace) }),
-      run: () => ({ adapters: { runEffect: async () => { throw new Error('this demo runs no workflow'); } } }),
+      run: () => ({ adapters: { runEffect: effect } }),
     },
   });
   const registry = createRegistry();
@@ -194,6 +219,13 @@ function callLines(r) {
       const value = JSON.parse(result);
       if (args.action === 'inspect') shown = 'valid; kept as this conversation\'s draft';
       if (args.action === 'save') shown = `saved ${value.name} as ${value.digest.slice(0, 12)}`;
+      if (args.action === 'load') shown = `loaded ${value.saved.name} ${value.saved.digest.slice(0, 12)} as this conversation's draft`;
+      if (args.action === 'run') {
+        const { outcome } = value;
+        shown = outcome.status === 'complete' ? `complete: labels ${outcome.output.labels}`
+          : outcome.status === 'escalated' ? `escalated at "${outcome.escalation.label}": ${outcome.escalation.summary}`
+            : `${outcome.status}: ${outcome.message}`;
+      }
     } catch {}
     return `agentrun(${args.action}${args.name ? ` ${args.name}` : ''}) -> ${shown}`;
   });
@@ -231,7 +263,11 @@ export function proposalStatus(proposal) {
   return `refused: ${proposal.refusals.map((r) => `${r.reason}${r.field ? ` in ${r.field}` : ''}${r.path ? ` in ${r.path}` : ''}`).join('; ')}`;
 }
 const runLine = (r) => {
-  const done = [...r.used.map((u) => `${u.id} used (${u.reason})`), ...r.accepted.map((a) => (a.workflow ? `workflow ${a.workflow} admitted as a trial` : `${a.id} accepted (${a.reason})`))];
+  const done = [
+    ...r.used.map((u) => `${u.id} used (${u.reason})`),
+    ...r.accepted.map((a) => (a.workflow ? `workflow ${a.workflow} admitted as a trial` : `${a.id} accepted (${a.reason})`)),
+    ...r.settled.map((d) => `${d.workflow} ${d.reason}`),
+  ];
   const rest = [...(r.held.length ? [`held: ${r.held.map((h) => h.reason).join('; ')}`] : []), ...(r.refused.length ? [`refused: ${r.refused.map((h) => h.reason).join('; ')}`] : [])];
   return `${r.run}: ${[...done, ...rest].join('; ') || 'nothing'}`;
 };
@@ -248,8 +284,9 @@ async function agentFiles() {
   return files;
 }
 
-// `run1` and `run2` replace those scripted runs' steps, for tests of what the transcript says on other paths.
-export async function runDemo({ dir, live = false, env = process.env, log = () => {}, run1: run1Steps, run2: run2Steps } = {}) {
+// `run1` and `run2` replace those scripted runs' steps, for tests of what the transcript says on other paths; `promotion: false`
+// leaves out step 9 on, the runs that try the trial.
+export async function runDemo({ dir, live = false, env = process.env, log = () => {}, run1: run1Steps, run2: run2Steps, promotion = true } = {}) {
   const root = dir ? resolve(dir) : await mkdtemp(join(tmpdir(), 'agent-learn-demo-'));
   await mkdir(root, { recursive: true });
   await chmod(root, 0o755);
@@ -400,6 +437,100 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
   for (const [i, call] of r4.calls.entries()) say(`   learn(${call.arguments.type}) -> ${r4.results[i] ?? '(no result)'}`);
   say(`   proposed ${f4.proposal.status === 'empty' ? 'nothing' : proposalStatus(f4.proposal)}; the secret (raw, base64 or hex) is in ${scan[0].holding + scan[1].holding} of ${scan[0].count + scan[1].count} git objects (remote and host repository)`);
   say();
+
+  // ---- a workflow earns its place --------------------------------------------------------------------------------------------
+  // Runs 5 on try the trial with the agentrun tool. Nothing here is written by hand: the uses curate settles are the ones
+  // proposeLearning reads from the records the tool left in each run's own store.
+  const offered = run3.workflows.loaded.some((w) => w.name === WORKFLOW);
+  if (live && promotion) say('9. A workflow earns its place: skipped with --live, which does not save the scripted workflow it needs\n');
+  if (!live && promotion && offered) await earnsItsPlace();
+
+  async function earnsItsPlace() {
+    out.earned = { clean: [], escalated: [] };
+    const trialAt = (sha) => readTrial(repo, WORKFLOW, sha);
+    const twelve = (sha) => sha.slice(0, 12);
+    const standing = (trial) => trial.revisions.filter((r) => ['trial', 'active', 'superseded', 'demoted'].includes(r.status)).map((r) => `${twelve(r.sha256)} ${r.status}`).join(', ');
+    const usedBy = (trial) => trial.uses.map((u) => `${u.run} ${u.outcome}`).join(', ');
+    const usesOn = (sha, runId) => JSON.parse(gitRead(bare, ['show', `${sha}:uses/${runId}.json`]).toString('utf8')).uses;
+    // `<learned>` marks a trial and names an active workflow bare.
+    const offerLine = (t) => {
+      const names = /Workflows to try first for this input: ([^.]*)\./.exec(t.learned.join('\n'))?.[1];
+      return `offered ${names ? names.split(', ').map((w) => (w.endsWith('(trial)') ? w : `${w} (active)`)).join(', ') : 'no workflow'}`;
+    };
+    const kindOf = (issue) => (issue.input.body ? 'its body is a stack trace' : 'it has no body');
+    const loadAndRun = (issue, answer) => [
+      { call: 'agentrun', args: { action: 'load', name: WORKFLOW, input: issue.input } },
+      { call: 'agentrun', args: { action: 'run' } },
+      { say: answer },
+    ];
+    const tryRun = async (runId, issue, steps) => {
+      const run = await prepareRun({ home, repo, host: HOST, runId, input: issue.input });
+      const r = await runOnce(run, [issue.text], scriptedModel(steps), vault, issue.values);
+      const f = await finishRun({ home, repo, run, secrets: vault, caseValues: issue.values });
+      say(`   ${runId} starts at main ${short(run.sha)}, ${offerLine(r)}`);
+      say(`     issue: "${issue.input.title}" (${kindOf(issue)})`);
+      for (const line of callLines(r)) say(`     ${line}`);
+      say(`     answer: ${r.answer}`);
+      if (!f.proposal.sha) say(`     proposed nothing (${proposalStatus(f.proposal)})`);
+      else {
+        say(`     proposed on runs/${runId} at ${short(f.proposal.sha)}: ${proposed(f.proposal.sha, runId)}`);
+        const uses = gitRead(bare, ['ls-tree', '--name-only', f.proposal.sha, `uses/${runId}.json`]).toString('utf8').trim() ? usesOn(f.proposal.sha, runId) : [];
+        for (const use of uses) say(`     uses/${runId}.json: ${use.name} ${twelve(use.sha256)} ${use.outcome} at ${use.at}`);
+      }
+      return { run, ...r, ...f };
+    };
+    let prev = c3.main;
+    let before = await trialAt(prev);
+    const settle = async () => {
+      const c = await curateNow({ repo, judge, secrets: vault });
+      const after = await trialAt(c.main);
+      for (const r of c.runs) say(`     curate: ${runLine(r)}`);
+      say(`     main ${short(c.main)} ${changed(prev, c.main)}`);
+      say(`     trial.json: ${before.status === after.status ? after.status : `${before.status} -> ${after.status}`}; ${standing(after)}; uses ${usedBy(after) || 'none'}`);
+      const settled = { curate: c, trial: after };
+      prev = c.main;
+      before = after;
+      return settled;
+    };
+
+    say('9. A workflow earns its place: later runs are offered triage-crash and run it with the agentrun tool');
+    say('   a use is frozen when the workflow finished the case by itself; three frozen uses in a row promote the trial to active');
+    for (const [i, issue] of [ISSUES.third, ISSUES.fourth, ISSUES.fifth].entries()) {
+      const t = await tryRun(`run-${5 + i}`, issue, loadAndRun(issue, 'bug, needs-repro: triage-crash labeled it, and the body is a crash trace.'));
+      out.earned.clean.push({ ...t, ...(await settle()) });
+    }
+    say();
+
+    say('10. Run 8 saves a second revision of triage-crash: it hands an issue with no body to a person');
+    const t8 = await tryRun('run-8', ISSUES.second, [
+      { call: 'agentrun', args: { action: 'inspect', workflow: TRIAGE_WORKFLOW_V2, input: ISSUES.second.input } },
+      { call: 'agentrun', args: { action: 'save', name: WORKFLOW } },
+      { call: 'learn', args: { type: 'workflow', id: WORKFLOW, text: WORKFLOW_V2_WHEN } },
+      { say: 'bug, needs-repro: the body is a crash trace.' },
+    ]);
+    out.earned.v2 = { ...t8, ...(await settle()) };
+    say();
+
+    say('11. Two issues in a row reach the new revision with no body: it escalates both times');
+    say('   two failed or escalated uses in a row demote a revision, and the revision it replaced comes back');
+    for (const [i, issue] of [ISSUES.bareA, ISSUES.bareB].entries()) {
+      const t = await tryRun(`run-${9 + i}`, issue, loadAndRun(issue, 'needs-repro: triage-crash handed this one back because the issue has no body; asking the reporter for the trace.'));
+      out.earned.escalated.push({ ...t, ...(await settle()) });
+    }
+    say();
+
+    say('12. The demoted revision never returns: run 11 saves it again');
+    const t11 = await tryRun('run-11', ISSUES.second, [
+      { call: 'agentrun', args: { action: 'inspect', workflow: TRIAGE_WORKFLOW_V2, input: ISSUES.second.input } },
+      { call: 'agentrun', args: { action: 'save', name: WORKFLOW } },
+      { say: 'bug, needs-repro: the body is a crash trace.' },
+    ]);
+    if (t11.proposal.status === 'empty') say('     the repository already holds that revision (demoted), so the run has nothing new to propose');
+    const c12 = await curateNow({ repo, judge, secrets: vault });
+    out.earned.again = { ...t11, curate: c12 };
+    say(`     curate: ${c12.runs.length ? `${c12.runs.length} run(s) curated` : 'nothing to curate'}; main stays ${short(c12.main)}`);
+    say();
+  }
 
   out.log = gitRead(bare, ['log', '--oneline', 'main']).toString('utf8').trimEnd();
   say('git log --oneline main');
