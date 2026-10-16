@@ -162,8 +162,9 @@ const KINDS: Record<string, string> = { "1": "a hard link", "2": "a symbolic lin
  * doubled pax header, more than 64 pax fields in one header, bytes after the end. Parsing stops at the first problem.
  * The work is bounded by the input: at most `maxMembers` members and two header blocks for each (a member and its one
  * pax header), so a tar of nothing but headers is refused after that many, and no header is copied into the next.
+ * `headers` is how many header blocks were read.
  */
-export async function listTar(file: FileHandle, size: number, maxMembers = Number.POSITIVE_INFINITY): Promise<{ members: TarMember[]; problems: string[] }> {
+export async function listTar(file: FileHandle, size: number, maxMembers = Number.POSITIVE_INFINITY): Promise<{ members: TarMember[]; problems: string[]; headers: number }> {
   const members: TarMember[] = [];
   const problems: string[] = [];
   const maxHeaders = 2 * maxMembers + 2;
@@ -262,7 +263,7 @@ export async function listTar(file: FileHandle, size: number, maxMembers = Numbe
       break;
     }
   }
-  return { members, problems };
+  return { members, problems, headers };
 }
 
 /** Copy `length` bytes at `offset` of `source` to `target`, which is open for writing. */

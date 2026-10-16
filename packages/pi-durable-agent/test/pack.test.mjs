@@ -549,7 +549,7 @@ test("a pack over maxBytes, or whose manifest says it is, is refused before anyt
   assert.deepEqual(steps, [], "a pack over the limit is refused on its size: not one byte of it is parsed");
   const lying = tamper(f.out, path.join(f.dir, "lying.tar"), (members) => withManifest(members, (edited) => { edited.size_bytes = 10 ** 9; }));
   await refused(manifest.size_bytes + 1000, lying);
-  assert.deepEqual(steps, ["parse"], "one whose manifest says it is over the limit is parsed for that, and not one member extracted");
+  assert.deepEqual(steps, ["parse", "parsed"], "one whose manifest says it is over the limit is parsed for that, and not one member extracted");
   const reads = [];
   assert.equal((await readPack(f.out, { maxBytes: manifest.size_bytes - 1, inject: (step) => reads.push(step.name) })).ok, false);
   assert.deepEqual(reads, [], "readPack parses nothing either");
@@ -655,17 +655,21 @@ test("a pack its own reader refuses is not written", skip, async () => {
   assert.deepEqual(readdirSync(f.dir).filter((name) => name.includes(".part-")), []);
 });
 
-test("a tar of nothing but pax headers is refused at the second one, in a moment and without reading the rest", skip, async () => {
+test("a tar of nothing but pax headers is refused at the second one, without reading the rest", skip, async () => {
   const dir = await scratch();
   const many = path.join(dir, "headers.tar");
   writeFileSync(many, headersOnly(100_000));
   assert.ok(statSync(many).size > 50_000_000);
   const rss = process.memoryUsage().rss;
+  const parsed = [];
   const started = performance.now();
-  const read = await readPack(many);
-  assert.ok(performance.now() - started < 2000, `refused in ${Math.round(performance.now() - started)} ms`);
+  const read = await readPack(many, { inject: (step) => { if (step.name === "parsed") parsed.push(step.index); } });
+  assert.deepEqual(parsed, [2], "the reader read two header blocks of the 100,000 and stopped");
+  assert.ok(performance.now() - started < 30_000, "a guard against a hang, not a measure of speed");
   assert.match(read.checks.find((check) => check.name === "format").message, /two pax headers in a row/);
-  await assert.rejects(importPack(many, path.join(dir, "never")), (error) => error.code === "check");
+  const imported = [];
+  await assert.rejects(importPack(many, path.join(dir, "never"), { inject: (step) => { if (step.name === "parsed") imported.push(step.index); } }), (error) => error.code === "check");
+  assert.deepEqual(imported, [2], "an import stops there too");
   assert.equal(existsSync(path.join(dir, "never")), false);
   assert.ok(process.memoryUsage().rss - rss < 150_000_000, "and without holding what it read");
 });

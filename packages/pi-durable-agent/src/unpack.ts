@@ -73,6 +73,7 @@ async function inspectPack(file: string, options: { maxBytes?: number; maxMember
   try {
     await options.inject?.({ name: "parse", index: 0 });
     const listed = await listTar(handle, info.size, options.maxMembers ?? MAX_MEMBERS);
+    await options.inject?.({ name: "parsed", index: listed.headers });
     for (const problem of listed.problems) bad("format", problem);
     const members: TarMember[] = listed.members;
     const seen = new Set<string>();
@@ -240,9 +241,9 @@ export async function readPack(file: string, options: { maxBytes?: number; maxMe
 // --- importing a pack -------------------------------------------------------------------------------------------------
 
 export type ImportReport = { ok: true; agent_id: string; checks: HomeCheck[]; written: true; replaces: boolean };
-/** A point in a read or an import: the pack about to be parsed, a member about to be extracted, the target checked, a run
+/** A point in a read or an import: the pack about to be parsed, parsed (`index` is the header blocks it read), a member about to be extracted, the target checked, a run
  *  directory moved, the store's commit made, the journal marked committed, the clean-up half done. */
-export type ImportStep = { name: "parse" | "extract" | "checked" | "moved" | "committed" | "marked" | "cleaned"; index: number };
+export type ImportStep = { name: "parse" | "parsed" | "extract" | "checked" | "moved" | "committed" | "marked" | "cleaned"; index: number };
 export type ImportOptions = {
   /** The target may already be a home. */
   replace?: boolean;
