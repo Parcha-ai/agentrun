@@ -27,10 +27,21 @@ The mount roots are fixed (`/mnt/pda/p1` .. `/mnt/pda/p5`, and `/mnt/pda/p8` for
 never run two live runs at once on one host; take a lock (`flock /tmp/pda-live.lock npm run test:live:supervise`). No token is
 ever printed: it travels on the archil wrapper's stdin and is scrubbed from captured output.
 
-The Daytona suite (`daytona.live.test.ts`, `_p9.ts`) and `examples/verify-production-path.sh` install the package the way a
-standalone checkout allows: they copy this directory and run `npm ci` in it. In the agentrun workspace the dependencies are
-hoisted to the repository root and this directory has no lockfile of its own, so both need an install step of their own
-before they can run from here. They have not been run from the workspace.
+The Daytona suite (`daytona.live.test.ts`, `_p9.ts`) ships this directory (without `node_modules`) into each box and installs
+it there: on `daytona-medium`, `prepareBox` installs Node, the archil client and the package's dependencies at boot (`npm
+install`, since this directory has no lockfile of its own in the workspace), about 16 s per box. `examples/verify-production-path.sh`
+copies this directory and runs `npm ci` in it, so it needs a standalone checkout's lockfile.
+
+The runtime snapshot makes a box ready in about 2 s instead. `daytona-snapshot.ts build <commit>` builds
+`pda-p9-runtime-<commit>-<stamp>` on Daytona from `snapshotDockerfile(commit)`: `daytona-medium`'s image
+(`daytonaio/sandbox:0.9.0`, the same toolbox user and resources) with the same pinned Node and archil, the run user, the
+wrapper, the sudoers drop-in, the mount root and the package's dependencies, installed from its `package.json` at `commit`
+(no build context; about 45 s). A daytonaHost start then takes `snapshot: <name>` and `prepare: (box) =>
+prepareOnSnapshot(client, box)`: the checkout's package source replaces the snapshot's, over its `node_modules`, and `npm
+install` runs only when the dependency fields differ from the ones the snapshot was built for. `check <name>` boots one box from
+it, prepares it and imports the package as the run user; `baseline` does the same on `daytona-medium`; `delete <name>` removes
+a snapshot this lane built. A snapshot is built once under a new name and never over an existing one (a default or another
+lane's). Its storage is billed while it exists, so delete it once its takes are done.
 
 The docker suite (`test:live:docker`, also run by `test:live` when `PDA_LIVE_DOCKER=1`) runs the instances in containers of
 the package's image on this machine's Docker daemon; nothing on the host mounts. `docker.live.test.ts` is T13 for
