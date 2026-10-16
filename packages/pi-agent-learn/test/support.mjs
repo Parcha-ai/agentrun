@@ -10,7 +10,7 @@ import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after } from "node:test";
-import { agentLearn, renderLearning } from "../dist/index.js";
+import { agentLearn, renderLearning, SeedDoc } from "../dist/index.js";
 
 export { ctx, fauxAssistantMessage, fauxText, fauxToolCall };
 
@@ -111,3 +111,10 @@ export const toolResults = (context) => context.messages.filter((m) => m.role ==
 
 export const learnCalls = (calls) => fauxAssistantMessage(calls.map((args, i) => fauxToolCall("learn", args, { id: `call-${i}` })), { stopReason: "toolUse" });
 export const done = () => fauxAssistantMessage([fauxText("Done.")], { stopReason: "stop" });
+
+/** Records a seed that gave the run `ids` in its section and `omitted` over the cap, as seedLearning would. */
+export async function seedIds(harness, ids, omitted = []) {
+  await harness.commit(async (tx) => {
+    Object.assign(await tx.doc(SeedDoc), { sha: SHA, index: ids.map((id) => `- ${id} lesson: A lesson.`), omitted, workflows: [], copied: false });
+  }, ctx);
+}

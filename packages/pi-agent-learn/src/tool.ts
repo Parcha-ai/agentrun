@@ -1,7 +1,9 @@
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, defineTool, type Session, type ToolExecutionResult, type ToolRegistration } from "@earendil-works/pi-durable";
-import { CAPS, LEARNING_ID, WORKFLOW_NAME } from "./layout.js";
+import { CAPS, WORKFLOW_NAME } from "./layout.js";
+import { seededIds } from "./section.js";
+import { SeedDoc } from "./seed.js";
 import { type Candidate, type Guard, LEARN_TYPES, type LearnType, type Refusal } from "./types.js";
 
 type Stored = { callId: string; type: LearnType; text: string; evidence: string[]; id?: string };
@@ -47,7 +49,7 @@ export const LEARN_PARAMETERS = {
       items: { type: "string", minLength: 1, maxLength: CAPS.evidence },
       description: "What in this run shows it: a tool call, a source, an error. Kept with the run, never in the learning.",
     },
-    id: { type: "string", minLength: 1, maxLength: 64, description: "For used: the id of the learning that helped (L-...). For workflow: the saved workflow's name. For a correction: the learning it corrects, when there is one." },
+    id: { type: "string", minLength: 1, maxLength: 64, description: "Only to name a learning listed in <learned> (type used) or a workflow name (type workflow); leave it out for a new learning." },
   },
 } as const;
 
@@ -69,6 +71,9 @@ export type LearnToolOptions = {
   readonly guard?: Guard;
   /** The host's secrets at the moment of the call, for `guard`. */
   readonly secrets?: () => Iterable<string>;
+  /** Values from this run's input, for `guard`: a note that repeats one is refused at the call, where the model can
+   *  restate it, not later when the run's notes are proposed. */
+  readonly caseValues?: () => Iterable<string>;
 };
 
 /** The `learn` tool: notes one candidate in the run's own store, keyed by the call id, and makes no model call. A rerun
@@ -87,18 +92,21 @@ export function learnTool(options: LearnToolOptions = {}): ToolRegistration {
       if (bytes(evidence.join("")) > CAPS.evidence) return refused(`Not noted: the evidence is over ${CAPS.evidence} bytes in all.`);
       if (input.type === "used" && input.id === undefined) return refused("Not noted: a used mark needs the id of the learning that helped.");
       if (input.type === "workflow" && (input.id === undefined || !WORKFLOW_NAME.test(input.id))) return refused("Not noted: a workflow note needs the saved workflow's name as id (lowercase letters, digits, dashes or underscores).");
-      if (input.type !== "workflow" && input.id !== undefined && !LEARNING_ID.test(input.id)) return refused("Not noted: id is a learning id, L- and 12 hex digits.");
+      if (input.type !== "workflow" && input.id !== undefined) {
+        const seed = await api.snapshot(SeedDoc, context);
+        if (!seed?.sha || !seededIds(seed).includes(input.id)) return refused(`Not noted: ${input.id} is not a learning you were given; leave id out for a new learning.`);
+      }
       const candidate: Candidate = { callId: api.callId, type: input.type, text: input.text, evidence, ...(input.id === undefined ? {} : { id: input.id }) };
       if (options.guard) {
         let refusals: readonly Refusal[];
         try {
-          refusals = options.guard({ role: "run", candidates: [candidate], secrets: [...(options.secrets?.() ?? [])] });
+          refusals = options.guard({ role: "run", candidates: [candidate], secrets: [...(options.secrets?.() ?? [])], caseValues: [...(options.caseValues?.() ?? [])] });
         } catch {
           return refused("Not noted: the host could not check it. Nothing was stored.");
         }
         if (refusals.length) {
           const why = [...new Set(refusals.map((r) => REASONS[r.reason] ?? "it was refused"))].join("; ");
-          return refused(`Not noted: ${why}. Restate it as a general rule without that.`);
+          return refused(`Not noted: ${why}. Restate it as a general rule${refusals.every((r) => r.reason === "case_data") ? "" : " without that"}.`);
         }
       }
       const noted = await api.commit(async (tx) => {

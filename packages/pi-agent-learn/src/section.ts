@@ -39,6 +39,13 @@ export function indexLine(learning: Learning): string | undefined {
   return `- ${learning.id} ${learning.type}: ${shown}${learning.uses > 0 ? ` (used ${learning.uses})` : ""}`;
 }
 
+const LINE_ID = /^- (L-[0-9a-f]{12}) /;
+
+/** The learnings a seed gave the run: those its section lists and those over the cap, which the run can read. */
+export function seededIds(seed: Pick<SeedRecord, "index" | "omitted">): string[] {
+  return [...seed.index.map((line) => LINE_ID.exec(line)?.[1]).filter((id): id is string => id !== undefined), ...seed.omitted];
+}
+
 /** Most used first, then by id: a fixed order for a fixed set of files. */
 export function byUse(a: Learning, b: Learning): number {
   return b.uses - a.uses || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
