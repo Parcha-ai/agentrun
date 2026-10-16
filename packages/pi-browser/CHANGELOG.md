@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.1.0-beta.14 (2026-10-16)
+
+- Accept pi 1.3: the `@earendil-works/pi-durable` and `@earendil-works/chord` peer ranges now end below 1.4, with the floors unchanged (1.0.4, and 1.1.0 for `@parcha/pi-browser`). pi 1.3.0 pins its own packages to exact versions, so an install is all 1.2 or all 1.3; CI runs every package's whole suite on a 1.3.0 family as well as on 1.2.0.
+  - On pi-ai 1.3, a tool call whose arguments are not a JSON object reaches no tool: pi-durable refuses it and shows the model the text it sent. A durable node's `submit` then spends none of its submissions. Before 1.3 the tool ran with `{}`, so `submit` answered with the schema's violations and counted one submission.
+- `@parcha/pi-browser/recorder`: `exportFrameTracks` turns the recorded frames into one `frame.track` line per session: a WebM (VP9, constant `fps`, default 10) plus an index that maps run time to video time across gaps, with a slate while a gap lasts. `handle.drain(harness, ctx, signal?)` on the pi-durable adapter's handle resolves once no browser release is still running, so a host waits for it before it closes the harness. The index exports custody's vocabulary by name (`CustodyPort`, `AttachedSession`, `ToolOutput`, `BrowserFailureError`, `BrowserDriver`, `DriverFactory`, `DriverOptions`, `Overrides`) so a host can write its own tool.
+- `@parcha/pi-browser`: a `cdp` kill never signals pid 1, pid 0, its own pid, or a process group the pid does not lead. A session's record and `browser_relaunch`'s answer name only the settings the provider applied (Browserbase applies proxies, verified, geolocation, region and context; Kernel and local Chrome none). A screenshot's `ask` comes back in `details.media.ask`. A classified failure names the browser provider, not Browserbase. A conversation's close evicts its repeat guard and idle entry. A page action's journal entry outlives its answer, and an identical retry waits for a look. Stagehand's extension losing its own CDP connection is a dropped browser, not the model's code error: a read reconnects and runs once more, a run is not repeated. A held Stagehand runtime is freed through its own close and never by closing its service worker, which under load was sometimes never restarted. Every Chrome the `cdp` provider starts gets a temporary directory of its own, removed with the lease, so Chrome's leftover entries no longer land in the host's `TMPDIR`.
+
 ## 0.1.0-beta.13 (2026-10-14)
 
 First release of `@parcha/pi-browser`. It is versioned with the other packages of the repository it is published from; the release PR dates this section and gives it the workspace version.

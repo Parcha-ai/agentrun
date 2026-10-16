@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // The stranger test: a package installed into an empty directory, with an empty environment and home, runs the one command
 // its README gives a newcomer, and the output is compared with what the spec expects. The spec for a package lives in
-// scripts/stranger/<name>.json; a package with no no-key path says so there and is reported, not failed.
+// scripts/stranger/<name>.json; a package with no no-key path says so there and is reported, not failed. A spec with
+// `examples` also walks the package's keyless examples against the published package (see `walkExamples`).
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { constants as osConstants, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -58,6 +59,11 @@ export function validateSpec(spec, name) {
   if (spec.readmeInstall !== undefined) {
     for (const key of ['readme', 'heading', 'fence']) assert.equal(typeof spec.readmeInstall[key], 'string', `${name}: readmeInstall.${key}`);
   }
+  if (spec.examples !== undefined) {
+    for (const key of ['readme', 'heading', 'fence', 'dir']) assert.equal(typeof spec.examples[key], 'string', `${name}: examples.${key}`);
+    assert.ok(Number.isInteger(spec.examples.timeoutMs) && spec.examples.timeoutMs > 0, `${name}: examples.timeoutMs`);
+    for (const floor of Object.values(spec.examples.platformFloors ?? {})) parseVersion(floor);
+  }
   return spec;
 }
 
@@ -95,15 +101,30 @@ export async function loadSpec(name) {
 /** The environment a stranger starts with: the PATH, an empty home and a private npm cache, nothing else. */
 export const strangerEnv = (path, home, cache) => ({ PATH: path, HOME: home, npm_config_cache: cache, npm_config_update_notifier: 'false', npm_config_fund: 'false', npm_config_audit: 'false' });
 
-function runCommand(command, args, { cwd, env, timeoutMs }) {
+/**
+ * `env -i`, the empty environment; the shell never adds to it. With `group`, the command leads a process group of its own,
+ * and a timeout (and the end of the command) kills every process of the group: an example starts instances of its own. A
+ * process outside the group that keeps an output pipe open must not keep the runner waiting: `graceMs` after the command's
+ * exit the pipes are closed and what was read is the result.
+ */
+export function runCommand(command, args, { cwd, env, timeoutMs, group = false, graceMs = 3000 }) {
   return new Promise(resolvePromise => {
-    // env -i is the empty environment; the shell never adds to it.
-    const child = spawn('/usr/bin/env', ['-i', ...Object.entries(env).map(([key, value]) => `${key}=${value}`), command, ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn('/usr/bin/env', ['-i', ...Object.entries(env).map(([key, value]) => `${key}=${value}`), command, ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: group });
+    const killGroup = () => { if (group && child.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* ESRCH: nothing left */ } } };
     let stdout = ''; let stderr = ''; let timedOut = false;
     child.stdout.on('data', chunk => { stdout += chunk; });
     child.stderr.on('data', chunk => { stderr += chunk; });
-    const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, timeoutMs);
-    child.on('close', code => { clearTimeout(timer); resolvePromise({ exitCode: code ?? -1, stdout, stderr, timedOut }); });
+    const timer = setTimeout(() => { timedOut = true; if (group) killGroup(); else child.kill('SIGKILL'); }, timeoutMs);
+    let settled = false;
+    const settle = code => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); killGroup();
+      resolvePromise({ exitCode: typeof code === 'number' ? code : -1, stdout, stderr, timedOut });
+    };
+    child.on('close', settle);
+    if (group) {
+      child.on('exit', code => setTimeout(() => { child.stdout.destroy(); child.stderr.destroy(); settle(code); }, graceMs).unref());
+    }
   });
 }
 
@@ -137,16 +158,22 @@ export function exitCodeOf(code, signal) {
  * peers. With `registry` the line runs as written; without, this tree's packed package takes its place on the line and
  * the peers stay as written, so the result says whether the next release installs the way the README says.
  */
-export async function stranger(name, { registry = false, tarballs: given, readmeLine = false } = {}) {
+export async function stranger(name, { registry = false, tarballs: given, readmeLine = false, examplesOnly = false } = {}) {
   const spec = await loadSpec(name);
   if (isMissing(spec)) return { name, status: 'missing', reason: spec.reason };
   assert.ok(!readmeLine || spec.readmeInstall, `${name}: the spec names no README install line (readmeInstall)`);
   assert.ok(!readmeLine || !given, 'A README install line packs its own tarballs');
+  assert.ok(!examplesOnly || spec.examples, `${name}: the spec names no examples to walk`);
   const work = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), 'stranger-'));
   try {
     const [project, home, cache, packs] = ['project', 'home', 'cache', 'packs'].map(part => join(work, part));
     for (const directory of [project, home, cache, packs]) await mkdir(directory);
     const env = strangerEnv(process.env.PATH, home, cache);
+    if (examplesOnly) {
+      const walked = await walkExamples(spec, work, env);
+      const failed = walked.results.filter(result => result.status === 'failed');
+      return { name, status: failed.length ? 'failed' : 'passed', problems: failed.flatMap(result => result.problems.map(problem => `${result.name}: ${problem}`)), examples: walked };
+    }
     const lock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8')).packages;
     const developed = developedVersions(lock);
     const peers = (spec.peers ?? []).map(peer => (registry || !(peer in developed) ? peer : `${peer}@${developed[peer]}`));
@@ -179,10 +206,120 @@ export async function stranger(name, { registry = false, tarballs: given, readme
     const [command, ...args] = spec.command;
     const result = await runCommand(command, args, { cwd: project, env, timeoutMs: spec.timeoutMs });
     const problems = judge(spec, result);
-    return { name, status: problems.length ? 'failed' : 'passed', problems, output: `${result.stdout}${result.stderr}`.slice(-2000) };
+    // A spec with `examples` also checks the package's keyless examples against the registry, whatever this run installed.
+    let walked;
+    if (spec.examples && !readmeLine) {
+      walked = await walkExamples(spec, work, env);
+      for (const failure of walked.results.filter(entry => entry.status === 'failed')) problems.push(...failure.problems.map(problem => `example ${failure.name}: ${problem}`));
+    }
+    return { name, status: problems.length ? 'failed' : 'passed', problems, examples: walked, output: `${result.stdout}${result.stderr}`.slice(-2000) };
   } finally {
     await rm(work, { recursive: true, force: true });
   }
+}
+
+// ---- the examples' Since cells ----------------------------------------------------------------------------------------
+
+/** `X.Y.Z` or `X.Y.Z-tag.N` as numbers; a release sorts above its own prereleases. Anything else is refused. */
+function parseVersion(text) {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-([a-z]+)\.(\d+))?$/.exec(text);
+  assert.ok(match, `"${text}" is not a version (X.Y.Z or X.Y.Z-tag.N)`);
+  return { core: match.slice(1, 4).map(Number), tag: match[4], n: match[5] === undefined ? 0 : Number(match[5]) };
+}
+
+/** -1, 0 or 1: whether version `a` is older than, the same as, or newer than `b`. */
+export function compareVersions(a, b) {
+  const [x, y] = [parseVersion(a), parseVersion(b)];
+  for (const [i, part] of x.core.entries()) if (part !== y.core[i]) return part < y.core[i] ? -1 : 1;
+  if (x.tag === undefined || y.tag === undefined) return x.tag === y.tag ? 0 : x.tag === undefined ? 1 : -1;
+  if (x.tag !== y.tag) return x.tag < y.tag ? -1 : 1;
+  return Math.sign(x.n - y.n);
+}
+
+/**
+ * The rows of an examples index that link an example's directory (`| [name](name/) | ... |`), with their Since and CI cells,
+ * read by the table's header names so a new column cannot shift them.
+ */
+export function parseIndex(markdown) {
+  const cells = line => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(cell => cell.trim());
+  const lines = markdown.split('\n');
+  const at = lines.findIndex(line => /^\|\s*Example\s*\|/.test(line));
+  assert.ok(at >= 0, 'the index has no table headed "Example"');
+  const header = cells(lines[at]);
+  const [since, ci] = ['Since', 'CI'].map(name => header.indexOf(name));
+  assert.ok(since >= 0 && ci >= 0, `the index table needs "Since" and "CI" columns, has: ${header.join(', ')}`);
+  const rows = [];
+  for (const line of lines.slice(at + 2)) {
+    if (!line.startsWith('|')) break;
+    const row = cells(line);
+    const link = /^\[([^\]]+)\]\(([^)]+)\/\)$/.exec(row[0]);
+    if (link && link[1] === link[2]) rows.push({ name: link[1], since: row[since], ci: row[ci] });
+  }
+  return rows;
+}
+
+/**
+ * Which examples to walk against the registry whose `beta` tag is `beta`: those that run with no key (CI "yes"), each at
+ * the `version` it installs: its Since, or this platform's `floor` (the spec's `examples.platformFloors`: the first release
+ * that runs on it at all) when that is later. One whose version is above the beta is skipped with its reason. A keyless
+ * example must name a version.
+ */
+export function selectExamples(rows, beta, floor) {
+  const run = []; const skipped = [];
+  for (const { name, since, ci } of rows) {
+    if (ci !== 'yes') { skipped.push({ name, reason: `not keyless (CI "${ci}")` }); continue; }
+    assert.ok(/^\d/.test(since), `${name}: a keyless example's Since is a published version, not "${since}"`);
+    const version = floor !== undefined && compareVersions(since, floor) < 0 ? floor : since;
+    if (compareVersions(version, beta) > 0) skipped.push({ name, reason: `needs ${version}${version === since ? '' : ' on this platform'}, and the registry's beta is ${beta}` });
+    else run.push({ name, since, version });
+  }
+  return { run, skipped };
+}
+
+/** The `npm install` arguments of the index's install block, with the package at `version` instead of `@beta`. */
+export function examplesInstallArgs(block, packageName, version) {
+  const lines = block.split('\n').map(line => line.trim()).filter(line => /^npm (install|i) /.test(line));
+  assert.equal(lines.length, 1, `the install block has one npm install line, not ${lines.length}`);
+  assert.ok(lines[0].split(/\s+/).includes(`${packageName}@beta`), `the install line names ${packageName}@beta`);
+  return readmeInstallArgs(lines[0], new Map([[packageName, `${packageName}@${version}`]]));
+}
+
+/**
+ * The Since cells, enforced: for every keyless example whose version (its Since, or this platform's floor when later) is
+ * at or below the registry's `beta`, install exactly that version in an empty directory the way "Run one from an install"
+ * says, copy the example's files, run `node main.ts` and expect its `ok:` line. An example above the beta is skipped with
+ * a reason. Results are `{ name, since, version, status, ... }`.
+ */
+async function walkExamples(spec, work, env) {
+  const { examples } = spec;
+  const npm = (args, cwd, timeoutMs = 300_000) => runCommand('npm', args, { cwd, env, timeoutMs });
+  const tag = await npm(['view', spec.package, 'dist-tags.beta'], work, 60_000);
+  const beta = tag.stdout.trim();
+  assert.ok(tag.exitCode === 0 && beta, `the registry has no beta tag for ${spec.package}: ${tag.stderr.slice(-500)}`);
+  const index = await readFile(join(root, examples.readme), 'utf8');
+  const { run, skipped } = selectExamples(parseIndex(index), beta, examples.platformFloors?.[process.platform]);
+  const results = skipped.map(({ name, reason }) => ({ name, status: 'skipped', reason }));
+  for (const version of [...new Set(run.map(example => example.version))]) {
+    const project = join(work, `examples-${version}`);
+    await mkdir(project);
+    await writeFile(join(project, 'package.json'), JSON.stringify({ name: 'stranger-examples', private: true, type: 'module' }));
+    const args = [...examplesInstallArgs(extractSnippet(index, examples), spec.package, version), '--ignore-scripts', '--no-audit', '--no-fund'];
+    const install = await npm(args, project);
+    for (const { name, since } of run.filter(example => example.version === version)) {
+      if (install.exitCode !== 0) { results.push({ name, since, version, status: 'failed', problems: [`npm install ${spec.package}@${version} failed (${install.exitCode}): ${install.stderr.slice(-1000)}`] }); continue; }
+      const target = join(project, name);
+      await cp(join(root, examples.dir, name), target, { recursive: true, filter: source => !/(^|\/)README\.md$/.test(source) });
+      const result = await runCommand('node', ['main.ts'], { cwd: target, env, timeoutMs: examples.timeoutMs, group: true });
+      const problems = judge({ expect: { exitCode: 0, pattern: '^ok: ' }, timeoutMs: examples.timeoutMs }, result);
+      const output = `${result.stdout}${result.stderr}`;
+      if (/^not ok/m.test(output)) problems.push('the output says "not ok"');
+      // The first line that says why (a SyntaxError for a missing export, a "not ok"), else the last line of the output.
+      const lines = output.split('\n').map(line => line.trim()).filter(Boolean);
+      if (problems.length) problems.push(`output: ${(lines.find(line => /Error|not ok/.test(line)) ?? lines.at(-1) ?? '(none)').slice(0, 300)}`);
+      results.push({ name, since, version, status: problems.length ? 'failed' : 'passed', problems, output: output.slice(-1500) });
+    }
+  }
+  return { beta, results };
 }
 
 async function main() {
@@ -192,8 +329,9 @@ async function main() {
   const tarballDir = flag('--tarballs');
   const registry = args.includes('--registry');
   const readmeLine = args.includes('--readme-line');
+  const examplesOnly = args.includes('--examples');
   const names = args.filter(arg => !arg.startsWith('--'));
-  if (names.length !== 1) { console.error('usage: node scripts/stranger.mjs <name> [--registry] [--readme-line] [--docker IMAGE]\nnames: ' + (await readdir(join(root, 'scripts/stranger'))).map(file => file.replace(/\.json$/, '')).join(' ')); process.exit(2); }
+  if (names.length !== 1) { console.error('usage: node scripts/stranger.mjs <name> [--registry] [--readme-line] [--examples] [--docker IMAGE]\nnames: ' + (await readdir(join(root, 'scripts/stranger'))).map(file => file.replace(/\.json$/, '')).join(' ')); process.exit(2); }
   const [name] = names;
   if (image && readmeLine) throw new Error('--readme-line runs on this machine, not with --docker');
   if (image) {
@@ -211,7 +349,14 @@ async function main() {
     return;
   }
   const given = tarballDir ? (await readdir(tarballDir)).filter(file => file.endsWith('.tgz')).map(file => join(tarballDir, file)) : undefined;
-  const outcome = await stranger(name, { registry, tarballs: given, readmeLine });
+  const outcome = await stranger(name, { registry, tarballs: given, readmeLine, examplesOnly });
+  if (outcome.examples) {
+    console.log(`${name}: examples against the registry's beta ${outcome.examples.beta}`);
+    for (const { name: example, since, version, status, reason, problems } of outcome.examples.results) {
+      const at = version === since ? `Since ${since}` : `Since ${since}, ${version} on ${process.platform}`;
+      console.log(status === 'skipped' ? `  ${example}: skipped, ${reason}` : `  ${example} (${at}): ${status}${problems?.length ? `: ${problems.join('; ').slice(0, 400)}` : ''}`);
+    }
+  }
   if (outcome.status === 'missing') console.log(`${name}: ${MISSING}: ${outcome.reason}`);
   else if (outcome.status === 'passed') console.log(`${name}: passed`);
   else { console.error(`${name}: failed\n${outcome.problems.join('\n')}\n--- output (tail) ---\n${outcome.output ?? ''}`); process.exitCode = 1; }

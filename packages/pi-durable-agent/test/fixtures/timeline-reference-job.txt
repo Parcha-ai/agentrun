@@ -1,0 +1,8 @@
+23:01:11  You: {"company":"Acme Ltd","urls":["http://registry.example/companies/01234567","http://news.example/acme-opens-a-second-plant"]}
+23:01:11  Opened a live browser session
+23:01:11  Opened registry.example/companies/01234567                  ok
+23:01:11  Read the page "Acme Ltd - Company register"                 ok
+23:01:11  Read filing.png                                             ok
+23:01:11  Submitted the answer                                        ok
+23:01:12  Answer: Acme Ltd was incorporated on 2019-03-04.
+23:01:12  Cost so far: $0 over 4 model requests

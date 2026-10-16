@@ -3,15 +3,18 @@
 // The memory store and the file store are this journal over two backends.
 import { bindingMismatch } from "./binding.js";
 import { RecoveryError, asRecoveryError } from "./errors.js";
-import type { RecoveryBinding, RecoveryEffect, RecoveryJournal, RecoveryNote } from "./store.js";
+import type { RecoveryBinding, RecoveryEffect, RecoveryItem, RecoveryJournal, RecoveryNote, RecoveryParts } from "./store.js";
 
-/** A journal as a backend keeps it: what it is bound to, who owns it, its state, its notes, and its effects in
- *  admission order, each with the outside calls it made. */
+/** A journal as a backend keeps it: what it is bound to, who owns it, its state, its notes, its effects in admission
+ *  order, each with the outside calls it made, and the parts written beside the state (map items' records by path,
+ *  states by digest). */
 export type JournalRecord = {
   binding: string | null; inputs: Record<string, string> | null;
   generation: number; revision: number; state: unknown;
   notes: RecoveryNote[];
   effects: Array<RecoveryEffect & { calls?: unknown }>;
+  items?: Record<string, RecoveryItem>;
+  states?: Record<string, unknown>;
 };
 
 export type JournalBackend = {
@@ -66,12 +69,18 @@ export async function openJournal(backend: JournalBackend, bound: RecoveryBindin
     return done;
   };
   /** One commit, inside a write: it checks this open still owns the journal, advances the revision, and lets `change`
-   *  alter the record with that revision. The record is replaced only when `change` returns. */
-  const commit = async (change: (record: JournalRecord, next: number) => void): Promise<number> => {
+   *  alter the record with that revision, then lays the parts beside it. The record is replaced only when both return. */
+  const commit = async (change: (record: JournalRecord, next: number) => void, parts?: (revision: number) => RecoveryParts): Promise<number> => {
     const record = await backend.read();
     if (!record || record.generation !== generation) throw new RecoveryError("Run owner generation is not acquired");
     const next = record.revision + 1;
     change(record, next);
+    const laid = parts?.(next);
+    if (laid?.items) record.items = { ...record.items, ...json(laid.items) };
+    if (laid?.states) {
+      const states = record.states ??= {};
+      for (const [sha256, state] of Object.entries(laid.states)) if (!Object.hasOwn(states, sha256)) states[sha256] = json(state);
+    }
     record.revision = next;
     await backend.write(record);
     revision = next;
@@ -84,12 +93,12 @@ export async function openJournal(backend: JournalBackend, bound: RecoveryBindin
     effects: () => [...effects.values()],
     effect: (id) => effects.get(id),
     notes: () => [...notes],
-    save: (state: unknown, note?: Pick<RecoveryNote, "kind" | "detail">) => inOrder(async () => {
+    save: (state: unknown, note?: Pick<RecoveryNote, "kind" | "detail">, parts?: (revision: number) => RecoveryParts) => inOrder(async () => {
       let entry: RecoveryNote | undefined;
       const committed = await commit((record, next) => {
         record.state = json(typeof state === "function" ? state(next) : state);
         if (note) { entry = { revision: next, kind: note.kind, detail: json(note.detail), at: new Date().toISOString() }; record.notes.push(entry); }
-      });
+      }, parts);
       if (entry) notes.push(entry);
       return committed;
     }),
@@ -99,20 +108,21 @@ export async function openJournal(backend: JournalBackend, bound: RecoveryBindin
       notes.push({ revision: committed, ...entry });
       return committed;
     }),
-    admit: (id, name, argsHash, state, session = null, intent, args) => inOrder(async () => {
+    // A record kept whole lists every effect itself, an owned one too.
+    admit: (id, name, argsHash, state, session = null, intent, args, parts) => inOrder(async () => {
       const known = effects.get(id);
       if (known) return known;
       const effect: RecoveryEffect = { id, name, argsHash, status: "unknown", session, result: null, ...(intent ? { intent: json(intent) } : {}), ...(args !== undefined ? { args: json(args) } : {}) };
-      await commit((record) => { record.effects.push({ ...effect }); record.state = json(state); });
+      await commit((record) => { record.effects.push({ ...effect }); record.state = json(state); }, parts);
       effects.set(id, effect);
       return "new" as const;
     }),
-    complete: (id, result, state = opened.state) => inOrder(async () => {
+    complete: (id, result, state = opened.state, parts) => inOrder(async () => {
       const known = effects.get(id);
       if (!known) throw new RecoveryError(`Effect ${id} completes without an admission`);
       if (known.status === "completed") throw new RecoveryError(`Effect ${id} completes once`);
       const value = json(result);
-      await commit((record) => { Object.assign(stored(record, id), { status: "completed", result: value }); record.state = json(state); });
+      await commit((record) => { Object.assign(stored(record, id), { status: "completed", result: value }); record.state = json(state); }, parts);
       effects.set(id, { ...known, status: "completed", result: value });
     }),
     called: (id, calls) => inOrder(async () => {
@@ -127,5 +137,7 @@ export async function openJournal(backend: JournalBackend, bound: RecoveryBindin
       await queue;
       await release();
     },
+    items: async (paths) => { const record = await backend.read(); return paths.map((path) => (record?.items && Object.hasOwn(record.items, path) ? json(record.items[path]) : undefined)); },
+    stateOf: async (sha256) => { const record = await backend.read(); return record?.states && Object.hasOwn(record.states, sha256) ? json(record.states[sha256]) : undefined; },
   };
 }

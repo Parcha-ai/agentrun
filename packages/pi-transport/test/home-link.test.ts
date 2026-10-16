@@ -231,7 +231,6 @@ describe("a home over a link", () => {
 			const move = {
 				id: "move-1",
 				notice: "System notice: you now run in b.",
-				roots: { from: from.workspace, to: to.workspace },
 			};
 			getOrThrow(await second.resume({ epoch: 2, seal, move }, context));
 			getOrThrow(await second.idle(context));
@@ -294,7 +293,7 @@ describe("a home over a link", () => {
 			getOrThrow(await host.submit("go", undefined, context));
 			await sleep(100);
 			getOrThrow(await host.drain({ timeoutMs: 5_000 }, context));
-			getOrThrow(await host.seal(context));
+			const seal = getOrThrow(await host.seal(context));
 			host.close("the host went away");
 			const ran = made.effects().length;
 			expect(ran).toBeLessThan(ROUNDS);
@@ -302,7 +301,13 @@ describe("a home over a link", () => {
 			// The launcher starts the runner again. It opens nothing by itself.
 			const restarted = createRunner(options);
 			const back = await linked(made, restarted, 1);
-			expect(getOrThrow(await back.status(context))).toEqual({ state: "sealed", epoch: 1 });
+			// It says the seal it holds, what a recovery's take carries forward, and whose note it keeps.
+			expect(getOrThrow(await back.status(context))).toEqual({
+				state: "sealed",
+				epoch: 1,
+				sealed: seal,
+				session: "session-1",
+			});
 			const byItself = await back.resume({ epoch: 1 }, context);
 			expect(byItself.ok ? "" : byItself.error.code).toBe("wrong_state");
 			await sleep(200);
