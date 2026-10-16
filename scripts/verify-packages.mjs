@@ -74,6 +74,10 @@ const allowedEndpoints = {
     // The fake provider in the test kit (`./testing`) serves its pages from a loopback server of its own.
     ['dist/testing/backend.js', 'http://127.0.0.1:${server.address().port}'],
   ],
+  serve: [
+    // The address agentrun-serve binds by default, which its quick start points a client at.
+    ['README.md', 'http://127.0.0.1:7340'],
+  ],
 };
 
 const usedEndpoints = new Set();
@@ -87,7 +91,7 @@ try {
     assert.equal(text, JSON.stringify(JSON.parse(text), null, 2) + '\n', `packages/${entry.name}/package.json is not canonical two-space JSON: a key appears twice, or the layout differs`);
   }
   receipt.checks.push('Every packages/*/package.json is canonical two-space JSON, so no key appears twice.');
-  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent'];
+  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve'];
   const tarballs = [];
   for (const directory of packageDirectories) {
     const cwd = join(root, 'packages', directory);
@@ -262,6 +266,7 @@ import * as piDurable from '@parcha/agentrun-pi/durable';
 import * as piWorkflows from '@parcha/agentrun-pi/workflows';
 import * as agentHome from '@parcha/pi-durable-agent';
 import * as agentExport from '@parcha/pi-durable-agent/export';
+import * as serve from '@parcha/agentrun-serve';
 import * as piSignin from '@parcha/agentrun-pi/signin';
 const { createPiRunner } = pi;
 assert.equal('authorWorkflow' in pi, false);
@@ -299,11 +304,13 @@ assert.equal(typeof piWorkflows.WorkflowStore,'function'); assert.equal(typeof p
 assert.deepEqual([agentExport.EXPORTABLE_KINDS,agentExport.SECRET_KINDS,agentExport.projectForExport],[agentHome.EXPORTABLE_KINDS,agentHome.SECRET_KINDS,agentHome.projectForExport]);
 { const ready=piSignin.checkKeys({name:'consumer',models:{lead:{needs:['text']}},keys:[{env:'CONSUMER_KEY',why:'w',where:'x',required:true}],programs:[],expectedCalls:0,expectedCost:0},{env:{}}); assert.equal(ready.exitCode,2); assert.equal(typeof piSignin.resolveModel,'function'); }
 assert.ok(loadAuthorReference('language').includes(authorContract()));
-console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,network:'prohibited'}));
+{ assert.equal(typeof serve.startServe,'function'); const caps=serve.capabilities({}); assert.equal(caps.contract,'agentrun.v2/0'); assert.equal(caps.backend,'local'); assert.equal(caps.models,undefined); assert.equal(serve.ERROR_STATUS.unsupported_here,501); }
+console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,serve:true,network:'prohibited'}));
 `);
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
   assert.deepEqual(smoke, runtimeSmokeChecks);
   receipt.runtimeSmoke = smoke;
+  assert.match((await offlineNode(['node_modules/@parcha/agentrun-serve/dist/cli.js', '--help'])).stdout, /^usage: agentrun-serve /, 'the installed agentrun-serve bin prints its usage');
   // The reference example runs in the consumer as a stranger would run it: its pages are served by the browser's fake backend on
   // loopback, so its preload admits loopback only.
   await cp(join(root, 'scripts/deny-remote.mjs'), join(consumer, 'deny-remote.mjs'));
