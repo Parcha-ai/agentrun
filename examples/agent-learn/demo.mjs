@@ -228,8 +228,6 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
   const bare = join(root, 'agent.git');
   execFileSync('git', ['init', '-q', '--bare', '--template=', '-b', 'main', bare], { env: gitEnv(root) });
   const repo = await openRepo({ dir: join(root, 'host-repo'), remote: local(bare) });
-  const tmpRoot = join(root, 'tmp');
-  await mkdir(tmpRoot);
   const vault = [`demo-vault-${randomBytes(16).toString('hex')}`];
   const asked = [];
   const judge = scriptedJudge(asked);
@@ -263,7 +261,7 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
   say(f1.proposal.status === 'proposed' ? `   proposed on runs/run-1 at ${short(f1.proposal.sha)}; main has not moved` : `   proposed nothing (${f1.proposal.status})`);
   say();
 
-  const c1 = await curateNow({ repo, judge, secrets: vault, tmpRoot });
+  const c1 = await curateNow({ repo, judge, secrets: vault });
   out.curate1 = c1;
   out.lessonId = c1.runs.flatMap((r) => r.accepted)[0]?.id;
   say(`3. Curate asks the judge: ${[...new Map(asked.map((a) => [a.question, a.p])).entries()].map(([q, p]) => `${ASKED[q] ?? q}? ${p}`).join('; ')}`);
@@ -290,7 +288,7 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
   say(f2.proposal.status === 'proposed' ? `   proposed on runs/run-2 at ${short(f2.proposal.sha)}: the note and the workflow's DSL records` : `   proposed nothing (${f2.proposal.status})`);
   say();
 
-  const c2 = await curateNow({ repo, judge, secrets: vault, tmpRoot });
+  const c2 = await curateNow({ repo, judge, secrets: vault });
   out.curate2 = c2;
   say('5. Curate admits the workflow as a trial skill');
   for (const r of c2.runs) say(`   ${r.run}: ${r.accepted.length} accepted, ${r.refused.length} refused, ${r.held.length} held${r.held.length ? ` (${r.held.map((h) => h.reason).join('; ')})` : ''}`);
@@ -299,7 +297,7 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
 
   // A revert on main takes the lesson out; the workflow trial stays.
   const reverted = out.lessonId ? await revertLearning({ repo, id: out.lessonId }) : undefined;
-  const c3 = await curateNow({ repo, judge, secrets: vault, tmpRoot });
+  const c3 = await curateNow({ repo, judge, secrets: vault });
   out.revert = reverted;
   out.curate3 = c3;
   say(`6. Revert the lesson on main (git revert of the commit that added ${out.lessonId ?? 'it'})`);

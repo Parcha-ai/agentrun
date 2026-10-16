@@ -53,9 +53,9 @@ test('a lesson and a workflow go through the repository: learned, curated, seen,
   assert.match(out.run2.learned.join('\n'), new RegExp(`- ${out.lessonId} lesson: An issue whose body has a stack trace`));
   assert.match(out.run2.answer, /^bug: /);
   assert.deepEqual(out.run2.calls.map((c) => (c.name === 'agentrun' ? `agentrun ${c.arguments.action}` : `learn ${c.arguments.type}`)), ['agentrun inspect', 'agentrun save', 'learn workflow']);
-  assert.deepEqual(out.run2.saved.found.map((w) => w.name), ['triage-crash']);
-  const digest = out.run2.saved.found[0].sha256;
-  assert.equal(git('show', 'runs/run-2:inbox/run-2/workflows/triage-crash/latest'), digest, 'the run proposed the DSL records');
+  const digest = git('show', 'runs/run-2:inbox/run-2/workflows/triage-crash/latest');
+  assert.match(digest, /^[0-9a-f]{64}$/, 'the run proposed the DSL records');
+  assert.match(git('show', `runs/run-2:inbox/run-2/workflows/triage-crash/${digest}.json`), /"issues\.label"/);
 
   // Curation admits it as a trial skill, in the DSL's own layout.
   assert.deepEqual(git('diff', '--name-only', out.curate1.main, out.curate2.main).split('\n').sort(), [

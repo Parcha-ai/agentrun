@@ -6,8 +6,7 @@ import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createSession } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import {
-  collectUses, collectWorkflows, currentRevision, curate, LAYOUT, LearnError, proposeLearning, readTrial, seedLearning, seedWorkflows,
-  usesSettler, workflowAdmitter, workflowsToTry,
+  currentRevision, curate, LAYOUT, LearnError, proposeLearning, readTrial, seedLearning, seedWorkflows, workflowsToTry,
 } from '@parcha/pi-agent-learn';
 import {
   AGENT_STORE_FILE, AgentHomeError, carryBack, createAgentHome, openAgentHome, readAgentHome, refreshAgentHome, startRun,
@@ -97,25 +96,18 @@ export async function prepareRun({ home, repo, host, runId, input, ref = 'main' 
   }
 }
 
-// Call after the run's Harness has closed. The workflows the run saved and the trials it used go with its notes; any
-// guard hit refuses the whole proposal, and main never moves here.
+// Call after the run's Harness has closed. From `workDir` the package collects the workflows the run saved and the
+// trials it used, beside its notes; any guard hit refuses the whole proposal, and main never moves here.
 export async function finishRun({ home, repo, run, secrets = [], caseValues = [], outcome = 'completed' }) {
   const carried = await carryBack(home, run, { outcome });
-  const saved = await collectWorkflows({ repo, workDir: run.workspace, seedSha: run.sha });
-  const uses = await collectUses({ store: run.storePath, workDir: run.workspace, run: run.runId });
-  const proposal = await inRunStore(run, (target) => proposeLearning({
-    repo, runId: run.runId, target, secrets, caseValues, workflows: saved.records, ...(uses ? { uses: () => uses } : {}),
-  }));
-  return { carried, proposal, saved };
+  const proposal = await inRunStore(run, (target) => proposeLearning({ repo, runId: run.runId, target, workDir: run.workspace, secrets, caseValues }));
+  return { carried, proposal };
 }
 
-// The single writer of main. `judge` is the DSL's runJudge port; workflows are admitted as trials and their uses settled
-// by the package's own ports.
-export function curateNow({ repo, judge, secrets = [], tmpRoot, now }) {
-  return curate({
-    repo, judge, secrets, admitWorkflow: workflowAdmitter({ ...(tmpRoot ? { tmpRoot } : {}) }), settleUses: usesSettler({ ...(tmpRoot ? { tmpRoot } : {}) }),
-    ...(now ? { now } : {}),
-  });
+// The single writer of main. `judge` is the DSL's runJudge port; curate admits saved workflows as trials and settles
+// their uses with the package's own ports by default.
+export function curateNow({ repo, judge, secrets = [], now }) {
+  return curate({ repo, judge, secrets, ...(now ? { now } : {}) });
 }
 
 // One curate commit per run: reverting it takes out everything that run added. Curation never brings it back, because
