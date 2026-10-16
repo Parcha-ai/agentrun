@@ -15,6 +15,24 @@
   },
   "keys": [
     {
+      "oneOf": [
+        {
+          "env": "TYPESAFE_API_KEY",
+          "why": "Jev's typed judgments",
+          "where": "https://console.typesafe.ai/keys",
+          "required": true
+        },
+        {
+          "env": "OPENROUTER_API_KEY",
+          "why": "Jev through OpenRouter",
+          "where": "https://openrouter.ai/keys",
+          "required": true
+        }
+      ],
+      "why": "the judge is Jev",
+      "for": "live"
+    },
+    {
       "env": "GITHUB_TOKEN",
       "why": "read-only GitHub REST calls; without it GitHub allows 60 requests an hour, which twenty issues overrun",
       "where": "https://github.com/settings/tokens (a token with no scopes reads public repositories)",
