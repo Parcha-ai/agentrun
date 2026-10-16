@@ -13,6 +13,7 @@ import { readAllEntries } from './folder.ts';
 import { diskPanel } from './disk.ts';
 import { transportPanel } from './transport.ts';
 import { visionPanel } from './vision.ts';
+import { failedItemsPanel } from './failed-items.ts';
 
 /** A bundled recording: embedded in gallery.js (its lines, and each blob as a data: URL), or, in a build that ships
  *  recordings as files, listed in `recordings/index.json` (each blob as its path in the recording's directory). */

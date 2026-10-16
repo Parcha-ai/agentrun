@@ -136,6 +136,42 @@ names; any other message, origin or field is ignored, and no message carries cod
 
 Without `&parent=`, the viewer still posts, and listens to nothing.
 
+## Rebuild a v4 item's state
+
+A v4 run (RECORDING.md section 5, draft 26: the keyed layout) keeps each map item in an `agentrun.items` document, its
+states as deltas against its map's base, and each base in an `agentrun.states` document. A panel never rebuilds an
+item's state itself: it imports `itemStateOf(item, states, path)` from `./items.ts`, which runs the DSL's own
+`itemState` with the page's SHA-256 (`sha256Hex`, `./receipt-key.ts`). It returns `{ state }`, or `{ unreadable }`
+saying why (the base is missing, a digest differs, the item keeps no state at that path), and a panel shows such an item
+as unreadable, never a guess. `statesBySha(values)` turns the `agentrun.states` values a panel keeps into the lookup
+`itemStateOf` takes.
+
+A failed map's finished results (draft 27) are the driver's `state.pin.partial.results`. A v3 pin keeps them inline. In
+the keyed layout, `results` is the SHA-256 of an `agentrun.states` document whose state is the list of slots, one per
+item in index order, each `null` (the item never finished) or the SHA-256 of the document holding that item's result,
+any JSON value. A panel never reads them itself: it imports `partialResultsOf(partial, states)` from `./items.ts`, which
+runs the DSL's own `partialResults` with the page's SHA-256, for either layout. It returns `{ slots }`, each `null`,
+`{ result }` or `{ unreadable }`, or a whole `{ unreadable }` when the list is missing, does not hash to its digest or
+is not a list of digests; every digest is checked.
+
+A map with `onItemFailure: "collect"` (draft 28) collects an item that fails instead of failing, and keeps how the item
+ended in exactly one place: in the keyed layout, the item's `agentrun.items` record, with status `"failed"` and
+`outcome: { code, label, message }`; otherwise the driver state's `pin.failures`,
+`{ <item path>: { code, label, message } }`, which holds every failed item of a v3 run and, in the keyed layout, only an
+item of a map that committed before the run moved to it (such an item has no record). A panel reads it with
+`itemFailureOf(path, item, pin)` from `./items.ts`, passing the item's record when the run keeps one: it returns
+`{ failed, from }` (`from` is `"item"` or `"pin"`), `undefined` when the item did not fail, or `{ unreadable }` when
+that place holds no `{ code, label, message }` (three strings, nothing else, as the DSL commits one) or the item is kept
+in both. A panel shows a failed item as failed, with its outcome, and has nothing to rebuild for it. The failed-items
+panel (`./failed-items.ts`) draws them: every failed item the run keeps at the stop, in map order, with its code, the
+label of the node that failed, its message and where it was read from, and an unreadable one as unreadable. It keeps
+each item's latest record and the driver's latest `pin`, starts over at each open's snapshot (a restore rolls back an
+item that failed later), and is drawn only for a recording with a failed item.
+
+The DSL's module, `itemState` and `partialResults` both, is read from `packages/dsl/src/recovery/item-state.ts` each time
+the viewer is built, never copied here: it is the one file outside `apps/viewer` a viewer module may import, the build
+inlines it in a scope of its own, and it refuses to build if that module ever imports anything.
+
 ## A panel in full
 
 ```ts
