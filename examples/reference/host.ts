@@ -115,7 +115,7 @@ const quiet = <T,>(report: (event: T) => void) => (event: T) => { try { report(e
 export type LocalHost = { host: Host; backend?: FakeBackend; ledger(): LedgerRow[]; evidence(): string[] };
 
 /** The no-key host for a run at `place`, from the job's `fakes`: scripted lead, tools, judge and browser pages, a ledger row for every fake call, and the run's events under the place. `options.browser` swaps the fake browser for another; `options.recorder` records the run. */
-export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: BrowserPlane; recorder?: Recorder; boxes?: BoxProvider; live?: boolean } = {}): LocalHost {
+export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: BrowserPlane; recorder?: Recorder; boxes?: BoxProvider; live?: boolean; /** On a live run, the live parts' tools (`LiveParts.tools`): the effect door dispatches to these. A tool missing here runs from `fakes.tools` only when it is in `fakesDeclared` (demo.json's `tools` entry says `local: "fakes"`), else the call fails `no live source for <tool>`. Absent, every tool runs from `fakes.tools` as before. */ liveTools?: Fakes['tools']; fakesDeclared?: ReadonlySet<string> } = {}): LocalHost {
   const recorder = options.recorder;
   const ledgerFile = join(place.root, 'ledger.jsonl');
   // Kept by the effect's id (hashed into a file name): two effects with one `argsHash`, a poll and its next, never share an answer.
@@ -166,7 +166,10 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
       extensions: options.live ? [] : [...(fakes.extensions ?? [])],
       runEffect: async ({ node, input, effect, call }) => {
         if (!effect) throw new Error('this door runs under the recovery driver, which names the admitted effect');
-        const tool = node.tool === undefined ? undefined : fakes.tools[node.tool];
+        // On a live run that has live tools, the door dispatches to them; one missing there runs from the fakes only when demo.json says it may (`local: "fakes"`). On fakes, `fakes.tools` is the only source.
+        const liveTool = options.live && options.liveTools && node.tool !== undefined ? options.liveTools[node.tool] : undefined;
+        if (options.live && options.liveTools && node.tool !== undefined && !liveTool && !options.fakesDeclared?.has(node.tool)) throw new Error(`no live source for ${node.tool}`);
+        const tool = liveTool ?? (node.tool === undefined ? undefined : fakes.tools[node.tool]);
         if (!tool) throw new Error(`no tool ${node.tool} in this host`);
         count('tool', node.tool!);
         // Each outside call is reported as it ends, with its outcome, so the run's record can say how many times it was applied. A send

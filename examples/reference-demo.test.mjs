@@ -1417,3 +1417,29 @@ test('code mode is off by default; on, the agent\'s `code` tool runs a script wh
   const spec = await run(t, { codeMode: true }, ['--json'], { DEMO_CODE: script, DEMO_CODE_ON: '' });
   assert.equal(readFileSync(join(spec.result.dir, 'work', 'proof.txt'), 'utf8').trim(), 'hello');
 });
+
+// ---- LiveParts.tools ---------------------------------------------------------------------------------------------------------------------------
+
+test('on --live the effect door dispatches to LiveParts.tools (with its receipt); a tool missing there runs from the fakes only when demo.json says local: "fakes", else the call fails "no live source"; on fakes nothing changes', { timeout: 300_000 }, async (t) => {
+  const programs = [{ name: 'fixture spec', env: 'DEMO_SPEC' }, { name: 'fixture probe', env: 'DEMO_LIVE_PROBE' }];
+  const keys = [[{ env: 'BROWSERBASE_API_KEY' }, { env: 'BROWSERBASE_PROJECT_ID' }]];
+  const browser = Object.fromEntries(['BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID'].map((name) => [name, `value-for-${name.toLowerCase()}`]));
+  const answers = (dir) => readdirSync(join(dir, 'answers')).map((name) => JSON.parse(readFileSync(join(dir, 'answers', name), 'utf8')));
+  const fromLive = (dir) => answers(dir).some((answer) => answer.value?.from === 'live');
+  // A live tool: dispatched through the door, its answer kept as the receipt (the same wrapper as a fakes tool).
+  const live = await run(t, { keys, programs }, ['--json', '--live'], { DEMO_LIVE_PROBE: '1', DEMO_LIVE_TOOLS: 'search', ...browser });
+  assert.equal(live.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(live.result.processes.at(-1)));
+  assert.ok(fromLive(live.result.dir), 'the live tool ran, and its receipt is the kept answer');
+  // A tool missing from the live tools, declared local: "fakes": the fakes\' own runs.
+  const declared = await run(t, { keys, programs, tools: [{ name: 'search', local: 'fakes', hosted: null }] }, ['--json', '--live'], { DEMO_LIVE_PROBE: '1', DEMO_LIVE_TOOLS: 'other', ...browser });
+  assert.equal(declared.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(declared.result.processes.at(-1)));
+  assert.ok(!fromLive(declared.result.dir) && answers(declared.result.dir).length > 0, 'the fakes\' search ran');
+  // Not declared: the call fails clearly.
+  const missing = await run(t, { keys, programs }, ['--json', '--live'], { DEMO_LIVE_PROBE: '1', DEMO_LIVE_TOOLS: 'other', ...browser });
+  assert.notEqual(missing.result.processes.at(-1).outcome.status, 'complete');
+  assert.ok(JSON.stringify(missing.result.processes.at(-1)).includes('no live source for search') || readFileSync(join(missing.recording, 'events.jsonl'), 'utf8').includes('no live source for search'), 'it says why');
+  // On fakes, live tools are never looked at.
+  const fakes = await run(t, {}, ['--json'], { DEMO_LIVE_PROBE: '', DEMO_LIVE_TOOLS: 'search' });
+  assert.equal(fakes.result.processes.at(-1).outcome.status, 'complete');
+  assert.ok(!fromLive(fakes.result.dir), 'fakes.tools never see LIVE');
+});
