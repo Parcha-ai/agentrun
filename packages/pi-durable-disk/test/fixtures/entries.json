@@ -44,6 +44,7 @@
       "markReadOnlySafe",
       "openClaimDir",
       "openDurableRun",
+      "readLocalRunStatus",
       "readRunStatus",
       "requestRun",
       "revoke",

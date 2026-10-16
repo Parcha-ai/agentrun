@@ -7,14 +7,13 @@
 // no key: `localRun` is a directory of this machine and pi-ai's faux model answers.
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { readFileSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { createModels, fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { createRegistry } from "@earendil-works/pi-durable";
-import { localRun, openDurableRun, serveRun, watchParking } from "@parcha/pi-durable-disk";
-import { parseRunRecord, RUN_JSON } from "@parcha/pi-durable-disk/internals";
+import { localRun, openDurableRun, readLocalRunStatus, serveRun, watchParking } from "@parcha/pi-durable-disk";
 
 const root = join(process.cwd(), "serve-and-park-run");
 /** The model's retry wait. A wait longer than the park threshold is what parks the run. */
@@ -115,7 +114,12 @@ function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
-const runRecord = () => parseRunRecord(readFileSync(join(root, RUN_JSON), "utf8"));
+/** The run's status from its directory: the record `readRunStatus` reads from a disk, read here from `run.json` under the run's root. */
+async function runRecord() {
+  const record = await readLocalRunStatus(root);
+  if (record === null) throw new Error(`the run has no run.json under ${root}`);
+  return record;
+}
 const lines: string[] = [];
 
 async function supervise(): Promise<void> {
@@ -131,7 +135,7 @@ async function supervise(): Promise<void> {
     console.log(`submitted order-1: submission ${sent.submission.id} is ${sent.submission.status}`);
     expect((await within(first.closed, 30_000, "generation 1 parking")) === 0, "generation 1 exits 0 by itself, parked");
     const parkedAt = Date.now();
-    const sleeping = runRecord();
+    const sleeping = await runRecord();
     expect(sleeping.status === "sleeping" && sleeping.wakeAt !== null && Date.parse(sleeping.wakeAt) > parkedAt - 1_000, `run.json says sleeping with a wakeAt: ${JSON.stringify([sleeping.status, sleeping.wakeAt])}`);
     // The record keeps the last holder; the release sealed the store, and the process it names is gone.
     expect(sleeping.sealedSeq !== null, "the release sealed the store at its last committed sequence");
@@ -150,7 +154,8 @@ async function supervise(): Promise<void> {
     expect(again.submission.status === "done" && again.answer?.text === "recovered, answered once" && again.generation === 2, `the answer comes from generation 2: ${JSON.stringify(again)}`);
     second.child.kill("SIGTERM");
     expect((await within(second.closed, 15_000, "generation 2 ending")) === 0, "generation 2 exits 0 on SIGTERM, done");
-    expect(runRecord().status === "done", `run.json says done: ${runRecord().status}`);
+    const finished = await runRecord();
+    expect(finished.status === "done", `run.json says done: ${finished.status}`);
     // The model was asked once by each generation (overloaded, then answered): the duplicate never reached it.
     const asked = lines.filter((line) => line.startsWith("model request"));
     expect(asked.join() === "model request (generation 1),model request (generation 2)", `model requests: ${asked}`);

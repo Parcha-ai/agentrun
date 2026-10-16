@@ -718,6 +718,14 @@ const run = await openDurableRun({ disk: "local", region: "local", id: "run-1" }
 });
 ```
 
+The run's status is its `run.json`, and `readLocalRunStatus(root)` (the directory `localRun` takes) reads it, read-only and safe beside a live instance, the way `readRunStatus` reads a disk's: the
+same `RunRecord` (`status`, `generation`, `wakeAt`, `holder`, `sealedSeq`, `detail`), `null` when the run has no `run.json`
+yet, and `RunRecordError` (`RUN_JSON_INVALID`) when it is malformed.
+
+```ts
+const status = await readLocalRunStatus("/var/runs/run-1");   // { status: "sleeping", wakeAt: "...", ... } or null
+```
+
 It is for one machine (a laptop, a CI job, a test), and says so: the claim is the directory itself, so nothing but this
 machine's owner lock keeps a second process off the run (a second open while one holds it is refused), and nothing at
 all keeps out a process on another machine that can reach the directory. Its barrier refuses once the run is fenced,
