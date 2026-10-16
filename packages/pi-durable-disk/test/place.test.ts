@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import type { Delegation } from "disk";
 import { archilPlace, localPlace, PlaceError } from "../src/place.ts";
 import { parseTokenNickname } from "../src/claim.ts";
-import type { HostDriver, HostHandle, HostStatus, StartAttempt, SupervisorControl } from "../src/supervise.ts";
+import type { HostBox, HostDriver, HostHandle, HostStatus, StartAttempt, SupervisorControl } from "../src/supervise.ts";
 import { currentBootId, procStartTicks } from "../src/hosts/local-host.ts";
 import { scratchRoot } from "./_run-support.ts";
 
@@ -806,6 +806,33 @@ describe("archilPlace", () => {
     assert.equal(settled, false, "still waiting, no signal and no rejection");
     await it3.return!();
     assert.deepEqual(await pending, { done: true, value: undefined });
+  });
+
+  it("status lists a receipt for each box the place started, a killed or released one with its end; a driver that makes no boxes gives none, nor does localPlace", async () => {
+    const control = new FakeControl();
+    const { host } = fakeHost(control);
+    const receipts = new Map<string, HostBox>();
+    const receipt = (n: number, to: string | null): HostBox => ({ provider: "daytona", kind: "sandbox 1 vCPU, 1 GiB memory, 3 GiB disk", from: `2026-10-16T09:0${n}:00.000Z`, to, usdPerSecond: 0.0000185, source: { page: "https://www.daytona.io/pricing", readOn: "2026-10-16" } });
+    (host as HostDriver).box = (h) => receipts.get(String(h.name)) ?? null;
+    const at = makePlace({ ...REF, control, host });
+    const first = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
+    receipts.set("box-1", receipt(1, null));
+    assert.deepEqual((await at.status!()).boxes, [receipt(1, null)]);
+    await at.kill(first, "box");
+    receipts.set("box-1", receipt(1, "2026-10-16T09:01:30.000Z"));
+    await at.recover(first, "box", { gen: 2, env: {}, stdin: await at.token!(2) });
+    receipts.set("box-2", receipt(2, null));
+    assert.deepEqual((await at.status!()).boxes, [receipt(1, "2026-10-16T09:01:30.000Z"), receipt(2, null)], "the killed box with its end, the new one live");
+    await at.release();
+    receipts.set("box-2", receipt(2, "2026-10-16T09:03:00.000Z"));
+    assert.deepEqual((await at.status!()).boxes?.map((b) => b.to), ["2026-10-16T09:01:30.000Z", "2026-10-16T09:03:00.000Z"], "released boxes stay listed");
+
+    const c2 = new FakeControl();
+    const plain = makePlace({ ...REF, control: c2, host: fakeHost(c2).host });
+    await plain.start({ gen: 1, env: {}, stdin: await plain.token!(1) });
+    assert.ok(!("boxes" in (await plain.status!())), "a driver that makes no boxes: no receipts");
+    await plain.release();
+    assert.ok(!("boxes" in (await localPlace({ app: APP })({ paths: pathsAt(scratch()) }).status!())), "localPlace reports none");
   });
 
   it("a driver with no kill: kills is empty and kill refuses", async () => {

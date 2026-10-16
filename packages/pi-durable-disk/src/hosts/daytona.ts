@@ -15,7 +15,7 @@
 // in it, the commands a crashed incarnation detached included. The supervisor holds the API key; boxes never do.
 import { DEFAULT_MOUNT_ROOT, runPath, type RunRef } from "../claim.ts";
 import { PdaError } from "../errors.ts";
-import type { HostDriver, HostHandle, HostStatus, StartAttempt } from "../supervise.ts";
+import type { HostBox, HostDriver, HostHandle, HostStatus, StartAttempt } from "../supervise.ts";
 import { attemptEnv } from "./attempt-env.ts";
 import { LAUNCH_DIR, type LaunchSpec, type LaunchState, type LaunchStatus } from "./daytona-launch.ts";
 import { TERMINAL_EXITS } from "./local-host.ts";
@@ -30,12 +30,43 @@ export type SandboxInfo = {
   id: string;
   name: string;
   state?: string;
+  /** The box's size as Daytona allocates it: vCPUs, GPUs, memory and disk (the API's GB). */
+  cpu?: number;
+  gpu?: number;
+  memory?: number;
+  disk?: number;
+  createdAt?: string;
   snapshot?: string;
   labels?: Record<string, string>;
   target?: string;
   toolboxProxyUrl?: string;
   errorReason?: string;
 };
+
+/**
+ * Daytona's published list prices, as its pricing page gave them on `readOn`: billed per second, quoted per hour, for
+ * each vCPU, each GiB of memory and each GiB of disk past the first 5 (free). The page publishes no GPU rate.
+ */
+export const DAYTONA_LIST_PRICES = {
+  page: "https://www.daytona.io/pricing",
+  readOn: "2026-10-16",
+  vcpuPerHour: 0.0504,
+  memoryGiBPerHour: 0.0162,
+  diskGiBPerHour: 0.000108,
+  freeDiskGiB: 5,
+} as const;
+
+/**
+ * A box's list price per second at DAYTONA_LIST_PRICES, from its size; null when its size is unknown or it has a GPU
+ * (no published rate to price it at).
+ */
+export function daytonaUsdPerSecond(size: Pick<SandboxInfo, "cpu" | "gpu" | "memory" | "disk">): number | null {
+  const { cpu, memory, disk, gpu } = size;
+  const count = (n: unknown) => typeof n === "number" && Number.isFinite(n) && n >= 0;
+  if (!count(cpu) || !count(memory) || !count(disk) || (gpu !== undefined && gpu !== 0)) return null;
+  const p = DAYTONA_LIST_PRICES;
+  return (cpu! * p.vcpuPerHour + memory! * p.memoryGiBPerHour + Math.max(0, disk! - p.freeDiskGiB) * p.diskGiBPerHour) / 3600;
+}
 
 export type CreateSandboxBody = {
   name: string;
@@ -364,6 +395,13 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & Required<Pic
     return r;
   }
 
+  /** Each box this driver made, for its receipt: what Daytona said of it, when it was made, and when it ended. */
+  const made = new Map<string, { info: SandboxInfo; from: string; to: string | null }>();
+  const ended = (id: string) => {
+    const m = made.get(id);
+    if (m && m.to === null) m.to = new Date(now()).toISOString();
+  };
+
   return {
     fleet,
     mountRoot,
@@ -387,8 +425,10 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & Required<Pic
         ...(opts.network?.allowList ? { networkAllowList: opts.network.allowList } : {}),
       };
       let box = await createOrAdopt(body, ref.id);
+      made.set(box.id, { info: box, from: box.createdAt ?? new Date(t0).toISOString(), to: null });
       try {
         box = await waitStarted(box, t0 + startTimeoutMs);
+        made.get(box.id)!.info = { ...made.get(box.id)!.info, ...box };
         const prepared = now();
         if (opts.prepare) await opts.prepare(box, client);
         const prepareMs = now() - prepared;
@@ -414,7 +454,9 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & Required<Pic
         }
         return handle;
       } catch (err) {
+        // The box was made and is deleted now: its receipt ends here, deleted or not (a delete that failed is the sweep's).
         await client.remove(box.id).catch(() => {});
+        ended(box.id);
         if (err instanceof DaytonaHostError) throw err;
         throw new DaytonaHostError("START_FAILED", `starting an instance in ${name} failed: ${(err as Error).message}`, { cause: err });
       }
@@ -428,7 +470,10 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & Required<Pic
       } catch (err) {
         throw new DaytonaHostError("DAYTONA_API_FAILED", `reading sandbox ${h.name}: ${(err as Error).message}`, { cause: err });
       }
-      if (!box) return "gone";
+      if (!box) {
+        ended(h.sandboxId as string);
+        return "gone";
+      }
       // The label, not the id in a handle, decides whose box this is: a handle can never reach another fleet's box.
       if (box.labels?.[LABEL_FLEET] !== fleet) return "unknown";
       const s = sandboxStatus(box.state);
@@ -463,6 +508,7 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & Required<Pic
           throw new DaytonaHostError("STOP_FAILED", `deleting sandbox ${h.name} failed: ${(err as Error).message}`, { cause: first });
         }
       }
+      ended(id);
     },
 
     async kill(h: HostHandle): Promise<void> {
@@ -487,6 +533,24 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & Required<Pic
           throw new DaytonaHostError("KILL_FAILED", `deleting sandbox ${h.name} failed: ${(err as Error).message}`, { cause: first });
         }
       }
+      ended(id);
+    },
+
+    box(h: HostHandle): HostBox | null {
+      if (!mine(h)) return null;
+      const m = made.get(h.sandboxId as string);
+      if (!m) return null;
+      const { cpu, gpu, memory, disk } = m.info;
+      const usdPerSecond = daytonaUsdPerSecond(m.info);
+      const size = [cpu, memory, disk].every((n) => typeof n === "number") ? ` ${cpu} vCPU, ${memory} GiB memory, ${disk} GiB disk${gpu ? `, ${gpu} GPU` : ""}` : "";
+      return {
+        provider: "daytona",
+        kind: `sandbox${size}`,
+        from: m.from,
+        to: m.to,
+        usdPerSecond,
+        source: usdPerSecond === null ? null : { page: DAYTONA_LIST_PRICES.page, readOn: DAYTONA_LIST_PRICES.readOn },
+      };
     },
   };
 }

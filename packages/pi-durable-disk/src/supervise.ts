@@ -45,6 +45,20 @@ export type HostHandle = { driver: string; [key: string]: Json };
  */
 export type StartAttempt = { attempt: number; env?: Record<string, string> };
 
+/**
+ * A box a driver made for an instance, as a receipt: who provided it, what kind, when it was made and when it ended
+ * (null while it lives), and its published list price per second with the page that price was read from and the date it
+ * was read. `usdPerSecond` and `source` are null when the provider publishes no price for this kind of box.
+ */
+export type HostBox = {
+  provider: string;
+  kind: string;
+  from: string;
+  to: string | null;
+  usdPerSecond: number | null;
+  source: { page: string; readOn: string } | null;
+};
+
 /** Compute is disposable and pluggable: a driver is these three calls. */
 export interface HostDriver {
   /**
@@ -65,6 +79,8 @@ export interface HostDriver {
   kill?(handle: HostHandle): Promise<void>;
   /** What `kill` takes: `process`, the instance's processes while its machine stays (a restart policy may bring them back), or `box`, its machine. */
   readonly kills?: "process" | "box";
+  /** Optional, for a driver whose instances get machines of their own: the box `handle`'s instance runs in, as a receipt. */
+  box?(handle: HostHandle): HostBox | null;
 }
 
 /** The control-plane calls the supervisor uses; an archil `Disk` satisfies it. */

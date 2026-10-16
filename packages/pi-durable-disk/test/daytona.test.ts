@@ -9,7 +9,9 @@ import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  DAYTONA_LIST_PRICES,
   daytonaHost,
+  daytonaUsdPerSecond,
   daytonaRest,
   DaytonaApiError,
   DaytonaHostError,
@@ -226,7 +228,7 @@ function shell(command: string, timeoutSec: number, cwd: string): Promise<ExecRe
 type Fault = Error | "landed-503" | "409-own" | "409-foreign";
 
 /** An in-memory Daytona: boxes start after `startAfterGets` reads; every call is recorded; faults are queued per call. */
-function fakeDaytona(o: { startAfterGets?: number; cwd?: string; writeFiles?: boolean } = {}) {
+function fakeDaytona(o: { startAfterGets?: number; cwd?: string; writeFiles?: boolean; size?: Pick<SandboxInfo, "cpu" | "gpu" | "memory" | "disk" | "createdAt"> } = {}) {
   const boxes = new Map<string, SandboxInfo & { deleted?: boolean; reads: number }>();
   const calls: { op: string; arg?: unknown }[] = [];
   const creates: CreateSandboxBody[] = [];
@@ -235,7 +237,7 @@ function fakeDaytona(o: { startAfterGets?: number; cwd?: string; writeFiles?: bo
   const faults = { create: [] as Fault[], get: [] as Error[], remove: [] as Error[], exec: [] as (Error | ExecResult)[], upload: [] as Error[] };
   let next = 1;
   const add = (body: CreateSandboxBody, labels = body.labels) => {
-    const box = { id: `sb-${next++}`, name: body.name, state: "creating", labels, target: body.target, reads: 0 };
+    const box = { id: `sb-${next++}`, name: body.name, state: "creating", labels, target: body.target, reads: 0, ...(o.size ?? {}) };
     boxes.set(box.id, box);
     return box;
   };
@@ -304,11 +306,11 @@ function fakeDaytona(o: { startAfterGets?: number; cwd?: string; writeFiles?: bo
 }
 
 /** A driver whose box is a scratch directory, its launcher this checkout's, its instance the fake one. */
-function world(codes = "hold", over: Partial<Parameters<typeof daytonaHost>[0]> = {}) {
+function world(codes = "hold", over: Partial<Parameters<typeof daytonaHost>[0]> = {}, fakeOptions: Parameters<typeof fakeDaytona>[0] = {}) {
   const d = scratch("pda-dt-");
   const box = join(d, "box");
   const out = join(d, "instance.jsonl");
-  const fake = fakeDaytona({ cwd: d });
+  const fake = fakeDaytona({ cwd: d, ...fakeOptions });
   const host = daytonaHost({
     client: fake.client,
     snapshot: "pda-runtime-test",
@@ -377,6 +379,33 @@ test("a start's own environment reaches the instance over the driver's; one that
     await assert.rejects(w.host.start(REF, TOKEN, { attempt: 3, env: bad }), (e: unknown) => e instanceof DaytonaHostError && e.code === "INVALID_ARGUMENT", JSON.stringify(bad));
   }
   assert.equal(w.creates.length, creates);
+});
+
+test("box: a receipt of each box the driver made: its size, when it was made and ended, priced at Daytona's published list price with that page and the date it was read", async () => {
+  const w = world("hold", {}, { size: { cpu: 2, memory: 4, disk: 10, gpu: 0, createdAt: "2026-10-16T09:00:00.000Z" } });
+  const h = await w.host.start(REF, TOKEN);
+  assert.deepEqual(w.host.box!(h), {
+    provider: "daytona",
+    kind: "sandbox 2 vCPU, 4 GiB memory, 10 GiB disk",
+    from: "2026-10-16T09:00:00.000Z",
+    to: null,
+    usdPerSecond: (2 * 0.0504 + 4 * 0.0162 + 5 * 0.000108) / 3600,
+    source: { page: "https://www.daytona.io/pricing", readOn: "2026-10-16" },
+  });
+  assert.equal(w.host.box!({ ...h, fleet: "other" }), null, "another fleet's handle is not this driver's");
+  await w.host.kill(h);
+  await stopLaunch(w.box, String(h.name), 1_000);
+  const ended = w.host.box!(h)!;
+  assert.ok(ended.to !== null && Date.parse(ended.to) >= Date.parse(ended.from), "ended when the driver deleted it");
+});
+
+test("daytonaUsdPerSecond: the list price from a box's size (the first 5 GiB of disk free); none without a size, or for a box with a GPU, whose rate the page does not publish", () => {
+  const p = DAYTONA_LIST_PRICES;
+  assert.equal(daytonaUsdPerSecond({ cpu: 1, memory: 1, disk: 3 }), (p.vcpuPerHour + p.memoryGiBPerHour) / 3600);
+  assert.equal(daytonaUsdPerSecond({ cpu: 4, memory: 8, disk: 20 }), (4 * p.vcpuPerHour + 8 * p.memoryGiBPerHour + 15 * p.diskGiBPerHour) / 3600);
+  assert.equal(daytonaUsdPerSecond({}), null);
+  assert.equal(daytonaUsdPerSecond({ cpu: 2, memory: 4, disk: 10, gpu: 1 }), null);
+  assert.deepEqual([p.page, p.readOn], ["https://www.daytona.io/pricing", "2026-10-16"], "a price never travels without its page and the date it was read");
 });
 
 test("kill: the box is deleted at once, with no launcher stop and no drain; another fleet's box and a gone one are no-ops; a refused delete powers the box off first; a box kill", async () => {

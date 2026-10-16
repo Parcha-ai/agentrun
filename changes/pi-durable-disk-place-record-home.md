@@ -15,6 +15,11 @@ kind: feature
   `record/<attempt>/blobs/` over the control, owned by the run user (mode 0755), while no delegation holds the run. A
   directory made by path on an Archil mount was seen to refuse file creates. Every file in them stays the runner's; a
   refused put fails the start with `DIRS_REFUSED`.
+- Box receipts: `HostDriver.box(handle)` (`HostBox`) and `PlaceStatus.boxes`. `archilPlace.status()` lists a receipt
+  for each box it started, released ones included: provider, kind, `from`, `to`, the published list price per second,
+  and its `source` (page and date read). `daytonaHost` reports its sandboxes, priced at `DAYTONA_LIST_PRICES`
+  (https://www.daytona.io/pricing, read 2026-10-16); a box with a GPU or of unknown size has no price
+  (`daytonaUsdPerSecond`). `localPlace` reports none.
 - Failures carry codes (`PlaceError`). `BLOB_MISMATCH` is thrown after everything else came home. `CARRY_FAILED` is
   thrown for a list or get that fails, and on `final` for a line whose blob never landed. `BOX_GONE` is never thrown
   by this place: the recording lives on the disk, which outlives the box.

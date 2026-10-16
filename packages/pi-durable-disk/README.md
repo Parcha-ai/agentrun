@@ -410,7 +410,12 @@ except after exit 65, 70, 75 or 76. `localHost({ mode: "child" })` runs a detach
 without that guarantee.
 
 `daytonaHost({ client, snapshot, ... })` runs each instance in a Daytona sandbox of its own (library only: `supervise`
-starts local units, so pass the driver to `ensureRunning`). The box comes from a snapshot that holds Node, the archil client
+starts local units, so pass the driver to `ensureRunning`). Its `box(handle)` is that sandbox's receipt: its size
+(vCPUs, memory, disk), when it was made and when the driver deleted it, and its list price per second at
+`DAYTONA_LIST_PRICES`. Those are Daytona's published rates, with the page and the date they were read
+(https://www.daytona.io/pricing, 2026-10-16): $0.0504 per vCPU-hour, $0.0162 per GiB-hour of memory and $0.000108 per
+GiB-hour of disk past the first 5 GiB, billed per second. A box with a GPU, or of unknown size, gets no price
+(`daytonaUsdPerSecond`). The box comes from a snapshot that holds Node, the archil client
 (`libfuse2`), this package, the run user and the sudoers drop-in, or from a default image that the caller's `prepare` installs
 them into. A container sandbox has no systemd (PID 1 is the Daytona daemon), so an in-box launcher keeps the instance
 alive in place and never restarts it after exit 0, 65, 70, 75 or 76. The mount token is uploaded to a root-only file and
@@ -785,7 +790,10 @@ id and directory as the supervisor computed them.
   - A recovery is the takeover: the killed holder's delegations are revoked whatever its lease says, and the next
     instance starts. It reports `revoked` and `ms`. A newer incarnation than the one the place killed (another
     supervisor's) gets the usual lease and start-grace checks instead, so a live one is `HELD`, not revoked.
-  - `status()` reads `run.json` over S3 and lists the run's delegations.
+  - `status()` reads `run.json` over S3 and lists the run's delegations, plus, when its host driver makes boxes
+    (`daytonaHost`), a receipt for each box the place started, released ones included (`boxes`, `HostBox`). A receipt
+    has the provider, the kind, `from`, `to` (null while it lives), and the published list price per second, with the
+    page it was read from and the date (`source`). It has no price when the provider publishes none for that kind.
   - `recordHome` (when the control can list, as `archilControl`'s can): an attempt's runner records into
     `recordHome.dir(attempt)`, `<root>/record/<attempt>`, in the run's directory, so its delegation covers it and
     `deleteRunTree` removes it. `bringHome(into, { final })` reads that directory through the control (S3 list and get:

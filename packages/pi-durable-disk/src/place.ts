@@ -23,6 +23,7 @@ import {
   TOKEN_TTL,
   type EnsureOptions,
   type EnsureResult,
+  type HostBox,
   type HostDriver,
   type HostHandle,
   type HostStatus,
@@ -45,7 +46,12 @@ export type PlaceRunner = { epoch: number; pid?: number; exited: Promise<PlaceEx
 /** What a runner is handed: its number in the run, its environment, and for a place with a token, the attempt's mount token. */
 export type RunnerOrder = { gen: number; env: Record<string, string>; stdin?: string };
 /** What the place reads of the run, the way it reads it: `run.json`, and on a disk the run's delegations. */
-export type PlaceStatus = { record: RunRecord | null; delegations?: Pick<Delegation, "clientId" | "inodeId" | "path" | "isOrphaned" | "isPending">[] };
+/**
+ * What the place reads of the run, the way it reads it: `run.json`; on a disk, the run's delegations; and the boxes the
+ * place made for its runners, each as a receipt (`HostBox`: provider, kind, from, to, list price per second and where
+ * that price was read), when its host driver makes boxes. A box the place released stays listed with its end.
+ */
+export type PlaceStatus = { record: RunRecord | null; delegations?: Pick<Delegation, "clientId" | "inodeId" | "path" | "isOrphaned" | "isPending">[]; boxes?: HostBox[] };
 /** What a recovery did. A takeover on a disk lists what it revoked, and `ms` is the whole of it (revoke and start). */
 export type PlaceRecovery = {
   runner: PlaceRunner;
@@ -649,6 +655,8 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
     const paths: PlacePaths = { id: ref.id, root, work: posix.join(root, "work"), store: posix.join(root, "store") };
     const minted = new Map<string, Minted>();
     const handles: HostHandle[] = [];
+    /** Every handle the place started, released or not: the boxes it reports. */
+    const started: HostHandle[] = [];
     const killed = new Map<PlaceRunner, () => void>();
     let resolver = pathlessResolver(control);
     const records = `${runPath(ref.id)}/${RECORDS}/`;
@@ -761,6 +769,7 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
           // An adopted instance mounts with an earlier start's token: this one is unused, removed as above.
           if (result.adopted) await drop(m).catch(() => {});
           handles.push(result.handle);
+          started.push(result.handle);
           const w = watch(result.handle);
           const mark = result.startMark ? await readStartMark(control, ref.id).catch(() => null) : null;
           const runner: PlaceRunner = { epoch: mark?.generation ?? order.gen, exited: w.exited };
@@ -851,7 +860,8 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
             throw error;
           }),
         ]);
-        return { record, delegations: delegations.map(({ clientId, inodeId, path, isOrphaned, isPending }) => ({ clientId, inodeId, path, isOrphaned, isPending })) };
+        const boxes = host.box ? started.map((h) => host.box!(h)).filter((b): b is HostBox => b !== null) : undefined;
+        return { record, delegations: delegations.map(({ clientId, inodeId, path, isOrphaned, isPending }) => ({ clientId, inodeId, path, isOrphaned, isPending })), ...(boxes ? { boxes } : {}) };
       },
       recover: async (last, kind, order) => {
         if (killed.has(last)) await kill(last, kind);
