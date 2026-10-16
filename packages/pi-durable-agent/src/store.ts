@@ -6,14 +6,26 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as sleep } from "node:timers/promises";
 
+/** One answer of a home check: what a pack or an import judged, by the contract's check names. Only `fail` refuses. */
+export type HomeCheck = {
+  name: "format" | "definition" | "tools" | "sign_ins" | "vault" | "quote" | "size" | "live_runs";
+  status: "ok" | "warn" | "fail";
+  message: string;
+  detail?: Record<string, unknown>;
+};
+
 /** What went wrong, by kind: `invalid` input, an agent home or run that `exists` or is `missing`, a home that stays
- *  `busy` past the wait, a `format` this version does not read, or a home whose cache is `stale` for the sha asked. */
+ *  `busy` past the wait, a `format` this version does not read, a home whose cache or revision is `stale` for the one
+ *  asked, a pack that is `too_large`, or a pack or import that failed a `check` (`checks` says which). */
 export class AgentHomeError extends Error {
-  readonly code: "invalid" | "exists" | "missing" | "busy" | "format" | "stale";
-  constructor(code: AgentHomeError["code"], message: string, options?: ErrorOptions) {
+  readonly code: "invalid" | "exists" | "missing" | "busy" | "format" | "stale" | "too_large" | "check";
+  /** The checks behind a `check` refusal, all of them, the failed ones with status `fail`. */
+  readonly checks?: HomeCheck[];
+  constructor(code: AgentHomeError["code"], message: string, options?: ErrorOptions & { checks?: HomeCheck[] }) {
     super(message, options);
     this.name = "AgentHomeError";
     this.code = code;
+    if (options?.checks) this.checks = options.checks;
   }
 }
 

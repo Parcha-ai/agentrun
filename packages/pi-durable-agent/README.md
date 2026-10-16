@@ -173,6 +173,51 @@ from an `agent.runs` record (it is the caller's own name for itself), or `undefi
 `EXPORTABLE_KINDS`. Kinds this package does not define, pi's own documents and another extension's, are not on the
 list, so they are dropped too.
 
+## Moving a home
+
+One packer moves a home between a local server and a hosted one. `packHome(home, { out })` writes the pack,
+`readPack(file)` judges one without writing a home, and `importPack(file, dir)` writes one as a home.
+
+A pack is a tar (POSIX ustar, with pax headers for a name over 100 bytes or beyond ASCII), and it holds these members
+and nothing else, in this order, sorted, owned by 0/0, mode 0644 or 0755, stamped with the manifest's `created_at`:
+
+| Member | Holds |
+|---|---|
+| `manifest.json` | `format` `agentrun.home/1`, `agent_id`, `definition`, `source` (`sha`, `refreshed_at`, or `null`), `skills` (`path`, `sha256`, `size_bytes`), `sign_ins` (`key`, `provider`: what the source had, none travels), `vault` (`name`s, empty today), `runs` (`count`, `live`), `size_bytes` (the pack's own), `created_at` |
+| `agent.sqlite` | A new agent store with only `EXPORTABLE_KINDS`, each through `projectForExport`, then `VACUUM INTO` one clean file: no `-wal`, no `-shm`, no free page with an old row. Nothing is copied from the live file |
+| `runs/<id>/store/run.sqlite` | Only through `exportRunStore(storePath, outPath)`; without it no run store travels |
+| `runs/<id>/work/...` | Regular files and directories whose names do not start with `.`. Symbolic links, hard links, devices and dotfiles are skipped (`skipped` lists them) |
+
+A run that was still live (no `endedAt`) travels as its `agent.runs` entry only: neither its store nor its work. The
+home's `chrome/`, `repo/`, `owner.lock`, `tmp/` and everything else are never read. The packer refuses (`check`) a
+SQLite file that holds a `SECRET_KINDS` document or has a `-wal`, `-shm` or `-journal` file beside it, whatever its name:
+it looks at the bytes, so a store hiding in `work/` is found. `maxBytes` refuses (`too_large`) before anything is
+written. The home is read under its owner lock, and the pack is renamed into place when complete.
+
+`readPack` returns `{ ok, manifest, checks }`. The checks use the contract's names for what the package can judge:
+`format` (the manifest first, `agentrun.home/N` with N at most this version's, every member on the allowlist, no `..`,
+no absolute path, no link or device, no store with a sign-in kind, nothing after the end), `definition` (the definition
+is valid and is the one in `agent.sqlite`, the agent id is the same everywhere, each skill matches its `sha256` and
+size), `sign_ins` (`warn` when the source had sign-ins: they are to redo at the target), `size` (the pack is the size its
+manifest says, and within `maxBytes`) and `live_runs` (`warn` when runs travel as index entries only). Tools, vault and
+quote are the host's to judge. It writes only temporary files.
+
+`importPack` judges the pack, extracts it to a directory beside `dir`, and swaps it in with two renames, all under
+`dir`'s owner lock. A `dir` that is already a home needs `replace`, must hold the same agent, and must have no live run
+(`check`, with `live_runs` failed); `ifRevision` must still be the home's `homeRevision` (`stale`). A replace keeps what
+never travels: the target's sign-ins, aliases and bindings, and its `chrome/` and `repo/` directories. It keeps its runs
+the pack does not have, entry and directory; for a run id in both, the pack's wins. A run that was live at the source
+arrives as an ended entry with outcome `not_carried_back`. Every refusal leaves the target and the directory beside it as
+they were. Between the two renames `dir` briefly does not exist (the old home is at `.<name>.import-*/replaced`).
+
+```js
+import { importPack, packHome, readPack } from "@parcha/pi-durable-agent";
+
+const { manifest } = await packHome(home, { out: "acme.tar", maxBytes: 200 * 1024 * 1024 });
+const { ok, checks } = await readPack("acme.tar");
+if (ok) await importPack("acme.tar", "./acme-copy"); // a fresh directory, or { replace: true, ifRevision: await homeRevision(home) } over a home
+```
+
 ## The timeline
 
 `@parcha/pi-durable-agent/timeline` turns a run into one human-readable timeline. It has no dependency and uses no Node
@@ -213,7 +258,10 @@ origin, path and query keys but drops its query values, fragment and userinfo. `
 | `durableProfileStore(target, { provider?, signal? })` | pi-browser's `ProfileStore` over a run store; `target` is the host's Harness or any Session on the file |
 | `EXPORTABLE_KINDS`, `SECRET_KINDS`, `projectForExport(kind, value)` | What an exporter may copy, what never leaves the home, and one document as an exporter writes it ([Exporting a home](#exporting-a-home)) |
 | `timelineOf`, `timelineReducer`, `groupTimeline`, `renderText` | The timeline above, from `@parcha/pi-durable-agent/timeline` |
-| `AgentHomeError` | `code` is `invalid`, `exists`, `missing`, `busy`, `format` or `stale` |
+| `packHome(home, { out, maxBytes?, exportRunStore?, now? })` | The pack of a home, above; returns `{ manifest, skipped }` |
+| `readPack(file, { maxBytes? })` | `{ ok, manifest, checks }`, without writing a home |
+| `importPack(file, dir, { replace?, ifRevision?, maxBytes?, now? })` | The pack as the home in `dir`; `ifRevision` is a `homeRevision`; returns `{ home, report }` |
+| `AgentHomeError` | `code` is `invalid`, `exists`, `missing`, `busy`, `format`, `stale`, `too_large` or `check` (`checks` lists the home checks behind it) |
 
 The package does not import pi-browser at run time: `ProfileStore` is declared here by shape. `npm run typecheck`
 (after the workspace build) checks that the declaration is exactly pi-browser's type, read from the return of

@@ -6,4 +6,5 @@ export type { AgentAlias, AgentDefinition, AgentIdentity, AgentSource, BrowserPr
 export { EXPORTABLE_KINDS, projectForExport, SECRET_KINDS } from "./export.js";
 export { durableProfileStore, type ProfileStore, type ProfileTarget } from "./profiles.js";
 export { type CarryBack, carryBack, RUN_STORE_FILE, type RunPaths, runPaths, type RunStart, startRun } from "./runs.js";
-export { AgentHomeError, LOCK_FILE } from "./store.js";
+export { type HomeManifest, type ImportReport, importPack, PACK_FORMAT, type PackOptions, packHome, readPack } from "./pack.js";
+export { AgentHomeError, type HomeCheck, LOCK_FILE } from "./store.js";
