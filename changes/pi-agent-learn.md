@@ -19,9 +19,10 @@ never redacts, makes no model call, and never repeats a value it refused. It fin
 lines, as base64 or base64url at any alignment, as hex in either case, and percent or form encoded; secret shapes (cloud
 keys, private-key blocks, tokens, a URL with a password); invisible and bidirectional characters, with emoji sequences and
 the joiners of scripts that need them allowed; any value from the run's input (case data); each role's own paths (a run
-writes its inbox and uses files, the curator writes learnings, skill folders and the workflow store; `AGENTS.md`, `agent.json`
+writes its inbox, uses and workflow-record files, the curator writes learnings, skill folders and the workflow store; `AGENTS.md`, `agent.json`
 and any `.git` segment never, in any spelling); and size and count caps. `proposeLearning` is the host step at a run's
-terminal: it collects the run's candidates, renders `inbox/<run id>.md`, guards the whole proposal, and makes one commit on
+terminal: it collects the run's candidates, renders `inbox/<run id>.md`, adds the DSL's saved workflow records the host
+collected (`inbox/<run id>/workflows/<name>/`), guards the whole proposal, and makes one commit on
 `runs/<run id>` through `@parcha/pi-git-remote`, pushed by sha. A guard hit refuses all of it and commits nothing; a second
 call, including one from a restarted host with an empty local repository, commits nothing. `renderInbox` and `parseInbox`
 are the inbox's format.

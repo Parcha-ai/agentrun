@@ -1,7 +1,7 @@
 import type { Repo } from "@parcha/pi-git-remote";
 import { type Caps, createGuard } from "./guard.js";
 import { renderInbox } from "./inbox.js";
-import { inboxPath, RUN_ID, runBranch, usesPath } from "./layout.js";
+import { inboxPath, LAYOUT, RUN_ID, runBranch, usesPath } from "./layout.js";
 import { collectCandidates } from "./tool.js";
 import type { Candidate, Refusal } from "./types.js";
 
@@ -54,19 +54,26 @@ export async function proposeFiles(options: ProposeFilesOptions): Promise<Propos
 /** A run's workflow uses, from lane B5; written to `uses/<run id>.json`. Undefined means none. */
 export type UsesSource = (target: ProposeTarget) => unknown | Promise<unknown>;
 
+/** The DSL's saved records the host collected from the run's workflow store: per workflow name, each file's name
+ *  (`<sha256>.json` or `latest`) and its content, as the store wrote them. */
+export type WorkflowRecords = Readonly<Record<string, { readonly files: Readonly<Record<string, string>> }>>;
+
 export type ProposeOptions = Omit<ProposeFilesOptions, "files" | "candidates"> & {
   /** The run's store: where `collectCandidates` reads the `learn` calls. */
   readonly target: ProposeTarget;
   readonly uses?: UsesSource;
+  /** Committed under `inbox/<run id>/workflows/<name>/`. Whatever is not a workflow name or a record name is refused. */
+  readonly workflows?: WorkflowRecords;
 };
 
 /** The host step at a run's terminal: collect the run's candidates (and uses), render `inbox/<run id>.md` (and
- *  `uses/<run id>.json`), and propose them. */
+ *  `uses/<run id>.json`), add the workflow records, and propose them. */
 export async function proposeLearning(options: ProposeOptions): Promise<ProposeResult> {
-  const { target, uses: usesSource, ...rest } = options;
+  const { target, uses: usesSource, workflows, ...rest } = options;
   const candidates = await collectCandidates(target);
   const uses = await usesSource?.(target);
-  if (candidates.length === 0 && uses === undefined) return { status: "empty" };
+  const records = Object.entries(workflows ?? {}).flatMap(([name, { files }]) => Object.entries(files).map(([file, content]) => [name, file, content] as const));
+  if (candidates.length === 0 && uses === undefined && records.length === 0) return { status: "empty" };
   if (typeof rest.runId !== "string" || !RUN_ID.test(rest.runId)) return { status: "refused", refusals: [{ reason: "invalid", detail: "the run id is not valid" }] };
   const files: Record<string, string> = {};
   if (candidates.length) files[inboxPath(rest.runId)] = renderInbox(rest.runId, candidates);
@@ -75,5 +82,6 @@ export async function proposeLearning(options: ProposeOptions): Promise<ProposeR
     if (json === undefined) return { status: "refused", refusals: [{ reason: "invalid", field: "uses", detail: "the uses are not JSON" }] };
     files[usesPath(rest.runId)] = `${json}\n`;
   }
+  for (const [name, file, content] of records) files[`${LAYOUT.inbox}/${rest.runId}/workflows/${name}/${file}`] = content;
   return proposeFiles({ ...rest, files, candidates });
 }

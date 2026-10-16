@@ -1,4 +1,5 @@
-// Guard corpus: 190 cases for the guard that checks what an agent proposes to commit to its own repository.
+// Guard corpus: the 190 cases of the first corpus, plus 11 that carry the content of cases whose path a spec ruling
+// closed, for the guard that checks what an agent proposes to commit to its own repository.
 //
 // Secret-shaped strings are never written out in this file. Each one is assembled at import time from pieces, for
 // example join("AK", "IA") + pick(UPPER, 16), so the source holds no literal secret shape for a repository scanner to
@@ -7,7 +8,13 @@
 // Case shape: { id, kind, input: { path, text, secrets? }, expect, reason }.
 // kind is one of secret, path, unicode, size, allow. expect is "refuse" or "allow". A case names no role: a path is
 // allowed when the run role (inbox/<RUN_ID>.md, uses/<RUN_ID>.json) or the curate role allows it. The size cases use the
-// default caps (learning 4096, learnings/INDEX.md 4096, inbox 16384).
+// default caps (learning 4096, inbox 16384).
+//
+// Spec changes, not edits to make code pass (rulings 11 and 12 of 2026-10-16): the curator writes learnings/L-<12 hex>.md
+// only (the index is derived at seed time and never stored, so learnings/INDEX.md is refused too), and in a skill folder
+// only SKILL.md and trial.json. Eleven cases that expected a plain name under learnings/ or a subfolder in a skill folder
+// to pass now expect refuse, each marked below; their text moved into allow.moved.* cases on the run's own inbox path, so
+// the cases that a careless text check would over-refuse stay covered.
 
 export const RUN_ID = "b2-run";
 
@@ -229,13 +236,19 @@ const SZ = (id, expect, reason, path, text) => add(`size.${id}`, "size", expect,
 SZ("learning.over-by-one", "refuse", "learning file 4097 bytes; the cap is 4096", LEARN, "a".repeat(4097));
 SZ("learning.exact-cap", "allow", "learning file exactly 4096 bytes", LEARN, "a".repeat(4096));
 SZ("learning.multibyte-over", "refuse", "1400 euro signs: 1400 characters but 4200 bytes, over the 4096 byte cap", LEARN, "€".repeat(1400));
-SZ("index.over-by-one", "refuse", "learnings/INDEX.md 4097 bytes; the cap is 4096", "learnings/INDEX.md", "a".repeat(4097));
+// Ruling 11: learnings/INDEX.md is refused for its path, so a size cap no longer applies to it.
+add("size.index.over-by-one", "path", "refuse", "learnings/INDEX.md of 4097 bytes; the index is derived and never stored", at("learnings/INDEX.md", "a".repeat(4097)));
 SZ("inbox.over-by-one", "refuse", "inbox file 16385 bytes; the cap is 16384", INBOX, "a".repeat(16385));
 
 // ---- kind: allow (expect allow; a careless guard would refuse these)
 
 const OK = (id, reason, text, secrets, path = INBOX) => add(`allow.${id}`, "allow", "allow", reason, at(path, text, secrets));
 const OKP = (id, reason, path, text = ORDINARY) => add(`allow.path.${id}`, "allow", "allow", reason, at(path, text));
+// Spec changes: a path the curator no longer writes (ruling 11: learnings/<id>.md only; ruling 12: SKILL.md and trial.json only).
+const STRICT = (id, ruling, reason, path, text = ORDINARY) =>
+  add(`path.strict.${id}`, "path", "refuse", `${reason}; ruling ${ruling} closes this path`, at(path, text));
+// The text of such a case, on a path a run may write.
+const MOVED = (id, reason, text) => add(`allow.moved.${id}`, "allow", "allow", `${reason}: its text, on the run's own inbox path`, at(INBOX, text));
 
 OK("word.tokens", "the word token in an ordinary learning", "Tokens are counted before truncation, so cap the input first.");
 OK("word.password", "the word password in an ordinary learning", "Never log a password; log the account id instead.");
@@ -279,19 +292,34 @@ OK("whitespace.tab-crlf", "tabs and CRLF line breaks", "Tabs\tand\r\nCRLF breaks
 OK("secret.near-miss", "a value one letter away from a planted value", `Old value ${PLANT_NEAR} was rotated.`, [PLANT_A]);
 OK("secret.word-with-planted", "the word secret with a planted value held but not present", "The secret store holds the value; this note names no value.", [PLANT_A]);
 
-OKP("token-name", "a learnings file name containing token", "learnings/token-rotation.md", "Rotate tokens every quarter.");
-OKP("secret-name", "a learnings file name containing secret", "learnings/secret-scanning-notes.md", "Scanners flag more than secrets.");
-OKP("agent-name", "a learnings file name containing agent", "learnings/agent-notes.md");
-OKP("agents-md-name", "a learnings file name containing AGENTS-md with a hyphen", "learnings/agents-md-history.md");
-OKP("agent-json-name", "a learnings file name containing agent-json with a hyphen", "learnings/agent-json-notes.md");
-OKP("index", "learnings/INDEX.md", "learnings/INDEX.md", "# Learned (0)\n");
-OKP("git-prefix-name", "a file name starting with git but not .git", "learnings/gitignore-notes.md");
+// Ruling 11: the curator writes learnings/L-<12 hex>.md only, so these names and INDEX.md are refused (they expected allow).
+STRICT("token-name", 11, "a learnings file name containing token", "learnings/token-rotation.md", "Rotate tokens every quarter.");
+STRICT("secret-name", 11, "a learnings file name containing secret", "learnings/secret-scanning-notes.md", "Scanners flag more than secrets.");
+STRICT("agent-name", 11, "a learnings file name containing agent", "learnings/agent-notes.md", ORDINARY);
+STRICT("agents-md-name", 11, "a learnings file name containing AGENTS-md with a hyphen", "learnings/agents-md-history.md", ORDINARY);
+STRICT("agent-json-name", 11, "a learnings file name containing agent-json with a hyphen", "learnings/agent-json-notes.md", ORDINARY);
+STRICT("index", 11, "learnings/INDEX.md", "learnings/INDEX.md", "# Learned (0)\n");
+STRICT("git-prefix-name", 11, "a file name starting with git but not .git", "learnings/gitignore-notes.md", ORDINARY);
 OKP("learning-id", "a learning file named by its id", LEARN, "---\nid: L-0123456789ab\n---\nText.\n\nEvidence: (none)\n");
-OKP("spaces", "a file name with spaces", "learnings/notes on retries.md");
-OKP("unicode-name", "a file name with a non-ASCII letter", "learnings/notas-último.md");
-OKP("nested", "a nested folder under learnings/", "learnings/deep/nested/topic/notes.md");
+STRICT("spaces", 11, "a file name with spaces", "learnings/notes on retries.md", ORDINARY);
+STRICT("unicode-name", 11, "a file name with a non-ASCII letter", "learnings/notas-último.md", ORDINARY);
+STRICT("nested", 11, "a nested folder under learnings/", "learnings/deep/nested/topic/notes.md", ORDINARY);
 OKP("skill-basic", "a skill file", ".agents/skills/deploy-check/SKILL.md", "# Deploy check\n");
-OKP("skill-nested", "a file inside a skill's subfolder", ".agents/skills/deploy-check/refs/checklist.md");
+// Ruling 12: a skill folder holds SKILL.md and trial.json only, so a subfolder is refused (it expected allow).
+STRICT("skill-nested", 12, "a file inside a skill's subfolder", ".agents/skills/deploy-check/refs/checklist.md", ORDINARY);
 OKP("skill-dot-name", "a skill folder whose name has a dot", ".agents/skills/my.skill/SKILL.md");
 OKP("inbox-own", "the run's own inbox file", INBOX, "---\nrun: b2-run\n---\n");
 OKP("uses-own", "the run's own uses file", `uses/${RUN_ID}.json`, "{}");
+
+// ---- the content of the cases that rulings 11 and 12 closed, on the run's own inbox path
+MOVED("token-name", "a learnings file name containing token", "Rotate tokens every quarter.");
+MOVED("secret-name", "a learnings file name containing secret", "Scanners flag more than secrets.");
+MOVED("agent-name", "a learnings file name containing agent", ORDINARY);
+MOVED("agents-md-name", "a learnings file name containing AGENTS-md with a hyphen", ORDINARY);
+MOVED("agent-json-name", "a learnings file name containing agent-json with a hyphen", ORDINARY);
+MOVED("index", "learnings/INDEX.md", "# Learned (0)\n");
+MOVED("git-prefix-name", "a file name starting with git but not .git", ORDINARY);
+MOVED("spaces", "a file name with spaces", ORDINARY);
+MOVED("unicode-name", "a file name with a non-ASCII letter", ORDINARY);
+MOVED("nested", "a nested folder under learnings/", ORDINARY);
+MOVED("skill-nested", "a file inside a skill's subfolder", ORDINARY);

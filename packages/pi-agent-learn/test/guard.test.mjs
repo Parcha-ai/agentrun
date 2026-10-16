@@ -1,8 +1,14 @@
+// Spec changes, not edits to make code pass (rulings 11 to 14 of 2026-10-16): the curator writes learnings/L-<12 hex>.md
+// only (learnings/INDEX.md is refused: the index is derived, never stored) and SKILL.md and trial.json in a skill folder
+// (no subfolders); ZWJ and ZWNJ between letters pass only in scripts that use them; the curator may write the DSL store's
+// records, a run may not. Eleven corpus cases that expected a plain name or a skill subfolder to pass now expect refuse,
+// and their text sits in allow.moved.* cases on the run's own inbox path (test/fixtures/guard-corpus.mjs).
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { CAPS, createGuard, guard } from "../dist/index.js";
+import { CAPS, createGuard, guard, LEARN_TYPES } from "../dist/index.js";
 import { cases, RUN_ID } from "./fixtures/guard-corpus.mjs";
+import { cases as workflowCases } from "./fixtures/guard-workflow-corpus.mjs";
 
 const refusals = (role, input) => guard({ role, runId: RUN_ID, files: { [input.path]: input.text }, secrets: input.secrets ?? [] });
 const reasonsOf = (list) => new Set(list.map((r) => r.reason));
@@ -20,8 +26,10 @@ const FAMILY = {
   path: ["rules_locked", "path_not_allowed", "invisible_unicode"],
 };
 
-test("the corpus holds 190 cases with unique ids", () => {
-  assert.equal(cases.length, 190);
+test("the corpus holds 190 cases and the 11 that carry the content of closed paths, with unique ids", () => {
+  assert.equal(cases.length, 201);
+  assert.equal(cases.filter((c) => c.id.startsWith("allow.moved.")).length, 11);
+  assert.equal(cases.filter((c) => c.id.startsWith("path.strict.")).length, 11);
   assert.equal(new Set(cases.map((c) => c.id)).size, cases.length);
   for (const c of cases) {
     assert.ok(["secret", "path", "unicode", "size", "allow"].includes(c.kind), c.id);
@@ -46,7 +54,7 @@ test("the corpus source holds no literal secret shape", () => {
   for (const [name, re] of shapes) assert.doesNotMatch(source, re, `the corpus holds a literal ${name}`);
 });
 
-for (const c of cases) {
+for (const c of [...cases, ...workflowCases]) {
   test(`corpus ${c.id} (${c.kind}, expect ${c.expect})`, () => {
     const v = verdict(c.input);
     const got = v.allowed ? "allow" : "refuse";
@@ -246,6 +254,39 @@ test("random secrets are found in every encoding at every alignment, and a near 
 test("this lane's source and test files hold no hidden or look-alike character: they are written as escapes", async () => {
   const { readFile } = await import("node:fs/promises");
   const hidden = /[\p{Cf}\p{Zl}\p{Zp}\p{Co}\u{2800}\u{fe00}-\u{fe0f}\u{20e3}\u{85}\u{410}\u{415}\u{405}\u{430}\u{ff0e}]/u;
-  const files = ["src/guard.ts", "src/inbox.ts", "src/propose.ts", "test/guard.test.mjs", "test/propose.test.mjs", "test/git-support.mjs", "test/fixtures/guard-corpus.mjs"];
+  const files = ["src/guard.ts", "src/inbox.ts", "src/propose.ts", "test/guard.test.mjs", "test/propose.test.mjs", "test/git-support.mjs", "test/fixtures/guard-corpus.mjs", "test/fixtures/guard-workflow-corpus.mjs"];
   for (const file of files) assert.doesNotMatch(await readFile(new URL(`../${file}`, import.meta.url), "utf8"), hidden, file);
+});
+
+test("workflow records belong to a run's inbox folder, and the DSL's store paths to the curator", () => {
+  const digest = "0123456789abcdef".repeat(4);
+  const inbox = `inbox/run-1/workflows/kyb/${digest}.json`;
+  const store = `.pi/agentrun/workflows/kyb/${digest}.json`;
+  assert.deepEqual(guard({ role: "run", runId: "run-1", files: { [inbox]: "{}", "inbox/run-1/workflows/kyb/latest": digest } }), []);
+  assert.ok(reasonsOf(guard({ role: "run", runId: "run-1", files: { [store]: "{}" } })).has("path_not_allowed"));
+  assert.ok(reasonsOf(guard({ role: "curate", files: { [inbox]: "{}" } })).has("path_not_allowed"));
+  assert.ok(reasonsOf(guard({ role: "run", runId: "run-2", files: { [inbox]: "{}" } })).has("path_not_allowed"));
+  assert.deepEqual(guard({ role: "curate", files: { [store]: "{}" } }), []);
+});
+
+test("a workflow candidate names a workflow, every other candidate a learning", { skip: !LEARN_TYPES.includes("workflow") }, () => {
+  const named = (type, id) => guard({ role: "run", candidates: [candidate({ type, id })] }).map((r) => [r.field, r.reason]);
+  assert.deepEqual(named("workflow", "kyb-us-registry"), []);
+  assert.deepEqual(named("workflow", "L-0123456789ab"), []);
+  assert.deepEqual(named("workflow", "not a name"), [["candidates[0].id", "invalid"]]);
+  assert.deepEqual(named("workflow", "../x"), [["candidates[0].id", "invalid"]]);
+  assert.deepEqual(named("used", "kyb-us-registry"), [["candidates[0].id", "invalid"]]);
+});
+
+test("the curator writes learnings/L-<12 hex>.md, SKILL.md and trial.json, and nothing else (rulings 11 and 12)", () => {
+  const curate = (file) => guard({ role: "curate", files: { [file]: "x" } });
+  for (const file of ["learnings/L-0123456789ab.md", ".agents/skills/kyb/SKILL.md", ".agents/skills/my.skill/trial.json"]) assert.deepEqual(curate(file), [], file);
+  for (const file of [
+    "learnings/INDEX.md", "learnings/notes.md", "learnings/L-0123456789AB.md", "learnings/L-0123456789a.md", "learnings/L-0123456789abc.md",
+    "learnings/L-0123456789ab.txt", "learnings/sub/L-0123456789ab.md", "learnings/L-0123456789ab.md/x", "learnings/ L-0123456789ab.md",
+    ".agents/skills/kyb/references/checklist.md", ".agents/skills/kyb/refs/checklist.md", ".agents/skills/kyb/notes.md", ".agents/skills/kyb/skill.md",
+    ".agents/skills/SKILL.md", ".agents/skills/kyb/SKILL.md/x", ".agents/skills/not a name/SKILL.md", ".agents/config.toml",
+  ]) {
+    assert.ok(reasonsOf(curate(file)).has("path_not_allowed"), file);
+  }
 });
