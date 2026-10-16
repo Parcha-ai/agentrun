@@ -26,3 +26,16 @@ collected (`inbox/<run id>/workflows/<name>/`), guards the whole proposal, and m
 `runs/<run id>` through `@parcha/pi-git-remote`, pushed by sha. A guard hit refuses all of it and commits nothing; a second
 call, including one from a restarted host with an empty local repository, commits nothing. `renderInbox` and `parseInbox`
 are the inbox's format.
+
+Saved workflows are tried and promoted on receipts. `admitWorkflow` is curate's hook for a workflow candidate a run saved with the
+DSL's `agentrun` tool: it validates the run's records through the DSL's public store (`@parcha/agentrun-pi/workflows`), refuses a
+workflow with code in it unless the host admits it, saves the revision into the checkout through the store, and writes the skill
+(`.agents/skills/<name>/SKILL.md`, whose description is the `workflow` learning's text) and `trial.json`: `{ name, status, when,
+revisions, uses }`, where `when` is typed checks on the run's input (a JSON pointer and `eq`, `in`, `exists`, `gte` or `lte`, derived from
+the workflow's own input schema unless the host gives them). `collectWorkflows` and `inboxWorkflowFiles` hand a run's new revisions to
+its inbox, `collectUses` reads from the run's store (read only, through `recordingLines`; or from the receipts of a pi session with `readSessionUses`)
+which saved workflow each durable workflow task ran and whether it finished `frozen`, `escalated` or `failed`, and `settleWorkflowUses` folds those uses into `trial.json` by the rules
+of the archived harness: a trial is promoted after 3 clean uses in a row, the live revision is demoted after 2 failed or escalated
+ones and the previous active revision comes back, a demoted revision is never tried again, and the run that wrote a revision is no
+evidence for it. `workflowsToTry` lists the trial and active workflows whose checks hold on a run's input, for the `<learned>`
+section, and `seedWorkflows` puts them in the run's own store. The thresholds are the host's.
