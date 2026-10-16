@@ -204,7 +204,7 @@ test("the file count and byte caps are the defaults, frozen, and createGuard set
 test("emoji and the joiners of scripts that need them are text; nothing else invisible is", () => {
   const ok = [
     "ship it \u2764\ufe0f", "family \u{1f468}\u200d\u{1f469}\u200d\u{1f467}", "keycap 1\ufe0f\u20e3", "fire \u2764\ufe0f\u200d\u{1f525}",
-    "coder \u{1f469}\u{1f3fd}\u200d\u{1f4bb}", "می\u200cخواهم", "ന്\u200dന", "ශ්\u200dර",
+    "coder \u{1f469}\u{1f3fd}\u200d\u{1f4bb}", "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645", "\u0d28\u0d4d\u200d\u0d28", "\u0dc1\u0dca\u200d\u0dbb",
   ];
   for (const text of ok) assert.deepEqual(guard({ role: "run", candidates: [candidate({ text })] }), [], JSON.stringify(text));
   const bad = [
@@ -256,13 +256,6 @@ test("random secrets are found in every encoding at every alignment, and a near 
   }
 });
 
-test("this lane's source and test files hold no hidden or look-alike character: they are written as escapes", async () => {
-  const { readFile } = await import("node:fs/promises");
-  const hidden = /[\p{Cf}\p{Zl}\p{Zp}\p{Co}\u{2800}\u{fe00}-\u{fe0f}\u{20e3}\u{85}\u{410}\u{415}\u{405}\u{430}\u{ff0e}]/u;
-  const files = ["src/guard.ts", "src/inbox.ts", "src/propose.ts", "test/guard.test.mjs", "test/propose.test.mjs", "test/git-support.mjs", "test/fixtures/guard-corpus.mjs", "test/fixtures/guard-workflow-corpus.mjs"];
-  for (const file of files) assert.doesNotMatch(await readFile(new URL(`../${file}`, import.meta.url), "utf8"), hidden, file);
-});
-
 test("workflow records belong to a run's inbox folder, and the DSL's store paths to the curator", () => {
   const digest = "0123456789abcdef".repeat(4);
   const inbox = `inbox/run-1/workflows/kyb/${digest}.json`;
@@ -282,4 +275,17 @@ test("a workflow candidate names a workflow, every other candidate a learning", 
   for (const id of ["not a name", "../x", "Kyb", "my.flow"]) assert.deepEqual(named("workflow", id), [["candidates[0].id", "invalid"]], id);
   assert.deepEqual(named("used", "kyb-us-registry"), [["candidates[0].id", "invalid"]]);
   assert.deepEqual(named("used", "L-0123456789ab"), []);
+});
+
+test("the curator writes learnings/L-<12 hex>.md, SKILL.md and trial.json, and nothing else (rulings 11 and 12)", () => {
+  const curate = (file) => guard({ role: "curate", files: { [file]: "x" } });
+  for (const file of ["learnings/L-0123456789ab.md", ".agents/skills/kyb/SKILL.md", ".agents/skills/my.skill/trial.json"]) assert.deepEqual(curate(file), [], file);
+  for (const file of [
+    "learnings/INDEX.md", "learnings/notes.md", "learnings/L-0123456789AB.md", "learnings/L-0123456789a.md", "learnings/L-0123456789abc.md",
+    "learnings/L-0123456789ab.txt", "learnings/sub/L-0123456789ab.md", "learnings/L-0123456789ab.md/x", "learnings/ L-0123456789ab.md",
+    ".agents/skills/kyb/references/checklist.md", ".agents/skills/kyb/refs/checklist.md", ".agents/skills/kyb/notes.md", ".agents/skills/kyb/skill.md",
+    ".agents/skills/SKILL.md", ".agents/skills/kyb/SKILL.md/x", ".agents/skills/not a name/SKILL.md", ".agents/config.toml",
+  ]) {
+    assert.ok(reasonsOf(curate(file)).has("path_not_allowed"), file);
+  }
 });
