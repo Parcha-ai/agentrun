@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { test } from "node:test";
-import { local, openRepo } from "@parcha/pi-git-remote";
+import { GitRemoteError, local, openRepo } from "@parcha/pi-git-remote";
 import {
-  curate, deriveSeed, guard, inboxPath, LEARN_TYPES, learningId, learningPath, parseLearning, proposeFiles, QUESTIONS, renderInbox, renderLearning,
+  curate, deriveSeed, inboxPath, LEARN_TYPES, learningId, learningPath, parseLearning, proposeFiles, QUESTIONS, renderInbox, renderLearning,
 } from "../dist/index.js";
 import { git } from "./git-support.mjs";
 import { AGENT_FILES, agentRepo, learning, learningFiles, scratch } from "./support.mjs";
@@ -42,7 +42,8 @@ async function world(files = {}) {
 }
 
 async function propose(w, runId, candidates, extra = {}) {
-  const result = await proposeFiles({ repo: w.runs, runId, files: { [inboxPath(runId)]: renderInbox(runId, candidates), ...extra }, candidates, secrets: [], caseValues: [] });
+  const inbox = candidates.length ? { [inboxPath(runId)]: renderInbox(runId, candidates) } : {};
+  const result = await proposeFiles({ repo: w.runs, runId, files: { ...inbox, ...extra }, candidates, secrets: [], caseValues: [] });
   assert.equal(result.status, "proposed", JSON.stringify(result));
   return result.sha;
 }
@@ -328,6 +329,30 @@ test("a main that keeps moving stops curation with contended after the retries, 
   assert.equal(await other.read(learningPath(learningId("run-1", LESSON)), "main"), undefined);
 });
 
+test("a curate commit whose push failed for another reason is published by the next curate, not taken as done", async () => {
+  const w = await world();
+  await propose(w, "run-1", [candidate(LESSON)]);
+  const { judge, calls } = fakeJudge();
+  let failed = false;
+  const flaky = Object.freeze({
+    ...w.curator,
+    push: async (sha, branch) => {
+      if (branch === "main" && !failed && sha !== git(w.bare, ["rev-parse", "main"]).toString().trim()) {
+        failed = true;
+        throw new GitRemoteError("git", "the network went away");
+      }
+      return w.curator.push(sha, branch);
+    },
+  });
+  await assert.rejects(curate({ repo: flaky, judge }), { code: "git" });
+  assert.deepEqual(curatedTrailers(await (await w.open("reader")).log()), [], "nothing reached the remote");
+  const asked = calls.length;
+  const report = await curate({ repo: w.curator, judge });
+  assert.deepEqual(report.runs, [], "the local commit already curated run-1");
+  assert.deepEqual(curatedTrailers(await (await w.open("reader-2")).log()), ["run-1"], "and the next curate published it");
+  assert.equal(calls.length, asked);
+});
+
 test("past the index cap the least-used active learnings are archived, the new one last, and the report says so", async () => {
   const long = (n) => `Lesson ${String(n).padStart(2, "0")}: ${"check the registry's own search before any aggregator, and note which one answered. ".repeat(3)}`.trim();
   const all = Array.from({ length: 30 }, (_, n) => learning(`L-${String(n).padStart(12, "0")}`, long(n), { uses: n === 4 ? 0 : 5 + n }));
@@ -428,40 +453,65 @@ test("past the question budget the rest of a run is held, never accepted", async
   assert.deepEqual(run.held.map((h) => [h.candidate, h.reason]), [[2, "the run's question budget is spent"]]);
 });
 
-const workflowsReady = LEARN_TYPES.includes("workflow") &&
-  guard({ role: "run", runId: "r", files: { "inbox/r/workflows/w/latest": "x\n" }, candidates: [{ callId: "c", type: "workflow", id: "kyb", text: "When a company is checked.", evidence: [] }] }).length === 0;
 const DIGEST = "a".repeat(64);
+const recordsOf = (runId, name) => ({ [`inbox/${runId}/workflows/${name}/${DIGEST}.json`]: "{\"v\":2}\n", [`inbox/${runId}/workflows/${name}/latest`]: `${DIGEST}\n` });
+const admitted = (name, when = "") => ({
+  status: "admitted", reason: "trial",
+  files: {
+    [`.pi/agentrun/workflows/${name}/${DIGEST}.json`]: "{\"v\":2}\n", [`.pi/agentrun/workflows/${name}/latest`]: `${DIGEST}\n`,
+    [`.agents/skills/${name}/SKILL.md`]: `---\nname: ${name}\ndescription: ${when}\n---\nRun workflow ${name}.\n`, [`.agents/skills/${name}/trial.json`]: "{\"status\":\"trial\"}\n",
+  },
+});
 
-test("a proposed workflow goes to the admitter; its files land, a rules path from it is refused, and with none it is held", { skip: workflowsReady ? false : "waits for the workflow candidate type and run paths" }, async () => {
+test("a run's saved workflow records go to the admitter; its files land, a rules path or a stray path from it is refused, and with none it is held", async () => {
   const w = await world();
-  const records = { [`inbox/run-1/workflows/kyb/${DIGEST}.json`]: "{\"v\":2}\n", "inbox/run-1/workflows/kyb/latest": `${DIGEST}\n` };
-  const when = { callId: "call-w", type: "workflow", id: "kyb", text: "A US company to check against its state registry.", evidence: [] };
-  await propose(w, "run-1", [when], records);
-  await propose(w, "run-2", [{ ...when, callId: "call-x", id: "evil" }]);
-  await propose(w, "run-3", [{ ...when, callId: "call-y", id: "loose" }]);
+  await propose(w, "run-1", [candidate(LESSON)], recordsOf("run-1", "kyb"));
+  await propose(w, "run-2", [], recordsOf("run-2", "evil"));
+  await propose(w, "run-3", [], recordsOf("run-3", "loose"));
+  await propose(w, "run-4", [], recordsOf("run-4", "stray"));
   const seen = [];
   const admitWorkflow = async (input) => {
     seen.push(input.workflow);
+    assert.equal(input.main, git(w.bare, ["rev-parse", "main"]).toString().trim());
+    assert.equal(await input.read("AGENTS.md"), RULES);
     if (input.workflow.name === "evil") return { status: "admitted", files: { "AGENTS.md": "No rules.\n" }, reason: "admitted" };
-    if (input.workflow.name === "loose") return { status: "held", reason: "no records yet" };
-    return {
-      status: "admitted", reason: "trial",
-      files: { [`.pi/agentrun/workflows/kyb/${DIGEST}.json`]: "{\"v\":2}\n", ".pi/agentrun/workflows/kyb/latest": `${DIGEST}\n`, ".agents/skills/kyb/SKILL.md": `---\nname: kyb\ndescription: ${input.workflow.when}\n---\nRun workflow kyb.\n`, ".agents/skills/kyb/trial.json": "{\"status\":\"trial\"}\n" },
-    };
+    if (input.workflow.name === "loose") return { status: "held", reason: "no trial yet" };
+    if (input.workflow.name === "stray") return { status: "admitted", files: { [learningPath("L-0123456789ab")]: "x\n" }, reason: "admitted" };
+    return admitted(input.workflow.name);
   };
   const { judge } = fakeJudge();
   const report = await curate({ repo: w.curator, judge, admitWorkflow });
-  assert.deepEqual(seen[0], { run: "run-1", name: "kyb", when: when.text, records: { [`${DIGEST}.json`]: "{\"v\":2}\n", latest: `${DIGEST}\n` }, untrusted: false });
-  assert.deepEqual(report.runs.map((r) => [r.run, r.accepted.map((a) => a.workflow), r.refused.map((a) => a.reason), r.held.map((a) => a.reason)]), [
-    ["run-1", ["kyb"], [], []],
+  assert.deepEqual(seen[0], { run: "run-1", name: "kyb", records: { [`${DIGEST}.json`]: "{\"v\":2}\n", latest: `${DIGEST}\n` }, untrusted: false });
+  assert.deepEqual(report.runs.map((r) => [r.run, r.accepted.map((a) => a.workflow ?? a.id), r.refused.map((a) => a.reason), r.held.map((a) => a.reason)]), [
+    ["run-1", [learningId("run-1", LESSON), "kyb"], [], []],
     ["run-2", [], ["rules_locked: the workflow admitter tried to write a rules-tier file"], []],
-    ["run-3", [], [], ["no records yet"]],
+    ["run-3", [], [], ["no trial yet"]],
+    ["run-4", [], ["path_not_allowed: the workflow admitter wrote outside the workflow's folders"], []],
   ]);
-  assert.equal(await w.curator.read(".agents/skills/kyb/trial.json", "main"), "{\"status\":\"trial\"}\n");
+  for (const [file, text] of Object.entries(admitted("kyb").files)) assert.equal(await w.curator.read(file, "main"), text, file);
   assert.equal(await w.curator.read("AGENTS.md", "main"), RULES);
-  const held = await world();
-  await propose(held, "run-1", [when], records);
-  assert.deepEqual((await curate({ repo: held.curator, judge })).runs[0].held.map((h) => h.reason), ["no workflow admitter is installed"]);
+  assert.equal(await w.curator.read(learningPath("L-0123456789ab"), "main"), undefined);
+  const log = await w.curator.log();
+  assert.deepEqual(log.find((e) => e.trailers["Curated-Run"]?.includes("run-1")).trailers.Workflow, ["kyb"]);
+  const bare = await world();
+  await propose(bare, "run-1", [], recordsOf("run-1", "kyb"));
+  assert.deepEqual((await curate({ repo: bare.curator, judge })).runs[0].held, [{ workflow: "kyb", reason: "no workflow admitter is installed" }]);
+});
+
+const workflowType = LEARN_TYPES.includes("workflow");
+
+test("a learn call of type workflow gives the admitter its \"when\", judged first like any candidate", { skip: workflowType ? false : "waits for the learn type workflow" }, async () => {
+  const w = await world();
+  const when = (id, text) => ({ callId: `call-${id}`, type: "workflow", id, text, evidence: [] });
+  await propose(w, "run-1", [when("kyb", "A US company to check against its state registry.")], recordsOf("run-1", "kyb"));
+  await propose(w, "run-2", [when("acme", "Only for the Acme Widgets file from this morning.")], recordsOf("run-2", "acme"));
+  const seen = [];
+  const { judge, asked } = fakeJudge([{ q: "general", text: "Acme Widgets", p: 0.05 }]);
+  const report = await curate({ repo: w.curator, judge, admitWorkflow: async (input) => (seen.push(input.workflow), admitted(input.workflow.name, input.workflow.when)) });
+  assert.deepEqual(seen.map((s) => [s.name, s.when]), [["kyb", "A US company to check against its state registry."]]);
+  assert.deepEqual(report.runs.map((r) => [r.accepted.map((a) => a.workflow), r.refused.map((a) => a.reason)]), [[["kyb"], []], [[], ["about this case, not general (0.05)"]]]);
+  assert.deepEqual(asked("general")[0].state, { learning: { type: "workflow", workflow: "kyb", text: "A US company to check against its state registry." } });
+  assert.equal(await w.curator.read(".agents/skills/acme/SKILL.md", "main"), undefined);
 });
 
 test("renderLearning stays the only writer of learning files: every file curate writes parses back", async () => {
