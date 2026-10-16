@@ -704,6 +704,36 @@ pi-durable, chord and their dependencies).
 `runPath`, `unmountClaim`, `createRunDir`, the mount-token and delegation helpers, `isLeaseFresh`, and the Daytona labels,
 names and `sweepSandboxes`. It carries no compatibility promise: a name there can change or go in any release.
 
+### Seeding a new run
+
+`seed` (in `openDurableRun`'s options, and `openRunLease`'s) writes what a new run starts with before anything sees the
+run: its store file, a SQLite database the Harness then opens (saved sign-in profiles, say), and files in its
+workspace (`work/.agents/skills/`). `beforeResume` runs after the store is open, too late for that.
+
+```ts
+await openDurableRun(ref, {
+  ...localRun("/var/runs/run-1"),           // or a disk's mountToken
+  harness: { models, registry },
+  async seed({ storePath, workDir }) {      // also root: the claim's root
+    const db = new DatabaseSync(storePath);
+    db.exec("CREATE TABLE IF NOT EXISTS x_agent_profiles (name TEXT PRIMARY KEY, profile BLOB)");
+    db.close();                             // closed before it returns: the store opens it next
+    await cp(skillsDir, join(workDir, ".agents/skills"), { recursive: true });
+  },
+});
+```
+
+- **When it runs.** Once, on the open that finds no `run.json`: inside the run's first claim, with the owner lock held,
+  after `store/`, `work/` and `tmp/` exist, before `run.json` is written and before the store opens. Its step is
+  `seed`. What it wrote is made durable (the claim's barrier) before `run.json` publishes the run.
+- **When it doesn't.** Never for a run that has `run.json`, whatever its generation, and never on a fork's first open
+  (`fork` writes `run.json`).
+- **When it fails.** A seed that throws fails the open with its own error. A process killed while it seeds leaves the run
+  unpublished in the same way: no `run.json`, the claim let go. The next open seeds again, so a seed overwrites what an
+  earlier attempt wrote.
+- **On a local directory** (`localRun`) it is the same. As with `work/`, the files it writes are the operating system's
+  to flush; a SQLite database it commits with `synchronous = FULL` is durable when the commit returns.
+
 ### A run on a local directory
 
 `localRun(root)` returns the `acquire` and `claimDir` that put a run on a plain directory of this machine, with no mount
