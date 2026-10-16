@@ -9,7 +9,21 @@ export interface JevClient {
   systemOne(request: SystemOneRequest, options: RequestOptions): PromiseLike<unknown>;
 }
 
+/** Where Jev is reached: TypeSafe's own API (default) or OpenRouter's System One path. */
+export type JevProvider = "typesafe" | "openrouter";
+const keyVariable: Record<JevProvider, string> = { typesafe: "TYPESAFE_API_KEY", openrouter: "OPENROUTER_API_KEY" };
+const OPENROUTER_BASE_URL = "https://openrouter.ai/api";
+const OPENROUTER_DEFAULT_MODEL = "~typesafe/jev-latest";
+
+/** The provider an environment's keys select: OpenRouter only when `OPENROUTER_API_KEY` is set and `TYPESAFE_API_KEY` is not. The runner itself never reads this. */
+export function jevProviderFromEnv(env: Record<string, string | undefined> = process.env): JevProvider {
+  const set = (name: string) => typeof env[name] === "string" && env[name]!.trim().length > 0;
+  return set("OPENROUTER_API_KEY") && !set("TYPESAFE_API_KEY") ? "openrouter" : "typesafe";
+}
+
 export interface JevOptions {
+  /** `typesafe` (default) or `openrouter`. OpenRouter sets the API root and the default model (`~typesafe/jev-latest`); its key is `apiKey` or `OPENROUTER_API_KEY`. Cannot be combined with `client`. */
+  provider?: JevProvider;
   apiKey?: string;
   /** API root, without /v1/systemone; useful for an explicitly configured gateway. */
   baseURL?: string;
@@ -25,7 +39,7 @@ export interface JevOptions {
   maxAttempts?: number;
   retryBaseMs?: number;
   retryMaxMs?: number;
-  /** Explicit estimate; unknown prices are never silently treated as free. */
+  /** Explicit estimate, used when the provider reports no cost; unknown prices are never silently treated as free. */
   pricing?: { inputUsdPerMillionTokens: number; outputUsdPerMillionTokens: number };
 }
 
@@ -93,19 +107,24 @@ export function createJevRunner(options: JevOptions = {}): NonNullable<WorkflowD
   configuration(timeoutMs !== null || options.client !== undefined, "The TypeSafe SDK requires a finite timeout. For timeoutMs: null, supply a cancellation-only host client.");
   configuration(Number.isInteger(maxAttempts) && maxAttempts >= 1 && maxAttempts <= 10, "maxAttempts must be an integer from 1 to 10.");
   configuration(milliseconds(retryBaseMs, true) && milliseconds(retryMaxMs, true) && retryBaseMs <= retryMaxMs, "Retry delays must be nonnegative integers; retryBaseMs cannot exceed retryMaxMs.");
-  configuration(!options.client || (options.apiKey === undefined && options.baseURL === undefined && options.fetch === undefined), "Supply either client or transport options, not both.");
+  configuration(!options.client || (options.apiKey === undefined && options.baseURL === undefined && options.fetch === undefined && options.provider === undefined), "Supply either client or transport options, not both.");
+  const provider = options.provider ?? "typesafe";
+  configuration(provider === "typesafe" || provider === "openrouter", "provider must be typesafe or openrouter.");
   const pricing = options.pricing ? { ...options.pricing } : undefined;
   if (pricing) configuration([pricing.inputUsdPerMillionTokens, pricing.outputUsdPerMillionTokens].every(n => Number.isFinite(n) && n >= 0), "Configured token prices must be finite nonnegative numbers.");
-  const model = options.model ?? "jev-latest";
+  const model = options.model ?? (provider === "openrouter" ? OPENROUTER_DEFAULT_MODEL : "jev-latest");
   configuration(typeof model === "string" && model.trim().length > 0, "model must be a nonempty string.");
   let client: JevClient;
   try {
+    const key = options.apiKey ?? (provider === "openrouter" ? process.env.OPENROUTER_API_KEY : undefined);
+    // The SDK falls back to TYPESAFE_API_KEY when given no key: for OpenRouter that would send one provider's key to another.
+    if (provider === "openrouter" && (typeof key !== "string" || key.trim().length === 0)) throw new Error("no key");
     client = options.client ?? new TypeSafeClient({
-      apiKey: options.apiKey, baseURL: options.baseURL, fetch: options.fetch,
+      apiKey: key, baseURL: options.baseURL ?? (provider === "openrouter" ? OPENROUTER_BASE_URL : undefined), fetch: options.fetch,
       defaultModel: model, retry: { maxRetries: 0 }, timeout: timeoutMs ?? undefined, logLevel: "off",
     });
   } catch {
-    throw new JevError("configuration", "Could not configure Jev. Supply apiKey or set TYPESAFE_API_KEY, and check transport options.");
+    throw new JevError("configuration", `Could not configure Jev. Supply apiKey or set ${keyVariable[provider]}, and check transport options.`);
   }
   const runnerSignal = options.signal;
 
@@ -180,14 +199,20 @@ export function createJevRunner(options: JevOptions = {}): NonNullable<WorkflowD
         catch (error) { throw new JevError("invalid_response", "Jev returned invalid answers or probability distributions.", attempt, undefined, undefined,
           { reason: error instanceof SystemOneError && isSystemOneResponseReason(error.responseReason) ? error.responseReason : "answer_validation" }); }
         const usage = result.usage;
-        if (usage != null && (!record(usage) || !tokens(usage.input_tokens) || !tokens(usage.output_tokens))) {
+        // Usage carries token counts, a provider-reported cost (USD), or both; a half pair of counts or a bad cost is invalid.
+        const counted = record(usage) && tokens(usage.input_tokens) && tokens(usage.output_tokens);
+        const reported = record(usage) && usage.cost !== undefined && usage.cost !== null;
+        const reportedCost = reported && typeof usage.cost === "number" && Number.isFinite(usage.cost) && usage.cost >= 0 ? usage.cost : undefined;
+        const noCounts = record(usage) && usage.input_tokens === undefined && usage.output_tokens === undefined;
+        if (usage != null && (!record(usage) || (reported ? reportedCost === undefined || !(counted || noCounts) : !counted))) {
           throw new JevError("invalid_response", "Jev returned invalid token usage.", attempt, undefined, undefined, { reason: "token_usage" });
         }
         if (result.model != null && (typeof result.model !== "string" || !result.model.trim())) {
           throw new JevError("invalid_response", "Jev returned an invalid model identifier.", attempt, undefined, undefined, { reason: "model_identifier" });
         }
-        const metering = record(usage) ? { input_tokens: usage.input_tokens as number, output_tokens: usage.output_tokens as number } : null;
-        const cost = pricing && metering ? (metering.input_tokens * pricing.inputUsdPerMillionTokens + metering.output_tokens * pricing.outputUsdPerMillionTokens) / 1_000_000 : null;
+        const metering = counted ? { input_tokens: usage.input_tokens as number, output_tokens: usage.output_tokens as number } : null;
+        // The provider's own cost wins; else the configured estimate; else unknown (null), never 0.
+        const cost = reportedCost !== undefined ? reportedCost : pricing && metering ? (metering.input_tokens * pricing.inputUsdPerMillionTokens + metering.output_tokens * pricing.outputUsdPerMillionTokens) / 1_000_000 : null;
         if (cost !== null && !Number.isFinite(cost)) throw new JevError("invalid_response", "Jev cost estimate exceeded the numeric range.", attempt, undefined, undefined, { reason: "cost_range" });
         return {
           answers, model: typeof result.model === "string" ? result.model : null,
