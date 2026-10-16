@@ -45,11 +45,13 @@ async function cutThenRerun(t, env) {
   assert.deepEqual(await within(first.exit, "the first process exits"), { code: null, signal: "SIGKILL", line: undefined });
   const { line } = await within(child("second").exit, "the second process prints its result");
   assert.ok(line, "the second process printed its result");
-  return { second: JSON.parse(line.slice("RESULT ".length)), asked: lines(paths.LEDGER).length, told: lines(path.join(paths.OUT, "looks.jsonl")) };
+  const stored = ["", "-wal"].map((end) => `${paths.DB}${end}`).filter((file) => fs.existsSync(file)).map((file) => fs.readFileSync(file).toString("latin1")).join("");
+  return { second: JSON.parse(line.slice("RESULT ".length)), asked: lines(paths.LEDGER).length, told: lines(path.join(paths.OUT, "looks.jsonl")), stored };
 }
 
 test("killed at the second filing on a host that never reruns a cut call, the next call pays nothing and every payment is told once", async (t) => {
-  const { second, asked, told } = await cutThenRerun(t, { REPLAY: "unsafe" });
+  const { second, asked, told, stored } = await cutThenRerun(t, { REPLAY: "unsafe" });
+  assert.ok(stored.includes("vision.kept") && !stored.includes("pi-vision."), "the kept answers are a vision document, by the kind's prefix");
   assert.equal(second.settled, "done");
   const calls = second.results.filter((r) => r.tool === "code");
   assert.equal(calls.length, 2, "the cut call stays cut, and the lead called the tool again");
