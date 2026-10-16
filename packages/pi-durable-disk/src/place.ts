@@ -554,12 +554,13 @@ async function withCarryLock(lock: string, fn: () => void): Promise<void> {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
     if (fd !== undefined) {
+      // Once created, the lock goes on every way out: a failed write of the pid or close of the file included.
       try {
-        writeAll(fd, new TextEncoder().encode(String(process.pid)));
-      } finally {
-        closeSync(fd);
-      }
-      try {
+        try {
+          writeAll(fd, new TextEncoder().encode(String(process.pid)));
+        } finally {
+          closeSync(fd);
+        }
         fn();
       } finally {
         rmSync(lock, { force: true });
@@ -571,8 +572,10 @@ async function withCarryLock(lock: string, fn: () => void): Promise<void> {
     try {
       holder = Number(readFileSync(lock, "utf8").trim());
       ageMs = Date.now() - statSync(lock).mtimeMs;
-    } catch {
-      continue; // released meanwhile: take it on the next turn
+    } catch (error) {
+      // Released meanwhile: take it on the next turn. Any other failure to read it (its mode, the disk) is the carry's.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" && Date.now() - t0 <= CARRY_LOCK_WAIT_MS) continue;
+      throw new PlaceError("CARRY_FAILED", said(`reading the carry lock ${lock} failed: ${(error as Error)?.message ?? error}`), { cause: error });
     }
     const gone = Number.isSafeInteger(holder) && holder > 0 ? !alive(holder) : ageMs > CARRY_LOCK_UNNAMED_MS;
     if (gone) {

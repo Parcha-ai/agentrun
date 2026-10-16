@@ -7,7 +7,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Delegation } from "disk";
@@ -421,6 +421,26 @@ describe("archilPlace recordHome", () => {
     await assert.rejects(at.recordHome!.bringHome(into), (e: unknown) => e instanceof PlaceError && e.code === "CARRY_FAILED" && /holds/.test(e.message) && e.message.length <= 240);
     assert.ok(Date.now() - t0 >= 5_000, "it waited for the holder first");
     assert.equal(read(join(into, ".spool", "child-9-1.jsonl")), line({ seq: 0 }), "nothing appended while another holds it");
+  });
+
+  it("a destination file's lock that cannot be read is CARRY_FAILED at once, never a wait without end", { timeout: 30_000 }, async (t) => {
+    if (process.getuid?.() === 0) return t.skip("root reads every file");
+    const control = new FakeControl();
+    const at = makePlace({ ...REF, control, host: fakeHost(control).host });
+    control.objects.set(rec(1, ".spool/child-9-1.jsonl"), line({ seq: 0 }));
+    const into = scratch();
+    mkdirSync(join(into, ".spool"), { recursive: true });
+    const lock = join(into, ".spool", ".child-9-1.jsonl.lock");
+    writeFileSync(lock, "4242");
+    chmodSync(lock, 0o000);
+    try {
+      const t0 = Date.now();
+      await assert.rejects(at.recordHome!.bringHome(into), (e: unknown) => e instanceof PlaceError && e.code === "CARRY_FAILED" && /reading the carry lock/.test(e.message) && e.message.length <= 240);
+      assert.ok(Date.now() - t0 < 5_000, "refused at once, not after the wait");
+      assert.equal(read(join(into, ".spool", "child-9-1.jsonl")), null);
+    } finally {
+      chmodSync(lock, 0o644);
+    }
   });
 
   it("writeAll goes on after a short write, and a write that takes nothing fails", () => {
