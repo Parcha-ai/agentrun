@@ -14,7 +14,7 @@ const done = await withClaim(
   { control, disk: disk!, region: region!, path: path! },
   async (held) => {
     process.stdout.write(`held ${held.root}\n`); // the suite's ledger records the mountpoint
-    if (mode === "hold") await new Promise(() => {}); // until killed
+    if (mode === "hold") await new Promise(() => setInterval(() => {}, 1 << 30)); // a live timer keeps the process up until it is killed
     const db = new DatabaseSync(join(held.root, "agent.sqlite"));
     db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; CREATE TABLE IF NOT EXISTS carried (label TEXT PRIMARY KEY)");
     db.prepare("INSERT INTO carried (label) VALUES (?)").run(label!);

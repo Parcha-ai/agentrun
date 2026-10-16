@@ -782,11 +782,13 @@ const store = await readReleased({ control, path: "agent" }, "agent.sqlite", { s
 
 A claim is one exclusive mount, about 0.4 to 1 s with its release, so it is for a run's end, never a turn.
 - **Exclusive by the mount.** Archil refuses a second client's mount of the path, an ancestor or a descendant. The call
-  mounts at a fresh `<mountRoot>/<pid>-<uuid>` (default `/mnt/archil/.claims`) and never shares a mount. It writes
+  mounts at a fresh `<mountRoot>/runs/<pid>-<uuid>` (default `/mnt/archil/.claims`; the shape `archil-scoped`'s cleanup
+  takes on a host that cannot unmount) and never shares a mount. It writes
   `.claim` with its deadline (`holdMs`, default 60 s), runs `fn`, then barriers, unmounts and gives its mount token back,
   whether `fn` resolved or threw.
-- **Lost holders are revoked first.** A holder whose client is gone (orphaned), or one still there past its `.claim`
-  deadline, is revoked before the mount. A live holder within its deadline is waited for (`waitMs`, default 30 s), never
+- **Lost holders are revoked first.** A holder whose client is gone (orphaned) is revoked before the mount, and so is a
+  holder of exactly the path whose `.claim` names a deadline that has passed and stays the same for 3 s (a holder that
+  just mounted rewrites it at once; a holder of a path above or below is never revoked by this path's `.claim`). A live holder within its deadline is waited for (`waitMs`, default 30 s), never
   revoked. A holder revoked while still alive fails its next fsync, so its commit rolls back and its own call is FENCED:
   the deadline never decides what is durable, the fence does.
 - **What it refuses.** A path that is not relative and of safe segments, or that is under `runs/` (a run's own) or

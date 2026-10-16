@@ -173,6 +173,8 @@ if (cmd === "mount") {
 } else if (cmd === "retire") {
   // Plays bin/archil-scoped's verb: move the mount to <root>/.released/<run>-<tag>, kill its daemon.
   const [mp, tag] = rest;
+  // As the real wrapper, it takes only a plain <root>/runs/<run>.
+  if (!/^\/[A-Za-z0-9._\/-]+\/runs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(mp)) exit(2, `archil-scoped: ${mp} is not <root>/runs/<run>\n`);
   if (!state.mounts[mp]) exit(3, `archil-scoped: no fuse.archil mount at ${mp}\n`);
   if (b.retireFail) exit(4, `archil-scoped: mount --move ${mp} failed\n`);
   const dest = mp.replace(/\/runs\/([^/]+)$/, `/.released/$1-${tag}`);

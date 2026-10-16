@@ -3,8 +3,9 @@
 //
 // A claim is one exclusive mount. Archil refuses a second client's mount of the path, of an ancestor or of a descendant,
 // and that refusal is the exclusivity; the delegation listing only decides whom to wait for and whom to revoke. A holder
-// is lost when its client is gone (orphaned) or when it is still there past the deadline its `.claim` names, and only a
-// lost holder is revoked. Safety rests on the fence, never on the deadline: a holder revoked while still alive gets EIO at
+// is lost when its client is gone (orphaned), or when it holds exactly the path and the `.claim` there names a deadline
+// that has passed and stays the same across a few seconds (a holder that just mounted rewrites it at once); only a lost
+// holder is revoked. Safety rests on the fence, never on the deadline: a holder revoked while still alive gets EIO at
 // its next fsync, so its commit rolls back and its own call throws FENCED. Both calls are supervisor side: they need the
 // API key's control API.
 import { randomUUID } from "node:crypto";
@@ -34,7 +35,7 @@ export interface WithClaimOptions {
   readonly holdMs?: number;
   /** How long to queue behind a live holder before CLAIM_HELD. Default 30 s. */
   readonly waitMs?: number;
-  /** Where the mount goes, under a directory of this call's own. Default `/mnt/archil/.claims`. */
+  /** Where the mount goes: `<mountRoot>/runs/<pid>-<uuid>`, of this call's own. Default `/mnt/archil/.claims`. */
   readonly mountRoot?: string;
   readonly host?: ArchilHost;
   readonly signal?: AbortSignal;
@@ -43,6 +44,11 @@ export interface WithClaimOptions {
 export const DEFAULT_HOLD_MS = 60_000;
 export const DEFAULT_WAIT_MS = 30_000;
 const POLL_MS = 250;
+/**
+ * How long a past-deadline `.claim` must stay the same, with the same holder, before that holder counts as lost. A holder
+ * that mounted a moment ago writes its own `.claim` right after its mount; until then the one there is its predecessor's.
+ */
+const CONFIRM_MS = 3_000;
 const TOKEN_TTL = "10m";
 const SEGMENT = /^[A-Za-z0-9._-]+$/;
 
@@ -94,12 +100,13 @@ async function pathlessOn(control: ClaimControl, path: string, pathless: readonl
   if (!control.exec) throw new ClaimError("CONTROL_API_FAILED", `a delegation with no path may be on ${path}, and the control API has no exec to attribute it`);
   const inodes = [...new Set(pathless.map((d) => d.inodeId))];
   if (!inodes.every((i) => Number.isSafeInteger(i) && i >= 0)) throw new ClaimError("CONTROL_API_FAILED", "a pathless delegation has no valid inode id");
+  // Every path relative to the disk root as ./<path>, so a segment that begins with "-" is never read as an option.
   const segments = path.split("/");
-  const above = [".", ...segments.slice(0, -1).map((_, i) => segments.slice(0, i + 1).join("/"))];
+  const above = [".", ...segments.slice(0, -1).map((_, i) => `./${segments.slice(0, i + 1).join("/")}`)];
   const test = inodes.map((i) => `-inum ${i}`).join(" -o ");
   let r: { exitCode: number; stdout: string };
   try {
-    r = await control.exec(`for a in ${above.join(" ")}; do if [ -e "$a" ]; then stat -c '%i' "$a" || exit 3; fi; done; if [ -e ${path} ]; then find ${path} \\( ${test} \\) -printf '%i\\n' || exit 3; fi`);
+    r = await control.exec(`for a in ${above.join(" ")}; do if [ -e "$a" ]; then stat -c '%i' -- "$a" || exit 3; fi; done; if [ -e ./${path} ]; then find ./${path} \\( ${test} \\) -printf '%i\\n' || exit 3; fi`);
   } catch (err) {
     throw new ClaimError("CONTROL_API_FAILED", `attributing pathless delegations to ${path} failed`, { cause: err });
   }
@@ -108,23 +115,44 @@ async function pathlessOn(control: ClaimControl, path: string, pathless: readonl
   return pathless.filter((d) => on.has(d.inodeId));
 }
 
-/** Whether the holder's `.claim` (read over S3) names a deadline that has passed; false when it cannot be read or parsed. */
-async function pastDeadline(control: ClaimControl, path: string): Promise<boolean> {
+/** `<path>/.claim` over S3, and whether the deadline it names has passed; null when it cannot be read or parsed. */
+async function readClaim(control: ClaimControl, path: string): Promise<{ text: string; expired: boolean } | null> {
   try {
-    const claim = JSON.parse(new TextDecoder().decode(await control.getObject(`${path}/${CLAIM_PROBE}`))) as { deadline?: unknown };
+    const text = new TextDecoder().decode(await control.getObject(`${path}/${CLAIM_PROBE}`));
+    const claim = JSON.parse(text) as { deadline?: unknown };
     const deadline = typeof claim.deadline === "string" ? Date.parse(claim.deadline) : Number.NaN;
-    return Number.isFinite(deadline) && deadline < Date.now();
+    return Number.isFinite(deadline) ? { text, expired: deadline < Date.now() } : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+const exactly = (d: Delegation, path: string) => typeof d.path === "string" && d.path.replace(/^\/+/, "").replace(/\/+$/, "") === path;
+const clientsOf = (holders: readonly Delegation[]) => [...new Set(holders.map((d) => d.clientId))].sort().join(",");
+
+/**
+ * Whether the live holders are lost past their deadline. Only a holder of exactly `path` has its deadline there, so any
+ * other (a descendant's, an ancestor's, one with no path) is never lost this way. And the `.claim` must be the same
+ * expired one, with the same holders, across CONFIRM_MS: a holder that just mounted rewrites it within that time.
+ */
+async function lostPastDeadline(control: ClaimControl, path: string, holders: readonly Delegation[], signal: AbortSignal | undefined): Promise<boolean> {
+  if (!holders.every((d) => exactly(d, path))) return false;
+  const first = await readClaim(control, path);
+  if (!first?.expired) return false;
+  await sleep(CONFIRM_MS, undefined, { signal }).catch(() => signal?.throwIfAborted());
+  const again = await holdersOf(control, path);
+  if (clientsOf(again.holders) !== clientsOf(holders)) return false;
+  const second = await readClaim(control, path);
+  return second !== null && second.expired && second.text === first.text;
 }
 
 /** Until nothing conflicts with a mount of `path`: lost holders are revoked, live ones waited for until `deadline`. */
 async function settle(control: ClaimControl, path: string, deadline: number, signal: AbortSignal | undefined): Promise<void> {
   for (;;) {
+    signal?.throwIfAborted();
     const { holders, all } = await holdersOf(control, path);
     if (holders.length === 0) return;
-    if (holders.every((d) => d.isOrphaned) || (await pastDeadline(control, path))) {
+    if (holders.every((d) => d.isOrphaned) || (await lostPastDeadline(control, path, holders, signal))) {
       try {
         for (const d of holders) await control.revokeDelegation({ clientId: d.clientId, inodeId: d.inodeId });
       } catch (err) {
@@ -133,8 +161,9 @@ async function settle(control: ClaimControl, path: string, deadline: number, sig
       await revokeCompanions(control, holders, all);
       continue;
     }
-    if (Date.now() >= deadline || signal?.aborted) throw notReleased(path, `a live holder within its deadline: ${holders.map((d) => d.clientId).join(", ")}`);
-    await sleep(POLL_MS);
+    signal?.throwIfAborted();
+    if (Date.now() >= deadline) throw notReleased(path, `a live holder within its deadline: ${holders.map((d) => d.clientId).join(", ")}`);
+    await sleep(POLL_MS, undefined, { signal }).catch(() => signal?.throwIfAborted());
   }
 }
 
@@ -145,7 +174,7 @@ const positive = (name: string, value: number) => {
 
 /**
  * Hold `path` exclusively while `fn` runs: wait for a live holder (`waitMs`), revoke a lost one, mount `<disk>:/<path>` at
- * a fresh `<mountRoot>/<pid>-<uuid>`, write `.claim` with this holder's deadline (`holdMs`), run `fn`, then barrier,
+ * a fresh `<mountRoot>/runs/<pid>-<uuid>`, write `.claim` with this holder's deadline (`holdMs`), run `fn`, then barrier,
  * unmount and give the mount token back, whether `fn` resolved or threw. Returns `fn`'s value; throws `fn`'s own error,
  * else INVALID_ARGUMENT, CLAIM_HELD (76, retryable), CONTROL_API_FAILED, the mount's errors, or FENCED (75: the claim was
  * revoked from under `fn`, whose writes are then not durable).
@@ -162,11 +191,13 @@ export async function withClaim<T>(
   const mountRoot = options.mountRoot ?? join(DEFAULT_MOUNT_ROOT, ".claims");
   for (;;) {
     await settle(control, path, deadline, options.signal);
+    options.signal?.throwIfAborted();
     const minted = await mintMountToken(control, { nickname: `pdc-${path.replaceAll("/", ".")}-${Date.now().toString(36)}`, ttl: TOKEN_TTL });
     const at = new Date();
     let mount: Awaited<ReturnType<typeof exclusiveMount>>;
     try {
-      mount = await exclusiveMount({ disk: where.disk, region: where.region, path }, join(mountRoot, `${process.pid}-${randomUUID()}`), minted.token, {
+      // <mountRoot>/runs/<name>: the shape archil-scoped's cleanup verbs take, for a host that cannot unmount (Sysbox).
+      mount = await exclusiveMount({ disk: where.disk, region: where.region, path }, join(mountRoot, "runs", `${process.pid}-${randomUUID()}`), minted.token, {
         host: options.host,
         probe: `${JSON.stringify({ pid: process.pid, host: hostname(), at: at.toISOString(), deadline: new Date(at.getTime() + holdMs).toISOString() })}\n`,
       });
@@ -177,7 +208,14 @@ export async function withClaim<T>(
         await sleep(POLL_MS);
         continue;
       }
+      options.signal?.throwIfAborted();
       throw err instanceof HeldError ? notReleased(path, "its mount was refused", err) : err;
+    }
+    // Aborted while it mounted: fn never runs, and nothing it holds is kept.
+    if (options.signal?.aborted) {
+      await mount.unmount().catch(() => undefined);
+      await removeMountToken(control, minted.identifier).catch(() => {});
+      options.signal.throwIfAborted();
     }
     const lost = new AbortController();
     const onAbort = () => lost.abort(options.signal?.reason);
@@ -263,6 +301,10 @@ export async function readReleased(
       throw new ClaimError("CONTROL_API_FAILED", `get ${key} failed`, { cause: err });
     }
     const after = await head(key);
+    // A writer that mounted, committed to the WAL and let go during the read leaves the database file as it was.
+    if (options.sqlite && sizeOf(await head(`${key}-wal`)) > 0) {
+      throw new ClaimError("NOT_RELEASED", `${key}-wal gained content during the read: a writer committed without a checkpoint (TRUNCATE)`);
+    }
     const still = (await holdersOf(control, path)).holders.length === 0;
     if (still && after !== null && identity(after) === identity(before) && sizeOf(after) === bytes.length) {
       const etag = (after as { etag?: unknown }).etag;

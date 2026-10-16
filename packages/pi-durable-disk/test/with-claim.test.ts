@@ -72,10 +72,11 @@ const clientOf = (mountpoint: string) => (mountpoint === REMOTE ? "remote-client
  * revoke that drops the holder and fences its mount, S3 objects from `objects`, and a holder's `.claim` from its mount
  * (a local holder) or from `claims` (a remote one). `log` records every call in order, with how many mounts preceded it.
  */
-function fakeControl(r: Rig, init: { orphaned?: Set<string>; claims?: Record<string, string>; objects?: Record<string, { bytes: string; etag: string }>; onList?: (n: number) => void; onHead?: (key: string, n: number) => void } = {}) {
+function fakeControl(r: Rig, init: { orphaned?: Set<string>; claims?: Record<string, string | ((n: number) => string)>; objects?: Record<string, { bytes: string; etag: string }>; onList?: (n: number) => void; onHead?: (key: string, n: number) => void; exec?: (command: string) => { exitCode: number; stdout: string } } = {}) {
   const log: string[] = [];
   let lists = 0;
   let heads = 0;
+  let claimReads = 0;
   const note = (call: string) => log.push(`${call} (after ${r.archil("mount").length} mounts)`);
   const control: ClaimControl = {
     async addUser() {
@@ -110,13 +111,15 @@ function fakeControl(r: Rig, init: { orphaned?: Set<string>; claims?: Record<str
       note(`get ${key}`);
       if (key === `${PATH}/.claim`) {
         const holder = r.read().holders[TARGET];
-        const text = holder === REMOTE ? init.claims?.[key] : holder ? readFileSync(join(holder, ".claim"), "utf8") : undefined;
+        const scripted = init.claims?.[key];
+        const text = holder === REMOTE ? (typeof scripted === "function" ? scripted(++claimReads) : scripted) : holder ? readFileSync(join(holder, ".claim"), "utf8") : undefined;
         if (text !== undefined) return new TextEncoder().encode(text);
       }
       const object = init.objects?.[key];
       if (!object) throw Object.assign(new Error(`NoSuchKey: ${key}`), { name: "NoSuchKey" });
       return new TextEncoder().encode(object.bytes);
     },
+    ...(init.exec ? { exec: async (command: string) => (note(`exec ${command}`), init.exec!(command)) } : {}),
     async headObject(key) {
       init.onHead?.(key, ++heads);
       note(`head ${key}`);
@@ -144,7 +147,7 @@ test("withClaim mounts the path at a fresh mountpoint of its own, runs fn there,
     return 42;
   }, { mountRoot: r.mountRoot, host: r.host, holdMs: 60_000 });
   assert.equal(value, 42, "fn's value");
-  assert.match(seen!.root, new RegExp(`^${r.mountRoot}/${process.pid}-[0-9a-f-]{36}$`), "a mountpoint of this call's own");
+  assert.match(seen!.root, new RegExp(`^${r.mountRoot}/runs/${process.pid}-[0-9a-f-]{36}$`), "a mountpoint of this call's own, in the <root>/runs/<name> shape archil-scoped's cleanup takes");
   assert.equal(seen!.path, PATH);
   const [mount] = r.archil("mount");
   assert.deepEqual(mount!.argv.filter((a) => !a.startsWith("--") && a !== REGION), ["mount", TARGET, seen!.root], "the path's own target, at that mountpoint");
@@ -213,6 +216,57 @@ test("withClaim revokes a live holder past its .claim deadline before it mounts,
   await withClaim(where(control), async () => undefined, { mountRoot: r.mountRoot, host: r.host });
   assert.equal(log.find((l) => l.startsWith("revoke")), "revoke remote-client (after 0 mounts)", "a hung holder past its deadline is revoked first");
   assert.ok(log.some((l) => l === `get ${PATH}/.claim (after 0 mounts)`), "its deadline was read over S3");
+});
+
+test("withClaim never revokes a live holder by a .claim that is not its own: a descendant's holder, or a new holder still writing its own", async () => {
+  const r = disposeAfter(rig());
+  // A live holder of agents/a1/cache, under the path; agents/a1/.claim is a stale one from an earlier holder of agents/a1.
+  r.set((s) => void (s.holders[`${DISK}:/${PATH}/cache`] = REMOTE));
+  const below = fakeControl(r, { claims: { [`${PATH}/.claim`]: claimText(new Date(Date.now() - 60_000)) } });
+  await assert.rejects(withClaim(where(below.control), async () => assert.fail("fn ran"), { mountRoot: r.mountRoot, host: r.host, waitMs: 600 }), held("CLAIM_HELD"));
+  assert.equal(below.log.filter((l) => l.startsWith("revoke")).length, 0, "the descendant's holder is not revoked by another path's .claim");
+  r.set((s) => void (s.holders = { [TARGET]: REMOTE }));
+  // A holder of the path that mounted a moment ago: the expired .claim is its predecessor's until its own lands.
+  const fresh = fakeControl(r, { claims: { [`${PATH}/.claim`]: (n) => claimText(new Date(Date.now() + (n === 1 ? -60_000 : 60_000))) } });
+  await assert.rejects(withClaim(where(fresh.control), async () => assert.fail("fn ran"), { mountRoot: r.mountRoot, host: r.host, waitMs: 4_000 }), held("CLAIM_HELD"));
+  assert.equal(fresh.log.filter((l) => l.startsWith("revoke")).length, 0, "a .claim that changed while it was confirmed is not a lost holder's");
+});
+
+test("withClaim does nothing for a caller that aborted: no mount and no fn when aborted before, the abort's reason when aborted while queued", async () => {
+  const r = disposeAfter(rig());
+  const { control, log } = fakeControl(r);
+  const before = new AbortController();
+  before.abort();
+  await assert.rejects(withClaim(where(control), async () => assert.fail("fn ran"), { mountRoot: r.mountRoot, host: r.host, signal: before.signal }), (error: unknown) => error === before.signal.reason);
+  assert.deepEqual(r.archil("mount"), []);
+  assert.equal(log.filter((l) => l.startsWith("addUser")).length, 0, "no token");
+  r.set((s) => void (s.holders[TARGET] = REMOTE));
+  const queued = new AbortController();
+  const remote = fakeControl(r, { claims: { [`${PATH}/.claim`]: claimText(new Date(Date.now() + 60_000)) } });
+  setTimeout(() => queued.abort(), 300);
+  await assert.rejects(withClaim(where(remote.control), async () => assert.fail("fn ran"), { mountRoot: r.mountRoot, host: r.host, signal: queued.signal, waitMs: 10_000 }), (error: unknown) => error === queued.signal.reason);
+});
+
+test("withClaim releases on a host whose kernel refuses every unmount (Sysbox): checked in, then moved aside by archil-scoped", async () => {
+  const r = disposeAfter(rig({ behave: { sysbox: true } }));
+  const { control } = fakeControl(r);
+  assert.equal(await withClaim(where(control), async () => "done", { mountRoot: r.mountRoot, host: r.host }), "done");
+  assert.equal(r.archil("retire").length, 1, "moved aside by the wrapper's retire");
+  assert.deepEqual(r.read().holders, {}, "the delegation was checked in");
+});
+
+test("withClaim names a path to exec as a relative path, never as an option (a path may begin with -)", async () => {
+  const r = disposeAfter(rig());
+  const commands: string[] = [];
+  const pathless: Delegation = { clientId: "c9", inodeId: 9, path: undefined as unknown as string, isPending: false, isOrphaned: true };
+  const { control } = fakeControl(r, { exec: (command) => (commands.push(command), { exitCode: 0, stdout: "" }) });
+  const withPathless: ClaimControl = { ...control, listDelegations: async () => [...(await control.listDelegations()), pathless] };
+  await withClaim({ control: withPathless, disk: DISK, region: REGION, path: "-agent" }, async () => undefined, { mountRoot: r.mountRoot, host: r.host });
+  assert.ok(commands.length > 0, "the pathless delegation was attributed");
+  for (const command of commands) {
+    assert.match(command, /\.\/-agent/, command);
+    assert.doesNotMatch(command, /[ ]-agent/, `no bare -agent argument: ${command}`);
+  }
 });
 
 test("withClaim still barriers, unmounts and gives the token back when fn throws, and throws fn's own error", async () => {
@@ -298,6 +352,14 @@ test("readReleased refuses CLAIM_HELD (76) while anything holds the path, and re
 test("readReleased refuses NOT_RELEASED a store whose WAL still has content (its writer did not checkpoint and close)", async () => {
   const r = disposeAfter(rig());
   const { control } = fakeControl(r, { objects: { [FILE]: { bytes: "x", etag: "e1" }, [`${FILE}-wal`]: { bytes: "frames", etag: "w1" } } });
+  await assert.rejects(readReleased({ control, path: PATH }, "agent.sqlite", { sqlite: true }), claimError("NOT_RELEASED"));
+});
+
+test("readReleased refuses NOT_RELEASED when a writer committed to the WAL during the read, though the database file did not change", async () => {
+  const r = disposeAfter(rig());
+  const objects: Record<string, { bytes: string; etag: string }> = { [FILE]: { bytes: "SQLite format 3", etag: "e1" } };
+  // A writer mounts, commits to the WAL and lets go without a checkpoint, between the first WAL look and the read.
+  const { control } = fakeControl(r, { objects, onHead: (key) => key === FILE && (objects[`${FILE}-wal`] = { bytes: "frames", etag: "w1" }) });
   await assert.rejects(readReleased({ control, path: PATH }, "agent.sqlite", { sqlite: true }), claimError("NOT_RELEASED"));
 });
 
