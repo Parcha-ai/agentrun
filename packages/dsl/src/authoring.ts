@@ -2,7 +2,7 @@ import {
   runWorkflow, validateWorkflow, resolveSchemaForWorkflow, WorkflowInvalidError,
   type Workflow, type WorkflowDeps, type WorkflowNode, type WorkflowRunResult,
 } from "./workflow.js";
-import { isDeepStrictEqual, types as utilTypes } from "node:util";
+import { isDeepStrictEqual, isProxy } from "#platform";
 import { assertZodJsonContract } from "./zod-json-contract.js";
 
 /** Structural Standard JSON Schema v1 interface. Compatible schema libraries need no
@@ -138,7 +138,7 @@ function copyJson(value: unknown, ancestors: Set<object>, budget: { entries: num
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value !== "object" || value === null) throw new Error("workflow documents must contain only finite JSON values");
-  if (utilTypes.isProxy(value)) throw new Error("workflow documents must not contain proxies");
+  if (isProxy(value)) throw new Error("workflow documents must not contain proxies");
   if (ancestors.has(value)) throw new Error("workflow documents must not contain cycles");
   const prototype = Object.getPrototypeOf(value);
   if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) throw new Error("workflow documents must contain plain JSON objects");

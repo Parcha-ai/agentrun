@@ -1,11 +1,9 @@
 import { observerSnapshot } from "./observer-snapshot.js";
-import { createHash } from "node:crypto";
-import { isDeepStrictEqual, types as utilTypes } from "node:util";
+import { compileSchema as Compile, isDeepStrictEqual, isProxy, sha256Hex } from "#platform";
 import { predicateMatches, getPath, MECHANICAL_PREDICATE_NAMES, type AcceptPredicate } from "./predicates.js";
 import { WORKFLOW_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
 import { validateAnswers, answerConfidence, answersSidecar, answersToValue, compileQuestions, SYSTEM_ONE_LIMITS, type AnswersSidecar, type CompiledQuestions, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
 import { DECISION_RECEIPT_VERSION, type DecisionKind, type DecisionReceipt, type DecisionRule } from "./decision-receipts.js";
-import { Compile } from "typebox/compile";
 import { compileTransform, compileTransformSyntax } from "./code-exec.js";
 import { workflowShapeErrors } from "./workflow-shape.js";
 import { resolveSchemaForWorkflow } from "./schema-references.js";
@@ -544,7 +542,7 @@ export function normalizeStringNullsForSchema(value: unknown, schema: Record<str
 
 export function workflowSha256(workflow: Workflow): string {
   const stable = (v: unknown): unknown => Array.isArray(v) ? v.map(stable) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v as any).sort().map((k) => [k, stable((v as any)[k])])) : v;
-  return createHash("sha256").update(JSON.stringify(stable(workflow))).digest("hex");
+  return sha256Hex(JSON.stringify(stable(workflow)));
 }
 
 /** Bound the complete document before any recursive schema or semantic traversal. Shared
@@ -559,7 +557,7 @@ export function workflowDocumentError(value: unknown): string | undefined {
     if (current.depth > 128) return "workflow document exceeds nesting depth 128";
     if (typeof current.value === "function") return "workflow document must contain data, not functions";
     if (current.value === null || typeof current.value !== "object") continue;
-    if (utilTypes.isProxy(current.value)) return "workflow document must not contain proxies";
+    if (isProxy(current.value)) return "workflow document must not contain proxies";
     const prototype = Object.getPrototypeOf(current.value);
     if (prototype !== Object.prototype && prototype !== Array.prototype && prototype !== null) return "workflow document must contain plain objects and arrays";
     if (ancestors.has(current.value)) return "workflow document contains a cycle";
@@ -1479,7 +1477,7 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
   const identity = (deps as LocatedDeps)[SCOPED_EFFECTS]
     ? canonicalJson(["execution-path-v1", executionPath(deps), node.label, node.via, node.tool ?? node.code ?? "", input])
     : `${node.label}\n${node.via}\n${node.tool ?? node.code ?? ""}\n${canonicalJson(input)}`;
-  const idempotencyKey = createHash("sha256").update(identity).digest("hex");
+  const idempotencyKey = sha256Hex(identity);
   const effectNode: CallNode = produces.length ? { ...node, produces } : node;
   const schema = node.via === "shell" ? SHELL_RESULT_SCHEMA : resolveSchemaForWorkflow(workflow, workflow.schemas[node.out as string]);
   const validator = Compile(schema as never);
@@ -1653,7 +1651,7 @@ function assertQuestionCount(deps: WorkflowDeps, count: number, label: string): 
   if (count > limit) throw new Error(`node "${label}": ${count} questions exceed maxQuestionsPerRequest (${limit}); reduce the collection/question set or raise the host limit`);
 }
 
-const utf8Bytes = (text: string): number => Buffer.byteLength(text, "utf8");
+const utf8Bytes = (text: string): number => new TextEncoder().encode(text).length;
 /** A split sift's requests in flight at once: the same default as `map.maxConcurrency`. A host that
  *  needs fewer bounds its own `runJudge`. */
 const SIFT_REQUESTS_IN_FLIGHT = 4;
@@ -1693,7 +1691,6 @@ const requireJudge = (deps: WorkflowDeps, kind: string, label: string): NonNulla
   };
 };
 
-const sha256Hex = (text: string): string => createHash("sha256").update(text).digest("hex");
 
 /** A text of any value, for a digest, in which two values that differ never read the same. JSON values are
  *  spelled as JSON with sorted keys. Everything JSON cannot say is a bare word no JSON value produces: a

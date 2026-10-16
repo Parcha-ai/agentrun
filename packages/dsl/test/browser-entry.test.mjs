@@ -75,7 +75,7 @@ test("the same workflows validate, inspect, dry-run and hash to the same results
       for (const [op, payload] of [["validate", {}], ["inspect", {}], ["dryRun", { options: { ...(input && typeof input === "object" ? { input } : {}) } }], ["sha256", {}]]) {
         const reply = await ask(op, { workflow, ...payload });
         assert.equal(reply.ok, true, `${file} ${op}: ${JSON.stringify(reply.error)}`);
-        viaWorker[op] = reply.result;
+        viaWorker[op] = plain(reply.result);
       }
       assert.deepEqual(viaWorker, viaNode, file);
     }
@@ -103,15 +103,17 @@ test("serveWorker without a runCode throws: there is no default way to run code"
   assert.throws(() => serveWorker(scope, { runCode: "(s) => s" }), /runCode/);
 });
 
-test("a code node reaches only the host's runCode; with none, the browser entry's dry run reports it and evaluates nothing", async () => {
-  const { dryRunWorkflow: browserDryRun } = await import("@parcha/agentrun-dsl/browser");
+test("a code node reaches only the host's runCode; with none, the browser bundle's dry run reports it and evaluates nothing", async () => {
+  // The bundle (browser platform), not the package import: Node resolves the package to its Node platform.
+  const { text } = await bundle("@parcha/agentrun-dsl/browser");
+  const { dryRunWorkflow: browserDryRun } = await import(`data:text/javascript;base64,${Buffer.from(text).toString("base64")}`);
   const flow = { v: 2, name: "code-flow", schemas: { Out: { type: "object" } }, output: { schemaId: "Out", path: "final" },
     root: { node: "code", label: "go", code: "(s) => { globalThis.__ran = true; return { final: { ok: true } }; }" } };
   delete globalThis.__ran;
   const without = await browserDryRun(flow);
   assert.equal(without.ok, false);
   assert.match(without.problems.join(" "), /runCode/);
-  assert.equal(globalThis.__ran, undefined, "the browser entry evaluated nothing");
+  assert.equal(globalThis.__ran, undefined, "the browser bundle evaluated nothing");
   const seen = [];
   const withHost = await browserDryRun(flow, { runCode: async (node) => { seen.push(node.label); return { final: { ok: true } }; } });
   assert.equal(withHost.ok, true, JSON.stringify(withHost));

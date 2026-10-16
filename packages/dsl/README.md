@@ -49,6 +49,18 @@ The schema helpers resolve the owning workflow's schema catalog; `stageSchemaFor
 
 The separate `@parcha/agentrun-dsl/demo` entrypoint provides the support-triage example. `@parcha/agentrun-dsl/schema` provides the generated workflow JSON Schema.
 
+## Browser entries
+
+`@parcha/agentrun-dsl/browser` is what a page needs to hold a workflow document: `validateWorkflow`, `inspectWorkflow`, `formatWorkflowTree`, `dryRunWorkflow`, `synthesizeInstance`, `workflowSha256`, the language vocabulary, the error classes and the types. It bundles for the browser platform as is: no `node:` import, no `Buffer`, no `eval` and no `new Function`, and it holds no executor and no recovery. Differences from the root entry, all on purpose:
+
+- A `code` node's source is not parsed or compiled here. `validateWorkflow` leaves it unchecked, so a syntax error in it shows when the code runs (in the host's `runCode`), not at validation; and `dryRunWorkflow` runs a code node only through the `runCode` the host passes; with none, the dry run reports that and evaluates nothing.
+- A Proxy cannot be told from its target in a browser, so the proxy check on a document does not fire there.
+- Schemas are checked by typebox's interpreted checker, which answers what the compiler answers (`test/platform-parity.test.mjs`).
+
+`@parcha/agentrun-dsl/browser/worker` serves those functions from a Web Worker. In the worker script, `serveWorker(self, { runCode })` answers `validate`, `inspect`, `dryRun` and `sha256` requests; `runCode` is required and `serveWorker` throws without a function, because there is no default way to run code. On the page, `createWorkerClient(new Worker(url, { type: "module" }))` returns `validate`, `inspect`, `dryRun`, `sha256` and `terminate`. The module contains no eval; a `runCode` built on one is the host's choice and the host's isolation.
+
+Under Node, both entries resolve through the same `#platform` seam as the root entry and behave as Node does; the browser platform is what a bundler selects under the `browser` condition.
+
 Children can contain maps, loops, routes, parallel branches and other children, and appear inside those structures. Their input/state and schema catalogs stay isolated; terminal report/artifact delivery remains parent-owned. New composed structures require path-aware recovery stores when recovery is enabled. `executionPath` is supplied to adapters, events and checkpoint/recovery hooks. Existing host validators and durable-cursor limits remain authoritative.
 
 ## Bounds

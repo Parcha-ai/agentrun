@@ -1,4 +1,4 @@
-import { Compile } from "typebox/compile";
+import { compileSchema as Compile } from "#platform";
 import { runWorkflow, validateWorkflow, WorkflowInvalidError, WorkflowInputInvalidError, WorkflowOutputInvalidError, type Workflow, type WorkflowDeps } from "./workflow.js";
 import { resolveSchemaForWorkflow } from "./schema-references.js";
 import { synthesizeAnswers } from "./system-one.js";

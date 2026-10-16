@@ -1,7 +1,6 @@
-import { createRequire } from "node:module";
-import { Compile } from "typebox/compile";
+import { compileSchema as Compile, documentSchema as documentSchemaValue } from "#platform";
 
-const documentSchema = createRequire(import.meta.url)("../schema/workflow.schema.json");
+const documentSchema = documentSchemaValue as any;
 const fullValidator = Compile(documentSchema);
 type RecordValue = Record<string, unknown>;
 const isRecord = (value: unknown): value is RecordValue => value !== null && typeof value === "object" && !Array.isArray(value);
