@@ -4,7 +4,7 @@
 
 // The run: open it, on a disk or a local directory, with its environment, its claim and the errors it fails with.
 export { openDurableRun, RunError, StoreBehindSealError } from "./run.ts";
-export type { BeforeResume, DurableRun, LeaseOptions, OpenDurableRunOptions, OpenRunLeaseOptions, OpenStep, ReleaseStep, RunClaim, RunEnv, RunErrorCode, RunLease, RunSeed, RunSeedDir, StoreHeadSource, StoreReads } from "./run.ts";
+export type { AfterClaim, BeforeResume, DurableRun, LeaseOptions, OpenDurableRunOptions, OpenRunLeaseOptions, OpenStep, ReleaseStep, RunClaim, RunEnv, RunErrorCode, RunLease, RunSeed, RunSeedDir, StoreHeadSource, StoreReads } from "./run.ts";
 export { localRun } from "./local-run.ts";
 export type { LocalRun } from "./local-run.ts";
 export { CLAIM_UNMOUNTED, openClaimDir, readLocalRunStatus, RunRecordError } from "./status.ts";
