@@ -21,7 +21,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { confineHooks, namesHeld, PathOutsideWorkError } from "../src/confine.ts";
 import { ArchilCodingTools, archilEnv, EnvError } from "../src/env.ts";
 import type { ArchilEnvOptions } from "../src/env.ts";
-import { SWAPPER_CAP_SECONDS, spawnSwapper, stopSwapper, swapperLoop } from "./fixtures/swapper.ts";
+import { groupRuns, SWAPPER_CAP_SECONDS, spawnSwapper, stopSwapper, swapperLoop } from "./fixtures/swapper.ts";
 import { asPlatform } from "./_macos.ts";
 import { alive } from "./_run-support.ts";
 
@@ -824,13 +824,36 @@ describe("stopping a swapper", () => {
         const t0 = Date.now();
         assert.equal(await stopSwapper(swapper.pid!, 200), true, "the group ended once killed");
         assert.ok(Date.now() - t0 >= 200, "not before the grace ran out");
-        assert.throws(() => process.kill(-swapper.pid!, 0), { code: "ESRCH" }, "nothing in the group runs");
+        assert.equal(groupRuns(swapper.pid!), false, "nothing in the group runs");
       } finally {
         try {
           process.kill(-swapper.pid!, "SIGKILL");
         } catch {}
       }
     });
+  });
+});
+
+describe("stopping a swapper whose group holds only zombies", () => {
+  it("counts it stopped at once: a zombie no one has reaped writes nothing", async () => {
+    // A parent that cannot reap (its event loop is blocked): the child it started in a group of its own stays a zombie.
+    const blocked = `const { spawn } = require("node:child_process");
+      const child = spawn("sh", ["-c", "exit 0"], { stdio: "ignore", detached: true });
+      require("node:fs").writeSync(1, child.pid + "\\n");
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000);`;
+    const parent = spawn(process.execPath, ["-e", blocked], { stdio: ["ignore", "pipe", "inherit"] });
+    try {
+      let said = "";
+      parent.stdout.on("data", (chunk) => (said += chunk));
+      for (const t0 = Date.now(); !said.includes("\n") && Date.now() - t0 < 10_000; ) await new Promise((r) => setTimeout(r, 10));
+      const zombie = Number(said.trim());
+      assert.ok(zombie > 0, "the parent started its child");
+      for (const t0 = Date.now(); alive(zombie) && Date.now() - t0 < 5_000; ) await new Promise((r) => setTimeout(r, 10));
+      assert.ok(!alive(zombie), "the child has exited");
+      assert.equal(await stopSwapper(zombie, 100, 100), true, "a group of zombies is stopped");
+    } finally {
+      parent.kill("SIGKILL");
+    }
   });
 });
 

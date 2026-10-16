@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 
 /** How long a swapper may run at most, whatever else happens: longer than any test needs, short enough that nothing outlives it by much. */
@@ -27,14 +27,7 @@ export function spawnSwapper(work: string, parent: number, capSeconds = SWAPPER_
  * can find a file made after the walk (ENOTEMPTY). Returns whether the group ended within `graceMs + killMs`.
  */
 export async function stopSwapper(leader: number, graceMs = 2_000, killMs = 5_000): Promise<boolean> {
-  const gone = () => {
-    try {
-      process.kill(-leader, 0);
-      return false;
-    } catch (error) {
-      return (error as NodeJS.ErrnoException).code === "ESRCH";
-    }
-  };
+  const gone = () => !groupRuns(leader);
   const waitGone = async (ms: number) => {
     for (const deadline = Date.now() + ms; !gone() && Date.now() < deadline; ) await new Promise((r) => setTimeout(r, 10));
     return gone();
@@ -46,4 +39,26 @@ export async function stopSwapper(leader: number, graceMs = 2_000, killMs = 5_00
     if (await waitGone(ms)) return true;
   }
   return false;
+}
+
+/**
+ * Whether a process other than a zombie is in the group `leader` leads. kill(0) answers for a zombie too, and a swapper's
+ * children, orphaned when its shell dies, stay zombies until their new parent reaps them; a zombie writes nothing.
+ */
+export function groupRuns(leader: number): boolean {
+  try {
+    process.kill(-leader, 0);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+  let listing: string;
+  try {
+    listing = execFileSync("ps", ["-A", "-o", "pgid=,stat="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  } catch {
+    return true;
+  }
+  return listing.split("\n").some((line) => {
+    const [pgid, stat] = line.trim().split(/\s+/);
+    return Number(pgid) === leader && stat !== undefined && !stat.startsWith("Z");
+  });
 }
