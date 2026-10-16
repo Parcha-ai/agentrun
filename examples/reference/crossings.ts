@@ -149,3 +149,23 @@ export function tapHost(host: Host, cross: Cross, window: EffectWindow = { open:
   };
   host.deliver = async (result) => { cross('deliver.writing'); await deliver(result); cross('deliver.written'); };
 }
+
+/** The live host's judge and model with the crossings the fakes' have, by the same names and counting as `tapFakes`: `judge.asked <label>` and `judge.answered <label>` around each typed question, `model.request turn <n>` before and `model.answered turn <n>` after each
+ *  request (n counts the tool results so far), so a kill at one of them lands on a live run with a paid question or request in flight. Call it on a live host, before the judge seam's caps; on fakes `tapFakes` has already put them there. */
+export function tapLive(host: Host, cross: Cross): void {
+  const judge = host.decisions.runJudge;
+  host.decisions = { ...host.decisions, runJudge: async (request) => { cross(`judge.asked ${request.label}`); const answer = await judge(request); cross(`judge.answered ${request.label}`); return answer; } };
+  const catalog = host.models.catalog;
+  const tapped = (member: (...args: any[]) => any, target: object) => (model: unknown, context: { messages: readonly { role: string }[] }, options?: unknown) => {
+    const turn = context.messages.filter((message) => message.role === 'toolResult').length;
+    cross(`model.request turn ${turn}`);
+    const events = member.call(target, model, context, options);
+    void Promise.resolve(events.result?.()).then(() => cross(`model.answered turn ${turn}`), () => undefined);
+    return events;
+  };
+  host.models = { ...host.models, catalog: new Proxy(catalog, { get(target, name) {
+    const member = Reflect.get(target, name, target);
+    if ((name === 'stream' || name === 'streamSimple') && typeof member === 'function') return tapped(member, target);
+    return typeof member === 'function' ? member.bind(target) : member;
+  } }) };
+}

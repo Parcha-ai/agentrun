@@ -1572,3 +1572,21 @@ test('on --live the effect door dispatches to LiveParts.tools (with its receipt)
   assert.equal(fakes.result.processes.at(-1).outcome.status, 'complete');
   assert.ok(!fromLive(fakes.result.dir), 'fakes.tools never see LIVE');
 });
+
+// ---- the live host's crossings ------------------------------------------------------------------------------------------------------------------
+
+test('a kill at "judge.asked <label>" or "model.request turn <n>" lands on a live-shaped host (no tapFakes: the judge and model are the live host\'s), the resume pays the judge once, and repeated is 0', { timeout: 300_000 }, async (t) => {
+  const programs = [{ name: 'fixture spec', env: 'DEMO_SPEC' }, { name: 'fixture probe', env: 'DEMO_LIVE_PROBE' }];
+  const keys = [[{ env: 'BROWSERBASE_API_KEY' }, { env: 'BROWSERBASE_PROJECT_ID' }]];
+  const browser = Object.fromEntries(['BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID'].map((name) => [name, `value-for-${name.toLowerCase()}`]));
+  const judged = (dir) => readFileSync(join(dir, 'ledger.jsonl'), 'utf8').split('\n').filter(Boolean).map((row) => JSON.parse(row)).filter((row) => row.kind === 'judge');
+  for (const point of ['judge.asked verdict', 'model.request turn 1']) {
+    const { result, recording } = await run(t, { keys, programs, kills: [{ point, why: `a kill at ${point} on a live host` }] }, ['--live', '--kill', '--json'], { DEMO_LIVE_PROBE: '1', ...browser });
+    assert.deepEqual(result.processes.map((process) => [process.signal, process.outcome?.status ?? null]), [['SIGKILL', null], [null, 'complete']], `${point}: ${JSON.stringify(result.processes)}`);
+    assert.deepEqual(result.kills.map((kill) => kill.point), [point]);
+    assert.deepEqual(result.unlanded, []);
+    assert.equal(judged(result.dir).length, 1, `${point}: the judge was paid for once across the kill and the resume`);
+    const counted = fold(readEvents(recording));
+    assert.deepEqual([counted.processes, counted.kills, counted.repeated], [2, 1, 0], point);
+  }
+});
