@@ -228,7 +228,8 @@ export function finishRecording(dir: string, header: Header): { lines: number } 
   all.sort(compareLines);
   assignMemoOrders(all);
   // The file a follower has been reading is a prefix of the final one when the lines arrived in order: the rest is appended. When one arrived late (after a line that sorts after it) the file is replaced whole, by a rename.
-  const finalText = all.map((line) => JSON.stringify(line)).join('\n') + (all.length ? '\n' : '');
+  const redactLine = header.redact ?? ((text: string) => text);
+  const finalText = all.map((line) => redactLine(JSON.stringify(line))).join('\n') + (all.length ? '\n' : '');
   const eventsFile = join(dir, 'events.jsonl');
   const live = existsSync(eventsFile) ? readFileSync(eventsFile, 'utf8') : '';
   if (live && finalText.startsWith(live)) appendFileSync(eventsFile, finalText.slice(live.length));
@@ -246,7 +247,7 @@ export function finishRecording(dir: string, header: Header): { lines: number } 
 /** Follows the spools of the recording in `dir` while a run is going and appends each line to `events.jsonl` as it becomes safe to place, whole lines in one append, in section 3's order, so a viewer polling the file sees a live run and its replay as one file.
  *  A line is placed once its `t` is `holdMs` behind the recording's clock (the time every writer has to get it to a spool), and a memo once a later commit has appeared (the lines of its own commit are all in); the lines of one batch are sorted
  *  by `compareLines`. `finishRecording` completes the file: what was not placed is appended, and a line that arrived later than the hold is placed by replacing the file whole. */
-export function followRecording(dir: string, options: { holdMs?: number } = {}): { poll(): void; close(): void } {
+export function followRecording(dir: string, options: { holdMs?: number; /** Every line it places goes through this too: a line a process wrote without the secret values (a box's child, which has no sign-in file) is cleaned on its way into the file. */ redact?: Redact } = {}): { poll(): void; close(): void } {
   const holdMs = options.holdMs ?? 1000;
   const started = Date.parse(startedAt(dir));
   const events = join(dir, 'events.jsonl');
@@ -288,7 +289,7 @@ export function followRecording(dir: string, options: { holdMs?: number } = {}):
       ready.sort(compareLines);
       for (const line of ready) pending.splice(pending.indexOf(line), 1);
       for (const line of ready) if (line.channel === 'durable' && line.order === null) { line.order = next.get(line.commit as number) ?? 0; next.set(line.commit as number, (line.order as number) + 1); }
-      appendFileSync(events, ready.map((line) => JSON.stringify(line)).join('\n') + '\n');
+      appendFileSync(events, ready.map((line) => (options.redact ?? ((text: string) => text))(JSON.stringify(line))).join('\n') + '\n');
     },
     close() { ingest(); },
   };

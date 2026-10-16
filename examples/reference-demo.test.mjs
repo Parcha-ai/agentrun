@@ -1495,3 +1495,24 @@ test('--record: a reader polling events.jsonl mid-run sees only whole lines in o
   const job = JSON.parse(readFileSync(join(recording, 'blobs', `${manifest.job.blob}.json`), 'utf8'));
   assert.deepEqual([job.workflow.name, job.input.company, Array.isArray(job.files)], ['reference-company-check', 'Acme Ltd', true]);
 });
+
+test('the follower redacts every line it places (a line a box\'s child wrote without the secret values is cleaned on its way in), live and in the finished file', async (t) => {
+  const { startedAt, followRecording, finishRecording } = await import('./reference/record.ts');
+  const { redactorOf } = await import('./reference/secrets.ts');
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-follow-redact-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'rec');
+  mkdirSync(join(dir, '.spool'), { recursive: true });
+  startedAt(dir);
+  const secret = `made-up-box-token-${'b'.repeat(24)}`;
+  const redact = redactorOf([{ key: 'K', value: secret }]);
+  appendFileSync(join(dir, '.spool', 'live-9.jsonl'), `${JSON.stringify({ channel: 'live', source: 'workflow', kind: 'x', gen: 1, seq: 0, t: 1, data: { text: `a box wrote ${secret}` } })}\n`);
+  const follower = followRecording(dir, { holdMs: 10, redact });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  follower.poll();
+  const live = readFileSync(join(dir, 'events.jsonl'), 'utf8');
+  assert.ok(live.includes('a box wrote [redacted]') && !live.includes(secret), 'cleaned as it is placed');
+  follower.close();
+  finishRecording(dir, { title: 't', task: 't', model: 'faux/faux-1', kills: 0, code: { repo: 'r', commit: 'c', packages: {} }, cost: { usd: 0, parts: {} }, source: { run: 'x', store_sha256: '0'.repeat(64) }, redact });
+  assert.ok(!readFileSync(join(dir, 'events.jsonl'), 'utf8').includes(secret) && !readFileSync(join(dir, 'manifest.json'), 'utf8').includes(secret));
+});

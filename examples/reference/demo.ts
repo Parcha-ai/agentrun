@@ -339,7 +339,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const served = await backend.serve();
   const supervisor = openSupervisor({ dir: recordDir, ...(redact ? { redact } : {}) });
   // A live run and its replay are one file: events.jsonl is appended to as the run goes (whole lines, section 3's order), and finishRecording completes it. The job is a blob from the start, so a viewer can draw the workflow graph at once.
-  const follower = followRecording(recordDir);
+  const follower = followRecording(recordDir, { ...(redact ? { redact } : {}) });
   const following = setInterval(() => follower.poll(), 100);
   const jobText = JSON.stringify({ workflow: job.workflow, input: input ?? (live ? undefined : options.fakes.input) ?? job.input, files: Object.keys(job.files ?? {}) });
   const jobBlob = keepBlob(recordDir, Buffer.from(redact ? redact(jobText) : jobText), 'json');
