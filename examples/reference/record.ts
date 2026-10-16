@@ -32,6 +32,26 @@ export type Recorder = {
   blob(bytes: Uint8Array | string, extension: string): string;
 };
 
+/** A recorder that touches no file until `start()`: the lines it is given before that (`host`, `live`, `memo`, `generation`) are kept in memory and written, in order, when `open()` has made the real one. A process on a disk the run has not
+ *  yet mounted starts it once its claim is open; a write before then would land on the bare mountpoint and be hidden by the mount. `blob`, `attach` and `detach` need the open run, so before `start()` they fail loudly (`detach` has nothing to stop). */
+export function lazyRecorder(open: () => Recorder): Recorder & { start(): void; readonly started: boolean } {
+  let real: Recorder | undefined;
+  const queued: Array<(recorder: Recorder) => void> = [];
+  const later = (call: (recorder: Recorder) => void) => { if (real) call(real); else queued.push(call); };
+  const needs = (name: string): never => { throw new Error(`recorder.${name} before the run is open: the recorder starts once the claim is open.`); };
+  return {
+    get started() { return real !== undefined; },
+    start() { if (real) return; real = open(); for (const call of queued.splice(0)) call(real); },
+    generation: (lease) => later((recorder) => recorder.generation(lease)),
+    live: (source, kind, data, meta) => later((recorder) => recorder.live(source, kind, data, meta)),
+    host: (kind, data, meta) => later((recorder) => recorder.host(kind, data, meta)),
+    memo: (key, value, meta) => later((recorder) => recorder.memo(key, value, meta)),
+    attach: (input) => (real ? real.attach(input) : needs('attach')),
+    detach: () => (real ? real.detach() : Promise.resolve()),
+    blob: (bytes, extension) => (real ? real.blob(bytes, extension) : needs('blob')),
+  };
+}
+
 const EXTENSIONS: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg' };
 
 /** Moves every image block inside `data` into `blobs/`, leaving `{ type: 'image', mimeType, blob }`: the SHA-256 of the file. A
