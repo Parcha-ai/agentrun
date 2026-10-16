@@ -9,8 +9,10 @@
 //   status <name>  print running, stopped or failed from the state file and whether the processes still live
 //   stop <name>    SIGTERM the launcher (it drains the instance), SIGKILL both after the timeout, print the state
 // Files live in a root-only directory (default /run/pda, 0700), which the run user can never traverse: `<name>.json`
-// (the spec), `<name>.token` (gone once read), `<name>.state`, `<name>.log` (the instance's output). Only the first
-// incarnation gets the token; a restart in place reads an empty stdin and reuses its live mount, as under localHost.
+// (the spec), `<name>.token` (gone once read), `<name>.state`, `<name>.log` (the instance's output). Every incarnation of
+// the attempt gets its token on stdin: a restart whose mount is still live reuses it and never needs the token, and one
+// whose mount went with the failed incarnation mounts again (a takeover in between makes that mount HeldError, 76,
+// terminal). The token lives in this launcher's memory for the attempt.
 // No cgroup per incarnation: commands a crashed instance detached can outlive it until the box is deleted.
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
@@ -164,9 +166,9 @@ export async function serve(dir: string, name: string): Promise<LaunchState> {
   try {
     for (;;) {
       const env = { PATH: SAFE_PATH, LANG: "C.UTF-8", HOME: ids.home, ...spec.env };
-      const first = token !== null;
+      const piped = Boolean(token);
       try {
-        child = spawn(spec.argv[0], spec.argv.slice(1), { uid: ids.uid, gid: ids.gid, env, cwd: "/", stdio: [first ? "pipe" : "ignore", log, log], detached: true });
+        child = spawn(spec.argv[0], spec.argv.slice(1), { uid: ids.uid, gid: ids.gid, env, cwd: "/", stdio: [piped ? "pipe" : "ignore", log, log], detached: true });
         await new Promise<void>((resolve, reject) => {
           child!.once("spawn", resolve);
           child!.once("error", reject);
@@ -175,10 +177,9 @@ export async function serve(dir: string, name: string): Promise<LaunchState> {
         save({ phase: "exited", instance: null, instanceTicks: null, exit: 1, reason: `spawn failed: ${(err as Error).message}` });
         return state;
       }
-      if (first) {
+      if (piped) {
         child.stdin!.on("error", () => {});
-        child.stdin!.end(token ? `${token}\n` : "");
-        token = null;
+        child.stdin!.end(`${token}\n`);
       }
       save({ phase: stopping ? "stopping" : "running", instance: child.pid!, instanceTicks: procStartTicks(child.pid!), spawned: state.spawned + 1, exit: null, signal: null });
       if (stopping) child.kill("SIGTERM");
