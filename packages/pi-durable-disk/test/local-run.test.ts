@@ -1,7 +1,7 @@
 // A run on a plain local directory (localRun): one machine, no Archil, no mount token.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -10,21 +10,33 @@ import { localRun } from "../src/local-run.ts";
 import { openDurableRun, RunError } from "../src/run.ts";
 import { parseRunRecord, RUN_JSON } from "../src/status.ts";
 import { FencedError, HeldError } from "../src/errors.ts";
+import { processTable } from "../src/process-table.ts";
 import { alive, ctx, killQuietly, scratchRoot, scriptedHarness, startCommand } from "./_run-support.ts";
 
 const ref = { disk: "dsk-local", region: "local", id: "run-1" };
 const LOCAL_COMMAND = fileURLToPath(new URL("./fixtures/local-command.ts", import.meta.url));
 
-/** A long-lived root-owned process this (unprivileged) user may not signal, with its start ticks; undefined if none. */
-function rootProcess(): { pid: number; start: number } | undefined {
-  for (const name of readdirSync("/proc").filter((n) => /^\d+$/.test(n)).map(Number).filter((pid) => pid > 2)) {
+/** Root's processes but pid 1 and kernel threads, from /proc on Linux and ps elsewhere (macOS). */
+function rootPids(): number[] {
+  if (process.platform !== "linux") {
+    const rows = execFileSync("/bin/ps", ["-A", "-o", "pid=,uid="], { encoding: "utf8" }).split("\n").map((line) => line.trim().split(/\s+/).map(Number));
+    return rows.filter(([pid, uid]) => pid! > 2 && uid === 0).map(([pid]) => pid!);
+  }
+  return readdirSync("/proc").filter((n) => /^\d+$/.test(n)).map(Number).filter((pid) => {
     try {
-      if (!/^Uid:\s+0\s/m.test(readFileSync(`/proc/${name}/status`, "utf8"))) continue;
-      if (readFileSync(`/proc/${name}/cmdline`, "utf8") === "") continue; // a kernel thread
-      return { pid: name, start: Number(readFileSync(`/proc/${name}/stat`, "utf8").split(") ")[1]!.split(" ")[19]) };
+      return pid > 2 && /^Uid:\s+0\s/m.test(readFileSync(`/proc/${pid}/status`, "utf8")) && readFileSync(`/proc/${pid}/cmdline`, "utf8") !== "";
     } catch {
-      // gone, or not readable
+      return false; // gone, or not readable
     }
+  });
+}
+
+/** A long-lived root-owned process this (unprivileged) user may not signal, with its start; undefined if none. */
+function rootProcess(): { pid: number; start: number } | undefined {
+  const look = processTable().snapshot();
+  for (const pid of rootPids()) {
+    const info = look.info(pid);
+    if (info !== undefined) return { pid, start: info.start };
   }
   return undefined;
 }
@@ -42,7 +54,7 @@ describe("localRun", () => {
     const open = () => openDurableRun({ disk: "dsk-local", region: "local", id: "survivor" }, { ...localRun(root), harness: { models: scripted.models, registry: scripted.registry } });
     try {
       await (await open()).release();
-      const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+      const boot = processTable().bootId()!;
       const record = join(root, "commands", `${survivor.pid}-${survivor.start}.json`);
       mkdirSync(join(root, "commands"), { recursive: true });
       writeFileSync(record, JSON.stringify({ boot, leader: survivor, members: [] }));

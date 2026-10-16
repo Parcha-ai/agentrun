@@ -14,7 +14,7 @@ function failures(mutant) {
   const run = spawnSync(process.execPath, ['--test', '--test-reporter=tap', runner], { env, encoding: 'utf8' });
   const failed = [...run.stdout.matchAll(/^not ok \d+ - (.+)$/gm)].map(([, title]) => title.replace(`${mutant}: `, ''));
   assert.equal(run.status === 0, failed.length === 0, `${mutant}: exit ${run.status}\n${run.stdout.slice(-2000)}`);
-  assert.match(run.stdout, /^# tests 15$/m, `${mutant}: the whole suite ran`);
+  assert.match(run.stdout, /^# tests 18$/m, `${mutant}: the whole suite ran`);
   return failed;
 }
 
@@ -29,6 +29,7 @@ const EXPECTED = {
   'intent-dropped': [/^admit keeps the external call it is given/],
   'args-dropped': [/^admit keeps the arguments it is given/],
   'calls-hidden': [/^called keeps the outside calls with the effect/],
+  'parts-dropped': [/^parts are kept beside the state/, /^an effect admitted with an owner is listed by the owner's record/, /^a write whose parts cannot be stored writes nothing at all/],
 };
 
 test('every mutant has an expectation, and the store that keeps every rule passes the suite', () => {

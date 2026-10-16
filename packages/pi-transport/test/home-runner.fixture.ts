@@ -4,6 +4,7 @@ import { createRegistry, defineExtension, defineTool } from "@earendil-works/pi-
 import { Type } from "typebox";
 import type { App } from "../src/home/app.ts";
 import { runMain } from "../src/home/main.ts";
+import type { Recording, RecordLine } from "../src/home/records.ts";
 import { textResult } from "../src/testing/tool-result.ts";
 
 /** An app whose one tool leaves a line in the workspace, run as a whole runner program. */
@@ -24,4 +25,22 @@ const app: App = (ctx) => {
 	return { registry, root: { agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: ctx.workspace } } };
 };
 
-await runMain(app);
+/** A recorder of the test's own, shaped as agentrun-pi's; it runs only when the host takes the record stream. */
+const recording: Recording = {
+	async snapshotLines(_storage, { at }) {
+		return [{ commit: at, kind: "snapshot" } as RecordLine];
+	},
+	recordCommits(session, { write }) {
+		let chain = Promise.resolve();
+		const unsubscribe = session.subscribeCommits((publication) => {
+			const lines = [{ commit: Number(publication.seq), kind: "commit" } as RecordLine];
+			chain = chain.then(() => write(lines));
+		});
+		return async () => {
+			unsubscribe();
+			await chain;
+		};
+	},
+};
+
+await runMain(app, { recording });
