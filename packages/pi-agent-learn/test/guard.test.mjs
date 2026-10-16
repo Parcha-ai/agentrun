@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { CAPS, createGuard, guard, LEARN_TYPES } from "../dist/index.js";
+import { CAPS, createGuard, guard, LEARN_TYPES, renderInbox } from "../dist/index.js";
 import { cases, RUN_ID } from "./fixtures/guard-corpus.mjs";
 import { cases as workflowCases } from "./fixtures/guard-workflow-corpus.mjs";
 
@@ -167,7 +167,7 @@ test("case data: a case value of 4 or more characters is refused in any case, sp
   assert.deepEqual(guard({ role: "run", caseValues: ["a b c"], candidates: [candidate({ text: "abc is short" })] }), [], "a value under 4 characters once its whitespace is gone is ignored");
   assert.ok(refused({ candidates: [candidate({ evidence: ["order 12345 failed"] })] }).has("case_data"));
   assert.ok(refused({ files: { [`inbox/${RUN_ID}.md`]: "see 12345" } }).has("case_data"));
-  assert.ok(refused({ files: { [`inbox/${RUN_ID}.md`]: "ok", "learnings/12345.md": "ok" } }).has("case_data"));
+  assert.ok(refused({ files: { [`inbox/${RUN_ID}.md`]: "ok", [`inbox/${RUN_ID}/workflows/12345/latest`]: "ok" } }).has("case_data"), "a workflow name is the agent's");
   assert.ok(refused({ candidates: [candidate({ text: "\uff21cme Holdings GmbH" })] }).has("case_data"), "fullwidth letters fold to the value");
   assert.deepEqual([...refused({ candidates: [candidate({ text: "A rule with xy in it, and 1234 too." })] })], [], "a value under 4 characters or a near miss is not case data");
   const out = guard({ role: "run", caseValues, candidates: [candidate({ text: "Acme Holdings GmbH" })] });
@@ -288,4 +288,66 @@ test("the curator writes learnings/L-<12 hex>.md, SKILL.md and trial.json, and n
   ]) {
     assert.ok(reasonsOf(curate(file)).has("path_not_allowed"), file);
   }
+});
+
+test("a call id, a run id, a seed and a digest are generated: a short case value in one is no case data", () => {
+  const digest = `${"0".repeat(40)}4821${"f".repeat(20)}`;
+  const seed = `${"a".repeat(30)}4821${"b".repeat(6)}`;
+  const runId = "run-4821-0f3";
+  const candidates = [candidate({ callId: "fc_68ad4821e0f3" }), candidate({ callId: "call_4821|fc_4821", type: "fact", text: "Another rule." })];
+  const files = {
+    [`inbox/${runId}.md`]: renderInbox(runId, candidates, { seed }),
+    [`inbox/${runId}/workflows/kyb/${digest}.json`]: JSON.stringify({ digest }),
+    [`inbox/${runId}/workflows/kyb/latest`]: `${digest}\n`,
+  };
+  const out = guard({ role: "run", runId, files, candidates, caseValues: ["4821"] });
+  assert.deepEqual(out, [], "nothing the model wrote holds the value");
+  assert.deepEqual(guard({ role: "curate", files: { "learnings/L-48214821abcd.md": "x", ".agents/skills/kyb/SKILL.md": "x" }, caseValues: ["4821"] }), []);
+});
+
+test("the model's own text in an inbox is still checked for case data, and so is anything that is not exactly a rendering", () => {
+  const caseValues = ["4821"];
+  const run = (content, candidates = []) => guard({ role: "run", runId: "run-1", files: { "inbox/run-1.md": content }, candidates, caseValues });
+  const clean = [candidate({ callId: "fc_4821" })];
+  const text = (field, value) => [candidate({ callId: "fc_1", [field]: value })];
+  for (const [name, found] of [["text", text("text", "order 4821 failed")], ["evidence", text("evidence", ["order 4821 failed"])], ["id", [candidate({ callId: "fc_1", type: "used", id: "L-4821abcdef01" })]]]) {
+    const out = run(renderInbox("run-1", found), found);
+    assert.deepEqual(out.map((r) => [r.reason, r.path ?? r.field]), [["case_data", "inbox/run-1.md"], ["case_data", name === "id" ? "candidates[0].id" : `candidates[0].${name === "text" ? "text" : "evidence[0]"}`]], name);
+  }
+  assert.deepEqual(run(renderInbox("run-1", clean), clean), []);
+  const rendered = renderInbox("run-1", clean);
+  // The same file with the value added outside the JSON block, or in a heading, or with the block edited, is not a rendering.
+  for (const [name, content] of [
+    ["a human section that differs from its block", rendered.replace("Search registries", "Search 4821 registries")],
+    ["a changed heading", rendered.replace("proposes 1", "proposes 4821")],
+    ["a block with another key", rendered.replace('"untrusted":false', '"untrusted":false,"note":"4821"')],
+    ["text after the block", `${rendered}more 4821\n`],
+    ["a plain note", "see 4821"],
+    ["a rendering for another run", renderInbox("run-2", clean)],
+  ]) {
+    assert.ok(run(content).some((r) => r.reason === "case_data"), name);
+  }
+  assert.ok(guard({ role: "run", runId: "run-1", files: { "inbox/run-1/workflows/x4821/latest": "ok" }, caseValues }).some((r) => r.reason === "case_data"), "a workflow name is the agent's");
+  assert.ok(guard({ role: "curate", files: { ".agents/skills/x4821/SKILL.md": "ok" }, caseValues }).some((r) => r.reason === "case_data"), "so is a skill name");
+  assert.ok(guard({ role: "run", runId: "run-1", files: { "uses/run-1.json": JSON.stringify({ note: "order 4821" }) }, caseValues }).some((r) => r.reason === "case_data"), "other files are checked whole");
+});
+
+test("a call id is a provider's id: printable ASCII with no space, up to 256 bytes, and never scanned", () => {
+  const withId = (callId) => guard({ role: "run", candidates: [candidate({ callId })] }).map((r) => [r.field, r.reason]);
+  for (const id of ["fc_68ad4821e0f3", "call-0", "call_abc|fc_abc", "toolu_01A", "x".repeat(256)]) assert.deepEqual(withId(id), [], id);
+  for (const id of ["", " ", "a b", "a\nb", "x".repeat(257), "caf\u00e9", "a\u200bb"]) assert.deepEqual(withId(id), [["candidates[0].callId", "invalid"]], JSON.stringify(id));
+  const key = ["AK", "IA", "ABCDEFGHIJKLMNOP"].join("");
+  assert.deepEqual(withId(`fc_${key}`), [], "a call id is not scanned for secret shapes either");
+});
+
+test("a long hex run is generated, unless it is itself a case value", () => {
+  const sha = "0123456789abcdef".repeat(4);
+  const hash = "c0ffee".repeat(7);
+  const run = (text, caseValues) => guard({ role: "run", candidates: [candidate({ text })], caseValues }).map((r) => r.reason);
+  assert.deepEqual(run(`the digest ${sha.slice(0, 20)}4821${sha.slice(20)} is long`, ["4821"]), [], "4821 inside 65 hex characters");
+  assert.deepEqual(run("order 4821 failed", ["4821"]), ["case_data"]);
+  assert.deepEqual(run(`ids ${hash}`, [hash]), ["case_data"], "a hash from the input is case data wherever it is");
+  assert.deepEqual(run(`ids ${hash.toUpperCase()}`, [hash]), ["case_data"]);
+  assert.deepEqual(run(`${hash} 4821`, [hash, "4821"]), ["case_data"]);
+  assert.deepEqual(run("a b c d e f 4821 a b c d e f a b c d e f a b c d e f", ["4821"]), ["case_data"], "spaced hex-looking words are not a hex run");
 });

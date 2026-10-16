@@ -1,5 +1,6 @@
 import { pathRefusal as gitPathRefusal } from "@parcha/pi-git-remote";
 import { CAPS, inboxPath, inboxWorkflowDir, isRulesLocked, LAYOUT, LEARNING_ID, learningPath, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
+import { parseInbox, renderInbox } from "./inbox.js";
 import { type Guard, type GuardInput, LEARN_TYPES, type Refusal, type RefusalReason } from "./types.js";
 
 export type Caps = { -readonly [K in keyof typeof CAPS]: number };
@@ -60,12 +61,21 @@ function secretMatcher(secrets: readonly string[]): (text: string) => boolean {
   };
 }
 
+// A digest or a commit id is generated, and a short case value turns up in one by chance; a hash that is itself a case
+// value is still found.
+const HEX_RUN = /[0-9a-fA-F]{32,}/g;
+const HASH = /^[0-9a-f]{32,}$/;
+
 function caseMatcher(values: readonly string[]): (text: string) => boolean {
   const needles = [...new Set(values.map(foldCase).filter((value) => [...value].length >= MIN_CASE_VALUE))];
+  const hashes = needles.filter((needle) => HASH.test(needle));
+  const words = needles.filter((needle) => !HASH.test(needle));
   return (text) => {
     if (!needles.length) return false;
-    const folded = foldCase(text);
-    return needles.some((needle) => folded.includes(needle));
+    if (hashes.length && hashes.some((needle) => foldCase(text).includes(needle))) return true;
+    if (!words.length) return false;
+    const folded = foldCase(text.replace(HEX_RUN, " "));
+    return words.some((needle) => folded.includes(needle));
   };
 }
 
@@ -112,9 +122,37 @@ function hiddenCharacter(text: string): { code: number; at: number } | undefined
 
 // A skill folder is named like a directory; a workflow folder by the DSL's workflow name rule.
 const SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// A call id is the provider's, not the model's: printable ASCII, no spaces, and no content scan, since an id made of hex
+// digits holds a short case value by chance.
+const CALL_ID = /^[\x21-\x7e]{1,256}$/;
 const DIGEST_RECORD = /^(?:[0-9a-f]{64}\.json|latest)$/;
 
 type Hit = { readonly reason: RefusalReason; readonly detail: string };
+
+/** The part of a path an agent wrote: the workflow or skill name. Run ids, digests and learning ids are generated, and a
+ *  short case value turns up in one of them by chance, so only the name is checked for case data. */
+function authoredName(file: string): string {
+  const parts = file.split("/");
+  if (parts[0] === "inbox" && parts[2] === "workflows") return parts[3] ?? "";
+  if (file.startsWith(`${LAYOUT.skills}/`)) return parts[2] ?? "";
+  if (file.startsWith(`${LAYOUT.workflows}/`)) return parts[3] ?? "";
+  return "";
+}
+
+/** What the model wrote in an inbox file, when the file is exactly what `renderInbox` makes of its own candidates: their
+ *  texts, evidence and ids. The run, the seed, the call ids and the headings around them are generated. Any other
+ *  shape of file, or a mismatch, is undefined, and is checked whole. */
+function inboxAuthored(content: string, runId: string): string[] | undefined {
+  try {
+    const inbox = parseInbox(content);
+    const marked = inbox.candidates.length > 0 && inbox.candidates.every((c) => c.untrusted);
+    const options = { ...(inbox.seed === undefined ? {} : { seed: inbox.seed }), untrusted: marked };
+    if (inbox.run !== runId || renderInbox(runId, inbox.candidates, options) !== content) return undefined;
+    return inbox.candidates.flatMap((c) => [c.text, ...c.evidence, ...(c.id === undefined ? [] : [c.id])]);
+  } catch {
+    return undefined;
+  }
+}
 
 /** The byte cap of a path the role may write, or why it may not write it. */
 function allowance(role: "run" | "curate", file: string, runId: string | undefined, caps: Caps): { cap: number } | Hit {
@@ -197,13 +235,14 @@ export function createGuard(overrides?: Partial<Caps>): Guard {
     const ceiling = Math.max(caps.inbox, caps.file, caps.learning);
     const hasSecret = secretMatcher(secrets);
     const hasCaseValue = caseMatcher(caseValues);
-    const scan = (text: string): Hit[] => {
+    const CASE_DATA: Hit = { reason: "case_data", detail: "repeats a value from this run's input: a learning states the rule, never the case" };
+    const scan = (text: string, caseData = true): Hit[] => {
       const hits: Hit[] = [];
       if (secrets.length && hasSecret(text)) hits.push({ reason: "secret_value", detail: "contains a value the host holds as a secret, or an encoding of it" });
       for (const [name, shape] of SHAPES) if (shape.test(text)) hits.push({ reason: "secret_shape", detail: `contains a ${name}` });
       const hidden = hiddenCharacter(text);
       if (hidden) hits.push({ reason: "invisible_unicode", detail: `contains U+${hidden.code.toString(16).toUpperCase().padStart(4, "0")} at character ${hidden.at}` });
-      if (hasCaseValue(text)) hits.push({ reason: "case_data", detail: "repeats a value from this run's input: a learning states the rule, never the case" });
+      if (caseData && hasCaseValue(text)) hits.push(CASE_DATA);
       return hits;
     };
 
@@ -214,7 +253,8 @@ export function createGuard(overrides?: Partial<Caps>): Guard {
     if (files.length > caps.files) add("too_many", `${files.length} files; the cap is ${caps.files}`);
     else {
       for (const [file, content] of files) {
-        const name = scan(file);
+        const name = scan(file, false);
+        if (hasCaseValue(authoredName(file))) name.push(CASE_DATA);
         // A name that holds a secret or a hidden character is never echoed back.
         const echo = name.length ? {} : { path: file };
         for (const hit of name) add(hit.reason, hit.detail, { ...echo, field: "path" });
@@ -231,13 +271,17 @@ export function createGuard(overrides?: Partial<Caps>): Guard {
           continue;
         }
         const seen = new Set<string>();
-        for (const text of [content, ...(file.endsWith(".json") ? jsonStrings(content) : [])]) {
-          for (const hit of scan(text)) {
+        // An inbox that is exactly the rendering of its candidates is checked for case data in what the model wrote.
+        const authored = input.role === "run" && typeof input.runId === "string" && RUN_ID.test(input.runId) && file === inboxPath(input.runId) ? inboxAuthored(content, input.runId) : undefined;
+        const texts = [content, ...(file.endsWith(".json") ? jsonStrings(content) : [])];
+        for (const text of texts) {
+          for (const hit of scan(text, authored === undefined)) {
             if (seen.has(hit.detail)) continue;
             seen.add(hit.detail);
             add(hit.reason, hit.detail, echo);
           }
         }
+        if (authored?.some((text) => hasCaseValue(text))) add(CASE_DATA.reason, CASE_DATA.detail, echo);
       }
     }
 
@@ -258,8 +302,7 @@ export function createGuard(overrides?: Partial<Caps>): Guard {
           else for (const hit of scan(value)) add(hit.reason, hit.detail, at(field));
         };
         if (!LEARN_TYPES.includes(candidate.type)) add("invalid", "unknown type", at("type"));
-        if (typeof candidate.callId !== "string" || candidate.callId === "") add("invalid", "no call id", at("callId"));
-        else check(candidate.callId, "callId");
+        if (typeof candidate.callId !== "string" || !CALL_ID.test(candidate.callId)) add("invalid", "not a call id", at("callId"));
         check(candidate.text, "text", caps.text);
         if (candidate.id !== undefined) {
           const named = candidate.type === "workflow";
