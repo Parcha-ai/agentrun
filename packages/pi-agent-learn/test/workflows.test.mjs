@@ -231,6 +231,22 @@ test("promotion on receipts through git: three clean uses promote, a changed rev
   assert.equal(trial.uses.length, 7, "the history is kept: every use but the writer's own");
 });
 
+test("through the settler, one run that ran the trial on three inputs is one use, and the report says the others were left out", async () => {
+  const root = await scratch();
+  const { repo } = await agentRepo(root);
+  const first = await admitted(repo);
+  const one = await settle(repo, usesOf("r1", [kyb.name, first.digest, "frozen", at(10, 0)], [kyb.name, first.digest, "frozen", at(10, 1)], [kyb.name, first.digest, "frozen", at(10, 2)]));
+  const trial = await readTrial(repo, kyb.name, one.sha);
+  assert.deepEqual([trial.status, trial.uses.length], ["trial", 1], "three frozen cases in one run do not promote it");
+  assert.deepEqual(one.result.ignored.map((i) => i.reason), ["same_run", "same_run"]);
+  assert.match(one.result.held[0].reason, /left out \(same_run\)/);
+  const out = await usesSettler()({ ...(await readOf(repo)), run: "r2", uses: [0, 1, 2].map((i) => ({ name: kyb.name, sha256: first.digest, outcome: "frozen", at: at(11, i) })) });
+  assert.deepEqual(out.decisions.map((d) => d.action), ["hold"], "a second run is a second use, not a promotion");
+  const second = await curateStep(repo, (dir) => settleWorkflowUses({ dir, uses: usesOf("r2", ...[0, 1, 2].map((i) => [kyb.name, first.digest, "frozen", at(11, i)])) }));
+  const third = await settle(repo, usesOf("r3", [kyb.name, first.digest, "frozen", at(12, 0)], [kyb.name, first.digest, "frozen", at(12, 1)], [kyb.name, first.digest, "frozen", at(12, 2)]));
+  assert.deepEqual([(await readTrial(repo, kyb.name, second.sha)).status, (await readTrial(repo, kyb.name, third.sha)).status], ["trial", "active"], "the third distinct run promotes");
+});
+
 test("a use of a workflow with no trial, or of a revision the trial does not hold, is left out and named", async () => {
   const root = await scratch();
   const { repo } = await agentRepo(root);
@@ -255,7 +271,8 @@ test("a rollback skips a superseded revision whose record the store can no longe
   // The middle revision's record is lost from main: it cannot run, so the demotion goes back past it.
   const lost = await repo.commitTo("main", { files: { [`.pi/agentrun/workflows/${kyb.name}/${digests[1]}.json`]: null }, message: "lose a record" });
   await repo.push(lost.sha, "main");
-  const step = await curateStep(repo, (dir) => settleWorkflowUses({ dir, uses: usesOf("x1", [kyb.name, digests[2], "failed", at(20)], [kyb.name, digests[2], "failed", at(21)]) }));
+  await settle(repo, usesOf("x1", [kyb.name, digests[2], "failed", at(20)]));
+  const step = await curateStep(repo, (dir) => settleWorkflowUses({ dir, uses: usesOf("x2", [kyb.name, digests[2], "failed", at(21)]) }));
   assert.deepEqual(step.result.decisions.map((d) => [d.decision.action, d.decision.rollbackTo, d.decision.skipped]), [["demote", digests[0], [digests[1]]]]);
   const dir = await checkoutOf(repo, step.sha);
   assert.equal((await new WorkflowStore(dir).load(kyb.name)).digest, digests[0]);

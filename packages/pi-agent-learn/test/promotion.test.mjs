@@ -215,27 +215,50 @@ test("the order uses were folded in decides, not a clock: a receipt that arrives
   assert.deepEqual([second.trial.status, second.applied.map((a) => a.decision.action)], ["demoted", ["demote"]], "a second one demotes");
 });
 
-test("a run already folded for a revision is not folded again, but distinct uses that look alike in one call all count", () => {
+test("one run is one use of a revision, however many cases it ran: three frozen cases in one run are one use, and three clean uses are three distinct runs", () => {
   const trial = admit(undefined, "a", 1);
-  const same = [use("r1", "a", "frozen", at(2)), use("r1", "a", "frozen", at(2)), use("r2", "a", "frozen", at(2))];
-  const once = foldUses(trial, same);
-  assert.equal(once.trial.uses.length, 3, "two tasks of one run that ended in the same millisecond are two uses");
-  assert.equal(once.trial.status, "active", "and three clean uses promote");
-  const again = foldUses(once.trial, [use("r1", "a", "frozen", at(2)), use("r1", "a", "failed", at(3))]);
-  assert.deepEqual(again.ignored.map((i) => i.reason), ["duplicate", "duplicate"], "a second call for the same run and revision is a replay");
-  assert.equal(again.trial.uses.length, 3);
+  const cases = (run, ...outcomes) => outcomes.map((outcome, i) => use(run, "a", outcome, at(2, i)));
+  const alone = foldUses(trial, cases("r1", "frozen", "frozen", "frozen"));
+  assert.deepEqual([alone.trial.status, alone.trial.uses.length], ["trial", 1], "one run on three inputs does not promote it");
+  assert.deepEqual(alone.ignored.map((i) => i.reason), ["same_run", "same_run"], "the other two cases are named, not dropped silently");
+  const two = foldUses(trial, [...cases("r1", "frozen", "frozen", "frozen"), ...cases("r2", "frozen", "frozen")]);
+  assert.deepEqual([two.trial.status, two.trial.uses.map((u) => u.run).sort()], ["trial", ["r1", "r2"]], "two runs are two uses, whatever they ran");
+  const three = foldUses(trial, [...cases("r1", "frozen", "frozen"), ...cases("r2", "frozen"), ...cases("r3", "frozen", "frozen", "frozen")]);
+  assert.deepEqual([three.trial.status, three.applied.map((a) => a.decision.action)], ["active", ["promote"]], "three distinct runs promote it");
+  assert.equal(foldUses(trial, [...cases("r1", "frozen"), ...cases("r2", "frozen")], { thresholds: { promoteAfter: 2 } }).trial.status, "active", "K clean uses are K runs for the host's K too");
 });
 
-test("receipts for other revisions never push out the evidence the live revision's decision still needs", () => {
-  let trial = proven(undefined, "a", 1);
-  trial = admit(trial, "b", 5);
-  trial = foldUses(trial, [use("r1", "b", "failed", at(6))]).trial;
-  const crowd = Array.from({ length: TRIAL_LIMITS.uses + 5 }, (_, i) => use(`other-${i}`, "a", "frozen", at(7, i % 60)));
-  trial = foldUses(trial, crowd).trial;
-  assert.equal(live(trial), "b", "one failure, however many receipts for the old revision follow");
-  assert.equal(trial.uses.length, TRIAL_LIMITS.uses);
-  const folded = foldUses(trial, [use("r2", "b", "failed", at(9))]);
-  assert.deepEqual([folded.applied.map((a) => a.decision.action), live(folded.trial)], [["demote"], "a"], "the first failure was kept, so the second demotes");
+test("a run's worst case is its outcome: one bad case counts against the run, and failed outranks escalated outranks frozen", () => {
+  const trial = admit(undefined, "a", 1);
+  const outcomeOf = (...outcomes) => foldUses(trial, outcomes.map((o, i) => use("r1", "a", o, at(2, i)))).trial.uses.map((u) => u.outcome);
+  assert.deepEqual(outcomeOf("frozen", "failed", "frozen"), ["failed"]);
+  assert.deepEqual(outcomeOf("frozen", "escalated", "frozen"), ["escalated"]);
+  assert.deepEqual(outcomeOf("escalated", "failed"), ["failed"]);
+  assert.deepEqual(outcomeOf("failed", "frozen", "escalated"), ["failed"]);
+  const clean = foldUses(trial, [use("r1", "a", "frozen", at(2)), use("r2", "a", "frozen", at(3))]).trial;
+  const spoiled = foldUses(clean, [use("r3", "a", "frozen", at(4)), use("r3", "a", "escalated", at(5)), use("r3", "a", "frozen", at(6))]);
+  assert.equal(spoiled.trial.status, "trial", "a run with one escalated case among clean ones is not a clean use");
+  assert.equal(spoiled.trial.uses.at(-1).outcome, "escalated");
+});
+
+test("demotion looks at the last two runs, not the last two cases: one run failing twice is one failure, and two runs failing once each demote", () => {
+  const active = proven(undefined, "a", 1);
+  const cases = (run, n, outcome = "failed") => Array.from({ length: n }, (_, i) => use(run, "a", outcome, at(10, i)));
+  const oneRun = foldUses(active, cases("r1", 3));
+  assert.deepEqual([oneRun.trial.status, oneRun.applied], ["active", []], "three failed cases in one run are one failed use");
+  const twoRuns = foldUses(oneRun.trial, [use("r2", "a", "escalated", at(11))]);
+  assert.deepEqual([twoRuns.trial.status, twoRuns.applied.map((a) => a.decision.action)], ["demoted", ["demote"]], "a second run that failed or escalated demotes it");
+  assert.equal(foldUses(active, [...cases("r1", 1), use("r2", "a", "frozen", at(11))]).trial.status, "active", "a clean run between two bad ones breaks the pair");
+});
+
+test("a run already folded for a revision is not folded again, and the author's own cases stay out however many there are", () => {
+  const trial = admit(undefined, "a", 1, "writer");
+  const first = foldUses(trial, [use("r1", "a", "frozen", at(2)), use("writer", "a", "frozen", at(2)), use("writer", "a", "frozen", at(3)), use("writer", "a", "frozen", at(4))]);
+  assert.deepEqual(first.ignored.map((i) => [i.use.run, i.reason]), [["writer", "author"], ["writer", "author"], ["writer", "author"]]);
+  assert.equal(first.trial.uses.length, 1);
+  const again = foldUses(first.trial, [use("r1", "a", "frozen", at(2)), use("r1", "a", "failed", at(3))]);
+  assert.deepEqual(again.ignored.map((i) => i.reason), ["duplicate", "duplicate"], "a second call for the same run and revision is a replay, whatever it says");
+  assert.equal(again.trial.uses.length, 1);
 });
 
 test("the boundaries move when the oldest uses are dropped, so a standing still counts exactly its own uses", () => {
