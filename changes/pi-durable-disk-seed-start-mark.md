@@ -8,5 +8,6 @@ kind: feature
   start: revoked, then seeded again.
 - Now, while the seed runs, the instance rewrites the mark's `at` every heartbeat through its claim (fsync and rename).
   It does so only when a supervisor's mark for generation 1 is there, keeping its generation, `by`, `failures` and
-  `lastExit`. It stops when the seed ends, and `run.json`'s heartbeat takes over.
+  `lastExit`. The rewrite runs on a thread of its own, one at a time, so a seed that blocks its thread (a synchronous
+  import) stays covered. It stops when the seed ends, before the open goes on, and `run.json`'s heartbeat takes over.
 - A seeder that dies stops rewriting, and the grace runs out as for any start. The mark's format does not change.

@@ -6,7 +6,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Delegation } from "disk";
@@ -99,6 +99,7 @@ describe("a seed and the supervisor's start grace", () => {
       assert.equal(seen?.action, "starting", `a tick ${750} ms into the seed, past the ${GRACE_MS} ms grace: ${JSON.stringify(seen)}`);
       assert.deepEqual(supervisor.revoked, [], "the seeder was not revoked");
       const mark = readMark(dir.root);
+      assert.equal(existsSync(join(dir.root, "start.json.tmp")), false, "no refresh is mid-write once the seed step is done");
       assert.deepEqual({ ...mark, at: "" }, { ...first, at: "" }, "only `at` changes: generation, by, failures and lastExit are the supervisor's");
       assert.ok(Date.parse(mark.at) > Date.parse(first.at), "`at` moved");
       // Once the seed ends, run.json's heartbeat takes over: the mark is not touched again.
@@ -126,11 +127,34 @@ describe("a seed and the supervisor's start grace", () => {
     }
   });
 
+  it("a seed that holds its thread (a synchronous import) is kept fresh too: the refresh runs on a thread of its own", { timeout: 60_000 }, async () => {
+    const dir = scratchRoot("seed-mark-blocks");
+    const root = join(dir.root, "run");
+    const marker = join(dir.root, "seeding");
+    mkdirSync(root, { recursive: true });
+    writeMark(root, { generation: 1, at: new Date().toISOString(), by: "sup-1", failures: 0, lastExit: null });
+    const BLOCK_MS = 4_000;
+    const child = spawn(process.execPath, [CHILD, root, marker, String(LEASE.heartbeatMs), String(BLOCK_MS)], { stdio: ["ignore", "ignore", "inherit"] });
+    try {
+      for (const t0 = Date.now(); !existsSync(marker) && Date.now() - t0 < 30_000; ) await sleep(20);
+      const blocked = Date.now();
+      await sleep(GRACE_MS + 400);
+      const seen = await supervisorOver(root, "seeded").tick();
+      assert.ok(Date.now() - blocked < BLOCK_MS, "the tick ran while the seed still held its thread");
+      const age = Date.now() - Date.parse(readMark(root).at);
+      assert.ok(age < GRACE_MS, `the mark is younger than the ${GRACE_MS} ms grace while the seed blocks: ${age} ms`);
+      assert.equal(seen.action, "starting", `past the grace into a blocking seed: ${JSON.stringify(seen)}`);
+    } finally {
+      child.kill("SIGKILL");
+      await new Promise((resolve) => (child.exitCode === null && child.signalCode === null ? child.once("close", resolve) : resolve(undefined)));
+      dir.remove();
+    }
+  });
+
   it("a seeder that dies stops refreshing, and the grace runs out as before", { timeout: 60_000 }, async () => {
     const dir = scratchRoot("seed-mark-dies");
     const root = join(dir.root, "run");
     const marker = join(dir.root, "seeding");
-    const { mkdirSync } = await import("node:fs");
     mkdirSync(root, { recursive: true });
     writeMark(root, { generation: 1, at: new Date().toISOString(), by: "sup-1", failures: 0, lastExit: null });
     const child = spawn(process.execPath, [CHILD, root, marker, String(LEASE.heartbeatMs)], { stdio: ["ignore", "ignore", "inherit"] });
