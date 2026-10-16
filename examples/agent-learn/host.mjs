@@ -1,11 +1,14 @@
-// The reference host loop for an agent that learns in its own git repository. The host owns git and the run's store;
-// the model only ever gets the `learn` tool. Three steps: prepareRun before a run, finishRun after it, curateNow when the
-// host decides (after each run, or on a schedule). Everything here is a public export of @parcha/pi-git-remote,
-// @parcha/pi-agent-learn, @parcha/pi-durable-agent or pi-durable.
+// The reference host loop for an agent that learns in its own git repository. The host owns git and the run's store; the
+// model gets `learn` and the DSL's `agentrun` tool, never git. Three steps: prepareRun before a run, finishRun after it,
+// curateNow when the host decides. Everything here is a public export of @parcha/pi-git-remote, @parcha/pi-agent-learn,
+// @parcha/pi-durable-agent or pi-durable.
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createSession } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
-import { curate, LAYOUT, proposeLearning, seedLearning } from '@parcha/pi-agent-learn';
+import {
+  collectUses, collectWorkflows, currentRevision, curate, LAYOUT, LearnError, proposeLearning, readTrial, seedLearning, seedWorkflows,
+  usesSettler, workflowAdmitter, workflowsToTry,
+} from '@parcha/pi-agent-learn';
 import {
   AGENT_STORE_FILE, AgentHomeError, carryBack, createAgentHome, openAgentHome, readAgentHome, refreshAgentHome, startRun,
 } from '@parcha/pi-durable-agent';
@@ -15,7 +18,7 @@ import { join } from 'node:path';
 
 const SKILLS = `${LAYOUT.skills}/`;
 
-// A learned skill whose trial.json says demoted (or does not parse) never reaches a run.
+// A learned workflow skill reaches a run only while its trial.json has a live revision (trial or active).
 export async function readAgentAt(repo, sha) {
   const json = await repo.read(LAYOUT.definition, sha);
   if (json === undefined) throw new Error(`the agent repository has no ${LAYOUT.definition} at ${sha}`);
@@ -31,17 +34,19 @@ export async function readAgentAt(repo, sha) {
   const skills = {};
   for (const [name, files] of byName) {
     const trial = `${name}/trial.json`;
-    if (files.includes(trial) && (await trialStatus(repo, `${SKILLS}${trial}`, sha)) === 'demoted') continue;
+    if (files.includes(trial) && !(await isLive(repo, name, sha))) continue;
     for (const file of files) if (file !== trial) skills[file] = await repo.read(`${SKILLS}${file}`, sha);
   }
   return { definition, rules, skills };
 }
 
-async function trialStatus(repo, path, sha) {
+async function isLive(repo, name, sha) {
   try {
-    return JSON.parse((await repo.read(path, sha)) ?? '{}').status;
-  } catch {
-    return 'demoted';
+    const trial = await readTrial(repo, name, sha);
+    return Boolean(trial && currentRevision(trial));
+  } catch (error) {
+    if (error instanceof LearnError) return false;
+    throw error;
   }
 }
 
@@ -65,9 +70,9 @@ async function inRunStore(run, step) {
   }
 }
 
-// The home's cache, the run and its <learned> section all come from one sha. The refresh is a compare-and-swap from the
-// sha the home holds, and a home already past `ref` is kept: the cache never moves back to an older main.
-export async function prepareRun({ home, repo, host, runId, ref = 'main', workflows }) {
+// The home's cache, the run, its <learned> section and the workflows it tries all come from one sha. The refresh is a
+// compare-and-swap from the sha the home holds, and a home already past `ref` is kept: the cache never moves back.
+export async function prepareRun({ home, repo, host, runId, input, ref = 'main' }) {
   for (let attempt = 0; ; attempt++) {
     await repo.fetch();
     const fetched = await repo.resolve(ref);
@@ -83,24 +88,36 @@ export async function prepareRun({ home, repo, host, runId, ref = 'main', workfl
       throw error;
     }
     const run = await startRun(home, { runId, host, sha });
-    const seeded = await inRunStore(run, (target) => seedLearning({ repo, ref: sha, target, into: run.workspace, ...(workflows ? { workflows } : {}) }));
-    return { ...run, definition, rules, seeded };
+    const workflows = await workflowsToTry({ repo, sha }, input);
+    const seeded = await inRunStore(run, (target) => seedLearning({ repo, ref: sha, target, into: run.workspace, workflows }));
+    const tried = await seedWorkflows({ repo, sha, into: run.workspace, workflows });
+    return { ...run, definition, rules, seeded, workflows: tried };
   }
 }
 
-// Call after the run's Harness has closed. Any guard hit refuses the whole proposal; main never moves here.
+// Call after the run's Harness has closed. The workflows the run saved and the trials it used go with its notes; any
+// guard hit refuses the whole proposal, and main never moves here.
 export async function finishRun({ home, repo, run, secrets = [], caseValues = [], outcome = 'completed' }) {
   const carried = await carryBack(home, run, { outcome });
-  const proposal = await inRunStore(run, (target) => proposeLearning({ repo, runId: run.runId, target, secrets, caseValues }));
-  return { carried, proposal };
+  const saved = await collectWorkflows({ repo, workDir: run.workspace, seedSha: run.sha });
+  const uses = await collectUses({ store: run.storePath, workDir: run.workspace, run: run.runId });
+  const proposal = await inRunStore(run, (target) => proposeLearning({
+    repo, runId: run.runId, target, secrets, caseValues, workflows: saved.records, ...(uses ? { uses: () => uses } : {}),
+  }));
+  return { carried, proposal, saved };
 }
 
-// The single writer of main. `judge` is the DSL's runJudge port.
-export function curateNow({ repo, judge, secrets = [], now }) {
-  return curate({ repo, judge, secrets, ...(now ? { now } : {}) });
+// The single writer of main. `judge` is the DSL's runJudge port; workflows are admitted as trials and their uses settled
+// by the package's own ports.
+export function curateNow({ repo, judge, secrets = [], tmpRoot, now }) {
+  return curate({
+    repo, judge, secrets, admitWorkflow: workflowAdmitter({ ...(tmpRoot ? { tmpRoot } : {}) }), settleUses: usesSettler({ ...(tmpRoot ? { tmpRoot } : {}) }),
+    ...(now ? { now } : {}),
+  });
 }
 
-// Curation never brings a reverted learning back: its run is already named on main.
+// One curate commit per run: reverting it takes out everything that run added. Curation never brings it back, because
+// its run is already named on main. retireLearning takes out one learning, also after a later run used it.
 export async function revertLearning({ repo, id }) {
   await repo.fetch();
   const added = (await repo.log({ ref: 'main', trailer: { key: 'Learning-Id', value: id } })).at(-1);

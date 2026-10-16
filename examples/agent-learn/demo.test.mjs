@@ -30,41 +30,63 @@ function objects(gitDir) {
   return out;
 }
 
-test('run 1 learns, curation merges it, run 2 sees it, a revert removes it for run 3, and a secret reaches no git object', async (t) => {
+test('a lesson and a workflow go through the repository: learned, curated, seen, reverted; a secret reaches no git object', async (t) => {
   const lines = [];
   const out = await runDemo({ dir: join(await scratch(t), 'demo'), log: (line) => lines.push(line) });
   const git = (...args) => gitRead(out.bare, args).toString('utf8').trim();
   const [seed] = git('rev-list', '--max-parents=0', 'main').split('\n');
 
+  // Run 1 learns; only curation moves main.
   assert.equal(out.run1.run.sha, seed);
   assert.deepEqual(out.run1.calls.map((c) => [c.name, c.arguments.type]), [['learn', 'lesson']]);
   assert.equal(out.run1.proposal.status, 'proposed');
   assert.equal(git('rev-parse', 'runs/run-1'), out.run1.proposal.sha, 'the run proposed on its own branch');
   assert.match(git('show', `${out.run1.proposal.sha}:inbox/run-1.md`), LESSON);
-  assert.equal(git('rev-parse', `${out.curate1.main}^`), seed, 'only curation moved main, by one commit');
-
+  assert.equal(git('rev-parse', `${out.curate1.main}^`), seed, 'curation moved main by one commit');
   assert.match(out.lessonId, /^L-[0-9a-f]{12}$/);
   assert.deepEqual(out.curate1.runs.map((r) => [r.run, r.accepted.map((a) => a.id)]), [['run-1', [out.lessonId]]]);
   assert.match(git('show', `${out.curate1.main}:learnings/${out.lessonId}.md`), LESSON);
 
+  // Run 2's request carries the lesson; the run saves a workflow with the agentrun tool and notes when to use it.
   assert.equal(out.run2.run.sha, out.curate1.main, 'run 2 starts at the new main');
   assert.equal(out.run2.fromRequest, true);
-  assert.match(out.run2.learned.join('\n'), new RegExp(`- ${out.lessonId} lesson: An issue whose body has a stack trace`), 'the request run 2 sent carries the lesson');
+  assert.match(out.run2.learned.join('\n'), new RegExp(`- ${out.lessonId} lesson: An issue whose body has a stack trace`));
   assert.match(out.run2.answer, /^bug: /);
-  assert.equal(out.run2.proposal.status, 'empty');
+  assert.deepEqual(out.run2.calls.map((c) => (c.name === 'agentrun' ? `agentrun ${c.arguments.action}` : `learn ${c.arguments.type}`)), ['agentrun inspect', 'agentrun save', 'learn workflow']);
+  assert.deepEqual(out.run2.saved.found.map((w) => w.name), ['triage-crash']);
+  const digest = out.run2.saved.found[0].sha256;
+  assert.equal(git('show', 'runs/run-2:inbox/run-2/workflows/triage-crash/latest'), digest, 'the run proposed the DSL records');
 
+  // Curation admits it as a trial skill, in the DSL's own layout.
+  assert.deepEqual(git('diff', '--name-only', out.curate1.main, out.curate2.main).split('\n').sort(), [
+    '.agents/skills/triage-crash/SKILL.md', '.agents/skills/triage-crash/trial.json',
+    `.pi/agentrun/workflows/triage-crash/${digest}.json`, '.pi/agentrun/workflows/triage-crash/latest',
+  ]);
+  const trialText = git('show', `${out.curate2.main}:.agents/skills/triage-crash/trial.json`);
+  const trial = JSON.parse(trialText);
+  assert.equal(trial.status, 'trial');
+  assert.deepEqual(trial.revisions.map((r) => [r.sha256, r.status, r.run]), [[digest, 'trial', 'run-2']]);
+  assert.match(git('show', `${out.curate2.main}:.agents/skills/triage-crash/SKILL.md`), /stack trace/);
+
+  // A revert takes the lesson out; curation does not bring it back; the trial stays.
   assert.equal(out.revert.changed, true);
   assert.equal(out.revert.reverted, out.curate1.main);
   assert.equal(git('rev-parse', 'main'), out.revert.sha);
-  assert.deepEqual(out.curate2.runs, [], 'curating again brings nothing back');
+  assert.deepEqual(out.curate3.runs, [], 'curating again brings nothing back');
+  assert.equal(git('ls-tree', '--name-only', 'main', 'learnings/'), '', 'main holds no learning');
+  assert.equal(git('log', '--format=%H', 'main', '--', `learnings/${out.lessonId}.md`).split('\n').length, 2, 'history keeps the lesson and its revert');
+  assert.equal(git('show', 'main:.agents/skills/triage-crash/trial.json'), trialText, 'the workflow trial is untouched');
+
+  // Run 3 does not see the lesson; it is offered the trial, which is in its own workflow store.
   assert.equal(out.run3.run.sha, out.revert.sha, 'run 3 starts at the revert');
   assert.equal(out.run3.fromRequest, true);
   assert.doesNotMatch(out.run3.system, LESSON, 'nothing in run 3\'s request carries the lesson');
   assert.match(out.run3.learned.join('\n'), /Nothing learned yet/);
+  assert.match(out.run3.learned.join('\n'), /Workflows to try first for this input: triage-crash \(trial\)\./);
+  assert.deepEqual(out.run3.run.workflows.loaded, [{ name: 'triage-crash', sha256: digest }]);
   assert.match(out.run3.answer, /^question: /);
-  assert.equal(git('ls-tree', '--name-only', 'main', 'learnings/'), '', 'main holds no learning');
-  assert.equal(git('log', '--format=%H', 'main', '--', `learnings/${out.lessonId}.md`).split('\n').length, 2, 'history keeps the lesson and its revert');
 
+  // Run 4's secret is refused at the call and reaches no git object.
   assert.match(out.run4.results[0], /^Not noted: it holds a value the host keeps secret/);
   assert.equal(out.run4.proposal.status, 'empty');
   assert.equal(git('branch', '--list', 'runs/run-4'), '', 'run 4 has no branch');
@@ -78,14 +100,15 @@ test('run 1 learns, curation merges it, run 2 sees it, a revert removes it for r
 
   const transcript = lines.join('\n');
   assert.match(transcript, /^2\. Run 1 starts at main [0-9a-f]{7}: nothing learned yet$/m);
-  assert.match(transcript, /^7\. Run 4 tries to learn a value the host holds as a secret$/m);
+  assert.match(transcript, /^5\. Curate admits the workflow as a trial skill$/m);
+  assert.match(transcript, /^8\. Run 4 tries to learn a value the host holds as a secret$/m);
   assert.match(transcript, /proposed nothing; the secret \(raw, base64 or hex\) is in 0 of \d+ git objects/);
   assert.doesNotMatch(transcript, new RegExp(secret), 'the transcript never prints the secret');
 });
 
 test('the command runs offline, prints the story and leaves nothing behind', async (t) => {
   const tmp = await scratch(t);
-  const { stdout } = await promisify(execFile)(process.execPath, [join(import.meta.dirname, 'demo.mjs')], {
+  const { stdout } = await promisify(execFile)(process.execPath, ['--no-warnings=ExperimentalWarning', join(import.meta.dirname, 'demo.mjs')], {
     env: { PATH: process.env.PATH, TMPDIR: tmp, HOME: tmp },
     timeout: 120_000,
   });
