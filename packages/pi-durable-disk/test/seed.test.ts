@@ -10,6 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { localRun } from "../src/local-run.ts";
 import { openDurableRun, STORE_FILE, type RunSeed } from "../src/run.ts";
+import { FencedError } from "../src/errors.ts";
 import { RUN_JSON } from "../src/status.ts";
 import { fakeClaim, localClaimDir, localRef, scratchRoot, scriptedHarness } from "./_run-support.ts";
 
@@ -29,9 +30,9 @@ function seeding(seen: { calls: number; runJsonThen?: boolean; dir?: Parameters<
   };
 }
 
-function opener(root: string, seed?: RunSeed) {
+function opener(root: string, seed?: RunSeed, claimOptions?: Parameters<typeof fakeClaim>[2]) {
   const ref = localRef("r1");
-  const claim = fakeClaim(root, ref);
+  const claim = fakeClaim(root, ref, claimOptions);
   const steps: string[] = [];
   const scripted = scriptedHarness();
   const open = () =>
@@ -44,6 +45,7 @@ function opener(root: string, seed?: RunSeed) {
       claimDir: localClaimDir,
       harness: { models: scripted.models, registry: scripted.registry },
       onStep: (step) => void steps.push(step),
+      onFenced: (error) => void claim.log.push(`onFenced: ${error.message}`), // recorded; the default exits the process
       ...(seed ? { seed } : {}),
     });
   return { claim, steps, open };
@@ -54,13 +56,15 @@ describe("seed", () => {
     const dir = scratchRoot("seed-new");
     try {
       const seen: { calls: number; runJsonThen?: boolean; dir?: Parameters<RunSeed>[0] } = { calls: 0 };
-      const t = opener(dir.root, seeding(seen, dir.root));
+      // At the barrier: the seed has run and the run is not published yet.
+      const atBarrier: { seeded: number; runJson: boolean }[] = [];
+      const t = opener(dir.root, seeding(seen, dir.root), { barrier: async () => void atBarrier.push({ seeded: seen.calls, runJson: existsSync(join(dir.root, RUN_JSON)) }) });
       const run = await t.open();
       assert.equal(seen.calls, 1);
       assert.equal(seen.runJsonThen, false, "no run.json yet while it seeds");
       assert.deepEqual(seen.dir, { root: dir.root, storePath: join(dir.root, "store", STORE_FILE), workDir: join(dir.root, "work") });
       assert.deepEqual(t.steps.slice(0, 4), ["acquire", "owner-lock", "seed", "run.json"]);
-      assert.ok(t.claim.log.indexOf("barrier") >= 0, "what it wrote is made durable (the claim's barrier) before run.json publishes the run");
+      assert.deepEqual(atBarrier[0], { seeded: 1, runJson: false }, "what it wrote is made durable (the claim's barrier) after it, before run.json publishes the run");
       const rows = await run.store.database.all<{ k: string }>("SELECT k FROM x_seed");
       assert.deepEqual(rows.map((row) => row.k), ["profile-1"], "the seeded table is in the opened store");
       assert.equal(readFileSync(join(dir.root, "work", ".agents", "skills", "sign-in.md"), "utf8"), "how to sign in\n");
@@ -103,6 +107,22 @@ describe("seed", () => {
       assert.equal(seen.calls, 1, "the next open seeds again");
       assert.equal(run.generation, 1, "the first published generation");
       await run.release();
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("a seed whose claim is lost before the run is published (the barrier refused: revoked, as by a supervisor past its start grace) fences the instance and publishes nothing", async () => {
+    // A fenced instance exits 75 and its owner lock goes with the process; the next start (a new process) seeds again, as
+    // the kill test below shows.
+    const dir = scratchRoot("seed-revoked");
+    try {
+      const seen = { calls: 0 };
+      const t = opener(dir.root, seeding(seen, dir.root), { barrier: async () => Promise.reject(new FencedError("the mount was revoked under the seed")) });
+      await assert.rejects(t.open(), (error: unknown) => error instanceof FencedError);
+      assert.equal(seen.calls, 1);
+      assert.ok(t.claim.log.some((line) => line.startsWith("onFenced: ")), "the instance is fenced (exit 75)");
+      assert.equal(existsSync(join(dir.root, RUN_JSON)), false, "nothing published");
     } finally {
       dir.remove();
     }
