@@ -10,6 +10,7 @@ import { citeStop } from './cite.ts';
 import { workflowMapPanel } from './workflow-map.ts';
 import { opensInPage, typeOfName } from './blobs.ts';
 import { readAllEntries } from './folder.ts';
+import { finishedManifest, placeLines, tailOf } from './follow.ts';
 import { diskPanel } from './disk.ts';
 import { transportPanel } from './transport.ts';
 import { visionPanel } from './vision.ts';
@@ -88,19 +89,33 @@ export function blobsNamed(manifest: Manifest, lines: Line[]): string[] {
   return [...named];
 }
 
+/** The blobs of a recording at a URL: blobs/<sha>.<ext>, where the line names the hash, so the extension is found by
+ *  asking. A hash not found yet is asked again on every later `find`. */
+function blobsAt(root: string) {
+  const urls: Record<string, string> = {};
+  const missing = new Set<string>();
+  return {
+    url: (sha: string) => urls[sha],
+    type: (sha: string) => (urls[sha] ? typeOfName(urls[sha]!) : undefined),
+    async find(shas: readonly string[]) {
+      await Promise.all([...new Set([...shas, ...missing])].filter((sha) => urls[sha] === undefined).map(async (sha) => {
+        for (const ext of BLOB_TYPES) {
+          const url = `${root}blobs/${sha}.${ext}`;
+          if ((await fetch(url, { method: 'HEAD' }).catch(() => undefined))?.ok) { urls[sha] = url; missing.delete(sha); return; }
+        }
+        missing.add(sha);
+      }));
+    },
+  };
+}
+
 async function fromUrl(base: string): Promise<Recording> {
   const root = base.endsWith('/') ? base : `${base}/`;
   const manifest = await (await fetch(`${root}manifest.json`)).json() as Manifest;
   const lines = parseLines(await (await fetch(`${root}events.jsonl`)).text());
-  // blobs/<sha>.<ext>: the line names the hash, so the extension is found by asking.
-  const urls: Record<string, string> = {};
-  await Promise.all(blobsNamed(manifest, lines).map(async (sha) => {
-    for (const ext of BLOB_TYPES) {
-      const url = `${root}blobs/${sha}.${ext}`;
-      if ((await fetch(url, { method: 'HEAD' }).catch(() => undefined))?.ok) { urls[sha] = url; return; }
-    }
-  }));
-  return { id: root, manifest, lines, blobUrl: (sha) => urls[sha], blobType: (sha) => (urls[sha] ? typeOfName(urls[sha]!) : undefined) };
+  const blobs = blobsAt(root);
+  await blobs.find(blobsNamed(manifest, lines));
+  return { id: root, manifest, lines, blobUrl: blobs.url, blobType: blobs.type };
 }
 
 async function fromFiles(files: File[]): Promise<Recording> {
@@ -454,13 +469,19 @@ export function steerOf(data: unknown, last: number): Steer | undefined {
 /** A message may steer the viewer only when it comes from the framing page itself, at the origin its URL named. */
 export const fromParent = (origin: string, isParent: boolean, allowed: string | undefined): boolean => allowed !== undefined && isParent && origin === allowed;
 
-function play(recording: Recording, root: HTMLElement, params: URLSearchParams, base?: string) {
-  const problems = validate(recording.manifest, recording.lines);
+/** A run the page follows while it goes: the lines that arrived since the last poll, the manifest once it is written (the
+ *  run finished), and what the page says of the connection. */
+export type Follow = { grow(fresh: Line[]): void; finish(manifest: Manifest): void; status(text: string): void };
+
+function play(recording: Recording, root: HTMLElement, params: URLSearchParams, base?: string, live?: { url: string }): Follow {
+  // A followed run is checked against the format once its manifest is written, when it is whole.
+  let following = live !== undefined;
+  let problems = following ? [] : validate(recording.manifest, recording.lines);
   const player: Player = { recording, stops: stopsOf(recording.lines), lanes: lanesOf(recording.lines), p: 0, playing: false, speed: 1, clock: 0 };
   const caches = new Map<unknown, Map<number, unknown>>();
   const cacheOf = (key: unknown) => caches.get(key) ?? caches.set(key, new Map()).get(key)!;
-  const lines = recording.lines;
-  const last = lines.length;
+  let lines = recording.lines;
+  let last = lines.length;
   const atParam = params.get('at');
   const citeParam = params.get('cite');
   /** The stop just after a commit, of a generation when given (a restore reuses commit numbers). */
@@ -474,7 +495,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   } else if (citeParam !== null) player.p = citeStop(lines, citeParam) ?? 0;
   else player.p = last;
   // Only a seek sets the playback clock; playing advances it (a redraw never does).
-  const head = playback(lines, player.stops);
+  let head = playback(lines, player.stops);
   player.p = head.seek(player.p);
   // `?t=<seconds>` opens at that time (it wins over `at` and `cite`): a link that shows the same moment to whoever opens it.
   const opened = timeParam(params.get('t'));
@@ -483,40 +504,51 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   player.cite = citeParam ?? undefined;
   let json: Map<string, Json> | undefined;
 
-  // The manifest's chapters when it names them; else each process start, each kill, and the end.
-  const chapters: { title: string; p: number; focus?: string }[] = recording.manifest.chapters
+  // The manifest's chapters when it names them; else each process start, each kill, and the end (while a run is followed,
+  // its end so far).
+  const chaptersOf = (): { title: string; p: number; focus?: string }[] => (recording.manifest.chapters && !following
     ? recording.manifest.chapters.map((chapter) => ({ title: chapter.title, p: afterCommit(chapter.at.commit, chapter.at.gen), ...(chapter.focus ? { focus: chapter.focus } : {}) }))
     : [
       ...lines.flatMap((line, index) => (line.source === 'host' && line.kind === 'process.started' ? [{ title: `process ${processOf(line)} starts`, p: index + 1 }] : [])),
       ...lines.flatMap((line, index) => (line.source === 'host' && line.kind === 'kill' ? [{ title: `killed: ${(line.data as { label?: string }).label ?? ''}`, p: snap(player.stops, index) }] : [])),
-      { title: 'the end', p: last },
-    ].sort((a, b) => a.p - b.p);
+      { title: following ? 'now' : 'the end', p: last },
+    ].sort((a, b) => a.p - b.p));
+  let chapters = chaptersOf();
   // After a restore a commit number names two commits (3.2), so the position says whose.
-  const restored = player.lanes.restores.length > 0;
+  let restored = player.lanes.restores.length > 0;
   // With no durable line anywhere, nothing from the store is measured; before a recording's first one, its zeros are true.
-  const measured = lines.some((line) => line.channel === 'durable');
+  let measured = lines.some((line) => line.channel === 'durable');
   let baseline: BaselineView | undefined;
   const baselineRow = el('div', { class: 'baseline' });
 
-  const header = el('header', {}, el('h1', { text: recording.manifest.title }), el('p', { class: 'meta', text:
-    `${recording.manifest.task} · ${recording.manifest.model} · ${recording.manifest.generations} process${recording.manifest.generations === 1 ? '' : 'es'} · ${recording.manifest.kills} kill${recording.manifest.kills === 1 ? '' : 's'}${recording.manifest.providers ? ` · ${recording.manifest.providers} providers` : ''} · recorded ${recording.manifest.recorded.started} · code ${recording.manifest.code.commit.slice(0, 8)}` }));
   // Embedded (`?embed=1`), the page is its frame's: no header, but a recording that breaks the format still says so.
   const embedded = params.get('embed') === '1';
-  const problemsNote = problems.length ? el('p', { class: 'problems', text: `This recording breaks the format: ${problems.slice(0, 3).join('; ')}` }) : undefined;
-  if (problemsNote && !embedded) header.append(problemsNote);
-  if (recording.manifest.result) {
-    const link = blobLink(recording, recording.manifest.result.blob, recording.manifest.result.title, 'result');
-    if (link) header.append(link);
-  }
-  // The job that ran and the run's store at its end, when the manifest keeps them (draft 24): the job is JSON and opens in
-  // a tab; the store is a SQLite file and downloads.
-  // A field of the wrong shape is a format problem the page notes, never a reason not to play the run: no link for it.
-  const { job, store } = recording.manifest;
-  const jobLink = typeof job?.blob === 'string' ? blobLink(recording, job.blob, 'The job', 'job') : undefined;
-  const at = store?.at;
-  const storeLink = typeof store?.blob === 'string' && typeof at?.commit === 'number' && typeof at.gen === 'number'
-    ? blobLink(recording, store.blob, `The store at commit ${at.commit} of generation ${at.gen}`, 'store') : undefined;
-  for (const link of [jobLink, storeLink]) if (link) header.append(' ', link);
+  /** What a followed run's page says of the connection: live, finished, or lost and retrying. */
+  const liveStatus = el('span', { class: 'live-status', text: 'live' });
+  const headerOf = () => {
+    const { manifest } = recording;
+    if (following) return { header: el('header', {}, el('h1', { text: manifest.title }), el('p', { class: 'meta' }, `following ${live!.url} · `, liveStatus)), problemsNote: undefined };
+    const header = el('header', {}, el('h1', { text: manifest.title }), el('p', { class: 'meta', text:
+      `${manifest.task} · ${manifest.model} · ${manifest.generations} process${manifest.generations === 1 ? '' : 'es'} · ${manifest.kills} kill${manifest.kills === 1 ? '' : 's'}${manifest.providers ? ` · ${manifest.providers} providers` : ''} · recorded ${manifest.recorded.started} · code ${manifest.code.commit.slice(0, 8)}` }));
+    if (live) header.append(el('p', { class: 'meta' }, `followed live from ${live.url} · `, liveStatus));
+    const problemsNote = problems.length ? el('p', { class: 'problems', text: `This recording breaks the format: ${problems.slice(0, 3).join('; ')}` }) : undefined;
+    if (problemsNote && !embedded) header.append(problemsNote);
+    if (manifest.result) {
+      const link = blobLink(recording, manifest.result.blob, manifest.result.title, 'result');
+      if (link) header.append(link);
+    }
+    // The job that ran and the run's store at its end, when the manifest keeps them (draft 24): the job is JSON and opens in
+    // a tab; the store is a SQLite file and downloads.
+    // A field of the wrong shape is a format problem the page notes, never a reason not to play the run: no link for it.
+    const { job, store } = manifest;
+    const jobLink = typeof job?.blob === 'string' ? blobLink(recording, job.blob, 'The job', 'job') : undefined;
+    const at = store?.at;
+    const storeLink = typeof store?.blob === 'string' && typeof at?.commit === 'number' && typeof at.gen === 'number'
+      ? blobLink(recording, store.blob, `The store at commit ${at.commit} of generation ${at.gen}`, 'store') : undefined;
+    for (const link of [jobLink, storeLink]) if (link) header.append(' ', link);
+    return { header, problemsNote };
+  };
+  let { header, problemsNote } = headerOf();
   const counters = el('div');
   const timeline = el('div', { class: 'timeline-wrap' });
   const position = el('span', { class: 'position' });
@@ -530,13 +562,16 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const controls = el('div', { class: 'controls' }, el('button', { text: 'previous commit' }), playButton, el('button', { text: 'next commit' }), speed, range, position);
   // The first registered panel that calls itself featured for this recording is shown first, with the controls right under it; the rest follow as before.
   // The panels this recording draws, judged once over all its lines: a panel with nothing here never shows, not even its title.
-  const shown = panelsFor(lines);
-  const featured = featuredPanel(shown, lines);
+  let shown = panelsFor(lines);
+  let featured = featuredPanel(shown, lines);
   const featuredBox = el('div', { class: 'featured' });
-  const top = embedded ? (problemsNote ? [problemsNote] : []) : [header];
   if (embedded) document.documentElement.classList.add('embed');
-  if (featured) root.replaceChildren(...top, featuredBox, controls, counters, baselineRow, timeline, chapterList, focusBar, panels);
-  else root.replaceChildren(...top, counters, baselineRow, timeline, controls, chapterList, focusBar, panels);
+  const layout = () => {
+    const top = embedded ? (problemsNote ? [problemsNote] : []) : [header];
+    if (featured) root.replaceChildren(...top, featuredBox, controls, counters, baselineRow, timeline, chapterList, focusBar, panels);
+    else root.replaceChildren(...top, counters, baselineRow, timeline, controls, chapterList, focusBar, panels);
+  };
+  layout();
   // Framed, the viewer tells the framing page where the point is and what is focused, and obeys it (seek, focus, theme)
   // only when its URL names that page's origin (`&parent=`): PANELS.md, "Embedding".
   const framed = embedded && window.parent !== window;
@@ -567,7 +602,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     const t = player.p > 0 ? lines[player.p - 1]!.t : 0;
     player.clock = head.clock;
     const counterState = cachedReduce(counterFold, lines, player.p, cacheOf(counterFold) as Map<number, never>);
-    counters.replaceChildren(drawCounters(countersOf(counterState, player.p === last), measured, recording.manifest.providers));
+    counters.replaceChildren(drawCounters(countersOf(counterState, player.p === last && !following), measured, recording.manifest.providers));
     timeline.replaceChildren(drawTimeline(player, (at) => scrubTo(stopAt(lines, player.stops, at)), setFocus));
     range.value = String(player.p);
     const line = lines[player.p - 1];
@@ -588,7 +623,8 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   function syncUrl() {
     const line = lines[player.p - 1];
     const url = new URL(location.href);
-    if (line?.channel === 'durable') url.searchParams.set('at', restored ? `${line.gen}:${line.commit}` : String(line.commit)); else url.searchParams.delete('at');
+    // Following at the newest line, the address names no commit, so a reload follows again from the end.
+    if (line?.channel === 'durable' && !(following && player.p >= last)) url.searchParams.set('at', restored ? `${line.gen}:${line.commit}` : String(line.commit)); else url.searchParams.delete('at');
     // ?cite= names the selected citation; opened without ?at=, it lands at the commit that first wrote it.
     if (player.cite !== undefined) url.searchParams.set('cite', player.cite); else url.searchParams.delete('cite');
     // A link that opened at a time keeps it only while the screen is still at that time: a scrub or a play would otherwise be undone by a reload.
@@ -664,8 +700,10 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     }
   }
   draw();
-  void resultJson(recording).then((read) => { if (read.size) { json = read; draw(); } });
-  if (recording.manifest.baseline) {
+  const readResults = () => void resultJson(recording).then((read) => { if (read.size) { json = read; draw(); } });
+  readResults();
+  const readBaseline = () => {
+    if (!recording.manifest.baseline) return;
     baselineRow.replaceChildren(el('p', { class: 'meta', text: `Baseline: ${recording.manifest.baseline.label} (loading)` }));
     baselineOf(recording, base).then((loaded) => {
       baseline = loaded;
@@ -674,7 +712,55 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
         : el('p', { class: 'meta', text: `Baseline ${recording.manifest.baseline!.label}: not available here` }));
       draw();
     }).catch(() => baselineRow.replaceChildren(el('p', { class: 'meta', text: `Baseline ${recording.manifest.baseline!.label}: could not be opened` })));
-  }
+  };
+  if (!following) readBaseline();
+
+  /** Everything drawn from the whole run, worked out again for the lines it has now. */
+  const derive = () => {
+    last = lines.length;
+    player.stops = stopsOf(lines);
+    player.lanes = lanesOf(lines);
+    head = playback(lines, player.stops);
+    chapters = chaptersOf();
+    restored = player.lanes.restores.length > 0;
+    measured = lines.some((line) => line.channel === 'durable');
+    range.max = String(last);
+    const now = panelsFor(lines);
+    const nowFeatured = featuredPanel(now, lines);
+    const moved = nowFeatured !== featured;
+    shown = now;
+    featured = nowFeatured;
+    if (moved) layout();
+  };
+  return {
+    grow(fresh) {
+      if (fresh.length === 0) return;
+      const atEnd = player.p >= last;
+      const placed = placeLines(lines, fresh);
+      lines = placed.lines;
+      recording.lines = lines;
+      // A kept state is the reduce of the lines before its place: one past the first changed line is stale.
+      for (const cache of caches.values()) for (const key of [...cache.keys()]) if (key > placed.from) cache.delete(key);
+      derive();
+      // The time cursor stays on the newest line unless the reader scrubbed back.
+      player.p = head.seek(atEnd ? last : Math.min(player.p, last));
+      if (fresh.some((line) => line.source === 'host' && line.kind === 'result')) readResults();
+      draw();
+    },
+    finish(manifest) {
+      following = false;
+      recording.manifest = manifest;
+      problems = validate(manifest, lines);
+      ({ header, problemsNote } = headerOf());
+      liveStatus.textContent = 'finished';
+      chapters = chaptersOf();
+      layout();
+      draw();
+      readResults();
+      readBaseline();
+    },
+    status(text) { liveStatus.textContent = text; },
+  };
 }
 
 function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entries: readonly { id: string; manifest: Manifest }[], unread?: string) {
@@ -710,13 +796,51 @@ function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entr
       : entries.length ? list : el('p', { class: 'empty', text: 'No recordings yet.' }), drop);
 }
 
+/** How often a followed run is asked for what is new. */
+const FOLLOW_MS = 1000;
+
+/** Follows a run while it goes (`?follow=<recording directory URL>`): the lines written so far, then what each poll adds,
+ *  until the manifest is written and the run plays as any recording. */
+async function followRun(target: string, root: HTMLElement, params: URLSearchParams) {
+  const base = new URL(target.endsWith('/') ? target : `${target}/`, location.href).href;
+  const tail = tailOf(`${base}events.jsonl`);
+  const blobs = blobsAt(base);
+  const recording: Recording = { id: base, lines: [], blobUrl: blobs.url, blobType: blobs.type, manifest: {
+    format: FORMAT, title: 'A run, followed live', task: '', recorded: { started: '', ended: '' }, code: { repo: '', commit: '', packages: {} },
+    model: '', generations: 0, kills: 0, cost: { usd: null, parts: {} }, source: { run: '', store_sha256: '' },
+  } };
+  // The manifest is written after the last line, so a read that follows a check for it holds every line written before it.
+  const poll = async () => {
+    const manifest = await finishedManifest(`${base}manifest.json`);
+    const fresh = await tail.read();
+    await blobs.find(blobsNamed(manifest ?? recording.manifest, fresh));
+    return { manifest, fresh };
+  };
+  const first = await poll();
+  recording.lines = placeLines([], first.fresh).lines;
+  const live = play(recording, root, params, base, { url: base });
+  if (first.manifest) { live.finish(first.manifest); return; }
+  const step = async () => {
+    try {
+      const { manifest, fresh } = await poll();
+      live.grow(fresh);
+      if (manifest) { live.finish(manifest); return; }
+      live.status('live');
+    } catch { live.status('connection lost, retrying'); }
+    setTimeout(step, FOLLOW_MS);
+  };
+  setTimeout(step, FOLLOW_MS);
+}
+
 async function main() {
   const root = document.getElementById('viewer')!;
   const params = new URLSearchParams(location.search);
-  const open = (recording: Recording, base?: string) => play(recording, root, params, base);
+  const open = (recording: Recording, base?: string) => { play(recording, root, params, base); };
   try {
     const id = params.get('r');
     const src = params.get('src');
+    const followed = params.get('follow');
+    if (followed) { await followRun(followed, root, params); return; }
     // The bundled recordings are read only when they are needed: a recording at a URL (`?src=`) opens without them, and
     // a gallery whose index cannot be read still offers the folder picker.
     let entries: (GalleryEntry | IndexEntry)[] = [];

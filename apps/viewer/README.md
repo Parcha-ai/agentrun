@@ -22,6 +22,14 @@ is JSON and opens in a tab; the store is a SQLite file and downloads.
 The page opens a recording three ways: a bundled one (`?r=<id>`), one at a URL beside the page (`?src=<url>`, on a
 static host), or a recording folder dropped on the page or chosen with its picker (works from `file://` too).
 
+It also follows a run while it goes (`?follow=<url>`): a recording directory served over HTTP that grows. Its
+`events.jsonl` gains whole lines (asked for from the last byte read, with a `Range` header; a server that sends the
+whole file works too), each blob is in `blobs/` before a line names it, and `manifest.json` is written last, once the
+run finished. About once a second the page reads what is new, places it in the format's order (by `t`, and in the order
+lines arrived when their `t` is the same), and redraws keeping the reader's place, with the time cursor on the newest
+line unless the reader scrubbed back. When the manifest appears it reads the last lines, checks the recording against
+the format, and plays it as any other.
+
 Add `&embed=1` to frame it in another page: no header (a recording that breaks the format still says so), the full
 width of its frame, and a small `postMessage` protocol (`PANELS.md`, "Embedding"): it posts `ready`, its `position`
 at each stop and its `focus`, and obeys `seek`, `focus` and `theme` only from the framing page whose origin its URL
