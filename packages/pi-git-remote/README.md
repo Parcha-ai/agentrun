@@ -54,13 +54,14 @@ log: run-1 proposes {"Run-Id":["run-1"]} | seed {}
 
 `openRepo({ dir, remote })` opens the host's own repository at `dir`, a bare repository it creates when the directory is
 empty or absent, and fetches the remote. Every method that reads a branch fetches first. Writes change local branches
-only; `push` sends a commit to the remote. Calls on one `Repo` run one at a time.
+only, and only if the branch has not moved since the write began; `push` sends a commit to the remote. Calls on one
+`Repo` run one at a time.
 
 | Method | What it does |
 |---|---|
-| `resolve(ref)` | The commit a branch or a full sha names. A local commit not yet pushed wins, unless the remote moved past it or away from it: the remote is the source of truth. |
+| `resolve(ref)` | The commit a branch or a full sha names. A local commit not yet pushed wins, unless the remote moved past it or away from it: the remote is the source of truth. With a push URL, the newer of the two remote tips counts. |
 | `checkout(ref, { into })` | Copies the regular files of `ref` into the empty directory `into`, never executable. It skips symlinks, submodules, paths git's index refuses, both spellings of a case collision, and files over the size cap, and names each one in `skipped`. A tree over `maxTreeEntries` files is refused whole. `into` may not be inside the host repository. |
-| `read(path, sha)`, `list(prefix, sha)` | A file's text at a commit; the entries under a prefix (`""` for the whole tree). |
+| `read(path, ref)`, `list(prefix, ref)` | A file's text at a commit; the entries under a prefix (`""` for the whole tree). A branch is fetched first; a full sha reads locally. |
 | `commitTo(branch, { files, message, trailers, parent })` | One commit with `files` applied (`null` deletes a path), built on the branch's tip, or on main for a new branch. `parent` names the commit to build on; a branch whose tip is elsewhere fails with `conflict`. A branch that already holds a commit with the same `Run-Id` trailer, locally or on the remote, gets no new commit, so a restarted host with an empty repository commits nothing twice. No change, no commit. |
 | `push(sha, branch)` | Sends a commit by sha to `refs/heads/<branch>`. Never forced. A remote that moved is a `conflict`; a remote that refuses the ref is `refused`. |
 | `merge(from, into)` | A fast-forward when possible, else a merge commit from `git merge-tree`. A conflict names the paths and moves nothing. |
@@ -74,7 +75,7 @@ flags before the command: `core.hooksPath=/dev/null`, `core.fsmonitor=false`, `c
 there is a credential), `core.askPass=`, `attr.tree` pinned to the empty tree, and `protocol.allow=never` with only `file`
 and `https` allowed. Blobs are written with `hash-object --no-filters` and read with `cat-file` without filters. Pushes
 pass `--no-verify`, and on a local remote, `--receive-pack` and `--upload-pack` turn hooks off on the receiving side too,
-since our flags do not cross a local push. `merge-tree` runs from an empty directory.
+since our flags do not cross a local push. `merge-tree` runs from an empty directory. Checkout reads and writes blobs in bounded batches, so its memory does not grow with the tree.
 
 The tests plant every hook git has in the host repository and in the remote, a `.gitattributes` naming filters, a union
 merge and `eol`/`ident` conversions, and a repository config that names hooks, fsmonitor, a credential helper and askpass,
@@ -94,7 +95,7 @@ spelling git or a case-insensitive file system treats as `.git` (case, ignorable
 spaces, an NTFS stream suffix, the 8.3 short name), nor one that reads as `.git` after compatibility normalization.
 `commitTo` refuses such a path, more than `maxFiles` paths, a file over `maxFileBytes`, a path that is both a file and a
 directory, and two paths that differ only in case. `merge` and `revert` refuse a result that brings in a symlink, a
-submodule or any of these paths. Defaults: `maxFileBytes` 1 MiB, `maxFiles` 256, `maxTreeEntries` 10,000; pass `limits`
+submodule, a file over `maxFileBytes` or any of these paths. Defaults: `maxFileBytes` 1 MiB, `maxFiles` 256, `maxTreeEntries` 10,000; pass `limits`
 to `openRepo` to change them.
 
 ## Remotes and credentials
