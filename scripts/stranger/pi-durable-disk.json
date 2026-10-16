@@ -38,6 +38,9 @@
     "fence": "sh",
     "index": 0,
     "dir": "packages/pi-durable-disk/examples",
-    "timeoutMs": 120000
+    "timeoutMs": 120000,
+    "platformFloors": {
+      "darwin": "0.1.0-beta.14"
+    }
   }
 }
