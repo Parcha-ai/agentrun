@@ -35,6 +35,8 @@ const context = BACKGROUND_CONTEXT;
 const RUN_VARIABLE = "PI_TRANSPORT_TEST_RUN";
 const RUN = `${process.pid}-${Date.now()}`;
 process.env[RUN_VARIABLE] = RUN;
+/** What every box of this file is made with: the mark is in the box's own environment too, which a box's commands get in place of this process's. */
+const BOX_SPEC = { maxLifetimeMs: 10 * 60_000, env: { [RUN_VARIABLE]: RUN } };
 afterAll(async () => {
 	try {
 		await waitNotRunning(() => carriersOf(RUN_VARIABLE, RUN).length > 0, "a process this file started", 8_000);
@@ -134,7 +136,7 @@ async function withEnv(
 ): Promise<void> {
 	const root = mkdtempSync(join(tmpdir(), "pi-transport-env-"));
 	const provider = localBoxes({ root, ...(path === undefined ? {} : { path }) });
-	const box = faulty(getOrThrow(await provider.create({ maxLifetimeMs: 10 * 60_000 }, context)));
+	const box = faulty(getOrThrow(await provider.create(BOX_SPEC, context)));
 	const env = boxEnv(box, options);
 	let boxDirectoryLeft = true;
 	try {
