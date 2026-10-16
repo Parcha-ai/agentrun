@@ -383,6 +383,12 @@ const openStore = (store: DurableStore): Promise<RecoveryJournal> => { const con
 void openStore;
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'durable-consumer.ts'], consumer);
+  await writeFile(join(consumer, 'workflows-consumer.ts'), `import { WorkflowStore, WorkflowStoreError, type StoredWorkflow, type WorkflowRevision } from '@parcha/agentrun-pi/workflows';
+import type { Workflow } from '@parcha/agentrun-dsl';
+const keep = async (store: WorkflowStore, workflow: Workflow): Promise<[StoredWorkflow, WorkflowRevision[], WorkflowStoreError | undefined]> => [await store.save('copy', workflow), await store.list(), undefined];
+void keep;
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'workflows-consumer.ts'], consumer);
   await writeFile(join(consumer, 'archil-consumer.ts'), `import { openDurableRun, type RunRef } from '@parcha/pi-durable-disk';
 import { openRunLease } from '@parcha/pi-durable-disk/lease';
 const durable: [typeof openDurableRun, typeof openRunLease, RunRef | undefined] = [openDurableRun, openRunLease, undefined];
