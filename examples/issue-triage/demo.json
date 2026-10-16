@@ -1,6 +1,6 @@
 {
   "name": "issue-triage",
-  "title": "Triage a repository's newest issues (the scripted run uses synthetic issues, not a real repository's)",
+  "title": "Triage a public repository's newest issues, scored against its maintainers' labels",
   "claim": "Twenty issues are researched, labelled by Jev against five labels, judged as good first issues, and scored against the maintainers' own labels, and a run killed mid-way finishes without repeating a paid call.",
   "models": {
     "lead": {

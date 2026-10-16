@@ -5,9 +5,8 @@ import demoSpec from './demo.json' with { type: 'json' };
 import { fakes, job } from './job.ts';
 import { live } from './live.ts';
 
-// The scripted run's title says its issues are synthetic; a live take is about a real repository's issues, and its recording says so.
-const spec = process.env.LIVE === '1' || process.argv.includes('--live')
-  ? { ...demoSpec, title: "Triage a public repository's newest issues, scored against its maintainers' labels" }
-  : demoSpec;
+// demo.json's title is the gallery take's, a live one. The scripted run is about synthetic issues, and its recording says so.
+const isLive = process.env.LIVE === '1' || process.argv.includes('--live');
+const spec = isLive ? demoSpec : { ...demoSpec, title: "Triage a repository's newest issues (a scripted run on synthetic issues, not a real repository's)" };
 
 await demo({ self: import.meta.url, spec, job, fakes, live });
