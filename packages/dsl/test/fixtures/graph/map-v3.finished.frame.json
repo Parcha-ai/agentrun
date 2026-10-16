@@ -1,0 +1,46 @@
+{
+  "input": "dab4ea9d49bbc250f9477d3e5e413b64e1c92e63b24b811399e65cf6e0b8b4b7",
+  "done": [
+    "/root/steps/0/items/0/body/steps/0",
+    "/root/steps/0/items/1/body/steps/0",
+    "/root/steps/0/items/2/body/steps/0",
+    "/root/steps/0/items/0/body/steps/1",
+    "/root/steps/0/items/1/body/steps/1",
+    "/root/steps/0/items/2/body/steps/1",
+    "/root/steps/0",
+    "/root/steps/1"
+  ],
+  "states": {
+    "/root/steps/1": {
+      "items": [
+        {
+          "id": "a"
+        },
+        {
+          "id": "b"
+        },
+        {
+          "id": "c"
+        }
+      ],
+      "found": [
+        2,
+        2,
+        2
+      ],
+      "final": {
+        "n": 3
+      }
+    }
+  },
+  "chains": {
+    "/root": {
+      "index": 1,
+      "path": "/root/steps/1"
+    }
+  },
+  "loops": {},
+  "routes": {},
+  "inputs": {},
+  "steps": {}
+}
