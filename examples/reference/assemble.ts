@@ -20,7 +20,8 @@ import { createBrowserExtension } from '@parcha/pi-browser/durable';
 import { createVisionExtension, type VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import type { Host, RunPlace, StatusEvent } from './host.ts';
 
-export type Job = { workflow: Workflow; input: Record<string, unknown>; files?: Record<string, Uint8Array> };
+/** `layout`: the recovery driver's layout for the run, `v4` for the keyed one (the map items kept as `agentrun.items` documents); the driver's default when absent. */
+export type Job = { workflow: Workflow; input: Record<string, unknown>; files?: Record<string, Uint8Array>; layout?: 'v3' | 'v4' };
 /** How the workflow's task ended, as the task reports it, with the run's generation and what it spent. */
 export type RunResult = WorkflowOutcome & { generation: number; usage: Awaited<ReturnType<Harness['usage']>> };
 
@@ -119,7 +120,7 @@ export async function run(place: RunPlace, host: Host, job: Job, options: RunOpt
   const ready = new Promise<void>((resolve) => { reconciled = resolve; });
   const flow = createWorkflowExtension({
     // A host settles what a killed process left unknown through the driver's own open: one generation, not two.
-    options: () => (host.tools.answered || host.tools.rerun ? { reconcile: (unknown, complete) => reconcileEffects(unknown, complete, host.tools) } : {}),
+    options: () => ({ ...(job.layout ? { layout: job.layout } : {}), ...(host.tools.answered || host.tools.rerun ? { reconcile: (unknown, complete) => reconcileEffects(unknown, complete, host.tools) } : {}) }),
     run: async ({ key, runtime, context, driver }) => {
       runtime.signal.throwIfAborted();
       await Promise.race([ready, once(runtime.signal, 'abort').then(() => { throw runtime.signal.reason; })]);

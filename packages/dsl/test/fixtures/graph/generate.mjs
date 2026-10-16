@@ -37,7 +37,7 @@ export const SHAPES = {
     code('finish', '({ final: { taken: s.slash.id } })'),
   ] }), input: {}, cut: 'finish' },
   nested: { workflow: flow('nested', { node: 'chain', steps: [
-    { node: 'map', label: 'each', itemsPath: 'items', as: 'outs', resultPath: 'sub', body: { node: 'chain', steps: [
+    { node: 'map', label: 'each', itemsPath: 'items', as: 'outs', resultPath: 'sub', maxConcurrency: 1, body: { node: 'chain', steps: [
       { node: 'workflow', label: 'sub', workflow: child, input: { id: '{item.id}' }, out: 'Any', as: 'sub' },
       code('tail', '({ done: true })'),
     ] } },

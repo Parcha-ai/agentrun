@@ -60,7 +60,9 @@ export function workflowGraph(workflow: unknown): WorkflowGraph {
   return { nodes, edges };
 }
 
-/** What a run has done at a node. A container (chain, parallel, map, loop, route, workflow) is `working` while some of
+/** What a run has done at a node. A node inside a map's or a loop's body covers the instances the record shows so far: it is `done`
+ *  when every one of them is, and an item that starts later makes it `working` again (the map node itself is done when the
+ *  run says so). Outside a body, `done` stays done. A container (chain, parallel, map, loop, route, workflow) is `working` while some of
  *  its descendants are, or some are done and it is not; a node a run never reached, a branch a route did not take among
  *  them, is `not-run`. */
 export type NodeState = "done" | "working" | "failed" | "not-run";

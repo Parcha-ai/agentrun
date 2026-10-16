@@ -4,7 +4,7 @@
     "map": "/root/steps/0",
     "index": 0,
     "base": "5a8962bce76d21ad55ca04896aaa6aa0efca355c2e730a913108cdea40dd5e95",
-    "revision": 21,
+    "revision": 9,
     "status": "running",
     "frame": {
       "done": [
@@ -45,108 +45,6 @@
     ],
     "clocks": {
       "attempt:step:/root/steps/0/items/0/body/steps/0/workflow/root/steps/0#call:0": 1792000000000
-    },
-    "files": {},
-    "unknownResponses": {},
-    "maps": {}
-  },
-  {
-    "driver": "graph-fixture",
-    "map": "/root/steps/0",
-    "index": 1,
-    "base": "5a8962bce76d21ad55ca04896aaa6aa0efca355c2e730a913108cdea40dd5e95",
-    "revision": 21,
-    "status": "running",
-    "frame": {
-      "done": [
-        "/root/steps/0/items/1/body/steps/0/workflow/root/steps/0",
-        "/root/steps/0/items/1/body/steps/0/workflow/root/steps/1",
-        "/root/steps/0/items/1/body/steps/0"
-      ],
-      "states": {
-        "/root/steps/0/items/1/body/steps/0": {
-          "set": {
-            "item": {
-              "id": "i1"
-            },
-            "item_index": 1,
-            "sub": {
-              "ok": true
-            }
-          },
-          "unset": [],
-          "sha256": "5ba4020bf7efac304517eb8b62fcdf34faa2c3ba78111f1afea13c8c07c5042d"
-        }
-      },
-      "chains": {
-        "/root/steps/0/items/1/body": {
-          "index": 0,
-          "path": "/root/steps/0/items/1/body/steps/0"
-        }
-      },
-      "loops": {},
-      "routes": {},
-      "inputs": {
-        "/root/steps/0/items/1/body/steps/1": "5ba4020bf7efac304517eb8b62fcdf34faa2c3ba78111f1afea13c8c07c5042d"
-      },
-      "steps": {}
-    },
-    "effects": [
-      "step:/root/steps/0/items/1/body/steps/0/workflow/root/steps/0#call:0"
-    ],
-    "clocks": {
-      "attempt:step:/root/steps/0/items/1/body/steps/0/workflow/root/steps/0#call:0": 1792000000000
-    },
-    "files": {},
-    "unknownResponses": {},
-    "maps": {}
-  },
-  {
-    "driver": "graph-fixture",
-    "map": "/root/steps/0",
-    "index": 2,
-    "base": "5a8962bce76d21ad55ca04896aaa6aa0efca355c2e730a913108cdea40dd5e95",
-    "revision": 21,
-    "status": "running",
-    "frame": {
-      "done": [
-        "/root/steps/0/items/2/body/steps/0/workflow/root/steps/0",
-        "/root/steps/0/items/2/body/steps/0/workflow/root/steps/1",
-        "/root/steps/0/items/2/body/steps/0"
-      ],
-      "states": {
-        "/root/steps/0/items/2/body/steps/0": {
-          "set": {
-            "item": {
-              "id": "i2"
-            },
-            "item_index": 2,
-            "sub": {
-              "ok": true
-            }
-          },
-          "unset": [],
-          "sha256": "32b281b4050f1ac6acf73bb8664e80eeb68e490bfe2f9a234154b6c85f1a7866"
-        }
-      },
-      "chains": {
-        "/root/steps/0/items/2/body": {
-          "index": 0,
-          "path": "/root/steps/0/items/2/body/steps/0"
-        }
-      },
-      "loops": {},
-      "routes": {},
-      "inputs": {
-        "/root/steps/0/items/2/body/steps/1": "32b281b4050f1ac6acf73bb8664e80eeb68e490bfe2f9a234154b6c85f1a7866"
-      },
-      "steps": {}
-    },
-    "effects": [
-      "step:/root/steps/0/items/2/body/steps/0/workflow/root/steps/0#call:0"
-    ],
-    "clocks": {
-      "attempt:step:/root/steps/0/items/2/body/steps/0/workflow/root/steps/0#call:0": 1792000000000
     },
     "files": {},
     "unknownResponses": {},
