@@ -4,7 +4,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { join, relative, resolve } from 'node:path';
-import { TEMP_BLOB, type Redact } from './record.ts';
+import type { Redact } from './record.ts';
 import { declaredEnv, type DemoSpec } from './demo-spec.ts';
 
 /** A secret value and the name it is reported by (an environment name, or `<file> credentials.<provider>.<field>`). */
@@ -93,7 +93,7 @@ export function trackSecrets(env: NodeJS.ProcessEnv, spec: DemoSpec, authFile: s
   };
 }
 
-const filesUnder = (dir: string): string[] => readdirSync(dir).filter((name) => !TEMP_BLOB.test(name)).flatMap((name) => {
+const filesUnder = (dir: string): string[] => readdirSync(dir).flatMap((name) => {
   const path = join(dir, name);
   return statSync(path).isDirectory() ? filesUnder(path) : [path];
 });
