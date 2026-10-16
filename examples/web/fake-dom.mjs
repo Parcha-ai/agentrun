@@ -115,7 +115,8 @@ export function fakeDom({ hash = "#/" } = {}) {
   const listeners = [];
   const timers = new Set();
   const intervals = new Set();
-  const objectUrls = new Set();
+  const objectUrls = new Map();
+  let made = 0;
   const window = {
     location: { hash, href: `http://page.test/run/${hash}` },
     fetched: [],
@@ -143,13 +144,15 @@ export function fakeDom({ hash = "#/" } = {}) {
     clearInterval: (t) => (clearInterval(t), intervals.delete(t)),
     requestAnimationFrame: (fn) => window.setTimeout(fn, 0),
     URL: {
-      createObjectURL: () => {
-        const url = `blob:page.test/${objectUrls.size + 1}`;
-        objectUrls.add(url);
+      createObjectURL: (blob) => {
+        const url = `blob:page.test/${(made += 1)}`;
+        objectUrls.set(url, blob);
         return url;
       },
       revokeObjectURL: (url) => objectUrls.delete(url),
     },
+    /** The Blob an object URL the page made still stands for. */
+    blobOf: (url) => objectUrls.get(url),
     /** Timers and intervals still set: an unmounted page leaves none. */
     pending: () => timers.size + intervals.size,
     hashListeners: () => listeners.filter((l) => l.type === "hashchange").length,

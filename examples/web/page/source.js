@@ -43,7 +43,9 @@
  * @property {(id: string, options?: { live?: boolean, signal?: AbortSignal }) => AsyncIterable<TimelineView> | Promise<TimelineView>} timeline
  *   a live run's timeline as it changes (each view whole; it ends when the run stops serving), or a released run's
  * @property {(id: string) => Promise<FileEntry[]>} files the run's workspace, dotfiles left out
- * @property {(id: string, path: string) => Promise<Response>} file one of those files
+ * @property {(id: string, path: string, options?: { download?: boolean }) => Promise<Response>} file one of those files:
+ *   as the page shows it inline (a long text file may come back cut short, with `x-truncated: 1`), or, with `download`,
+ *   all of it
  * @property {(q: string) => Promise<SearchHit[]>} search
  * @property {(text: string) => Promise<{ id: string }>} [start] a new run with a first message (live only)
  * @property {(id: string, text: string) => Promise<unknown>} [submit] a message to a run (live only)
@@ -152,7 +154,7 @@ export function httpSource(base) {
     run: (id) => json(at(`runs/${encodeURIComponent(id)}`)),
     timeline: (id, { live = false, signal } = {}) => (live ? follow(id, signal) : json(at(`runs/${encodeURIComponent(id)}/timeline`), { signal })),
     files: async (id) => (await json(at(`runs/${encodeURIComponent(id)}/files`))).files,
-    file: (id, path) => fetch(at(`runs/${encodeURIComponent(id)}/files/${pathUrl(path)}`)),
+    file: (id, path, { download = false } = {}) => fetch(at(`runs/${encodeURIComponent(id)}/files/${pathUrl(path)}${download ? "?download=1" : ""}`)),
     search: async (q) => (await json(at(`search?q=${encodeURIComponent(q)}`))).results,
     start: (text) => post("runs", { content: text }),
     submit: (id, text) => post(`runs/${encodeURIComponent(id)}/messages`, { content: text }),

@@ -95,7 +95,8 @@ The page is at `/`. The data follows Grep's job routes.
   opened read-only, with the same module. A live store is never opened: it is read only through its door.
 - **Files.** The tree under `work/`, dotfiles hidden. A "Saved" row links to the file it names, by the row's `path`.
   Markdown is rendered with HTML escaped, CSV as a table, text as text, images inline. Agent-written HTML is shown in a
-  frame sandboxed with nothing allowed. Every file can be downloaded.
+  frame sandboxed with nothing allowed. Every file can be downloaded, whole: a text file over 512 KiB is shown cut
+  short, and its Download fetches all of it.
 - **Browser.** The run's live view in one frame, kept while the run sleeps so a person can sign in after the agent's turn
   ended. The frame reloads only when the view's address changes.
 - **Chat.** One message box under every tab, so a person can sign in on the Browser tab and answer "done" without leaving it.
@@ -119,7 +120,8 @@ recorded runs from static files. Every URL it builds is relative, so it works un
 
 A `RunSource` has `list()` (the history, newest first), `run(id)`, `timeline(id, { live, signal })` (a released run's
 `{ rows, state, costUsd }`, or, for a live run, the same view each time it changes, until the run stops serving),
-`files(id)`, `file(id, path)` (a `Response`) and `search(q)`. A live source also has `start(text)`, `submit(id, text)`,
+`files(id)`, `file(id, path, { download })` (a `Response`: as the page shows it, where a long text file may come back
+cut short with `x-truncated: 1`, or, with `download`, all of it) and `search(q)`. A live source also has `start(text)`, `submit(id, text)`,
 `stop(id)` and `live(id, run)` (the live view's frame: `{ key, src }`, or null).
 
 - `httpSource(base)` is this server's routes under `base`, the address the page is served from.
@@ -156,9 +158,11 @@ The layout it writes:
 <base>/runs/<id>/files/<path>     each file
 ```
 
-`writeReplay` refuses, before it writes anything, a run id the page could not ask for and a file path that is absolute,
-has a `.` or `..` segment, names a dotfile, or names a file and a directory at once; every summary and run is written with
-`live: false` and no live view. `pack-page.mjs` writes `index.html` (its Content-Security-Policy as a meta tag, since a
+`writeReplay` refuses, before it writes anything, a run id the page could not ask for, a summary or run record for
+another id, a file path that is absolute, has a `.` or `..` segment, names a dotfile, or names a file and a directory at
+once, and two runs whose paths collide (ids `a` and `a.json`); every summary and run is written with `live: false` and
+no live view. It writes the new replay beside its directory and swaps it in, so a write that fails leaves the replay
+that was there whole. `pack-page.mjs` writes `index.html` (its Content-Security-Policy as a meta tag, since a
 static host sets no headers), `replay.js`, `run-page.js`, `source.js`, `app.css` and `timeline/`; the page reads the
 replay from the `replay-data` meta tag's address, `./data/` unless `--data` says otherwise. So:
 

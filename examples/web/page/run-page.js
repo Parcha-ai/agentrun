@@ -372,7 +372,9 @@ export function mountRunPage(root, source) {
       if (sig !== ui.sig) {
         ui.sig = sig;
         const t = await source.timeline(id, { live: false }).catch(() => null);
-        if (t && id === ui.id) apply(t);
+        // The page left this run, or was unmounted, while the timeline loaded: nothing more for it.
+        if (id !== ui.id) return;
+        if (t) apply(t);
       }
     } else if (!ui.rows.length) p.steps.replaceChildren(el("div", { class: "note" }, info.status === "starting" ? "Starting the run…" : `The run is ${info.status}.`));
     paintHead();
@@ -444,8 +446,12 @@ export function mountRunPage(root, source) {
     if (ui.file !== path || ui.id !== id) return;
     const bytes = res?.ok ? await res.blob() : null;
     if (ui.file !== path || ui.id !== id) return;
+    // The inline view may be cut short; what Download hands over is always the whole file.
+    const truncated = Boolean(bytes && res.headers.get("x-truncated"));
+    const whole = truncated ? await source.file(id, path, { download: true }).then((full) => (full.ok ? full.blob() : null), () => null) : bytes;
+    if (ui.file !== path || ui.id !== id) return;
     const name = path.split("/").pop();
-    const download = bytes ? el("a", { href: blobUrl(new Blob([bytes], { type: "application/octet-stream" })), download: name }, "Download") : null;
+    const download = whole ? el("a", { href: blobUrl(new Blob([whole], { type: "application/octet-stream" })), download: name }, "Download") : null;
     const bar = el("div", { class: "bar2" }, el("a", { href: `#/run/${enc(id)}` }, "Files"), el("b", {}, path), download);
     let body;
     if (!bytes) body = el("div", { class: "note" }, "This file is not available.");
@@ -459,7 +465,7 @@ export function mountRunPage(root, source) {
         const [head, ...rows] = csv(text, ext === "csv" ? "," : "\t");
         body = el("table", {}, el("thead", {}, el("tr", {}, (head ?? []).map((c) => el("th", {}, c)))), el("tbody", {}, rows.slice(0, 500).map((r) => el("tr", {}, r.map((c) => el("td", {}, c))))));
       } else body = el("pre", {}, text);
-      if (text !== all || res.headers.get("x-truncated")) body = el("div", {}, body, el("p", { class: "note" }, "The file is longer than the preview. Download it to read the rest."));
+      if (text !== all || truncated) body = el("div", {}, body, el("p", { class: "note" }, "The file is longer than the preview. Download it to read the rest."));
     } else body = el("div", { class: "note" }, "No preview for this type. Use Download.");
     if (ui.file === path && ui.id === id) p.files.replaceChildren(el("div", { class: "viewer" }, bar, body));
   }

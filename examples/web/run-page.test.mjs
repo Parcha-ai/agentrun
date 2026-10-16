@@ -146,6 +146,46 @@ test("a file view keeps every guard: agent HTML in a frame with nothing allowed,
   assert.equal(view.window.hashListeners(), 0, "and no listener");
 });
 
+test("a long text file shows cut short and says so, and Download hands over all of it; a short one is fetched once", async (t) => {
+  const calls = [];
+  const big = "x".repeat(600 * 1024);
+  const capped = (path, download) => (path === "big.txt" ? (download ? new Response(big) : new Response(big.slice(0, 512 * 1024), { headers: { "x-truncated": "1" } })) : respond(path));
+  const source = {
+    ...replaySource(calls),
+    files: async () => [{ path: "big.txt", size: big.length }, ...Object.entries(FILES).map(([path, body]) => ({ path, size: body.length }))],
+    file: async (id, path, options) => (calls.push(`file ${path}${options?.download ? " download" : ""}`), capped(path, options?.download)),
+  };
+  const view = await mount(t, source, "#/run/r1/files/big.txt");
+  assert.match(view.find("files").textContent, /longer than the preview/);
+  const link = byTag(view.find("files"), "a").find((a) => a.getAttribute("download") === "big.txt");
+  assert.ok(link, "a Download link");
+  assert.equal(view.window.blobOf(link.getAttribute("href")).size, big.length, "the whole file, not the preview");
+  assert.deepEqual(calls.filter((c) => c.startsWith("file ")), ["file big.txt", "file big.txt download"]);
+  view.window.navigate("#/run/r1/files/notes.md");
+  await settle();
+  assert.deepEqual(calls.filter((c) => c.startsWith("file notes")), ["file notes.md"], "a file shown whole is not fetched again");
+});
+
+test("a page unmounted while a run's timeline is still loading does no more work for it", async (t) => {
+  const calls = [];
+  let loaded;
+  const gate = new Promise((resolve) => { loaded = resolve; });
+  const source = {
+    ...liveSource(calls),
+    run: async () => summary(),
+    timeline: async (id) => (calls.push(`timeline ${id}`), await gate, { rows, state: "idle", costUsd: 0.05 }),
+    files: async () => (calls.push("files"), []),
+  };
+  const view = await mount(t, source, "#/run/r1");
+  assert.ok(calls.includes("timeline r1"), "the timeline is loading");
+  const before = calls.filter((c) => c === "files").length;
+  view.handle.unmount();
+  loaded();
+  await settle();
+  assert.equal(calls.filter((c) => c === "files").length, before, "no files loaded after unmount");
+  assert.equal(view.window.pending(), 0, "and no timer set");
+});
+
 test("writeReplay writes the static layout staticSource reads under any path: the reference job's rows, its files, and search", async (t) => {
   const recording = (await readFile(new URL("../../apps/viewer/recordings/reference-job/events.jsonl", import.meta.url), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
   const entries = recording.filter((l) => l.channel === "durable" && l.source === "pi" && Array.isArray(l.data?.model)).map((l) => l.data);
@@ -173,6 +213,39 @@ test("writeReplay writes the static layout staticSource reads under any path: th
   assert.deepEqual((await source.search("reference")).map((hit) => hit.runId), ["reference-job"]);
   assert.equal((await source.run("r1")).title, "Log in to the practice site");
   await assert.rejects(source.run("../runs"), /no run/);
+});
+
+/** A replay written before, so a later write that fails can be shown to leave it whole. */
+async function oldReplay(out) {
+  await writeReplay(out, [{ summary: summary({ id: "old" }), rows, files: { "kept.md": "# Kept" } }]);
+  return { runs: await readFile(join(out, "runs.json"), "utf8"), file: await readFile(join(out, "runs", "old", "files", "kept.md"), "utf8") };
+}
+const siblings = async (out) => (await readdir(join(out, ".."))).filter((name) => name !== "data");
+
+test("writeReplay refuses runs whose paths collide before touching the replay that is there", async () => {
+  const out = join(tmp, "collide", "data");
+  const before = await oldReplay(out);
+  await assert.rejects(writeReplay(out, [{ summary: summary({ id: "a" }), rows }, { summary: summary({ id: "a.json" }), rows }]),
+    /runs\/a\.json as a file and as a directory/);
+  assert.equal(await readFile(join(out, "runs.json"), "utf8"), before.runs, "the old replay's runs.json");
+  assert.equal(await readFile(join(out, "runs", "old", "files", "kept.md"), "utf8"), before.file, "and its files");
+  assert.deepEqual(await siblings(out), [], "nothing left beside it");
+});
+
+test("writeReplay that fails while writing leaves the replay that was there whole", async () => {
+  const out = join(tmp, "half", "data");
+  const before = await oldReplay(out);
+  await assert.rejects(writeReplay(out, [{ summary: summary({ id: "new" }), rows, files: { [`${"x".repeat(300)}.md`]: "too long a name for the file system" } }]), /ENAMETOOLONG|name too long/i);
+  assert.equal(await readFile(join(out, "runs.json"), "utf8"), before.runs);
+  assert.equal(await readFile(join(out, "runs", "old", "files", "kept.md"), "utf8"), before.file);
+  assert.deepEqual(await readdir(join(out, "runs")), ["old", "old.json"], "the new run is not there");
+  assert.deepEqual(await siblings(out), [], "nothing left beside it");
+});
+
+test("writeReplay refuses a summary for another run's id, so every listed run opens", async () => {
+  const out = join(tmp, "renamed", "data");
+  await assert.rejects(writeReplay(out, [{ id: "r1", summary: summary({ id: "r2" }), rows }]), /the run r1 has a summary for "r2"/);
+  await assert.rejects(readdir(out), { code: "ENOENT" }, "nothing was written");
 });
 
 test("writeReplay refuses an id or a path a run page could not ask for, before writing anything", async () => {

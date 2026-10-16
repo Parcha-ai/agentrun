@@ -6,8 +6,8 @@
 // A replay acts on nothing and shows no live browser: every summary and run is written with `live: false` and no live
 // view, whose address is a full-control token.
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { SECRET_KINDS } from "@parcha/pi-durable-agent/export";
 import { timelineOf } from "@parcha/pi-durable-agent/timeline";
 import { RUN_ID, safePath } from "./page/source.js";
@@ -114,6 +114,7 @@ async function readRun(input) {
   const id = input.id ?? input.summary?.id;
   if (typeof id !== "string" || !RUN_ID.test(id)) throw new Error(`a replay run id must match ${RUN_ID}, not ${JSON.stringify(id)}`);
   if (input.run?.id !== undefined && input.run.id !== id) throw new Error(`the run ${id} has a run record for ${JSON.stringify(input.run.id)}`);
+  if (input.summary?.id !== undefined && input.summary.id !== id) throw new Error(`the run ${id} has a summary for ${JSON.stringify(input.summary.id)}`);
   if ((input.store === undefined) === (input.rows === undefined)) throw new Error(`the run ${id} needs a store or ready rows, and not both`);
   let rows = input.rows;
   if (input.store !== undefined) {
@@ -147,10 +148,13 @@ async function readRun(input) {
 }
 
 /**
- * Write `runs` as a replay under `outDir`, replacing what a replay there held. Every run is read and checked first, and
- * nothing is written when one is refused: a run id a run page could not ask for, a store that is not exported (it holds
- * a sign-in, a lease, a binding or an alias), and a file path that is absolute, leaves the run's files (`..`), is a
- * dotfile or names a directory twice.
+ * Write `runs` as a replay under `outDir`, replacing what a replay there held (its `runs.json` and `runs/`). Every run
+ * is read and checked, and every path of the replay laid out, before anything on disk is touched, and nothing is
+ * written when one is refused: a run id a run page could not ask for, a summary or run record for another id, a store
+ * that is not exported (it holds a sign-in, a lease, a binding or an alias), a file path that is absolute, leaves the
+ * run's files (`..`), is a dotfile or names a directory twice, and two runs whose paths collide (ids `a` and `a.json`:
+ * `runs/a.json` as a file and a directory). The replay is written beside `outDir` and swapped in, so a failure leaves
+ * the replay that was there whole.
  * @param {string} outDir
  * @param {ReplayRun[]} runs
  */
@@ -161,23 +165,43 @@ export async function writeReplay(outDir, runs) {
     if (read.some((other) => other.id === run.id)) throw new Error(`the run ${run.id} is in the replay twice`);
     read.push(run);
   }
-  const root = resolve(outDir);
-  await rm(join(root, "runs"), { recursive: true, force: true });
-  await mkdir(join(root, "runs"), { recursive: true });
-  const write = async (path, content) => {
-    const at = resolve(root, path);
-    const rel = relative(root, at);
-    if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error(`${path} is outside the replay`);
-    await mkdir(dirname(at), { recursive: true });
-    await writeFile(at, content);
-  };
   const summaries = read.map((run) => run.summary).sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
-  await write("runs.json", `${JSON.stringify({ version: 1, runs: summaries })}\n`);
+  const out = new Map([["runs.json", `${JSON.stringify({ version: 1, runs: summaries })}\n`]]);
   for (const { id, rows, files, run } of read) {
-    await write(join("runs", `${id}.json`), `${JSON.stringify(run)}\n`);
-    await write(join("runs", id, "timeline.json"), `${JSON.stringify(rows)}\n`);
+    out.set(`runs/${id}.json`, `${JSON.stringify(run)}\n`);
+    out.set(`runs/${id}/timeline.json`, `${JSON.stringify(rows)}\n`);
     const listed = Object.entries(files).map(([path, content]) => ({ path, size: typeof content === "string" ? Buffer.byteLength(content) : content.byteLength })).sort((a, b) => a.path.localeCompare(b.path));
-    await write(join("runs", id, "files.json"), `${JSON.stringify(listed)}\n`);
-    for (const [path, content] of Object.entries(files)) await write(join("runs", id, "files", ...path.split("/")), content);
+    out.set(`runs/${id}/files.json`, `${JSON.stringify(listed)}\n`);
+    for (const [path, content] of Object.entries(files)) out.set(`runs/${id}/files/${path}`, content);
+  }
+  const dirs = new Set([...out.keys()].flatMap((path) => path.split("/").slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join("/"))));
+  const clash = [...out.keys()].find((path) => dirs.has(path));
+  if (clash) throw new Error(`the replay would hold ${clash} as a file and as a directory: two runs name the same path (a run id and another run's file, as "a" and "a.json"). Nothing was written.`);
+
+  const root = resolve(outDir);
+  await mkdir(dirname(root), { recursive: true });
+  const next = await mkdtemp(join(dirname(root), `.${basename(root)}.next-`));
+  try {
+    await mkdir(join(next, "runs"));
+    for (const [path, content] of out) {
+      const at = resolve(next, ...path.split("/"));
+      const rel = relative(next, at);
+      if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error(`${path} is outside the replay`);
+      await mkdir(dirname(at), { recursive: true });
+      await writeFile(at, content);
+    }
+    await mkdir(root, { recursive: true });
+    const old = join(next, "old-runs");
+    const hadRuns = await rename(join(root, "runs"), old).then(() => true, (error) => (error.code === "ENOENT" ? false : Promise.reject(error)));
+    try {
+      await rename(join(next, "runs"), join(root, "runs"));
+      await rename(join(next, "runs.json"), join(root, "runs.json"));
+    } catch (error) {
+      await rm(join(root, "runs"), { recursive: true, force: true });
+      if (hadRuns) await rename(old, join(root, "runs"));
+      throw error;
+    }
+  } finally {
+    await rm(next, { recursive: true, force: true });
   }
 }
