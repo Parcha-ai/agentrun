@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
+import { effectiveBoxes } from './reference/demo-spec.ts';
 import { BOX_CROSSINGS, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from './reference/index.ts';
 
 const FIXTURE = new URL('./reference/demo-fixture.ts', import.meta.url).href;
@@ -373,4 +374,109 @@ test('a child started with the spend cap already passed is ended at once, and no
   const result = await spawnChild(new URL('./reference/demo-fixture.ts', import.meta.url).href, { DIR: '/tmp/never', BACKEND: 'http://127.0.0.1:1', DEMO_SPEC: '/no/such/spec.json' }, () => {}, stop);
   assert.equal(result.signal, 'SIGKILL');
   assert.ok(Date.now() - started < 10_000);
+});
+
+// ---- the audit's five gaps (A2) -------------------------------------------------------------------------------------------------------------
+
+test('Fakes.extensions are installed on a no-key run, and Fakes.vision is called with the host and the running run (its harness undefined until the run is open)', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-a2-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const { localHost, placeAt } = await import('./reference/index.ts');
+  const place = await placeAt(join(tmp, 'run'));
+  const probeExtension = { name: 'probe', tools: [] };
+  const local = localHost(place, { model: () => { throw new Error('unused'); }, tools: {}, judge: async () => ({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }), pages: {}, start: 'about:blank', extensions: [probeExtension] });
+  assert.deepEqual(local.host.tools.extensions, [probeExtension]);
+  const { result } = await run(t, {}, ['--json'], { DEMO_VISION_PROBE: '1' });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.deepEqual(JSON.parse(readFileSync(join(result.dir, 'vision-called.json'), 'utf8')), { hasHost: true, harnessUndefinedAtBuild: true });
+});
+
+test('the result hook: the entry writes the result line and its blob from what the demo makes (agentrun.cited/1), not from the raw record', { timeout: 300_000 }, async (t) => {
+  const { result, recording } = await run(t, {}, ['--json'], { DEMO_RESULT: '1' });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.deepEqual(validateRecording(recording), []);
+  const manifest = JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.result.title, 'A cited result');
+  const cited = JSON.parse(readFileSync(join(recording, 'blobs', `${manifest.result.blob}.json`), 'utf8'));
+  assert.equal(cited.format, 'agentrun.cited/1');
+  assert.equal(cited.rows[0].value, 'Acme Ltd');
+  assert.ok(readFileSync(join(recording, 'blobs', `${cited.rows[0].cites[0].blob}.txt`), 'utf8') === 'a cited file', 'keep() stored the file in the recording\'s blobs');
+  const line = readEvents(recording).find((entry) => entry.source === 'host' && entry.kind === 'result');
+  assert.equal(line.data.title, 'A cited result');
+});
+
+test('ToolContext.live: false on a no-key run, true when the host is live, so one set of tools reads live or replays a capture', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-live-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const { localHost, placeAt } = await import('./reference/index.ts');
+  const seen = [];
+  for (const live of [false, true]) {
+    const place = await placeAt(join(tmp, String(live)));
+    const local = localHost(place, { model: () => { throw new Error('unused'); }, tools: { look: (_args, context) => { seen.push(context.live); return {}; } }, judge: async () => ({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }), pages: {}, start: 'about:blank' }, { live });
+    await local.host.tools.runEffect({ node: { tool: 'look' }, input: {}, effect: { id: `e${live}`, argsHash: 'h' } });
+  }
+  assert.deepEqual(seen, [false, true]);
+});
+
+test('boxes on fakes are local, and Docker is used only with --live: a no-key run starts no container', async (t) => {
+  assert.deepEqual(effectiveBoxes({ name: 'x', boxes: { kind: 'docker', image: 'i', runIn: true } }, false), { kind: 'local', image: 'i', runIn: true });
+  assert.deepEqual(effectiveBoxes({ name: 'x', boxes: { kind: 'docker' } }, true), { kind: 'docker' });
+  assert.equal(effectiveBoxes({ name: 'x' }, false), undefined);
+  const { result, recording } = await run(t, { boxes: { kind: 'docker', runIn: true } }, ['--json']);
+  assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
+  const created = readEvents(recording).filter((line) => line.source === 'transport' && line.kind === 'box.created').map((line) => line.data.provider);
+  assert.deepEqual(created, ['local'], 'the box was a local one');
+});
+
+test('--input <name> runs a capture from input.fixtures: a name not in the map is refused with the known captures, and a path outside fixtures/ is refused', async (t) => {
+  const { mkdirSync, writeFileSync: write, rmSync } = await import('node:fs');
+  const fixtures = new URL('./reference/fixtures/', import.meta.url);
+  const capture = new URL('./other-ltd.json', fixtures);
+  const spec = { input: { fixtures: { 'other-ltd': 'examples/reference/fixtures/other-ltd.json', 'acme-ltd': 'examples/reference/fixtures/acme-ltd.json' } } };
+  // A name that is not a capture, on fakes: refused, and the refusal lists the captures there are.
+  await assert.rejects(() => run(t, spec, ['--json', '--input', 'nobody']), (error) => /--input nobody is not a capture of reference/.test(error.message) && /The captures are: other-ltd, acme-ltd\./.test(error.message) && /--live/.test(error.message));
+  await assert.rejects(() => run(t, {}, ['--json', '--input', 'nobody']), /It has none/);
+  // A capture in the map whose file is not there says where to put it.
+  await assert.rejects(() => run(t, spec, ['--json', '--input', 'other-ltd']), /examples\/reference\/fixtures\/other-ltd\.json, which does not exist/);
+  // A path outside this demo's fixtures/ is refused, whatever it names.
+  for (const path of ['examples/reference/job.ts', 'examples/other/fixtures/x.json', 'examples/reference/fixtures/../job.ts', '/etc/passwd']) await assert.rejects(() => run(t, { input: { fixtures: { escape: path } } }, ['--json', '--input', 'escape']), /not a path under examples\/reference\/fixtures\//, path);
+  // The job's own input and an inline object need no capture.
+  const own = await run(t, spec, ['--json', '--input', '{"company":"Acme Ltd"}']);
+  assert.equal(own.result.processes.at(-1).outcome.status, 'complete');
+  // With its fixture in place, the name runs the job on it.
+  mkdirSync(fixtures, { recursive: true });
+  write(capture, '{"company":"Other Ltd"}');
+  t.after(() => { rmSync(capture, { force: true }); try { rmSync(fixtures); } catch { /* not empty or gone */ } });
+  const other = await run(t, spec, ['--json', '--input', 'other-ltd']);
+  assert.equal(other.result.record.company, 'Other Ltd');
+});
+
+test('a live child gets exactly the environment names demo.json declares (keys, oneOf members, programs) and nothing undeclared; its live vision is built from the host and the running run like the fakes\'', { timeout: 300_000 }, async (t) => {
+  const { declaredEnv } = await import('./reference/demo-spec.ts');
+  const keys = [
+    { oneOf: [{ env: 'OPENAI_API_KEY', required: true }, { env: 'GEMINI_API_KEY' }] },
+    { env: 'TYPESAFE_API_KEY', required: true },
+    { oneOf: [[{ env: 'BROWSERBASE_API_KEY' }, { env: 'BROWSERBASE_PROJECT_ID' }], { env: 'CHROME_PATH' }] },
+  ];
+  assert.deepEqual([...declaredEnv({ name: 'x', keys, programs: [{ name: 'chrome', env: 'CHROME_BIN' }] })].sort(), ['BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'CHROME_BIN', 'CHROME_PATH', 'GEMINI_API_KEY', 'OPENAI_API_KEY', 'TYPESAFE_API_KEY']);
+  // Values are made up from the names, so no literal that looks like a credential is in the source.
+  const secrets = Object.fromEntries(['OPENAI_API_KEY', 'TYPESAFE_API_KEY', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'GITHUB_TOKEN', 'UNDECLARED_SECRET', 'ANTHROPIC_API_KEY'].map((name) => [name, `value-for-${name.toLowerCase()}`]));
+  // The test fixture's own settings are declared like any other name the child may see (`programs`), so the rule is exact.
+  const programs = [{ name: 'fixture spec', env: 'DEMO_SPEC' }, { name: 'fixture probe', env: 'DEMO_LIVE_PROBE' }];
+  const { result } = await run(t, { keys, programs }, ['--json', '--live'], { DEMO_LIVE_PROBE: '1', DEMO_SPEC_NOTE: 'also not declared', ...secrets });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
+  const seen = JSON.parse(readFileSync(join(result.dir, 'env-seen.json'), 'utf8'));
+  for (const name of ['OPENAI_API_KEY', 'TYPESAFE_API_KEY', 'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'PATH']) assert.ok(seen.includes(name), `${name} reaches the child`);
+  for (const name of ['GITHUB_TOKEN', 'UNDECLARED_SECRET', 'ANTHROPIC_API_KEY', 'DEMO_SPEC_NOTE']) assert.ok(!seen.includes(name), `${name} was not declared and does not reach a live child`);
+  assert.deepEqual(JSON.parse(readFileSync(join(result.dir, 'live-vision.json'), 'utf8')), { hasHost: true, harnessUndefinedAtBuild: true }, 'live vision gets (host, running) like fakes.vision');
+});
+
+test('fakes.extensions are for a no-key run: a live host does not install them', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-live-ext-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const { localHost, placeAt } = await import('./reference/index.ts');
+  const scripted = { name: 'scripted', tools: [] };
+  const fakes = { model: () => { throw new Error('unused'); }, tools: {}, judge: async () => ({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }), pages: {}, start: 'about:blank', extensions: [scripted] };
+  assert.deepEqual(localHost(await placeAt(join(tmp, 'a')), fakes, { live: false }).host.tools.extensions, [scripted]);
+  assert.deepEqual(localHost(await placeAt(join(tmp, 'b')), fakes, { live: true }).host.tools.extensions, []);
 });
