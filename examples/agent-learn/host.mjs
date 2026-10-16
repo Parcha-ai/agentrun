@@ -81,13 +81,15 @@ export async function prepareRun({ home, repo, host, runId, input, ref = 'main' 
     const ahead = cached !== null && cached !== fetched && (await repo.log({ ref: cached })).some((commit) => commit.sha === fetched);
     const sha = ahead ? cached : fetched;
     const { definition, rules, skills } = await readAgentAt(repo, sha);
+    let run;
     try {
       await refreshAgentHome(home, { sha, from: cached, definition, skills });
+      // Another host can move the home between the refresh and the start; startRun refuses before it creates anything.
+      run = await startRun(home, { runId, host, sha });
     } catch (error) {
       if (error instanceof AgentHomeError && error.code === 'stale' && attempt < 2) continue;
       throw error;
     }
-    const run = await startRun(home, { runId, host, sha });
     const workflows = await workflowsToTry({ repo, sha }, input);
     const seeded = await inRunStore(run, (target) => seedLearning({ repo, ref: sha, target, into: run.workspace, workflows }));
     const tried = await seedWorkflows({ repo, sha, into: run.workspace, workflows });
