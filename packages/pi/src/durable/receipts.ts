@@ -43,8 +43,10 @@ export type ReusableTool = { name: string; execute: (args: any, api: any, contex
 export type ReuseReceiptsOptions = {
   /** The tools whose calls are paid and keep a receipt: a tool whose answer is its own session's state keeps none. */
   tools: readonly string[];
-  /** The session this wrapper runs in: it never answers a call from a receipt its own session wrote. */
-  sessionId: string;
+  /** The session a call belongs to: a call is never answered from a receipt its own session wrote. Absent, each call's
+   *  own conversation, so a node run again in another conversation (its task replaced after it failed) is answered from
+   *  the receipt the conversation it replaces paid for, and does not pay again. */
+  sessionId?: string;
   /** Whether a repeat of another session's paid call is answered from its receipt (a continuation's sessions do). Receipts
    *  are recorded either way. */
   answer: boolean;
@@ -91,9 +93,10 @@ export function reuseReceipts(options: ReuseReceiptsOptions): ReceiptReuse {
             { isError: true, details: { effect_status: "unknown", refused: true } });
         }
         const key = `${intent.tool}:${intent.argsHash}`;
+        const session = options.sessionId ?? String(api?.conversationId);
         if (options.answer) {
           const receipt = await api.snapshot(ReceiptIndex, key, context);
-          if (receipt?.result != null && receipt.session !== options.sessionId) {
+          if (receipt?.result != null && receipt.session !== session) {
             stats.reused += 1;
             const text = typeof receipt.result === "string" ? receipt.result : JSON.stringify(receipt.result);
             return toolResult([{ type: "text", text: `${text}\n\n(answered from the paid receipt of ${receipt.session}; the call was not dispatched again)` }],
@@ -106,7 +109,7 @@ export function reuseReceipts(options: ReuseReceiptsOptions): ReceiptReuse {
           const value = textOf(blocks ?? []);
           await api.commit(async (tx: any) => {
             const receipt = await tx.doc(ReceiptIndex, key, null);
-            if (receipt.result === null) { receipt.tool = intent.tool; receipt.argsHash = intent.argsHash; receipt.result = value; receipt.session = options.sessionId; }
+            if (receipt.result === null) { receipt.tool = intent.tool; receipt.argsHash = intent.argsHash; receipt.result = value; receipt.session = session; }
           }, context);
         }
         return result;

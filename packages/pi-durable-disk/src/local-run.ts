@@ -8,8 +8,9 @@
 // store's own commits are made durable by SQLite, and work/ is the operating system's to flush; a power loss can lose what
 // it had not written yet. It refuses once the claim is fenced, as a mount's does.
 //
-// Linux only, for now: the run's root is held open through /proc/self/fd (openClaimDir), and the default environment
-// (`archilEnv`) confines commands with `setpriv` (util-linux) and the file tools through /proc/self/fd. macOS has neither.
+// On macOS, for development: it has no /proc/self/fd and no setpriv, so there the run's root is addressed by its path
+// (openClaimDir's `byPath`), commands keep the user's rights, the file tools are confined by path (confine.ts), and the
+// commands are recorded from ps (process-table.ts). The README's "On macOS" says what that costs.
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { AcquireOptions, Claim, RunRef } from "./claim.ts";

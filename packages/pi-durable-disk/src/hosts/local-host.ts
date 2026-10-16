@@ -12,7 +12,6 @@
 // place reads nothing and reuses its live mount), the instance closes its stdin after reading, and stop removes it.
 // The token is never in argv, the environment, a systemd credential directory or anything the run's user can open.
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { extname, join } from "node:path";
@@ -20,7 +19,9 @@ import { fileURLToPath } from "node:url";
 import { ARCHIL_SCOPED, DEAD_CONNECTION, DEFAULT_MOUNT_ROOT, runPath, type RunRef } from "../claim.ts";
 import { EXIT_FENCED, EXIT_HELD, PdaError } from "../errors.ts";
 import { LOCAL_PARK_THRESHOLD_MS } from "../park.ts";
-import type { HostDriver, HostHandle, HostStatus, Json } from "../supervise.ts";
+import { processTable, thisBoot } from "../process-table.ts";
+import type { HostDriver, HostHandle, HostStatus, Json, StartAttempt } from "../supervise.ts";
+import { attemptEnv } from "./attempt-env.ts";
 
 export type Ran = { code: number | null; timedOut: boolean; stdout: string; stderr: string };
 /** Runs one command; replaceable so tests can record argv without systemd. */
@@ -66,7 +67,7 @@ export interface LocalHostOptions {
 }
 
 export class LocalHostError extends PdaError {
-  constructor(code: "INVALID_ARGUMENT" | "START_FAILED" | "STOP_FAILED", message: string, options: { cause?: unknown } = {}) {
+  constructor(code: "INVALID_ARGUMENT" | "START_FAILED" | "STOP_FAILED" | "KILL_FAILED", message: string, options: { cause?: unknown } = {}) {
     super(code, message, options);
   }
 }
@@ -119,8 +120,11 @@ export const runCommand: Runner = (argv, opts = {}) =>
     child.stdin.end(opts.input ?? "");
   });
 
+/** This boot's id: `/proc/sys/kernel/random/boot_id`, or `kern.bootsessionuuid` on macOS. Throws when it cannot be read. */
 export function currentBootId(): string {
-  return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+  const boot = thisBoot();
+  if (boot === null) throw new Error("this machine's boot id cannot be read");
+  return boot;
 }
 
 const firstLine = (r: Ran) => (r.stderr.trim().split("\n").at(-1) ?? "").slice(0, 300);
@@ -155,7 +159,7 @@ export function unitStatus(show: Record<string, string>): HostStatus {
   }
 }
 
-export function localHost(opts: LocalHostOptions = {}): HostDriver & { readonly hostName: string; readonly mountRoot: string } {
+export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pick<HostDriver, "kill" | "kills">> & { readonly hostName: string; readonly mountRoot: string } {
   const mode = opts.mode ?? "systemd";
   const mountRoot = opts.mountRoot ?? DEFAULT_MOUNT_ROOT;
   const hostName = opts.hostName ?? hostname();
@@ -213,12 +217,12 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & { readonly 
     await root(["/bin/rm", "-f", path]);
   }
 
-  async function startUnit(ref: RunRef, token: string): Promise<HostHandle> {
+  async function startUnit(ref: RunRef, token: string, extra: Record<string, string>): Promise<HostHandle> {
     const unit = `${prefix}${ref.id}-${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36).padStart(2, "0")}`;
     if (!UNIT_SAFE.test(unit)) throw new LocalHostError("INVALID_ARGUMENT", `unit name ${unit} is not safe`);
     const mountpoint = mountpointOf(ref);
     const handle: HostHandle = { driver: "local", mode: "systemd", host: hostName, bootId, unit, mountpoint };
-    const env: Record<string, string> = { ...opts.env, PATH: SAFE_PATH, PDA_HOLDER: holderEnv(handle) };
+    const env: Record<string, string> = { ...opts.env, ...extra, PATH: SAFE_PATH, PDA_HOLDER: holderEnv(handle) };
     const path = tokenFile(unit);
     await writeTokenFile(path, token);
     let started = false;
@@ -252,7 +256,7 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & { readonly 
     }
   }
 
-  async function startChild(ref: RunRef, token: string): Promise<HostHandle> {
+  async function startChild(ref: RunRef, token: string, extra: Record<string, string>): Promise<HostHandle> {
     const tag = `${prefix}${ref.id}-${Date.now().toString(36)}`;
     const mountpoint = mountpointOf(ref);
     const base: HostHandle = { driver: "local", mode: "child", host: hostName, bootId, mountpoint, tag };
@@ -261,7 +265,7 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & { readonly 
       const { openSync } = await import("node:fs");
       out = openSync(join(opts.logDir, `${tag}.log`), "a", 0o600);
     }
-    const env = { ...opts.env, PATH: SAFE_PATH, LANG: "C.UTF-8", HOME: process.env.HOME ?? "/", PDA_HOLDER: holderEnv(base) };
+    const env = { ...opts.env, ...extra, PATH: SAFE_PATH, LANG: "C.UTF-8", HOME: process.env.HOME ?? "/", PDA_HOLDER: holderEnv(base) };
     const child = spawn(command[0], [...command.slice(1), ...runFlags(ref), "--token-stdin"], { detached: true, stdio: ["pipe", out, out], env });
     await new Promise<void>((resolve, reject) => {
       child.once("spawn", resolve);
@@ -337,9 +341,11 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & { readonly 
   return {
     hostName,
     mountRoot,
-    start(ref, token) {
+    kills: "process",
+    async start(ref, token, attempt?: StartAttempt) {
       runPath(ref.id);
-      return mode === "systemd" ? startUnit(ref, token) : startChild(ref, token);
+      const extra = attemptEnv(attempt, (m) => new LocalHostError("INVALID_ARGUMENT", m));
+      return mode === "systemd" ? startUnit(ref, token, extra) : startChild(ref, token, extra);
     },
 
     async status(h) {
@@ -388,19 +394,40 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & { readonly 
       await root([SYSTEMCTL, "reset-failed", `${h.unit}.service`]);
       await removeFile(tokenFile(h.unit));
     },
+
+    async kill(h) {
+      if (!mine(h) || h.bootId !== bootId) return;
+      if (h.mode === "child") {
+        const pid = Number(h.pid);
+        // As in stop: only a real process, and only the one the handle names (its start ticks).
+        if (!Number.isInteger(pid) || pid <= 1 || typeof h.startTicks !== "number" || procStartTicks(pid) !== h.startTicks) return;
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch {
+          // gone already
+        }
+        return;
+      }
+      if (typeof h.unit !== "string" || !UNIT_SAFE.test(h.unit)) return;
+      // Every process of the unit's control group at once, the instance's commands included. Its FUSE daemon runs in a
+      // scope of its own and keeps the mount, as after an OOM kill; the unit restarts in place unless restart is off.
+      const r = await root([SYSTEMCTL, "kill", "--signal=SIGKILL", "--kill-whom=all", `${h.unit}.service`]);
+      if (!okRan(r) && unitStatus(await show(h.unit)) === "running") {
+        throw new LocalHostError("KILL_FAILED", `systemctl kill ${h.unit}: ${r.timedOut ? "timed out" : firstLine(r)}`);
+      }
+    },
   };
 }
 
-/** Field 22 of /proc/<pid>/stat (start time in clock ticks), so a reused pid is never mistaken for the instance. */
+/**
+ * A live process's start (field 22 of /proc/<pid>/stat, in clock ticks; on macOS the second it started), so a reused pid is
+ * never mistaken for the instance. Null for a zombie, a process that is gone, or one the table cannot be read for.
+ */
 export function procStartTicks(pid: number): number | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
-  let stat: string;
   try {
-    stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return processTable().snapshot().info(pid)?.start ?? null;
   } catch {
     return null;
   }
-  const rest = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-  if (rest[0] === "Z" || rest[0] === "X") return null;
-  return Number(rest[19]);
 }

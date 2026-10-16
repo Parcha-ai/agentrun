@@ -53,6 +53,22 @@ test('a paid result is recorded under its tool and arguments, by the session tha
   assert.equal(again.calls.length, 1);
 });
 
+test('with no sessionId a call\'s own conversation is its session: a receipt one conversation paid for answers another, never itself', async () => {
+  const calls = api();
+  const reuse = reuseReceipts({ tools: ['search'], answer: true });
+  const search = counted('search', 'rows');
+  const first = { ...calls, conversationId: 7 };
+  await reuse.wrap(search).execute({ q: 'a' }, first, {});
+  assert.equal(calls.held.get(keyOf('search', { q: 'a' })).session, '7', 'the receipt names the conversation that paid');
+  // The conversation that paid asks again: its own receipt does not answer it.
+  await reuse.wrap(search).execute({ q: 'a' }, first, {});
+  assert.equal(search.calls.length, 2);
+  // Another conversation of the run (a node run again after its task was replaced): answered from the receipt.
+  const answered = await reuse.wrap(search).execute({ q: 'a' }, { ...calls, conversationId: 9 }, {});
+  assert.equal(answered.details.effect_status, 'reused');
+  assert.equal(search.calls.length, 2, 'the other conversation did not pay again');
+});
+
 test('a run that does not answer still records; a receipt already held is kept', async () => {
   const calls = api();
   seed(calls.held, 'search', { q: 'a' }, 'first', 'other');

@@ -3,7 +3,9 @@
 // to the DSL's public validation and run entry points, plus the author skill's examples
 // and the conformance cases, each with the TypeScript validator's verdict. Run after
 // `npm run build`:
-//   node spec/lean/sweep/collect.mjs [out.json]
+//   node spec/lean/sweep/collect.mjs [--test-concurrency <n>] [out.json]
+// The suites run with a plain `node --test`, so at node's default concurrency (every core). `--test-concurrency <n>` or
+// TEST_CONCURRENCY=<n> passes it to each suite; the flag wins, and neither leaves node's default alone.
 // `lake exe validator-sweep out.json` then asserts the Lean validator accepts every
 // workflow the TypeScript validator accepts.
 import { execFileSync } from "node:child_process";
@@ -13,7 +15,19 @@ import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
-const out = resolve(process.argv[2] ?? join(root, "spec/lean/.lake/validator-corpus.json"));
+const args = process.argv.slice(2);
+let concurrency = process.env.TEST_CONCURRENCY || undefined;
+const positional = [];
+for (let i = 0; i < args.length; i += 1) {
+  if (args[i] === "--test-concurrency") concurrency = args[(i += 1)] ?? "";
+  else if (args[i].startsWith("--test-concurrency=")) concurrency = args[i].slice("--test-concurrency=".length);
+  else positional.push(args[i]);
+}
+if (concurrency !== undefined && !/^[1-9]\d*$/.test(concurrency)) {
+  console.error(`The test concurrency must be a positive whole number, not "${concurrency}" (--test-concurrency or TEST_CONCURRENCY)`);
+  process.exit(2);
+}
+const out = resolve(positional[0] ?? join(root, "spec/lean/.lake/validator-corpus.json"));
 const { validateWorkflow } = await import(join(root, "packages/dsl/dist/index.js"));
 const capture = mkdtempSync(join(tmpdir(), "lean-sweep-"));
 const register = join(root, "spec/lean/sweep/capture-register.mjs");
@@ -28,7 +42,7 @@ for (const [dir, pattern] of suites) {
   const files = readdirSync(join(root, dir)).filter((f) => pattern.test(f)).map((f) => join(dir, f));
   const before = readdirSync(capture).length;
   try {
-    execFileSync(process.execPath, ["--test", ...files], {
+    execFileSync(process.execPath, ["--test", ...(concurrency === undefined ? [] : [`--test-concurrency=${concurrency}`]), ...files], {
       cwd: root, stdio: ["ignore", "ignore", "pipe"], maxBuffer: 64 * 1024 * 1024,
       env: { ...process.env, LEAN_SWEEP_DIR: capture, NODE_OPTIONS: `--import=${register}` },
     });
