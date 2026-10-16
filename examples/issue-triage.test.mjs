@@ -19,6 +19,7 @@ async function run() {
       const issue = byNumber.get(input.number);
       if (node.tool === 'github_issue') { const { prs, paths, labels, ...record } = issue; return record; }
       if (node.tool === 'github_linked_prs') return { prs: issue.prs };
+      if (node.tool === 'github_code') return { paths: issue.paths };
       if (node.tool === 'github_labels') return { labels: issue.labels };
       throw new Error(node.tool);
     },

@@ -344,6 +344,21 @@
       "required": [
         "labels"
       ]
+    },
+    "CodeFetched": {
+      "type": "object",
+      "properties": {
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Repository paths now readable under repo/ in the workspace."
+        }
+      },
+      "required": [
+        "paths"
+      ]
     }
   },
   "input": {
@@ -413,11 +428,35 @@
               }
             },
             {
+              "node": "call",
+              "label": "fetch-code",
+              "via": "tool",
+              "tool": "github_code",
+              "args": {
+                "repo": "{repo}",
+                "number": "{item}"
+              },
+              "out": "CodeFetched",
+              "as": "code",
+              "deadline_s": 60,
+              "retry": {
+                "attempts": 3,
+                "backoff_s": 1,
+                "on": [
+                  "timeout",
+                  "http_5xx",
+                  "http_429",
+                  "connection"
+                ]
+              }
+            },
+            {
               "node": "agent",
               "label": "research",
               "state": {
                 "issue": "{issue}",
-                "linked_prs": "{linked.prs}"
+                "linked_prs": "{linked.prs}",
+                "readable_paths": "{code.paths}"
               },
               "out": "Research",
               "as": "research",
@@ -431,7 +470,7 @@
                 "ls"
               ],
               "effort": "low",
-              "instructions": "You triage one issue of a public repository. Its record is in `issue` (its number, title, body and URL) and the pull requests that mention it are in `linked_prs`. Read the code the issue or those pull requests name with the read-only tools you have (read, grep, find, ls): the repository's files are under `repo/` in your workspace. Report what the issue asks, whether it gives a way to reproduce what it reports, the paths you read, and at least one short quotation from each source you rely on (the issue itself, a pull request's title, a file). Quote; never paraphrase a quotation. If a path you want does not exist, say so in the summary and do not invent its contents. You decide nothing about labels here."
+              "instructions": "You triage one issue of a public repository. Its record is in `issue` (its number, title, body and URL) and the pull requests that mention it are in `linked_prs`. Read the code the issue or those pull requests name with the read-only tools you have (read, grep, find, ls): the files `readable_paths` lists are under `repo/` in your workspace. Report what the issue asks, whether it gives a way to reproduce what it reports, the paths you read, and at least one short quotation from each source you rely on (the issue itself, a pull request's title, a file). Quote; never paraphrase a quotation. If a path you want does not exist, say so in the summary and do not invent its contents. You decide nothing about labels here."
             },
             {
               "node": "judge",

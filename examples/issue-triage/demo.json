@@ -2,10 +2,46 @@
   "name": "issue-triage",
   "title": "Triage a repository's newest issues (the scripted run uses synthetic issues, not a real repository's)",
   "claim": "Twenty issues are researched, labelled by Jev against five labels, judged as good first issues, and scored against the maintainers' own labels, and a run killed mid-way finishes without repeating a paid call.",
-  "models": { "lead": { "needs": ["text", "tools"] }, "judge": { "jev": true } },
-  "keys": [],
-  "programs": [{ "cmd": "node", "why": "runs the demo", "required": true, "min": "22.19.0" }],
+  "models": {
+    "lead": {
+      "needs": [
+        "text",
+        "tools"
+      ]
+    },
+    "judge": {
+      "jev": true
+    }
+  },
+  "keys": [
+    {
+      "env": "GITHUB_TOKEN",
+      "why": "read-only GitHub REST calls; without it GitHub allows 60 requests an hour, which twenty issues overrun",
+      "where": "https://github.com/settings/tokens (a token with no scopes reads public repositories)",
+      "required": false,
+      "for": "live"
+    }
+  ],
+  "programs": [
+    {
+      "cmd": "node",
+      "why": "runs the demo",
+      "required": true,
+      "min": "22.19.0"
+    }
+  ],
   "expectedCalls": 80,
   "expectedCost": 1.5,
-  "kills": [{ "point": "judge.asked label", "n": 10, "why": "a typed question is in flight when the process dies; the resumed run takes its recorded answer and asks no second time" }]
+  "kills": [
+    {
+      "point": "judge.asked label",
+      "n": 10,
+      "why": "a typed question is in flight when the process dies; the resumed run takes its recorded answer and asks no second time"
+    }
+  ],
+  "model": {
+    "provider": "openai",
+    "id": "gpt-6-luna",
+    "via": "the scoped broker"
+  }
 }

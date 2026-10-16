@@ -14,6 +14,7 @@ It runs on scripted fakes: no key, no network, $0. **The twenty issues are synth
 | `AUTHOR-PROMPT.md` | what the user says to the drafting agent: describe, inspect, dry-run, save, learn, run |
 | `fixtures.json`, `TRUTH.md` | the twenty fictional issues, the files they name, and the scripted answers (17 of 20 labels agree with the maintainers') |
 | `job.ts`, `run.ts`, `demo.json` | the job and fakes, the entry call, and the spec |
+| `live.ts`, `github.ts`, `pick-issues.mjs` | the live parts: the model and Jev's judge, the read-only GitHub tools, and the host's pick of the twenty issues |
 | `SETUP-PROMPT.md` | what a stranger gives their coding agent to set the demo up |
 
 ## The five labels, as one Jev question
@@ -40,6 +41,16 @@ The row's confidence is the distance of the yes-probability from one half, doubl
 ## The maintainers' labels are the truth, and the classifier never sees them
 
 The label an issue carries is what the run is scored against, so nothing the research agent or either Jev question reads may contain it. The workflow enforces that by structure, not by an instruction: `github_issue` hands over the issue's number, title, body and URL and no labels; the research agent and both judges are given explicit state maps built from that; and the maintainers' labels are fetched by their own call, `github_labels`, after both judgments, and used only by the last step to compute the row's agreement. A test (`examples/issue-triage.test.mjs`) holds a run to it: no state, instruction or question handed to the agent or a judge contains a maintainer's label.
+
+## A live run
+
+```sh
+source ~/.github-app-auth.sh parcha          # or any GITHUB_TOKEN with no scopes: public reads only
+node examples/issue-triage/pick-issues.mjs expressjs/express > input.json    # the 20 newest open issues that carry a maintainers' label (stderr: the composition)
+~/evals/agentrun-archil-tl/bin/with-typesafe npm run demo:issue-triage -- --live --input input.json --max-usd 2.5 --record <dir>
+```
+
+The lead model is pi-ai's own catalog entry for `openai/gpt-6-luna` (its price included, so `--max-usd` meters real numbers) with only its base URL pointed at the scoped broker; Jev's judge is `createJevRunner` on `TYPESAFE_API_KEY`. Every GitHub call is a read-only GET. `--kill` adds the kill at the tenth label question.
 
 ## Choosing the repository for a live take
 
