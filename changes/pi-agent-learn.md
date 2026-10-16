@@ -60,3 +60,8 @@ order they were folded, never a clock. `collectWorkflows` and `inboxWorkflowFile
 `readSessionUses`) which saved workflow each durable workflow task ran and whether it finished `frozen`, `escalated` or `failed`,
 `workflowsToTry` lists the trial and active workflows whose checks hold on a run's input, for the `<learned>` section, and
 `seedWorkflows` puts them in the run's own store. The thresholds are the host's.
+`curate` uses `workflowAdmitter()` and `usesSettler()` when its `admitWorkflow` and `settleUses` options are omitted, so a host cannot
+forget the workflow pieces (`null` turns one off), and `proposeLearning` takes the run's working directory (`workDir`): it collects
+what the run saved and how it used what it had, reading the uses from an open Session with a commit that only scans the workflow
+tasks (`readUses` takes `{ target }` as well as `{ store }`), and proposes them with the run's candidates; an explicit `workflows` or
+`uses` wins.

@@ -234,7 +234,7 @@ read, and the candidates as one JSON line in the last fenced block, which is all
 
 ```ts
 import { createJevRunner } from "@parcha/agentrun-jev";
-const report = await curate({ repo, judge: createJevRunner(), secrets: vault.values(), admitWorkflow, settleUses });
+const report = await curate({ repo, judge: createJevRunner(), secrets: vault.values() });
 ```
 
 `curate` is the host step that writes `main`, and the only one. It takes each branch `runs/<run id>` whose run no
@@ -266,8 +266,9 @@ with the files to write under `.pi/agentrun/workflows/<name>/` and `.agents/skil
 `refused`. A run's `uses/<run id>.json` goes to the `settleUses` hook, which folds the uses into the workflows' trials
 and answers the files to write and one decision per workflow (`promote`, `demote` or `hold`). Curation guards what
 either hook returns, refuses a rules-tier path or any path outside the named workflows' folders, and holds a workflow
-or the uses when its hook is not installed. Both ports (`AdmitWorkflow`, `SettleUses`, `RepoRead`, `WorkflowUse`) are
-this package's types; the workflows lane implements them. When the
+or the uses when its hook is turned off. Both ports (`AdmitWorkflow`, `SettleUses`, `RepoRead`, `WorkflowUse`) are
+this package's types, and `workflowAdmitter()` and `usesSettler()` are their implementations: when `admitWorkflow` or
+`settleUses` is omitted, curate uses them, so a host cannot forget the workflow pieces, and `null` turns one off. When the
 `<learned>` section derived from the active learnings would pass 4,096 bytes, the least-used are archived first, this
 run's new ones last, and the report names each.
 
@@ -304,13 +305,21 @@ const hints = await workflowsToTry({ repo, sha }, input);
 const seeded = await seedLearning({ repo, ref: sha, target: harness, into: workDir, workflows: hints });
 await seedWorkflows({ repo, sha: seeded.sha, into: workDir, workflows: seeded.workflows });
 
-// At the run's terminal: what it saved that the repository did not hold, and how it used what it had.
-const collected = await collectWorkflows({ repo, workDir, seedSha: seeded.sha });
-await proposeLearning({ repo, runId, target: harness, workflows: collected.records, uses: usesSource({ store: storeFile, workDir, run: runId }) });
+// At the run's terminal: with the working directory, the step collects what the run saved that the repository did not
+// hold, and how it used what it had, and proposes them with the run's candidates. Explicit `workflows` or `uses` win.
+await proposeLearning({ repo, runId, target: harness, workDir });
 
-// In curate: the two ports.
-await curate({ repo, judge, admitWorkflow: workflowAdmitter({ tmpRoot }), settleUses: usesSettler({ tmpRoot }) });
+// In curate: the two ports are the defaults, so there is nothing to pass.
+await curate({ repo, judge });
 ```
+
+List every extension the agent's conversation needs in the root agent's extensions, including agentLearn and the workflow tool;
+installing in the registry alone is not enough. The shape is `{ extensions: [learn.extension, workflowTool.extension] }`.
+
+`proposeLearning({ workDir })` reads the run's uses from `target` when it is an open Session (a commit that only scans the
+workflow tasks and writes nothing); pass `uses: usesSource({ store, workDir, run })` to read them from the run's store file
+instead, or from the receipts of a pi session. Without a seed in `target` (`seedSha` overrides it) the baseline for "new" is
+main.
 
 **Admitting.** `workflowAdmitter` is the curator's `AdmitWorkflow` port. It copies main's `trial.json` and skill for the name
 into a scratch directory, loads the run's records through the DSL's store there, which refuses a record whose name, metadata
@@ -339,7 +348,7 @@ on the input: active first, then by name, at most 8. The file stays under the cu
 uses, 16 checks of at most 1,536 characters printed.
 
 **Uses.** A use is one `agentrun.workflow` task in the run's store (`@parcha/agentrun-pi/durable`'s `createWorkflowExtension`),
-read after the run's Harness has closed it, with `recordingLines`, one read transaction, never written. It counts when the
+read from the store file with `recordingLines` (one read transaction, never written; open or closed) or from the open Session. It counts when the
 task's workflow has the digest of a revision the run's own store holds under a name. The outcome is `frozen` when the workflow
 completed, `escalated` when a gate fired and the host's ladder took over, `failed` when the task failed or faulted. A task
 that is not finished, was cancelled or was orphaned says nothing about the workflow and is named in `skipped`, and so is a use

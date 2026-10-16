@@ -9,6 +9,7 @@ import { assertNotRulesLocked, CAPS, inboxPath, isRulesLocked, LAYOUT, LEARNING_
 import { byUse, indexLine, renderSection } from "./section.js";
 import { learningsAt } from "./seed.js";
 import type { AdmitWorkflow, Candidate, Refusal, RepoRead, SettleUses, WorkflowCandidate, WorkflowUse } from "./types.js";
+import { usesSettler, workflowAdmitter } from "./workflows.js";
 
 /** The judge: the DSL's System One adapter, `WorkflowDeps["runJudge"]`. `createJevRunner` from `@parcha/agentrun-jev` is one. */
 export type Judge = NonNullable<WorkflowDeps["runJudge"]>;
@@ -59,6 +60,9 @@ export type CurateCaps = {
 
 export const CURATE_CAPS: Readonly<CurateCaps> = Object.freeze({ index: CAPS.section, questionsPerRun: 128, retries: 5 });
 
+/** The options with the ports settled: a function, or none. */
+type Resolved = Omit<CurateOptions, "admitWorkflow" | "settleUses"> & { readonly admitWorkflow: AdmitWorkflow | undefined; readonly settleUses: SettleUses | undefined };
+
 export type CurateOptions = {
   readonly repo: CurateRepo;
   readonly judge: Judge;
@@ -69,11 +73,12 @@ export type CurateOptions = {
   readonly now?: Date;
   /** Plaintext values the host holds as secrets now, for the guard. */
   readonly secrets?: Iterable<string>;
-  /** Takes a proposed workflow through the DSL's store; without it, every proposed workflow is held. */
-  readonly admitWorkflow?: AdmitWorkflow;
-  /** Folds a run's workflow uses into their trials; called for every run with a `uses/<run id>.json`. Without it, the
-   *  uses are held. */
-  readonly settleUses?: SettleUses;
+  /** Takes a proposed workflow through the DSL's store. Default: `workflowAdmitter()`, so a host cannot forget the workflow
+   *  pieces; `null` turns it off, and then every proposed workflow is held. */
+  readonly admitWorkflow?: AdmitWorkflow | null;
+  /** Folds a run's workflow uses into their trials; called for every run with a `uses/<run id>.json`. Default:
+   *  `usesSettler()`; `null` turns it off, and then the uses are held. */
+  readonly settleUses?: SettleUses | null;
   readonly signal?: AbortSignal;
 };
 
@@ -177,15 +182,19 @@ function exclusive<T>(key: object, fn: () => Promise<T>): Promise<T> {
 export async function curate(options: CurateOptions): Promise<CurateReport> {
   if (!options || typeof options !== "object" || !options.repo || typeof options.judge !== "function") throw new LearnError("invalid", "curate needs { repo, judge }");
   if (options.rules !== undefined && typeof options.rules !== "string") throw new LearnError("invalid", "rules is the text of AGENTS.md");
-  if (options.admitWorkflow !== undefined && typeof options.admitWorkflow !== "function") throw new LearnError("invalid", "admitWorkflow is a function");
-  if (options.settleUses !== undefined && typeof options.settleUses !== "function") throw new LearnError("invalid", "settleUses is a function");
+  if (options.admitWorkflow !== undefined && options.admitWorkflow !== null && typeof options.admitWorkflow !== "function") throw new LearnError("invalid", "admitWorkflow is a function");
+  if (options.settleUses !== undefined && options.settleUses !== null && typeof options.settleUses !== "function") throw new LearnError("invalid", "settleUses is a function");
   const thresholds = checkThresholds(options.thresholds);
   const caps = checkCaps(options.caps);
   const secrets = [...(options.secrets ?? [])];
-  return exclusive(options.repo, () => curateRuns(options, thresholds, caps, secrets));
+  const stamp = options.now === undefined ? {} : { now: () => options.now! };
+  const admitWorkflow = options.admitWorkflow === null ? undefined : (options.admitWorkflow ?? workflowAdmitter(stamp));
+  const settleUses = options.settleUses === null ? undefined : (options.settleUses ?? usesSettler());
+  const resolved: Resolved = { ...options, ...(admitWorkflow ? { admitWorkflow } : { admitWorkflow: undefined }), ...(settleUses ? { settleUses } : { settleUses: undefined }) };
+  return exclusive(options.repo, () => curateRuns(resolved, thresholds, caps, secrets));
 }
 
-async function curateRuns(options: CurateOptions, thresholds: Thresholds, caps: CurateCaps, secrets: string[]): Promise<CurateReport> {
+async function curateRuns(options: Resolved, thresholds: Thresholds, caps: CurateCaps, secrets: string[]): Promise<CurateReport> {
   const { repo } = options;
   const at = (options.now ?? new Date()).toISOString();
   const memo = new Map<string, number>();
@@ -321,7 +330,7 @@ async function curatedRuns(repo: CurateRepo, main: string): Promise<Set<string>>
 }
 
 type PlanInput = {
-  readonly options: CurateOptions;
+  readonly options: Resolved;
   readonly thresholds: Thresholds;
   readonly caps: CurateCaps;
   readonly secrets: readonly string[];

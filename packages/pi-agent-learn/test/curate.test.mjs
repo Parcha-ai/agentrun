@@ -499,7 +499,7 @@ test("a run's saved workflow records go to the admitter; its files land, a rules
   assert.deepEqual(log.find((e) => e.trailers["Curated-Run"]?.includes("run-1")).trailers.Workflow, ["kyb"]);
   const bare = await world();
   await propose(bare, "run-1", [], recordsOf("run-1", "kyb"));
-  assert.deepEqual((await curate({ repo: bare.curator, judge })).runs[0].held, [{ workflow: "kyb", reason: "no workflow admitter is installed" }]);
+  assert.deepEqual((await curate({ repo: bare.curator, judge, admitWorkflow: null })).runs[0].held, [{ workflow: "kyb", reason: "no workflow admitter is installed" }]);
 });
 
 const workflowType = LEARN_TYPES.includes("workflow");
@@ -552,7 +552,7 @@ test("a run's workflow uses go to the settler; its trial files and decisions lan
   assert.equal(log.find((e) => e.trailers["Curated-Run"]?.includes("run-2")).trailers.Workflow, undefined, "a hold writes nothing");
   const none = await world();
   await propose(none, "run-1", [], usesFile("run-1", [use("kyb", "frozen")]));
-  assert.deepEqual((await curate({ repo: none.curator, judge })).runs[0].held, [{ reason: "uses: no uses settler is installed" }]);
+  assert.deepEqual((await curate({ repo: none.curator, judge, settleUses: null })).runs[0].held, [{ reason: "uses: no uses settler is installed" }]);
 });
 
 test("retireLearning takes out a learning a later run used, where a revert conflicts: the file stays, the section drops it, a relearn is held, twice changes nothing", async () => {
