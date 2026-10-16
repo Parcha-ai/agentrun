@@ -7,9 +7,9 @@ import { DatabaseSync } from "node:sqlite";
 import { setTimeout as sleep } from "node:timers/promises";
 
 /** What went wrong, by kind: `invalid` input, an agent home or run that `exists` or is `missing`, a home that stays
- *  `busy` past the wait, or a `format` this version does not read. */
+ *  `busy` past the wait, a `format` this version does not read, or a home whose cache is `stale` for the sha asked. */
 export class AgentHomeError extends Error {
-  readonly code: "invalid" | "exists" | "missing" | "busy" | "format";
+  readonly code: "invalid" | "exists" | "missing" | "busy" | "format" | "stale";
   constructor(code: AgentHomeError["code"], message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "AgentHomeError";

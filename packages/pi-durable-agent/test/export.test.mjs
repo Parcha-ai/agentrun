@@ -49,7 +49,7 @@ test("the signed-in fixture holds its marker in both stores, and no projection o
   const state = await readAgentHome(home);
   assert.deepEqual(state.profiles.practice, { provider: "browserbase", ref: SIGN_IN_MARKER, state: "ready", allowedOrigins: [PRACTICE_ORIGIN] });
   const documents = {
-    "agent.identity": [state.identity], "agent.definition": [state.definition], "agent.skills": Object.values(state.skills),
+    "agent.identity": [state.identity], "agent.definition": [state.definition], "agent.source": state.source ? [state.source] : [], "agent.skills": Object.values(state.skills),
     "agent.aliases": Object.values(state.aliases), "agent.bindings": Object.values(state.bindings), "agent.runs": Object.values(state.runs),
     "agent.leases": Object.values(state.leases), "browser.profiles": Object.values(state.profiles),
   };
