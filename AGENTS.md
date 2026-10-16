@@ -55,7 +55,7 @@ Provider configuration, SOP text, budgets and application policy stay in the hos
 
 ## Jev
 
-Jev (TypeSafe System One) returns typed answers with probabilities: a boolean's yes-probability, a choice with confidence, or a leveled score. It writes no prose and calls no tools. Use it for one focused semantic decision per property: select evidence, compare a claim to its source, choose a route. Code does exact work (lookups, arithmetic, joins); agents do open-ended research. Give Jev the original source text, not an agent's paraphrase. Thresholds live in the workflow (`gte`, `route.unsure`, or a code gate on `<as>$answers`), and uncertainty escalates or takes an explicit fallback. Live calls need `TYPESAFE_API_KEY`; tests never do.
+Jev (TypeSafe System One) returns typed answers with probabilities: a boolean's yes-probability, a choice with confidence, or a leveled score. It writes no prose and calls no tools. Use it for one focused semantic decision per property: select evidence, compare a claim to its source, choose a route. Code does exact work (lookups, arithmetic, joins); agents do open-ended research. Give Jev the original source text, not an agent's paraphrase. Thresholds live in the workflow (`gte`, `route.unsure`, or a code gate on `<as>$answers`), and uncertainty escalates or takes an explicit fallback. Live calls need `TYPESAFE_API_KEY` (or `OPENROUTER_API_KEY` with `provider: "openrouter"`); tests never do.
 
 ## Lean
 
