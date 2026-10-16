@@ -8,6 +8,11 @@ const slow = (faux, ms, text) =>
     faux.signal?.addEventListener("abort", () => (clearTimeout(timer), resolve(faux.message("", { stopReason: "aborted" }))), { once: true });
   });
 
+const untilExists = async (file) => {
+  const { access } = await import("node:fs/promises");
+  while (!(await access(file).then(() => true, () => false))) await new Promise((resolve) => setTimeout(resolve, 20));
+};
+
 export default function reply(context, faux) {
   const users = context.messages.filter((m) => m.role === "user").map(textOf);
   const [first = "", last = ""] = [users[0], users.at(-1)];
@@ -24,6 +29,9 @@ export default function reply(context, faux) {
   }
   if (first.includes("Take your time") && users.length === 1) return slow(faux, 60_000, "Done slowly.");
   if (first.includes("Answer soon") && users.length === 1) return slow(faux, 1_500, "Soon.");
+  // "Answer once <file> exists.": the test says when, by making the file.
+  const once = /^Answer once (\S+) exists\.$/.exec(first);
+  if (once && users.length === 1) return untilExists(once[1]).then(() => faux.message("Now."));
   if (first.includes("Fail")) return faux.message("", { stopReason: "error", errorMessage: "the faux model failed on purpose" });
   if (first.includes("as JSON")) return faux.message(first.includes("wrongly") ? '{"answer": "forty-two"}' : '```json\n{"answer": 42}\n```');
   return faux.message(`On ${last}: done.`);

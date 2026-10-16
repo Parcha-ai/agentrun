@@ -148,7 +148,9 @@ export function statusOf(run: Run): { status: Status; state: State } {
   return { status: "working", state: "idle" };
 }
 
-export type RunsOptions = { agents: Agents; doorTokenFile: string; doorToken: string; faux?: string; drainTimeout?: string };
+/** The waits between carry backs that found the home busy, and a hook called at each such refusal. */
+export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: string, attempt: number) => void };
+export type RunsOptions = { agents: Agents; doorTokenFile: string; doorToken: string; faux?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry };
 
 /** The last line of the run process's log, for a failure's message. */
 async function lastLogLine(run: Run): Promise<string> {
@@ -500,7 +502,7 @@ export class Runs {
       outcome = end?.outcome;
     }
     if (!outcome) return this.refresh(run);
-    const entry = await this.agentWhenFree(run.agentId);
+    const entry = await this.agentWhenFree(run.agentId, run.id);
     const answer = answerOf(run.rows);
     const cost = costOf(run.rows);
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message };
@@ -517,8 +519,7 @@ export class Runs {
           });
           break;
         } catch (error) {
-          if (!(error instanceof AgentHomeError && error.code === "busy") || attempt >= CARRY_BACK_RETRIES_MS.length) throw error;
-          await sleep(CARRY_BACK_RETRIES_MS[attempt]!);
+          if (!(error instanceof AgentHomeError && error.code === "busy") || !(await this.retryBusy(run.id, attempt))) throw error;
         }
       }
       this.options.agents.forget(run.agentId);
@@ -531,14 +532,22 @@ export class Runs {
     this.refresh(run);
   }
 
+  /** After refusal `attempt` for a busy home: waits out the next delay and says whether to try again. */
+  private async retryBusy(runId: string, attempt: number): Promise<boolean> {
+    const delays = this.options.carryBackRetry?.delaysMs ?? CARRY_BACK_RETRIES_MS;
+    this.options.carryBackRetry?.onBusy?.(runId, attempt);
+    if (attempt >= delays.length) return false;
+    await sleep(delays[attempt]!);
+    return true;
+  }
+
   /** The agent, read again while another writer holds its home, within the carry back's retries. */
-  private async agentWhenFree(id: string): Promise<AgentEntry | null> {
+  private async agentWhenFree(id: string, runId = id): Promise<AgentEntry | null> {
     for (let attempt = 0; ; attempt++) {
       try {
         return await this.options.agents.get(id);
       } catch (error) {
-        if (!(error instanceof ApiError && error.code === "home_busy") || attempt >= CARRY_BACK_RETRIES_MS.length) throw error;
-        await sleep(CARRY_BACK_RETRIES_MS[attempt]!);
+        if (!(error instanceof ApiError && error.code === "home_busy") || !(await this.retryBusy(runId, attempt))) throw error;
       }
     }
   }

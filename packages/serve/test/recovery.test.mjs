@@ -2,7 +2,7 @@
 // still replay, and a carry back that a busy home put off.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -99,20 +99,30 @@ test("Idempotency-Key answers outlive a restart for the retention capabilities s
 });
 
 test("a carry back that finds the home busy is tried again until it lands, so the run still ends final", async (t) => {
-  const data = join(await scratch(t), "agents");
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const dir = await scratch(t);
+  const data = join(dir, "agents");
+  let busy;
+  const refused = new Promise((resolve) => (busy = resolve));
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", carryBackRetry: { delaysMs: Array(20).fill(20), onBusy: (runId) => busy(runId) } });
   t.after(() => server.close());
   const api = client(server.baseUrl, server.token);
   assert.equal((await api("POST", "/agents", agent("calc"))).status, 201);
-  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "Answer soon." } });
-  // Another writer holds the home's lock for longer than a carry back waits for it.
+  const go = join(dir, "go");
+  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: `Answer once ${go} exists.` } });
+  // Once the run's process has read its home and works: before that, it needs the home's lock itself.
+  for (let i = 0; (await api("GET", `/runs/${run.run_id}`)).body.state !== "working" || (await api("GET", `/runs/${run.run_id}`)).body.status !== "working"; i++) {
+    assert.ok(i < 400, "the run starts working");
+    await sleep(50);
+  }
+  // Another writer holds the home's lock; the run answers; the carry back is refused; then the writer lets go.
   const lock = new DatabaseSync(join(data, "calc", "owner.lock"), { timeout: 0 });
   lock.exec("PRAGMA locking_mode = EXCLUSIVE");
   lock.exec("BEGIN EXCLUSIVE");
   lock.exec("COMMIT");
-  await sleep(9_000);
+  await writeFile(go, "");
+  assert.equal(await refused, run.run_id);
   lock.close();
-  const { last } = await follow(api, run.run_id, ["completed"], { deadlineMs: 40_000 });
+  const { last } = await follow(api, run.run_id, ["completed"]);
   assert.equal(last.final, true);
   assert.equal((await readAgentHome({ dir: join(data, "calc") })).runs[run.run_id].outcome, "completed");
 });

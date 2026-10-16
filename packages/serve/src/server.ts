@@ -10,7 +10,7 @@ import { agentView, Agents, etagOf, type AgentEntry } from "./agents.js";
 import { BOUND_TOOLS } from "./app.js";
 import { ApiError, invalid, unsupported } from "./errors.js";
 import { EFFORTS, FAUX_ENV, modelSource } from "./model.js";
-import { type Run, Runs } from "./runs.js";
+import { type CarryBackRetry, type Run, Runs } from "./runs.js";
 import { checkAgentCreate, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json } from "./validate.js";
 
 export const CONTRACT = "agentrun.v2/0";
@@ -43,6 +43,9 @@ export type ServeOptions = {
   /** Extra `Host` names to accept besides the loopback ones. */
   allowHosts?: string[];
   drainTimeout?: string;
+  /** The waits between carry backs that found the home held by another writer (default 0.5, 1, 2, 4 and 8 s), and a
+   *  hook called at each such refusal. */
+  carryBackRetry?: CarryBackRetry;
 };
 
 export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string; close(): Promise<void> };
@@ -160,7 +163,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const env = { ...process.env, ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}) };
   const caps = capabilities(env);
   const agents = new Agents(data);
-  const runs = new Runs({ agents, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}) });
+  const runs = new Runs({ agents, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
