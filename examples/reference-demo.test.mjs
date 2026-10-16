@@ -1221,3 +1221,52 @@ test('a holder\'s host and boot id are labels in the recording (host-1, host-2, 
   }
   assert.deepEqual(validateRecording(recording), []);
 });
+
+// ---- the operator's kill ------------------------------------------------------------------------------------------------------------------------
+
+test('an operator kill (a control file the supervisor watches, never the child\'s request file) kills through the place, writes a kill line with crossing null and label operator, and the run resumes with repeated 0', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-operator-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'spec.json');
+  writeFileSync(file, JSON.stringify({ name: 'reference' }));
+  Object.assign(process.env, { DEMO_SPEC: file });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const control = join(tmp, 'control', 'kill-now');
+  mkdirSync(join(tmp, 'control'));
+  const recording = join(tmp, 'recording');
+  // The operator\'s page, here a test: once the judge has answered in the first process, it makes the control file.
+  const killed = [];
+  const placeOn = (trigger) => ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner, start: async (order) => {
+      const runner = await inner.start(order);
+      const waiting = setInterval(() => { try { if (readFileSync(order.env.CROSS_LOG, 'utf8').includes(trigger) && !killed.length) { killed.push(order.gen); writeFileSync(control, ''); clearInterval(waiting); } } catch { /* not yet */ } }, 5);
+      runner.exited.then(() => clearInterval(waiting));
+      return runner;
+    } };
+  };
+  const place = placeOn('judge.answered verdict');
+  const result = await demo({ ...options, argv: ['--json', '--record', recording, '--operator-kill', control], place });
+  assert.deepEqual(result.processes.map((process) => [process.signal, process.outcome?.status ?? null]), [['SIGKILL', null], [null, 'complete']], JSON.stringify(result.processes));
+  assert.equal(result.record.company, 'Acme Ltd');
+  assert.ok(!existsSync(control), 'the supervisor consumed the control file');
+  const lines = readEvents(recording);
+  const kills = lines.filter((line) => line.source === 'host' && line.kind === 'kill');
+  assert.deepEqual(kills.map((line) => [line.data.gen, line.data.label, line.data.crossing, line.data.kind]), [[1, 'operator', null, 'process']]);
+  assert.deepEqual(result.kills.map((kill) => [kill.gen, kill.point, kill.why]), [[1, null, 'the operator asked']]);
+  const counted = fold(lines);
+  assert.deepEqual([counted.processes, counted.kills, counted.repeated, counted.unknown], [2, 1, 0, 0]);
+  assert.deepEqual(validateRecording(recording), []);
+  // The plan\'s own kill is not lost: an operator kill that ends an attempt first leaves its planned kill for the next one.
+  killed.length = 0;
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'planned' }] }));
+  const { options: planned } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const both = await demo({ ...planned, argv: ['--kill', '--json', '--operator-kill', control], place: placeOn('model.request turn 0') });
+  assert.deepEqual(both.kills.map((kill) => [kill.gen, kill.point ?? 'operator']), [[1, 'operator'], [2, 'judge.asked verdict']]);
+  assert.deepEqual(both.unlanded, []);
+  assert.equal(both.processes.at(-1).outcome.status, 'complete');
+  // A stale control file would kill the first process at once: it is refused.
+  writeFileSync(control, '');
+  await assert.rejects(() => demo({ ...options, argv: ['--json', '--operator-kill', control] }), /already exists/);
+});
