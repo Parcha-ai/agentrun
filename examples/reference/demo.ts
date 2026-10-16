@@ -40,7 +40,7 @@ import { inputOf, declaredEnv, childPlansOf, chooseBrowser, effectiveBoxes, kill
 import { cost } from './fold.ts';
 import { checkItems, fetchSources, missingCommitted, readSources, withSources } from './sources.ts';
 import { localHost, type BrowserPlane, type Fakes, type Host, type RunPlace } from './host.ts';
-import { codeOf, finishRecording, followRecording, keepBlob, openRecorder, openSupervisor } from './record.ts';
+import { codeOf, finishRecording, followRecording, keepBlob, lazyRecorder, openRecorder, openSupervisor } from './record.ts';
 import { packageCommitRecorder } from './record-store.ts';
 import { scanPlaced, scanRecording, signInFile, trackSecrets } from './secrets.ts';
 
@@ -178,7 +178,7 @@ async function inBox(provider: BoxProvider, kind: 'local' | 'docker', place: { i
 }
 
 /** What one process of the run is made of, before it opens the store: the place, the host (the demo's, the live parts merged, the crossings and the judge caps on it), the job with its input, and the run's options. `made` is the demo's result hook, run on the delivered result. */
-export type Prepared = { models: Record<string, unknown> | undefined; place: RunPlace; host: Host; job: Job; runOptions: RunOptions; recorder: Recorder | undefined; made(result: Awaited<ReturnType<typeof run>>): Promise<{ json: unknown; title: string } | undefined>; done(): Promise<void> };
+export type Prepared = { models: Record<string, unknown> | undefined; place: RunPlace; host: Host; job: Job; runOptions: RunOptions; recorder: Recorder | undefined; /** Starts what writes under the run's directory: the recorder, the fetched sources, the box. Awaited once the claim is open (before `beforeResume`); `child()` has no claim to wait for and calls it at once. */ open(): Promise<void>; made(result: Awaited<ReturnType<typeof run>>): Promise<{ json: unknown; title: string } | undefined>; done(): Promise<void> };
 
 /** The outcome line a process reports on its way out: how the run ended, the record it delivered, what the demo's result hook made of it, and the hash of its store. */
 export function outcomeOf(result: Awaited<ReturnType<typeof run>>, storeSha256: string | undefined, made?: { json: unknown; title: string }, models?: Record<string, unknown>) {
@@ -194,7 +194,9 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   // A recording holds none of the secret values (the declared environment's, the sign-in's tokens, a refreshed token too): the supervisor hands this process the sign-in's home (`AGENTRUN_HOME`, the one name added beside
   // the declared ones, so a child that signs in uses the file the recorder reads), and this process reads the values itself.
   const redact = env.RECORD_DIR && env.AGENTRUN_HOME ? trackSecrets(env, options.spec).redact : undefined;
-  const recorder = env.RECORD_DIR ? openRecorder({ dir: env.RECORD_DIR, commits: await packageCommitRecorder(), ...(redact ? { redact } : {}) }) : undefined;
+  const commits = env.RECORD_DIR ? await packageCommitRecorder() : undefined;
+  const lazy = env.RECORD_DIR ? lazyRecorder(() => openRecorder({ dir: env.RECORD_DIR!, commits: commits!, ...(redact ? { redact } : {}) })) : undefined;
+  const recorder: Recorder | undefined = lazy;
   const live = env.LIVE === '1';
   const browserKind = (env.BROWSER ?? 'fake') as 'fake' | 'browserbase' | 'chrome' | 'none';
   let box: Awaited<ReturnType<typeof inBox>> | undefined;
@@ -208,7 +210,7 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   const fakesTapped = live && parts.tools ? tapFakes(options.fakes, cross) : undefined;
   const declaredFakes = new Set((options.spec.tools ?? []).filter((entry) => entry.local === 'fakes').map((entry) => entry.name));
   const local = localHost(place, live ? (fakesTapped ?? options.fakes) : tapFakes(options.fakes, cross), {
-    ...(tapped ? { liveTools: tapped.tools, fakesDeclared: declaredFakes } : {}), browser: browserKind === 'none' ? noBrowser() : fakeBrowser(env.BACKEND!), live, ...(recorder ? { recorder } : {}), ...(boxes ? { boxes } : {}) });
+    ...(tapped ? { liveTools: tapped.tools, fakesDeclared: declaredFakes } : {}), browser: browserKind === 'none' ? noBrowser() : fakeBrowser(env.BACKEND!), live, deferLogs: true, ...(recorder ? { recorder } : {}), ...(boxes ? { boxes } : {}) });
   // The live parts are merged into the host member by member FIRST, then the platform wraps the final host: the crossings (so a live `status` or `tools` still has them) and the judge seam's
   // caps (Jev's), which a live judge is held to too.
   composeHost(local.host, parts.host, cross, window, join(place.root, 'judge-spent.jsonl'));
@@ -219,19 +221,24 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   // The input: `--input`'s, else the demo's for this mode (`fakes.input` on fakes, which may be a smaller slice), else the job's own.
   const input = env.INPUT ? (JSON.parse(env.INPUT) as Record<string, unknown>) : (live ? undefined : options.fakes.input) ?? options.job.input;
   let boxFiles = options.job.files;
-  if (options.sourcesFor || options.spec.sources) {
-    const items = options.sourcesFor ? checkItems(options.sourcesFor(input), 'sourcesFor') : readSources(sourcesPath(options)).items;
-    if (live || env.FETCH_SOURCES === '1') {
+  const wanted = options.sourcesFor || options.spec.sources ? (options.sourcesFor ? checkItems(options.sourcesFor(input), 'sourcesFor') : readSources(sourcesPath(options)).items) : undefined;
+  if (wanted && !(live || env.FETCH_SOURCES === '1') && options.sourcesFor) {
+    const missing = missingCommitted(wanted, options.job.files, place.work);
+    if (missing.length) throw new Error(`this input needs ${missing.length} source file(s) a no-key run does not have (${missing.slice(0, 3).join(', ')}${missing.length > 3 ? ', ...' : ''}): run with --fetch-sources, or --live`);
+  }
+  // What writes under the run's directory waits for `open()`: the recorder, the fetched files, the box. Nothing before it touches the disk (on a disk the run has not mounted yet, a write would land on the bare mountpoint).
+  const open = async () => {
+    lazy?.start();
+    local.touchLogs();
+    // The checked files the job reads, fetched into work/ and verified: on --live and with --fetch-sources (a no-key run uses the files the demo commits). A fetched file is cached by its hash (`--cache`), so a re-run does not fetch it again.
+    if (wanted && (live || env.FETCH_SOURCES === '1')) {
       await mkdir(place.work, { recursive: true });
-      const got = await fetchSources({ items }, place.work, fetch, 60_000, env.CACHE_DIR);
+      const got = await fetchSources({ items: wanted }, place.work, fetch, 60_000, env.CACHE_DIR);
       // A Docker box shares nothing with work/: the verified files go in with the job's own.
       if (boxes && boxSpec?.kind === 'docker' && boxSpec.runIn) boxFiles = withSources(options.job.files, place.work, [...got.fetched, ...got.kept, ...got.cached]);
-    } else if (options.sourcesFor) {
-      const missing = missingCommitted(items, options.job.files, place.work);
-      if (missing.length) throw new Error(`this input needs ${missing.length} source file(s) a no-key run does not have (${missing.slice(0, 3).join(', ')}${missing.length > 3 ? ', ...' : ''}): run with --fetch-sources, or --live`);
     }
-  }
-  if (boxes && boxSpec?.runIn) box = await inBox(boxes, boxSpec.kind, place, boxFiles ?? {});
+    if (boxes && boxSpec?.runIn) box = await inBox(boxes, boxSpec.kind, place, boxFiles ?? {});
+  };
   // The vision option: every look is kept in a `vision.looks` document with the screenshot it was of, and the demo passes only its eyes.
   const shown = shownShots({ ...(recorder ? { keep: (bytes: Buffer, extension: string) => recorder.blob(bytes, extension) } : {}), ...(recorder ? { onShown: (read) => recorder.live('vision', 'shown', read) } : {}) });
   // Each record filed, by its receipt path: a look that failed is told only the receipt.
@@ -250,9 +257,9 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
       onMiss: async (miss) => { await kept.onMiss?.(miss); await own.onMiss?.(miss); },
     };
   };
-  const runOptions: RunOptions = { ...(box ? { env: box.env } : {}), ...(options.spec.sites ? { sites: options.spec.sites } : {}), ...(options.codeMode ?? options.spec.codeMode ? { codeMode: options.codeMode ?? (options.spec.codeMode as CodeModeOptions | boolean) } : {}), vision };
+  const runOptions: RunOptions = { ...(boxes && boxSpec?.runIn ? { env: () => box!.env() } : {}), ...(options.spec.sites ? { sites: options.spec.sites } : {}), ...(options.codeMode ?? options.spec.codeMode ? { codeMode: options.codeMode ?? (options.spec.codeMode as CodeModeOptions | boolean) } : {}), vision };
   const made = async (result: Awaited<ReturnType<typeof run>>) => (result.status === 'complete' && options.result ? options.result(result.output, { dir: place.root, keep: (bytes, extension) => (recorder ? recorder.blob(bytes, extension) : createHash('sha256').update(bytes).digest('hex')) }) : undefined);
-  return { models: parts.models, place, host: local.host, job: { ...options.job, input }, runOptions, recorder, made, done: async () => { await box?.destroy(); } };
+  return { models: parts.models, place, host: local.host, job: { ...options.job, input }, runOptions, recorder, open, made, done: async () => { await box?.destroy(); } };
 }
 
 const storeShaOf = (place: RunPlace) => {
@@ -267,6 +274,7 @@ async function child(options: DemoOptions) {
     const killNonce = process.env.KILL_NONCE;
     delete process.env.KILL_NONCE;
     prepared = await prepareChild(options, process.env, undefined, killNonce);
+    await prepared.open();
     const result = await run(prepared.place, prepared.host, prepared.job, prepared.runOptions);
     const made = await prepared.made(result);
     await prepared.recorder?.detach();
