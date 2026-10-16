@@ -144,6 +144,18 @@ function slowModel() {
 	return { models, asked: () => asked };
 }
 
+/** The `transport.moves` records in the vault's log from commit `from`, each with the commit it is in. */
+async function movesInLog(made: World, from = 1) {
+	const log = getOrThrow(await localVault(join(made.host, "vault")).readLog("run-1", from, context));
+	return log.entries.flatMap(({ commit, writes }) =>
+		writes.flatMap((write) =>
+			write.type === "document.create" && write.record.kind === "transport.moves"
+				? [{ commit, key: write.record.key, value: write.content.value as Record<string, unknown> }]
+				: [],
+		),
+	);
+}
+
 /** The spool files the recording's directory holds on the host. */
 const spoolFiles = (made: World) => readdirSync(join(made.record, ".spool")).filter((name) => name.endsWith(".jsonl"));
 
@@ -403,6 +415,33 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 						to: { environment: "box", box: "box-2" },
 						checkpoint: { n: expect.any(Number), head: expect.any(Number) },
 					});
+					// The restore's durable record, in the restored home's first commit: from box-1 to box-2, its checkpoint. The
+					// log holds the commits from the checkpoint on.
+					const moves = await movesInLog(made, recovered.restored?.head);
+					expect(moves).toHaveLength(1);
+					const [restore] = moves;
+					expect(restore?.key).toBe("restore-2");
+					expect(restore?.value).toMatchObject({
+						v: 1,
+						id: "restore-2",
+						kind: "restore",
+						epoch: 2,
+						head: recovered.restored?.head,
+						from: { environment: "box", provider: made.provider.name, box: "box-1" },
+						to: { environment: "box", provider: made.provider.name, box: "box-2" },
+						drainMs: null,
+						shipMs: expect.any(Number),
+						takeMs: expect.any(Number),
+						bytes: expect.any(Number),
+						stopped: [],
+						checkpoint: {
+							head: recovered.restored?.head,
+							sha256: expect.any(String),
+							bytes: expect.any(Number),
+							at: expect.any(String),
+						},
+					});
+					expect(restore?.commit).toBe(restore?.value.head);
 					await place.release();
 				} finally {
 					made.remove();
@@ -500,6 +539,23 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 					for (const id of made.ids) expect(told).not.toContain(id);
 					// The receipts are the same boxes under the same labels.
 					expect(receipts.map(({ box }) => box).sort()).toEqual(["box-1", "box-2"]);
+					// The restore's durable record: from the log alone, so replayed from 1 and no checkpoint, at its head.
+					const moves = await movesInLog(made);
+					expect(moves).toHaveLength(1);
+					const [restore] = moves;
+					expect(restore?.value).toMatchObject({
+						v: 1,
+						kind: "restore",
+						epoch: 2,
+						head: (recovered.replayed?.to ?? 0) + 1,
+						replayed: { from: 1, to: recovered.replayed?.to },
+						from: { environment: "box", box: "box-1" },
+						to: { environment: "box", box: "box-2" },
+						stopped: [],
+					});
+					expect(restore?.value).not.toHaveProperty("checkpoint");
+					expect(restore?.commit).toBe(restore?.value.head);
+					for (const id of made.ids) expect(JSON.stringify(restore)).not.toContain(id);
 				} finally {
 					made.remove();
 				}
@@ -532,6 +588,12 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 					expect(model.asked()).toBe(1);
 					expect(record.answer?.startsWith("answer number 1:")).toBe(true);
 					expect(record.questions).toBe(1);
+					// pi reopens a store whose generation was running and commits that before anything else (measured: one commit,
+					// the record at head + 1). The record's head is the store's next commit at open, `replayed.to + 1`: the first
+					// commit of the restored process is at or above it.
+					const [restore] = await movesInLog(made);
+					expect(restore?.value).toMatchObject({ kind: "restore", head: (recovered.replayed?.to ?? 0) + 1 });
+					expect(restore?.commit).toBeGreaterThanOrEqual(restore?.value.head as number);
 					await place.release();
 				} finally {
 					made.remove();

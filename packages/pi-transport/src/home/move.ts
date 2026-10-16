@@ -572,7 +572,7 @@ async function restoreHome(
 		try {
 			const made = await options.replace(gone, context);
 			if (!made.ok) return made;
-			return await restoreInto(options, record, undefined, whole, made.value, context);
+			return await restoreInto(options, record, undefined, whole, made.value, gone, context);
 		} finally {
 			rmSync(dirname(whole.file), { recursive: true, force: true });
 		}
@@ -583,7 +583,7 @@ async function restoreHome(
 	try {
 		const made = await options.replace(gone, context);
 		if (!made.ok) return made;
-		return await restoreInto(options, record, checkpoint, replay, made.value, context);
+		return await restoreInto(options, record, checkpoint, replay, made.value, gone, context);
 	} finally {
 		if (replay !== undefined) rmSync(replay.file, { force: true });
 	}
@@ -637,6 +637,7 @@ async function restoreInto(
 	checkpoint: Checkpoint | undefined,
 	replay: Replayed | undefined,
 	place: Place,
+	gone: Place,
 	context: Context,
 ): Promise<
 	Result<
@@ -660,6 +661,8 @@ async function restoreInto(
 	if (!dropped.ok) return err(new MoveError("ship", `the host's log could not be rewound: ${dropped.error.message}`));
 	const storeFile = replay?.file ?? checkpoint?.storeFile;
 	if (storeFile === undefined) return err(new MoveError("no_checkpoint", "there is no store to restore"));
+	const shipStarted = performance.now();
+	let treeBytes = 0;
 	const file = await moveFile(vault.box, storeFile, place.box, place.store, seal, undefined, context);
 	if (!file.ok)
 		return err(new MoveError("ship", `the restored store did not reach the new box: ${file.error.message}`));
@@ -672,6 +675,7 @@ async function restoreInto(
 		);
 		if (!tree.ok)
 			return err(new MoveError("ship", `the checkpoint's files did not reach the new box: ${tree.error.message}`));
+		treeBytes = tree.value.bytes;
 	} else {
 		// From the log alone no file comes back: the workspace is an empty directory.
 		// The directory is made if it is not there, and must hold nothing: the notice says no file came back.
@@ -693,13 +697,16 @@ async function restoreInto(
 			);
 		}
 	}
+	const shipMs = Math.round(performance.now() - shipStarted);
 	const host = options.host ?? "host";
 	const holder = { environment: place.environment, provider: place.provider, box: place.box.id, host };
+	const takeStarted = performance.now();
 	const taken = await ownership.take(session, holder, record.epoch, { move: id, seal }, context);
 	if (!taken.ok) {
 		const code = taken.error.code === "lost" ? "lost" : "take";
 		return err(new MoveError(code, `the lease was not taken: ${taken.error.message}`));
 	}
+	const takeMs = Math.round(performance.now() - takeStarted);
 	const epoch = taken.value.epoch;
 	const started = await options.start(place, epoch, context);
 	if (!started.ok) return started;
@@ -717,6 +724,19 @@ async function restoreInto(
 				kind: "restore",
 				head: seal.head,
 				...(replay === undefined ? {} : { replayed: { from: replay.from, to: replay.to } }),
+				// The restore's durable record: from the lost place to this one, and the checkpoint it came from, if any.
+				record: {
+					from: whereOf(gone),
+					to: whereOf(place),
+					drainMs: null,
+					shipMs,
+					takeMs,
+					bytes: seal.bytes + treeBytes,
+					stopped: [],
+					...(checkpoint === undefined
+						? {}
+						: { checkpoint: { ...checkpoint.seal, at: new Date(checkpoint.at).toISOString() } }),
+				},
 			},
 			...(options.env === undefined ? {} : { env: options.env }),
 		},
@@ -848,6 +868,17 @@ export async function recoverHome(
 							notice,
 							kind: lease.move.startsWith("restore-") ? "restore" : "move",
 							...(lease.seal === undefined ? {} : { head: lease.seal.head }),
+							// A target that took the session and never opened writes the record from here: the host knows only
+							// where the lease puts it. A target that wrote it keeps its own.
+							record: {
+								from: null,
+								to: whereOf(place),
+								drainMs: null,
+								shipMs: null,
+								takeMs: null,
+								bytes: null,
+								stopped: [],
+							},
 						},
 					}),
 			...(options.env === undefined ? {} : { env: options.env }),
