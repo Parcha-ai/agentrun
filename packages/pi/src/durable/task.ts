@@ -211,10 +211,19 @@ export function createWorkflowExtension(host: WorkflowTaskHost): {
           try { await runtime.commit(() => ({ status: "terminal", outcome }), context); }
           catch (error) { if (!runtime.signal.aborted) uncommittedOf(key, task.id).fail(cause ?? error); throw error; }
         };
+        /** The invocation ends when the host closes the Harness, and the task stays pending. */
+        const untilClosed = () => new Promise<void>((resolve) => { if (runtime.signal.aborted) resolve(); else runtime.signal.addEventListener("abort", () => resolve(), { once: true }); });
         let opened: Awaited<ReturnType<typeof open>>;
         try { opened = await open(task, runtime, context); }
         catch (error) {
           if (runtime.signal.aborted) throw error;
+          // A run a later build stored in a schema this build does not know is left for that build: the task stays
+          // pending, and this process's waiters get the refusal. Any other failure to open ends the run.
+          if (codeOf(error) === "RECOVERY_SCHEMA_NEWER") {
+            uncommittedOf(key, task.id).fail(error);
+            await untilClosed();
+            throw runtime.signal.reason;
+          }
           await commitEnd(failed(error), error);
           return;
         }

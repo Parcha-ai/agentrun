@@ -1,0 +1,8 @@
+{
+  "about": "gen 1's submit (call-0) is cut; in gen 2 a different run (call-1) tells it and is cut before its answer was saved, its entry carrying call-0 as prior; gen 3 tells call-0, then call-1. Two keys, each dispatched once",
+  "expected": {
+    "repeated": 0,
+    "askedTwice": 0,
+    "possible": 0
+  }
+}
