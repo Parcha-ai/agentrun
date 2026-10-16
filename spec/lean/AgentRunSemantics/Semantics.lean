@@ -140,8 +140,8 @@ structure Oracle where
   /-- Whether the host declared a failure its adapter raised an item failure (a string `code` and
   `itemFailure: true`, or the interpreter's own verification failure), and its code. -/
   declared : Err → Option String
-  /-- A collected failure's message, as the interpreter renders the error (at most 300 characters). -/
-  message : Err → String
+  /-- A collected failure's message for item `i`, as the interpreter renders the error (at most 300 characters). -/
+  message : Nat → Err → String
   /-- Which of several concurrent failures (map items, parallel branches) is reported. -/
   choose : List Outcome → Outcome
   choose_mem : ∀ l, l ≠ [] → choose l ∈ l
@@ -464,7 +464,7 @@ def failureRows (O : Oracle) : Nat → List (Outcome × Option Value) → List V
   | _, [] => []
   | i, (o, _) :: rest => (match o with
       | .failed e => (match itemCode O e with
-        | some c => [Value.obj [("item_index", .num i), ("label", .str e.label), ("code", .str c), ("message", .str (O.message e))]]
+        | some c => [Value.obj [("item_index", .num i), ("label", .str e.label), ("code", .str c), ("message", .str (O.message i e))]]
         | none => [])
       | _ => []) ++ failureRows O (i + 1) rest
 

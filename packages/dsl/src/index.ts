@@ -9,6 +9,8 @@ export {
   WorkflowVerificationError, WorkflowDecisionRecordError, EffectFailure, EffectDeadlineExceededError,
   EffectOutcomeUnknownError, EscalationSignal, routesByValue, isItemFailure,
 } from "./workflow.js";
+export { defineJob } from "./job.js";
+export type { Job } from "./job.js";
 export { DECISION_RECEIPT_VERSION, rederiveDecision } from "./decision-receipts.js";
 export type { DecisionKind, DecisionReceipt, DecisionRule } from "./decision-receipts.js";
 export type {
@@ -17,7 +19,7 @@ export type {
   LlmNode, JudgeNode, PickNode, SiftNode, RouteNode, RouteByJudgmentNode, RouteByValueNode, WorkflowInvocation,
   ArtifactNode, ArtifactState, CallNode, CodeNode, CallRetryClass, EffectFailureCode, CallPredicate, PollClause,
   ModelTier, AgentContext, WorkflowEffort, WorkflowThinking, VerifyClause,
-  AskPredicate, MechanicalPredicate, Predicate,
+  AskPredicate, MechanicalPredicate, Predicate, ValidationCode, ValidationIssue,
 } from "./workflow.js";
 export { dryRunWorkflow, synthesizeInstance } from "./dry-run.js";
 export type { DryRunOptions, DryRunResult } from "./dry-run.js";

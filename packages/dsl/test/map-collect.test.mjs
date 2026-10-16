@@ -70,6 +70,24 @@ test('onItemFailure is "stop" or "collect"; failedAs is required with "collect",
   assert.match(validateWorkflow(parallel).errors.join('\n'), /both write state\.failed/);
 });
 
+test('each collect rule reports its rule code at the map', () => {
+  const issues = (map) => {
+    const checked = validateWorkflow(flow(map));
+    assert.equal(checked.ok, false);
+    assert.deepEqual(checked.issues.map((issue) => issue.message), checked.errors);
+    return checked.issues.filter((issue) => /onItemFailure|failedAs/.test(issue.message)).map(({ path, code }) => [path, code]);
+  };
+  const map = '/root/steps/0';
+  assert.deepEqual(issues({ onItemFailure: 'skip', body: priced }), [[map, 'NODE_FIELD_INVALID']]);
+  assert.deepEqual(issues({ onItemFailure: 'collect', body: priced }), [[map, 'NODE_FIELD_INVALID']]);
+  assert.deepEqual(issues(collect(priced, { failedAs: '$failed' })), [[map, 'STATE_KEY_RESERVED']]);
+  assert.deepEqual(issues(collect(priced, { failedAs: 'found' })), [[map, 'NODE_FIELD_INVALID']]);
+  // A key that belongs to the other form of the node, as `otherwise` on a route Jev chooses.
+  assert.deepEqual(issues({ failedAs: 'failed', body: priced }), [[map, 'NODE_KEY_UNKNOWN']]);
+  // A field of the wrong JSON type is the shape check's, at the field itself.
+  assert.deepEqual(issues({ onItemFailure: 3, body: priced }), [[`${map}/onItemFailure`, 'SHAPE_INVALID']]);
+});
+
 test('a collecting map keeps as aligned with its items: a later node zips them, and the failed item\'s row holds null', async () => {
   const events = [];
   const workflow = flow(collect(priced), [{ node: 'code', label: 'zip', code: 's => ({ rows: s.items.map((item, i) => ({ id: item.id, result: s.found[i] })) })' }]);
@@ -123,6 +141,25 @@ test('a failure inside a child workflow names the child\'s node under the invoca
   const run = await runWorkflow(flow(collect({ node: 'workflow', label: 'child', workflow: child, input: { item: '{item}' }, out: 'Any', as: 'sub' }, { resultPath: 'sub' })), { items: ITEMS }, {});
   assert.deepEqual(run.state.failed.map((row) => [row.item_index, row.label, row.code]), [[2, 'child/price', 'code_transform_failed']]);
   assert.deepEqual(run.state.found[3], quote('d', 4));
+});
+
+test('an item failure in one branch of an item never hides a failure the map must stop on in another branch', async () => {
+  // The code branch fails first with an item failure; the agent branch, already running, then fails with an undeclared
+  // host error. The parallel reports one failure: it must be the one the map stops on.
+  const body = { node: 'parallel', label: 'both', branches: [
+    { node: 'code', label: 'early', as: 'early', code: 's => { throw new Error("typed, and first"); }' },
+    { node: 'agent', label: 'late', instructions: 'Judge it.', out: 'Verdict', as: 'verdict' },
+  ] };
+  await assert.rejects(runWorkflow(flow(collect(body)), { items: ITEMS.slice(0, 1) }, {
+    runNode: async () => { await new Promise((resolve) => setTimeout(resolve, 20)); throw new Error('an undeclared host error, after the typed one'); },
+  }), /an undeclared host error/);
+});
+
+test('a structural node in the item names itself in the row: a nested map whose list is not one', async () => {
+  const body = { node: 'map', label: 'inner', itemsPath: 'item.parts', as: 'scored', body: { node: 'code', label: 'score', as: 'v', code: 's => s.item * 2' } };
+  const run = await runWorkflow(flow(collect(body, { resultPath: 'scored' })), { items: [{ id: 'a', parts: [1, 2] }, { id: 'b', parts: 'none' }] }, {});
+  assert.deepEqual(run.state.found, [[2, 4], null]);
+  assert.deepEqual(run.state.failed.map((row) => [row.item_index, row.label, row.code]), [[1, 'inner', 'state_invalid']]);
 });
 
 test('never collected: an unknown outcome, an undeclared host error, an escalation and an abort stop a collecting map', async () => {

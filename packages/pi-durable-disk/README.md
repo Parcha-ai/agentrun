@@ -381,17 +381,28 @@ Revoking a holder that is alive is safe: its next fsync fails and it exits 75, a
 reaches the new owner. No wait follows a revoke, because the fence is the server's, not a clock. Two supervisors racing
 on one run are safe: the mount admits one claimant and the other instance exits 76.
 
-A host driver is three calls, and nothing else in the package knows which compute runs an instance:
+A host driver is three calls, plus an optional fourth, and nothing else in the package knows which compute runs an instance:
 
 ```ts
 export interface HostDriver {
   // The handle is JSON; the instance writes it into run.json. `attempt` (the generation the instance will open) lets a
-  // driver key a start, so a retry of the same attempt finds the instance it already started.
-  start(ref: RunRef, mountToken: string, attempt?: { attempt: number }): Promise<HostHandle>;
+  // driver key a start, so a retry of the same attempt finds the instance it already started. `env` is what this start
+  // adds to the instance's environment, over the driver's own `env`; PATH and PDA_HOLDER are the driver's (refused).
+  start(ref: RunRef, mountToken: string, attempt?: { attempt: number; env?: Record<string, string> }): Promise<HostHandle>;
   status(handle: HostHandle): Promise<"running" | "stopped" | "failed" | "gone" | "unknown">;
   stop(handle: HostHandle): Promise<void>;
+  // Optional: take the instance away as a crash would. No drain, no release, nothing cleaned.
+  kill?(handle: HostHandle): Promise<void>;
+  readonly kills?: "process" | "box";
 }
 ```
+
+`kill` leaves the run's claim the way a crash leaves it, and the supervisor's next pass decides what follows. `kills` says
+what a kill takes. `localHost` kills `process`: `systemctl kill --signal=SIGKILL --kill-whom=all` on the unit, or SIGKILL
+to the child's process group. Its machine stays, and with `restart` on, systemd starts the unit again. `dockerHost` kills
+`box` (`docker kill`; the container stays exited until the next start removes it), and so does `daytonaHost` (the
+sandbox's delete). A handle from another fleet or boot is a no-op, and a kill that fails while the instance still runs
+throws `KILL_FAILED`.
 
 `localHost()` runs instances on this machine as systemd transient units with `KillMode=control-group`, so stopping or
 restarting the unit kills every command the instance started, pi's detached ones included. The unit restarts on failure,
@@ -707,6 +718,14 @@ const run = await openDurableRun({ disk: "local", region: "local", id: "run-1" }
 });
 ```
 
+The run's status is its `run.json`, and `readLocalRunStatus(root)` (the directory `localRun` takes) reads it, read-only and safe beside a live instance, the way `readRunStatus` reads a disk's: the
+same `RunRecord` (`status`, `generation`, `wakeAt`, `holder`, `sealedSeq`, `detail`), `null` when the run has no `run.json`
+yet, and `RunRecordError` (`RUN_JSON_INVALID`) when it is malformed.
+
+```ts
+const status = await readLocalRunStatus("/var/runs/run-1");   // { status: "sleeping", wakeAt: "...", ... } or null
+```
+
 It is for one machine (a laptop, a CI job, a test), and says so: the claim is the directory itself, so nothing but this
 machine's owner lock keeps a second process off the run (a second open while one holds it is refused), and nothing at
 all keeps out a process on another machine that can reach the directory. Its barrier refuses once the run is fenced,
@@ -744,6 +763,39 @@ A local run works on macOS for development, and is weaker there than on Linux in
 `checkpoint_fullfsync` there (SQLite then syncs with `F_FULLFSYNC`), and refuses to open unless they read back. CI runs
 the no-key quickstart and the local run's tests (its command records, `run --dir` and `status --dir`, the lease watchdog,
 the file tools' confinement) on macOS.
+
+### Places: a run a supervisor can kill and bring back
+
+A place is where one run lives and how its instance starts, is killed and comes back, for a supervisor that decides when
+to kill (agentrun's reference demo). Each factory takes its options and returns `(ctx) => Place`; `ctx.paths` is the run's
+id and directory as the supervisor computed them.
+
+- `localPlace({ app, root? })` runs `pi-durable-disk run --dir <root> --id <id> --app <app>` as a child in its own
+  process group, with `{ PATH, ...order.env }` and nothing else of the caller's environment. It needs no disk, no key and
+  no token. A process kill is SIGKILL to the group, and the next runner resumes the run from the directory. A box kill
+  also calls `ctx.destroyBoxes` (a deletion that failed is tried again by the next kill or recover). `release()` kills
+  what still runs, then, under the run's owner lock, ends the commands the run recorded (pi starts each in a process
+  group of its own, which the instance's kill does not reach). While another process holds the run, they are its own,
+  and release leaves them. With `ctx.requestFile`, `signals(attempt)` yields the kill request the runner writes
+  there when it parks at its planned crossing. `return()` ends a pending `next()`.
+- `archilPlace({ disk, region, control, host })` runs the instance on the disk through a host driver set up with the app.
+  - `token(attempt)` mints that attempt's mount token through `control`, and the runner handed that token mounts with it.
+  - A start is `ensureRunning` with the token (`mountToken`) and the order's environment (`StartAttempt.env`).
+  - A kill is the driver's `kill`, and `kills` is the driver's.
+  - A recovery is the takeover: the killed holder's delegations are revoked whatever its lease says, and the next
+    instance starts. It reports `revoked` and `ms`. A newer incarnation than the one the place killed (another
+    supervisor's) gets the usual lease and start-grace checks instead, so a live one is `HELD`, not revoked.
+  - `status()` reads `run.json` over S3 and lists the run's delegations.
+  - It has no `signals` yet: a box can't write the supervisor's request file, so a kill at a named crossing on a box
+    waits for the channel over the run's disk.
+  - `release()` stops every instance the place started and removes every token it minted. What it could not stop or
+    remove, it reports (`RELEASE_FAILED`) and tries again on the next `release()`. The run's directory stays
+    (`deleteRunTree`).
+
+A runner's `exited` says how it ended. Locally that is the exit code or signal, and the outcome is the instance's
+`{"outcome":{...}}` line on stdout. Without that line, or on a disk (a box's stdout is out of reach), the outcome is
+`run.json`: its status and generation, plus `code`, `message`, `record` and `storeSha256` from the detail of the last
+status the app set. So an app that runs on a box and wants its supervisor to have its record puts the record there.
 
 ## Tests
 

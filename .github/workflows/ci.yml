@@ -32,6 +32,8 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run build
       - run: npm run typecheck
+      - name: Demo setup prompts match their specs
+        run: node scripts/check-setup-prompts.mjs
       - run: node scripts/generate-schema.mjs --check
       - run: npm run export:source
       - run: node scripts/check-generated.mjs
@@ -332,8 +334,8 @@ jobs:
     # `packed` puts this tree's package in the line, so it says whether the next release installs; `registry` runs the line
     # as written, so it says whether the published package installs today. Unlike `stranger`, the peers are not pinned to
     # the developed versions. A mode that is not `blocking` reports a failure as a warning on the run and passes, so a
-    # known failure does not turn every pull request red: `registry` until a release whose range accepts pi-durable 1.2
-    # (0.1.0-beta.13) is on npm, since 0.1.0-beta.12 cannot install beside it. Flip it then.
+    # known failure does not turn every pull request red. Both are blocking: 0.1.0-beta.14, whose peer ranges accept pi
+    # below 1.4, installs with the README's own line as written (0.1.0-beta.13, below 1.3, did not once pi 1.3.0 shipped).
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -343,7 +345,7 @@ jobs:
           - mode: packed
             blocking: true
           - mode: registry
-            blocking: false
+            blocking: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

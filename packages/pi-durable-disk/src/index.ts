@@ -7,7 +7,7 @@ export { openDurableRun, RunError, StoreBehindSealError } from "./run.ts";
 export type { BeforeResume, DurableRun, LeaseOptions, OpenDurableRunOptions, OpenRunLeaseOptions, OpenStep, ReleaseStep, RunClaim, RunEnv, RunErrorCode, RunLease, StoreHeadSource, StoreReads } from "./run.ts";
 export { localRun } from "./local-run.ts";
 export type { LocalRun } from "./local-run.ts";
-export { CLAIM_UNMOUNTED, openClaimDir, RunRecordError } from "./status.ts";
+export { CLAIM_UNMOUNTED, openClaimDir, readLocalRunStatus, RunRecordError } from "./status.ts";
 export type { ClaimDir, OpenClaimDirOptions, PersistRecord, RunHolder, RunRecord, RunStatus } from "./status.ts";
 export { ArchilCodingTools, archilEnv, EnvClosedError, EnvError, markReadOnlySafe } from "./env.ts";
 export type { ArchilEnvClaim, ArchilEnvFactory, ArchilEnvOptions, EnvErrorCode } from "./env.ts";
@@ -37,6 +37,10 @@ export type { CreateSandboxBody, DaytonaClient, DaytonaHostErrorCode, DaytonaHos
 // Serve: one HTTP request runs one turn.
 export { requestRun, ServeConfigError, ServeError, serveRun } from "./serve.ts";
 export type { RequestOptions, RunResponse, RunServer, ServeConfigErrorCode, ServeErrorCode, ServeOptions } from "./serve.ts";
+
+// Places: where a run lives for a supervisor that kills it and brings it back (agentrun's reference place seam).
+export { archilPlace, localPlace, PlaceError } from "./place.ts";
+export type { ArchilPlaceOptions, LocalPlaceOptions, Place, PlaceContext, PlaceErrorCode, PlaceExit, PlaceKill, PlaceOutcome, PlacePaths, PlaceRecovery, PlaceRunner, PlaceSignal, PlaceStatus, RunnerOrder } from "./place.ts";
 
 // Parking: an idle run gives its host back.
 export { busyState, drain, leaseParkTarget, watchParking } from "./park.ts";

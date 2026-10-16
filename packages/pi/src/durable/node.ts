@@ -6,7 +6,9 @@
 // finds the same conversation under the same id, the same request id returns the same submission, and pi resumes
 // what was in flight by itself: a turn that committed is never requested again. The node's record is read from the
 // conversation's record document, never from its transcript, and an attempt that already delivered one makes no
-// request at all.
+// request at all. A conversation another task owns is one whose task ended and was replaced by a new task over the
+// same journal (a failed run's next start): pi aborted what was in flight in it when that task ended, so the attempt
+// runs again in a conversation of the task that runs it now, unless the old one already delivered its record.
 import type { Context, JsonValue } from "@earendil-works/chord";
 import {
   configure, defineDocFamily, type AgentChange, type ConversationId, type DocumentReader, type InputSubmissionDraft, type Submission,
@@ -98,24 +100,40 @@ export class NodeBindingMismatch extends Error {
 /** Run one attempt. */
 export async function runNodeAttempt(scope: NodeScope, attempt: NodeAttempt, context: Context): Promise<NodeOutcome> {
   let found: { conversationId: ConversationId; digest: string | null; resumed: boolean; startedMs: number } | undefined;
-  await scope.commit(async (tx) => {
-    const entry = await tx.doc(NodeIndex, attempt.session, null);
-    if (entry.conversation !== null) {
-      found = { conversationId: entry.conversation as unknown as ConversationId, digest: entry.digest, resumed: true, startedMs: entry.startedMs ?? 0 };
-      // An attempt under another binding is refused below, untouched.
-      if (entry.digest === attempt.digest) await attempt.adopt?.(tx, found.conversationId, entry as unknown as Record<string, unknown>);
-      return;
-    }
+  /** The attempt's conversation when another task owns it: that task ended, and this one replaced it. */
+  let orphaned: ConversationId | undefined;
+  /** A new conversation for the attempt, owned by the scope's task, recorded under the attempt's session. */
+  const create = async (tx: Tx, entry: { conversation: number | null; digest: string | null; startedMs: number | null; closed: boolean }) => {
     const conversation = await tx.createConversation({ ownership: scope.owner !== undefined ? { kind: "task", taskId: scope.owner } : { kind: "ownerless" } });
     await configure(tx, conversation.id, attempt.agent);
     await attempt.init?.(tx, conversation.id);
     entry.conversation = Number(conversation.id);
     entry.digest = attempt.digest;
     entry.startedMs = Date.now();
+    entry.closed = false;
     found = { conversationId: conversation.id, digest: attempt.digest, resumed: false, startedMs: entry.startedMs };
+  };
+  await scope.commit(async (tx) => {
+    const entry = await tx.doc(NodeIndex, attempt.session, null);
+    if (entry.conversation !== null) {
+      found = { conversationId: entry.conversation as unknown as ConversationId, digest: entry.digest, resumed: true, startedMs: entry.startedMs ?? 0 };
+      // An attempt under another binding is refused below, untouched.
+      if (entry.digest === attempt.digest) await attempt.adopt?.(tx, found.conversationId, entry as unknown as Record<string, unknown>);
+      if (scope.owner !== undefined && entry.digest === attempt.digest) {
+        const owner = (await tx.conversation(found.conversationId))?.owner?.taskId;
+        if (owner !== undefined && owner !== scope.owner) orphaned = found.conversationId;
+      }
+      return;
+    }
+    await create(tx, entry);
   }, context);
-  const { conversationId, digest, resumed, startedMs } = found!;
-  if (digest !== attempt.digest) throw new NodeBindingMismatch(attempt.session, digest, attempt.digest);
+  if (found!.digest !== attempt.digest) throw new NodeBindingMismatch(attempt.session, found!.digest, attempt.digest);
+  // The replaced task's conversation: its record, when it delivered one, is the node's; otherwise the attempt runs
+  // again in a conversation of this task, never on the request the old task's end aborted.
+  if (orphaned !== undefined && !(await deliveredRecord(scope, orphaned, context))) {
+    await scope.commit(async (tx) => { await create(tx, await tx.doc(NodeIndex, attempt.session, null)); }, context);
+  }
+  const { conversationId, resumed, startedMs } = found!;
   await attempt.onOpen?.({ conversationId, resumed, startedMs });
   // A record the attempt already delivered is the node's record: nothing is requested for it.
   const already = await deliveredRecord(scope, conversationId, context);

@@ -18,13 +18,13 @@ for (const schema of [documentSchema.definitions.Workflow, ...nodeSchemas.values
   diagnosticValidators.set(schema, Compile({ ...schema, definitions: diagnosticDefinitions }));
 }
 const pointer = (key: string) => key.replace(/~/g, "~0").replace(/\//g, "~1");
-function discriminatedErrors(value: unknown): string[] {
-  const errors: string[] = [];
+function discriminatedErrors(value: unknown): ShapeIssue[] {
+  const errors: ShapeIssue[] = [];
   const check = (schema: any, entry: unknown, path: string): void => {
     if (errors.length >= 8) return;
     const validator = diagnosticValidators.get(schema)!;
     if (!validator.Check(entry)) for (const error of validator.Errors(entry)) {
-      errors.push(`workflow${path}${error.instancePath || (path ? "" : "/")}: ${error.message}`);
+      errors.push({ path: `${path}${error.instancePath}`, message: `workflow${path}${error.instancePath || (path ? "" : "/")}: ${error.message}` });
       if (errors.length >= 8) return;
     }
     visit(schema, entry, path);
@@ -51,100 +51,126 @@ function discriminatedErrors(value: unknown): string[] {
   return errors;
 }
 
+/** A shape problem: its message, and a JSON Pointer to the value it is about (to the nearest value the document has, when
+ *  the one the rule names is missing). */
+export type ShapeIssue = { path: string; message: string };
+
+/** The deepest prefix of `path` that names a value in `document`: a rule about a missing key points at its container. */
+function present(document: unknown, path: string): string {
+  let cursor = document;
+  let reached = "";
+  for (const raw of path.split("/").slice(1)) {
+    const key = raw.replace(/~1/g, "/").replace(/~0/g, "~");
+    if (cursor === null || typeof cursor !== "object" || !Object.hasOwn(cursor, key)) break;
+    cursor = (cursor as RecordValue)[key];
+    reached += `/${raw}`;
+  }
+  return reached;
+}
+
 export function workflowShapeErrors(value: unknown, complete = false): string[] {
+  return workflowShapeIssues(value, complete).map(issue => issue.message);
+}
+
+export function workflowShapeIssues(value: unknown, complete = false): ShapeIssue[] {
+  const located = (issues: ShapeIssue[]): ShapeIssue[] => issues.map(issue => ({ path: present(value, issue.path), message: issue.message }));
   if (complete) {
     if (fullValidator.Check(value)) return [];
     const selected = discriminatedErrors(value);
-    if (selected.length) return selected;
-    return [...fullValidator.Errors(value)].slice(0, 8).map(error =>
-      `workflow${error.instancePath || "/"}: ${error.message}`);
+    if (selected.length) return located(selected);
+    return located([...fullValidator.Errors(value)].slice(0, 8).map(error =>
+      ({ path: error.instancePath, message: `workflow${error.instancePath || "/"}: ${error.message}` })));
   }
-  const errors: string[] = [];
-  const fail = (path: string, expected: string) => { errors.push(`${path} must be ${expected}`); };
-  const record = (entry: unknown, path: string): entry is RecordValue => {
+  // A place in the document: the dotted text the messages show, and the JSON Pointer the issue carries.
+  type Loc = { text: string; ptr: string };
+  const at = (loc: Loc, key: string): Loc => ({ text: `${loc.text}.${key}`, ptr: `${loc.ptr}/${pointer(key)}` });
+  const index = (loc: Loc, i: number): Loc => ({ text: `${loc.text}[${i}]`, ptr: `${loc.ptr}/${i}` });
+  const errors: ShapeIssue[] = [];
+  const fail = (loc: Loc, expected: string) => { errors.push({ path: loc.ptr, message: `${loc.text} must be ${expected}` }); };
+  const record = (entry: unknown, loc: Loc): entry is RecordValue => {
     if (isRecord(entry)) return true;
-    fail(path, "an object");
+    fail(loc, "an object");
     return false;
   };
-  const strings = (entry: RecordValue, path: string, keys: string[]) => {
-    for (const key of keys) if (entry[key] !== undefined && typeof entry[key] !== "string") fail(`${path}.${key}`, "a string");
+  const strings = (entry: RecordValue, loc: Loc, keys: string[]) => {
+    for (const key of keys) if (entry[key] !== undefined && typeof entry[key] !== "string") fail(at(loc, key), "a string");
   };
-  const stringList = (entry: unknown, path: string) => {
+  const stringList = (entry: unknown, loc: Loc) => {
     if (entry === undefined) return;
-    if (!Array.isArray(entry)) { fail(path, "an array of strings"); return; }
-    entry.forEach((item, index) => { if (typeof item !== "string") fail(`${path}[${index}]`, "a string"); });
+    if (!Array.isArray(entry)) { fail(loc, "an array of strings"); return; }
+    entry.forEach((item, i) => { if (typeof item !== "string") fail(index(loc, i), "a string"); });
   };
   // Preserve existing diagnostics for missing, non-finite and out-of-range numbers, and
   // primitive strings such as poll.deadline_s="soon". Objects can throw during coercion.
-  const numeric = (entry: RecordValue, path: string, keys: string[]) => {
+  const numeric = (entry: RecordValue, loc: Loc, keys: string[]) => {
     for (const key of keys) {
       const item = entry[key];
-      if (item !== null && item !== undefined && !["number", "string", "boolean"].includes(typeof item)) fail(`${path}.${key}`, "a number");
+      if (item !== null && item !== undefined && !["number", "string", "boolean"].includes(typeof item)) fail(at(loc, key), "a number");
     }
   };
-  const objectField = (entry: RecordValue, path: string, key: string, visit?: (item: RecordValue, path: string) => void) => {
+  const objectField = (entry: RecordValue, loc: Loc, key: string, visit?: (item: RecordValue, loc: Loc) => void) => {
     if (entry[key] === undefined) return;
-    if (record(entry[key], `${path}.${key}`)) visit?.(entry[key], `${path}.${key}`);
+    if (record(entry[key], at(loc, key))) visit?.(entry[key], at(loc, key));
   };
-  const predicate = (entry: RecordValue, path: string) => {
-    strings(entry, path, ["predicate", "path", "key", "instructions"]);
-    numeric(entry, path, ["n", "gte"]);
-    objectField(entry, path, "state");
-    objectField(entry, path, "criteria", (criteria, at) => strings(criteria, at, ["true", "false"]));
+  const predicate = (entry: RecordValue, loc: Loc) => {
+    strings(entry, loc, ["predicate", "path", "key", "instructions"]);
+    numeric(entry, loc, ["n", "gte"]);
+    objectField(entry, loc, "state");
+    objectField(entry, loc, "criteria", (criteria, here) => strings(criteria, here, ["true", "false"]));
   };
-  const node = (entry: unknown, path: string): void => {
+  const node = (entry: unknown, loc: Loc): void => {
     if (entry === undefined) return; // missing bodies already receive semantic diagnostics
-    if (!record(entry, path)) return;
-    strings(entry, path, ["node", "label", "code", "as", "out", "instructions", "itemsPath", "resultPath", "kind", "stage", "summary", "describe", "type", "path", "tool", "command", "via", "where", "effort", "thinking", "tier", "valuePath", "otherwise", "onItemFailure", "failedAs"]);
-    numeric(entry, path, ["maxConcurrency", "maxIters", "expect_iters", "deadline_s"]);
-    for (const key of ["requires", "tools", "produces"]) stringList(entry[key], `${path}.${key}`);
-    if (entry.sopSection !== undefined && typeof entry.sopSection !== "string") stringList(entry.sopSection, `${path}.sopSection`);
-    for (const key of ["state", "args", "input", "env"]) objectField(entry, path, key);
+    if (!record(entry, loc)) return;
+    strings(entry, loc, ["node", "label", "code", "as", "out", "instructions", "itemsPath", "resultPath", "kind", "stage", "summary", "describe", "type", "path", "tool", "command", "via", "where", "effort", "thinking", "tier", "valuePath", "otherwise", "onItemFailure", "failedAs"]);
+    numeric(entry, loc, ["maxConcurrency", "maxIters", "expect_iters", "deadline_s"]);
+    for (const key of ["requires", "tools", "produces"]) stringList(entry[key], at(loc, key));
+    if (entry.sopSection !== undefined && typeof entry.sopSection !== "string") stringList(entry.sopSection, at(loc, "sopSection"));
+    for (const key of ["state", "args", "input", "env"]) objectField(entry, loc, key);
     // Host-owned and opaque: only its container is checked, never its keys or values.
     if (entry.metadata !== undefined && !isRecord(entry.metadata)) {
-      errors.push(`${path} (${typeof entry.label === "string" && entry.label ? entry.label : String(entry.node)}): metadata must be a plain object of host markers`);
+      errors.push({ path: at(loc, "metadata").ptr, message: `${loc.text} (${typeof entry.label === "string" && entry.label ? entry.label : String(entry.node)}): metadata must be a plain object of host markers` });
     }
-    for (const key of ["until", "when"]) objectField(entry, path, key, predicate);
-    objectField(entry, path, "verify", (verify, at) => {
-      strings(verify, at, ["out"]);
-      numeric(verify, at, ["maxDrives"]);
-      objectField(verify, at, "state");
-      objectField(verify, at, "override", (override, here) => numeric(override, here, ["below"]));
+    for (const key of ["until", "when"]) objectField(entry, loc, key, predicate);
+    objectField(entry, loc, "verify", (verify, here) => {
+      strings(verify, here, ["out"]);
+      numeric(verify, here, ["maxDrives"]);
+      objectField(verify, here, "state");
+      objectField(verify, here, "override", (override, inner) => numeric(override, inner, ["below"]));
     });
-    objectField(entry, path, "keep", (keep, at) => { strings(keep, at, ["path"]); numeric(keep, at, ["gte"]); });
-    objectField(entry, path, "unsure", (unsure, at) => { strings(unsure, at, ["branch"]); numeric(unsure, at, ["gte"]); });
-    objectField(entry, path, "retry", (retry, at) => {
-      numeric(retry, at, ["attempts", "backoff_s"]);
-      stringList(retry.on, `${at}.on`);
+    objectField(entry, loc, "keep", (keep, here) => { strings(keep, here, ["path"]); numeric(keep, here, ["gte"]); });
+    objectField(entry, loc, "unsure", (unsure, here) => { strings(unsure, here, ["branch"]); numeric(unsure, here, ["gte"]); });
+    objectField(entry, loc, "retry", (retry, here) => {
+      numeric(retry, here, ["attempts", "backoff_s"]);
+      stringList(retry.on, at(here, "on"));
     });
-    objectField(entry, path, "poll", (poll, at) => {
-      numeric(poll, at, ["interval_s", "deadline_s"]);
-      for (const key of ["until", "fail_when"]) objectField(poll, at, key, predicate);
+    objectField(entry, loc, "poll", (poll, here) => {
+      numeric(poll, here, ["interval_s", "deadline_s"]);
+      for (const key of ["until", "fail_when"]) objectField(poll, here, key, predicate);
     });
     if (entry.node === "chain" || entry.node === "parallel") {
       const key = entry.node === "chain" ? "steps" : "branches";
       if (entry[key] !== undefined) {
-        if (!Array.isArray(entry[key])) fail(`${path}.${key}`, "an array of nodes");
-        else entry[key].forEach((child, index) => node(child, `${path}.${key}[${index}]`));
+        if (!Array.isArray(entry[key])) fail(at(loc, key), "an array of nodes");
+        else entry[key].forEach((child, i) => node(child, index(at(loc, key), i)));
       }
     }
-    if (entry.node === "map" || entry.node === "loop") node(entry.body, `${path}.body`);
-    if (entry.node === "route") objectField(entry, path, "branches", (branches, at) => {
-      for (const [name, branch] of Object.entries(branches)) if (record(branch, `${at}.${name}`)) {
-        strings(branch, `${at}.${name}`, ["criteria"]);
-        node(branch.body, `${at}.${name}.body`);
+    if (entry.node === "map" || entry.node === "loop") node(entry.body, at(loc, "body"));
+    if (entry.node === "route") objectField(entry, loc, "branches", (branches, here) => {
+      for (const [name, branch] of Object.entries(branches)) if (record(branch, at(here, name))) {
+        strings(branch, at(here, name), ["criteria"]);
+        node(branch.body, at(at(here, name), "body"));
       }
     });
-    if (entry.node === "workflow") workflow(entry.workflow, `${path}.workflow`);
+    if (entry.node === "workflow") workflow(entry.workflow, at(loc, "workflow"));
   };
-  const workflow = (entry: unknown, path: string): void => {
-    if (!record(entry, path)) return;
-    strings(entry, path, ["name"]);
-    record(entry.schemas, `${path}.schemas`);
-    objectField(entry, path, "input", (input, at) => strings(input, at, ["schemaId"]));
-    if (record(entry.output, `${path}.output`)) strings(entry.output, `${path}.output`, ["schemaId", "path"]);
-    if (record(entry.root, `${path}.root`)) node(entry.root, `${path}.root`);
+  const workflow = (entry: unknown, loc: Loc): void => {
+    if (!record(entry, loc)) return;
+    strings(entry, loc, ["name"]);
+    record(entry.schemas, at(loc, "schemas"));
+    objectField(entry, loc, "input", (input, here) => strings(input, here, ["schemaId"]));
+    if (record(entry.output, at(loc, "output"))) strings(entry.output, at(loc, "output"), ["schemaId", "path"]);
+    if (record(entry.root, at(loc, "root"))) node(entry.root, at(loc, "root"));
   };
-  workflow(value, "workflow");
-  return errors.slice(0, 8);
+  workflow(value, { text: "workflow", ptr: "" });
+  return located(errors.slice(0, 8));
 }
