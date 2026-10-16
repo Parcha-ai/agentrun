@@ -764,6 +764,48 @@ A local run works on macOS for development, and is weaker there than on Linux in
 the no-key quickstart, the local run's tests (its command records, `run --dir` and `status --dir`, the lease watchdog,
 the file tools' confinement) and the keyless examples on macOS.
 
+### A short claim on any path, and a read of what it released
+
+`withClaim` holds one path of a disk exclusively for a moment, outside any run: pi-durable-agent carries an agent's home
+(`agent/agent.sqlite`) back at a run's end this way. `readReleased` reads a file such a claim released over the S3 API,
+with no mount, so a reader never blocks a writer. Both are supervisor side: they take the `control` of
+`archilControl({ apiKey, disk, region })`.
+
+```ts
+await withClaim({ control, disk: "dsk-...", region: "aws-us-east-1", path: "agent" }, async (held) => {
+  const db = new DatabaseSync(join(held.root, "agent.sqlite"));
+  db.exec("INSERT INTO runs (id) VALUES ('job-1'); PRAGMA wal_checkpoint(TRUNCATE)");
+  db.close();
+});
+const store = await readReleased({ control, path: "agent" }, "agent.sqlite", { sqlite: true }); // null: none yet
+```
+
+A claim is one exclusive mount, about 0.4 to 1 s with its release, so it is for a run's end, never a turn.
+- **Exclusive by the mount.** Archil refuses a second client's mount of the path, an ancestor or a descendant. The call
+  mounts at a fresh `<mountRoot>/runs/<pid>-<uuid>` (default `/mnt/archil/.claims`; the shape `archil-scoped`'s cleanup
+  takes on a host that cannot unmount) and never shares a mount. Archil mounts no path whose directory is missing, so it
+  first makes the path's directories the disk lacks, over S3, as the calling process's own (0700; `owner` sets them). It writes
+  `.claim` with its deadline (`holdMs`, default 60 s), runs `fn`, then barriers, unmounts and gives its mount token back,
+  whether `fn` resolved or threw.
+- **Lost holders are revoked first.** A holder whose client is gone (orphaned) is revoked before the mount, and so is a
+  holder of exactly the path whose `.claim` names a deadline that has passed and stays the same for 3 s (a holder that
+  just mounted rewrites it at once; a holder of a path above or below is never revoked by this path's `.claim`). A live holder within its deadline is waited for (`waitMs`, default 30 s), never
+  revoked. A holder revoked while still alive fails its next fsync, so its commit rolls back and its own call is FENCED:
+  the deadline never decides what is durable, the fence does.
+- **What it refuses.** A path that is not relative and of safe segments, or that is under `runs/` (a run's own) or
+  `.archil/`, is `ClaimError` `INVALID_ARGUMENT`, before any call. A live holder after `waitMs` is `HeldError`
+  `CLAIM_HELD` (exit 76). The control API failing, or a delegation with no path it cannot attribute, is
+  `CONTROL_API_FAILED`. A claim revoked from under `fn` is `FencedError` (exit 75), and `fn`'s writes are then not
+  durable.
+- **`CLAIM_HELD` is retryable.** The path is not released yet: retry within `waitMs`, and never fall back to an older
+  release.
+
+`readReleased` returns the bytes only when the read is of a released file. Nothing holds the path (or an ancestor or a
+descendant) before or after the read, and the object is unchanged across it (its etag, else its size and time). For
+SQLite (`sqlite: true`), its `-wal` must also be absent or empty, so its writer checkpointed with `TRUNCATE` and closed. A
+held path is `CLAIM_HELD`, retryable as above, and a WAL with content is `NOT_RELEASED`. A file that changed during every
+one of `attempts` reads (default 3) is `CLAIM_HELD`. Open the bytes as a local file, read-only (`?immutable=1`).
+
 ### Places: a run a supervisor can kill and bring back
 
 A place is where one run lives and how its instance starts, is killed and comes back, for a supervisor that decides when
@@ -777,7 +819,7 @@ id and directory as the supervisor computed them.
   what still runs, then, under the run's owner lock, ends the commands the run recorded (pi starts each in a process
   group of its own, which the instance's kill does not reach). While another process holds the run, they are its own,
   and release leaves them. With `ctx.requestFile`, `signals(attempt)` yields the kill request the runner writes
-  there when it parks at its planned crossing. `return()` ends a pending `next()`.
+  there when it parks at its planned crossing, and `requestFile` is that same file. `return()` ends a pending `next()`.
 - `archilPlace({ disk, region, control, host })` runs the instance on the disk through a host driver set up with the app.
   - `token(attempt)` mints that attempt's mount token through `control`, and the runner handed that token mounts with it.
   - A start is `ensureRunning` with the token (`mountToken`) and the order's environment (`StartAttempt.env`).
@@ -786,8 +828,18 @@ id and directory as the supervisor computed them.
     instance starts. It reports `revoked` and `ms`. A newer incarnation than the one the place killed (another
     supervisor's) gets the usual lease and start-grace checks instead, so a live one is `HELD`, not revoked.
   - `status()` reads `run.json` over S3 and lists the run's delegations.
-  - It has no `signals` yet: a box can't write the supervisor's request file, so a kill at a named crossing on a box
-    waits for the channel over the run's disk.
+  - `requestFile(attempt)` is `<root>/signals/kill-<attempt>.json`, in the run's directory and outside `work/`, and
+    `signals(attempt)` reads `runs/<id>/signals/kill-<attempt>.json` over S3 every 500 ms (`signalPollMs`). A runner on
+    a box of its own can't reach the supervisor's files, so its request travels through the disk. The runner must write
+    it durably for S3 to see it: a temporary file, fsync, rename, fsync of the directory. A missing object is a request
+    not written yet; any other read failure is retried. Once reads have failed for `signalFailMs` (60 s) without a
+    break, the iterator yields one `{ kind: "signals-failed", code, message }` and ends, so a parked runner never waits
+    with no word of why. `code` is the failing read's own error code when it has one (`CONTROL_API_FAILED` for a read
+    that timed out), else `SIGNALS_FAILED`. The iterator never rejects.
+  - A request names `point` and `n`, and every other field it carries stays in the signal's `crossing`, except the
+    per-attempt nonce the supervisor put in the order's env. That one is lifted to the signal's own `nonce` (when it is a
+    string), where the supervisor reads it for its check, as from the local place. The place's token never goes into a
+    request: on a disk it is the mount token, and the app never holds it.
   - `release()` stops every instance the place started and removes every token it minted. What it could not stop or
     remove, it reports (`RELEASE_FAILED`) and tries again on the next `release()`. The run's directory stays
     (`deleteRunTree`).

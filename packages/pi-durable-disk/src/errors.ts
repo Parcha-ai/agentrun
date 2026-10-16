@@ -52,7 +52,8 @@ export type ClaimErrorCode =
   | "UNMOUNT_FAILED"
   | "DEAD_MOUNT_CLEANUP_FAILED"
   | "CLAIM_RELEASED"
-  | "CONTROL_API_FAILED";
+  | "CONTROL_API_FAILED"
+  | "NOT_RELEASED";
 
 /** Any other claim failure (bad input, a refused or unverifiable mount, a CLI or control API failure). Exit 1. */
 export class ClaimError extends PdaError {
