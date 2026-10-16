@@ -1343,7 +1343,7 @@ test('a blob read while it is being written is absent or whole (written to a tem
   const seen = { temporary: 0, whole: 0, absent: 0, torn: [] };
   while (child.exitCode === null && child.signalCode === null) {
     const names = existsSync(blobs) ? readdirSync(blobs) : [];
-    if (names.some((name) => /^\..*\.tmp-\d+$/.test(name))) seen.temporary += 1;
+    if ((existsSync(join(tmp, '.spool')) ? readdirSync(join(tmp, '.spool')) : []).some((name) => /^blob-.*\.tmp-\d+$/.test(name))) seen.temporary += 1;
     if (names.includes(finalName)) {
       const size = statSync(join(blobs, finalName)).size;
       if (size === bytes) seen.whole += 1; else seen.torn.push(size);
@@ -1352,31 +1352,16 @@ test('a blob read while it is being written is absent or whole (written to a tem
   }
   await exited;
   assert.deepEqual(seen.torn, [], 'the blob was never seen half written');
-  assert.ok(seen.temporary > 0, 'it was written under a temporary name first');
+  assert.ok(seen.temporary > 0, 'it was written under a temporary name in .spool/ first');
   assert.equal(statSync(join(blobs, finalName)).size, bytes);
-  assert.deepEqual(readdirSync(blobs), [finalName], 'no temporary file is left');
+  assert.deepEqual(readdirSync(blobs), [finalName], 'blobs/ holds only the whole blob');
+  assert.deepEqual(readdirSync(join(tmp, '.spool')).filter((name) => name.startsWith('blob-')), [], 'no temporary file is left');
   assert.equal(createHash('sha256').update(readFileSync(join(blobs, finalName))).digest('hex'), sha, 'whole, and named by its own hash');
   // Already there: left alone.
-  const { keepBlob, TEMP_BLOB } = await import('./reference/record.ts');
+  const { keepBlob } = await import('./reference/record.ts');
   const before = statSync(join(blobs, finalName)).mtimeMs;
   assert.equal(keepBlob(tmp, Buffer.alloc(bytes, 7), 'bin'), sha);
   assert.equal(statSync(join(blobs, finalName)).mtimeMs, before);
-  // A temporary name is skipped by the validator, the gate and the scan.
-  const recording = join(tmp, 'rec');
-  mkdirSync(join(recording, 'blobs'), { recursive: true });
-  const lone = createHash('sha256').update('x').digest('hex');
-  writeFileSync(join(recording, 'blobs', `.${lone}.txt.tmp-123`), 'half of a blob');
-  assert.ok(TEMP_BLOB.test(`.${lone}.txt.tmp-123`) && !TEMP_BLOB.test(`${lone}.txt`));
-  const { scanRecording } = await import('./reference/secrets.ts');
-  assert.doesNotThrow(() => scanRecording(recording, [{ key: 'K', value: 'half of a blob' }]), 'the scan skips a blob still being written');
-  const { validateRecording } = await import('../scripts/recording/validate.mjs');
-  assert.ok(!validateRecording(recording).some((problem) => /tmp-/.test(JSON.stringify(problem))), 'the validator does not name it');
-  const dist = join(tmp, 'dist');
-  mkdirSync(join(dist, 'recordings'), { recursive: true });
-  cpSync(recording, join(dist, 'recordings', 'rec'), { recursive: true });
-  writeFileSync(join(dist, 'gallery.js'), 'window.AGENTRUN_GALLERY = [{"id":"rec"}];\n');
-  const { gateProblems } = await import('../scripts/recording/gate.mjs');
-  assert.ok(!gateProblems(dist).some((problem) => /tmp-/.test(problem.path)), 'the gate does not name it');
 });
 
 // ---- browser: false ----------------------------------------------------------------------------------------------------------------------------
