@@ -590,11 +590,15 @@ It makes the box, and
 - `signals(attempt)` reads the runner's kill request from `requestFile(attempt)` in the box, with the nonce it wrote,
   and passes on the transport's crossings; its iterator's `return()` ends a pending `next()`. `status()` is the run's
   record: `run`, the epoch as `generation`, the box in `holder.host`, the home's state, and `sealedSeq` when sealed.
-- `carry` names the host paths an order's environment holds that the runner reads or writes: each is given a path in
-  the box instead. A `file` comes back whole when the runner exits. A `dir` takes its `in` files into the box before
-  each runner starts, and brings back the files under its `once` directories (each once, by a temporary name, then
-  renamed) and then the bytes added to the files under its `append` directories, every `followMs` while the runner runs
-  and when it exits, before `exited` resolves.
+- `carry` names host files an order's environment holds that the runner writes (a crossings log): each is given a path
+  in the box, and the file comes back whole when the runner exits.
+- `recording` names the order's recording directory. The runner writes the recording in `recordHome.dir(attempt)` in
+  the box, and the supervisor brings it home with `recordHome.bringHome(into, { final })`: the blobs not yet home
+  (hash-checked against their names, written to a temporary name, synced, renamed), then the new bytes of every
+  `.spool/*.jsonl` up to its last whole line. It throws an error with a `code`: `BOX_GONE` (the box the runner ran in is
+  gone), `CARRY_FAILED` (a read failed in a box that is still there), `BLOB_MISMATCH` (a blob whose bytes are not its
+  name: the rest comes home first). `clockSkewMs` is how far the box's clock may be from the host's, measured when the
+  box is made.
 - `release()` closes the link and destroys every box the place made.
 
 ## Home: a program kept alive in a box

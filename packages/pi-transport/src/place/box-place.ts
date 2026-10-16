@@ -1,4 +1,5 @@
-import { appendFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { appendFile, mkdir, open, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join, posix } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -52,22 +53,25 @@ export type PlaceSignal = {
 
 export type KillKind = "process" | "box";
 
+/** Why a recording's files did not all come home. `BOX_GONE`: the box the runner ran in is gone. `CARRY_FAILED`: a read in a box that is still there failed (try again). `BLOB_MISMATCH`: a blob's bytes do not hash to its name; it was not brought home, the rest was. */
+export class RecordHomeError extends Error {
+	public code: "BOX_GONE" | "CARRY_FAILED" | "BLOB_MISMATCH";
+
+	constructor(code: RecordHomeError["code"], message: string) {
+		super(message.slice(0, 240));
+		this.name = "RecordHomeError";
+		this.code = code;
+	}
+}
+
 /**
- * A host path an order's environment names, which the runner in the box reads or writes. The place gives the runner a
- * path in the box instead, and carries the files across. `file`: written by the runner, copied back whole when it
- * exits. `dir`: `in` files go into the box before each runner starts; the files under `once` directories come back once
- * each (by name, written whole under a temporary name, then renamed), then the files under `append` directories come
- * back as they grow (new bytes only), while the runner runs and when it exits. Paths are relative to the directory.
+ * A recording the runner writes in the box, which comes home by the supervisor's calls: `dir(attempt)` is the directory
+ * attempt `attempt` writes it in, and `bringHome(into)` brings what is new to the host's recording directory `into`.
  */
-export type CarriedPath =
-	| { readonly env: string; readonly kind: "file" }
-	| {
-			readonly env: string;
-			readonly kind: "dir";
-			readonly in?: readonly string[];
-			readonly once?: readonly string[];
-			readonly append?: readonly string[];
-	  };
+export type RecordHome = {
+	dir(attempt: number): string;
+	bringHome(into: string, options?: { final?: boolean }): Promise<void>;
+};
 
 export type BoxPlaceOptions = {
 	/** The session: the run's id. */
@@ -91,7 +95,17 @@ export type BoxPlaceOptions = {
 	readonly host?: string;
 	/** What a session restarted after a kill is told. */
 	readonly notice?: string;
-	readonly carry?: readonly CarriedPath[];
+	/**
+	 * The names in an order's environment of host files the runner writes (a crossings log): the runner is given a path
+	 * in the box instead, and the file comes back whole when the runner exits.
+	 */
+	readonly carry?: readonly string[];
+	/**
+	 * The name in an order's environment of the host's recording directory. The runner is given `recordHome.dir(attempt)`
+	 * instead (the recording's clock comes in the order's own environment), and the supervisor brings the recording home
+	 * with `recordHome.bringHome`: every `.spool/*.jsonl` up to its last whole line, the blobs before them.
+	 */
+	readonly recording?: string;
 	readonly checkpoint?: {
 		readonly drain?: DrainOptions;
 		readonly holdMs?: number;
@@ -102,8 +116,6 @@ export type BoxPlaceOptions = {
 		/** The wait between those tries. Default 500 ms. */
 		readonly waitMs?: number;
 	};
-	/** How often a running runner's carried files come back. Default 2 s; 0: only when it exits. */
-	readonly followMs?: number;
 	/** How often a runner's kill request is looked for in the box. Default 100 ms. */
 	readonly pollMs?: number;
 };
@@ -131,6 +143,10 @@ export type BoxPlace = {
 	release(): Promise<void>;
 	/** What the checkpoints of this place did. */
 	readonly stats: CheckpointStats;
+	/** With `recording`: the recording's way home. */
+	readonly recordHome?: RecordHome;
+	/** How far the box's clock may be from the host's, in ms: measured when the box is made. */
+	readonly clockSkewMs: number;
 };
 
 const DEFAULT_NOTICE =
@@ -177,6 +193,29 @@ async function sizeHere(path: string): Promise<number | undefined> {
 	}
 }
 
+/** How far `box`'s clock is from this machine's at most, in ms: one round trip to its node, less half the trip. */
+async function skewOf(box: Box): Promise<number> {
+	const before = Date.now();
+	const said = await output(box, ["node", "-e", "process.stdout.write(String(Date.now()))"]);
+	const after = Date.now();
+	const there = Number(new TextDecoder().decode(said ?? new Uint8Array()));
+	if (!Number.isFinite(there) || there <= 0) return 0;
+	return Math.max(0, Math.round(Math.abs(there - (before + after) / 2) - (after - before) / 2));
+}
+
+/** Write `bytes` whole under a temporary name in its directory, sync it, and rename it into place. */
+async function writeWhole(path: string, bytes: Uint8Array): Promise<void> {
+	const temp = join(dirname(path), `.${path.slice(dirname(path).length + 1)}.tmp-${process.pid}`);
+	const file = await open(temp, "w");
+	try {
+		await file.writeFile(bytes);
+		await file.sync();
+	} finally {
+		await file.close();
+	}
+	await rename(temp, path);
+}
+
 /**
  * Make a session's place in a box: the box is made now, and the session's lease is taken when its first runner starts.
  * The place starts pi-transport's runner in the box (`boxRunner`), kills a runner by its process or by its box,
@@ -191,6 +230,7 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 	const boxes: Box[] = [made.value];
 	let box = made.value;
 	let paths = pathsIn(box, session);
+	let clockSkewMs = await skewOf(box);
 	const homePlace = (): HomePlace => ({
 		environment,
 		provider: options.provider.name,
@@ -213,91 +253,121 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 		queues.set(attempt, queue);
 	};
 
+	// Each attempt's recording directory: where it is, in which box, and the host's directory its clock came from.
+	const recordings = new Map<number, { dir: string; into: string; box?: Box }>();
+	// How many bytes of each spool file are home, by attempt and name.
+	const spooled = new Map<string, number>();
+	const recordDir = (n: number) => recordings.get(n)?.dir ?? posix.join(paths.root, `record-${n}`);
+
 	/** The order's environment with every carried host path made a path in the box. */
-	const inBox = (order: RunnerOrder): { env: Record<string, string>; carried: Map<CarriedPath, string> } => {
+	const inBox = (order: RunnerOrder, root: string): { env: Record<string, string>; carried: Map<string, string> } => {
 		const env = { ...order.env };
-		const carried = new Map<CarriedPath, string>();
-		for (const path of options.carry ?? []) {
-			const there = env[path.env];
+		const carried = new Map<string, string>();
+		for (const name of options.carry ?? []) {
+			const there = env[name];
 			if (there === undefined) continue;
-			carried.set(path, there);
-			env[path.env] =
-				path.kind === "file"
-					? posix.join(paths.root, "carried", `${path.env.toLowerCase()}-${order.gen}${posix.extname(there)}`)
-					: posix.join(paths.root, "carried", path.env.toLowerCase());
+			carried.set(name, there);
+			env[name] = posix.join(root, "carried", `${name.toLowerCase()}-${order.gen}${posix.extname(there)}`);
+		}
+		const into = options.recording === undefined ? undefined : env[options.recording];
+		if (options.recording !== undefined && into !== undefined) {
+			const dir = posix.join(root, `record-${order.gen}`);
+			recordings.set(order.gen, { dir, into });
+			env[options.recording] = dir;
 		}
 		return { env, carried };
 	};
 
-	/** The `in` files of each carried directory, into the box at the paths the runner is given. */
-	const carryIn = async (target: Box, env: Record<string, string>, carried: Map<CarriedPath, string>) => {
-		const files: { path: string; bytes: Uint8Array }[] = [];
-		for (const [path, hostDir] of carried) {
-			if (path.kind !== "dir") continue;
-			const boxDir = env[path.env] as string;
-			for (const relative of path.in ?? []) {
-				try {
-					files.push({ path: posix.join(boxDir, relative), bytes: await readFile(join(hostDir, relative)) });
-				} catch {
-					// Not on the host: the runner goes without it.
-				}
-			}
+	/** The box ready for attempt `n`'s runner: the directory of its carried files; its recording is kept to that box. */
+	const prepareBox = async (target: Box, n: number) => {
+		if ((options.carry ?? []).length > 0) {
+			await output(target, ["mkdir", "-p", posix.join(pathsIn(target, session).root, "carried")]);
 		}
-		if (files.length > 0) {
-			const uploaded = await target.upload(files, BACKGROUND_CONTEXT);
-			if (!uploaded.ok) throw new Error(`could not carry files into ${target.id}: ${uploaded.error.message}`);
+		const recording = recordings.get(n);
+		if (recording !== undefined) recording.box = target;
+	};
+
+	/** The carried files back to the host, whole, from the box the runner ran in. */
+	const carryOut = async (from: Box, env: Record<string, string>, carried: Map<string, string>) => {
+		for (const [name, hostPath] of carried) {
+			const read = await from.download([env[name] as string], BACKGROUND_CONTEXT);
+			if (!read.ok || read.value[0] === undefined) continue;
+			await mkdir(dirname(hostPath), { recursive: true });
+			await writeFile(`${hostPath}.carry`, read.value[0].bytes);
+			await rename(`${hostPath}.carry`, hostPath);
 		}
 	};
 
-	/** The carried files back to the host: what is new since the last time, from the box the runner ran in. */
-	const carryOut = async (from: Box, env: Record<string, string>, carried: Map<CarriedPath, string>) => {
-		for (const [path, hostPath] of carried) {
-			const boxPath = env[path.env] as string;
-			if (path.kind === "file") {
-				const read = await from.download([boxPath], BACKGROUND_CONTEXT);
-				if (!read.ok || read.value[0] === undefined) continue;
-				await mkdir(dirname(hostPath), { recursive: true });
-				await writeFile(`${hostPath}.carry`, read.value[0].bytes);
-				await rename(`${hostPath}.carry`, hostPath);
+	/** What is new of one attempt's recording, home: whole blobs first, then the spool's whole lines. */
+	const bringAttempt = async (n: number, from: Box, dir: string, into: string) => {
+		const mismatched: string[] = [];
+		const blobs = posix.join(dir, "blobs");
+		const listedBlobs = await output(from, ["sh", "-c", 'cd "$1" 2>/dev/null || exit 0; ls -A', "sh", blobs]);
+		if (listedBlobs === undefined)
+			throw new RecordHomeError("CARRY_FAILED", `the blobs of attempt ${n} could not be listed`);
+		for (const name of new TextDecoder().decode(listedBlobs).split("\n")) {
+			const hash = /^([0-9a-f]{64})(\..+)?$/.exec(name)?.[1];
+			if (hash === undefined) continue;
+			const target = join(into, "blobs", name);
+			if ((await sizeHere(target)) !== undefined) continue;
+			const read = await from.download([posix.join(blobs, name)], BACKGROUND_CONTEXT);
+			if (!read.ok || read.value[0] === undefined) {
+				throw new RecordHomeError("CARRY_FAILED", `a blob of attempt ${n} could not be read`);
+			}
+			const bytes = read.value[0].bytes;
+			if (createHash("sha256").update(bytes).digest("hex") !== hash) {
+				mismatched.push(name);
 				continue;
 			}
-			// Whole files first (a blob is read by name), then the lines that name them.
-			for (const relative of path.once ?? []) {
-				const here = join(hostPath, relative);
-				const there = posix.join(boxPath, relative);
-				for (const name of (await sizesIn(from, there)).keys()) {
-					const target = join(here, name);
-					if ((await sizeHere(target)) !== undefined) continue;
-					const read = await from.download([posix.join(there, name)], BACKGROUND_CONTEXT);
-					if (!read.ok || read.value[0] === undefined) continue;
-					await mkdir(here, { recursive: true });
-					await writeFile(`${target}.carry`, read.value[0].bytes);
-					await rename(`${target}.carry`, target);
-				}
-			}
-			const skip = new Set(path.in ?? []);
-			for (const relative of path.append ?? []) {
-				const here = join(hostPath, relative);
-				const there = posix.join(boxPath, relative);
-				for (const [name, size] of await sizesIn(from, there)) {
-					if (skip.has(posix.join(relative, name))) continue;
-					const target = join(here, name);
-					const have = (await sizeHere(target)) ?? 0;
-					if (size <= have) continue;
-					const tail = await output(from, [
-						"sh",
-						"-c",
-						'tail -c +"$2" "$1"',
-						"sh",
-						posix.join(there, name),
-						String(have + 1),
-					]);
-					if (tail === undefined || tail.length === 0) continue;
-					await mkdir(here, { recursive: true });
-					await appendFile(target, tail.subarray(0, size - have));
-				}
-			}
+			await mkdir(join(into, "blobs"), { recursive: true });
+			await writeWhole(target, bytes);
 		}
+		const spool = posix.join(dir, ".spool");
+		for (const [name, size] of await sizesIn(from, spool)) {
+			if (!name.endsWith(".jsonl")) continue;
+			const key = `${n}/${name}`;
+			const have = spooled.get(key) ?? 0;
+			if (size <= have) continue;
+			const tail = await output(from, [
+				"sh",
+				"-c",
+				'tail -c +"$2" "$1"',
+				"sh",
+				posix.join(spool, name),
+				String(have + 1),
+			]);
+			if (tail === undefined)
+				throw new RecordHomeError("CARRY_FAILED", `a spool file of attempt ${n} could not be read`);
+			const bytes = tail.subarray(0, size - have);
+			// Up to the last whole line: a line being written comes with the next call.
+			const end = bytes.lastIndexOf(0x0a);
+			if (end < 0) continue;
+			await mkdir(join(into, ".spool"), { recursive: true });
+			await appendFile(join(into, ".spool", name), bytes.subarray(0, end + 1));
+			spooled.set(key, have + end + 1);
+		}
+		if (mismatched.length > 0) {
+			throw new RecordHomeError(
+				"BLOB_MISMATCH",
+				`${mismatched.length} blob(s) of attempt ${n} do not hash to their names`,
+			);
+		}
+	};
+
+	const recordHome: RecordHome = {
+		dir: recordDir,
+		async bringHome(into) {
+			for (const [n, recording] of recordings) {
+				if (recording.box === undefined || recording.into !== into) continue;
+				// An attempt of a box the place left behind (a lost box replaced) brought home what it could at its end.
+				if (recording.box !== box) continue;
+				const there = await options.provider.attach(recording.box.id, BACKGROUND_CONTEXT);
+				if (there.ok && there.value === undefined) {
+					throw new RecordHomeError("BOX_GONE", `the box of attempt ${n} is gone`);
+				}
+				await bringAttempt(n, recording.box, recording.dir, recording.into);
+			}
+		},
 	};
 
 	/**
@@ -305,7 +375,7 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 	 * `{"outcome":...}` ends it in order (the link closes, the home closes, the process exits 0), and its carried files
 	 * come back while it runs and when it exits.
 	 */
-	const runnerOf = (env: Record<string, string>, carried: Map<CarriedPath, string>) => {
+	const runnerOf = (gen: number, env: Record<string, string>, carried: Map<string, string>) => {
 		let stderr = "";
 		let outcome: Outcome | undefined;
 		let started: BoxProcess | undefined;
@@ -337,28 +407,13 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 		});
 		const start: StartRunner = async (at, epochAt, startContext) => {
 			ranIn = at.box;
-			await carryIn(at.box, env, carried);
+			await prepareBox(at.box, gen);
 			const begun = await startRunner(at, epochAt, startContext);
 			if (begun.ok) held = begun.value;
 			return begun;
 		};
 		const exited = async (): Promise<Exit> => {
-			const followMs = options.followMs ?? 2_000;
-			let following = false;
-			const timer =
-				followMs > 0
-					? setInterval(() => {
-							if (following || ranIn === undefined) return;
-							following = true;
-							void carryOut(ranIn, env, carried)
-								.catch(() => {})
-								.finally(() => {
-									following = false;
-								});
-						}, followMs)
-					: undefined;
 			const waited = started === undefined ? undefined : await started.wait();
-			if (timer !== undefined) clearInterval(timer);
 			held?.close("the runner ended");
 			if (ranIn !== undefined) await carryOut(ranIn, env, carried).catch(() => {});
 			const code = waited?.ok ? waited.value : null;
@@ -394,14 +449,18 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 		},
 		kills: ["process", "box"],
 		stats,
+		get clockSkewMs() {
+			return clockSkewMs;
+		},
+		...(options.recording === undefined ? {} : { recordHome }),
 		requestFile: (n) => posix.join(paths.root, `kill-${n}.json`),
 		async start(order) {
 			attempt = order.gen;
-			const { env, carried } = inBox(order);
+			const { env, carried } = inBox(order, paths.root);
 			const taken = await options.ownership.take(session, holder(), 0, undefined, context);
 			if (!taken.ok) throw new Error(`could not take the session's lease: ${taken.error.message}`);
 			epoch = taken.value.epoch;
-			const runner = runnerOf(env, carried);
+			const runner = runnerOf(order.gen, env, carried);
 			const begun = await runner.start(homePlace(), epoch, context);
 			if (!begun.ok) throw begun.error;
 			handle = begun.value;
@@ -489,37 +548,39 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 		async recover(last, kind, order) {
 			await last.exited;
 			attempt = order.gen;
-			const { env, carried } = inBox(order);
-			const runner = runnerOf(env, carried);
+			// The place the lease names: a lost box is found gone there, and its replacement is made first, so that the
+			// order's paths are the new box's.
+			const named = homePlace();
+			let next: Box | undefined;
+			if (kind === "box") {
+				const made = await options.provider.create(options.spec, context);
+				if (!made.ok)
+					throw new MoveError("prepare", `could not make a box in place of the lost one: ${made.error.message}`);
+				next = made.value;
+				boxes.push(next);
+			}
+			const { env, carried } = inBox(order, (next === undefined ? paths : pathsIn(next, session)).root);
+			const runner = runnerOf(order.gen, env, carried);
 			const recovered = await recoverHome(
 				{
 					session,
 					ownership: options.ownership,
-					places: { [environment]: homePlace() },
+					places: { [environment]: named },
 					start: runner.start,
 					notice: options.notice ?? DEFAULT_NOTICE,
 					host,
 					env,
-					...(kind === "box"
-						? {
+					...(next === undefined
+						? {}
+						: {
 								vault: options.vault,
-								replace: async (_gone: HomePlace, replaceContext: Context) => {
-									const next = await options.provider.create(options.spec, replaceContext);
-									if (!next.ok) {
-										return err(
-											new MoveError(
-												"prepare",
-												`could not make a box in place of the lost one: ${next.error.message}`,
-											),
-										);
-									}
-									boxes.push(next.value);
-									box = next.value;
-									paths = pathsIn(box, session);
+								replace: async () => {
+									box = next;
+									paths = pathsIn(next, session);
+									clockSkewMs = await skewOf(next);
 									return ok(homePlace());
 								},
-							}
-						: {}),
+							}),
 				},
 				context,
 			);

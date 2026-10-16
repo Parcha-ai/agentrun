@@ -14,17 +14,13 @@ import type { RunnerProgram } from "../src/home/start.ts";
 import {
 	type BoxPlace,
 	boxPlace,
-	type CarriedPath,
 	type PlaceSignal,
+	RecordHomeError,
 	type RunnerOrder,
 } from "../src/place/box-place.ts";
 
 const context = BACKGROUND_CONTEXT;
 const STARTED = "2026-10-16T00:00:00.000Z";
-const CARRY: readonly CarriedPath[] = [
-	{ env: "CROSS_LOG", kind: "file" },
-	{ env: "RECORD_DIR", kind: "dir", in: [".spool/started"], once: ["blobs"], append: [".spool"] },
-];
 
 /** Where the cases run: the boxes, the spec of each, and the runner the boxes run (the fixture `place-box-runner.fixture.ts`). */
 export type BoxPlaceSetup = {
@@ -63,8 +59,8 @@ async function placeIn(made: World): Promise<BoxPlace> {
 				program: made.setup.program,
 				models: createModels(),
 				vault: localVault(join(made.host, "vault")),
-				carry: CARRY,
-				followMs: 0,
+				carry: ["CROSS_LOG"],
+				recording: "RECORD_DIR",
 			},
 			context,
 		),
@@ -79,11 +75,26 @@ const orderOf = (made: World, place: BoxPlace, gen: number, more: Record<string,
 		STEPS: "3",
 		CROSS_LOG: join(made.host, `crossings-${gen}.jsonl`),
 		RECORD_DIR: made.record,
+		RECORD_STARTED: STARTED,
+		RECORD_GEN: String(gen),
 		KILL_REQUEST: place.requestFile(gen),
 		KILL_NONCE: `nonce-${gen}`,
 		...more,
 	},
 });
+
+/** The spool files the recording's directory holds on the host. */
+const spoolFiles = (made: World) => readdirSync(join(made.record, ".spool")).filter((name) => name.endsWith(".jsonl"));
+
+/** What `promise` rejected with: its `code`. */
+async function codeOf(promise: Promise<unknown>): Promise<string> {
+	try {
+		await promise;
+		return "resolved";
+	} catch (error) {
+		return error instanceof RecordHomeError ? error.code : String(error);
+	}
+}
 
 const lines = (path: string) =>
 	readFileSync(path, "utf8")
@@ -109,12 +120,13 @@ async function firstSignal(place: BoxPlace, gen: number, kind: PlaceSignal["kind
 export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void {
 	describe(name, () => {
 		it(
-			"runs a runner in the box until it reports its outcome, carries its files both ways, and lets the box go",
+			"runs a runner in the box until it reports its outcome, carries its files, brings its recording home when asked, and lets the box go",
 			async () => {
 				const made = world(setup);
 				try {
 					const place = await placeIn(made);
-					const runner = await place.start(orderOf(made, place, 1));
+					expect(place.clockSkewMs).toBeLessThan(1_000);
+					const runner = await place.start(orderOf(made, place, 1, { PARTIAL: "1" }));
 					expect(runner.epoch).toBe(1);
 					const exit = await runner.exited;
 					expect({ exit: exit.exit, signal: exit.signal, status: exit.outcome?.status }).toEqual({
@@ -129,10 +141,19 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 						started: STARTED,
 						root: place.paths.root,
 					});
-					// What the runner wrote came back to the host paths the order named: the crossings, then the blobs and the lines.
+					// The crossings log came back whole at the exit, to the host path the order named.
 					expect(lines(join(made.host, "crossings-1.jsonl")).map((line) => line.n)).toEqual([1, 2, 3]);
-					const spool = readdirSync(join(made.record, ".spool")).filter((name) => name.endsWith(".jsonl"));
+					// The recording comes home when the supervisor asks, not before: the blobs, then the whole lines.
+					expect(spoolFiles(made)).toEqual([]);
+					const recordHome = place.recordHome;
+					if (recordHome === undefined) throw new Error("a place with a recording has recordHome");
+					await recordHome.bringHome(made.record, { final: true });
+					await recordHome.bringHome(made.record, { final: true });
+					const spool = spoolFiles(made);
 					expect(spool).toHaveLength(1);
+					const spoolText = readFileSync(join(made.record, ".spool", spool[0] as string), "utf8");
+					// Whole lines only, once each: the line the runner left half written stays in the box.
+					expect(spoolText.endsWith("\n")).toBe(true);
 					const spooled = lines(join(made.record, ".spool", spool[0] as string));
 					expect(spooled.map((line) => line.step)).toEqual([1, 2, 3]);
 					for (const line of spooled)
@@ -164,8 +185,12 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 						crossing: { point: "fixture.step", n: 2 },
 						nonce: "nonce-1",
 					});
-					// At rest at its request, the session is open.
+					// At rest at its request, the session is open; a tick brings home what is written so far.
 					expect((await place.status()).record).toMatchObject({ run: "run-1", generation: 1, status: "open" });
+					await place.recordHome?.bringHome(made.record, {});
+					expect(
+						spoolFiles(made).flatMap((name) => lines(join(made.record, ".spool", name)).map((line) => line.step)),
+					).toEqual([1, 2]);
 					await place.kill(runner, "process");
 					const killed = await runner.exited;
 					expect({ signal: killed.signal, outcome: killed.outcome }).toEqual({
@@ -179,11 +204,41 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 					});
 					const exit = await recovered.runner.exited;
 					expect(exit.outcome?.record).toMatchObject({ done: 3, resumedFrom: 2 });
+					// Each attempt wrote its own spool file in its own directory: both are home, each line once.
+					await place.recordHome?.bringHome(made.record, { final: true });
+					const steps = spoolFiles(made).flatMap((name) =>
+						lines(join(made.record, ".spool", name)).map((line) => line.step),
+					);
+					expect(steps.sort()).toEqual([1, 2, 3]);
 					// return() ends a pending next(): the supervisor stops reading when a runner has exited.
 					const iterator = place.signals(3)[Symbol.asyncIterator]();
 					const pending = iterator.next();
 					await iterator.return?.();
 					expect(await pending).toEqual({ done: true, value: undefined });
+					await place.release();
+				} finally {
+					made.remove();
+				}
+			},
+			setup.timeoutMs ?? 60_000,
+		);
+
+		it(
+			"brings home every blob that matches its name and the lines, and says which did not",
+			async () => {
+				const made = world(setup);
+				try {
+					const place = await placeIn(made);
+					const runner = await place.start(orderOf(made, place, 1, { BAD_BLOB: "1" }));
+					await runner.exited;
+					expect(
+						await codeOf(place.recordHome?.bringHome(made.record, { final: true }) ?? Promise.resolve()),
+					).toBe("BLOB_MISMATCH");
+					// The blob whose bytes are not its name stayed in the box; the others and the lines are home.
+					expect(readdirSync(join(made.record, "blobs"))).toHaveLength(3);
+					expect(
+						spoolFiles(made).flatMap((name) => lines(join(made.record, ".spool", name)).map((line) => line.step)),
+					).toEqual([1, 2, 3]);
 					await place.release();
 				} finally {
 					made.remove();
@@ -212,6 +267,10 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 					});
 					await place.kill(runner, "box");
 					await runner.exited;
+					// The supervisor's last call for the attempt whose box was lost: the place says the box is gone.
+					expect(
+						await codeOf(place.recordHome?.bringHome(made.record, { final: true }) ?? Promise.resolve()),
+					).toBe("BOX_GONE");
 					const recovered = await place.recover(runner, "box", orderOf(made, place, 2));
 					expect(recovered.runner.epoch).toBe(2);
 					expect(recovered.restored).toEqual({ checkpoint: expect.any(String), head: expect.any(Number) });

@@ -2,7 +2,7 @@
 // reference entry's child drives its job. It writes what a supervisor carries across (a crossings log, a recording's
 // spool lines and blobs), asks to be killed at `PARK_AT` and waits there, and prints its outcome when the job is done.
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createRegistry, defineDocFamily, type JsonObject } from "@earendil-works/pi-durable";
 import type { App } from "../src/home/app.ts";
@@ -26,9 +26,13 @@ const app: App = (ctx) => ({
 		let done = Number(read?.done ?? 0);
 		const resumedFrom = done;
 		const record = env.RECORD_DIR;
-		const startedFile = record === undefined ? undefined : join(record, ".spool", "started");
-		const started =
-			startedFile !== undefined && existsSync(startedFile) ? readFileSync(startedFile, "utf8").trim() : null;
+		// The recording's clock comes in the order's environment; the runner writes it into its own directory.
+		const started = env.RECORD_STARTED ?? null;
+		if (record !== undefined) {
+			mkdirSync(join(record, ".spool"), { recursive: true });
+			const startedFile = join(record, ".spool", "started");
+			if (started !== null && !existsSync(startedFile)) writeFileSync(startedFile, `${started}\n`);
+		}
 		while (done < steps) {
 			done += 1;
 			const step = done;
@@ -52,6 +56,15 @@ const app: App = (ctx) => ({
 				// At rest until the supervisor kills it.
 				await new Promise(() => {});
 			}
+		}
+		if (record !== undefined && env.BAD_BLOB === "1") {
+			// A blob whose name is not the hash of its bytes.
+			const named = createHash("sha256").update("other bytes").digest("hex");
+			writeFileSync(join(record, "blobs", named), "not the bytes the name says");
+		}
+		if (record !== undefined && env.PARTIAL === "1") {
+			// A line the recorder was writing when the runner ended: no newline yet.
+			appendFileSync(join(record, ".spool", `${process.pid}.jsonl`), '{"step":');
 		}
 		console.log(
 			JSON.stringify({
