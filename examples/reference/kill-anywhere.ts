@@ -20,6 +20,7 @@ import { join, relative } from 'node:path';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { FakeBackend, remoteDriver, remoteProvider } from '@parcha/pi-browser/testing';
+import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { placeAt, run } from './assemble.ts';
 import { localHost, type LedgerRow, type StatusEvent } from './host.ts';
 import { gates } from './gates.ts';
@@ -60,6 +61,19 @@ export function progress(reference: string[], processes: string[][]): number {
 /** Startup crossings a resumed process takes again before it reaches new work (the browser's reconcile, a node's start). */
 const REPLAYED = 3;
 
+/** `TWO_ACTIONS`: the reference lead with one more page action (the same `goto` again) between its first and its read, so a run has a page action that follows another: what `browser.between-actions` is the moment of. The lead never sees the extra exchange. */
+function twoActions(ask: ReturnType<typeof lead>, messages: Parameters<typeof fakes.model>[0]) {
+  const isRun = (message: (typeof messages)[number]) => (message.role === 'toolResult' && message.toolName === 'run') || (message.role === 'assistant' && message.content.some((block) => block.type === 'toolCall' && block.name === 'run'));
+  const runs = messages.filter(isRun);
+  const seen = messages.filter((message) => !runs.slice(2).includes(message));
+  const answer = ask(seen);
+  const reading = answer.content.some((block) => block.type === 'toolCall' && block.name === 'browser_read');
+  if (!reading || runs.length >= 4) return answer;
+  const first = runs.find((message) => message.role === 'assistant')!;
+  const call = (first as { content: Array<{ type: string; name?: string; arguments?: unknown }> }).content.find((block) => block.type === 'toolCall' && block.name === 'run')!;
+  return fauxAssistantMessage([fauxToolCall('run', call.arguments as never)], { stopReason: 'toolUse' });
+}
+
 /** The plan for the next kill. The side is drawn by the work left on each; the crossing is drawn from a window that
  *  shrinks with the work and the kills left, so ten kills spread over the whole run and none is drawn past its end. */
 export function planNext(next: () => number, left: number, remaining: { child: number; supervisor: number }): Plan {
@@ -99,7 +113,7 @@ async function child() {
       const ask = lead();
       const turn = messages.filter((message) => message.role === 'toolResult').length;
       cross(`model.request turn ${turn}`);
-      const answer = ask(messages);
+      const answer = process.env.TWO_ACTIONS ? twoActions(ask, messages) : ask(messages);
       cross(`model.answered turn ${turn}`);
       return answer;
     },
@@ -133,7 +147,7 @@ async function child() {
   };
   local.host.deliver = async (result) => { cross('deliver.writing'); await deliver(result); cross('deliver.written'); };
   try {
-    const result = await run(place, local.host, job);
+    const result = await run(place, local.host, job, { crossing: (point) => cross(point) });
     await recorder?.detach();
     console.log(JSON.stringify({ outcome: { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 240) } : {}) }, view: summary(place, result, local) }));
   } catch (error) {
@@ -312,6 +326,20 @@ export async function cutInEffectWindow(point = 'tool.dispatch search', options:
     const afterKill = made(env.RAN_LOG);
     const resumed = await spawnChild(env, (pid) => { state.pid = pid; });
     return { killed: killed.signal, resumed: resumed.outcome, effects: (await count(join(scratch, 'run'), backend)).effects, /** The tool calls the fake actually ran: by the killed process, then in all. The host's ledger row is written before the call. */ made: { killed: afterKill, total: made(env.RAN_LOG) } };
+  } finally { await served.close(); await rm(scratch, { recursive: true, force: true }); }
+}
+
+/** The browser's own crossings (pi-browser's `crossing` option): the first process ends at `point` (`browser.between-actions`, or `browser.action-returned`), a fresh one resumes. With no point nothing is cut, which is the baseline: how many page actions an uninterrupted run makes. */
+export async function cutBrowserCrossing(point?: 'browser.between-actions' | 'browser.action-returned', options: { twoActions?: boolean } = {}) {
+  const scratch = await mkdtemp(join(tmpdir(), 'agentrun-kill-'));
+  const { backend, state } = watchedBackend();
+  const served = await backend.serve();
+  try {
+    const env = { HOME: scratch, TMPDIR: scratch, DIR: join(scratch, 'run'), BACKEND: served.url, ...(options.twoActions ? { TWO_ACTIONS: '1' } : {}) };
+    const killed = point ? await spawnChild({ ...env, KILL_AT_POINT: point }, (pid) => { state.pid = pid; }) : undefined;
+    const resumed = await spawnChild(env, (pid) => { state.pid = pid; });
+    const counted = await count(join(scratch, 'run'), backend);
+    return { killed: killed?.signal ?? null, resumed: resumed.outcome, pageRuns: counted.browser['page.run'] ?? 0, errored: counted.toolResults.filter((result) => result.error).map((result) => result.tool), committedTurns: counted.committedTurns };
   } finally { await served.close(); await rm(scratch, { recursive: true, force: true }); }
 }
 

@@ -68,7 +68,7 @@ function runEnv(claim: Claim): RunEnv {
  *  the example's (a member you give replaces ours, except `onLook` and `onMiss`, which run after ours). It is called once when the
  *  extension is built, with a getter for the run's harness (undefined until the run is open). What differs per conversation is
  *  what the options themselves take: `limits`, `eyes` and `eyesModel` are given the conversation (`{ conversationId }`). */
-export type RunOptions = { env?: (claim: Claim) => RunEnv; vision?: (context: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions> };
+export type RunOptions = { env?: (claim: Claim) => RunEnv; /** Called synchronously at two moments of a page action (pi-browser's `crossing`), for a host that kills the process there to test a resume: `browser.between-actions` once an action's answer is committed and before the next dispatches, `browser.action-returned` once the driver call returned and before pi commits its answer. */ crossing?: (point: 'browser.between-actions' | 'browser.action-returned') => void; vision?: (context: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions> };
 
 /** `env`: where the run's tools act. Default: the claim's `work/`, through the disk package's confined environment. */
 export async function run(place: RunPlace, host: Host, job: Job, options: RunOptions = {}): Promise<RunResult> {
@@ -83,6 +83,7 @@ export async function run(place: RunPlace, host: Host, job: Job, options: RunOpt
   const labelOf = async (id: ConversationId | undefined) => (opened && id !== undefined && (await opened.snapshot(Label, id, ctx))?.label) || 'run';
 
   const browser = createBrowserExtension({
+    ...(options.crossing ? { crossing: options.crossing } : {}),
     provider: (target) => host.tools.browser.provider(target), driver: host.tools.browser.driver, evidence: host.evidence,
     ...(host.tools.browser.prices ? { prices: host.tools.browser.prices } : {}),
     ...(host.credentials.redact ? { redact: { values: host.credentials.redact } } : {}),
