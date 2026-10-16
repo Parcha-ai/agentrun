@@ -9,10 +9,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Delegation } from "disk";
-import { DEFAULT_MOUNT_ROOT, findDelegations, mintMountToken, removeMountToken, runPath, type RunRef } from "./claim.ts";
-import { PdaError } from "./errors.ts";
+import { DEFAULT_MOUNT_ROOT, findDelegations, mintMountToken, pathlessResolver, removeMountToken, runPath, type RunRef } from "./claim.ts";
+import { reapCommands } from "./commands.ts";
+import { HeldError, PdaError } from "./errors.ts";
+import { takeOwnerLock } from "./run.ts";
 import { readRunRecord, type RunRecord } from "./status.ts";
 import {
+  CONTROL_TIMEOUT_MS,
   ensureRunning,
   readRunStatus,
   readStartMark,
@@ -23,6 +26,7 @@ import {
   type HostHandle,
   type HostStatus,
   type SupervisorControl,
+  withTimeouts,
 } from "./supervise.ts";
 
 export type PlaceKill = "process" | "box";
@@ -75,7 +79,7 @@ export interface Place {
   recover(last: PlaceRunner, kind: PlaceKill, order: RunnerOrder): Promise<PlaceRecovery>;
   checkpoint?(): Promise<{ taken: boolean; heldBy?: string }>;
   move?(to: Place): Promise<Record<string, unknown>>;
-  /** Lets the run go: stops what still runs and removes what the place made for it (tokens), never the run's directory. */
+  /** Lets the run go: stops what still runs (its commands too) and removes what the place made for it (tokens), never the run's directory. */
   release(): Promise<void>;
 }
 
@@ -139,7 +143,8 @@ export function localPlace(options: LocalPlaceOptions): (ctx: PlaceContext) => P
     const paths = pathsUnder(ctx.paths.id, root);
     const command = options.command ?? [process.execPath, CLI];
     const alive = new Map<PlaceRunner, number>();
-    const boxesTaken = new Set<PlaceRunner>();
+    /** A runner's boxes being taken, or taken: one deletion per runner, shared while in flight, retried after a failure. */
+    const boxesTaken = new Map<PlaceRunner, Promise<void>>();
 
     const start = async (order: RunnerOrder): Promise<PlaceRunner> => {
       const argv = [...command.slice(1), "run", "--dir", root, "--id", paths.id, "--app", options.app, ...(options.runArgs ?? [])];
@@ -202,10 +207,21 @@ export function localPlace(options: LocalPlaceOptions): (ctx: PlaceContext) => P
         }
       }
       await runner.exited;
-      // Once per runner: a supervisor that kills and then recovers the same runner takes its boxes once.
-      if (kind === "box" && !boxesTaken.has(runner)) {
-        boxesTaken.add(runner);
-        await ctx.destroyBoxes?.();
+      // Once per runner: a supervisor that kills and then recovers the same runner takes its boxes once. A deletion that
+      // failed is forgotten, so the next kill or recover tries again before any runner starts.
+      if (kind === "box" && ctx.destroyBoxes) {
+        let taking = boxesTaken.get(runner);
+        if (!taking) {
+          taking = (async () => ctx.destroyBoxes!())().then(
+            () => undefined,
+            (error: unknown) => {
+              boxesTaken.delete(runner);
+              throw error;
+            },
+          );
+          boxesTaken.set(runner, taking);
+        }
+        await taking;
       }
     };
 
@@ -224,6 +240,27 @@ export function localPlace(options: LocalPlaceOptions): (ctx: PlaceContext) => P
       },
       release: async () => {
         await Promise.all([...alive.keys()].map((runner) => kill(runner, "process")));
+        // pi runs each command in a process group of its own, which the instance's kill does not reach: end what the
+        // run recorded, as its next open would, since there may be none. Only under the run's owner lock, as an open
+        // does: while another process holds the run, the commands are its own, not this place's.
+        const commands = join(root, "commands");
+        if (!existsSync(commands)) return;
+        let lock: ReturnType<typeof takeOwnerLock>;
+        try {
+          lock = takeOwnerLock(root);
+        } catch (error) {
+          if (error instanceof HeldError) return;
+          throw error;
+        }
+        let reaped: Awaited<ReturnType<typeof reapCommands>>;
+        try {
+          reaped = await reapCommands(commands);
+        } finally {
+          lock.release();
+        }
+        if (reaped.survivors.length > 0) {
+          throw new PlaceError("RELEASE_FAILED", `releasing ${root} left commands alive after SIGKILL: pids ${reaped.survivors.map((m) => m.pid).join(", ")}`);
+        }
       },
     };
   };
@@ -325,7 +362,10 @@ type Minted = { token: string; identifier: string; nickname: string; removed: bo
  * stays (`deleteRunTree`).
  */
 export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) => Place {
-  const { control, host } = options;
+  const { host } = options;
+  // Every call the place makes on the disk is bounded as ensureRunning bounds its own: one that does not answer fails as
+  // CONTROL_API_FAILED, so a stalled request never leaves a recovery, a release or a runner's end waiting forever.
+  const control = withTimeouts(options.control, options.ensure?.controlTimeoutMs ?? CONTROL_TIMEOUT_MS);
   const pollMs = options.pollMs ?? 1_000;
   const startTimeoutMs = options.startTimeoutMs ?? 60_000;
   return (ctx) => {
@@ -338,6 +378,7 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
     const minted = new Map<string, Minted>();
     const handles: HostHandle[] = [];
     const killed = new Map<PlaceRunner, () => void>();
+    let resolver = pathlessResolver(control);
     const handleOf = new Map<PlaceRunner, HostHandle>();
 
     const mint = async (attempt: number): Promise<Minted> => {
@@ -409,22 +450,26 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
             ...(takeover ? { leaseExpiryMs: Number.NEGATIVE_INFINITY, startGraceMs: 0 } : {}),
           });
         } catch (err) {
-          // HOST_START_FAILED: ensureRunning removed the token. Anything else failed before the token was used.
-          if ((err as PdaError).code === "HOST_START_FAILED") m.removed = true;
-          else await drop(m).catch(() => {});
+          // Nothing mounted with the token. ensureRunning's own removal ignores a failure, so remove it again (Archil
+          // answers a removal of a gone user with success): a failure here leaves it for release.
+          await drop(m).catch(() => {});
           throw err;
         }
         if (result.action === "started") {
-          if (result.adopted) m.removed = true;
+          // An adopted instance mounts with an earlier start's token: this one is unused, removed as above.
+          if (result.adopted) await drop(m).catch(() => {});
           handles.push(result.handle);
           const w = watch(result.handle);
           const mark = result.startMark ? await readStartMark(control, ref.id).catch(() => null) : null;
           const runner: PlaceRunner = { epoch: mark?.generation ?? order.gen, exited: w.exited };
           killed.set(runner, w.kill);
           handleOf.set(runner, result.handle);
-          // A runner that ended on its own is gone: a later kill of it is a no-op.
-          const forget = () => void killed.delete(runner);
-          w.exited.then(forget, forget);
+          // A runner the driver reports ended is gone: a later kill of it is a no-op. One whose status could not be read
+          // may still run, so it stays killable.
+          w.exited.then(
+            () => void killed.delete(runner),
+            () => undefined,
+          );
           return { result, runner, ms: Math.round(performance.now() - t0) };
         }
         if ((result.action === "pending" || result.action === "starting") && Date.now() < deadline) {
@@ -451,6 +496,9 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
         await host.kill(handle);
         killed.delete(runner);
         end();
+        // The kill is made; a runner whose status reads had failed still reports that failure through `exited`.
+        await runner.exited.catch(() => undefined);
+        return;
       }
       await runner.exited;
     };
@@ -463,18 +511,38 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
       start: async (order) => (await ensure(order, false)).runner,
       kill,
       status: async () => {
-        const [record, delegations] = await Promise.all([readRunStatus(control, ref.id), findDelegations(control, ref.id)]);
+        // One resolver for the place's life: Archil lists a fresh run's delegation with no path, and its inode cache spares
+        // every later call the `find` on the disk. It keeps its first failure for good, so a failed call gets the next
+        // call a new one: one transient error must not fail the rest of a long run.
+        const resolve = resolver;
+        const [record, delegations] = await Promise.all([
+          readRunStatus(control, ref.id),
+          findDelegations(control, ref.id, resolve).catch((error: unknown) => {
+            if (resolver === resolve) resolver = pathlessResolver(control);
+            throw error;
+          }),
+        ]);
         return { record, delegations: delegations.map(({ clientId, inodeId, path, isOrphaned, isPending }) => ({ clientId, inodeId, path, isOrphaned, isPending })) };
       },
       recover: async (last, kind, order) => {
         if (killed.has(last)) await kill(last, kind);
-        const { result, runner, ms } = await ensure(order, true);
+        // Forced only while the newest incarnation the disk knows of (run.json or a start mark) is the one this place
+        // killed. A newer one, another supervisor's, gets the usual lease and start-grace checks.
+        const [record, mark] = await Promise.all([readRunStatus(control, ref.id), readStartMark(control, ref.id)]);
+        const newest = Math.max(record?.generation ?? 0, mark?.generation ?? 0);
+        const { result, runner, ms } = await ensure(order, handleOf.has(last) && newest <= last.epoch);
         return { runner, revoked: result.action === "started" ? result.revoked : [], ms };
       },
       release: async () => {
         const failed: string[] = [];
-        for (const handle of handles.splice(0)) {
-          await host.stop(handle).catch((err: unknown) => failed.push(`stop ${String(handle.name ?? handle.driver)}: ${(err as Error).message}`));
+        // A handle leaves the list only once its stop succeeded, so a later release tries a failed one again.
+        for (const handle of [...handles]) {
+          try {
+            await host.stop(handle);
+            handles.splice(handles.indexOf(handle), 1);
+          } catch (err) {
+            failed.push(`stop ${String(handle.name ?? handle.driver)}: ${(err as Error).message}`);
+          }
         }
         for (const m of minted.values()) {
           await drop(m).catch((err: unknown) => failed.push(`token ${m.nickname}: ${(err as Error).message}`));

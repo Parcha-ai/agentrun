@@ -3,6 +3,7 @@
 // No Archil, no network.
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +11,7 @@ import type { Delegation } from "disk";
 import { archilPlace, localPlace, PlaceError } from "../src/place.ts";
 import { parseTokenNickname } from "../src/claim.ts";
 import type { HostDriver, HostHandle, HostStatus, StartAttempt, SupervisorControl } from "../src/supervise.ts";
+import { currentBootId, procStartTicks } from "../src/hosts/local-host.ts";
 import { scratchRoot } from "./_run-support.ts";
 
 const APP = fileURLToPath(new URL("./fixtures/place-app.ts", import.meta.url));
@@ -89,8 +91,63 @@ describe("localPlace", () => {
     assert.equal(other.paths.root, root2, "root replaces the context's");
     const held = await other.start({ gen: 1, env: {} });
     await waitFor("the runner", () => existsSync(join(root2, "work", "sleeper.pid")));
+    // A command the run recorded, in a process group of its own as pi starts them: the instance's kill does not reach it.
+    const command = spawn("sleep", ["300"], { detached: true, stdio: "ignore" });
+    const mark = { pid: command.pid!, start: procStartTicks(command.pid!)! };
+    after(() => void (alive(mark.pid) && procStartTicks(mark.pid) === mark.start && process.kill(mark.pid, "SIGKILL")));
+    mkdirSync(join(root2, "commands"), { recursive: true });
+    writeFileSync(join(root2, "commands", `${mark.pid}-${mark.start}.json`), JSON.stringify({ boot: currentBootId(), leader: mark, members: [] }));
+    const commandGone = new Promise((r) => command.once("exit", r));
     await other.release();
     assert.equal((await held.exited).signal, "SIGKILL");
+    await Promise.race([commandGone, sleep(5_000)]);
+    assert.ok(!alive(mark.pid), "release ended the run's recorded command");
+    assert.ok(!existsSync(join(root2, "commands")), "and cleared its records");
+  });
+});
+
+describe("localPlace cleanup", () => {
+  it("a box deletion that fails is tried again by the next kill or recover, and one that succeeded is not repeated", { timeout: 120_000 }, async () => {
+    const root = scratch();
+    let calls = 0;
+    const place = localPlace({ app: APP })({
+      paths: pathsAt(root),
+      destroyBoxes: () => {
+        if (++calls === 1) throw new Error("provider down");
+      },
+    });
+    const first = await place.start({ gen: 1, env: { PLACE_FINISH: "1" } });
+    await assert.rejects(place.kill(first, "box"), /provider down/);
+    const { runner } = await place.recover(first, "box", { gen: 2, env: { PLACE_FINISH: "1" } });
+    assert.equal(calls, 2, "the recover took the boxes the failed kill left");
+    await runner.exited;
+    await place.kill(first, "box");
+    assert.equal(calls, 2, "taken once");
+  });
+
+  it("release reaps the run's commands only under its owner lock: while another process holds the run they are its own", { timeout: 120_000 }, async () => {
+    const root = scratch();
+    mkdirSync(join(root, "commands"), { recursive: true });
+    const holder = spawn(process.execPath, [fileURLToPath(new URL("./fixtures/hold-owner-lock.ts", import.meta.url)), root], { stdio: ["ignore", "pipe", "inherit"] });
+    after(() => void (holder.exitCode === null && holder.kill("SIGKILL")));
+    await new Promise<void>((ok, fail) => {
+      holder.stdout!.setEncoding("utf8").on("data", (d: string) => (d.includes("held") ? ok() : d.includes("refused") && fail(new Error(d))));
+    });
+    const command = spawn("sleep", ["300"], { detached: true, stdio: "ignore" });
+    const mark = { pid: command.pid!, start: procStartTicks(command.pid!)! };
+    after(() => void (alive(mark.pid) && procStartTicks(mark.pid) === mark.start && process.kill(mark.pid, "SIGKILL")));
+    writeFileSync(join(root, "commands", `${mark.pid}-${mark.start}.json`), JSON.stringify({ boot: currentBootId(), leader: mark, members: [] }));
+
+    const place = localPlace({ app: APP })({ paths: pathsAt(root) });
+    await place.release();
+    assert.ok(alive(mark.pid), "the holder's command was left alone");
+
+    holder.kill("SIGKILL");
+    await new Promise((r) => holder.once("exit", r));
+    const gone = new Promise((r) => command.once("exit", r));
+    await place.release();
+    await Promise.race([gone, sleep(5_000)]);
+    assert.ok(!alive(mark.pid), "with the run free, release reaped it");
   });
 });
 
@@ -133,11 +190,20 @@ class FakeControl implements SupervisorControl {
   delegations: Delegation[] = [];
   users = new Map<string, { nickname: string; token: string }>();
   ops: string[] = [];
+  /** getObject of a key under this prefix never answers. */
+  hangUnder: string | null = null;
+  /** The inode each run directory has, as the disk's `find -inum` reports it; and how many execs ran, and how many next fail. */
+  inodes = new Map<string, number>();
+  execs = 0;
+  execFails = 0;
+  /** The next this many removeUser calls fail. */
+  removeFails = 0;
   #n = 0;
   runJson(o: Record<string, unknown>) {
     this.objects.set(`runs/${ID}/run.json`, JSON.stringify({ run: ID, status: "running", generation: 1, sealedSeq: null, wakeAt: null, holder: null, heartbeatAt: new Date().toISOString(), updatedAt: new Date().toISOString(), detail: null, ...o }));
   }
   async getObject(key: string) {
+    if (this.hangUnder !== null && key.startsWith(this.hangUnder)) return new Promise<Uint8Array>(() => {});
     const v = this.objects.get(key);
     if (v === undefined) throw Object.assign(new Error("NoSuchKey"), { status: 404, code: "NoSuchKey" });
     return new TextEncoder().encode(v);
@@ -157,7 +223,12 @@ class FakeControl implements SupervisorControl {
   }
   async removeUser(_type: "token", identifier: string) {
     this.ops.push(`removeUser ${identifier}`);
-    if (!this.users.delete(identifier)) throw Object.assign(new Error("no such user"), { status: 404 });
+    if (this.removeFails > 0) {
+      this.removeFails--;
+      throw Object.assign(new Error("503"), { status: 503 });
+    }
+    // Archil answers the removal of a user that is gone with success.
+    this.users.delete(identifier);
   }
   async listDelegations() {
     return this.delegations.map((d) => ({ ...d }));
@@ -166,8 +237,11 @@ class FakeControl implements SupervisorControl {
     this.ops.push(`revoke ${d.clientId}`);
     this.delegations = this.delegations.filter((x) => x.clientId !== d.clientId);
   }
-  async exec() {
-    return { exitCode: 0, stdout: "" };
+  async exec(command: string) {
+    this.execs++;
+    if (this.execFails > 0 && this.execFails--) throw new Error("exec unreachable");
+    const asked = new Set([...command.matchAll(/-inum (\d+)/g)].map((m) => Number(m[1])));
+    return { exitCode: 0, stdout: [...this.inodes].filter(([, inode]) => asked.has(inode)).map(([run, inode]) => `${inode} ${run}\n`).join("") };
   }
 }
 
@@ -175,10 +249,12 @@ class FakeControl implements SupervisorControl {
 function fakeHost(control: FakeControl, kills: "process" | "box" | null = "box") {
   const states = new Map<string, HostStatus>();
   const starts: { token: string; attempt?: StartAttempt }[] = [];
+  const faults = { start: 0, stop: 0, status: 0 };
   const host: HostDriver & { mountRoot: string } = {
     mountRoot: "/mnt/fake",
     async start(_ref, token, attempt) {
       control.ops.push(`start g${attempt?.attempt}`);
+      if (faults.start > 0 && faults.start--) throw new Error("no capacity");
       starts.push({ token, attempt });
       const name = `box-${starts.length}`;
       states.set(name, "running");
@@ -187,10 +263,12 @@ function fakeHost(control: FakeControl, kills: "process" | "box" | null = "box")
       return { driver: "fake", name };
     },
     async status(h: HostHandle) {
+      if (faults.status > 0 && faults.status--) throw new Error("status unreachable");
       return states.get(String(h.name)) ?? "unknown";
     },
     async stop(h: HostHandle) {
       control.ops.push(`stop ${h.name}`);
+      if (faults.stop > 0 && faults.stop--) throw new Error("cannot reach the box");
       if (states.has(String(h.name))) states.set(String(h.name), "stopped");
     },
     ...(kills
@@ -203,7 +281,7 @@ function fakeHost(control: FakeControl, kills: "process" | "box" | null = "box")
         }
       : {}),
   };
-  return { host, states, starts };
+  return { host, states, starts, faults };
 }
 
 /** Every archil place a test makes, released after the file: a runner left running is polled until it ends. */
@@ -307,6 +385,95 @@ describe("archilPlace", () => {
     control.ops.length = 0;
     await at.release();
     assert.deepEqual(control.ops, [], "nothing left to stop or remove");
+  });
+
+  it("a release whose stop fails keeps the handle: it says so, and the next release stops it", async () => {
+    const control = new FakeControl();
+    const { host, faults } = fakeHost(control);
+    const at = makePlace({ ...REF, control, host });
+    const runner = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
+    faults.stop = 1;
+    await assert.rejects(at.release(), (e: unknown) => e instanceof PlaceError && e.code === "RELEASE_FAILED" && /stop box-1: cannot reach the box/.test(e.message));
+    control.ops.length = 0;
+    await at.release();
+    assert.deepEqual(control.ops, ["stop box-1"], "tried again; the token went the first time");
+    assert.equal((await Promise.race([runner.exited, sleep(2_000).then(() => ({ exit: "still running" }))])).exit, "stopped");
+  });
+
+  it("a start the driver refuses: the unused token is removed even when ensureRunning's own removal failed, and release retries what is left", async () => {
+    const control = new FakeControl();
+    const { host, faults } = fakeHost(control);
+    const at = makePlace({ ...REF, control, host });
+    faults.start = 1;
+    control.removeFails = 1; // ensureRunning's removal
+    await assert.rejects(at.start({ gen: 1, env: {}, stdin: await at.token!(1) }), (e: unknown) => (e as { code?: string }).code === "HOST_START_FAILED");
+    assert.equal(control.users.size, 0, "the place removed it again");
+
+    faults.start = 1;
+    control.removeFails = 2; // ensureRunning's and the place's
+    await assert.rejects(at.start({ gen: 2, env: {}, stdin: await at.token!(2) }));
+    assert.equal(control.users.size, 1, "both removals failed: the user is still there");
+    await at.release();
+    assert.equal(control.users.size, 0, "release removed it");
+  });
+
+  it("a runner whose status reads fail stays killable: its exited reports the failure, and kill still kills", async () => {
+    const control = new FakeControl();
+    const { host, faults } = fakeHost(control);
+    const at = makePlace({ ...REF, control, host });
+    const runner = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
+    faults.status = 1_000;
+    await assert.rejects(runner.exited, (e: unknown) => e instanceof PlaceError && e.code === "STATUS_FAILED");
+    faults.status = 0;
+    await at.kill(runner, "box");
+    assert.ok(control.ops.includes("kill box-1"), "the driver's kill ran");
+  });
+
+  it("recover leaves a newer holder another supervisor started to the usual checks: no revoke, no start, HELD", async () => {
+    const control = new FakeControl();
+    const { host } = fakeHost(control);
+    const at = makePlace({ ...REF, control, host });
+    const first = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
+    await at.kill(first, "box");
+    // Before this recover reads the disk, another supervisor's instance opened generation 2 and holds the run.
+    control.runJson({ generation: 2, holder: { driver: "other", host: "elsewhere", bootId: null, pid: 9, since: new Date().toISOString() } });
+    control.delegations = [{ clientId: "c-other", inodeId: 7, path: `runs/${ID}`, isPending: false, isOrphaned: false }];
+    control.ops.length = 0;
+    await assert.rejects(at.recover(first, "box", { gen: 2, env: {}, stdin: await at.token!(2) }), (e: unknown) => e instanceof PlaceError && e.code === "HELD");
+    assert.ok(!control.ops.some((o) => o.startsWith("revoke") || o.startsWith("start")), control.ops.join(", "));
+  });
+
+  it("every disk call the place makes is bounded: a recovery whose run.json read stalls fails CONTROL_API_FAILED instead of waiting forever", async () => {
+    const control = new FakeControl();
+    const { host } = fakeHost(control);
+    const at = makePlace({ ...REF, control, host, ensure: { controlTimeoutMs: 50 } });
+    const first = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
+    await at.kill(first, "box");
+    const t2 = await at.token!(2);
+    control.hangUnder = `runs/${ID}/run.json`;
+    const ended = await Promise.race([
+      at.recover(first, "box", { gen: 2, env: {}, stdin: t2 }).then(() => "recovered", (e: unknown) => e),
+      sleep(5_000).then(() => "still waiting"),
+    ]);
+    assert.equal((ended as { code?: string }).code, "CONTROL_API_FAILED", String(ended));
+    control.hangUnder = null;
+  });
+
+  it("status keeps one resolver: a delegation Archil lists with no path costs one exec over many calls, and a failed exec does not fail the next call", async () => {
+    const control = new FakeControl();
+    const { host } = fakeHost(control);
+    const at = makePlace({ ...REF, control, host });
+    control.inodes.set(ID, 7);
+    control.delegations = [{ clientId: "c-1", inodeId: 7, isPending: false, isOrphaned: false } as Delegation];
+    for (let i = 0; i < 5; i++) assert.deepEqual((await at.status!()).delegations?.map((d) => d.clientId), ["c-1"]);
+    assert.equal(control.execs, 1, "the inode was attributed once");
+
+    const other = makePlace({ ...REF, control, host });
+    control.execs = 0;
+    control.execFails = 1;
+    await assert.rejects(other.status!(), (e: unknown) => (e as { code?: string }).code === "CONTROL_API_FAILED");
+    assert.deepEqual((await other.status!()).delegations?.map((d) => d.clientId), ["c-1"], "the next call resolved it with a new resolver");
+    assert.equal(control.execs, 2);
   });
 
   it("a driver with no kill: kills is empty and kill refuses", async () => {

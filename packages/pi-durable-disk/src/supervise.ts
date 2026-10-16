@@ -41,7 +41,7 @@ export type HostHandle = { driver: string; [key: string]: Json };
 /**
  * Which start this is: the generation the instance will open (run.json's generation + 1), also in the token's nickname.
  * `env`: what this start adds to the instance's environment (a place's per-attempt order), merged over the driver's own
- * `env`; the keys the driver sets itself (PATH, PDA_HOLDER) still win. A name that is not a variable name is refused.
+ * `env`. PATH and PDA_HOLDER are the driver's: a start that sets either, or a name that is not a variable name, is refused.
  */
 export type StartAttempt = { attempt: number; env?: Record<string, string> };
 

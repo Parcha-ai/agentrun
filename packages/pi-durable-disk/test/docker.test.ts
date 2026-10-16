@@ -285,15 +285,18 @@ test("status: running, paused (a frozen host) is running, exit 0 stopped, any ot
   assert.equal(containerStatus({ Status: "something-new" }), "unknown");
 });
 
-test("a start's own environment goes into the container over the driver's; PDA_HOLDER stays the driver's; a bad name is refused", async () => {
+test("a start's own environment goes into the container over the driver's; one that sets PATH or PDA_HOLDER, or a bad name, is refused", async () => {
   const fake = fakeDaemon();
   try {
-    const driver = host(fake, { env: { A: "1", PLAN: "driver's" } });
-    const h = await driver.start(ref, TOKEN, { attempt: 4, env: { PLAN: "p4", PDA_HOLDER: "{}" } });
+    const driver = host(fake, { env: { A: "1", PLAN: "driver's", PATH: "/opt/driver/bin:/usr/bin" } });
+    const h = await driver.start(ref, TOKEN, { attempt: 4, env: { PLAN: "p4" } });
     const env = fake.byName(String(h.name))!.env;
     assert.deepEqual(env.filter((e) => /^(A|PLAN|PDA_HOLDER)=/.test(e)), ["A=1", "PLAN=p4", `PDA_HOLDER=${JSON.stringify({ driver: h.driver, fleet: h.fleet, daemon: h.daemon, name: h.name, mountpoint: h.mountpoint, image: h.image })}`]);
     await driver.stop(h);
-    await assert.rejects(driver.start(ref, TOKEN, { attempt: 5, env: { "1BAD": "x" } }), (e: unknown) => e instanceof DockerHostError && e.code === "INVALID_ARGUMENT");
+    assert.ok(env.includes("PATH=/opt/driver/bin:/usr/bin"), "the driver's PATH");
+    for (const bad of [{ "1BAD": "x" }, { PATH: "/elsewhere" }, { PDA_HOLDER: "{}" }] as Record<string, string>[]) {
+      await assert.rejects(driver.start(ref, TOKEN, { attempt: 5, env: bad }), (e: unknown) => e instanceof DockerHostError && e.code === "INVALID_ARGUMENT", JSON.stringify(bad));
+    }
   } finally {
     fake.remove();
   }

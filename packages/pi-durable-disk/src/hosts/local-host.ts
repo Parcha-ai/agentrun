@@ -12,7 +12,6 @@
 // place reads nothing and reuses its live mount), the instance closes its stdin after reading, and stop removes it.
 // The token is never in argv, the environment, a systemd credential directory or anything the run's user can open.
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { extname, join } from "node:path";
@@ -20,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { ARCHIL_SCOPED, DEAD_CONNECTION, DEFAULT_MOUNT_ROOT, runPath, type RunRef } from "../claim.ts";
 import { EXIT_FENCED, EXIT_HELD, PdaError } from "../errors.ts";
 import { LOCAL_PARK_THRESHOLD_MS } from "../park.ts";
+import { processTable, thisBoot } from "../process-table.ts";
 import type { HostDriver, HostHandle, HostStatus, Json, StartAttempt } from "../supervise.ts";
 import { attemptEnv } from "./attempt-env.ts";
 
@@ -120,8 +120,11 @@ export const runCommand: Runner = (argv, opts = {}) =>
     child.stdin.end(opts.input ?? "");
   });
 
+/** This boot's id: `/proc/sys/kernel/random/boot_id`, or `kern.bootsessionuuid` on macOS. Throws when it cannot be read. */
 export function currentBootId(): string {
-  return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+  const boot = thisBoot();
+  if (boot === null) throw new Error("this machine's boot id cannot be read");
+  return boot;
 }
 
 const firstLine = (r: Ran) => (r.stderr.trim().split("\n").at(-1) ?? "").slice(0, 300);
@@ -416,16 +419,15 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
   };
 }
 
-/** Field 22 of /proc/<pid>/stat (start time in clock ticks), so a reused pid is never mistaken for the instance. */
+/**
+ * A live process's start (field 22 of /proc/<pid>/stat, in clock ticks; on macOS the second it started), so a reused pid is
+ * never mistaken for the instance. Null for a zombie, a process that is gone, or one the table cannot be read for.
+ */
 export function procStartTicks(pid: number): number | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
-  let stat: string;
   try {
-    stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return processTable().snapshot().info(pid)?.start ?? null;
   } catch {
     return null;
   }
-  const rest = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-  if (rest[0] === "Z" || rest[0] === "X") return null;
-  return Number(rest[19]);
 }
