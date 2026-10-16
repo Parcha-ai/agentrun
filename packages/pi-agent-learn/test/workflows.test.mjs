@@ -350,6 +350,35 @@ test("a workflow whose input schema has a wide enumeration is admitted, with the
   assert.deepEqual([refused.result.status, refused.result.reason], ["refused", "when"], "a host's own checks that a trial cannot keep are refused, not thrown");
 });
 
+test("a proposal for an older revision, delivered late, never rewrites the live revision's description", async () => {
+  const root = await scratch();
+  const { repo } = await agentRepo(root);
+  const first = await admitted(repo, { checks: schemaWhen });
+  for (const [i, run] of ["u1", "u2", "u3"].entries()) await settle(repo, usesOf(run, [kyb.name, first.digest, "frozen", at(8, 10 + i)]));
+  const second = await admitted(repo, { doc: workflowDoc({ limit: 40 }), run: "author-2", description: "Quote a SKU, escalating above 40.", when: at(9) });
+  const late = await admitted(repo, { run: "late-run", description: "Older text, from a run that finished long ago.", when: at(10) });
+  assert.deepEqual([late.result.status, late.result.files], ["unchanged", {}]);
+  assert.equal(await repo.read(`.agents/skills/${kyb.name}/SKILL.md`, late.sha), renderSkill(kyb.name, "Quote a SKU, escalating above 40."), "the live revision keeps its own description");
+  assert.equal(late.sha, second.sha);
+});
+
+test("preconditions a trial cannot keep are refused before any file is written, whatever shape they have", async () => {
+  const root = await scratch();
+  const { repo } = await agentRepo(root);
+  const many = Array.from({ length: 17 }, (_, i) => ({ pointer: `/f${i}`, op: "exists" }));
+  for (const checks of [() => many, () => [{ pointer: "no-slash", op: "exists" }], () => [{ pointer: "/a", op: "matches" }], () => "not a list"]) {
+    const { dir, saved } = await workDirWith({ [kyb.name]: workflowDoc() });
+    const result = await curateStep(repo, async (checkout) => {
+      const out = await admitInDir({ dir: checkout, runId: "r", name: kyb.name, description: WHEN, records: await records(dir, kyb.name, saved[kyb.name]), when: checks });
+      const wrote = await readTrialIn(checkout, kyb.name);
+      assert.equal(wrote, undefined, "no trial was written");
+      assert.equal(await new WorkflowStore(checkout).list().then((l) => l.length), 0, "no record was saved");
+      return out;
+    });
+    assert.deepEqual([result.result.status, result.result.reason], ["refused", "when"]);
+  }
+});
+
 test("the ports a curator calls: admitting, settling, and what each says", async () => {
   const root = await scratch();
   const { repo } = await agentRepo(root);
