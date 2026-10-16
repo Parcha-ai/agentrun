@@ -15,6 +15,9 @@ async function fakeBrowser() {
     socket.write(Buffer.concat([head, body]));
   };
   const server = http.createServer();
+  // Every connection is tracked: an upgraded socket leaves the http server's own list, and server.close() waits for it.
+  const sockets = new Set();
+  server.on("connection", (c) => { sockets.add(c); c.on("close", () => sockets.delete(c)); });
   server.on("upgrade", (req, s) => {
     socket = s;
     s.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${createHash("sha1").update(req.headers["sec-websocket-key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64")}\r\n\r\n`);
@@ -53,7 +56,7 @@ async function fakeBrowser() {
     pauseForm: (frameId) => send({ sessionId: "S2", method: "Fetch.requestPaused", params: { requestId: "F9", networkId: "R9", frameId, resourceType: "Document", request: { method: "POST", url: "http://widget.test/api/iframe-form", headers: {} } } }),
     announce: (requestId) => send({ sessionId: "S1", method: "Network.requestWillBeSent", params: { requestId, request: { method: "POST", url: "http://fake.test/api/order" } } }),
     pause: (requestId, networkId) => send({ sessionId: "S1", method: "Fetch.requestPaused", params: { requestId, networkId, resourceType: "Fetch", request: { method: "POST", url: "http://fake.test/api/order", headers: {} } } }),
-    close: () => new Promise((resolve) => { socket?.destroy(); server.close(() => resolve()); }),
+    close: () => new Promise((resolve) => { for (const c of sockets) c.destroy(); server.close(() => resolve()); }),
   };
 }
 
