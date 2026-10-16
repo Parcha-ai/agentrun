@@ -1295,3 +1295,28 @@ test('code mode is off by default; on, the agent\'s `code` tool runs a script wh
   const spec = await run(t, { codeMode: true }, ['--json'], { DEMO_CODE: script, DEMO_CODE_ON: '' });
   assert.equal(readFileSync(join(spec.result.dir, 'work', 'proof.txt'), 'utf8').trim(), 'hello');
 });
+
+test('a run.json line is an allowlist: a holder\'s sandbox id, name and mountpoint and any other field are dropped, and a detail is text of at most 240 with every absolute path as <path>', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-allowlist-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'spec.json');
+  writeFileSync(file, JSON.stringify({ name: 'reference' }));
+  Object.assign(process.env, { DEMO_SPEC: file });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const recording = join(tmp, 'recording');
+  await demo({ ...options, argv: ['--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => ({
+    ...localPlace({ self, paths, destroyBoxes, requestFile }),
+    status: async () => ({ record: {
+      run: paths.id, status: 'running', generation: 3, sealedSeq: 7, wakeAt: null, heartbeatAt: 'h', updatedAt: 'u', surprise: 'a field nobody listed',
+      holder: { driver: 'archil', host: 'a-real-host-name', bootId: 'a-real-boot-id', pid: 12, since: 's', sandboxId: 'sbx-123456', name: 'sandbox-of-the-demo', mountpoint: '/mnt/archil/the-disk' },
+      detail: `mounted at /mnt/archil/the-disk and ${paths.root}/store: ${'x'.repeat(400)}`,
+    } }),
+  }) });
+  const [line] = readEvents(recording).filter((entry) => entry.source === 'host' && entry.kind === 'run.json');
+  assert.deepEqual(Object.keys(line.data).sort(), ['detail', 'gen', 'generation', 'heartbeatAt', 'holder', 'run', 'sealedSeq', 'status', 'updatedAt', 'wakeAt']);
+  assert.deepEqual(line.data.holder, { driver: 'archil', host: 'host-1', bootId: 'boot-1', pid: 12, since: 's' });
+  assert.ok(line.data.detail.startsWith('mounted at <path> and <path>:') && line.data.detail.length <= 240);
+  const text = readFileSync(join(recording, 'events.jsonl'), 'utf8');
+  for (const leaked of ['sbx-123456', 'sandbox-of-the-demo', '/mnt/archil', 'a-real-host-name', 'a-real-boot-id', 'a field nobody listed']) assert.ok(!text.includes(leaked), `${leaked} is not in the recording`);
+});

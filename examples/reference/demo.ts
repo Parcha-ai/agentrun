@@ -362,10 +362,13 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
         const key = JSON.stringify([record.status, record.generation, record.holder, record.sealedSeq]);
         if (key === lastRunRecord) return;
         lastRunRecord = key;
-        // A recording never holds a real host name or boot id: the holder's are labels (`host-1`, `boot-1`, ... in order of first appearance, the same label for the same value), so a takeover by a new box still shows a new holder.
-        const holder = record.holder && typeof record.holder === 'object' ? { ...(record.holder as Record<string, unknown>) } : undefined;
-        if (holder) { if (typeof holder.host === 'string') holder.host = labelOf(hostLabels, 'host', holder.host); if (typeof holder.bootId === 'string') holder.bootId = labelOf(bootLabels, 'boot', holder.bootId); }
-        supervisor.host('run.json', { gen: record.generation, ...record, ...(holder ? { holder } : {}) });
+        // The line is an allowlist (RECORDING.md's host row): run, status, generation, sealedSeq, wakeAt, holder { driver, host, bootId, pid, since }, heartbeatAt, updatedAt, and a detail as text. Every other field is dropped (a sandbox id, a name, a mountpoint:
+        // what a place knows of its machine is not the recording's). A holder's host and boot id are labels (`host-1`, `boot-1`, ... in order of first appearance, the same label for the same value), so a takeover by a new box still shows a new holder.
+        const holder = record.holder && typeof record.holder === 'object' ? (record.holder as Record<string, unknown>) : undefined;
+        const kept = (source: Record<string, unknown>, names: readonly string[]) => Object.fromEntries(names.filter((name) => source[name] !== undefined).map((name) => [name, source[name]]));
+        const safeHolder = holder ? { ...kept(holder, ['driver', 'pid', 'since']), ...(typeof holder.host === 'string' ? { host: labelOf(hostLabels, 'host', holder.host) } : {}), ...(typeof holder.bootId === 'string' ? { bootId: labelOf(bootLabels, 'boot', holder.bootId) } : {}) } : undefined;
+        const detail = record.detail === undefined || record.detail === null ? undefined : plainText(record.detail);
+        supervisor.host('run.json', { gen: record.generation, ...kept(record, ['run', 'status', 'generation', 'sealedSeq', 'wakeAt', 'heartbeatAt', 'updatedAt']), ...(safeHolder ? { holder: safeHolder } : {}), ...(detail ? { detail } : {}) });
       } catch { /* a reading never fails the run */ }
     });
     return reading;
@@ -491,6 +494,12 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     await served.close();
     if (!values.record && !values.dir) await rm(scratch, { recursive: true, force: true });
   }
+}
+
+/** A place's detail as the recording holds it: text of at most 240 characters, every absolute path replaced by `<path>`. */
+export function plainText(value: unknown): string {
+  const text = typeof value === 'string' ? value : JSON.stringify(value) ?? '';
+  return text.replace(/(?<![\w/:.-])\/(?:[\w.@%+~-]+\/?)+/g, '<path>').slice(0, 240);
 }
 
 const readEventsOf = (dir: string) => rows<Record<string, unknown>>(join(dir, 'events.jsonl'));
