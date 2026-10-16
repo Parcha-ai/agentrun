@@ -2,6 +2,6 @@
 packages: repo
 kind: ci
 ---
-The stranger job's `registry` mode, which installs `@parcha/pi-durable-disk@beta` with the README's own install line against
-the registry's latest peers and runs the README's quickstart, is blocking: 0.1.0-beta.13 installs beside pi-durable,
-chord and pi-ai 1.2.0 with no ERESOLVE, where 0.1.0-beta.12 could not.
+The stranger job's `registry` mode, which installs `@parcha/pi-durable-disk@beta` from the registry with the README's own
+install line as written and runs the README's quickstart, is blocking: 0.1.0-beta.14, whose peer ranges accept pi below
+1.4, installs with it, where 0.1.0-beta.13 (ranges below 1.3) failed with ERESOLVE once pi 1.3.0 shipped.
