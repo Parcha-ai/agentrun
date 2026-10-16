@@ -96,13 +96,29 @@ export function csv(text, sep) {
   return rows;
 }
 
+/** The themes the page draws in: `auto` follows the system's light or dark. */
+export const THEMES = ["auto", "light", "dark"];
+/** What a sandboxed file frame's document is told its colors are, so it is not painted light on a dark page. */
+const FRAME_SCHEME = { auto: "light dark", light: "light", dark: "dark" };
+
+/** Agent HTML for a sandboxed frame, told the page's color scheme: the meta goes after a doctype, so the document keeps
+ *  its mode. */
+function themedFrame(html, theme) {
+  const meta = `<meta name="color-scheme" content="${FRAME_SCHEME[theme]}">`;
+  const doctype = /^\s*<!doctype[^>]*>/i.exec(html);
+  return doctype ? `${doctype[0]}${meta}${html.slice(doctype[0].length)}` : `${meta}${html}`;
+}
+
 /**
  * Draw the run page into `root` and keep it current from `source`. Returns `unmount`, which stops every timer, stream
- * and listener the page holds.
+ * and listener the page holds. `theme` sets `data-theme` on `root`; every color is a `--ar-*` token there, which a host
+ * may also set in its own CSS.
  * @param {HTMLElement} root
  * @param {import("./source.js").RunSource} source
+ * @param {{ theme?: "auto" | "light" | "dark" }} [options]
  */
-export function mountRunPage(root, source) {
+export function mountRunPage(root, source, { theme = "auto" } = {}) {
+  if (!THEMES.includes(theme)) throw new Error(`the run page's theme is one of ${THEMES.join(", ")}, not ${JSON.stringify(theme)}`);
   const doc = root.ownerDocument;
   const win = doc.defaultView;
   const can = { start: typeof source.start === "function", submit: typeof source.submit === "function", stop: typeof source.stop === "function", live: typeof source.live === "function" };
@@ -166,6 +182,7 @@ export function mountRunPage(root, source) {
   );
   root.dataset.pane = "run";
   root.dataset.tab = "timeline";
+  root.setAttribute("data-theme", theme);
 
   const ui = { id: null, info: null, rows: [], state: "idle", cost: null, open: new Set(), follow: null, timer: null, sig: "", file: null, files: new Set(), filesSig: "", browserKey: "", shown: false, secs: new Map(), liveSince: new Map(), blobs: [] };
   const timers = new Set();
@@ -455,7 +472,7 @@ export function mountRunPage(root, source) {
     const bar = el("div", { class: "bar2" }, el("a", { href: `#/run/${enc(id)}` }, "Files"), el("b", {}, path), download);
     let body;
     if (!bytes) body = el("div", { class: "note" }, "This file is not available.");
-    else if (ext === "html" || ext === "htm") body = Object.assign(el("iframe", { sandbox: "", referrerpolicy: "no-referrer", title: path }), { srcdoc: await bytes.text() });
+    else if (ext === "html" || ext === "htm") body = Object.assign(el("iframe", { sandbox: "", referrerpolicy: "no-referrer", title: path }), { srcdoc: themedFrame(await bytes.text(), theme) });
     else if (IMAGES.has(ext)) body = el("img", { src: blobUrl(bytes), alt: path });
     else if (TEXT.has(ext)) {
       const all = await bytes.text();

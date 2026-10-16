@@ -62,13 +62,13 @@ const liveSource = (calls = []) => ({
 });
 
 /** Mount the page on a fresh DOM at `hash`, with any `fetch` outside the source failing the test. */
-async function mount(t, source, hash) {
+async function mount(t, source, hash, options) {
   const dom = fakeDom({ hash });
   const fetched = [];
   const real = globalThis.fetch;
   globalThis.fetch = (url) => (fetched.push(String(url)), Promise.reject(new Error("the run page reads only through its source")));
   t.after(() => (globalThis.fetch = real));
-  const handle = page.mountRunPage(dom.root, source);
+  const handle = page.mountRunPage(dom.root, source, options);
   t.after(() => handle.unmount());
   await settle();
   return { ...dom, handle, fetched, find: (id) => byId(dom.root, id), tabs: () => byTag(dom.root, "button").filter((b) => b.dataset.tab).map((b) => b.dataset.tab) };
@@ -131,12 +131,48 @@ test("a live run with no summary cost still shows its rows' cost so far", async 
   assert.equal(view.find("cost").textContent, "$0.030");
 });
 
+test("the theme is data-theme on the page root, auto by default; an unknown theme is refused", async (t) => {
+  const view = await mount(t, replaySource(), "#/run/r1");
+  assert.equal(view.root.getAttribute("data-theme"), "auto");
+  assert.throws(() => page.mountRunPage(fakeDom().root, replaySource(), { theme: "blue" }), /theme is one of auto, light, dark/);
+});
+
+test("theme dark sets data-theme dark, the file frame is told it, and the replay notice is drawn in it", async (t) => {
+  const html = "<!DOCTYPE html><h1>agent page</h1>";
+  const source = { ...replaySource(), file: async (id, path) => (path === "page.html" ? new Response(html) : respond(path)) };
+  const dark = await mount(t, source, "#/run/r1/files/page.html", { theme: "dark" });
+  assert.equal(dark.root.getAttribute("data-theme"), "dark");
+  assert.equal(byTag(dark.find("files"), "iframe")[0].srcdoc, '<!DOCTYPE html><meta name="color-scheme" content="dark"><h1>agent page</h1>', "after the doctype, so the document keeps its mode");
+  assert.ok(shown(dark.find("replay")), "the replay notice is drawn in the dark theme too");
+});
+
+test("no color is written in the page's script, and every color in app.css is a token, the same ones in light and in both dark rules", async () => {
+  const script = await readFile(new URL("./page/run-page.js", import.meta.url), "utf8");
+  assert.doesNotMatch(script, /#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color-mix)\(|\bstyle\b/i, "run-page.js sets no color of its own");
+  const css = await readFile(new URL("./page/app.css", import.meta.url), "utf8");
+  const blocks = {
+    light: /^:where\(\.runs-app\) \{([^}]*)\}/m.exec(css)?.[1],
+    system: /^@media \(prefers-color-scheme: dark\) \{ :where\(\.runs-app:not\(\[data-theme="light"\]\)\) \{([^}]*)\} \}/m.exec(css)?.[1],
+    dark: /^:where\(\.runs-app\[data-theme="dark"\]\) \{([^}]*)\}/m.exec(css)?.[1],
+  };
+  for (const [name, block] of Object.entries(blocks)) assert.ok(block, `the ${name} token rule`);
+  const tokens = (block) => [...block.matchAll(/(--ar-[a-z-]+):/g)].map((m) => m[1]).filter((name) => name !== "--ar-mono").sort();
+  assert.deepEqual(tokens(blocks.system), tokens(blocks.light), "the system's dark redefines every color token");
+  assert.deepEqual(tokens(blocks.dark), tokens(blocks.light), "and so does data-theme=dark");
+  const rules = css.split("\n").filter((line) => !line.startsWith(":where(.runs-app") && !line.startsWith("@media (prefers-color-scheme: dark)"));
+  const literal = rules.filter((line) => /#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?)\(|:\s*(?:white|black)\b/i.test(line));
+  assert.deepEqual(literal, [], "a color outside the token rules");
+  const defined = new Set([...blocks.light.matchAll(/(--ar-[a-z-]+):/g)].map((m) => m[1]));
+  const used = [...new Set([...css.matchAll(/var\((--[a-z-]+)\)/g)].map((m) => m[1]))];
+  assert.deepEqual(used.filter((name) => !defined.has(name)), [], "every token used is defined");
+});
+
 test("a file view keeps every guard: agent HTML in a frame with nothing allowed, a path out of the workspace never asked for", async (t) => {
   const calls = [];
   const view = await mount(t, replaySource(calls), "#/run/r1/files/page.html");
   const frame = byTag(view.find("files"), "iframe")[0];
   assert.equal(frame.getAttribute("sandbox"), "", "sandboxed, no scripts and no same origin");
-  assert.equal(frame.srcdoc, FILES["page.html"], "the page's own HTML, shown as a document of its own");
+  assert.equal(frame.srcdoc, `<meta name="color-scheme" content="light dark">${FILES["page.html"]}`, "the page's own HTML, shown as a document of its own and told the page's colors");
   assert.equal(frame.hasAttribute("src"), false);
   view.window.navigate("#/run/r1/files/notes.md");
   await settle();
