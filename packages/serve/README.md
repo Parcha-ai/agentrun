@@ -17,7 +17,7 @@ npm ci --ignore-scripts && npm run build
 cat > faux.mjs <<'JS'
 export default (context, faux) => faux.message("The answer is 42.");
 JS
-node packages/agentrun-serve/dist/cli.js --faux faux.mjs
+node packages/serve/dist/cli.js --faux faux.mjs
 ```
 
 It prints where it listens and the token:
