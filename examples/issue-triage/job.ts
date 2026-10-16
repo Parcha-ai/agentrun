@@ -74,7 +74,9 @@ export const fakes: Fakes = {
     github_labels: ({ number }) => ({ labels: byNumber.get(Number(number))?.labels ?? [] }),
     // The scripted run's source files: this issue's, written into the workspace for the agent's read-only tools, as the live tool writes the repository's.
     github_code: ({ number }, context) => {
-      const paths = (byNumber.get(Number(number))?.paths ?? []).filter((path) => path in fixtures.files);
+      // The files the issue names and those of its pull requests: what the scripted researcher reads.
+      const issue = byNumber.get(Number(number));
+      const paths = [...new Set([...(issue?.paths ?? []), ...(issue?.prs ?? []).flatMap((pr) => pr.paths)])].filter((path) => path in fixtures.files);
       if (!context?.place) throw new Error('github_code needs the run place');
       for (const path of paths) { const at = join(context.place.work, 'repo', path); mkdirSync(dirname(at), { recursive: true }); writeFileSync(at, fixtures.files[path]!); }
       return { paths };

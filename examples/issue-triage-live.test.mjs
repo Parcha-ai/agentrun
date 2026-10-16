@@ -149,3 +149,17 @@ test("a live run has no fictional file: the job stages none, and the scripted gi
     await assert.rejects(readFile(join(place.work, 'repo/lib/send-file.js'), 'utf8'), { code: 'ENOENT' });
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("the scripted github_code writes every file the scripted researcher reads: the issue's and its pull requests'", async () => {
+  const root = await mkdtemp(join(tmpdir(), 'triage-fixtures-'));
+  try {
+    const place = { root, work: join(root, 'work') };
+    // #109's pull request changes lib/layer.js and lib/route.js; the issue itself names lib/layer.js.
+    const { paths } = fakes.tools.github_code({ number: 109 }, { place });
+    for (const path of ['lib/layer.js']) assert.match(await readFile(join(place.work, 'repo', path), 'utf8'), /handleRequest/);
+    const fixtures = JSON.parse(await readFile(new URL('./issue-triage/fixtures.json', import.meta.url), 'utf8'));
+    const issue = fixtures.issues.find((candidate) => candidate.number === 109);
+    const wanted = [...new Set([...issue.paths, ...issue.prs.flatMap((pr) => pr.paths)])].filter((path) => path in fixtures.files);
+    assert.deepEqual([...paths].sort(), wanted.sort(), 'every file the researcher would read is written');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
