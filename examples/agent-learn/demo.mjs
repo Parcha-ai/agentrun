@@ -24,9 +24,11 @@ import { agentHomeFor, curateNow, finishRun, prepareRun, revertLearning } from '
 
 const AGENT_DIR = join(import.meta.dirname, 'agent');
 const HOST = 'agent-learn-demo';
-const LESSON = 'An issue whose body has a stack trace is a bug report even when its title asks a question: label it bug.';
+// A project rule no model can guess from an issue: the maintainer says it once, in run 1.
+const CORRECTION = 'Correction from the maintainer: in this project an issue whose body has a stack trace is labeled bug and needs-repro. Remember that for next time.';
+const RULE = 'In this project an issue whose body has a stack trace is labeled bug and needs-repro.';
 const WORKFLOW = 'triage-crash';
-const WORKFLOW_WHEN = 'Use it for an issue whose body holds a stack trace: it labels the issue bug.';
+const WORKFLOW_WHEN = 'Use it for an issue whose body holds a stack trace: it labels the issue bug and needs-repro.';
 
 const issue = (number, reporter, title, body) => ({
   input: { title, body },
@@ -42,20 +44,20 @@ export const ISSUES = {
 
 // The tools a saved workflow may call here; the demo never runs one.
 const WORKFLOW_TOOLS = [{
-  name: 'issues.label', description: 'Set the label of an issue.',
-  parameters: { type: 'object', required: ['title', 'label'], properties: { title: { type: 'string' }, label: { enum: ['bug', 'feature', 'question'] } } },
+  name: 'issues.label', description: 'Set the labels of an issue, comma separated.',
+  parameters: { type: 'object', required: ['title', 'labels'], properties: { title: { type: 'string' }, labels: { type: 'string' } } },
 }];
 export const TRIAGE_WORKFLOW = {
   v: 2, name: WORKFLOW,
   schemas: {
     Issue: { type: 'object', additionalProperties: false, required: ['title', 'body'], properties: { title: { type: 'string' }, body: { type: 'string' } } },
-    Labeled: { type: 'object', required: ['label'], properties: { label: { enum: ['bug', 'feature', 'question'] } } },
+    Labeled: { type: 'object', required: ['labels'], properties: { labels: { type: 'string' } } },
   },
   input: { schemaId: 'Issue' },
   output: { schemaId: 'Labeled', path: 'labeled' },
   root: {
     node: 'chain',
-    steps: [{ node: 'call', label: 'label it bug', via: 'tool', tool: 'issues.label', args: { title: '{title}', label: 'bug' }, out: 'Labeled', as: 'labeled', deadline_s: 20 }],
+    steps: [{ node: 'call', label: 'label it bug and needs-repro', via: 'tool', tool: 'issues.label', args: { title: '{title}', labels: 'bug,needs-repro' }, out: 'Labeled', as: 'labeled', deadline_s: 20 }],
   },
 };
 
@@ -87,19 +89,21 @@ const learnedLines = (system) => {
   return start < 0 ? [] : lines.slice(start, end + 1);
 };
 
-function scriptedModel({ calls = [], answer: fixed } = {}) {
+// `steps` are the model's responses in order, across every turn of the run: a tool call, or an answer (text, or the
+// label its <learned> section leads to).
+function scriptedModel(steps) {
   const requests = [];
   const faux = fauxProvider({ models: [{ id: 'scripted' }] });
   const label = (context) => {
-    const lesson = /- (L-[0-9a-f]{12}) lesson: An issue whose body has a stack trace/.exec(learnedLines(systemText(context.messages)).join('\n'));
-    if (lesson) return `bug: the body is a crash trace, and ${lesson[1]} says a question with a stack trace is a bug report.`;
-    const asked = textOf(context.messages.findLast((m) => m.role === 'user')?.content);
-    return /^Title: .*\?$/m.test(asked) ? 'question: the title asks how to do something.' : 'bug: something fails.';
+    const rule = /- (L-[0-9a-f]{12}) correction: In this project an issue whose body has a stack trace is labeled bug and needs-repro/.exec(learnedLines(systemText(context.messages)).join('\n'));
+    return rule ? `bug, needs-repro: the body is a crash trace, and ${rule[1]} says this project labels those needs-repro too.` : 'bug: the body is a crash trace.';
   };
-  faux.setResponses([
-    ...calls.map(([name, args], i) => (context) => (requests.push(context), fauxAssistantMessage([fauxToolCall(name, args, { id: `call-${i + 1}` })], { stopReason: 'toolUse' }))),
-    (context) => (requests.push(context), fauxAssistantMessage([fauxText(fixed ?? label(context))], { stopReason: 'stop' })),
-  ]);
+  let call = 0;
+  faux.setResponses(steps.map((step) => (context) => {
+    requests.push(context);
+    if (step.call) return fauxAssistantMessage([fauxToolCall(step.call, step.args, { id: `call-${++call}` })], { stopReason: 'toolUse' });
+    return fauxAssistantMessage([fauxText(step.say ?? label(context))], { stopReason: 'stop' });
+  }));
   const models = createModels();
   models.setProvider(faux.provider);
   return { models, agent: { model: { provider: 'faux', modelId: 'scripted' } }, requests };
@@ -133,7 +137,7 @@ async function promptOf(run) {
   return [run.definition.instructions, run.rules.trim(), ...skills].join('\n\n');
 }
 
-async function runOnce(run, issue, model, vault) {
+async function runOnce(run, inputs, model, vault) {
   const learn = agentLearn({ guard, secrets: () => vault });
   // The workflow tool keeps the run's saved workflows in the run's own workspace, where finishRun collects them.
   const workflowTool = createWorkflowTool({
@@ -150,15 +154,24 @@ async function runOnce(run, issue, model, vault) {
   const harness = await Harness.open(await openNodeSqliteStorage(run.storePath), { models: model.models, registry, onReport: () => {} }, ctx);
   try {
     const root = await harness.root(ctx, { agent: { ...model.agent, extensions: [learn, workflowTool.extension], instructions: await promptOf(run) } });
-    await (await root.submit({ type: 'input', content: issue.text }, ctx)).wait(ctx);
-    const { messages } = await root.context(ctx);
-    const calls = messages.filter((m) => m.role === 'assistant').flatMap((m) => m.content.filter((c) => c.type === 'toolCall'));
-    const results = messages.filter((m) => m.role === 'toolResult').map((m) => textOf(m.content));
-    const answer = textOf(messages.findLast((m) => m.role === 'assistant')?.content).trim();
+    const turns = [];
+    let seen = 0;
+    for (const content of inputs) {
+      await (await root.submit({ type: 'input', content }, ctx)).wait(ctx);
+      const { messages } = await root.context(ctx);
+      const fresh = messages.slice(seen);
+      seen = messages.length;
+      turns.push({
+        input: content,
+        calls: fresh.filter((m) => m.role === 'assistant').flatMap((m) => m.content.filter((c) => c.type === 'toolCall')),
+        results: fresh.filter((m) => m.role === 'toolResult').map((m) => textOf(m.content)),
+        answer: textOf(fresh.findLast((m) => m.role === 'assistant')?.content).trim(),
+      });
+    }
     const system = systemText(model.requests[0]?.messages ?? []);
     const sent = learnedLines(system);
     return {
-      answer, calls, results, system,
+      turns, answer: turns.at(-1).answer, calls: turns.flatMap((t) => t.calls), results: turns.flatMap((t) => t.results), system,
       learned: sent.length ? sent : ['<learned>', ...run.seeded.section.split('\n'), '</learned>'], fromRequest: sent.length > 0,
     };
   } finally {
@@ -246,38 +259,41 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
   say(`   main ${short(seed.sha)}`);
   say();
 
-  // Run 1 learns a lesson.
+  // Run 1 is corrected by the maintainer, and learns the project's rule as its AGENTS.md says to.
   const run1 = await prepareRun({ home, repo, host: HOST, runId: 'run-1', input: ISSUES.first.input });
-  const r1 = await runOnce(run1, ISSUES.first, modelFor({
-    calls: [['learn', { type: 'lesson', text: LESSON, evidence: ['the body holds a TypeError trace'] }]],
-    answer: 'bug: the title asks a question, but the body is a crash trace.',
-  }), vault);
+  const r1 = await runOnce(run1, [ISSUES.first.text, CORRECTION], modelFor([
+    {},
+    { call: 'learn', args: { type: 'correction', text: RULE, evidence: ['the maintainer corrected the labels'] } },
+    { say: 'bug, needs-repro: the body is a crash trace, and this project labels those needs-repro too.' },
+  ]), vault);
   const f1 = await finishRun({ home, repo, run: run1, secrets: vault, caseValues: ISSUES.first.values });
   out.run1 = { run: run1, ...r1, ...f1 };
   say(`2. Run 1 starts at main ${short(run1.sha)}: ${run1.seeded.index.length ? `${run1.seeded.index.length} learnings` : 'nothing learned yet'}`);
   say(`   issue: "${ISSUES.first.input.title}" (its body is a stack trace)`);
-  for (const line of callLines(r1)) say(`   ${line}`);
-  say(`   answer: ${r1.answer}`);
+  for (const [i, turn] of r1.turns.entries()) {
+    if (i > 0) say(`   maintainer: "${turn.input}"`);
+    for (const line of callLines(turn)) say(`   ${line}`);
+    say(`   answer: ${turn.answer}`);
+  }
   say(f1.proposal.status === 'proposed' ? `   proposed on runs/run-1 at ${short(f1.proposal.sha)}; main has not moved` : `   proposed nothing (${f1.proposal.status})`);
   say();
 
   const c1 = await curateNow({ repo, judge, secrets: vault });
   out.curate1 = c1;
-  out.lessonId = c1.runs.flatMap((r) => r.accepted)[0]?.id;
+  out.ruleId = c1.runs.flatMap((r) => r.accepted)[0]?.id;
   say(`3. Curate asks the judge: ${[...new Map(asked.map((a) => [a.question, a.p])).entries()].map(([q, p]) => `${ASKED[q] ?? q}? ${p}`).join('; ')}`);
   for (const r of c1.runs) say(`   ${r.run}: ${r.accepted.length} accepted, ${r.refused.length} refused, ${r.held.length} held`);
   say(`   main ${short(c1.main)} adds ${shortPaths(added(seed.sha, c1.main)) || 'nothing'}`);
   say();
 
-  // Run 2 sees the lesson, and saves a workflow for the next runs to try.
+  // Run 2 applies the rule, and saves a workflow for the next runs to try.
   const run2 = await prepareRun({ home, repo, host: HOST, runId: 'run-2', input: ISSUES.second.input });
-  const r2 = await runOnce(run2, ISSUES.second, modelFor({
-    calls: [
-      ['agentrun', { action: 'inspect', workflow: TRIAGE_WORKFLOW, input: ISSUES.second.input }],
-      ['agentrun', { action: 'save', name: WORKFLOW }],
-      ['learn', { type: 'workflow', id: WORKFLOW, text: WORKFLOW_WHEN }],
-    ],
-  }), vault);
+  const r2 = await runOnce(run2, [ISSUES.second.text], modelFor([
+    { call: 'agentrun', args: { action: 'inspect', workflow: TRIAGE_WORKFLOW, input: ISSUES.second.input } },
+    { call: 'agentrun', args: { action: 'save', name: WORKFLOW } },
+    { call: 'learn', args: { type: 'workflow', id: WORKFLOW, text: WORKFLOW_WHEN } },
+    {},
+  ]), vault);
   const f2 = await finishRun({ home, repo, run: run2, secrets: vault, caseValues: ISSUES.second.values });
   out.run2 = { run: run2, ...r2, ...f2 };
   say(`4. Run 2 starts at main ${short(run2.sha)}. ${r2.fromRequest ? 'Its first model request carries' : 'Its <learned> section'}:`);
@@ -295,18 +311,18 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
   say(`   main ${short(c2.main)} adds ${shortPaths(added(c1.main, c2.main)) || 'nothing'}`);
   say();
 
-  // A revert on main takes the lesson out; the workflow trial stays.
-  const reverted = out.lessonId ? await revertLearning({ repo, id: out.lessonId }) : undefined;
+  // A revert on main takes the learned rule out; the workflow trial stays.
+  const reverted = out.ruleId ? await revertLearning({ repo, id: out.ruleId }) : undefined;
   const c3 = await curateNow({ repo, judge, secrets: vault });
   out.revert = reverted;
   out.curate3 = c3;
-  say(`6. Revert the lesson on main (git revert of the commit that added ${out.lessonId ?? 'it'})`);
+  say(`6. Revert the learned rule on main (git revert of the commit that added ${out.ruleId ?? 'it'})`);
   if (reverted) say(`   main ${short(reverted.sha)} reverts ${short(reverted.reverted)}`);
-  say(`   curate again: ${c3.runs.length ? `${c3.runs.length} run(s) curated` : 'nothing to curate, the lesson does not come back'}; main stays ${short(c3.main)}`);
+  say(`   curate again: ${c3.runs.length ? `${c3.runs.length} run(s) curated` : 'nothing to curate, the rule does not come back'}; main stays ${short(c3.main)}`);
   say();
 
   const run3 = await prepareRun({ home, repo, host: HOST, runId: 'run-3', input: ISSUES.second.input });
-  const r3 = await runOnce(run3, ISSUES.second, modelFor(), vault);
+  const r3 = await runOnce(run3, [ISSUES.second.text], modelFor([{}]), vault);
   const f3 = await finishRun({ home, repo, run: run3, secrets: vault, caseValues: ISSUES.second.values });
   out.run3 = { run: run3, ...r3, ...f3 };
   say(`7. Run 3 starts at main ${short(run3.sha)}. ${r3.fromRequest ? 'Its first model request carries' : 'Its <learned> section'}:`);
@@ -317,7 +333,10 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
 
   // A run that tries to learn a secret proposes nothing. Always scripted: it plants the value on purpose.
   const run4 = await prepareRun({ home, repo, host: HOST, runId: 'run-4', input: ISSUES.first.input });
-  const r4 = await runOnce(run4, ISSUES.first, scriptedModel({ calls: [['learn', { type: 'fact', text: `The tracker's deploy token is ${vault[0]}; use it to post labels.` }]] }), vault);
+  const r4 = await runOnce(run4, [ISSUES.first.text], scriptedModel([
+    { call: 'learn', args: { type: 'fact', text: `The tracker's deploy token is ${vault[0]}; use it to post labels.` } },
+    {},
+  ]), vault);
   const f4 = await finishRun({ home, repo, run: run4, secrets: vault, caseValues: ISSUES.first.values });
   const needles = [vault[0], Buffer.from(vault[0]).toString('base64'), Buffer.from(vault[0]).toString('hex')].map((s) => Buffer.from(s));
   const gitDir = existsSync(join(repo.dir, '.git')) ? join(repo.dir, '.git') : repo.dir;
