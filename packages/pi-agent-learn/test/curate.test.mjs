@@ -80,7 +80,7 @@ test("a general lesson is accepted: one learning file on main, one commit with i
   assert.deepEqual([run.superseded, run.duplicates, run.used, run.held, run.refused, run.archived], [[], [], [], [], [], []]);
   assert.equal(run.questions, 2);
   const entries = await learningsOn(w.curator);
-  assert.deepEqual(entries[id], { id, type: "lesson", scope: "all", status: "active", provenance: { runs: ["run-1"], sha: w.main, untrusted: false }, uses: 0, supersedes: [], text: LESSON });
+  assert.deepEqual(entries[id], { id, type: "lesson", scope: "all", status: "active", provenance: { runs: ["run-1"], sha: w.main, untrusted: false, shaFrom: "branch-base" }, uses: 0, supersedes: [], text: LESSON });
   const [head] = await w.curator.log({ max: 1 });
   assert.equal(head.sha, report.main);
   assert.equal(run.commit, report.main);
