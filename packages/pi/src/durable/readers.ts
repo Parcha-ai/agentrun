@@ -38,11 +38,34 @@ function revisionsOf(db: Database, id: number): Record<string, unknown> | undefi
   return value;
 }
 
-/** A Session document's current value. `key` names a family member; a singleton has none. */
-function sessionDoc(db: Database, kind: string, key?: string): Record<string, unknown> | undefined {
+/** The row of a Session document. `key` names a family member; a singleton has none. */
+function sessionDocId(db: Database, kind: string, key?: string): number | undefined {
   const row = db.prepare("SELECT id FROM documents WHERE kind = ? AND scope_kind = 'session' AND owner_id = 0 AND family = ? AND key_value = ? AND retired_at IS NULL ORDER BY created_at DESC LIMIT 1")
     .get(JSON.stringify(kind), key === undefined ? 0 : 1, JSON.stringify(key ?? "")) as { id?: number } | undefined;
-  return row?.id === undefined ? undefined : revisionsOf(db, row.id);
+  return row?.id;
+}
+
+/** A Session document's current value. `key` names a family member; a singleton has none. */
+function sessionDoc(db: Database, kind: string, key?: string): Record<string, unknown> | undefined {
+  const id = sessionDocId(db, kind, key);
+  return id === undefined ? undefined : revisionsOf(db, id);
+}
+
+/** The ids of the effects the map items of `table` own (the keyed layout's `maps`: `{ <map path>: { items, ... } }`), each
+ *  item's own nested maps included, read as the driver reads them back: item `i` of a map is its record at
+ *  `<map path>/items/<i>`, for every item the map started. */
+function itemEffects(db: Database, key: string, table: unknown, into: string[]): void {
+  if (!table || typeof table !== "object" || Array.isArray(table)) return;
+  for (const [mapPath, entry] of Object.entries(table as Record<string, { items?: unknown } | null>)) {
+    const started = entry?.items;
+    if (typeof started !== "number" || !Number.isSafeInteger(started)) continue;
+    for (let index = 0; index < started; index += 1) {
+      const item = sessionDoc(db, "agentrun.items", effectKey(key, `${mapPath}/items/${index}`)) as { effects?: unknown; maps?: unknown } | undefined;
+      if (!item) continue;
+      if (Array.isArray(item.effects)) for (const id of item.effects) if (typeof id === "string") into.push(id);
+      itemEffects(db, key, item.maps, into);
+    }
+  }
 }
 
 /** A Session document of the run's store `file`, read-only; undefined when the file or the document is absent. */
@@ -56,7 +79,15 @@ export function readJournal(file: string, key: string): JournalView | undefined 
   return withDurableFile(file, (db): JournalView | undefined => {
     const doc = sessionDoc(db, "agentrun.driver", key) as DriverRecord | undefined;
     if (!doc || doc.binding === null) return undefined;
-    const effects = doc.effects.map((id) => {
+    // The driver's record lists the effects no map item owns; in the keyed layout each item's record lists its own. All of
+    // them, once each, in the order they were admitted: an effect's document is created by its admission, and a document's
+    // row is numbered when it is created (a later checkpoint folds its revisions, never its row).
+    const ids = [...doc.effects];
+    itemEffects(db, key, (doc.state as { maps?: unknown } | null)?.maps, ids);
+    const admitted = new Map<string, number>();
+    for (const id of new Set(ids)) admitted.set(id, sessionDocId(db, "agentrun.effects", effectKey(key, id)) ?? Number.MAX_SAFE_INTEGER);
+    // A stable sort: an id whose document is missing keeps its place in the listing, after every admitted one.
+    const effects = [...admitted.keys()].sort((a, b) => admitted.get(a)! - admitted.get(b)!).map((id) => {
       const e = sessionDoc(db, "agentrun.effects", effectKey(key, id)) as (Omit<RecoveryEffect, "id"> & { intent?: { tool: string; argsHash: string } }) | undefined;
       return { id, name: e?.name ?? "", argsHash: e?.argsHash ?? "", status: e?.status ?? "unknown", session: e?.session ?? null, result: e?.result ?? null, ...(e?.intent ? { intent: e.intent } : {}), ...(e?.args !== undefined ? { args: e.args } : {}), ...(Array.isArray((e as { calls?: unknown })?.calls) ? { calls: (e as { calls: unknown[] }).calls } : {}) } as RecoveryEffect;
     });
