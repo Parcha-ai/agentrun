@@ -75,12 +75,16 @@ describe("a runner's outbox", () => {
 		again.close();
 	});
 
-	/** Ways the clearing out fails once: each makes the next one fail, and gives back what undoes it. */
-	const failures: readonly (readonly [string, () => () => void])[] = [
+	/**
+	 * Ways the clearing out fails once: each makes the next one fail, calls `failed` as it does, and gives back what
+	 * undoes it.
+	 */
+	const failures: readonly (readonly [string, (failed: () => void) => () => void])[] = [
 		[
 			"the rename",
-			() => {
+			(failed) => {
 				vi.mocked(renameSync).mockImplementationOnce(() => {
+					failed();
 					throw new Error("the disk refused the rename");
 				});
 				return () => {};
@@ -88,7 +92,7 @@ describe("a runner's outbox", () => {
 		],
 		[
 			"the new file",
-			() => {
+			(failed) => {
 				const real = vi.mocked(openSync).getMockImplementation() as (
 					...args: Parameters<typeof openSync>
 				) => number;
@@ -96,6 +100,7 @@ describe("a runner's outbox", () => {
 				vi.mocked(openSync).mockImplementation((...args: Parameters<typeof openSync>) => {
 					if (!refused && String(args[0]).endsWith(".tmp")) {
 						refused = true;
+						failed();
 						throw new Error("no room for the new file");
 					}
 					return real(...args);
@@ -110,22 +115,31 @@ describe("a runner's outbox", () => {
 		it(`never fails an acknowledgement when clearing the file out fails at ${what}, and clears it out later`, () => {
 			const path = place();
 			const outbox = openOutbox(path, { head: 1 });
-			const restore = fail();
-			const failed: unknown[] = [];
+			let failedNow = false;
+			const restore = fail(() => {
+				failedNow = true;
+			});
+			const thrown: unknown[] = [];
+			// Whether a temporary file was left beside the outbox right after the failed try.
+			const leftAfterFailure: boolean[] = [];
 			try {
 				longSession(outbox, (ack) => {
 					try {
 						ack();
 					} catch (cause) {
-						failed.push(cause);
+						thrown.push(cause);
+					}
+					if (failedNow) {
+						failedNow = false;
+						leftAfterFailure.push(existsSync(`${path}.tmp`));
 					}
 				});
 			} finally {
 				restore();
 			}
 			// The old file stayed whole and in use, nothing was left beside it, and a later try cleared it out.
-			expect(failed).toEqual([]);
-			expect(existsSync(`${path}.tmp`)).toBe(false);
+			expect(thrown).toEqual([]);
+			expect(leftAfterFailure).toEqual([false]);
 			expect(rowsIn(path)).toBeLessThan(2_048);
 			outbox.close();
 			const again = openOutbox(path, { head: 3_002 });
