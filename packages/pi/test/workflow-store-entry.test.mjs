@@ -35,13 +35,22 @@ const inProcess = (body, ...args) => JSON.parse(execFileSync(process.execPath, [
   `import { WorkflowStore } from '${manifest.name}/workflows'; const [dir, ...rest] = process.argv.slice(1); const out = await (async () => { ${body} })(); console.log(JSON.stringify(out));`, ...args],
   { cwd: packageRoot, encoding: 'utf8' }));
 
-test('the entry resolves by the package name, is typed, and never reaches the coding agent, its agent core or its TUI', () => {
+test('the entry resolves by the package name and never reaches the coding agent, its agent core or its TUI', () => {
   for (const file of Object.values(manifest.exports['./workflows'])) {
     assert.ok(existsSync(join(packageRoot, file)), file);
     const reached = reachableImports(packageRoot, file).filter(specifier => CODING_AGENT_ONLY.some(name => specifier === name || specifier.startsWith(`${name}/`)));
     assert.deepEqual(reached, [], file);
   }
   assert.equal(typeof WorkflowStore, 'function'); assert.equal(typeof WorkflowStoreError, 'function');
+});
+
+test('the entry is typed: a strict consumer imports every export and checks what save, load and list return', () => {
+  // Declarations are checked too (no skipLibCheck): the entry reaches only the DSL package's, which are clean.
+  execFileSync(process.execPath, [
+    fileURLToPath(new URL('../../../node_modules/typescript/bin/tsc', import.meta.url)),
+    '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext',
+    fileURLToPath(new URL('./workflow-store-types.ts', import.meta.url)),
+  ], { encoding: 'utf8' });
 });
 
 test('a workflow saved by one process loads in a second, by name and by digest, as the same value', async t => {
