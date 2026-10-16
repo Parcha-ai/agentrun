@@ -107,7 +107,7 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | @types/node | 18.19.130 | MIT | pi-browser | no | 1 |
 | @types/node | 22.20.4 | MIT | pi, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision, serve | no | 1 |
 | @types/retry | 0.12.0 | MIT | pi, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision, serve | no | 1 |
-| @typesafe-ai/sdk | 0.6.0 | MIT | jev, pi | no | 1 |
+| @typesafe-ai/sdk | 0.7.0 | MIT | jev, pi | no | 1 |
 | @xmldom/xmldom | 0.9.12 | MIT | pi-vision | no | 1 |
 | abort-controller | 3.0.0 | MIT | pi-browser | no | 1 |
 | agent-base | 7.1.4 | MIT | pi, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision, serve | no | 1 |
