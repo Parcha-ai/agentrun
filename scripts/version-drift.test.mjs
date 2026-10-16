@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { docFiles, driftOf, RULES, specsOf, statementsOf, STRUCTURE } from './version-drift.mjs';
+import { docFiles, driftOf, RULES, specsOf, statementsOf, STRUCTURE, tokensOf } from './version-drift.mjs';
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -99,4 +99,9 @@ test('the statements of a file, by line: a fenced shell command, an inline comma
   assert.deepEqual(specsOf('npm install -g @earendil-works/pi-coding-agent@1.3.0 typebox').map(({ name, spec }) => [name, spec]), [['@earendil-works/pi-coding-agent', '1.3.0'], ['typebox', undefined]]);
   assert.deepEqual(specsOf('npx --yes @parcha/agentrun-dsl@1.0.0 validate workflow.json').map(({ name, spec }) => [name, spec]), [['@parcha/agentrun-dsl', '1.0.0']]);
   assert.deepEqual(specsOf('pi install npm:@parcha/agentrun-pi@1.0.0').map(({ name, spec }) => [name, spec]), [['@parcha/agentrun-pi', '1.0.0']]);
+});
+
+test('a quoted spec is one token, with its quotes removed', () => {
+  assert.deepEqual(tokensOf('npm install @earendil-works/pi-durable@">=1.0.4 <1.4.0" -D \'a b\''), ['npm', 'install', '@earendil-works/pi-durable@>=1.0.4 <1.4.0', '-D', 'a b']);
+  assert.deepEqual(specsOf('npm install @earendil-works/pi-durable@">=1.0.4 <1.4.0"').map(({ name, spec }) => [name, spec]), [['@earendil-works/pi-durable', '>=1.0.4 <1.4.0']]);
 });
