@@ -20,7 +20,10 @@ export class GithubError extends Error {
 type Fetch = typeof fetch;
 export type Place = { root: string; work: string };
 
-export function githubTools(env: NodeJS.ProcessEnv, fetcher: Fetch = fetch) {
+/** The two file operations a write is made of, so a test can see their order. */
+export type Files = { writeFile: typeof writeFile; rename: typeof rename };
+
+export function githubTools(env: NodeJS.ProcessEnv, fetcher: Fetch = fetch, files: Files = { writeFile, rename }) {
   const token = env.GITHUB_TOKEN?.trim();
   /** One GET. The failure names the status and the path, never a header. */
   const get = async (path: string): Promise<any> => {
@@ -73,8 +76,8 @@ export function githubTools(env: NodeJS.ProcessEnv, fetcher: Fetch = fetch) {
         await mkdir(dirname(at), { recursive: true });
         // Whole or not there: four issues run at once, and another's agent may read this path while it is written.
         const part = `${at}.${randomUUID()}.part`;
-        await writeFile(part, Buffer.from(file.content, 'base64'));
-        await rename(part, at);
+        await files.writeFile(part, Buffer.from(file.content, 'base64'));
+        await files.rename(part, at);
         written.push(clean);
       }
       return { paths: written };

@@ -119,18 +119,22 @@ test('a dropped connection is a failure the entry may send again, and it names t
   });
 });
 
-test('a file is written whole or not at all: a reader never sees a part of it, and no partial file is left', async () => {
+test('a file is written whole or not at all: the bytes go to a part file and are renamed into place, and the final path is never written to', async () => {
   const root = await mkdtemp(join(tmpdir(), 'triage-atomic-'));
   try {
     const place = { root, work: join(root, 'work') };
-    const big = 'x'.repeat(30_000);
-    const tools = githubTools({}, github({ '/repos/o/r/issues/7': () => json(ISSUE), '/repos/o/r/issues/7/timeline': () => json([]), '/repos/o/r/contents/lib/params.js': () => json({ type: 'file', size: big.length, content: Buffer.from(big).toString('base64') }), '/repos/o/r/contents/docs/guide/routing.md': () => json({ type: 'file', size: 3, content: Buffer.from('abc').toString('base64') }) }).fetcher);
-    const seen = new Set();
-    const watcher = (async () => { for (let i = 0; i < 400; i += 1) { try { seen.add((await readFile(join(place.work, 'repo/lib/params.js'), 'utf8')).length); } catch { /* not there yet */ } await new Promise((resolve) => setImmediate(resolve)); } })();
-    await Promise.all([tools.github_code({ repo: 'o/r', number: 7 }, { place }), tools.github_code({ repo: 'o/r', number: 7 }, { place }), watcher]);
-    assert.deepEqual([...seen].filter((length) => length !== big.length), [], 'a reader saw a file that was not whole');
+    const { writeFile: write, rename } = await import('node:fs/promises');
+    const log = [];
+    const files = { writeFile: async (path, bytes) => { log.push(['write', path]); return write(path, bytes); }, rename: async (from, to) => { log.push(['rename', from, to]); return rename(from, to); } };
+    const tools = githubTools({}, github({ '/repos/o/r/issues/7': () => json(ISSUE), '/repos/o/r/issues/7/timeline': () => json([]), '/repos/o/r/contents/lib/params.js': () => json({ type: 'file', size: 4, content: Buffer.from('code').toString('base64') }) }).fetcher, files);
+    await tools.github_code({ repo: 'o/r', number: 7 }, { place });
+    const final = join(place.work, 'repo/lib/params.js');
+    assert.equal(log.length, 2);
+    assert.equal(log[0][0], 'write'); assert.match(log[0][1], /\.part$/); assert.notEqual(log[0][1], final);
+    assert.deepEqual(log[1], ['rename', log[0][1], final]);
+    assert.equal(await readFile(final, 'utf8'), 'code');
     const { readdir } = await import('node:fs/promises');
-    assert.deepEqual((await readdir(join(place.work, 'repo/lib'))).sort(), ['params.js']);
+    assert.deepEqual(await readdir(join(place.work, 'repo/lib')), ['params.js'], 'no part file is left');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
