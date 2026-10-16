@@ -187,8 +187,8 @@ pi-browser's declaration until then.
 ## Requirements
 
 - Node 22.19 or later.
-- `@earendil-works/pi-durable` and `@earendil-works/chord`, `>=1.1.0 <1.3.0`, as peer dependencies. The package is
-  developed against 1.1.0, and CI runs its suite on 1.2.0 too.
+- `@earendil-works/pi-durable` and `@earendil-works/chord`, `>=1.1.0 <1.4.0`, as peer dependencies. The package is
+  developed against 1.1.0, and CI runs its suite on 1.2.0 and 1.3.0 too.
 
 ## License
 
