@@ -20,10 +20,14 @@ export default async function app(ctx: AppContext): Promise<AppOptions> {
   const killNonce = process.env.KILL_NONCE;
   delete process.env.KILL_NONCE;
   const prepared = await prepareChild(options, process.env, { id: ctx.ref.id, root: ctx.root, work: ctx.work, store: ctx.store }, killNonce);
-  return appOf(prepared.place, prepared.host, prepared.job, prepared.runOptions, async ({ result, storeSha256 }) => {
+  const opened = await appOf(prepared.place, prepared.host, prepared.job, prepared.runOptions, async ({ result, storeSha256 }) => {
     const made = await prepared.made(result);
     await prepared.recorder?.detach();
     console.log(JSON.stringify({ outcome: outcomeOf(result, storeSha256, made, prepared.models) }));
     await prepared.done();
   });
+  // Nothing under the run's directory is written before the claim is open: the recorder, the fetched files and the box start here, once the store is open and before it resumes (a write earlier would land on the bare
+  // mountpoint, which the mount then hides). The lines produced before this are held in memory and written, in order, when the recorder starts.
+  const beforeResume = opened.beforeResume;
+  return { ...opened, beforeResume: async (input) => { await prepared.open(); await beforeResume?.(input); } };
 }

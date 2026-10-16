@@ -24,6 +24,7 @@ import { DEFAULT_MOUNT_ROOT, runPath, type RunRef } from "../claim.ts";
 import { PdaError } from "../errors.ts";
 import { LOCAL_PARK_THRESHOLD_MS } from "../park.ts";
 import type { HostDriver, HostHandle, HostStatus, StartAttempt } from "../supervise.ts";
+import { attemptEnv } from "./attempt-env.ts";
 
 export type DockerRan = { code: number | null; timedOut: boolean; stdout: string; stderr: string };
 /** Runs one docker CLI command; replaceable so tests can drive a fake daemon. */
@@ -76,7 +77,7 @@ export interface DockerHostOptions {
 }
 
 export class DockerHostError extends PdaError {
-  constructor(code: "INVALID_ARGUMENT" | "START_FAILED" | "STOP_FAILED" | "DOCKER_FAILED", message: string, options: { cause?: unknown } = {}) {
+  constructor(code: "INVALID_ARGUMENT" | "START_FAILED" | "STOP_FAILED" | "KILL_FAILED" | "DOCKER_FAILED", message: string, options: { cause?: unknown } = {}) {
     super(code, message, options);
   }
 }
@@ -187,7 +188,7 @@ export function containerStatus(state: DockerState): HostStatus {
 
 export type ContainerInfo = { status: HostStatus; state: string; exitCode: number | null; oomKilled: boolean; error: string; startedAt: string | null; finishedAt: string | null };
 
-export function dockerHost(opts: DockerHostOptions = {}): HostDriver & {
+export function dockerHost(opts: DockerHostOptions = {}): HostDriver & Required<Pick<HostDriver, "kill" | "kills">> & {
   readonly fleet: string;
   readonly mountRoot: string;
   describe(handle: HostHandle): Promise<ContainerInfo | null>;
@@ -262,8 +263,8 @@ export function dockerHost(opts: DockerHostOptions = {}): HostDriver & {
     if (!ok(r) && !NO_SUCH.test(r.stderr)) throw new DockerHostError("DOCKER_FAILED", `docker rm -f ${ref}: ${firstLine(r)}`);
   }
 
-  function createArgs(ref: RunRef, name: string, attempt: number | null, holder: HostHandle, profile: string | null): string[] {
-    const env: Record<string, string> = { ...opts.env, PDA_HOLDER: JSON.stringify(holder) };
+  function createArgs(ref: RunRef, name: string, attempt: number | null, holder: HostHandle, profile: string | null, extra: Record<string, string>): string[] {
+    const env: Record<string, string> = { ...opts.env, ...extra, PDA_HOLDER: JSON.stringify(holder) };
     const runFlags = [
       "run",
       "--disk", ref.disk,
@@ -300,10 +301,10 @@ export function dockerHost(opts: DockerHostOptions = {}): HostDriver & {
     ];
   }
 
-  async function create(ref: RunRef, name: string, attempt: number | null, holder: HostHandle): Promise<{ id: string } | { adopted: true }> {
+  async function create(ref: RunRef, name: string, attempt: number | null, holder: HostHandle, extra: Record<string, string>): Promise<{ id: string } | { adopted: true }> {
     const profile = await apparmor();
     for (let tries = 0; ; tries++) {
-      const r = await run(createArgs(ref, name, attempt, holder, profile), { timeoutMs: 120_000 });
+      const r = await run(createArgs(ref, name, attempt, holder, profile, extra), { timeoutMs: 120_000 });
       if (ok(r)) return { id: r.stdout.trim().split("\n").at(-1)!.trim() };
       if (!IN_USE.test(r.stderr) || tries > 0) throw new DockerHostError("START_FAILED", `docker create ${name}: ${firstLine(r)}`);
       // The same attempt again: a running container is a start that already happened (a racing supervisor, or a retry
@@ -338,16 +339,18 @@ export function dockerHost(opts: DockerHostOptions = {}): HostDriver & {
   return {
     fleet,
     mountRoot,
+    kills: "box",
 
     async start(ref, token, attemptInfo?: StartAttempt) {
       runPath(ref.id);
       if (!opts.image) throw new DockerHostError("INVALID_ARGUMENT", "dockerHost needs an image to start an instance");
       if (!token || /[\r\n]/.test(token)) throw new DockerHostError("INVALID_ARGUMENT", "no mount token, or one with a line break");
       const attempt = attemptInfo?.attempt ?? null;
+      const extra = attemptEnv(attemptInfo, (m) => new DockerHostError("INVALID_ARGUMENT", m));
       const name = `${prefix}${ref.id}-${diskKey(ref)}-${attempt === null ? `t${Date.now().toString(36)}` : `g${attempt}`}`;
       if (!NAME_SAFE.test(name)) throw new DockerHostError("INVALID_ARGUMENT", `container name ${name} is not safe`);
       const handle: HostHandle = { driver: "docker", fleet, daemon: await daemon(), name, mountpoint: posix.join(mountRoot, runPath(ref.id)), image: opts.image };
-      const made = await create(ref, name, attempt, handle);
+      const made = await create(ref, name, attempt, handle, extra);
       // An earlier start of this attempt made the container: the token given to this start was not used.
       if ("adopted" in made) return { ...handle, adopted: true };
       try {
@@ -393,6 +396,19 @@ export function dockerHost(opts: DockerHostOptions = {}): HostDriver & {
       }
       await remove(ref);
       if (await inspect(ref)) throw new DockerHostError("STOP_FAILED", `container ${ref} is still there after docker rm -f`);
+    },
+
+    async kill(h) {
+      if (!(await mine(h))) return;
+      const ref = target(h);
+      const found = await inspect(ref);
+      if (!found || found.labels["pda.fleet"] !== fleet) return;
+      // SIGKILL, no stop timeout: the container dies with its mount (its own namespace), as on a power loss. It is left
+      // exited, not removed; the next start of the run removes it.
+      const r = await run(["kill", ref], { timeoutMs: 30_000 });
+      if (!ok(r) && !NO_SUCH.test(r.stderr) && (await inspect(ref).then((f) => f && containerStatus(f.state) === "running"))) {
+        throw new DockerHostError("KILL_FAILED", `docker kill ${ref}: ${firstLine(r)}`);
+      }
     },
   };
 }
