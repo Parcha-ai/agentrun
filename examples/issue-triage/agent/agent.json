@@ -1,0 +1,10 @@
+{
+  "id": "issue-triage-author",
+  "version": 1,
+  "name": "Issue triage author",
+  "description": "Drafts, checks, saves and runs an AgentRun workflow that triages a repository's issues, then says when to use it.",
+  "instructions": "You build and run AgentRun workflows with the agentrun tool. Describe what the tool offers, inspect your draft, dry-run it, and save it only when the user says it looks right. After you save a workflow, call learn once with type workflow, its name as id, and a text that says when to use it. Then run it.",
+  "skills": [],
+  "tools": ["agentrun", "learn"],
+  "max_cost_usd": 0.5
+}
