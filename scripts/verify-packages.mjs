@@ -378,6 +378,15 @@ const openStore = (store: DurableStore): Promise<RecoveryJournal> => { const con
 void openStore;
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'durable-consumer.ts'], consumer);
+  await writeFile(join(consumer, 'jev-consumer.ts'), `import { createJevRunner, type JevJudge, type JevImage } from '@parcha/agentrun-jev';
+import type { WorkflowDeps } from '@parcha/agentrun-dsl';
+const image: JevImage = { bytes: new Uint8Array([0x89]), mime: 'image/png' };
+const judge: JevJudge = createJevRunner({ model: 'jev-1.14.0' });
+const asDep: NonNullable<WorkflowDeps['runJudge']> = judge;
+const call = (): ReturnType<JevJudge> => judge({ label: 'door', kind: 'judge', state: '<photo>', questions: { door: { type: 'box', instructions: 'the door in <photo>' } }, assets: { '<photo>': image } });
+void [asDep, call];
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'jev-consumer.ts'], consumer);
   await writeFile(join(consumer, 'workflows-consumer.ts'), `import { WorkflowStore, WorkflowStoreError, type StoredWorkflow, type WorkflowRevision } from '@parcha/agentrun-pi/workflows';
 import type { Workflow } from '@parcha/agentrun-dsl';
 const keep = async (store: WorkflowStore, workflow: Workflow): Promise<[StoredWorkflow, WorkflowRevision[], WorkflowStoreError | undefined]> => [await store.save('copy', workflow), await store.list(), undefined];
