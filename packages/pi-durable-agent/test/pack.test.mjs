@@ -11,6 +11,7 @@ import { buildSignedInHome, checkExportClean, SIGN_IN_MARKER, signedInHomeSkip }
 import { tarSize } from "../dist/tar.js";
 import { headersOnly, listTar, longNames, manifestOf, paxPairs, paxWithFields, tamper, withManifest, writeTarFile } from "./pack-support.mjs";
 import { defineDoc } from "@earendil-works/pi-durable";
+import { recoveryHook } from "../dist/store.js";
 import { ctx, openSession, scratch } from "./support.mjs";
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
@@ -783,4 +784,72 @@ test("names are bounded: a tar whose member names add up to too much is refused,
   const entry = skipped.find((one) => /nested more than 64 levels deep/.test(one.reason));
   assert.ok(entry, JSON.stringify(skipped));
   assert.equal((await readPack(f.out)).ok, true);
+});
+
+/** Stop the next recovery where `step` is reached, as a crash would, and let the lock taker after it settle. */
+async function stopRecoveryAt(f, step) {
+  recoveryHook.after = (at) => { if (at === step) throw new Error(`stopped at ${at}`); };
+  try {
+    await assert.rejects(readAgentHome(f.home), new RegExp(`stopped at ${step}`));
+  } finally {
+    recoveryHook.after = undefined;
+  }
+}
+const withoutJournal = (entries) => entries.filter((entry) => !entry.startsWith(".import-journal"));
+
+test("a rollback is terminal: stopped after its marker, or after the staging directory is gone, the next lock taker settles it", skip, async () => {
+  for (const step of ["marked", "staging-removed"]) {
+    const f = await diverged();
+    const before = tree(f.home.dir);
+    const revision = await homeRevision(f.home);
+    await assert.rejects(importPack(f.out, f.home.dir, { replace: true, inject: killed({ name: "moved", index: 1 }) }), /killed/);
+    await stopRecoveryAt(f, step);
+    assert.equal(journalOf(f).phase, "rolled-back", `${step}: the verdict is on disk`);
+    assert.equal(staging(f).length, step === "marked" ? 1 : 0);
+    assert.deepEqual(withoutJournal(tree(f.home.dir)), before, `${step}: every run directory is back`);
+    await readAgentHome(f.home);
+    assert.deepEqual(tree(f.home.dir), before, `${step}: settled, with nothing left of the import`);
+    assert.equal(await homeRevision(f.home), revision);
+    assert.deepEqual(staging(f), []);
+  }
+});
+
+test("a commit is terminal too: stopped after the clean-up removed the staging directory, the next lock taker settles as the new home", skip, async () => {
+  for (const crash of ["committed", "marked", "cleaned"]) {
+    const f = await diverged();
+    await assert.rejects(importPack(f.out, f.home.dir, { replace: true, inject: killed({ name: crash, index: 2 }) }), /killed/);
+    assert.equal(journalOf(f).phase, crash === "committed" ? "moving" : "committed", "a journal not yet marked is judged by the store's head, and marked by recovery");
+    await stopRecoveryAt(f, "staging-removed");
+    assert.equal(staging(f).length, 0);
+    assert.equal(journalOf(f).phase, "committed");
+    const state = await readAgentHome(f.home);
+    assert.equal(state.source.sha, SHA, "the pack's source");
+    assert.equal(existsSync(path.join(f.work, "OLD.txt")), false, "the imported directories are in place");
+    assert.equal(readFileSync(path.join(f.home.dir, "runs", "second", "work", "second.txt"), "utf8"), "second\n");
+    assert.equal(existsSync(path.join(f.home.dir, ".import-journal")), false);
+  }
+});
+
+test("a failed import whose recovery cannot settle keeps the staging directory and the journal, and names them", skip, async () => {
+  const f = await diverged();
+  const parent = path.dirname(f.home.dir);
+  const base = path.basename(f.home.dir);
+  const evidence = () => readdirSync(parent).find((name) => name.startsWith(`.${base}.import-`));
+  const before = tree(f.home.dir);
+  await assert.rejects(
+    importPack(f.out, f.home.dir, {
+      replace: true,
+      inject: (step) => {
+        if (step.name === "moved" && step.index === 1) {
+          rmSync(path.join(parent, evidence(), "backup"), { recursive: true });
+          throw new Error("boom");
+        }
+      },
+    }),
+    (error) => error.code === "format" && /without deleting a run directory/.test(error.message) && /boom/.test(error.message),
+  );
+  assert.ok(evidence(), "the staging directory is still there");
+  assert.ok(existsSync(path.join(parent, evidence(), "home")), "with what the pack brought");
+  assert.ok(existsSync(path.join(f.home.dir, ".import-journal")));
+  for (const kept of ["runs/second/work/second.txt", "runs/signed-in/work/notes.txt"]) assert.ok(existsSync(path.join(f.home.dir, kept)), `${kept} was not deleted`);
 });

@@ -143,10 +143,13 @@ export const IMPORT_JOURNAL = ".import-journal";
 /** One run directory an import replaces: whether the home had one (it is set aside in `<staging>/backup/<id>`) and
  *  whether the pack brought one (extracted under the staging directory's `home` folder, in `runs/<id>`). */
 export type ImportMove = { id: string; hadOld: boolean; hasNew: boolean };
+/** `moving` until the import is settled one way or the other, then `committed` (the store's commit has returned) or
+ *  `rolled-back` (every run directory is back where it was). A settled journal is written, on disk, before any of its
+ *  evidence is removed, and says only that what is left of the evidence is to be removed. */
+export type ImportPhase = "moving" | "committed" | "rolled-back";
 /** `from` is the store's head commit before the import; `staging` is the directory beside the home that holds the
- *  extracted pack and the set-aside run directories. `phase` is `moving` until the store's commit has returned and the
- *  journal has been rewritten, on disk, as `committed`: from then on only the clean-up is left. */
-export type ImportJournal = { version: 1; phase?: "moving" | "committed"; staging: string; from: number; moves: ImportMove[] };
+ *  extracted pack and the set-aside run directories. */
+export type ImportJournal = { version: 1; phase?: ImportPhase; staging: string; from: number; moves: ImportMove[] };
 const AGENT_STORE = "agent.sqlite"; // AGENT_STORE_FILE, which home.ts defines and imports this file for
 
 async function syncDirectory(dir: string): Promise<void> {
@@ -184,13 +187,17 @@ export const writeJournal = (home: string, journal: Omit<ImportJournal, "phase">
 /** Record, on disk, that the store's commit has returned. Nothing is cleaned up before this. */
 export const markCommitted = (home: string, journal: Omit<ImportJournal, "phase">): Promise<void> => putJournal(home, { ...journal, phase: "committed" });
 
+/** @internal Called by recovery after a settled phase is on disk and after the staging directory is removed. A test
+ *  throws from it to stop recovery there, as a crash would. */
+export const recoveryHook: { after?: (step: "marked" | "staging-removed") => void | Promise<void> } = {};
+
 const RUN_DIR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 function parseJournal(text: string): ImportJournal | undefined {
   try {
     const value = JSON.parse(text) as Partial<ImportJournal> | null;
     const moves = value?.moves;
     if (value?.version !== 1 || typeof value.staging !== "string" || !Number.isSafeInteger(value.from) || !Array.isArray(moves)) return undefined;
-    if (value.phase !== undefined && value.phase !== "moving" && value.phase !== "committed") return undefined;
+    if (value.phase !== undefined && value.phase !== "moving" && value.phase !== "committed" && value.phase !== "rolled-back") return undefined;
     if (!moves.every((move) => move && typeof move.id === "string" && RUN_DIR.test(move.id) && typeof move.hadOld === "boolean" && typeof move.hasNew === "boolean")) return undefined;
     return value as ImportJournal;
   } catch {
@@ -199,14 +206,20 @@ function parseJournal(text: string): ImportJournal | undefined {
 }
 
 /**
- * Settle an import that did not finish, under the home's lock. The commit landed when the journal says `committed`, or,
- * for a journal that never got that far, when the store's head moved past `from`. Then only the clean-up is left: each
- * new run directory is made sure to be in place, and the staging directory (the old directories) is removed. Otherwise
- * every run directory goes back: the pack's ones to where they were extracted, the old ones from `<staging>/backup`.
+ * Settle an import that did not finish, under the home's lock. Safe to repeat any number of times, so a crash during
+ * recovery is recovered next time.
  *
- * It never deletes a run directory it cannot account for. When a directory it would restore, or one that should have
- * arrived, is in neither of its places, nothing is changed and nothing is removed: the journal and the staging directory
- * stay, and the error names them, for a person. Safe to repeat, so a crash during recovery is recovered next time.
+ * A journal that is `committed` or `rolled-back` is settled: its run directories are not judged again, and whatever is
+ * left of its evidence is removed, the staging directory first and the journal last.
+ *
+ * A journal still `moving` is judged once. The commit landed when the store's head moved past `from`; then each new run
+ * directory is made sure to be in place. Otherwise every run directory goes back: the pack's ones to where they were
+ * extracted, the old ones from `<staging>/backup`. It never deletes a run directory it cannot account for: when one it
+ * would restore, or one that should have arrived, is in neither of its places, nothing is changed and nothing is removed,
+ * the journal and the staging directory stay, and the error names them, for a person.
+ *
+ * The verdict is written to the journal, on disk, before any evidence goes: after that nothing is judged again, so a stop
+ * between removing the staging directory and removing the journal leaves a journal that only has to be removed.
  */
 export async function recoverImport(home: string): Promise<void> {
   const file = path.join(home, IMPORT_JOURNAL);
@@ -216,38 +229,43 @@ export async function recoverImport(home: string): Promise<void> {
   if (path.dirname(staging) !== path.dirname(home) || !path.basename(staging).startsWith(`.${path.basename(home)}.import-`)) {
     throw new AgentHomeError("format", `the import journal names ${staging}, which is not a staging directory beside the home; nothing was removed`);
   }
-  const store = await openStore(path.join(home, AGENT_STORE));
-  let head: number;
-  try { head = await store.head(); } finally { await store.close(); }
-  const committed = journal.phase === "committed" || head > journal.from;
-  const where = (id: string) => ({ target: path.join(home, "runs", id), backup: path.join(staging, "backup", id), staged: path.join(staging, "home", "runs", id) });
-  const stuck: string[] = [];
-  const steps: Array<() => Promise<void>> = [];
-  for (const move of journal.moves) {
-    const { target, backup, staged } = where(move.id);
-    const [inTarget, inBackup, inStaged] = [existsSync(target), existsSync(backup), existsSync(staged)];
-    if (committed) {
-      if (move.hasNew && !inTarget) {
-        if (inStaged) steps.push(() => rename(staged, target));
-        else if (inBackup) stuck.push(`${move.id} (the imported directory is gone and the old one is the only copy)`);
+  if ((journal.phase ?? "moving") === "moving") {
+    const store = await openStore(path.join(home, AGENT_STORE));
+    let head: number;
+    try { head = await store.head(); } finally { await store.close(); }
+    const committed = head > journal.from;
+    const where = (id: string) => ({ target: path.join(home, "runs", id), backup: path.join(staging, "backup", id), staged: path.join(staging, "home", "runs", id) });
+    const stuck: string[] = [];
+    const steps: Array<() => Promise<void>> = [];
+    for (const move of journal.moves) {
+      const { target, backup, staged } = where(move.id);
+      const [inTarget, inBackup, inStaged] = [existsSync(target), existsSync(backup), existsSync(staged)];
+      if (committed) {
+        if (move.hasNew && !inTarget) {
+          if (inStaged) steps.push(() => rename(staged, target));
+          else if (inBackup) stuck.push(`${move.id} (the imported directory is gone and the old one is the only copy)`);
+        }
+      } else if (inBackup) {
+        if ((inTarget && inStaged) || (inTarget && !move.hasNew)) stuck.push(`${move.id} (a directory stands where the old one goes, and the pack's copy has no place to return to)`);
+        else steps.push(async () => {
+          if (inTarget) await rename(target, staged);
+          await rename(backup, target);
+        });
+      } else if (move.hadOld) {
+        if (!inTarget || (move.hasNew && !inStaged)) stuck.push(`${move.id} (the old directory is in neither its place nor the backup)`);
+      } else if (move.hasNew && !inStaged && inTarget) {
+        steps.push(() => rename(target, staged));
       }
-    } else if (inBackup) {
-      if ((inTarget && inStaged) || (inTarget && !move.hasNew)) stuck.push(`${move.id} (a directory stands where the old one goes, and the pack's copy has no place to return to)`);
-      else steps.push(async () => {
-        if (inTarget) await rename(target, staged);
-        await rename(backup, target);
-      });
-    } else if (move.hadOld) {
-      if (!inTarget || (move.hasNew && !inStaged)) stuck.push(`${move.id} (the old directory is in neither its place nor the backup)`);
-    } else if (move.hasNew && !inStaged && inTarget) {
-      steps.push(() => rename(target, staged));
     }
+    if (stuck.length) {
+      throw new AgentHomeError("format", `the import journal in the agent home cannot be settled without deleting a run directory: ${stuck.join("; ")}. Nothing was changed or removed; the journal and ${staging} are kept for a person`);
+    }
+    for (const step of steps) await step();
+    await putJournal(home, { ...journal, phase: committed ? "committed" : "rolled-back" });
+    await recoveryHook.after?.("marked");
   }
-  if (stuck.length) {
-    throw new AgentHomeError("format", `the import journal in the agent home cannot be settled without deleting a run directory: ${stuck.join("; ")}. Nothing was changed or removed; the journal and ${staging} are kept for a person`);
-  }
-  for (const step of steps) await step();
   await rm(staging, { recursive: true, force: true });
+  await recoveryHook.after?.("staging-removed");
   await rm(file, { force: true });
 }
 

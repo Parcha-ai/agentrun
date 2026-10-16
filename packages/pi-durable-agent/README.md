@@ -222,13 +222,19 @@ as an ended entry with outcome `not_carried_back`.
 
 The pack's run directories move into place before the commit, each old one set aside first in the staging directory
 beside the home, in the order of a journal, `.import-journal` (mode 0600), written first. A failure puts every one back.
-As soon as the store's commit returns, the journal is rewritten, synced, as `committed`, before any clean-up. A crash
-leaves the journal for the next process that takes the home's lock, which settles it before anything else: a `committed`
-journal (or an older one whose store head moved past the journal's) only has its clean-up left, even when the commit
-changed nothing in the store; otherwise every directory goes back. Recovery never deletes a run directory it cannot account
-for: when one it would restore, or one that should have arrived, is in neither of its places, it changes and removes
-nothing, keeps the journal and the staging directory, and says so. So a home is the old one or the new one, never a mix,
-and no old directory is deleted before the commit. Every refusal leaves the home, and the directory beside it, as they were.
+The journal has three phases, `moving`, then `committed` or `rolled-back`, and a settled one is written (beside the
+journal, synced, renamed over it, the directory synced) before any evidence is removed. As soon as the store's commit
+returns, the import writes `committed`; recovery writes `rolled-back` after every run directory is back, and `committed`
+for a journal that was still `moving` when the store's head had moved. A crash leaves the journal for the next process
+that takes the home's lock, which settles it before anything else. A `committed` or `rolled-back` journal is never
+judged again: only what is left of its evidence is removed, the staging directory first and the journal last, so
+recovery can be stopped at any point and run any number of times. Only a `moving` journal is judged, once: a store head
+past the journal's means the commit landed (a commit that changes nothing in the store does not move it, which is why the
+import writes `committed` itself, at once, and does not leave that to the head); otherwise every directory goes back. Recovery never deletes a run directory it cannot account for: when one it would
+restore, or one that should have arrived, is in neither of its places, it changes and removes nothing, keeps the journal
+and the staging directory, and says so; the import that failed does not remove them either. So a home is the old one or
+the new one, never a mix, and no old directory is deleted before the commit. Every refusal leaves the home, and the
+directory beside it, as they were.
 
 ```js
 import { importPack, packHome, readPack } from "@parcha/pi-durable-agent";

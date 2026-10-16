@@ -281,7 +281,7 @@ export async function importPack(file: string, dir: string, options: ImportOptio
   await mkdir(parent, { recursive: true });
   const staging = await mkdtemp(path.join(parent, `.${path.basename(target)}.import-`));
   const extracted = path.join(staging, "home");
-  let crashed = false;
+  let keepStaging = false;
   try {
     await mkdir(extracted);
     const inspection = await inspectPack(file, { maxBytes: options.maxBytes, maxMembers: options.maxMembers, extractTo: extracted, inject: options.inject });
@@ -390,8 +390,17 @@ export async function importPack(file: string, dir: string, options: ImportOptio
           await step("cleaned", moves.length);
           await rm(path.join(target, IMPORT_JOURNAL), { force: true });
         } catch (error) {
-          if ((error as { crash?: boolean }).crash) crashed = true;
-          else if (moves.length) await recoverImport(target);
+          if ((error as { crash?: boolean }).crash) keepStaging = true;
+          else if (moves.length) {
+            // Recovery removes the staging directory itself once it has said what it settled. When it cannot settle, what
+            // it keeps for a person is the evidence: this import's clean-up must not remove it.
+            try {
+              await recoverImport(target);
+            } catch (recovery) {
+              keepStaging = true;
+              throw new AgentHomeError("format", `${(recovery as Error).message} (the import itself failed first: ${(error as Error).message})`, { cause: recovery });
+            }
+          }
           throw error;
         }
       });
@@ -404,6 +413,6 @@ export async function importPack(file: string, dir: string, options: ImportOptio
     };
     return { home, report };
   } finally {
-    if (!crashed) await rm(staging, { recursive: true, force: true });
+    if (!keepStaging) await rm(staging, { recursive: true, force: true });
   }
 }
