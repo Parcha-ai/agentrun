@@ -116,6 +116,9 @@ if (cmd === "mount") {
   else if (b.mount === "older" || (!state.mounts[mp] && daemonsOf(mp).length)) exit(1, OLDER(mp));
   else if (b.mount === "socket") exit(1, `Failed to bind control socket for ${mp}: ConnectionError(Socket already exists and is in use)\n✗ Unspecified Error\n`);
   else if (hasEntries(mp)) exit(1, "✗ Unspecified Error\n"); // archil refuses to mount over entries
+  else if (b.requireDir && !(state.dirs ?? []).includes(target.slice(target.indexOf(":/") + 2))) {
+    exit(1, `✗ disk ${target.split(":")[0]}: the configured subdirectory does not exist\n`); // a path with no directory on the disk
+  }
   else if (state.holders[target] && !force) {
     exit(1, `⠋ Attaching\r✗ Unable to mount Archil disk to '${mp}' because another client has an outstanding delegation to the root of the disk, or to any individual file on the disk.\n\nIf you're attempting ...\n`);
   } else {
@@ -173,6 +176,8 @@ if (cmd === "mount") {
 } else if (cmd === "retire") {
   // Plays bin/archil-scoped's verb: move the mount to <root>/.released/<run>-<tag>, kill its daemon.
   const [mp, tag] = rest;
+  // As the real wrapper, it takes only a plain <root>/runs/<run>.
+  if (!/^\/[A-Za-z0-9._\/-]+\/runs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(mp)) exit(2, `archil-scoped: ${mp} is not <root>/runs/<run>\n`);
   if (!state.mounts[mp]) exit(3, `archil-scoped: no fuse.archil mount at ${mp}\n`);
   if (b.retireFail) exit(4, `archil-scoped: mount --move ${mp} failed\n`);
   const dest = mp.replace(/\/runs\/([^/]+)$/, `/.released/$1-${tag}`);
