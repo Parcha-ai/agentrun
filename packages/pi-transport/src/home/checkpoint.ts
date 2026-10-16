@@ -26,6 +26,7 @@ import type { Place } from "./move.ts";
 import type { RecordSink } from "./records.ts";
 import type { Seal } from "./store.ts";
 import {
+	changedEntries,
 	type Excluded,
 	excludedOf,
 	type Manifest,
@@ -116,6 +117,11 @@ export interface CheckpointVault {
 	 * when a link comes up.
 	 */
 	through(session: string): number;
+	/**
+	 * Forget the shipped commits above `through`: a restore that did not replay them has made them a branch that no longer
+	 * exists, and the runner at the new epoch will commit those numbers again. Afterwards `through` is at most this.
+	 */
+	dropLogAbove(session: string, through: number, context: Context): Promise<Result<void, VaultError>>;
 	/** The shipped commits from `from` on, the unbroken run only; `gap` says commits beyond a break were held. */
 	readLog(
 		session: string,
@@ -275,8 +281,12 @@ export function localVault(directory: string): CheckpointVault {
 			rmSync(join(dirOf(pending.session), generationName(pending.n)), { recursive: true, force: true });
 		},
 		async latest(session) {
-			const all = numbers(session);
-			return ok(all.length === 0 ? undefined : read(session, all.at(-1) as number));
+			// The newest record that reads: one that was damaged on disk does not hide the generations before it.
+			for (const n of numbers(session).reverse()) {
+				const found = read(session, n);
+				if (found !== undefined) return ok(found);
+			}
+			return ok(undefined);
 		},
 		async get(session, n) {
 			return ok(read(session, n));
@@ -355,6 +365,27 @@ export function localVault(directory: string): CheckpointVault {
 			}
 		},
 		through: (session) => Math.max(0, through(session) ?? 0),
+		async dropLogAbove(session, limit) {
+			try {
+				const entries = readEntries(session);
+				if (entries.some((entry) => entry.commit > limit)) {
+					const file = logFile(session);
+					writeFileSync(
+						`${file}.partial`,
+						entries
+							.filter((entry) => entry.commit <= limit)
+							.map((entry) => `${JSON.stringify(entry)}\n`)
+							.join(""),
+					);
+					renameSync(`${file}.partial`, file);
+				}
+				const kept = entries.filter((entry) => entry.commit <= limit);
+				heldThrough.set(session, kept.length === 0 ? undefined : (kept.at(-1) as LogEntry).commit);
+				return ok(undefined);
+			} catch (cause) {
+				return err(io("could not drop the shipped commits above the restore", cause));
+			}
+		},
 		async readLog(session, from) {
 			try {
 				const entries = readEntries(session)
@@ -498,17 +529,20 @@ export async function pullCheckpoint(
 	// The session stays held until everything of this moment is on the host, so that the files and the store are of one
 	// moment; it is let go whatever happens, and no longer than `holdMs` after it came to rest.
 	const holdMs = options.holdMs ?? DEFAULT_HOLD_MS;
-	const limits = { stallMs: holdMs, deadlineMs: holdMs };
+	const heldFrom = performance.now();
+	/** What is left of the hold, for the call about to start: every phase of the pull draws on the same `holdMs`. */
+	const left = () => Math.max(1, Math.floor(holdMs - (performance.now() - heldFrom)));
+	const over = () => performance.now() - heldFrom >= holdMs;
+	const timedOut = (phase: string) =>
+		skip("failed", `the session was held ${holdMs} ms and the checkpoint was not done: it ran out before ${phase}`);
+	const calls = () => ({
+		...options.workspace,
+		callTimeoutMs: Math.min(options.workspace?.callTimeoutMs ?? left(), left()),
+	});
 	let committed: Result<Checkpoint, CheckpointSkipped>;
 	try {
 		committed = await (async (): Promise<Result<Checkpoint, CheckpointSkipped>> => {
-			const manifest = await manifestSince(
-				place.box,
-				place.workspace,
-				previous?.manifest,
-				options.workspace,
-				context,
-			);
+			const manifest = await manifestSince(place.box, place.workspace, previous?.manifest, calls(), context);
 			if (!manifest.ok)
 				return skip(
 					manifest.error.code === "too_large" ? "too_large" : "failed",
@@ -522,10 +556,11 @@ export async function pullCheckpoint(
 					`the workspace holds ${manifest.value.bytes} bytes, the limit is ${options.workspace.maxBytes}`,
 				);
 			}
+			if (over()) return timedOut("the files were listed");
 			if (options.maxPullBytes !== undefined) {
-				const before = new Map((previous?.manifest.entries ?? []).map((entry) => [entry.path, entry.sha256]));
-				const delta = manifest.value.entries
-					.filter((entry) => entry.kind === "file" && before.get(entry.path) !== entry.sha256)
+				// What moveChanged will copy: also a file whose mode or time changed with the same content.
+				const delta = changedEntries(previous?.manifest, manifest.value)
+					.filter((entry) => entry.kind === "file")
 					.reduce((sum, entry) => sum + entry.bytes, 0);
 				if (delta + held.value.seal.bytes > options.maxPullBytes) {
 					return skip(
@@ -536,7 +571,7 @@ export async function pullCheckpoint(
 			}
 			let excluded: Excluded | undefined;
 			if ((options.workspace?.exclude?.length ?? 0) > 0) {
-				const found = await excludedOf(place.box, place.workspace, options.workspace, context);
+				const found = await excludedOf(place.box, place.workspace, calls(), context);
 				if (!found.ok) return skip("failed", found.error.message, [], found.error);
 				if (found.value.files > 0 || found.value.entries.length > 0) excluded = found.value;
 			}
@@ -547,16 +582,24 @@ export async function pullCheckpoint(
 				await vault.discard(pending);
 				return skip(reason, error.message, [], error);
 			};
+			if (over()) {
+				await vault.discard(pending);
+				return timedOut("the store was copied");
+			}
 			const file = await moveFile(
 				place.box,
 				held.value.path,
 				vault.box,
 				pending.storeFile,
 				held.value.seal,
-				undefined,
+				{ stallMs: left(), deadlineMs: left() },
 				context,
 			);
 			if (!file.ok) return fail(file.error, "failed");
+			if (over()) {
+				await vault.discard(pending);
+				return timedOut("the files were pulled");
+			}
 			const files = await moveChanged(
 				place.box,
 				vault.box,
@@ -565,8 +608,9 @@ export async function pullCheckpoint(
 					toRoot: pending.filesRoot,
 					previous: pending.previous?.manifest,
 					current: manifest.value,
-					...limits,
-					...options.workspace,
+					...calls(),
+					stallMs: left(),
+					deadlineMs: left(),
 				},
 				context,
 			);
@@ -593,7 +637,7 @@ export async function pullCheckpoint(
 	} finally {
 		await home.abandon(withoutAbortSignal(context));
 	}
-	const heldMs = Math.round(performance.now() - started);
+	const heldMs = Math.round(performance.now() - heldFrom);
 	if (options.stats !== undefined) options.stats.longestHeldMs = Math.max(options.stats.longestHeldMs ?? 0, heldMs);
 	if (!committed.ok) return committed;
 	const keep = Math.max(1, options.keep ?? DEFAULT_KEEP);

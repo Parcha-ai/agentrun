@@ -460,9 +460,36 @@ async function usableCheckpoint(
 		if (!(await verifyStore(checkpoint.storeFile, checkpoint.seal, context)).ok) continue;
 		const tree = await manifestOf(vault.box, checkpoint.filesRoot, undefined, context);
 		if (!tree.ok) continue;
-		const mine = (entries: readonly { path: string; kind: string; bytes: number; sha256?: string }[]) =>
-			JSON.stringify(entries.map((e) => [e.path, e.kind, e.bytes, e.sha256 ?? null]));
+		const mine = (
+			entries: readonly {
+				path: string;
+				kind: string;
+				bytes: number;
+				mode?: number;
+				target?: string;
+				sha256?: string;
+			}[],
+		) =>
+			JSON.stringify(
+				entries.map((e) => [e.path, e.kind, e.bytes, e.mode ?? null, e.target ?? null, e.sha256 ?? null]),
+			);
 		if (mine(tree.value.entries) === mine(checkpoint.manifest.entries)) return checkpoint;
+	}
+	return undefined;
+}
+
+/** The newest checkpoint whose store ends at or before `head`: the one a restore at that head started from. */
+async function checkpointBefore(
+	vault: CheckpointVault,
+	session: string,
+	head: number,
+	context: Context,
+): Promise<Checkpoint | undefined> {
+	const latest = await vault.latest(session, context);
+	if (!latest.ok || latest.value === undefined) return undefined;
+	for (let n = latest.value.n; n >= 1; n -= 1) {
+		const got = await vault.get(session, n, context);
+		if (got.ok && got.value !== undefined && got.value.seal.head <= head) return got.value;
 	}
 	return undefined;
 }
@@ -571,6 +598,10 @@ async function restoreInto(
 	const { session, vault, ownership } = options;
 	const id = `restore-${record.epoch + 1}`;
 	const seal = replay?.seal ?? checkpoint.seal;
+	// The commits the lost box shipped and this restore did not replay are a branch that no longer exists: the runner at
+	// the new epoch commits those numbers again, so the log must not say it holds them.
+	const dropped = await vault.dropLogAbove(session, seal.head - 1, context);
+	if (!dropped.ok) return err(new MoveError("ship", `the host's log could not be rewound: ${dropped.error.message}`));
 	const file = await moveFile(
 		vault.box,
 		replay?.file ?? checkpoint.storeFile,
@@ -717,6 +748,13 @@ export async function recoverHome(
 			home.setEpoch(lease.epoch);
 		}
 	}
+	// A restore the host did not finish (the start or the readiness failed after the take) is finished here: the model is
+	// still told it was restored, from the checkpoint the lease's seal came from.
+	let notice = options.notice;
+	if (lease.move?.startsWith("restore-") && lease.seal !== undefined && options.vault !== undefined) {
+		const from = await checkpointBefore(options.vault, options.session, lease.seal.head, context);
+		if (from !== undefined) notice = (options.noticeOfRestore ?? restoreNotice)(from, options.calls ?? []);
+	}
 	const resumed = await home.resume(
 		{
 			epoch: lease.epoch,
@@ -726,7 +764,7 @@ export async function recoverHome(
 				: {
 						move: {
 							id: lease.move,
-							notice: options.notice,
+							notice,
 							kind: lease.move.startsWith("restore-") ? "restore" : "move",
 							...(lease.seal === undefined ? {} : { head: lease.seal.head }),
 						},

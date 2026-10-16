@@ -128,6 +128,7 @@ export { type StopRunner, stopRunner } from "./stop.ts";
 export { checkpointStore, type Seal, StoreError, type StoreErrorCode, sealStore, verifyStore } from "./store.ts";
 export {
 	type ChangedReceipt,
+	changedEntries,
 	type Excluded,
 	excludedOf,
 	type Manifest,

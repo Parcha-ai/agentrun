@@ -120,6 +120,10 @@ export type MoveFileOptions = {
 	readonly toPipe?: Pipe;
 	/** The size of the parts when a side moves files and names no size. Default 32 MiB. */
 	readonly chunkBytes?: number;
+	/** No byte moved for this long ends the copy. Default 60 s. */
+	readonly stallMs?: number;
+	/** The whole copy must end within this. Default: a base and the time the file's size needs at an assumed floor. */
+	readonly deadlineMs?: number;
 };
 
 /** How a directory is moved. */
@@ -1092,8 +1096,8 @@ export async function moveFile(
 			? filesSink(to, JOIN_FILE_SCRIPT, [partial], toPipe.chunkBytes)
 			: streamStarter(to, ["sh", "-c", RECEIVE_SCRIPT, "sh", partial]),
 		{
-			stallMs: DEFAULT_STALL_MS,
-			deadlineMs: BASE_DEADLINE_MS + (seal.bytes / ASSUMED_FLOOR_BYTES_PER_SECOND) * 1000,
+			stallMs: options?.stallMs ?? DEFAULT_STALL_MS,
+			deadlineMs: options?.deadlineMs ?? BASE_DEADLINE_MS + (seal.bytes / ASSUMED_FLOOR_BYTES_PER_SECOND) * 1000,
 		},
 		context,
 	);
@@ -1149,6 +1153,18 @@ export async function moveFile(
 }
 
 /** Whether two entries are the same file as far as a listing can tell: kind, size, mode, target and time. */
+/**
+ * The entries of `current` that a pull has to copy: new ones, and any whose listing (size, mode, link target or time) or
+ * content differs from the same path in `previous`. `moveChanged` copies exactly these, so a budget counts them too.
+ */
+export function changedEntries(previous: Manifest | undefined, current: Manifest): ManifestEntry[] {
+	const before = new Map((previous?.entries ?? []).map((entry) => [entry.path, entry]));
+	return current.entries.filter((entry) => {
+		const old = before.get(entry.path);
+		return old === undefined || !sameListed(old, entry) || old.sha256 !== entry.sha256;
+	});
+}
+
 function sameListed(a: Listed, b: Listed): boolean {
 	return a.kind === b.kind && a.bytes === b.bytes && a.mode === b.mode && a.target === b.target && a.mtime === b.mtime;
 }
@@ -1222,10 +1238,7 @@ export async function moveChanged(
 	if (!toPipeResult.ok) return toPipeResult;
 	const before = new Map((options.previous?.entries ?? []).map((entry) => [entry.path, entry]));
 	const now = new Map(options.current.entries.map((entry) => [entry.path, entry]));
-	const changed = options.current.entries.filter((entry) => {
-		const old = before.get(entry.path);
-		return old === undefined || !sameListed(old, entry) || old.sha256 !== entry.sha256;
-	});
+	const changed = changedEntries(options.previous, options.current);
 	const removed = [...before.keys()].filter((path) => {
 		const entry = now.get(path);
 		// A path that changed kind is removed first, so the new entry does not meet the old one.

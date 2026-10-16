@@ -414,7 +414,7 @@ says what the host keeps so that it loses no more.
 session (a short drain), makes a sealed copy of the store in the box (`checkpointStore`), takes the workspace manifest,
 pulls the store (`moveFile`) and the files that changed since the previous checkpoint (`moveChanged`) into the vault,
 checks all of it, and lets the session go. The session is held through the pull because a file it writes meanwhile
-would no longer match the manifest. `holdMs` bounds the hold (120 s by default). A checkpoint exists only when the
+would no longer match the manifest. `holdMs` bounds the hold (120 s by default): every phase of the pull draws on the same clock, and a pull that outruns it is skipped (`failed`) and lets the session go. A checkpoint exists only when the
 store and the files are both on the host and verified; a store without its files is never kept. The vault
 (`localVault(directory)`: put `begin`/`commit`, `latest`, `get`, `prune`) is the host's disk, a generation per
 checkpoint made with hard links so that a generation costs its delta, and the newest 3 are kept (`keep`).
@@ -443,7 +443,7 @@ counted, however large; the record names what was left out (`Checkpoint.excluded
 file count and bytes), and the restore notice says so: "Not restored: media (1 file, N bytes) are left out of checkpoints.
 Fetch them again if you need them." so that a replay-safe download tool runs again. Two budgets: `workspace.maxBytes` is
 the most the workspace may hold (excluded paths not counted), and `maxPullBytes` the most one pull may move (the store
-copy and the files that changed); a pull over either is skipped as `too_large` before a file moves. The pause of a pull
+copy and every file the pull copies, also one whose time or mode changed with the same content); a pull over either is skipped as `too_large` before a file moves. The pause of a pull
 is `CheckpointStats.last.heldMs`.
 
 The commits between two checkpoints are kept too, on the record stream: a host that gives `connectHome` (or `boxRunner`) a
@@ -458,7 +458,7 @@ date. So a call the lost box admitted after the checkpoint is in the history the
 recovery, not run again. A log that does not start where the checkpoint ends is not used: the restore is the checkpoint, as
 before.
 
-A model call paid between two checkpoints is not paid twice. A request can carry a `key` and a `position` (the store's
+A model call paid between two checkpoints is not paid twice: `boxRunner` serves every runner it starts with one `serveModels` server (pass your own as `server`, and give it to `pullCheckpoint({ answers })`), so a replacement runner finds the answers already kept. A restore that did not replay every shipped commit drops the rest from the host's log (`dropLogAbove`), so a runner at the new epoch is not told the host holds commits it no longer has. A request can carry a `key` and a `position` (the store's
 next sequence number; `proxyModels({ keyOf })` makes them, the key must not change across a restore). `serveModels`
 keeps a completed answer by its key, not for `keepMs`, until `covered(head)`: a repeat from a rebuilt runner gets the
 kept frames (or joins the call still streaming) and `server.paid` does not move. A failure is not kept, so a retry

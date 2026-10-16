@@ -9,6 +9,7 @@ import { finish } from "../box/files.ts";
 import { type Crossing, type CrossingCounter, crossingCounter } from "./crossing.ts";
 import { connectHome, type HomeHandle } from "./host.ts";
 import { processLink } from "./link.ts";
+import { type ModelServer, serveModels } from "./models.ts";
 import { MoveError, type Place, type StartRunner } from "./move.ts";
 import type { RecordSink } from "./records.ts";
 
@@ -34,6 +35,11 @@ export type BoxRunnerOptions = {
 	readonly crossing?: Crossing;
 	/** The place's counter, shared with its `pullCheckpoint`s, so that `n` counts across restarts and points of one session. */
 	readonly crossingCount?: CrossingCounter;
+	/**
+	 * The host's model server, shared by every runner this starts so that paid answers survive a restore. Default: one made
+	 * from `models`. Pass your own to call `covered(head)` on it (`pullCheckpoint({ answers })` does) and to read `paid`.
+	 */
+	readonly server?: ModelServer;
 };
 
 /** The output of one short program in a box, or why it did not run. */
@@ -82,6 +88,9 @@ async function checkNode(box: Box, context: Context): Promise<Result<string, Mov
  * directory as `runner-<sha256>.mjs`, uploaded only when the box does not hold that file yet; Node is checked first.
  */
 export function boxRunner(options: BoxRunnerOptions): StartRunner {
+	// One server for every runner this starts: a runner that comes back (a restore, a restart) asks again for an answer the
+	// host already paid for, and gets the kept one. `covered` on it lets the answers go once a checkpoint covers them.
+	const server = options.server ?? serveModels(options.models);
 	// One count for every runner this starts: a restarted runner goes on counting.
 	const counter = options.crossingCount ?? crossingCounter();
 	let file: Promise<{ readonly bytes: Uint8Array; readonly sha256: string }> | undefined;
@@ -143,6 +152,7 @@ export function boxRunner(options: BoxRunnerOptions): StartRunner {
 		return ok(
 			connectHome(processLink(process), {
 				models: options.models,
+				server,
 				epoch,
 				...(options.records === undefined ? {} : { records: options.records }),
 				...(options.crossing === undefined
