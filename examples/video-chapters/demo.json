@@ -2,6 +2,7 @@
   "name": "video-chapters",
   "title": "A Film, in Chapters",
   "targets": ["local"],
+  "browser": false,
   "claim": "One agent watches NASA's 1969 Apollo 11 film a minute at a time, sound included, writes its chapters with a keyframe each, survives a kill mid-film, and pays for each minute once.",
   "models": {
     "lead": { "needs": ["text", "tools"], "default": "openai/gpt-6-luna" },

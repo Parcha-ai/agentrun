@@ -135,7 +135,7 @@ test('the server: a run started from the drop endpoint is followed as it grows, 
   assert.equal((await at('/viewer/')).status, 200);
   assert.equal((await at('/runs?name=notes.txt', { method: 'POST', body: 'x' })).status, 400, 'only a video is taken');
   const made = await (await at('/runs?source=clip', { method: 'POST' })).json();
-  assert.match(made.follow, new RegExp(`^/viewer/\\?src=/runs/${made.id}/recording/&follow=1$`));
+  assert.equal(made.follow, `/viewer/index.html?follow=/runs/${made.id}/recording/`);
   const events = `/runs/${made.id}/recording/events.jsonl`;
   // Followed by Range from the last byte: whole lines only, until the first look is filed.
   let offset = 0;
