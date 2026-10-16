@@ -206,7 +206,9 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
           session: node.sessionId,
           digest: host.digest?.(node) ?? canonicalSha256({ step: node.label, path: node.executionPath ?? null, kind: node.kind, item: node.item?.index ?? null, attempt: node.attempt }),
           agent: withNodes(agent),
-          user: `${node.user}\n${submitFooter({ label, schema: node.schema, reviewed: reviewers.length > 0, ...(record.file ? { fileKey: record.file.key } : {}), ...(record.instructions ? { instructions: record.instructions } : {}) })}`,
+          // The node's input, then its delivery contract, as two text parts of its one user turn, in that order: a viewer
+          // shows the input and folds the contract. An attempt an older build submitted as one string resumes as it was.
+          user: [{ type: "text", text: node.user }, { type: "text", text: submitFooter({ label, schema: node.schema, reviewed: reviewers.length > 0, ...(record.file ? { fileKey: record.file.key } : {}), ...(record.instructions ? { instructions: record.instructions } : {}) }) }],
           init: async (tx, id) => {
             Object.assign(await tx.doc(NodeDoc, id), { system, label, schema: node.schema as JsonValue, fileKey: record.file?.key ?? null });
             await host.init?.(node, tx, id);
