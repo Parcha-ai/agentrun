@@ -18,6 +18,7 @@ const myPanel: Panel<MyState> = {
   reduce: (state, line) => nextState,             // one line in, the next state out
   view: (state, { t, focus, baseline }) => node,  // the screen for a state
   shows: (line) => line.kind === 'frame',          // optional: the lines a recording needs to draw this panel at all
+  showsFor: (manifest) => manifest.job !== undefined, // optional: the recordings, by their manifest, it is for
 };
 register(myPanel);                // when its module loads; extensions' panels show first, in this order
 ```
@@ -34,6 +35,9 @@ this once over every line of the recording, never up to the stop, so a panel nev
 stop before its first line it is drawn with its state before any line. Give a panel `shows` when its `accepts` takes
 lines that are not its story: the transport panel reduces the counters' lines for its own counters, but draws only for
 a recording with `transport` lines.
+
+A panel with `showsFor` is drawn only for a recording whose manifest it says yes to, whatever its lines: the workflow
+graph panel needs the job that ran, so a recording whose manifest names no `job` does not draw it.
 
 ## What `view` returns
 
@@ -91,7 +95,8 @@ and lays out the tiles; the viewer draws the picture.
 The shell gives `view` a context: `t`, the time of the current point; `focus`, the focused path if there is one;
 `cite`, the selected citation if there is one (a node with `cite` selects it, `?cite=` opens with it, and selecting one
 moves no stop, so the screen it was clicked on stays); `json(sha)`, the parsed JSON of a blob the manifest's `result`
-or a `result` line names, undefined until the shell has read it; and `baseline` when the manifest names one (`BaselineView`: its label, the counters of that other recording at its end,
+or a `result` line names, or of the manifest's `job`, undefined until the shell has read it; `job`, the SHA-256 of the
+job blob when the manifest names one (`{ workflow, input, files }`, read with `json(job)`); and `baseline` when the manifest names one (`BaselineView`: its label, the counters of that other recording at its end,
 and how long it ran in ms, or null; another real recording, opened beside this one, never typed-in numbers). When
 `counters.measured` is false the recording has no durable line, so its counts are not measured and its cost is
 unknown: show that, never its zeros.
@@ -201,3 +206,17 @@ in order (the orphan flag as seen, the revoke and the takeover time, the fence),
 repeated, cut by a kill (unknown, not sent again) or in flight. The paid-call verdicts are the shell's own counter fold
 (`appliedIn`), so the panel and the counters strip agree. A recording with no disk claim line (`shows`: a `run.json`, `delegation`, `revoke` or `fenced` host line) does not draw the
 panel at all, its title included. Its test, `test/disk.test.ts`, renders `test/fixtures/disk-takeover`.
+
+## The workflow graph
+
+The job's workflow drawn as its nodes and edges, beside the workflow map: the DSL's graph of the workflow in the job
+blob the manifest names, `{ nodes: [{ path, kind, label, via? }], edges: [{ from, to, kind }] }`, with `path` a JSON
+Pointer into the workflow and an edge's `kind` one of `next`, `branch`, `route`, `item` and `child`. Each node is drawn
+in its chain, with what it opens into (a branch, a route's branches, a map's body, a child workflow) under it, and
+marked by what the run did there at the stop: done, running, failed or not reached, with counts for a node a map runs
+once per item. Done comes from the driver's checkpoint (`agentrun.driver`, every `done` path) and, in the keyed layout,
+each map item's `agentrun.items` record (committed, and its own `frame.done`); failed from an item record whose status
+is `"failed"` and from `pin.failures`; running from a live `node.start` with no `node.end` since, in the process that is
+running. An execution path names its node with each map item's and loop iteration's index taken out
+(`/root/steps/1/items/3/body` is `/root/steps/1/body`). Each open's snapshot starts it over. A recording whose manifest
+names no job does not draw it. Its test is `test/workflow-graph.test.ts`.

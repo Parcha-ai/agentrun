@@ -8,6 +8,7 @@ import { frameFold, gapTitle, pictureAt, type FrameState } from './frames.ts';
 import { nextStop, playback, previousStop, reduceTo, snap, stopAt, stopsOf, linkedTime, timeParam, type Fold } from './replay.ts';
 import { citeStop } from './cite.ts';
 import { workflowMapPanel } from './workflow-map.ts';
+import { workflowGraph } from './workflow-graph.ts';
 import { opensInPage, typeOfName } from './blobs.ts';
 import { readAllEntries } from './folder.ts';
 import { diskPanel } from './disk.ts';
@@ -354,10 +355,11 @@ export function restorePlace(root: HTMLElement, place: ReturnType<typeof placeIn
   if (place.focus !== undefined) (all.find((node) => placeKey(node, root) === place.focus) as HTMLElement | undefined)?.focus({ preventScroll: true });
 }
 
-/** The JSON blobs a recording's result names (the manifest's and each `result` line's), parsed. One that does not load
- *  or parse is left out, and the views say they cannot read it. */
+/** The JSON blobs a recording's result names (the manifest's and each `result` line's), and the job that ran (the
+ *  manifest's `job`), parsed. One that does not load or parse is left out, and the views say they cannot read it. */
 async function resultJson(recording: Recording): Promise<Map<string, Json>> {
   const named = new Set<string>(recording.manifest.result ? [recording.manifest.result.blob] : []);
+  if (typeof recording.manifest.job?.blob === 'string') named.add(recording.manifest.job.blob);
   for (const line of recording.lines) {
     const blob = line.source === 'host' && line.kind === 'result' ? (line.data as { blob?: unknown } | null)?.blob : undefined;
     if (typeof blob === 'string') named.add(blob);
@@ -397,7 +399,7 @@ export function baselineViewOf(label: string, other: Recording): BaselineView {
 export function viewContext(t: number, manifest: Manifest, inputs: { focus?: string; baseline?: BaselineView; cite?: string; json?: Map<string, Json>; now?: number } = {}): ViewContext {
   const { focus, baseline, cite, json, now } = inputs;
   return { t, now: now ?? t, ...(focus ? { focus } : {}), ...(baseline ? { baseline } : {}), ...(manifest.providers ? { providers: manifest.providers } : {}),
-    ...(cite !== undefined ? { cite } : {}), ...(json ? { json: (sha: string) => json.get(sha) } : {}) };
+    ...(cite !== undefined ? { cite } : {}), ...(json ? { json: (sha: string) => json.get(sha) } : {}), ...(typeof manifest.job?.blob === 'string' ? { job: manifest.job.blob } : {}) };
 }
 
 /** The chapter a point is in: the one with the greatest stop at or before it (a manifest's chapters keep the order it
@@ -530,7 +532,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const controls = el('div', { class: 'controls' }, el('button', { text: 'previous commit' }), playButton, el('button', { text: 'next commit' }), speed, range, position);
   // The first registered panel that calls itself featured for this recording is shown first, with the controls right under it; the rest follow as before.
   // The panels this recording draws, judged once over all its lines: a panel with nothing here never shows, not even its title.
-  const shown = panelsFor(lines);
+  const shown = panelsFor(lines, recording.manifest);
   const featured = featuredPanel(shown, lines);
   const featuredBox = el('div', { class: 'featured' });
   const top = embedded ? (problemsNote ? [problemsNote] : []) : [header];
