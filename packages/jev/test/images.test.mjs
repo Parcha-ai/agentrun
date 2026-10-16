@@ -88,6 +88,8 @@ test('a request that cannot be valid is refused before any send: no image for a 
     'a Box with no image': { assets: undefined },
     'bytes that are neither PNG nor JPEG': { assets: { '<photo>': asPng(Uint8Array.from([1, 2, 3, 4])) } },
     'empty bytes': { assets: { '<photo>': asPng(new Uint8Array(0)) } },
+    'a reference only a question id names': { state: 'no reference here', questions: { '<photo>': { type: 'noul', instructions: 'Is it open?' } }, assets: { '<photo>': asPng(png()) } },
+    'a reference only an option name names': { state: 'no reference here', questions: { pick: { type: 'choice', instructions: 'Which?', criteria: { '<photo>': null, other: null } } }, assets: { '<photo>': asPng(png()) } },
     'a mime type that names neither': { assets: { '<photo>': { bytes: png(), mime: 'image/gif' } } },
     'bytes that are a JPEG under a PNG label': { assets: { '<photo>': { bytes: jpeg(), mime: 'image/png' } } },
     'bytes that are not a Uint8Array': { assets: { '<photo>': { bytes: 'AAAA', mime: 'image/png' } } },
@@ -169,4 +171,20 @@ test('the caller names the model per call, and an image question (no Box) is all
   await run({ label: 't', kind: 'judge', state: 'x <photo>', questions: { urgent: { type: 'noul', instructions: 'Is <photo> urgent?' } }, assets: { '<photo>': asPng(png()) } });
   assert.deepEqual(t.seen.map(sent => sent.request.model), ['jev-1.14.0', 'jev-latest']);
   assert.ok(t.seen.every(sent => sent.headers[HEADER.toLowerCase()] === 'true'));
+});
+
+test('a reference counts where it sits in a string value of the state, an instruction or a criterion, however deep', async () => {
+  const cases = [
+    { state: { notes: ['see <photo>'] }, questions: noulQuestions },
+    { state: 'plain', questions: { urgent: { type: 'noul', instructions: 'Is <photo> urgent?' } } },
+    { state: 'plain', questions: { pick: { type: 'choice', instructions: 'Which?', criteria: { a: 'looks like <photo>', b: null } } } },
+    { state: 'plain', questions: { level: { type: 'score', instructions: 'How bad?', criteria: ['fine', 'like <photo>'] } } },
+  ];
+  for (const { state, questions } of cases) {
+    const t = transport(ok({ urgent: { type: 'noul', noul: 0.9 } }));
+    const answers = Object.fromEntries(Object.entries(questions).map(([id, q]) => [id, q.type === 'noul' ? { type: 'noul', noul: 0.9 } : q.type === 'choice' ? { type: 'choice', choice: 'a', probabilities: { a: 0.5, b: 0.5 }, confidence: 0.1 } : { type: 'score', score: 0.5, legend: { 0: 'fine', 1: 'like <photo>' }, probabilities: { 0: 0.5, 1: 0.5 }, confidence: 0.1 }]));
+    const run = createJevRunner({ ...quick, fetch: transport(ok(answers)).fetch });
+    await run({ label: 't', kind: 'judge', state, questions, assets: { '<photo>': asPng(png()) } });
+    void t;
+  }
 });

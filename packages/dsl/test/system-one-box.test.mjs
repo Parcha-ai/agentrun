@@ -9,7 +9,8 @@ const box = { top: 0.1, bottom: 0.6, left: 0.2, right: 0.5 };
 const answers = (over = {}) => ({ mug: { type: 'box', box, confidence: 0.8, ...over }, open: { type: 'noul', noul: 0.25 } });
 const rejects = (reason, a, q = questions) => assert.throws(() => validateAnswers(q, a), error => error.responseReason === reason);
 
-test('a box answer validates beside other answers, with a confidence or none', () => {
+test('a box answer validates beside other answers, with a confidence or none, and a zero-width box is still a box', () => {
+  validateAnswers({ mug: questions.mug }, { mug: { type: 'box', box: { top: 0.3, bottom: 0.3, left: 0.4, right: 0.4 }, confidence: 0.5 } });
   validateAnswers(questions, answers());
   validateAnswers(questions, answers({ confidence: null }));
   validateAnswers({ mug: questions.mug }, { mug: { type: 'box', box: { top: 0, bottom: 1, left: 0, right: 1 }, confidence: 0 } });
@@ -17,7 +18,7 @@ test('a box answer validates beside other answers, with a confidence or none', (
 
 test('a box answer outside its shape is refused with a fixed reason', () => {
   assert.equal(isSystemOneResponseReason('box_coordinates'), true);
-  for (const bad of [{ ...box, top: -0.1 }, { ...box, right: 1.01 }, { ...box, left: NaN }, { ...box, bottom: '0.5' }, { top: 0, bottom: 1, left: 0 }, { ...box, extra: 0 }, null, [0, 1, 0, 1]])
+  for (const bad of [{ ...box, top: -0.1 }, { ...box, right: 1.01 }, { ...box, left: NaN }, { ...box, bottom: '0.5' }, { top: 0.9, bottom: 0.1, left: 0.2, right: 0.5 }, { top: 0.1, bottom: 0.6, left: 0.8, right: 0.2 }, { top: 0, bottom: 1, left: 0 }, { ...box, extra: 0 }, null, [0, 1, 0, 1]])
     rejects('box_coordinates', answers({ box: bad }));
   for (const confidence of [-1, 1.5, NaN, '0.5', undefined]) rejects('confidence', answers({ confidence }));
   rejects('answer_type', { mug: { type: 'noul', noul: 0.5 }, open: { type: 'noul', noul: 0.5 } });

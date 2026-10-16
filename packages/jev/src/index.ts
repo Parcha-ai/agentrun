@@ -51,6 +51,12 @@ function answersBox(model: string): boolean {
   const version = /^jev-(\d+)\.(\d+)(?:\.\d+)?$/.exec(model);
   return version !== null && (Number(version[1]) > 1 || (Number(version[1]) === 1 && Number(version[2]) >= 14));
 }
+/** Every string value of a JSON value, not its keys. */
+function* stringValues(value: unknown): Generator<string> {
+  if (typeof value === "string") yield value;
+  else if (Array.isArray(value)) for (const each of value) yield* stringValues(each);
+  else if (record(value)) for (const each of Object.values(value)) yield* stringValues(each);
+}
 const startsWith = (bytes: Uint8Array, prefix: number[]) => prefix.every((byte, index) => bytes[index] === byte);
 const imageMagic: Record<JevImage["mime"], number[]> = { "image/png": [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], "image/jpeg": [0xff, 0xd8, 0xff] };
 
@@ -214,7 +220,8 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
       let assets: Record<string, Image> | undefined;
       let assetDigests: Record<string, { sha256: string; mime: string; bytes: number }> | undefined;
       if (carriesImage) {
-        const text = `${serializedState}${JSON.stringify(request.questions)}`;
+        // A reference is replaced where it sits inside a string value of the state, an instruction or a criterion; keys (question ids, option names) are never replaced.
+        const texts = [...stringValues(JSON.parse(serializedState)), ...Object.values(request.questions).flatMap(question => record(question) ? [...stringValues(question.instructions), ...stringValues(question.criteria)] : [])];
         assets = Object.create(null) as Record<string, Image>; assetDigests = Object.create(null) as Record<string, { sha256: string; mime: string; bytes: number }>;
         for (const reference of references) {
           const image = given[reference];
@@ -222,7 +229,7 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
             && record(image) && image.bytes instanceof Uint8Array && (image.mime === "image/png" || image.mime === "image/jpeg")
             && image.bytes.byteLength > 0 && image.bytes.byteLength <= MAX_IMAGE_BYTES && startsWith(image.bytes, imageMagic[image.mime]);
           if (!sound) throw invalid("invalid_assets", "Each image is a PNG or JPEG file of at most 16 MiB, with bytes that are that type and a plain reference. No request was sent.");
-          if (!text.includes(reference)) throw invalid("invalid_assets", "Every image reference must appear in the state or a question. No request was sent.");
+          if (!texts.some(text => text.includes(reference))) throw invalid("invalid_assets", "Every image reference must appear in the state or a question. No request was sent.");
           assets[reference] = new Image(image.bytes);
           assetDigests[reference] = { sha256: createHash("sha256").update(image.bytes).digest("hex"), mime: image.mime, bytes: image.bytes.byteLength };
         }

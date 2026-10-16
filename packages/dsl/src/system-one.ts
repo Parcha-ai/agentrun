@@ -211,6 +211,8 @@ export function validateAnswers(questions: Record<string, SystemOneQuestion>, an
     if (q.type === "box") {
       const box = a.box;
       if (!box || typeof box !== "object" || Array.isArray(box) || Object.keys(box).length !== 4 || !(["top", "bottom", "left", "right"] as const).every(edge => unit(box[edge]))) throw new SystemOneError("System One answer: a box's edges are not fractions in [0, 1]", null, undefined, "box_coordinates");
+      // An edge pair that runs backwards is a box with negative width or height: not a box.
+      if (box.top > box.bottom || box.left > box.right) throw new SystemOneError("System One answer: a box's top and left edges cannot lie past its bottom and right", null, undefined, "box_coordinates");
       if (!(a.confidence === null || unit(a.confidence))) throw new SystemOneError("System One answer: confidence is not in [0, 1]", null, undefined, "confidence");
       continue;
     }
