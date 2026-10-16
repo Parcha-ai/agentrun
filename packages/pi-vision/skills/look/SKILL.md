@@ -140,6 +140,7 @@ for (const name of pages) {
   const { answers } = await vision.judge({ paths: [`.look/pages/${name}`], questions: { invoice: { type: "noul", instructions: "Is `images[0].image` a readable page of an invoice?" } } });
   if (answers.invoice.noul > 0.5) worth.push(name);
 }
+if (!worth.length) return { pages: [], number: null, confirmed: false };
 const seen = await vision.see({ ask: "What is the invoice number on this page? Answer with the number only.", paths: [`.look/pages/${worth[0]}`] });
 const check = await vision.judge({ paths: [`.look/pages/${worth[0]}`], questions: { same: { type: "noul", instructions: `Does \`images[0].image\` show the invoice number ${seen.text.trim()}?` } } });
 return { pages: worth, number: seen.text.trim(), confirmed: check.answers.same.noul > 0.5 };

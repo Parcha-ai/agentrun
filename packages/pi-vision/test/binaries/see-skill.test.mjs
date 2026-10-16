@@ -104,6 +104,8 @@ test("Jev before and after the eyes: only the pages worth a look go to the eyes,
   assert.equal(judged.length, 13, "twelve skips, then one check");
   assert.equal(judged.at(-1).questions.same.instructions, "Does `images[0].image` show the invoice number saw .look/pages/p-01.png?");
   assert.equal(value.confirmed, true);
+  const none = await example(aroundEyes, (q) => (q.type === "noul" ? { type: "noul", noul: 0.1 } : ANSWERS[q.type](q)));
+  assert.deepEqual([none.value, none.requests, none.judged.length], [{ pages: [], number: null, confirmed: false }, [], 12], "no page worth a look: the eyes are not asked");
 });
 
 test("Jev: photos classified by example images in the criteria", async () => {

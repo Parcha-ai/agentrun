@@ -120,6 +120,15 @@ test("a processor that only fits images to their largest size is held to Jev's o
   assert.equal(imageHeader(Buffer.from(fit.blocks[0].data, "base64")).progressive, undefined, "re-encoded baseline though no formats were named");
 });
 
+test("a tall image cut into tiles has every tile held to the minimum edge", async () => {
+  const fit = await fitImage(sharpImages(sharp), pngBytes(200, 10000), "image/png", { maxWidth: 1568, maxHeight: 1568, maxBytes: 10_000_000, minEdge: 280 });
+  assert.equal(fit.fit, "tiled");
+  assert.ok(fit.blocks.length > 1, `${fit.blocks.length} tiles`);
+  assert.deepEqual([...new Set(fit.blocks.map((b) => b.width))], [280], "each 200 px wide tile padded to 280 at its right");
+  assert.ok(fit.blocks.every((b) => b.height >= 280 && b.height <= 1568), JSON.stringify(fit.blocks.map((b) => b.height)));
+  assert.equal(fit.tile.width, 200, "the tile's own pixels are what the fit says it shows");
+});
+
 test("a price the port does not know is filed as unknown, never as $0", async () => {
   const cwd = workspace({ "p1.png": pngBytes(400, 300) });
   const rows = host();

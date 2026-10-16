@@ -51,8 +51,9 @@ export type ImageBlock = PixelSize & { readonly data: string; readonly mimeType:
  *  may carry. A route's `Limits.image` and `Limits.imagesPerCall`, side by side. */
 export type FitLimits = ImageLimits & {
   readonly jpegQuality?: number; readonly imagesPerCall?: number;
-  /** Each side of the block at least this many pixels: a smaller image is scaled up as far as the edge limits allow,
-   *  then padded with white at its right and bottom, its own pixels at the top left (`content` in the fit). */
+  /** Each side of every block at least this many pixels: a smaller image is scaled up as far as the edge limits allow,
+   *  then padded with white at its right and bottom, its own pixels at the top left (`content` in the fit); a tile under
+   *  it is padded the same way, so a point read off a tile is still the tile's start plus its coordinate. */
   readonly minEdge?: number;
   /** The MIME types a block may keep as they are (default: PNG, JPEG, GIF and WebP); any other is re-encoded. */
   readonly formats?: readonly string[];
@@ -219,7 +220,8 @@ export async function fitImage(processor: ImageProcessor, bytes: Uint8Array, mim
     const rects = layout.tiles.length ? layout.tiles : [{ left: 0, top: 0, ...layout.scaled }];
     const blocks: ImageBlock[] = [];
     for (const [index, rect] of rects.entries()) {
-      const block = await encodeWithin(encode, layout.tiles.length ? crop(pixels, rect) : small(pixels) ? pad(pixels, limits.minEdge!) : pixels, limits);
+      const cut = layout.tiles.length ? crop(pixels, rect) : pixels;
+      const block = await encodeWithin(encode, small(cut) ? pad(cut, limits.minEdge!) : cut, limits);
       if (!block) return refuse("over_budget", original, `no encoding of ${layout.tiles.length ? `tile ${index + 1} of ${rects.length}` : "it"} fits in ${grouped(limits.maxBytes)} base64 characters`);
       blocks.push(block);
     }
