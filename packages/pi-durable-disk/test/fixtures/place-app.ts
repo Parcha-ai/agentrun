@@ -1,7 +1,8 @@
 // The app test/place.test.ts runs through `localPlace` (`run --dir --app`). Each incarnation writes `work/gen-<n>` with
 // what its order said (PLACE_ORDER). Generation 1 starts a `sleep` in its own process group, writes its pid, and waits
 // to be killed. A later one (or the first, with PLACE_FINISH) prints its outcome line, unless PLACE_SILENT, records
-// `done` with the same record in its detail, and exits 0.
+// `done` with the same record in its detail (`failed` with PLACE_FAIL, `done` with no record with PLACE_NO_RECORD), and
+// exits 0.
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -23,7 +24,9 @@ export default function app(where: AppContext): AppOptions {
       }
       const record = { order };
       if (!process.env.PLACE_SILENT) process.stdout.write(`${JSON.stringify({ outcome: { status: "complete", generation: run.generation, record } })}\n`);
-      await run.setStatus("done", { record });
+      // PLACE_FAIL: the run gives up; PLACE_NO_RECORD: it ends done with no result.
+      if (process.env.PLACE_FAIL) await run.setStatus("failed", { code: "APP_GAVE_UP", record });
+      else await run.setStatus("done", process.env.PLACE_NO_RECORD ? { steps: 1 } : { record });
       await run.release();
       process.exit(0);
     },
