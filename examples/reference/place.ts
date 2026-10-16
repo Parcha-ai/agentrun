@@ -17,7 +17,9 @@ export type RunnerOrder = { gen: number; env: Record<string, string>; stdin?: st
 export type MoveReceipt = Record<string, unknown>;
 /** What a runner announces to its supervisor: a crossing it took, or a request to be killed at one (a child parks at a planned crossing until the supervisor's kill arrives, so the
  *  latency of reading it from a remote place is acceptable). `info` carries what the place knows of the crossing (`gen`, `box`, `tool`, a transport crossing's `session` and `epoch`). */
-export type PlaceSignal = { kind: 'crossing' | 'kill-request'; crossing: { point: string; n: number; pid?: number; info?: Record<string, unknown> }; /** The attempt's nonce the runner wrote into its request (a place passes every request field through): the supervisor honors a kill request only with the nonce it minted for that attempt. */ nonce?: string };
+export type PlaceSignal = { kind: 'crossing' | 'kill-request'; crossing: { point: string; n: number; pid?: number; info?: Record<string, unknown> }; /** The attempt's nonce the runner wrote into its request (a place passes every request field through): the supervisor honors a kill request only with the nonce it minted for that attempt. */ nonce?: string } | {
+  /** A place's signals may END with this: it could not keep reading (a store that went away, a credential that expired). The supervisor writes a `signals.failed` host line and ends the attempt as it does after a kill that failed. */
+  kind: 'signals-failed'; code: string; message: string };
 
 export type Place = {
   /** For the recording's lines and the README: `local`, `box:docker`, `archil`. */

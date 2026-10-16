@@ -89,6 +89,8 @@ export type DemoResult = {
   overBudget: boolean;
   /** Kills the place could not make: the attempt ended, and the run did not go on. Each has the place's error code. */
   failedKills: Array<{ gen: number; code: string }>;
+  /** Attempts whose place ended its signals with `signals-failed` (or whose reader threw): the attempt ended as after a failed kill. */
+  failedSignals: Array<{ gen: number; code: string }>;
   /** The points of planned kills that never landed: the process finished without taking the crossing. A demo whose kill does not land is broken. */
   unlanded: string[];
 };
@@ -103,7 +105,7 @@ export async function demo(options: DemoOptions): Promise<DemoResult | undefined
   if (values.json) console.log(JSON.stringify(result));
   else summarize(options, result);
   // A command line ends with a failing code when the run did not complete or went past its cap; a caller that passed its own arguments reads the result.
-  if (options.argv === undefined && (result.overBudget || result.failedKills.length || result.unlanded.length || result.processes.at(-1)?.outcome?.status !== 'complete')) process.exitCode = 1;
+  if (options.argv === undefined && (result.overBudget || result.failedKills.length || result.failedSignals.length || result.unlanded.length || result.processes.at(-1)?.outcome?.status !== 'complete')) process.exitCode = 1;
   return result;
 }
 
@@ -331,6 +333,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const processes: DemoResult['processes'] = [];
   const kills: DemoResult['kills'] = [];
   const failedKills: DemoResult['failedKills'] = [];
+  const failedSignals: DemoResult['failedSignals'] = [];
   const unlanded: string[] = [];
   let overBudget = false;
   // Where the session lives, as paths in the place: computed, not made. The supervisor touches nothing under them; the place makes them.
@@ -403,20 +406,24 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
           const code = String((error as { code?: unknown } | null)?.code ?? 'KILL_FAILED');
           killFailed = true;
           failedKills.push({ gen, code });
-          supervisor.host('kill.failed', { gen, code, message: String((error as Error | null)?.message ?? error).slice(0, 240), kind: killed.kind });
+          supervisor.host('kill.failed', { gen, code, message: messageOf(error, paths.root), kind: killed.kind });
         }
         await readStatus();
       };
       const iterator = place.signals?.(gen)[Symbol.asyncIterator]();
+      let signalsFailed = false;
+      const signalsFailure = (code: string, message: string) => { if (signalsFailed) return; signalsFailed = true; failedSignals.push({ gen, code }); supervisor.host('signals.failed', { gen, code, message }); };
+      // Nothing in the pump can end the supervisor: a failure of the place's signals (its iterator ends with `signals-failed`, or throws) is a line and the end of the attempt, never an unhandled rejection.
       const pump = (async () => {
         if (!iterator) return;
         for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
+          if (next.value.kind === 'signals-failed') { signalsFailure(String(next.value.code), messageOf(next.value.message, paths.root)); return; }
           if (next.value.kind !== 'kill-request') continue;
           // A request is honored only with this attempt's nonce: a stale or other attempt's process, or a stray file on a shared mount, never puts a kill line in a recording.
           if (next.value.nonce !== nonce) { supervisor.host('kill.request.ignored', { gen, point: next.value.crossing.point, reason: next.value.nonce === undefined ? 'no nonce' : 'wrong nonce' }); continue; }
           await decide(next.value.crossing);
         }
-      })();
+      })().catch((error) => signalsFailure(String((error as { code?: unknown } | null)?.code ?? 'SIGNALS_FAILED'), messageOf(error, paths.root)));
       const watch = setInterval(() => { if (!killed && overBudget) void decide(undefined); }, 20);
       const tick = setInterval(() => { void readStatus(); }, 2000);
       const result = await runner.exited;
@@ -426,7 +433,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       await iterator?.return?.();
       await pump;
       processes.push(result);
-      if (killFailed || (killed && killed.label === 'max-usd')) break;
+      if (killFailed || signalsFailed || (killed && killed.label === 'max-usd')) break;
       if (killed) { previous = { runner, kind: killed.kind }; continue; }
       // A process that died by SIGKILL on its own (a crash, or a kill with no supervisor) is a kill at the last crossing it logged.
       if (result.signal === 'SIGKILL') {
@@ -466,7 +473,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     // The record-time scan: a recording that still holds a secret is refused (its manifest removed, so it is not a finished recording), naming the key and the file, never the value.
     try { scanRecording(recordDir, tracked?.final() ?? []); } catch (error) { rmSync(join(recordDir, 'manifest.json'), { force: true }); throw error; }
     const usd = cost(readEventsOf(recordDir)).usd;
-    return { processes, kills, record: delivered?.record ?? null, dir, runId, ...(values.record ? { recording: values.record } : {}), usd, maxUsd, overBudget, failedKills, unlanded };
+    return { processes, kills, record: delivered?.record ?? null, dir, runId, ...(values.record ? { recording: values.record } : {}), usd, maxUsd, overBudget, failedKills, failedSignals, unlanded };
   } finally {
     if (meterTimer) clearInterval(meterTimer);
     await place.release();
@@ -475,11 +482,19 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   }
 }
 
+/** A message the supervisor writes about a failure of the place: an absolute path outside the run's directory is replaced by `<path>` (the run's own paths stay), then it is capped at 240 characters. The recorder's exact-value redaction runs on the line after. */
+export function messageOf(error: unknown, root: string): string {
+  const own = resolve(root);
+  const text = String((error as { message?: unknown } | null)?.message ?? error);
+  return text.replace(/(?<![\w/:.-])\/(?:[\w.@%+~-]+\/?)+/g, (path) => (path === own || path.startsWith(`${own}/`) ? path : '<path>')).slice(0, 240);
+}
+
 const readEventsOf = (dir: string) => rows<Record<string, unknown>>(join(dir, 'events.jsonl'));
 
 function summarize(options: DemoOptions, result: DemoResult) {
   console.log(`${options.spec.title ?? options.spec.name}: ${result.processes.at(-1)?.outcome?.status ?? 'no outcome'} in ${result.processes.length} process${result.processes.length === 1 ? '' : 'es'}, ${result.kills.length} kill${result.kills.length === 1 ? '' : 's'}`);
   for (const kill of result.kills) console.log(`  killed process ${kill.gen} (${kill.kind}) at ${kill.point ?? 'no named crossing'}: ${kill.why}`);
+  if (result.failedSignals.length) console.log(`the place's signals failed: ${result.failedSignals.map((entry) => `process ${entry.gen} (${entry.code})`).join(', ')}`);
   if (result.failedKills.length) console.log(`kills the place could not make: ${result.failedKills.map((kill) => `process ${kill.gen} (${kill.code})`).join(', ')}`);
   const last = result.processes.at(-1)?.outcome;
   if (last && last.status !== 'complete' && last.message) console.log(`  stopped: ${last.message}`);
