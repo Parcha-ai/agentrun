@@ -32,6 +32,7 @@
     "demo:reference": "node scripts/check-node.mjs && node --no-warnings=ExperimentalWarning examples/reference/run.ts",
     "demo:kill": "node scripts/check-node.mjs && node --no-warnings=ExperimentalWarning examples/reference/kill-anywhere.ts",
     "demo:hero": "node scripts/check-node.mjs && node --no-warnings=ExperimentalWarning examples/hero/run.ts",
+    "demo:video-chapters": "node scripts/check-node.mjs && node --no-warnings=ExperimentalWarning examples/video-chapters/run.ts",
     "test:support": "node --test examples/support-answer.test.mjs examples/support-answer-runner.test.mjs"
   },
   "devDependencies": {

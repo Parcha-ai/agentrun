@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A Film, in Chapters</title>
+<style>
+  :root { --bg: #fbfaf7; --fg: #1c1b19; --muted: #6b6760; --line: #e3dfd6; --accent: #2f5d8a; --bad: #a33a2b; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #161513; --fg: #ece9e2; --muted: #a29d93; --line: #34312c; --accent: #8fb4dd; --bad: #e08a7d; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 22px; margin: 8px 0 4px; }
+  .meta { color: var(--muted); margin: 0 0 16px; }
+  .drop { border: 2px dashed var(--line); border-radius: 10px; padding: 28px; text-align: center; }
+  .drop.over { border-color: var(--accent); }
+  button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--fg); cursor: pointer; margin: 6px 4px 0; }
+  button.kill { border-color: var(--bad); color: var(--bad); }
+  #status { margin: 8px 0; color: var(--muted); }
+  iframe { width: 100%; height: 72vh; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
+  #log { font: 13px/1.4 ui-monospace, monospace; max-height: 30vh; overflow: auto; border-top: 1px solid var(--line); margin-top: 12px; padding-top: 8px; white-space: pre-wrap; }
+  [hidden] { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>A film, in chapters</h1>
+  <p class="meta">One agent watches the film a window at a time, sound included, and writes its chapters. Runs here are {{MODE}}; each stops past ${{CAP}}.</p>
+  <section id="drop" hidden>
+    <div class="drop" id="zone">
+      <p>Drop a video here, or <label><input type="file" id="file" accept="video/*" hidden><u>pick one</u></label>.</p>
+      <button id="nasa">Use NASA's Apollo 11 film</button>
+      <button id="clip">Use the 24 s clip</button>
+    </div>
+  </section>
+  <section id="run" hidden>
+    <p id="status">Starting...</p>
+    <button class="kill" id="kill">Kill the run's process</button>
+    <p class="meta">A kill ends the process mid-film; a fresh one starts and reads back every window already answered, paying nothing again.</p>
+    <iframe id="viewer" title="The run, as the viewer follows it"></iframe>
+    <div id="log"></div>
+  </section>
+</main>
+<script>
+const RUN = '{{RUN}}';
+const $ = (id) => document.getElementById(id);
+async function start(query, body) {
+  $('drop').querySelectorAll('button').forEach((b) => { b.disabled = true; });
+  const response = await fetch('/runs?' + query, { method: 'POST', body });
+  const made = await response.json();
+  if (!response.ok) { alert(made.error || 'the run could not start'); location.reload(); return; }
+  location.href = made.page;
+}
+if (!RUN) {
+  $('drop').hidden = false;
+  $('nasa').onclick = () => start('source=nasa');
+  $('clip').onclick = () => start('source=clip');
+  $('file').onchange = () => { const f = $('file').files[0]; if (f) start('name=' + encodeURIComponent(f.name), f); };
+  const zone = $('zone');
+  zone.ondragover = (e) => { e.preventDefault(); zone.classList.add('over'); };
+  zone.ondragleave = () => zone.classList.remove('over');
+  zone.ondrop = (e) => { e.preventDefault(); zone.classList.remove('over'); const f = e.dataTransfer.files[0]; if (f) start('name=' + encodeURIComponent(f.name), f); };
+} else {
+  $('run').hidden = false;
+  const base = '/runs/' + RUN + '/';
+  $('viewer').src = '/viewer/?src=' + encodeURIComponent(base + 'recording/') + '&follow=1';
+  let offset = 0;
+  const lines = [];
+  const say = (line) => {
+    if (line.source === 'host' && line.kind === 'process.started') return 'process ' + line.data.gen + ' started';
+    if (line.source === 'host' && line.kind === 'kill') return 'killed process ' + line.data.gen + (line.data.label ? ' at ' + line.data.label : '');
+    if (line.source === 'vision' && line.kind === 'LookEvent') { const r = line.data.record || {}; return (r.facts && r.facts.kept ? 'kept   ' : 'looked ') + (r.args ? r.args.path : '') + (r.facts && typeof r.facts.cost_usd === 'number' ? '  $' + r.facts.cost_usd.toFixed(4) : ''); }
+    if (line.source === 'host' && line.kind === 'result') return 'result: ' + line.data.title;
+    return null;
+  };
+  async function tick() {
+    const status = await (await fetch(base + 'status')).json();
+    $('status').textContent = status.film + ': ' + status.state + ', ' + status.processes + ' process' + (status.processes === 1 ? '' : 'es') + ', ' + status.kills + ' kill' + (status.kills === 1 ? '' : 's') + (status.cost ? ', cost ' + (status.cost.usd === null ? 'unknown' : '$' + status.cost.usd.toFixed(4)) : '');
+    $('kill').disabled = status.state !== 'running' || !status.pid;
+    const response = await fetch(base + 'recording/events.jsonl', { headers: { range: 'bytes=' + offset + '-' } });
+    if (response.status === 206) {
+      const text = await response.text();
+      offset += new TextEncoder().encode(text).length;
+      for (const raw of text.split('\n')) { if (!raw) continue; try { const said = say(JSON.parse(raw)); if (said) lines.push(said); } catch {} }
+      $('log').textContent = lines.join('\n');
+      $('log').scrollTop = $('log').scrollHeight;
+    }
+    if (status.state === 'running') setTimeout(tick, 1500);
+    else if (status.state === 'finished') $('viewer').src = '/viewer/?src=' + encodeURIComponent(base + 'recording/');
+  }
+  $('kill').onclick = async () => { $('kill').disabled = true; const r = await fetch(base + 'kill', { method: 'POST' }); if (!r.ok) alert((await r.json()).error); };
+  tick();
+}
+</script>
+</body>
+</html>

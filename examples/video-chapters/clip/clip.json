@@ -1,0 +1,9 @@
+{
+ "about": "What a run on fakes reads with no network: 24 seconds of the film, cut by cut.sh from the checked film, fixed by size and SHA-256.",
+ "file": "eagle-clip-360-384.webm",
+ "from": "eagle-has-landed",
+ "cut": "seconds 360 to 384 (the launch, with its narration), VP9 and Opus in WebM, a keyframe each second",
+ "bytes": 676426,
+ "sha256": "13cff4839275849adec3626028bffae36275656543e57ee543890a9b2f06906a",
+ "duration_s": 24
+}
