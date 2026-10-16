@@ -26,7 +26,21 @@ test('the disk panel is not a scroll box: it is as tall as its content', noChrom
   const url = `${pathToFileURL(join(out, 'dist', 'index.html')).href}?r=disk-takeover`;
   const browser = spawn(chrome, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${join(out, 'profile')}`, '--window-size=1400,900', '--remote-debugging-port=0', url], { stdio: 'ignore' });
   const exited = new Promise((resolve) => browser.once('exit', resolve));
-  t.after(async () => { browser.kill(); await Promise.race([exited, sleep(10_000)]); rmSync(out, { recursive: true, force: true }); });
+  // Chrome keeps writing its profile until it has shut down: ask it to close, wait for it to exit, kill it only past a deadline, and
+  // retry the removal for the files its helpers were still holding.
+  t.after(async () => {
+    try {
+      const port = readFileSync(join(out, 'profile', 'DevToolsActivePort'), 'utf8').split('\n')[0];
+      const { webSocketDebuggerUrl } = await (await within(fetch(`http://127.0.0.1:${port}/json/version`), 5_000, 'the browser address')).json() as { webSocketDebuggerUrl: string };
+      const whole = new WebSocket(webSocketDebuggerUrl);
+      await within(new Promise((resolve, reject) => { whole.addEventListener('open', resolve); whole.addEventListener('error', () => reject(new Error('the browser socket failed'))); }), 5_000, 'the browser socket');
+      whole.send(JSON.stringify({ id: 1, method: 'Browser.close' }));
+    } catch { /* it is killed below */ }
+    await Promise.race([exited, sleep(10_000)]);
+    browser.kill();
+    await Promise.race([exited, sleep(5_000)]);
+    rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+  });
   let port: string | undefined;
   for (let tries = 0; tries < 300 && !port; tries += 1) { await sleep(100); try { port = readFileSync(join(out, 'profile', 'DevToolsActivePort'), 'utf8').split('\n')[0]; } catch { /* not up yet */ } }
   assert.ok(port, 'Chrome is up');
