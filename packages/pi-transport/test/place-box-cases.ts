@@ -9,6 +9,7 @@ import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/provid
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { describe, expect, it } from "vitest";
 import type { BoxProvider, BoxSpec } from "../src/box/box.ts";
+import { type BoxReceipt, type BoxReceipts, boxReceipts } from "../src/box/receipts.ts";
 import { localVault } from "../src/home/checkpoint.ts";
 import { dirStore } from "../src/home/dir-store.ts";
 import { leaseIn } from "../src/home/ownership.ts";
@@ -16,6 +17,7 @@ import type { RunnerProgram } from "../src/home/start.ts";
 import {
 	type BoxPlace,
 	boxPlace,
+	type PlaceLineKind,
 	type PlaceSignal,
 	RecordHomeError,
 	type RunnerOrder,
@@ -36,24 +38,44 @@ export type BoxPlaceSetup = {
 	readonly agentProgram?: RunnerProgram;
 };
 
-/** A host's directory (lease, vault, the recording's spool with its clock) and the setup's boxes. */
+/** `inner`, with the id of every box it makes kept in `ids`: what no line of the place may name. */
+function idsOf(inner: BoxProvider, ids: string[]): BoxProvider {
+	return {
+		name: inner.name,
+		async create(spec, context) {
+			const made = await inner.create(spec, context);
+			if (made.ok) ids.push(made.value.id);
+			return made;
+		},
+		attach: (id, context) => inner.attach(id, context),
+		list: (labels, context) => inner.list(labels, context),
+	};
+}
+
+/** A host's directory (lease, vault, the recording's spool with its clock), the setup's boxes, and the place's lines. */
 function world(setup: BoxPlaceSetup) {
 	const root = mkdtempSync(join(tmpdir(), "pi-transport-place-"));
 	const host = join(root, "host");
 	const record = join(host, "record");
 	mkdirSync(join(record, ".spool"), { recursive: true });
 	writeFileSync(join(record, ".spool", "started"), `${STARTED}\n`);
+	const ids: string[] = [];
 	return {
 		host,
 		record,
 		setup,
-		provider: setup.provider(root),
+		ids,
+		lines: [] as { kind: PlaceLineKind; data: Readonly<Record<string, unknown>> }[],
+		provider: idsOf(setup.provider(root), ids),
 		remove: () => rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }),
 	};
 }
 type World = ReturnType<typeof world>;
 
-async function placeIn(made: World, more: { models?: Models; program?: RunnerProgram } = {}): Promise<BoxPlace> {
+async function placeIn(
+	made: World,
+	more: { models?: Models; program?: RunnerProgram; receipts?: BoxReceipts } = {},
+): Promise<BoxPlace> {
 	return getOrThrow(
 		await boxPlace(
 			{
@@ -67,6 +89,8 @@ async function placeIn(made: World, more: { models?: Models; program?: RunnerPro
 				vault: localVault(join(made.host, "vault")),
 				carry: ["CROSS_LOG"],
 				recording: "RECORD_DIR",
+				lines: (kind, data) => made.lines.push({ kind, data }),
+				...(more.receipts === undefined ? {} : { receipts: more.receipts }),
 			},
 			context,
 		),
@@ -88,6 +112,15 @@ const orderOf = (made: World, place: BoxPlace, gen: number, more: Record<string,
 		...more,
 	},
 });
+
+/** Every value in the place's lines that names a box: each must be a label. */
+function boxNames(made: World): unknown[] {
+	return made.lines.flatMap(({ kind, data }) => {
+		if (kind === "lease") return [(data.holder as { box?: unknown } | undefined)?.box];
+		if (kind === "restore") return [(data.from as { box?: unknown }).box, (data.to as { box?: unknown }).box];
+		return [data.box];
+	});
+}
 
 /** The commits the place's vault holds from commit 1, read as a host that starts again reads them. */
 async function logFrom1(made: World) {
@@ -191,9 +224,18 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 					const status = await place.status();
 					const holder = status.record.holder as { host: string; bootId: string };
 					expect(status.record).toMatchObject({ run: "run-1", generation: 1, status: "stopped" });
-					expect(holder.bootId).toBe("epoch-1");
+					expect(holder).toEqual({ host: "box-1", bootId: "epoch-1" });
 					await place.release();
-					expect(getOrThrow(await made.provider.attach(holder.host, context))).toBeUndefined();
+					expect(getOrThrow(await made.provider.attach(made.ids[0] as string, context))).toBeUndefined();
+					// The home box's life, by its label: made, then ended by the release, not killed.
+					expect(
+						made.lines.map(({ kind, data }) => [kind, data.box ?? (data.holder as { box: string }).box]),
+					).toEqual([
+						["box.created", "box-1"],
+						["lease", "box-1"],
+						["box.ended", "box-1"],
+					]);
+					expect(made.lines[2]?.data).toEqual({ box: "box-1", provider: made.provider.name, killed: false });
 				} finally {
 					made.remove();
 				}
@@ -316,6 +358,7 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 					const runner = await place.start(orderOf(made, place, 1, { PARK_AT: "2" }));
 					await firstSignal(place, 1, "kill-request");
 					const lost = ((await place.status()).record.holder as { host: string }).host;
+					expect(lost).toBe("box-1");
 					// A supervisor that asks again while a checkpoint is being taken gets that one: the session is held once.
 					expect(await Promise.all([place.checkpoint(), place.checkpoint()])).toEqual([
 						{ taken: true },
@@ -351,8 +394,15 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 					// The lost box's attempt is behind the place; the restored one's recording comes home.
 					await place.recordHome?.bringHome(made.record, { final: true });
 					const status = await place.status();
-					expect((status.record.holder as { host: string }).host).not.toBe(lost);
+					expect((status.record.holder as { host: string }).host).toBe("box-2");
 					expect(status.record.generation).toBe(2);
+					expect(made.lines.find(({ kind }) => kind === "restore")?.data).toMatchObject({
+						kind: "restore",
+						epoch: 2,
+						from: { environment: "box", box: "box-1" },
+						to: { environment: "box", box: "box-2" },
+						checkpoint: { n: expect.any(Number), head: expect.any(Number) },
+					});
 					await place.release();
 				} finally {
 					made.remove();
@@ -366,7 +416,21 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 			async () => {
 				const made = world(setup);
 				try {
-					const place = await placeIn(made);
+					// The host's ledger, as the pool's: the home's boxes are labelled in its numbering and each gets its receipt.
+					const receipts: BoxReceipt[] = [];
+					const ledger = boxReceipts({
+						prices: [
+							{
+								provider: made.provider.name,
+								kind: "none",
+								usdPerSecond: 0.0001,
+								source: "test",
+								priced: "2026-10-16",
+							},
+						],
+						write: (receipt) => receipts.push(receipt),
+					});
+					const place = await placeIn(made, { receipts: ledger });
 					const effects = join(made.host, "effects.jsonl");
 					writeFileSync(effects, "");
 					const steps = 30;
@@ -406,6 +470,36 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 					expect(missing.every((step) => step === record.interrupted)).toBe(true);
 					expect(new Set(ran.map((line) => line.generation))).toEqual(new Set([1, 2]));
 					await place.release();
+					// The home's lane and its hop, by labels only: made, killed, ended, the new box made, the lease moved, the restore.
+					const home = made.lines.filter(({ kind }) => kind !== "lease" && kind !== "restore");
+					expect(home.map(({ kind, data }) => [kind, data.box])).toEqual([
+						["box.created", "box-1"],
+						["box.killed", "box-1"],
+						["box.ended", "box-1"],
+						["box.created", "box-2"],
+						["box.ended", "box-2"],
+					]);
+					expect(made.lines.filter(({ kind }) => kind === "lease").map(({ data }) => data)).toEqual([
+						{ epoch: 1, holder: { environment: "box", provider: made.provider.name, box: "box-1" } },
+						{ epoch: 2, holder: { environment: "box", provider: made.provider.name, box: "box-2" } },
+					]);
+					const hop = made.lines.find(({ kind }) => kind === "restore")?.data;
+					expect(hop).toMatchObject({
+						kind: "restore",
+						epoch: 2,
+						from: { environment: "box", box: "box-1" },
+						to: { environment: "box", box: "box-2" },
+						replayed: { from: 1, to: recovered.replayed?.to },
+						head: (recovered.replayed?.to ?? 0) + 1,
+					});
+					expect(hop).not.toHaveProperty("checkpoint");
+					// Every box-identifying field is a label, and no line, status or receipt names a provider's id.
+					expect(made.ids).toHaveLength(2);
+					for (const name of boxNames(made)) expect(name).toMatch(/^box-\d+$/);
+					const told = JSON.stringify({ lines: made.lines, status: await place.status(), receipts });
+					for (const id of made.ids) expect(told).not.toContain(id);
+					// The receipts are the same boxes under the same labels.
+					expect(receipts.map(({ box }) => box).sort()).toEqual(["box-1", "box-2"]);
 				} finally {
 					made.remove();
 				}

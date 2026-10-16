@@ -7,6 +7,7 @@ import type { Models } from "@earendil-works/pi-ai";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import type { Box, BoxProcess, BoxProvider, BoxSpec } from "../box/box.ts";
 import { finish } from "../box/files.ts";
+import { type BoxReceipts, boxReceipts } from "../box/receipts.ts";
 import {
 	type CheckpointStats,
 	type CheckpointVault,
@@ -80,6 +81,9 @@ export type RecordHome = {
 	bringHome(into: string, options?: { final?: boolean }): Promise<void>;
 };
 
+/** The live lines a box place writes, source `transport`. */
+export type PlaceLineKind = "box.created" | "box.killed" | "box.ended" | "lease" | "restore";
+
 export type BoxPlaceOptions = {
 	/** The session: the run's id. */
 	readonly session: string;
@@ -132,6 +136,21 @@ export type BoxPlaceOptions = {
 	};
 	/** How often a runner's kill request is looked for in the box. Default 100 ms. */
 	readonly pollMs?: number;
+	/**
+	 * The host's receipts ledger (`boxReceipts`): the place makes its boxes through it, so each box has its receipt and
+	 * its label in the ledger's numbering, the label every line and record of the place names it by. Pass `provider`
+	 * unwrapped (one the ledger already wraps is used as it is). Without it, the place labels its boxes `box-1`, `box-2`
+	 * by itself and writes no receipt.
+	 */
+	readonly receipts?: BoxReceipts;
+	/**
+	 * The place's live lines, source `transport`, for the host to write: `box.created` `{ box, environment, provider,
+	 * facts }` when it makes a box; `box.killed` `{ box }` before it destroys one at `kill(runner, "box")`; `box.ended`
+	 * `{ box, provider, killed }` when one is gone; `lease` `{ epoch, holder }` when the session is taken at an epoch;
+	 * `restore` `{ id, kind, epoch, head, from, to, checkpoint?, replayed? }` when a lost box's session lives again in a
+	 * new one. A box is named by its label in every line, never by its provider's id.
+	 */
+	readonly lines?: (kind: PlaceLineKind, data: Readonly<Record<string, unknown>>) => void;
 };
 
 /** A session's place in a box, made by `boxPlace`. */
@@ -238,9 +257,32 @@ async function writeWhole(path: string, bytes: Uint8Array): Promise<void> {
  * (`pullCheckpoint`), which a box kill does not need: they bring the workspace's files along.
  */
 export async function boxPlace(options: BoxPlaceOptions, context: Context): Promise<Result<BoxPlace, MoveError>> {
-	const made = await options.provider.create(options.spec, context);
-	if (!made.ok) return err(new MoveError("prepare", `could not make the place's box: ${made.error.message}`));
 	const { session, environment } = options;
+	// Every box of the place is on a ledger, so that each has one label: the receipts', or the place's own.
+	const ledger = options.receipts ?? boxReceipts({ prices: [], write: () => {} });
+	const provider = ledger.wrap(options.provider);
+	const labelOf = (one: Box) => ledger.labelOf(provider.name, one.id) ?? "a box with no label";
+	const line = (kind: PlaceLineKind, data: Record<string, unknown>) => {
+		try {
+			options.lines?.(kind, data);
+		} catch {
+			// A recording line never fails the place.
+		}
+	};
+	const where = (one: Box) => ({ environment, provider: provider.name, box: labelOf(one) });
+	const announce = (one: Box) => {
+		const { isolation, gpu, cpus } = one.facts();
+		line("box.created", { ...where(one), facts: { isolation, gpu, cpus } });
+	};
+	const ended = new Set<Box>();
+	const gone = (one: Box, killed: boolean) => {
+		if (ended.has(one)) return;
+		ended.add(one);
+		line("box.ended", { box: labelOf(one), provider: provider.name, killed });
+	};
+	const made = await provider.create(options.spec, context);
+	if (!made.ok) return err(new MoveError("prepare", `could not make the place's box: ${made.error.message}`));
+	announce(made.value);
 	const host = options.host ?? "host";
 	const boxes: Box[] = [made.value];
 	let box = made.value;
@@ -268,9 +310,14 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 	let taking: Promise<{ taken: boolean; heldBy?: string }> | undefined;
 
 	const crossing: Crossing = (point, info) => {
-		const { release: _release, ...told } = info;
+		const { release: _release, box: id, ...told } = info;
+		// A crossing that names a box names it by its label, as every line of the place does.
+		const one = typeof id === "string" ? boxes.find((each) => each.id === id) : undefined;
 		const queue = queues.get(attempt) ?? [];
-		queue.push({ kind: "crossing", crossing: { point, n: info.n, info: { ...told } } });
+		queue.push({
+			kind: "crossing",
+			crossing: { point, n: info.n, info: { ...told, ...(one === undefined ? {} : { box: labelOf(one) }) } },
+		});
 		queues.set(attempt, queue);
 	};
 
@@ -382,7 +429,7 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 				if (recording.box === undefined || recording.into !== into) continue;
 				// An attempt of a box the place left behind (a lost box replaced) brought home what it could at its end.
 				if (recording.box !== box) continue;
-				const there = await options.provider.attach(recording.box.id, BACKGROUND_CONTEXT);
+				const there = await provider.attach(recording.box.id, BACKGROUND_CONTEXT);
 				if (there.ok && there.value === undefined) {
 					throw new RecordHomeError("BOX_GONE", `the box of attempt ${n} is gone`);
 				}
@@ -519,6 +566,7 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 			const taken = await options.ownership.take(session, holder(), 0, undefined, context);
 			if (!taken.ok) throw new Error(`could not take the session's lease: ${taken.error.message}`);
 			epoch = taken.value.epoch;
+			line("lease", { epoch, holder: where(box) });
 			const runner = runnerOf(order.gen, env, carried);
 			const begun = await runner.start(homePlace(), epoch, context);
 			if (!begun.ok) throw begun.error;
@@ -584,8 +632,12 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 				const stopped = await killRunner(homePlace(), context);
 				if (!stopped.ok) throw stopped.error;
 			} else {
-				const destroyed = await box.destroy(context);
+				const lost = box;
+				// A planned loss: written before the box is destroyed, and the box ended once it is.
+				line("box.killed", { box: labelOf(lost) });
+				const destroyed = await lost.destroy(context);
 				if (!destroyed.ok) throw destroyed.error;
+				gone(lost, true);
 			}
 			await runner.exited;
 		},
@@ -593,7 +645,7 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 			const record: Record<string, unknown> = {
 				run: session,
 				generation: epoch,
-				holder: { host: box.id, bootId: `epoch-${epoch}` },
+				holder: { host: labelOf(box), bootId: `epoch-${epoch}` },
 			};
 			const read = handle === undefined ? undefined : await handle.status(context);
 			if (read?.ok) {
@@ -612,11 +664,14 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 			const named = homePlace();
 			let next: Box | undefined;
 			if (kind === "box") {
-				const made = await options.provider.create(options.spec, context);
+				// A box lost other than by `kill` ended too: the session waits for its next box.
+				gone(named.box, false);
+				const made = await provider.create(options.spec, context);
 				if (!made.ok)
 					throw new MoveError("prepare", `could not make a box in place of the lost one: ${made.error.message}`);
 				next = made.value;
 				boxes.push(next);
+				announce(next);
 			}
 			const { env, carried } = inBox(order, (next === undefined ? paths : pathsIn(next, session)).root);
 			const runner = runnerOf(order.gen, env, carried);
@@ -649,6 +704,21 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 			handle = recovered.value.home;
 			epoch = recovered.value.lease.epoch;
 			const { restored, replayed } = recovered.value;
+			if (next !== undefined) {
+				// The hop: from the lost box to the one the session lives in now, each by its label.
+				const head = replayed !== undefined ? replayed.to + 1 : restored?.seal.head;
+				line("lease", { epoch, holder: where(box) });
+				line("restore", {
+					id: recovered.value.lease.move ?? `restore-${epoch}`,
+					kind: "restore",
+					epoch,
+					...(head === undefined ? {} : { head }),
+					from: where(named.box),
+					to: where(box),
+					...(restored === undefined ? {} : { checkpoint: { n: restored.n, head: restored.seal.head } }),
+					...(replayed === undefined ? {} : { replayed: { from: replayed.from, to: replayed.to } }),
+				});
+			}
 			return {
 				runner: { epoch, exited: runner.exited() },
 				...(restored === undefined
@@ -668,7 +738,10 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 			released = true;
 			handle?.close("the place is released");
 			server.close();
-			for (const made of boxes) await made.destroy(context).catch(() => {});
+			for (const made of boxes) {
+				const destroyed = await made.destroy(context).catch(() => undefined);
+				if (destroyed?.ok === true) gone(made, false);
+			}
 		},
 	};
 	return ok(place);

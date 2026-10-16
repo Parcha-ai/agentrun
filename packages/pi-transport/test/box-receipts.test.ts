@@ -178,6 +178,26 @@ describe("box receipts", () => {
 		}
 	});
 
+	it("names each box it made by its label, keeps a provider wrapped twice on the ledger once, and names no other box", async () => {
+		const made = ledgerOf();
+		try {
+			const ledger = boxReceipts({ prices: PRICES, write: (receipt) => made.written.push(receipt) });
+			const once = ledger.wrap(made.raw);
+			expect(ledger.wrap(once)).toBe(once);
+			const box = getOrThrow(await ledger.wrap(once).create({ maxLifetimeMs: 60_000 }, context));
+			const foreign = getOrThrow(await made.raw.create({ maxLifetimeMs: 60_000 }, context));
+			expect(ledger.labelOf(made.raw.name, box.id)).toBe("box-1");
+			expect(ledger.labelOf(made.raw.name, foreign.id)).toBeUndefined();
+			getOrThrow(await box.destroy(context));
+			getOrThrow(await foreign.destroy(context));
+			// One receipt for the box, and its label kept after it ended.
+			expect(made.written.map(({ box: label }) => label)).toEqual(["box-1"]);
+			expect(ledger.labelOf(made.raw.name, box.id)).toBe("box-1");
+		} finally {
+			made.remove();
+		}
+	});
+
 	it("labels the boxes of a slower and a faster provider as they are made, each receipt with its own box's provider and price", async () => {
 		const two = twoOf();
 		try {

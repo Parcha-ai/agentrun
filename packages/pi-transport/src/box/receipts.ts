@@ -77,9 +77,15 @@ export type BoxReceipts = {
 	 * `provider` with every box it makes on the ledger. The box ends when it is destroyed through it, when its `status`
 	 * says it ended, or when `attach` finds it gone (a box ended by its lifetime, under the run): a sweep that ends a
 	 * leaked box through it is the third. Hand the wrapped providers to everything that makes boxes (a box place, the
-	 * transport's hands pools through `TransportHost.providers`).
+	 * transport's hands pools through `TransportHost.providers`). A provider this ledger already wraps is returned as it
+	 * is: a box is on the ledger once, with one label and one receipt.
 	 */
 	wrap(provider: BoxProvider): BoxProvider;
+	/**
+	 * The label this ledger gave the box `id` of the provider named `provider`, ended or not; `undefined` for a box it
+	 * did not make. Whatever names a box in a recording names it by this, never by its id.
+	 */
+	labelOf(provider: string, id: string): string | undefined;
 };
 
 function defaultKind(facts: BoxFacts): string {
@@ -97,6 +103,10 @@ export function boxReceipts(options: BoxReceiptsOptions): BoxReceipts {
 			count += 1;
 			return `box-${count}`;
 		});
+	// Every box's label, by provider and id, kept after the box ends.
+	const labels = new Map<string, string>();
+	// The providers this ledger wraps: wrapping one again returns it.
+	const wrapped = new WeakSet<BoxProvider>();
 	// The boxes made and not yet ended, by provider and id.
 	const open = new Map<
 		string,
@@ -149,8 +159,9 @@ export function boxReceipts(options: BoxReceiptsOptions): BoxReceipts {
 
 	return {
 		wrap(inner) {
+			if (wrapped.has(inner)) return inner;
 			const keyOf = (id: string) => `${inner.name}\u0000${id}`;
-			return {
+			const provider: BoxProvider = {
 				name: inner.name,
 				async create(spec, context) {
 					const made = await inner.create(spec, context);
@@ -159,12 +170,9 @@ export function boxReceipts(options: BoxReceiptsOptions): BoxReceipts {
 					const facts = made.value.facts();
 					const kind = kindOf(facts);
 					const from = now();
-					open.set(key, {
-						provider: inner.name,
-						kind,
-						from,
-						box: label({ provider: inner.name, kind, spec, facts }),
-					});
+					const box = label({ provider: inner.name, kind, spec, facts });
+					labels.set(key, box);
+					open.set(key, { provider: inner.name, kind, from, box });
 					return ok(onLedger(key, made.value));
 				},
 				async attach(id, context) {
@@ -178,8 +186,11 @@ export function boxReceipts(options: BoxReceiptsOptions): BoxReceipts {
 					// A box another process or host made is its maker's to receipt.
 					return open.has(key) ? ok(onLedger(key, found.value)) : found;
 				},
-				list: (labels, context) => inner.list(labels, context),
+				list: (wanted, context) => inner.list(wanted, context),
 			};
+			wrapped.add(provider);
+			return provider;
 		},
+		labelOf: (provider, id) => labels.get(`${provider}\u0000${id}`),
 	};
 }

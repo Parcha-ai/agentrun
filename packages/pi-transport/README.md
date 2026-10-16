@@ -594,6 +594,12 @@ It makes the box, and
 - Every runner of the session ships its commits into `vault`'s log (`recordSink`) and asks one model server: the log a
   lost box is restored from is always the one the runners wrote, and a runner that comes back is answered what was
   paid for, not charged again. The host passes only where the recorder's lines go (`recorder`).
+- A box is named by its label everywhere the place names one, never by its provider's id: the status record's
+  `holder.host`, a crossing's `info.box`, and the place's own live lines, source `transport`, that it hands the host's
+  `lines`: `box.created`, `box.killed` before a box kill, `box.ended`, `lease` at each epoch, and `restore` from the lost
+  box to the new one (with its `checkpoint` or `replayed`), so a panel draws the home's lane and its hop. With the
+  host's receipts ledger (`receipts`), the place makes its boxes through it: each has its receipt and its label in the
+  ledger's numbering, the same as the pool's boxes. Without one, the place labels its boxes `box-1`, `box-2` itself.
 - `signals(attempt)` reads the runner's kill request from `requestFile(attempt)` in the box, with the nonce it wrote,
   and passes on the transport's crossings; its iterator's `return()` ends a pending `next()`. `status()` is the run's
   record: `run`, the epoch as `generation`, the box in `holder.host`, the home's state, and `sealedSeq` when sealed.
