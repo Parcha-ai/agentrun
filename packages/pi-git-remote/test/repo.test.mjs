@@ -330,3 +330,17 @@ test("a directory reopened without its push URL ignores the push side's refs, an
   assert.equal((await plain.commitTo("runs/r1", { files: { "inbox/r1.md": "y\n" }, message: "r1", trailers: { "Run-Id": "r1" } })).created, true);
   assert.equal(await split.resolve(MAIN), ahead.sha, "the handle with the push URL still sees the newer tip");
 });
+
+test("allowEmpty makes a commit that changes no file, so its message and trailers are the record", async () => {
+  const root = await scratch();
+  const { dir, remote, main } = await seededRemote(root);
+  const repo = await openRepo({ dir: path.join(root, "host"), remote });
+  assert.deepEqual(await repo.commitTo(MAIN, { files: {}, message: "nothing" }), { sha: main, created: false });
+  const empty = await repo.commitTo(MAIN, { files: {}, message: "held one", trailers: { "Curated-Run": "r1" }, allowEmpty: true, parent: main });
+  assert.equal(empty.created, true);
+  await repo.push(empty.sha, MAIN);
+  const [entry] = await repo.log({ max: 1 });
+  assert.deepEqual(entry, { sha: empty.sha, parents: [main], subject: "held one", trailers: { "Curated-Run": ["r1"] } });
+  const tree = async (rev) => (await rawGit(["rev-parse", `${rev}^{tree}`], { gitDir: dir })).toString().trim();
+  assert.equal(await tree(empty.sha), await tree(main));
+});
