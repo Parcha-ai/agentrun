@@ -282,3 +282,16 @@ test("a workflow record that is not shaped like the store's, or holds a secret, 
     for (const gitDir of [dir, repo.dir]) assert.ok(!holds(gitDir, secret) && !holds(gitDir, "registry.search"), `${name}: an object holds the proposal`);
   }
 });
+
+test("uses that have no JSON form are refused, not thrown", async () => {
+  const root = await scratch();
+  const { dir, remote, main } = await seededRemote(root);
+  const repo = await host(root, remote);
+  const cycle = {};
+  cycle.self = cycle;
+  for (const [name, uses] of [["a bigint", () => ({ count: 1n })], ["a cycle", () => cycle], ["a function", () => () => 1]]) {
+    const result = await proposeLearning({ ...OPTIONS, repo, target: targetOf([candidate()]), uses });
+    assert.deepEqual(result, { status: "refused", refusals: [{ reason: "invalid", field: "uses", detail: "the uses are not JSON" }] }, name);
+  }
+  assert.deepEqual(await refsOf(dir), { "refs/heads/main": main });
+});

@@ -160,6 +160,11 @@ test("case data: a case value of 4 or more characters is refused in any case, sp
   const refused = (input) => reasonsOf(guard({ role: "run", runId: RUN_ID, caseValues, ...input }));
   assert.ok(refused({ candidates: [candidate({ text: "For acme holdings gmbh, use the registry." })] }).has("case_data"));
   assert.ok(refused({ candidates: [candidate({ text: "For ACME\n  HOLDINGS   GmbH only." })] }).has("case_data"));
+  for (const text of ["12\n345", "1 2 3 4 5", "12\r\n   345", "For Ac\nme Holdings\tGmbH"]) {
+    assert.ok(refused({ candidates: [candidate({ text })] }).has("case_data"), `a value split by whitespace: ${JSON.stringify(text)}`);
+  }
+  assert.ok(guard({ role: "run", caseValues: ["Acme"], candidates: [candidate({ text: "Ac\nme" })] }).some((r) => r.reason === "case_data"));
+  assert.deepEqual(guard({ role: "run", caseValues: ["a b c"], candidates: [candidate({ text: "abc is short" })] }), [], "a value under 4 characters once its whitespace is gone is ignored");
   assert.ok(refused({ candidates: [candidate({ evidence: ["order 12345 failed"] })] }).has("case_data"));
   assert.ok(refused({ files: { [`inbox/${RUN_ID}.md`]: "see 12345" } }).has("case_data"));
   assert.ok(refused({ files: { [`inbox/${RUN_ID}.md`]: "ok", "learnings/12345.md": "ok" } }).has("case_data"));

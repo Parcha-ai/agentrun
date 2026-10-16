@@ -78,7 +78,12 @@ export async function proposeLearning(options: ProposeOptions): Promise<ProposeR
   const files: Record<string, string> = {};
   if (candidates.length) files[inboxPath(rest.runId)] = renderInbox(rest.runId, candidates);
   if (uses !== undefined) {
-    const json = JSON.stringify(uses, null, 2);
+    let json: string | undefined;
+    try {
+      json = JSON.stringify(uses, null, 2);
+    } catch {
+      // A bigint or a cycle has no JSON form.
+    }
     if (json === undefined) return { status: "refused", refusals: [{ reason: "invalid", field: "uses", detail: "the uses are not JSON" }] };
     files[usesPath(rest.runId)] = `${json}\n`;
   }

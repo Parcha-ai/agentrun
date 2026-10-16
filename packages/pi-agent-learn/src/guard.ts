@@ -12,7 +12,7 @@ const MIN_CASE_VALUE = 4;
 
 const bytes = (text: string) => Buffer.byteLength(text, "utf8");
 const squeeze = (text: string) => text.normalize("NFKC").replace(/\s+/gu, "");
-const foldCase = (text: string) => text.normalize("NFKC").toLowerCase().replace(/\s+/gu, " ").trim();
+const foldCase = (text: string) => squeeze(text).toLowerCase();
 
 // ---------------------------------------------------------------- secrets
 
