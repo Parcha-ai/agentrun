@@ -19,3 +19,31 @@ export function spawnSwapper(work: string, parent: number, capSeconds = SWAPPER_
   const group = "kill -s KILL -- -$$";
   return spawn("sh", ["-c", `(sleep ${capSeconds}; ${group}) & ${swapperLoop(work, parent)}; ${group}`], { stdio: "ignore", detached: true });
 }
+
+/**
+ * Stops the swapper whose group `leader` leads, and returns once nothing in the group runs: SIGTERM to the group, SIGKILL
+ * once `graceMs` has passed. A signal sent is not a swapper stopped: a member finishes the write it is in, and on macOS a
+ * child forked as the signal lands can miss it and run its `ln` or `rm` after, so a layout removed right after the signal
+ * can find a file made after the walk (ENOTEMPTY). Returns whether the group ended within `graceMs + killMs`.
+ */
+export async function stopSwapper(leader: number, graceMs = 2_000, killMs = 5_000): Promise<boolean> {
+  const gone = () => {
+    try {
+      process.kill(-leader, 0);
+      return false;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ESRCH";
+    }
+  };
+  const waitGone = async (ms: number) => {
+    for (const deadline = Date.now() + ms; !gone() && Date.now() < deadline; ) await new Promise((r) => setTimeout(r, 10));
+    return gone();
+  };
+  for (const [signal, ms] of [["SIGTERM", graceMs], ["SIGKILL", killMs]] as const) {
+    try {
+      process.kill(-leader, signal);
+    } catch {}
+    if (await waitGone(ms)) return true;
+  }
+  return false;
+}
