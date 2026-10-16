@@ -6,7 +6,7 @@ import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { BROWSER_TOOLS, WEB_TOOLS, browserSection, type ToolContract } from "./core/contract.js";
 import {
-  BrowserFailureError, closeDriver, custodyTools, newSessionRecord, notices, sessionSpec,
+  BrowserFailureError, closeDriver, custodyTools, newSessionRecord, notices, profileRefusal, sessionSpec,
   type AttachedSession, type CustodyPort, type DriverFactory, type Overrides, type ToolOutput,
 } from "./core/custody.js";
 import { browserFailure, classifyBrowserError, type BrowserFailure } from "./core/failures.js";
@@ -61,6 +61,8 @@ export class LocalCustody implements CustodyPort<PageDriver> {
   private live: Live | null = null;
   /** Browsers that are gone whose directories are not: each is released again as cleanup, never kept as the live session. */
   private leftovers: Live[] = [];
+  /** The last session this custody released, so a release asked after it can say how and when it ended. */
+  private lastReleased: SessionRecord | null = null;
   private seq = 0;
   private notice: string | null = null;
   private readonly queue = keyedSerializer();
@@ -77,7 +79,7 @@ export class LocalCustody implements CustodyPort<PageDriver> {
   }
 
   private save(record: SessionRecord): void {
-    this.d.keep(SESSION_ENTRY, { tag: record.tag, resourceId: record.resourceId, state: record.state, reason: record.releaseReason });
+    this.d.keep(SESSION_ENTRY, { tag: record.tag, resourceId: record.resourceId, state: record.state, reason: record.releaseReason, ...(record.endedAt ? { endedAt: record.endedAt } : {}) });
   }
 
   private failure(error: unknown, signal?: AbortSignal): BrowserFailureError {
@@ -115,6 +117,8 @@ export class LocalCustody implements CustodyPort<PageDriver> {
     const provider = await this.d.provider();
     const tag = leaseTag("pib", this.d.config.run, randomUUID().slice(0, 8), ++this.seq);
     const spec = sessionSpec(this.d.config, tag, overrides);
+    const unsupported = profileRefusal(spec, provider.caps);
+    if (unsupported) throw new BrowserFailureError(unsupported);
     const record = newSessionRecord({ plane: "browser", tag, provider: provider.name, spec, at: now(), honours: provider.caps.settings });
     this.save(record);
     const signal = AbortSignal.any([this.d.signal, AbortSignal.timeout(CREATE_DEADLINE_MS)]);
@@ -134,7 +138,8 @@ export class LocalCustody implements CustodyPort<PageDriver> {
       let released = refs !== null;
       for (const ref of refs ?? []) if (!(await provider.release(ref).then(() => true, () => false))) released = false;
       if (released) {
-        Object.assign(record, { state: "released", releaseReason: "create_failed" });
+        Object.assign(record, { state: "released", releaseReason: "create_failed", endedAt: now() });
+        this.lastReleased = record;
         this.save(record);
       }
       throw this.failure(error, signal);
@@ -154,12 +159,14 @@ export class LocalCustody implements CustodyPort<PageDriver> {
       if (this.live === live) this.live = null;
       live.driver = null;
       Object.assign(live.record, { state: "releasing", releaseReason: reason });
+      this.lastReleased = live.record;
       this.save(live.record);
       this.leftovers.push(live);
       throw this.failure(error);
     }
     if (this.live === live) this.live = null;
-    Object.assign(live.record, { state: "released", releaseReason: reason });
+    Object.assign(live.record, { state: "released", releaseReason: reason, endedAt: now() });
+    this.lastReleased = live.record;
     this.save(live.record);
   }
 
@@ -170,7 +177,7 @@ export class LocalCustody implements CustodyPort<PageDriver> {
     const pending = this.leftovers.splice(0);
     for (const live of pending) {
       try { await (await this.d.provider()).release(live.ref); } catch (error) { this.leftovers.push(live); stillLeft = error; continue; }
-      Object.assign(live.record, { state: "released" });
+      Object.assign(live.record, { state: "released", endedAt: now() });
       this.save(live.record);
     }
     return stillLeft;
@@ -199,12 +206,17 @@ export class LocalCustody implements CustodyPort<PageDriver> {
     });
   }
 
-  release(): Promise<{ released: boolean; sessionId: string | null }> {
+  release(): Promise<{ released: boolean; sessionId: string | null; ended?: { reason: ReleaseReason; at: string | null } }> {
     return this.serial(async () => {
       const live = this.live;
-      if (live) await this.finish(live, "tool");
-      else { const stillLeft = await this.sweepLeftovers(); if (stillLeft) throw this.failure(stillLeft); } // no browser, but a directory an earlier release left
-      return { released: !!live, sessionId: live?.ref.id ?? null };
+      if (live) {
+        await this.finish(live, "tool");
+        return { released: true, sessionId: live.ref.id };
+      }
+      const stillLeft = await this.sweepLeftovers(); // no browser, but a directory an earlier release left
+      if (stillLeft) throw this.failure(stillLeft);
+      const last = this.lastReleased;
+      return last ? { released: false, sessionId: last.resourceId, ended: { reason: last.releaseReason ?? "tool", at: last.endedAt } } : { released: false, sessionId: null };
     });
   }
 
@@ -362,6 +374,9 @@ export function createBrowserExtension(options: CodingAgentOptions = {}): (pi: E
     let opening: Promise<Runtime> | null = null;
     let webSearchRegistered = false;
     let sitesRegistered = false;
+    // Children on one existing browser (--browser-endpoint) would drive the same pages, so there they take turns.
+    let turn: Promise<unknown> = Promise.resolve();
+    const inTurn = <T>(run: () => Promise<T>): Promise<T> => { const mine = turn.then(run, run); turn = mine.catch(() => undefined); return mine; };
 
     pi.registerFlag("browser-provider", { type: "string", description: "Browser provider: cdp (a local Chrome, the default), browserbase (needs BROWSERBASE_API_KEY) or kernel (needs KERNEL_API_KEY)" });
     pi.registerFlag("browser-endpoint", { type: "string", description: "Attach to a Chrome DevTools endpoint (http://host:port or ws://...) instead of starting Chrome" });
@@ -440,7 +455,10 @@ export function createBrowserExtension(options: CodingAgentOptions = {}): (pi: E
         annotations: { readOnlyHint: false, openWorldHint: true },
         async execute(_callId, params, signal, _onUpdate, ctx) {
           const rt = await runtimeOf(ctx);
-          const out = await useWebsite(params as Record<string, unknown>, port, listing, { signal: signal ?? new AbortController().signal, runChild: (task, childSignal) => childSession(ctx, task.prompt, childSignal) });
+          const out = await useWebsite(params as Record<string, unknown>, port, listing, { signal: signal ?? new AbortController().signal, runChild: (task, childSignal) => {
+            const run = () => childSession(ctx, task.prompt, childSignal);
+            return flagOf(pi, "browser-endpoint", env.PI_BROWSER_ENDPOINT) ? inTurn(run) : run();
+          } });
           return { content: out.content.map((item) => item.type === "text" ? { ...item, text: rt.redact(item.text) } : item), details: undefined, ...(out.isError ? { isError: true } : {}) };
         },
       });
