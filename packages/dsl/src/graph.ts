@@ -81,10 +81,15 @@ const definitionPath = (path: string): string => path.replace(/\/items\/\d+\/bod
 
 const RANK: Record<"working" | "failed" | "done", number> = { working: 1, done: 2, failed: 3 };
 
+/** `item`: the source is one map item's (or loop iteration's) record, read on its own, and this is its execution path
+ *  (`<map path>/items/<index>`, `<loop path>/iterations/<index>`). That item is then the instance, not one of many: its body is done
+ *  when the item is, whether or not the map is. A map or loop inside the item still stands for all of its own items. */
+export type StatusOptions = { item?: string };
+
 /** For every node of `graph`, the state the record shows. `source` is what the driver kept: its frame and, in the keyed
  *  layout, the records of the map items (a run's whole story is the frame and the items together). A source that is not
  *  one of those shows no node run. */
-export function nodeStatus(graph: WorkflowGraph, source: StatusSource): Record<string, NodeState> {
+export function nodeStatus(graph: WorkflowGraph, source: StatusSource, options: StatusOptions = {}): Record<string, NodeState> {
   const instances = new Map<string, "working" | "done" | "failed">();
   const note = (path: unknown, state: "working" | "done" | "failed"): void => {
     if (typeof path !== "string") return;
@@ -146,7 +151,9 @@ export function nodeStatus(graph: WorkflowGraph, source: StatusSource): Record<s
   }
   // A node inside a map's or a loop's body stands for every item or iteration, and the record names only those that started: it is
   // done only when the map or loop is. Parents come before their descendants in the node list, so the container is settled first.
-  const containers = graph.nodes.filter((node) => node.kind === "map" || node.kind === "loop");
+  // The map or loop an `item` belongs to is the exception: that item is the instance.
+  const owner = typeof options.item === "string" ? definitionPath(options.item.replace(/\/(?:items|iterations)\/\d+$/, "")) : undefined;
+  const containers = graph.nodes.filter((node) => (node.kind === "map" || node.kind === "loop") && node.path !== owner);
   for (const node of graph.nodes) {
     if (out[node.path] !== "done") continue;
     if (containers.some((container) => node.path.startsWith(`${container.path}/body`) && out[container.path] !== "done")) out[node.path] = "working";
