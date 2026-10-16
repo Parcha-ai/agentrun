@@ -6,7 +6,7 @@ import { processOf, under, type Json, type Line } from './format.ts';
 import { isAsk } from './live.ts';
 import type { Fold } from './replay.ts';
 import type { Counters } from './counters.ts';
-import { entryOf, imagesOf, textOf, toolCallsOf } from './durable.ts';
+import { entryOf, imagesOf, textOf, textPartsOf, toolCallsOf } from './durable.ts';
 
 /** A region in percent of the element that holds it: left, top, width, height. */
 export type Box = { x: number; y: number; w: number; h: number };
@@ -82,7 +82,8 @@ export const linesPanel: Panel<{ bySource: Record<string, Line[]>; count: number
       h('ol', {}, ...[...lines].reverse().map((line) => h('li', { class: `${line.channel}${dimmed(line.path, focus)}`, ...(line.path ? { path: line.path, title: line.path } : {}) }, describe(line))))))),
 };
 
-type Turn = { conv: number | undefined; role: string; text: string; calls: string[]; images: string[]; error: boolean; path?: string };
+/** `more`: a prompt's text parts after its first (a footer the job adds after the prompt), folded under one toggle. */
+type Turn = { conv: number | undefined; role: string; text: string; more?: string[]; calls: string[]; images: string[]; error: boolean; path?: string };
 
 /** The agent's conversations as pi committed them: each turn's words, tool calls, results and images. */
 export const turnsPanel: Panel<{ turns: Turn[]; streaming: Record<string, boolean> }> = {
@@ -97,18 +98,25 @@ export const turnsPanel: Panel<{ turns: Turn[]; streaming: Record<string, boolea
     }
     const entry = entryOf(line);
     if (!entry) return state;
-    const turns = entry.model.filter((message) => message.role === 'assistant' || message.role === 'toolResult').map((message): Turn => ({
-      conv: line.conv, role: message.role, text: textOf(message).slice(0, 600), calls: toolCallsOf(message).map((call) => `${call.name}(${JSON.stringify(call.arguments)})`),
-      images: imagesOf(message), error: message.isError === true, ...(line.path ? { path: line.path } : {}),
-    }));
+    const turns = entry.model.filter((message) => message.role === 'assistant' || message.role === 'toolResult' || message.role === 'user').map((message): Turn => {
+      // A prompt shows its first text part; the rest (a footer the job adds after it) folds under one toggle.
+      const parts = message.role === 'user' ? textPartsOf(message) : [];
+      return {
+        conv: line.conv, role: message.role, text: (message.role === 'user' ? parts[0] ?? '' : textOf(message)).slice(0, 600),
+        ...(parts.length > 1 ? { more: parts.slice(1).map((part) => part.slice(0, 600)) } : {}),
+        calls: toolCallsOf(message).map((call) => `${call.name}(${JSON.stringify(call.arguments)})`),
+        images: imagesOf(message), error: message.isError === true, ...(line.path ? { path: line.path } : {}),
+      };
+    });
     const answered = entry.model.some((message) => message.role === 'assistant');
     return { turns: [...state.turns, ...turns], streaming: answered ? { ...state.streaming, [String(line.conv)]: false } : state.streaming };
   },
   view: (state, { focus }) => h('div', { class: 'turns' },
     state.turns.length === 0 && h('p', { class: 'empty' }, 'No turn committed yet.'),
     ...state.turns.map((turn) => h('div', { class: `turn ${turn.role}${turn.error ? ' error' : ''}${dimmed(turn.path, focus)}`, ...(turn.path ? { path: turn.path } : {}) },
-      h('span', { class: 'who' }, turn.role === 'assistant' ? 'model' : 'tool result'),
+      h('span', { class: 'who' }, turn.role === 'assistant' ? 'model' : turn.role === 'user' ? 'prompt' : 'tool result'),
       turn.text !== '' && h('p', {}, turn.text),
+      turn.more !== undefined && h('details', { class: 'more' }, h('summary', {}, 'more'), ...turn.more.map((part) => h('p', {}, part))),
       ...turn.calls.map((call) => h('code', {}, call)),
       ...turn.images.map((blob): Node => ({ tag: 'img', blob, alt: 'an image the model was shown' })))),
     ...Object.entries(state.streaming).filter(([, live]) => live).map(([conv]) => h('p', { class: 'streaming' }, `conversation ${conv}: a turn is in flight`))),
