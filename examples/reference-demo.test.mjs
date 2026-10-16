@@ -1809,6 +1809,42 @@ test('RECORD_STARTED gives a fresh recording directory its clock (an existing on
   const all = readdirSync(join(dir, '.spool')).filter((name) => name.endsWith('.jsonl')).flatMap((name) => readFileSync(join(dir, '.spool', name), 'utf8').split('\n').filter(Boolean)).map((entry) => JSON.parse(entry));
   assert.equal(all.find((line) => line.data.index === 'second').gen, 2, 'the second process is process 2');
   assert.equal(all.find((line) => line.data.index === 0).gen, 1);
+
+
+});
+
+test('a box.receipt line is written for each box place.status() reports once its `to` appears: box-N by first appearance, seconds, the price and the cost (null with no price), never the provider\'s id; a place that reports none writes none', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-box-receipts-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'spec.json');
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] }));
+  Object.assign(process.env, { DEMO_SPEC: file });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const lines = (recording, kind) => readEvents(recording).filter((line) => line.source === 'host' && line.kind === kind);
+  const recording = join(tmp, 'recording');
+  const priced = { provider: 'prov', kind: 'sandbox', id: 'sbx-9f31c0', from: '2026-10-16T10:00:00.000Z', usdPerSecond: 0.0001, source: 'https://prices.example/page 2026-10-01', priced: true };
+  const unpriced = { provider: 'prov', kind: 'sandbox', id: 'sbx-77ab12', from: '2026-10-16T10:01:00.000Z', source: 'none published', priced: false };
+  await demo({ ...options, argv: ['--kill', '--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    let boxes = [];
+    return {
+      ...inner,
+      status: async () => ({ record: null, boxes }),
+      start: async (order) => { boxes = [priced, unpriced]; return inner.start(order); },
+      // The first box ends when the process is killed; the second ends with the takeover.
+      kill: async (runner, kind) => { boxes = [{ ...priced, to: '2026-10-16T10:00:30.000Z' }, unpriced]; await inner.kill(runner, kind); },
+      recover: async (last, kind, order) => { const next = await inner.recover(last, kind, order); boxes = [{ ...priced, to: '2026-10-16T10:00:30.000Z' }, { ...unpriced, to: '2026-10-16T10:03:00.000Z' }]; return next; },
+    };
+  } });
+  const receipts = lines(recording, 'box.receipt').map((line) => line.data);
+  assert.deepEqual(receipts.map((row) => [row.box, row.seconds, row.usd_per_second, row.cost_usd, row.priced]), [['box-1', 30, 0.0001, 0.003, true], ['box-2', 120, null, null, false]], 'one per box, in order of first appearance; the unpriced box has no cost');
+  assert.deepEqual(Object.keys(receipts[0]).sort(), ['box', 'cost_usd', 'from', 'kind', 'priced', 'provider', 'seconds', 'source', 'to', 'usd_per_second']);
+  assert.ok(!readFileSync(join(recording, 'events.jsonl'), 'utf8').match(/sbx-9f31c0|sbx-77ab12/), 'the provider\'s id is not in the recording');
+  assert.deepEqual(validateRecording(recording), []);
+  const plain = join(tmp, 'plain');
+  await demo({ ...options, argv: ['--kill', '--json', '--record', plain] });
+  assert.equal(lines(plain, 'box.receipt').length, 0);
 });
 
 // ---- a kill's n counts every crossing, and it lands at the first eligible one at or after the nth ------------------------------------------------------------
