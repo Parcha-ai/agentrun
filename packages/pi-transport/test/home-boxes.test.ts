@@ -2,12 +2,14 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { describe, expect, it } from "vitest";
 import type { BoxProvider } from "../src/box/box.ts";
 import { readStream } from "../src/box/files.ts";
 import { localBoxes } from "../src/box/local.ts";
 import { type BoxServer, type ProxyBoxes, proxyBoxes, serveBoxes } from "../src/home/boxes.ts";
+import { connectHome } from "../src/home/host.ts";
 import { type Frame, type Link, linkPair } from "../src/home/link.ts";
 import { registerBoxConformance } from "../src/testing/box-conformance.ts";
 import { registerHandsCases } from "./hands-support.ts";
@@ -149,6 +151,80 @@ describe("the host's box proxy", () => {
 			getOrThrow(await box.destroy(context));
 			again.close("done");
 		} finally {
+			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+		}
+	});
+
+	it("applies a stdin write once when the runner sends it again, as it does after a resume whose ack was lost", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-transport-boxes-"));
+		const server = serveBoxes({ providers: { local: localBoxes({ root }) } });
+		const got: Frame[] = [];
+		const reply = (frame: Frame) => {
+			got.push(frame);
+			return true;
+		};
+		const settled = async (until: (frames: Frame[]) => boolean) => {
+			for (let n = 0; n < 200 && !until(got); n += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+		};
+		try {
+			server.receive(
+				{ t: "box", id: "c1", op: "create", provider: "local", args: { spec: { maxLifetimeMs: 60_000 } } },
+				reply,
+			);
+			await settled((frames) => frames.some((frame) => frame.id === "c1"));
+			const label = (got.find((frame) => frame.id === "c1")?.value as { box: string }).box;
+			server.receive(
+				{ t: "box", id: "e1", op: "exec", provider: "local", box: label, args: { command: ["cat"] } },
+				reply,
+			);
+			const bytes = Buffer.from("once").toString("base64");
+			for (const frame of [
+				{ t: "box-stdin", id: "e1", n: 1, bytes },
+				{ t: "box-stdin", id: "e1", n: 1, bytes },
+				{ t: "box-stdin", id: "e1", n: 2, close: true },
+				{ t: "box-stdin", id: "e1", n: 1, bytes },
+			])
+				server.receive(frame, reply);
+			await settled((frames) => frames.some((frame) => frame.id === "e1" && frame.exit !== undefined));
+			const out = got
+				.filter((frame) => frame.id === "e1" && frame.stream === "stdout")
+				.map((frame) => Buffer.from(String(frame.bytes), "base64").toString())
+				.join("");
+			expect(out).toBe("once");
+			expect(
+				got.filter((frame) => frame.id === "e1" && typeof frame.stdin === "number").map((frame) => frame.stdin),
+			).toEqual([1, 2]);
+			await server.release(context);
+		} finally {
+			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+		}
+	});
+
+	it("says its providers in the link's hello, and refuses a box frame from a home the lease left behind", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-transport-boxes-"));
+		const server = serveBoxes({ providers: { local: localBoxes({ root }) } });
+		const [runner, hostEnd] = linkPair();
+		const got: Frame[] = [];
+		runner.onFrame((frame) => got.push(frame));
+		const settled = async (until: () => boolean) => {
+			for (let n = 0; n < 200 && !until(); n += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+		};
+		const host = connectHome(hostEnd, { models: createModels(), epoch: 2, boxes: server });
+		try {
+			await settled(() => got.some((frame) => frame.t === "hello"));
+			expect(got.find((frame) => frame.t === "hello")?.boxes).toEqual(["local"]);
+			const ask = { t: "box", op: "create", provider: "local", args: { spec: { maxLifetimeMs: 60_000 } } };
+			runner.send({ ...ask, id: "old", epoch: 1 });
+			await settled(() => got.some((frame) => frame.t === "refused"));
+			expect(got.some((frame) => frame.t === "refused")).toBe(true);
+			expect(server.held.size).toBe(0);
+			runner.send({ ...ask, id: "now", epoch: 2 });
+			await settled(() => got.some((frame) => frame.id === "now"));
+			expect(got.find((frame) => frame.id === "now")?.ok).toBe(true);
+			expect(server.held.size).toBe(1);
+			await server.release(context);
+		} finally {
+			host.close("done");
 			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 		}
 	});
