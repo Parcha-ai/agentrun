@@ -72,10 +72,8 @@ where FUSE is unavailable. Without Archil, a run can live on a plain directory o
 ## Install
 
 ```sh
-npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable@~1.2.0 @earendil-works/pi-ai@~1.2.0 @earendil-works/chord@~1.2.0
+npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable @earendil-works/pi-ai @earendil-works/chord
 ```
-
-The pi packages are pinned to 1.2: pi 1.3.0 pins its own packages to exact versions, and this release's ranges stop below 1.3 until the next one.
 
 From a checkout (this package is `packages/pi-durable-disk` of the repository; the root build compiles `dist/`):
 
@@ -97,7 +95,7 @@ In an empty directory, install the package and its peers, save this as `chat.mjs
 (it is [examples/01-durable-chat/on-a-directory.mjs](examples/01-durable-chat/on-a-directory.mjs)):
 
 ```sh
-npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable@~1.2.0 @earendil-works/pi-ai@~1.2.0 @earendil-works/chord@~1.2.0
+npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable @earendil-works/pi-ai @earendil-works/chord
 ```
 
 ```js
