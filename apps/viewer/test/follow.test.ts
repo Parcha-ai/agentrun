@@ -14,7 +14,7 @@ import { finishedManifest, placeLines, tailOf } from '../src/follow.ts';
 import { blobsNamed } from '../src/app.ts';
 import { fileOrder, type Line } from '../src/format.ts';
 import { stopsOf } from '../src/replay.ts';
-import { chrome, closeLeftBrowsers, drivenPage } from './driven-page.ts';
+import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
 import { blobs, lines, manifest } from './vision-hand.ts';
 
 // A browser a test left open would hold this file's process: each is ended here, and the file fails.
@@ -97,6 +97,16 @@ test('a line written anew earlier in the file, the last bytes read unchanged, is
     file.write(jsonl([line(9, 'i')]));
     assert.deepEqual((await tail.read()).lines.map((each) => each.kind), ['i'], 'and then grows as before');
   }
+});
+
+test('a test\'s cleanup tries every page when one does not end, still closes what the test held, and fails', async () => {
+  const closed: string[] = [];
+  const page = (name: string, ends: boolean) => ({ close: async () => { closed.push(name); if (!ends) throw new Error(`the browser ${name} did not end`); } });
+  let held = true;
+  await assert.rejects(closeAll([page('a', false), page('b', true)], () => { held = false; }), /the browser a did not end/);
+  assert.deepEqual(closed, ['a', 'b'], 'the page after the one that failed is closed too');
+  assert.equal(held, false, 'the server and the directory go whatever happened');
+  await closeAll([page('c', true)], () => undefined);
 });
 
 test('the manifest says the run finished: absent while it goes, read once it is written', async () => {
@@ -221,11 +231,7 @@ test('the page follows a run as two writers grow it, through a kill and a second
   live.append(early);
   // One hook ends every page before the server and the profiles go: a profile is removed only once its browser has ended.
   const pages: Awaited<ReturnType<typeof drivenPage>>[] = [];
-  t.after(async () => {
-    for (const each of pages) await each.close();
-    live.server.close();
-    rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
-  });
+  t.after(() => closeAll(pages, () => { live.server.close(); rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); }));
   const followed = await drivenPage(`http://127.0.0.1:${port}/viewer/index.html?follow=/run/`, join(out, 'profile'));
   pages.push(followed);
   const seen = async (page = followed) => JSON.parse(String(await page.evaluate(`JSON.stringify({ position: document.querySelector('.position')?.textContent ?? '', status: document.querySelector('.live-status')?.textContent ?? '',
@@ -294,7 +300,7 @@ test('the page recovers: a run not started yet, a blob whose connection drops, b
   const port = await listen(live.server);
   live.fail('/run/manifest.json', 1);
   const followed = await drivenPage(`http://127.0.0.1:${port}/viewer/index.html?follow=/run/`, join(out, 'profile'));
-  t.after(async () => { await followed.close(); live.server.close(); rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); });
+  t.after(() => closeAll([followed], () => { live.server.close(); rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); }));
   const seen = async () => JSON.parse(String(await followed.evaluate(`JSON.stringify({ position: document.querySelector('.position')?.textContent ?? '', status: document.querySelector('.live-status')?.textContent ?? '',
     missing: [...document.querySelectorAll('.missing')].map((each) => each.textContent).join(' | '), text: document.body.textContent })`))) as Record<string, string>;
   const until = async (test: (now: Record<string, string>) => boolean, what: string) => {
@@ -344,7 +350,7 @@ test('a run on another server is never followed', { skip: existsSync(chrome) ? f
   const [homePort, awayPort] = [await listen(home.server), await listen(away.server)];
   away.append(lines.slice(0, 5));
   const page = await drivenPage(`http://127.0.0.1:${homePort}/viewer/index.html?follow=${encodeURIComponent(`http://127.0.0.1:${awayPort}/run/`)}`, join(out, 'profile'));
-  t.after(async () => { await page.close(); home.server.close(); away.server.close(); rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); });
+  t.after(() => closeAll([page], () => { home.server.close(); away.server.close(); rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); }));
   let text = '';
   for (let tries = 0; tries < 300 && !text.includes('could not be opened'); tries += 1) { await page.sleep(100); text = String(await page.evaluate('document.body.textContent')); }
   assert.match(text, /could not be opened: a run is followed only from this page's own server/);

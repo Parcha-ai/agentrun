@@ -77,6 +77,15 @@ export async function drivenPage(url: string, profile: string) {
   return { evaluate, sleep, close };
 }
 
+/** A test's cleanup: ends every page, each tried even when one fails, then runs `then` (its servers closed, its
+ *  directory removed) whatever happened, and throws the first failure. A browser that did not end fails its test, and
+ *  nothing the test held is left open to keep its process alive. */
+export async function closeAll(pages: readonly { close(): Promise<void> }[], then: () => void): Promise<void> {
+  const failed: unknown[] = [];
+  for (const page of pages) await page.close().catch((error: unknown) => { failed.push(error); });
+  try { then(); } finally { if (failed.length) throw failed[0]; }
+}
+
 /** Ends every browser a test started and did not close, and names them: a file's `after` fails on any. */
 export async function closeLeftBrowsers(): Promise<number[]> {
   const left = [...open.keys()];

@@ -13,7 +13,7 @@ import { pathToFileURL } from 'node:url';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
 import { chapterAt, embedMessage, fromParent, parentOrigin, parentParam, steerOf } from '../src/app.ts';
-import { closeLeftBrowsers, drivenPage } from './driven-page.ts';
+import { closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
 
 const chrome = process.env.CHROME_PATH ?? '/usr/bin/google-chrome';
 const noChrome = { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` };
@@ -105,11 +105,7 @@ test('steered over http: the named parent\'s seek is obeyed; another type, and a
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   // One hook ends the page before the server and the profile go: a profile is removed only once its browser has ended.
   const pages: Awaited<ReturnType<typeof drivenPage>>[] = [];
-  t.after(async () => {
-    for (const each of pages) await each.close();
-    server.close();
-    rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
-  });
+  t.after(() => closeAll(pages, () => { server.close(); rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); }));
   const port = (server.address() as AddressInfo).port;
   const parent = `http://127.0.0.1:${port}`;
   // The viewer is framed from another host name of the same server, so its origin differs from the parent's; a second

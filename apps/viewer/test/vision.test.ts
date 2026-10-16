@@ -20,7 +20,7 @@ import { counterFold, countersOf } from '../src/counters.ts';
 import { viewContext } from '../src/app.ts';
 import { visionAccountOf, visionKeptChars, visionMeters, visionPanel, type VisionState } from '../src/vision.ts';
 import { ACCOUNT, blobs, FILM, K, LOOKS, lines, manifest, PAGES, PHOTOS, RESULT, writeRecording } from './vision-hand.ts';
-import { closeLeftBrowsers, drivenPage } from './driven-page.ts';
+import { closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
 
 after(async () => { assert.deepEqual(await closeLeftBrowsers(), [], 'every browser a test started was closed by that test'); });
 
@@ -280,7 +280,7 @@ test('a redraw after a chip is chosen keeps the account where the reader scrolle
   for (const file of ['manifest.json', 'events.jsonl']) writeFileSync(join(dir, file), readFileSync(join(dir, file), 'utf8').replaceAll(RESULT, sha));
   build(join(out, 'dist'), join(out, 'recordings'));
   const page = await drivenPage(`${pathToFileURL(join(out, 'dist', 'index.html')).href}?r=vision-long`, join(out, 'profile'));
-  t.after(async () => { await page.close(); rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); });
+  t.after(() => closeAll([page], () => rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })));
   let ready = false;
   for (let tries = 0; tries < 100 && !ready; tries += 1) { await page.sleep(100); ready = await page.evaluate('(() => { const a = document.querySelector(".vz-account"); return !!a && a.scrollHeight > a.clientHeight + 300; })()') === true; }
   assert.ok(ready, 'the account scrolls');
