@@ -1,5 +1,0 @@
----
-packages: @parcha/pi-git-remote
-kind: feature
----
-`https(url, credential, { pushUrl? })` and `codeStorage({ origin, repo, token, hidden? })` make the remotes a host needs beyond `local`. `https` takes any https git host and a credential callback asked once for each git process, so a short-lived token is minted fresh each time; a URL with userinfo, a query or a fragment is refused before any git process starts. `codeStorage` builds `<origin>/<repo>.git` from a host-supplied origin (there is no default hostname) and sends the JWT `token()` returns as the Basic password of user `t`, over plain git with no SDK; with `hidden: true`, pushes go to `<repo>+ephemeral.git`, a namespace a normal clone does not see, while reads fetch `<repo>.git`. The tests run a TLS smart-HTTP server over `git http-backend` that requires the generated token and refuses `main` for the run's identity in a pre-receive hook: the token stays in the fd-3 file (never argv, the environment, a URL or a file), and a refused push is a `refused` error whose message holds `[credential]` where a server's reason repeats the token.

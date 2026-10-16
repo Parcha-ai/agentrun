@@ -77,6 +77,8 @@ const allowedEndpoints = {
   serve: [
     // The address agentrun-serve binds by default, which its quick start points a client at.
     ['README.md', 'http://127.0.0.1:7340'],
+    // The same address in the changelog entry the release fold writes from the package's fragment (#625).
+    ['CHANGELOG.md', 'http://127.0.0.1:7340'],
   ],
 };
 
