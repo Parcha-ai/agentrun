@@ -488,6 +488,30 @@ pays. `pullCheckpoint({ answers: server })` lets go of the answers below the old
 `registerRestoreConformance` (`./testing`) kills the whole box of the source or the target before each of the seven
 steps of a move and recovers; the suite runs on local boxes and on Docker.
 
+### Tool boxes the host makes: the box proxy
+
+A runner in a box holds no credential, for its models or for its boxes. `serveBoxes({ providers, receipts, allow })`
+on the host, beside `serveModels`, holds the host's box providers: they make and hold every tool box of the session,
+and keep their tokens. The runner asks over its link and gets handles: `AppContext.boxes` is one `BoxProvider` per
+provider the host serves (the link's hello names them), for the app's `TransportHost.providers`, so the hands router
+runs as before. A box is a handle named by the host's label (`box-7`, in the receipts ledger's numbering), never by
+the provider's id, and its facts are what the host reports.
+
+- **One request, frames numbered.** `box` asks (`create`, `attach`, `list`, `status`, `exec`, `upload`, `download`,
+  `destroy`, `snapshot`); `box-answer` answers; an exec's output, its stdin acknowledgements and its exit come as
+  `box-stream`, and `box-stdin` writes are applied in order and once each. Box frames carry the runner's epoch: a
+  home the lease left behind is refused, as for models.
+- **A dropped link is resumed.** The host's boxes and programs go on; the runner asks for what it missed
+  (`box-resume`) and sends again the stdin writes not yet acknowledged, so a program's output comes whole and once.
+  `box-ack` lets the host forget frames the runner holds; a call the host no longer knows is `box-unknown`.
+- **Boxes outlive the runner.** The host holds what it made, so a runner that comes back (a restart, a restore after
+  its own box was lost) finds them by the labels its store kept. `release` ends what is left.
+- **The host decides.** `allow(provider, spec)` refuses a box the session may not have, and a provider the host does
+  not serve is refused (`invalid`).
+
+`boxRunner({ boxes })` and `connectHome(link, { boxes })` take the server; a box place serves its `pool` on every
+runner's link.
+
 ### The record stream: the host keeps the session's log
 
 A host that keeps a session's log holds its runners with `connectHome(link, { models, epoch, records })` (or
@@ -618,6 +642,9 @@ It makes the box, and
   record: `run`, the epoch as `generation`, the box in `holder.host`, the home's state, and `sealedSeq` when sealed.
 - `carry` names host files an order's environment holds that the runner writes (a crossings log): each is given a path
   in the box, and the file comes back whole when the runner exits.
+- `pool` names the providers of the session's tool boxes, on the host: every runner gets them over its link
+  (`AppContext.boxes`, the box proxy above) as handles named by label, on the place's receipts ledger, and no token
+  goes into the home box. The place ends the pool's boxes at `release`.
 - `recording` names the order's recording directory. The runner writes the recording in `recordHome.dir(attempt)` in
   the box, and the supervisor brings it home with `recordHome.bringHome(into, { final })`: the blobs not yet home
   (hash-checked against their names, written to a temporary name, synced, renamed), then the new bytes of every
