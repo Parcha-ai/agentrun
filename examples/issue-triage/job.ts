@@ -7,7 +7,6 @@ import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/provid
 import type { Workflow } from '@parcha/agentrun-dsl';
 import type { Job } from '../reference/index.ts';
 import type { Fakes } from '../reference/host.ts';
-import { githubTools } from './github.ts';
 
 const fixtures = JSON.parse(readFileSync(new URL('./fixtures.json', import.meta.url), 'utf8')) as {
   issues: Array<{ number: number; title: string; body: string; labels: string[]; url: string; prs: Array<{ number: number; title: string; state: string; paths: string[] }>; paths: string[] }>;
@@ -63,8 +62,7 @@ export function researcher(messages: readonly Message[]) {
   });
 }
 
-/** On a live run the effect door is GitHub's read-only REST API; on fakes it is the fixtures. */
-const scripted: Fakes = {
+export const fakes: Fakes = {
   model: researcher,
   tools: {
     // The issue as the classifier may see it: no maintainers' labels (`github_labels` hands those over after the judgments).
@@ -97,10 +95,3 @@ const scripted: Fakes = {
   // Twenty branches, each a few turns.
   responses: 400,
 };
-
-// TEMPORARY, for the unpublished smoke and rehearsal only: on --live the effect door is GitHub's read-only REST API. The reference entry's ruling is that `fakes.tools` never reads LIVE
-// (a $0 run is honest by construction), so this branch goes in the change that moves these tools to `live().tools` (`LiveParts.tools`), and the published takes wait for that.
-const github = githubTools(process.env);
-export const fakes: Fakes = process.env.LIVE === '1'
-  ? { ...scripted, tools: { github_issue: github.github_issue, github_labels: github.github_labels, github_linked_prs: github.github_linked_prs, github_code: github.github_code } }
-  : scripted;
