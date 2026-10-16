@@ -133,6 +133,18 @@ test("a miss about one medium is filed as that medium: a video over the eyes' bu
   }
 });
 
+test("a name whose cited window rounds to nothing is still a name: the look is made, and a miss of it cites no window", async () => {
+  const cwd = workspace({ "p1.png": pngBytes(40, 30) });
+  const rows = host();
+  const label = "film.mp4#t=1.0001,1.0004";
+  const seen = await ran(createVisionExtension({ eyes: fakeEyes({ answers: ["a test card"] }), ...rows.options }), cwd, `return await vision.see({ ask: "what?", paths: ["p1.png"], fragments: [${JSON.stringify(label)}] });`);
+  assert.equal(seen.ok, true);
+  assert.equal(seen.value.text, "a test card");
+  const blind = host();
+  await ran(createVisionExtension(blind.options), cwd, `try { await vision.see({ ask: "what?", paths: ["p1.png"], fragments: [${JSON.stringify(label)}] }); } catch (error) { return error.message; }`);
+  assert.deepEqual(blind.filed.map((r) => [r.args.path, r.facts.fragment]), [[label, ""]]);
+});
+
 test("a miss before a medium is read names it as asked, of a kind not yet known, and with no hash rather than the hash of no bytes", async () => {
   const cwd = workspace({ "p1.png": pngBytes(40, 30) });
   const blind = host();

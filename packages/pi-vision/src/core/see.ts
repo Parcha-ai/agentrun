@@ -41,7 +41,10 @@ type Item = { readonly data: string; readonly mimeType: string; readonly width?:
 type About = { readonly path: string; readonly kind: Kind; readonly sha256: string; readonly fragment: string };
 const sha256Of = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 /** The window or page a medium's name cites (`clip.mp4#t=60,90`), "" when it cites none. */
-const citedFragment = (label: string) => { const cited = parseCitation(label).fragment; return cited ? formatFragment(cited) : ""; };
+const citedFragment = (label: string) => {
+  const cited = parseCitation(label).fragment;
+  try { return cited ? formatFragment(cited) : ""; } catch { return ""; }
+};
 const aboutMedium = (label: string, kind: Kind, bytes?: Uint8Array): About => ({ path: label, kind, sha256: bytes ? sha256Of(bytes) : "", fragment: citedFragment(label) });
 
 /** A look asked, filed and told: what the eyes answered, whether it was read back from the call's memo, and its receipt. */
@@ -96,29 +99,30 @@ export async function see(input: unknown, env: VisionEnv | undefined, call: Call
   // Before any medium is read, a miss is about the request's media as named: their kind and bytes are known only when
   // every one is a block.
   const labels = [...(request.images ?? []).map((_, i) => request.fragments?.[i] ?? `image ${i + 1}`), ...(request.paths ?? []).map((path, i) => request.fragments?.[(request.images?.length ?? 0) + i] ?? path)];
-  const blocksOnly = !request.paths?.length && request.images ? request.images : undefined;
-  const requested: About = {
-    path: labels.join(", "), kind: blocksOnly ? (blocksOnly.some(isVideo) ? "video" : "image") : "unknown",
-    sha256: blocksOnly ? blocksSha256(blocksOnly) : "", fragment: labels.length === 1 ? citedFragment(labels[0]!) : "",
+  const requested = (): About => {
+    const blocksOnly = !request.paths?.length && request.images ? request.images : undefined;
+    return {
+      path: labels.join(", "), kind: blocksOnly ? (blocksOnly.some(isVideo) ? "video" : "image") : "unknown",
+      sha256: blocksOnly ? blocksSha256(blocksOnly) : "", fragment: labels.length === 1 ? citedFragment(labels[0]!) : "",
+    };
   };
   const eyes = setup.eyes;
-  if (!eyes?.accepts.image) return fail(eyes ? { code: "no_vision_route", reason: `the vision route ${eyes.model} does not accept images`, model: eyes.model } : { code: "no_vision_route", reason: "no vision route is configured for this run" }, [], undefined, requested);
+  if (!eyes?.accepts.image) return fail(eyes ? { code: "no_vision_route", reason: `the vision route ${eyes.model} does not accept images`, model: eyes.model } : { code: "no_vision_route", reason: "no vision route is configured for this run" }, [], undefined, requested());
 
   const ctx = visionContext(call.signal);
   const readPath = async (path: string, label: string): Promise<{ bytes: Uint8Array; mimeType: string }> => {
-    const unread = aboutMedium(label, "unknown");
-    if (!env) return fail({ code: "refused", reason: `${path} cannot be read: this host gives vision.see no environment; pass the image as a block` }, [], undefined, unread);
+    const unread = () => aboutMedium(label, "unknown");
+    if (!env) return fail({ code: "refused", reason: `${path} cannot be read: this host gives vision.see no environment; pass the image as a block` }, [], undefined, unread());
     const info = await env.fileInfo(path, ctx);
-    if (!info.ok || info.value.kind !== "file") return fail({ code: "unreadable", reason: `${path} is not a file that opens${info.ok ? "" : ` (${firstLine(info.error)})`}` }, [], undefined, unread);
-    if (info.value.size > SOURCE_BYTES_IN_PROCESS) return fail({ code: "over_budget", reason: `${path} is ${info.value.size} bytes, over the ${SOURCE_BYTES_IN_PROCESS} read into this process; cut it smaller first` }, [], undefined, unread);
+    if (!info.ok || info.value.kind !== "file") return fail({ code: "unreadable", reason: `${path} is not a file that opens${info.ok ? "" : ` (${firstLine(info.error)})`}` }, [], undefined, unread());
+    if (info.value.size > SOURCE_BYTES_IN_PROCESS) return fail({ code: "over_budget", reason: `${path} is ${info.value.size} bytes, over the ${SOURCE_BYTES_IN_PROCESS} read into this process; cut it smaller first` }, [], undefined, unread());
     const read = await env.readBinaryFile(path, ctx);
-    if (!read.ok) return fail({ code: "unreadable", reason: `${path} could not be read (${firstLine(read.error)})` }, [], undefined, unread);
+    if (!read.ok) return fail({ code: "unreadable", reason: `${path} could not be read (${firstLine(read.error)})` }, [], undefined, unread());
     const sniffed = sniffKind(read.value.subarray(0, SNIFF_BYTES), path);
     if (!sniffed.ok) return fail(sniffed, [], undefined, aboutMedium(label, "unknown", read.value));
-    const known = aboutMedium(label, sniffed.kind, read.value);
-    if (sniffed.kind !== "image" && sniffed.kind !== "video") return fail({ code: "unsupported", reason: `${path} reads as ${sniffed.kind}, not an image or a video; render its pages or cut its frames to images first` }, [], undefined, known);
+    if (sniffed.kind !== "image" && sniffed.kind !== "video") return fail({ code: "unsupported", reason: `${path} reads as ${sniffed.kind}, not an image or a video; render its pages or cut its frames to images first` }, [], undefined, aboutMedium(label, sniffed.kind, read.value));
     const allowed = setup.allow?.({ path, kind: sniffed.kind, tool: VISION_SEE.name }) ?? true;
-    if (allowed !== true) return fail({ code: "refused", reason: allowed }, [], undefined, known);
+    if (allowed !== true) return fail({ code: "refused", reason: allowed }, [], undefined, aboutMedium(label, sniffed.kind, read.value));
     return { bytes: read.value, mimeType: sniffed.mimeType ?? "application/octet-stream" };
   };
   const media = (request.images ?? []).map((image, i) => ({ bytes: Buffer.from(image.data, "base64") as Uint8Array, mimeType: image.mimeType, fragment: labels[i]! }));
