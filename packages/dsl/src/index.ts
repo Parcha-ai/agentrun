@@ -9,6 +9,8 @@ export {
   WorkflowVerificationError, WorkflowDecisionRecordError, EffectFailure, EffectDeadlineExceededError,
   EffectOutcomeUnknownError, EscalationSignal, routesByValue,
 } from "./workflow.js";
+export { defineJob } from "./job.js";
+export type { Job } from "./job.js";
 export { DECISION_RECEIPT_VERSION, rederiveDecision } from "./decision-receipts.js";
 export type { DecisionKind, DecisionReceipt, DecisionRule } from "./decision-receipts.js";
 export type {
