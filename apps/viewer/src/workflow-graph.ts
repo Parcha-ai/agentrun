@@ -43,11 +43,11 @@ export const workflowGraphPanel: Panel<RunRecord> = {
         const node = byPath.get(at);
         if (!node) continue;
         const status = statuses[node.path] ?? 'not-run';
+        // The parts keep a space between them, so the row reads as words when it is copied or read aloud (the page sets them apart).
+        const parts = [h('span', { class: 'wg-kind' }, node.kind), h('span', { class: 'wg-label' }, node.label),
+          ...(node.via !== undefined ? [h('span', { class: 'wg-via' }, `via ${node.via}`)] : []), h('span', { class: 'wg-status' }, WG_TEXT[status])];
         out.push(h('li', { class: `wg-node ${node.kind} ${status}${dim(node.path)}`, title: node.path },
-          h('span', { class: 'wg-kind' }, node.kind),
-          h('span', { class: 'wg-label' }, node.label),
-          node.via !== undefined && h('span', { class: 'wg-via' }, `via ${node.via}`),
-          h('span', { class: 'wg-status' }, WG_TEXT[status]),
+          ...parts.flatMap((part, index) => (index === 0 ? [part] : [' ', part])),
           ...inner(node.path).map((edge) => h('div', { class: `wg-into ${edge.kind}` }, h('span', { class: 'wg-edge' }, edge.kind), h('ol', {}, ...chain(edge.to))))));
       }
       return out;

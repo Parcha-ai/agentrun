@@ -109,3 +109,19 @@ test('the build inlines the DSL\'s graph module from its source, and refuses it 
   assert.doesNotMatch(built.body, /^\s*import\s/m, 'no import is left in the classic script');
   assert.throws(() => checkModule(DSL_GRAPH, "import { x } from 'y';\nexport const a = 1;"), /imports something; the viewer inlines it only while it imports nothing/);
 });
+
+test('a row reads as words: its kind, label, way and status apart, in its text and on the page', () => {
+  // A row's parts were drawn flush ("chainchainworking"): the text keeps a space between them, and the page's stylesheet
+  // sets the parts apart and marks the status by what the run did.
+  const own = (node: Node): string => (typeof node === 'string' ? node : 'children' in node && node.children
+    ? node.children.filter((child) => typeof child === 'string' || !('class' in child) || !String(child.class).startsWith('wg-into')).map(own).join('') : '');
+  const items: Node[] = [];
+  const collect = (node: Node) => { if (typeof node === 'string' || !('children' in node)) return; if (node.tag === 'li') items.push(node); (node.children ?? []).forEach(collect); };
+  collect(viewed(linesOf('nested', 'finished'), read('nested.workflow.json')));
+  assert.ok(items.length > 3);
+  for (const item of items) assert.match(own(item), /^\S+ \S.* (done|working|failed|not run)$/, own(item));
+  assert.ok(items.some((item) => / via \S+ /.test(own(item))), 'a call names its way between its label and its status');
+  const page = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.match(page, /\.wg-node > span \{[^}]*margin-right/, 'the parts are set apart on the page');
+  for (const status of ['done', 'working', 'failed', 'not-run']) assert.match(page, new RegExp(`\\.wg-node\\.${status} > \\.wg-status`), `a ${status} row's status is marked`);
+});
