@@ -4,6 +4,7 @@
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -237,8 +238,21 @@ class FakeControl implements SupervisorControl {
   async headObject(key: string) {
     return this.objects.has(key) ? {} : null;
   }
-  async putObject(key: string, body: string) {
+  /** Every put, with the owner and mode it asked for; and a listing that fails, when set. */
+  puts: { key: string; uid: number; gid: number; mode: number }[] = [];
+  lists = 0;
+  failList: Error | null = null;
+  async putObject(key: string, body: string, options: { uid: number; gid: number; mode: number } = { uid: -1, gid: -1, mode: -1 }) {
+    if (key.includes("/record/")) {
+      this.ops.push(`put ${key.slice(`runs/${ID}/`.length)}`);
+      this.puts.push({ key, ...options });
+    }
     this.objects.set(key, body);
+  }
+  async listObjects(prefix: string, _options?: { recursive?: boolean }) {
+    this.lists++;
+    if (this.failList) throw this.failList;
+    return { objects: [...this.objects].filter(([key]) => key.startsWith(prefix) && !key.endsWith("/")).map(([key, v]) => ({ key, size: Buffer.byteLength(v) })) };
   }
   async addUser(user: { type: "token"; nickname: string }) {
     this.ops.push(`addUser ${user.nickname.replace(/-[0-9a-z]+$/, "")}`);
@@ -318,6 +332,140 @@ const makePlace = (o: Parameters<typeof archilPlace>[0]) => {
   made.push(p);
   return p;
 };
+
+describe("archilPlace recordHome", () => {
+  const rec = (n: number, rest: string) => `runs/${ID}/record/${n}/${rest}`;
+  const line = (o: Record<string, unknown>) => `${JSON.stringify(o)}\n`;
+  const blobOf = (text: string, ext = "png") => ({ text, hash: createHash("sha256").update(text).digest("hex"), name: `${createHash("sha256").update(text).digest("hex")}.${ext}` });
+  const read = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : null);
+
+  it("dir is the attempt's directory in the run; localPlace has none, nor a place whose control cannot list", () => {
+    const control = new FakeControl();
+    const at = makePlace({ ...REF, control, host: fakeHost(control).host });
+    assert.equal(at.recordHome!.dir(2), `/mnt/fake/runs/${ID}/record/2`);
+    assert.throws(() => at.recordHome!.dir(0), (e: unknown) => e instanceof PlaceError && e.code === "INVALID_ARGUMENT");
+    assert.equal(localPlace({ app: APP })({ paths: pathsAt("/x") }).recordHome, undefined);
+    const bare = new FakeControl();
+    (bare as unknown as { listObjects?: unknown }).listObjects = undefined;
+    assert.equal(makePlace({ ...REF, control: bare, host: fakeHost(bare).host }).recordHome, undefined);
+  });
+
+  it("brings home the whole lines and holds a partial one; a second call, or one from another place on the same disk, carries nothing twice", async () => {
+    const control = new FakeControl();
+    const at = makePlace({ ...REF, control, host: fakeHost(control).host });
+    const into = scratch();
+    const spool = rec(1, ".spool/child-9-1.jsonl");
+    const dest = join(into, ".spool", "child-9-1.jsonl");
+    control.objects.set(spool, `${line({ seq: 0 })}${line({ seq: 1 })}{"seq":`);
+    control.objects.set(rec(1, ".spool/started"), "2026-10-16T07:00:00.000Z");
+    await at.recordHome!.bringHome(into);
+    assert.equal(read(dest), `${line({ seq: 0 })}${line({ seq: 1 })}`, "up to the last whole line");
+    assert.equal(read(join(into, ".spool", "started")), null, "started is the supervisor's, never carried back");
+    const gets = control.gets;
+    await at.recordHome!.bringHome(into);
+    assert.equal(read(dest), `${line({ seq: 0 })}${line({ seq: 1 })}`);
+    assert.equal(control.gets, gets, "a file that did not grow is not fetched");
+    control.objects.set(spool, `${line({ seq: 0 })}${line({ seq: 1 })}${line({ seq: 2 })}${line({ seq: 3 })}`);
+    await at.recordHome!.bringHome(into, { final: true });
+    await makePlace({ ...REF, control, host: fakeHost(control).host }).recordHome!.bringHome(into, { final: true });
+    assert.equal(read(dest), [0, 1, 2, 3].map((seq) => line({ seq })).join(""), "each line once");
+  });
+
+  it("segments: each .spool/*.jsonl comes home with its own offset, a rotated one too", async () => {
+    const control = new FakeControl();
+    const at = makePlace({ ...REF, control, host: fakeHost(control).host });
+    const into = scratch();
+    const seg = (n: number) => rec(2, `.spool/child-9-1.${n}.jsonl`);
+    control.objects.set(seg(1), `${line({ seq: 0 })}${line({ seq: 1 })}`);
+    control.objects.set(seg(2), `${line({ seq: 2 })}{"se`);
+    await at.recordHome!.bringHome(into);
+    control.objects.set(seg(2), `${line({ seq: 2 })}${line({ seq: 3 })}`);
+    control.objects.set(seg(3), line({ seq: 4 }));
+    await at.recordHome!.bringHome(into);
+    assert.equal(read(join(into, ".spool", "child-9-1.1.jsonl")), `${line({ seq: 0 })}${line({ seq: 1 })}`);
+    assert.equal(read(join(into, ".spool", "child-9-1.2.jsonl")), `${line({ seq: 2 })}${line({ seq: 3 })}`);
+    assert.equal(read(join(into, ".spool", "child-9-1.3.jsonl")), line({ seq: 4 }));
+  });
+
+  it("blobs first: a blob that lands before its line comes home with it; a line whose blob is not on the disk yet waits, and on final is carried and named CARRY_FAILED", async () => {
+    const control = new FakeControl();
+    const at = makePlace({ ...REF, control, host: fakeHost(control).host });
+    const into = scratch();
+    const x = blobOf("frame one");
+    const y = blobOf("frame two", "jpg");
+    const spool = rec(1, ".spool/child-9-1.jsonl");
+    const dest = join(into, ".spool", "child-9-1.jsonl");
+    control.objects.set(rec(1, `blobs/${x.name}`), x.text);
+    control.objects.set(spool, line({ seq: 0, blobs: [x.hash] }));
+    await at.recordHome!.bringHome(into);
+    assert.equal(read(join(into, "blobs", x.name)), x.text);
+    assert.equal(read(dest), line({ seq: 0, blobs: [x.hash] }));
+
+    control.objects.set(spool, `${line({ seq: 0, blobs: [x.hash] })}${line({ seq: 1, blobs: [y.hash] })}${line({ seq: 2 })}`);
+    await at.recordHome!.bringHome(into);
+    assert.equal(read(dest), line({ seq: 0, blobs: [x.hash] }), "the line waits for its blob, and the lines after it too");
+    // The blob lands after the line that names it: the next call brings both.
+    const z = blobOf("frame three");
+    control.objects.set(rec(1, `blobs/${y.name}`), y.text);
+    await at.recordHome!.bringHome(into);
+    assert.equal(read(join(into, "blobs", y.name)), y.text);
+    assert.equal(read(dest), [line({ seq: 0, blobs: [x.hash] }), line({ seq: 1, blobs: [y.hash] }), line({ seq: 2 })].join(""));
+    control.objects.delete(rec(1, `blobs/${y.name}`));
+    control.objects.set(spool, `${read(dest)}${line({ seq: 3, blobs: [z.hash] })}`);
+    await assert.rejects(at.recordHome!.bringHome(into, { final: true }), (e: unknown) => e instanceof PlaceError && e.code === "CARRY_FAILED" && e.message.includes(z.hash) && e.message.length <= 240);
+    assert.ok(read(dest)!.endsWith(line({ seq: 3, blobs: [z.hash] })), "on final a line whose blob never landed comes home anyway, and says so");
+  });
+
+  it("a blob whose bytes do not hash to its name is skipped, everything else comes home, then the call is BLOB_MISMATCH", async () => {
+    const control = new FakeControl();
+    const at = makePlace({ ...REF, control, host: fakeHost(control).host });
+    const into = scratch();
+    const bad = blobOf("the whole frame");
+    const good = blobOf("another frame", "jpg");
+    control.objects.set(rec(1, `blobs/${bad.name}`), "the who");
+    control.objects.set(rec(1, `blobs/${good.name}`), good.text);
+    control.objects.set(rec(1, ".spool/child-9-1.jsonl"), `${line({ seq: 0, blobs: [good.hash] })}${line({ seq: 1 })}`);
+    for (const final of [false, true]) {
+      await assert.rejects(at.recordHome!.bringHome(into, { final }), (e: unknown) => e instanceof PlaceError && e.code === "BLOB_MISMATCH" && e.message.includes(bad.name) && e.message.length <= 240);
+      assert.equal(read(join(into, "blobs", bad.name)), null, "never written");
+      assert.equal(read(join(into, "blobs", good.name)), good.text, "the rest first");
+      assert.equal(read(join(into, ".spool", "child-9-1.jsonl")), `${line({ seq: 0, blobs: [good.hash] })}${line({ seq: 1 })}`);
+    }
+    control.objects.set(rec(1, `blobs/${bad.name}`), bad.text);
+    await at.recordHome!.bringHome(into, { final: true });
+    assert.equal(read(join(into, "blobs", bad.name)), bad.text, "the next call tries it again");
+  });
+
+  it("no BOX_GONE: the recording is on the run's disk, so after the box is deleted the final call still carries what it wrote", async () => {
+    const control = new FakeControl();
+    const { host } = fakeHost(control);
+    const at = makePlace({ ...REF, control, host });
+    const into = scratch();
+    const runner = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
+    control.objects.set(rec(1, ".spool/child-9-1.jsonl"), line({ seq: 0 }));
+    await at.kill(runner, "box");
+    await at.recordHome!.bringHome(into, { final: true });
+    assert.equal(read(join(into, ".spool", "child-9-1.jsonl")), line({ seq: 0 }));
+  });
+
+  it("a listing that fails is CARRY_FAILED, in a message of at most 240 characters", async () => {
+    const control = new FakeControl();
+    const at = makePlace({ ...REF, control, host: fakeHost(control).host });
+    control.failList = Object.assign(new Error(`503 ${"x".repeat(1_000)}`), { status: 503 });
+    await assert.rejects(at.recordHome!.bringHome(scratch()), (e: unknown) => e instanceof PlaceError && e.code === "CARRY_FAILED" && e.message.length <= 240);
+  });
+
+  it("the place writes nothing into the run's disk: the runner seeds its own record directory", async () => {
+    const control = new FakeControl();
+    const { host } = fakeHost(control);
+    const at = archilPlace({ ...REF, control, host, pollMs: 5, ensure: { create: { uid: 1500, gid: 1500 } } })({ paths: pathsAt("/x") });
+    made.push(at);
+    await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
+    await at.recordHome!.bringHome(scratch(), { final: true });
+    assert.deepEqual(control.puts, [], "no put under record/");
+    await at.release();
+  });
+});
 
 describe("archilPlace", () => {
   it("mints a mount token per attempt through its control: a runner starts with the token it was handed, with its order's environment", async () => {
@@ -565,6 +713,8 @@ describe("archilPlace", () => {
   it("signals: a long poll attaches nothing to anything that lives as long as the iterator (the heap does not grow with polls)", { timeout: 120_000 }, async () => {
     setFlagsFromString("--expose-gc");
     const gc = runInNewContext("gc") as () => void;
+    // The places the tests before made still poll their runners' status: quiet them, so the heap is this iterator's.
+    await Promise.all(made.map((p) => p.release().catch(() => {})));
     const control = new FakeControl();
     const { host } = fakeHost(control);
     const at = makePlace({ ...REF, control, host, signalPollMs: 0 });

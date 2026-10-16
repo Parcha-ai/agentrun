@@ -786,6 +786,20 @@ id and directory as the supervisor computed them.
     instance starts. It reports `revoked` and `ms`. A newer incarnation than the one the place killed (another
     supervisor's) gets the usual lease and start-grace checks instead, so a live one is `HELD`, not revoked.
   - `status()` reads `run.json` over S3 and lists the run's delegations.
+  - `recordHome` (when the control can list, as `archilControl`'s can): an attempt's runner records into
+    `recordHome.dir(attempt)`, `<root>/record/<attempt>`, in the run's directory, so its delegation covers it and
+    `deleteRunTree` removes it. `bringHome(into, { final })` reads that directory through the control (S3 list and get:
+    nothing takes the run's claim) and brings the recording into the supervisor's `into`.
+    - Blobs come first, each checked against the hash its name carries and written whole (a temporary file, fsync,
+      rename). One that doesn't match is skipped; everything else still comes home, then the call throws
+      `BLOB_MISMATCH`.
+    - Then the new whole lines of each `.spool/*.jsonl` segment, with an offset per file name: what `into` already
+      holds of it. So a second call, or a call from another process, brings nothing twice. A line waits while a blob it
+      names isn't home yet. On `final` it comes home anyway, and the call throws `CARRY_FAILED` naming the blob.
+    - A list or get that fails is `CARRY_FAILED`.
+    - The recording is on the disk, not in the box, so a final call after a box kill still brings home everything the
+      box fsynced: this place never throws `BOX_GONE`. The place writes nothing into the run's directory; the runner
+      seeds its own.
   - `requestFile(attempt)` is `<root>/signals/kill-<attempt>.json`, in the run's directory and outside `work/`, and
     `signals(attempt)` reads `runs/<id>/signals/kill-<attempt>.json` over S3 every 500 ms (`signalPollMs`). A runner on
     a box of its own can't reach the supervisor's files, so its request travels through the disk. The runner must write

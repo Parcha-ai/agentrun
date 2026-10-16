@@ -5,8 +5,9 @@
 // place seam (examples/reference/place.ts) structurally. The supervisor reads nothing under the run's directory: the
 // outcome, the run's record and its delegations come through the place.
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { extname, join, posix, resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, writeSync } from "node:fs";
+import { dirname, extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Delegation } from "disk";
 import { DEFAULT_MOUNT_ROOT, findDelegations, mintMountToken, pathlessResolver, removeMountToken, runPath, type RunRef } from "./claim.ts";
@@ -73,6 +74,22 @@ export type PlaceSignal =
  */
 export type PlaceContext = { paths: PlacePaths; self?: string; destroyBoxes?: () => void | Promise<void>; requestFile?: (attempt: number) => string };
 
+/**
+ * Where an attempt's runner records (its RECORD_DIR, in the place) and how the place brings that recording home. For a
+ * place whose runners cannot write the supervisor's recording directory.
+ */
+export interface PlaceRecordHome {
+  /** The directory, in the place, attempt `attempt`'s runner records into. */
+  dir(attempt: number): string;
+  /**
+   * Brings home into `into` what the runners recorded: blobs first, then the new whole lines of each `.spool/*.jsonl`.
+   * Idempotent; `final` is the call after the runner ended, when nothing is still landing.
+   */
+  bringHome(into: string, options?: { final?: boolean }): Promise<void>;
+  /** How far the place's clock is from the supervisor's, when it knows. */
+  readonly clockSkewMs?: number;
+}
+
 export interface Place {
   /** `local` or `archil`, for the recording's lines. */
   readonly name: string;
@@ -101,9 +118,11 @@ export interface Place {
   move?(to: Place): Promise<Record<string, unknown>>;
   /** Lets the run go: stops what still runs (its commands too) and removes what the place made for it (tokens), never the run's directory. */
   release(): Promise<void>;
+  /** A place whose runners record where the supervisor cannot read says where, and brings the recording home. */
+  readonly recordHome?: PlaceRecordHome;
 }
 
-export type PlaceErrorCode = "INVALID_ARGUMENT" | "HELD" | "START_TIMED_OUT" | "STATUS_FAILED" | "KILL_UNSUPPORTED" | "RELEASE_FAILED";
+export type PlaceErrorCode = "INVALID_ARGUMENT" | "HELD" | "START_TIMED_OUT" | "STATUS_FAILED" | "KILL_UNSUPPORTED" | "RELEASE_FAILED" | "BOX_GONE" | "CARRY_FAILED" | "BLOB_MISMATCH";
 
 export class PlaceError extends PdaError {
   constructor(code: PlaceErrorCode, message: string, options: { cause?: unknown } = {}) {
@@ -405,8 +424,11 @@ function outcomeLine(line: string): PlaceOutcome | undefined {
 export interface ArchilPlaceOptions {
   disk: string;
   region: string;
-  /** The disk's control API (`archilControl`). The place holds it; no instance ever does. */
-  control: SupervisorControl;
+  /**
+   * The disk's control API (`archilControl`). The place holds it; no instance ever does. With `listObjects` (as
+   * `archilControl` has), the place has `recordHome`.
+   */
+  control: SupervisorControl & Partial<RecordControl>;
   /**
    * The driver that runs the instance (`localHost`, `dockerHost`, `daytonaHost`), set up with the app the instance runs.
    * Its `kill` and `kills` are the place's.
@@ -435,10 +457,167 @@ type Minted = { token: string; identifier: string; nickname: string; removed: bo
 
 /** Where in the run's directory an Archil place's runners write their kill requests. */
 const REQUESTS = "signals";
-const requestName = (attempt: number): string => {
+
+// ---- bringing a recording home ------------------------------------------------------------------------------------------
+
+/** The listing `recordHome` reads the run's recordings with: S3 ListObjects, each object's size when the API gives it. */
+export interface RecordControl {
+  listObjects(prefix: string, options?: { recursive?: boolean }): Promise<{ objects: { key: string; size?: number }[] }>;
+}
+
+/** Where in the run's directory an Archil place's runners record, one directory per attempt. */
+const RECORDS = "record";
+const BLOB_NAME = /^([0-9a-f]{64})\.[A-Za-z0-9]{1,16}$/;
+const SPOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,200}\.jsonl$/;
+const NEWLINE = 0x0a;
+
+/** A message for a recording's line: at most 240 characters, so it never carries more than the line can hold. */
+const said = (text: string): string => text.slice(0, MESSAGE_KEEP);
+
+/** `bytes` into `file` whole: a temporary file, fsync, rename, then the directory's fsync. */
+function writeWhole(file: string, bytes: Uint8Array): void {
+  const dir = dirname(file);
+  mkdirSync(dir, { recursive: true });
+  const tmp = join(dir, `.${randomUUID()}.tmp`);
+  const fd = openSync(tmp, "wx", 0o644);
+  try {
+    writeSync(fd, bytes);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(tmp, file);
+  syncDir(dir);
+}
+
+/** `bytes` at the end of `file`, fsynced; a file it creates is made durable in its directory too. */
+function appendDurably(file: string, bytes: Uint8Array): void {
+  const dir = dirname(file);
+  const created = !existsSync(file);
+  mkdirSync(dir, { recursive: true });
+  const fd = openSync(file, "a", 0o644);
+  try {
+    writeSync(fd, bytes);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  if (created) syncDir(dir);
+}
+
+function syncDir(dir: string): void {
+  const fd = openSync(dir, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** The blob hashes (SHA-256, hex) a recording's line names in its `blobs`; none for a line that is not JSON or names none. */
+function blobsOf(line: Uint8Array): string[] {
+  try {
+    const v = JSON.parse(new TextDecoder().decode(line)) as { blobs?: unknown };
+    return Array.isArray(v?.blobs) ? v.blobs.filter((b): b is string => typeof b === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Brings home into `into` what the runners recorded under `prefix` (`runs/<id>/record/`), read through the control (S3
+ * ListObjects and GetObject: nothing takes the run's claim). It keeps no state: a blob is home when `into/blobs/<name>`
+ * exists, and a spool file's carried bytes are what `into/.spool/<name>` holds, so a second call, or a call from another
+ * process, carries nothing twice.
+ * - Blobs first: each one not yet home is fetched, checked against the hash its name carries, and written whole into
+ *   `into/blobs`. One whose bytes do not match is skipped; everything else is brought home, then the call throws
+ *   BLOB_MISMATCH, and the next call tries that blob again.
+ * - Then lines: the new whole lines of each `.spool/<name>.jsonl`, the recorder's segments (`<stream>.<n>.jsonl`), each
+ *   with its own offset: what `into/.spool/<name>` already holds. A file is fetched only when it grew since this place
+ *   last fetched it (the SDK has no ranged read). A line whose blobs are not home yet waits for the next call, so no line arrives before its blob; on
+ *   `final` it is carried anyway, and its missing blobs are CARRY_FAILED once everything else is home.
+ * - A listing or fetch that fails is CARRY_FAILED. The recording is on the run's disk, not in the box, so a lost box
+ *   costs only what it had not fsynced: this place never throws BOX_GONE.
+ */
+async function carryHome(control: Pick<SupervisorControl, "getObject"> & RecordControl, prefix: string, into: string, final: boolean, fetched: Map<string, number>): Promise<void> {
+  const fetch = async (key: string): Promise<Uint8Array> => {
+    try {
+      return await control.getObject(key);
+    } catch (error) {
+      throw new PlaceError("CARRY_FAILED", said(`reading ${key.slice(prefix.length)} of the run's recording failed: ${(error as Error)?.message ?? error}`), { cause: error });
+    }
+  };
+  let objects: { key: string; size?: number }[];
+  try {
+    objects = (await control.listObjects(prefix, { recursive: true })).objects;
+  } catch (error) {
+    throw new PlaceError("CARRY_FAILED", said(`listing the run's recording failed: ${(error as Error)?.message ?? error}`), { cause: error });
+  }
+  // `<attempt>/blobs/<name>` and `<attempt>/.spool/<name>.jsonl`; anything else (`started`, a box's temporary file) is not carried.
+  const parts = (key: string) => key.slice(prefix.length).split("/");
+  const blobs = objects.filter((o) => {
+    const p = parts(o.key);
+    return p.length === 3 && p[1] === "blobs" && BLOB_NAME.test(p[2]);
+  });
+  const spools = objects.filter((o) => {
+    const p = parts(o.key);
+    return p.length === 3 && p[1] === ".spool" && SPOOL_NAME.test(p[2]);
+  });
+  const home = (name: string) => existsSync(join(into, "blobs", name));
+  const mismatched: string[] = [];
+  for (const blob of blobs) {
+    const name = parts(blob.key)[2];
+    if (home(name)) continue;
+    const bytes = await fetch(blob.key);
+    if (createHash("sha256").update(bytes).digest("hex") !== BLOB_NAME.exec(name)![1]) {
+      mismatched.push(name);
+      continue;
+    }
+    writeWhole(join(into, "blobs", name), bytes);
+  }
+  // A line names its blobs by hash; the file is `<hash>.<ext>`.
+  const homeHashes = new Set(existsSync(join(into, "blobs")) ? readdirSync(join(into, "blobs")).map((n) => BLOB_NAME.exec(n)?.[1]).filter((h): h is string => h !== undefined) : []);
+  const waiting = new Set<string>();
+  for (const spool of spools) {
+    const name = parts(spool.key)[2];
+    const dest = join(into, ".spool", name);
+    const carried = existsSync(dest) ? statSync(dest).size : 0;
+    // Not fetched again while its size is what this place last fetched and nothing in it waited for a blob (a partial
+    // last line keeps it bigger than what is home). Never skipped on `final`. Only a saving: what is home is still what
+    // the destination holds.
+    if (spool.size !== undefined && (spool.size <= carried || (!final && fetched.get(spool.key) === spool.size))) continue;
+    const bytes = await fetch(spool.key);
+    if (bytes.length <= carried) continue;
+    let heldForBlob = false;
+    let end = carried;
+    for (let at = carried; at < bytes.length; ) {
+      const nl = bytes.indexOf(NEWLINE, at);
+      if (nl < 0) break; // a line still being written
+      const missing = blobsOf(bytes.subarray(at, nl)).filter((hash) => !homeHashes.has(hash));
+      if (missing.length > 0 && !final) {
+        heldForBlob = true;
+        break;
+      }
+      for (const b of missing) waiting.add(b);
+      end = nl + 1;
+      at = nl + 1;
+    }
+    if (end > carried) appendDurably(dest, bytes.subarray(carried, end));
+    if (heldForBlob) fetched.delete(spool.key);
+    else fetched.set(spool.key, bytes.length);
+  }
+  if (mismatched.length > 0) {
+    throw new PlaceError("BLOB_MISMATCH", said(`${mismatched.length} blob(s) of the run's recording do not hash to their names: ${mismatched.join(", ")}`));
+  }
+  if (final && waiting.size > 0) {
+    throw new PlaceError("CARRY_FAILED", said(`${waiting.size} blob(s) the run's recording names never reached its disk: ${[...waiting].join(", ")}`));
+  }
+}
+const countFrom1 = (attempt: number): number => {
   if (!Number.isSafeInteger(attempt) || attempt < 1) throw new PlaceError("INVALID_ARGUMENT", `attempt ${attempt} is not a count from 1`);
-  return `kill-${attempt}.json`;
+  return attempt;
 };
+const requestName = (attempt: number): string => `kill-${countFrom1(attempt)}.json`;
 
 /**
  * The run on an Archil disk, its instance run by a host driver. `token(attempt)` mints the attempt's mount token through
@@ -472,6 +651,9 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
     const handles: HostHandle[] = [];
     const killed = new Map<PlaceRunner, () => void>();
     let resolver = pathlessResolver(control);
+    const records = `${runPath(ref.id)}/${RECORDS}/`;
+    const recording = typeof options.control.listObjects === "function";
+    const fetchedSizes = new Map<string, number>();
     const handleOf = new Map<PlaceRunner, HostHandle>();
 
     const mint = async (attempt: number): Promise<Minted> => {
@@ -601,6 +783,15 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
       paths,
       kills: host.kill && host.kills ? [host.kills] : [],
       token: async (attempt) => (await mint(attempt)).token,
+      ...(recording
+        ? {
+            recordHome: {
+              // In the run's directory, so the runner's delegation covers it and deleteRunTree removes it.
+              dir: (attempt: number) => posix.join(root, RECORDS, String(countFrom1(attempt))),
+              bringHome: (into: string, carry: { final?: boolean } = {}) => carryHome(control as SupervisorControl & RecordControl, records, into, carry.final === true, fetchedSizes),
+            },
+          }
+        : {}),
       // The request goes in the run's directory, outside work/ where the agent's tools are confined, and the place reads
       // it over S3: a runner on a box of its own cannot reach the supervisor's files.
       requestFile: (attempt) => posix.join(root, REQUESTS, requestName(attempt)),
