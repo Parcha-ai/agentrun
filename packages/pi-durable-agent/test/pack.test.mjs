@@ -341,6 +341,7 @@ const TAMPERED = {
   "a SQLite side file": [(m) => [...m, { name: "runs/signed-in/store/run.sqlite-wal", data: Buffer.from("x") }], "format", /side file/],
   "a run the index does not list": [(m) => [...m, { name: "runs/ghost/work/a.txt", data: Buffer.from("x") }], "format", /ghost/],
   "a duplicate member": [(m) => [...m, m[1]], "format", /appears twice/],
+  "an import journal": [(m) => [...m, { name: ".import-journal", data: Buffer.from("{}") }], "format", /\.import-journal: it is not a member a home pack holds/],
   "a member inside a file": [(m) => [...m, { name: "runs/signed-in/work/notes.txt/inner", data: Buffer.from("x") }], "format", /is inside runs\/signed-in\/work\/notes\.txt, which is a file/],
   "the manifest not first": [(m) => [...m.slice(1), m[0]], "format", /first member/],
   "a higher format": [(m) => withManifest(m, (manifest) => { manifest.format = "agentrun.home/2"; }), "format", /this version reads agentrun\.home\/1/],
