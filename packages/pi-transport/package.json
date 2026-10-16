@@ -45,6 +45,12 @@
       "import": "./dist/home/index.js",
       "default": "./dist/home/index.js"
     },
+    "./place": {
+      "source": "./src/place/index.ts",
+      "types": "./dist/place/index.d.ts",
+      "import": "./dist/place/index.js",
+      "default": "./dist/place/index.js"
+    },
     "./testing": {
       "source": "./src/testing/index.ts",
       "types": "./dist/testing/index.d.ts",
