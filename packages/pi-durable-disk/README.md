@@ -888,6 +888,11 @@ id and directory as the supervisor computed them.
     - Then the new whole lines of each `.spool/*.jsonl` segment, with an offset per file name: what `into` already
       holds of it. So a second call, or a call from another process, brings nothing twice. A line waits while a blob it
       names isn't home yet. On `final` it comes home anyway, and the call throws `CARRY_FAILED` naming the blob.
+    - Carriers that overlap on one `into` never append at once. The place runs one call at a time per destination, and
+      each append happens under a lock file beside its spool file (`.<name>.lock`, naming its holder's pid), after the
+      destination's size is read again, so only the lines past it are appended. A lock whose holder is gone is taken
+      over; one held past 5 s is `CARRY_FAILED`. A second `into` gets every line: what the place fetched for one
+      destination says nothing of another.
     - A list or get that fails is `CARRY_FAILED`.
     - The recording is on the disk, not in the box, so a final call after a box kill still brings home everything the
       box fsynced: this place never throws `BOX_GONE`.

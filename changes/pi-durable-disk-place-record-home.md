@@ -10,7 +10,9 @@ kind: feature
 - `dir(attempt)` is `<root>/record/<attempt>`, inside the run's directory. `bringHome` reads it over S3 (list and get,
   never the run's claim). Blobs come first, hash-checked and written whole; then the new whole lines of each
   `.spool/*.jsonl` segment, with an offset per file name kept as what `into` already holds, so it is idempotent across
-  calls and processes.
+  calls and processes. Carriers that overlap on one destination append each line once: one call at a time per
+  destination in a place, and a lock file per spool file across places and processes (a gone holder's is taken over;
+  one held past 5 s is `CARRY_FAILED`). Every write is carried to its last byte.
 - With `ensure.create`, each start first makes the EMPTY `signals/`, `record/<attempt>/.spool/` and
   `record/<attempt>/blobs/` over the control, owned by the run user (mode 0755), while no delegation holds the run. A
   directory made by path on an Archil mount was seen to refuse file creates. Every file in them stays the runner's; a

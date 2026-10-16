@@ -6,7 +6,7 @@
 // outcome, the run's record and its delegations come through the place.
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { dirname, extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Delegation } from "disk";
@@ -480,6 +480,18 @@ const NEWLINE = 0x0a;
 /** A message for a recording's line: at most 240 characters, so it never carries more than the line can hold. */
 const said = (text: string): string => text.slice(0, MESSAGE_KEEP);
 
+/**
+ * Every byte of `bytes` to `fd`: a write may take fewer bytes than it was given, so it goes on from where the last one
+ * stopped. A write that takes none fails, as one that throws (a full disk) does.
+ */
+export function writeAll(fd: number, bytes: Uint8Array, write: (fd: number, bytes: Uint8Array, offset: number, length: number) => number = writeSync): void {
+  for (let at = 0; at < bytes.length; ) {
+    const n = write(fd, bytes, at, bytes.length - at);
+    if (!(n > 0)) throw new PlaceError("CARRY_FAILED", `a write took no bytes, ${bytes.length - at} of ${bytes.length} left`);
+    at += n;
+  }
+}
+
 /** `bytes` into `file` whole: a temporary file, fsync, rename, then the directory's fsync. */
 function writeWhole(file: string, bytes: Uint8Array): void {
   const dir = dirname(file);
@@ -487,11 +499,14 @@ function writeWhole(file: string, bytes: Uint8Array): void {
   const tmp = join(dir, `.${randomUUID()}.tmp`);
   const fd = openSync(tmp, "wx", 0o644);
   try {
-    writeSync(fd, bytes);
+    writeAll(fd, bytes);
     fsyncSync(fd);
-  } finally {
+  } catch (error) {
     closeSync(fd);
+    rmSync(tmp, { force: true });
+    throw error;
   }
+  closeSync(fd);
   renameSync(tmp, file);
   syncDir(dir);
 }
@@ -503,12 +518,70 @@ function appendDurably(file: string, bytes: Uint8Array): void {
   mkdirSync(dir, { recursive: true });
   const fd = openSync(file, "a", 0o644);
   try {
-    writeSync(fd, bytes);
+    writeAll(fd, bytes);
     fsyncSync(fd);
   } finally {
     closeSync(fd);
   }
   if (created) syncDir(dir);
+}
+
+/** How long a carrier waits for another one appending to the same destination file. */
+const CARRY_LOCK_WAIT_MS = 5_000;
+/** A lock file with no holder written yet (its taker is between the create and the write) counts as held this long. */
+const CARRY_LOCK_UNNAMED_MS = 10_000;
+
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+};
+
+/**
+ * `fn` while holding `lock`, a file created exclusively that names its holder's pid, so two carriers on one destination
+ * (two places, two processes) never append at once. A lock whose holder is gone (its process ended) is taken over; one a
+ * live holder keeps past CARRY_LOCK_WAIT_MS is CARRY_FAILED. `fn` is synchronous, so the lock is held only for it.
+ */
+async function withCarryLock(lock: string, fn: () => void): Promise<void> {
+  for (const t0 = Date.now(); ; ) {
+    let fd: number | undefined;
+    try {
+      fd = openSync(lock, "wx", 0o644);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    if (fd !== undefined) {
+      try {
+        writeAll(fd, new TextEncoder().encode(String(process.pid)));
+      } finally {
+        closeSync(fd);
+      }
+      try {
+        fn();
+      } finally {
+        rmSync(lock, { force: true });
+      }
+      return;
+    }
+    let holder = 0;
+    let ageMs = 0;
+    try {
+      holder = Number(readFileSync(lock, "utf8").trim());
+      ageMs = Date.now() - statSync(lock).mtimeMs;
+    } catch {
+      continue; // released meanwhile: take it on the next turn
+    }
+    const gone = Number.isSafeInteger(holder) && holder > 0 ? !alive(holder) : ageMs > CARRY_LOCK_UNNAMED_MS;
+    if (gone) {
+      rmSync(lock, { force: true });
+      continue;
+    }
+    if (Date.now() - t0 > CARRY_LOCK_WAIT_MS) throw new PlaceError("CARRY_FAILED", said(`another carrier (pid ${holder || "unnamed"}) holds ${lock} past ${CARRY_LOCK_WAIT_MS} ms`));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
 }
 
 function syncDir(dir: string): void {
@@ -534,7 +607,10 @@ function blobsOf(line: Uint8Array): string[] {
  * Brings home into `into` what the runners recorded under `prefix` (`runs/<id>/record/`), read through the control (S3
  * ListObjects and GetObject: nothing takes the run's claim). It keeps no state: a blob is home when `into/blobs/<name>`
  * exists, and a spool file's carried bytes are what `into/.spool/<name>` holds, so a second call, or a call from another
- * process, carries nothing twice.
+ * process, carries nothing twice. Carriers that overlap on one destination never append at once: the place runs one call
+ * at a time per destination, and every append happens under a lock file beside its spool file (`.<name>.lock`, naming
+ * its holder's pid), where the destination's size is read again so only the lines past it are appended. A lock whose
+ * holder is gone is taken over; one held past 5 s is CARRY_FAILED. Every write is carried to its last byte.
  * - Blobs first: each one not yet home is fetched, checked against the hash its name carries, and written whole into
  *   `into/blobs`. One whose bytes do not match is skipped; everything else is brought home, then the call throws
  *   BLOB_MISMATCH, and the next call tries that blob again.
@@ -591,7 +667,9 @@ async function carryHome(control: Pick<SupervisorControl, "getObject"> & RecordC
     // Not fetched again while its size is what this place last fetched and nothing in it waited for a blob (a partial
     // last line keeps it bigger than what is home). Never skipped on `final`. Only a saving: what is home is still what
     // the destination holds.
-    if (spool.size !== undefined && (spool.size <= carried || (!final && fetched.get(spool.key) === spool.size))) continue;
+    // Per destination: what this place fetched for one `into` says nothing of another.
+    const cacheKey = `${resolve(into)}\0${spool.key}`;
+    if (spool.size !== undefined && (spool.size <= carried || (!final && fetched.get(cacheKey) === spool.size))) continue;
     const bytes = await fetch(spool.key);
     if (bytes.length <= carried) continue;
     let heldForBlob = false;
@@ -608,9 +686,17 @@ async function carryHome(control: Pick<SupervisorControl, "getObject"> & RecordC
       end = nl + 1;
       at = nl + 1;
     }
-    if (end > carried) appendDurably(dest, bytes.subarray(carried, end));
-    if (heldForBlob) fetched.delete(spool.key);
-    else fetched.set(spool.key, bytes.length);
+    if (end > carried) {
+      // Another carrier on this destination (another place, another process) may have appended since `carried` was read.
+      // Under the file's lock, what the destination holds now decides: only the lines past it are appended.
+      mkdirSync(dirname(dest), { recursive: true });
+      await withCarryLock(join(dirname(dest), `.${name}.lock`), () => {
+        const now = existsSync(dest) ? statSync(dest).size : 0;
+        if (end > now) appendDurably(dest, bytes.subarray(now, end));
+      });
+    }
+    if (heldForBlob) fetched.delete(cacheKey);
+    else fetched.set(cacheKey, bytes.length);
   }
   if (mismatched.length > 0) {
     throw new PlaceError("BLOB_MISMATCH", said(`${mismatched.length} blob(s) of the run's recording do not hash to their names: ${mismatched.join(", ")}`));
@@ -685,6 +771,7 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
       }
     };
     const fetchedSizes = new Map<string, number>();
+    const carrying = new Map<string, Promise<void>>();
     const handleOf = new Map<PlaceRunner, HostHandle>();
 
     const mint = async (attempt: number): Promise<Minted> => {
@@ -824,7 +911,17 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
             recordHome: {
               // In the run's directory, so the runner's delegation covers it and deleteRunTree removes it.
               dir: (attempt: number) => posix.join(root, RECORDS, String(countFrom1(attempt))),
-              bringHome: (into: string, carry: { final?: boolean } = {}) => carryHome(control as SupervisorControl & RecordControl, records, into, carry.final === true, fetchedSizes),
+              // One carry at a time per destination in this place; another place or process is held off by the file lock.
+              bringHome: (into: string, carry: { final?: boolean } = {}) => {
+                const key = resolve(into);
+                const run = (carrying.get(key) ?? Promise.resolve()).catch(() => {}).then(() => carryHome(control as SupervisorControl & RecordControl, records, into, carry.final === true, fetchedSizes));
+                const settled = run.then(() => {}, () => {});
+                carrying.set(key, settled);
+                void settled.then(() => {
+                  if (carrying.get(key) === settled) carrying.delete(key);
+                });
+                return run;
+              },
             },
           }
         : {}),

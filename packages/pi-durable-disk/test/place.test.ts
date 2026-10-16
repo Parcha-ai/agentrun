@@ -3,15 +3,15 @@
 // No Archil, no network.
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Delegation } from "disk";
-import { archilPlace, localPlace, PlaceError } from "../src/place.ts";
+import { archilPlace, localPlace, PlaceError, writeAll } from "../src/place.ts";
 import { parseTokenNickname } from "../src/claim.ts";
 import type { HostBox, HostDriver, HostHandle, HostStatus, StartAttempt, SupervisorControl } from "../src/supervise.ts";
 import { currentBootId, procStartTicks } from "../src/hosts/local-host.ts";
@@ -372,6 +372,66 @@ describe("archilPlace recordHome", () => {
     await at.recordHome!.bringHome(into, { final: true });
     await makePlace({ ...REF, control, host: fakeHost(control).host }).recordHome!.bringHome(into, { final: true });
     assert.equal(read(dest), [0, 1, 2, 3].map((seq) => line({ seq })).join(""), "each line once");
+  });
+
+  it("carriers that overlap on one destination append each line once: two calls of one place, two places, a third that finds the lines home", async () => {
+    const control = new FakeControl();
+    const spool = rec(1, ".spool/child-9-1.jsonl");
+    const lines = [0, 1, 2, 3, 4].map((seq) => line({ seq })).join("");
+    control.objects.set(spool, lines);
+    const one = makePlace({ ...REF, control, host: fakeHost(control).host });
+    const other = makePlace({ ...REF, control, host: fakeHost(control).host });
+    const into = scratch();
+    // Both read the destination's offset (0) before either appends: without the recheck under the lock, both append.
+    await Promise.all([one.recordHome!.bringHome(into), one.recordHome!.bringHome(into), other.recordHome!.bringHome(into)]);
+    assert.equal(read(join(into, ".spool", "child-9-1.jsonl")), lines, "each line once");
+    await other.recordHome!.bringHome(into, { final: true });
+    assert.equal(read(join(into, ".spool", "child-9-1.jsonl")), lines);
+    assert.deepEqual(readdirSync(join(into, ".spool")), ["child-9-1.jsonl"], "no lock is left behind");
+  });
+
+  it("a second destination gets every line, even of the files this place already carried elsewhere and that did not grow", async () => {
+    const control = new FakeControl();
+    const at = makePlace({ ...REF, control, host: fakeHost(control).host });
+    const spool = rec(1, ".spool/child-9-1.jsonl");
+    control.objects.set(spool, `${line({ seq: 0 })}${line({ seq: 1 })}`);
+    const a = scratch();
+    const b = scratch();
+    await at.recordHome!.bringHome(a);
+    await at.recordHome!.bringHome(b);
+    assert.equal(read(join(b, ".spool", "child-9-1.jsonl")), `${line({ seq: 0 })}${line({ seq: 1 })}`);
+    assert.equal(read(join(a, ".spool", "child-9-1.jsonl")), read(join(b, ".spool", "child-9-1.jsonl")));
+  });
+
+  it("a destination file's lock: one left by a carrier that is gone is taken over; one a live carrier keeps is CARRY_FAILED after the wait", { timeout: 30_000 }, async () => {
+    const control = new FakeControl();
+    const at = makePlace({ ...REF, control, host: fakeHost(control).host });
+    control.objects.set(rec(1, ".spool/child-9-1.jsonl"), line({ seq: 0 }));
+    const into = scratch();
+    mkdirSync(join(into, ".spool"), { recursive: true });
+    const lock = join(into, ".spool", ".child-9-1.jsonl.lock");
+    const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" }).stdout;
+    writeFileSync(lock, dead);
+    await at.recordHome!.bringHome(into);
+    assert.equal(read(join(into, ".spool", "child-9-1.jsonl")), line({ seq: 0 }), "a gone holder's lock is taken over");
+    assert.equal(existsSync(lock), false);
+    control.objects.set(rec(1, ".spool/child-9-1.jsonl"), `${line({ seq: 0 })}${line({ seq: 1 })}`);
+    writeFileSync(lock, String(process.pid)); // a live carrier: this process, as another one would be
+    const t0 = Date.now();
+    await assert.rejects(at.recordHome!.bringHome(into), (e: unknown) => e instanceof PlaceError && e.code === "CARRY_FAILED" && /holds/.test(e.message) && e.message.length <= 240);
+    assert.ok(Date.now() - t0 >= 5_000, "it waited for the holder first");
+    assert.equal(read(join(into, ".spool", "child-9-1.jsonl")), line({ seq: 0 }), "nothing appended while another holds it");
+  });
+
+  it("writeAll goes on after a short write, and a write that takes nothing fails", () => {
+    const got: number[] = [];
+    writeAll(7, new Uint8Array([1, 2, 3, 4, 5, 6, 7]), (_fd, bytes, offset, length) => {
+      const n = Math.min(3, length);
+      got.push(...bytes.subarray(offset, offset + n));
+      return n;
+    });
+    assert.deepEqual(got, [1, 2, 3, 4, 5, 6, 7]);
+    assert.throws(() => writeAll(7, new Uint8Array([1, 2]), () => 0), (e: unknown) => e instanceof PlaceError && e.code === "CARRY_FAILED");
   });
 
   it("segments: each .spool/*.jsonl comes home with its own offset, a rotated one too", async () => {
