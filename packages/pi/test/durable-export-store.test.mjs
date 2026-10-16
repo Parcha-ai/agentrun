@@ -66,6 +66,13 @@ test('a signed-in home, exported: no sign-in in any byte, the host stripped, and
     const report = exportStore(source, out, { exportable, secrets: [SIGN_IN_MARKER] });
     assert.equal(sha(source), before, 'the source is never changed');
     checkExportClean(out);
+    // Read straight from the files' documents tables. `documents.kind` holds the kind as JSON text, quotes included, so the
+    // decoded kind is what is compared; the source must hold secret rows (or this proves nothing), the export none.
+    const decoded = (file) => rows(file, "SELECT json_extract(kind, '$') AS kind, kind AS raw FROM documents");
+    assert.ok(decoded(source).some((row) => SECRET_KINDS.includes(row.kind) && row.raw === JSON.stringify(row.kind)), `${name}: the source holds a secret kind, quoted as stored`);
+    const exported = decoded(out);
+    assert.deepEqual(exported.filter((row) => SECRET_KINDS.includes(row.kind) || SECRET_KINDS.map((kind) => JSON.stringify(kind)).includes(row.raw)), [], `${name}: no exported row is of a secret kind`);
+    assert.ok((name === 'run' || exported.length > 0) && exported.every((row) => row.raw === JSON.stringify(row.kind)), `${name}: the export keeps pi-durable's quoted column`);
     assert.ok(report.bytes === statSync(out).size && report.bytes <= EXPORT_MAX_BYTES);
     assert.equal(report.kept['browser.profiles'], undefined);
     assert.ok(report.dropped['browser.profiles'] >= 1, `${name}: the saved sign-in is dropped by kind`);
