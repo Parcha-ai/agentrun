@@ -26,7 +26,8 @@ terminal: it collects the run's candidates, renders `inbox/<run id>.md`, adds th
 collected (`inbox/<run id>/workflows/<name>/`), guards the whole proposal, and makes one commit on
 `runs/<run id>` through `@parcha/pi-git-remote`, pushed by sha. A guard hit refuses all of it and commits nothing; a second
 call, including one from a restarted host with an empty local repository, commits nothing. `renderInbox` and `parseInbox`
-are the inbox's format.
+are the inbox's format: the run, the commit it was seeded from (`seed`, from its `learn.seed` record) and, on each candidate,
+an `untrusted` mark that `proposeLearning({ untrusted: true })` sets when the run read untrusted content.
 
 `curate({ repo, runs, judge, rules, thresholds, caps, now, secrets, admitWorkflow, settleUses })` is the host step that writes `main`, and
 the only one. It takes each `runs/<run id>` branch (read from `runs` when the host keeps run branches in another
@@ -41,7 +42,8 @@ to a `settleUses` hook (both ports are this package's types), archives the least
 derived `<learned>` section would pass 4,096 bytes, and makes one commit per run on main with `Curated-Run` and
 `Learning-Id` trailers, pushed without force and rebuilt on a moved main at most five more times (then `contended`). A
 reverted learning stays reverted, a second curate changes nothing, and no reason in the report or a commit message names
-a value from the case. Learning files take an optional `supersededBy`; a candidate takes an optional `untrusted` mark.
+a value from the case. A learning's `provenance.sha` is the inbox's `seed`; without one it is the run branch's base and
+`provenance.shaFrom` says `branch-base`. Learning files take an optional `supersededBy`.
 `retireLearning({ repo, id, reason })` takes a learning out after it was used, where a `git revert` of the commit that
 added it would conflict: one commit on main sets its status to the new `retired` (the file stays), with a
 `Retired-Learning` trailer, pushed like a curate commit. A retired learning never shows in `<learned>` again, and curate

@@ -35,6 +35,16 @@ test("a superseded learning names what replaced it; the key is written only when
   assert.throws(() => parseLearning(file.replace("supersededBy: L-cafecafecafe", "supersededBy: L-cafecafecafe\nsupersededBy: L-cafecafecafe")), { code: "format" });
 });
 
+test("provenance says when its sha is the run branch's base rather than the seed, and only then", () => {
+  const based = { ...ENTRY, provenance: { ...ENTRY.provenance, shaFrom: "branch-base" } };
+  const file = renderLearning(based);
+  assert.ok(file.includes("  untrusted: true\n  shaFrom: branch-base\nuses: 4\n"));
+  assert.deepEqual(parseLearning(file), based);
+  assert.ok(!renderLearning(ENTRY).includes("shaFrom"));
+  assert.throws(() => renderLearning({ ...ENTRY, provenance: { ...ENTRY.provenance, shaFrom: "seed" } }), { code: "format" });
+  assert.throws(() => parseLearning(file.replace("shaFrom: branch-base", "shaFrom: other")), { code: "format" });
+});
+
 test("the id is L- and 12 hex of SHA-256 over the run id and the text: the same pair always gives the same id", () => {
   const id = learningId("run-1", ENTRY.text);
   assert.match(id, /^L-[0-9a-f]{12}$/);

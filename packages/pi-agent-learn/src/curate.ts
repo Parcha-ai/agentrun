@@ -4,11 +4,11 @@ import { createHash } from "node:crypto";
 import { type Learning, learningId, parseLearning, renderLearning } from "./entry.js";
 import { LearnError } from "./errors.js";
 import { createGuard, guard } from "./guard.js";
-import { InboxFormatError, parseInbox } from "./inbox.js";
-import { assertNotRulesLocked, CAPS, inboxPath, isRulesLocked, LAYOUT, LEARNING_ID, learningPath, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
+import { InboxFormatError, type InboxCandidate, parseInbox } from "./inbox.js";
+import { assertNotRulesLocked, CAPS, COMMIT_SHA, inboxPath, isRulesLocked, LAYOUT, LEARNING_ID, learningPath, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
 import { byUse, indexLine, renderSection } from "./section.js";
 import { learningsAt } from "./seed.js";
-import type { AdmitWorkflow, Candidate, Refusal, RepoRead, SettleUses, WorkflowCandidate, WorkflowUse } from "./types.js";
+import type { AdmitWorkflow, Refusal, RepoRead, SettleUses, WorkflowCandidate, WorkflowUse } from "./types.js";
 import { usesSettler, workflowAdmitter } from "./workflows.js";
 
 /** The judge: the DSL's System One adapter, `WorkflowDeps["runJudge"]`. `createJevRunner` from `@parcha/agentrun-jev` is one. */
@@ -403,12 +403,14 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     runFiles[path] = (await runsRepo.read(path, tip)) ?? "";
   }
   const inboxText = runFiles[inboxPath(runId)];
-  let candidates: readonly Candidate[] = [];
+  let candidates: readonly InboxCandidate[] = [];
+  let seed: unknown;
   if (typeof inboxText === "string") {
     try {
       const inbox = parseInbox(inboxText);
       if (inbox.run !== runId) return refuseRun("the inbox names another run");
       candidates = inbox.candidates;
+      seed = inbox.seed;
     } catch (error) {
       if (!(error instanceof InboxFormatError)) throw error;
       return refuseRun("the inbox does not parse");
@@ -417,6 +419,9 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
   const runRefusals = guard({ role: "run", runId, files: runFiles, candidates, secrets: input.secrets });
   if (runRefusals.length) return refuseRun(`the run's files are refused: ${refusalReason(runRefusals)}`);
 
+  // A learning names the commit its run was seeded from; an inbox that does not say gets its branch's base, marked so.
+  const seeded = typeof seed === "string" && COMMIT_SHA.test(seed) && mainHistory.has(seed) ? seed : undefined;
+  const origin = seeded ? { sha: seeded } : { sha: base, shaFrom: "branch-base" as const };
   const { learnings } = await learningsAt(repo, main);
   const entries = new Map(learnings.map((l) => [l.id, l]));
   const touched = new Set<string>();
@@ -582,7 +587,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     }
     const made: Learning = {
       id, type: type as Learning["type"], scope: "all", status: "active",
-      provenance: { runs: [runId], sha: base, untrusted: candidate.untrusted === true }, uses: 0, supersedes: replaces, text: candidate.text,
+      provenance: { runs: [runId], ...origin, untrusted: candidate.untrusted === true }, uses: 0, supersedes: replaces, text: candidate.text,
     };
     try {
       renderLearning(made);

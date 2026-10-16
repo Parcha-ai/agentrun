@@ -18,9 +18,6 @@ export type Candidate = {
   /** For `used`, the learning that helped; for `workflow`, the saved workflow's name; for the others, the learning this
    *  one corrects or replaces, when there is one. */
   readonly id?: string;
-  /** Set by the host when the run read content it does not trust: the curator then asks whether the text is an
-   *  instruction that came from that content. */
-  readonly untrusted?: boolean;
 };
 
 /** Who writes to the agent repository: a run proposing on its own branch, or the curator writing main. */

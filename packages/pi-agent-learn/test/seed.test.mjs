@@ -154,7 +154,7 @@ test("seedLearning refuses a missing ref, a relative directory, and a symlinked 
   }
 });
 
-test("copies are installed whole: a restart after an interrupted copy, an edited copy or a planted link restores the stored bytes", async () => {
+test("copies are installed whole: a restart after an interrupted copy, an edited copy or a planted link restores the stored bytes, and files this call did not create are left alone", async () => {
   const root = await scratch();
   const { repo, main } = await agentRepo(root, learningFiles([L1, L2]));
   const stored = async (l) => repo.read(`learnings/${l.id}.md`, main);
@@ -162,14 +162,18 @@ test("copies are installed whole: a restart after an interrupted copy, an edited
   const dir = path.join(work, ".agent", "learnings");
   await mkdir(dir, { recursive: true });
   await writeFile(path.join(dir, `${L1.id}.md`), (await stored(L1)).slice(0, 20));
-  await writeFile(path.join(dir, `.${L1.id}.md.0123456789abcdef.partial`), "half a copy");
+  const crashed = path.join(work, ".agent", ".seeding-0123456789abcdef");
+  await mkdir(crashed);
+  await writeFile(path.join(crashed, `${L1.id}.md`), "half a copy");
   await writeFile(path.join(root, "outside.md"), "outside\n");
   await symlink(path.join(root, "outside.md"), path.join(dir, `${L2.id}.md`));
   const run = await openRun(path.join(root, "run.sqlite"));
   try {
     const seeded = await seedLearning({ repo, target: run.harness, into: work });
     assert.deepEqual(seeded.files, [`.agent/learnings/${L1.id}.md`, `.agent/learnings/${L2.id}.md`]);
-    assert.deepEqual((await readdir(dir)).sort(), [`${L1.id}.md`, `${L2.id}.md`], "the leftover partial file is gone");
+    assert.deepEqual((await readdir(dir)).sort(), [`${L1.id}.md`, `${L2.id}.md`], "nothing but whole copies in the learnings directory");
+    assert.deepEqual((await readdir(path.join(work, ".agent"))).sort(), [".seeding-0123456789abcdef", "learnings"], "this call removed its own staging directory and only that");
+    assert.equal(await readFile(path.join(crashed, `${L1.id}.md`), "utf8"), "half a copy", "another call's file is never touched");
     for (const l of [L1, L2]) {
       const file = path.join(dir, `${l.id}.md`);
       assert.ok((await lstat(file)).isFile(), "a regular file, not a link");
@@ -184,9 +188,31 @@ test("copies are installed whole: a restart after an interrupted copy, an edited
   const run2 = await openRun(path.join(root, "run2.sqlite"));
   try {
     await assert.rejects(seedLearning({ repo, target: run2.harness, into: blocked }), (e) => e instanceof LearnError && e.code === "invalid" && /cannot be replaced/.test(e.message));
-    assert.deepEqual((await readdir(path.join(blocked, ".agent", "learnings"))).filter((n) => n.endsWith(".partial")), [], "a failed install leaves no partial file");
+    assert.deepEqual(await readdir(path.join(blocked, ".agent")), ["learnings"], "a failed install leaves no staging directory");
   } finally {
     await run2.close();
+  }
+});
+
+test("two seeds into one working directory at once both finish with every copy whole, and neither removes the other's files", async () => {
+  const root = await scratch();
+  const many = Array.from({ length: 24 }, (_, i) => learning(`L-${(0x100 + i).toString(16).padStart(12, "0")}`, `Lesson ${i}: ${"keep registry lookups to the legal name ".repeat(20)}`));
+  const { repo, main } = await agentRepo(root, learningFiles(many));
+  const work = path.join(root, "work");
+  const dir = path.join(work, ".agent", "learnings");
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, `.${many[0].id}.md.0123456789abcdef.partial`), "someone else's file");
+  const runs = await Promise.all([openRun(path.join(root, "a.sqlite")), openRun(path.join(root, "b.sqlite"))]);
+  try {
+    for (let round = 0; round < 3; round += 1) {
+      const seeded = await Promise.all(runs.map((run) => seedLearning({ repo, target: run.harness, into: work })));
+      for (const s of seeded) assert.equal(s.files.length, many.length);
+    }
+    for (const l of many) assert.equal(await readFile(path.join(dir, `${l.id}.md`), "utf8"), await repo.read(`learnings/${l.id}.md`, main));
+    assert.equal(await readFile(path.join(dir, `.${many[0].id}.md.0123456789abcdef.partial`), "utf8"), "someone else's file");
+    assert.deepEqual(await readdir(path.join(work, ".agent")), ["learnings"], "both calls removed their own staging directories");
+  } finally {
+    await Promise.all(runs.map((run) => run.close()));
   }
 });
 

@@ -2,7 +2,7 @@ import type { Session } from "@earendil-works/pi-durable";
 import type { Repo } from "@parcha/pi-git-remote";
 import { type Caps, createGuard } from "./guard.js";
 import { renderInbox } from "./inbox.js";
-import { inboxPath, inboxWorkflowDir, RUN_ID, runBranch, usesPath, WORKFLOW_NAME } from "./layout.js";
+import { COMMIT_SHA, inboxPath, inboxWorkflowDir, RUN_ID, runBranch, usesPath, WORKFLOW_NAME } from "./layout.js";
 import { readSeed } from "./seed.js";
 import { collectCandidates } from "./tool.js";
 import type { Candidate, Refusal } from "./types.js";
@@ -67,6 +67,8 @@ export type ProposeOptions = Omit<ProposeFilesOptions, "files" | "candidates"> &
   readonly uses?: UsesSource;
   /** Committed under `inbox/<run id>/workflows/<name>/`. Whatever is not a workflow name or a record name is refused. */
   readonly workflows?: WorkflowRecords;
+  /** Set when the run read untrusted content: every candidate is marked untrusted in the inbox. */
+  readonly untrusted?: boolean;
   /**
    * The run's working directory, where its workflow store lives. When given, the step collects what the run saved
    * (`collectWorkflows`) and how it used the workflows it had (`collectUses`, read from `target` when that is an open
@@ -78,10 +80,10 @@ export type ProposeOptions = Omit<ProposeFilesOptions, "files" | "candidates"> &
   readonly seedSha?: string;
 };
 
-/** The host step at a run's terminal: collect the run's candidates (and uses), render `inbox/<run id>.md` (and
- *  `uses/<run id>.json`), add the workflow records, and propose them. */
+/** The host step at a run's terminal: collect the run's candidates (and uses), render `inbox/<run id>.md` with the run's
+ *  seed commit (and `uses/<run id>.json`), add the workflow records, and propose them. */
 export async function proposeLearning(options: ProposeOptions): Promise<ProposeResult> {
-  const { target, uses: usesSource, workflows, workDir, seedSha, ...rest } = options;
+  const { target, uses: usesSource, workflows, untrusted, workDir, seedSha, ...rest } = options;
   const candidates = await collectCandidates(target);
   let records = workflows;
   let uses = await usesSource?.(target);
@@ -98,7 +100,10 @@ export async function proposeLearning(options: ProposeOptions): Promise<ProposeR
   if (candidates.length === 0 && uses === undefined && pairs.length === 0) return { status: "empty" };
   if (typeof rest.runId !== "string" || !RUN_ID.test(rest.runId)) return { status: "refused", refusals: [{ reason: "invalid", detail: "the run id is not valid" }] };
   const files: Record<string, string> = {};
-  if (candidates.length) files[inboxPath(rest.runId)] = renderInbox(rest.runId, candidates);
+  // The commit the run was seeded from, which a reader stamps on what it learned; a run that was not seeded has none.
+  const seed = (await readSeed(target))?.sha;
+  if (seed !== undefined && !COMMIT_SHA.test(seed)) return { status: "refused", refusals: [{ reason: "invalid", field: "seed", detail: "the run's seed is not a commit id" }] };
+  if (candidates.length) files[inboxPath(rest.runId)] = renderInbox(rest.runId, candidates, { ...(seed === undefined ? {} : { seed }), untrusted: untrusted === true });
   if (uses !== undefined) {
     let json: string | undefined;
     try {
