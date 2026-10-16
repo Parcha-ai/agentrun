@@ -87,7 +87,7 @@ try {
     assert.equal(text, JSON.stringify(JSON.parse(text), null, 2) + '\n', `packages/${entry.name}/package.json is not canonical two-space JSON: a key appears twice, or the layout differs`);
   }
   receipt.checks.push('Every packages/*/package.json is canonical two-space JSON, so no key appears twice.');
-  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent'];
+  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'pi-git-remote', 'pi-agent-learn'];
   const tarballs = [];
   for (const directory of packageDirectories) {
     const cwd = join(root, 'packages', directory);
@@ -261,6 +261,12 @@ import * as transportTesting from '@parcha/pi-transport/testing';
 import * as piDurable from '@parcha/agentrun-pi/durable';
 import * as piWorkflows from '@parcha/agentrun-pi/workflows';
 import * as agentHome from '@parcha/pi-durable-agent';
+import * as gitRemote from '@parcha/pi-git-remote';
+import * as agentLearn from '@parcha/pi-agent-learn';
+import { createRegistry, Harness, MemoryStorage } from '@earendil-works/pi-durable';
+import { createModels } from '@earendil-works/pi-ai/models';
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
+import { execFileSync } from 'node:child_process';
 import * as piSignin from '@parcha/agentrun-pi/signin';
 const { createPiRunner } = pi;
 assert.equal('authorWorkflow' in pi, false);
@@ -295,9 +301,12 @@ assert.equal(typeof transportHands.transport,'function'); assert.equal(typeof tr
 assert.equal(piDurable.DECISION_RECEIPTS_DOC,'agentrun.decisions'); assert.equal(piDurable.DECISION_ROW_VERSION,1); { let opened=0; const writer=piDurable.createDecisionWriter({open:async()=>{opened++;throw new Error('never opened');}}); await writer.flush(); assert.equal(opened,0); }
 assert.equal(typeof piWorkflows.WorkflowStore,'function'); assert.equal(typeof piWorkflows.WorkflowStoreError,'function'); { const dir=await mkdtemp(join(tmpdir(),'wf-store-')); try { assert.deepEqual(await new piWorkflows.WorkflowStore(dir).list(),[]); } finally { await rm(dir,{recursive:true,force:true}); } }
 { const dir=await mkdtemp(join(tmpdir(),'agentrun-agent-home-')); try { const home=await agentHome.createAgentHome(join(dir,'acme'),{definition:{version:1,name:'consumer',instructions:'Answer.',skills:['s'],tools:[]},skills:{'s/SKILL.md':'# S'}}); const started=await agentHome.startRun(home,{runId:'r1',host:'consumer'}); assert.deepEqual(started,{...agentHome.runPaths(home,'r1'),runId:'r1',agent:{instructions:'Answer.',tools:[]},leases:[]}); assert.equal(await readFile(join(started.workspace,'.agents/skills/s/SKILL.md'),'utf8'),'# S'); assert.deepEqual(await agentHome.carryBack(home,started,{outcome:'completed'}),{changed:true,profiles:[],released:[]}); assert.equal((await agentHome.readAgentHome(home)).runs.r1.outcome,'completed'); } finally { await rm(dir,{recursive:true,force:true}); } }
+{ const dir=await mkdtemp(join(tmpdir(),'agentrun-git-remote-')); try { const bare=join(dir,'remote.git'); execFileSync('git',['init','-q','--bare','--template=','-b','main',bare]); const repo=await gitRemote.openRepo({dir:join(dir,'host'),remote:gitRemote.local(bare)}); const made=await repo.commitTo('runs/r1',{files:{'inbox/r1.md':'a lesson\\n'},message:'r1',trailers:{'Run-Id':'r1'}}); await repo.push(made.sha,'runs/r1'); const fresh=await gitRemote.openRepo({dir:join(dir,'fresh'),remote:gitRemote.local(bare)}); assert.deepEqual(await fresh.commitTo('runs/r1',{files:{'inbox/r1.md':'again\\n'},message:'r1',trailers:{'Run-Id':'r1'}}),{sha:made.sha,created:false}); assert.equal(await fresh.read('inbox/r1.md',made.sha),'a lesson\\n'); const userinfo=new URL('https://git.example.test/a.git'); userinfo.username='user'; userinfo.password='pass'; await assert.rejects(gitRemote.openRepo({dir:join(dir,'h'),remote:{kind:'https',url:userinfo.href}}),e=>e instanceof gitRemote.GitRemoteError&&e.code==='refused'); } finally { await rm(dir,{recursive:true,force:true}); } }
+{ const dir=await mkdtemp(join(tmpdir(),'agentrun-agent-learn-')); try { assert.throws(()=>agentLearn.RULES_LOCKED.push('x'),TypeError); assert.equal(agentLearn.isRulesLocked('learnings/AGENTS.md'),true); const bare=join(dir,'remote.git'); execFileSync('git',['init','-q','--bare','--template=','-b','main',bare]); const repo=await gitRemote.openRepo({dir:join(dir,'host'),remote:gitRemote.local(bare)}); const lesson={id:'L-0123456789ab',type:'lesson',scope:'all',status:'active',provenance:{runs:['r0'],sha:'0'.repeat(40),untrusted:false},uses:0,supersedes:[],text:'Search both forms of the legal name.'}; const made=await repo.commitTo('main',{files:{'learnings/L-0123456789ab.md':agentLearn.renderLearning(lesson)},message:'seed'}); await repo.push(made.sha,'main'); const registry=createRegistry(); registry.install(agentLearn.agentLearn()); const harness=await Harness.open(new MemoryStorage(),{models:createModels(),registry},BACKGROUND_CONTEXT); try { const seeded=await agentLearn.seedLearning({repo,target:harness,into:join(dir,'work')}); assert.equal(seeded.sha,made.sha); assert.equal((await agentLearn.readSeed(harness)).sha,made.sha); assert.match(seeded.section,/L-0123456789ab lesson: Search both forms/); assert.equal(await readFile(join(dir,'work/.agent/learnings/L-0123456789ab.md'),'utf8'),agentLearn.renderLearning(lesson)); assert.deepEqual(await agentLearn.collectCandidates(harness),[]); } finally { await harness.close(BACKGROUND_CONTEXT); } } finally { await rm(dir,{recursive:true,force:true}); } }
 { const ready=piSignin.checkKeys({name:'consumer',models:{lead:{needs:['text']}},keys:[{env:'CONSUMER_KEY',why:'w',where:'x',required:true}],programs:[],expectedCalls:0,expectedCost:0},{env:{}}); assert.equal(ready.exitCode,2); assert.equal(typeof piSignin.resolveModel,'function'); }
+{ const dir=await mkdtemp(join(tmpdir(),'agentrun-agent-propose-')); try { assert.deepEqual(agentLearn.guard({role:'curate',files:{'agent.json':'{}'}}).map(r=>r.reason),['rules_locked']); const bare=join(dir,'remote.git'); execFileSync('git',['init','-q','--bare','--template=','-b','main',bare]); const repo=await gitRemote.openRepo({dir:join(dir,'host'),remote:gitRemote.local(bare)}); const base=await repo.commitTo('main',{files:{'AGENTS.md':'# Rules\\n'},message:'seed'}); await repo.push(base.sha,'main'); const noted={callId:'c1',type:'lesson',text:'Search both forms of the legal name.',evidence:['a 404']}; const target={snapshot:async()=>({order:['c1'],byCall:{c1:noted}})}; const proposed=await agentLearn.proposeLearning({repo,runId:'r1',target}); assert.equal(proposed.status,'proposed'); assert.deepEqual(await agentLearn.proposeLearning({repo,runId:'r1',target}),{status:'already',sha:proposed.sha}); assert.deepEqual(agentLearn.parseInbox(await repo.read('inbox/r1.md',proposed.sha)),{run:'r1',candidates:[noted]}); const refused=await agentLearn.proposeLearning({repo,runId:'r2',target,secrets:['Search both forms']}); assert.equal(refused.status,'refused'); assert.equal(await repo.resolve('runs/r2'),undefined); } finally { await rm(dir,{recursive:true,force:true}); } }
 assert.ok(loadAuthorReference('language').includes(authorContract()));
-console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,network:'prohibited'}));
+console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,git:true,learn:true,network:'prohibited'}));
 `);
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
   assert.deepEqual(smoke, runtimeSmokeChecks);
@@ -432,6 +441,33 @@ const oneRun = async (home: AgentHome, harness: Parameters<typeof durableProfile
 void [oneRun, createAgentHome];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'agent-consumer.ts'], consumer);
+  await writeFile(join(consumer, 'git-consumer.ts'), `import { GitRemoteError, local, openRepo, type CommitOptions, type Committed, type GitCredential, type Remote, type Repo } from '@parcha/pi-git-remote';
+// A host proposes a run's files on the run's branch and pushes them; an https remote takes its credential from a callback.
+const propose = async (dir: string, remote: Remote, files: CommitOptions['files']): Promise<Committed> => {
+  const repo: Repo = await openRepo({ dir, remote });
+  const made = await repo.commitTo('runs/r1', { files, message: 'r1', trailers: { 'Run-Id': 'r1' } });
+  await repo.push(made.sha, 'runs/r1');
+  return made;
+};
+const https = (url: string, token: () => GitCredential): Remote => ({ kind: 'https', url, credential: token });
+const code = (error: unknown) => (error instanceof GitRemoteError ? error.code : undefined);
+void [propose, https, code, local];
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'git-consumer.ts'], consumer);
+  await writeFile(join(consumer, 'learn-consumer.ts'), `import { agentLearn, collectCandidates, curate, LearnError, seedLearning, type Candidate, type CurateReport, type Guard, type Judge, type Refusal, type Seeded, type WorkflowHint } from '@parcha/pi-agent-learn';
+import type { Repo } from '@parcha/pi-git-remote';
+// A host seeds a run from its agent repository, installs the extension with its guard, and reads the run's candidates after.
+const guard: Guard = (input) => (input.candidates ?? []).filter((c: Candidate) => c.text.includes('secret')).map((): Refusal => ({ reason: 'secret_value', detail: 'a secret' }));
+const start = async (repo: Repo, harness: Parameters<typeof seedLearning>[0]['target'] & Parameters<typeof collectCandidates>[0], into: string, workflows: WorkflowHint[]): Promise<[Seeded, Candidate[]]> => {
+  const seeded = await seedLearning({ repo, target: harness, into, workflows });
+  return [seeded, await collectCandidates(harness)];
+};
+const code = (error: unknown) => (error instanceof LearnError ? error.code : undefined);
+// The curator writes main; its judge is the DSL's System One port.
+const curated = (repo: Repo, judge: Judge): Promise<CurateReport> => curate({ repo, judge, thresholds: { general: { yes: 0.9 } } });
+void [start, code, curated, agentLearn({ guard, secrets: () => [] })];
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'learn-consumer.ts'], consumer);
   receipt.checks.push('Installed ESM imports, core execution, fake Jev/Pi adapters, and strict TypeScript consumer compilation passed.');
   await rm(join(receiptDir, 'packages'), { recursive: true, force: true });
   await mkdir(join(receiptDir, 'packages'), { recursive: true });

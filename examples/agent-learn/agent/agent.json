@@ -1,0 +1,10 @@
+{
+  "id": "issue-triage",
+  "version": 1,
+  "name": "Issue triage",
+  "description": "Labels a new issue bug, feature or question, and says why in one line.",
+  "instructions": "You triage new issues for a software project. Read the issue, pick one label, and answer with the label, a colon, and why in one line.",
+  "skills": ["triage"],
+  "tools": ["learn"],
+  "max_cost_usd": 0.05
+}

@@ -15,11 +15,11 @@ const exec = promisify(execFile);
 // The packages a release may publish, by directory, in publication order: dependencies first (dsl, then jev and pi, which use it), the
 // packages that depend on none of them after. This list is the gate for a new package: a workspace package that is not private and not
 // named here fails the preflight, so a package is never published (or half-released, on a missing trusted publisher) by accident.
-export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi', 'pi-durable-disk': '@parcha/pi-durable-disk', 'pi-browser': '@parcha/pi-browser', 'pi-vision': '@parcha/pi-vision', 'pi-transport': '@parcha/pi-transport', 'pi-durable-agent': '@parcha/pi-durable-agent' };
+export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi', 'pi-durable-disk': '@parcha/pi-durable-disk', 'pi-browser': '@parcha/pi-browser', 'pi-vision': '@parcha/pi-vision', 'pi-transport': '@parcha/pi-transport', 'pi-durable-agent': '@parcha/pi-durable-agent', 'pi-git-remote': '@parcha/pi-git-remote', 'pi-agent-learn': '@parcha/pi-agent-learn' };
 export const listedPackages = Object.keys(releasePackageNames);
 // The clean consumer's runtime smoke in verify-packages, one key per installed package it runs: verify-packages asserts its
 // smoke against this set and the preflight requires a receipt that says exactly it, so the two cannot disagree.
-export const runtimeSmokeChecks = { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, agent: true, network: 'prohibited' };
+export const runtimeSmokeChecks = { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, agent: true, git: true, learn: true, network: 'prohibited' };
 // A package whose own manifest says "private": true is held: it is built, tested, typechecked, verified and checked to be at the workspace
 // version like every package, and it is never published. Lifting a hold removes that one flag; the publish set below follows it.
 const here = dirname(fileURLToPath(import.meta.url));
@@ -51,6 +51,7 @@ export function checkManifest(manifest, directory, version, license) {
   if (manifest.publishConfig.registry !== undefined) assert.equal(manifest.publishConfig.registry, 'https://registry.npmjs.org/', 'Unexpected publication registry');
   if (directory === 'jev' || directory === 'pi') assert.equal(manifest.dependencies?.['@parcha/agentrun-dsl'], version, 'Internal dependencies must use the exact release version');
   if (directory === 'pi') assert.equal(manifest.dependencies?.['@parcha/agentrun-jev'], version, 'Pi must use the exact Jev release version');
+  if (directory === 'pi-agent-learn') assert.equal(manifest.dependencies?.['@parcha/pi-git-remote'], version, 'pi-agent-learn must use the exact pi-git-remote release version');
 }
 
 // A high or critical advisory blocks publication unless a scoped, expiring exception in
