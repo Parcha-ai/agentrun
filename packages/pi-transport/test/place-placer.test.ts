@@ -1,6 +1,6 @@
 import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
 import type { ClassifierAnswer, ClassifierContext, ClassifierResult, Models } from "@earendil-works/pi-ai";
-import { createModels, createProvider } from "@earendil-works/pi-ai/models";
+import { calculateCost, createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { typesafeProvider } from "@earendil-works/pi-ai/providers/typesafe";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { afterEach, describe, expect, it } from "vitest";
@@ -43,8 +43,14 @@ const query = (more: Partial<PlacementQuery> = {}): PlacementQuery => ({
 	...more,
 });
 
-/** TypeSafe answering with `answer` for each question it is asked: a stand-in at pi-ai's provider boundary. */
-function answering(answer: (context: ClassifierContext) => ClassifierResult | Promise<ClassifierResult>) {
+/**
+ * TypeSafe answering with `answer` for each question it is asked: a stand-in at pi-ai's provider boundary. `catalog` is
+ * the models the provider lists, pi-ai's own by default.
+ */
+function answering(
+	answer: (context: ClassifierContext) => ClassifierResult | Promise<ClassifierResult>,
+	catalog = typesafeProvider().getAllModels?.() ?? [],
+) {
 	const asked: ClassifierContext[] = [];
 	const models = createModels();
 	models.setProvider(
@@ -52,12 +58,15 @@ function answering(answer: (context: ClassifierContext) => ClassifierResult | Pr
 			id: "typesafe",
 			name: "TypeSafe, in a test",
 			auth: { apiKey: { name: "no key", resolve: async () => ({ auth: {} }) } },
-			models: typesafeProvider().getAllModels?.() ?? [],
+			models: catalog,
 			classifiers: {
 				"typesafe-system-one": {
-					async classify(_model, given) {
+					async classify(model, given) {
 						asked.push(structuredClone(given));
-						return answer(given);
+						const answered = structuredClone(await answer(given));
+						// As pi-ai's TypeSafe provider prices a call: from the entry it was handed.
+						if (answered.usage !== undefined) calculateCost(model, answered.usage);
+						return answered;
 					},
 				},
 			},
@@ -141,6 +150,16 @@ describe("the placer", () => {
 			});
 			expect(record.error).toBeUndefined();
 		}
+	});
+
+	it("records the cost pi-ai reckons from the classifier entry a host priced, with no price typed in here", async () => {
+		const priced = (typesafeProvider().getAllModels?.() ?? []).map((model) =>
+			model.id === JEV.modelId ? { ...model, cost: { ...model.cost, input: 3, output: 0 } } : model,
+		);
+		const placer = await placerOver(answering(() => said(0.9, "gpu"), priced).models);
+		const decided = kept(await placer.decide(query(), context));
+		// 10 input tokens at 3 USD a million.
+		expect(decided.usage?.costUsd).toBeCloseTo((10 * 3) / 1_000_000, 12);
 	});
 
 	it("goes back to rest at a turn's end when nothing needs the session elsewhere, by the config", async () => {
