@@ -36,7 +36,11 @@ export type AppOptions = OpenDurableRunOptions["harness"] & {
   wake?(run: DurableRun, at: number | null): Promise<void>;
 };
 
-/** What `--app` names: `export default async (ctx) => ({ registry, models, onOpen })`. */
+/**
+ * What `--app` names: `export default async (ctx) => ({ registry, models, onOpen })`. The CLI calls it once the claim is
+ * held, so `ctx.root` is the live run directory and the factory may write under it; the Harness opens with what it
+ * returns.
+ */
 export type AppModule = (ctx: AppContext) => AppOptions | Promise<AppOptions>;
 
 /**

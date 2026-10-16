@@ -9,12 +9,13 @@ import { after, test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
-import { createRegistry, Harness, MemoryStorage } from '@earendil-works/pi-durable';
+import { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { compileTransform } from '@parcha/agentrun-dsl';
 import { workspaceFiles } from '@parcha/agentrun-dsl/recovery';
 import { createWorkflowTool, durableDoc } from '@parcha/agentrun-pi/durable';
 import { WorkflowStore } from '@parcha/agentrun-pi/workflows';
+import { resultOf } from './fixtures/pi-version.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-durable-tool-'));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -40,12 +41,19 @@ const PATTERNED = { ...QUOTED, name: 'patterned', schemas: { ...schemas, Input: 
 const runCode = async (node, state, at) => compileTransform(node.code)(state, { sop: at.sop });
 
 let rigs = 0;
-/** A Harness with the tool's extension, a root conversation that offers it, and what the model was sent. A later rig
- *  given the same `storage` file and `shared` project, workspace and effects stands for a later process. */
-async function rig(turns, host = {}, { storage, shared } = {}) {
+/** A Harness with the tool's extension, a root conversation that offers it, and what the model was sent and offered.
+ *  A later rig given the same `storage` file and `shared` project, workspace and effects stands for a later process.
+ *  `installed` are other extensions in the registry; `listed` picks the root agent's extensions (the tool's alone by
+ *  default). */
+async function rig(turns, host = {}, { storage, shared, installed = [], listed = (tool) => [tool] } = {}) {
   const requests = [];
+  const offered = [];
   const faux = fauxProvider();
-  faux.setResponses(turns.map((turn) => async (context) => { requests.push(JSON.parse(JSON.stringify(context.messages))); return turn; }));
+  faux.setResponses(turns.map((turn) => async (context) => {
+    requests.push(JSON.parse(JSON.stringify(context.messages)));
+    offered.push(context.messages.flatMap((message) => message.toolsAdded ?? []).map((tool) => tool.name).sort());
+    return turn;
+  }));
   const models = createModels();
   models.setProvider(faux.provider);
   const { projectDir, files, effects } = shared ?? { projectDir: mkdtempSync(join(root, 'project-')), files: workspaceFiles(mkdtempSync(join(root, 'cwd-'))), effects: [] };
@@ -58,15 +66,16 @@ async function rig(turns, host = {}, { storage, shared } = {}) {
   });
   const registry = createRegistry();
   registry.install(tool.extension);
+  for (const extension of installed) registry.install(extension);
   const harness = await Harness.open(storage ? await openNodeSqliteStorage(storage) : new MemoryStorage(), { models, registry }, ctx);
-  const conversation = await harness.root(ctx, { agent: { model: MODEL, extensions: [tool.extension] } });
+  const conversation = await harness.root(ctx, { agent: { model: MODEL, extensions: listed(tool.extension) } });
   // Request ids are per process: the same id again is the same submission.
   const process = ++rigs;
   let asked = 0;
   const ask = async (content) => (await (await conversation.submit({ type: 'input', content, requestId: `ask-${process}-${++asked}` }, ctx)).wait(ctx));
   /** The tool's answers the model read, in order, as text. */
   const answers = () => requests.at(-1).filter((message) => message.role === 'toolResult').map((message) => message.content.map((block) => block.text ?? '').join(''));
-  return { harness, conversation, ask, answers, requests, effects, projectDir };
+  return { harness, conversation, ask, answers, requests, offered, effects, projectDir, tool };
 }
 
 test('describe lists the host\'s tools and the durable host\'s rules; inspect keeps the draft; its dry run calls no tool', async () => {
@@ -183,4 +192,32 @@ test('a run uses the code executor the host gave the tool, whatever its task ret
     assert.deepEqual(unhandled, [], 'the observer\'s rejections are consumed');
     await harness.close(ctx);
   } finally { process.off('unhandledRejection', onUnhandled); }
+});
+
+test('inspect refuses a workflow that gives an agent node tools the host did not register, naming them and where a host registers them', async () => {
+  const reading = { ...QUOTED, name: 'reading', root: { node: 'agent', label: 'read-quote', instructions: 'Read the quote file and give its price.', tools: ['read', 'grep'], out: 'Quote', as: 'quote' } };
+  const unregistered = await rig([call({ action: 'inspect', workflow: reading }), say('done')]);
+  await unregistered.ask('Check it.');
+  const refusal = unregistered.answers().at(-1);
+  assert.match(refusal, /tools this session's host has not registered: "grep", "read"/);
+  assert.match(refusal, /createWorkflowTool's tools/);
+  assert.match(unregistered.tool.extension.tools[0].description, /only the tools describe lists, which the host registers/);
+  await unregistered.harness.close(ctx);
+  const tool = (name) => ({ name, description: `The ${name} tool.`, parameters: { type: 'object', additionalProperties: true } });
+  const registered = await rig([call({ action: 'inspect', workflow: reading }), say('done')], { tools: [QUOTE, tool('read'), tool('grep')] });
+  await registered.ask('Check it.');
+  assert.equal(JSON.parse(registered.answers().at(-1)).workflow.name, 'reading');
+  await registered.harness.close(ctx);
+});
+
+test('a root agent offers the tools of the extensions it lists: one installed in the registry and not listed is not offered', async () => {
+  const learn = defineExtension({ name: 'host.learn', tools: [defineTool({ name: 'learn', description: 'Keep a lesson.', parameters: { type: 'object', additionalProperties: true }, execute: async () => resultOf([{ type: 'text', text: 'kept' }]) })] });
+  const listed = await rig([say('hello')], {}, { installed: [learn], listed: (tool) => [learn, tool] });
+  await listed.ask('Hi.');
+  assert.deepEqual(listed.offered.at(-1), ['agentrun', 'learn']);
+  await listed.harness.close(ctx);
+  const unlisted = await rig([say('hello')], {}, { installed: [learn] });
+  await unlisted.ask('Hi.');
+  assert.deepEqual(unlisted.offered.at(-1), ['agentrun'], 'installed alone, its tool is not offered');
+  await unlisted.harness.close(ctx);
 });
