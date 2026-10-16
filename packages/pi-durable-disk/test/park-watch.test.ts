@@ -9,7 +9,7 @@ const parked = { startedAt: "2026-10-16T00:00:00.000Z" };
 const g1: G1Record = { status: "exited", exitCode: 0, restartCount: 0, startedAt: parked.startedAt };
 const wakeAt = 90_000;
 /** One sample every 2 s from 2 s to 100 s. */
-const run = (state: (at: number) => Pick<WatchSample, "g1" | "others">): WatchSample[] => Array.from({ length: 50 }, (_, i) => ({ at: (i + 1) * 2_000, ...state((i + 1) * 2_000) }));
+const run = (state: (at: number) => Pick<WatchSample, "g1" | "others">): WatchSample[] => Array.from({ length: 50 }, (_, i) => ({ at: (i + 1) * 2_000, to: (i + 1) * 2_000 + 50, ...state((i + 1) * 2_000) }));
 
 /** The check before this change: g1 absent only from the first sample that sees another container. */
 const legacy = (samples: WatchSample[]): boolean => {
@@ -35,4 +35,15 @@ test('a g1 that was restarted, ran again, started anew or was removed before the
   assert.equal(g1StayedParked(after({ g1: { ...g1, startedAt: "2026-10-16T00:00:50.000Z" }, others: [] }), parked, wakeAt), false, 'a new start');
   assert.equal(g1StayedParked(after({ g1: { ...g1, exitCode: 1 }, others: [] }), parked, wakeAt), false, 'exit 1');
   assert.equal(g1StayedParked(after({ g1: null, others: [] }), parked, wakeAt), false, 'gone before the wake (from 80 s, the wake is at 90 s)');
+});
+
+test('an inspection that started before the wake and read after it may find g1 removed: a stall across the wake is not a restart', () => {
+  // The watcher stamps the sample before `docker inspect` runs. On a loaded host the inspect stalls past the wake (90 s), and the
+  // supervisor has removed g1 by the time it reads: a pre-wake stamp with g1 gone.
+  const stalled: WatchSample[] = [...run((at) => (at < 88_000 ? { g1, others: [] } : { g1: null, others: [] })).filter((s) => s.at < 88_000), { at: 89_500, to: 90_800, g1: null, others: [] }, { at: 92_000, to: 92_050, g1: null, others: ["g2"] }];
+  assert.equal(g1StayedParked(stalled, parked, wakeAt), true);
+  // Read entirely before the wake and found gone: removed early.
+  assert.equal(g1StayedParked([...stalled.slice(0, -2), { at: 85_000, to: 85_200, g1: null, others: [] }], parked, wakeAt), false);
+  // Across the wake but g1 present and changed: still a failure.
+  assert.equal(g1StayedParked([{ at: 89_500, to: 90_800, g1: { ...g1, restartCount: 1 }, others: [] }], parked, wakeAt), false);
 });

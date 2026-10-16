@@ -153,9 +153,12 @@ test("parking through dockerHost: g1 exits 0 and stays exited while the run slee
   assert.equal((await delegationsOn(runId)).length, 0, "the run is released");
 
   // ---- 2. nothing starts the run, or restarts g1, before wakeAt ---------------------------------------------------------
-  const watch: { at: number; g1: Seen | null; others: string[] }[] = [];
+  const watch: { at: number; to: number; g1: Seen | null; others: string[] }[] = [];
   const second = await waitFor("g2's start", () => {
-    watch.push({ at: Date.now(), g1: seen(g1), others: runContainers().filter((n) => n !== g1) });
+    const at = Date.now();
+    const inspected = seen(g1);
+    const others = runContainers().filter((n) => n !== g1);
+    watch.push({ at, to: Date.now(), g1: inspected, others });
     return lines.find((l) => l.action === "started" && l !== first);
   }, RETRY_MS + 60_000, 2_000);
   const before = watch.filter((w) => w.at < second.seenAt);
@@ -165,8 +168,8 @@ test("parking through dockerHost: g1 exits 0 and stays exited while the run slee
   // removal it is created depends on the host's load (test/park-watch.test.ts holds the window still).
   const g1Unchanged = g1StayedParked(before, parked, wakeAt);
   // The supervisor creates g2 inside the tick that reports its start, so g2 may show up once wakeAt has passed.
-  const othersBeforeWake = [...new Set(before.filter((w) => w.at < wakeAt).flatMap((w) => w.others))];
-  const othersAfterWake = [...new Set(before.filter((w) => w.at >= wakeAt).flatMap((w) => w.others))];
+  const othersBeforeWake = [...new Set(before.filter((w) => w.to < wakeAt).flatMap((w) => w.others))];
+  const othersAfterWake = [...new Set(before.filter((w) => w.to >= wakeAt).flatMap((w) => w.others))];
   const g2Seen = before.find((w) => w.others.includes(nameOf(2)));
   results.wait = {
     samples: before.length,
