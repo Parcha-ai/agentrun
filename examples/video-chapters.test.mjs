@@ -75,7 +75,7 @@ test('beat 1: on fakes, with no network, the agent\'s own script cuts the clip i
   }
 });
 
-test('beat 2: killed inside the evidence sink at vision.filing, a fresh process runs the script again; the looks come back kept, the fold reads repeated 0 and unknown 0, each window paid once', { timeout: 300_000, skip: FFMPEG }, async (t) => {
+test('beat 2: killed inside the evidence sink at vision.filing, a fresh process goes on with a new script; the windows answered before the kill are read back from the workspace, the fold reads repeated 0 and unknown 0, each window\'s look filed once', { timeout: 300_000, skip: FFMPEG }, async (t) => {
   const tmp = await scratch(t);
   const record = join(tmp, 'recording');
   const [kill] = options.spec.kills;
@@ -92,7 +92,7 @@ test('beat 2: killed inside the evidence sink at vision.filing, a fresh process 
   assert.equal(folded.paid.vision, WINDOWS, 'each window paid once');
   const looks = [...looksOf(record).values()];
   assert.equal(looks.length, WINDOWS, 'a window cut again is the same bytes, so its look is the same key');
-  assert.ok(looks.some((filings) => filings.some((filing) => filing.record.facts.kept === true)), 'a look answered before the kill comes back kept');
+  assert.deepEqual(looks.map((filings) => filings.length), looks.map(() => 1), 'the window filed before the kill is read back from the workspace, not asked again');
 });
 
 test('beat 3: every look has its receipt, the recording validates, says scripted, names the film it fetches, and its cost is a number it earned', { timeout: 240_000, skip: FFMPEG }, async (t) => {
@@ -152,8 +152,9 @@ test('the server: a run started from the drop endpoint is followed as it grows, 
     read.push(...text.split('\n').filter(Boolean).map((line) => JSON.parse(line)));
   }
   assert.equal((await at(`/runs/${made.id}/recording/manifest.json`)).status, 404, 'no manifest while the run goes on');
-  const killed = await (await at(`/runs/${made.id}/kill`, { method: 'POST' })).json();
-  assert.equal(killed.gen, 1);
+  const asked = await at(`/runs/${made.id}/kill`, { method: 'POST' });
+  assert.equal(asked.status, 202);
+  assert.equal((await asked.json()).gen, 1);
   let status;
   for (let tries = 0; ; tries += 1) {
     assert.ok(tries < 400, 'the run finishes');
@@ -168,7 +169,9 @@ test('the server: a run started from the drop endpoint is followed as it grows, 
   const folded = fold(readEvents(record));
   assert.equal(folded.repeated, 0);
   assert.equal(folded.paid.vision, WINDOWS);
-  assert.ok([...looksOf(record).values()].some((filings) => filings.some((filing) => filing.record.facts.kept === true)), 'the look answered before the kill comes back kept');
+  const kill = linesOf(join(record, 'events.jsonl')).find((line) => line.source === 'host' && line.kind === 'kill');
+  assert.equal(kill.data.label, 'operator', 'the page\'s kill is the operator\'s, made by the run\'s supervisor');
+  assert.equal(kill.data.crossing, null);
   assert.equal((await at(`/runs/${made.id}/recording/manifest.json`)).status, 200);
   assert.equal((await at(`/runs/${made.id}/recording/..%2F..%2F..%2Frun.log`)).status, 404);
   assert.equal((await at(`/runs/${made.id}/kill`, { method: 'POST' })).status, 409, 'a finished run has no process to kill');

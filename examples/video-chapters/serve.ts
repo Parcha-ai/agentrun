@@ -7,12 +7,12 @@
 //   POST /runs?source=nasa|clip         a run of NASA's film or of the clip; POST /runs?name=<file> with the file as the body
 //   GET  /runs/<id>/                    the run's page: its state, the Kill button, the viewer following it
 //   GET  /runs/<id>/status              { id, film, live, state, processes, kills, pid }
-//   POST /runs/<id>/kill                kills the run's current process (SIGKILL, exactly that pid)
+//   POST /runs/<id>/kill                the operator's kill: the run's supervisor kills its process and starts a fresh one
 //   GET  /runs/<id>/recording/<file>    events.jsonl (grows by whole lines; Range: bytes=N-), manifest.json (once finished), blobs/
 //   GET  /viewer/<file>                 the viewer (index.html?follow=/runs/<id>/recording/ follows a run)
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, closeSync, createReadStream, createWriteStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, createReadStream, createWriteStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { basename, extname, join, normalize, resolve, sep } from 'node:path';
@@ -26,7 +26,8 @@ const TYPES: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.j
 /** The largest film the drop page takes. */
 const MAX_UPLOAD = 2_000_000_000;
 
-type Run = { id: string; film: string; live: boolean; dir: string; record: string; events: string; supervisor: ChildProcess; exited: boolean; offsets: Map<string, number> };
+/** `control`: the operator's kill file the run's supervisor watches (`--operator-kill`). */
+type Run = { id: string; film: string; live: boolean; dir: string; record: string; events: string; control: string; supervisor: ChildProcess; exited: boolean; offsets: Map<string, number> };
 
 export type Served = { url: string; server: Server; runs: Map<string, Run>; close(): Promise<void> };
 
@@ -86,8 +87,6 @@ function sendFile(request: IncomingMessage, response: ServerResponse, file: stri
 const json = (response: ServerResponse, status: number, value: unknown) => { response.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(value)); };
 /** A path under `root`, or undefined when it would leave it. */
 const under = (root: string, path: string) => { const base = resolve(root); const at = resolve(base, normalize(path).replace(/^[/\\]+/, '')); return at === base || at.startsWith(`${base}${sep}`) ? at : undefined; };
-/** A process's parent, from `/proc/<pid>/stat` (the field after the command's closing parenthesis and the state). */
-const parentOf = (pid: number) => Number(readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1]!.split(' ')[1]);
 
 /** Starts the server; `npm run demo:video-chapters -- --serve` keeps it up until the process ends. */
 export async function serve(options: DemoOptions, argv: string[]): Promise<Served> {
@@ -110,12 +109,13 @@ export async function serve(options: DemoOptions, argv: string[]): Promise<Serve
   const start = (id: string, film: string, input: Record<string, unknown>, fetchSources: boolean): Run => {
     const dir = join(root, 'runs', id, 'run');
     const record = join(root, 'runs', id, 'recording');
+    const control = join(root, 'runs', id, 'operator-kill');
     mkdirSync(join(dir, 'work'), { recursive: true });
-    const args = ['--no-warnings=ExperimentalWarning', fileURLToPath(options.self), '--dir', dir, '--record', record, '--input', JSON.stringify(input), '--max-usd', maxUsd, '--cache', join(root, 'cache'), ...(live ? ['--live'] : fetchSources ? ['--fetch-sources'] : [])];
+    const args = ['--no-warnings=ExperimentalWarning', fileURLToPath(options.self), '--dir', dir, '--record', record, '--input', JSON.stringify(input), '--max-usd', maxUsd, '--cache', join(root, 'cache'), '--operator-kill', control, ...(live ? ['--live'] : fetchSources ? ['--fetch-sources'] : [])];
     const supervisor = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     const log = createWriteStream(join(root, 'runs', id, 'run.log'));
     supervisor.stdout?.pipe(log); supervisor.stderr?.pipe(log);
-    const run: Run = { id, film, live, dir, record, events: join(root, 'runs', id, 'live-events.jsonl'), supervisor, exited: false, offsets: new Map() };
+    const run: Run = { id, film, live, dir, record, events: join(root, 'runs', id, 'live-events.jsonl'), control, supervisor, exited: false, offsets: new Map() };
     supervisor.on('exit', () => { run.exited = true; });
     runs.set(id, run);
     return run;
@@ -159,11 +159,12 @@ export async function serve(options: DemoOptions, argv: string[]): Promise<Serve
     }
     if (request.method === 'POST' && parts[2] === 'kill') {
       const now = run.exited ? undefined : currentPid(run);
-      // Only the run's own process: a child of this run's supervisor, started as `--child` of the demo's entry.
-      const owned = now !== undefined && (() => { try { return readFileSync(`/proc/${now.pid}/cmdline`, 'utf8').split('\0').includes('--child') && parentOf(now.pid) === run.supervisor.pid; } catch { return false; } })();
-      if (!now || !owned) { json(response, 409, { error: 'the run has no process to kill now' }); return; }
-      process.kill(now.pid, 'SIGKILL');
-      json(response, 200, { killed: now.pid, gen: now.gen });
+      if (!now) { json(response, 409, { error: 'the run has no process to kill now' }); return; }
+      if (existsSync(run.control)) { json(response, 409, { error: 'a kill is already asked for' }); return; }
+      // The control file is written whole and renamed into place: the supervisor sees it complete, kills through its place and resumes.
+      writeFileSync(`${run.control}.${process.pid}.partial`, `${new Date().toISOString()}\n`);
+      renameSync(`${run.control}.${process.pid}.partial`, run.control);
+      json(response, 202, { asked: true, gen: now.gen });
       return;
     }
     if (parts[2] === 'recording' && (request.method === 'GET' || request.method === 'HEAD')) {

@@ -12,7 +12,7 @@ npm run demo:video-chapters -- --serve         # a page to drop a film on, the r
 ## What you will see
 
 1. The job: one agent writes its own code (a `code` tool with `bash` and `vision.see`, following pi-vision's look skill): it probes the film, cuts it into windows of about a minute with their sound, asks the eyes about each, groups the windows into chapters, takes a keyframe for each, and you keep an `agentrun.cited/1` result: a summary, then one row a chapter (its title, its start and end, a one-line note), citing the looks it rests on (`#t=` of the film) and its keyframe.
-2. A kill and resume (`--kill`, or the server's Kill button at any moment): the process dies with an answered look not yet filed; the next process runs the agent's script again, and every window already answered comes back kept, paid nothing: the recording's fold reads repeated 0.
+2. A kill and resume (`--kill`, or the server's Kill button at any moment): the process dies mid-film; its supervisor starts a fresh one, whose script reads back from the workspace every window already answered and asks only the rest: the recording's fold reads repeated 0.
 3. Receipts with cost: every look is filed with the window's SHA-256, the question, the answer, the model and its price; the recording's cost is a number, or unknown where a failed request may have been billed, never an unearned 0.
 
 | Flag | What it does |

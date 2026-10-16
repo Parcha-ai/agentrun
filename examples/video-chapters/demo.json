@@ -31,7 +31,7 @@
   "expectedCalls": 55,
   "expectedCost": 0.4,
   "kills": [
-    { "point": "vision.filing", "n": 2, "hold": 1, "why": "Inside the evidence sink, at the second window's filing: the eyes have answered it and the answer is kept, and the look is not yet filed. A fresh process runs the agent's script again: the first window comes back kept, the second from its kept answer, nothing paid twice." }
+    { "point": "vision.filing", "n": 2, "hold": 1, "why": "Inside the evidence sink, at the second window's filing: the eyes have answered it and the look is not yet filed. A fresh process goes on with a new script, which reads the first window's answer back from the workspace and asks only the rest." }
   ],
   "panels": ["workflow-map", "vision"],
   "sources": "examples/video-chapters/sources.json",
