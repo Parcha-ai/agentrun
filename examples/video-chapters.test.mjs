@@ -15,6 +15,7 @@ import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
 import { clipInput } from './video-chapters/job.ts';
 import { chooseModels, liveParts } from './video-chapters/models.ts';
+import { keyframeAt } from './video-chapters/tools.ts';
 import { options } from './video-chapters/run.ts';
 import { serve } from './video-chapters/serve.ts';
 import { demo } from './reference/index.ts';
@@ -189,4 +190,12 @@ test('live models: the default lead and eyes, Google\'s eyes take a video window
   assert.equal(google.vision().eyes.accepts.video, true);
   assert.deepEqual(google.models, { lead: 'openai/gpt-6-luna', eyes: 'google/gemini-3.8-flash' });
   assert.equal(liveParts({ env: gateway, models: { eyesModel: 'openai/gpt-6-sol' } }).vision().eyes.accepts.video, false);
+});
+
+test('a keyframe asked at a black frame is taken at the first second after it that is not black, inside its chapter', { skip: FFMPEG }, async (t) => {
+  const tmp = await scratch(t);
+  execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=black:size=160x90:rate=10:duration=4', '-f', 'lavfi', '-i', 'testsrc=size=160x90:rate=10:duration=6', '-filter_complex', '[0][1]concat=n=2:v=1', '-pix_fmt', 'yuv420p', join(tmp, 'fade.mp4')]);
+  assert.deepEqual(keyframeAt(tmp, 'fade.mp4', 0, 0, 10), { path: '.look/keys/1-4.jpg', at: 4 }, 'seconds 0 and 2 are black; 4 is the first that is not');
+  assert.ok(existsSync(join(tmp, '.look', 'keys', '1-4.jpg')));
+  assert.deepEqual(keyframeAt(tmp, 'fade.mp4', 1, 0, 3), { path: '.look/keys/2-0.jpg', at: 0 }, 'a chapter that is black to its end keeps the second asked');
 });

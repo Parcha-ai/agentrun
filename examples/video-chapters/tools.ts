@@ -38,12 +38,32 @@ export const clock = (seconds: number) => {
 /** The window a look saw, as its fragment names it (`film#t=S,E`): `#t=S,E`. */
 const windowOf = (record: LookRecord) => /#t=[\d.]+(?:,[\d.]+)?/.exec(String(record.args.path))?.[0];
 
-/** One frame of the film at a second, as a JPEG in the workspace; the path, or '' when ffmpeg could not take it. */
-function keyframeAt(work: string, film: string, index: number, second: number): string {
-  const path = `.look/keys/${index + 1}-${second}.jpg`;
+/** A frame's mean brightness (0 to 255), or undefined when ffmpeg could not read it. */
+function brightnessAt(work: string, film: string, second: number): number | undefined {
+  try {
+    const printed = execFileSync('ffmpeg', ['-v', 'error', '-ss', String(second), '-i', basename(film), '-frames:v', '1', '-vf', 'signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-', '-f', 'null', '-'], { cwd: work, encoding: 'utf8' });
+    const mean = Number(/lavfi\.signalstats\.YAVG=([\d.]+)/.exec(printed)?.[1]);
+    return Number.isFinite(mean) ? mean : undefined;
+  } catch { return undefined; }
+}
+
+/** At or below this mean brightness a frame is black (video black is 16; a fade, a gap between cuts): a keyframe is taken a
+ *  little later instead. */
+const BLACK = 20;
+
+/** One frame of the film at a second inside [from, to), as a JPEG in the workspace: the second asked, or the first one after
+ *  it, two seconds apart, whose frame is not black. The path and the second taken, or '' when ffmpeg could take none. */
+export function keyframeAt(work: string, film: string, index: number, second: number, to = second + 1): { path: string; at: number } {
+  let at = second;
+  for (let next = second; next < to && next <= second + 10; next += 2) {
+    const mean = brightnessAt(work, film, next);
+    if (mean === undefined) break;
+    if (mean > BLACK) { at = next; break; }
+  }
+  const path = `.look/keys/${index + 1}-${at}.jpg`;
   mkdirSync(join(work, '.look', 'keys'), { recursive: true });
-  try { execFileSync('ffmpeg', ['-v', 'error', '-y', '-ss', String(second), '-i', basename(film), '-frames:v', '1', '-q:v', '3', path], { cwd: work, stdio: 'ignore' }); } catch { return ''; }
-  return existsSync(join(work, path)) ? path : '';
+  try { execFileSync('ffmpeg', ['-v', 'error', '-y', '-ss', String(at), '-i', basename(film), '-frames:v', '1', '-q:v', '3', path], { cwd: work, stdio: 'ignore' }); } catch { return { path: '', at }; }
+  return { path: existsSync(join(work, path)) ? path : '', at };
 }
 
 /** The cited result: a summary row, then one row a chapter (its title, its start, its note), citing the looks of its windows. */
@@ -55,8 +75,8 @@ export function citedOf(root: string, args: { film: string; summary: string; cha
     const looks = chapter.receipts.flatMap((receipt) => { const record = lookAt(root, receipt); return record ? [record] : []; });
     if (!looks.length) { dropped.push({ chapter: chapter.title, why: 'none of its receipts is an ok look this run filed' }); continue; }
     // The keyframe's second is inside the chapter: one the agent chose outside it is the chapter's middle.
-    const at = chapter.at_s >= chapter.start_s && chapter.at_s < chapter.end_s ? chapter.at_s : Math.round((chapter.start_s + chapter.end_s) / 2);
-    const keyframe = keyframeAt(join(root, 'work'), args.film, chapters.length, at);
+    const chosen = chapter.at_s >= chapter.start_s && chapter.at_s < chapter.end_s ? chapter.at_s : Math.round((chapter.start_s + chapter.end_s) / 2);
+    const { path: keyframe, at } = keyframeAt(join(root, 'work'), args.film, chapters.length, chosen, chapter.end_s);
     if (!keyframe) dropped.push({ chapter: chapter.title, why: `no keyframe could be taken at ${at} s` });
     const { receipts: _receipts, ...kept } = chapter;
     chapters.push({ ...kept, at_s: at, keyframe, looks: looks.map((record) => record.facts.key) });
