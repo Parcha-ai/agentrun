@@ -189,7 +189,7 @@ whole proposal, and the curator on what it writes.
 | `secret_value` | A value in `secrets` as written; with its whitespace removed (a value split over lines); as base64 or base64url at any of the three alignments, wrapped or not; as hex in either case; percent or form encoded. Every string inside a `.json` file is searched past its escapes. A secret of fewer than 8 characters cannot be matched without false hits, so the guard answers `invalid` to everything until the host drops it. |
 | `secret_shape` | AWS access key ids (`AKIA`, `ASIA`), Google API keys, private-key blocks (public keys and certificates are fine), GitHub tokens, `sk-` keys, Slack tokens, JWTs, and a URL with a password (`user:pass@`; `user@` alone is fine). |
 | `invisible_unicode` | Zero-width, bidirectional, tag, variation-selector, private-use and control characters, in a path or a text. U+FE0F after an emoji, a joiner inside an emoji sequence, and a joiner or non-joiner between letters of a script that needs them (Persian and Urdu, the Indic scripts, Khmer, Myanmar, Sinhala) are text. |
-| `case_data` | Any value of 4 or more characters from `caseValues`, matched without case, over Unicode compatibility forms and across line breaks, in a text or a path. A learning states the rule, never the case. |
+| `case_data` | Any value of 4 or more characters from `caseValues`, matched without case, over Unicode compatibility forms and with whitespace ignored (a value split by a line break is still found), in a text or a path. A learning states the rule, never the case. |
 | `rules_locked` | `AGENTS.md` and `agent.json` for every role, in any spelling (`isRulesLocked`). |
 | `path_not_allowed` | A path outside the role's own, any `.git` segment in any spelling, and a path that is not a plain relative one (`..`, `.`, `//`, a backslash, an absolute path, a control character). |
 | `too_large`, `too_many` | Over a cap in `CAPS`: bytes per text, per evidence list, per file, per inbox; files per write; new learnings and `used` marks per run. A refused write is never truncated. |
@@ -197,7 +197,7 @@ whole proposal, and the curator on what it writes.
 
 A run writes `inbox/<run id>.md`, `uses/<run id>.json`, and the DSL's saved workflow records as they are,
 `inbox/<run id>/workflows/<name>/<sha256>.json` and `inbox/<run id>/workflows/<name>/latest` (`<name>` is a workflow
-name: 1 to 64 letters, digits, dots, dashes or underscores, starting with a letter or digit), and nothing else. The
+name, `WORKFLOW_NAME`: 1 to 64 lowercase letters, digits, dashes or underscores, starting with a letter or digit), and nothing else. The
 curator writes `learnings/L-<12 hex>.md` (it names every entry by its generated id; the index is derived at seed time and
 never stored, so `learnings/INDEX.md` is refused), `.agents/skills/<name>/SKILL.md` and `trial.json` (no other file or
 folder in a skill folder), and the DSL's workflow records, `.pi/agentrun/workflows/<name>/<sha256>.json` and `latest`.
@@ -233,7 +233,7 @@ read, and the candidates as one JSON line in the last fenced block, which is all
 
 ```ts
 import { createJevRunner } from "@parcha/agentrun-jev";
-const report = await curate({ repo, judge: createJevRunner(), secrets: vault.values(), admitWorkflow });
+const report = await curate({ repo, judge: createJevRunner(), secrets: vault.values(), admitWorkflow, settleUses });
 ```
 
 `curate` is the host step that writes `main`, and the only one. It takes each branch `runs/<run id>` whose run no
@@ -259,9 +259,14 @@ probability, over the candidate's own text, never a paraphrase (`QUESTIONS` hold
 
 An answer between the two cuts holds the candidate; nothing uncertain is accepted. `thresholds` overrides any cut,
 `DEFAULT_THRESHOLDS` are the defaults above. A `used` mark counts one use per run for an active learning and needs no
-judgment. A workflow (its records under `inbox/<run id>/workflows/<name>/` and the "when" of a `learn` call of type
-`workflow`) goes to the `admitWorkflow` hook, which returns the files to write under `.pi/agentrun/workflows/<name>/` and
-`.agents/skills/<name>/`; curation guards them and refuses any other path. Without the hook a workflow is held. When the
+judgment. A workflow (its records under `inbox/<run id>/workflows/<name>/` and the `description`, the agent's
+when-to-use text from a `learn` call of type `workflow`) goes to the `admitWorkflow` hook, which answers `admitted`
+with the files to write under `.pi/agentrun/workflows/<name>/` and `.agents/skills/<name>/`, `unchanged`, `held` or
+`refused`. A run's `uses/<run id>.json` goes to the `settleUses` hook, which folds the uses into the workflows' trials
+and answers the files to write and one decision per workflow (`promote`, `demote` or `hold`). Curation guards what
+either hook returns, refuses a rules-tier path or any path outside the named workflows' folders, and holds a workflow
+or the uses when its hook is not installed. Both ports (`AdmitWorkflow`, `SettleUses`, `RepoRead`, `WorkflowUse`) are
+this package's types; the workflows lane implements them. When the
 `<learned>` section derived from the active learnings would pass 4,096 bytes, the least-used are archived first, this
 run's new ones last, and the report names each.
 
@@ -269,7 +274,7 @@ run's new ones last, and the report names each.
 remaining candidates are held) and the retries (`retries`, 5): a push that a moved main rejects is rebuilt from the new
 main, judged answers reused, and after the last retry curation stops with `contended`. A judge that fails or answers out
 of shape stops it with `judge` before that run is written. The report lists, per run, `accepted`, `superseded`,
-`duplicates`, `used`, `held`, `refused` and `archived`, each item with the candidate's position, the learning id and a
+`duplicates`, `used`, `held`, `refused`, `archived` and `settled`, each item with the candidate's position, the learning id and a
 reason that names no value from the case. A `git revert` of a curate commit on main undoes that run's learnings, and the
 next curate does not bring them back: the run is still named in main's history.
 

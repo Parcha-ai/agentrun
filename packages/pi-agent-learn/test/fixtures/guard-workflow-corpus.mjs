@@ -15,7 +15,7 @@ const add = (id, kind, expect, reason, path, text = RECORD, secrets) =>
 
 add("allow.workflow.record", "allow", "allow", "a record named by its digest", `${BASE}/kyb-us-registry/${DIGEST}.json`);
 add("allow.workflow.latest", "allow", "allow", "the latest pointer", `${BASE}/kyb-us-registry/latest`, DIGEST);
-add("allow.workflow.name-with-dot-and-underscore", "allow", "allow", "a name with a dot and an underscore", `${BASE}/my.flow_v2/${DIGEST}.json`);
+add("allow.workflow.name-with-dash-and-underscore", "allow", "allow", "a name with a dash and an underscore", `${BASE}/my-flow_v2/${DIGEST}.json`);
 add("allow.workflow.name-at-limit", "allow", "allow", "a 64 character name", `${BASE}/${"n".repeat(64)}/${DIGEST}.json`);
 add("allow.workflow.credential-words", "allow", "allow", "a record that names a password or token step without holding one", `${BASE}/rotate/${DIGEST}.json`,
   JSON.stringify({ steps: [{ call: "vault.password", note: "never log a token" }] }));
@@ -23,6 +23,8 @@ add("allow.workflow.at-size-cap", "allow", "allow", "a record of exactly 32768 b
 
 const refuse = (id, reason, path, text) => add(`path.workflow.${id}`, "path", "refuse", reason, path, text);
 refuse("name-too-long", "a 65 character name", `${BASE}/${"n".repeat(65)}/${DIGEST}.json`);
+refuse("name-with-dot", "a name with a dot: the DSL's workflow names have none", `${BASE}/my.flow/${DIGEST}.json`);
+refuse("name-uppercase", "a name with a capital letter: the DSL's workflow names are lowercase", `${BASE}/Kyb/${DIGEST}.json`);
 refuse("name-with-space", "a name with a space", `${BASE}/a b/${DIGEST}.json`);
 refuse("name-leading-dot", "a name that starts with a dot", `${BASE}/.hidden/${DIGEST}.json`);
 refuse("name-dot-git", "a .git folder", `${BASE}/.git/${DIGEST}.json`);

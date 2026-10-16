@@ -1,7 +1,7 @@
 import type { Repo } from "@parcha/pi-git-remote";
 import { type Caps, createGuard } from "./guard.js";
 import { renderInbox } from "./inbox.js";
-import { inboxPath, LAYOUT, RUN_ID, runBranch, usesPath } from "./layout.js";
+import { inboxPath, inboxWorkflowDir, RUN_ID, runBranch, usesPath, WORKFLOW_NAME } from "./layout.js";
 import { collectCandidates } from "./tool.js";
 import type { Candidate, Refusal } from "./types.js";
 
@@ -78,10 +78,18 @@ export async function proposeLearning(options: ProposeOptions): Promise<ProposeR
   const files: Record<string, string> = {};
   if (candidates.length) files[inboxPath(rest.runId)] = renderInbox(rest.runId, candidates);
   if (uses !== undefined) {
-    const json = JSON.stringify(uses, null, 2);
+    let json: string | undefined;
+    try {
+      json = JSON.stringify(uses, null, 2);
+    } catch {
+      // A bigint or a cycle has no JSON form.
+    }
     if (json === undefined) return { status: "refused", refusals: [{ reason: "invalid", field: "uses", detail: "the uses are not JSON" }] };
     files[usesPath(rest.runId)] = `${json}\n`;
   }
-  for (const [name, file, content] of records) files[`${LAYOUT.inbox}/${rest.runId}/workflows/${name}/${file}`] = content;
+  for (const [name, file, content] of records) {
+    if (!WORKFLOW_NAME.test(name)) return { status: "refused", refusals: [{ reason: "invalid", field: "workflows", detail: "a workflow name is not valid" }] };
+    files[`${inboxWorkflowDir(rest.runId, name)}${file}`] = content;
+  }
   return proposeFiles({ ...rest, files, candidates });
 }
