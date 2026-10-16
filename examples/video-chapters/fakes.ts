@@ -1,5 +1,5 @@
 // The run with no key: a scripted lead and scripted eyes stand in for the models, and the film is a real one (the committed
-// clip, or with --fetch-sources NASA's). The lead writes the script a model would (probe, cut windows, look, group, keyframes)
+// clip, or with --fetch-sources NASA's). The lead writes the script a model would (probe, cut windows, look, group, a second for each keyframe)
 // and runs it through the `code` tool; the eyes answer each window with a line that says no model looked, and a topic from a
 // fixed table. Every answer says it is scripted, and so does the recording.
 import type { AssistantMessage, Message, ToolCall, ToolResultMessage } from '@earendil-works/pi-ai';
@@ -30,7 +30,7 @@ export function scriptFor(state: { film: string; from_s: number; to_s: number; w
     'const sh = async (command) => { const ran = await tools.bash({ command }); if (ran.exitCode !== 0) throw new Error(command + ": " + ran.output); return ran.output; };',
     'const duration = parseFloat(await sh("ffprobe -v error -show_entries format=duration -of csv=p=0 " + film));',
     `const from = ${state.from_s}; const to = ${state.to_s} > 0 ? Math.min(${state.to_s}, duration) : duration;`,
-    'await sh("rm -rf .look/keys && mkdir -p .look/windows .look/answers .look/keys");',
+    'await sh("mkdir -p .look/windows .look/answers");',
     'const windows = [];',
     'for (let s = from; s < to - 0.5; s += W) {',
     '  const e = Math.min(to, s + W); const path = ".look/windows/" + s + ext;',
@@ -52,10 +52,10 @@ export function scriptFor(state: { film: string; from_s: number; to_s: number; w
     '  if (last && last.topic === w.topic) { last.end_s = w.e; last.receipts.push(...w.receipts); }',
     '  else chapters.push({ topic: w.topic, start_s: w.s, end_s: w.e, receipts: [...w.receipts], first: w.text });',
     '}',
-    'for (const c of chapters) { c.at_s = Math.round(c.start_s + Math.min(W, c.end_s - c.start_s) / 2); await sh("ffmpeg -v error -y -ss " + c.at_s + " -i " + film + " -frames:v 1 -q:v 3 .look/keys/" + c.at_s + ".jpg"); }',
+    'for (const c of chapters) c.at_s = Math.round(c.start_s + Math.min(W, c.end_s - c.start_s) / 2);',
     'return {',
     '  summary: "(scripted) " + chapters.length + " chapters: " + chapters.map((c) => c.topic).join("; ") + ".",',
-    '  chapters: chapters.map((c) => ({ title: c.topic, start_s: c.start_s, end_s: c.end_s, note: c.first.split("\\n")[0], at_s: c.at_s, keyframe: ".look/keys/" + c.at_s + ".jpg", receipts: c.receipts })),',
+    '  chapters: chapters.map((c) => ({ title: c.topic, start_s: c.start_s, end_s: c.end_s, note: c.first.split("\\n")[0], at_s: c.at_s, receipts: c.receipts })),',
     '};',
   ].join('\n');
 }

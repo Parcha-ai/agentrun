@@ -1,7 +1,8 @@
 // The job: one agent that watches a film and cuts it into chapters. It writes its own code (the `code` tool: bash and
 // `vision.see`), following pi-vision's look skill: it probes the film, cuts windows of about a minute with their sound, asks
-// the eyes about each, decides where the chapters are, takes a keyframe for each, and hands back the chapters with the
-// receipts of the looks each rests on. A tool then resolves every receipt to its look and builds the cited result. It is data:
+// the eyes about each, decides where the chapters are and the second that shows each best, and hands back the chapters with
+// the receipts of the looks each rests on. A tool then takes each chapter's keyframe at that second, resolves every receipt to
+// its look and builds the cited result. It is data:
 // no host code, no model named. The default input is NASA's film (what --live reads); a run on fakes reads the committed clip.
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -21,19 +22,18 @@ const TASK = `Cut the film in \`film\` (a file in your workspace) into chapters,
 1. Probe the film with ffprobe. Read from \`from_s\` to \`to_s\` seconds (to_s 0 means to the end).
 2. Cut it into windows of \`window_s\` seconds, sound kept: \`mkdir -p .look/windows .look/answers\`, then for each start S \`ffmpeg -v error -y -ss S -t W -i FILM -map_metadata -1 -c copy -fflags +bitexact .look/windows/S.EXT\` (EXT the film's own extension; bitexact, so a window cut again is the same bytes and its kept look is found). Ask \`vision.see\` about each window on its own: ask exactly ${JSON.stringify(ASK)}, with the window as the one path and \`FILM#t=S,E\` as its one fragment. Write each window's answer and receipts to \`.look/answers/S.json\` as soon as you have it, and before asking about a window read that file if it is there: a script cut short is run again as a new script, and a window already answered is not asked again. A look that throws (its message starts with its code) is skipped; go on with the rest.
 3. Group consecutive windows whose answers are about the same thing into one chapter (the TOPIC lines help). Write each chapter's title (a few words) and a one-line note of what happens in it, from the answers only.
-4. For each chapter take one keyframe at its most telling moment: \`rm -rf .look/keys && mkdir -p .look/keys\` once, then \`ffmpeg -v error -y -ss T -i FILM -frames:v 1 -q:v 3 .look/keys/T.jpg\` (an ffmpeg scene filter may pick T).
-5. Return { summary, chapters }: summary, three or four sentences about the whole film; each chapter { title, start_s, end_s, note, at_s, keyframe: ".look/keys/T.jpg", receipts }, where receipts are the receipts \`vision.see\` returned for the windows the chapter rests on.
+4. For each chapter choose \`at_s\`, the second inside it that shows it best (from the answers; an ffmpeg scene filter may help). Its keyframe is taken there for you.
+5. Return { summary, chapters }: summary, three or four sentences about the whole film; each chapter { title, start_s, end_s, note, at_s, receipts }, where receipts are the receipts \`vision.see\` returned for the windows the chapter rests on.
 Then submit exactly what the script returned. Write nothing the answers do not say.
 
 The look skill:
 ${LOOK}`;
 
 const Chapter = {
-  type: 'object', additionalProperties: false, required: ['title', 'start_s', 'end_s', 'note', 'at_s', 'keyframe', 'receipts'],
+  type: 'object', additionalProperties: false, required: ['title', 'start_s', 'end_s', 'note', 'at_s', 'receipts'],
   properties: {
     title: { type: 'string', minLength: 1 }, start_s: { type: 'number', minimum: 0 }, end_s: { type: 'number', minimum: 0 }, note: { type: 'string', minLength: 1 },
-    at_s: { type: 'number', minimum: 0, description: 'The second the keyframe was taken at.' },
-    keyframe: { type: 'string', pattern: '^\\.look/keys/[\\w.-]+\\.jpg$', description: 'The keyframe\'s path in the workspace.' },
+    at_s: { type: 'number', minimum: 0, description: 'The second inside the chapter that shows it best: its keyframe is taken there.' },
     receipts: { type: 'array', minItems: 1, items: { type: 'string', minLength: 1 }, description: 'The receipts of the looks the chapter rests on, as vision.see returned them.' },
   },
 } as const;
