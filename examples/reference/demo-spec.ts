@@ -46,6 +46,8 @@ export type DemoSpec = {
   programs?: unknown[];
   /** The checked files the job reads: `sources.json` beside the demo (`true`), or another path relative to it. They are fetched into the run's `work/` on `--live` and with `--fetch-sources`. */
   sources?: boolean | string;
+  /** Code mode (same as `DemoOptions.codeMode`): a `code` tool with a sandbox that has `tools.bash` and `vision.see`. Off by default. */
+  codeMode?: boolean | { timeoutMs?: number; outputChars?: number };
   /** The box the job's tools run in. */
   boxes?: BoxSpec;
   /** The sites the agent can hand a task to (`use_website`): each runs a child agent in a browser of its own, starting at `startUrl`, and answers a short report. */
