@@ -18,7 +18,7 @@ import { ClaimError, HeldError } from "./errors.ts";
 import type { SupervisorControl } from "./supervise.ts";
 
 /** The control API both calls use; `archilControl`'s satisfies it. */
-export type ClaimControl = Pick<SupervisorControl, "addUser" | "removeUser" | "listDelegations" | "revokeDelegation" | "exec" | "getObject" | "headObject">;
+export type ClaimControl = Pick<SupervisorControl, "putObject" | "addUser" | "removeUser" | "listDelegations" | "revokeDelegation" | "exec" | "getObject" | "headObject">;
 
 /** The path `fn` holds: `root` is where it is mounted on this host. */
 export interface HeldPath {
@@ -39,6 +39,8 @@ export interface WithClaimOptions {
   readonly mountRoot?: string;
   readonly host?: ArchilHost;
   readonly signal?: AbortSignal;
+  /** The owner and mode of the path's directories it makes when the disk lacks them. Default this process's, 0700. */
+  readonly owner?: { readonly uid: number; readonly gid: number; readonly mode?: number };
 }
 
 export const DEFAULT_HOLD_MS = 60_000;
@@ -167,6 +169,22 @@ async function settle(control: ClaimControl, path: string, deadline: number, sig
   }
 }
 
+/**
+ * The directories of `path` the disk lacks, made over S3 with `owner`: archil mounts no path whose directory is missing
+ * ("the configured subdirectory does not exist").
+ */
+async function ensureDirectories(control: ClaimControl, path: string, owner: { uid: number; gid: number; mode: number }): Promise<void> {
+  const segments = path.split("/");
+  for (let i = 1; i <= segments.length; i++) {
+    const key = `${segments.slice(0, i).join("/")}/`;
+    try {
+      if ((await control.headObject(key)) === null) await control.putObject(key, "", owner);
+    } catch (err) {
+      throw new ClaimError("CONTROL_API_FAILED", `making ${key} on the disk failed`, { cause: err });
+    }
+  }
+}
+
 const positive = (name: string, value: number) => {
   if (!Number.isSafeInteger(value) || value <= 0) throw new ClaimError("INVALID_ARGUMENT", `${name} ${value} is not a positive whole number of milliseconds`);
   return value;
@@ -189,9 +207,11 @@ export async function withClaim<T>(
   const deadline = Date.now() + positive("waitMs", options.waitMs ?? DEFAULT_WAIT_MS);
   const { control } = where;
   const mountRoot = options.mountRoot ?? join(DEFAULT_MOUNT_ROOT, ".claims");
+  const owner = { uid: options.owner?.uid ?? process.getuid!(), gid: options.owner?.gid ?? process.getgid!(), mode: options.owner?.mode ?? 0o700 };
   for (;;) {
     await settle(control, path, deadline, options.signal);
     options.signal?.throwIfAborted();
+    await ensureDirectories(control, path, owner);
     const minted = await mintMountToken(control, { nickname: `pdc-${path.replaceAll("/", ".")}-${Date.now().toString(36)}`, ttl: TOKEN_TTL });
     const at = new Date();
     let mount: Awaited<ReturnType<typeof exclusiveMount>>;

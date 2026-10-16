@@ -39,7 +39,7 @@ function rig(init: { behave?: Record<string, unknown> } = {}) {
     chmodSync(p, 0o755);
     return p;
   };
-  const read = () => JSON.parse(readFileSync(statePath, "utf8")) as { holders: Record<string, string>; mounts: Record<string, { fenced: boolean }>; calls: { tool: string; argv: string[] }[] };
+  const read = () => JSON.parse(readFileSync(statePath, "utf8")) as { holders: Record<string, string>; mounts: Record<string, { fenced: boolean }>; dirs?: string[]; calls: { tool: string; argv: string[] }[] };
   const host: ArchilHost = {
     archil: wrap("archil"),
     fusermount: wrap("fusermount"),
@@ -79,6 +79,10 @@ function fakeControl(r: Rig, init: { orphaned?: Set<string>; claims?: Record<str
   let claimReads = 0;
   const note = (call: string) => log.push(`${call} (after ${r.archil("mount").length} mounts)`);
   const control: ClaimControl = {
+    async putObject(key, _body, options) {
+      note(`put ${key} ${JSON.stringify(options)}`);
+      r.set((s) => void (s.dirs = [...(s.dirs ?? []), key.replace(/\/$/, "")]));
+    },
     async addUser() {
       note("addUser");
       return { identifier: "tok-id-1", token: TOKEN };
@@ -123,6 +127,7 @@ function fakeControl(r: Rig, init: { orphaned?: Set<string>; claims?: Record<str
     async headObject(key) {
       init.onHead?.(key, ++heads);
       note(`head ${key}`);
+      if (key.endsWith("/")) return (r.read().dirs ?? []).includes(key.slice(0, -1)) ? { size: 0 } : null;
       const object = init.objects?.[key];
       return object ? { etag: object.etag, size: object.bytes.length } : null;
     },
@@ -155,6 +160,17 @@ test("withClaim mounts the path at a fresh mountpoint of its own, runs fn there,
   assert.deepEqual(log.filter((l) => /^(addUser|removeUser)/.test(l)), ["addUser (after 0 mounts)", "removeUser tok-id-1 (after 1 mounts)"], "a token minted for the mount and removed after it");
   assert.equal(existsSync(seen!.root), false, "its mountpoint is gone");
   assert.deepEqual(r.read().holders, {}, "nothing holds the path");
+});
+
+test("withClaim makes the path's directories that the disk lacks, as this process's own (0700), since archil mounts no missing path", async () => {
+  const r = disposeAfter(rig({ behave: { requireDir: true } }));
+  r.set((s) => void (s.dirs = ["agents"]));
+  const { control, log } = fakeControl(r);
+  assert.equal(await withClaim(where(control), async () => "in", { mountRoot: r.mountRoot, host: r.host }), "in");
+  const owner = JSON.stringify({ uid: process.getuid!(), gid: process.getgid!(), mode: 0o700 });
+  assert.deepEqual(log.filter((l) => l.startsWith("put ")), [`put ${PATH}/ ${owner} (after 0 mounts)`], "only the missing one, before the mount");
+  await withClaim(where(control), async () => undefined, { mountRoot: r.mountRoot, host: r.host });
+  assert.equal(log.filter((l) => l.startsWith("put ")).length, 1, "nothing made once it exists");
 });
 
 test("withClaim refuses a path that is not one safe relative path, or that belongs to the runs, before any control call", async () => {

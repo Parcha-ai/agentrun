@@ -116,6 +116,9 @@ if (cmd === "mount") {
   else if (b.mount === "older" || (!state.mounts[mp] && daemonsOf(mp).length)) exit(1, OLDER(mp));
   else if (b.mount === "socket") exit(1, `Failed to bind control socket for ${mp}: ConnectionError(Socket already exists and is in use)\n✗ Unspecified Error\n`);
   else if (hasEntries(mp)) exit(1, "✗ Unspecified Error\n"); // archil refuses to mount over entries
+  else if (b.requireDir && !(state.dirs ?? []).includes(target.slice(target.indexOf(":/") + 2))) {
+    exit(1, `✗ disk ${target.split(":")[0]}: the configured subdirectory does not exist\n`); // a path with no directory on the disk
+  }
   else if (state.holders[target] && !force) {
     exit(1, `⠋ Attaching\r✗ Unable to mount Archil disk to '${mp}' because another client has an outstanding delegation to the root of the disk, or to any individual file on the disk.\n\nIf you're attempting ...\n`);
   } else {

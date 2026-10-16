@@ -783,7 +783,8 @@ const store = await readReleased({ control, path: "agent" }, "agent.sqlite", { s
 A claim is one exclusive mount, about 0.4 to 1 s with its release, so it is for a run's end, never a turn.
 - **Exclusive by the mount.** Archil refuses a second client's mount of the path, an ancestor or a descendant. The call
   mounts at a fresh `<mountRoot>/runs/<pid>-<uuid>` (default `/mnt/archil/.claims`; the shape `archil-scoped`'s cleanup
-  takes on a host that cannot unmount) and never shares a mount. It writes
+  takes on a host that cannot unmount) and never shares a mount. Archil mounts no path whose directory is missing, so it
+  first makes the path's directories the disk lacks, over S3, as the calling process's own (0700; `owner` sets them). It writes
   `.claim` with its deadline (`holdMs`, default 60 s), runs `fn`, then barriers, unmounts and gives its mount token back,
   whether `fn` resolved or threw.
 - **Lost holders are revoked first.** A holder whose client is gone (orphaned) is revoked before the mount, and so is a
