@@ -3,7 +3,7 @@
 import { Type } from 'typebox';
 import {
   compileTransform, dryRunWorkflow, formatWorkflowTree, inspectWorkflow, loadAuthorReference, renderAuthorHostAddendum,
-  type DryRunResult, type Workflow, type WorkflowDeps,
+  type AuthorHostAddendum, type DryRunResult, type Workflow, type WorkflowDeps,
 } from '@parcha/agentrun-dsl';
 import type { WorkflowExtensionService } from './extension-service.js';
 import { PI_HOST_ADDENDUM } from './host-addendum.js';
@@ -25,10 +25,10 @@ export const describeTools = (tools: readonly { name: string; description?: stri
   resultContract: t.resultSchema ? 'Host-declared direct workflow call result.' : 'Pi result envelope; tool-specific details are not declared. Do not invent fields inside details.',
 }));
 
-/** The author references describe returns, with the Pi host's addendum. */
-export const authoringReferences = () => ({
+/** The author references describe returns, with the host's addendum (the coding-agent extension's by default). */
+export const authoringReferences = (host: AuthorHostAddendum = PI_HOST_ADDENDUM) => ({
   language: loadAuthorReference('language'), workflow: loadAuthorReference('workflow-format'), jev: loadAuthorReference('jev-decisions'),
-  host: renderAuthorHostAddendum(PI_HOST_ADDENDUM),
+  host: renderAuthorHostAddendum(host),
 });
 
 /** The checks that run no code (admission by `checker`, structure, a supplied input), and the workflow's tree. A
