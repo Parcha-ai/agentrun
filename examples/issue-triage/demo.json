@@ -1,7 +1,7 @@
 {
   "name": "issue-triage",
   "title": "Triage a public repository's newest issues, scored against its maintainers' labels",
-  "claim": "Twenty issues are researched, labelled by Jev against five labels, judged as good first issues, and scored against the maintainers' own labels, and a run killed mid-way finishes without repeating a paid call.",
+  "claim": "Twenty issues are researched, labelled by Jev with one of four types, judged as good first issues and as actionable, and the type label is scored against the maintainers' own; a run killed mid-way finishes without repeating a paid call.",
   "models": {
     "lead": {
       "needs": [

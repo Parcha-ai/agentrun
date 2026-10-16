@@ -8,7 +8,7 @@ import { runWorkflow } from '@parcha/agentrun-dsl';
 const dir = new URL('./issue-triage/', import.meta.url);
 const workflow = JSON.parse(readFileSync(new URL('workflow.json', dir), 'utf8'));
 const fixtures = JSON.parse(readFileSync(new URL('fixtures.json', dir), 'utf8'));
-const MAP = { bug: 'bug', enhancement: 'feature', docs: 'docs', question: 'question', 'awaiting more info': 'needs-info' };
+const MAP = { bug: 'bug', enhancement: 'feature', docs: 'docs', question: 'question' };
 const issues = fixtures.issues.slice(0, 6);
 
 async function run() {
@@ -27,7 +27,7 @@ async function run() {
     runJudge: async (params) => {
       seen.judge.push(params);
       return { answers: Object.fromEntries(Object.entries(params.questions).map(([id, question]) => [id, question.type === 'choice'
-        ? { type: 'choice', choice: Object.keys(question.criteria)[0], probabilities: Object.fromEntries(Object.keys(question.criteria).map((option, index) => [option, index === 0 ? 0.8 : 0.05])), confidence: 0.8 }
+        ? { type: 'choice', choice: Object.keys(question.criteria)[0], probabilities: Object.fromEntries(Object.keys(question.criteria).map((option, index) => [option, index === 0 ? 0.8 : 0.2 / 3])), confidence: 0.8 }
         : { type: 'noul', noul: 0.1 }])), usage: null, cost_usd: 0 };
     },
   });
@@ -38,7 +38,7 @@ test('no maintainer label reaches the research agent or a judge, in its state, i
   const { result, seen } = await run();
   assert.equal(result.status, 'complete');
   assert.equal(seen.node.length, issues.length);
-  assert.equal(seen.judge.length, issues.length * 2);
+  assert.equal(seen.judge.length, issues.length * 3);
   const labels = [...new Set(issues.flatMap((issue) => issue.labels))];
   for (const [kind, calls] of Object.entries(seen)) for (const call of calls) {
     const read = JSON.stringify(kind === 'node' ? [call.user, call.system] : [call.state, call.questions]);
@@ -46,7 +46,7 @@ test('no maintainer label reaches the research agent or a judge, in its state, i
     assert.doesNotMatch(read, /"labels"\s*:/, `${kind}: a labels field was handed over`);
     // The rubric says "a maintainer's design decision"; what must never be handed over is the maintainers' record of this issue.
     assert.doesNotMatch(read, /"maintainer"|maintainer_label|read-maintainer-labels|github_labels/, `${kind}: the maintainers' record was handed over`);
-    for (const label of labels.filter((name) => name.includes(' '))) assert.equal(read.includes(label), false, `${kind}: "${label}" was handed over`);
+    for (const label of labels.filter((name) => name.includes(' ') || name === 'enhancement')) assert.equal(read.includes(label), false, `${kind}: "${label}" was handed over`);
   }
 });
 
@@ -60,5 +60,5 @@ test('the row compares the classifier with the maintainers after the fact, and a
     assert.equal(row.agrees, row.maintainer_label === row.label);
   }
   assert.equal(result.output.agreement.total, issues.length);
-  assert.match(result.output.agreement.summary, /^Jev agreed with the maintainers on \d+ of \d+/);
+  assert.match(result.output.agreement.summary, /^Jev agreed with the maintainers' type label on \d+ of \d+/);
 });

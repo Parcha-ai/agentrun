@@ -1,33 +1,38 @@
 # The issue-triage demo
 
-An agent drafts a workflow that triages a public repository's twenty newest open issues, and the run is one durable task. For each issue, a research step (an agent with read-only tools) reads the issue, the pull requests that mention it and the code it names; Jev chooses one of five labels; Jev judges whether it is a good first issue against a stated rubric; the result is a table and the agreement with the maintainers' own labels. A run killed partway finishes with no paid call repeated.
+An agent drafts a workflow that triages a public repository's twenty newest open issues, and the run is one durable task. For each issue, a research step (an agent with read-only tools) reads the issue, the pull requests that mention it and the code it names; Jev gives it one of four types (bug, feature, docs, question); Jev judges whether it is a good first issue against a stated rubric and whether it is actionable as written; the result is a table and the agreement of Jev's type with the maintainers' own type labels. A run killed partway finishes with no paid call repeated.
 
 ```sh
 npm ci --ignore-scripts && npm run build && npm run demo:issue-triage
 ```
 
-It runs on scripted fakes: no key, no network, $0. **The twenty issues are synthetic, written for the scripted run: they are not a real repository's issues** (they borrow the Express repository's label vocabulary and nothing else), so no real person's text is in the recording. The live takes use a real public repository's issues; see below. The flags are the reference entry's (`--record <dir>`, `--kill`, `--dir`, `--json`; see `examples/reference/README.md`).
+It runs on scripted fakes: no key, no network, $0. **The twenty issues are synthetic, written for the scripted run: they are not a real repository's issues** (they borrow the Express repository's type-label vocabulary and nothing else), so no real person's text is in the recording. The live takes use a real public repository's issues; see below. The flags are the reference entry's (`--record <dir>`, `--kill`, `--dir`, `--json`; see `examples/reference/README.md`).
 
 | File | What |
 |---|---|
-| `workflow.json` | the reference workflow: a map over issue numbers; per issue `call` (issue), `call` (linked pull requests), `agent` (research), `judge` (label, a choice), `judge` (good first issue, a boolean), `code` (the row); then the agreement. It validates and dry-runs clean. |
+| `workflow.json` | the reference workflow: a map over issue numbers; per issue `call` (issue), `call` (linked pull requests), `call` (code), `agent` (research), `judge` (type, a choice), `judge` (good first issue, a boolean), `judge` (actionable, a boolean), `call` (the maintainers' labels), `code` (the row); then the agreement. It validates and dry-runs clean. |
 | `AUTHOR-PROMPT.md` | what the user says to the drafting agent: describe, inspect, dry-run, save, learn, run |
-| `fixtures.json`, `TRUTH.md` | the twenty fictional issues, the files they name, and the scripted answers (17 of 20 labels agree with the maintainers') |
+| `fixtures.json`, `TRUTH.md` | the twenty fictional issues, the files they name, and the scripted answers (17 of 20 types agree with the maintainers') |
 | `job.ts`, `run.ts`, `demo.json` | the job and fakes, the entry call, and the spec |
 | `live.ts`, `github.ts`, `pick-issues.mjs` | the live parts: the model and Jev's judge, the read-only GitHub tools, and the host's pick of the twenty issues |
 | `SETUP-PROMPT.md` | what a stranger gives their coding agent to set the demo up |
 
-## The five labels, as one Jev question
+## The four types, as one Jev question
 
 `LabelQuestion` is one choice question. The question is the property's description; each option carries its criterion.
 
-| Label | Criterion |
+| Type | Criterion |
 |---|---|
 | bug | The issue reports behaviour that contradicts the repository's own documentation or an earlier release, with a way to see it fail. |
 | feature | The issue asks for behaviour the project does not have, or a change to an API on purpose; nothing is broken today. |
 | docs | The issue is about wrong, missing or unclear documentation, a README or a guide; the code behaves as designed. |
 | question | The reporter asks how to use the project, or why it works as it does; no change is asked for. |
-| needs-info | What is reported cannot be acted on yet: no version, no way to reproduce, or no clear ask; the next step is a question back to the reporter. |
+
+Only this type is scored against the maintainers' labels, and every Jev answer counts: a type that differs from the maintainers' is a miss, never dropped.
+
+## Actionable, as one Jev question (shown, never scored)
+
+`ActionableQuestion` is one boolean (noul) question: *can a maintainer act on this report as written: does it give enough to start work without asking the reporter anything first?* **Yes**: it states what is wrong or wanted and gives enough to start (a version or setup, a way to reproduce, or a clear ask). **No**: it is missing something a maintainer must ask for before starting (a version or setup, a way to reproduce, or what is wanted). It is a column on every row. It is not scored, because the maintainers' own label for it, where a repository has one (Express's `awaiting more info`), is a *process state* (we are waiting on the reporter), not a property of the report, and scoring one against the other would measure the label's use, not Jev.
 
 ## The good-first-issue rubric, as one Jev question
 
@@ -54,13 +59,13 @@ The lead model is pi-ai's own catalog entry for `openai/gpt-6-luna` (its price i
 
 ## Choosing the repository for a live take
 
-The repository needs at least twenty open issues carrying the maintainers' own labels, labels that map onto the five, an active history and a permissive license.
+The repository needs at least twenty open issues carrying the maintainers' own type labels (bug, feature, docs, question), an active history and a permissive license. A waiting-on-reporter label is not a type and neither picks nor scores an issue.
 
-1. **`expressjs/express`** (MIT, pushed within the week of the check, 2026-10-16): 108 open issues, 37 of them carrying the maintainers' labels: `enhancement` 20, `awaiting more info` 10, `bug` 5, `docs` 1, `question` 1 (`require-triage` 4 more). All five labels map. The mix leans to `feature` and `needs-info`, which makes the agreement figure honest rather than easy; `docs` and `question` are thin, so a take needs the newest twenty to be chosen with at least one of each, or the full labelled set.
-2. **`fastify/fastify`** (MIT, active): labels `bug`, `documentation`, `feature request`, `question`, `need info` all exist and map one to one, but only 17 open issues carry one today (13 feature requests, 4 docs), so it is short of twenty and has no open `bug`, `question` or `need info`.
+1. **`expressjs/express`** (MIT, pushed within the week of the check, 2026-10-16): 108 open issues, 27 of them carrying a type label (`enhancement` 20, `bug` 5, `docs` 1, `question` 1; `awaiting more info` is a process state and not counted). The 20 newest of those are the live take's; their composition is printed with the pick and shown on the card, and it leans to `feature`, with `docs` and `question` thin.
+2. **`fastify/fastify`** (MIT, active): `bug`, `documentation`, `feature request` and `question` exist, but only 17 open issues carry one today (13 feature requests, 4 docs), so it is short of twenty and has no open `bug` or `question`.
 
 The first is the pick unless a maintainer's labelling changes before the take; the counts are re-read the day of the take.
 
 ### Showing an issue's text in a published recording
 
-An issue's title and body are third-party text written by a named person, and a recording is published. The live take publishes the issue's number, its URL, the two labels and the verdicts, and quotes at most 200 characters from a source (the evidence field already caps it), with the source named. It publishes no username, avatar or email, and it records no issue body past the cap. A run on the live repository is read-only (GitHub's read API; no comment, label or reaction is written). The scripted run above avoids the question: its issues are fictional.
+An issue's title and body are third-party text written by a named person, and a recording is published. The live take publishes the issue's number, its URL, the two labels and the verdicts (type, good first issue, actionable), and quotes at most 200 characters from a source (the evidence field already caps it), with the source named. It publishes no username, avatar or email, and it records no issue body past the cap. A run on the live repository is read-only (GitHub's read API; no comment, label or reaction is written). The scripted run above avoids the question: its issues are fictional.

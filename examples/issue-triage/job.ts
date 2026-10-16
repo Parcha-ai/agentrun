@@ -11,12 +11,12 @@ import type { Fakes } from '../reference/host.ts';
 const fixtures = JSON.parse(readFileSync(new URL('./fixtures.json', import.meta.url), 'utf8')) as {
   issues: Array<{ number: number; title: string; body: string; labels: string[]; url: string; prs: Array<{ number: number; title: string; state: string; paths: string[] }>; paths: string[] }>;
   files: Record<string, string>;
-  script: Record<string, { label: string; good_first_issue: boolean }>;
+  script: Record<string, { label: string; good_first_issue: boolean; actionable: boolean }>;
 };
 export const workflow = JSON.parse(readFileSync(new URL('./workflow.json', import.meta.url), 'utf8')) as Workflow;
 
-/** The maintainers' label names (here the Express repository's) mapped onto the five. */
-export const LABEL_MAP = { bug: 'bug', enhancement: 'feature', docs: 'docs', question: 'question', 'awaiting more info': 'needs-info' };
+/** The maintainers' type labels (here the Express repository's) mapped onto the four types. A waiting-on-reporter state is not a type and is not here. */
+export const LABEL_MAP = { bug: 'bug', enhancement: 'feature', docs: 'docs', question: 'question' };
 export const REPO = 'fictional/widget-router';
 const encoder = new TextEncoder();
 
@@ -75,7 +75,7 @@ export const fakes: Fakes = {
     github_code: ({ number }) => ({ paths: (byNumber.get(Number(number))?.paths ?? []).filter((path) => path in fixtures.files) }),
     github_linked_prs: ({ number }) => ({ prs: (byNumber.get(Number(number))?.prs ?? []) }),
   },
-  // Scripted: no model, so $0. A label question gets the scripted label at 0.8 and the rest share what is left; a good-first-issue question gets 0.9 or 0.1.
+  // Scripted: no model, so $0. A label question gets the scripted label at 0.8 and the rest share what is left; the good-first-issue and actionable questions get 0.9 or 0.1 from their own columns.
   judge: async ({ questions, state }) => {
     const row = byTitle.get(String((state as { title?: unknown }).title));
     const scripted = row ? fixtures.script[row.number]! : undefined;
@@ -84,9 +84,10 @@ export const fakes: Fakes = {
         const options = Object.keys(question.criteria);
         const chosen = options.includes(scripted?.label ?? '') ? scripted!.label : options[0]!;
         const rest = options.filter((option) => option !== chosen);
-        return [id, { type: 'choice' as const, choice: chosen, probabilities: Object.fromEntries(options.map((option) => [option, option === chosen ? 0.8 : +(0.2 / rest.length).toFixed(2)])), confidence: 0.8 }];
+        return [id, { type: 'choice' as const, choice: chosen, probabilities: Object.fromEntries(options.map((option) => [option, option === chosen ? 0.8 : 0.2 / rest.length])), confidence: 0.8 }];
       }
-      return [id, { type: 'noul' as const, noul: scripted?.good_first_issue ? 0.9 : 0.1 }];
+      const yes = id === 'actionable' ? scripted?.actionable : scripted?.good_first_issue;
+      return [id, { type: 'noul' as const, noul: yes ? 0.9 : 0.1 }];
     }));
     return { answers, usage: { input_tokens: 0, output_tokens: 0 }, cost_usd: 0 };
   },

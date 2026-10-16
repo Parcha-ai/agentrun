@@ -21,15 +21,14 @@
         },
         "label_map": {
           "type": "object",
-          "description": "the maintainers' label names mapped onto the five: bug, feature, docs, question, needs-info",
+          "description": "the maintainers' type labels mapped onto the four: bug, feature, docs, question",
           "additionalProperties": {
             "type": "string",
             "enum": [
               "bug",
               "feature",
               "docs",
-              "question",
-              "needs-info"
+              "question"
             ]
           }
         }
@@ -164,16 +163,14 @@
             "bug",
             "feature",
             "docs",
-            "question",
-            "needs-info"
+            "question"
           ],
-          "description": "Which one label fits this issue best, going by what the issue asks for and the evidence read for it, not by who wrote it or how it is worded?",
+          "description": "Which one type fits this issue best, going by what the issue asks for and the evidence read for it, not by who wrote it or how it is worded?",
           "criteria": {
             "bug": "The issue reports behaviour that contradicts the repository's own documentation or an earlier release, with a way to see it fail.",
             "feature": "The issue asks for behaviour the project does not have, or a change to an API on purpose; nothing is broken today.",
             "docs": "The issue is about wrong, missing or unclear documentation, a README or a guide; the code behaves as designed.",
-            "question": "The reporter asks how to use the project, or why it works as it does; no change is asked for.",
-            "needs-info": "What is reported cannot be acted on yet: no version, no way to reproduce, or no clear ask; the next step is a question back to the reporter."
+            "question": "The reporter asks how to use the project, or why it works as it does; no change is asked for."
           }
         }
       },
@@ -217,8 +214,7 @@
             "bug",
             "feature",
             "docs",
-            "question",
-            "needs-info"
+            "question"
           ]
         },
         "label_confidence": {
@@ -262,8 +258,7 @@
             "bug",
             "feature",
             "docs",
-            "question",
-            "needs-info"
+            "question"
           ]
         },
         "agrees": {
@@ -271,6 +266,14 @@
             "boolean",
             "null"
           ]
+        },
+        "actionable": {
+          "type": "boolean"
+        },
+        "actionable_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
         }
       },
       "required": [
@@ -283,7 +286,9 @@
         "good_first_confidence",
         "evidence",
         "maintainer_label",
-        "agrees"
+        "agrees",
+        "actionable",
+        "actionable_confidence"
       ],
       "additionalProperties": false
     },
@@ -313,13 +318,17 @@
             },
             "summary": {
               "type": "string"
+            },
+            "note": {
+              "type": "string"
             }
           },
           "required": [
             "agreed",
             "compared",
             "total",
-            "summary"
+            "summary",
+            "note"
           ],
           "additionalProperties": false
         }
@@ -359,6 +368,23 @@
       "required": [
         "paths"
       ]
+    },
+    "ActionableQuestion": {
+      "type": "object",
+      "properties": {
+        "actionable": {
+          "type": "boolean",
+          "description": "Can a maintainer act on this report as written: does it give enough to start work without asking the reporter anything first?",
+          "criteria": {
+            "true": "The report states what is wrong or what is wanted and gives enough to start: a version or setup, a way to reproduce, or a clear ask.",
+            "false": "The report is missing something a maintainer must ask for before starting: a version or setup, a way to reproduce, or what is wanted."
+          }
+        }
+      },
+      "required": [
+        "actionable"
+      ],
+      "additionalProperties": false
     }
   },
   "input": {
@@ -499,6 +525,19 @@
               "as": "starter"
             },
             {
+              "node": "judge",
+              "label": "actionable",
+              "state": {
+                "title": "{issue.title}",
+                "body": "{issue.body}",
+                "summary": "{research.summary}",
+                "reproduces": "{research.reproduces}",
+                "evidence": "{research.evidence}"
+              },
+              "out": "ActionableQuestion",
+              "as": "report"
+            },
+            {
               "node": "call",
               "label": "read-maintainer-labels",
               "via": "tool",
@@ -525,7 +564,7 @@
               "node": "code",
               "label": "row",
               "as": "row",
-              "code": "(s) => { const label = s.decision.label; const mapped = (s.maintainer.labels || []).map((name) => s.label_map[name]).filter((value) => value !== undefined); const maintainer = mapped.length ? mapped[0] : null; return { number: s.issue.number, title: s.issue.title, url: s.issue.url, label, label_confidence: s['decision$answers'].answers.label.confidence, good_first_issue: s.starter.good_first_issue, good_first_confidence: Math.abs(s['starter$answers'].answers.good_first_issue.noul - 0.5) * 2, evidence: s.research.evidence, maintainer_label: maintainer, agrees: maintainer === null ? null : maintainer === label }; }"
+              "code": "(s) => { const label = s.decision.label; const mapped = (s.maintainer.labels || []).map((name) => s.label_map[name]).filter((value) => value !== undefined); const maintainer = mapped.length ? mapped[0] : null; return { number: s.issue.number, title: s.issue.title, url: s.issue.url, label, label_confidence: s['decision$answers'].answers.label.confidence, good_first_issue: s.starter.good_first_issue, good_first_confidence: Math.abs(s['starter$answers'].answers.good_first_issue.noul - 0.5) * 2, actionable: s.report.actionable, actionable_confidence: Math.abs(s['report$answers'].answers.actionable.noul - 0.5) * 2, evidence: s.research.evidence, maintainer_label: maintainer, agrees: maintainer === null ? null : maintainer === label }; }"
             }
           ]
         }
@@ -533,7 +572,7 @@
       {
         "node": "code",
         "label": "finish",
-        "code": "(s) => { const compared = s.rows.filter((row) => row.agrees !== null); const agreed = compared.filter((row) => row.agrees).length; return { result: { repo: s.repo, rows: s.rows, agreement: { agreed, compared: compared.length, total: s.rows.length, summary: 'Jev agreed with the maintainers on ' + agreed + ' of ' + compared.length + (compared.length < s.rows.length ? ' (' + (s.rows.length - compared.length) + ' without a maintainer label)' : '') } } }; }"
+        "code": "(s) => { const compared = s.rows.filter((row) => row.agrees !== null); const agreed = compared.filter((row) => row.agrees).length; return { result: { repo: s.repo, rows: s.rows, agreement: { agreed, compared: compared.length, total: s.rows.length, summary: 'Jev agreed with the maintainers\\' type label on ' + agreed + ' of ' + compared.length + (compared.length < s.rows.length ? ' (' + (s.rows.length - compared.length) + ' without a type label from the maintainers)' : ''), note: 'Only the maintainers\\' type labels (bug, feature, docs, question) are scored: a waiting-on-reporter state is a process, not a type, so the actionable column is shown for every issue and never scored.' } } }; }"
       }
     ]
   }

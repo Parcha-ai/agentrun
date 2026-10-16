@@ -3,7 +3,8 @@
 // label map. Read-only GETs (GITHUB_TOKEN optional). It runs before the workflow, outside it: the classifier never sees which labels these issues carry.
 const [repo, count = '20'] = process.argv.slice(2);
 if (!/^[\w.-]+\/[\w.-]+$/.test(repo ?? '')) { console.error('usage: node pick-issues.mjs owner/name [count]'); process.exit(2); }
-const MAPS = { 'expressjs/express': { bug: 'bug', enhancement: 'feature', docs: 'docs', question: 'question', 'awaiting more info': 'needs-info' } };
+// Only TYPE labels: a waiting-on-reporter label (express's `awaiting more info`) is a process state, not a type, so it is neither picked on nor scored.
+const MAPS = { 'expressjs/express': { bug: 'bug', enhancement: 'feature', docs: 'docs', question: 'question' } };
 const labelMap = MAPS[repo];
 if (!labelMap) { console.error(`no label map for ${repo}: add its maintainers' labels to MAPS`); process.exit(2); }
 const token = process.env.GITHUB_TOKEN?.trim();

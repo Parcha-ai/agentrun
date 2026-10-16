@@ -64,7 +64,7 @@
       "title": "Server hangs sometimes",
       "body": "It hangs. Please fix.",
       "labels": [
-        "awaiting more info"
+        "bug"
       ],
       "url": "https://github.com/fictional/widget-router/issues/105",
       "prs": [],
@@ -146,7 +146,7 @@
       "title": "Does not work",
       "body": "I upgraded and it does not work anymore.",
       "labels": [
-        "awaiting more info"
+        "bug"
       ],
       "url": "https://github.com/fictional/widget-router/issues/110",
       "prs": [],
@@ -234,7 +234,7 @@
       "title": "Some requests return a 500 in production",
       "body": "Some requests give a 500 in production, never locally. Node version unknown, no logs.",
       "labels": [
-        "awaiting more info"
+        "bug"
       ],
       "url": "https://github.com/fictional/widget-router/issues/117",
       "prs": [],
@@ -308,83 +308,103 @@
   "script": {
     "101": {
       "label": "bug",
-      "good_first_issue": false
+      "good_first_issue": false,
+      "actionable": true
     },
     "102": {
       "label": "feature",
-      "good_first_issue": false
+      "good_first_issue": false,
+      "actionable": true
     },
     "103": {
       "label": "docs",
-      "good_first_issue": true
+      "good_first_issue": true,
+      "actionable": true
     },
     "104": {
       "label": "question",
-      "good_first_issue": false
+      "good_first_issue": false,
+      "actionable": true
     },
     "105": {
-      "label": "needs-info",
-      "good_first_issue": false
+      "label": "bug",
+      "good_first_issue": false,
+      "actionable": false
     },
     "106": {
       "label": "bug",
-      "good_first_issue": false
+      "good_first_issue": false,
+      "actionable": true
     },
     "107": {
-      "label": "needs-info",
-      "good_first_issue": false
+      "label": "bug",
+      "good_first_issue": false,
+      "actionable": false
     },
     "108": {
       "label": "docs",
-      "good_first_issue": true
+      "good_first_issue": true,
+      "actionable": true
     },
     "109": {
       "label": "bug",
-      "good_first_issue": false
+      "good_first_issue": false,
+      "actionable": true
     },
     "110": {
-      "label": "needs-info",
-      "good_first_issue": false
+      "label": "bug",
+      "good_first_issue": false,
+      "actionable": false
     },
     "111": {
       "label": "feature",
-      "good_first_issue": false
+      "good_first_issue": false,
+      "actionable": true
     },
     "112": {
       "label": "feature",
-      "good_first_issue": false
+      "good_first_issue": false,
+      "actionable": true
     },
     "113": {
       "label": "question",
-      "good_first_issue": false
+      "good_first_issue": false,
+      "actionable": true
     },
     "114": {
       "label": "docs",
-      "good_first_issue": true
+      "good_first_issue": true,
+      "actionable": true
     },
     "115": {
       "label": "docs",
-      "good_first_issue": true
+      "good_first_issue": true,
+      "actionable": true
     },
     "116": {
       "label": "feature",
-      "good_first_issue": false
+      "good_first_issue": false,
+      "actionable": true
     },
     "117": {
-      "label": "needs-info",
-      "good_first_issue": false
+      "label": "bug",
+      "good_first_issue": false,
+      "actionable": false
     },
     "118": {
       "label": "bug",
-      "good_first_issue": false
+      "good_first_issue": false,
+      "actionable": true
     },
     "119": {
       "label": "docs",
-      "good_first_issue": true
+      "good_first_issue": true,
+      "actionable": true
     },
     "120": {
       "label": "question",
-      "good_first_issue": false
+      "good_first_issue": false,
+      "actionable": true
     }
   }
 }
