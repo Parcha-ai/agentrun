@@ -123,7 +123,8 @@ supersedes: []
 Company registries match the legal name without Inc or LLC; search both forms.
 ```
 
-A superseded learning also has `supersededBy: <id>` after `supersedes`, naming the one that replaced it.
+`status` is `active`, `superseded`, `archived` (the least used, past the section's cap) or `retired` (taken out on
+purpose). A superseded learning also has `supersededBy: <id>` after `supersedes`, naming the one that replaced it.
 `renderLearning` writes exactly this and `parseLearning` reads nothing looser: an unknown, missing or repeated key, or a
 value out of shape, is a `LearnError` with code `format`. `learningId(runId, text)` is `L-` and 12 hex digits of SHA-256
 over the run id and the text, so curating the same candidate twice cannot make two learnings.
@@ -275,8 +276,20 @@ remaining candidates are held) and the retries (`retries`, 5): a push that a mov
 main, judged answers reused, and after the last retry curation stops with `contended`. A judge that fails or answers out
 of shape stops it with `judge` before that run is written. The report lists, per run, `accepted`, `superseded`,
 `duplicates`, `used`, `held`, `refused`, `archived` and `settled`, each item with the candidate's position, the learning id and a
-reason that names no value from the case. A `git revert` of a curate commit on main undoes that run's learnings, and the
-next curate does not bring them back: the run is still named in main's history.
+reason that names no value from the case.
+
+Two ways take a learning out. A `git revert` of a curate commit on main undoes that run's learnings while nothing else
+has touched their files, and the next curate does not bring them back: the run is still named in main's history. Once
+a later run used a learning (its `uses` moved), the revert conflicts; then the host retires it:
+
+```ts
+await retireLearning({ repo, id: "L-3f2a9c1d0e7b", reason: "it sent runs to the wrong registry" });
+```
+
+`retireLearning` is the same single writer: one commit on main that sets the status to `retired`, keeps the file and its
+history, carries `Retired-Learning: <id>`, and is pushed without force with the same retries. A retired learning is
+never in `<learned>` again, and curate compares every new candidate with the retired learnings of its type, so a run
+that learns it again in other words is held, naming the retired id. Retiring it twice changes nothing.
 
 ## Workflows
 

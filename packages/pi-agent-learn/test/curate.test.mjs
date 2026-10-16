@@ -3,7 +3,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { GitRemoteError, local, openRepo } from "@parcha/pi-git-remote";
 import {
-  curate, deriveSeed, inboxPath, LEARN_TYPES, learningId, learningPath, parseLearning, proposeFiles, QUESTIONS, renderInbox, renderLearning,
+  curate, deriveSeed, inboxPath, renderSection, retireLearning, LEARN_TYPES, learningId, learningPath, parseLearning, proposeFiles, QUESTIONS, renderInbox, renderLearning,
 } from "../dist/index.js";
 import { git } from "./git-support.mjs";
 import { AGENT_FILES, agentRepo, learning, learningFiles, scratch } from "./support.mjs";
@@ -553,6 +553,58 @@ test("a run's workflow uses go to the settler; its trial files and decisions lan
   const none = await world();
   await propose(none, "run-1", [], usesFile("run-1", [use("kyb", "frozen")]));
   assert.deepEqual((await curate({ repo: none.curator, judge })).runs[0].held, [{ reason: "uses: no uses settler is installed" }]);
+});
+
+test("retireLearning takes out a learning a later run used, where a revert conflicts: the file stays, the section drops it, a relearn is held, twice changes nothing", async () => {
+  const w = await world();
+  await propose(w, "run-1", [candidate(LESSON)]);
+  const { judge } = fakeJudge([{ q: "duplicate", text: "drop Inc", existing: "without the suffix", p: 0.9 }]);
+  const first = await curate({ repo: w.curator, judge });
+  const id = learningId("run-1", LESSON);
+  await propose(w, "run-2", [{ callId: "u-1", type: "used", text: "", evidence: [], id }]);
+  await curate({ repo: w.curator, judge });
+  const before = (await learningsOn(w.curator))[id];
+  assert.equal(before.uses, 1);
+  await assert.rejects((await w.open("reverter")).revert(first.runs[0].commit, "main"), { code: "conflict" }, "a revert after a use conflicts");
+
+  const retired = await retireLearning({ repo: w.curator, id, reason: "it sent runs to the wrong registry" });
+  assert.equal(retired.status, "retired");
+  const entries = await learningsOn(w.curator);
+  assert.deepEqual(entries[id], { ...before, status: "retired" });
+  const [head] = await w.curator.log({ max: 1 });
+  assert.deepEqual([head.sha, head.subject, head.trailers], [retired.commit, `retire ${id}: it sent runs to the wrong registry`, { "Retired-Learning": [id] }]);
+  const seed = deriveSeed(retired.main, Object.values(entries), { copied: true });
+  assert.deepEqual([seed.index, seed.omitted], [[], []]);
+  assert.ok(!renderSection(seed).includes(id), "the next run's section does not name it");
+
+  await propose(w, "run-3", [candidate("Registries drop Inc and LLC from legal names, so search without them too.")]);
+  const report = await curate({ repo: w.curator, judge });
+  assert.deepEqual(report.runs[0].held.map((h) => [h.candidate, h.of, h.reason]), [[1, id, `relearns the retired ${id} (0.90)`]]);
+  assert.deepEqual(report.runs[0].accepted, []);
+  assert.deepEqual(Object.values(await learningsOn(w.curator)).map((l) => [l.id, l.status]), [[id, "retired"]]);
+
+  assert.deepEqual(await retireLearning({ repo: w.curator, id, reason: "again" }), { status: "unchanged", main: report.main });
+  assert.equal((await w.curator.log({ max: 1 }))[0].sha, report.main);
+});
+
+test("retireLearning rebuilds on a moved main, refuses an unknown id or no reason, and withholds a reason that holds a secret", async () => {
+  const old = learning("L-abcabcabcabc", LESSON);
+  const w = await world(learningFiles([old]));
+  const other = await w.open("other");
+  const repo = racing(w, w.curator, async (n) => {
+    if (n !== 1) return;
+    const made = await other.commitTo("main", { files: { ".agents/skills/x/SKILL.md": "---\nname: x\ndescription: x\n---\n" }, message: "another writer" });
+    await other.push(made.sha, "main");
+  });
+  const secret = ["Wombat", "#5", "qT8nZr4Kc"].join("");
+  const retired = await retireLearning({ repo, id: old.id, reason: `leaked ${secret}`, secrets: [secret] });
+  const log = await w.curator.log({ max: 2 });
+  assert.deepEqual(log.map((e) => e.subject), [`retire ${old.id}: a reason was withheld (secret_value)`, "another writer"]);
+  assert.equal(log[0].sha, retired.main);
+  assert.equal((await learningsOn(w.curator))[old.id].status, "retired");
+  await assert.rejects(retireLearning({ repo: w.curator, id: "L-000000000000", reason: "x" }), { code: "missing" });
+  await assert.rejects(retireLearning({ repo: w.curator, id: "nope", reason: "x" }), { code: "invalid" });
+  await assert.rejects(retireLearning({ repo: w.curator, id: old.id, reason: " " }), { code: "invalid" });
 });
 
 test("renderLearning stays the only writer of learning files: every file curate writes parses back", async () => {

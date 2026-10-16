@@ -41,6 +41,10 @@ derived `<learned>` section would pass 4,096 bytes, and makes one commit per run
 `Learning-Id` trailers, pushed without force and rebuilt on a moved main at most five more times (then `contended`). A
 reverted learning stays reverted, a second curate changes nothing, and no reason in the report or a commit message names
 a value from the case. Learning files take an optional `supersededBy`; a candidate takes an optional `untrusted` mark.
+`retireLearning({ repo, id, reason })` takes a learning out after it was used, where a `git revert` of the commit that
+added it would conflict: one commit on main sets its status to the new `retired` (the file stays), with a
+`Retired-Learning` trailer, pushed like a curate commit. A retired learning never shows in `<learned>` again, and curate
+holds a run that learns it again in other words.
 
 Saved workflows are tried and promoted on receipts. `workflowAdmitter` is the curator's `AdmitWorkflow` port for a workflow candidate
 a run saved with the DSL's `agentrun` tool: it validates the run's records through the DSL's public store
