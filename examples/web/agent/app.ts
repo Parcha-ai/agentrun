@@ -28,7 +28,7 @@ import { stagehandDriver } from "@parcha/pi-browser/driver/stagehand";
 import { browserbaseProvider } from "@parcha/pi-browser/providers/browserbase";
 import { cdpProvider } from "@parcha/pi-browser/providers/cdp";
 import { durableProfileStore, openAgentHome, readAgentHome, type AgentDefinition, type AgentHomeState } from "@parcha/pi-durable-agent";
-import { ArchilCodingTools, recordWake, type AppContext, type AppOptions } from "@parcha/pi-durable-disk";
+import { ArchilCodingTools, type AppContext, type AppOptions } from "@parcha/pi-durable-disk";
 import { browserOf, CHROME_PROFILE, type BrowserKind } from "./chrome.ts";
 
 const THINKING: readonly ModelThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
@@ -291,7 +291,8 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
     // On SIGTERM the instance records its wake and lets go of the run; the browser goes first, so nothing paid stays open.
     wake: async (run, at) => {
       await releaseBrowsers(run.harness, BACKGROUND_CONTEXT).catch(() => undefined);
-      await recordWake(run, at);
+      // The default wake, through the run's own API: sleeping, with the deadline its work waits for (null: idle, woken on demand).
+      await run.setStatus("sleeping", { reason: at === null ? "idle" : "waiting" }, { wakeAt: at === null ? null : new Date(at).toISOString() });
     },
   };
   return { options, browser };
