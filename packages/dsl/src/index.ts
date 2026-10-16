@@ -29,7 +29,7 @@ export {
   answerConfidence, synthesizeAnswers, SYSTEM_ONE_LIMITS, SystemOneError, isSystemOneResponseReason,
 } from "./system-one.js";
 export type {
-  SystemOneQuestion, SystemOneAnswer, SystemOneResult, SystemOneRetryClass, SystemOneResponseReason,
+  SystemOneQuestion, SystemOneAnswer, SystemOneBox, SystemOneResult, SystemOneRetryClass, SystemOneResponseReason,
   CompiledQuestions, AnswersSidecar,
 } from "./system-one.js";
 

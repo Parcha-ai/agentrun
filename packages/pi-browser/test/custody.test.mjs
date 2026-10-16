@@ -367,7 +367,9 @@ test("the real run tool cut mid-dispatch: interrupted, the identical code refuse
 
 test("a run applied and answered, killed before pi committed its answer: the identical run is refused until the model looks after the refusal", async (t) => {
   const submit = ["run", { code: "await page.click('#submit')" }];
-  for (const cutAt of ["session-updated", "run-answered"]) {
+  // browser.action-returned: pi-browser's own crossing at that moment, which a host kills at the way this rig's
+  // run-answered wrapper does.
+  for (const cutAt of ["session-updated", "run-answered", "browser.action-returned"]) {
     const { tally, seen } = await scenario(t, { script: [submit, "snapshot", submit, "browser_read", submit, "browser_release"], cutAt, env: { REAL_TOOLS: "1" }, env2: { REAL_TOOLS: "1" } });
     assert.equal(seen[0].isError, true, `${cutAt}: pi answers the cut run interrupted`);
     assert.equal(seen[1].isError, false, `${cutAt}: the snapshot runs`);
@@ -382,6 +384,16 @@ test("a run applied and answered, killed before pi committed its answer: the ide
     assert.equal(seen[4].isError, false, `${cutAt}: after a read, the identical run runs`);
     assert.equal(tally.dispatches, 2, `${cutAt}: the run reached the page once before the cut and once after the look`);
   }
+});
+
+test("killed at browser.between-actions, after a run's answer was committed and before the next run dispatched: the resume owes nothing, and the identical run runs", async (t) => {
+  const submit = ["run", { code: "await page.click('#submit')" }];
+  const { tally, seen } = await scenario(t, { script: [submit, "browser_read", submit, submit, "browser_release"], cutAt: "browser.between-actions", env: { REAL_TOOLS: "1" }, env2: { REAL_TOOLS: "1" } });
+  assert.equal(seen[0].isError, false, "the first run answered before the kill");
+  assert.equal(seen[2].isError, true, "pi answers the run that was killed before it dispatched interrupted");
+  assert.ok(seen.every((row) => !/Your run call/.test(row.text) && row.details?.pendingEffect === undefined), "no cut is told: the first run's answer was committed");
+  assert.equal(seen[3].isError, false, "the identical run runs: nothing is owed");
+  assert.equal(tally.dispatches, 2, "the run reached the page before the kill and once after it, never in between");
 });
 
 test("a cut run's facts list, as data, the requests its observer saw leave the browser", async (t) => {

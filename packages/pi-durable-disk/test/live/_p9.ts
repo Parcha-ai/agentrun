@@ -1,5 +1,5 @@
-// The Daytona live helpers. The ledger (P9-STATE.json in $PDA_STATE_DIR) gets every sandbox before its create call returns, every
-// token user and run directory the moment they exist, and stamps each when it is gone. The guarded Daytona client only
+// The Daytona live helpers. The ledger (P9-STATE.json in $PDA_STATE_DIR) gets every sandbox and snapshot before its create call
+// returns, every token user and run directory the moment they exist, and stamps each when it is gone. The guarded Daytona client only
 // lists by this lane's label and only runs commands in, uploads to, stops or deletes a box that is both in the ledger and
 // labeled `pda-fleet=p9`: the organization may run other sandboxes, which the suite never touches. Identifiers only;
 // never a key or a token.
@@ -26,7 +26,7 @@ type Ledger = {
   phase: number;
   updated: string;
   note: string;
-  daytona: { sandboxes: Entry[] };
+  daytona: { sandboxes: Entry[]; snapshots: Entry[] };
   archil: { tokens: Entry[]; subdirs: Entry[] };
   events: Entry[];
   spendUsd: { daytona: number; archil: number };
@@ -36,11 +36,11 @@ type Ledger = {
 const now = () => new Date().toISOString();
 
 function load(): Ledger {
-  const fresh: Ledger = { lane: "P9", phase: 1, updated: now(), note: "", daytona: { sandboxes: [] }, archil: { tokens: [], subdirs: [] }, events: [], spendUsd: { daytona: 0, archil: 0 }, closed: true };
+  const fresh: Ledger = { lane: "P9", phase: 1, updated: now(), note: "", daytona: { sandboxes: [], snapshots: [] }, archil: { tokens: [], subdirs: [] }, events: [], spendUsd: { daytona: 0, archil: 0 }, closed: true };
   if (!existsSync(LEDGER)) return fresh;
   const l = JSON.parse(readFileSync(LEDGER, "utf8")) as Partial<Ledger> & { phase?: number };
   if (l.phase === 0) return { ...fresh, note: "Phase 0 was desk only; phase 1 starts here." };
-  return { ...fresh, ...l } as Ledger;
+  return { ...fresh, ...l, daytona: { snapshots: [], ...l.daytona } } as Ledger;
 }
 
 function update(fn: (l: Ledger) => void): void {
@@ -48,7 +48,12 @@ function update(fn: (l: Ledger) => void): void {
   fn(l);
   l.updated = now();
   l.spendUsd.daytona = Math.round(spendOf(l) * 10000) / 10000;
-  l.closed = l.daytona.sandboxes.every((s) => s.deletedAt || s.createFailedAt) && l.archil.tokens.every((t) => t.removedAt) && l.archil.subdirs.every((d) => d.deletedAt);
+  // A snapshot kept on purpose (for the next take) is open but named: `kept` says who uses it.
+  l.closed =
+    l.daytona.sandboxes.every((s) => s.deletedAt || s.createFailedAt) &&
+    l.daytona.snapshots.every((s) => s.deletedAt || s.failedAt || s.kept) &&
+    l.archil.tokens.every((t) => t.removedAt) &&
+    l.archil.subdirs.every((d) => d.deletedAt);
   mkdirSync(dirname(LEDGER), { recursive: true });
   writeFileSync(LEDGER, `${JSON.stringify(l, null, 2)}\n`);
 }
@@ -81,6 +86,18 @@ export const ledger = {
   },
   gone(id: string, state: string) {
     update((l) => l.daytona.sandboxes.filter((e) => e.id === id && !e.goneAt).forEach((e) => Object.assign(e, { goneAt: now(), finalState: state, deletedAt: e.deletedAt ?? now(), how: e.how ?? "deleted by Daytona (force stop with autoDeleteInterval 0, or TTL)" })));
+  },
+  snapshotCreating(name: string, commit: string, purpose: string) {
+    update((l) => void l.daytona.snapshots.push({ name, commit, purpose, createdAt: now() }));
+  },
+  snapshotSettled(name: string, fields: Entry) {
+    update((l) => stamp(l.daytona.snapshots, "name", name, fields));
+  },
+  snapshotDeleted(name: string) {
+    update((l) => stamp(l.daytona.snapshots, "name", name, { deletedAt: now() }));
+  },
+  snapshotNames(): Set<string> {
+    return new Set(load().daytona.snapshots.filter((s) => !s.deletedAt).map((s) => String(s.name)));
   },
   token(identifier: string, nickname: string, purpose: string) {
     update((l) => void l.archil.tokens.push({ identifier, nickname, purpose, createdAt: now() }));
@@ -180,7 +197,7 @@ export async function confirmGone(client: DaytonaClient, timeoutMs = 120_000): P
   }
 }
 
-// ---- the box's runtime (a default Daytona image gets it at boot; no snapshot is built) ----------------------------------
+// ---- the box's runtime (a default Daytona image gets it at boot, or a snapshot built from it already holds it) ------------
 
 export const NODE = "/opt/node24/bin/node";
 export const PACKAGE_DIR = "/usr/local/lib/pi-durable-disk";
@@ -269,6 +286,292 @@ export async function prepareBox(client: DaytonaClient, box: SandboxInfo): Promi
     else if (a !== undefined && ["archil", "node", "pda"].includes(k)) versions[k] = a;
   }
   return { ms: Math.round(performance.now() - t0), steps, versions };
+}
+
+// ---- a snapshot with the runtime built in, so a takeover box starts in seconds -------------------------------------------
+
+/**
+ * The image `daytona-medium` runs. A snapshot built on it shares its layers (which Daytona's runners already hold, so a
+ * box pulls only the runtime on top) and its toolbox user `daytona`, with sudo, so every daytonaHost option stays as is.
+ */
+export const SNAPSHOT_BASE = "daytonaio/sandbox:0.9.0";
+/** `daytona-medium`'s resources: a box from the snapshot is priced as one from it. */
+export const SNAPSHOT_RESOURCES = { cpu: 2, memory: 4, disk: 8 } as const;
+/** In the snapshot: the hash of the dependency fields its node_modules were installed for. */
+const DEPS_STAMP = `${PACKAGE_DIR}/node_modules/.pda-deps.sha256`;
+/** Prints the hash of a package.json's dependency fields (sorted), with the box's node; the file is the argument. */
+const DEPS_HASH = `${NODE} -e 'const p=require(process.argv[1]);const f=["dependencies","devDependencies","peerDependencies","optionalDependencies"];process.stdout.write(require("node:crypto").createHash("sha256").update(JSON.stringify(f.map((k)=>Object.entries(p[k]||{}).sort()))).digest("hex"))'`;
+
+/**
+ * The snapshot's Dockerfile: on SNAPSHOT_BASE, the same runtime PREPARE installs at boot (Node and archil sha256-checked,
+ * the run user, the wrapper, the sudoers drop-in, the mount root), and the package's dependencies, installed from its
+ * package.json at `commit` of the public repository. It needs no build context. The package itself (its source and
+ * dist) still comes from the checkout at boot (`prepareOnSnapshot`), over the snapshot's node_modules.
+ */
+export function snapshotDockerfile(commit: string, options: { readonly demo?: boolean } = {}): string {
+  if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error(`the snapshot pins a full commit sha, not ${JSON.stringify(commit)}`);
+  // The demo variant keeps npm's cache: a box's offline install still resolves its explicit specs (DEMO_EXTRA) there.
+  const dropCache = options.demo ? "" : "rm -rf /root/.npm; ";
+  return [
+    `FROM ${SNAPSHOT_BASE}`,
+    "USER root",
+    `RUN set -eu; cd /tmp; curl -fsSLo node.tar.xz ${NODE_URL}; echo "${NODE_SHA256}  node.tar.xz" | sha256sum -c -; install -d -m 0755 /opt/node24; tar -xJf node.tar.xz -C /opt/node24 --strip-components=1; chmod -R a+rX /opt/node24; rm -f node.tar.xz`,
+    `RUN set -eu; cd /tmp; curl -fsSLo archil.deb ${ARCHIL_URL}; echo "${ARCHIL_SHA256}  archil.deb" | sha256sum -c -; apt-get update -qq; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libfuse2t64 fuse3 /tmp/archil.deb; rm -rf /var/lib/apt/lists/* /tmp/archil.deb`,
+    `RUN groupadd --gid ${PDA_ID} pda && useradd --uid ${PDA_ID} --gid ${PDA_ID} --create-home --shell /bin/bash pda`,
+    `RUN set -eu; install -d -m 0755 ${PACKAGE_DIR}; curl -fsSLo ${PACKAGE_DIR}/package.json https://raw.githubusercontent.com/Parcha-ai/agentrun/${commit}/packages/pi-durable-disk/package.json; curl -fsSLo ${ARCHIL_WRAPPER} https://raw.githubusercontent.com/Parcha-ai/agentrun/${commit}/packages/pi-durable-disk/bin/archil-scoped; env PATH=/opt/node24/bin:/usr/bin:/bin HOME=/root ${PACKAGE_INSTALL.join(" ")} --prefix ${PACKAGE_DIR}; ${DEPS_HASH} ${PACKAGE_DIR}/package.json > ${DEPS_STAMP}; ${dropCache}chown -R root:root ${PACKAGE_DIR}; chmod -R a+rX,go-w ${PACKAGE_DIR}`,
+    ...(options.demo ? [demoClosureRun(commit)] : []),
+    `RUN set -eu; chown root:root ${ARCHIL_WRAPPER}; chmod 0755 ${ARCHIL_WRAPPER}; printf '%s\\n' 'pda ALL=(root) NOPASSWD: ${ARCHIL_WRAPPER}, /usr/bin/fusermount -u ${MOUNT_ROOT}/runs/*' > /etc/sudoers.d/pi-durable-disk; chmod 0440 /etc/sudoers.d/pi-durable-disk; visudo -cf /etc/sudoers.d/pi-durable-disk; install -d -m 0755 /mnt/pda ${MOUNT_ROOT}; install -d -o pda -g pda -m 0755 ${MOUNT_ROOT}/runs ${APP_OUT}`,
+    "USER daytona",
+    "",
+  ].join("\n");
+}
+
+// ---- the demo variant: what the disk demo's box installs besides this package, baked in ---------------------------------
+
+/** The workspace packages the disk demo's box installs from this checkout's tarballs, by directory under packages/. */
+export const DEMO_PACKS = ["dsl", "pi", "pi-browser", "pi-vision", "pi-transport"] as const;
+/** What the demo's box installs from npm with them. */
+export const DEMO_EXTRA = ["@earendil-works/pi-codemode@1.1.0"] as const;
+const DEMO_STUBS = "/opt/pda-demo/stubs";
+
+type LockEntry = { version?: string; link?: boolean; dependencies?: Record<string, string>; peerDependencies?: Record<string, string>; optionalDependencies?: Record<string, string>; peerDependenciesMeta?: Record<string, { optional?: boolean }> };
+
+const gitShow = (commit: string, path: string): string => {
+  const r = spawnSync("git", ["show", `${commit}:${path}`], { cwd: REPO, encoding: "utf8", maxBuffer: 64 << 20 });
+  if (r.status !== 0) throw new Error(`git show ${commit}:${path}: ${r.stderr.trim()}`);
+  return r.stdout;
+};
+
+/**
+ * The demo packs' third-party dependency closure at `commit`, from their package.json files and the workspace lockfile:
+ * `stubs`, each pack's package.json cut to its name, version and dependency fields (installed in the snapshot as stand-ins
+ * the box's own tarballs replace), and `pins`, every package of the closure the lockfile resolves to one version, at that
+ * version (npm overrides), so the snapshot holds the lockfile's versions. A name the lockfile has at several versions
+ * (typebox, pinned exactly by each pack) is left to npm, which nests it as the lockfile does. A workspace package that is
+ * not a pack (`@parcha/agentrun-jev`) comes from npm at its version, as it does in the box.
+ */
+export function demoClosure(commit: string): { stubs: Record<string, Record<string, unknown>>; pins: Record<string, string> } {
+  const lock = (JSON.parse(gitShow(commit, "package-lock.json")) as { packages: Record<string, LockEntry> }).packages;
+  const stubs: Record<string, Record<string, unknown>> = {};
+  const packNames = new Set<string>();
+  for (const dir of DEMO_PACKS) {
+    const pkg = JSON.parse(gitShow(commit, `packages/${dir}/package.json`)) as Record<string, unknown>;
+    packNames.add(String(pkg.name));
+    stubs[dir] = Object.fromEntries(["name", "version", "dependencies", "peerDependencies", "peerDependenciesMeta", "optionalDependencies"].filter((k) => pkg[k] !== undefined).map((k) => [k, pkg[k]]));
+  }
+  // Node's lookup over the lockfile's paths: <from>/node_modules/<name>, then each parent's, then the root's.
+  const find = (from: string, name: string): string | undefined => {
+    for (let dir = from; ; ) {
+      const key = dir ? `${dir}/node_modules/${name}` : `node_modules/${name}`;
+      if (lock[key]) return key;
+      if (!dir) return undefined;
+      const i = dir.lastIndexOf("/node_modules/");
+      dir = i >= 0 ? dir.slice(0, i) : "";
+    }
+  };
+  const versions = new Map<string, Set<string>>();
+  const seen = new Set<string>();
+  const walk = (key: string) => {
+    if (seen.has(key)) return;
+    seen.add(key);
+    const entry = lock[key]!;
+    const optionalPeer = (name: string) => entry.peerDependenciesMeta?.[name]?.optional === true;
+    const names = [...Object.keys(entry.dependencies ?? {}), ...Object.keys(entry.optionalDependencies ?? {}), ...Object.keys(entry.peerDependencies ?? {}).filter((n) => !optionalPeer(n))];
+    for (const name of names) {
+      if (packNames.has(name)) continue;
+      const at = find(key, name);
+      if (!at) continue; // an optional dependency the lockfile did not install (another platform's)
+      const dep = lock[at]!;
+      if (dep.link) {
+        // Another workspace package: the box gets it from npm, at the version the workspace has.
+        const target = lock[String((dep as { resolved?: string }).resolved ?? "")];
+        if (target?.version) (versions.get(name) ?? versions.set(name, new Set()).get(name)!).add(target.version);
+        continue;
+      }
+      if (dep.version) (versions.get(name) ?? versions.set(name, new Set()).get(name)!).add(dep.version);
+      walk(at);
+    }
+  };
+  for (const dir of DEMO_PACKS) walk(`packages/${dir}`);
+  const pins = Object.fromEntries([...versions].filter(([, v]) => v.size === 1).map(([name, v]) => [name, [...v][0]!]).sort(([a], [b]) => a.localeCompare(b)));
+  return { stubs, pins };
+}
+
+/** The demo variant's one extra layer: the stubs and DEMO_EXTRA installed over the package's own dependencies, pinned by `demoClosure`. */
+function demoClosureRun(commit: string): string {
+  const { stubs, pins } = demoClosure(commit);
+  const disk = JSON.parse(gitShow(commit, "packages/pi-durable-disk/package.json")) as Record<string, Record<string, string>>;
+  const direct: Record<string, string> = { ...disk.dependencies, ...disk.devDependencies };
+  for (const dir of DEMO_PACKS) direct[String(stubs[dir]!.name)] = `file:${DEMO_STUBS}/${dir}`;
+  for (const spec of DEMO_EXTRA) {
+    const at = spec.lastIndexOf("@");
+    direct[spec.slice(0, at)] = spec.slice(at + 1);
+  }
+  // npm refuses an override of a direct dependency that differs from it; the direct ones stay as declared.
+  const overrides = Object.fromEntries(Object.entries(pins).filter(([name]) => !(name in direct)));
+  const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64");
+  const writeStubs = DEMO_PACKS.map((dir) => `mkdir -p ${DEMO_STUBS}/${dir}; echo ${b64(stubs[dir])} | base64 -d > ${DEMO_STUBS}/${dir}/package.json`).join("; ");
+  const root = { name: "pda-demo-closure", private: true, dependencies: direct, overrides };
+  // The package's own package.json goes back after, so its dependency stamp (and prepareOnSnapshot's check) is unchanged.
+  return `RUN set -eu; ${writeStubs}; cp ${PACKAGE_DIR}/package.json /tmp/disk-package.json; echo ${b64(root)} | base64 -d > ${PACKAGE_DIR}/package.json; env PATH=/opt/node24/bin:/usr/bin:/bin HOME=/root ${PACKAGE_INSTALL.join(" ")} --install-links --prefix ${PACKAGE_DIR}; mv /tmp/disk-package.json ${PACKAGE_DIR}/package.json; rm -f ${PACKAGE_DIR}/package-lock.json; chown -R root:root ${PACKAGE_DIR}; chmod -R a+rX,go-w ${PACKAGE_DIR}`;
+}
+
+/**
+ * The demo's install on a box from the demo variant: this checkout's packs (DEMO_PACKS, packed by the caller) and
+ * DEMO_EXTRA, offline, over the closure the snapshot holds; then only what it installed is made root-owned and
+ * world-readable (the snapshot's node_modules already is). `offline: false` is the same install with the network, for a
+ * box from the plain snapshot.
+ */
+export async function installDemoPacks(client: DaytonaClient, box: SandboxInfo, tarballs: readonly string[], options: { readonly offline?: boolean } = {}): Promise<{ ms: number; steps: Record<string, number> }> {
+  const t0 = performance.now();
+  const steps: Record<string, number> = {};
+  const lap = (name: string) => (steps[name] = Math.round(performance.now() - t0));
+  await sh(client, box, "rm -rf /tmp/packs && mkdir -p /tmp/packs");
+  for (const file of tarballs) await client.upload(box, `/tmp/packs/${file.split("/").at(-1)}`, new Uint8Array(readFileSync(file)));
+  lap("upload");
+  const names = DEMO_PACKS.map((dir) => String(JSON.parse(readFileSync(new URL(`../../../${dir}/package.json`, import.meta.url), "utf8")).name)).concat(DEMO_EXTRA.map((s) => s.slice(0, s.lastIndexOf("@"))));
+  await sh(client, box, `set -euo pipefail
+sudo -n env PATH=/opt/node24/bin:/usr/bin:/bin HOME=/root ${PACKAGE_INSTALL.join(" ")} --prefix ${PACKAGE_DIR} --no-save ${options.offline === false ? "" : "--offline"} /tmp/packs/*.tgz ${DEMO_EXTRA.join(" ")} >/dev/null`, 900);
+  lap("npm");
+  await sh(client, box, `set -euo pipefail
+cd ${PACKAGE_DIR}/node_modules && sudo -n chown -R root:root ${names.join(" ")} && sudo -n chmod -R a+rX,go-w ${names.join(" ")}
+rm -rf /tmp/packs`);
+  lap("chown");
+  return { ms: Math.round(performance.now() - t0), steps };
+}
+
+/**
+ * What a box from the snapshot does at boot: the checkout's package source replaces the snapshot's (its node_modules
+ * stay), `npm install` runs only when the dependency fields differ from the ones the snapshot installed, and the wrapper
+ * is installed again from the checkout. A box without the snapshot's runtime fails here, never half prepared.
+ */
+const PREPARE_ON_SNAPSHOT = String.raw`
+set -euo pipefail
+t0=$(date +%s%N)
+step() { printf 'step\t%s\t%s\n' "$1" $(( ($(date +%s%N) - t0) / 1000000 )); }
+[ -x ${NODE} ] && command -v archil >/dev/null && [ -f ${DEPS_STAMP} ] && id pda >/dev/null 2>&1 || { echo "this box is not from the runtime snapshot (no node, archil, deps stamp or pda)" >&2; exit 3; }
+sudo -n find ${PACKAGE_DIR} -mindepth 1 -maxdepth 1 ! -name node_modules -exec rm -rf {} +
+sudo -n tar -xzf /tmp/pda-pkg.tar.gz -C ${PACKAGE_DIR} --no-same-owner
+rm -f /tmp/pda-pkg.tar.gz
+sudo -n find ${PACKAGE_DIR} -path ${PACKAGE_DIR}/node_modules -prune -o -exec chmod a+rX,go-w {} +
+step package
+want=$(${DEPS_HASH} ${PACKAGE_DIR}/package.json)
+if [ "$want" != "$(cat ${DEPS_STAMP})" ]; then
+  sudo -n env PATH=/opt/node24/bin:/usr/bin:/bin HOME=/root ${PACKAGE_INSTALL.join(" ")} --prefix ${PACKAGE_DIR} >/dev/null
+  printf '%s' "$want" | sudo -n tee ${DEPS_STAMP} >/dev/null
+  sudo -n chown -R root:root ${PACKAGE_DIR}/node_modules
+  printf 'deps\tinstalled\n'
+else
+  printf 'deps\tfrom the snapshot\n'
+fi
+step deps
+sudo -n install -o root -g root -m 0755 ${PACKAGE_DIR}/bin/archil-scoped ${ARCHIL_WRAPPER}
+step setup
+printf 'archil\t%s\n' "$(archil --version 2>&1 | head -1)"
+printf 'node\t%s\n' "$(${NODE} --version)"
+printf 'pda\t%s\n' "$(id pda)"
+printf 'user\t%s\n' "$(id -un)"
+`;
+
+/** prepareBox for a box from the runtime snapshot: the same result, in seconds (see PREPARE_ON_SNAPSHOT). */
+export async function prepareOnSnapshot(client: DaytonaClient, box: SandboxInfo): Promise<{ ms: number; steps: Record<string, number>; versions: Record<string, string> }> {
+  const t0 = performance.now();
+  await client.upload(box, "/tmp/pda-pkg.tar.gz", packageTarball());
+  const out = await sh(client, box, PREPARE_ON_SNAPSHOT, 900);
+  const steps: Record<string, number> = {};
+  const versions: Record<string, string> = {};
+  for (const line of out.split("\n")) {
+    const [k, a, b] = line.split("\t");
+    if (k === "step") steps[a] = Number(b);
+    else if (a !== undefined && ["archil", "node", "pda", "deps", "user"].includes(k)) versions[k] = a;
+  }
+  return { ms: Math.round(performance.now() - t0), steps, versions };
+}
+
+/** The organization's snapshot API (the guarded box client has none): this lane only creates, reads and deletes its own. */
+async function snapshotApi(method: "GET" | "POST" | "DELETE", path: string, body?: unknown): Promise<{ status: number; json: Entry }> {
+  const base = (process.env.DAYTONA_API_URL || "https://app.daytona.io/api").replace(/\/+$/, "");
+  const res = await fetch(`${base}/snapshots${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${process.env.DAYTONA_API_KEY}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  const text = await res.text().catch(() => "");
+  let json: Entry = {};
+  try {
+    json = text ? (JSON.parse(text) as Entry) : {};
+  } catch {
+    json = { message: text.slice(0, 300) };
+  }
+  return { status: res.status, json };
+}
+
+/** What a snapshot's record says that is not the organization's: name, state, size (GiB), resources, error. */
+const snapshotFacts = (s: Entry) => ({ name: s.name, state: s.state, size: s.size, cpu: s.cpu, mem: s.mem, disk: s.disk, errorReason: s.errorReason ?? null });
+
+/** One of this lane's snapshots, or null when it does not exist. */
+export async function getSnapshot(name: string): Promise<ReturnType<typeof snapshotFacts> | null> {
+  const r = await snapshotApi("GET", `/${encodeURIComponent(name)}`);
+  if (r.status === 404) return null;
+  if (r.status !== 200) throw new Error(`GET snapshot ${name}: ${r.status} ${String(r.json.message ?? "").slice(0, 200)}`);
+  return snapshotFacts(r.json);
+}
+
+/**
+ * Build the runtime snapshot from `snapshotDockerfile(commit)` under a new name of this lane's (NAME_PREFIX), never one
+ * that exists (a default or another lane's is never overwritten), and wait until it is active or failed.
+ */
+export async function buildSnapshot(name: string, commit: string, options: { readonly demo?: boolean; readonly timeoutMs?: number } = {}): Promise<{ facts: ReturnType<typeof snapshotFacts>; ms: number }> {
+  const timeoutMs = options.timeoutMs ?? 30 * 60_000;
+  if (!name.startsWith(NAME_PREFIX) || !/^[a-z0-9-]+$/.test(name)) throw new NotOursError(`a lane snapshot is named ${NAME_PREFIX}<lowercase, digits, dashes>, not ${name}`);
+  if (await getSnapshot(name)) throw new NotOursError(`snapshot ${name} exists: a snapshot is built once under a new name, never over one`);
+  const t0 = performance.now();
+  const dockerfileContent = snapshotDockerfile(commit, { demo: options.demo === true });
+  ledger.snapshotCreating(name, commit, options.demo ? "runtime snapshot, demo variant" : "runtime snapshot");
+  const created = await snapshotApi("POST", "", { name, buildInfo: { dockerfileContent, contextHashes: [] }, ...SNAPSHOT_RESOURCES });
+  if (created.status >= 300) {
+    ledger.snapshotSettled(name, { failedAt: now(), error: `${created.status} ${String(created.json.message ?? "").slice(0, 200)}` });
+    throw new Error(`POST snapshot ${name}: ${created.status} ${String(created.json.message ?? "").slice(0, 300)}`);
+  }
+  for (;;) {
+    const facts = await getSnapshot(name);
+    const state = String(facts?.state ?? "missing");
+    const settled = state === "active" || state === "error" || state === "build_failed";
+    if (settled || performance.now() - t0 > timeoutMs) {
+      const ms = Math.round(performance.now() - t0);
+      // A build still running when the wait ends stays open (it may yet become active, and is billed): only a failed
+      // build is closed. Delete it, or mark it kept, by hand.
+      const outcome = state === "active" ? {} : settled ? { failedAt: now(), error: facts?.errorReason ?? state } : { timedOutAt: now() };
+      ledger.snapshotSettled(name, { state, size: facts?.size ?? null, buildMs: ms, ...outcome });
+      return { facts: facts ?? snapshotFacts({ name, state }), ms };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5_000));
+  }
+}
+
+/**
+ * Delete one of this lane's snapshots, by the name its ledger recorded, and wait until Daytona no longer has it. The API
+ * deletes by id only (a name is refused, 400 "uuid is expected"), so the name is resolved first. Stamped deleted once
+ * the delete is accepted, and `goneAt` once a read finds nothing; a refusal throws and leaves the ledger open.
+ */
+export async function deleteSnapshot(name: string, timeoutMs = 5 * 60_000): Promise<{ status: number; gone: boolean }> {
+  if (!name.startsWith(NAME_PREFIX) || !ledger.snapshotNames().has(name)) throw new NotOursError(`refusing to delete snapshot ${name}: not one this lane built`);
+  const found = await snapshotApi("GET", `/${encodeURIComponent(name)}`);
+  let status = 404;
+  if (found.status !== 404) {
+    if (found.status !== 200 || typeof found.json.id !== "string") throw new Error(`GET snapshot ${name}: ${found.status} ${String(found.json.message ?? "").slice(0, 200)}`);
+    status = (await snapshotApi("DELETE", `/${encodeURIComponent(found.json.id)}`)).status;
+    if (status >= 300 && status !== 404) throw new Error(`DELETE snapshot ${name}: ${status}`);
+  }
+  ledger.snapshotDeleted(name);
+  for (const t0 = performance.now(); performance.now() - t0 < timeoutMs; await new Promise((resolve) => setTimeout(resolve, 5_000))) {
+    if (!(await getSnapshot(name))) {
+      ledger.snapshotSettled(name, { goneAt: now() });
+      return { status, gone: true };
+    }
+  }
+  return { status, gone: false };
 }
 
 /** Put a mount token into the box's root-only /run/pda/<name>.token through the toolbox user's 0700 staging directory. */

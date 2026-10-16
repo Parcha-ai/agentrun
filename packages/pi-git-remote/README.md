@@ -100,7 +100,13 @@ to `openRepo` to change them.
 
 ## Remotes and credentials
 
-`local(path)` is a bare repository on this machine. A remote is a small object, so other kinds can be added:
+A remote is a small object, and three constructors make one:
+
+| Constructor | The remote |
+|---|---|
+| `local(path)` | A bare repository on this machine. For development, tests and offline hosts. |
+| `https(url, credential, { pushUrl? })` | Any https git host: GitHub, GitLab, Gitea, code.storage. |
+| `codeStorage({ origin, repo, token, hidden? })` | A code.storage repository over plain git and https, with no SDK. |
 
 ```ts
 type Remote = {
@@ -111,11 +117,72 @@ type Remote = {
 };
 ```
 
-A URL with userinfo is refused, and the refusal never repeats it. An https remote's credential is a callback, asked once
-for each git process that talks to the remote. The host writes `username` and `password` into an unlinked file opened for
-that one process and hands it to git on file descriptor 3; git's only credential helper prints it. It never appears in
-argv, the environment, a URL or a file left on disk, and an error message replaces it with `[credential]`. The tests
-check this with a recording git. A local remote takes no credential.
+A URL with userinfo, a query or a fragment is refused, and the refusal never repeats it: `https` and `codeStorage` throw
+before any git process starts. An https remote's credential is a callback, asked once for each git process that talks to
+the remote, so a short-lived token can be minted fresh each time. The host writes `username` and `password` into an
+unlinked file opened for that one process and hands it to git on file descriptor 3; git's only credential helper prints
+it. It never appears in argv, the environment, a URL or a file left on disk, and an error message replaces it with
+`[credential]`, a server's refusal reason included. A local remote takes no credential.
+
+`https(url, credential, options)` takes the credential callback as its second argument and an optional `pushUrl` for a
+separate push target.
+
+`codeStorage` builds `<origin>/<repo>.git` and sends HTTP Basic as user `t` with the JWT `token()` returns, which is how
+code.storage takes a git token. `origin` is the git host's base URL from the host's configuration; there is no default
+hostname, and a path prefix is kept for a proxy mounted under one. `repo` is the repository id, such as `agents/<id>`.
+Minting the JWT, its scopes and its ref policies stay with the host: the package only passes the token to git.
+
+With `hidden: true`, every push goes to `<repo>+ephemeral.git`, a namespace a normal clone does not see, so a run's
+branch stays out of the agent's clones. Reads fetch `<repo>.git`, and the ephemeral URL too, so a branch pushed there is
+found again (`commitTo` stays idempotent by `Run-Id`). The flag applies to every push of that remote: a host that pushes
+`main` uses a second remote without it. When the service refuses a ref, `push` throws `refused`; the tests run a server
+whose ref policy refuses `refs/heads/main` for the run's identity.
+
+### The same host code, offline and on code.storage
+
+Only the remote changes. This runs with no network: the `codeStorage` remote is built and printed but never used, and the
+push goes to a bare repository on this machine.
+
+```js
+import { execFileSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { codeStorage, local, openRepo } from "@parcha/pi-git-remote";
+
+// In production: the host's git origin and a callback that mints a short-lived token. Nothing connects until a repo is opened.
+const production = codeStorage({
+  origin: "https://git.example.com",
+  repo: "agents/acme",
+  token: async () => "a-short-lived-jwt-from-your-minter",
+  hidden: true,
+});
+console.log(production.url);
+console.log(production.pushUrl);
+
+// In development and tests: the same code over a bare repository on this machine.
+const root = mkdtempSync(path.join(tmpdir(), "acme-"));
+const bare = path.join(root, "acme.git");
+execFileSync("git", ["init", "-q", "--bare", "--template=", "-b", "main", bare]);
+
+async function propose(remote, dir) {
+  const repo = await openRepo({ dir, remote });
+  const run = await repo.commitTo("runs/run-1", {
+    files: { "inbox/run-1.md": "Registries match the legal name without the suffix.\n" },
+    message: "run-1 proposes",
+    trailers: { "Run-Id": "run-1" },
+  });
+  await repo.push(run.sha, "runs/run-1");
+  return (await repo.resolve("runs/run-1")) === run.sha;
+}
+console.log("pushed:", await propose(local(bare), path.join(root, "host")));
+```
+
+```
+https://git.example.com/agents/acme.git
+https://git.example.com/agents/acme+ephemeral.git
+pushed: true
+```
 
 ## A repository for a pi coding-agent session
 

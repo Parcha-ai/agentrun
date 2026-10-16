@@ -221,6 +221,31 @@ test("an idle session is released after the policy's idle spell, and the record 
   assert.equal(backend.tally().creates, 2);
 });
 
+test("the coding agent's browser_release after an idle release says the session was already released, as data", async (t) => {
+  const backend = fake();
+  const agent = await startAgent(t, { extension: extensionOf(backend, { policy: { idleReleaseS: 0.05 } }) });
+  await agent.run(turn(["snapshot"]));
+  await until(() => backend.liveCount() === 0);
+  const ended = agent.custom("browser.session").at(-1);
+  const [released] = await agent.run(turn(["browser_release"]));
+  const answer = failure(released.text);
+  assert.equal(typeof ended.endedAt, "string", "the idle release records when it ended");
+  assert.deepEqual([answer.ok, answer.released, answer.already_released], [true, false, { reason: "idle", at: ended.endedAt }]);
+});
+
+test("browser_release after a launch that failed and was cleaned up names that launch's release, not an earlier session's", async (t) => {
+  const backend = fake();
+  const agent = await startAgent(t, { extension: extensionOf(backend) });
+  await agent.run(turn(["snapshot"]), turn(["browser_release"]));
+  backend.fail("attach", 1);
+  const [refused, again] = await agent.run(turn(["snapshot"]), turn(["browser_release"]));
+  assert.equal(refused.isError, true, "the second launch's attach failed");
+  const ended = agent.custom("browser.session").at(-1);
+  assert.deepEqual([ended.state, ended.reason, typeof ended.endedAt], ["released", "create_failed", "string"], "the cleaned-up launch records when it ended");
+  const answer = failure(again.text);
+  assert.deepEqual([answer.released, answer.session_id, answer.already_released], [false, ended.resourceId, { reason: "create_failed", at: ended.endedAt }]);
+});
+
 test("a launch the provider refuses is a typed failure, leaves no session behind, and the next call can launch", async (t) => {
   const backend = fake();
   backend.fail("create", 1);
@@ -377,6 +402,20 @@ test("an explicit browser_release of a browser whose directory is left says so, 
   assert.equal(backend.tally().creates, 2, "the next call opens a fresh browser, not the released one");
 });
 
+test("a browser_release after one whose directory was left removes it and says the session was already released, by the tool", async (t) => {
+  const backend = fake();
+  const { provider, releases } = leftoverProvider(backend, 1);
+  const agent = await startAgent(t, { extension: { provider: () => provider, driver: fakeDriver(backend) } });
+  const [, first, again] = await agent.run(turn(["snapshot"]), turn(["browser_release"]), turn(["browser_release"]));
+  assert.match(first.text, /could not be removed/, "the first release says what is left");
+  assert.equal(releases.length, 2, "the second release removed the leftover directory");
+  const ended = agent.custom("browser.session").at(-1);
+  assert.equal(ended.state, "released");
+  assert.equal(typeof ended.endedAt, "string", "the record ends, with its time, once the directory is gone");
+  const answer = failure(again.text);
+  assert.deepEqual([answer.ok, answer.released, answer.already_released], [true, false, { reason: "tool", at: ended.endedAt }]);
+});
+
 test("shutdown releases a leftover directory once more, and a release that fails for another reason still holds the session", async (t) => {
   const backend = fake();
   const { provider, releases } = leftoverProvider(backend, 1);
@@ -451,4 +490,15 @@ test("browser_release with no browser open says so again while the directory sti
   assert.match(second.text, /could not be removed/);
   assert.equal(third.isError, false, third.text);
   assert.equal(releases.length, 3);
+});
+
+test("a profile the provider cannot keep, or beside a context id, is refused with the typed envelope before a browser is started", async (t) => {
+  for (const policy of [{ profile: { name: "work", save: true } }, { profile: { name: "work", save: true }, contextId: "ctx_1" }]) {
+    const backend = fake({ caps: { profiles: Boolean(policy.contextId) } });
+    const agent = await startAgent(t, { extension: extensionOf(backend, { policy }) });
+    const [refused] = await agent.run(turn(["snapshot"]));
+    assert.equal(refused.isError, true);
+    assert.deepEqual([failure(refused.text).code, failure(refused.text).effect], ["refused", "none"]);
+    assert.equal(backend.tally().creates, 0);
+  }
 });
