@@ -30,7 +30,7 @@ function objects(gitDir) {
   return out;
 }
 
-test('a correction and a workflow go through the repository: learned, curated, applied, reverted; a secret reaches no git object', async (t) => {
+test('a correction and a workflow go through the repository: learned, curated, applied, used, retired; a secret reaches no git object', async (t) => {
   const lines = [];
   const out = await runDemo({ dir: join(await scratch(t), 'demo'), log: (line) => lines.push(line) });
   const git = (...args) => gitRead(out.bare, args).toString('utf8').trim();
@@ -62,33 +62,36 @@ test('a correction and a workflow go through the repository: learned, curated, a
   assert.equal(out.run2.fromRequest, true);
   assert.match(out.run2.learned.join('\n'), new RegExp(`- ${out.ruleId} correction: In this project an issue whose body has a stack trace is labeled bug and needs-repro`));
   assert.match(out.run2.answer, /^bug, needs-repro: /);
-  assert.deepEqual(out.run2.calls.map((c) => (c.name === 'agentrun' ? `agentrun ${c.arguments.action}` : `learn ${c.arguments.type}`)), ['agentrun inspect', 'agentrun save', 'learn workflow']);
+  assert.deepEqual(out.run2.calls.map((c) => (c.name === 'agentrun' ? `agentrun ${c.arguments.action}` : `learn ${c.arguments.type}`)), ['learn used', 'agentrun inspect', 'agentrun save', 'learn workflow']);
+  assert.equal(out.run2.calls[0].arguments.id, out.ruleId, 'run 2 marks the rule it used');
   const digest = git('show', 'runs/run-2:inbox/run-2/workflows/triage-crash/latest');
   assert.match(digest, /^[0-9a-f]{64}$/, 'the run proposed the DSL records');
   assert.match(git('show', `runs/run-2:inbox/run-2/workflows/triage-crash/${digest}.json`), /"issues\.label"/);
 
-  // Curation admits it as a trial skill, in the DSL's own layout.
+  // Curation counts the use and admits the workflow as a trial skill, in the DSL's own layout.
   assert.deepEqual(git('diff', '--name-only', out.curate1.main, out.curate2.main).split('\n').sort(), [
     '.agents/skills/triage-crash/SKILL.md', '.agents/skills/triage-crash/trial.json',
-    `.pi/agentrun/workflows/triage-crash/${digest}.json`, '.pi/agentrun/workflows/triage-crash/latest',
-  ]);
+    `.pi/agentrun/workflows/triage-crash/${digest}.json`, '.pi/agentrun/workflows/triage-crash/latest', `learnings/${out.ruleId}.md`,
+  ].sort());
+  assert.match(git('show', `${out.curate2.main}:learnings/${out.ruleId}.md`), /^uses: 1$/m);
+  assert.deepEqual(out.curate2.runs[0].used.map((u) => u.id), [out.ruleId]);
   const trialText = git('show', `${out.curate2.main}:.agents/skills/triage-crash/trial.json`);
   const trial = JSON.parse(trialText);
   assert.equal(trial.status, 'trial');
   assert.deepEqual(trial.revisions.map((r) => [r.sha256, r.status, r.run]), [[digest, 'trial', 'run-2']]);
   assert.match(git('show', `${out.curate2.main}:.agents/skills/triage-crash/SKILL.md`), /stack trace/);
 
-  // A revert takes the rule out; curation does not bring it back; the trial stays.
-  assert.equal(out.revert.changed, true);
-  assert.equal(out.revert.reverted, out.curate1.main);
-  assert.equal(git('rev-parse', 'main'), out.revert.sha);
+  // Retiring takes the rule out after it was used; curation does not bring it back; the trial stays.
+  assert.equal(out.retire.status, 'retired');
+  assert.equal(git('rev-parse', 'main'), out.retire.main);
+  assert.equal(git('rev-parse', `${out.retire.main}^`), out.curate2.main, 'one retire commit');
   assert.deepEqual(out.curate3.runs, [], 'curating again brings nothing back');
-  assert.equal(git('ls-tree', '--name-only', 'main', 'learnings/'), '', 'main holds no learning');
-  assert.equal(git('log', '--format=%H', 'main', '--', `learnings/${out.ruleId}.md`).split('\n').length, 2, 'history keeps the rule and its revert');
+  assert.match(git('show', `main:learnings/${out.ruleId}.md`), /^status: retired$/m, 'main keeps the entry, retired');
+  assert.equal(git('log', '--format=%H', 'main', '--', `learnings/${out.ruleId}.md`).split('\n').length, 3, 'history keeps every version: added, used, retired');
   assert.equal(git('show', 'main:.agents/skills/triage-crash/trial.json'), trialText, 'the workflow trial is untouched');
 
   // Run 3 does not see the rule and does not apply it; it is offered the trial, which is in its own workflow store.
-  assert.equal(out.run3.run.sha, out.revert.sha, 'run 3 starts at the revert');
+  assert.equal(out.run3.run.sha, out.retire.main, 'run 3 starts at the retire commit');
   assert.equal(out.run3.fromRequest, true);
   assert.doesNotMatch(out.run3.system, RULE, 'nothing in run 3\'s request carries the rule');
   assert.match(out.run3.learned.join('\n'), /Nothing learned yet/);
@@ -111,7 +114,9 @@ test('a correction and a workflow go through the repository: learned, curated, a
 
   const transcript = lines.join('\n');
   assert.match(transcript, /^2\. Run 1 starts at main [0-9a-f]{7}: nothing learned yet$/m);
-  assert.match(transcript, /^5\. Curate admits the workflow as a trial skill$/m);
+  assert.match(transcript, /^5\. Curate counts the use and admits the workflow as a trial skill$/m);
+  assert.match(transcript, /^ {3}a git revert of [0-9a-f]{7}, the commit that added it, would conflict: /m);
+  assert.match(transcript, /^ {3}curate again: nothing to curate, the rule does not come back; /m);
   assert.match(transcript, /^8\. Run 4 tries to learn a value the host holds as a secret$/m);
   assert.match(transcript, /proposed nothing; the secret \(raw, base64 or hex\) is in 0 of \d+ git objects/);
   assert.doesNotMatch(transcript, new RegExp(secret), 'the transcript never prints the secret');
@@ -125,6 +130,6 @@ test('the command runs offline, prints the story and leaves nothing behind', asy
   });
   assert.match(stdout, /^model: scripted \(no key, no network\); judge: scripted$/m);
   assert.match(stdout, /^ {5}- L-[0-9a-f]{12} correction: In this project an issue whose body has a stack trace is labeled bug and needs-repro/m);
-  assert.match(stdout, /^git log --oneline main\n {2}[0-9a-f]{7} Revert "curate: run run-1/m);
+  assert.match(stdout, /^git log --oneline main\n {2}[0-9a-f]{7} retire L-[0-9a-f]{12}: the maintainer withdrew the rule$/m);
   assert.deepEqual(await readdir(tmp), [], 'the temporary directory is removed');
 });

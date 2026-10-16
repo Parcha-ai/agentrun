@@ -109,14 +109,3 @@ export async function finishRun({ home, repo, run, secrets = [], caseValues = []
 export function curateNow({ repo, judge, secrets = [], now }) {
   return curate({ repo, judge, secrets, ...(now ? { now } : {}) });
 }
-
-// One curate commit per run: reverting it takes out everything that run added. Curation never brings it back, because
-// its run is already named on main. retireLearning takes out one learning, also after a later run used it.
-export async function revertLearning({ repo, id }) {
-  await repo.fetch();
-  const added = (await repo.log({ ref: 'main', trailer: { key: 'Learning-Id', value: id } })).at(-1);
-  if (!added) throw new Error(`no commit on main carries Learning-Id: ${id}`);
-  const reverted = await repo.revert(added.sha, 'main', { trailers: { 'Reverts-Learning': id } });
-  if (reverted.changed) await repo.push(reverted.sha, 'main');
-  return { reverted: added.sha, sha: reverted.sha, changed: reverted.changed };
-}

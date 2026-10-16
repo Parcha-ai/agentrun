@@ -11,7 +11,7 @@ import { createRegistry, Harness } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { workspaceFiles } from '@parcha/agentrun-dsl/recovery';
 import { createWorkflowTool } from '@parcha/agentrun-pi/durable';
-import { agentLearn, guard } from '@parcha/pi-agent-learn';
+import { agentLearn, guard, retireLearning } from '@parcha/pi-agent-learn';
 import { local, openRepo } from '@parcha/pi-git-remote';
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -20,7 +20,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { agentHomeFor, curateNow, finishRun, prepareRun, revertLearning } from './host.mjs';
+import { agentHomeFor, curateNow, finishRun, prepareRun } from './host.mjs';
 
 const AGENT_DIR = join(import.meta.dirname, 'agent');
 const HOST = 'agent-learn-demo';
@@ -89,19 +89,22 @@ const learnedLines = (system) => {
   return start < 0 ? [] : lines.slice(start, end + 1);
 };
 
+const ruleIn = (context) =>
+  /- (L-[0-9a-f]{12}) correction: In this project an issue whose body has a stack trace is labeled bug and needs-repro/.exec(learnedLines(systemText(context.messages)).join('\n'))?.[1];
+
 // `steps` are the model's responses in order, across every turn of the run: a tool call, or an answer (text, or the
 // label its <learned> section leads to).
 function scriptedModel(steps) {
   const requests = [];
   const faux = fauxProvider({ models: [{ id: 'scripted' }] });
   const label = (context) => {
-    const rule = /- (L-[0-9a-f]{12}) correction: In this project an issue whose body has a stack trace is labeled bug and needs-repro/.exec(learnedLines(systemText(context.messages)).join('\n'));
-    return rule ? `bug, needs-repro: the body is a crash trace, and ${rule[1]} says this project labels those needs-repro too.` : 'bug: the body is a crash trace.';
+    const rule = ruleIn(context);
+    return rule ? `bug, needs-repro: the body is a crash trace, and ${rule} says this project labels those needs-repro too.` : 'bug: the body is a crash trace.';
   };
   let call = 0;
   faux.setResponses(steps.map((step) => (context) => {
     requests.push(context);
-    if (step.call) return fauxAssistantMessage([fauxToolCall(step.call, step.args, { id: `call-${++call}` })], { stopReason: 'toolUse' });
+    if (step.call) return fauxAssistantMessage([fauxToolCall(step.call, typeof step.args === 'function' ? step.args(context) : step.args, { id: `call-${++call}` })], { stopReason: 'toolUse' });
     return fauxAssistantMessage([fauxText(step.say ?? label(context))], { stopReason: 'stop' });
   }));
   const models = createModels();
@@ -184,7 +187,7 @@ function callLines(r) {
   return r.calls.map((call, i) => {
     const result = r.results[i] ?? '(no result)';
     const args = call.arguments;
-    if (call.name === 'learn') return `learn(${args.type}${args.id ? ` ${args.id}` : ''}) -> ${result}\n     "${args.text}"`;
+    if (call.name === 'learn') return `learn(${args.type}${args.id ? ` ${args.id}` : ''}) -> ${result}${args.type === 'used' ? '' : `\n     "${args.text}"`}`;
     let shown = result.split('\n')[0].slice(0, 120);
     try {
       const value = JSON.parse(result);
@@ -220,6 +223,11 @@ export function objectsHolding(gitDir, needles) {
 }
 
 const short = (sha) => sha.slice(0, 7);
+const runLine = (r) => {
+  const done = [...r.used.map((u) => `${u.id} used (${u.reason})`), ...r.accepted.map((a) => (a.workflow ? `workflow ${a.workflow} admitted as a trial` : `${a.id} accepted (${a.reason})`))];
+  const rest = [...(r.held.length ? [`held: ${r.held.map((h) => h.reason).join('; ')}`] : []), ...(r.refused.length ? [`refused: ${r.refused.map((h) => h.reason).join('; ')}`] : [])];
+  return `${r.run}: ${[...done, ...rest].join('; ') || 'nothing'}`;
+};
 const shortPaths = (paths) => paths.map((path) => path.replace(/\b([0-9a-f]{12})[0-9a-f]{52}\b/, '$1...')).join(', ');
 
 // ---- the story ---------------------------------------------------------------------------------------------------------------
@@ -245,7 +253,11 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
   const asked = [];
   const judge = scriptedJudge(asked);
   const modelFor = (script) => (live ? liveModel(env) : scriptedModel(script));
-  const added = (from, to) => gitRead(bare, ['diff', '--name-only', '--no-renames', '--diff-filter=A', from, to]).toString('utf8').trim().split('\n').filter(Boolean);
+  const changed = (from, to) => {
+    const rows = gitRead(bare, ['diff', '--name-status', '--no-renames', from, to]).toString('utf8').trim().split('\n').filter(Boolean).map((row) => row.split('\t'));
+    const of = (status, verb) => (rows.some(([s]) => s === status) ? `${verb} ${shortPaths(rows.filter(([s]) => s === status).map(([, path]) => path))}` : '');
+    return [of('A', 'adds'), of('M', 'changes'), of('D', 'removes')].filter(Boolean).join('; ') || 'changes nothing';
+  };
   const out = { root, bare, vault };
 
   say('agent-learn demo: an agent that learns in its own git repository');
@@ -282,13 +294,14 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
   out.curate1 = c1;
   out.ruleId = c1.runs.flatMap((r) => r.accepted)[0]?.id;
   say(`3. Curate asks the judge: ${[...new Map(asked.map((a) => [a.question, a.p])).entries()].map(([q, p]) => `${ASKED[q] ?? q}? ${p}`).join('; ')}`);
-  for (const r of c1.runs) say(`   ${r.run}: ${r.accepted.length} accepted, ${r.refused.length} refused, ${r.held.length} held`);
-  say(`   main ${short(c1.main)} adds ${shortPaths(added(seed.sha, c1.main)) || 'nothing'}`);
+  for (const r of c1.runs) say(`   ${runLine(r)}`);
+  say(`   main ${short(c1.main)} ${changed(seed.sha, c1.main)}`);
   say();
 
   // Run 2 applies the rule, and saves a workflow for the next runs to try.
   const run2 = await prepareRun({ home, repo, host: HOST, runId: 'run-2', input: ISSUES.second.input });
   const r2 = await runOnce(run2, [ISSUES.second.text], modelFor([
+    { call: 'learn', args: (context) => ({ type: 'used', id: ruleIn(context), text: 'It gave this issue its labels.' }) },
     { call: 'agentrun', args: { action: 'inspect', workflow: TRIAGE_WORKFLOW, input: ISSUES.second.input } },
     { call: 'agentrun', args: { action: 'save', name: WORKFLOW } },
     { call: 'learn', args: { type: 'workflow', id: WORKFLOW, text: WORKFLOW_WHEN } },
@@ -301,23 +314,27 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
   say(`   issue: "${ISSUES.second.input.title}" (its body is a stack trace)`);
   for (const line of callLines(r2)) say(`   ${line}`);
   say(`   answer: ${r2.answer}`);
-  say(f2.proposal.status === 'proposed' ? `   proposed on runs/run-2 at ${short(f2.proposal.sha)}: the note and the workflow's DSL records` : `   proposed nothing (${f2.proposal.status})`);
+  say(f2.proposal.status === 'proposed' ? `   proposed on runs/run-2 at ${short(f2.proposal.sha)}: its notes and the workflow's DSL records` : `   proposed nothing (${f2.proposal.status})`);
   say();
 
   const c2 = await curateNow({ repo, judge, secrets: vault });
   out.curate2 = c2;
-  say('5. Curate admits the workflow as a trial skill');
-  for (const r of c2.runs) say(`   ${r.run}: ${r.accepted.length} accepted, ${r.refused.length} refused, ${r.held.length} held${r.held.length ? ` (${r.held.map((h) => h.reason).join('; ')})` : ''}`);
-  say(`   main ${short(c2.main)} adds ${shortPaths(added(c1.main, c2.main)) || 'nothing'}`);
+  say('5. Curate counts the use and admits the workflow as a trial skill');
+  for (const r of c2.runs) say(`   ${runLine(r)}`);
+  say(`   main ${short(c2.main)} ${changed(c1.main, c2.main)}`);
   say();
 
-  // A revert on main takes the learned rule out; the workflow trial stays.
-  const reverted = out.ruleId ? await revertLearning({ repo, id: out.ruleId }) : undefined;
+  // The maintainer withdraws the rule. A git revert of the commit that added it conflicts once a run used it, so the
+  // general way out is retireLearning: one commit that marks it retired and keeps its file.
+  say(`6. The maintainer withdraws the rule: retire ${out.ruleId ?? 'it'}`);
+  if (out.ruleId) {
+    const touched = await repo.log({ ref: 'main', path: `learnings/${out.ruleId}.md` });
+    if (touched.length > 1) say(`   a git revert of ${short(touched.at(-1).sha)}, the commit that added it, would conflict: ${short(touched[0].sha)} changed the entry since (its uses)`);
+    out.retire = await retireLearning({ repo, id: out.ruleId, reason: 'the maintainer withdrew the rule', secrets: vault });
+    say(`   main ${short(out.retire.main)} retires it: learnings/${out.ruleId}.md stays on main with status retired, and history keeps every version`);
+  }
   const c3 = await curateNow({ repo, judge, secrets: vault });
-  out.revert = reverted;
   out.curate3 = c3;
-  say(`6. Revert the learned rule on main (git revert of the commit that added ${out.ruleId ?? 'it'})`);
-  if (reverted) say(`   main ${short(reverted.sha)} reverts ${short(reverted.reverted)}`);
   say(`   curate again: ${c3.runs.length ? `${c3.runs.length} run(s) curated` : 'nothing to curate, the rule does not come back'}; main stays ${short(c3.main)}`);
   say();
 
