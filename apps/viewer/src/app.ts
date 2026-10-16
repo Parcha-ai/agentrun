@@ -150,7 +150,7 @@ async function fromUrl(base: string): Promise<Recording> {
   const lines = parseLines(await (await fetch(`${root}events.jsonl`)).text());
   const blobs = blobsAt(root);
   await blobs.find(blobsNamed(manifest, lines));
-  return { id: root, manifest, lines, blobUrl: blobs.url, blobType: blobs.type };
+  return { id: root, manifest, lines, blobUrl: blobs.url, blobType: blobs.type, find: blobs.find };
 }
 
 async function fromFiles(files: File[]): Promise<Recording> {
@@ -178,6 +178,8 @@ type Player = {
   recording: Recording;
   /** A run followed while it goes: a blob not read yet is loading, not missing. */
   following?: boolean;
+  /** A blob a view draws that the shell has not found: asks for it, and says whether it is still being looked for. */
+  want?: (sha: string) => boolean;
   stops: boolean[];
   lanes: Lanes;
   p: number;
@@ -316,7 +318,7 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
   if (typeof node === 'string') return document.createTextNode(node);
   if (node.tag === 'img' && 'blob' in node) {
     const url = player.recording.blobUrl(node.blob);
-    return url ? Object.assign(el('img', { class: node.class ?? 'blob' }), { src: url, alt: node.alt }) : el('span', { class: 'missing', text: `[${node.alt}: ${player.following ? 'loading' : 'not in this recording'}]` });
+    return url ? Object.assign(el('img', { class: node.class ?? 'blob' }), { src: url, alt: node.alt }) : el('span', { class: 'missing', text: `[${node.alt}: ${player.want?.(node.blob) || player.following ? 'loading' : 'not in this recording'}]` });
   }
   if (node.tag === 'a' && 'href' in node) {
     // A page outside the recording: linked only when it is a web address, and opened apart from the viewer.
@@ -324,7 +326,7 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
     return web ? Object.assign(el('a', { class: node.class ?? 'blob', text: node.text }), { href: node.href, target: '_blank', rel: 'noopener noreferrer' }) : el('span', { class: node.class ?? 'blob', text: node.text });
   }
   if (node.tag === 'a' && 'blob' in node && 'text' in node) {
-    return blobLink(player.recording, node.blob, node.text, node.class ?? 'blob', 'fragment' in node ? node.fragment : undefined) ?? el('span', { class: 'missing', text: `[${node.text}: ${player.following ? 'loading' : 'not in this recording'}]` });
+    return blobLink(player.recording, node.blob, node.text, node.class ?? 'blob', 'fragment' in node ? node.fragment : undefined) ?? el('span', { class: 'missing', text: `[${node.text}: ${player.want?.(node.blob) || player.following ? 'loading' : 'not in this recording'}]` });
   }
   if (node.tag === 'frame' && 'session' in node) {
     const picture = pictureAt(frames, node.session, t);
@@ -517,6 +519,17 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   let following = live !== undefined;
   let problems = following ? [] : validate(recording.manifest, recording.lines);
   const player: Player = { recording, following, stops: stopsOf(recording.lines), lanes: lanesOf(recording.lines), p: 0, playing: false, speed: 1, clock: 0 };
+  // A blob no line names (a picture a result cites) is looked for by its name in blobs/ the first time a view draws it.
+  const looked = new Map<string, boolean>();
+  const wanted = new Set<string>();
+  if (recording.find) player.want = (sha) => { if (!looked.has(sha)) wanted.add(sha); return looked.get(sha) !== true; };
+  const findWanted = () => {
+    const due = [...wanted];
+    wanted.clear();
+    if (!recording.find || due.length === 0) return;
+    for (const sha of due) looked.set(sha, false);
+    void recording.find(due).catch(() => undefined).then(() => { for (const sha of due) looked.set(sha, true); draw(); });
+  };
   const caches = new Map<unknown, Map<number, unknown>>();
   const cacheOf = (key: unknown) => caches.get(key) ?? caches.set(key, new Map()).get(key)!;
   let lines = recording.lines;
@@ -657,6 +670,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     focusBar.replaceChildren(...(player.focus ? [el('span', { text: `Focused on ${player.focus}` }), Object.assign(el('button', { text: 'clear focus' }), { onclick: () => setFocus(undefined) })] : []),
       ...(player.cite !== undefined ? [el('span', { text: `Citation ${player.cite.length > 16 ? `${player.cite.slice(0, 12)}…` : player.cite}` }), Object.assign(el('button', { text: 'clear citation' }), { onclick: () => setCite(undefined) })] : []));
     drawPanels(t);
+    findWanted();
     syncUrl();
   }
 
@@ -871,7 +885,7 @@ async function followRun(target: string, root: HTMLElement, params: URLSearchPar
   const base = url.href;
   const tail = tailOf(`${base}events.jsonl`);
   const blobs = blobsAt(base, true);
-  const recording: Recording = { id: base, lines: [], blobUrl: blobs.url, blobType: blobs.type, manifest: {
+  const recording: Recording = { id: base, lines: [], blobUrl: blobs.url, blobType: blobs.type, find: blobs.find, manifest: {
     format: FORMAT, title: 'A run, followed live', task: '', recorded: { started: '', ended: '' }, code: { repo: '', commit: '', packages: {} },
     model: '', generations: 0, kills: 0, cost: { usd: null, parts: {} }, source: { run: '', store_sha256: '' },
   } };

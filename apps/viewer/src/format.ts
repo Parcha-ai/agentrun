@@ -53,7 +53,9 @@ export type Manifest = {
 };
 
 /** A recording as the viewer holds it: its manifest, its lines in file order, and where a blob's bytes are. */
-export type Recording = { id: string; manifest: Manifest; lines: Line[]; blobUrl(sha: string): string | undefined; blobType(sha: string): string | undefined };
+export type Recording = { id: string; manifest: Manifest; lines: Line[]; blobUrl(sha: string): string | undefined; blobType(sha: string): string | undefined;
+  /** Read from a server, whose `blobs/` cannot be listed: finds blobs by their names there. */
+  find?(shas: readonly string[]): Promise<void> };
 
 const SOURCES = new Set(['workflow', 'pi', 'browser', 'vision', 'transport', 'host']);
 const isInt = (value: unknown, min = 0) => Number.isInteger(value) && (value as number) >= min;
