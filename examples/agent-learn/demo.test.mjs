@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
-import { gitRead, learnedLines, runDemo } from './demo.mjs';
+import { gitRead, runDemo } from './demo.mjs';
 
 const LESSON = /An issue whose body has a stack trace is a bug report even when its title asks a question/;
 
@@ -18,7 +18,6 @@ async function scratch(t) {
   return dir;
 }
 
-/** Every object in a git directory, as raw bytes. */
 function objects(gitDir) {
   const all = gitRead(gitDir, ['cat-file', '--batch-all-objects', '--batch']);
   const out = [];
@@ -49,8 +48,8 @@ test('run 1 learns, curation merges it, run 2 sees it, a revert removes it for r
   assert.match(git('show', `${out.curate1.main}:learnings/${out.lessonId}.md`), LESSON);
 
   assert.equal(out.run2.run.sha, out.curate1.main, 'run 2 starts at the new main');
-  const section = learnedLines(out.run2.system).join('\n');
-  assert.match(section, new RegExp(`- ${out.lessonId} lesson: An issue whose body has a stack trace`), 'the request run 2 sent carries the lesson');
+  assert.equal(out.run2.fromRequest, true);
+  assert.match(out.run2.learned.join('\n'), new RegExp(`- ${out.lessonId} lesson: An issue whose body has a stack trace`), 'the request run 2 sent carries the lesson');
   assert.match(out.run2.answer, /^bug: /);
   assert.equal(out.run2.proposal.status, 'empty');
 
@@ -59,8 +58,9 @@ test('run 1 learns, curation merges it, run 2 sees it, a revert removes it for r
   assert.equal(git('rev-parse', 'main'), out.revert.sha);
   assert.deepEqual(out.curate2.runs, [], 'curating again brings nothing back');
   assert.equal(out.run3.run.sha, out.revert.sha, 'run 3 starts at the revert');
-  assert.doesNotMatch(out.run3.system, LESSON, 'run 3 does not see the lesson');
-  assert.match(learnedLines(out.run3.system).join('\n'), /Nothing learned yet/);
+  assert.equal(out.run3.fromRequest, true);
+  assert.doesNotMatch(out.run3.system, LESSON, 'nothing in run 3\'s request carries the lesson');
+  assert.match(out.run3.learned.join('\n'), /Nothing learned yet/);
   assert.match(out.run3.answer, /^question: /);
   assert.equal(git('ls-tree', '--name-only', 'main', 'learnings/'), '', 'main holds no learning');
   assert.equal(git('log', '--format=%H', 'main', '--', `learnings/${out.lessonId}.md`).split('\n').length, 2, 'history keeps the lesson and its revert');

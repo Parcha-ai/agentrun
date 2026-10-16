@@ -24,7 +24,6 @@ const AGENT_DIR = join(import.meta.dirname, 'agent');
 const HOST = 'agent-learn-demo';
 const LESSON = 'An issue whose body has a stack trace is a bug report even when its title asks a question: label it bug.';
 
-/** Two issues from different reporters. Both titles ask a question; both bodies hold a crash. */
 export const ISSUES = {
   first: {
     values: ['dana-w', '4821'],
@@ -36,11 +35,9 @@ export const ISSUES = {
   },
 };
 
-/** The judge's answer to each curation question, as a probability of yes: general, and no to everything else. */
 const JUDGE = { general: 0.94, narrowsRules: 0.03, fromContent: 0.03, duplicate: 0.04, supersedes: 0.04, contradicts: 0.03 };
 const ASKED = { general: 'general', narrowsRules: 'narrows a rule', fromContent: 'came from content', duplicate: 'a duplicate', supersedes: 'replaces one', contradicts: 'contradicts one' };
 
-/** A scripted judge with the DSL's `runJudge` shape. It records what it was asked. */
 export function scriptedJudge(asked = []) {
   return async ({ questions }) => {
     const answers = {};
@@ -56,25 +53,21 @@ export function scriptedJudge(asked = []) {
 
 const textOf = (content) => (typeof content === 'string' ? content : (content ?? []).map((part) => part.text ?? '').join(''));
 
-/** What the model was shown as its system prompt: the instructions and each section, as the request carried them. */
-export const systemText = (messages) =>
+const systemText = (messages) =>
   messages.filter((m) => m.role === 'system').map((m) => [textOf(m.content), ...Object.values(m.sections ?? {}).filter((s) => typeof s === 'string')].join('\n')).join('\n');
 
-/** The `<learned>` section's lines in a system prompt. */
-export const learnedLines = (system) => {
+const learnedLines = (system) => {
   const lines = system.split('\n');
   const start = lines.findIndex((line) => line.includes('<learned>'));
   const end = lines.findIndex((line, i) => i >= start && line.includes('</learned>'));
   return start < 0 ? [] : lines.slice(start, end + 1);
 };
 
-/** The scripted model of one run. It labels the issue from the `<learned>` section of its request, unless `answer` is
- *  given; `learn` is the call it makes first, if any. Every request it receives is kept in `requests`. */
 function scriptedModel({ learn, answer: fixed } = {}) {
   const requests = [];
   const faux = fauxProvider({ models: [{ id: 'scripted' }] });
   const label = (context) => {
-    const lesson = /- (L-[0-9a-f]{12}) lesson: An issue whose body has a stack trace/.exec(systemText(context.messages));
+    const lesson = /- (L-[0-9a-f]{12}) lesson: An issue whose body has a stack trace/.exec(learnedLines(systemText(context.messages)).join('\n'));
     if (lesson) return `bug: the body is a crash trace, and ${lesson[1]} says a question with a stack trace is a bug report.`;
     const asked = textOf(context.messages.findLast((m) => m.role === 'user')?.content);
     return /^Title: .*\?$/m.test(asked) ? 'question: the title asks how to do something.' : 'bug: something fails.';
@@ -91,7 +84,6 @@ function scriptedModel({ learn, answer: fixed } = {}) {
   return { models, agent: { model: { provider: 'faux', modelId: 'scripted' } }, requests };
 }
 
-/** A real model at an OpenAI Responses endpoint named in the environment. Thinking is never off. */
 function liveModel(env = process.env) {
   const baseUrl = env.AGENT_MODEL_BASE_URL?.replace(/\/+$/, '');
   const id = env.AGENT_MODEL;
@@ -114,15 +106,12 @@ function liveModel(env = process.env) {
 
 // ---- one run ---------------------------------------------------------------------------------------------------------------
 
-/** The run's prompt: the definition's instructions, the rules, and the skills it names, from the run's workspace. */
 async function promptOf(run) {
   const skills = await Promise.all(run.definition.skills.map(async (name) =>
     `<skill name="${name}">\n${(await readFile(join(run.workspace, '.agents/skills', name, 'SKILL.md'), 'utf8')).trim()}\n</skill>`));
   return [run.definition.instructions, run.rules.trim(), ...skills].join('\n\n');
 }
 
-/** Runs one issue through a started run: a pi-durable Harness on the run's own store, with the `learn` extension
- *  guarded by the host's secrets. Returns the answer, the tool calls and results, and the system prompt it was sent. */
 async function runOnce(run, issue, model, vault) {
   const registry = createRegistry();
   registry.install(agentLearn({ guard, secrets: () => vault }));
@@ -134,8 +123,9 @@ async function runOnce(run, issue, model, vault) {
     const calls = messages.filter((m) => m.role === 'assistant').flatMap((m) => m.content.filter((c) => c.type === 'toolCall'));
     const results = messages.filter((m) => m.role === 'toolResult').map((m) => textOf(m.content));
     const answer = textOf(messages.findLast((m) => m.role === 'assistant')?.content).trim();
-    const first = model.requests[0]?.messages ?? messages;
-    return { answer, calls, results, system: systemText(first) };
+    const system = systemText(model.requests[0]?.messages ?? []);
+    const sent = learnedLines(system);
+    return { answer, calls, results, system, learned: sent.length ? sent : ['<learned>', ...run.seeded.section.split('\n'), '</learned>'], fromRequest: sent.length > 0 };
   } finally {
     await harness.close(ctx);
   }
@@ -145,12 +135,10 @@ async function runOnce(run, issue, model, vault) {
 
 const gitEnv = (home) => ({ PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', HOME: home });
 
-/** Plain git, read-only, on a repository this demo made: no system or global config, no hooks. */
 export function gitRead(gitDir, args) {
   return execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], { env: { ...gitEnv(gitDir), GIT_DIR: gitDir }, encoding: 'buffer', maxBuffer: 64 << 20 });
 }
 
-/** How many git objects `gitDir` holds, and how many contain any of `needles`. */
 export function objectsHolding(gitDir, needles) {
   const all = gitRead(gitDir, ['cat-file', '--batch-all-objects', '--batch']);
   let at = 0;
@@ -171,7 +159,6 @@ const short = (sha) => sha.slice(0, 7);
 
 // ---- the story ---------------------------------------------------------------------------------------------------------------
 
-/** The agent's files from `agent/`, as its repository holds them. */
 async function agentFiles() {
   const files = {
     'agent.json': await readFile(join(AGENT_DIR, 'agent.json'), 'utf8'),
@@ -181,11 +168,6 @@ async function agentFiles() {
   return files;
 }
 
-/**
- * The whole story in `dir` (a new temporary directory when omitted): the agent repository, run 1 learns, curation merges
- * the lesson, run 2 sees it, a revert removes it, run 3 does not see it, and a run that tries to learn a secret proposes
- * nothing. `log` gets the transcript line by line. Returns what each step did, for tests.
- */
 export async function runDemo({ dir, live = false, env = process.env, log = () => {} } = {}) {
   const root = dir ? resolve(dir) : await mkdtemp(join(tmpdir(), 'agent-learn-demo-'));
   await mkdir(root, { recursive: true });
@@ -241,8 +223,8 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
   const r2 = await runOnce(run2, ISSUES.second, modelFor(), vault);
   const f2 = await finishRun({ home, repo, run: run2, secrets: vault, caseValues: ISSUES.second.values });
   out.run2 = { run: run2, ...r2, ...f2 };
-  say(`4. Run 2 starts at main ${short(run2.sha)}. Its first model request carries:`);
-  for (const line of learnedLines(r2.system)) say(`     ${line}`);
+  say(`4. Run 2 starts at main ${short(run2.sha)}. ${r2.fromRequest ? 'Its first model request carries' : 'Its <learned> section'}:`);
+  for (const line of r2.learned) say(`     ${line}`);
   say(`   issue: "${/^Title: (.*)$/m.exec(ISSUES.second.text)[1]}" (its body is a stack trace)`);
   say(`   answer: ${r2.answer}`);
   say();
@@ -262,8 +244,8 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
   const r3 = await runOnce(run3, ISSUES.second, modelFor(), vault);
   const f3 = await finishRun({ home, repo, run: run3, secrets: vault, caseValues: ISSUES.second.values });
   out.run3 = { run: run3, ...r3, ...f3 };
-  say(`6. Run 3 starts at main ${short(run3.sha)}. Its first model request carries:`);
-  for (const line of learnedLines(r3.system)) say(`     ${line}`);
+  say(`6. Run 3 starts at main ${short(run3.sha)}. ${r3.fromRequest ? 'Its first model request carries' : 'Its <learned> section'}:`);
+  for (const line of r3.learned) say(`     ${line}`);
   say(`   same issue as run 2; answer: ${r3.answer}`);
   say();
 

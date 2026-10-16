@@ -15,8 +15,7 @@ import { join } from 'node:path';
 
 const SKILLS = `${LAYOUT.skills}/`;
 
-/** The agent at one commit of its repository: `agent.json`, the text of `AGENTS.md`, and the skill files a run gets
- *  (path under `.agents/skills/` to text). A learned workflow skill whose `trial.json` says demoted is left out. */
+// A learned skill whose trial.json says demoted (or does not parse) never reaches a run.
 export async function readAgentAt(repo, sha) {
   const json = await repo.read(LAYOUT.definition, sha);
   if (json === undefined) throw new Error(`the agent repository has no ${LAYOUT.definition} at ${sha}`);
@@ -46,8 +45,7 @@ async function trialStatus(repo, path, sha) {
   }
 }
 
-/** The agent home in `dir`: opened when it is there, else made from the repository's main, owner-only (its stores hold
- *  the agent's sign-ins). */
+// Owner-only: the home's stores hold the agent's sign-ins.
 export async function agentHomeFor({ dir, repo }) {
   if (existsSync(join(dir, AGENT_STORE_FILE))) return openAgentHome(dir);
   await repo.fetch();
@@ -58,7 +56,6 @@ export async function agentHomeFor({ dir, repo }) {
   return createAgentHome(dir, { definition, skills, sha });
 }
 
-/** A run's pi-durable store, opened as a session for one host step and closed after it. */
 async function inRunStore(run, step) {
   const session = createSession(await openNodeSqliteStorage(run.storePath));
   try {
@@ -68,12 +65,8 @@ async function inRunStore(run, step) {
   }
 }
 
-/**
- * Before a run: fetch `ref`, read the definition and skill set at its sha, move the home's cache there, start the run
- * at that sha, and seed the run's `<learned>` section from the same sha. The refresh is a compare-and-swap from the sha
- * the home holds, and a home already past `ref` (another host refreshed it to a newer main) is kept, never moved back.
- * Returns the started run (`runId`, `storePath`, `workspace`, `sha`), its definition, the rules text and the seed.
- */
+// The home's cache, the run and its <learned> section all come from one sha. The refresh is a compare-and-swap from the
+// sha the home holds, and a home already past `ref` is kept: the cache never moves back to an older main.
 export async function prepareRun({ home, repo, host, runId, ref = 'main', workflows }) {
   for (let attempt = 0; ; attempt++) {
     await repo.fetch();
@@ -95,26 +88,19 @@ export async function prepareRun({ home, repo, host, runId, ref = 'main', workfl
   }
 }
 
-/**
- * After a run's Harness has closed: carry the run back into the home, then propose what it noted on `runs/<run id>`,
- * guarded against the host's secrets and the run's input values, committed by plumbing and pushed by sha. Any guard hit
- * refuses the whole proposal. Main does not move: only curation writes main.
- */
+// Call after the run's Harness has closed. Any guard hit refuses the whole proposal; main never moves here.
 export async function finishRun({ home, repo, run, secrets = [], caseValues = [], outcome = 'completed' }) {
   const carried = await carryBack(home, run, { outcome });
   const proposal = await inRunStore(run, (target) => proposeLearning({ repo, runId: run.runId, target, secrets, caseValues }));
   return { carried, proposal };
 }
 
-/** Curation, the single writer of main: every uncurated `runs/<id>` branch is guarded again, judged, and merged as one
- *  commit per run, with no human step. `judge` is the DSL's `runJudge` port; `createJevRunner()` of
- *  @parcha/agentrun-jev is one. */
+// The single writer of main. `judge` is the DSL's runJudge port.
 export function curateNow({ repo, judge, secrets = [], now }) {
   return curate({ repo, judge, secrets, ...(now ? { now } : {}) });
 }
 
-/** Undo a learning: revert, on main, the curate commit that added it, and push. History keeps it, and curation never
- *  brings it back, because its run is already named on main. */
+// Curation never brings a reverted learning back: its run is already named on main.
 export async function revertLearning({ repo, id }) {
   await repo.fetch();
   const added = (await repo.log({ ref: 'main', trailer: { key: 'Learning-Id', value: id } })).at(-1);
