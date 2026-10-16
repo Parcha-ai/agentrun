@@ -3,20 +3,23 @@
 import { Type } from 'typebox';
 import {
   compileTransform, dryRunWorkflow, formatWorkflowTree, inspectWorkflow, loadAuthorReference, renderAuthorHostAddendum,
-  type DryRunResult, type Workflow, type WorkflowDeps,
+  type AuthorHostAddendum, type DryRunResult, type Workflow, type WorkflowDeps,
 } from '@parcha/agentrun-dsl';
 import type { WorkflowExtensionService } from './extension-service.js';
 import { PI_HOST_ADDENDUM } from './host-addendum.js';
 
 export const WORKFLOW_TOOL_ACTIONS = ['describe', 'inspect', 'dry-run', 'run', 'save', 'load', 'list'] as const;
 
-/** The tool's parameters: one action, and the fields an action reads. */
-export const workflowToolParameters = () => Type.Object({ action: Type.Union(WORKFLOW_TOOL_ACTIONS.map(value => Type.Literal(value))),
+/** The tool's fields: one action, and the fields an action reads. A host's tool may add its own. */
+export const workflowToolProperties = () => ({ action: Type.Union(WORKFLOW_TOOL_ACTIONS.map(value => Type.Literal(value))),
   name: Type.Optional(Type.String({ description: 'Saved procedure name: lowercase letters, digits, hyphens or underscores.' })),
   digest: Type.Optional(Type.String({ description: 'Optional exact saved SHA-256 revision to load.' })),
   workflow: Type.Optional(Type.Record(Type.String(), Type.Unknown(), {
     description: 'The complete AgentRun workflow JSON object. Pass the object directly, not a JSON-encoded string. Inspection validates its DSL structure.',
   })), input: Type.Optional(Type.Record(Type.String(), Type.Unknown())) });
+
+/** The tool's parameters. */
+export const workflowToolParameters = () => Type.Object(workflowToolProperties());
 
 /** What describe says of each tool a workflow may call: its schemas, and the result contract it is called under. */
 export const describeTools = (tools: readonly { name: string; description?: string; parameters: unknown; resultSchema?: unknown }[]) => tools.map(t => ({
@@ -25,10 +28,10 @@ export const describeTools = (tools: readonly { name: string; description?: stri
   resultContract: t.resultSchema ? 'Host-declared direct workflow call result.' : 'Pi result envelope; tool-specific details are not declared. Do not invent fields inside details.',
 }));
 
-/** The author references describe returns, with the Pi host's addendum. */
-export const authoringReferences = () => ({
+/** The author references describe returns, with the host's addendum (the coding-agent extension's by default). */
+export const authoringReferences = (host: AuthorHostAddendum = PI_HOST_ADDENDUM) => ({
   language: loadAuthorReference('language'), workflow: loadAuthorReference('workflow-format'), jev: loadAuthorReference('jev-decisions'),
-  host: renderAuthorHostAddendum(PI_HOST_ADDENDUM),
+  host: renderAuthorHostAddendum(host),
 });
 
 /** The checks that run no code (admission by `checker`, structure, a supplied input), and the workflow's tree. A

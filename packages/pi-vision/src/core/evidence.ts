@@ -37,8 +37,8 @@ export type LookRecord = {
     readonly derived?: readonly string[];
     /** Set when the result's unit ids did not match its image blocks and every block was looked at on its own. */
     readonly units_dropped?: string;
-    /** Set when the answer was read back from the call's memo: an earlier attempt of the call asked and paid for it, and
-     *  this one made no request. Its key's other records are that look's, not another payment. */
+    /** Set when the answer was read back from the call's memo: an earlier attempt or an earlier call asked and paid for
+     *  it, and this one made no request. Its key's other records are that look's, not another payment. */
     readonly kept?: true;
   };
   /** The answer, "shown to the model natively", or the miss. */

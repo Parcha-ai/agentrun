@@ -24,6 +24,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./export": {
+      "types": "./dist/export.d.ts",
+      "default": "./dist/export.js"
+    },
     "./timeline": {
       "types": "./dist/timeline/index.d.ts",
       "default": "./dist/timeline/index.js"

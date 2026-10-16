@@ -42,6 +42,28 @@ Existing flat graphs retain their older effect keys. Repeated calls with the sam
 - A run that a pi-durable 1.1 process started and left (killed with a tool call in flight, mid-submit, or paused) is resumed by a 1.2 process and completes, with no effect dispatched twice. pi 1.2 migrates the call's `pi.tool` task to version 2. This package's own documents keep their kinds and versions, and their stored rows are the same on both.
 - A run that pi 1.2 left with a tool call in flight cannot be continued by pi 1.1. pi 1.2 keeps that call as a version 2 `pi.tool` task; a 1.1 process waits on it and does not end the run. The only thing it writes is that task's mark from running back to pending, as pi does for any task a dead process left running. A later 1.2 process continues the run, and makes no request twice. Continue such a run on 1.2, and do not downgrade pi under a live run. To fail fast instead of waiting, call `refuseNewerTasks(harness, context)` from `@parcha/agentrun-pi/durable` after `Harness.open` and before `resume()`. On pi before 1.2 it throws `NewerTaskError` (code `PI_TASK_NEWER`) for a live `pi.tool` task above version 1; on 1.2 it does nothing.
 
+### The agentrun tool in a pi-durable session
+
+`createWorkflowTool(host)` from `@parcha/agentrun-pi/durable` gives an agent in a pi-durable session the agentrun tool. Its actions are the coding-agent extension's, run by the same code:
+
+- `describe`: the host's tools and the language.
+- `inspect`: validates a complete workflow and keeps it as the conversation's draft, a session document.
+- `dry-run`: runs the draft on synthetic values, with no model, Jev or tool call, and answers `passed`, `not_run` or `failed`.
+- `save`, `load` and `list`: the project store of `@parcha/agentrun-pi/workflows` under `host.projectDir`.
+- `run`: described below.
+
+```ts
+const { extension, workflow } = createWorkflowTool({ projectDir, tools, task: { options, run }, runCode });
+registry.install(extension); // and list the tool's name, `agentrun`, in the agent definition
+```
+
+- `run` starts the draft as one `agentrun.workflow` task of the calling conversation, in the background. The tool's own commit creates the task, so no Harness is needed. The call waits for the task and answers with its outcome and the run's last progress lines. While the run goes on, the progress lines the coding-agent extension shows are written to the call's running output. A run of the same draft on the same input in the same conversation is the same run: a call after a restart waits for the live task, and a call after it ended answers with its outcome, so its effects happen once. `again: true` starts a fresh run of them. How many fresh runs were asked for is a session document (`agentrun.runs`), so a later `run`, after a restart too, reaches the newest.
+- `tools` are the tools a drafted workflow may use, as a call's tool and as an agent node's tools (`read`, `grep` and the like included): the host decides, and nothing else is admitted. Inspect refuses a workflow that uses any other, naming each and pointing at `createWorkflowTool`'s `tools`.
+- List every extension the agent's conversation needs in the root agent's extensions, including agentLearn and the workflow tool; installing in the registry alone is not enough. For example, with `const learn = agentLearn({ guard, secrets })` (it returns the extension itself), `harness.root(context, { agent: { model, extensions: [learn, workflowTool.extension] } })` offers the tools of both, and with only `[workflowTool.extension]` the conversation is offered `agentrun` alone.
+- `task` is `createWorkflowExtension`'s host, so the run has the same driver, journal, stops and ladder as a run the host starts itself. `workflow.read` and `workflow.stop` reach it from the host's side.
+- Code nodes run only through `host.runCode`. Without it, a dry run of a workflow with code is `not_run`, and a run of one is refused before it starts.
+- `createWorkflowExtension`'s `start` and `read` take a tool's `api` as well as a Harness (`WorkflowCaller`). A caller with no root conversation names the conversation in `options.conversationId`. A start with a cancel needs a Harness.
+
 ## Decision receipts
 
 Every typed question (`judge`, `pick`, `sift`, `route`, an `ask` predicate, a `verify` review) is one decision. Supply `recordDecision(receipt, exchange)` to keep them:
