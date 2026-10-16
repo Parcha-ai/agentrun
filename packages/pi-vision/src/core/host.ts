@@ -52,9 +52,10 @@ export type CallContext = {
   readonly tool?: string;
   readonly model: unknown;
   readonly signal: AbortSignal | undefined;
-  /** The value kept under `key` for this call, else `compute`'s, kept before it is returned: a call cut by a crash and
-   *  run again gets the kept value without computing it. A paid request goes through it, so its answer is kept before
-   *  the result that reports it. Absent: computed every time. */
+  /** The value kept under `key`, else `compute`'s, kept before it is returned: a call cut by a crash and run again, or
+   *  a later call that asks the same, gets the kept value without computing it. A paid request goes through it, so its
+   *  answer is kept before the result that reports it. The pi-durable adapter keeps a tool call's on its conversation, so
+   *  a new call finds what a cut one paid for, and a hook's on its task. Absent: computed every time. */
   readonly memo?: <T extends Json>(key: string, compute: () => Promise<T>) => Promise<T>;
 };
 
