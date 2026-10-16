@@ -244,6 +244,46 @@ test('a first-time sign-in that resolveModel\'s signal cancels ends at once: it 
   assert.deepEqual(stored(home).credentials, {});
 });
 
+/** The cancelled sign-in's end, as the tests above check it: an AbortError within 5 s, port 1455 free, nothing stored. */
+async function endsCancelled(resolving, home) {
+  let ended = false;
+  const watched = resolving.finally(() => { ended = true; });
+  await Promise.race([watched.catch(() => {}), new Promise((resolve) => setTimeout(resolve, 5000))]);
+  assert.ok(ended, 'the cancel ended the sign-in');
+  await assert.rejects(watched, (error) => error?.name === 'AbortError' || assert.fail(`not an abort: ${error?.stack ?? error}`));
+  let free = false;
+  for (let tries = 0; tries < 20 && !free; tries += 1) { free = await portFree(); if (!free) await new Promise((resolve) => setTimeout(resolve, 50)); }
+  assert.ok(free, 'port 1455 is free again');
+  assert.deepEqual(stored(home).credentials, {});
+}
+
+test('a cancel given while the sign-in waits on the user\'s prompt ends it the same way', { skip: !namesTheApp && 'pi-ai before 1.1 refuses the sign-in before its page is shown' }, async (t) => {
+  await fake(t);
+  const home = newHome();
+  const controller = new AbortController();
+  let asked;
+  const waiting = new Promise((resolve) => { asked = resolve; });
+  const interaction = { notify: () => {}, prompt: () => { asked(); return new Promise(() => {}); } };
+  const resolving = resolveModel(spec(), { home, env: {}, interaction, signal: controller.signal });
+  await waiting;
+  controller.abort();
+  await endsCancelled(resolving, home);
+});
+
+test('an interaction whose notify and prompt are class methods keeps them when the signal is added', { skip: !namesTheApp && 'pi-ai before 1.1 refuses the sign-in before its page is shown' }, async (t) => {
+  await fake(t);
+  const home = newHome();
+  const controller = new AbortController();
+  class Interaction {
+    shown = [];
+    notify(event) { this.shown.push(event.type); }
+    prompt() { controller.abort(); return new Promise(() => {}); }
+  }
+  const interaction = new Interaction();
+  await endsCancelled(resolveModel(spec(), { home, env: {}, interaction, signal: controller.signal }), home);
+  assert.deepEqual(interaction.shown, ['auth_url'], 'its notify ran, with its own this');
+});
+
 test('the plan\'s usage limit: the typed error, and one request, at the start or mid-stream', async (t) => {
   for (const responses of ['limit', 'limit-midstream']) {
     const server = await fake(t, { responses });
