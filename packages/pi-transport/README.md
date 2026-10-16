@@ -451,7 +451,9 @@ environment) and `auto.threshold` how sure Jev must be (default 0.5).
 
 `jevPlacer(models, auto.classifier, { rest, threshold })` asks Jev through pi-ai's `Models.classify` (provider
 `typesafe`, model `jev-latest`): one call a decision, two questions. `need` is whether the step needs something `rest`
-cannot do, wherever the session is now; `where` is a choice among the environments, each by its purpose. The session
+cannot do, wherever the session is now; `where` is a choice among the environments, each by its purpose. Jev reads
+the step and each environment's purpose and facts (GPU, CPUs, memory, capabilities, isolation, region; not the
+provider, which names how a box is made). The session
 moves only for a need: `need` at least the threshold and `where` elsewhere. A session away from rest stays while its
 next step needs that place, and goes back to rest at a turn's end when nothing does, by the config. Code checks only
 structure: the judgment is Jev's.

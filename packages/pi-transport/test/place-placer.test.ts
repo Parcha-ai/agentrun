@@ -152,6 +152,32 @@ describe("the placer", () => {
 		}
 	});
 
+	it("shows Jev each environment's isolation and region when the config gives them, and no provider", async () => {
+		const jev = answering(() => said(0.9, "eu"));
+		const placer = await placerOver(jev.models);
+		const same = "A box with 16 CPUs for long jobs";
+		kept(
+			await placer.decide(
+				query({
+					options: [
+						facts("local", "This machine"),
+						facts("us", same, { cpus: 16, region: "us-east-1", isolation: "container" }),
+						facts("eu", same, { cpus: 16, region: "eu-west-1", isolation: "vm" }),
+					],
+					next: "Process the customer files that must stay in the EU.",
+				}),
+				context,
+			),
+		);
+		const environments = (jev.asked[0]?.state as { environments?: Record<string, Record<string, unknown>> })
+			.environments;
+		expect(environments?.us).toMatchObject({ region: "us-east-1", isolation: "container" });
+		expect(environments?.eu).toMatchObject({ region: "eu-west-1", isolation: "vm" });
+		// The provider names how a box is made, not what a step can use: the purpose line says that.
+		expect(Object.values(environments ?? {}).some((one) => "provider" in one)).toBe(false);
+		expect(environments?.local).toEqual({ purpose: "This machine" });
+	});
+
 	it("records the cost pi-ai reckons from the classifier entry a host priced, with no price typed in here", async () => {
 		const priced = (typesafeProvider().getAllModels?.() ?? []).map((model) =>
 			model.id === JEV.modelId ? { ...model, cost: { ...model.cost, input: 3, output: 0 } } : model,

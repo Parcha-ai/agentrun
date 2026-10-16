@@ -6,7 +6,10 @@ import type { TransportConfig } from "../config.ts";
 
 type JsonObject = { readonly [key: string]: unknown };
 
-/** What one environment can do, as the placer shows it to Jev: the author's line, and the config's facts. */
+/**
+ * What one environment can do, as the placer shows it to Jev: the author's line, and the config's facts. The provider is
+ * not shown: it names how a box is made, not what a step can use, and the purpose line says what the place is for.
+ */
 export type EnvironmentFacts = {
 	readonly id: string;
 	readonly provider: string;
@@ -184,6 +187,8 @@ function stateFor(query: PlacementQuery, maxStepChars: number): JsonObject {
 					...(option.cpus === null ? {} : { cpus: option.cpus }),
 					...(option.memoryMb === null ? {} : { memoryMb: option.memoryMb }),
 					...(option.capabilities.length === 0 ? {} : { capabilities: option.capabilities }),
+					...(option.isolation === null ? {} : { isolation: option.isolation }),
+					...(option.region === null ? {} : { region: option.region }),
 				},
 			]),
 		),
