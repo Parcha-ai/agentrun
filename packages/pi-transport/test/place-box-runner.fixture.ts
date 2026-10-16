@@ -49,6 +49,8 @@ const app: App = (ctx) => ({
 				if (!existsSync(join(record, "blobs", hash))) writeFileSync(join(record, "blobs", hash), text);
 				appendFileSync(join(record, ".spool", `${process.pid}.jsonl`), `${JSON.stringify({ step, blob: hash })}\n`);
 			}
+			// A job that takes its time, for a supervisor that reads its recording while it runs.
+			if (env.STEP_MS !== undefined) await new Promise((resolve) => setTimeout(resolve, Number(env.STEP_MS)));
 			if (step === parkAt && env.KILL_REQUEST !== undefined) {
 				const asked = JSON.stringify({ point: "fixture.step", n: step, nonce: env.KILL_NONCE });
 				writeFileSync(`${env.KILL_REQUEST}.tmp`, asked);

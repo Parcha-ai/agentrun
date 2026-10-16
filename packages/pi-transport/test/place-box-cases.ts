@@ -224,6 +224,38 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 		);
 
 		it(
+			"brings home a spool that grows while the runner runs, at every call, each line once",
+			async () => {
+				const made = world(setup);
+				try {
+					const place = await placeIn(made);
+					const runner = await place.start(orderOf(made, place, 1, { STEPS: "5", STEP_MS: "300" }));
+					let ended = false;
+					void runner.exited.then(() => {
+						ended = true;
+					});
+					// The supervisor's ticks while the runner runs: some find part of the file, and the next ones the rest.
+					const seen: number[] = [];
+					while (!ended) {
+						await place.recordHome?.bringHome(made.record, {});
+						seen.push(spoolFiles(made).flatMap((name) => lines(join(made.record, ".spool", name))).length);
+						await new Promise((resolve) => setTimeout(resolve, 50));
+					}
+					await place.recordHome?.bringHome(made.record, { final: true });
+					expect(seen.some((count) => count > 0 && count < 5)).toBe(true);
+					const steps = spoolFiles(made).flatMap((name) =>
+						lines(join(made.record, ".spool", name)).map((line) => line.step),
+					);
+					expect(steps).toEqual([1, 2, 3, 4, 5]);
+					await place.release();
+				} finally {
+					made.remove();
+				}
+			},
+			setup.timeoutMs ?? 60_000,
+		);
+
+		it(
 			"brings home every blob that matches its name and the lines, and says which did not",
 			async () => {
 				const made = world(setup);
