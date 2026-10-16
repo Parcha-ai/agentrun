@@ -3,7 +3,9 @@ import { LearnError } from "./errors.js";
 import { CAPS, COMMIT_SHA, LEARNING_ID, RUN_ID } from "./layout.js";
 import { ENTRY_TYPES, type EntryType } from "./types.js";
 
-export const STATUSES = Object.freeze(["active", "superseded", "archived"] as const);
+/** `retired`: taken out on purpose by `retireLearning`; the file stays, it is never shown again, and curation holds a
+ *  run that learns it again. */
+export const STATUSES = Object.freeze(["active", "superseded", "archived", "retired"] as const);
 export type Status = (typeof STATUSES)[number];
 
 /** `all`, or a short lowercase name of the inputs a learning applies to. */
@@ -66,7 +68,7 @@ function checkLearning(l: Learning): void {
   if (l.supersededBy !== undefined) {
     if (typeof l.supersededBy !== "string" || !LEARNING_ID.test(l.supersededBy)) throw bad("supersededBy is not a learning id");
     if (l.supersededBy === l.id) throw bad("a learning cannot supersede itself");
-    if (l.status !== "superseded") throw bad("only a superseded learning names what superseded it");
+    if (l.status !== "superseded" && l.status !== "retired") throw bad("only a superseded or retired learning names what superseded it");
   }
   if (typeof l.text !== "string" || l.text.trim() === "") throw bad("the text is empty");
   if (/\r/.test(l.text)) throw bad("the text holds a carriage return");

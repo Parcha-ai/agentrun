@@ -30,6 +30,8 @@ test("a superseded learning names what replaced it; the key is written only when
     assert.throws(() => renderLearning(bad), { code: "format" });
   }
   assert.throws(() => parseLearning(file.replace("status: superseded", "status: active")), { code: "format" });
+  const retired = { ...old, status: "retired" };
+  assert.deepEqual(parseLearning(renderLearning(retired)), retired, "a retired learning keeps what superseded it");
   assert.throws(() => parseLearning(file.replace("supersededBy: L-cafecafecafe", "supersededBy: L-cafecafecafe\nsupersededBy: L-cafecafecafe")), { code: "format" });
 });
 
