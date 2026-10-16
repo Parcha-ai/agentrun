@@ -13,7 +13,7 @@ import { renderText, timelineOf } from "@parcha/pi-durable-agent/timeline";
 import { buildSignedInHome, signedInHomeSkip } from "../../packages/pi-durable-agent/test/fixtures/signed-in-home.mjs";
 import { ensureAgentHome } from "./agent/home.mjs";
 import { byId, byTag, fakeDom, settle, shown } from "./fake-dom.mjs";
-import { serveStatic, transcript } from "./fixtures.mjs";
+import { frameLine, jpegSha, serveStatic, signInGap, transcript, writeFrames } from "./fixtures.mjs";
 import { packPage, REPLAY_CSP } from "./pack-page.mjs";
 import { staticSource } from "./page/source.js";
 import { readRunEntries, writeReplay } from "./replay.mjs";
@@ -100,8 +100,10 @@ test("a live source: the message box, stop, new run and the Browser tab, each ac
   assert.deepEqual(view.tabs().filter((name) => name === "browser").length, 2, "a Browser tab, and its button on a phone");
   assert.ok(shown(view.find("banner")), "the run waits for the person");
   assert.ok(calls.includes("timeline r1 live"), "a live run's timeline is followed");
-  const frame = byTag(view.find("browser"), "iframe")[0];
+  const [frame] = byTag(view.find("float"), "iframe");
   assert.equal(frame.getAttribute("src"), "runs/r1/live?v=k1", "the live view's frame, from the source");
+  assert.deepEqual([frame.getAttribute("sandbox"), frame.getAttribute("referrerpolicy")], ["allow-scripts allow-same-origin allow-forms allow-popups", "no-referrer"]);
+  assert.match(view.find("browser").textContent, /in its own panel/);
 
   view.find("text").value = "done";
   view.find("send").click();
@@ -156,6 +158,7 @@ test("no color is written in the page's script, and every color in app.css is a 
     dark: /^:where\(\.runs-app\[data-theme="dark"\]\) \{([^}]*)\}/m.exec(css)?.[1],
   };
   for (const [name, block] of Object.entries(blocks)) assert.ok(block, `the ${name} token rule`);
+  for (const [name, block] of Object.entries(blocks)) assert.doesNotMatch(block, /var\(/, `the ${name} token rule gives each token a color of its own, never another token`);
   const tokens = (block) => [...block.matchAll(/(--ar-[a-z-]+):/g)].map((m) => m[1]).filter((name) => name !== "--ar-mono").sort();
   assert.deepEqual(tokens(blocks.system), tokens(blocks.light), "the system's dark redefines every color token");
   assert.deepEqual(tokens(blocks.dark), tokens(blocks.light), "and so does data-theme=dark");
@@ -372,6 +375,154 @@ test("the packed replay page: every URL relative, the CSP in a meta tag, no way 
   assert.match(await readFile(join(bundle, "replay.js"), "utf8"), /staticSource/);
   assert.doesNotMatch(await readFile(join(bundle, "replay.js"), "utf8"), /httpSource/);
   await assert.rejects(packPage(join(tmp, "x"), { data: "/data/" }), /relative/);
+});
+
+/** The run's rows up to its request for a sign-in. */
+const asking = rows.slice(0, rows.findIndex((r) => r.kind === "waiting") + 1);
+
+/** A live run whose state the test moves: `move(state)` sends the page a new view of its timeline. */
+function movingSource(calls = [], first = "working") {
+  let state = first;
+  let push = () => {};
+  const source = {
+    ...liveSource(calls),
+    run: async () => summary({ status: "running", live: true, state, liveView: { key: "k1" } }),
+    timeline: (id, { live, signal } = {}) => {
+      if (!live) return Promise.resolve({ rows, state: "idle", costUsd: 0.05 });
+      return (async function* () {
+        for (;;) {
+          yield { rows: asking, state, costUsd: 0.03 };
+          const next = new Promise((resolve) => ((push = resolve), signal.addEventListener("abort", resolve, { once: true })));
+          await next;
+          if (signal.aborted) return;
+        }
+      })();
+    },
+  };
+  return { source, move: (next) => ((state = next), push()) };
+}
+
+test("the live browser floats over the page: large while the run waits, small once the person answers; minimize keeps its bar, close leaves a chip; one frame throughout", async (t) => {
+  const { source, move } = movingSource();
+  const view = await mount(t, source, "#/run/r1");
+  const panel = view.find("float");
+  const frame = byTag(panel, "iframe")[0];
+  assert.ok(shown(panel) && !shown(view.find("show-browser")));
+  assert.equal(panel.getAttribute("data-size"), "small", "docked small while the agent works");
+  assert.equal(view.root.dataset.tab, "timeline", "the timeline stays in view");
+
+  move("waiting");
+  await settle();
+  assert.equal(panel.getAttribute("data-size"), "large", "opened large: the person signs in there");
+  assert.equal(view.root.dataset.tab, "timeline");
+  assert.match(view.find("float-note").textContent, /^Waiting for you: Sign in to the practice site to read its secure area\. Reply "done" below/, "the large panel covers the banner, so it says what the agent asked");
+  move("working");
+  await settle();
+  assert.equal(panel.getAttribute("data-size"), "small", "back to small once the person answered");
+  assert.equal(view.find("float-note").textContent, "");
+
+  view.find("float-min").click();
+  assert.deepEqual([panel.getAttribute("data-size"), view.find("float-min").textContent], ["min", "Restore"]);
+  view.find("float-close").click();
+  assert.ok(!shown(panel) && shown(view.find("show-browser")), "closed: a Show browser chip");
+  move("waiting");
+  await settle();
+  assert.ok(shown(panel) && panel.getAttribute("data-size") === "large", "a new wait opens it again, large");
+  view.find("float-size").click();
+  assert.equal(panel.getAttribute("data-size"), "small");
+  view.find("float-close").click();
+  view.find("show-browser").click();
+  assert.ok(shown(panel) && panel.getAttribute("data-size") === "small");
+  for (const tab of ["files", "browser", "timeline"]) byTag(view.root, "button").find((b) => b.dataset.tab === tab).click();
+  await settle();
+  assert.equal(byTag(panel, "iframe")[0], frame, "one frame for the run: no tab change or resize reloads the live view");
+  assert.deepEqual([...view.fetched, ...view.window.fetched], []);
+});
+
+test("the saved sign-ins on the history, never a ref; a run's page says what it started signed in to", async (t) => {
+  const signIns = [
+    { key: "default", provider: "browserbase", state: "ready", sites: ["https://the-internet.herokuapp.com"], verifiedAt: "2026-10-16T05:58:00.000Z", heldBy: null },
+    { key: "other", provider: "browserbase", state: "ready", sites: [], verifiedAt: null, heldBy: "r2" },
+  ];
+  const source = { ...liveSource(), agent: async () => ({ name: "Site reporter", signIns }), run: async () => summary({ signedIn: [{ key: "default", provider: "browserbase", sites: ["https://the-internet.herokuapp.com"] }] }) };
+  const view = await mount(t, source, "#/run/r1");
+  const lines = byTag(view.find("signins"), "div").filter((d) => d.getAttribute("class") === "saved").map((d) => d.getAttribute("title"));
+  assert.match(view.find("signins").textContent, /^Saved sign-ins/);
+  assert.match(lines[0], /^the-internet\.herokuapp\.com · Browserbase · saved \d\d:\d\d$/);
+  assert.equal(lines[1], "Saved sign-in (Browserbase), sites not recorded · in use by r2", "and the run that holds it");
+  assert.match(view.find("signins").textContent, /the-internet\.herokuapp\.comBrowserbase · saved \d\d:\d\dSaved sign-in \(Browserbase\), sites not recordedin use by r2$/, "the site, then what keeps it, on lines of their own");
+  assert.ok(shown(view.find("started")));
+  assert.equal(view.find("started").textContent, "Started signed in to the-internet.herokuapp.com");
+  assert.equal(page.startedLine([{ key: "default", provider: "browserbase", sites: [] }]), "Started signed in (Browserbase sign-in, sites not recorded)");
+  assert.equal(page.startedLine([]), "");
+  assert.equal(page.signInLine({ ...signIns[0], verifiedAt: null }), "the-internet.herokuapp.com · Browserbase");
+
+  const replay = await mount(t, replaySource(), "#/run/r1");
+  assert.equal(replay.find("signins"), null, "a replay shows no saved sign-in");
+  assert.ok(!shown(replay.find("started")));
+});
+
+const SHA = { a: "a".repeat(64), b: "b".repeat(64), c: "c".repeat(64) };
+const FRAMES = [frameLine(1, 1_000, SHA.a), frameLine(2, 1_500, SHA.b), signInGap(3, 2_000, 1_500), frameLine(4, 61_500, SHA.c)];
+
+test("a run that is not live plays back what its browser showed: the frame at each time, play and pause, and the sign-in drawn as a gap and named", async (t) => {
+  const calls = [];
+  const source = { ...liveSource(calls), run: async () => summary({ frames: true }), frames: async (id) => (calls.push(`frames ${id}`), FRAMES), frameSrc: (id, sha) => `runs/${id}/frames/${sha}.jpg` };
+  const view = await mount(t, source, "#/run/r1");
+  byTag(view.root, "button").find((b) => b.dataset.tab === "browser").click();
+  await settle();
+  assert.ok(calls.includes("frames r1"));
+  const img = view.find("frame-img");
+  const scrub = view.find("scrub");
+  assert.equal(img.getAttribute("src"), `runs/r1/frames/${SHA.a}.jpg`, "the first frame");
+  assert.deepEqual([scrub.getAttribute("min"), scrub.getAttribute("max")], ["1000", "61500"]);
+  assert.equal(view.find("play-time").textContent, "0:00 / 1:01");
+  const [marks] = byTag(view.find("browser"), "div").filter((d) => d.getAttribute("class") === "marks");
+  assert.equal(marks.innerHTML, `<svg viewBox="0 0 1000 10" preserveAspectRatio="none" aria-hidden="true"><rect x="${((500 / 60_500) * 1000).toFixed(1)}" y="0" width="${((60_000 / 60_500) * 1000).toFixed(1)}" height="10"><title>You signed in here (not recorded)</title></rect></svg>`, "the gap, drawn where it falls on the scrubber");
+  assert.match(view.find("browser").textContent, /0:01 to 1:01 You signed in here \(not recorded\)/);
+
+  scrub.value = "30000";
+  scrub.dispatchEvent({ type: "input" });
+  assert.ok(shown(view.find("gap-note")) && view.find("gap-note").textContent === "You signed in here (not recorded)", "inside the gap: no picture of the sign-in, only the note");
+  assert.equal(img.getAttribute("src"), `runs/r1/frames/${SHA.b}.jpg`);
+  scrub.value = "61500";
+  scrub.dispatchEvent({ type: "input" });
+  assert.ok(!shown(view.find("gap-note")));
+  assert.equal(img.getAttribute("src"), `runs/r1/frames/${SHA.c}.jpg`);
+  view.find("play").click();
+  assert.equal(view.find("play").textContent, "Pause", "at the end, play starts again from the first frame");
+  assert.equal(img.getAttribute("src"), `runs/r1/frames/${SHA.a}.jpg`);
+  view.find("play").click();
+  assert.equal(view.find("play").textContent, "Play");
+
+  const track = page.frameTrack([...FRAMES, { kind: "frame.gap", t: 70_000, data: { from: 61_500, reason: "session_released" } }]);
+  assert.deepEqual(track.gaps.map((g) => [g.from, g.to, g.label]), [[1_500, 61_500, page.SIGNED_IN_GAP]], "a gap with no frame after it ends the track");
+
+  const live = await mount(t, { ...source, run: async () => summary({ status: "running", live: true, frames: true, liveView: { key: "k1" } }) }, "#/run/r1");
+  assert.equal(live.find("frame-img"), null, "a live run shows its live browser, not the player");
+});
+
+test("a replay never carries a sign-in or a frame: writeReplay drops what a run started signed in to and refuses a frame or a run's own directory; staticSource never asks for one", async (t) => {
+  const out = join(tmp, "no-frames", "data");
+  await writeReplay(out, [{ summary: summary({ id: "r1", signedIn: [{ key: "default", provider: "browserbase", sites: ["https://the-internet.herokuapp.com"] }], frames: true }), rows, files: FILES }]);
+  const written = await readFile(join(out, "runs.json"), "utf8") + await readFile(join(out, "runs", "r1.json"), "utf8");
+  assert.doesNotMatch(written, /signedIn|herokuapp|"frames"/);
+  for (const path of ["frames/frames.jsonl", `frames/blobs/${SHA.a}.jpg`, `out/frames/blobs/${SHA.b}.jpg`]) {
+    await assert.rejects(writeReplay(join(tmp, "refused-frames"), [{ summary: summary({ id: "r1" }), rows, files: { [path]: "x" } }]), /browser frame/, path);
+  }
+  const home = await ensureAgentHome(join(tmp, "frames-home"));
+  const { dir } = await startRun(home, { runId: "framed", host: "test" });
+  writeFrames(dir, [frameLine(1, 1_000, jpegSha(Buffer.from("x")))], [Buffer.from("x")]);
+  await assert.rejects(writeReplay(join(tmp, "refused-frames"), [{ summary: summary({ id: "r1" }), rows, files: dir }]), /a run's directory/);
+  await assert.rejects(readdir(join(tmp, "refused-frames")), { code: "ENOENT" }, "nothing was written");
+
+  const host = await serveStatic(join(tmp, "no-frames"), "/run/");
+  t.after(() => host.close());
+  const source = staticSource(`${host.url}data/`);
+  assert.equal((await source.file("r1", "frames/frames.jsonl")).status, 404);
+  assert.ok(!host.requests.some((path) => path.includes("frames/")), "never asked for");
+  assert.equal(typeof source.frames, "undefined");
+  assert.ok(!(await readdir(bundle, { recursive: true })).some((f) => /frames|\.jpg$/.test(f)), "the packed page holds no frame");
 });
 
 const RECORDING = new URL("../../apps/viewer/recordings/reference-job/", import.meta.url);
