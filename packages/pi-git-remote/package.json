@@ -4,6 +4,7 @@
   "private": true,
   "description": "A git repository a host keeps for its agent: commits through plumbing, no repository hook, filter or driver ever runs, and the credential stays in the host's memory.",
   "keywords": [
+    "pi-package",
     "pi",
     "git",
     "agent",
@@ -23,6 +24,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./coding-agent": {
+      "types": "./dist/coding-agent.d.ts",
+      "default": "./dist/coding-agent.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -32,12 +37,29 @@
     "LICENSE",
     "NOTICE"
   ],
+  "pi": {
+    "extensions": [
+      "./dist/coding-agent.js"
+    ]
+  },
   "sideEffects": false,
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.json",
     "prepack": "npm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test --test-concurrency=8 'test/*.test.mjs' 'test/hostile/*.test.mjs'"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-coding-agent": "1.1.0"
   },
   "repository": {
     "type": "git",

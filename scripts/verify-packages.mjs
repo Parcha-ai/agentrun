@@ -266,6 +266,7 @@ import * as piDurable from '@parcha/agentrun-pi/durable';
 import * as piWorkflows from '@parcha/agentrun-pi/workflows';
 import * as agentHome from '@parcha/pi-durable-agent';
 import * as gitRemote from '@parcha/pi-git-remote';
+import * as gitRemoteAgent from '@parcha/pi-git-remote/coding-agent';
 import { execFileSync } from 'node:child_process';
 import * as agentExport from '@parcha/pi-durable-agent/export';
 import * as serve from '@parcha/agentrun-serve';
@@ -304,6 +305,7 @@ assert.equal(piDurable.DECISION_RECEIPTS_DOC,'agentrun.decisions'); assert.equal
 assert.equal(typeof piWorkflows.WorkflowStore,'function'); assert.equal(typeof piWorkflows.WorkflowStoreError,'function'); { const dir=await mkdtemp(join(tmpdir(),'wf-store-')); try { assert.deepEqual(await new piWorkflows.WorkflowStore(dir).list(),[]); } finally { await rm(dir,{recursive:true,force:true}); } }
 { const dir=await mkdtemp(join(tmpdir(),'agentrun-agent-home-')); try { const home=await agentHome.createAgentHome(join(dir,'acme'),{definition:{version:1,name:'consumer',instructions:'Answer.',skills:['s'],tools:[]},skills:{'s/SKILL.md':'# S'}}); const started=await agentHome.startRun(home,{runId:'r1',host:'consumer'}); assert.deepEqual(started,{...agentHome.runPaths(home,'r1'),runId:'r1',agent:{instructions:'Answer.',tools:[]},leases:[]}); assert.equal(await readFile(join(started.workspace,'.agents/skills/s/SKILL.md'),'utf8'),'# S'); assert.deepEqual(await agentHome.carryBack(home,started,{outcome:'completed'}),{changed:true,profiles:[],released:[]}); assert.equal((await agentHome.readAgentHome(home)).runs.r1.outcome,'completed'); } finally { await rm(dir,{recursive:true,force:true}); } }
 { const dir=await mkdtemp(join(tmpdir(),'agentrun-git-remote-')); try { const bare=join(dir,'remote.git'); execFileSync('git',['init','-q','--bare','--template=','-b','main',bare]); const repo=await gitRemote.openRepo({dir:join(dir,'host'),remote:gitRemote.local(bare)}); const made=await repo.commitTo('runs/r1',{files:{'inbox/r1.md':'a lesson\\n'},message:'r1',trailers:{'Run-Id':'r1'}}); await repo.push(made.sha,'runs/r1'); const fresh=await gitRemote.openRepo({dir:join(dir,'fresh'),remote:gitRemote.local(bare)}); assert.deepEqual(await fresh.commitTo('runs/r1',{files:{'inbox/r1.md':'again\\n'},message:'r1',trailers:{'Run-Id':'r1'}}),{sha:made.sha,created:false}); assert.equal(await fresh.read('inbox/r1.md',made.sha),'a lesson\\n'); const userinfo=new URL('https://git.example.test/a.git'); userinfo.username='user'; userinfo.password='pass'; await assert.rejects(gitRemote.openRepo({dir:join(dir,'h'),remote:{kind:'https',url:userinfo.href}}),e=>e instanceof gitRemote.GitRemoteError&&e.code==='refused'); assert.throws(()=>gitRemote.https(userinfo.href,()=>undefined),e=>e instanceof gitRemote.GitRemoteError&&e.code==='refused'); const hosted=gitRemote.codeStorage({origin:'https://git.example.test/git/',repo:'agents/a1',token:async()=>'unused',hidden:true}); assert.deepEqual([hosted.kind,hosted.url,hosted.pushUrl],['https','https://git.example.test/git/agents/a1.git','https://git.example.test/git/agents/a1+ephemeral.git']); assert.equal((await hosted.credential()).username,'t'); } finally { await rm(dir,{recursive:true,force:true}); } }
+assert.equal(typeof gitRemoteAgent.createGitRemoteExtension,'function'); assert.equal(typeof gitRemoteAgent.default,'function'); assert.equal(typeof gitRemoteAgent.createGitRemoteExtension({}),'function');
 assert.deepEqual([agentExport.EXPORTABLE_KINDS,agentExport.SECRET_KINDS,agentExport.projectForExport],[agentHome.EXPORTABLE_KINDS,agentHome.SECRET_KINDS,agentHome.projectForExport]);
 { const ready=piSignin.checkKeys({name:'consumer',models:{lead:{needs:['text']}},keys:[{env:'CONSUMER_KEY',why:'w',where:'x',required:true}],programs:[],expectedCalls:0,expectedCost:0},{env:{}}); assert.equal(ready.exitCode,2); assert.equal(typeof piSignin.resolveModel,'function'); }
 assert.ok(loadAuthorReference('language').includes(authorContract()));
@@ -471,6 +473,12 @@ const anyHost = (url: string, credential: CredentialSource, options?: HttpsOptio
 const codeStorageHost = (options: CodeStorageOptions): Remote => codeStorage(options);
 const code = (error: unknown) => (error instanceof GitRemoteError ? error.code : undefined);
 void [propose, anyHost, codeStorageHost, code, local];
+// The coding-agent subpath: options a host writes, the report it hears, and the factory pi loads.
+import { createGitRemoteExtension, type EndOutcome, type GitRemoteOptions } from '@parcha/pi-git-remote/coding-agent';
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+const options: GitRemoteOptions = { remote: local('/srv/acme.git'), allow: ['notes/**'], onEnd: (report) => { if (report.ok) { const outcome: EndOutcome = report.outcome; void outcome.branch; } } };
+const extension: (pi: ExtensionAPI) => void = createGitRemoteExtension(options);
+void extension;
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'git-consumer.ts'], consumer);
   receipt.checks.push('Installed ESM imports, core execution, fake Jev/Pi adapters, and strict TypeScript consumer compilation passed.');
