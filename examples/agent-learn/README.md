@@ -1,10 +1,13 @@
 # An agent that learns in its own git repository
 
-An issue-triage agent keeps its definition, rules and skills in a git repository. One run notices something general and
-notes it with `learn`, a tool that costs nothing. The host proposes the note on the run's own branch, curation merges it to
-`main`, and the next run starts at the new `main` with the lesson in its prompt. That run also saves a workflow with the
-DSL's `agentrun` tool; curation admits it as a trial skill, and later runs are offered it. A `git revert` on `main` takes
-the lesson back out while the trial stays, and history keeps both. A run that tries to keep a secret proposes nothing.
+An issue-triage agent keeps its definition, rules and skills in a git repository, and its own rules (`AGENTS.md`) say
+how it learns: "When a maintainer corrects you, call learn with type correction and the general rule, then answer again."
+In run 1 a maintainer corrects its labels with a project rule no model can guess from an issue (a stack trace means `bug`
+and `needs-repro`). The agent notes the rule with `learn`, a tool that costs nothing. The host proposes the note on the
+run's own branch, curation merges it to `main`, and run 2 starts at the new `main` with the rule in its prompt and
+applies it. Run 2 also saves a workflow with the DSL's `agentrun` tool; curation admits it as a trial skill, and later
+runs are offered it. A `git revert` on `main` takes the rule back out, so run 3 labels without it, while the trial stays
+and history keeps both. A run that tries to keep a secret proposes nothing.
 
 It is the reference host loop for [`@parcha/pi-agent-learn`](../../packages/pi-agent-learn/README.md) on
 [`@parcha/pi-git-remote`](../../packages/pi-git-remote/README.md) and
@@ -22,33 +25,37 @@ npm ci --ignore-scripts && npm run build && npm run demo:learn
 It takes a few seconds and prints the story (the shas differ on every run):
 
 ```
-2. Run 1 starts at main a86586d: nothing learned yet
-   learn(lesson) -> [noted 1]
-     "An issue whose body has a stack trace is a bug report even when its title asks a question: label it bug."
-   proposed on runs/run-1 at 5551828; main has not moved
+2. Run 1 starts at main 8287729: nothing learned yet
+   answer: bug: the body is a crash trace.
+   maintainer: "Correction from the maintainer: in this project an issue whose body has a stack trace is labeled bug and needs-repro. Remember that for next time."
+   learn(correction) -> [noted 1]
+     "In this project an issue whose body has a stack trace is labeled bug and needs-repro."
+   answer: bug, needs-repro: the body is a crash trace, and this project labels those needs-repro too.
+   proposed on runs/run-1 at 74bef3d; main has not moved
 
 3. Curate asks the judge: narrows a rule? 0.03; general? 0.94
-   main e1252eb adds learnings/L-5acfcaa49a21.md
+   main d24bbd6 adds learnings/L-43c99595a04d.md
 
-4. Run 2 starts at main e1252eb. Its first model request carries:
+4. Run 2 starts at main d24bbd6. Its first model request carries:
      <learned>
      ...
-     - L-5acfcaa49a21 lesson: An issue whose body has a stack trace is a bug report even when its title asks a question: label it bug.
+     - L-43c99595a04d correction: In this project an issue whose body has a stack trace is labeled bug and needs-repro.
      ...
      </learned>
-   agentrun(save triage-crash) -> saved triage-crash as 0f207f81a334
+   agentrun(save triage-crash) -> saved triage-crash as 2bfc0cd79680
    learn(workflow triage-crash) -> [noted 1]
-   answer: bug: the body is a crash trace, and L-5acfcaa49a21 says a question with a stack trace is a bug report.
+   answer: bug, needs-repro: the body is a crash trace, and L-43c99595a04d says this project labels those needs-repro too.
 
 5. Curate admits the workflow as a trial skill
-   main 7bdc530 adds .agents/skills/triage-crash/SKILL.md, .agents/skills/triage-crash/trial.json, .pi/agentrun/workflows/triage-crash/...
+   main d545907 adds .agents/skills/triage-crash/SKILL.md, .agents/skills/triage-crash/trial.json, .pi/agentrun/workflows/triage-crash/...
 
-6. Revert the lesson on main (git revert of the commit that added L-5acfcaa49a21)
-   main eab7aa7 reverts e1252eb
+6. Revert the learned rule on main (git revert of the commit that added L-43c99595a04d)
+   main 576e496 reverts d24bbd6
 
-7. Run 3 starts at main eab7aa7. Its first model request carries:
-     Nothing learned yet (your repo at eab7aa7560b5).
+7. Run 3 starts at main 576e496. Its first model request carries:
+     Nothing learned yet (your repo at 576e496eb747).
      Workflows to try first for this input: triage-crash (trial). Run one with the agentrun tool; if it escalates, continue yourself.
+   same issue as run 2; this scripted run does not try the workflow; answer: bug: the body is a crash trace.
 
 8. Run 4 tries to learn a value the host holds as a secret
    learn(fact) -> Not noted: it holds a value the host keeps secret. Restate it as a general rule without that.
@@ -60,16 +67,18 @@ With flags, run it as `node examples/agent-learn/demo.mjs <flags>`.
 | Flag | What it does |
 | --- | --- |
 | `--dir <path>` | keep the repository, the agent home and the runs there: `git --git-dir <path>/agent.git log --all` |
-| `--live` | run 1 to 3 on a real model (below); the judge and run 4 stay scripted |
+| `--live` | run 1 to 3 on a real model (below), with the same maintainer correction; the judge and run 4 stay scripted |
 
-`node --test examples/agent-learn/demo.test.mjs` runs it offline and checks the story against the repository: run 2's
-request carries the lesson, the workflow lands as a trial in the DSL's own layout, run 3's request has no lesson and
-offers the trial, main holds no learning after the revert while history keeps it, and the secret is in no git object.
+`node --test examples/agent-learn/demo.test.mjs` runs it offline and checks the story against the repository: run 1's
+first answer lacks the rule and its corrected one has it, run 2's request carries the rule and its answer applies it, the
+workflow lands as a trial in the DSL's own layout, run 3's request has no rule and its answer does not apply it, main holds
+no learning after the revert while history keeps it, and the secret is in no git object.
 
 ### A real model
 
-`--live` sends runs 1 to 3 to an OpenAI Responses endpoint. Whether the model calls `learn` or saves a workflow, and
-what it notes, is then the model's: the transcript shows what happened.
+`--live` sends runs 1 to 3 to an OpenAI Responses endpoint, run 1 with the same maintainer correction. Whether the model
+calls `learn` or saves a workflow, and what it notes, is then the model's: the transcript shows what happened. A model
+that answers right on its own has nothing to learn; the correction is the signal, and `AGENTS.md` says what to do with it.
 
 | Variable | Needed | What |
 | --- | --- | --- |
