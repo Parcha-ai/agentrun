@@ -43,5 +43,6 @@
     "provider": "openai",
     "id": "gpt-6-luna",
     "via": "the scoped broker"
-  }
+  },
+  "browser": false
 }
