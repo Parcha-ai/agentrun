@@ -804,8 +804,11 @@ id and directory as the supervisor computed them.
 
 A runner's `exited` says how it ended. Locally that is the exit code or signal, and the outcome is the instance's
 `{"outcome":{...}}` line on stdout. Without that line, or on a disk (a box's stdout is out of reach), the outcome is
-`run.json`: its status and generation, plus `code`, `message`, `record` and `storeSha256` from the detail of the last
-status the app set. So an app that runs on a box and wants its supervisor to have its record puts the record there.
+`run.json`'s, with its generation, and `code`, `message`, `record` and `storeSha256` from the detail of the last status
+the app set. Its `status` is the run's word, not the record's, so a supervisor needs no package vocabulary: `complete`
+when the run is `done` and that detail carries a record, `failed` for anything else (done with no record, failed, or a
+run its instance left `running`, `paused` or `sleeping`). So an app that runs on a box and wants its supervisor to have
+its record puts the record there, in its final `setStatus("done", { record })`.
 
 ## Tests
 
