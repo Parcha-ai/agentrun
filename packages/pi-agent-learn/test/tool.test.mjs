@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { test } from "node:test";
 import { agentLearn, CAPS, collectCandidates, LEARN_PARAMETERS } from "../dist/index.js";
-import { ask, ctx, done, learnCalls, openRun, scratch, toolResults } from "./support.mjs";
+import { ask, ctx, done, learnCalls, openRun, scratch, seedIds, toolResults } from "./support.mjs";
 
 const LESSON = { type: "lesson", text: "Registries list officers under Principals, not Officers.", evidence: ["the registry page read in call 3"] };
 const FACT = { type: "fact", text: "The registry rate-limits after 20 requests a minute." };
@@ -26,6 +26,7 @@ test("learn stores one candidate per call id, makes no model call, and answers [
   tool.execute = async (...a) => { const r = await execute(...a); returned.push(r); return r; };
   const run = await openRun(path.join(root, "run.sqlite"), { extension, steps: [() => learnCalls([LESSON, FACT, { type: "used", text: "It helped.", id: "L-0123456789ab" }]), (c) => { seen = toolResults(c); return done(); }] });
   try {
+    await seedIds(run.harness, ["L-0123456789ab"]);
     assert.equal((await ask(run.harness)).status, "done");
     assert.equal(run.faux.state.callCount, 2, "the model was asked twice: the turn that called learn and the answer; learn asked nothing");
     assert.deepEqual(calls, ["call-0", "call-1", "call-2"]);
@@ -100,6 +101,7 @@ test("caps: text and evidence bytes, new learnings per run and used marks per ru
     (c) => { seen = toolResults(c); return done(); },
   ] });
   try {
+    await seedIds(run.harness, ["L-0123456789ab"]);
     await ask(run.harness);
     assert.match(seen[0].text, /text is over 1000 bytes/);
     assert.match(seen[1].text, /evidence is over 1000 bytes/);
@@ -142,11 +144,72 @@ test("a workflow note names a saved workflow by the DSL's name rules and says wh
     (c) => { seen = toolResults(c); return done(); },
   ] });
   try {
+    await seedIds(run.harness, ["L-0123456789ab"]);
     await ask(run.harness);
     assert.deepEqual(seen.map((r) => r.isError), [false, true, true, true, true, false]);
     assert.match(seen[1].text, /needs the saved workflow's name as id/);
-    assert.match(seen[4].text, /id is a learning id/);
+    assert.equal(seen[4].text, "Not noted: kyb-us-registry is not a learning you were given; leave id out for a new learning.");
     assert.deepEqual((await collectCandidates(run.harness)).map(({ type, id }) => ({ type, id })), [{ type: "workflow", id: "kyb-us-registry" }, { type: "correction", id: "L-0123456789ab" }]);
+  } finally {
+    await run.close();
+  }
+});
+
+test("an id on used, lesson, fact or correction must name a learning this run was given; a made-up one is refused at the call", async () => {
+  const root = await scratch();
+  const given = "L-00000000000a";
+  const overCap = "L-00000000000b";
+  let seen = [];
+  const run = await openRun(path.join(root, "run.sqlite"), { steps: [
+    () => learnCalls([
+      { type: "lesson", id: "L-a4821c9e530b", text: "Search the registry by the legal name." },
+      { type: "used", id: "L-ffffffffffff", text: "Helped." },
+      { type: "fact", id: "not-an-id", text: "A fact." },
+      { type: "used", id: given, text: "It found the company." },
+      { type: "correction", id: overCap, text: "The registry now lists officers under Officers." },
+      { type: "lesson", text: "A new lesson needs no id." },
+    ]),
+    (c) => { seen = toolResults(c); return done(); },
+  ] });
+  try {
+    await seedIds(run.harness, [given], [overCap]);
+    await ask(run.harness);
+    assert.deepEqual(seen.map((r) => r.isError), [true, true, true, false, false, false]);
+    assert.equal(seen[0].text, "Not noted: L-a4821c9e530b is not a learning you were given; leave id out for a new learning.");
+    assert.equal(seen[1].text, "Not noted: L-ffffffffffff is not a learning you were given; leave id out for a new learning.");
+    assert.deepEqual((await collectCandidates(run.harness)).map(({ type, id }) => ({ type, id })), [{ type: "used", id: given }, { type: "correction", id: overCap }, { type: "lesson", id: undefined }]);
+  } finally {
+    await run.close();
+  }
+  let unseeded = [];
+  const bare = await openRun(path.join(root, "bare.sqlite"), { steps: [() => learnCalls([{ type: "used", id: given, text: "Helped." }]), (c) => { unseeded = toolResults(c); return done(); }] });
+  try {
+    await ask(bare.harness);
+    assert.equal(unseeded[0].isError, true, "a run that was not seeded was given no learning");
+  } finally {
+    await bare.close();
+  }
+  assert.match(LEARN_PARAMETERS.properties.id.description, /^Only to name a learning listed in <learned> \(type used\) or a workflow name \(type workflow\); leave it out for a new learning\.$/);
+});
+
+test("agentLearn passes the run's case values to the guard at the call, so case data is refused where the model can restate it", async () => {
+  const root = await scratch();
+  const asked = [];
+  const guard = (input) => {
+    const values = [...input.caseValues];
+    asked.push(values);
+    return input.candidates.some((c) => values.some((v) => c.text.includes(v))) ? [{ reason: "case_data", field: "candidates[0].text", detail: "repeats a value from this case" }] : [];
+  };
+  let seen = [];
+  const run = await openRun(path.join(root, "run.sqlite"), { extension: agentLearn({ guard, caseValues: () => ["4821", "Acme Holdings"] }), steps: [
+    () => learnCalls([{ type: "lesson", text: "Issue 4821 needed the second registry." }, { type: "lesson", text: "Some issues need the second registry." }]),
+    (c) => { seen = toolResults(c); return done(); },
+  ] });
+  try {
+    await ask(run.harness);
+    assert.deepEqual(seen, [{ isError: true, text: "Not noted: it repeats data from this case. Restate it as a general rule." }, { isError: false, text: "[noted 1]" }]);
+    assert.deepEqual(asked, [["4821", "Acme Holdings"], ["4821", "Acme Holdings"]]);
+    assert.deepEqual((await collectCandidates(run.harness)).map((c) => c.text), ["Some issues need the second registry."]);
   } finally {
     await run.close();
   }

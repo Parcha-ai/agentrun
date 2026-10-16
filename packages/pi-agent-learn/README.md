@@ -141,10 +141,12 @@ over the run id and the text, so curating the same candidate twice cannot make t
 call id, inside the tool's commit. It is replay-safe: a call rerun after a crash finds its candidate and stores nothing
 new. It makes no model call. A `used` mark names the learning that helped by its id. A `workflow` note names a workflow
 the run saved (its name, by the DSL's rule: 1 to 64 lowercase letters, digits, dashes or underscores) and says in its
-text when to use it; a correction, lesson or fact may name the learning it replaces. Text is at most 1,000 bytes and
+text when to use it. Any other id must name a learning this run was given (listed in its section, or over the cap), so a
+made-up id is refused at the call and the model can leave it out. Text is at most 1,000 bytes and
 evidence 1,000 bytes in all; a run makes at most 8 notes of every type but `used`, and 32 `used` marks. Evidence stays with the run and is
-never part of a learning. `agentLearn({ guard, secrets })` checks every call with the host's guard first; a refused call
-stores nothing and its result names the reason, never the value. The result carries its text under both `content` and
+never part of a learning. `agentLearn({ guard, secrets, caseValues })` checks every call with the host's guard first,
+with the host's secrets and this run's input values; a refused call stores nothing and its result names the reason,
+never the value, so the model can restate it as a general rule at once. The result carries its text under both `content` and
 `output`, so pi-durable 1.1, 1.2 and 1.3 all show it to the model.
 
 The `<learned>` section says that the rules win, lists the active learnings at the seeded commit (most used first, the
@@ -158,7 +160,7 @@ agent's tools, the lines that ask it to call `learn` are left out.
 
 ```ts
 const seeded = await seedLearning({ repo, ref: "main", target: harness, into: run.workspace, workflows });
-const extension = agentLearn({ guard, secrets: () => vault.values() });
+const extension = agentLearn({ guard, secrets: () => vault.values(), caseValues: () => run.inputValues });
 const candidates = await collectCandidates(harness);
 ```
 
@@ -199,7 +201,7 @@ whole proposal, and the curator on what it writes.
 | `secret_value` | A value in `secrets` as written; with its whitespace removed (a value split over lines); as base64 or base64url at any of the three alignments, wrapped or not; as hex in either case; percent or form encoded. Every string inside a `.json` file is searched past its escapes. A secret of fewer than 8 characters cannot be matched without false hits, so the guard answers `invalid` to everything until the host drops it. |
 | `secret_shape` | AWS access key ids (`AKIA`, `ASIA`), Google API keys, private-key blocks (public keys and certificates are fine), GitHub tokens, `sk-` keys, Slack tokens, JWTs, and a URL with a password (`user:pass@`; `user@` alone is fine). |
 | `invisible_unicode` | Zero-width, bidirectional, tag, variation-selector, private-use and control characters, in a path or a text. U+FE0F after an emoji, a joiner inside an emoji sequence, and a joiner or non-joiner between letters of a script that needs them (Persian and Urdu, the Indic scripts, Khmer, Myanmar, Sinhala) are text. |
-| `case_data` | Any value of 4 or more characters from `caseValues`, matched without case, over Unicode compatibility forms and with whitespace ignored (a value split by a line break is still found), in a text or a path. A learning states the rule, never the case. |
+| `case_data` | Any value of 4 or more characters from `caseValues`, matched without case, over Unicode compatibility forms and with whitespace ignored (a value split by a line break is still found), in what the agent wrote: candidate texts, evidence and ids, the text of any other file, and the workflow or skill name in a path. Generated text is not checked, because a short value turns up in it by chance: a call id (never scanned, only checked to be printable ASCII), the run id, seed and digests (a hex run of 32 characters or more is skipped, unless a case value is itself such a hash), and the frame of an inbox that is exactly what `renderInbox` makes of its candidates. A learning states the rule, never the case. |
 | `rules_locked` | `AGENTS.md` and `agent.json` for every role, in any spelling (`isRulesLocked`). |
 | `path_not_allowed` | A path outside the role's own, any `.git` segment in any spelling, and a path that is not a plain relative one (`..`, `.`, `//`, a backslash, an absolute path, a control character). |
 | `too_large`, `too_many` | Over a cap in `CAPS`: bytes per text, per evidence list, per file, per inbox; files per write; new learnings and `used` marks per run. A refused write is never truncated. |
