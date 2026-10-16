@@ -82,6 +82,31 @@ test("a run released but not carried back when its server stopped is carried bac
   assert.equal((await readAgentHome({ dir: join(data, "calc") })).runs[runId].outcome, "completed");
 });
 
+test("a run store still locked when the next server reads it is read again once free, so the run still ends final", async (t) => {
+  const { data, runId, pid } = await crashMidRun(t, "Answer soon.");
+  await sleep(2_500);
+  process.kill(pid, "SIGTERM");
+  for (let i = 0; alive(pid); i++) {
+    assert.ok(i < 200, "the run's process exits on SIGTERM");
+    await sleep(50);
+  }
+  // Another holder keeps the run's store locked across the next server's start, as the run's own process does until it exits.
+  const store = new DatabaseSync(join(data, "calc", "runs", runId, "store", "run.sqlite"), { timeout: 0 });
+  store.exec("PRAGMA locking_mode = EXCLUSIVE");
+  store.exec("BEGIN EXCLUSIVE");
+  store.exec("COMMIT");
+  let busy;
+  const refused = new Promise((resolve) => (busy = resolve));
+  const next = await startServe({ data, port: 0, faux: FAUX, carryBackRetry: { delaysMs: Array(20).fill(50), onBusy: (id) => busy(id) } });
+  t.after(() => next.close());
+  assert.equal(await Promise.race([refused, sleep(10_000).then(() => "the locked store was never tried again")]), runId);
+  store.close();
+  const api = client(next.baseUrl, next.token);
+  const { last } = await follow(api, runId, ["completed"]);
+  assert.equal(last.final, true);
+  assert.equal((await readAgentHome({ dir: join(data, "calc") })).runs[runId].outcome, "completed");
+});
+
 test("Idempotency-Key answers outlive a restart for the retention capabilities state", async (t) => {
   const data = join(await scratch(t), "agents");
   const one = await startServe({ data, port: 0, faux: FAUX });
