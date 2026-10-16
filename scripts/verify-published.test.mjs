@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { execFile } from 'node:child_process';
+import { createServer } from 'node:http';
+import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { verifyPublished, waitForRegistryVersions, registryBackoffMs, PACKUMENT_ACCEPT } from './verify-published.mjs';
+import { verifyPublished, waitForRegistryVersions, registryBackoffMs, installRegistryConsumer, PACKUMENT_ACCEPT } from './verify-published.mjs';
 import { releasePackageNames, releasePackages } from './release-preflight.mjs';
 
+const exec = promisify(execFile);
 const bytes = Buffer.from('verified package fixture bytes');
 const version = '0.1.0-beta.1';
 const packages = releasePackages.map(directory => ({ directory, name: releasePackageNames[directory], version,
@@ -192,3 +196,80 @@ test('slow requests cannot stretch the wait past its wall budget', async () => {
   const polled = polls / (2 * packages.length);
   assert.ok(polled > 20 && polled < 60, `${polled} polls`);
 });
+
+// A registry of two families: pi-coding-agent 1.1.0 imports an export of pi-codemode that pi-codemode 1.2.0 dropped, and its range ^1.1.0 reaches 1.2.0.
+const FAMILY = '@earendil-works/';
+async function familyRegistry(work) {
+  const tarballs = new Map();
+  const versions = {};
+  const add = async (name, version, files, dependencies = {}) => {
+    const source = join(work, `src-${name.replace('/', '-')}-${version}`);
+    await mkdir(join(source, 'package'), { recursive: true });
+    await writeFile(join(source, 'package/package.json'), JSON.stringify({ name, version, type: 'module', dependencies, exports: { '.': './index.js', ...(files['declarations.js'] ? { './declarations': './declarations.js' } : {}) } }));
+    for (const [file, text] of Object.entries(files)) await writeFile(join(source, 'package', file), text);
+    const archive = join(work, `${name.replace('/', '-')}-${version}.tgz`);
+    await exec('tar', ['-czf', archive, '-C', source, 'package']);
+    const data = await readFile(archive);
+    tarballs.set(`${name.replace('/', '-')}-${version}.tgz`, data);
+    (versions[name] ??= {})[version] = { name, version, dependencies, dist: { integrity: `sha512-${createHash('sha512').update(data).digest('base64')}`, shasum: createHash('sha1').update(data).digest('hex'), tarball: `${base}/tarballs/${name.replace('/', '-')}-${version}.tgz` } };
+  };
+  let base = '';
+  const server = createServer((request, response) => {
+    const path = decodeURIComponent(new URL(request.url, 'http://registry.test').pathname);
+    if (path.startsWith('/tarballs/') && tarballs.has(path.slice('/tarballs/'.length))) return response.end(tarballs.get(path.slice('/tarballs/'.length)));
+    const name = path.slice(1);
+    if (!versions[name]) { response.statusCode = 404; return response.end('{}'); }
+    const newest = Object.keys(versions[name]).sort().at(-1);
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify({ name, 'dist-tags': { latest: newest }, versions: versions[name] }));
+  });
+  await new Promise(done => server.listen(0, '127.0.0.1', done));
+  base = `http://${'127.0.0.1'}:${server.address().port}`;
+  await add(`${FAMILY}pi-codemode`, '1.1.0', { 'index.js': 'export {};\n', 'declarations.js': "export const MCP_TYPESCRIPT_PREAMBLE = 'preamble';\n" });
+  await add(`${FAMILY}pi-codemode`, '1.2.0', { 'index.js': 'export {};\n', 'declarations.js': "export const MCP_DECLARATIONS = 'declarations';\n" });
+  await add(`${FAMILY}pi-coding-agent`, '1.1.0', { 'index.js': "import { MCP_TYPESCRIPT_PREAMBLE } from '@earendil-works/pi-codemode/declarations';\nexport const preamble = MCP_TYPESCRIPT_PREAMBLE;\n" }, { [`${FAMILY}pi-codemode`]: '^1.1.0' });
+  return { registry: `${base}/`, close: () => new Promise(done => server.close(done)) };
+}
+const familyLock = { [`node_modules/${FAMILY}pi-coding-agent`]: { version: '1.1.0', dependencies: { [`${FAMILY}pi-codemode`]: '^1.1.0' } }, [`node_modules/${FAMILY}pi-codemode`]: { version: '1.1.0' } };
+async function inRegistryFixture(fn) {
+  const work = await mkdtemp(join(tmpdir(), 'agentrun-family-registry-'));
+  const registry = await familyRegistry(work);
+  try {
+    const root = join(work, 'root'); const consumer = join(work, 'consumer');
+    await mkdir(root); await mkdir(consumer);
+    await writeFile(join(root, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: familyLock }));
+    const env = { ...process.env, npm_config_cache: join(work, 'cache'), npm_config_userconfig: join(work, 'npmrc'), npm_config_update_notifier: 'false' };
+    await fn({ root, consumer, registry: registry.registry, run: (command, args, options) => exec(command, args, { ...options, env }), load: () => exec(process.execPath, ['-e', "import('@earendil-works/pi-coding-agent').then(m => console.log(m.preamble))"], { cwd: consumer, env }) });
+  } finally { await registry.close(); await rm(work, { recursive: true, force: true }); }
+}
+
+test('the control: a consumer with no pins lands on the codemode that dropped the export, and the coding agent dies on import', () => inRegistryFixture(async ({ consumer, registry, run, load }) => {
+  await writeFile(join(consumer, 'package.json'), JSON.stringify({ name: 'control', private: true, type: 'module' }));
+  await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', `--registry=${registry}`, `${FAMILY}pi-coding-agent@1.1.0`], { cwd: consumer });
+  assert.equal(JSON.parse(await readFile(join(consumer, 'node_modules/@earendil-works/pi-codemode/package.json'), 'utf8')).version, '1.2.0');
+  await assert.rejects(load(), /MCP_TYPESCRIPT_PREAMBLE/);
+}));
+test('the registry consumer pins a family edge to the version the repository lockfile holds, so the coding agent imports', () => inRegistryFixture(async ({ root, consumer, registry, run, load }) => {
+  const lock = await installRegistryConsumer(consumer, { requested: [`${FAMILY}pi-coding-agent@1.1.0`], root, registry, run });
+  assert.equal(lock.packages[`node_modules/${FAMILY}pi-codemode`].version, '1.1.0');
+  assert.equal((await load()).stdout.trim(), 'preamble');
+}));
+test('the registry consumer fails when the pins cannot be met', () => inRegistryFixture(async ({ root, consumer, registry, run }) => {
+  await writeFile(join(root, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: { ...familyLock, [`node_modules/${FAMILY}pi-codemode`]: { version: '1.0.9' } } }));
+  await assert.rejects(installRegistryConsumer(consumer, { requested: [`${FAMILY}pi-coding-agent@1.1.0`], root, registry, run }), /ETARGET|No matching version/);
+}));
+test('the installed tree is checked against the lockfile: an install that succeeds on a version the lockfile does not hold fails', () => inRegistryFixture(async ({ root, consumer, registry, run }) => {
+  // The install is honest, then the consumer's lockfile is rewritten as if npm had resolved the edge to the newer minor.
+  const drifting = async (command, args, options) => {
+    const done = await run(command, args, options);
+    if (command === 'npm' && args[0] === 'install') {
+      const path = join(consumer, 'package-lock.json');
+      const lock = JSON.parse(await readFile(path, 'utf8'));
+      lock.packages[`node_modules/${FAMILY}pi-codemode`].version = '1.2.0';
+      await writeFile(path, JSON.stringify(lock));
+    }
+    return done;
+  };
+  await assert.rejects(installRegistryConsumer(consumer, { requested: [`${FAMILY}pi-coding-agent@1.1.0`], root, registry, run: drifting }), /does not hold|the repository does not hold/);
+  await installRegistryConsumer(consumer, { requested: [`${FAMILY}pi-coding-agent@1.1.0`], root, registry, run });
+}));

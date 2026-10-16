@@ -1,4 +1,5 @@
-// The lease watchdog's parts: the lapse rule on a fake clock, the sweep over a fake /proc and over real processes.
+// The lease watchdog's parts: the lapse rule on a fake clock, the sweep over a fake /proc, a scripted ps (macOS) and real
+// processes.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -6,6 +7,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { lapsed, SLOT_BEAT, SLOT_LAPSED, SLOT_LIMIT, sweep } from "../src/watchdog.ts";
+import { linuxPs, onPlatform } from "./_macos.ts";
 import { alive, killQuietly, scratchRoot, waitGone } from "./_run-support.ts";
 
 const MS = 1_000_000n;
@@ -104,20 +106,48 @@ describe("the sweep", () => {
     }
   });
 
-  it("kills real commands: a detached group with its grandchild, and a child in the parent's group; the parent lives", { timeout: 20_000 }, async () => {
-    const parent = spawn(process.execPath, ["test/fixtures/command-parent.ts"], { stdio: ["ignore", "pipe", "inherit"] });
-    let pids: { detached: number; grandchild: number; sameGroup: number } | undefined;
+  it("where there is no /proc (macOS), sweeps from one ps listing the same way, never group 1, and has no cgroup", () => {
+    const dir = scratchRoot("sweep-ps");
     try {
-      pids = JSON.parse((await createInterface({ input: parent.stdout! })[Symbol.asyncIterator]().next()).value as string);
-      for (const pid of Object.values(pids!)) assert.ok(alive(pid));
-      assert.equal(sweep(parent.pid!), 2);
-      for (const pid of Object.values(pids!)) assert.ok(await waitGone(pid), `pid ${pid} died`);
-      assert.ok(alive(parent.pid!), "the instance itself is never signalled");
+      const empty = join(dir.root, "no-proc");
+      mkdirSync(empty);
+      const rows = [...procs, { pid: 600, comm: "joined", ppid: 100, pgrp: 1 }];
+      const calls: string[] = [];
+      const ps = (file: string, args: readonly string[]) => {
+        calls.push([file, ...args].join(" "));
+        return `${rows.map((p) => `  ${p.pid}   ${p.ppid}   ${p.pgrp}`).join("\n")}\n`;
+      };
+      const sent: number[] = [];
+      assert.equal(sweep(100, { proc: empty, ps, ownCgroup: true, kill: (pid) => void sent.push(pid) }), 3);
+      assert.deepEqual(sent.sort((a, b) => a - b), [-200, 300, 600]);
+      assert.deepEqual(calls, ["/bin/ps -A -o pid=,ppid=,pgid="]);
+      assert.equal(sweep(999, { ps, kill: (pid) => void sent.push(pid) }), 0, "an instance it cannot see has nothing to sweep");
+      assert.equal(sweep(100, { ps: () => assert.fail("ps failed"), kill: (pid) => void sent.push(pid) }), 0, "nor does a ps that fails");
+      assert.equal(sent.length, 3);
     } finally {
-      parent.kill("SIGKILL");
-      for (const pid of Object.values(pids ?? {})) killQuietly(pid);
+      dir.remove();
     }
   });
+
+  const real = (name: string, via: (instance: number) => number | Promise<number>, skip: string | false = false) =>
+    it(`kills real commands${name}: a detached group with its grandchild, and a child in the parent's group; the parent lives`, { timeout: 20_000, skip }, async () => {
+      const parent = spawn(process.execPath, ["test/fixtures/command-parent.ts"], { stdio: ["ignore", "pipe", "inherit"] });
+      let pids: { detached: number; grandchild: number; sameGroup: number } | undefined;
+      try {
+        pids = JSON.parse((await createInterface({ input: parent.stdout! })[Symbol.asyncIterator]().next()).value as string);
+        for (const pid of Object.values(pids!)) assert.ok(alive(pid));
+        assert.equal(await via(parent.pid!), 2);
+        for (const pid of Object.values(pids!)) assert.ok(await waitGone(pid), `pid ${pid} died`);
+        assert.ok(alive(parent.pid!), "the instance itself is never signalled");
+      } finally {
+        parent.kill("SIGKILL");
+        for (const pid of Object.values(pids ?? {})) killQuietly(pid);
+      }
+    });
+  real("", (instance) => sweep(instance));
+  const linuxOnly = process.platform !== "linux" && "Linux only";
+  real(" through ps, as on macOS (procps)", (instance) => sweep(instance, { ps: linuxPs }), linuxOnly);
+  real(" through /bin/ps, as macOS does by default", (instance) => onPlatform("darwin", () => sweep(instance)), linuxOnly);
 });
 
 describe("the watchdog in a host started with --input-type=module", () => {

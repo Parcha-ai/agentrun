@@ -45,6 +45,12 @@ function checkedWorkflow(value: unknown): { workflow: Workflow; digest: string }
 /** Local procedure revisions, not execution state or authority. The host still
  * preflights loaded workflows against current capabilities and approves each run.
  * This is not a sandbox against a process concurrently replacing project directories.
+ *
+ * Public through `@parcha/agentrun-pi/workflows`. The constructor takes a project directory, never the
+ * workflows directory itself: records live in `<projectDirectory>/.pi/agentrun/workflows/<name>/`, the same
+ * place the extension keeps them for its `ctx.cwd`, so the extension and a host that passes that directory
+ * read each other's records. The directory is resolved once when it is used; everything under it must be
+ * real directories and regular files.
  */
 export class WorkflowStore {
   private readonly projectDirectory: string;
