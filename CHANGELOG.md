@@ -2,6 +2,93 @@
 
 ## Unreleased
 
+## 0.1.0-beta.14 (2026-10-16)
+
+- Accept pi 1.3: the `@earendil-works/pi-durable` and `@earendil-works/chord` peer ranges now end below 1.4, with the floors unchanged (1.0.4, and 1.1.0 for `@parcha/pi-browser`). pi 1.3.0 pins its own packages to exact versions, so an install is all 1.2 or all 1.3; CI runs every package's whole suite on a 1.3.0 family as well as on 1.2.0.
+  - On pi-ai 1.3, a tool call whose arguments are not a JSON object reaches no tool: pi-durable refuses it and shows the model the text it sent. A durable node's `submit` then spends none of its submissions. Before 1.3 the tool ran with `{}`, so `submit` answered with the schema's violations and counted one submission.
+- **`apps/viewer`: one disk panel for every demo that runs on a disk place**
+  - A lane per claim generation of the run (who held it, from when, and how it ended: released with its sealed sequence, killed or its box taken away, fenced, or replaced between two polls), the claim's events in order (the orphan flag as seen, the revoke and the takeover time, the fence), and each paid call marked made once, repeated, cut by a kill or in flight, from the shell's own counter fold.
+  - It reads the supervisor's `host` lines `run.json` (the package's `RunRecord` verbatim), `delegation`, `revoke` and `fenced`, which `RECORDING.md` section 5 now describes (draft 26). A recording with no disk line is unchanged. Viewer only: no package export.
+- **`apps/viewer`: the gallery bundles two recorded runs**
+  - `reference-job` and `ten-kills-seed21`: the reference example's job with scripted providers (no key, $0), once
+    uncut and once killed ten times and resumed, recorded at one commit from a clean checkout. `recordings/README.md`
+    says how each was recorded and what its counters show.
+  - A test holds every bundled recording to the format, with the blobs it names, and its manifest's cost and processes
+    to the counters' fold; the source cost check (`scripts/recording/fold.test.mjs`) covers the gallery too.
+  - The README says what the deploy buttons publish: this replay viewer only, which never runs an agent or calls a model
+    and asks for no key. A test parses both deploy configs and both buttons' URLs and fails on any variable, secret or
+    binding.
+  - A run of one process or one kill reads "1 process", "1 kill" in the gallery and the header.
+- A second example, the hero job: one agent reads nine electricity grid operators' public dashboards in nine browser sessions at once, vision reads two numbers from each chart, and the run ends in `snapshot.html`, a table of the nine grids with each reading linked to the screenshot it came from and the operator's published figure beside it. `npm run demo:hero` runs it on fakes with no key; `-- --kill1` kills the run inside a paid call and resumes it without paying that call twice, and `-- --record <dir>` keeps the run as a recording. The nine dashboards were checked by hand (`examples/hero/sources.json`).
+- **`apps/viewer`: a build that ships recordings as files**
+  - `node apps/viewer/build.mjs --files` (or `build(target, dir, { files: true })`), off by default, writes
+    `recordings/index.json` (each recording's id, manifest and blob paths) and a `gallery.js` that only points at it,
+    instead of embedding every recording's lines and blobs in `gallery.js`. The page lists the gallery from the index and
+    fetches a recording's lines when it is opened, its blobs at the paths the index names, with no guessing. It needs a
+    static host; the default build still opens from `file://`.
+- **`apps/viewer`: the manifest's job and store**
+  - A manifest's `job` (the job that ran, a JSON blob) and `store` (the run's store at its end, a SQLite blob, with the
+    commit and generation it was taken at), from the format's draft 24, are linked in the header: the job opens in a tab,
+    the store downloads (`.sqlite` is never opened in the viewer's page).
+  - Both count among the blobs a recording names, so a recording opened from a URL fetches them, and the viewer's format
+    check notes either one missing from `blobs/`.
+- **`apps/viewer`: the gallery is hosted on GitHub Pages**
+  - `.github/workflows/pages.yml` builds the viewer and publishes it to https://parcha-ai.github.io/agentrun/ on each
+    push to `main` that touches `apps/viewer/`, or by hand. Its token reads the repository and writes Pages; it names no
+    secret.
+  - It publishes nothing unless what was built passes `scripts/recording/gate.mjs`: every recording in it (a hidden one
+    too) passes the recording validator; a recording holds only its manifest, its lines and blobs named by their own
+    SHA-256; every published text file is free of credential shapes and machine paths; and the gallery embeds exactly the
+    recordings beside it. An empty gallery fails.
+  - `scripts/recording/gate.test.mjs` refuses each of those; `scripts/pages-workflow.test.mjs` holds the workflow's
+    triggers, permissions and step order, and runs its gate step as written.
+- **`apps/viewer`: a panel with nothing in a recording is not drawn**
+  - A panel is drawn only for a recording that holds a line it is for: one its new optional `shows(line)` says yes to,
+    or, without `shows`, one it `accepts`. With none, the shell draws nothing for it, not even its title. The shell
+    judges this once over the whole recording, never up to the stop, so no panel appears or vanishes mid-scrub.
+  - The transport panel declares `shows` for `transport` lines: it reduces the counters' lines for its own counters, so
+    until now it drew an empty titled box on every run without transport lines.
+- **`apps/viewer`: a scripted run says so**
+  - The cost on the counters strip names a run whose manifest says `providers: "scripted"` (at least one priced part was a
+    fake, a cassette or a script): "scripted, $0" rather than "$0.0000", or "scripted, $" and the price reported, because
+    that is not a provider's bill, though it may include real charges for the other parts. A baseline's strip
+    uses the baseline's own `providers`.
+  - The header's meta line says "scripted providers" or "real providers" when the manifest says which.
+- The viewer's panel contract can draw motion by time: a node's `vars` set CSS custom properties (numbers only), `ViewContext.now` is the playback clock, an `animated` panel is redrawn about ten times a second while playing, and a `featured(lines)` panel is shown first with the playback controls under it (the first registered one wins). `?t=<seconds>` opens the viewer at a time. Panels that set none of these draw exactly as before; see `apps/viewer/PANELS.md`.
+- The viewer's transport panel is now a stage: one row per environment, the session token riding a rail between them, a flight shown as its own phases (drain, seal, ship, take, resume) with the token flying while the bytes ship, a whole-box kill as a red flash with the token left as a ghost and popping back in the rebuilt box, a process kill as a blink in place, a skipped wait as a hatched band with its seconds, the browser tile beside the lane it runs in, and the film's card at the end. The token, the lanes' marks and the status line all read one answer for where the session is. It is a pure view over the same reduced state (plus the box's lane and the lane the browser runs in), in light and dark and at phone width, and with `prefers-reduced-motion` it does not animate and tells the same states in words. It uses the new `featured`, `animated`, `vars` and `now` shell additions.
+- The reference example's reconcile now hands a host's `rerun` the args the journal kept for an effect (`RecoveryEffect.args`). Before, a call admitted but never sent (a kill between admission and the send) could not be sent again after the kill, and the resumed run was refused with `FROZEN_EFFECT_UNKNOWN` even for a host that could rerun it. With a `rerun`, the resumed process now sends it exactly once.
+- The viewer's transport panel no longer reads a host kill line with no `kind` as a whole-box kill: a kill's kind is `process` or `box`, an absent kind means a process, and only `box` is a box (the strip counts follow). A process that comes back with no box named no longer prints "at box ?". A recording with no transport lines now draws nothing from this panel, so a reference run's plain process kills no longer open an empty "Boxes" heading and a kills strip.
+- `pi-1-2` fails unless every package with a pi-family peer is in its leg: each one is built, type-checked and tested on pi 1.2.0, so a package whose ranges stop accepting 1.2 fails CI instead of leaving the leg.
+- The reference kill test no longer claims that the same seed lands every kill at the same place: under load, later landings depend on the order concurrent work takes inside a process. It asserts what is true: the same seed draws the same first kill's plan, another seed draws another, and every ledger check and gate passes on each run.
+- `scripts/changes.mjs --check`, which the required `verify` job runs on pull requests and in the merge queue, fails a release commit (a workspace package version differs from the merge base's) while `changes/` holds anything but `README.md`: `release commit carries unfolded fragments: <names>; refold on current main`. The tag now always goes on the release pull request's own merge commit, with no separate fold pull request.
+- **The examples' Since cells are enforced by the stranger test**
+  - `scripts/stranger.mjs` reads the examples index (`packages/pi-durable-disk/examples/README.md`) and, for every keyless
+    example whose Since is at or below the registry's `beta` tag, installs exactly that published version in an empty
+    directory (the index's own install line), copies the example's files, runs `node main.ts` and expects its `ok:` line. An
+    example above the beta is skipped with the reason printed. It runs in the existing `stranger` job through the
+    `pi-durable-disk` spec (`examples` key), so it needs no workflow change; `node scripts/stranger.mjs pi-durable-disk
+    --examples` runs only this check. An example that claims a Since its imports do not have fails, naming the missing export.
+- The validator sweep collector (`spec/lean/sweep/collect.mjs`) takes `--test-concurrency <n>`, or `TEST_CONCURRENCY=<n>`, and passes it to the DSL, Pi and example suites it runs. With neither set, node's default is unchanged.
+- The release's last step, `verify-published`, installs its consumer with the same `@earendil-works` pins the package check uses, and fails if the install lands on a version the repository lockfile does not hold. Before, the consumer floated pi-codemode to a release that dropped an export pi-coding-agent imports, and the step failed after every package had published.
+
+  The floor legs of `scripts/pi-leg.mjs` pin the packages the family depends on outside it (pi-codemode and pi-mcp under the coding agent) at the leg's version too, and fail a leg whose coding agent loads one at another version. Before, they stayed green only because the lockfile held pi-codemode 1.1.0; a refresh to 1.2.0, which dropped an export that coding agents 1.0.4 and 1.1.x import, would have broken them.
+- The install line and the requirement in the package README name Pi 1.2.0, the tested host. `npm install -g @earendil-works/pi-coding-agent@1.1.0` now installs a Pi that crashes on start: its `^` range pulls `pi-codemode` 1.2.0, which no longer exports `MCP_TYPESCRIPT_PREAMBLE`.
+- **`apps/viewer/RECORDING.md` follows the format's draft 25**
+  - A supervisor's `kill` line may say what was killed: `kind` is `process` when only the run's process died and `box`
+    when its whole machine or sandbox was taken away. Absent means `process`, and a panel never guesses `box`.
+  - A JSON result blob may be `agentrun.cited/1`: rows of a label, a value and its cites, each naming a blob, a look or
+    both, with a fragment in pi-vision's form, and optionally the `url` the evidence was read from and the time `at`. A
+    cite with a url and no blob or look is shown as linked, not kept; a row with no cite says on screen that it cites
+    nothing.
+  - The manifest may name the `job` that ran and the run's `store` at the end, each as a blob, and other recorded runs
+    of the same demo in `see_also`, linked only.
+  - Repeated and asked twice count the browser's replay-unsafe page actions, by `(conv, tool, codeSha)` from the session
+    records' `pendingEffect` entries: each later dispatch of an action that already reached the page counts once, and one
+    after a dispatch that shows no sign of reaching it is possible, never proven. A recording that keeps only the latest
+    session records shows page actions not measured.
+  - A look live lines show started is not a possible extra payment when a later process filed its key as kept: that
+    filing is the same answer read back, already counted.
+
 ## 0.1.0-beta.13 (2026-10-14)
 
 - `@parcha/agentrun-pi/durable` reads and writes tool results the same way on pi-durable 1.0.4 to 1.2.x, in one build; pi-durable 1.2 names a tool result's blocks `output` instead of `content` and reads a result that has only `content` as empty, with no error. The peer ranges do not move yet.
