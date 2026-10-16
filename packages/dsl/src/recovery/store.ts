@@ -8,8 +8,18 @@
  *  the digest of each input it covers, by name, so that a refused open names the inputs that moved. */
 export type RecoveryBinding = { binding: string; inputs?: Record<string, string> };
 
-/** A decision recorded beside the state, with the revision of the commit that wrote it. */
-export type RecoveryNote = { revision: number; kind: "escalation" | "handoff" | "inherited"; detail: unknown; at: string };
+/** A decision recorded beside the state, with the revision of the commit that wrote it. `layout` says once per open
+ *  that the driver keeps the whole state in one record although the host asked for the keyed layout, and why. */
+export type RecoveryNote = { revision: number; kind: "escalation" | "handoff" | "inherited" | "layout"; detail: unknown; at: string };
+
+/** A map item's record, as a store keeps it beside the state: plain JSON the driver writes and reads back. The store
+ *  reads one field of it, `effects`: the ids of the effects admitted with this item as their owner. */
+export type RecoveryItem = { effects: string[]; [field: string]: unknown };
+
+/** What a write keeps beside the state, in the same commit: map items' records by item path, each replacing the one
+ *  before it whole, and states by their digest (`canonicalHash`), each written once and never changed. Computed with
+ *  the commit's revision, after the state. */
+export type RecoveryParts = { items?: Record<string, RecoveryItem>; states?: Record<string, unknown> };
 
 /** The external call an effect stands for: the tool it calls and the hash of the arguments it calls it with
  *  (`canonicalHash` of the arguments). A continuation's own call is keyed the same way, so a call that repeats an
@@ -38,10 +48,11 @@ export type RecoveryJournal = {
   effect(id: string): RecoveryEffect | undefined;
   notes(): RecoveryNote[];
   /** Commit a state computed with the commit's own revision, so a row that names its revision is never durable without
-   *  it, and a note when the state records a decision. Resolves to that revision. */
-  save(state: (revision: number) => unknown, note?: Pick<RecoveryNote, "kind" | "detail">): Promise<number>;
-  /** Commit the state, and a note when the state records a decision. Resolves to the commit's revision. */
-  save(state: unknown, note?: Pick<RecoveryNote, "kind" | "detail">): Promise<number>;
+   *  it, and a note when the state records a decision, and the parts that go with it. Resolves to that revision. */
+  save(state: (revision: number) => unknown, note?: Pick<RecoveryNote, "kind" | "detail">, parts?: (revision: number) => RecoveryParts): Promise<number>;
+  /** Commit the state, and a note when the state records a decision, and the parts that go with it. Resolves to the
+   *  commit's revision. */
+  save(state: unknown, note?: Pick<RecoveryNote, "kind" | "detail">, parts?: (revision: number) => RecoveryParts): Promise<number>;
   /** Commit a note with no state change. Resolves to the commit's revision. */
   note(kind: RecoveryNote["kind"], detail: unknown): Promise<number>;
   /** Admit an effect before it is dispatched, with the state that admits it, in one commit, and the external call it
@@ -49,18 +60,27 @@ export type RecoveryJournal = {
    *  later open. `args` are the call's arguments as the driver admitted it, kept with the effect as the host's door is sent them
    *  (an optional field: a record without them reads as it always did). A store that does not keep them leaves a call that was
    *  admitted and never sent unsettleable: a host's `reconcile` cannot re-send it, and the resume refuses it
-   *  (`FROZEN_EFFECT_UNKNOWN`). An id already admitted is returned as it stands and nothing is written. */
-  admit(id: string, name: string, argsHash: string, state: unknown, session?: string | null, intent?: RecoveryIntent, args?: unknown): Promise<"new" | RecoveryEffect>;
+   *  (`FROZEN_EFFECT_UNKNOWN`). An id already admitted is returned as it stands and nothing is written. `owner` names the
+   *  map item whose record lists the effect, written in `parts` in the same commit: a store that keeps parts lists the
+   *  effect there, and needs not list it again. */
+  admit(id: string, name: string, argsHash: string, state: unknown, session?: string | null, intent?: RecoveryIntent, args?: unknown, parts?: (revision: number) => RecoveryParts, owner?: string): Promise<"new" | RecoveryEffect>;
   /** Complete an admitted effect with its result, and the state that follows, in one commit. An effect completes once,
    *  and never without an admission. With no state given, the state stays as this open found it: that is how an
    *  operator reconciles an unknown effect. */
-  complete(id: string, result: unknown, state?: unknown): Promise<void>;
+  complete(id: string, result: unknown, state?: unknown, parts?: (revision: number) => RecoveryParts): Promise<void>;
   /** Keep the outside calls an admitted effect made, whether or not the effect completes: the list given replaces the one the
    *  effect held, and the effect's `calls` carries it from then on, at every later open. They are evidence for the host; no
    *  resume depends on them. A caller that adds to the calls an earlier process kept passes the earlier ones first. */
   called(id: string, calls: unknown): Promise<void>;
   /** Let go of the journal. No later commit is made through this open, and the next open is the next generation. */
   close(): Promise<void>;
+  /** The records of the map items at `paths`, as the last commit that wrote each left it (undefined for one never
+   *  written), so a driver reads back what it wrote in `parts`. The effects they list are then in `effects()` too.
+   *  A store that keeps parts has both `items` and `stateOf`; a store without them cannot keep the keyed layout, and the
+   *  driver keeps the whole state in one record there. */
+  items?(paths: string[]): Promise<Array<RecoveryItem | undefined>>;
+  /** The state written in `parts` under `sha256`, or undefined. */
+  stateOf?(sha256: string): Promise<unknown>;
 };
 
 /** Where one run's journal lives. `open` takes ownership of it: a journal that is already open is refused, a binding

@@ -33,6 +33,8 @@ lake exe conformance
 lake exe validator-sweep .lake/validator-corpus.json
 ```
 
+The collector runs the DSL, Pi and example suites with a plain `node --test`, so at node's default concurrency (every core). On a shared machine pass `--test-concurrency <n>` (`node spec/lean/sweep/collect.mjs --test-concurrency 8 spec/lean/.lake/validator-corpus.json`) or set `TEST_CONCURRENCY=<n>`; the flag wins, and with neither node's default is unchanged.
+
 `lake build` checks the proofs and their assumptions. Conformance cases compare execution results; the sweep checks that workflows accepted by TypeScript in the collected corpus are also accepted by the model. Review expected-result changes before accepting them. Do not update fixtures merely to make a changed implementation pass.
 
 ### Changing recovery behavior

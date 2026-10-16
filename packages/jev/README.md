@@ -48,6 +48,21 @@ const runJudge = createJevRunner({
 });
 ```
 
+### Through OpenRouter
+
+Jev is also served by OpenRouter's System One path, on the same request shape. Choose it with `provider`:
+
+```ts
+import { createJevRunner, jevProviderFromEnv } from "@parcha/agentrun-jev";
+
+const runJudge = createJevRunner({ provider: "openrouter" });             // key: apiKey, else OPENROUTER_API_KEY
+const byEnv = createJevRunner({ provider: jevProviderFromEnv(process.env) }); // OpenRouter only when only OPENROUTER_API_KEY is set
+```
+
+`provider: "openrouter"` sends to `https://openrouter.ai/api/v1/systemone` (an explicit `baseURL` wins) and defaults the model to `~typesafe/jev-latest`; pin `typesafe/jev-1.14` when a result must be reproducible. It never falls back to `TYPESAFE_API_KEY`: with no OpenRouter key it is a configuration error. The default provider is `typesafe` and nothing changes for it. `provider` cannot be combined with `client`.
+
+Cost: when the response reports `usage.cost` (USD) it is `cost_usd`; otherwise a configured `pricing` estimate is used; otherwise `cost_usd` is `null`, never 0. A `usage` with a cost and no token counts is accepted and returns `usage: null`. Requests over about 32 KB of state run in the provider's slower long-context mode.
+
 The official `@typesafe-ai/sdk` resolves `TYPESAFE_API_KEY` and `TYPESAFE_BASE_URL`. Explicit `apiKey` and `baseURL` options take precedence. An API root ends before `/v1/systemone`. Set `fetch` for a custom transport, or supply a `client` with a `systemOne(request, options)` method. A custom client must honor the request signal and disable its own retries; it owns its credentials and cannot be combined with transport options.
 
 The adapter retries transient HTTP 408, 429, 5xx responses and connection failures with bounded exponential delays. SDK retries are disabled. Validation failures and other HTTP errors do not retry. The deadline and either the runner or per-call signal interrupt both requests and backoff. Cancellation bounds when the adapter returns; an uncooperative custom client can still continue its own work.
