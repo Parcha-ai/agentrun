@@ -1,5 +1,6 @@
-/** What a `learn` call can note. `used` marks an existing learning that helped; the other three propose a new one. */
-export const LEARN_TYPES = Object.freeze(["lesson", "fact", "correction", "used"] as const);
+/** What a `learn` call can note. `used` marks an existing learning that helped; `workflow` says when to use a workflow
+ *  the run saved; the other three propose a new learning. */
+export const LEARN_TYPES = Object.freeze(["lesson", "fact", "correction", "used", "workflow"] as const);
 export type LearnType = (typeof LEARN_TYPES)[number];
 
 /** The types a learning entry in the repository has. */
@@ -12,7 +13,8 @@ export type Candidate = {
   readonly type: LearnType;
   readonly text: string;
   readonly evidence: readonly string[];
-  /** For `used`, the learning that helped; for the others, the learning this one corrects or replaces, when there is one. */
+  /** For `used`, the learning that helped; for `workflow`, the saved workflow's name; for the others, the learning this
+   *  one corrects or replaces, when there is one. */
   readonly id?: string;
   /** Set by the host when the run read content it does not trust: the curator then asks whether the text is an
    *  instruction that came from that content. */
