@@ -3,6 +3,8 @@
 // fits and a window cut from it when one is asked. Runs in the `vision-binaries` job, where a missing ffmpeg fails it.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { DEFAULT_LIMITS, VIDEO_FRAMES_PER_READ, imageHeader, readMedia, resolveLimits } from "@parcha/pi-vision";
@@ -54,4 +56,18 @@ test("a lead that takes video gets the file when it fits and a window cut from i
   const past = await r.read({ path: "clip.mp4", from_s: 30 });
   assert.equal(past.isError, true);
   assert.match(text(past), /^Cannot read clip\.mp4: from_s \(30\) is past the end of the video \(12\.00s\)\.$/);
+});
+
+test("a read of a video window that misses is filed with the video, its kind, its hash and the window asked", { skip }, async (t) => {
+  const dir = await fixtureDir("pi-vision-read-video-miss-");
+  t.after(() => dir.remove());
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=10:duration=12", "-c:v", "libx264", "-pix_fmt", "yuv420p", `${dir.path}/clip.mp4`]);
+  const filed = [];
+  const env = new NodeExecutionEnv({ cwd: dir.path });
+  const setup = { limits: resolveLimits(undefined, { video: { native: true, inlineBytes: 2000 } }), eyes: undefined, providers: [ffmpegProvider()], sources: {}, scope: { label: "n", deriveDir: `${dir.path}/evidence/n/media` }, evidence: { file: async (label, record) => { filed.push(record); return { path: `evidence/${label}/1-look.md` }; } } };
+  const out = await readMedia(env, { path: "clip.mp4", from_s: 2, to_s: 5 }, { conversationId: "c1", callId: "t1", model: undefined, signal: undefined }, setup);
+  assert.equal(out.details.miss.code, "over_budget");
+  const [record] = filed;
+  const sha256 = createHash("sha256").update(readFileSync(`${dir.path}/clip.mp4`)).digest("hex");
+  assert.deepEqual([record.args.path, record.args.from_s, record.args.to_s, record.facts.kind, record.facts.sha256, record.facts.fragment], ["clip.mp4", 2, 5, "video", sha256, "t=2,5"]);
 });
