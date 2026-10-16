@@ -794,9 +794,10 @@ id and directory as the supervisor computed them.
     break, the iterator yields one `{ kind: "signals-failed", code, message }` and ends, so a parked runner never waits
     with no word of why. `code` is the failing read's own error code when it has one (`CONTROL_API_FAILED` for a read
     that timed out), else `SIGNALS_FAILED`. The iterator never rejects.
-  - A request names `point` and `n`; every other field passes through unchanged, so a per-attempt nonce the supervisor
-    put in the order's env reaches its check. The place's token never goes into a request: on a disk it is the mount
-    token, and the app never holds it.
+  - A request names `point` and `n`, and every other field it carries stays in the signal's `crossing`, except the
+    per-attempt nonce the supervisor put in the order's env. That one is lifted to the signal's own `nonce` (when it is a
+    string), where the supervisor reads it for its check, as from the local place. The place's token never goes into a
+    request: on a disk it is the mount token, and the app never holds it.
   - `release()` stops every instance the place started and removes every token it minted. What it could not stop or
     remove, it reports (`RELEASE_FAILED`) and tries again on the next `release()`. The run's directory stays
     (`deleteRunTree`).

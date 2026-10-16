@@ -169,9 +169,9 @@ describe("localPlace signals", () => {
     void first.then(() => (settled = true));
     await sleep(0);
     assert.equal(settled, false, "half a request is not one");
-    writeFileSync(`${requestFile(1)}.tmp`, JSON.stringify({ point: "paid-call.acknowledged", n: 2, pid: 7 }));
+    writeFileSync(`${requestFile(1)}.tmp`, JSON.stringify({ point: "paid-call.acknowledged", n: 2, pid: 7, nonce: "ab12" }));
     renameSync(`${requestFile(1)}.tmp`, requestFile(1));
-    assert.deepEqual(await first, { done: false, value: { kind: "kill-request", crossing: { point: "paid-call.acknowledged", n: 2, pid: 7 } } });
+    assert.deepEqual(await first, { done: false, value: { kind: "kill-request", crossing: { point: "paid-call.acknowledged", n: 2, pid: 7 }, nonce: "ab12" } }, "the nonce at the signal's top");
     assert.deepEqual(await it1.next(), { done: true, value: undefined }, "one request per attempt");
 
     const it2 = place.signals!(2)[Symbol.asyncIterator]();
@@ -441,9 +441,21 @@ describe("archilPlace", () => {
     control.objects.set(key, '{"point":"paid-call.ackn');
     await sleep(40);
     assert.equal(settled, false, "half a request is not one");
-    control.objects.set(key, JSON.stringify({ point: "paid-call.acknowledged", n: 1, nonce: "0f1e" }));
-    assert.deepEqual(await first, { done: false, value: { kind: "kill-request", crossing: { point: "paid-call.acknowledged", n: 1, nonce: "0f1e" } } }, "every field passes through");
+    control.objects.set(key, JSON.stringify({ point: "paid-call.acknowledged", n: 1, pid: 4, nonce: "0f1e" }));
+    assert.deepEqual(
+      await first,
+      { done: false, value: { kind: "kill-request", crossing: { point: "paid-call.acknowledged", n: 1, pid: 4 }, nonce: "0f1e" } },
+      "the nonce is the signal's, read at its top, and not the crossing's; every other field stays in the crossing",
+    );
     assert.deepEqual(await it3.next(), { done: true, value: undefined });
+
+    // No nonce, or one that is not a string: the signal has no nonce field, and the crossing none either.
+    for (const [request, attempt] of [[{ point: "p", n: 2 }, 5], [{ point: "p", n: 2, nonce: 7 }, 6]] as const) {
+      control.objects.set(`runs/${ID}/signals/kill-${attempt}.json`, JSON.stringify(request));
+      const got = (await at.signals!(attempt)[Symbol.asyncIterator]().next()).value as Record<string, unknown>;
+      assert.deepEqual(got, { kind: "kill-request", crossing: { point: "p", n: 2 } }, JSON.stringify(request));
+      assert.ok(!("nonce" in got), "no nonce field at all");
+    }
 
     control.hangUnder = `runs/${ID}/signals/`;
     const it4 = at.signals!(4)[Symbol.asyncIterator]();
@@ -556,6 +568,7 @@ describe("archilPlace", () => {
     for (const [error, code] of [
       [Object.assign(new Error("AccessDenied"), { status: 403 }), "SIGNALS_FAILED"],
       [Object.assign(new Error("getObject did not answer in 10000 ms"), { code: "CONTROL_API_FAILED" }), "CONTROL_API_FAILED"],
+      [Object.assign(new Error(`AccessDenied ${"x".repeat(1_000)}`), { status: 403 }), "SIGNALS_FAILED"],
     ] as const) {
       const it2 = at.signals!(2)[Symbol.asyncIterator]();
       control.failUnder = { prefix, error };
@@ -563,7 +576,9 @@ describe("archilPlace", () => {
       assert.equal(failed.done, false, JSON.stringify(failed));
       assert.equal(failed.value.kind, "signals-failed");
       assert.equal(failed.value.code, code);
-      assert.match(failed.value.message, new RegExp(`failed for 200 ms: ${error.message}`));
+      assert.ok(`reading the kill request failed for 200 ms: ${error.message}`.startsWith(failed.value.message), failed.value.message);
+      assert.ok(failed.value.message.length <= 240, `the whole message is capped: ${failed.value.message.length} characters`);
+      assert.match(failed.value.message, /^reading the kill request failed for 200 ms: AccessDenied|^reading the kill request failed for 200 ms: getObject/);
       assert.deepEqual(await nextOf(it2), { done: true, value: undefined }, "then the iterator ends");
       control.failUnder = null;
     }

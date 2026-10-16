@@ -57,7 +57,12 @@ export type PlaceRecovery = {
  * out), else SIGNALS_FAILED.
  */
 export type PlaceSignal =
-  | { kind: "crossing" | "kill-request"; crossing: { point: string; n: number; pid?: number; info?: Record<string, unknown> } }
+  | {
+      kind: "crossing" | "kill-request";
+      crossing: { point: string; n: number; pid?: number; info?: Record<string, unknown> };
+      /** The attempt's nonce the runner wrote into its request, lifted out of `crossing`: the supervisor honors a kill request only with the nonce it minted for that attempt. */
+      nonce?: string;
+    }
   | { kind: "signals-failed"; code: string; message: string };
 /**
  * What the supervisor hands a place factory: the run's paths as it computed them, how to take the boxes the run made,
@@ -118,6 +123,8 @@ const notThere = (error: unknown): boolean => {
   return e.status === 404 || e.statusCode === 404 || e.code === "NoSuchKey";
 };
 const STDERR_KEEP = 600;
+/** The longest message a place reports in a signal, as a kill line's. */
+const MESSAGE_KEEP = 240;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** The outcome `run.json` gives: its status and generation, and what the app put in its last detail. */
@@ -331,14 +338,16 @@ function requestSignals(read: () => Promise<string | undefined>, pollMs: number,
               if (!closed && Date.now() - failingSince >= failMs) {
                 closed = true;
                 const code = (error as { code?: unknown } | null)?.code;
-                const message = `reading the kill request failed for ${failMs} ms: ${String((error as Error | null)?.message ?? error).slice(0, 240)}`;
+                const message = `reading the kill request failed for ${failMs} ms: ${String((error as Error | null)?.message ?? error)}`.slice(0, MESSAGE_KEEP);
                 return { done: false, value: { kind: "signals-failed", code: typeof code === "string" && code ? code : "SIGNALS_FAILED", message } };
               }
             }
-            const crossing = closed || text === undefined ? undefined : requestIn(text);
-            if (crossing) {
+            const request = closed || text === undefined ? undefined : requestIn(text);
+            if (request) {
               closed = true;
-              return { done: false, value: { kind: "kill-request", crossing } };
+              // The nonce is the signal's, not the crossing's: a supervisor reads it at the top, as from any place.
+              const { nonce, ...crossing } = request;
+              return { done: false, value: { kind: "kill-request", crossing, ...(typeof nonce === "string" ? { nonce } : {}) } };
             }
             if (!closed) await unlessReturned(sleep(pollMs));
           }
@@ -354,13 +363,13 @@ function requestSignals(read: () => Promise<string | undefined>, pollMs: number,
   };
 }
 
-/** The crossing a kill request names. */
-type RequestCrossing = Extract<PlaceSignal, { crossing: unknown }>["crossing"];
+/** What a kill request file holds: the crossing, with the attempt's nonce beside its fields. */
+type RequestCrossing = Extract<PlaceSignal, { crossing: unknown }>["crossing"] & { nonce?: unknown };
 
 /**
- * The crossing a request names: `point` and `n` at least, with every other field it carries (the per-attempt nonce the
- * supervisor put in the order and checks; never the place's token); anything else (a half write, another file) is not
- * one yet.
+ * What a request names: `point` and `n` at least, with every other field it carries; the per-attempt nonce the
+ * supervisor put in the order (never the place's token) is lifted out of the crossing into the signal. Anything else (a
+ * half write, another file) is not one yet.
  */
 function requestIn(text: string): RequestCrossing | undefined {
   try {

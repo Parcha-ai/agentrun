@@ -10,6 +10,7 @@ kind: feature
   or S3 may not see it. A missing object is a request not written yet; once reads have failed otherwise for
   `signalFailMs` (60 s) without a break, the iterator yields one `signals-failed` signal (`code`, `message`) and ends.
   It never rejects.
-- A request is yielded once it names `point` and `n`, with every other field it carries, so a per-attempt nonce from the
-  supervisor's order reaches its check. The place's token (on a disk, the mount token) never goes into a request. The
+- A request is yielded once it names `point` and `n`, with every other field it carries in `crossing`, except the
+  per-attempt nonce from the supervisor's order, which is the signal's own `nonce` (`PlaceSignal.nonce`), where the
+  supervisor reads it for its check. The place's token (on a disk, the mount token) never goes into a request. The
   iterator's `return()` ends a pending `next()` even while its read is in flight.
