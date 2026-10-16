@@ -76,7 +76,7 @@ Typed questions answered by the host's judge in one request each: no tools, no s
 ### Control nodes
 
 - `chain`: non-empty `steps`, run in order.
-- `map`: `itemsPath` (an upstream list), `body` and `as`. The body sees `item` and `item_index`; `maxConcurrency` is a positive integer (default 4); `resultPath` selects one path from each completed item's state.
+- `map`: `itemsPath` (an upstream list), `body` and `as`. The body sees `item` and `item_index`; `maxConcurrency` is a positive integer (default 4); `resultPath` selects one path from each completed item's state. Without `resultPath`, and with no `as` in the body, each item's result is its whole state, the mapped list included: set `resultPath` (or an `as` in the body) for a large map; the validator warns.
 - `parallel`: at least two `branches`, each starting from the state before the parallel node. Branches write disjoint keys and never read a sibling's writes.
 - `loop`: `body`, `until` (a predicate) and an integer `maxIters` of at least 1 (no maximum), optionally an integer `expect_iters` of at least 1 (priced passes). At the bound the state passes through with `until` unmet; follow the loop with an escalate or gate on that condition.
 - `escalate`: `when` (a predicate), and non-empty `kind`, `stage` and `summary`. When the predicate holds the run stops without output and returns the escalation with its interpolated summary.

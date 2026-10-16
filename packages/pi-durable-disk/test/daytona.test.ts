@@ -362,6 +362,55 @@ test("a launcher that starts nothing and gives no reason: the error carries its 
   });
 });
 
+test("a start's own environment reaches the instance over the driver's; one that sets PATH or PDA_HOLDER, or a bad name, is refused before a box is made", async () => {
+  const w = world();
+  const h = await w.host.start(REF, TOKEN, { attempt: 2, env: { PLAN: "p2" } });
+  const spec = JSON.parse(readFileSync(join(w.box, `${h.name}.json`), "utf8")) as LaunchSpec;
+  assert.equal(spec.env.PLAN, "p2");
+  assert.deepEqual(JSON.parse(spec.env.PDA_HOLDER), h);
+  const [first] = await waitFor("the instance", () => (w.lines().length ? w.lines() : null));
+  assert.ok(first.envKeys.includes("PLAN"));
+  await w.host.stop(h);
+  const creates = w.creates.length;
+  assert.equal(spec.env.PATH, undefined, "the launcher's own PATH");
+  for (const bad of [{ "A=B": "x" }, { PATH: "/elsewhere" }, { PDA_HOLDER: "{}" }] as Record<string, string>[]) {
+    await assert.rejects(w.host.start(REF, TOKEN, { attempt: 3, env: bad }), (e: unknown) => e instanceof DaytonaHostError && e.code === "INVALID_ARGUMENT", JSON.stringify(bad));
+  }
+  assert.equal(w.creates.length, creates);
+});
+
+test("kill: the box is deleted at once, with no launcher stop and no drain; another fleet's box and a gone one are no-ops; a refused delete powers the box off first; a box kill", async () => {
+  const live = (w: ReturnType<typeof world>) => [...w.boxes.values()].filter((b) => !b.deleted).length;
+  const w = world();
+  assert.equal(w.host.kills, "box");
+  const h = await w.host.start(REF, TOKEN);
+  const before = w.calls.length;
+  const execsBefore = w.execs.length;
+  await w.host.kill(h);
+  assert.deepEqual(w.calls.slice(before).map((c) => c.op), ["get", "remove"], "read to confirm the fleet, then DELETE");
+  assert.equal(w.execs.length, execsBefore, "no launcher stop ran in the box");
+  assert.equal(live(w), 0);
+  // The fake's box is a directory of this machine: a real DELETE takes its processes with it, so the test does that.
+  await stopLaunch(w.box, String(h.name), 1_000);
+  const n = w.calls.length;
+  await w.host.kill(h); // gone
+  assert.deepEqual(w.calls.slice(n).map((c) => c.op), ["get"]);
+  const other = world();
+  const o = await other.host.start(REF, TOKEN);
+  other.boxes.get(String(o.sandboxId))!.labels = { [LABEL_FLEET]: "someone-else" };
+  await other.host.kill(o);
+  assert.equal(live(other), 1, "another fleet's box is never deleted");
+  other.boxes.get(String(o.sandboxId))!.labels = { [LABEL_FLEET]: "p9t" };
+  await other.host.stop(o);
+  const refused = world();
+  const r = await refused.host.start(REF, TOKEN);
+  refused.faults.remove.push(new DaytonaApiError(409, "Sandbox state change in progress"));
+  await refused.host.kill(r);
+  assert.deepEqual(refused.calls.slice(-3).map((c) => c.op), ["remove", "stop", "remove"]);
+  assert.equal(live(refused), 0);
+  await stopLaunch(refused.box, String(r.name), 1_000);
+});
+
 test("start: one labeled box that deletes itself on stop and dies at its TTL; the token only in an upload into the root-only directory; the instance gets it on stdin", async () => {
   const prev = process.env.DAYTONA_API_KEY;
   process.env.DAYTONA_API_KEY = DAYTONA_KEY_SENTINEL;

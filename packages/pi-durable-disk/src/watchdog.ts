@@ -1,8 +1,9 @@
 // The lease watchdog on a thread of its own. A store commit is synchronous, so a FUSE daemon that stops
 // answering blocks the instance's main thread inside the kernel, and with it every timer the main thread owns. This
-// thread never touches the mount: it reads a clock reading the main thread shares, /proc and the cgroup, and sends
-// signals. Once the lease has lapsed it kills the instance's commands on every look, until the main thread runs again,
+// thread never touches the mount: it reads a clock reading the main thread shares, /proc and the cgroup (on macOS, one
+// ps listing), and sends signals. Once the lease has lapsed it kills the instance's commands on every look, until the main thread runs again,
 // sees the flag and takes the normal fence path (exit 75).
+import * as child_process from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Worker } from "node:worker_threads";
@@ -51,20 +52,49 @@ function cgroupPids(instance, proc, sys) {
   }
 }
 
-function sweep(instance, options = {}) {
-  const proc = options.proc ?? "/proc";
-  const kill = options.kill ?? ((pid, signal) => process.kill(pid, signal));
+/** The instance's group and its direct children, from /proc. */
+function procTree(instance, proc) {
   const own = stat(proc, instance);
-  if (own === undefined) return 0;
-  const targets = new Set();
+  if (own === undefined) return undefined;
+  const children = [];
   for (const entry of fs.readdirSync(proc)) {
     const pid = Number(entry);
     if (!Number.isInteger(pid) || pid <= 0 || pid === instance) continue;
     const child = stat(proc, pid);
-    if (child === undefined || child.ppid !== instance) continue;
-    targets.add(child.pgrp === own.pgrp || child.pgrp <= 1 ? pid : -child.pgrp);
+    if (child !== undefined && child.ppid === instance) children.push({ pid, pgrp: child.pgrp });
   }
-  if (options.ownCgroup) {
+  return { pgrp: own.pgrp, children };
+}
+
+/** The same from one ps listing, where there is no /proc (macOS). */
+function psTree(instance, ps) {
+  let text;
+  try {
+    text = ps("/bin/ps", ["-A", "-o", "pid=,ppid=,pgid="]);
+  } catch {
+    return undefined;
+  }
+  const rows = [];
+  for (const line of text.split("\n")) {
+    const f = line.trim().split(/\s+/).map(Number);
+    if (f.length === 3 && f.every(Number.isInteger)) rows.push({ pid: f[0], ppid: f[1], pgrp: f[2] });
+  }
+  const own = rows.find((row) => row.pid === instance);
+  if (own === undefined) return undefined;
+  return { pgrp: own.pgrp, children: rows.filter((row) => row.ppid === instance && row.pid > 0 && row.pid !== instance) };
+}
+
+const runPs = (file, args) => child_process.execFileSync(file, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 10000 });
+
+function sweep(instance, options = {}) {
+  const proc = options.proc ?? "/proc";
+  const kill = options.kill ?? ((pid, signal) => process.kill(pid, signal));
+  const ps = options.ps ?? (options.proc === undefined && process.platform === "darwin" ? runPs : undefined);
+  const tree = ps === undefined ? procTree(instance, proc) : psTree(instance, ps);
+  if (tree === undefined) return 0;
+  const targets = new Set();
+  for (const child of tree.children) targets.add(child.pgrp === tree.pgrp || child.pgrp <= 1 ? child.pid : -child.pgrp);
+  if (options.ownCgroup && ps === undefined) {
     for (const pid of cgroupPids(instance, proc, options.sys ?? "/sys/fs/cgroup")) if (pid !== instance && pid > 0) targets.add(pid);
   }
   let sent = 0;
@@ -81,6 +111,7 @@ function sweep(instance, options = {}) {
 `;
 
 const WORKER_SOURCE = `"use strict";
+const child_process = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const { workerData } = require("node:worker_threads");
@@ -98,9 +129,11 @@ export interface SweepOptions {
   readonly proc?: string;
   readonly sys?: string;
   readonly kill?: (pid: number, signal: NodeJS.Signals) => void;
+  /** Lists processes with this ps(1) instead of reading `proc`: the default on macOS, which has no /proc, unless `proc` is given. */
+  readonly ps?: (file: string, args: readonly string[]) => string;
 }
 
-const compiled = new Function("fs", "path", `"use strict";${LIB}\nreturn { lapsed, sweep };`)(fs, path) as {
+const compiled = new Function("child_process", "fs", "path", `"use strict";${LIB}\nreturn { lapsed, sweep };`)(child_process, fs, path) as {
   lapsed(shared: BigInt64Array, now: bigint): boolean;
   sweep(instance: number, options?: SweepOptions): number;
 };
@@ -112,7 +145,7 @@ export const lapsed: (shared: BigInt64Array, now: bigint) => boolean = compiled.
  * SIGKILL the instance's commands: the process group of each direct child (pi starts each command as its own group's
  * leader), or the child alone when it shares the instance's group; with `ownCgroup`, every other process of the cgroup.
  * Never the instance or its group. A process this user may not signal (sudo's archil helpers) is skipped. Returns the
- * number of signals sent. `stat` lines are `pid (comm) state ppid pgrp ...`, read after the last `)` since comm may hold
+ * number of signals sent. Where there is no /proc (macOS) the processes come from one ps listing, and there is no cgroup. `stat` lines are `pid (comm) state ppid pgrp ...`, read after the last `)` since comm may hold
  * spaces and parentheses.
  */
 export const sweep: (instance: number, options?: SweepOptions) => number = compiled.sweep;

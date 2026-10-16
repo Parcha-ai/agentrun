@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ExecutionEnv, FileError, FileInfo, Result } from "@earendil-works/pi-durable/env";
@@ -328,4 +328,62 @@ export function randomOperation(next: () => number): { label: string; run: Opera
 	const [label, make] = choices[Math.floor(next() * choices.length)] as [string, () => Operation];
 	const run = make();
 	return { label: `${label}(${args.map((arg) => JSON.stringify(arg)).join(", ")})`, run };
+}
+
+/** The longest a command's processes may take to be gone after `exec` has returned: a start that lands late is killed after `exec` returned, best effort and short. */
+export const GONE_BOUND_MS = 15_000;
+
+/**
+ * Wait until `isRunning` says no, polling, and return as soon as it does. Fails naming `what` after `boundMs`.
+ *
+ * `exec` returns the moment an abort or a timeout is answered. A start that was still on its way then lands late and is killed by a kill that runs AFTER `exec`
+ * has returned, best effort and short by design, so a check for absence made at once can see the command still running on a loaded box. This is the check made
+ * right: the poll ends the moment the group is gone, and "best effort" can become slow but never "never", because the poll fails after the bound.
+ */
+export async function waitNotRunning(
+	isRunning: () => Promise<boolean> | boolean,
+	what: string,
+	boundMs = GONE_BOUND_MS,
+	pollMs = 250,
+): Promise<void> {
+	const deadline = Date.now() + boundMs;
+	for (;;) {
+		const left = deadline - Date.now();
+		const still = new Error(`${what} was still running ${boundMs} ms after exec returned`);
+		if (left <= 0) throw still;
+		// A check that hangs is cut at the deadline, and one that answers late does not count as success.
+		let timer: NodeJS.Timeout | undefined;
+		const limit = new Promise<never>((_, reject) => {
+			timer = setTimeout(() => reject(still), left);
+		});
+		try {
+			if (!(await Promise.race([Promise.resolve(isRunning()), limit]))) {
+				if (Date.now() > deadline) throw still;
+				return;
+			}
+		} finally {
+			clearTimeout(timer);
+		}
+		await new Promise((resolve) => setTimeout(resolve, pollMs));
+	}
+}
+
+/**
+ * The other processes of this machine that carry `name=value` in their environment: a test file marks its own process, every child it starts inherits the
+ * mark, and a child that outlives the file (a `sleep` reparented to init) still carries it. Each entry is a pid and its command line.
+ */
+export function carriersOf(name: string, value: string): { pid: number; command: string }[] {
+	const mark = `${name}=${value}`;
+	const found: { pid: number; command: string }[] = [];
+	for (const entry of readdirSync("/proc")) {
+		const pid = Number(entry);
+		if (!Number.isInteger(pid) || pid === process.pid) continue;
+		try {
+			if (!readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(mark)) continue;
+			found.push({ pid, command: readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").join(" ").trim() });
+		} catch {
+			// It ended, or it is not ours to read: not a leak of this file.
+		}
+	}
+	return found;
 }

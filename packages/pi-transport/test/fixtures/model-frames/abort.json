@@ -1,0 +1,171 @@
+{
+	"events": [
+		{
+			"type": "start",
+			"partial": {
+				"role": "assistant",
+				"content": [],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 16,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 18,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"timestamp": 1792095148217
+			}
+		},
+		{
+			"type": "text_start",
+			"contentIndex": 0,
+			"partial": {
+				"role": "assistant",
+				"content": [
+					{
+						"type": "text",
+						"text": ""
+					}
+				],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 16,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 18,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"timestamp": 1792095148217
+			}
+		},
+		{
+			"type": "text_delta",
+			"contentIndex": 0,
+			"delta": "a long answer th",
+			"partial": {
+				"role": "assistant",
+				"content": [
+					{
+						"type": "text",
+						"text": "a long answer th"
+					}
+				],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 16,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 18,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"timestamp": 1792095148217
+			}
+		},
+		{
+			"type": "error",
+			"reason": "aborted",
+			"error": {
+				"role": "assistant",
+				"content": [
+					{
+						"type": "text",
+						"text": "a long answer th"
+					}
+				],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 16,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 18,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "aborted",
+				"timestamp": 1792095148567,
+				"errorMessage": "Request was aborted",
+				"durationMs": 350
+			}
+		}
+	],
+	"frames": [
+		{
+			"type": "start",
+			"partial": {
+				"role": "assistant",
+				"content": [],
+				"api": "faux",
+				"provider": "faux",
+				"model": "faux-1",
+				"usage": {
+					"input": 2,
+					"output": 16,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"totalTokens": 18,
+					"cost": {
+						"input": 0,
+						"output": 0,
+						"cacheRead": 0,
+						"cacheWrite": 0,
+						"total": 0
+					}
+				},
+				"stopReason": "pending",
+				"timestamp": 1792095148217
+			}
+		},
+		{
+			"type": "text_start",
+			"contentIndex": 0,
+			"content": {
+				"type": "text",
+				"text": ""
+			}
+		},
+		{
+			"type": "text_delta",
+			"contentIndex": 0,
+			"delta": "a long answer th"
+		},
+		null
+	]
+}
