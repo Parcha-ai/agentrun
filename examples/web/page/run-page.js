@@ -68,8 +68,9 @@ export function startedLine(signedIn) {
 /**
  * A run's frames as the player plays them: the frames in time order, and each gap from where the frames stopped to the
  * next frame after it, or to the end of the recording when none came after (a page that did not change after a sign-in
- * sends none). A gap that starts inside another is part of it, named by the first. The session's release is the end of
- * the track, not a gap: the page showed its last frame until then. `start` and `end` bound the scrubber.
+ * sends none). Such a gap is `open`: it holds the track's end too, so the end shows its note, not the last frame before
+ * it. A gap that starts inside another is part of it, named by the first. The session's release is the end of the
+ * track, not a gap: the page showed its last frame until then. `start` and `end` bound the scrubber.
  * @param {import("./source.js").FrameLine[]} lines
  */
 export function frameTrack(lines) {
@@ -85,6 +86,7 @@ export function frameTrack(lines) {
     if (before && from < before.to) before.to = Math.max(before.to, to);
     else if (to > from) gaps.push({ from, to, label: signIn ? SIGNED_IN_GAP : (GAPS[g.data?.reason] ?? "Not recorded") });
   }
+  for (const g of gaps) g.open = !frames.some((f) => f.t >= g.to);
   const start = times.length ? Math.min(...frames.map((f) => f.t), ...gaps.map((g) => g.from), end) : 0;
   return { frames, gaps, start, end };
 }
@@ -614,7 +616,7 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
     if (!player) return;
     const { track } = player;
     player.pos = pos;
-    const gap = track.gaps.find((g) => pos >= g.from && pos < g.to);
+    const gap = track.gaps.find((g) => pos >= g.from && (pos < g.to || (g.open && pos === g.to)));
     const frame = track.frames.findLast((f) => f.t <= pos) ?? track.frames[0];
     const src = source.frameSrc(ui.id, frame.blobs[0]);
     if (player.img.getAttribute("src") !== src) player.img.setAttribute("src", src);

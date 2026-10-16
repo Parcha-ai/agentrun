@@ -541,6 +541,28 @@ test("playback runs to the track's end, the release after the last frame include
   view.find("play").click();
 });
 
+test("a sign-in with no frame after it holds the end: at the track's end the note stays; a gap closed by a frame shows that frame there", async (t) => {
+  const frameSrc = (id, sha) => `runs/${id}/frames/${sha}.jpg`;
+  const open = [frameLine(1, 1_000, SHA.a), frameLine(2, 1_200, SHA.b), signInGap(3, 1_300, 1_200), { kind: "frame.gap", t: 1_500, data: { from: 1_200, reason: "session_released" } }];
+  const view = await mount(t, { ...liveSource(), run: async () => summary({ frames: true }), frames: async () => open, frameSrc }, "#/run/r1");
+  byTag(view.root, "button").find((b) => b.dataset.tab === "browser").click();
+  await settle();
+  view.find("play").click();
+  for (let i = 0; i < 150 && view.find("play").textContent === "Pause"; i++) await new Promise((r) => setTimeout(r, 20));
+  assert.equal(view.find("scrub").value, "1500", "played to the end");
+  assert.ok(shown(view.find("gap-note")) && view.find("gap-note").textContent === page.SIGNED_IN_GAP, "the end is still the sign-in, not the frame before it");
+  assert.equal(view.find("frame-img").getAttribute("src"), frameSrc("r1", SHA.b));
+
+  const closed = [frameLine(1, 1_000, SHA.a), frameLine(2, 1_200, SHA.b), signInGap(3, 1_300, 1_200), frameLine(4, 1_500, SHA.c)];
+  const after = await mount(t, { ...liveSource(), run: async () => summary({ frames: true }), frames: async () => closed, frameSrc }, "#/run/r1");
+  byTag(after.root, "button").find((b) => b.dataset.tab === "browser").click();
+  await settle();
+  after.find("scrub").value = "1500";
+  after.find("scrub").dispatchEvent({ type: "input" });
+  assert.ok(!shown(after.find("gap-note")), "a frame ends this gap: at the end, that frame");
+  assert.equal(after.find("frame-img").getAttribute("src"), frameSrc("r1", SHA.c));
+});
+
 test("a run that turns live while its frames load keeps its live tab: the late player draws nothing", async (t) => {
   let live = false;
   let deliver;
