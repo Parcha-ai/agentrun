@@ -60,8 +60,6 @@ export type CommitOptions = {
   /** The commit to build on (a sha or a branch). When the branch exists, its tip must be this commit, or the call
    *  fails with `conflict`. Default: the branch's tip, else main's. */
   readonly parent?: string;
-  /** Make the commit even when `files` change nothing, for a commit whose message and trailers are the record. */
-  readonly allowEmpty?: boolean;
 };
 
 export type Committed = { readonly sha: string; readonly created: boolean };
@@ -524,7 +522,7 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     const baseTree = base ? await treeOf(base) : EMPTY_TREE;
     const tree = await buildTree(base ? baseTree : undefined, options.files);
     await checkIntroduced(baseTree, tree);
-    if (base && tree === baseTree && options.allowEmpty !== true) return { sha: base, created: false };
+    if (base && tree === baseTree) return { sha: base, created: false };
     const sha = await commitTree(tree, base ? [base] : [], message);
     await moveBranch(branch, sha, localBefore);
     return { sha, created: true };
