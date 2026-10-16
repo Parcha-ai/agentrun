@@ -134,8 +134,12 @@ test('an image stays out of the line: a block holds its blob, never its data', a
   assert.deepEqual([first(await recording(t, { lines: inline })).line, first(await recording(t, { lines: inline })).message.slice(0, 22)], [4, 'holds image data inlin']);
   const dataUrl = events.map((line, index) => (index === 3 ? { ...line, data: { src: 'data:image/png;base64,AAAA' } } : line));
   assert.match(first(await recording(t, { lines: dataUrl })).message, /image data inline/);
-  const long = events.map((line, index) => (index === 3 ? { ...line, data: { frame: 'A'.repeat(5000) } } : line));
-  assert.match(first(await recording(t, { lines: long })).message, /image data inline/);
+  // What is an image is structural: an image block that holds its data. Long base64 anywhere else is data (a store's
+  // chunk, a checkpoint), whatever its length, so a writer never has to cut it up to pass.
+  const long = events.map((line, index) => (index === 3 ? { ...line, data: { frame: 'A'.repeat(5000), chunks: ['A'.repeat(8000)], part: { type: 'chunk', data: 'A'.repeat(6000) } } } : line));
+  assert.deepEqual(validateRecording(await recording(t, { lines: long, started: 2 })), []);
+  const longBlock = events.map((line, index) => (index === 3 ? { ...line, data: { content: [{ type: 'image', mimeType: 'image/png', data: 'A'.repeat(5000) }] } } : line));
+  assert.match(first(await recording(t, { lines: longBlock })).message, /image data inline/);
   const unlisted = events.map((line, index) => (index === 3 ? { ...line, blobs: undefined, data: { content: [block] } } : line));
   assert.match(first(await recording(t, { lines: unlisted })).message, /does not list/);
 });

@@ -93,10 +93,11 @@ export function lineProblems(event) {
   return problems;
 }
 
-/** Image data left inline in a line: an image block that still holds `data`, a data: URL, or a long run of base64. */
+/** Image data left inline in a line, by its structure: an image block that still holds `data`, or a data: URL that says it
+ *  is an image. Long base64 anywhere else is data (a store's chunk, a checkpoint), however long. */
 export function inlineImage(value) {
   if (Array.isArray(value)) return value.some(inlineImage);
-  if (typeof value === 'string') return /^data:image\//.test(value) || /^[A-Za-z0-9+/]{4000,}={0,2}$/.test(value);
+  if (typeof value === 'string') return /^data:image\//.test(value);
   if (!isObject(value)) return false;
   if (value.type === 'image' && typeof value.data === 'string') return true;
   return Object.values(value).some(inlineImage);
