@@ -12,6 +12,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./graph": {
+      "types": "./dist/graph.d.ts",
+      "import": "./dist/graph.js"
+    },
     "./demo": {
       "types": "./dist/demo.d.ts",
       "import": "./dist/demo.js"
@@ -44,6 +48,9 @@
   },
   "dependencies": {
     "typebox": "1.3.7"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
   },
   "repository": {
     "type": "git",

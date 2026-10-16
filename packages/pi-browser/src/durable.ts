@@ -4,7 +4,7 @@ import { configure, defineDoc, defineExtension, defineTool, ToolResultEntry, typ
 import type { JsonValue } from "@earendil-works/chord";
 import type { TSchema, Usage } from "@earendil-works/pi-ai";
 import { BROWSER_TOOL_NAMES, BROWSER_TOOLS, browserSection, WEB_TOOL_NAMES } from "./core/contract.js";
-import { BrowserFailureError, closeDriver, currentRecord, custodyTools, newSessionRecord, notices, NAVIGATION_CAP, relaunchRefusal, SESSION_REPLACED, sessionSpec, type AttachedSession, type CustodyPort, type DriverFactory, type Overrides, type ToolOutput } from "./core/custody.js";
+import { BrowserFailureError, closeDriver, currentRecord, custodyTools, newSessionRecord, notices, NAVIGATION_CAP, profileRefusal, relaunchRefusal, SESSION_REPLACED, sessionSpec, type AttachedSession, type CustodyPort, type DriverFactory, type Overrides, type ToolOutput } from "./core/custody.js";
 import { forModel } from "./durable-result.js";
 import type { Decisions } from "./core/decisions.js";
 import type { EvidenceSink } from "./core/evidence.js";
@@ -51,7 +51,15 @@ export type BrowserExtensionOptions<D extends PageDriver = PageDriver> = {
   createDeadlineMs?: number;
   /** How the request observer attaches (default `EffectObserver.open`); a seam for tests that have no Chrome. */
   openObserver?: typeof EffectObserver.open;
+  /** Called synchronously at two moments of a page action, for a host that kills the process there to test a resume:
+   *  `browser.between-actions` once a page action's answer is committed, before the next page action dispatches, and
+   *  `browser.action-returned` once the driver call returned (or threw) and the action's entry is marked finished,
+   *  before pi commits its answer. A throw, or a rejected promise, is a process warning (`PI_BROWSER_CROSSING`) and
+   *  never changes the call. */
+  crossing?: (point: Crossing) => void;
 };
+
+type Crossing = "browser.between-actions" | "browser.action-returned";
 
 export type BrowserExtensionHandle = {
   /** Install once per Harness, before `resume()`; select per conversation. */
@@ -173,6 +181,15 @@ async function emitObserver<D extends PageDriver>(c: Readers<D>, row: ObserverRo
   try { await c.options.onObserver?.(row); } catch {}
 }
 
+/** The host's crossing: called synchronously; what it throws or rejects with is reported and never reaches the call. */
+function cross<D extends PageDriver>(c: Readers<D>, point: Crossing): void {
+  const crossing = c.options.crossing;
+  if (!crossing) return;
+  const warn = (error: unknown) => process.emitWarning(`pi-browser: the host's crossing threw at ${point}; the call goes on: ${error instanceof Error ? error.message : String(error)}`, { code: "PI_BROWSER_CROSSING" });
+  // Promise.resolve, not instanceof: a promise from another realm (node:vm) is caught too.
+  try { Promise.resolve(crossing(point) as unknown).catch(warn); } catch (error) { warn(error); }
+}
+
 async function emit<D extends PageDriver>(c: Readers<D>, cid: ConversationId, label: string, record: SessionRecord, change: SessionChange, provider?: BrowserProvider): Promise<void> {
   if (!c.options.onSession) return;
   try {
@@ -246,6 +263,8 @@ async function create<D extends PageDriver>(c: Custody<D>, scope: Scope, overrid
   const provider = await c.options.provider({ conversationId: scope.cid, plane: scope.plane, config });
   const tag = presetTag ?? leaseTag("ar", config.run, scope.cid, (await stateOf(c, scope)).sessions.length + 1);
   const spec = sessionSpec(config, tag, overrides);
+  const unsupported = profileRefusal(spec, provider.caps);
+  if (unsupported) throw new BrowserFailureError(unsupported);
   const record = newSessionRecord({ plane: scope.plane, tag, provider: provider.name, spec, at: now(), honours: provider.caps.settings });
   const row = rowOf(scope.cid, record);
   await scope.commit(async (tx) => {
@@ -305,11 +324,12 @@ const journalOf = (state: SessionsState, plane: string) => [...state.sessions].r
 const clearJournal = <D extends PageDriver>(c: Custody<D>, scope: Scope, callId: string) =>
   editState(c, scope, (state) => { for (const record of state.sessions) if (record.plane === scope.plane && record.pendingEffect?.callId === callId) record.pendingEffect = null; });
 
-/** Whether a journaled action's own answer was committed as a success: its result, found by pi's typed tool-result
- *  entry. The scan covers only the entry's conversation from where it was journaled on, never the whole history. */
-async function answered(scope: Scope, pending: PendingEffect): Promise<boolean> {
+/** A journaled action's own answer as pi committed it, found by pi's typed tool-result entry: true for a success, false
+ *  for an error, null for none yet. The scan covers only the entry's conversation from where it was journaled on, never
+ *  the whole history. */
+async function answerOf(scope: Scope, pending: PendingEffect): Promise<boolean | null> {
   const after = pending.after;
-  if (after === undefined) return false;
+  if (after === undefined) return null;
   return scope.commit(async (tx) => {
     let cursor: Parameters<Tx["scanEntries"]>[2];
     do {
@@ -320,9 +340,12 @@ async function answered(scope: Scope, pending: PendingEffect): Promise<boolean> 
       }
       cursor = page.next;
     } while (cursor !== undefined);
-    return false;
+    return null;
   });
 }
+
+/** Whether a journaled action's own answer was committed as a success. */
+const answered = async (scope: Scope, pending: PendingEffect) => (await answerOf(scope, pending)) === true;
 
 /** The cut a call answers for. In this process an entry is in flight or answered, never cut; one an earlier process
  *  wrote is a cut unless its action finished and pi committed its answer, which only then is looked up. */
@@ -381,16 +404,27 @@ function portFor<D extends PageDriver>(c: Custody<D>, api: ToolExecutionApi, con
     relaunch: (overrides) => c.serial.run(key, () => relaunchOn(c, scope, api, memo("relaunch"), overrides)),
     release: () => c.serial.run(key, async () => {
       const record = currentRecord(await stateOf(c, scope), scope.plane);
-      if (!record || !open(record)) return { released: record?.state === "releasing", sessionId: record?.resourceId ?? null };
+      if (!record || !open(record)) {
+        // Only a release under way or done says so: a lost record is custody giving up, and its browser may still run.
+        const ended = (record?.state === "releasing" || record?.state === "released") && record.releaseReason ? { ended: { reason: record.releaseReason, at: record.endedAt } } : {};
+        return { released: record?.state === "releasing", sessionId: record?.resourceId ?? null, ...ended };
+      }
       await releaseRecord(c, scope, record, "tool");
       return { released: true, sessionId: record.resourceId };
     }),
-    dispatching: (effect) => scope.commit(async (tx) => {
-      const record = currentRecord(await tx.doc(c.Sessions, scope.cid), scope.plane);
-      if (!record) return;
-      const newest = (await tx.scanEntries({ conversationId: scope.cid, order: "descending" }, 1)).items[0]?.id;
-      record.pendingEffect = { ...effect, url: effect.url === null ? null : scrubPageUrl(effect.url, c.redact), at: now(), sent: [], incarnation: c.incarnation, ...(newest === undefined ? {} : { after: newest as number }) };
-    }),
+    dispatching: async (effect) => {
+      // The host's mid-browse crossing: the page action before this one finished and pi committed its answer.
+      if (c.options.crossing) {
+        const previous = journalOf(await stateOf(c, scope), scope.plane);
+        if (previous?.finished && (await answerOf(scope, previous)) !== null) cross(c, "browser.between-actions");
+      }
+      await scope.commit(async (tx) => {
+        const record = currentRecord(await tx.doc(c.Sessions, scope.cid), scope.plane);
+        if (!record) return;
+        const newest = (await tx.scanEntries({ conversationId: scope.cid, order: "descending" }, 1)).items[0]?.id;
+        record.pendingEffect = { ...effect, url: effect.url === null ? null : scrubPageUrl(effect.url, c.redact), at: now(), sent: [], incarnation: c.incarnation, ...(newest === undefined ? {} : { after: newest as number }) };
+      });
+    },
     journal: (row) => editState(c, scope, (state) => {
       const pending = currentRecord(state, scope.plane)?.pendingEffect;
       if (!pending) return;
@@ -399,10 +433,16 @@ function portFor<D extends PageDriver>(c: Custody<D>, api: ToolExecutionApi, con
       const at = sent.findIndex((r) => r.requestId === row.requestId);
       if (at === -1) sent.push(scrubbed); else sent[at] = scrubbed;
     }),
-    mark: (step, callId) => editState(c, scope, (state) => {
-      const pending = state.sessions.find((r) => r.plane === scope.plane && r.pendingEffect?.callId === callId)?.pendingEffect;
-      if (pending) pending[step] = true;
-    }),
+    mark: async (step, callId) => {
+      const found = { pending: false };
+      await editState(c, scope, (state) => {
+        const pending = state.sessions.find((r) => r.plane === scope.plane && r.pendingEffect?.callId === callId)?.pendingEffect;
+        if (pending) { pending[step] = true; found.pending = true; }
+      });
+      // The host's double-run crossing: the action's driver call is over and its entry says so; pi has not committed
+      // the answer.
+      if (found.pending && step === "finished") cross(c, "browser.action-returned");
+    },
     settle: (callId) => clearJournal(c, scope, callId),
     navigated: async (page) => {
       // A page URL can carry a credential in any query value, its fragment or its userinfo: scrubbed before it is

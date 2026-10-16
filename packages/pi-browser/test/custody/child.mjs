@@ -19,6 +19,12 @@ const cut = async (name) => {
   say(`AT ${name}`);
   await new Promise(() => {});
 };
+// A pi-browser crossing (browser.*) is called synchronously: announced, then this thread blocks until the kill.
+const crossing = (point) => {
+  if (env.MODE !== "first" || env.KILL_AT !== point) return;
+  fs.writeSync(1, `AT ${point}\n`);
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+};
 
 const inner = env.KERNEL_URL
   ? kernelProvider({ env: { KERNEL_API_KEY: env.KERNEL_KEY, KERNEL_BASE_URL: env.KERNEL_URL }, confirm: { polls: 40, intervalMs: 25 } })
@@ -81,6 +87,7 @@ const browser = createBrowserExtension({
   onSession: async (row, change) => { rows.push({ change, tag: row.session.tag, state: row.session.state, label: row.label }); if (change === "updated") await cut("session-updated"); },
   onObserver: (row) => { observerRows.push(row); },
   createDeadlineMs: Number(env.CREATE_DEADLINE_MS ?? 300),
+  crossing,
   ...(env.WALL === "1" ? { decisions: { classifyPage: async () => ({ wall: "login_wall", injection: null, confidence: 0.9 }) } } : {}),
 });
 
