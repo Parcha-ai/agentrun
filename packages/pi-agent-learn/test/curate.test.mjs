@@ -355,7 +355,7 @@ test("a curate commit whose push failed for another reason is published by the n
 
 test("past the index cap the least-used active learnings are archived, the new one last, and the report says so", async () => {
   const long = (n) => `Lesson ${String(n).padStart(2, "0")}: ${"check the registry's own search before any aggregator, and note which one answered. ".repeat(3)}`.trim();
-  const all = Array.from({ length: 30 }, (_, n) => learning(`L-${String(n).padStart(12, "0")}`, long(n), { uses: n === 4 ? 0 : 5 + n }));
+  const all = Array.from({ length: 30 }, (_, n) => learning(`L-${String(n).padStart(12, "0")}`, long(n), { uses: n === 4 ? 1 : 5 + n }));
   let k = 1;
   while (deriveSeed("0".repeat(40), all.slice(0, k + 1), { copied: true }).omitted.length === 0) k += 1;
   const seeded = all.slice(0, k);
@@ -367,7 +367,7 @@ test("past the index cap the least-used active learnings are archived, the new o
   const id = learningId("run-1", long(99));
   assert.deepEqual(run.accepted.map((a) => a.id), [id]);
   assert.deepEqual(run.archived.map((a) => a.id), ["L-000000000004"]);
-  assert.match(run.archived[0].reason, /^least used \(uses 0\): archived to keep the <learned> index within 4096 bytes$/);
+  assert.match(run.archived[0].reason, /^least used \(uses 1\): archived to keep the <learned> index within 4096 bytes$/, "an older learning goes before this run's new one, even one used more");
   const entries = await learningsOn(w.curator);
   assert.equal(entries["L-000000000004"].status, "archived");
   assert.equal(entries[id].status, "active");
@@ -605,6 +605,62 @@ test("retireLearning rebuilds on a moved main, refuses an unknown id or no reaso
   await assert.rejects(retireLearning({ repo: w.curator, id: "L-000000000000", reason: "x" }), { code: "missing" });
   await assert.rejects(retireLearning({ repo: w.curator, id: "nope", reason: "x" }), { code: "invalid" });
   await assert.rejects(retireLearning({ repo: w.curator, id: old.id, reason: " " }), { code: "invalid" });
+});
+
+test("a main that moved while the judge was answering is a retry, not a stop", async () => {
+  const w = await world();
+  await propose(w, "run-1", [candidate(LESSON)]);
+  await propose(w, "run-2", [candidate("Retry a registry search once after a timeout.")]);
+  const other = await w.open("other");
+  const { judge: answer } = fakeJudge();
+  let moved = false;
+  const judge = async (params) => {
+    if (!moved) {
+      moved = true;
+      const made = await other.commitTo("main", { files: { ".agents/skills/x/SKILL.md": "---\nname: x\ndescription: x\n---\n" }, message: "another writer" });
+      await other.push(made.sha, "main");
+    }
+    return answer(params);
+  };
+  const report = await curate({ repo: w.curator, judge });
+  assert.deepEqual(report.runs.map((r) => [r.run, r.accepted.length]), [["run-1", 1], ["run-2", 1]]);
+  assert.deepEqual(curatedTrailers(await w.curator.log()).sort(), ["run-1", "run-2"]);
+});
+
+test("a learning many runs repeat stays under the file cap: its uses count on, its provenance stops at 16 runs", async () => {
+  const runs = Array.from({ length: 16 }, (_, n) => `run-old-${n}`);
+  const old = learning("L-121212121212", LESSON, { uses: 40, provenance: { runs, sha: "0".repeat(40), untrusted: false } });
+  const w = await world(learningFiles([old]));
+  await propose(w, "run-1", [candidate("Registries list companies by legal name minus Inc or LLC, so try both.")]);
+  const { judge } = fakeJudge([{ q: "duplicate", p: 0.9 }]);
+  const [run] = (await curate({ repo: w.curator, judge })).runs;
+  assert.deepEqual(run.duplicates.map((d) => d.of), [old.id]);
+  const entry = (await learningsOn(w.curator))[old.id];
+  assert.deepEqual([entry.uses, entry.provenance.runs], [41, runs]);
+});
+
+test("a run with every used mark it may make and a new lesson writes all of them in one commit", async () => {
+  const seeded = Array.from({ length: 32 }, (_, n) => learning(`L-${String(n).padStart(12, "0")}`, `Short rule ${n}.`));
+  const w = await world(learningFiles(seeded));
+  await propose(w, "run-1", [...seeded.map((l, n) => ({ callId: `u-${n}`, type: "used", text: "", evidence: [], id: l.id })), candidate(LESSON)]);
+  const [run] = (await curate({ repo: w.curator, judge: fakeJudge().judge })).runs;
+  assert.deepEqual([run.used.length, run.accepted.length, run.refused], [32, 1, []]);
+  const entries = await learningsOn(w.curator);
+  assert.equal(Object.values(entries).filter((l) => l.uses === 1).length, 32);
+  assert.equal((await w.curator.log({ max: 1 }))[0].trailers["Learning-Id"].length, 33);
+});
+
+test("a reason from a hook is checked whole before it is shortened, and a second description of one workflow is refused", async () => {
+  const secret = ["Platypus", "%9", "mW3kRt7Qe"].join("");
+  const w = await world();
+  const when = (callId, text) => ({ callId, type: "workflow", id: "kyb", text, evidence: [] });
+  await propose(w, "run-1", [when("w-1", "A US company to check against its state registry."), when("w-2", "Any company at all.")], recordsOf("run-1", "kyb"));
+  const admitWorkflow = async () => ({ status: "held", reason: `${"x".repeat(195)} ${secret}` });
+  const [run] = (await curate({ repo: w.curator, judge: fakeJudge().judge, admitWorkflow, secrets: [secret] })).runs;
+  assert.deepEqual(run.held.map((h) => [h.candidate, h.reason]), [[1, "a reason was withheld (secret_value)"]]);
+  assert.deepEqual(run.refused.map((r) => [r.candidate, r.reason]), [[2, "a second description of the same workflow in this run (#1 is the one judged)"]]);
+  const messages = git(w.bare, ["log", "--format=%B", "main"]).toString();
+  for (const cut of [secret, secret.slice(0, 4)]) assert.ok(!messages.includes(`x ${cut}`), cut);
 });
 
 test("renderLearning stays the only writer of learning files: every file curate writes parses back", async () => {

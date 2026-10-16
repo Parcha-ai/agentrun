@@ -3,7 +3,7 @@ import { GitRemoteError, modeRefusal, type Repo } from "@parcha/pi-git-remote";
 import { createHash } from "node:crypto";
 import { type Learning, learningId, parseLearning, renderLearning } from "./entry.js";
 import { LearnError } from "./errors.js";
-import { guard } from "./guard.js";
+import { createGuard, guard } from "./guard.js";
 import { InboxFormatError, parseInbox } from "./inbox.js";
 import { assertNotRulesLocked, CAPS, inboxPath, isRulesLocked, LAYOUT, LEARNING_ID, learningPath, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
 import { byUse, indexLine, renderSection } from "./section.js";
@@ -124,6 +124,11 @@ const RUNS = "runs/";
 const ENTRY_TYPES_COMPARED = ["lesson", "fact", "correction"] as const;
 const RECORD = /^(?:[0-9a-f]{64}\.json|latest)$/;
 const CONTENT_REASONS: readonly Refusal["reason"][] = ["secret_value", "secret_shape", "invisible_unicode", "case_data"];
+/** A learning lists at most this many proposing runs, so a popular one stays under the file cap; its uses keep counting. */
+const MAX_PROVENANCE_RUNS = 16;
+/** One curate commit can touch every learning a run's notes and marks reach, the archived ones and a workflow's files:
+ *  as many as one git commit takes here, not the 32 a run may write. */
+const curatorGuard = createGuard({ files: 256 });
 
 type Verdict = "yes" | "no" | "unsure" | "budget";
 type Asked = { readonly verdict: Verdict; readonly p?: number };
@@ -217,8 +222,10 @@ async function curateRuns(options: CurateOptions, thresholds: Thresholds, caps: 
         break;
       }
       assertNotRulesLocked(Object.keys(plan.files));
-      const commit = await repo.commitTo("main", { files: plan.files, message: plan.message, trailers: plan.trailers, parent: main, allowEmpty: true });
+      let commit: { sha: string };
       try {
+        // commitTo fetches first: a main that moved since `main` was read is a conflict here, before any push.
+        commit = await repo.commitTo("main", { files: plan.files, message: plan.message, trailers: plan.trailers, parent: main, allowEmpty: true });
         pushes += 1;
         await repo.push(commit.sha, "main");
       } catch (error) {
@@ -281,8 +288,9 @@ export async function retireLearning(options: RetireOptions): Promise<RetireResu
       const files = { [path]: renderLearning({ ...entry, status: "retired" }) };
       const refusals = guard({ role: "curate", files, secrets });
       if (refusals.length) throw new LearnError("invalid", `the retired learning's file is refused: ${refusalReason(refusals)}`);
-      const commit = await repo.commitTo("main", { files, message: `retire ${id}: ${safeReason(options.reason, secrets)}`, trailers: { "Retired-Learning": id }, parent: main });
+      let commit: { sha: string };
       try {
+        commit = await repo.commitTo("main", { files, message: `retire ${id}: ${safeReason(options.reason, secrets)}`, trailers: { "Retired-Learning": id }, parent: main });
         await repo.push(commit.sha, "main");
       } catch (error) {
         if (!(error instanceof GitRemoteError) || error.code !== "conflict") throw error;
@@ -470,6 +478,10 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
         lists.refused.push({ candidate: at, reason: "a workflow candidate needs a workflow name as its id" });
         continue;
       }
+      if (workflows.has(name)) {
+        lists.refused.push({ candidate: at, workflow: name, reason: `a second description of the same workflow in this run (#${workflows.get(name)!.candidate} is the one judged)` });
+        continue;
+      }
       const verdict = await atomic({ type: "workflow", workflow: name, text: candidate.text }, candidate.untrusted === true);
       workflows.set(name, { description: candidate.text, candidate: at, untrusted: candidate.untrusted === true, ...(verdict ? { verdict: verdict.status, reason: verdict.reason } : {}) });
       continue;
@@ -539,7 +551,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     if (outcome?.kind === "duplicate") {
       const target = entries.get(outcome.of)!;
       if (!fresh.has(target.id)) {
-        const runs = target.provenance.runs.includes(runId) ? target.provenance.runs : [...target.provenance.runs, runId];
+        const runs = target.provenance.runs.includes(runId) || target.provenance.runs.length >= MAX_PROVENANCE_RUNS ? target.provenance.runs : [...target.provenance.runs, runId];
         entries.set(target.id, { ...target, uses: usedOnce.has(target.id) ? target.uses : target.uses + 1, provenance: { ...target.provenance, runs } });
         usedOnce.add(target.id);
         touched.add(target.id);
@@ -649,7 +661,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     }
   }
 
-  // The derived index stays under its cap: archive the least-used active learnings, this run's own last.
+  // The derived index stays under its cap: archive the least-used older learnings first, this run's own only after them.
   const indexBytes = () => {
     const lines = [...entries.values()].filter((l) => l.status === "active").sort(byUse).map(indexLine).filter((l): l is string => l !== undefined);
     return Buffer.byteLength(renderSection({ sha: main, index: lines, omitted: [], workflows: [], copied: true }), "utf8");
@@ -657,7 +669,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
   while (indexBytes() > input.caps.index) {
     const victim = [...entries.values()]
       .filter((l) => l.status === "active")
-      .sort((a, b) => a.uses - b.uses || Number(fresh.has(a.id)) - Number(fresh.has(b.id)) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))[0];
+      .sort((a, b) => Number(fresh.has(a.id)) - Number(fresh.has(b.id)) || a.uses - b.uses || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))[0];
     if (!victim) break;
     entries.set(victim.id, { ...victim, status: "archived" });
     touched.add(victim.id);
@@ -665,8 +677,16 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
   }
 
   const files: Record<string, string | null> = { ...workflowFiles };
-  for (const id of [...touched].sort()) files[learningPath(id)] = renderLearning(entries.get(id)!);
-  const refusals = guard({ role: "curate", files, secrets: input.secrets });
+  for (const id of [...touched].sort()) {
+    try {
+      files[learningPath(id)] = renderLearning(entries.get(id)!);
+    } catch (error) {
+      if (!(error instanceof LearnError)) throw error;
+      touched.delete(id);
+      lists.refused.push({ id, reason: `${error.code}: the change to ${id} would not render, so it was left as it is` });
+    }
+  }
+  const refusals = curatorGuard({ role: "curate", files, secrets: input.secrets });
   if (refusals.length) {
     const reason = `curation's own files are refused: ${refusalReason(refusals)}`;
     const all = Object.values(lists).flat();
@@ -716,9 +736,12 @@ function parseUses(text: string, runId: string): WorkflowUse[] | undefined {
 /** A reason from outside this package, kept only when it holds nothing the guard would refuse. */
 function safeReason(reason: unknown, secrets: readonly string[]): string {
   if (typeof reason !== "string" || reason.trim() === "") return "no reason given";
-  const line = oneLine(reason).slice(0, 200);
-  const hits = guard({ role: "curate", candidates: [{ callId: "reason", type: "lesson", text: line, evidence: [] }], secrets }).filter((r) => CONTENT_REASONS.includes(r.reason));
-  return hits.length ? `a reason was withheld (${[...new Set(hits.map((h) => h.reason))].join(", ")})` : line;
+  if (reason.length > 16_384) return "a reason was withheld (too long to check)";
+  // The whole text is checked before it is shortened: a cut can split a secret the guard would only match whole.
+  const line = oneLine(reason);
+  const check = createGuard({ text: Math.max(CAPS.text, Buffer.byteLength(line, "utf8")) });
+  const hits = check({ role: "curate", candidates: [{ callId: "reason", type: "lesson", text: line, evidence: [] }], secrets }).filter((r) => CONTENT_REASONS.includes(r.reason));
+  return hits.length ? `a reason was withheld (${[...new Set(hits.map((h) => h.reason))].join(", ")})` : Array.from(line).slice(0, 200).join("");
 }
 
 function finish(input: PlanInput, lists: Lists, files: Record<string, string | null>, ids: readonly string[], workflows: readonly string[], questions: number): Plan {
