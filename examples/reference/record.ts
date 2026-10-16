@@ -86,17 +86,15 @@ export function startedAt(dir: string, given?: string): string {
   return readFileSync(startedFile(dir), 'utf8');
 }
 
-/** A blob that is still being written: `.<sha>.<ext>.tmp-<pid>`, which the validator, the gate and the scan skip. */
-export const TEMP_BLOB = /^\..*\.tmp-\d+$/;
-
-/** Keeps a file whole in `blobs/` under its SHA-256 and returns the hash. A viewer following a live run may fetch it at any moment, so it appears whole or not at all: it is written to a temporary name beside it, synced, and renamed
- *  into place (atomic on one filesystem). A blob already there is left alone. */
+/** Keeps a file whole in `blobs/` under its SHA-256 and returns the hash. The bytes go to a temporary file in the recording's `.spool/` (which the scan and the validator ignore), are fsynced, and are renamed into
+ *  `blobs/` (one filesystem, so the rename is atomic): a process killed while it writes leaves a temporary file in `.spool/` and never a torn blob under a name that says it is whole. */
 export function keepBlob(dir: string, buffer: Buffer, extension: string): string {
   mkdirSync(join(dir, 'blobs'), { recursive: true });
   const hash = createHash('sha256').update(buffer).digest('hex');
   const at = join(dir, 'blobs', `${hash}.${extension}`);
   if (existsSync(at)) return hash;
-  const temporary = join(dir, 'blobs', `.${hash}.${extension}.tmp-${process.pid}`);
+  mkdirSync(spool(dir), { recursive: true });
+  const temporary = join(spool(dir), `blob-${hash}.${extension}.tmp-${process.pid}`);
   const descriptor = openSync(temporary, 'w');
   try { writeSync(descriptor, buffer); fsyncSync(descriptor); } finally { closeSync(descriptor); }
   renameSync(temporary, at);
