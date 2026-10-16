@@ -1,6 +1,6 @@
 import type { Context } from "@earendil-works/chord";
 import { ok } from "@earendil-works/pi-durable/env";
-import type { Box, BoxFacts, BoxProvider } from "./box.ts";
+import type { Box, BoxFacts, BoxProvider, BoxSpec } from "./box.ts";
 
 /**
  * A published list price for one provider's kind of box, as the host read it: `source` is the page it was read from
@@ -33,6 +33,18 @@ export type BoxReceipt = {
 	readonly priced: string;
 };
 
+/**
+ * A box its provider has just made, as the host's labeler is shown it: the box's own request and facts. Its id is left
+ * out: a label is the host's, never made from the id. A host that labels boxes of its own reads its label from the
+ * request it made (`spec.labels`), never from the order it asked in: boxes asked for together are made in any order.
+ */
+export type BoxMade = {
+	readonly provider: string;
+	readonly kind: string;
+	readonly spec: BoxSpec;
+	readonly facts: BoxFacts;
+};
+
 export type BoxReceiptsOptions = {
 	readonly prices: readonly BoxPrice[];
 	/**
@@ -45,8 +57,17 @@ export type BoxReceiptsOptions = {
 	 * isolation (`none`, `container`, `gvisor`, `vm`).
 	 */
 	readonly kindOf?: (facts: BoxFacts) => string;
-	/** The label of a box, by first appearance. Default `box-<n>`; a host that labels boxes of its own passes its labeler. */
-	readonly label?: () => string;
+	/**
+	 * The label of a box, called once when its provider has made it, with that box's own request and facts. Default
+	 * `box-<n>`, numbered as the boxes are made. A label is written into the recording: it never repeats in one.
+	 */
+	readonly label?: (made: BoxMade) => string;
+	/**
+	 * The labels the recording already holds, from the process before a restart (its `box.receipt` lines): the default
+	 * labeler numbers on past every `box-<n>` among them. A box the killed process made, or was making, is not this
+	 * ledger's: no receipt is written for it here, so its cost stays unknown.
+	 */
+	readonly taken?: readonly string[];
 	readonly now?: () => number;
 };
 
@@ -69,7 +90,7 @@ function defaultKind(facts: BoxFacts): string {
 export function boxReceipts(options: BoxReceiptsOptions): BoxReceipts {
 	const now = options.now ?? Date.now;
 	const kindOf = options.kindOf ?? defaultKind;
-	let count = 0;
+	let count = Math.max(0, ...(options.taken ?? []).map((one) => Number(/^box-(\d+)$/.exec(one)?.[1] ?? 0)));
 	const label =
 		options.label ??
 		(() => {
@@ -135,7 +156,15 @@ export function boxReceipts(options: BoxReceiptsOptions): BoxReceipts {
 					const made = await inner.create(spec, context);
 					if (!made.ok) return made;
 					const key = keyOf(made.value.id);
-					open.set(key, { provider: inner.name, kind: kindOf(made.value.facts()), from: now(), box: label() });
+					const facts = made.value.facts();
+					const kind = kindOf(facts);
+					const from = now();
+					open.set(key, {
+						provider: inner.name,
+						kind,
+						from,
+						box: label({ provider: inner.name, kind, spec, facts }),
+					});
 					return ok(onLedger(key, made.value));
 				},
 				async attach(id, context) {

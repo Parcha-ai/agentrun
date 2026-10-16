@@ -15,6 +15,7 @@ export {
 } from "./box/box.ts";
 export { downloadByExec, finish, readStream, uploadByExec } from "./box/files.ts";
 export {
+	type BoxMade,
 	type BoxPrice,
 	type BoxReceipt,
 	type BoxReceipts,

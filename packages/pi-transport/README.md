@@ -609,8 +609,15 @@ It makes the box, and
 provider, and each box it makes gets one receipt when it ends, destroyed through it, found ended by `status`, or found
 gone by `attach` (a lifetime that ran out, or a sweep). The host writes each receipt as a live line, source
 `transport`, kind `box.receipt`: `{ box, provider, kind, from, to, seconds, usd_per_second, cost_usd, source, priced }`.
-`box` is a label, `box-1`, `box-2` by first appearance, never the provider's id. Hand the wrapped providers to
+`box` is a label, `box-1`, `box-2` as the boxes are made, never the provider's id. Hand the wrapped providers to
 everything that makes boxes: a box place, and the transport's hands pools (`TransportHost.providers`).
+
+A host that labels boxes of its own passes `label(made)`: it is called once when a provider has made a box, with that
+box's own request and facts (`{ provider, kind, spec, facts }`, its id left out), so a host reads its label from the
+request it made (`spec.labels`), never from the order it asked in: boxes asked for together, from providers that answer
+at different speeds, are made in any order. After a restart, `taken` passes the labels the recording already holds (its
+`box.receipt` lines), and the default labeler numbers on past them. A box the killed process made or was making is not
+the new ledger's: no receipt is written for it, so its cost stays unknown.
 
 The prices are the host's (`prices: [{ provider, kind, usdPerSecond, source, priced }]`, with `source` the page a price
 was read from and `priced` the date it was read): this package holds no price table. A box's `kind` is found from its
