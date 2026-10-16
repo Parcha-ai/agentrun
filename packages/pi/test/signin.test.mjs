@@ -218,6 +218,32 @@ test('port 1455 busy: the sign-in fails at once with the clear message, and stor
   assert.deepEqual(stored(home).credentials, {});
 });
 
+/** Whether this process can bind port 1455 now: the sign-in's callback server let go of it. */
+const portFree = () => new Promise((done) => {
+  const probe = createServer();
+  probe.once('error', () => done(false));
+  probe.listen(1455, '127.0.0.1', () => probe.close(() => done(true)));
+});
+
+test('a first-time sign-in that resolveModel\'s signal cancels ends at once: it rejects as aborted, port 1455 is free again, and nothing is stored', { skip: !namesTheApp && 'pi-ai before 1.1 refuses the sign-in before its page is shown' }, async (t) => {
+  await fake(t);
+  const home = newHome();
+  const controller = new AbortController();
+  // The user never answers, and this prompt does not watch its own signal: only the cancel can end the sign-in.
+  const interaction = { notify: (event) => { if (event.type === 'auth_url') controller.abort(); }, prompt: () => new Promise(() => {}) };
+  const started = Date.now();
+  let ended = false;
+  const resolving = resolveModel(spec(), { home, env: {}, interaction, signal: controller.signal }).finally(() => { ended = true; });
+  await Promise.race([resolving.catch(() => {}), new Promise((resolve) => setTimeout(resolve, 5000))]);
+  assert.ok(ended, 'the cancel ended the sign-in');
+  await assert.rejects(resolving, (error) => error?.name === 'AbortError');
+  assert.ok(Date.now() - started < 5000, 'no hang');
+  let free = false;
+  for (let tries = 0; tries < 20 && !free; tries += 1) { free = await portFree(); if (!free) await new Promise((resolve) => setTimeout(resolve, 50)); }
+  assert.ok(free, 'port 1455 is free again');
+  assert.deepEqual(stored(home).credentials, {});
+});
+
 test('the plan\'s usage limit: the typed error, and one request, at the start or mid-stream', async (t) => {
   for (const responses of ['limit', 'limit-midstream']) {
     const server = await fake(t, { responses });
