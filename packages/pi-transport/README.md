@@ -38,6 +38,7 @@ ignoring it.
 | Docker | `@parcha/pi-transport/box/docker` | a container per box |
 | Daytona | `@parcha/pi-transport/box/daytona` | a container per box on the host kernel; a `linux-vm` snapshot is a VM |
 | Modal | `@parcha/pi-transport/box/modal` | a gVisor sandbox, or a VM (`isolation: "vm"`) |
+| E2B | `@parcha/pi-transport/box/e2b` | a Firecracker microVM per box |
 
 ### Daytona
 
@@ -78,6 +79,34 @@ await provider.create({ maxLifetimeMs: 10 * 60_000, isolation: "vm" }, BACKGROUN
   provider's own variable picks the ones that run). It names its Modal app and labels from `PI_TRANSPORT_LIVE_PREFIX`
   and `PI_TRANSPORT_LIVE_LABELS`, and `PI_TRANSPORT_LIVE_MODAL_KINDS` (`sandbox,vm,gpu`; default `sandbox,vm`) picks
   the kinds.
+
+### E2B
+
+`e2bBoxes(Sandbox, { template })` takes the host's own E2B SDK: pass the `Sandbox` class of the `e2b` package, which fits
+`E2bSdk` structurally, so this package depends on no E2B SDK.
+
+```ts
+import { Sandbox } from "e2b";
+import { e2bBoxes } from "@parcha/pi-transport/box/e2b";
+
+const provider = e2bBoxes(Sandbox);
+await provider.create({ maxLifetimeMs: 10 * 60_000 }, BACKGROUND_CONTEXT);
+```
+
+- A box is one sandbox, a Firecracker microVM. The spec's `image` is E2B's template; `env` is the sandbox's own.
+- The template decides the size and there is no GPU: `cpus`, `memoryMb`, `region`, `gpu`, a `snapshot` and any `isolation`
+  but `vm` are refused with `unsupported`. `facts()` reports the size E2B says the template has.
+- `maxLifetimeMs` is E2B's own sandbox timeout, rounded up to whole seconds and capped at 24 hours; E2B ends the box when
+  it passes, whatever happens to the host. E2B's plan decides the longest it accepts (1 hour on the free plan): a longer
+  one is refused by E2B and comes back as an error, it is not shortened here.
+- **Programs' output reaches the host as text.** The SDK's output callbacks give strings, so bytes that are not valid
+  UTF-8 do not survive in a program's output (NUL and the other ASCII values do). Input and files keep every byte, and
+  `facts().bulk` is `files`, so a workspace or a store moves through `upload` and `download`.
+- A program's exit code is a value (the SDK throws for a non-zero exit; this package returns the code). Its timeout and
+  the call's abort stop the program with `kill`.
+- The live suite spends money and runs only when asked. It needs `E2B_API_KEY` in the environment and the SDK, which is
+  not installed with this package: `npm install --no-save e2b@2.56.0`, then `PI_TRANSPORT_LIVE_E2B=1 npm run test:live -w
+  @parcha/pi-transport`.
 
 `localBoxes` gives a program a fixed `PATH` (`/usr/local/bin:/usr/bin:/bin`, or the `path` option), a private `HOME`
 and `TMPDIR`, and the spec's `env`. A detached watchdog ends a box when its lifetime has passed. On Linux, `destroy`

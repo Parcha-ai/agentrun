@@ -25,6 +25,12 @@ export interface BoxConformanceOptions {
 	/** Names set in the host process's environment that no program in a box may see. */
 	readonly absentEnv?: readonly string[];
 	/**
+	 * For a provider whose programs' output reaches the host as text, not bytes (a vendor SDK whose output callbacks give
+	 * strings): the byte-value case carries the values 0 to 127, which text keeps, and not 128 to 255. Input is bytes
+	 * either way; the file round trips (`upload`, `download`) always carry every value.
+	 */
+	readonly textOutput?: boolean;
+	/**
 	 * When set, the suite creates one box with this lifetime, starts a long program in it, makes no further call to
 	 * the provider, and requires `ended` to say the box is gone within `graceMs` after the lifetime. This is the bound
 	 * on leaked boxes, so `ended` must look at the machine itself (a process table, a container list, the vendor's
@@ -169,7 +175,10 @@ export function createBoxConformance(options: BoxConformanceOptions): BoxConform
 			name: "input and output carry every byte value",
 			run: () =>
 				withBox(async (box) => {
-					const bytes = Uint8Array.from({ length: 1024 }, (_, index) => index % 256);
+					const bytes = Uint8Array.from(
+						{ length: 1024 },
+						(_, index) => index % (options.textOutput === true ? 128 : 256),
+					);
 					const finished = unwrap(await finish(await start(box, ["cat"]), bytes));
 					assertions.strictEqual(finished.exitCode, 0);
 					assertions.deepEqual(Array.from(finished.stdout), Array.from(bytes));
