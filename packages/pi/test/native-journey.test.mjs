@@ -251,7 +251,8 @@ test('in a real Pi host, /agentrun stop reaches a dry run in flight: the dry run
     assert.ok(dried && stopped, 'both answered');
     assert.match(stopped.content, /Dry run stopped/, 'the stop reached the dry run');
     assert.equal(dried.details.dryRun.status, 'not_run');
-    assert.match(dried.details.dryRun.skipped.join('\n'), /stopped before it finished/);
+    // Before its first step or after some: either way the stop ended it, not its step budget.
+    assert.match(dried.details.dryRun.skipped.join('\n'), /stopped before it (started|finished)/);
     await host.stop();
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

@@ -1202,7 +1202,7 @@ test('in an interactive session /agentrun dry-run returns at once, as /agentrun 
     assert.match(app.messages.at(-1).content, /Dry run stopped/);
     await waitUntil(() => answered());
     assert.equal(answered().details.dryRun.status, 'not_run');
-    assert.match(answered().details.dryRun.skipped.join('\n'), /stopped before it finished/);
+    assert.match(answered().details.dryRun.skipped.join('\n'), /stopped before it (started|finished)/, 'the stop ended it, not its step budget');
     assert.equal(app.calls.length, 0);
   } finally { await app.shutdown(); }
 });
