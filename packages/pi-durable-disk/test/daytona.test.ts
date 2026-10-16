@@ -399,7 +399,7 @@ test("box: a receipt of each box the driver made: its size, when it was made and
   assert.ok(ended.to !== null && Date.parse(ended.to) >= Date.parse(ended.from), "ended when the driver deleted it");
 });
 
-test("daytonaUsdPerSecond: the list price from a box's size (the first 5 GiB of disk free); none without a size, or for a box with a GPU, whose rate the page does not publish", () => {
+test("daytonaUsdPerSecond: the list price from a box's size (the first 5 GiB of disk free); none without a size, or for a box with a GPU, which the page prices per model", () => {
   const p = DAYTONA_LIST_PRICES;
   assert.equal(daytonaUsdPerSecond({ cpu: 1, memory: 1, disk: 3 }), (p.vcpuPerHour + p.memoryGiBPerHour) / 3600);
   assert.equal(daytonaUsdPerSecond({ cpu: 4, memory: 8, disk: 20 }), (4 * p.vcpuPerHour + 8 * p.memoryGiBPerHour + 15 * p.diskGiBPerHour) / 3600);

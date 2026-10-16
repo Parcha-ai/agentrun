@@ -45,7 +45,9 @@ export type SandboxInfo = {
 
 /**
  * Daytona's published list prices, as its pricing page gave them on `readOn`: billed per second, quoted per hour, for
- * each vCPU, each GiB of memory and each GiB of disk past the first 5 (free). The page publishes no GPU rate.
+ * each vCPU, each GiB of memory and each GiB of disk. The page's footnote "Price per GiB after first 5 free" is applied
+ * to storage (disk) only: its placement is ambiguous and could be read as covering memory too, so this is a choice.
+ * The page lists GPU rates per GPU model; this driver does not map a box's GPU to a model, so a GPU box is unpriced.
  */
 export const DAYTONA_LIST_PRICES = {
   page: "https://www.daytona.io/pricing",
@@ -58,7 +60,7 @@ export const DAYTONA_LIST_PRICES = {
 
 /**
  * A box's list price per second at DAYTONA_LIST_PRICES, from its size; null when its size is unknown or it has a GPU
- * (no published rate to price it at).
+ * (priced per GPU model on the page, which this driver does not map).
  */
 export function daytonaUsdPerSecond(size: Pick<SandboxInfo, "cpu" | "gpu" | "memory" | "disk">): number | null {
   const { cpu, memory, disk, gpu } = size;

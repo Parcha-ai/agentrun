@@ -414,8 +414,9 @@ starts local units, so pass the driver to `ensureRunning`). Its `box(handle)` is
 (vCPUs, memory, disk), when it was made and when the driver deleted it, and its list price per second at
 `DAYTONA_LIST_PRICES`. Those are Daytona's published rates, with the page and the date they were read
 (https://www.daytona.io/pricing, 2026-10-16): $0.0504 per vCPU-hour, $0.0162 per GiB-hour of memory and $0.000108 per
-GiB-hour of disk past the first 5 GiB, billed per second. A box with a GPU, or of unknown size, gets no price
-(`daytonaUsdPerSecond`). The box comes from a snapshot that holds Node, the archil client
+GiB-hour of disk past the first 5 GiB, billed per second. The page's "first 5 free" footnote is applied to disk only (its
+placement is ambiguous). A box of unknown size gets no price, and neither does a box with a GPU: the page prices GPUs per
+model, which the driver doesn't map (`daytonaUsdPerSecond`). The box comes from a snapshot that holds Node, the archil client
 (`libfuse2`), this package, the run user and the sudoers drop-in, or from a default image that the caller's `prepare` installs
 them into. A container sandbox has no systemd (PID 1 is the Daytona daemon), so an in-box launcher keeps the instance
 alive in place and never restarts it after exit 0, 65, 70, 75 or 76. The mount token is uploaded to a root-only file and

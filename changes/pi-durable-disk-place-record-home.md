@@ -18,8 +18,9 @@ kind: feature
 - Box receipts: `HostDriver.box(handle)` (`HostBox`) and `PlaceStatus.boxes`. `archilPlace.status()` lists a receipt
   for each box it started, released ones included: provider, kind, `from`, `to`, the published list price per second,
   and its `source` (page and date read). `daytonaHost` reports its sandboxes, priced at `DAYTONA_LIST_PRICES`
-  (https://www.daytona.io/pricing, read 2026-10-16); a box with a GPU or of unknown size has no price
-  (`daytonaUsdPerSecond`). `localPlace` reports none.
+  (https://www.daytona.io/pricing, read 2026-10-16), with the "first 5 GiB free" applied to disk (the footnote's
+  placement is ambiguous). A box of unknown size has no price, nor does a box with a GPU, which the page prices per
+  model (`daytonaUsdPerSecond`). `localPlace` reports none.
 - Failures carry codes (`PlaceError`). `BLOB_MISMATCH` is thrown after everything else came home. `CARRY_FAILED` is
   thrown for a list or get that fails, and on `final` for a line whose blob never landed. `BOX_GONE` is never thrown
   by this place: the recording lives on the disk, which outlives the box.
