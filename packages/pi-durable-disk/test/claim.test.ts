@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -941,11 +941,27 @@ async function stderrOf<T>(fn: () => Promise<T>): Promise<{ value?: T; error?: u
   }
 }
 
+/** Leftovers of an earlier incarnation: written, then dated an hour back, before this process started. */
 function seedMountpoint(r: Rig) {
   mkdirSync(join(r.root, "jobs"), { recursive: true });
   writeFileSync(join(r.root, "run.json"), "secret-content-1\n");
   writeFileSync(join(r.root, "jobs", "a.json"), "secret-content-2\n");
+  const past = new Date(Date.now() - 3_600_000);
+  for (const p of [join(r.root, "jobs", "a.json"), join(r.root, "run.json"), join(r.root, "jobs")]) utimesSync(p, past, past);
 }
+
+test("entries this incarnation wrote into the bare mountpoint before its claim (an app's factory): the start is refused, MOUNTPOINT_WRITTEN, exit 65, naming them; nothing moves aside or is lost, and nothing mounts", async () => {
+  const r = disposeAfter(rig());
+  mkdirSync(join(r.root, "record", "1", ".spool"), { recursive: true });
+  writeFileSync(join(r.root, "events.jsonl"), "");
+  writeFileSync(join(r.root, "record", "1", ".spool", "durable-1.0.jsonl"), "");
+  await assert.rejects(acquire(r.opts), (e: unknown) => {
+    const m = (e as Error).message;
+    return e instanceof ClaimError && e.code === "MOUNTPOINT_WRITTEN" && exitCodeFor(e) === 65 && m.includes("<mp>/events.jsonl") && m.includes("<mp>/record") && !m.includes(r.root) && m.length <= 240;
+  });
+  assert.equal(r.calls("archil", "stray").length + r.calls("archil", "mount").length, 0, "never moved aside, never mounted over");
+  assert.ok(existsSync(join(r.root, "record", "1", ".spool", "durable-1.0.jsonl")), "the writes are where the app left them");
+});
 
 test("acquire moves the entries of an unmounted mountpoint aside whole, logs the run and the count, then mounts", async () => {
   const r = disposeAfter(rig());

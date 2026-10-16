@@ -46,6 +46,7 @@ export type ClaimErrorCode =
   | "INVALID_ARGUMENT"
   | "MOUNTPOINT_BUSY"
   | "MOUNTPOINT_NOT_EMPTY"
+  | "MOUNTPOINT_WRITTEN"
   | "MOUNT_FAILED"
   | "CLAIM_NOT_VERIFIED"
   | "ARCHIL_CLI_FAILED"
@@ -56,7 +57,7 @@ export type ClaimErrorCode =
 
 /** Any other claim failure (bad input, a refused or unverifiable mount, a CLI or control API failure). Exit 1. */
 export class ClaimError extends PdaError {
-  constructor(code: ClaimErrorCode, message: string, options: { cause?: unknown } = {}) {
+  constructor(code: ClaimErrorCode, message: string, options: { cause?: unknown; exitCode?: number } = {}) {
     super(code, message, options);
   }
 }
