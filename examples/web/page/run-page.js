@@ -490,7 +490,8 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
   function wholeOnClick(id, path, name, failed) {
     const link = el("a", { href: "#", class: "download" }, "Download");
     let state = "idle";
-    on(link, "click", async (event) => {
+    // On the link itself, not the page's listeners: the handler goes with the node when the file view is replaced.
+    link.addEventListener("click", async (event) => {
       if (state === "ready") return;
       event.preventDefault();
       if (state === "loading") return;

@@ -217,6 +217,31 @@ test("a long text file draws its cut-short preview at once from one request; Dow
   assert.equal(view.window.blobOf(link.getAttribute("href")).size, BIG.length, "the whole file is saved, not the preview");
 });
 
+test("leaving a large file's view keeps nothing of it: three files in turn, and the page holds no listener of any old Download", async (t) => {
+  const calls = [];
+  const names = ["a.txt", "b.txt", "c.txt"];
+  const big = (path) => new Response(BIG.slice(0, 512 * 1024), { headers: { "x-truncated": "1" } });
+  const source = {
+    ...replaySource(calls),
+    files: async () => names.map((path) => ({ path, size: BIG.length })),
+    file: async (id, path) => (names.includes(path) ? big(path) : respond(path)),
+  };
+  const view = await mount(t, source, `#/run/r1/files/${names[0]}`);
+  const touched = [];
+  for (const [index, name] of names.entries()) {
+    if (index > 0) {
+      view.window.navigate(`#/run/r1/files/${name}`);
+      await settle();
+    }
+    const link = byTag(view.find("files"), "a").find((a) => a.textContent === "Download");
+    assert.ok(link && link.getAttribute("href") === "#", `${name}: a Download that fetches on click`);
+    const remove = link.removeEventListener.bind(link);
+    link.removeEventListener = (...args) => (touched.push(name), remove(...args));
+  }
+  view.handle.unmount();
+  assert.deepEqual(touched, [], "unmount reached no Download link: the page kept no entry for any file view it left");
+});
+
 test("a download that fails says so and leaves the preview", async (t) => {
   const calls = [];
   const view = await mount(t, cappingSource(calls, Promise.resolve(new Response("", { status: 503, statusText: "Service Unavailable" }))), "#/run/r1/files/big.txt");
