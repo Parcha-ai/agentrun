@@ -9,6 +9,7 @@ import { finish } from "../box/files.ts";
 import { connectHome, type HomeHandle } from "./host.ts";
 import { processLink } from "./link.ts";
 import { MoveError, type Place, type StartRunner } from "./move.ts";
+import type { RecordSink } from "./records.ts";
 
 /** The lowest Node a runner runs on: pi-durable's own floor. */
 const NODE_FLOOR = [22, 19] as const;
@@ -26,6 +27,8 @@ export type BoxRunnerOptions = {
 	readonly models: Models;
 	/** What the runner writes on its error output, for the host's log. */
 	readonly onErrors?: (text: string) => void;
+	/** Where the session's record stream goes: the same sink for every runner of the session, wherever it runs. */
+	readonly records?: RecordSink;
 };
 
 /** The output of one short program in a box, or why it did not run. */
@@ -130,6 +133,12 @@ export function boxRunner(options: BoxRunnerOptions): StartRunner {
 			const decoder = new TextDecoder();
 			for await (const chunk of process.stderr) options.onErrors?.(decoder.decode(chunk, { stream: true }));
 		})().catch(() => {});
-		return ok(connectHome(processLink(process), { models: options.models, epoch }));
+		return ok(
+			connectHome(processLink(process), {
+				models: options.models,
+				epoch,
+				...(options.records === undefined ? {} : { records: options.records }),
+			}),
+		);
 	};
 }

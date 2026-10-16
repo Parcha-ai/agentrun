@@ -1,6 +1,6 @@
 {
   "name": "@parcha/pi-durable-disk",
-  "version": "0.1.0-beta.13",
+  "version": "0.1.0-beta.14",
   "description": "A durable pi host on a network disk (Archil): one owner per run, a fence, durable commits, and a supervisor.",
   "keywords": [
     "pi",
@@ -67,8 +67,8 @@
     "verify:tarball": "node scripts/verify-tarball.mjs"
   },
   "peerDependencies": {
-    "@earendil-works/chord": ">=1.0.4 <1.3.0",
-    "@earendil-works/pi-durable": ">=1.0.4 <1.3.0"
+    "@earendil-works/chord": ">=1.0.4 <1.4.0",
+    "@earendil-works/pi-durable": ">=1.0.4 <1.4.0"
   },
   "dependencies": {
     "disk": "1.7.0"

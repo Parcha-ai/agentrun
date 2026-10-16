@@ -10,6 +10,7 @@ import { citeStop } from './cite.ts';
 import { workflowMapPanel } from './workflow-map.ts';
 import { opensInPage, typeOfName } from './blobs.ts';
 import { readAllEntries } from './folder.ts';
+import { diskPanel } from './disk.ts';
 import { transportPanel } from './transport.ts';
 import { visionPanel } from './vision.ts';
 
