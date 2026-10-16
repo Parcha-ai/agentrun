@@ -16,8 +16,9 @@ kind: feature
   directory made by path on an Archil mount was seen to refuse file creates. Every file in them stays the runner's; a
   refused put fails the start with `DIRS_REFUSED`.
 - Box receipts: `HostDriver.box(handle)` (`HostBox`) and `PlaceStatus.boxes`. `archilPlace.status()` lists a receipt
-  for each box it started, released ones included: provider, kind, `from`, `to`, the published list price per second,
-  and its `source` (page and date read). `daytonaHost` reports its sandboxes, priced at `DAYTONA_LIST_PRICES`
+  for each box it started, released ones included: provider, kind, `from`, `to` and, when it has a price, the published
+  list price per second (`usdPerSecond`), the page it was read from (`source`) and the date read (`priced`). An unpriced
+  box has none of the three, never 0, and no field holds the provider's box id. `daytonaHost` reports its sandboxes, priced at `DAYTONA_LIST_PRICES`
   (https://www.daytona.io/pricing, read 2026-10-16), with the "first 5 GiB free" applied to disk (the footnote's
   placement is ambiguous). A box of unknown size has no price, nor does a box with a GPU, which the page prices per
   model (`daytonaUsdPerSecond`). `localPlace` reports none.

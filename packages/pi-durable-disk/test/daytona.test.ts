@@ -390,13 +390,23 @@ test("box: a receipt of each box the driver made: its size, when it was made and
     from: "2026-10-16T09:00:00.000Z",
     to: null,
     usdPerSecond: (2 * 0.0504 + 4 * 0.0162 + 5 * 0.000108) / 3600,
-    source: { page: "https://www.daytona.io/pricing", readOn: "2026-10-16" },
+    source: "https://www.daytona.io/pricing",
+    priced: "2026-10-16",
   });
+  assert.ok(!JSON.stringify(w.host.box!(h)).includes(String(h.sandboxId)), "no field holds the sandbox's id");
   assert.equal(w.host.box!({ ...h, fleet: "other" }), null, "another fleet's handle is not this driver's");
   await w.host.kill(h);
   await stopLaunch(w.box, String(h.name), 1_000);
   const ended = w.host.box!(h)!;
   assert.ok(ended.to !== null && Date.parse(ended.to) >= Date.parse(ended.from), "ended when the driver deleted it");
+
+  // A GPU box: the page prices GPUs per model, which the driver does not map; no price at all, never 0.
+  const g = world("hold", {}, { size: { cpu: 4, memory: 16, disk: 50, gpu: 1, createdAt: "2026-10-16T09:00:00.000Z" } });
+  const gh = await g.host.start(REF, TOKEN);
+  const gpu = g.host.box!(gh)!;
+  assert.deepEqual(Object.keys(gpu).sort(), ["from", "kind", "provider", "to"], "no usdPerSecond, source or priced");
+  assert.equal(gpu.kind, "sandbox 4 vCPU, 16 GiB memory, 50 GiB disk, 1 GPU");
+  await g.host.stop(gh);
 });
 
 test("daytonaUsdPerSecond: the list price from a box's size (the first 5 GiB of disk free); none without a size, or for a box with a GPU, which the page prices per model", () => {

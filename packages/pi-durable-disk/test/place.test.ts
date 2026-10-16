@@ -812,7 +812,7 @@ describe("archilPlace", () => {
     const control = new FakeControl();
     const { host } = fakeHost(control);
     const receipts = new Map<string, HostBox>();
-    const receipt = (n: number, to: string | null): HostBox => ({ provider: "daytona", kind: "sandbox 1 vCPU, 1 GiB memory, 3 GiB disk", from: `2026-10-16T09:0${n}:00.000Z`, to, usdPerSecond: 0.0000185, source: { page: "https://www.daytona.io/pricing", readOn: "2026-10-16" } });
+    const receipt = (n: number, to: string | null): HostBox => ({ provider: "daytona", kind: "sandbox 1 vCPU, 1 GiB memory, 3 GiB disk", from: `2026-10-16T09:0${n}:00.000Z`, to, usdPerSecond: 0.0000185, source: "https://www.daytona.io/pricing", priced: "2026-10-16" });
     (host as HostDriver).box = (h) => receipts.get(String(h.name)) ?? null;
     const at = makePlace({ ...REF, control, host });
     const first = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });

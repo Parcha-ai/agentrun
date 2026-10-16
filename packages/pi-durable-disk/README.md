@@ -793,8 +793,9 @@ id and directory as the supervisor computed them.
     supervisor's) gets the usual lease and start-grace checks instead, so a live one is `HELD`, not revoked.
   - `status()` reads `run.json` over S3 and lists the run's delegations, plus, when its host driver makes boxes
     (`daytonaHost`), a receipt for each box the place started, released ones included (`boxes`, `HostBox`). A receipt
-    has the provider, the kind, `from`, `to` (null while it lives), and the published list price per second, with the
-    page it was read from and the date (`source`). It has no price when the provider publishes none for that kind.
+    has the provider, the kind, `from` and `to` (null while it lives). It also has the published list price per second
+    (`usdPerSecond`), the page that price was read from (`source`) and the ISO date it was read (`priced`). A box with
+    no price has none of those three, never a price of 0. No field holds the provider's id of the box.
   - `recordHome` (when the control can list, as `archilControl`'s can): an attempt's runner records into
     `recordHome.dir(attempt)`, `<root>/record/<attempt>`, in the run's directory, so its delegation covers it and
     `deleteRunTree` removes it. `bringHome(into, { final })` reads that directory through the control (S3 list and get:

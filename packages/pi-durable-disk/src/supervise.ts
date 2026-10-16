@@ -47,16 +47,19 @@ export type StartAttempt = { attempt: number; env?: Record<string, string> };
 
 /**
  * A box a driver made for an instance, as a receipt: who provided it, what kind, when it was made and when it ended
- * (null while it lives), and its published list price per second with the page that price was read from and the date it
- * was read. `usdPerSecond` and `source` are null when the provider publishes no price for this kind of box.
+ * (null while it lives), and its published list price per second (`usdPerSecond`), with the page that price was read
+ * from (`source`) and the ISO date it was read (`priced`). A box with no price (a kind the provider's page does not
+ * price, or of unknown size) has none of the three: never a price of 0. No field holds the provider's id of the box:
+ * the supervisor labels boxes itself and computes their seconds and cost.
  */
 export type HostBox = {
   provider: string;
   kind: string;
   from: string;
   to: string | null;
-  usdPerSecond: number | null;
-  source: { page: string; readOn: string } | null;
+  usdPerSecond?: number;
+  source?: string;
+  priced?: string;
 };
 
 /** Compute is disposable and pluggable: a driver is these three calls. */

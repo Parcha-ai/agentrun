@@ -550,8 +550,7 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & Required<Pic
         kind: `sandbox${size}`,
         from: m.from,
         to: m.to,
-        usdPerSecond,
-        source: usdPerSecond === null ? null : { page: DAYTONA_LIST_PRICES.page, readOn: DAYTONA_LIST_PRICES.readOn },
+        ...(usdPerSecond === null ? {} : { usdPerSecond, source: DAYTONA_LIST_PRICES.page, priced: DAYTONA_LIST_PRICES.readOn }),
       };
     },
   };
