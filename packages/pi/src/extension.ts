@@ -64,6 +64,8 @@ type Session = {
   savedName?: string; observation?: RunObservation; report?: ExtensionRunReport;
   runId?: string; persistenceWarning?: string; sop?: { file: string; sha256: string };
   pause?: () => void;
+  /** Stops the dry run in flight. */
+  dryRun?: AbortController;
   sessionFile: () => string | undefined;
 };
 
@@ -394,13 +396,18 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
 
   /** The inspected draft on synthetic values, or `input`: nothing is paid, and the session's run is untouched. Code runs
    *  only when the user's command trusts this dry run. */
-  const dryRun = async (ctx: ExtensionContext, s: Session, input: Record<string, unknown> | undefined, trusted: boolean): Promise<WorkflowDryRun> => {
+  const dryRun = async (ctx: ExtensionContext, s: Session, input: Record<string, unknown> | undefined, trusted: boolean, signal?: AbortSignal): Promise<WorkflowDryRun> => {
     if (!s.draft) throw new Error('Inspect a workflow first. Try /agentrun demo, or describe a task with /agentrun <task>.');
     let sop: SopText | undefined, sopUnavailable: string | undefined;
     try { sop = await sopFor(ctx, s, inspectWorkflow(s.draft).requires.sopSections); }
     catch (error) { sopUnavailable = error instanceof Error ? error.message : String(error); }
-    return dryRunDraft(s.draft, { ...(input === undefined ? {} : { input }), ...(sop ? { sop: sop.text } : {}), ...(sopUnavailable ? { sopUnavailable } : {}),
-      trusted, trustedCommand: '/agentrun dry-run --trusted' });
+    // /agentrun stop, the tool call's own abort and the session's end each stop it.
+    const controller = new AbortController();
+    s.dryRun?.abort(); s.dryRun = controller;
+    try {
+      return await dryRunDraft(s.draft, { ...(input === undefined ? {} : { input }), ...(sop ? { sop: sop.text } : {}), ...(sopUnavailable ? { sopUnavailable } : {}),
+        trusted, trustedCommand: '/agentrun dry-run --trusted', signal: AbortSignal.any([controller.signal, ...[signal, ctx.signal].filter((v): v is AbortSignal => !!v)]) });
+    } finally { if (s.dryRun === controller) s.dryRun = undefined; }
   };
   const launch = async (ctx: ExtensionContext, s: Session, input: Record<string, unknown>, trusted = false) => {
     if (s.busy) throw new Error('A workflow is already running. Use /agentrun stop first.');
@@ -454,7 +461,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
       }
       if (args.action === 'dry-run') {
         if (args.workflow !== undefined) throw new Error('Inspect the workflow first with action inspect, then dry-run without a workflow argument.');
-        const report = await dryRun(ctx, s, args.input, false);
+        const report = await dryRun(ctx, s, args.input, false, signal);
         return textResult(modelJson({ dryRun: report }), { dryRun: report });
       }
       if (args.action === 'run' && args.workflow !== undefined) throw new Error('Inspect the workflow first with action inspect, then run without a workflow argument.');
@@ -577,7 +584,8 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
           const ready = readiness(ctx, s);
           show(s, `agent.run() · ${s.busy ? 'running' : 'idle'}\nDemo: ready — /agentrun demo (no keys or model calls)\nWorkflow: ${s.draft ? `${modelJson(inspectWorkflow(s.draft).name)} · ${s.demo ? 'scripted' : 'live adapters'}` : 'none — load a saved procedure, run the demo, or describe a task'}\n\nFor your own workflows:\n${piHostLine(PI_VERSION)}\nSkill: ${ready.skill ? 'loaded — /agentrun <task>' : 'missing — enable package skills, then /reload'}\nPi: ${ready.pi ? 'selected model available (connection not tested)' : 'no usable active model — /login to connect a provider, then /model to select it'}\nJev: ${ready.jev ? 'configuration present (connection not tested)' : 'not configured — only needed for system one decisions; set TYPESAFE_API_KEY before starting Pi'}`, ready);
         } else if (command === 'stop') {
-          s.pause?.(); s.controller?.abort(); s.service.stop(); show(s, s.busy ? 'Stop requested. Already-started tool effects may still finish.' : 'Nothing is running.');
+          const dry = s.dryRun; dry?.abort();
+          s.pause?.(); s.controller?.abort(); s.service.stop(); show(s, s.busy ? 'Stop requested. Already-started tool effects may still finish.' : dry ? 'Dry run stopped.' : 'Nothing is running.');
         } else if (command === 'demo' || command === 'demo live' || command === 'demo empty') {
           inspect(ctx, s, demoWorkflow);
           s.demo = command === 'demo live' ? undefined : command === 'demo empty' ? 'empty' : 'scripted';
@@ -605,7 +613,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
   });
   const closeSession = async (retainFinal = false) => {
     if (!current) return;
-    const old = current, wasRunning = old.busy; old.clearStatus(); old.closed = true; old.pause?.(); old.controller?.abort(); await old.service.dispose();
+    const old = current, wasRunning = old.busy; old.clearStatus(); old.closed = true; old.dryRun?.abort(); old.pause?.(); old.controller?.abort(); await old.service.dispose();
     await old.inFlight;
     // Only before-switch/shutdown hooks still own the originating branch. A
     // session_tree event is already on another branch and must never receive this receipt.

@@ -64,6 +64,8 @@ export type DryRunDraftOptions = {
   runCode?: WorkflowDeps['runCode'];
   /** How code is authorized in this host, named when a code node does not run. */
   trustedCommand?: string;
+  /** Ends the dry run at its next step, as not run. */
+  signal?: AbortSignal;
 };
 
 /** The status of a dry run's result: its own once the DSL gives one, else read from `ok` and `skipped`. */
@@ -97,6 +99,7 @@ export async function dryRunDraft(draft: unknown, options: DryRunDraftOptions = 
   }
   const result = await dryRunWorkflow(draft as Workflow, {
     ...(options.input === undefined ? {} : { input: options.input }), ...(options.sop === undefined ? {} : { sop: options.sop }),
+    ...(options.signal ? { signal: options.signal } : {}),
     runCode: options.runCode ?? (code.length ? inProcessCode : noCode),
   });
   return { ...result, status: dryRunStatus(result) } as WorkflowDryRun;
