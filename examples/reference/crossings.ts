@@ -47,6 +47,7 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
   const eligible = new Map<unknown, number>();
   const done = new Set<number>();
   let parkedCount = 0;
+  let fired = false;
   let killAsked = false;
   const cross = ((point: string, options: { cut?: boolean; info?: Info } = {}) => {
     // A crossing taken while any tool call is between its dispatch and its kept answer is never a run kill point, whichever seam it is at: a kill there would leave that call unknown.
@@ -64,15 +65,16 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
     });
     if (tool >= 0) { done.add(tool); return true; }
     const run = plan?.run;
+    // A run kill's `n` counts EVERY crossing of its point (and `where`), eligible or not, so a demo's kill always lands when the run reaches the point n times or more; it lands at the first ELIGIBLE crossing at or after the nth (eligible: not while a tool call is
+    // between its dispatch and its kept answer). `ordinal` is the crossing's own number, which the kill line keeps.
+    const ordinal = run && !('storm' in run) && run.point === point && matches(run.where, info) ? count(eligible, run, true) : 0;
     if (!cut || !run) { if (point === 'event workflow.node.start') begun = true; return false; }
-    // A run kill's `n` counts the matching crossings that could have been kill points: one suppressed by an open tool call is not the nth time, it is not a time at all.
-    const timesEligible = 'storm' in run ? 0 : count(eligible, run, run.point === point && matches(run.where, info));
     // A kill with `hold` is taken by `park`, not here: the crossing parks the nth filing and the ones after it.
     if (!('storm' in run) && run.hold !== undefined) return false;
     // A named point is taken as named; a storm waits for the first node to have begun.
-    const due = 'storm' in run ? begun && point !== 'event workflow.node.start' && Date.now() - started >= run.gapMs : run.point === point && matches(run.where, info) && timesEligible === run.n;
+    const due = 'storm' in run ? begun && point !== 'event workflow.node.start' && Date.now() - started >= run.gapMs : ordinal > 0 && ordinal >= run.n && !fired;
     if (point === 'event workflow.node.start') begun = true;
-    if (due) kill({ point, n, pid: process.pid });
+    if (due) { fired = true; kill({ point, n: ordinal, pid: process.pid }); }
     return false;
   }) as Cross;
   (cross as { park: NonNullable<Cross['park']> }).park = (point, info) => {
