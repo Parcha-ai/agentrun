@@ -3,6 +3,7 @@ import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
 import type { StorageWrite } from "@earendil-works/pi-durable";
 import type { Result } from "@earendil-works/pi-durable/env";
 import { isPlacementRecord, writePlacement } from "../place/log.ts";
+import { type ProxyBoxes, proxyBoxes } from "./boxes.ts";
 import type { DrainOptions } from "./gate.ts";
 import { createKeys } from "./keys.ts";
 import { type Frame, LINK_VERSION, type Link } from "./link.ts";
@@ -80,7 +81,12 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 	let proxy: ProxyModels | undefined;
 	// The one opening of the home, with the models it opened with. A host that says hello meanwhile waits for it.
 	let opening:
-		| { readonly proxy: ProxyModels; readonly shipper?: Shipper; readonly home: Promise<Result<Home, Error>> }
+		| {
+				readonly proxy: ProxyModels;
+				readonly boxes?: ProxyBoxes;
+				readonly shipper?: Shipper;
+				readonly home: Promise<Result<Home, Error>>;
+		  }
 		| undefined;
 	let home: Home | undefined;
 	let current: Link | undefined;
@@ -97,6 +103,7 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 		if (finished) return;
 		finished = true;
 		proxy?.down(reason);
+		opening?.boxes?.down(reason);
 		if (how === "refused") await home?.close(context);
 		current?.close(reason);
 		end({ how, exitCode, reason });
@@ -221,13 +228,22 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 				...(keys === undefined ? {} : { keyOf: (request) => keys.keyOf(request) }),
 			});
 			proxy = made;
+			// The host's box providers, when it serves them: every pool box is the host's, made with its credentials.
+			const boxes = Array.isArray(frame.boxes)
+				? proxyBoxes(
+						frame.boxes.map(String),
+						options.resumeWithinMs === undefined ? undefined : { resumeWithinMs: options.resumeWithinMs },
+					)
+				: undefined;
 			const { recording: _recording, linesSync: _linesSync, admits: _admits, ...homeOptions } = options;
 			opening = {
 				proxy: made,
+				...(boxes === undefined ? {} : { boxes }),
 				...(shipper === undefined ? {} : { shipper }),
 				home: openHome({
 					...homeOptions,
 					models: made.models,
+					...(boxes === undefined ? {} : { boxes: boxes.providers }),
 					// Told to the host as they happen, small and without arguments. A link that is down drops them.
 					onCall: async (event) => {
 						const to = current;
@@ -265,6 +281,7 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 		home = opened.value;
 		if (link !== current) return;
 		mine.proxy.up((model) => (current === link ? send(link, model) : false));
+		mine.boxes?.up((box) => (current === link ? send(link, box) : false));
 		mine.shipper?.up((record) => (current === link ? send(link, record) : false));
 		send(link, { t: "ready", v: LINK_VERSION, ok: true, session: options.session, state: opened.value.state });
 	};
@@ -287,6 +304,7 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 				else if (frame.t === "cancel") running.get(frame.id)?.();
 				else if (frame.t === "call-ack") toolAcks.get(String(frame.id))?.();
 				else if (proxy?.receive(frame)) return;
+				else if (opening?.boxes?.receive(frame)) return;
 				else if (opening?.shipper?.receive(frame)) return;
 				else if (frame.t === "order") {
 					const active = home;
@@ -315,6 +333,7 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 				if (current !== link) return;
 				current = undefined;
 				proxy?.down(reason);
+				opening?.boxes?.down(reason);
 				opening?.shipper?.down();
 				// No host is there to finish a move: held work goes on. A sealed home stays sealed.
 				if (home?.state === "open") home.abandon();

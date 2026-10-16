@@ -6,6 +6,7 @@ import type { Models } from "@earendil-works/pi-ai";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import type { Box, BoxProcess } from "../box/box.ts";
 import { finish } from "../box/files.ts";
+import type { BoxServer } from "./boxes.ts";
 import { type Crossing, type CrossingCounter, crossingCounter } from "./crossing.ts";
 import { connectHome, type HomeHandle } from "./host.ts";
 import { processLink } from "./link.ts";
@@ -42,6 +43,8 @@ export type BoxRunnerOptions = {
 	 * from `models`. Pass your own to call `covered(head)` on it (`pullCheckpoint({ answers })` does) and to read `paid`.
 	 */
 	readonly server?: ModelServer;
+	/** The host's box providers for every runner this starts (`serveBoxes`): pool boxes are made here, never in a box. */
+	readonly boxes?: BoxServer;
 };
 
 /** The output of one short program in a box, or why it did not run. */
@@ -157,6 +160,7 @@ export function boxRunner(options: BoxRunnerOptions): StartRunner {
 				models: options.models,
 				server,
 				epoch,
+				...(options.boxes === undefined ? {} : { boxes: options.boxes }),
 				...(options.records === undefined ? {} : { records: options.records }),
 				...(options.crossing === undefined
 					? {}
