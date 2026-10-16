@@ -65,7 +65,7 @@ function run(args, { cwd, env }) {
 
 test("the real pi CLI loads the package, seeds the repository, and a print-mode run commits what the model wrote on exit", { timeout: 170_000 }, async (t) => {
   const root = await scratch();
-  const { bare, main } = await remoteWith(root, { "AGENTS.md": "# Rules\nCite every claim.\n", "notes/hello.md": "hello\n", "src/code.js": "x\n" });
+  const { bare } = await remoteWith(root, { "AGENTS.md": "# Rules\nCite every claim.\n", "notes/hello.md": "hello\n", "src/code.js": "x\n" });
   const home = path.join(root, "home");
   const agent = path.join(home, "agent");
   const model = await fakeModel(t, path.join(agent, "git-remote", "checkouts"));
@@ -90,6 +90,5 @@ test("the real pi CLI loads the package, seeds the repository, and a print-mode 
   assert.equal(await showOn(bare, `sessions/${id}`, "notes/learned.md"), "Registries match the legal name.\n");
   assert.deepEqual((await treeOf(bare, `sessions/${id}`)).sort(), ["AGENTS.md", "notes/hello.md", "notes/learned.md", "src/code.js"]);
   assert.equal(await showOn(bare, "main", "notes/learned.md"), null);
-  assert.notEqual(main, undefined);
   assert.deepEqual(readdirSync(work), [], "nothing was written to the working directory");
 });
