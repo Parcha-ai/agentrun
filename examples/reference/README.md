@@ -261,3 +261,11 @@ A place that has `status()` reports its reading of the run (`{ record }`, a disk
 ### The operator's kill
 
 `--operator-kill <file>` names a control the supervisor owns (never the child's request file): when a process is running and the file appears, the supervisor removes it, writes a `kill` host line with `crossing: null` and `label: "operator"`, kills through the place, and resumes as usual. A kill still planned for the attempt it ended is planned for the next, so a planned kill is not lost. The path must not exist when the run starts (a stale file would kill the first process); a page's server makes it with any process of the same user, so the path belongs in a directory only the operator can write. The operator may kill anywhere, so a kill inside a tool's dispatch leaves that effect unknown, as any kill there does.
+
+### A demo with no browser
+
+`browser: false` in demo.json (`DemoSpec.browser`) means the entry creates no browser, live or on fakes: `--live` then needs no Browserbase key and no Chrome (`chooseBrowser` is not asked), the live parts' browser is ignored, and a page tool call fails with `this demo has no browser` rather than a missing key. The default (a browser) is unchanged.
+
+### Blobs appear whole
+
+Each blob is written to a temporary name beside its final one (`blobs/.<sha>.<ext>.tmp-<pid>`), synced, and renamed into place, so a viewer following a live run finds it absent or whole; a blob already there is left alone. The validator, the gate and the record-time scan skip a temporary name.

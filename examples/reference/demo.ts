@@ -57,7 +57,7 @@ export type DemoOptions = {
   spec: DemoSpec;
   job: Job;
   fakes: Fakes;
-  live?: (context: { env: NodeJS.ProcessEnv; browser: 'fake' | 'browserbase' | 'chrome'; /** What `--provider`, `--model` and `--eyes-model` named (each absent when not given): the demo's sign-in plan decides what they mean. */ models: LiveModels }) => LiveParts | Promise<LiveParts>;
+  live?: (context: { env: NodeJS.ProcessEnv; browser: 'fake' | 'browserbase' | 'chrome' | 'none'; /** What `--provider`, `--model` and `--eyes-model` named (each absent when not given): the demo's sign-in plan decides what they mean. */ models: LiveModels }) => LiveParts | Promise<LiveParts>;
   /** Fields the demo adds to the manifest, from the run it just finished (never a field the entry writes: `format`, `source`, `result`, `providers`, ...). It runs in the supervisor, once, after the last process. */
   manifest?: (context: { dir: string; record: unknown; input: Record<string, unknown> | undefined; live: boolean; /** What the live parts reported choosing (`LiveParts.models`); absent on fakes. */ models?: Record<string, unknown> }) => Record<string, unknown>;
   /** The run's result, as the recording shows it: the entry writes the result line and its blob from `json` (`agentrun.cited/1` for a payoff that cites what it read) instead of the raw delivered record. `keep` stores a file in the recording's blobs and returns its SHA-256; `dir` is the run's directory, where the run's own files are. It runs in the process that delivered. */
@@ -125,6 +125,12 @@ function fakeBrowser(url: string): BrowserPlane {
   };
 }
 
+/** The browser of a demo that has none (`browser: false`): any page call fails, saying so. */
+function noBrowser(): BrowserPlane {
+  const refuse = (): never => { throw new Error('this demo has no browser'); };
+  return { provider: refuse, driver: async () => refuse() };
+}
+
 /** The host a run uses, in the order that keeps every platform check on the final host: the live parts merged in, then the crossings put at its seams, then the judge seam's caps. */
 export function composeHost(host: Host, parts: Partial<Host> | undefined, cross: Cross, window: EffectWindow, spentFile: string): void {
   mergeParts(host, parts);
@@ -183,17 +189,19 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   const redact = env.RECORD_DIR && env.AGENTRUN_HOME ? trackSecrets(env, options.spec).redact : undefined;
   const recorder = env.RECORD_DIR ? openRecorder({ dir: env.RECORD_DIR, commits: await packageCommitRecorder(), ...(redact ? { redact } : {}) }) : undefined;
   const live = env.LIVE === '1';
-  const browserKind = (env.BROWSER ?? 'fake') as 'fake' | 'browserbase' | 'chrome';
+  const browserKind = (env.BROWSER ?? 'fake') as 'fake' | 'browserbase' | 'chrome' | 'none';
   let box: Awaited<ReturnType<typeof inBox>> | undefined;
   const parts = live ? await options.live!({ env, browser: browserKind, models: env.MODELS ? (JSON.parse(env.MODELS) as LiveModels) : {} }) : {};
   // Docker only with --live: a no-key run uses a local box, so it starts no container.
   const boxSpec = effectiveBoxes(options.spec, live);
   const provider = await boxProvider(boxSpec, place);
   const boxes = provider ? tapBox(provider, { cross, window, ...(env.RUN_LABEL ? { runLabel: env.RUN_LABEL } : {}), ...(recorder ? { recorder } : {}) }) : undefined;
-  const local = localHost(place, live ? options.fakes : tapFakes(options.fakes, cross), { browser: fakeBrowser(env.BACKEND!), live, ...(recorder ? { recorder } : {}), ...(boxes ? { boxes } : {}) });
+  const local = localHost(place, live ? options.fakes : tapFakes(options.fakes, cross), { browser: browserKind === 'none' ? noBrowser() : fakeBrowser(env.BACKEND!), live, ...(recorder ? { recorder } : {}), ...(boxes ? { boxes } : {}) });
   // The live parts are merged into the host member by member FIRST, then the platform wraps the final host: the crossings (so a live `status` or `tools` still has them) and the judge seam's
   // caps (Jev's), which a live judge is held to too.
   composeHost(local.host, parts.host, cross, window, join(place.root, 'judge-spent.jsonl'));
+  // A demo with `browser: false` has none, whatever the live parts supplied.
+  if (browserKind === 'none') local.host.tools = { ...local.host.tools, browser: noBrowser() };
   // The checked files the job reads, fetched into work/ and verified: on --live and with --fetch-sources (a no-key run uses the files the demo commits). `sourcesFor(input)` names only the items this input needs;
   // else the demo's sources.json lists them all. A fetched file is cached by its hash (`--cache`), so a re-run does not fetch it again.
   // The input: `--input`'s, else the demo's for this mode (`fakes.input` on fakes, which may be a smaller slice), else the job's own.
@@ -297,7 +305,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const { spec, job } = options;
   const live = values.live === true;
   if (live && !options.live) throw new Error(`--live: ${spec.name} supplies no live parts (no real models or services), so it runs on fakes only.`);
-  const browser = chooseBrowser({ live, env: process.env, localChrome: values['local-chrome'] === true });
+  // `browser: false` in demo.json: no browser is created, so no key or Chrome is asked for.
+  const browser = spec.browser === false ? 'none' as const : chooseBrowser({ live, env: process.env, localChrome: values['local-chrome'] === true });
   const plans = values.kill ? plansOf(killsOf(spec)) : [];
   const maxUsd = maxUsdOf(values['max-usd'], spec);
   // The operator's control file: a path the caller names (`--operator-kill`), which must not exist yet (a stale one would kill the first process).
