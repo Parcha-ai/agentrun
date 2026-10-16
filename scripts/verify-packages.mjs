@@ -120,6 +120,14 @@ try {
           if (dependency.startsWith('.')) {
             const target = resolve(dirname(join(extracted, name)), dependency);
             assert.ok(target.startsWith(join(extracted, 'package') + '/'), `Import escapes package: ${name}`);
+          } else if (dependency.startsWith('#')) {
+            // The package's own `imports` map: declared, and every target packed.
+            const declared = manifest.imports?.[dependency];
+            assert.ok(declared, `Undeclared import ${dependency} in ${name}`);
+            const targets = [];
+            const collect = value => typeof value === 'string' ? targets.push(value) : Object.values(value ?? {}).forEach(collect);
+            collect(declared);
+            for (const target of targets) assert.ok(names.includes(`package/${target.replace(/^\.\//, '')}`), `Import target ${target} of ${dependency} is not packed in ${manifest.name}`);
           } else if (!dependency.startsWith('node:')) {
             const packageName = dependency.startsWith('@') ? dependency.split('/').slice(0, 2).join('/') : dependency.split('/')[0];
             assert.ok(manifest.dependencies?.[packageName] || manifest.peerDependencies?.[packageName], `Undeclared dependency ${packageName} in ${name}`);

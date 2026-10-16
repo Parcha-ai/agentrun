@@ -25,7 +25,8 @@ const pairs = [
   [{}, {}], [{ a: 1, b: 2 }, { b: 2, a: 1 }], [{ a: 1 }, { a: 1, b: undefined }], [{ a: { b: { c: [1, { d: 2 }] } } }, { a: { b: { c: [1, { d: 2 }] } } }],
   [{ a: undefined }, {}], [{ a: 1 }, { a: 2 }], [[], {}], [{ 0: "a" }, ["a"]],
   [new Point(1), new Point(1)], [new Point(1), new Other(1)], [new Point(1), { x: 1 }],
-  [new Date(5), new Date(5)], [new Date(5), new Date(6)], [new Date(NaN), new Date(NaN)],
+  [new Date(5), new Date(5)], [new Date(5), new Date(6)],
+  // Not here: two invalid Dates. Node's answer changed between its releases (false on 22, true on 24); the browser says true.
   [/a/g, /a/g], [/a/g, /a/i], [/a/, /b/],
   [new Map([[1, 2]]), new Map([[1, 2]])], [new Map([[1, 2]]), new Map([[1, 3]])], [new Map([[{ a: 1 }, 2]]), new Map([[{ a: 1 }, 2]])],
   [new Set([1, 2]), new Set([2, 1])], [new Set([1, 2]), new Set([1, 3])], [new Set([{ a: 1 }]), new Set([{ a: 1 }])],
