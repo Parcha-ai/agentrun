@@ -1,14 +1,17 @@
-// The recovery store on a pi-durable Harness: one run's journal as two document families in the run's Session, so a
-// state and the admission or completion it goes with land in one commit.
-//   - `agentrun.driver`, one per journal key: its binding, its generation, its revision counter, its whole state, its
-//     notes, and the ids of its effects;
-//   - `agentrun.effects`, one per effect: admitted before dispatch, completed with its result after.
-// Both names, their version and the effect key are stored formats: a run written by one build is read by the next.
+// The recovery store on a pi-durable Harness: one run's journal as document families in the run's Session, so a state
+// and the admission, completion or parts it goes with land in one commit.
+//   - `agentrun.driver`, one per journal key: its binding, its generation, its revision counter, its state, its notes,
+//     and the ids of its effects that no map item lists;
+//   - `agentrun.effects`, one per effect: admitted before dispatch, completed with its result after;
+//   - `agentrun.items`, one per map item the driver keeps apart (the keyed layout), replaced whole when it changes, and
+//     listing the ids of the effects admitted in that item;
+//   - `agentrun.states`, one per state the keyed layout references, by its digest, written once.
+// Every name, its version and its key are stored formats: a run written by one build is read by the next.
 import type { Harness } from "@earendil-works/pi-durable";
 import { defineDocFamily } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
-import { RecoveryError, asRecoveryError, bindingMismatch, type RecoveryBinding, type RecoveryEffect, type RecoveryJournal, type RecoveryNote, type RecoveryStore } from "@parcha/agentrun-dsl/recovery";
+import { RecoveryError, asRecoveryError, bindingMismatch, type RecoveryBinding, type RecoveryEffect, type RecoveryItem, type RecoveryJournal, type RecoveryNote, type RecoveryParts, type RecoveryStore } from "@parcha/agentrun-dsl/recovery";
 import { storageError } from "./pi-versions.js";
 
 type Json = any;
@@ -50,6 +53,19 @@ const DriverDoc = defineDocFamily<DriverRecord, null>({ kind: "agentrun.driver",
   initial: () => ({ binding: null, inputs: null, generation: 0, revision: 0, state: null, notes: [], effects: [] }) });
 const EffectDoc = defineDocFamily<EffectRecord, null>({ kind: "agentrun.effects", version: 1, scope: "session", family: true,
   initial: () => ({ driver: "", name: "", argsHash: "", status: "unknown", session: null, result: null }) });
+/** A map item's record as the driver writes it, whole; `driver` is empty only for one never written. */
+type ItemDocRecord = Record<string, Json> & { driver: string; effects: string[] };
+const ItemDoc = defineDocFamily<ItemDocRecord, null>({ kind: "agentrun.items", version: 1, scope: "session", family: true,
+  initial: () => ({ driver: "", effects: [] }) });
+/** A state by its digest; `sha256` is empty only for one never written. */
+const StateDoc = defineDocFamily<{ driver: string; sha256: string; state: Json }, null>({ kind: "agentrun.states", version: 1, scope: "session", family: true,
+  initial: () => ({ driver: "", sha256: "", state: null }) });
+
+/** A draft made to hold `value` whole: every field set, every other field removed. */
+function replaceWhole(draft: Record<string, unknown>, value: Record<string, unknown>): void {
+  for (const field of Object.keys(draft)) if (!Object.hasOwn(value, field)) delete draft[field];
+  for (const [field, item] of Object.entries(value)) draft[field] = item;
+}
 
 /** A value as the journal stores it: plain JSON, every number finite. */
 function json(value: unknown): Json {
@@ -142,28 +158,40 @@ async function openDocumentJournal(host: DocumentStoreHost, key: string, bound: 
     return done;
   };
   /** One Session commit on the journal's record: it checks this open's generation is the record's, advances the
-   *  revision, and lets `write` change the record (its state computed with that revision) and the effect documents. */
-  const commit = async <T>(write: (doc: DriverRecord, next: number, tx: Tx) => Promise<T> | T): Promise<{ revision: number; value: T }> =>
+   *  revision, and lets `write` change the record (its state computed with that revision) and the effect documents,
+   *  then writes the parts computed with that revision. */
+  const commit = async <T>(write: (doc: DriverRecord, next: number, tx: Tx) => Promise<T> | T, parts?: (revision: number) => RecoveryParts): Promise<{ revision: number; value: T }> =>
     host.commit(async (tx) => {
       const doc = await tx.doc(DriverDoc, key, null);
       if (doc.generation !== opened.generation) throw new RecoveryError("Run owner generation is not acquired");
       const next = doc.revision + 1;
       const value = await write(doc, next, tx);
+      const laid = parts?.(next);
+      for (const [path, item] of Object.entries(laid?.items ?? {})) {
+        replaceWhole(await tx.doc(ItemDoc, effectKey(key, path), null) as Record<string, unknown>, json(item));
+      }
+      for (const [sha256, state] of Object.entries(laid?.states ?? {})) {
+        const held = await tx.doc(StateDoc, effectKey(key, sha256), null);
+        if (held.sha256 === "") Object.assign(held, { driver: key, sha256, state: json(state) });
+      }
       doc.revision = next;
       return { revision: next, value };
     }, context).then((done) => { revision = done.revision; return done; });
+  /** A read in a commit of its own: it writes nothing the caller did not ask for. */
+  const read = <T>(body: (tx: Tx) => Promise<T>): Promise<T> => inOrder(() => host.commit(body, context));
+  const storedEffect = (id: string, e: EffectRecord): StoredEffect => ({ id, name: e.name, argsHash: e.argsHash, status: e.status, session: e.session, result: json(e.result), ...(e.intent ? { intent: json(e.intent) as EffectIntent } : {}), ...(e.args !== undefined ? { args: json(e.args) } : {}), ...(Array.isArray(e.calls) ? { calls: json(e.calls) as unknown[] } : {}) });
   return {
     existing: opened.existing, generation: opened.generation, state: opened.state as Json,
     get revision() { return revision; },
     effects: () => [...effects.values()],
     effect: (id) => effects.get(id),
     notes: () => [...notes],
-    save: (state: unknown, note?: Pick<RecoveryNote, "kind" | "detail">) => inOrder(async () => {
+    save: (state: unknown, note?: Pick<RecoveryNote, "kind" | "detail">, parts?: (revision: number) => RecoveryParts) => inOrder(async () => {
       let entry: RecoveryNote | undefined;
       const done = await commit((doc, next) => {
         doc.state = json(typeof state === "function" ? state(next) : state);
         if (note) { entry = { revision: next, kind: note.kind, detail: json(note.detail), at: new Date().toISOString() }; doc.notes.push(entry); }
-      });
+      }, parts);
       if (entry) notes.push(entry);
       return done.revision;
     }),
@@ -173,7 +201,7 @@ async function openDocumentJournal(host: DocumentStoreHost, key: string, bound: 
       notes.push({ revision: done.revision, ...entry });
       return done.revision;
     }),
-    admit: (id, name, argsHash, state, session = null, intent?: EffectIntent, args?: unknown) => inOrder(async () => {
+    admit: (id, name, argsHash, state, session = null, intent?: EffectIntent, args?: unknown, parts?: (revision: number) => RecoveryParts, owner?: string) => inOrder(async () => {
       effectKey(key, id);
       const known = effects.get(id);
       if (known) return known;
@@ -182,13 +210,14 @@ async function openDocumentJournal(host: DocumentStoreHost, key: string, bound: 
       const keptArgs = args === undefined ? undefined : json(args);
       await commit(async (doc, _next, tx) => {
         Object.assign(await tx.doc(EffectDoc, effectKey(key, id), null), { driver: key, name, argsHash, status: "unknown", session, result: null, ...(kept ? { intent: kept } : {}), ...(keptArgs !== undefined ? { args: keptArgs } : {}) });
-        doc.effects.push(id);
+        // An effect a map item owns is listed by that item's record, written in the same commit.
+        if (owner === undefined || !parts) doc.effects.push(id);
         doc.state = stored;
-      });
+      }, parts);
       effects.set(id, { id, name, argsHash, status: "unknown", session, result: null, ...(kept ? { intent: kept } : {}), ...(keptArgs !== undefined ? { args: keptArgs } : {}) });
       return "new" as const;
     }),
-    complete: (id, result, state = opened.state) => inOrder(async () => {
+    complete: (id, result, state = opened.state, parts?: (revision: number) => RecoveryParts) => inOrder(async () => {
       const known = effects.get(id);
       if (!known) throw new RecoveryError(`Effect ${id} completes without an admission`);
       if (known.status === "completed") throw new RecoveryError(`Effect ${id} completes once`);
@@ -198,7 +227,7 @@ async function openDocumentJournal(host: DocumentStoreHost, key: string, bound: 
         const effect = await tx.doc(EffectDoc, effectKey(key, id), null);
         effect.status = "completed"; effect.result = value;
         doc.state = next;
-      });
+      }, parts);
       effects.set(id, { ...known, status: "completed", result: value });
     }),
     called: (id, calls) => inOrder(async () => {
@@ -213,5 +242,20 @@ async function openDocumentJournal(host: DocumentStoreHost, key: string, bound: 
       await queue;
       held.release();
     },
+    // Only paths and digests the driver wrote are asked for: a read of a document never written would create it.
+    items: (paths) => read(async (tx) => {
+      const found: Array<RecoveryItem | undefined> = [];
+      for (const path of paths) {
+        const item = await tx.doc(ItemDoc, effectKey(key, path), null);
+        if (item.driver === "") { found.push(undefined); continue; }
+        found.push(json(item) as RecoveryItem);
+        for (const id of (item.effects ?? []) as string[]) if (!effects.has(id)) effects.set(id, storedEffect(id, await tx.doc(EffectDoc, effectKey(key, id), null)));
+      }
+      return found;
+    }),
+    stateOf: (sha256) => read(async (tx) => {
+      const held = await tx.doc(StateDoc, effectKey(key, sha256), null);
+      return held.sha256 === "" ? undefined : json(held.state);
+    }),
   };
 }

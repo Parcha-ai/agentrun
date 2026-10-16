@@ -95,6 +95,29 @@ export const browserChargesOf = (doc: DocLine): { tag: string; usd: number | nul
   });
 };
 
+/** A page action a `browser.sessions` revision journals (RECORDING.md section 6): pi-browser writes each replay-unsafe
+ *  action as a session record's `pendingEffect` before it acts, and a later entry carries earlier ones as `prior`. Its key
+ *  is its `tool` (absent means `run`) and `codeSha`, in its conversation; it REACHED THE PAGE when this revision shows it
+ *  `finished` or with a `sent` row whose `held` is not `"denied"`. */
+export type PageAction = { callId: string; tool: string; codeSha: string; reached: boolean };
+export const pageActionsOf = (doc: DocLine): PageAction[] | undefined => {
+  if (doc.doc !== 'browser.sessions' || !isObj(doc.value) || !Array.isArray(doc.value.sessions)) return undefined;
+  const out: PageAction[] = [];
+  const visit = (entry: Json | undefined): void => {
+    if (Array.isArray(entry)) { entry.forEach(visit); return; }
+    if (!isObj(entry)) return;
+    // The entries a later one carries were dispatched before it: they come first.
+    visit(entry.prior);
+    if (typeof entry.callId === 'string' && typeof entry.codeSha === 'string') {
+      const sent = Array.isArray(entry.sent) ? entry.sent : [];
+      out.push({ callId: entry.callId, tool: typeof entry.tool === 'string' ? entry.tool : 'run', codeSha: entry.codeSha,
+        reached: entry.finished === true || sent.some((row) => isObj(row) && row.held !== 'denied') });
+    }
+  };
+  for (const session of doc.value.sessions) if (isObj(session)) visit(session.pendingEffect);
+  return out;
+};
+
 /** The LookRecords a `vision.*` document files, each with its place in the document's list (the list only grows, and
  *  every revision carries all of it), its look key (`facts.key`), whether the eyes answered (`status` ok), whether the
  *  lead looked itself (`args.native`), whether it is an answer read back after a kill (`facts.kept`), and its price
