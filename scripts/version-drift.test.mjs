@@ -2,12 +2,12 @@
 // a structural rule it names (STRUCTURE), so it leaves alone what a grep over prose would hit and is right as it stands: recorded
 // fixtures, history and minimums. On this repository's own docs it finds nothing; on a tree with stale lines it names each one.
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { docFiles, driftOf, RULES, specsOf, statementsOf, STRUCTURE, tokensOf } from './version-drift.mjs';
+import { docFiles, driftOf, EXPECTED, RULES, specsOf, statementsOf, STRUCTURE, tokensOf } from './version-drift.mjs';
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -25,9 +25,10 @@ const base = {
   'packages/pi/package.json': { name: '@parcha/agentrun-pi', version: '0.1.0-beta.14', peerDependencies: { '@earendil-works/pi-durable': '>=1.0.4 <1.4.0', '@earendil-works/pi-coding-agent': '*' } },
 };
 
-test('the rule is named: five kinds of line are statements, and each rule says what it holds', () => {
-  assert.equal(STRUCTURE.length, 5);
-  assert.deepEqual(Object.keys(RULES).sort(), ['bare-npx', 'pi-range', 'release', 'release-statement']);
+test('the rule is named: five kinds of line are statements and the files that must carry one are listed, and each rule says what it holds', () => {
+  assert.equal(STRUCTURE.length, 6);
+  assert.deepEqual(Object.keys(RULES).sort(), ['bare-npx', 'expected-statement', 'pi-range', 'release', 'release-statement']);
+  assert.deepEqual(Object.keys(EXPECTED).sort(), ['pi-statement', 'release-statement']);
 });
 
 test('this repository\'s own docs, examples and starter name the current release, the packages\' Pi range and no bare npx', () => {
@@ -47,7 +48,7 @@ test('on a tree with stale lines it names each one, with its file, line and rule
     'examples/starter/README.md': 'Nothing to install here.\n',
     'examples/starter/package.json': { dependencies: { '@parcha/agentrun-dsl': '0.1.0-beta.4', '@parcha/agentrun-jev': '0.1.0-beta.14', zod: '4.6.5' } },
   });
-  const found = driftOf(root).map(({ file, line, rule }) => `${file}:${line} ${rule}`).sort();
+  const found = driftOf(root, { expected: {} }).map(({ file, line, rule }) => `${file}:${line} ${rule}`).sort();
   assert.deepEqual(found, [
     'README.md:3 release-statement',
     'README.md:6 release',
@@ -79,7 +80,7 @@ test('what a grep would hit and is right as it stands is not read: history, fixt
     'apps/viewer/test/fixtures/README.md': '```sh\nnpx agentrun demo\n```\n',
     'packages/dsl/skills/author/SKILL.md': '```sh\nnpx agentrun demo\n```\n',
   });
-  assert.deepEqual(driftOf(root), []);
+  assert.deepEqual(driftOf(root, { expected: {} }), []);
   const { markdown, manifests } = docFiles(root);
   assert.deepEqual(markdown, ['README.md']);
   assert.deepEqual(manifests, []);
@@ -104,4 +105,30 @@ test('the statements of a file, by line: a fenced shell command, an inline comma
 test('a quoted spec is one token, with its quotes removed', () => {
   assert.deepEqual(tokensOf('npm install @earendil-works/pi-durable@">=1.0.4 <1.4.0" -D \'a b\''), ['npm', 'install', '@earendil-works/pi-durable@>=1.0.4 <1.4.0', '-D', 'a b']);
   assert.deepEqual(specsOf('npm install @earendil-works/pi-durable@">=1.0.4 <1.4.0"').map(({ name, spec }) => [name, spec]), [['@earendil-works/pi-durable', '>=1.0.4 <1.4.0']]);
+});
+
+/** The repository's own docs, copied, with `edit(file, text)` applied: a scratch copy a statement can be rephrased in. */
+function scratch(t, edit) {
+  const files = { 'package.json': readFileSync(join(repo, 'package.json'), 'utf8'), 'packages/pi/package.json': readFileSync(join(repo, 'packages/pi/package.json'), 'utf8') };
+  const { markdown, manifests } = docFiles(repo);
+  for (const file of [...markdown, ...manifests]) files[file] = readFileSync(join(repo, file), 'utf8');
+  for (const file of Object.keys(files)) files[file] = edit(file, files[file]);
+  return tree(t, files);
+}
+
+test('a statement the check expects, rephrased so it no longer matches, fails the check: it never passes by not seeing it', (t) => {
+  assert.deepEqual(driftOf(scratch(t, (_, text) => text)), [], 'the copy, unedited, is as clean as the repository');
+  const release = driftOf(scratch(t, (file, text) => (file === 'README.md' ? text.replace('This release is', 'The current release is') : text)));
+  assert.deepEqual(release.map(({ file, rule, message }) => [file, rule, message]), [['README.md', 'expected-statement', 'README.md: expected 1 release statement, found 0: a rephrase? update STRUCTURE']]);
+  const beta = driftOf(scratch(t, (file, text) => (file === 'packages/jev/README.md' ? text.replace('Beta:', 'Version:') : text)));
+  assert.deepEqual(beta.map(({ file, message }) => [file, message]), [['packages/jev/README.md', 'packages/jev/README.md: expected 1 release statement, found 0: a rephrase? update STRUCTURE']]);
+  const pi = driftOf(scratch(t, (file, text) => (file === 'docs/guide.md' ? text.replace(/1\.0\.4 to below 1\.4/g, 'between 1.0.4 and 1.3.x') : text)));
+  assert.deepEqual(pi.map(({ file, message }) => [file, message]), [['docs/guide.md', 'docs/guide.md: expected 1 Pi range statement, found 0: a rephrase? update STRUCTURE']]);
+  // One of two gone is fewer than expected too.
+  const fewer = driftOf(scratch(t, (file, text) => (file === 'README.md' ? text.replace('| Pi 1.0.4 to below 1.4 (CI tests', '| Pi 1.0.4 up to 1.3.x (CI tests') : text)));
+  assert.deepEqual(fewer.map(({ file, message }) => [file, message]), [['README.md', 'README.md: expected 2 Pi range statements, found 1: a rephrase? update STRUCTURE']]);
+  // A listed file that is gone is found 0.
+  const gone = driftOf(scratch(t, (file, text) => (file === 'packages/dsl/README.md' ? 'Beta: `0.1.0-beta.14`.'.replace('Beta', 'Edition') : text)));
+  assert.equal(gone.length, 1);
+  assert.match(gone[0].message, /packages\/dsl\/README\.md: expected 1 release statement, found 0/);
 });

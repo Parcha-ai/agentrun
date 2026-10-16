@@ -11,13 +11,22 @@ export const STRUCTURE = [
   'a release statement: a line beginning "This release is `<version>`" or "Beta: `<version>`"',
   'a dependency of an example package.json that names a @parcha/ or @earendil-works/ package',
   'the Pi range statement, "<low> to below <high>" (the one form the docs state the supported Pi range in)',
+  'EXPECTED: the two statement shapes above are prose, so a rephrased sentence would stop being seen and the check would pass without it; EXPECTED lists the files that must carry each and how many, and a file with fewer fails the check',
 ];
+/** The files that must carry a release statement and the Pi range statement, with how many each holds today. A file with fewer fails:
+ *  the sentence was rephrased (so the shape no longer matches and the check cannot see it) or removed; update STRUCTURE when that is meant. */
+export const EXPECTED = {
+  'release-statement': { 'README.md': 1, 'packages/dsl/README.md': 1, 'packages/jev/README.md': 1 },
+  'pi-statement': { 'README.md': 2, 'docs/guide.md': 1, 'packages/pi/README.md': 4 },
+};
+const LABEL = { 'release-statement': 'release statement', 'pi-statement': 'Pi range statement' };
 // And only in the user-facing docs: DOC_FILES. The rules on those lines:
 export const RULES = {
   release: 'a @parcha/ package named with a version names the current release (the workspace version in package.json)',
   'pi-range': 'an @earendil-works/ package named with an exact version is inside the Pi range @parcha/agentrun-pi accepts, one named with a range names that range exactly, and a Pi range statement says that range (from its peer range of pi-durable)',
   'bare-npx': '`npx agentrun` names no package: the command is `npx @parcha/agentrun-dsl@<release> <command>`',
   'release-statement': 'a release statement names the current release',
+  'expected-statement': 'every file EXPECTED lists holds at least as many release and Pi range statements as it lists',
 };
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
@@ -105,7 +114,7 @@ export function specsOf(command) {
 }
 
 /** What drifts in `root`: `[{ file, line, rule, text, message }]`, empty when nothing does. */
-export function driftOf(root) {
+export function driftOf(root, { expected: listed = EXPECTED } = {}) {
   const release = readJson(join(root, 'package.json')).version;
   const piRange = readJson(join(root, 'packages/pi/package.json')).peerDependencies['@earendil-works/pi-durable'];
   const shape = /^>=(\d+\.\d+\.\d+) <(\d+\.\d+)\.0$/.exec(piRange.trim());
@@ -132,8 +141,10 @@ export function driftOf(root) {
   };
 
   const { markdown, manifests } = docFiles(root);
+  const counts = {};
   for (const file of markdown) {
     for (const statement of statementsOf(readFileSync(join(root, file), 'utf8'))) {
+      if (statement.kind !== 'command') ((counts[statement.kind] ??= {})[file] ??= []).push(statement.line);
       if (statement.kind === 'pi-statement') {
         if (expected && (statement.low !== expected.low || statement.high !== expected.high)) {
           report(file, statement.line, 'pi-range', statement.text, `the Pi range is stated as ${statement.low} to below ${statement.high}, and the packages' own is ${expected.low} to below ${expected.high}`);
@@ -149,6 +160,12 @@ export function driftOf(root) {
         report(file, statement.line, 'bare-npx', statement.text, 'a bare `npx agentrun` names no package (use npx @parcha/agentrun-dsl@' + release + ')');
       }
       for (const spec of specsOf(statement.text)) check(file, statement.line, spec, statement.text);
+    }
+  }
+  for (const [kind, files] of Object.entries(listed)) {
+    for (const [file, count] of Object.entries(files)) {
+      const found = counts[kind]?.[file]?.length ?? 0;
+      if (found < count) report(file, 0, 'expected-statement', '', `${file}: expected ${count} ${LABEL[kind]}${count === 1 ? '' : 's'}, found ${found}: a rephrase? update STRUCTURE`);
     }
   }
   for (const file of manifests) {
