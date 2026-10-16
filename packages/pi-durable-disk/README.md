@@ -777,7 +777,7 @@ id and directory as the supervisor computed them.
   what still runs, then, under the run's owner lock, ends the commands the run recorded (pi starts each in a process
   group of its own, which the instance's kill does not reach). While another process holds the run, they are its own,
   and release leaves them. With `ctx.requestFile`, `signals(attempt)` yields the kill request the runner writes
-  there when it parks at its planned crossing. `return()` ends a pending `next()`.
+  there when it parks at its planned crossing, and `requestFile` is that same file. `return()` ends a pending `next()`.
 - `archilPlace({ disk, region, control, host })` runs the instance on the disk through a host driver set up with the app.
   - `token(attempt)` mints that attempt's mount token through `control`, and the runner handed that token mounts with it.
   - A start is `ensureRunning` with the token (`mountToken`) and the order's environment (`StartAttempt.env`).
@@ -786,8 +786,18 @@ id and directory as the supervisor computed them.
     instance starts. It reports `revoked` and `ms`. A newer incarnation than the one the place killed (another
     supervisor's) gets the usual lease and start-grace checks instead, so a live one is `HELD`, not revoked.
   - `status()` reads `run.json` over S3 and lists the run's delegations.
-  - It has no `signals` yet: a box can't write the supervisor's request file, so a kill at a named crossing on a box
-    waits for the channel over the run's disk.
+  - `requestFile(attempt)` is `<root>/signals/kill-<attempt>.json`, in the run's directory and outside `work/`, and
+    `signals(attempt)` reads `runs/<id>/signals/kill-<attempt>.json` over S3 every 500 ms (`signalPollMs`). A runner on
+    a box of its own can't reach the supervisor's files, so its request travels through the disk. The runner must write
+    it durably for S3 to see it: a temporary file, fsync, rename, fsync of the directory. A missing object is a request
+    not written yet; any other read failure is retried. Once reads have failed for `signalFailMs` (60 s) without a
+    break, the iterator yields one `{ kind: "signals-failed", code, message }` and ends, so a parked runner never waits
+    with no word of why. `code` is the failing read's own error code when it has one (`CONTROL_API_FAILED` for a read
+    that timed out), else `SIGNALS_FAILED`. The iterator never rejects.
+  - A request names `point` and `n`, and every other field it carries stays in the signal's `crossing`, except the
+    per-attempt nonce the supervisor put in the order's env. That one is lifted to the signal's own `nonce` (when it is a
+    string), where the supervisor reads it for its check, as from the local place. The place's token never goes into a
+    request: on a disk it is the mount token, and the app never holds it.
   - `release()` stops every instance the place started and removes every token it minted. What it could not stop or
     remove, it reports (`RELEASE_FAILED`) and tries again on the next `release()`. The run's directory stays
     (`deleteRunTree`).
