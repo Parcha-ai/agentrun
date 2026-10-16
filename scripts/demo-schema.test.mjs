@@ -47,9 +47,15 @@ test('the template lists every field the reference entry\'s own DemoSpec type re
   listed(crossing, demo.definitions.crossingKill);
   enums(crossing, demo.definitions.crossingKill);
   listed(storm, demo.definitions.stormKill);
+  enums(storm, demo.definitions.stormKill);
   listed(storm.properties.storm, demo.definitions.stormKill.properties.storm);
   listed(typed.properties.boxes, demo.properties.boxes);
   enums(typed.properties.boxes, demo.properties.boxes);
+  listed(typed.properties.input, demo.properties.input);
+  // The single `kill` is the entry's alone, and it keeps only what its type has: the schema allows no more, so no
+  // setting there is silently dropped.
+  listed(typed.properties.kill, demo.properties.kill);
+  for (const field of Object.keys(demo.properties.kill.properties)) assert.ok(field in typed.properties.kill.properties, `the schema's kill allows ${field}, which the entry drops`);
 });
 
 test('every examples/*/demo.json is a valid demo', () => {
@@ -83,6 +89,7 @@ test('a whole demo.json is valid, and each kind of mistake is refused', () => {
     'a kill target that is not run or tool': { ...sample, kills: [{ point: 'p', why: 'w', target: 'box' }] },
     'a storm with no gap': { ...sample, kills: [{ storm: { kills: 2 } }] },
     'a field a kill does not have': { ...sample, kills: [{ point: 'p', why: 'w', holdMs: 6 }] },
+    'a single kill with settings the entry drops': { ...sample, kill: { point: 'p', why: 'w', target: 'tool', n: 2 } },
     'a hold that is not a whole number': { ...sample, kills: [{ point: 'vision.filing', why: 'w', hold: 1.5 }] },
     'sources from the root of the disk': { ...sample, sources: '/srv/sources.json' },
     'sources out of the demo\'s directory': { ...sample, sources: '../other/sources.json' },
