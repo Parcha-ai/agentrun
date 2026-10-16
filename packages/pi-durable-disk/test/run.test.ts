@@ -248,6 +248,44 @@ describe("openDurableRun", () => {
     }
   });
 
+  it("afterClaim runs once the claim is held (lock, run.json) and before the store and the Harness, which open with what it returns; a rejection, or no Harness options at all, lets the claim go", async () => {
+    const dir = scratchRoot("after-claim");
+    try {
+      const own = scriptedHarness();
+      let seen: { root: string; runJson: boolean } | undefined;
+      const t = setup(dir.root, {
+        options: {
+          harness: undefined,
+          afterClaim: async (claim) => {
+            seen = { root: claim.root, runJson: existsSync(join(claim.root, RUN_JSON)) };
+            return { harness: { models: own.models, registry: own.registry } };
+          },
+        },
+      });
+      const run = await t.open();
+      assert.deepEqual(t.steps, ["acquire", "owner-lock", "run.json", "heartbeat", "layout", "after-claim", "store", "seal", "harness", "live", "resume"]);
+      assert.deepEqual(seen, { root: dir.root, runJson: true }, "on the claimed directory, run.json already written");
+      const root = await run.harness.root(ctx, { agent: own.agent });
+      assert.equal((await (await root.submit({ type: "input", content: "hello" }, ctx)).wait(ctx)).status, "done", "the Harness has the options afterClaim returned");
+      await run.release();
+    } finally {
+      dir.remove();
+    }
+    for (const [name, options, refused] of [
+      ["a rejection", { afterClaim: async () => { throw new Error("the app module did not load"); } }, (e: unknown) => /did not load/.test((e as Error).message)],
+      ["no Harness options", { harness: undefined }, (e: unknown) => e instanceof RunError && e.code === "INVALID_ARGUMENT"],
+    ] as const) {
+      const d = scratchRoot("after-claim-refused");
+      try {
+        const t = setup(d.root, { options: options as Partial<OpenDurableRunOptions> });
+        await assert.rejects(t.open(), refused, name);
+        assert.ok(t.claim.log.includes("release"), `${name}: the claim was let go`);
+      } finally {
+        d.remove();
+      }
+    }
+  });
+
   it("an invalid read through the run's store is refused and the run's Session goes on (pi 1.2 fails a Session on any other Storage error)", async () => {
     const dir = scratchRoot("invalid-read");
     try {

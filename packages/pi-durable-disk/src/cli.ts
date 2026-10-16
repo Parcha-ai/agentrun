@@ -187,7 +187,8 @@ async function readToken(values: Record<string, unknown>): Promise<string> {
 /**
  * The instance a host driver starts: openDurableRun with the app module's Harness options (src/app.ts), the
  * driver's handle as run.json's holder, the mount token from stdin (read once, then stdin is closed), and the lease
- * periods. The app loads before anything mounts; a missing or throwing module, or a failed `onOpen`, is AppError (exit 1,
+ * periods. The app's factory runs once the claim is held (`afterClaim`: the run's directory is mounted, so `ctx.root` is
+ * the live directory) and the Harness opens with what it returns; a missing or throwing module, or a failed `onOpen`, is AppError (exit 1,
  * so the unit retries within systemd's start limit; a restart in place reuses the claim). A fence of any kind kills the
  * run's commands and exits 75 inside openDurableRun.
  *
@@ -221,14 +222,10 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   const mountRoot = str(values["mount-root"], DEFAULT_MOUNT_ROOT)!;
   const root = dir ?? join(mountRoot, runPath(ref.id));
   const log = (event: string, extra: Record<string, unknown> = {}) => process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), event, run: ref.id, ...extra })}\n`);
-  let app: AppOptions;
-  try {
-    app = await loadApp(str(values.app)!, { ref, root, work: join(root, "work"), store: join(root, "store") });
-  } catch (err) {
-    log("app failed", { code: (err as PdaError).code, message: (err as Error).message });
-    return exitCodeFor(err);
-  }
-  const { onOpen, beforeResume, root: rootOptions, wake: appWake, ...harness } = app;
+  // The app's factory runs once the claim is held (`afterClaim`), so `ctx.root` is the live directory whenever app code
+  // runs; what it returns opens the Harness. Serve starts before the open, with the root options the factory fills in.
+  let app: AppOptions | undefined;
+  const rootOptions: NonNullable<AppOptions["root"]> = {};
   const holder = JSON.parse(process.env.PDA_HOLDER ?? "{}") as Record<string, Json>;
   // On a local directory nothing else knows this instance: its start ticks go into the holder, so `status --dir` tells it
   // from a later process that reuses its pid (a driver's handle already carries them).
@@ -250,7 +247,12 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
     run = await openDurableRun(ref, {
       // A local directory is its own claim (no mount, no token); a disk's run is mounted with a token.
       ...(dir === undefined ? { mountToken: await readToken(values), mountRoot, host: { archil: str(values.archil) } } : localRun(dir)),
-      harness,
+      afterClaim: async (claim) => {
+        app = await loadApp(str(values.app)!, { ref, root: claim.root, work: claim.work, store: claim.store });
+        const { onOpen: _onOpen, beforeResume, root: appRoot, wake: _wake, ...harness } = app;
+        Object.assign(rootOptions, appRoot ?? {});
+        return { harness, ...(beforeResume ? { beforeResume } : {}) };
+      },
       ...(runAs
         ? { env: (c: Claim) => archilEnv(c, { runAs: { uid: runAs.uid, gid: runAs.gid }, shellEnv: { HOME: runAs.home, USER: runAs.name, LOGNAME: runAs.name } }) }
         : {}),
@@ -258,15 +260,15 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
       ownCgroup: cgroup.owns,
       lease: Object.fromEntries(Object.entries(lease).filter(([, v]) => v !== undefined)),
       onStep: (step, t) => void (steps[step] = Math.round(t)),
-      ...(beforeResume ? { beforeResume } : {}),
     });
   } catch (err) {
-    log("open failed", { code: (err as PdaError).code, exitCode: exitCodeFor(err), message: (err as Error).message, steps });
+    log(err instanceof AppError ? "app failed" : "open failed", { code: (err as PdaError).code, exitCode: exitCodeFor(err), message: (err as Error).message, steps });
     await server?.close();
     return exitCodeFor(err);
   }
   server?.attach(run);
   log("running", { generation: run.generation, steps, ...(server ? { serve: server.url } : {}) });
+  const { onOpen, wake: appWake } = app!;
   return serveUntilDone(run, onOpen, onSigterm, log, process, {
     drainMs,
     ...(server ? { server } : {}),

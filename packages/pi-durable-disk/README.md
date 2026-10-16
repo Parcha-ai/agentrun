@@ -267,7 +267,15 @@ Each example's README lists the exact commands the demo runs, so you can run the
 
 An instance is `pi-durable-disk run --app <module> ...`: `openDurableRun` with the app's options. The module is an ES
 module whose default export is a function of where the run lives and returns pi's Harness options without `env` (the run
-builds `env` on its claim: the workspace is `<root>/work`), plus an optional `beforeResume` and an optional `onOpen`:
+builds `env` on its claim: the workspace is `<root>/work`), plus an optional `beforeResume` and an optional `onOpen`.
+
+The factory runs once the claim is held: the run's directory is mounted, its owner lock taken and `run.json` written
+(`openDurableRun`'s `afterClaim`). So `where.root` is the live directory whenever app code runs, and a factory may write
+under it (a recorder's spool, a `signals/` directory). Before, the factory ran before the mount, and its writes landed in
+the bare mountpoint and were lost. The Harness opens after the factory, with what it returns. Claim options, if one ever
+needs them, are static (CLI flags or the environment) and never returned by the factory, since the claim is taken before
+the factory runs. A module that does not load, or a factory that throws, fails the open with `APP_FAILED` (exit 1), and
+the claim is let go.
 
 ```ts
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -278,7 +286,7 @@ import { ArchilCodingTools } from "@parcha/pi-durable-disk";
 import type { AppContext, AppOptions } from "@parcha/pi-durable-disk";
 
 export default async function app(where: AppContext): Promise<AppOptions> {
-  // where = { ref: { disk, region, id }, root, work, store }: known before anything mounts.
+  // where = { ref: { disk, region, id }, root, work, store }: the claim is held, so root is the live run directory.
   const models = createModels();
   models.setProvider(openaiProvider());       // reads OPENAI_API_KEY from the instance's environment
   const registry = createRegistry();          // every extension the run's tasks need
@@ -309,7 +317,8 @@ rerun. Any other tool is an effect: its intent is committed before it starts, an
 was `interrupted`, never run again. `run.setStatus("done" | "failed" | "paused" | "sleeping", detail)` records the run's
 status in `run.json`; `done` and `failed` run the durability barrier first. `run.release()` closes the Harness, kills the
 run's commands, runs the barrier, seals `run.json` with the store's last sequence, and unmounts. A module that is missing
-or throws, or an `onOpen` that rejects, is `AppError` (exit 1, which the unit retries). A `beforeResume` that rejects
+or throws, or an `onOpen` that rejects, is `AppError` (exit 1, which the unit retries; a module that fails lets the claim
+go first). A `beforeResume` that rejects
 fails the open (its step is `before-resume`) and releases the claim. Besides the Harness, the hook gets `storage`, the
 store the Harness was opened over as four reads (`scanConversations`, `scanTasks`, `scanDocuments`, `document`) with no
 way to a write, and `head`, the store's last committed sequence: a recorder snapshots every document at `head` there.
@@ -676,7 +685,9 @@ then list the prefix and check it is empty.
 ## Library
 
 `openDurableRun(ref, options)` is what `run` calls: mount, verify the claim, take the owner lock, write `run.json`, open
-the store, check the seal, open and resume the Harness, keep the lease. `acquire`, `ensureRunning`, `localHost`,
+the store, check the seal, open and resume the Harness, keep the lease. Its `afterClaim(claim)` is awaited between the
+claim and the store, with the claim's `ref`, `root`, `work` and `store`. What it returns (`harness`, `beforeResume`) goes
+into the open, so `harness` may come from there instead of the options. A rejection fails the open and lets the claim go. `acquire`, `ensureRunning`, `localHost`,
 `archilEnv` and the typed errors (`FencedError`, `HeldError`, `StoreBehindSealError`) are exported for apps that compose
 their own lifecycle, and so are serve (`serveRun`, `requestRun`), parking (`watchParking`, `drain`, `busyState`, and
 `leaseParkTarget` for a Harness a host opened over `openRunLease`) and `fork`. `src/index.ts` lists every export; the

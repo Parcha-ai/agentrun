@@ -100,7 +100,7 @@ export interface LeaseOptions {
   readonly checkMs?: number;
 }
 
-export type OpenStep = "acquire" | "owner-lock" | "run.json" | "heartbeat" | "layout" | "commands" | "store" | "seal" | "harness" | "live" | "before-resume" | "resume";
+export type OpenStep = "acquire" | "owner-lock" | "run.json" | "heartbeat" | "layout" | "commands" | "after-claim" | "store" | "seal" | "harness" | "live" | "before-resume" | "resume";
 export type ReleaseStep = "close" | "cleanup" | "barrier" | "seal" | "unlock" | "unmount";
 
 export interface OpenRunLeaseOptions {
@@ -153,8 +153,18 @@ export interface OpenRunLeaseOptions {
 export interface OpenDurableRunOptions<Tool extends ToolRegistration = ToolRegistration> extends Omit<OpenRunLeaseOptions, "cleanup"> {
   /** Default `exclusive`. */
   readonly profile?: Profile;
-  /** pi's Harness options; the registry holds every extension before the Harness opens (recovered tasks need them). */
-  readonly harness: Omit<HarnessOptions<Tool>, "env">;
+  /**
+   * pi's Harness options; the registry holds every extension before the Harness opens (recovered tasks need them).
+   * Required, here or from `afterClaim`.
+   */
+  readonly harness?: Omit<HarnessOptions<Tool>, "env">;
+  /**
+   * Awaited once the claim is held (the run's directory mounted, its owner lock taken, `run.json` written) and before the
+   * store and the Harness open, with the claim's paths: what it returns (`harness`, `beforeResume`) goes into the open,
+   * over what these options give. For code that must run on the live directory, as an app module's factory does under
+   * the CLI. A rejection fails the open, and the claim is released.
+   */
+  readonly afterClaim?: (claim: Pick<Claim, "ref" | "root" | "work" | "store">) => Promise<AfterClaim<Tool>>;
   /** The run's environment, built on the claim; default `archilEnv(claim)`. Its `cleanup` is the lease's. */
   readonly env?: (claim: Claim) => RunEnv;
   /** Wraps the raw database inside the store's fence (instrumentation, fault injection). */
@@ -165,6 +175,12 @@ export interface OpenDurableRunOptions<Tool extends ToolRegistration = ToolRegis
    * a resumed task's steps commit. A host reconciles here what a resumed tool depends on (a browser, a mount). A rejection
    * fails the open as any step does (`before-resume`), and the claim is released.
    */
+  readonly beforeResume?: (run: BeforeResume) => void | Promise<void>;
+}
+
+/** What `afterClaim` gives the open: the Harness options and the `beforeResume` hook, when it holds them. */
+export interface AfterClaim<Tool extends ToolRegistration = ToolRegistration> {
+  readonly harness?: Omit<HarnessOptions<Tool>, "env">;
   readonly beforeResume?: (run: BeforeResume) => void | Promise<void>;
 }
 
@@ -964,7 +980,8 @@ class Run implements DurableRun {
     // Both refusals here are terminal: the run is marked `failed`, keeping its seal, so the supervisor stops on it.
     await step("seal", () => lease.checkSeal(this.#store!));
     const storage = lease.observe(this.#store.storage);
-    this.#harness = await step("harness", () => Harness.open(storage, { ...this.#options.harness, env: this.env }, this.#context));
+    // openDurableRun refused an open without Harness options (here or from afterClaim) before this runs.
+    this.#harness = await step("harness", () => Harness.open(storage, { ...this.#options.harness!, env: this.env }, this.#context));
     await step("live", () => lease.live());
     const before = this.#options.beforeResume;
     if (before) {
@@ -1043,7 +1060,20 @@ export async function openDurableRun<Tool extends ToolRegistration = ToolRegistr
     await lease.abandon(error);
     throw error;
   }
-  const run = new Run(lease, env, options as unknown as OpenDurableRunOptions<ToolRegistration>, context);
+  let opening: OpenDurableRunOptions<Tool> = options;
+  try {
+    if (options.afterClaim) {
+      const { ref: claimRef, root, work, store } = lease.rawClaim;
+      const given = await step("after-claim", () => options.afterClaim!({ ref: claimRef, root, work, store }));
+      opening = { ...options, ...(given.harness ? { harness: given.harness } : {}), ...(given.beforeResume ? { beforeResume: given.beforeResume } : {}) };
+    }
+    if (!opening.harness) throw new RunError("INVALID_ARGUMENT", "openDurableRun needs pi's Harness options, from its options or from afterClaim");
+  } catch (error) {
+    // The lease's cleanup is the environment's (openLease's `cleanup` above): abandoning it cleans both.
+    await lease.abandon(error);
+    throw error;
+  }
+  const run = new Run(lease, env, opening as unknown as OpenDurableRunOptions<ToolRegistration>, context);
   try {
     await run.open(step);
   } catch (error) {
