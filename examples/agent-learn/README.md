@@ -108,14 +108,17 @@ that answers right on its own has nothing to learn; the correction is the signal
 A saved workflow starts as a trial and keeps its place only on receipts. Curation never asks a model whether the workflow was
 good: it counts how each run that used it ended, as the `agentrun` tool recorded it.
 
-- **A use** is one run of the workflow by the `agentrun` tool in a run's own store, read by the host after the run
-  (`finishRun` passes the run's `workDir` to `proposeLearning`, which reads the tool's `agentrun.workflow` tasks), never
-  reported by the model. It ends `frozen` when the workflow finished the case by itself, `escalated` when a gate fired and
-  the agent took over, or `failed` when it did not finish. A run that only loads, inspects or dry-runs a workflow makes no use,
-  and neither does a workflow the run did not save under a name.
-- **Three clean uses promote.** A trial whose last three uses all ended `frozen` becomes `active`. The run that wrote a
-  revision is no evidence for it.
-- **Two failed or escalated uses in a row demote and roll back.** The live revision is marked `demoted`, and the revision it
+- **A use** is what one run did with a revision of the workflow, read by the host from the run's own store after the run
+  (`finishRun` passes the run's `workDir` to `proposeLearning`, which reads the `agentrun.workflow` tasks the `agentrun` tool
+  left there), never reported by the model. It ends `frozen` when the workflow finished the case by itself, `escalated` when a
+  gate fired and the agent took over, or `failed` when it did not finish. A run that only loads, inspects or dry-runs a
+  workflow makes no use, and neither does a workflow the run did not save under a name.
+- **A run is one use of a revision.** However many cases a run gave the workflow, curation counts it once, and the worst
+  outcome wins (`failed` over `escalated` over `frozen`); the other cases are named as `same_run` in the report. So promotion
+  and demotion rest on distinct runs, and one run cannot promote a trial alone.
+- **Three clean runs promote.** A trial whose last three uses, three distinct runs, all ended `frozen` becomes `active`. The
+  run that wrote a revision is no evidence for it.
+- **Two failed or escalated runs in a row demote and roll back.** The live revision is marked `demoted`, and the revision it
   replaced, kept as `superseded` with its preconditions and the description of its skill, is active again. With none to
   restore, the name is demoted whole and its skill is removed, so no run is offered it.
 - **A demoted revision never returns.** Its record stays on main, so a run that saves the same document again has nothing
@@ -242,4 +245,5 @@ both when the app does. Call `finishRun` after the session's store has closed.
   way out.
 - Steps 9 to 12 run the workflow with a scripted model, and its one tool, `issues.label`, is a stub that answers with the
   labels it was given. A real host gives the workflow's tools to `createWorkflowTool` and runs the same loop.
-- A run that runs the workflow on several cases makes one use for each, and all of them count toward promotion or demotion.
+- A run that runs the workflow on several cases is one use of that revision, with its worst outcome, so a host that wants
+  several uses gives each case its own run.

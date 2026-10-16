@@ -9,7 +9,7 @@ import { after, test } from 'node:test';
 import { promisify } from 'node:util';
 import { recordingLines } from '@parcha/agentrun-pi/durable';
 import { WorkflowStore } from '@parcha/agentrun-pi/workflows';
-import { guard, readUses, renderInbox, workflowAdmitter } from '@parcha/pi-agent-learn';
+import { admitRevision, guard, parseTrial, readUses, renderInbox, renderTrial, trialPath, usesSettler, workflowAdmitter } from '@parcha/pi-agent-learn';
 import { gitRead, ISSUES, proposalStatus, runDemo, runOnce, scriptedModel, TRIAGE_WORKFLOW } from './demo.mjs';
 
 const RULE = /In this project an issue whose body has a stack trace is labeled bug and needs-repro/;
@@ -148,7 +148,7 @@ const TRIAL_JSON = '.agents/skills/triage-crash/trial.json';
 /** The tool's own records in a finished run's store: its `agentrun.workflow` tasks, as pi-durable committed them. */
 const toolTasks = (run) => recordingLines(run.storePath).lines.filter((line) => line.kind === 'agentrun.workflow').map((line) => line.data);
 
-test('a trial is promoted to active on its third clean use, each use read from the records the agentrun tool left in the run\'s own store', async () => {
+test('a trial is promoted to active on its third clean run, each use read from the records the agentrun tool left in the run\'s own store', async () => {
   const { out } = await storyOf();
   const git = (...args) => gitRead(out.bare, args).toString('utf8').trim();
   const [{ sha256: digest }] = out.run3.run.workflows.loaded;
@@ -273,7 +273,7 @@ test('a revision that escalates twice in a row is demoted and the one it replace
   assert.match(refused.reason, /^demoted: [0-9a-f]{12} was demoted; a demoted revision is never tried again$/);
 });
 
-test('the tool\'s other records are read the same way: a tool that is down is a failed use, two cases in one run are two uses, and a dry run is none', async (t) => {
+test('the tool\'s other records are read the same way: a tool that is down is a failed use, two cases in one run are two records but one use, and a dry run is none', async (t) => {
   const root = await scratch(t);
   const issue = ISSUES.third;
   const steps = (action) => [
@@ -292,7 +292,8 @@ test('the tool\'s other records are read the same way: a tool that is down is a 
   };
 
   const labels = async ({ input }) => ({ labels: input.labels });
-  const runTwo = () => run('two', 'run', labels, [
+  let twos = 0;
+  const runTwo = (effect) => run(`two-${++twos}`, 'run', effect, [
     { call: 'agentrun', args: { action: 'load', name: 'triage-crash', input: ISSUES.third.input } },
     { call: 'agentrun', args: { action: 'run' } },
     { call: 'agentrun', args: { action: 'run', input: ISSUES.fourth.input } },
@@ -308,12 +309,32 @@ test('the tool\'s other records are read the same way: a tool that is down is a 
   assert.deepEqual(failed.skipped, []);
   assert.deepEqual(failed.doc.uses.map((u) => [u.name, u.sha256, u.outcome]), [['triage-crash', digest, 'failed']]);
 
-  // Two cases in one run are two tasks under two keys, and so two uses.
-  const two = await runTwo();
+  // Two cases in one run are two tasks under two keys, so two records in the run's uses file. Curation takes a run as one use
+  // of a revision, the worst outcome winning: one frozen and one failed case make a failed use, never two uses.
+  const writer = admitRevision(undefined, { name: 'triage-crash', sha256: digest, run: 'writer', at: '2026-01-01T00:00:00.000Z', when: [] }).trial;
+  const settle = (uses) => usesSettler()({
+    main: 'main', run: 'run-1', uses, list: async () => [],
+    read: async (path) => (path === trialPath('triage-crash') ? renderTrial(writer) : undefined),
+  });
+  const usesOf = async (r) => (await readUses({ store: r.handle.storePath, workDir: r.handle.workspace, run: 'run-1' })).doc.uses;
+
+  const two = await runTwo(labels);
   assert.deepEqual(two.results.slice(1, 3).map((r) => JSON.parse(r).outcome.status), ['complete', 'complete']);
   assert.equal(toolTasks(two.handle).length, 2);
-  const both = await readUses({ store: two.handle.storePath, workDir: two.handle.workspace, run: 'run-1' });
-  assert.deepEqual(both.doc.uses.map((u) => [u.name, u.sha256, u.outcome]), [['triage-crash', digest, 'frozen'], ['triage-crash', digest, 'frozen']]);
+  const both = await usesOf(two);
+  assert.deepEqual(both.map((u) => [u.name, u.sha256, u.outcome]), [['triage-crash', digest, 'frozen'], ['triage-crash', digest, 'frozen']], 'the store holds a record for each case');
+  const counted = await settle(both);
+  assert.deepEqual(parseTrial(counted.files[trialPath('triage-crash')], 'triage-crash').uses.map((u) => [u.run, u.outcome]), [['run-1', 'frozen']], 'one run with two cases is one use');
+  assert.deepEqual(counted.decisions.map((d) => d.action), ['hold']);
+  assert.match(counted.decisions[0].reason, /has 1 use in its trial; .*left out \(same_run\)$/);
+
+  const mixed = await runTwo(async (params) => {
+    if (params.input.title === ISSUES.fourth.input.title) throw new Error('the tracker is down');
+    return labels(params);
+  });
+  assert.deepEqual(mixed.results.slice(1, 3).map((r) => JSON.parse(r).outcome.status), ['complete', 'refused']);
+  assert.deepEqual((await usesOf(mixed)).map((u) => u.outcome).sort(), ['failed', 'frozen']);
+  assert.deepEqual(parseTrial((await settle(await usesOf(mixed))).files[trialPath('triage-crash')], 'triage-crash').uses.map((u) => [u.run, u.outcome]), [['run-1', 'failed']], 'the worse case is the run\'s use');
 
   const dry = await run('dry', 'dry-run', async () => { throw new Error('a dry run calls no tool'); });
   assert.equal(JSON.parse(dry.results[1]).dryRun.status, 'passed');
