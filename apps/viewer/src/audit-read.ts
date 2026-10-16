@@ -19,12 +19,15 @@ export type Plan = { mapPath: string; items: string[]; steps: string[] };
 export function planOf(line: Line): Plan | undefined {
   if (line.channel !== 'durable' || line.source !== 'workflow' || line.kind !== 'agentrun.workflow' || !auditIsObj(line.data)) return undefined;
   const input = auditIsObj(line.data.input) ? line.data.input : undefined;
-  const workflow = input && auditIsObj(input.workflow) ? input.workflow : undefined;
-  const root = workflow && auditIsObj(workflow.root) ? workflow.root : undefined;
+  return input ? planOfWorkflow(input.workflow, input.input) : undefined;
+}
+/** The same, from a workflow document and the input it ran on (the job blob's `workflow` and `input`). */
+export function planOfWorkflow(workflow: Json | undefined, input: Json | undefined): Plan | undefined {
+  const root = auditIsObj(workflow) && auditIsObj(workflow.root) ? workflow.root : undefined;
   if (!root) return undefined;
   const found = findMap(root, '/root', 0);
   if (!found) return undefined;
-  const given = input && auditIsObj(input.input) ? input.input : {};
+  const given = auditIsObj(input) ? input : {};
   const list = typeof found.node.itemsPath === 'string' ? auditPath(given, found.node.itemsPath) : undefined;
   const items = Array.isArray(list) ? list.map((each) => (auditIsObj(each) && typeof each.name === 'string' ? (typeof each.version === 'string' ? `${each.name}@${each.version}` : each.name) : String(each))) : [];
   const body = auditIsObj(found.node.body) ? found.node.body : undefined;

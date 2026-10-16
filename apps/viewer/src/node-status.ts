@@ -44,6 +44,9 @@ export function runRecordReduce(state: RunRecord, line: Line): RunRecord {
 export const statusSource = (record: RunRecord): { pin: Json; items: Json[] } => ({ pin: record.pin ?? {}, items: Object.values(record.items) });
 
 const rrUnder = (path: string, at: string) => under(path, at);
+/** The map item a keyed record (`agentrun.items`) is for, as its execution path (`<map>/items/<i>`). */
+export const recordItemOf = (value: Json | undefined): string | undefined =>
+  rrIsObj(value) && typeof value.map === 'string' && Number.isInteger(value.index) ? `${value.map}/items/${String(value.index)}` : undefined;
 /** The part of the record that is one map item's (`<map>/items/<i>`): the frame's paths under it (a run stored whole keeps
  *  every item in the frame) and its own record (the keyed layout). Asking `nodeStatus` of this alone says what that one item
  *  did, at the nodes of its map's body. */
@@ -55,6 +58,6 @@ export function itemSource(record: RunRecord, item: string): { pin: Json; items:
     steps: keys(pin.steps),
     inputs: keys(pin.inputs),
   };
-  const own = Object.values(record.items).filter((value) => rrIsObj(value) && typeof value.map === 'string' && Number.isInteger(value.index) && `${value.map}/items/${value.index}` === item);
+  const own = Object.values(record.items).filter((value) => recordItemOf(value) === item);
   return { pin: slice, items: own };
 }

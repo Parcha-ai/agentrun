@@ -247,8 +247,11 @@ nothing). `./node-status.ts` keeps only what it reads, the driver's record at th
 (`agentrun.driver`'s `state.pin`) and each map item's latest `agentrun.items` record, starting over at each open's
 snapshot. `statusSource(record)` is the whole record, which the workflow graph asks of the job's workflow;
 `itemSource(record, item)` is one map item's part of it (the frame's paths under the item, and its own record), which
-the workflow map asks of the workflow its `agentrun.workflow` line carries, to say whether that item's body is done. No
-panel decides a node's status itself, so a resumed process's items, finished from its journal with no live event, and a
-map whose body is one node are done where the record says so. The workflow map counts a judge's verdict only for a
-recording with no workflow or no durable record to ask. The tests read the DSL's graph fixtures
-(`packages/dsl/test/fixtures/graph`: six shapes, finished and cut) and `test/fixtures/disk-resumed`.
+the workflow map asks with `{ item }`, the item as the instance, to say whether that item's body is done. It asks of the
+workflow its `agentrun.workflow` line carries, else of the job's (a task that names no workflow); the job also gives it
+the plan it lays out. A keyed item record marks its item's cell as started, as a checkpoint naming the item's paths does.
+No panel decides a node's status itself, so a resumed process's items, finished from its journal with no live event, and
+a map whose body is one node are done where the record says so. The workflow map counts a judge's verdict only for a
+recording with no workflow anywhere or no durable record to ask. The tests read the DSL's graph fixtures
+(`packages/dsl/test/fixtures/graph`: six shapes, finished and cut, and the nested shape's recording) and
+`test/fixtures/disk-resumed`.

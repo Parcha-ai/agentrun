@@ -6,12 +6,12 @@ import type { Json, Line } from './format.ts';
 import { counterFold, countersOf, repeatedLabel, type CounterState } from './counters.ts';
 import { docOf, effectIdOf, effectOf, type DocLine } from './durable.ts';
 import {
-  branchOf, callFactsOf, callKindOf, conversationOf, donePathsOf, evidenceOf, factsOf, finishedOf, looksOf, planOf, recordFactsOf, repositoryOf, verdictsOf,
+  branchOf, callFactsOf, callKindOf, conversationOf, donePathsOf, evidenceOf, factsOf, finishedOf, looksOf, planOf, planOfWorkflow, recordFactsOf, repositoryOf, verdictsOf,
   type CallFacts, type CallKind, type Fact, type Look, type Plan, type Repository, type Verdict,
 } from './audit-read.ts';
-import { h, register, type BaselineView, type Node, type Panel } from './panels.ts';
+import { h, register, type BaselineView, type Node, type Panel, type ViewContext } from './panels.ts';
 import { nodeStatus, workflowGraph, type WorkflowGraph } from '../../../packages/dsl/src/graph.ts';
-import { itemSource, runRecordAccepts, runRecordInit, runRecordReduce, type RunRecord } from './node-status.ts';
+import { itemSource, recordItemOf, runRecordAccepts, runRecordInit, runRecordReduce, type RunRecord } from './node-status.ts';
 
 export type WmBranch = {
   id: string;
@@ -70,14 +70,16 @@ const wmWorkflowOf = (line: Line): Json | undefined => {
   return typeof input === 'object' && input !== null && !Array.isArray(input) ? (input as Record<string, Json>).workflow : undefined;
 };
 const wmGraphs = new WeakMap<object, WorkflowGraph>();
-/** What the DSL's `nodeStatus` says one item did, at the nodes of its map's body: the record's part that is that item's
- *  (node-status.ts, `itemSource`). Undefined when there is no workflow or no durable record to ask. */
+/** What the DSL's `nodeStatus` says one item did, at the nodes of its map's body: asked of the record's part that is that
+ *  item's (node-status.ts, `itemSource`) with the item's execution path (`branch.id`, `<map>/items/<i>`, the path an
+ *  `agentrun.items` key ends in). Undefined when there is no workflow or no durable record to ask. */
 function wmItemStatus(state: WmState, branch: WmBranch): Record<string, string> | undefined {
   const workflow = state.workflow;
   if (typeof workflow !== 'object' || workflow === null || (state.record.pin === undefined && Object.keys(state.record.items).length === 0)) return undefined;
   let graph = wmGraphs.get(workflow);
   if (!graph) { graph = workflowGraph(workflow); wmGraphs.set(workflow, graph); }
-  return nodeStatus(graph, itemSource(state.record, branch.id) as Parameters<typeof nodeStatus>[1]);
+  // The item is the instance (`{ item }`): its body is done when the item is, whatever the rest of the map has done.
+  return nodeStatus(graph, itemSource(state.record, branch.id) as Parameters<typeof nodeStatus>[1], { item: branch.id });
 }
 
 /** Whether the branch finished: the DSL's `nodeStatus` of the item's record says its map's body is done (a body of one
@@ -139,9 +141,11 @@ export const workflowMapPanel: Panel<WmState> = {
     const convHome = line.conv !== undefined ? next.convBranch[String(line.conv)] : undefined;
     const home = own ?? (convHome ? branchOf(`${convHome}/`) : undefined);
     if (doc) {
-      const done = donePathsOf(doc);
+      // A checkpoint is state (node-status.ts keeps it for the DSL's nodeStatus): the branches it names have been seen. So has
+      // the branch an item's own record is for (the keyed layout, whose checkpoint names no item).
+      const item = doc.doc === 'agentrun.items' ? recordItemOf(doc.value) : undefined;
+      const done = donePathsOf(doc) ?? (item ? [item] : undefined);
       if (done) {
-        // A checkpoint is state (node-status.ts keeps it for the DSL's nodeStatus): the branches it names have been seen.
         const seen: Record<string, WmBranch> = {};
         for (const path of done) {
           const where = branchOf(path);
@@ -232,7 +236,20 @@ function wmZoomed(state: WmState, focus: string | undefined): WmBranch | undefin
   return where ? (state.branches[where.id] ?? wmNew(where.id, where.index)) : undefined;
 }
 
-function wmView(state: WmState, context: { focus?: string; baseline?: BaselineView; providers?: 'real' | 'scripted' }): Node {
+/** The state the view draws: a recording whose lines carry no workflow line (a run whose task names none) takes the
+ *  workflow, and the plan it lays out, from the job the manifest names (`{ workflow, input, files }`), the document the
+ *  workflow graph draws. The lines' own win. */
+function wmWithJob(state: WmState, context: ViewContext): WmState {
+  if (state.workflow !== undefined || context.job === undefined) return state;
+  const job = context.json?.(context.job);
+  const workflow = typeof job === 'object' && job !== null && !Array.isArray(job) ? job.workflow : undefined;
+  if (typeof workflow !== 'object' || workflow === null || Array.isArray(workflow)) return state;
+  const plan = state.plan ?? planOfWorkflow(workflow, (job as Record<string, Json>).input);
+  return { ...state, workflow, ...(plan ? { plan } : {}) };
+}
+
+function wmView(given: WmState, context: ViewContext): Node {
+  const state = wmWithJob(given, context);
   const zoom = wmZoomed(state, context.focus);
   const size = wmSize(state);
   const cells = Array.from({ length: size }, (_, index) => {

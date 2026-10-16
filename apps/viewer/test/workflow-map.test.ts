@@ -11,7 +11,7 @@ import { reduceTo, stopsOf } from '../src/replay.ts';
 import { branchOf, planOf } from '../src/audit-read.ts';
 import { counterFold, countersOf } from '../src/counters.ts';
 import type { BaselineView } from '../src/panels.ts';
-import { wmGlyphOf, workflowMapPanel, type WmState } from '../src/workflow-map.ts';
+import { wmGlyphOf, workflowMapPanel, type WmGlyph, type WmState } from '../src/workflow-map.ts';
 
 const ROOT = '/root/steps/0/items';
 const STEPS = ['registry', 'advisories', 'install in a box', 'repository', 'finding', 'verdict', 'row'];
@@ -289,4 +289,51 @@ test('an itemsPath is a dotted state path: a nested input still lays out its pla
   assert.deepEqual(planOf(line({ plan: { questions: ['first', 'second'] } })), { mapPath: '/root/steps/0', items: ['first', 'second'], steps: ['ask'] });
   assert.deepEqual(planOf(line({ plan: { questions: [{ name: 'a', version: '1' }] } }))?.items, ['a@1']);
   assert.deepEqual(planOf(line({ plan: {} }))?.items, [], 'a path that leads nowhere plans no cells');
+});
+
+// The DSL's map fixtures (packages/dsl/test/fixtures/graph): the frame the driver kept and, in the keyed layout, each
+// item's own record, fed in as lines after the workflow line. What each item did is read off the fixtures' records: a
+// finished run finished every item; a cut run finished its first item, was inside its second, and never reached its third.
+const GRAPH = new URL('../../../packages/dsl/test/fixtures/graph/', import.meta.url);
+const graphFixture = (file: string) => JSON.parse(readFileSync(new URL(file, GRAPH), 'utf8')) as Json;
+const MAP_SHAPES: Record<string, Json> = { 'map-v3': { items: ['a', 'b', 'c'].map((id) => ({ id })) }, 'map-v4': { items: ['a', 'b', 'c'].map((id) => ({ id })) }, nested: { items: ['i0', 'i1', 'i2'].map((id) => ({ id })) } };
+const ITEMS_DID: Record<string, WmGlyph[]> = { finished: ['done', 'done', 'done'], cut: ['done', 'working', 'empty'] };
+for (const [shape, input] of Object.entries(MAP_SHAPES)) {
+  for (const variant of ['finished', 'cut']) {
+    test(`${shape}, ${variant}: each item's cell shows what the item did, from the driver's frame and the item's own record`, () => {
+      const at = (commit: number, order: number, kind: string, data: Json): Line => ({ channel: 'durable', source: 'workflow', kind, gen: 1, t: commit * 10 + order, commit, order, data } as Line);
+      const records = graphFixture(`${shape}.${variant}.items.json`) as Record<string, Json>[];
+      const fed = [
+        at(1, 0, 'agentrun.workflow', { id: 1, kind: 'agentrun.workflow', input: { key: 'run', workflow: graphFixture(`${shape}.workflow.json`), input } }),
+        at(2, 0, 'agentrun.driver', { doc: 'agentrun.driver', key: 'run', value: { generation: 1, state: { schema: 'agentrun.frozen_run.v4', pin: graphFixture(`${shape}.${variant}.frame.json`) } }, version: 1 }),
+        ...records.map((record, n) => at(3, n, 'agentrun.items', { doc: 'agentrun.items', key: `run\u0000${String(record.map)}/items/${String(record.index)}`, value: record, version: 1 })),
+      ];
+      const end = reduceTo(workflowMapPanel, fed, fed.length);
+      const cells = [0, 1, 2].map((index) => { const branch = end.branches[`/root/steps/0/items/${index}`]; return branch ? wmGlyphOf(end, branch) : 'empty'; });
+      assert.deepEqual(cells, ITEMS_DID[variant]);
+    });
+  }
+}
+
+test('a recording whose lines carry no workflow line reads the workflow and its plan from the job the manifest names', () => {
+  // The DSL's nested recording: its task line names no workflow, so only the job says what ran. Every item finished.
+  const recorded = parseLines(readFileSync(new URL('nested.recording.jsonl', GRAPH), 'utf8'));
+  assert.equal(recorded.some((line) => line.kind === 'agentrun.workflow'), false);
+  const end = reduceTo(workflowMapPanel, recorded, recorded.length);
+  const job = 'e'.repeat(64);
+  const read = { workflow: graphFixture('nested.workflow.json'), input: MAP_SHAPES.nested, files: [] } as Json;
+  const cells = (context: Record<string, unknown>) => {
+    const found: string[] = [];
+    const walk = (node: Node) => { if (typeof node === 'string' || !('children' in node)) return; if (typeof node.class === 'string' && node.class.startsWith('wm-glyph ')) found.push(node.class.split(' ')[1]!); for (const child of node.children ?? []) walk(child); };
+    walk(workflowMapPanel.view(end, { t: 0, ...context }));
+    return found;
+  };
+  assert.deepEqual(cells({ json: (sha: string) => (sha === job ? read : undefined), job }), ['done', 'done', 'done']);
+  assert.equal(cells({ json: () => undefined, job }).includes('done'), false, 'the job not read yet: nothing reads finished');
+  const zoomed = workflowMapPanel.view(end, { t: 0, json: (sha: string) => (sha === job ? read : undefined), job, focus: '/root/steps/0/items/1' });
+  const labels: string[] = [];
+  const walk = (node: Node) => { if (typeof node === 'string' || !('children' in node)) return; if (typeof node.class === 'string' && node.class.startsWith('wm-node ')) labels.push(`${String(node.children?.[0])}:${node.class.split(' ')[1]}`); for (const child of node.children ?? []) walk(child); };
+  walk(zoomed);
+  const body = ((graphFixture('nested.workflow.json') as { root: { steps: { body: { steps: { label: string }[] } }[] } }).root.steps[0]!.body.steps).map((step) => `${step.label}:done`);
+  assert.deepEqual(labels, body, "the item's steps are the job's map body's, each done");
 });
