@@ -663,6 +663,37 @@ test("a reason from a hook is checked whole before it is shortened, and a second
   for (const cut of [secret, secret.slice(0, 4)]) assert.ok(!messages.includes(`x ${cut}`), cut);
 });
 
+test("the question budget holds across a run's retries: a moved main does not buy a second budget", async () => {
+  const w = await world();
+  await propose(w, "run-1", [candidate(LESSON), candidate("Retry a registry search once after a timeout.")]);
+  const other = await w.open("other");
+  const { judge, calls } = fakeJudge();
+  const repo = racing(w, w.curator, async (n) => {
+    if (n !== 1) return;
+    const made = await other.commitTo("main", { files: { ".agents/skills/x/SKILL.md": "---\nname: x\ndescription: x\n---\n" }, message: "another writer" });
+    await other.push(made.sha, "main");
+  });
+  const [run] = (await curate({ repo, judge, caps: { questionsPerRun: 3 } })).runs;
+  assert.equal(calls.length, 3);
+  assert.equal(run.questions, 3);
+  assert.deepEqual(run.held.map((h) => [h.candidate, h.reason]), [[2, "the run's question budget is spent"]]);
+});
+
+test("a replacement is held when the learning it replaces cannot be marked superseded within the file cap", async () => {
+  const id = "L-343434343434";
+  const base = renderLearning(learning(id, "Search registries by the full legal name.")).length;
+  const old = learning(id, `Search registries by the full legal name.${" Keep the long form.".repeat(Math.floor((4090 - base) / 20))}`);
+  assert.ok(renderLearning(old).length > 4096 - 33 && renderLearning(old).length <= 4096);
+  const w = await world(learningFiles([old]));
+  const better = "Search registries by the legal name without the suffix; the full name misses most entries.";
+  await propose(w, "run-1", [candidate(better, { type: "correction", id })]);
+  const { judge } = fakeJudge([{ q: "supersedes", p: 0.95 }]);
+  const [run] = (await curate({ repo: w.curator, judge })).runs;
+  assert.deepEqual(run.held.map((h) => [h.of, h.reason]), [[id, `${id} cannot be marked superseded within the file cap`]]);
+  assert.deepEqual([run.accepted, run.superseded], [[], []]);
+  assert.deepEqual(Object.values(await learningsOn(w.curator)).map((l) => [l.id, l.status]), [[id, "active"]]);
+});
+
 test("renderLearning stays the only writer of learning files: every file curate writes parses back", async () => {
   const w = await world();
   await propose(w, "run-1", [candidate(LESSON)]);

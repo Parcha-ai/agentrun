@@ -211,12 +211,14 @@ async function curateRuns(options: CurateOptions, thresholds: Thresholds, caps: 
       skipped.push({ branch: branch.name, reason: "the name after runs/ is not a run id" });
       continue;
     }
+    // One question budget per run, across its retries: an answer already given is free, a new one is not.
+    const budget = { left: caps.questionsPerRun, asked: 0 };
     for (let attempt = 0; ; attempt++) {
       if (curated.at !== main) curated = { at: main, runs: await curatedRuns(repo, main) };
       if (curated.runs.has(runId)) break;
       const tip = await repo.resolve(branch.name);
       if (!tip) break;
-      const plan = await planRun({ options, thresholds, caps, secrets, memo, runId, tip, main });
+      const plan = await planRun({ options, thresholds, caps, secrets, memo, budget, runId, tip, main });
       if (plan === undefined) {
         skipped.push({ branch: branch.name, reason: "the branch proposes nothing beyond main" });
         break;
@@ -324,6 +326,7 @@ type PlanInput = {
   readonly caps: CurateCaps;
   readonly secrets: readonly string[];
   readonly memo: Map<string, number>;
+  readonly budget: { left: number; asked: number };
   readonly runId: string;
   readonly tip: string;
   readonly main: string;
@@ -346,7 +349,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
   const { options, runId, tip, main } = input;
   const { repo } = options;
   const lists: Lists = { accepted: [], superseded: [], duplicates: [], used: [], held: [], refused: [], archived: [], settled: [] };
-  const budget = { left: input.caps.questionsPerRun, asked: 0 };
+  const { budget } = input;
 
   const mainHistory = new Set((await repo.log({ ref: main })).map((c) => c.sha));
   const own = (await repo.log({ ref: tip })).filter((c) => !mainHistory.has(c.sha));
@@ -568,6 +571,20 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     } catch (error) {
       if (!(error instanceof LearnError)) throw error;
       lists.refused.push({ candidate: at, id, reason: `${error.code}: the learning file would not render` });
+      continue;
+    }
+    // A replacement lands only with every learning it replaces marked superseded, never beside one still active.
+    const stuck = replaces.find((old) => {
+      try {
+        renderLearning({ ...entries.get(old)!, status: "superseded", supersededBy: id });
+        return false;
+      } catch (error) {
+        if (!(error instanceof LearnError)) throw error;
+        return true;
+      }
+    });
+    if (stuck) {
+      lists.held.push({ candidate: at, id, of: stuck, reason: `${stuck} cannot be marked superseded within the file cap` });
       continue;
     }
     entries.set(id, made);
