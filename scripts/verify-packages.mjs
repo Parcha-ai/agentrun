@@ -259,6 +259,7 @@ import * as transportHands from '@parcha/pi-transport/hands';
 import * as transportHome from '@parcha/pi-transport/home';
 import * as transportTesting from '@parcha/pi-transport/testing';
 import * as piDurable from '@parcha/agentrun-pi/durable';
+import * as piWorkflows from '@parcha/agentrun-pi/workflows';
 import * as agentHome from '@parcha/pi-durable-agent';
 import * as gitRemote from '@parcha/pi-git-remote';
 import * as gitRemoteAgent from '@parcha/pi-git-remote/coding-agent';
@@ -295,6 +296,7 @@ for (const name of ${JSON.stringify(boxProviders)}) assert.equal(typeof (await i
 assert.equal(typeof transportHands.boxEnv,'function');
 assert.equal(typeof transportHands.transport,'function'); assert.equal(typeof transport.TransportError,'function');
 assert.equal(piDurable.DECISION_RECEIPTS_DOC,'agentrun.decisions'); assert.equal(piDurable.DECISION_ROW_VERSION,1); { let opened=0; const writer=piDurable.createDecisionWriter({open:async()=>{opened++;throw new Error('never opened');}}); await writer.flush(); assert.equal(opened,0); }
+assert.equal(typeof piWorkflows.WorkflowStore,'function'); assert.equal(typeof piWorkflows.WorkflowStoreError,'function'); { const dir=await mkdtemp(join(tmpdir(),'wf-store-')); try { assert.deepEqual(await new piWorkflows.WorkflowStore(dir).list(),[]); } finally { await rm(dir,{recursive:true,force:true}); } }
 { const dir=await mkdtemp(join(tmpdir(),'agentrun-agent-home-')); try { const home=await agentHome.createAgentHome(join(dir,'acme'),{definition:{version:1,name:'consumer',instructions:'Answer.',skills:['s'],tools:[]},skills:{'s/SKILL.md':'# S'}}); const started=await agentHome.startRun(home,{runId:'r1',host:'consumer'}); assert.deepEqual(started,{...agentHome.runPaths(home,'r1'),runId:'r1',agent:{instructions:'Answer.',tools:[]},leases:[]}); assert.equal(await readFile(join(started.workspace,'.agents/skills/s/SKILL.md'),'utf8'),'# S'); assert.deepEqual(await agentHome.carryBack(home,started,{outcome:'completed'}),{changed:true,profiles:[],released:[]}); assert.equal((await agentHome.readAgentHome(home)).runs.r1.outcome,'completed'); } finally { await rm(dir,{recursive:true,force:true}); } }
 { const dir=await mkdtemp(join(tmpdir(),'agentrun-git-remote-')); try { const bare=join(dir,'remote.git'); execFileSync('git',['init','-q','--bare','--template=','-b','main',bare]); const repo=await gitRemote.openRepo({dir:join(dir,'host'),remote:gitRemote.local(bare)}); const made=await repo.commitTo('runs/r1',{files:{'inbox/r1.md':'a lesson\\n'},message:'r1',trailers:{'Run-Id':'r1'}}); await repo.push(made.sha,'runs/r1'); const fresh=await gitRemote.openRepo({dir:join(dir,'fresh'),remote:gitRemote.local(bare)}); assert.deepEqual(await fresh.commitTo('runs/r1',{files:{'inbox/r1.md':'again\\n'},message:'r1',trailers:{'Run-Id':'r1'}}),{sha:made.sha,created:false}); assert.equal(await fresh.read('inbox/r1.md',made.sha),'a lesson\\n'); const userinfo=new URL('https://git.example.test/a.git'); userinfo.username='user'; userinfo.password='pass'; await assert.rejects(gitRemote.openRepo({dir:join(dir,'h'),remote:{kind:'https',url:userinfo.href}}),e=>e instanceof gitRemote.GitRemoteError&&e.code==='refused'); } finally { await rm(dir,{recursive:true,force:true}); } }
 assert.equal(typeof gitRemoteAgent.createGitRemoteExtension,'function'); assert.equal(typeof gitRemoteAgent.default,'function'); assert.equal(typeof gitRemoteAgent.createGitRemoteExtension({}),'function');
@@ -379,6 +381,12 @@ const openStore = (store: DurableStore): Promise<RecoveryJournal> => { const con
 void openStore;
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'durable-consumer.ts'], consumer);
+  await writeFile(join(consumer, 'workflows-consumer.ts'), `import { WorkflowStore, WorkflowStoreError, type StoredWorkflow, type WorkflowRevision } from '@parcha/agentrun-pi/workflows';
+import type { Workflow } from '@parcha/agentrun-dsl';
+const keep = async (store: WorkflowStore, workflow: Workflow): Promise<[StoredWorkflow, WorkflowRevision[], WorkflowStoreError | undefined]> => [await store.save('copy', workflow), await store.list(), undefined];
+void keep;
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'workflows-consumer.ts'], consumer);
   await writeFile(join(consumer, 'archil-consumer.ts'), `import { openDurableRun, type RunRef } from '@parcha/pi-durable-disk';
 import { openRunLease } from '@parcha/pi-durable-disk/lease';
 const durable: [typeof openDurableRun, typeof openRunLease, RunRef | undefined] = [openDurableRun, openRunLease, undefined];
