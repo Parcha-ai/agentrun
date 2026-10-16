@@ -1,14 +1,14 @@
 // localHost unit tests: the systemd unit's shape and its stop sequence over a recording runner (no systemd touched),
 // the status mapping, and child mode with real processes. No Archil, no network.
 import { after, test } from "node:test";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARCHIL_SCOPED } from "../src/claim.ts";
-import { currentBootId, localHost, parseShow, procStartTicks, statCodeArgv, TERMINAL_EXITS, unitStatus, type Ran, type Runner } from "../src/hosts/local-host.ts";
+import { currentBootId, localHost, LocalHostError, parseShow, procStartTicks, statCodeArgv, TERMINAL_EXITS, unitStatus, type Ran, type Runner } from "../src/hosts/local-host.ts";
 import { PdaError } from "../src/errors.ts";
 
 const REF = { disk: "dsk-0000000000000001", region: "aws-us-east-1", id: "r1" };
@@ -157,6 +157,60 @@ test("stop: the unit, then nothing else when the instance released its own mount
   await host.stop({ ...h, host: "host-b" });
   await host.stop({ ...h, bootId: "other" });
   assert.equal(calls.length, 0, "a handle this driver cannot reach is a no-op");
+});
+
+test("a start's own environment goes over the driver's; one that sets PATH or PDA_HOLDER, or a name that is not a variable, is refused", async () => {
+  const w = world();
+  const { calls, exec } = recorder();
+  const host = localHost({ exec, mountRoot: w.mountRoot, procMounts: w.procMounts, hostName: "host-a", user: "1000", group: "1000", command: ["/n", "/c"], env: { A: "1", PLAN: "driver's" } });
+  const h = await host.start(REF, TOKEN, { attempt: 2, env: { PLAN: '{"tools":["x y"]}' } });
+  const set = calls.find((c) => c.argv.includes("/usr/bin/systemd-run"))!.argv.filter((x) => x.startsWith("--setenv="));
+  assert.deepEqual(set, ["--setenv=A=1", '--setenv=PLAN={"tools":["x y"]}', "--setenv=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", `--setenv=PDA_HOLDER=${JSON.stringify(h)}`]);
+  calls.length = 0;
+  for (const env of [{ "NOT-A-NAME": "x" }, { PATH: "/elsewhere" }, { PDA_HOLDER: "{}" }] as Record<string, string>[]) {
+    await assert.rejects(host.start(REF, TOKEN, { attempt: 3, env }), (e: unknown) => e instanceof LocalHostError && e.code === "INVALID_ARGUMENT", JSON.stringify(env));
+  }
+  assert.equal(calls.length, 0, "refused before anything ran");
+});
+
+test("kill: SIGKILL of the unit's whole control group and nothing else; a handle it cannot reach is a no-op; a process kill", async () => {
+  const w = world();
+  const { calls, exec } = recorder();
+  const host = localHost({ exec, hostName: "host-a", procMounts: w.procMounts, mountRoot: w.mountRoot, user: "1000", group: "1000" });
+  assert.equal(host.kills, "process");
+  const h = { driver: "local", mode: "systemd", host: "host-a", bootId: currentBootId(), unit: "pda-t-r1-x", mountpoint: w.mp };
+  await host.kill(h);
+  assert.deepEqual(calls.map((c) => c.argv.join(" ")), ["/usr/bin/sudo -n /usr/bin/systemctl kill --signal=SIGKILL --kill-whom=all pda-t-r1-x.service"], "no stop, no unmount, no reset-failed, no token file removed: what a crash leaves");
+  calls.length = 0;
+  await host.kill({ ...h, host: "host-b" });
+  await host.kill({ ...h, bootId: "other" });
+  await host.kill({ ...h, unit: "../etc" });
+  assert.equal(calls.length, 0);
+});
+
+test("kill: a unit that a failed systemctl kill leaves running is a typed failure", async () => {
+  const w = world();
+  const { exec } = recorder((argv) => (argv.includes("kill") ? { code: 1, stdout: "", stderr: "Failed to kill unit", timedOut: false } : argv.includes("show") ? { code: 0, stdout: "LoadState=loaded\nActiveState=active\nSubState=running\nResult=success\nExecMainStatus=0\nMainPID=42\n", stderr: "", timedOut: false } : undefined));
+  const host = localHost({ exec, hostName: "host-a", procMounts: w.procMounts, mountRoot: w.mountRoot, user: "1000", group: "1000" });
+  await assert.rejects(host.kill({ driver: "local", mode: "systemd", host: "host-a", bootId: currentBootId(), unit: "pda-t-r1-x", mountpoint: w.mp }), (e: unknown) => e instanceof LocalHostError && e.code === "KILL_FAILED");
+});
+
+test("kill in child mode: SIGKILL of the instance's process group, at once", async () => {
+  const w = world();
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+  const pid = child.pid!;
+  const startTicks = procStartTicks(pid)!;
+  const exited = new Promise<NodeJS.Signals | null>((resolve) => child.once("exit", (_code, signal) => resolve(signal)));
+  try {
+    const host = localHost({ mode: "child", hostName: "host-a", procMounts: w.procMounts, mountRoot: w.mountRoot });
+    await host.kill({ driver: "local", mode: "child", host: "host-a", bootId: currentBootId(), pid, startTicks, mountpoint: w.mp });
+    // An unreferenced timer: a passing run must not keep the process up for the bound.
+    const bound = new Promise<string>((resolve) => setTimeout(() => resolve("still running"), 5_000).unref());
+    assert.equal(await Promise.race([exited, bound]), "SIGKILL");
+  } finally {
+    // A kill that did not happen must not leave the child for good: end its group here, only while the pid is still it.
+    if (procStartTicks(pid) === startTicks) process.kill(-pid, "SIGKILL");
+  }
 });
 
 test("stop: the unit's mount left behind is checked in by archil unmount when its daemon answers", async () => {

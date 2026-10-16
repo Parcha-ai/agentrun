@@ -10,6 +10,7 @@ import type { AgentChange, ConversationId } from "@earendil-works/pi-durable";
 import type { Claim, RunRef } from "../src/claim.ts";
 import { ArchilCodingTools } from "../src/env.ts";
 import { FencedError } from "../src/errors.ts";
+import { processTable } from "../src/process-table.ts";
 import type { DurableRun } from "../src/run.ts";
 import { openClaimDir, type ClaimDir } from "../src/status.ts";
 
@@ -157,8 +158,9 @@ export function alive(pid: number): boolean {
   } catch {
     return false;
   }
+  // A zombie still answers kill(0); the process table does not list it as live.
   try {
-    return !/^\d+ \(.*\) Z/.test(readFileSync(`/proc/${pid}/stat`, "utf8"));
+    return processTable().snapshot().info(pid) !== undefined;
   } catch {
     return false;
   }

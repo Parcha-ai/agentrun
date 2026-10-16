@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentRun runs</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body data-pane="run" data-tab="timeline">
+<header class="top">
+  <a class="brand" href="#/">agentrun <span>runs</span></a>
+  <input id="q" type="search" placeholder="Search runs and files" autocomplete="off" aria-label="Search runs and files">
+</header>
+<main>
+  <aside id="hist" class="hist" aria-label="Job history">
+    <div class="head"><b>Job history</b><button id="new" class="btn primary">New run</button></div>
+    <ul id="runs"></ul>
+  </aside>
+  <section id="view" class="view"></section>
+  <section id="run" class="run" hidden>
+    <div class="top-row"><h1 id="title"></h1><span id="pill"></span><span id="cost" class="mono"></span><button id="stop" class="btn" hidden>Stop</button></div>
+    <div id="banner" class="banner" hidden><b>Waiting for you</b><span id="banner-text"></span><button id="banner-btn" class="btn">Open live browser</button></div>
+    <nav class="tabs"><button data-tab="timeline">Timeline</button><button data-tab="files">Files</button><button data-tab="browser">Browser</button></nav>
+    <div id="steps" class="pane"></div>
+    <div id="files" class="pane"></div>
+    <div id="browser" class="pane"></div>
+    <div id="err" class="err"></div>
+    <div class="composer"><textarea id="text" rows="2"></textarea><button id="send" class="btn primary">Send</button></div>
+  </section>
+</main>
+<nav class="bar"><button data-pane="hist">Runs</button><button data-tab="timeline">Timeline</button><button data-tab="files">Files</button><button data-tab="browser">Browser</button></nav>
+<script type="module" src="/app.js"></script>
+</body>
+</html>
