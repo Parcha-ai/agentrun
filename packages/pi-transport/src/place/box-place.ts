@@ -233,8 +233,9 @@ async function writeWhole(path: string, bytes: Uint8Array): Promise<void> {
 /**
  * Make a session's place in a box: the box is made now, and the session's lease is taken when its first runner starts.
  * The place starts pi-transport's runner in the box (`boxRunner`), kills a runner by its process or by its box,
- * restarts it in the same box (`recoverHome`) or, for a lost box, in a new one from the newest checkpoint, and takes
- * checkpoints at rest (`pullCheckpoint`).
+ * restarts it in the same box (`recoverHome`) or, for a lost box, in a new one from the newest checkpoint and the
+ * commits since, or from the commits alone before any checkpoint (`restoreFromLog`), and takes checkpoints at rest
+ * (`pullCheckpoint`), which a box kill does not need: they bring the workspace's files along.
  */
 export async function boxPlace(options: BoxPlaceOptions, context: Context): Promise<Result<BoxPlace, MoveError>> {
 	const made = await options.provider.create(options.spec, context);
@@ -632,6 +633,8 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 						? {}
 						: {
 								vault: options.vault,
+								// Before any checkpoint, the session is rebuilt from the vault's log alone: a box kill needs no rest.
+								restoreFromLog: true,
 								replace: async () => {
 									box = next;
 									paths = pathsIn(next, session);

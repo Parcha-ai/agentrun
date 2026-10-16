@@ -585,7 +585,9 @@ It makes the box, and
   left it); `kill(runner, "box")` destroys the box. `recover(last, "process", order)` starts the next runner in the
   same box where the store left off (`recoverHome`, same epoch); `recover(last, "box", order)` makes a new box, restores
   the newest checkpoint into it and replays the shipped commits (`recoverHome` with `vault` and `replace`), at the next
-  epoch, and says what it restored. `checkpoint()` takes one at rest (`pullCheckpoint`, tried again while the session
+  epoch, and says what it restored. Before any checkpoint it rebuilds the store from the vault's log alone
+  (`restoreFromLog`), in an empty workspace: `restored` is undefined and `replayed` starts at commit 1. A box kill
+  needs no checkpoint at rest; a checkpoint brings the workspace's files along. `checkpoint()` takes one at rest (`pullCheckpoint`, tried again while the session
   is busy) and announces `transport.checkpoint.taken`; a call while one is being taken gets that one, so the session
   is held once. The hold admits no new tool call or model request and waits for the ones in flight up to
   `checkpoint.drain.timeoutMs` (10 s by default): a session whose effects run longer than that is skipped as busy.
