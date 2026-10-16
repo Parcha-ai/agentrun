@@ -228,7 +228,7 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | ts-algebra | 2.0.0 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | tslib | 2.8.1 | 0BSD | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | typebox | 1.3.27 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 5 |
-| typebox | 1.3.7 | MIT | dsl, jev, pi | no | 1 |
+| typebox | 1.3.7 | MIT | dsl, jev, pi, pi-agent-learn | no | 1 |
 | undici-types | 5.26.5 | MIT | pi-browser | no | 1 |
 | undici-types | 6.21.0 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | undici | 6.29.0 | MIT | pi-browser | no | 1 |

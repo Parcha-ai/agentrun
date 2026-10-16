@@ -1,5 +1,6 @@
 import { pathRefusal as gitPathRefusal } from "@parcha/pi-git-remote";
-import { CAPS, inboxPath, isRulesLocked, LEARNING_ID, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
+import { CAPS, inboxPath, isRulesLocked, LEARNING_ID, RUN_ID, usesPath } from "./layout.js";
+import { WORKFLOW_NAME } from "./layout.js";
 import { type Guard, type GuardInput, LEARN_TYPES, type Refusal, type RefusalReason } from "./types.js";
 
 export type Caps = { -readonly [K in keyof typeof CAPS]: number };

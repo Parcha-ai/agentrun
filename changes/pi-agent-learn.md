@@ -27,3 +27,16 @@ collected (`inbox/<run id>/workflows/<name>/`), guards the whole proposal, and m
 `runs/<run id>` through `@parcha/pi-git-remote`, pushed by sha. A guard hit refuses all of it and commits nothing; a second
 call, including one from a restarted host with an empty local repository, commits nothing. `renderInbox` and `parseInbox`
 are the inbox's format.
+
+`curate({ repo, judge, rules, thresholds, caps, now, secrets, admitWorkflow })` is the host step that writes `main`, and
+the only one. It takes each `runs/<run id>` branch whose run no `Curated-Run` trailer on main names, guards everything
+the run changed again, and judges each candidate with the DSL's System One port (`WorkflowDeps["runJudge"]`; Jev is one),
+one question at a time over the candidate's own text: general or about this case, contradicts or narrows a rule in
+AGENTS.md, an instruction from content the run read (for a candidate marked `untrusted`), then duplicate, supersedes and
+contradicts against each active learning of its type. An answer between the cuts in `thresholds` holds the candidate;
+nothing uncertain is accepted. It writes new learnings, marks replaced ones `superseded` with `supersededBy`, counts
+duplicates and `used` marks as uses, hands workflows to an `admitWorkflow` hook, archives the least-used learnings when the
+derived `<learned>` section would pass 4,096 bytes, and makes one commit per run on main with `Curated-Run` and
+`Learning-Id` trailers, pushed without force and rebuilt on a moved main at most five more times (then `contended`). A
+reverted learning stays reverted, a second curate changes nothing, and no reason in the report or a commit message names
+a value from the case. Learning files take an optional `supersededBy`; a candidate takes an optional `untrusted` mark.

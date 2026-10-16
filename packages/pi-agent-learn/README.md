@@ -9,9 +9,9 @@ It builds on [`@parcha/pi-git-remote`](../pi-git-remote), which owns git, and on
 host owns git: no model tool commits or pushes, and the repository's `.git` is never in the agent's working directory.
 
 This package is held: it is built and tested in this repository and not published yet. This release has the contract
-the model sees, the host step that seeds a run, the guard every write goes through, and the host step that proposes a
-run's notes. Curation and workflow trials come next, on the types this release fixes (`Guard`, `Candidate`,
-`WorkflowHint`).
+the model sees, the host step that seeds a run, the guard every write goes through, the host step that proposes a
+run's notes, and the curator that merges them to `main`. Workflow trials come next, on the types this release fixes
+(`Guard`, `Candidate`, `WorkflowHint`, `AdmitWorkflow`).
 
 ## Quickstart (no key, no network)
 
@@ -123,6 +123,7 @@ supersedes: []
 Company registries match the legal name without Inc or LLC; search both forms.
 ```
 
+A superseded learning also has `supersededBy: <id>` after `supersedes`, naming the one that replaced it.
 `renderLearning` writes exactly this and `parseLearning` reads nothing looser: an unknown, missing or repeated key, or a
 value out of shape, is a `LearnError` with code `format`. `learningId(runId, text)` is `L-` and 12 hex digits of SHA-256
 over the run id and the text, so curating the same candidate twice cannot make two learnings.
@@ -168,7 +169,8 @@ when its store already holds a seed, that commit is used again and the record is
 run to a newer commit. `readSeed` returns the record; `collectCandidates` returns the run's candidates in order.
 `workflows` is a list of `{ name, status: "trial" | "active" }`, at most 8; it is empty until workflow trials land.
 
-Every failure is a `LearnError` with a `code`: `invalid`, `format`, `missing`, `rules_locked` or `too_large`.
+Every failure is a `LearnError` with a `code`: `invalid`, `format`, `missing`, `rules_locked`, `too_large`, or, from
+`curate`, `contended` and `judge`.
 
 ## The guard
 
@@ -226,6 +228,50 @@ sha. The result is one of:
 A push the remote refuses throws a `GitRemoteError`. `proposeFiles` is the same guard-commit-push for files the caller
 has already rendered. `renderInbox` and `parseInbox` are the inbox's format: front matter, the candidates for a person to
 read, and the candidates as one JSON line in the last fenced block, which is all a reader trusts.
+
+## Curating
+
+```ts
+import { createJevRunner } from "@parcha/agentrun-jev";
+const report = await curate({ repo, judge: createJevRunner(), secrets: vault.values(), admitWorkflow });
+```
+
+`curate` is the host step that writes `main`, and the only one. It takes each branch `runs/<run id>` whose run no
+`Curated-Run` trailer in main's history names, in name order. It checks the branch (every commit since main carries
+this run's `Run-Id`, and it starts from main's history), reads back everything the run changed and guards it again as
+the `run` role with the host's secrets of now: a rules-tier path or any guard hit refuses the whole run, and nothing of
+it reaches the judge. Then it judges each candidate, writes the result, and makes one commit on `main` with
+`Curated-Run: <run id>` and one `Learning-Id` per learning it touched, pushed without force. Holds and refusals are in
+that commit's message, so a run that only held still gets its commit and is curated once.
+
+The judge is the DSL's System One port, `WorkflowDeps["runJudge"]` from `@parcha/agentrun-dsl`: `createJevRunner` from
+`@parcha/agentrun-jev` is one, and a test passes a scripted function. Each question is asked on its own, as a yes-or-no
+probability, over the candidate's own text, never a paraphrase (`QUESTIONS` holds the wording):
+
+| Question | Asked of | Yes at or above, no at or below | A yes |
+| --- | --- | --- | --- |
+| `general` | every new lesson, fact, correction and workflow "when" | 0.8, 0.2 | passes; a no refuses it as about this case |
+| `narrowsRules` | the same, with `rules` (AGENTS.md at main, or the `rules` option) | 0.5, 0.1 | refuses it |
+| `fromContent` | the same, when the candidate is marked `untrusted` | 0.5, 0.1 | refuses it |
+| `duplicate` | it and each active learning of its type, and the one a correction names | 0.8, 0.2 | the existing one counts a use and the run joins its provenance |
+| `supersedes` | the same pairs | 0.8, 0.2 | it is written and the existing one becomes `superseded`, naming it in `supersededBy` |
+| `contradicts` | the same pairs | 0.5, 0.2 | it is held |
+
+An answer between the two cuts holds the candidate; nothing uncertain is accepted. `thresholds` overrides any cut,
+`DEFAULT_THRESHOLDS` are the defaults above. A `used` mark counts one use per run for an active learning and needs no
+judgment. A workflow (its records under `inbox/<run id>/workflows/<name>/` and the "when" of a `learn` call of type
+`workflow`) goes to the `admitWorkflow` hook, which returns the files to write under `.pi/agentrun/workflows/<name>/` and
+`.agents/skills/<name>/`; curation guards them and refuses any other path. Without the hook a workflow is held. When the
+`<learned>` section derived from the active learnings would pass 4,096 bytes, the least-used are archived first, this
+run's new ones last, and the report names each.
+
+`caps` sets the section cap (`index`), the questions one run may ask (`questionsPerRun`, 128; past it the run's
+remaining candidates are held) and the retries (`retries`, 5): a push that a moved main rejects is rebuilt from the new
+main, judged answers reused, and after the last retry curation stops with `contended`. A judge that fails or answers out
+of shape stops it with `judge` before that run is written. The report lists, per run, `accepted`, `superseded`,
+`duplicates`, `used`, `held`, `refused` and `archived`, each item with the candidate's position, the learning id and a
+reason that names no value from the case. A `git revert` of a curate commit on main undoes that run's learnings, and the
+next curate does not bring them back: the run is still named in main's history.
 
 ## Versions
 

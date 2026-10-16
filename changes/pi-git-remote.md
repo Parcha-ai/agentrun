@@ -12,3 +12,6 @@ and change nothing on a conflict; `checkout` copies regular files only, never ex
 reaches git only on file descriptor 3 (never argv, the environment, a URL or a file), and a URL with userinfo is refused.
 A `.git` segment in any spelling, `..`, symlinks, submodules, case collisions and files over the caps are refused or
 skipped and named. Every failure is a `GitRemoteError` with a `code`. Needs git 2.40 or later.
+`branches(prefix)` lists the branches under a prefix (`runs/`), here and on the remote, at the commit `resolve` gives;
+`commitTo(branch, { allowEmpty: true })` makes a commit that changes no file, for a commit whose message and trailers are
+the record.

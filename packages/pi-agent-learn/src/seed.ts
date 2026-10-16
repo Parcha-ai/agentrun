@@ -50,7 +50,7 @@ export type Seeded = SeedRecord & {
 
 const ENTRY = new RegExp(`^${LAYOUT.learnings}/(L-[0-9a-f]{12})\\.md$`);
 
-async function learningsAt(repo: SeedOptions["repo"], sha: string): Promise<{ learnings: Learning[]; files: Map<string, string>; skipped: Skipped[] }> {
+export async function learningsAt(repo: SeedOptions["repo"], sha: string): Promise<{ learnings: Learning[]; files: Map<string, string>; skipped: Skipped[] }> {
   const learnings: Learning[] = [];
   const files = new Map<string, string>();
   const skipped: Skipped[] = [];
