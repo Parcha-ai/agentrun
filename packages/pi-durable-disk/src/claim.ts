@@ -3,7 +3,7 @@
 // a mount token and uses the archil client: mount, verify, barrier, release, dead-mount cleanup.
 import { spawn } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
-import { mkdir, open, readdir, readFile, rmdir, stat } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, readFile, rmdir, stat } from "node:fs/promises";
 import { basename, isAbsolute, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -660,6 +660,54 @@ async function clearStaleDaemon(host: Host, ref: RunRef, mountpoint: string): Pr
   return pids;
 }
 
+/** The most entries of a bare mountpoint the stray check looks at; past it, nothing is moved aside. */
+export const STRAY_CHECK_LIMIT = 100_000;
+
+/**
+ * The entries under `dir` written since `since` (ms since the epoch), as paths relative to it, walked without following
+ * links. `unchecked` says why the walk could not look at every entry: more than `limit` of them, or one it could not
+ * read (an entry gone meanwhile is not one). A directory keeps its time when a file in it is rewritten in place, so only
+ * a walk that looked at every entry shows there is none.
+ */
+export async function writtenSince(dir: string, since: number, limit = STRAY_CHECK_LIMIT): Promise<{ fresh: string[]; unchecked: string | null }> {
+  const fresh: string[] = [];
+  const dirs = [""];
+  let seen = 0;
+  const failed = (error: unknown) => {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ENOENT" ? null : `an entry it cannot read (${code ?? "an unknown error"})`;
+  };
+  for (let i = 0; i < dirs.length; i++) {
+    const rel = dirs[i]!;
+    let names: string[];
+    try {
+      names = await readdir(join(dir, rel));
+    } catch (error) {
+      const unchecked = failed(error);
+      if (unchecked) return { fresh, unchecked };
+      continue;
+    }
+    for (const name of names.sort()) {
+      if (++seen > limit) return { fresh, unchecked: `more than ${limit} entries` };
+      const path = rel ? `${rel}/${name}` : name;
+      let st: Awaited<ReturnType<typeof lstat>>;
+      try {
+        st = await lstat(join(dir, path));
+      } catch (error) {
+        const unchecked = failed(error);
+        if (unchecked) return { fresh, unchecked };
+        continue;
+      }
+      if (st.mtimeMs >= since) fresh.push(path);
+      if (st.isDirectory()) dirs.push(path);
+    }
+  }
+  return { fresh, unchecked: null };
+}
+
+/** The exit of a start refused for the app's own writes before its claim (EX_DATAERR): a restart would write them again. */
+const EXIT_WRITTEN_BEFORE_MOUNT = 65;
+
 /** How many entries a directory holds; 0 when it cannot be read. */
 const entries = (dir: string) => readdir(dir).then((names) => names.length, () => 0);
 
@@ -669,10 +717,35 @@ const entries = (dir: string) => readdir(dir).then((names) => names.length, () =
  * directory with its owner and mode: archil refuses to mount over entries, and nothing in them may enter the run. One
  * line on stderr names the run and the count of entries, never a name or a byte of them. An unreadable mountpoint goes
  * to the wrapper too, which looks as root.
+ *
+ * Entries written since this process started are not an earlier incarnation's leftovers but this one's own writes
+ * before its claim mounted (an app's factory writing under ctx.root, which runs before the mount): moving them aside
+ * would lose them silently and the run would later find them gone (ENOENT). The start is refused instead,
+ * MOUNTPOINT_WRITTEN (exit 65, terminal: a restart writes them again), naming the first of them. A mountpoint whose
+ * entries the check cannot all look at (more than STRAY_CHECK_LIMIT, or one this process cannot read) may hide such a
+ * write, so it is refused too, MOUNTPOINT_UNCHECKED (exit 65: someone looks at it), naming none of them.
  */
 async function moveStrayAside(host: Host, ref: RunRef, mountRoot: string, mountpoint: string): Promise<{ to: string; entries: number } | null> {
   const names = await readdir(mountpoint).catch(() => null);
   if (names && names.length === 0) return null;
+  if (names) {
+    const { fresh, unchecked } = await writtenSince(mountpoint, performance.timeOrigin);
+    if (fresh.length > 0) {
+      const named = fresh.slice(0, 4).map((p) => `<mp>/${p}`).join(", ");
+      throw new ClaimError(
+        "MOUNTPOINT_WRITTEN",
+        `the bare mountpoint <mp> of ${runPath(ref.id)} holds ${fresh.length} entr${fresh.length === 1 ? "y" : "ies"} written since this incarnation started, before its claim mounted: ${named}`.slice(0, 240),
+        { exitCode: EXIT_WRITTEN_BEFORE_MOUNT },
+      );
+    }
+    if (unchecked) {
+      throw new ClaimError(
+        "MOUNTPOINT_UNCHECKED",
+        `the bare mountpoint <mp> of ${runPath(ref.id)} holds ${unchecked}, so this incarnation cannot rule out its own writes before its claim mounted: nothing is moved aside. Look at it, then move it aside by hand`,
+        { exitCode: EXIT_WRITTEN_BEFORE_MOUNT },
+      );
+    }
+  }
   const tag = Date.now().toString(36);
   const r = await archil(host, ["stray", mountpoint, tag]);
   if (!ok(r)) throw new ClaimError("MOUNTPOINT_NOT_EMPTY", `${mountpoint} is not empty and could not be moved aside: ${detail(r)}`);
