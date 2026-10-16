@@ -289,7 +289,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const { spec, job } = options;
   const live = values.live === true;
   if (live && !options.live) throw new Error(`--live: ${spec.name} supplies no live parts (no real models or services), so it runs on fakes only.`);
-  const browser = chooseBrowser({ live, env: process.env, localChrome: values['local-chrome'] === true });
+  // A demo whose job opens no page (`browser: false` in demo.json) needs no browser, live or not: it gets the fake, which nothing calls.
+  const browser = spec.browser === false ? 'fake' : chooseBrowser({ live, env: process.env, localChrome: values['local-chrome'] === true });
   const plans = values.kill ? plansOf(killsOf(spec)) : [];
   const maxUsd = maxUsdOf(values['max-usd'], spec);
   const models: LiveModels = { ...(values.provider ? { provider: values.provider } : {}), ...(values.model ? { model: values.model } : {}), ...(values['eyes-model'] ? { eyesModel: values['eyes-model'] } : {}) };

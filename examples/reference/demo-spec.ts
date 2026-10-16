@@ -34,6 +34,8 @@ export type DemoSpec = {
   name: string;
   title?: string;
   claim?: string;
+  /** `false`: the job opens no page, so a live run needs no browser. */
+  browser?: boolean;
   /** What `--kill` does: each entry in order, one per process, then the run finishes. The template's single `kill` is a list of one. */
   kills?: KillSpec[];
   kill?: { point: string; why: string };
