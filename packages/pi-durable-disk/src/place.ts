@@ -32,7 +32,10 @@ import {
 export type PlaceKill = "process" | "box";
 /** The run's paths in the place: its id, its directory, and the `work` and `store` under it. */
 export type PlacePaths = { id: string; root: string; work: string; store: string };
-/** How the run stood when a runner ended: the instance's own report, or `run.json` as it left it. */
+/**
+ * How the run stood when a runner ended: the instance's own report, or `run.json` as it left it. `status` is the run's
+ * word: `complete` when it delivered, else `failed`.
+ */
 export type PlaceOutcome = { status: string; generation: number | null; code?: string | null; message?: string; record?: unknown; storeSha256?: string };
 /** How a runner ended. `exit`: the exit code or signal (local), or the host's status (`stopped`, `failed`, `gone`) or `SIGKILL` when the place killed it (archil). */
 export type PlaceExit = { exit: number | string | null; signal: string | null; outcome?: PlaceOutcome; stderr: string };
@@ -99,12 +102,18 @@ const OUTPUT_GRACE_MS = 2_000;
 const STDERR_KEEP = 600;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-/** The outcome `run.json` gives: its status and generation, and what the app put in its last detail. */
+/**
+ * The outcome `run.json` gives, in the run's vocabulary rather than the record's: `complete` when the run is `done` and
+ * delivered a record (the detail of the app's last status carries one), `failed` for anything else (done with no result,
+ * failed, or a run its instance left `running`, `paused` or `sleeping`). Its generation, and what the app put in that
+ * detail.
+ */
 function outcomeOf(record: RunRecord | null | undefined): PlaceOutcome | undefined {
   if (!record) return undefined;
   const detail = record.detail !== null && typeof record.detail === "object" && !Array.isArray(record.detail) ? (record.detail as Record<string, unknown>) : {};
+  const delivered = record.status === "done" && "record" in detail && detail.record !== null && detail.record !== undefined;
   return {
-    status: record.status,
+    status: delivered ? "complete" : "failed",
     generation: record.generation,
     code: typeof detail.code === "string" ? detail.code : null,
     ...(typeof detail.message === "string" ? { message: detail.message } : {}),
