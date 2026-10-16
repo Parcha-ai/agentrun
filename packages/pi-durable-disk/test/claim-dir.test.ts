@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync
 import { join } from "node:path";
 import { exitCodeFor, FencedError } from "../src/errors.ts";
 import { CLAIM_UNMOUNTED, deviceName, openClaimDir, persistRecord, readRunRecord, RUN_JSON, writeRunRecord, type RunRecord } from "../src/status.ts";
+import { onPlatform } from "./_macos.ts";
 import { removeWhileWritten, scratchRoot } from "./_run-support.ts";
 
 const unmounted = (error: unknown) => error instanceof FencedError && error.code === CLAIM_UNMOUNTED && exitCodeFor(error) === 75;
@@ -125,6 +126,40 @@ describe("the claim directory", () => {
       await claim.close();
     } finally {
       t.remove();
+    }
+  });
+
+  it("by path (macOS has no /proc/self/fd): at is the root, and a write or an owner-lock check is refused once the path names another directory", async () => {
+    const t = swappable("claimdir-bypath");
+    try {
+      const claim = await openClaimDir(t.root, { fstype: null, byPath: true });
+      assert.equal(claim.at, t.root);
+      await writeRunRecord(claim, record);
+      assert.deepEqual(await readRunRecord(claim), record, "run.json round-trips by path");
+      writeFileSync(join(t.root, "owner.lock"), "");
+      await claim.assertSame("owner.lock");
+      t.swap();
+      writeFileSync(join(t.root, "owner.lock"), "");
+      await assert.rejects(claim.assertSame("owner.lock"), unmounted, "the root's path is another directory");
+      await assert.rejects(writeRunRecord(claim, { ...record, generation: 2 }), unmounted);
+      assert.deepEqual(readdirSync(t.root), ["owner.lock"], "the check refused before the write");
+      await claim.close();
+      assert.throws(() => claim.at, FencedError);
+    } finally {
+      t.remove();
+    }
+  });
+
+  it("is by path by default on macOS, and through the open directory elsewhere", async () => {
+    const dir = scratchRoot("claimdir-default");
+    try {
+      const darwin = await onPlatform("darwin", () => openClaimDir(dir.root, { fstype: null }));
+      const linux = await onPlatform("linux", () => openClaimDir(dir.root, { fstype: null }));
+      assert.equal(darwin.at, dir.root);
+      assert.match(linux.at, /^\/proc\/self\/fd\/\d+$/);
+      await Promise.all([darwin.close(), linux.close()]);
+    } finally {
+      dir.remove();
     }
   });
 

@@ -187,7 +187,8 @@ export async function run(place: RunPlace, host: Host, job: Job, options: RunOpt
 }
 
 /** An effect a killed process left unknown, as the driver hands it to `reconcile`: its intent and the calls its host reported before the kill. */
-export type UnknownEffect = { id: string; argsHash: string; intent?: { tool: string }; calls?: unknown[] };
+/** `args`: what the call was admitted with, which the journal keeps (absent on a record written before args were kept): a call admitted and never sent is sent again with them. */
+export type UnknownEffect = { id: string; argsHash: string; intent?: { tool: string }; args?: unknown; calls?: unknown[] };
 /** What `reconcile` is given to settle one: its value, and the receipt the driver records beside it (the calls it APPENDS to the effect's own). */
 export type Complete = (id: string, value: unknown, receipt?: { intent?: { tool: string; args?: unknown }; calls?: unknown[] }) => Promise<void>;
 
@@ -200,7 +201,7 @@ export async function reconcileEffects(unknown: UnknownEffect[], complete: Compl
     // The door keeps its answer by the effect's id, so one effect's answer is never another's (a poll and its next share an argsHash).
     const kept = answered ? await answered({ id: effect.id, argsHash: effect.argsHash }) : undefined;
     // Nothing kept: the host may run it again, when that is safe, by the effect's id (not its hash, which a retry shares).
-    const rerunAnswer = kept === undefined && rerun ? await rerun({ id: effect.id, intent: { tool: effect.intent.tool, argsHash: effect.argsHash } }) : undefined;
+    const rerunAnswer = kept === undefined && rerun ? await rerun({ id: effect.id, intent: { tool: effect.intent.tool, argsHash: effect.argsHash }, args: effect.args }) : undefined;
     const answer = kept ?? rerunAnswer;
     if (!answer) continue;
     // A host lists every applied call exactly once: settling from evidence finds the call applied, so when the effect's calls hold no applied

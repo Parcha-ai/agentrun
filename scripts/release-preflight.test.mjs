@@ -33,7 +33,7 @@ SOFTWARE.\n`;
 const manifest = directory => ({ name: releasePackageNames[directory], ...(heldPackages.includes(directory) ? { private: true } : {}), version, license: 'MIT', type: 'module', files: ['dist', 'LICENSE'],
   repository: { type: 'git', url: 'git+https://github.com/Parcha-ai/agentrun.git', directory: `packages/${directory}` },
   homepage: 'https://agentrun.ai', bugs: { url: 'https://github.com/Parcha-ai/agentrun/issues' }, publishConfig: { access: 'public', tag: 'beta' },
-  ...(directory === 'dsl' || directory === 'pi-durable-disk' || directory === 'pi-browser' || directory === 'pi-vision' || directory === 'pi-transport' ? {} : { dependencies: { '@parcha/agentrun-dsl': version, ...(directory === 'pi' ? { '@parcha/agentrun-jev': version } : {}) } }),
+  ...(directory === 'dsl' || directory === 'pi-durable-disk' || directory === 'pi-browser' || directory === 'pi-vision' || directory === 'pi-transport' || directory === 'pi-durable-agent' ? {} : { dependencies: { '@parcha/agentrun-dsl': version, ...(directory === 'pi' ? { '@parcha/agentrun-jev': version } : {}) } }),
 });
 const putJson = (path, value) => writeFile(path, JSON.stringify(value));
 let baseline;
@@ -60,7 +60,7 @@ async function recordPackages(root) {
     packages.push({ name: packed.name, version, filename: packed.filename, sha256 });
   }
   await putJson(join(root, '.release/verification.json'), { status: 'passed', packages,
-    runtimeSmoke: { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, network: 'prohibited' }, audit: { vulnerabilities: { high: 0, critical: 0 } } });
+    runtimeSmoke: { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, agent: true, network: 'prohibited' }, audit: { vulnerabilities: { high: 0, critical: 0 } } });
 }
 after(async () => { await rm(baseline, { recursive: true, force: true }); });
 async function fixture(fn) {
@@ -139,11 +139,21 @@ test('incomplete or unsuccessful verification cannot approve release', () => fix
   await putJson(path, { ...receipt, runtimeSmoke: { core: true, jev: true, network: 'prohibited' } });
   await assert.rejects(preflight(root), /All installed package smoke checks/);
   await putJson(path, { ...receipt, packages: receipt.packages.slice(0, 2) });
-  await assert.rejects(preflight(root), /exactly 7 verified packages/);
+  await assert.rejects(preflight(root), /exactly 8 verified packages/);
   await putJson(path, { ...receipt, status: 'failed' });
   await assert.rejects(preflight(root), /verification must pass/);
   await putJson(path, { ...receipt, audit: { vulnerabilities: { high: 1, critical: 0 } } });
   await assert.rejects(preflight(root), /High dependency advisories/);
+}));
+
+test('a receipt names every installed package smoke, the agent home included, and verify-packages checks that same set', () => fixture(async root => {
+  const path = join(root, '.release/verification.json');
+  const receipt = JSON.parse(await readFile(path));
+  assert.equal((await preflight(root)).status, 'passed', 'the receipt verify-packages writes, with agent: true, passes');
+  const { agent: _, ...withoutAgent } = receipt.runtimeSmoke;
+  await putJson(path, { ...receipt, runtimeSmoke: withoutAgent });
+  await assert.rejects(preflight(root), /All installed package smoke checks/);
+  assert.match(readFileSync(new URL('./verify-packages.mjs', import.meta.url), 'utf8'), /assert\.deepEqual\(smoke, runtimeSmokeChecks\);/, 'verify-packages asserts its smoke against the set the preflight requires');
 }));
 
 test('only the scoped, unexpired audit exception admits a high advisory to publication', () => fixture(async root => {
@@ -238,7 +248,7 @@ test('the publish set is the explicit release map minus the held packages, and a
 });
 
 test('publication order is dependency order, fixed by the release map and not by directory listing', () => {
-  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport'], 'dsl before jev and pi, the packages that depend on none of them after');
+  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent'], 'dsl before jev and pi, the packages that depend on none of them after');
   const names = new Map(listedPackages.map(directory => [releasePackageNames[directory], directory]));
   for (const directory of listedPackages) {
     for (const dependency of Object.keys(repoManifest(directory).dependencies ?? {})) {

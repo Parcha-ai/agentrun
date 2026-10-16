@@ -7,3 +7,5 @@ The session's system text is the [language reference](language.md) followed by t
 With `rubricSections`, every generated LLM node must reference every supplied section, including child workflows. This conservative author policy rejects Jev nodes, semantic `ask` predicates, and `verify` clauses until the host has a separately reviewed question contract. Execution must receive the same authoritative SOP text. A schema field named `node`, `verify`, or `predicate` is ordinary data, not a judgment clause.
 
 Host-owned acceptance callbacks and fixtures remain outside generated workflows. Do not edit them to obtain a pass. Structural acceptance alone does not establish behavior. Keep request text, rubric text, candidates, and reviews in storage appropriate for their contents.
+
+A host that ships a workflow with the input it runs on exports a `Job` (`{ workflow, input, files? }`, files as bytes by path); `defineJob(job)` returns its argument and keeps the workflow's literal type, so `export const workflow = {...} as const satisfies Workflow` and `export default defineJob({ workflow, input })` compile together.

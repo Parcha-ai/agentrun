@@ -52,6 +52,14 @@ export const MUTANTS = {
     effects: () => journal.effects().map(({ calls, ...rest }) => rest),
     effect: (id) => { const found = journal.effect(id); if (!found) return found; const { calls, ...rest } = found; return rest; },
   })),
+  // The store declares parts (both reads) and keeps none: a write's parts are dropped, and its reads find nothing.
+  'parts-dropped': () => over(memoryStore(), (journal) => Object.assign(Object.create(journal), {
+    save: (state, note) => journal.save(state, note),
+    admit: (id, name, argsHash, state, session, intent, args) => journal.admit(id, name, argsHash, state, session, intent, args),
+    complete: (id, result, state) => journal.complete(id, result, state),
+    items: async (paths) => paths.map(() => undefined),
+    stateOf: async () => undefined,
+  })),
   // A closed journal still commits.
   'commits-after-close': () => { const shared = backend(); return over({ open: (bound) => openJournal(shared, bound) }, (journal) => Object.assign(Object.create(journal), { close: async () => {} })); },
 };
