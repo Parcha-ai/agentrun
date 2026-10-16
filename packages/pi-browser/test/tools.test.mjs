@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
+import vm from "node:vm";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
@@ -12,7 +13,7 @@ const START = "https://example.test/start";
 const ARTICLE = { url: START, title: "Filing", text: "Menu Home Acme Corp file number 7741234 Footer", html: "<html><body><nav>Menu Home</nav><article><h1>Acme Corp</h1><p>File number <b>7741234</b></p></article><footer>Footer</footer></body></html>" };
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
-async function session(t, calls, { backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } }), between, decisions, provider, policy = {}, reconcileWith = (h) => h, prices, settle = false, tools, onSession } = {}) {
+async function session(t, calls, { backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } }), between, decisions, provider, policy = {}, reconcileWith = (h) => h, prices, settle = false, tools, onSession, crossing } = {}) {
   const filed = [];
   const browser = createBrowserExtension({
     provider: () => provider ?? backend.provider, driver: fakeDriver(backend),
@@ -22,6 +23,7 @@ async function session(t, calls, { backend = new FakeBackend({ start: START, pag
     ...(prices ? { prices } : {}),
     ...(tools ? { tools } : {}),
     ...(onSession ? { onSession } : {}),
+    ...(crossing ? { crossing } : {}),
   });
   const model = fauxProvider({ models: [{ id: "faux-1" }] });
   model.setResponses(Array.from({ length: calls.length + 1 }, (_, turn) => async () => {
@@ -100,6 +102,49 @@ test("run: code runs once and leaves its journal entry finished; exactly one of 
   assert.equal(failure(texts[1]).code, "refused");
   assert.equal(sessions.sessions[0].pendingEffect?.finished, true, "a run that answered leaves its entry finished, for a resumed run to check");
   assert.deepEqual([sessions.sessions[0].lastUrl, sessions.sessions[0].navigation.length], [START, 1], "the first page a run found starts the timeline");
+});
+
+test("the host's crossing is called at the two page-action moments, in order: after the driver call returned, and before the next action dispatches once the previous answer is committed", async (t) => {
+  const steps = [["run", { code: "await page.click('a')" }], ["browser_read"], ["run", { code: "await page.click('b')" }], ["snapshot"]];
+  const points = [];
+  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+  await session(t, steps, { backend, crossing: (point) => points.push([point, backend.tally().dispatches]) });
+  // [point, driver runs so far]: the first action has no earlier one, and a read or a snapshot is not a page action.
+  assert.deepEqual(points, [["browser.action-returned", 1], ["browser.between-actions", 1], ["browser.action-returned", 2]]);
+  // A run whose driver call threw: its entry is finished and its error answer is committed, which is an answer too.
+  const failing = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+  failing.fail("driver.run", 1);
+  const after = [];
+  const { seen } = await session(t, steps.slice(0, 3), { backend: failing, crossing: (point) => after.push(point) });
+  assert.deepEqual([seen[0].isError, seen[2].isError], [true, false]);
+  assert.deepEqual(after, ["browser.action-returned", "browser.between-actions", "browser.action-returned"]);
+});
+
+test("a crossing that throws, or returns a rejected promise of this realm or another, changes no call: each throw is a process warning and the calls go on", async (t) => {
+  const steps = [["run", { code: "await page.click('a')" }], ["browser_read"], ["run", { code: "await page.click('b')" }], ["snapshot"]];
+  const plain = await session(t, steps);
+  assert.equal(plain.backend.tally().dispatches, 2);
+  const warnings = [];
+  // Only this test's own throws: a warning another test's crossing raised can arrive late.
+  const onWarning = (warning) => { if (warning.code === "PI_BROWSER_CROSSING" && /host-side boom/.test(warning.message)) warnings.push(warning.message); };
+  process.on("warning", onWarning);
+  t.after(() => process.off("warning", onWarning));
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  t.after(() => process.off("unhandledRejection", onUnhandled));
+  // The third returns a rejected promise from another realm, which is no instance of this one's Promise.
+  const elsewhere = () => vm.runInNewContext("Promise.reject(new Error('host-side boom'))");
+  for (const crossing of [() => { throw new Error("host-side boom"); }, async () => { throw new Error("host-side boom"); }, elsewhere]) {
+    warnings.length = 0;
+    const thrown = await session(t, steps, { crossing });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(thrown.seen.map((m) => m.isError), plain.seen.map((m) => m.isError), "every call answers as it does with no crossing");
+    assert.equal(thrown.backend.tally().dispatches, 2, "both runs reached the driver");
+    assert.deepEqual(thrown.sessions.sessions.map((r) => [r.state, r.pendingEffect?.finished]), plain.sessions.sessions.map((r) => [r.state, r.pendingEffect?.finished]));
+    assert.deepEqual(warnings.map((w) => /at (browser\.[a-z-]+)/.exec(w)?.[1]), ["browser.action-returned", "browser.between-actions", "browser.action-returned"], "one warning per crossing, naming it, with the host's own error");
+  }
+  assert.deepEqual(unhandled, [], "a rejected promise is caught, never unhandled");
 });
 
 test("a credential in the fragment, the userinfo or a query value of any name, in the page's URL, reaches no result, receipt, fact, detail or judge", async (t) => {
@@ -248,6 +293,33 @@ test("after an idle release, the next call's session still idles out", async (t)
   assert.deepEqual([backend.tally().creates, backend.tally().releases], [2, 2], "the session the second call opened was released by its idle timer");
 });
 
+test("browser_release on a session custody gave up releasing (lost) does not say it was released: the browser may still run", { timeout: 90_000 }, async (t) => {
+  const { RELEASE_ATTEMPTS } = await import("@parcha/pi-browser/durable");
+  const gaveUp = async (harness) => { for (let i = 0; i < 600 && (await harness.inspect(ctx)).tasks.some((task) => task.record.kind === "browser.release"); i += 1) await new Promise((r) => setTimeout(r, 100)); };
+  const done = await session(t, [["snapshot"], ["browser_release"]], { between: { 1: async (backend, { browser, harness, root }) => { backend.fail("release", RELEASE_ATTEMPTS); await browser.release(root, "idle", ctx); await gaveUp(harness); } } });
+  const [record] = done.sessions.sessions;
+  assert.equal(record.state, "lost");
+  assert.equal(done.backend.liveCount(), 1, "the provider still runs it");
+  const answer = failure(done.texts[1]);
+  assert.deepEqual([answer.ok, answer.released, answer.already_released], [true, false, undefined], "a release custody gave up on is no release");
+});
+
+test("browser_release on a session the idle policy already released says so, as data and in one sentence", async (t) => {
+  const releases = async (harness) => { for (let i = 0; i < 200 && (await harness.inspect(ctx)).tasks.some((task) => task.record.kind === "browser.release"); i += 1) await new Promise((r) => setTimeout(r, 25)); };
+  const done = await session(t, [["snapshot"], ["browser_release"]], { between: { 1: async (_b, { browser, harness, root }) => { await browser.release(root, "idle", ctx); await releases(harness); } } });
+  const answer = failure(done.texts[1]);
+  const [record] = done.sessions.sessions;
+  assert.deepEqual([answer.ok, answer.released, answer.already_released], [true, false, { reason: "idle", at: record.endedAt }]);
+  assert.equal(typeof answer.note, "string");
+  // An idle release still in flight: the session is being released, and the answer says by whom.
+  const slow = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
+  slow.delay("release", 10_000);
+  const inFlight = await session(t, [["snapshot"], ["browser_release"]], { backend: slow, between: { 1: (_b, { browser, root }) => browser.release(root, "idle", ctx) } });
+  assert.deepEqual([failure(inFlight.texts[1]).released, failure(inFlight.texts[1]).already_released], [true, { reason: "idle", at: null }]);
+  const plain = await session(t, [["snapshot"], ["browser_release"]]);
+  assert.equal(failure(plain.texts[1]).already_released, undefined, "a release this call made is not an earlier one");
+});
+
 test("an idle release keeps the conversation's repeat guard: a third identical failure is still refused", async (t) => {
   const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE } });
   backend.fail("create", 10);
@@ -341,4 +413,36 @@ test("the meter's edges: a host tool that throws before it returns is a typed fa
   const event = rows.find((r) => r.change === "released");
   assert.deepEqual(event?.spent, released.sessions.sessions[0].spent, "the released event carries the bill the record keeps");
   assert.equal(event?.spent.final, true);
+});
+
+const ME = { name: "work", save: true };
+
+test("a profile under a provider that cannot keep one, or beside a context id, or with a bad name, is refused before any session is made", async (t) => {
+  const refusals = [
+    [{ profile: ME }, /cannot keep a saved sign-in/],
+    [{ profile: ME, contextId: "ctx_1" }, /context/],
+    [{ profile: { name: "../etc", save: true } }, /profile name/],
+  ];
+  for (const [policy, message] of refusals) {
+    const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE }, caps: { profiles: policy.contextId || policy.profile.name !== "work" } });
+    const run = await session(t, [["snapshot"], ["snapshot"]], { backend, policy });
+    const refused = failure(run.texts[0]);
+    assert.deepEqual([run.seen[0].isError, refused.code, refused.effect], [true, "refused", "none"], JSON.stringify(policy));
+    assert.match(refused.message, message);
+    assert.equal(backend.tally().creates, 0, "nothing was created");
+    assert.deepEqual(run.sessions?.sessions ?? [], [], "and no record was kept");
+  }
+});
+
+test("a profile reaches the provider as asked, the record names it and only its name, and a relaunch keeps it", async (t) => {
+  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE }, caps: { profiles: true } });
+  const run = await session(t, [["snapshot"], ["browser_relaunch", {}]], { backend, policy: { profile: ME } });
+  const creates = backend.ledger.filter((row) => row.op === "create");
+  assert.equal(creates.length, 2);
+  for (const create of creates) assert.deepEqual(create.profile, ME);
+  assert.deepEqual(run.sessions.sessions.map((s) => s.settings.profile), ["work", "work"]);
+  assert.equal(JSON.stringify(run.sessions).includes("save"), false, "the record carries the name, never the saving flag or any state");
+
+  const none = await session(t, [["snapshot"]]);
+  assert.equal(none.sessions.sessions[0].settings.profile, null);
 });

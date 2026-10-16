@@ -11,6 +11,17 @@ const valid = {
 	hands: { default: "box", train: "gpu" },
 };
 
+/** The same environments, each with the line Jev reads for it, and a home that auto places. */
+const placed = {
+	...valid,
+	environments: {
+		local: { ...valid.environments.local, purpose: "This machine: reading, writing and small scripts" },
+		box: { ...valid.environments.box, purpose: "A small cloud box: builds and long-running jobs" },
+		gpu: { ...valid.environments.gpu, purpose: "An H100 machine: training a model or other GPU work" },
+	},
+	home: "auto",
+};
+
 function issuesOf(input: unknown): readonly ConfigIssue[] {
 	const result = parseTransportConfig(input);
 	if (result.ok) throw new Error("the config was accepted");
@@ -88,12 +99,41 @@ describe("parseTransportConfig", () => {
 			{ path: "/home", message: "is auto, which needs auto.classifier" },
 		]);
 		const result = parseTransportConfig({
-			...valid,
-			home: "auto",
+			...placed,
 			auto: { classifier: { provider: "typesafe", modelId: "jev-latest" } },
 		});
 		if (!result.ok) throw result.error;
-		expect(result.value.auto?.ask).toBe("message");
+		expect(result.value.auto).toEqual({
+			classifier: { provider: "typesafe", modelId: "jev-latest" },
+			ask: "message",
+			// The first declared environment, and a need Jev is at least even on.
+			rest: "local",
+			threshold: 0.5,
+		});
+		expect(result.value.environments.gpu?.purpose).toBe("An H100 machine: training a model or other GPU work");
+	});
+
+	it("refuses auto that offers an environment with no purpose, rests anywhere undeclared, or a threshold out of 0..1", () => {
+		const auto = { classifier: { provider: "typesafe", modelId: "jev-latest" } };
+		const { purpose: _purpose, ...box } = placed.environments.box;
+		expect(issuesOf({ ...placed, environments: { ...placed.environments, box }, auto })).toEqual([
+			{
+				path: "/environments/box/purpose",
+				message: "is required when auto places the session: it is the line Jev reads for this environment",
+			},
+		]);
+		expect(issuesOf({ ...placed, auto: { ...auto, rest: "moon" } })).toEqual([
+			{ path: "/auto/rest", message: 'names "moon", which is not a declared environment' },
+		]);
+		expect(issuesOf({ ...placed, auto: { ...auto, rest: "auto" } }).map((issue) => issue.path)).toContain(
+			"/auto/rest",
+		);
+		expect(issuesOf({ ...placed, auto: { ...auto, threshold: 1.5 } }).map((issue) => issue.path)).toEqual([
+			"/auto/threshold",
+		]);
+		// No environment is placed by auto: no purpose is required.
+		const fixed = parseTransportConfig({ ...valid, auto });
+		expect(fixed.ok).toBe(true);
 	});
 
 	it("requires a lifetime for every provider but local", () => {
