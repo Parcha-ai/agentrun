@@ -275,3 +275,22 @@ test('one item\'s record read on its own: with { item }, its instance is its own
   assert.equal(whole['/root/body'], 'done');
   assert.equal(whole['/root/body/body'], 'done', 'the inner map is recorded done, so its body is');
 });
+
+test('an item of a map inside another map\'s item, read on its own: the maps that enclose it are not asked, the ones inside it still are', () => {
+  const twice = flow('twice', { node: 'map', label: 'outer', itemsPath: 'rows', as: 'o', body: { node: 'map', label: 'inner', itemsPath: 'cells', as: 'c', body: { node: 'chain', steps: [code('one'), code('two')] } } });
+  const graph = workflowGraph(twice);
+  const item = '/root/items/0/body/items/0';
+  const record = (status, done) => [{ map: '/root/items/0/body', index: 0, status, frame: { done } }];
+  const committed = nodeStatus(graph, record('committed', [`${item}/body/steps/0`, `${item}/body/steps/1`]), { item });
+  for (const path of ['/root/body/body', '/root/body/body/steps/0', '/root/body/body/steps/1']) assert.equal(committed[path], 'done', path);
+  const running = nodeStatus(graph, record('running', [`${item}/body/steps/0`]), { item });
+  assert.equal(running['/root/body/body'], 'working');
+  assert.equal(running['/root/body/body/steps/0'], 'done', 'a step this item committed is done: the item is the instance');
+  assert.equal(running['/root/body/body/steps/1'], 'not-run');
+  // Not as an item: the same record is one item of a map that is not done.
+  assert.equal(nodeStatus(graph, record('committed', [`${item}/body/steps/0`, `${item}/body/steps/1`]))['/root/body/body/steps/0'], 'working');
+  // A map inside the item still stands for its own items: here the item holds a map that is not recorded done.
+  const deeper = flow('deeper', { node: 'map', label: 'a', itemsPath: 'x', as: 'a', body: { node: 'map', label: 'b', itemsPath: 'y', as: 'b', body: { node: 'map', label: 'c', itemsPath: 'z', as: 'c', body: code('leaf') } } });
+  const inside = nodeStatus(workflowGraph(deeper), [{ map: '/root/items/0/body', index: 0, status: 'running', frame: { done: ['/root/items/0/body/items/0/body/items/0/body'] } }], { item: '/root/items/0/body/items/0' });
+  assert.equal(inside['/root/body/body/body'], 'working', 'the map c is inside the item and is not recorded done');
+});
