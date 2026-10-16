@@ -541,7 +541,8 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     wanted.clear();
     if (!recording.find || due.length === 0) return;
     for (const sha of due) looked.set(sha, false);
-    void recording.find(due).catch(() => undefined).then(() => { for (const sha of due) looked.set(sha, true); draw(); });
+    // One of them may be a result's blob, which only a read of the results draws.
+    void recording.find(due).catch(() => undefined).then(() => { for (const sha of due) looked.set(sha, true); readResults(); draw(); });
   };
   const caches = new Map<unknown, Map<number, unknown>>();
   const cacheOf = (key: unknown) => caches.get(key) ?? caches.set(key, new Map()).get(key)!;
