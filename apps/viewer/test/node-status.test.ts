@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import { nodeStatus, workflowGraph } from '../../../packages/dsl/src/graph.ts';
 import { parseLines, type Json, type Line } from '../src/format.ts';
 import { itemSource, runRecordInit, runRecordReduce, statusSource } from '../src/node-status.ts';
-import { workflowMapPanel, wmGlyphOf } from '../src/workflow-map.ts';
+import { workflowMapPanel, wmCellsOf } from '../src/workflow-map.ts';
 import { workflowGraphPanel } from '../src/workflow-graph.ts';
 import { planOf } from '../src/audit-read.ts';
 import { reduceTo } from '../src/replay.ts';
@@ -19,8 +19,8 @@ const job = JSON.parse(readFileSync(new URL(`blobs/${manifest.job.blob}.json`, f
 const MAP = '/root/steps/0';
 const items = Array.from({ length: 10 }, (_, index) => `${MAP}/items/${index}`);
 const glyphs = (some: Line[]) => {
-  const state = reduceTo(workflowMapPanel, some, some.length);
-  return items.map((item) => (state.branches[item] ? wmGlyphOf(state, state.branches[item]!) : 'missing'));
+  const cells = wmCellsOf(reduceTo(workflowMapPanel, some, some.length));
+  return items.map((item) => cells.find((cell) => cell.id === item)?.glyph ?? 'missing');
 };
 
 test('the recording: a run killed once and resumed, whose map body is one node, so the plan names no step and no judge answers', () => {

@@ -250,7 +250,8 @@ snapshot. `statusSource(record)` is the whole record, which the workflow graph a
 and of the items of a map inside it), which
 the workflow map asks with `{ item }`, the item as the instance, to say whether that item's body is done. It asks of the
 workflow its `agentrun.workflow` line carries, else of the job's (a task that names no workflow); the job also gives it
-the plan it lays out. A keyed item record marks its item's cell as started, as a checkpoint naming the item's paths does.
+the plan it lays out. Whether an item has started is asked the same way (`wmStarted`: a line of it, or its body not `not-run`), so no panel
+reads a checkpoint's done paths by hand; the grid is `wmCellsOf(state)`, one cell per item the plan or a line names.
 No panel decides a node's status itself, so a resumed process's items, finished from its journal with no live event, and
 a map whose body is one node are done where the record says so. The workflow map counts a judge's verdict only for a
 recording with no workflow anywhere or no durable record to ask. The tests read the DSL's graph fixtures

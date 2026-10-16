@@ -6,12 +6,12 @@ import type { Json, Line } from './format.ts';
 import { counterFold, countersOf, repeatedLabel, type CounterState } from './counters.ts';
 import { docOf, effectIdOf, effectOf, type DocLine } from './durable.ts';
 import {
-  branchOf, callFactsOf, callKindOf, conversationOf, donePathsOf, evidenceOf, factsOf, finishedOf, looksOf, planOf, planOfWorkflow, recordFactsOf, repositoryOf, verdictsOf,
+  branchOf, callFactsOf, callKindOf, conversationOf, evidenceOf, factsOf, finishedOf, looksOf, planOf, planOfWorkflow, recordFactsOf, repositoryOf, verdictsOf,
   type CallFacts, type CallKind, type Fact, type Look, type Plan, type Repository, type Verdict,
 } from './audit-read.ts';
 import { h, register, type BaselineView, type Node, type Panel, type ViewContext } from './panels.ts';
 import { nodeStatus, workflowGraph, type WorkflowGraph } from '../../../packages/dsl/src/graph.ts';
-import { itemSource, recordItemOf, runRecordAccepts, runRecordInit, runRecordReduce, type RunRecord } from './node-status.ts';
+import { itemSource, runRecordAccepts, runRecordInit, runRecordReduce, type RunRecord } from './node-status.ts';
 
 export type WmBranch = {
   id: string;
@@ -90,10 +90,18 @@ function wmFinished(state: WmState, branch: WmBranch): boolean {
   return done ? done[`${wmMapOf(branch.id)}/body`] === 'done' : branch.verdict !== undefined;
 }
 
+/** Whether the branch has started: a line of it was seen, or the DSL's `nodeStatus` of its record says its map's body ran
+ *  (a checkpoint, or the item's own record in the keyed layout, shows it; a resumed process writes no live line for it). */
+export function wmStarted(state: WmState, branch: WmBranch): boolean {
+  if (branch.seen) return true;
+  const status = wmItemStatus(state, branch)?.[`${wmMapOf(branch.id)}/body`];
+  return status !== undefined && status !== 'not-run';
+}
+
 /** What a branch's glyph shows: empty, working, done, or a finding (the judge raised a notice or an act). */
 export type WmGlyph = 'empty' | 'working' | 'done' | 'finding';
 export function wmGlyphOf(state: WmState, branch: WmBranch): WmGlyph {
-  if (!branch.seen) return 'empty';
+  if (!wmStarted(state, branch)) return 'empty';
   if (branch.verdict !== undefined && branch.verdict.answer !== 'clear') return 'finding';
   return wmFinished(state, branch) ? 'done' : 'working';
 }
@@ -141,22 +149,6 @@ export const workflowMapPanel: Panel<WmState> = {
     const convHome = line.conv !== undefined ? next.convBranch[String(line.conv)] : undefined;
     const home = own ?? (convHome ? branchOf(`${convHome}/`) : undefined);
     if (doc) {
-      // A checkpoint is state (node-status.ts keeps it for the DSL's nodeStatus): the branches it names have been seen. So has
-      // the branch an item's own record is for (the keyed layout, whose checkpoint names no item).
-      const item = doc.doc === 'agentrun.items' ? recordItemOf(doc.value) : undefined;
-      const done = donePathsOf(doc) ?? (item ? [item] : undefined);
-      if (done) {
-        const seen: Record<string, WmBranch> = {};
-        for (const path of done) {
-          const where = branchOf(path);
-          if (!where || seen[where.id]) continue;
-          // A branch the checkpoint shows progress for has started, including one a restore rebuilt only from the kill history (its cut count stays).
-          const held = next.branches[where.id];
-          if (!held) seen[where.id] = { ...wmNew(where.id, where.index), seen: true };
-          else if (!held.seen) seen[where.id] = { ...held, seen: true };
-        }
-        next = { ...next, branches: { ...next.branches, ...seen } };
-      }
       const effect = effectOf(doc);
       if (effect && doc.key !== undefined && home) next = wmEffect(next, doc, effect, home, line);
       for (const row of verdictsOf(doc)) {
@@ -248,18 +240,26 @@ function wmWithJob(state: WmState, context: ViewContext): WmState {
   return { ...state, workflow, ...(plan ? { plan } : {}) };
 }
 
+/** The grid: one cell per item the plan or a line names, each with its glyph. An item no line has touched is asked of the
+ *  record all the same (`wmStarted`), so a run resumed from its journal shows what its items did. */
+export function wmCellsOf(given: WmState, context: Pick<ViewContext, 'json' | 'job'> = {}): { index: number; id?: string; branch?: WmBranch; glyph: WmGlyph }[] {
+  const state = wmWithJob(given, context as ViewContext);
+  return Array.from({ length: wmSize(state) }, (_, index) => {
+    const id = wmIdOf(state, index);
+    const branch = (id ? state.branches[id] : Object.values(state.branches).find((each) => each.index === index)) ?? (id ? wmNew(id, index) : undefined);
+    return { index, ...(id ? { id } : {}), ...(branch ? { branch } : {}), glyph: branch ? wmGlyphOf(state, branch) : 'empty' };
+  });
+}
+
 function wmView(given: WmState, context: ViewContext): Node {
   const state = wmWithJob(given, context);
   const zoom = wmZoomed(state, context.focus);
   const size = wmSize(state);
-  const cells = Array.from({ length: size }, (_, index) => {
-    const id = wmIdOf(state, index);
-    const branch = id ? state.branches[id] : Object.values(state.branches).find((each) => each.index === index);
-    const glyph = branch ? wmGlyphOf(state, branch) : 'empty';
-    return h('span', { class: `wm-glyph ${glyph}${branch?.cut ? ' cut' : ''}${zoom?.index === index ? ' zoomed' : ''}`, ...(id ? { path: id } : {}),
-      title: `${wmName(state, { index })}: ${glyph}${branch?.cut ? `, cut by ${branch.cut} kill${branch.cut === 1 ? '' : 's'}` : ''}` }, WM_MARK[glyph]);
-  });
-  const count = (glyph: WmGlyph) => Object.values(state.branches).filter((branch) => wmGlyphOf(state, branch) === glyph).length;
+  const grid = wmCellsOf(state, context);
+  const cells = grid.map(({ index, id, branch, glyph }) =>
+    h('span', { class: `wm-glyph ${glyph}${branch?.cut ? ' cut' : ''}${zoom?.index === index ? ' zoomed' : ''}`, ...(id ? { path: id } : {}),
+      title: `${wmName(state, { index })}: ${glyph}${branch?.cut ? `, cut by ${branch.cut} kill${branch.cut === 1 ? '' : 's'}` : ''}` }, WM_MARK[glyph]));
+  const count = (glyph: WmGlyph) => grid.filter((cell) => cell.glyph === glyph).length;
   return h('div', { class: `wm${zoom ? ' zoom' : ''}` },
     h('div', { class: 'wm-map' },
       h('div', { class: 'wm-legend' }, `${count('done')} done · ${count('finding')} found something · ${count('working')} working · ${size - count('done') - count('finding') - count('working')} waiting`),
@@ -286,7 +286,7 @@ function wmBranchView(state: WmState, branch: WmBranch): Node {
   let reached = false;
   const steps = labels.map((label, index) => {
     const done = state.plan ? wmFinished(state, branch) || wmItemStatus(state, branch)?.[`${wmMapOf(branch.id)}/body/steps/${index}`] === 'done' : branch.calls[WM_CALLS[index]?.kind ?? 'registry'] === 'done';
-    const status = done ? 'done' : !reached && branch.seen && !wmFinished(state, branch) ? 'working' : 'pending';
+    const status = done ? 'done' : !reached && wmStarted(state, branch) && !wmFinished(state, branch) ? 'working' : 'pending';
     if (!done) reached = true;
     return h('span', { class: `wm-node ${status}`, title: wmStepPath(branch.id, index) }, label);
   });

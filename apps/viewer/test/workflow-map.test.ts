@@ -11,7 +11,7 @@ import { reduceTo, stopsOf } from '../src/replay.ts';
 import { branchOf, planOf } from '../src/audit-read.ts';
 import { counterFold, countersOf } from '../src/counters.ts';
 import type { BaselineView } from '../src/panels.ts';
-import { wmGlyphOf, workflowMapPanel, type WmGlyph, type WmState } from '../src/workflow-map.ts';
+import { wmCellsOf, wmGlyphOf, wmStarted, workflowMapPanel, type WmGlyph, type WmState } from '../src/workflow-map.ts';
 
 const ROOT = '/root/steps/0/items';
 const STEPS = ['registry', 'advisories', 'install in a box', 'repository', 'finding', 'verdict', 'row'];
@@ -266,8 +266,10 @@ test('a restore rebuilds the branches from the checkpoint: a discarded verdict g
   const before = reduceAll(run.slice(0, 5));
   assert.equal(wmGlyphOf(before, before.branches[`${ROOT}/1`]!), 'finding');
   const after = reduceAll(run);
-  assert.equal(wmGlyphOf(after, after.branches[`${ROOT}/1`]!), 'working', 'the discarded verdict and finish are gone');
-  assert.equal(after.branches[`${ROOT}/1`]!.verdict, undefined);
+  // The branch is the record's after the restore (the checkpoint says it started), so the grid's cell is read.
+  const cell = wmCellsOf(after).find((each) => each.id === `${ROOT}/1`)!;
+  assert.equal(cell.glyph, 'working', 'the discarded verdict and finish are gone');
+  assert.equal(cell.branch?.verdict, undefined);
   assert.deepEqual(after.kills.map((each) => each.label), ['storm 1'], 'the kill history stays');
   assert.equal(after.plan?.items.length, 4, 'and the plan');
   // The kill's cut is history: a branch it cut keeps its cut count and its outline through the restore, whatever the checkpoint holds.
@@ -279,8 +281,8 @@ test('a restore rebuilds the branches from the checkpoint: a discarded verdict g
   // A branch that finished a step, checkpointed and was cut in its first call: the restored checkpoint shows it started, with its cut count.
   const progressed = reduceAll([process(1), task, driverAt(3, [step(2, 0)], 1), durableLine('agentrun.effects', 'workflow', 1, 4, { doc: 'agentrun.effects', key: `a\u0000step:${step(2, 1)}#call:0`, value: { name: 'advisories', argsHash: 'y', status: 'unknown', result: null, intent: { tool: 'advisories', argsHash: 'y' } }, version: 1 }, { path: step(2, 1) }),
     kill(1), process(2), driverAt(3, [step(2, 0)], 1, true)]);
-  const branch = progressed.branches[`${ROOT}/2`]!;
-  assert.deepEqual([branch.seen, branch.cut, wmGlyphOf(progressed, branch)], [true, 1, 'working']);
+  const branch = wmCellsOf(progressed).find((each) => each.id === `${ROOT}/2`)!.branch!;
+  assert.deepEqual([wmStarted(progressed, branch), branch.cut, wmGlyphOf(progressed, branch)], [true, 1, 'working']);
 });
 
 test('an itemsPath is a dotted state path: a nested input still lays out its planned cells', () => {
@@ -309,8 +311,7 @@ for (const [shape, input] of Object.entries(MAP_SHAPES)) {
         ...records.map((record, n) => at(3, n, 'agentrun.items', { doc: 'agentrun.items', key: `run\u0000${String(record.map)}/items/${String(record.index)}`, value: record, version: 1 })),
       ];
       const end = reduceTo(workflowMapPanel, fed, fed.length);
-      const cells = [0, 1, 2].map((index) => { const branch = end.branches[`/root/steps/0/items/${index}`]; return branch ? wmGlyphOf(end, branch) : 'empty'; });
-      assert.deepEqual(cells, ITEMS_DID[variant]);
+      assert.deepEqual(wmCellsOf(end).map((cell) => cell.glyph), ITEMS_DID[variant]);
     });
   }
 }
@@ -329,6 +330,11 @@ test('a recording whose lines carry no workflow line reads the workflow and its 
     return found;
   };
   assert.deepEqual(cells({ json: (sha: string) => (sha === job ? read : undefined), job }), ['done', 'done', 'done']);
+  // A v4 run: the checkpoint names no item, and each item's own record says it finished. With no live line at all (a
+  // process that finishes its items from its journal writes none), every item still reads done, from the record alone.
+  const durableOnly = recorded.filter((line) => line.channel === 'durable');
+  const read2 = { json: (sha: string) => (sha === job ? read : undefined), job };
+  assert.deepEqual(wmCellsOf(reduceTo(workflowMapPanel, durableOnly, durableOnly.length), read2).map((cell) => cell.glyph), ['done', 'done', 'done']);
   assert.equal(cells({ json: () => undefined, job }).includes('done'), false, 'the job not read yet: nothing reads finished');
   const zoomed = workflowMapPanel.view(end, { t: 0, json: (sha: string) => (sha === job ? read : undefined), job, focus: '/root/steps/0/items/1' });
   const labels: string[] = [];
@@ -349,9 +355,8 @@ test('a map inside a map\'s item: each row\'s cell reads off its records, in bot
       at(2, 0, 'agentrun.driver', { doc: 'agentrun.driver', key: 'run', value: { generation: 1, state: { schema: 'agentrun.frozen_run.v4', pin: frame } }, version: 1 }),
       ...items.map((record, n) => at(3, n, 'agentrun.items', { doc: 'agentrun.items', key: `run\u0000${String(record.map)}/items/${String(record.index)}`, value: record, version: 1 })),
     ];
-    const end = reduceTo(workflowMapPanel, fed, fed.length);
-    const cells = [0, 1].map((index) => { const branch = end.branches[`/root/steps/0/items/${index}`]; return branch ? wmGlyphOf(end, branch) : 'empty'; });
-    assert.deepEqual(cells, want, run);
-    assert.deepEqual(Object.keys(end.branches).sort(), ['/root/steps/0/items/0', '/root/steps/0/items/1'], `${run}: a cell per row, none per inner cell`);
+    const cells = wmCellsOf(reduceTo(workflowMapPanel, fed, fed.length));
+    assert.deepEqual(cells.map((cell) => cell.glyph), want, run);
+    assert.deepEqual(cells.map((cell) => cell.id), ['/root/steps/0/items/0', '/root/steps/0/items/1'], `${run}: a cell per row, none per inner cell`);
   }
 });

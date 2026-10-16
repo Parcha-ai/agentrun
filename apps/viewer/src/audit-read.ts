@@ -66,23 +66,6 @@ export function finishedOf(line: Line): boolean {
   return state?.status === 'terminal' && outcome?.status === 'completed';
 }
 
-/** Every execution path a driver checkpoint lists as done, at any depth of its state. */
-export function donePathsOf(doc: DocLine): string[] | undefined {
-  if (doc.doc !== 'agentrun.driver' || !auditIsObj(doc.value) || !auditIsObj(doc.value.state)) return undefined;
-  const found = new Set<string>();
-  const walk = (value: Json | undefined, depth: number) => {
-    if (depth > 8) return;
-    if (Array.isArray(value)) { for (const item of value) walk(item, depth + 1); return; }
-    if (!auditIsObj(value)) return;
-    for (const [key, child] of Object.entries(value)) {
-      if (key === 'done' && Array.isArray(child)) for (const path of child) { if (typeof path === 'string' && path.startsWith('/')) found.add(path); }
-      else walk(child, depth + 1);
-    }
-  };
-  walk(doc.value.state, 0);
-  return [...found].sort();
-}
-
 /** The audit call an effect is: the tool it names. The three calls of a branch are `registry`, `advisories`, `install`. */
 export type CallKind = 'registry' | 'advisories' | 'install';
 export function callKindOf(name: string, tool: string | undefined): CallKind | undefined {

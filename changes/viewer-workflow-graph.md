@@ -17,7 +17,8 @@ kind: feature
   is, whatever the rest of the map has done. An item's part of the record holds the records of the items of a map
   inside it, so that inner map reads what its own items did.
 - In the keyed layout, whose checkpoint names no item, the workflow map showed an item as not started when the item's
-  own record was its only line (an item a resumed process finished from its journal): that record now marks its cell
-  started. A recording whose task names no workflow (no `agentrun.workflow`
+  own record was its only line (an item a resumed process finished from its journal). Whether an item started is now
+  the DSL's `nodeStatus` of its record too, so no panel reads a checkpoint's done paths by hand (`donePathsOf` is
+  gone from `./audit-read.ts`). A recording whose task names no workflow (no `agentrun.workflow`
   line) takes the workflow, and the plan the map lays out, from the job the manifest names; before, its items read
   working at the end and its zoomed item listed the steps of another workflow.
