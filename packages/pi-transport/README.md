@@ -109,6 +109,13 @@ const ran = await env.exec("wc -c notes/a.txt", { timeout: 10 }, BACKGROUND_CONT
   caller's timeout allows; with none it has no deadline, as in pi's local environment, unless `maxExecMs` sets one.
 - A command runs as a process group of its own. A timeout or an abort kills the whole group with a second exec, also
   on a box whose provider cannot stop a program it started.
+- The kill is confirmed, not assumed. The kill exec reads back that no live process of the group is left (a zombie does not
+  count: a container whose first process does not reap would otherwise keep a killed group "alive" for ever) and is sent
+  again, at 1, 2 and 4 seconds, when it fails, times out or finds the group alive. The whole confirmation has 10 seconds of
+  wall time, a call in flight included, so a stop answers `aborted` or `timeout` after at most 10 seconds more than before,
+  and only when a kill call failed. When the group could not be confirmed gone, the error is a `StoppedCommandError`: its
+  `killUnconfirmed` is `true`, and the command stays tracked, so `cleanup()` ends it with the rest. `killUnconfirmed` is
+  absent when the group was confirmed gone, which is the normal case.
 - The variables a caller asks for, `PATH` included, reach the command alone. The environment's own scripts keep the
   box's search path, so a `PATH` with no shell in it still runs a program named by its path.
 - Results match pi's `NodeExecutionEnv` on the same files: the same values and the same error codes. Messages differ.
@@ -284,6 +291,122 @@ const seal = drained.ok ? await home.value.seal(BACKGROUND_CONTEXT) : undefined;
 
 Not covered: a tool call that sleeps between retries inside pi has no hook, so a drain waits for it or times out;
 programs the agent left running in the background do not move.
+
+### A home in a box: the link
+
+A home in a box is a runner program, driven by the host over the box's own `exec`: frames are JSON lines on the
+runner's input and output. Nothing listens in the box and nothing dials in. The customer bundles the runner with
+their app into one file:
+
+```ts
+import { runMain } from "@parcha/pi-transport/home";
+import app from "./app.ts";
+
+await runMain(app);
+```
+
+The host starts it with `Box.exec` and holds it with `connectHome(processLink(process), { models, epoch })`, which
+says hello with the host's model catalog, gives orders (`resume`, `drain`, `seal`, `reopen`, `retire`, `submit`,
+`idle`, `status`) and answers the runner's model requests. `createRunner` and `connectHome` over `linkPair()` do the
+same in one process.
+
+- **No key in the box.** The runner's models mirror the host's catalog without `headers` or `baseUrl`, with an auth
+  that holds nothing. A model request is one frame with the request's whole transcript, its system message (the
+  instructions and the tools) included; the host makes the call with its own credentials and sends the answer
+  back as pi-ai's compact frames, which the runner turns into the same events. A request's `apiKey`, `env`,
+  functions and signal never cross; an abort is a frame of its own. The host does not trust the frame either: only
+  plain values of a short list of knobs (`HOST_REQUEST_OPTIONS`: temperature, token and reasoning limits, tool choice,
+  sampling, session id, cache retention, metadata) reach its models; a credential, an endpoint, a header, the
+  provider's environment and the host's retry limits never come from a box. `serveModels(models, { allow })` replaces
+  that list; a host widens it with `[...HOST_REQUEST_OPTIONS, "name"]`. The exported list is frozen. The answers the host acts on (the ready
+  state, a seal, a status) are checked for their shape, and a bad one is `invalid`.
+- **A link that drops in the middle of an answer.** The runner keeps the request open for `resumeWithinMs` (30 s by
+  default) and asks for the frames it missed when a host comes back; the host kept them, so the answer goes on and the
+  host pays once. The rest of the answer goes only to the link the runner resumed it on, after what it missed. That
+  takes one server for every link to the runner: `const server = serveModels(models)`, then
+  `connectHome(link, { models, epoch, server })` for each; a handle closes only a server it made. A request still open
+  after that ends with an error pi retries.
+- **Orders and their contexts.** An order whose context ended already is not sent. An order the host gives up on is
+  cancelled in the runner too, as in the host's own process: a drain given up opens the gate again. The runner says
+  ready only with its home open; a home it could not open is tried again at the next host's hello.
+- **A long line closes the link.** A line longer than `maxLineLength` characters, finished or not, closes it, so what
+  a box writes cannot fill the host's memory. `linkPair`, `streamLink` and `processLink` take `{ maxLineLength }`; the
+  default is `MAX_LINE_LENGTH`, 64 Mi, above the request size of the providers we know.
+- **Writes are coalesced.** One write to the runner's input is in flight at a time and every frame sent meanwhile goes
+  in the next one, so a box whose input is a slow buffered call carries an answer at the pace it is made.
+- **The fence.** Every frame from the runner carries the epoch it runs at. The host refuses a model request from any
+  epoch but the lease's; the runner then closes its session without sealing and exits with `75` (`EXIT_REFUSED`), and
+  its launcher must not start it again. A home the lease left behind has no model. This does not stop a command that
+  was already running in a box that was cut off and is still alive: its effects outside the box are not fenced.
+- **A lost link** gives up a drain that was under way: held work goes on. A home that sealed stays sealed. The runner
+  program speaks over the `exec` that started it, so when that link closes it closes its session in order and exits;
+  a runner started again opens nothing until a host says so. `runMain` writes nothing but frames on its output: the
+  app's `console.log` goes to the error output. It refuses a Node below 22.19.
+
+Not covered: in this release a home in a box runs its tools in its own box, and there are no box frames on the link.
+
+### Moving a home
+
+`moveHome(options)` moves a session's home from one box to another with no disk the two share, in seven steps:
+
+1. **Prepare.** Start the runner in the target box: check its Node (none, or one below 22.19, is `no_runtime`),
+   upload the runner file by its SHA-256 unless the box holds it (`boxRunner({ program: { file } })`), start it with
+   `Box.exec`. The session keeps working.
+2. **Drain** the source: the gate holds it still. A drain that does not complete gives the move up (`drain`, with
+   what held it) and the session works on.
+3. **Seal** the source's store.
+4. **Ship** the store and the workspace (`moveFile`, `moveWorkspace`), each checked on the target, one retry.
+5. **Take** the lease (`Ownership`, below): one conditional write, from epoch `e` to `e + 1`, with the seal and the
+   move's id in the record. **The point of no return.** It is tried only with a target that still answers. A take
+   whose answer was lost is read back: a record with this move's id is this move's.
+6. **Resume** the target at `e + 1`: it verifies the copy, points the conversations' directories at its own
+   workspace and admits the notice once. The store records the workspace it last ran in, so no root travels with
+   the order and a second resume rewrites nothing.
+7. **Retire** the source: it stops and deletes its copy. A source that does not answer is fenced by the epoch.
+   The boxes are the host's: it made them and passes them in each `Place`, and it ends or keeps the source's box
+   after the move.
+
+Before the take, a failure leaves the session where it was: the source is told to run again (`seal`, `ship`,
+`target`): a sealed source opens its store again, and one whose seal failed after it closed its store resumes at its
+own epoch; the error says whether it runs. A lost take (`lost`) means another host acted: this host deletes the copy it
+shipped, unless the lease names the target's own place (then the copy is that host's too), and does nothing more;
+the error's `lease` says where the session is. A session can move back to a place it left: that place's note refuses
+orders only at its epoch or before, and its workspace, the copy the session left behind, is emptied before anything
+lands. Only for a place whose note is this session's, and only the workspace's entries (links as links; never the
+directory above it or the store): a workspace that is not an absolute path in normal form, is a directory of the
+system, holds the store, or is the box's home, a directory above it or a link, is refused and nothing is removed.
+
+After the take, a failure is the target's to finish: `recoverHome(options)` reads the lease, starts the runner where
+it says and makes that home run. A target that never resumed, or a sealed home the lease names at a later epoch, is
+told to resume with the lease's seal and move id, and the `notice` the recovering host passes. A home sealed at the
+lease's epoch may be the source of a move that is about to take the next epoch for another place, so the lease
+decides: recovery takes that next epoch for the same place, with the seal the home reports, and resumes the home
+there; when the move took it first, the take is `lost`, recovery opens nothing, and its error's `lease` says where the
+session is. **Recovering a sealed home moves the epoch.** A host that starts again calls it. Never two runners on one
+store: a home holds its store alone (an exclusive SQLite lock on `<store>.lock`, which the system drops with the
+process), and a second runner at the same place is refused with `busy`; before `recoverHome` starts a runner it stops
+one that still runs there (`stopRunner`: the process its `<store>.pid` names, and only when that process's command
+line names this store), and a call that runner had in flight is cut, at most once. A runner names itself in
+`<store>.pid` when it starts, unless the file names another live runner of the store, and again whenever it takes the
+store into its hold, so a runner refused with `busy` never hides the one that holds it. A host whose runners a
+launcher keeps passes the launcher's stop as `stop`.
+
+`registerMoveConformance(runner, name, withPair)` (`./testing`) runs the handoff on two places of a provider: a move
+with nothing cut, a move given up at the drain and at the ship, a move there and back, a take whose answer was lost,
+a take another host won (to another place, and to the same place), a kill of the host,
+the source or the target just before each of the seven steps, and a kill of the target inside its own resume (after
+its marker, after the conversations point at it, between a tool's effect and its result), each followed by a
+recovery. Every case counts the move's notice in what the model is sent: once when the session moved, never when it
+stayed. Every round's effect is there once when the kill came while the session was held still (after the drain,
+before the target ran it). A kill while it ran (the host or the source before the drain held it, the host or the
+target once the target ran it) may cut the round that ran: pi does not run a call twice that was running when its
+process died, and tells the model it was interrupted. The suite accepts a missing effect only for such a round. Its lease is `leaseIn(dirStore(...))` in a temporary directory. The runner it needs is `runMain(moveConformanceApp)` bundled into
+one file.
+
+What a kill loses, in these words: a host, a source or a target process that dies loses nothing; the session
+finishes with every effect once when the kill came after the drain held it, and at most once when it came while
+the session ran. A box that dies with its disk loses the work since the last checkpoint: that needs the checkpoint
+of a later release, or a disk that outlives the box.
 
 ## Ownership: one writer per session
 

@@ -12,7 +12,8 @@ import { entryOf, imagesOf, textOf, toolCallsOf } from './durable.ts';
 export type Box = { x: number; y: number; w: number; h: number };
 /** An element's props. `cite`: a click selects that citation in every panel (`ViewContext.cite`). `box`: the element is
  *  placed over its parent at that region. */
-export type Props = { class?: string; path?: string; title?: string; cite?: string; box?: Box };
+/** `vars` are numbers a stylesheet reads as custom properties (`--name`): a view's way to say where something is without a style string. */
+export type Props = { class?: string; path?: string; title?: string; cite?: string; box?: Box; vars?: Record<string, number> };
 
 /** A node a view returns. `frame` asks the shell to draw a browser session's picture at the stop (frames.ts). */
 export type Node =
@@ -32,12 +33,29 @@ export type BaselineView = { label: string; counters: Counters; ms: number | nul
  *  the baseline when the manifest names one (a real recording, never typed-in numbers). `cite` is the selected
  *  citation, a view input like the focus. `json` is a JSON blob the recording's result names, parsed, by its SHA-256:
  *  undefined until the shell has read it, and for any other blob. */
-export type ViewContext = { t: number; focus?: string; baseline?: BaselineView; providers?: 'real' | 'scripted'; cite?: string; json?: (sha: string) => Json | undefined };
+export type ViewContext = { t: number; /** The playback clock in ms: the time of the point at a stop (a scrub sets it), and running between stops while playing. A view that draws motion reads it. */ now?: number; focus?: string; baseline?: BaselineView; providers?: 'real' | 'scripted'; cite?: string; json?: (sha: string) => Json | undefined };
 
 /** A node's class under a focus: a line with a path outside the focused branch is dimmed; one with no path stays. */
 const dimmed = (path: string | undefined, focus: string | undefined) => (focus !== undefined && path !== undefined && !under(path, focus) ? ' dim' : '');
 
-export type Panel<S> = Fold<S> & { id: string; title: string; view(state: S, context: ViewContext): Node };
+export type Panel<S> = Fold<S> & {
+  id: string;
+  title: string;
+  /** The shell redraws the panels about ten times a second while playing, so a view that moves with `now` moves between stops. */
+  animated?: boolean;
+  /** True for a recording whose story this panel tells: the shell shows it first, under the title, with the playback controls right under it. */
+  featured?(lines: Line[]): boolean;
+  view(state: S, context: ViewContext): Node;
+  /** Which lines a recording must hold for this panel to be drawn at all; without it, `accepts` says. A panel with no such
+   *  line in the whole recording is not drawn, its title included. */
+  shows?(line: Line): boolean;
+};
+
+/** The panel the shell shows first for this recording: the first registered one whose `featured` says yes. */
+export const featuredPanel = <S>(panels: Panel<S>[], lines: Line[]): Panel<S> | undefined => panels.find((panel) => panel.featured?.(lines) === true);
+
+/** The panels the shell redraws between stops: only those that move with the clock. */
+export const animatedPanels = <S>(panels: Panel<S>[]): Panel<S>[] => panels.filter((panel) => panel.animated === true);
 
 /** The extensions' panels, in the order they register (each when its module loads). */
 export const registry: Panel<any>[] = [];
@@ -97,3 +115,7 @@ export const turnsPanel: Panel<{ turns: Turn[]; streaming: Record<string, boolea
 
 /** The panels the shell shows, in order: the extensions' first, then its own two, the run's lines and the model's turns. */
 export const panelsShown = (): Panel<any>[] => [...registry, linesPanel, turnsPanel];
+
+/** The panels a recording draws: each with a line it is for (`shows`, else `accepts`) anywhere in the whole recording.
+ *  Judged over every line, never up to the stop, so a panel never appears mid-scrub. */
+export const panelsFor = (lines: readonly Line[]): Panel<any>[] => panelsShown().filter((panel) => lines.some((line) => (panel.shows ? panel.shows(line) : panel.accepts(line))));

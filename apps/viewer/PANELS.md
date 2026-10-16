@@ -17,6 +17,7 @@ const myPanel: Panel<MyState> = {
   accepts: (line) => line.source === 'browser',   // which lines it reduces
   reduce: (state, line) => nextState,             // one line in, the next state out
   view: (state, { t, focus, baseline }) => node,  // the screen for a state
+  shows: (line) => line.kind === 'frame',          // optional: the lines a recording needs to draw this panel at all
 };
 register(myPanel);                // when its module loads; extensions' panels show first, in this order
 ```
@@ -26,6 +27,13 @@ its state and its context. RECORDING.md writes the contract as `view(state, blob
 the context, and blobs are resolved by the shell from the nodes a view returns. That is what makes a scrub a replay: the viewer may compute a panel's state at any point
 with a fresh reduce of the lines before it, or by stepping from a state it kept, and both give the same screen. A test
 in `test/core.test.ts` checks this for every registered panel at every stop of the test fixture.
+
+A panel is drawn only for a recording that has a line it is for: one its `shows` says yes to, or, without `shows`, one
+it `accepts`. With none in the whole recording, the shell draws nothing for it, not even its title. The shell judges
+this once over every line of the recording, never up to the stop, so a panel never appears or vanishes mid-scrub: at a
+stop before its first line it is drawn with its state before any line. Give a panel `shows` when its `accepts` takes
+lines that are not its story: the transport panel reduces the counters' lines for its own counters, but draws only for
+a recording with `transport` lines.
 
 ## What `view` returns
 
@@ -92,7 +100,7 @@ Focus is a view input (RECORDING.md section 4 rule 4). The shell drops no line f
 run, and its `view` shows what is under the focused path its own way (filter, dim, highlight, or zoom on one branch
 while the rest stays drawn). Keep the lines that have no `path` in the state: a conversation entry or a driver
 checkpoint belongs to a branch without naming it. `under(path, focus)` in `src/format.ts` says whether a path is in
-the focused branch. The two panels the viewer ships dim what is outside it. The counters strip never changes with the
+the focused branch. The two panels the viewer ships dim what is outside it, and so do the disk panel's paid calls. The counters strip never changes with the
 focus.
 
 ## A panel in full
@@ -124,3 +132,39 @@ come after them (`panelsShown` in `src/panels.ts`).
 The build joins every module into one classic script, so two rules hold: import a name (`import { mapPanel } from
 './map.ts'`), never a bare `import './map.ts'`, which the build refuses; and keep every top-level name unique across
 `src/`, since a duplicate is refused too.
+
+## Motion, and a panel the recording is about
+
+A view may draw motion by time. Four additions to the contract make that work without wall-clock animation, so a scrub
+is still a replay:
+
+- **`vars` on a node.** `h('div', { class: 'token', vars: { row: 2.4, age: 0.3 } })` sets `--row: 2.4` and `--age: 0.3`
+  on the element. The values are numbers (a non-finite one is dropped), and a name is letters, digits and dashes starting with a letter
+  (any other name is skipped, so a name is never a style string); the stylesheet reads them: `top: calc(var(--row) * 40px)`, or a paused animation with
+  `animation-delay: calc(var(--age) * -1s)` that draws the frame for an age. Position and age are functions of the
+  state and the clock, so the same time draws the same screen.
+- **`now` in the context.** `ViewContext.now` is the playback clock in ms. At a stop it is the time of the point (what
+  `t` is); while playing it runs between stops, and a link opened with `?t=` sets it to that time. `t` still says which
+  lines have happened; `now` says how far into the run the screen is. A view that draws motion reads `now`.
+- **`animated: true` on a panel.** While playing, the shell redraws the panels about ten times a second even when no
+  new line has been reached, so a view that moves with `now` moves between stops. A panel that does not set it is drawn
+  at each stop only, as before. A redraw is a fresh `view` of the same state, so a view stays pure.
+- **`featured(lines)` on a panel.** When it returns true for the recording, the shell shows that panel first, under the
+  title, with the playback controls directly under it, and the counters, timeline and the other panels after. Use it
+  when the panel tells the recording's story (boxes and flights, a browser session). When several panels say they are
+  featured, the first registered wins; the others are drawn in the usual place.
+
+`?t=<seconds>` opens the viewer at a time (a number of seconds, no less than 0; anything else is ignored). It wins over
+`at` and `cite`. The stop is the last whose lines all happened by then, so a time between two commits shows the stop
+before it (never the inside of a commit), with the clock at the time asked for.
+
+## The disk panel (`src/disk.ts`)
+
+One panel for every demo that runs on a disk place. It reads the supervisor's `host` lines `run.json`, `delegation`,
+`revoke` and `fenced` (RECORDING.md section 5), the shell's own `process.started` and `kill`, and the durable
+`agentrun.effects` documents; it draws a lane per claim generation (who held it, from when, and how it ended: released
+with its sealed sequence, killed or its box taken away, fenced, or replaced between two polls), the events between them
+in order (the orphan flag as seen, the revoke and the takeover time, the fence), and each paid call marked made once,
+repeated, cut by a kill (unknown, not sent again) or in flight. The paid-call verdicts are the shell's own counter fold
+(`appliedIn`), so the panel and the counters strip agree. A recording with no disk claim line (`shows`: a `run.json`, `delegation`, `revoke` or `fenced` host line) does not draw the
+panel at all, its title included. Its test, `test/disk.test.ts`, renders `test/fixtures/disk-takeover`.

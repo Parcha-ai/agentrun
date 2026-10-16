@@ -100,15 +100,16 @@ jobs:
           if-no-files-found: ignore
 
   pi-1-2:
-    # Every package whose pi-family peer ranges accept pi 1.2 builds, type-checks and runs its whole suite on it, while
-    # the workspace develops on 1.1.0 (verify). scripts/pi-leg.mjs picks the packages from their ranges, so a range that
-    # starts to accept 1.2 is tested on it in the same pull request, and fails the run if another version was resolved.
+    # Every package whose pi-family peer ranges accept the leg's pi builds, type-checks and runs its whole suite on it,
+    # while the workspace develops on 1.1.0 (verify). scripts/pi-leg.mjs picks the packages from their ranges, so a range
+    # that starts to accept a version is tested on it in the same pull request, and fails the run if another version was
+    # resolved. From 1.3 pi pins its own packages to exact versions, so each leg installs one whole family.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        pi: ['1.2.0']
+        pi: ['1.2.0', '1.3.0']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -121,7 +122,7 @@ jobs:
         # The packages packed and installed together in an empty directory, with the pi family at this version: one
         # pi-durable and one chord there, and the reference job's record equal to the one fixed for this pi.
         run: node scripts/verify-packages.mjs --pi ${{ matrix.pi }}
-      - run: node scripts/pi-leg.mjs --pi ${{ matrix.pi }} --scratch --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
+      - run: node scripts/pi-leg.mjs --pi ${{ matrix.pi }} --scratch --require-all --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
       - name: The re-asked fold on this pi
         # A real mid-stream kill and resume, recorded on the pi the leg installed: pi.live must still be version 1 and turn 0 asked twice.
         # It skips until the package has the store export and the disk its beforeResume hook. If pi changes pi.live it fails; it is not adapted.
@@ -296,6 +297,35 @@ jobs:
         run: |
           node scripts/stranger.mjs "${{ matrix.spec }}" | tee "$RUNNER_TEMP/stranger.out"
           if grep -q 'no-key path missing' "$RUNNER_TEMP/stranger.out"; then echo "::notice title=${{ matrix.spec }}::$(cat "$RUNNER_TEMP/stranger.out")"; fi
+
+  macos-local-run:
+    # A run on a local directory on macOS, which has no /proc and no setpriv: the process table comes from ps and
+    # sysctl, the run's root is addressed by its path, the file tools are confined by path, and the store syncs with
+    # F_FULLFSYNC. No other job runs on a Mac, so every macOS line of the README stands on this one: the stranger's
+    # no-key quickstart, and the local run's tests on the Mac's own ps.
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: The local run's tests
+        working-directory: packages/pi-durable-disk
+        run: >-
+          node --test --test-timeout=240000
+          test/process-table.test.ts test/commands.test.ts test/watchdog.test.ts
+          test/local-run.test.ts test/cli-local.test.ts test/quickstart.test.ts test/confine.test.ts
+      - name: The stranger's no-key quickstart
+        # Not blocking until a release with macOS support is on npm. On a pull request the job runs on the branch merged
+        # into main, where the stranger also walks the examples against the registry's beta (#557); the published beta
+        # predates macOS support, and its examples fail on a Mac. The Mac's proof is the step above, whose quickstart test
+        # runs the same example from this tree.
+        continue-on-error: true
+        run: node scripts/stranger.mjs pi-durable-disk
 
   stranger-readme-line:
     # The README's own install line, as a stranger types it, against what the registry serves now (--readme-line):

@@ -16,6 +16,9 @@
       ],
       "@parcha/pi-durable-disk": [
         "../src/index.ts"
+      ],
+      "@parcha/pi-durable-disk/internals": [
+        "../src/internals.ts"
       ]
     }
   },

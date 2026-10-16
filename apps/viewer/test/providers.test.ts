@@ -20,8 +20,9 @@ test('the format takes providers real or scripted, or none, and refuses another 
 
 test('the shell hands a view the run\'s own providers beside the time, the focus and the baseline', () => {
   const baseline = baselineViewOf('the paid run', { id: 'b', manifest: { ...base, providers: 'real' }, lines, blobUrl: () => undefined, blobType: () => undefined } as Recording);
-  assert.deepEqual(viewContext(5, base), { t: 5 }, 'a manifest with no providers hands none');
-  assert.deepEqual(viewContext(5, { ...base, providers: 'scripted' }, { focus: '/root/steps/0/items/2', baseline }), { t: 5, focus: '/root/steps/0/items/2', baseline, providers: 'scripted' });
+  assert.deepEqual(viewContext(5, base), { t: 5, now: 5 }, 'a manifest with no providers hands none (and the clock is the time of the point at a stop)');
+  assert.deepEqual(viewContext(5, { ...base, providers: 'scripted' }, { focus: '/root/steps/0/items/2', baseline }), { t: 5, now: 5, focus: '/root/steps/0/items/2', baseline, providers: 'scripted' });
+  assert.equal(viewContext(5, base, { now: 7_500 }).now, 7_500, 'while playing the clock is the playback clock');
   assert.equal(viewContext(0, { ...base, providers: 'real' }).providers, 'real');
 });
 

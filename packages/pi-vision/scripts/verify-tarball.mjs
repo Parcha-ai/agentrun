@@ -1,7 +1,7 @@
 // Proves the installed path: `npm pack`, install the tarball into an empty project with the optional peers, then on each Node given
 //   - import every entry of `exports` with type stripping switched off, so nothing can lean on it;
 //   - typecheck an `import` of every entry with tsc (nodenext, strict) in an empty TypeScript project;
-//   - check the tarball holds only dist, the licence files, the README and the changelog.
+//   - check the tarball holds only dist, the skills `pi.skills` names, the licence files, the README and the changelog.
 // Needs the npm registry (the dependencies, the peers and typescript are installed from it). Usage:
 //   node scripts/verify-tarball.mjs [--node DIR ...]     DIR holds the `node` to try (default: the Node running this)
 import { spawnSync } from "node:child_process";
@@ -30,8 +30,9 @@ try {
   const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 
   const allowed = ["package.json", "README.md", "CHANGELOG.md", "LICENSE", "NOTICE"];
-  const stray = packed.files.map((f) => f.path).filter((p) => !p.startsWith("dist/") && !allowed.includes(p));
-  check(`the tarball holds only dist and ${allowed.join(", ")} (${packed.files.length} files)`, stray.length === 0, stray.join("\n"));
+  const stray = packed.files.map((f) => f.path).filter((p) => !p.startsWith("dist/") && !p.startsWith("skills/") && !allowed.includes(p));
+  check(`the tarball holds only dist, skills and ${allowed.join(", ")} (${packed.files.length} files)`, stray.length === 0, stray.join("\n"));
+  check("the tarball ships the look skill where `pi.skills` names it", pkg.pi?.skills?.includes("./skills") && packed.files.some((f) => f.path === "skills/look/SKILL.md"));
   check("the tarball has no source map", !packed.files.some((f) => f.path.endsWith(".map")));
 
   const app = join(work, "consumer");

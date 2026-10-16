@@ -7,9 +7,10 @@ SHA-256, its question, its answer, the model and the price.
 
 The host keeps what is its own: which model looks and its price, where receipts are filed, its rows, path custody.
 `read` keeps its name and its arguments (`path, offset, limit, char_offset, ask, from_s, to_s, page`), so hosts and
-their stored instructions do not change. One tool is new, `look(source, ask, pages?, from_s?, to_s?, region?)`: a
-vision model answers a question about many pages or a long video, and only its words, where it looked and the price
-enter the caller's context.
+their stored instructions do not change. No tool is added. For many pages, a long video or many images the agent
+writes code: the `look` skill (`skills/look/SKILL.md`) shows it how to render pages and cut frames with bash and ask
+about them with `vision.see`, the one function this package puts in a host's code mode. Only the answer, where it
+looked and the price enter the caller's context.
 
 ## Status
 
@@ -19,7 +20,7 @@ read below). Parts not built yet throw `NotBuiltError`, never a half answer.
 
 | Part | Status |
 | --- | --- |
-| The model contract: `read`'s media arguments and description, `look`, the section, the miss codes | built |
+| The model contract: `read`'s media arguments and description, `vision.see`, the section, the miss codes | built |
 | The host contract's types, the environment port, budgets (`resolveLimits`), fragments, the provider interface | built |
 | The test kit (`./testing`): fake eyes, fixtures, the provider conformance suite | built |
 | The test kit's builders of synthetic documents, images and spreadsheets | built |
@@ -31,7 +32,7 @@ read below). Parts not built yet throw `NotBuiltError`, never a half answer.
 | Video: probe, frames by seek, windows, ffmpeg | built |
 | `read`'s media half with the package's own reader for every kind, the guard, the eyes on pi-ai, receipts and misses | built |
 | The pi-durable adapter, the Node environment and eyes on pi's `Models` | built |
-| `look` | not built |
+| `vision.see` for a host's code mode, and the `look` skill | built |
 
 ## A first read, with no key
 
@@ -130,10 +131,33 @@ are always there; programs run in the environment the agent's shell runs in, nev
 | An office document as it looks | a `needs` miss; its text still comes back | LibreOffice's `soffice` (MPL-2.0, run as a program) |
 | Video: probe, frames, windows | a `needs` miss; a file under the inline budget still goes to a route that takes video | ffmpeg and ffprobe (LGPL or GPL, run as programs) |
 
-`@earendil-works/pi-durable` and `@earendil-works/chord` (1.0.4 to 1.2.x) and `@earendil-works/pi-ai` (any version: the
+`@earendil-works/pi-durable` and `@earendil-works/chord` (1.0.4 to 1.3.x) and `@earendil-works/pi-ai` (any version: the
 host's copy) are optional peers, for the adapter and the pi-ai eyes, and Photon is one for the default image processor.
 sharp is never resolved by this package: a host that wants it passes its own module (`sharpImages(sharp)`), so its LGPL
 code stays with the host's install.
+
+## For a host: `vision.see` in code mode
+
+`handle.see(env, call)` is `vision.see` bound to one call, in the shape pi-codemode's `globals` take. Build it per call,
+so it reads paths through that call's environment and keeps its answers in that call's memos:
+
+```ts
+import { CodemodeSandbox } from "@earendil-works/pi-codemode";
+import { callContext, createVisionExtension } from "@parcha/pi-vision/durable";
+
+const vision = createVisionExtension({ evidence, scope, eyesModel });
+// Inside the host's code-mode tool, `execute(args, api, context)`:
+const sandbox = new CodemodeSandbox({ tools, globals: [vision.see(api.env, await callContext(api, context))] });
+```
+
+A global is not a tool: the model's tool list does not change, and the sandbox's declarations carry its doc comment and
+signature (`VISION_SEE`). Each eyes request is a look, filed and told through `onLook` as `read`'s are; its answer is a
+memo before it is told, so a code-mode tool declared replay-safe and cut by a crash pays for each look and tells the host
+of it once when it runs again. The looks' price reaches the host through `onLook`, not the code-mode tool's result. A
+look that cannot be made throws a `SeeMiss` whose `code` is the miss code and whose message starts with it. There is no
+cap on pages, frames or price: a host that wants one wraps `execute`. The planner's own caps (`plan(..., caps)`,
+`priceLook(..., capUsd)`) are also the host's to pass, with none by default. pi loads the skill from the package
+(`pi.skills`); a host that is not pi gives its agent `skills/look/SKILL.md` the way it gives any skill.
 
 ## For a host: what a program is started with
 

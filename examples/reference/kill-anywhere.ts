@@ -124,6 +124,8 @@ async function child() {
   const { evidence, status, deliver } = local.host;
   const runEffect = local.host.tools.runEffect;
   local.host.tools = { ...local.host.tools, runEffect: async (request) => { const value = await runEffect(request); cross(`effect.kept ${request.node.tool}`); return value; } };
+  // `RERUN`: the host sends a call the journal admitted and a kill kept from being sent, with the args the journal kept (reconcile's `rerun`).
+  if (process.env.RERUN) local.host.tools = { ...local.host.tools, rerun: async ({ intent, args }) => { const tool = taps.tools[intent.tool]; if (!tool || args === undefined) return undefined; return { args, value: await tool(args as Record<string, unknown>) }; } };
   local.host.evidence = { file: async (label, record) => { cross(`receipt.filing ${record.tool}`); const filed = await evidence.file(label, record); cross(`receipt.filed ${record.tool}`); return filed; } };
   local.host.status = (event: StatusEvent) => {
     cross(`event ${event.source}.${event.source === 'workflow' ? event.event.type : 'change' in event ? event.change : 'look' in event ? 'look' : 'miss' in event ? 'miss' : 'reconciled'}`);
@@ -300,12 +302,12 @@ const made = (file: string) => { try { return readFileSync(file, 'utf8').split('
 /** The one cut the draw leaves out: inside the effect's window. The first process ends at `point` (the tool dispatched, its
  *  result not committed); the second finds the effect admitted and never completed, refuses it, and the tool is not
  *  dispatched again. */
-export async function cutInEffectWindow(point = 'tool.dispatch search') {
+export async function cutInEffectWindow(point = 'tool.dispatch search', options: { rerun?: boolean } = {}) {
   const scratch = await mkdtemp(join(tmpdir(), 'agentrun-kill-'));
   const { backend, state } = watchedBackend();
   const served = await backend.serve();
   try {
-    const env = { HOME: scratch, TMPDIR: scratch, DIR: join(scratch, 'run'), BACKEND: served.url, RAN_LOG: join(scratch, 'ran.jsonl') };
+    const env = { HOME: scratch, TMPDIR: scratch, DIR: join(scratch, 'run'), BACKEND: served.url, RAN_LOG: join(scratch, 'ran.jsonl'), ...(options.rerun ? { RERUN: '1' } : {}) };
     const killed = await spawnChild({ ...env, KILL_AT_POINT: point }, (pid) => { state.pid = pid; });
     const afterKill = made(env.RAN_LOG);
     const resumed = await spawnChild(env, (pid) => { state.pid = pid; });

@@ -16,6 +16,7 @@ import { localBoxes } from "../src/box/local.ts";
 import { parseTransportConfig } from "../src/config.ts";
 import { transport } from "../src/hands/index.ts";
 import { HandsDoc, SessionBoxesDoc, TransportError } from "../src/transport.ts";
+import { waitNotRunning } from "./box-env-support.ts";
 import {
 	bash,
 	openSession,
@@ -101,7 +102,8 @@ describe("the check for watchdogs left running", () => {
 		const box = getOrThrow(await localBoxes({ root }).create({ maxLifetimeMs: 60_000 }, context));
 		try {
 			let seen = watchdogsUnder(root);
-			for (let tries = 0; seen.length === 0 && tries < 100; tries++) {
+			// At least 20 s: a start on a loaded machine can take seconds, and the loop ends as soon as it is seen.
+			for (let tries = 0; seen.length === 0 && tries < 400; tries++) {
 				await sleep(50);
 				seen = watchdogsUnder(root);
 			}
@@ -660,12 +662,12 @@ describe("transport(): where tools run", () => {
 			const running = () => spawnSync("pgrep", ["-f", tag]).stdout.toString().trim() !== "";
 			const pending = env.exec(`sleep 30 & sleep 30 # ${tag}\nwait`, undefined, context);
 			for (let tries = 0; !running(); tries++) {
-				if (tries > 200) throw new Error("the command did not start");
+				if (tries > 400) throw new Error("the command did not start");
 				await sleep(50);
 			}
 			await session.hands.release(context);
 			expect(getOrThrow(await pending).exitCode).toBeGreaterThan(128);
-			expect(running()).toBe(false);
+			await waitNotRunning(running, `the released command ${tag}`);
 			const box = provider.created[0];
 			if (box === undefined) throw new Error("no box was created");
 			expect(getOrThrow(await box.status(context)).state).toBe("running");
