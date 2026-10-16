@@ -1,0 +1,20 @@
+{
+  "input": "5a8962bce76d21ad55ca04896aaa6aa0efca355c2e730a913108cdea40dd5e95",
+  "done": [
+    "/root/steps/0",
+    "/root/steps/1"
+  ],
+  "states": {
+    "/root/steps/1": "5caddfdd83c52041d06f9484ae160b0189ba2a560bbf7958e010a804e15d4a16"
+  },
+  "chains": {
+    "/root": {
+      "index": 1,
+      "path": "/root/steps/1"
+    }
+  },
+  "loops": {},
+  "routes": {},
+  "inputs": {},
+  "steps": {}
+}
