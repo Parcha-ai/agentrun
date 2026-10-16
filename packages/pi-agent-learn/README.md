@@ -95,6 +95,7 @@ repo/
   learnings/<id>.md                one learning per file
   inbox/<run id>.md                a run's candidates, on runs/<run id> only
   uses/<run id>.json               a run's workflow uses, on runs/<run id> only
+  inbox/<run id>/workflows/<name>/ a run's saved workflow records, as the DSL wrote them, on runs/<run id> only
 ```
 
 `RULES_LOCKED` is the frozen list `["agent.json", "AGENTS.md"]`. `isRulesLocked(path)` is true for either name in any
@@ -187,7 +188,10 @@ whole proposal, and the curator on what it writes.
 | `too_large`, `too_many` | Over a cap in `CAPS`: bytes per text, per evidence list, per file, per inbox; files per write; new learnings and `used` marks per run. A refused write is never truncated. |
 | `invalid` | A run id, role, type, id or secret that is not well formed. |
 
-A run writes `inbox/<run id>.md` and `uses/<run id>.json`, and nothing else. The curator writes
+A run writes `inbox/<run id>.md`, `uses/<run id>.json`, and the DSL's saved workflow records as they are,
+`inbox/<run id>/workflows/<name>/<sha256>.json` and `inbox/<run id>/workflows/<name>/latest` (`<name>` is a workflow
+name: 1 to 64 letters, digits, dots, dashes or underscores, starting with a letter or digit), and nothing else. The
+curator writes
 `learnings/<name>.md` (a name in Latin letters, digits, spaces, dots, hyphens and underscores, in any folder, and
 `learnings/INDEX.md`), `.agents/skills/<name>/SKILL.md`, `trial.json` and `<folder>/<file>.md` inside a skill folder, and
 the DSL's workflow records, `.pi/agentrun/workflows/<name>/<sha256>.json` and `latest`. `trial.json` is the host's, so a
@@ -196,11 +200,14 @@ run that proposes one is refused.
 ## Proposing a run's notes
 
 ```ts
-const result = await proposeLearning({ repo, runId, target: harness, secrets: vault.values(), caseValues });
+const result = await proposeLearning({ repo, runId, target: harness, secrets: vault.values(), caseValues, workflows });
 ```
 
 `proposeLearning` is the host step at a run's terminal. It collects the run's candidates, renders `inbox/<run id>.md`
-(and `uses/<run id>.json` from the optional `uses` hook, which a later part supplies), guards the whole proposal as the
+(and `uses/<run id>.json` from the optional `uses` hook, which a later part supplies), adds the workflow records the
+host collected from the run's DSL store (`workflows`: per name, `{ files: { "<sha256>.json": text, latest: text } }`,
+committed byte for byte under `inbox/<run id>/workflows/<name>/`; a name or file name of any other shape refuses the
+proposal), guards the whole proposal as the
 `run` role, and makes one commit on `runs/<run id>` through `@parcha/pi-git-remote` with a `Run-Id` trailer, pushed by
 sha. The result is one of:
 

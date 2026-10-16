@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { CAPS, createGuard, guard } from "../dist/index.js";
+import { CAPS, createGuard, guard, LEARN_TYPES } from "../dist/index.js";
 import { cases, RUN_ID } from "./fixtures/guard-corpus.mjs";
+import { cases as workflowCases } from "./fixtures/guard-workflow-corpus.mjs";
 
 const refusals = (role, input) => guard({ role, runId: RUN_ID, files: { [input.path]: input.text }, secrets: input.secrets ?? [] });
 const reasonsOf = (list) => new Set(list.map((r) => r.reason));
@@ -46,7 +47,7 @@ test("the corpus source holds no literal secret shape", () => {
   for (const [name, re] of shapes) assert.doesNotMatch(source, re, `the corpus holds a literal ${name}`);
 });
 
-for (const c of cases) {
+for (const c of [...cases, ...workflowCases]) {
   test(`corpus ${c.id} (${c.kind}, expect ${c.expect})`, () => {
     const v = verdict(c.input);
     const got = v.allowed ? "allow" : "refuse";
@@ -246,6 +247,26 @@ test("random secrets are found in every encoding at every alignment, and a near 
 test("this lane's source and test files hold no hidden or look-alike character: they are written as escapes", async () => {
   const { readFile } = await import("node:fs/promises");
   const hidden = /[\p{Cf}\p{Zl}\p{Zp}\p{Co}\u{2800}\u{fe00}-\u{fe0f}\u{20e3}\u{85}\u{410}\u{415}\u{405}\u{430}\u{ff0e}]/u;
-  const files = ["src/guard.ts", "src/inbox.ts", "src/propose.ts", "test/guard.test.mjs", "test/propose.test.mjs", "test/git-support.mjs", "test/fixtures/guard-corpus.mjs"];
+  const files = ["src/guard.ts", "src/inbox.ts", "src/propose.ts", "test/guard.test.mjs", "test/propose.test.mjs", "test/git-support.mjs", "test/fixtures/guard-corpus.mjs", "test/fixtures/guard-workflow-corpus.mjs"];
   for (const file of files) assert.doesNotMatch(await readFile(new URL(`../${file}`, import.meta.url), "utf8"), hidden, file);
+});
+
+test("workflow records belong to a run's inbox folder, and the DSL's store paths to the curator", () => {
+  const digest = "0123456789abcdef".repeat(4);
+  const inbox = `inbox/run-1/workflows/kyb/${digest}.json`;
+  const store = `.pi/agentrun/workflows/kyb/${digest}.json`;
+  assert.deepEqual(guard({ role: "run", runId: "run-1", files: { [inbox]: "{}", "inbox/run-1/workflows/kyb/latest": digest } }), []);
+  assert.ok(reasonsOf(guard({ role: "run", runId: "run-1", files: { [store]: "{}" } })).has("path_not_allowed"));
+  assert.ok(reasonsOf(guard({ role: "curate", files: { [inbox]: "{}" } })).has("path_not_allowed"));
+  assert.ok(reasonsOf(guard({ role: "run", runId: "run-2", files: { [inbox]: "{}" } })).has("path_not_allowed"));
+  assert.deepEqual(guard({ role: "curate", files: { [store]: "{}" } }), []);
+});
+
+test("a workflow candidate names a workflow, every other candidate a learning", { skip: !LEARN_TYPES.includes("workflow") }, () => {
+  const named = (type, id) => guard({ role: "run", candidates: [candidate({ type, id })] }).map((r) => [r.field, r.reason]);
+  assert.deepEqual(named("workflow", "kyb-us-registry"), []);
+  assert.deepEqual(named("workflow", "L-0123456789ab"), []);
+  assert.deepEqual(named("workflow", "not a name"), [["candidates[0].id", "invalid"]]);
+  assert.deepEqual(named("workflow", "../x"), [["candidates[0].id", "invalid"]]);
+  assert.deepEqual(named("used", "kyb-us-registry"), [["candidates[0].id", "invalid"]]);
 });

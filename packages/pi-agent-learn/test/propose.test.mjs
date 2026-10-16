@@ -223,3 +223,62 @@ test("a secret the learn tool did not screen is still refused at the proposal, a
     }
   }
 });
+
+const DIGEST = "0123456789abcdef".repeat(4);
+const RECORD = `${JSON.stringify({ name: "kyb-us-registry", steps: [{ call: "registry.search" }] })}\n`;
+const workflowFiles = { [`${DIGEST}.json`]: RECORD, latest: `${DIGEST}\n` };
+
+test("workflow records the host collected are committed byte for byte under inbox/<run id>/workflows/<name>/", async () => {
+  const root = await scratch();
+  const { dir, remote, main } = await seededRemote(root);
+  const repo = await host(root, remote);
+  const workflows = { "kyb-us-registry": { files: workflowFiles }, "my.flow_v2": { files: { latest: `${DIGEST}\n` } } };
+  const result = await proposeLearning({ ...OPTIONS, repo, target: targetOf([candidate()]), workflows });
+  assert.equal(result.status, "proposed");
+  const names = git(dir, ["diff-tree", "-r", "--no-commit-id", "--name-only", main, result.sha]).toString().trim().split("\n").sort();
+  assert.deepEqual(names, [
+    "inbox/run-1.md", `inbox/run-1/workflows/kyb-us-registry/${DIGEST}.json`, "inbox/run-1/workflows/kyb-us-registry/latest", "inbox/run-1/workflows/my.flow_v2/latest",
+  ]);
+  assert.equal(await repo.read(`inbox/run-1/workflows/kyb-us-registry/${DIGEST}.json`, result.sha), RECORD);
+  assert.equal(await repo.read("inbox/run-1/workflows/kyb-us-registry/latest", result.sha), `${DIGEST}\n`);
+  const restarted = await host(root, remote, "host-2");
+  assert.deepEqual(await proposeLearning({ ...OPTIONS, repo: restarted, target: targetOf([candidate()]), workflows }), { status: "already", sha: result.sha });
+  assert.equal(commitCount(dir, `${main}..refs/heads/runs/run-1`), 1);
+});
+
+test("workflow records alone are a proposal; an empty set of them is not", async () => {
+  const root = await scratch();
+  const { dir, remote, main } = await seededRemote(root);
+  const repo = await host(root, remote);
+  assert.deepEqual(await proposeLearning({ ...OPTIONS, repo, target: targetOf([]), workflows: {} }), { status: "empty" });
+  assert.deepEqual(await proposeLearning({ ...OPTIONS, repo, target: targetOf([]), workflows: { kyb: { files: {} } } }), { status: "empty" });
+  const result = await proposeLearning({ ...OPTIONS, repo, target: targetOf([]), workflows: { kyb: { files: workflowFiles } } });
+  assert.equal(result.status, "proposed");
+  assert.deepEqual(
+    git(dir, ["diff-tree", "-r", "--no-commit-id", "--name-only", main, result.sha]).toString().trim().split("\n").sort(),
+    [`inbox/run-1/workflows/kyb/${DIGEST}.json`, "inbox/run-1/workflows/kyb/latest"],
+  );
+});
+
+test("a workflow record that is not shaped like the store's, or holds a secret, refuses the whole proposal", async () => {
+  const secret = ["Lantern", "?>", "x9Kd3Qa"].join("");
+  const bad = [
+    ["a name that climbs out", { "../x": { files: workflowFiles } }],
+    ["a name with a slash", { "a/b": { files: { latest: DIGEST } } }],
+    ["a name too long", { ["n".repeat(65)]: { files: workflowFiles } }],
+    ["a nested record", { kyb: { files: { [`sub/${DIGEST}.json`]: RECORD } } }],
+    ["a record named for something else", { kyb: { files: { "notes.md": "x" } } }],
+    ["a link-shaped record", { kyb: { files: { "latest -> ../AGENTS.md": "x" } } }],
+    ["a secret in a record", { kyb: { files: { [`${DIGEST}.json`]: JSON.stringify({ note: secret }) } } }],
+    ["a secret in the latest pointer, base64", { kyb: { files: { latest: Buffer.from(`k:${secret}`).toString("base64") } } }],
+  ];
+  for (const [name, workflows] of bad) {
+    const root = await scratch();
+    const { dir, remote, main } = await seededRemote(root);
+    const repo = await host(root, remote);
+    const result = await proposeLearning({ ...OPTIONS, repo, secrets: [secret], target: targetOf([candidate()]), workflows: { ok: { files: workflowFiles }, ...workflows } });
+    assert.equal(result.status, "refused", name);
+    assert.deepEqual(await refsOf(dir), { "refs/heads/main": main }, name);
+    for (const gitDir of [dir, repo.dir]) assert.ok(!holds(gitDir, secret) && !holds(gitDir, "registry.search"), `${name}: an object holds the proposal`);
+  }
+});
