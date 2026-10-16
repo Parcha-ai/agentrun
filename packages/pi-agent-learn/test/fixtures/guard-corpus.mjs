@@ -52,7 +52,7 @@ const PLANT_A = join("Lant", "ern?>", pick(ALNUM, 7)); // 16 bytes: base64 is pa
 const PLANT_B = join("Orchid", "!", pick(ALNUM, 5));
 const PLANT_EIGHT = join("Quill?>", pick(ALNUM, 1)); // the shortest value the guard accepts
 const PLANT_SPACED = join("orchid lantern ", pick(ALNUM, 4)); // a space, so form encoding differs from percent encoding
-const PLANT_NONASCII = join("Qüetzal-ñandú-", pick(ALNUM, 4));
+const PLANT_NONASCII = join("Q\u00fcetzal-\u00f1and\u00fa-", pick(ALNUM, 4));
 const PLANT_NEAR = `M${PLANT_A.slice(1)}`; // differs from PLANT_A in one letter
 
 // ---- secret shapes, assembled from pieces
@@ -235,7 +235,7 @@ U("control.esc", "ESC control character starting a hidden-text sequence", "Ordin
 const SZ = (id, expect, reason, path, text) => add(`size.${id}`, "size", expect, reason, at(path, text));
 SZ("learning.over-by-one", "refuse", "learning file 4097 bytes; the cap is 4096", LEARN, "a".repeat(4097));
 SZ("learning.exact-cap", "allow", "learning file exactly 4096 bytes", LEARN, "a".repeat(4096));
-SZ("learning.multibyte-over", "refuse", "1400 euro signs: 1400 characters but 4200 bytes, over the 4096 byte cap", LEARN, "€".repeat(1400));
+SZ("learning.multibyte-over", "refuse", "1400 euro signs: 1400 characters but 4200 bytes, over the 4096 byte cap", LEARN, "\u20ac".repeat(1400));
 // Ruling 11: learnings/INDEX.md is refused for its path, so a size cap no longer applies to it.
 add("size.index.over-by-one", "path", "refuse", "learnings/INDEX.md of 4097 bytes; the index is derived and never stored", at("learnings/INDEX.md", "a".repeat(4097)));
 SZ("inbox.over-by-one", "refuse", "inbox file 16385 bytes; the cap is 16384", INBOX, "a".repeat(16385));
@@ -282,12 +282,12 @@ OK("code.hex-color", "a CSS hex color", "```css\ncolor: #1a2b3c;\n```\n");
 OK("hex.commit-sha", "a 40-character hex commit id", `Fixed in commit ${pick(HEX, 40)} by the parser change.`);
 OK("base64.short", "a short base64 string of harmless text", "The base64 of hi is aGk=, which is harmless.");
 OK("uuid.run-id", "a UUID", "The run id 0f8fad5b-d9cb-469f-a165-8c45a5d8b2c3 identifies the trace.");
-OK("lang.spanish", "Spanish with accents and enye", "Recuerda rotar las claves antes del viernes; las contraseñas no van en el repositorio.");
-OK("lang.japanese", "Japanese text", "レビューは必ず二人で行い、結果を記録する。");
-OK("lang.arabic", "Arabic right-to-left letters, which are not bidi controls", "يجب مراجعة السجل قبل النشر، وحفظ النتيجة.");
-OK("lang.hebrew", "Hebrew right-to-left letters", "יש לבדוק את הקובץ לפני המיזוג.");
-OK("emoji.plain", "emoji with no joiners or variation selectors", "Ship it 🚀 and tag the release 🎉 once CI is green ✅.");
-OK("unicode.combining-marks", "combining accents, which are ordinary text", "Café and naïve are ordinary text with combining marks.");
+OK("lang.spanish", "Spanish with accents and enye", "Recuerda rotar las claves antes del viernes; las contrase\u00f1as no van en el repositorio.");
+OK("lang.japanese", "Japanese text", "\u30ec\u30d3\u30e5\u30fc\u306f\u5fc5\u305a\u4e8c\u4eba\u3067\u884c\u3044\u3001\u7d50\u679c\u3092\u8a18\u9332\u3059\u308b\u3002");
+OK("lang.arabic", "Arabic right-to-left letters, which are not bidi controls", "\u064a\u062c\u0628 \u0645\u0631\u0627\u062c\u0639\u0629 \u0627\u0644\u0633\u062c\u0644 \u0642\u0628\u0644 \u0627\u0644\u0646\u0634\u0631\u060c \u0648\u062d\u0641\u0638 \u0627\u0644\u0646\u062a\u064a\u062c\u0629.");
+OK("lang.hebrew", "Hebrew right-to-left letters", "\u05d9\u05e9 \u05dc\u05d1\u05d3\u05d5\u05e7 \u05d0\u05ea \u05d4\u05e7\u05d5\u05d1\u05e5 \u05dc\u05e4\u05e0\u05d9 \u05d4\u05de\u05d9\u05d6\u05d5\u05d2.");
+OK("emoji.plain", "emoji with no joiners or variation selectors", "Ship it \u{1f680} and tag the release \u{1f389} once CI is green \u2705.");
+OK("unicode.combining-marks", "combining accents, which are ordinary text", "Cafe\u0301 and nai\u0308ve are ordinary text with combining marks.");
 OK("whitespace.tab-crlf", "tabs and CRLF line breaks", "Tabs\tand\r\nCRLF breaks are ordinary text.");
 OK("secret.near-miss", "a value one letter away from a planted value", `Old value ${PLANT_NEAR} was rotated.`, [PLANT_A]);
 OK("secret.word-with-planted", "the word secret with a planted value held but not present", "The secret store holds the value; this note names no value.", [PLANT_A]);
@@ -302,7 +302,7 @@ STRICT("index", 11, "learnings/INDEX.md", "learnings/INDEX.md", "# Learned (0)\n
 STRICT("git-prefix-name", 11, "a file name starting with git but not .git", "learnings/gitignore-notes.md", ORDINARY);
 OKP("learning-id", "a learning file named by its id", LEARN, "---\nid: L-0123456789ab\n---\nText.\n\nEvidence: (none)\n");
 STRICT("spaces", 11, "a file name with spaces", "learnings/notes on retries.md", ORDINARY);
-STRICT("unicode-name", 11, "a file name with a non-ASCII letter", "learnings/notas-último.md", ORDINARY);
+STRICT("unicode-name", 11, "a file name with a non-ASCII letter", "learnings/notas-\u00faltimo.md", ORDINARY);
 STRICT("nested", 11, "a nested folder under learnings/", "learnings/deep/nested/topic/notes.md", ORDINARY);
 OKP("skill-basic", "a skill file", ".agents/skills/deploy-check/SKILL.md", "# Deploy check\n");
 // Ruling 12: a skill folder holds SKILL.md and trial.json only, so a subfolder is refused (it expected allow).
