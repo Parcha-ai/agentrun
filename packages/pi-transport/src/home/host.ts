@@ -145,6 +145,19 @@ export function connectHome(link: Link, options: ConnectOptions): HomeHandle {
 	const reply = (frame: Frame) => link.send(frame);
 
 	const { records } = options;
+	/** What the runner's ready says: the home's state, or why it is not ready. Needs nothing from the log. */
+	const readyOf = (frame: Frame): Result<Ready, RemoteError> => {
+		if (frame.ok !== true) return err(fromWire(frame.error));
+		if (!HOME_STATES.has(frame.state)) {
+			return err(
+				new RemoteError("invalid", `the runner said it is ready in no known state: ${String(frame.state)}`),
+			);
+		}
+		return ok({ session: String(frame.session), state: frame.state as HomeState });
+	};
+	// Received and not yet acted on: the runner's ready, and how many answers each order has in the queue.
+	let readyHeard: Result<Ready, RemoteError> | undefined;
+	const answersQueued = new Map<number, number>();
 	const handle = async (frame: Frame): Promise<void> => {
 		if (MODEL_FRAMES.has(frame.t) || RECORD_FRAMES.has(frame.t)) {
 			// A home the lease left behind has no model, and writes nothing to the session's log.
@@ -158,29 +171,30 @@ export function connectHome(link: Link, options: ConnectOptions): HomeHandle {
 			if (MODEL_FRAMES.has(frame.t)) server.receive(frame, reply);
 			else if (records !== undefined) await receiveRecords(records, frame, reply);
 		} else if (frame.t === "ready") {
-			if (frame.ok !== true) settleReady(err(fromWire(frame.error)));
-			else if (!HOME_STATES.has(frame.state)) {
-				settleReady(
-					err(new RemoteError("invalid", `the runner said it is ready in no known state: ${String(frame.state)}`)),
-				);
-			} else {
-				// Where the host's log is, once every append begun on it from any link settled: the runner sends what it
-				// holds from there, then what follows.
-				if (records !== undefined) {
-					const held = await inSinkOrder(records, async () => records.held());
-					link.send({ t: "resend-after", ...held });
-				}
-				settleReady(ok({ session: String(frame.session), state: frame.state as HomeState }));
+			const ready = readyOf(frame);
+			// Where the host's log is, once every append begun on it from any link settled: the runner sends what it
+			// holds from there, then what follows.
+			if (ready.ok && records !== undefined) {
+				const held = await inSinkOrder(records, async () => records.held());
+				link.send({ t: "resend-after", ...held });
 			}
+			settleReady(ready);
 		} else if (frame.t === "answer") {
-			const settle = pending.get(Number(frame.id));
-			pending.delete(Number(frame.id));
+			const id = Number(frame.id);
+			const left = (answersQueued.get(id) ?? 1) - 1;
+			if (left > 0) answersQueued.set(id, left);
+			else answersQueued.delete(id);
+			const settle = pending.get(id);
+			pending.delete(id);
 			settle?.(frame.ok === true ? ok(frame.value) : err(fromWire(frame.error)));
 		}
 	};
 	// One frame after another: a commit is in the log before any later frame of the link is acted on.
 	let handled: Promise<void> = Promise.resolve();
 	link.onFrame((frame) => {
+		if (frame.t === "ready") readyHeard ??= readyOf(frame);
+		else if (frame.t === "answer")
+			answersQueued.set(Number(frame.id), (answersQueued.get(Number(frame.id)) ?? 0) + 1);
 		handled = handled
 			.then(() => handle(frame))
 			.catch((cause) => {
@@ -191,11 +205,18 @@ export function connectHome(link: Link, options: ConnectOptions): HomeHandle {
 	});
 	link.onClose((reason) => {
 		server.down(reply);
-		// After the frames that came before it: an answer the runner sent before it closed is still its answer.
+		const lost = (): Result<never, RemoteError> => err(new RemoteError("link_lost", `the link went down: ${reason}`));
+		// At once, whatever the log is doing: the runner's ready is what it said, and an order it did not answer is lost.
+		settleReady(readyHeard ?? lost());
+		for (const [id, settle] of pending) {
+			if (answersQueued.has(id)) continue;
+			pending.delete(id);
+			settle(lost());
+		}
+		// An answer the runner sent before it closed is still its answer, after the frames that came before it: a commit
+		// is in the log before an answer that followed it is acted on.
 		handled = handled.then(() => {
-			settleReady(err(new RemoteError("link_lost", `the link went down: ${reason}`)));
-			for (const settle of pending.values())
-				settle(err(new RemoteError("link_lost", `the link went down: ${reason}`)));
+			for (const settle of pending.values()) settle(lost());
 			pending.clear();
 		});
 	});
