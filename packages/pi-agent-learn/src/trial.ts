@@ -109,7 +109,7 @@ const whenChecker = Compile(Type.Array(PreconditionSchema, { maxItems: LIMITS.pr
 const bad = (message: string) => new LearnError("format", message);
 /** The preconditions' size as the file prints them, which is what the file cap counts. */
 export const whenSize = (when: readonly Precondition[]): number => JSON.stringify(when, null, 2).length;
-const validStamp = (value: string) => STAMP.test(value) && new Date(value).toISOString() === value;
+const validStamp = (value: string) => STAMP.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
 
 function isJson(value: unknown, depth = 0): value is Json {
   if (depth > 8) return false;

@@ -439,6 +439,10 @@ test("the ports a curator calls: admitting, settling, and what each says", async
   assert.deepEqual(demoted.decisions.map((d) => [d.action, d.rollbackTo]), [["demote", digest]]);
   assert.equal(demoted.files[`.agents/skills/${kyb.name}/SKILL.md`], renderSkill(kyb.name, WHEN));
 
+  const badDate = await repo.commitTo("main", { files: { ".agents/skills/dated-flow/trial.json": JSON.stringify({ name: "dated-flow", status: "trial", when: [], revisions: [{ sha256: "a".repeat(64), status: "trial", since: "2026-99-16T08:00:00.000Z", run: "r", after: 0 }], uses: [] }) }, message: "damage a date" });
+  await repo.push(badDate.sha, "main");
+  const dated = await settle({ ...(await readOf(repo)), run: "r9", uses: [{ name: "dated-flow", sha256: "a".repeat(64), outcome: "frozen", at: at(17) }] });
+  assert.deepEqual(dated.decisions.map((d) => [d.name, d.action]), [["dated-flow", "hold"]], "a damaged date holds the name, never stops curation");
   // A trial.json that does not parse holds its name and leaves the rest of the run's uses to be folded.
   const broken = await repo.commitTo("main", { files: { ".agents/skills/broken-flow/trial.json": "{ nope" }, message: "damage" });
   await repo.push(broken.sha, "main");
