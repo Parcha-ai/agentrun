@@ -154,48 +154,6 @@
       ],
       "additionalProperties": false
     },
-    "LabelQuestion": {
-      "type": "object",
-      "properties": {
-        "label": {
-          "type": "string",
-          "enum": [
-            "bug",
-            "feature",
-            "docs",
-            "question"
-          ],
-          "description": "Which one type fits this issue best, going by what the issue asks for and the evidence read for it, not by who wrote it or how it is worded?",
-          "criteria": {
-            "bug": "The issue reports behaviour that contradicts the repository's own documentation or an earlier release, with a way to see it fail.",
-            "feature": "The issue asks for behaviour the project does not have, or a change to an API on purpose; nothing is broken today.",
-            "docs": "The issue is about wrong, missing or unclear documentation, a README or a guide; the code behaves as designed.",
-            "question": "The reporter asks how to use the project, or why it works as it does; no change is asked for."
-          }
-        }
-      },
-      "required": [
-        "label"
-      ],
-      "additionalProperties": false
-    },
-    "GoodFirstQuestion": {
-      "type": "object",
-      "properties": {
-        "good_first_issue": {
-          "type": "boolean",
-          "description": "Is this a good first issue: could a newcomer to the project take it and finish it without a maintainer's design decision?",
-          "criteria": {
-            "true": "The change is small and local (one file or one function), the issue names where it is, the expected result is stated or checkable by a test, and a newcomer can do it without knowing the project's design.",
-            "false": "The change spans several modules, needs a design decision from a maintainer, depends on an unreleased change or an unclear ask, or needs knowledge of the project's internals."
-          }
-        }
-      },
-      "required": [
-        "good_first_issue"
-      ],
-      "additionalProperties": false
-    },
     "Row": {
       "type": "object",
       "properties": {
@@ -369,9 +327,33 @@
         "paths"
       ]
     },
-    "ActionableQuestion": {
+    "Judgment": {
       "type": "object",
       "properties": {
+        "label": {
+          "type": "string",
+          "enum": [
+            "bug",
+            "feature",
+            "docs",
+            "question"
+          ],
+          "description": "Which one type fits this issue best, going by what the issue asks for and the evidence read for it, not by who wrote it or how it is worded?",
+          "criteria": {
+            "bug": "The issue reports behaviour that contradicts the repository's own documentation or an earlier release, with a way to see it fail.",
+            "feature": "The issue asks for behaviour the project does not have, or a change to an API on purpose; nothing is broken today.",
+            "docs": "The issue is about wrong, missing or unclear documentation, a README or a guide; the code behaves as designed.",
+            "question": "The reporter asks how to use the project, or why it works as it does; no change is asked for."
+          }
+        },
+        "good_first_issue": {
+          "type": "boolean",
+          "description": "Is this a good first issue: could a newcomer to the project take it and finish it without a maintainer's design decision?",
+          "criteria": {
+            "true": "The change is small and local (one file or one function), the issue names where it is, the expected result is stated or checkable by a test, and a newcomer can do it without knowing the project's design.",
+            "false": "The change spans several modules, needs a design decision from a maintainer, depends on an unreleased change or an unclear ask, or needs knowledge of the project's internals."
+          }
+        },
         "actionable": {
           "type": "boolean",
           "description": "Can a maintainer act on this report as written: does it give enough to start work without asking the reporter anything first?",
@@ -382,6 +364,8 @@
         }
       },
       "required": [
+        "label",
+        "good_first_issue",
         "actionable"
       ],
       "additionalProperties": false
@@ -500,42 +484,18 @@
             },
             {
               "node": "judge",
-              "label": "label",
+              "label": "triage",
               "state": {
                 "title": "{issue.title}",
                 "body": "{issue.body}",
                 "summary": "{research.summary}",
                 "reproduces": "{research.reproduces}",
+                "code_paths": "{research.code_paths}",
                 "evidence": "{research.evidence}",
                 "linked_prs": "{linked.prs}"
               },
-              "out": "LabelQuestion",
+              "out": "Judgment",
               "as": "decision"
-            },
-            {
-              "node": "judge",
-              "label": "good-first-issue",
-              "state": {
-                "title": "{issue.title}",
-                "summary": "{research.summary}",
-                "code_paths": "{research.code_paths}",
-                "evidence": "{research.evidence}"
-              },
-              "out": "GoodFirstQuestion",
-              "as": "starter"
-            },
-            {
-              "node": "judge",
-              "label": "actionable",
-              "state": {
-                "title": "{issue.title}",
-                "body": "{issue.body}",
-                "summary": "{research.summary}",
-                "reproduces": "{research.reproduces}",
-                "evidence": "{research.evidence}"
-              },
-              "out": "ActionableQuestion",
-              "as": "report"
             },
             {
               "node": "call",
@@ -564,7 +524,7 @@
               "node": "code",
               "label": "row",
               "as": "row",
-              "code": "(s) => { const label = s.decision.label; const mapped = (s.maintainer.labels || []).map((name) => s.label_map[name]).filter((value) => value !== undefined); const maintainer = mapped.length ? mapped[0] : null; return { number: s.issue.number, title: s.issue.title, url: s.issue.url, label, label_confidence: s['decision$answers'].answers.label.confidence, good_first_issue: s.starter.good_first_issue, good_first_confidence: Math.abs(s['starter$answers'].answers.good_first_issue.noul - 0.5) * 2, actionable: s.report.actionable, actionable_confidence: Math.abs(s['report$answers'].answers.actionable.noul - 0.5) * 2, evidence: s.research.evidence, maintainer_label: maintainer, agrees: maintainer === null ? null : maintainer === label }; }"
+              "code": "(s) => { const label = s.decision.label; const mapped = (s.maintainer.labels || []).map((name) => s.label_map[name]).filter((value) => value !== undefined); const maintainer = mapped.length ? mapped[0] : null; return { number: s.issue.number, title: s.issue.title, url: s.issue.url, label, label_confidence: s['decision$answers'].answers.label.confidence, good_first_issue: s.decision.good_first_issue, good_first_confidence: Math.abs(s['decision$answers'].answers.good_first_issue.noul - 0.5) * 2, actionable: s.decision.actionable, actionable_confidence: Math.abs(s['decision$answers'].answers.actionable.noul - 0.5) * 2, evidence: s.research.evidence, maintainer_label: maintainer, agrees: maintainer === null ? null : maintainer === label }; }"
             }
           ]
         }

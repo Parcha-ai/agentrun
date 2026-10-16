@@ -38,7 +38,7 @@ test('no maintainer label reaches the research agent or a judge, in its state, i
   const { result, seen } = await run();
   assert.equal(result.status, 'complete');
   assert.equal(seen.node.length, issues.length);
-  assert.equal(seen.judge.length, issues.length * 3);
+  assert.equal(seen.judge.length, issues.length, 'one request per issue: the entry caps a run at 50 judge requests');
   const labels = [...new Set(issues.flatMap((issue) => issue.labels))];
   for (const [kind, calls] of Object.entries(seen)) for (const call of calls) {
     const read = JSON.stringify(kind === 'node' ? [call.user, call.system] : [call.state, call.questions]);

@@ -10,7 +10,7 @@ It runs on scripted fakes: no key, no network, $0. **The twenty issues are synth
 
 | File | What |
 |---|---|
-| `workflow.json` | the reference workflow: a map over issue numbers; per issue `call` (issue), `call` (linked pull requests), `call` (code), `agent` (research), `judge` (type, a choice), `judge` (good first issue, a boolean), `judge` (actionable, a boolean), `call` (the maintainers' labels), `code` (the row); then the agreement. It validates and dry-runs clean. |
+| `workflow.json` | the reference workflow: a map over issue numbers; per issue `call` (issue), `call` (linked pull requests), `call` (code), `agent` (research), one `judge` that asks Jev three questions in a single request (the type, a choice; good first issue and actionable, booleans), `call` (the maintainers' labels), `code` (the row); then the agreement. It validates and dry-runs clean. |
 | `AUTHOR-PROMPT.md` | what the user says to the drafting agent: describe, inspect, dry-run, save, learn, run |
 | `fixtures.json`, `TRUTH.md` | the twenty fictional issues, the files they name, and the scripted answers (17 of 20 types agree with the maintainers') |
 | `job.ts`, `run.ts`, `demo.json` | the job and fakes, the entry call, and the spec |
@@ -19,7 +19,7 @@ It runs on scripted fakes: no key, no network, $0. **The twenty issues are synth
 
 ## The four types, as one Jev question
 
-`LabelQuestion` is one choice question. The question is the property's description; each option carries its criterion.
+The type is one choice question of the `triage` judge (`Judgment.label`). The question is the property's description; each option carries its criterion.
 
 | Type | Criterion |
 |---|---|
@@ -32,11 +32,11 @@ Only this type is scored against the maintainers' labels, and every Jev answer c
 
 ## Actionable, as one Jev question (shown, never scored)
 
-`ActionableQuestion` is one boolean (noul) question: *can a maintainer act on this report as written: does it give enough to start work without asking the reporter anything first?* **Yes**: it states what is wrong or wanted and gives enough to start (a version or setup, a way to reproduce, or a clear ask). **No**: it is missing something a maintainer must ask for before starting (a version or setup, a way to reproduce, or what is wanted). It is a column on every row. It is not scored, because the maintainers' own label for it, where a repository has one (Express's `awaiting more info`), is a *process state* (we are waiting on the reporter), not a property of the report, and scoring one against the other would measure the label's use, not Jev.
+`Judgment.actionable` is one boolean (noul) question of the same request: *can a maintainer act on this report as written: does it give enough to start work without asking the reporter anything first?* **Yes**: it states what is wrong or wanted and gives enough to start (a version or setup, a way to reproduce, or a clear ask). **No**: it is missing something a maintainer must ask for before starting (a version or setup, a way to reproduce, or what is wanted). It is a column on every row. It is not scored, because the maintainers' own label for it, where a repository has one (Express's `awaiting more info`), is a *process state* (we are waiting on the reporter), not a property of the report, and scoring one against the other would measure the label's use, not Jev.
 
 ## The good-first-issue rubric, as one Jev question
 
-`GoodFirstQuestion` is one boolean (noul) question: *is this a good first issue: could a newcomer to the project take it and finish it without a maintainer's design decision?*
+`Judgment.good_first_issue` is one boolean (noul) question of the same request: *is this a good first issue: could a newcomer to the project take it and finish it without a maintainer's design decision?*
 
 - **Yes**: the change is small and local (one file or one function), the issue names where it is, the expected result is stated or checkable by a test, and a newcomer can do it without knowing the project's design.
 - **No**: the change spans several modules, needs a design decision from a maintainer, depends on an unreleased change or an unclear ask, or needs knowledge of the project's internals.
@@ -55,7 +55,7 @@ node examples/issue-triage/pick-issues.mjs expressjs/express > input.json    # t
 ~/evals/agentrun-archil-tl/bin/with-typesafe npm run demo:issue-triage -- --live --input input.json --max-usd 2.5 --record <dir>
 ```
 
-The lead model is pi-ai's own catalog entry for `openai/gpt-6-luna` (its price included, so `--max-usd` meters real numbers) with only its base URL pointed at the scoped broker; Jev's judge is `createJevRunner` on `TYPESAFE_API_KEY`. Every GitHub call is a read-only GET. `--kill` adds the kill at the tenth label question.
+The lead model is pi-ai's own catalog entry for `openai/gpt-6-luna` (its price included, so `--max-usd` meters real numbers) with only its base URL pointed at the scoped broker; Jev's judge is `createJevRunner` on `TYPESAFE_API_KEY`. Every GitHub call is a read-only GET. `--kill` adds the kill at the tenth `triage` question.
 
 ## Choosing the repository for a live take
 
@@ -69,3 +69,7 @@ The first is the pick unless a maintainer's labelling changes before the take; t
 ### Showing an issue's text in a published recording
 
 An issue's title and body are third-party text written by a named person, and a recording is published. The live take publishes the issue's number, its URL, the two labels and the verdicts (type, good first issue, actionable), and quotes at most 200 characters from a source (the evidence field already caps it), with the source named. It publishes no username, avatar or email, and it records no issue body past the cap. A run on the live repository is read-only (GitHub's read API; no comment, label or reaction is written). The scripted run above avoids the question: its issues are fictional.
+
+### One request per issue
+
+The three questions are asked in one Jev request per issue, not three: the entry caps a run at 50 judge requests and 40,000 tokens (Jev's limits), and twenty issues at three requests each would be 60. One request also sends the issue's text once. Jev answers each question of a request against the same state, independently.
