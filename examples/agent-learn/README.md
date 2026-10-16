@@ -131,7 +131,7 @@ List every extension the agent's conversation needs in the root agent's extensio
   starts the run at that sha, seeds the run's `<learned>` section from the same sha, and puts the trials that fit `input`
   into the run's own workflow store.
 - `learnExtension` is `agentLearn` with the guard given the host's secrets and the run's input values at every call, so a
-  note that would refuse the whole proposal at the end (a made-up id that repeats the issue number, say) is refused while
+  note that would refuse the whole proposal at the end (one that repeats the issue number, say) is refused while
   the model can still restate it.
 - The model gets `learn` and the `agentrun` tool. It never commits or pushes, and the repository's `.git` is never in its
   workspace. The workflow tool's `projectDir` is the run's workspace, where `finishRun` collects what it saved.
