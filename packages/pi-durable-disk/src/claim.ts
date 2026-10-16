@@ -512,13 +512,35 @@ async function moveAside(host: Host, mountpoint: string, code: "UNMOUNT_FAILED" 
 }
 
 /**
- * Release a live mount the kernel will not unmount (Sysbox): `archil checkin` gives the delegation back, the client must
- * then list none on the run, and only then is the mount moved aside and its daemon killed. Any failed step leaves the
- * mount where it is, as UNMOUNT_FAILED: a mount that may still hold the delegation is never abandoned.
+ * Release a live mount the kernel will not unmount (Sysbox): `archil checkin` gives the delegation back, then each
+ * delegation the client still lists under the mount is checked in by its own path, until it lists none, and only then
+ * is the mount moved aside and its daemon killed. Any failed step leaves the mount where it is, as UNMOUNT_FAILED: a
+ * mount that may still hold a delegation is never abandoned.
  */
 async function checkinAndMoveAside(host: Host, mountpoint: string): Promise<void> {
   const c = await archil(host, ["checkin", mountpoint], host.timeoutMs.unmount);
   if (!ok(c)) throw new ClaimError("UNMOUNT_FAILED", `${mountpoint} cannot be unmounted on this host (ENOENT) and archil checkin failed: ${detail(c)}`);
+  // The checkin of the mountpoint can leave delegations the client holds on paths under it (a file under record/ on a
+  // box): each is checked in by its own path and the list read again, a bounded number of times.
+  for (let pass = 1; ; pass++) {
+    const listed = await activeUnder(host, mountpoint);
+    if (listed.paths && listed.paths.length === 0) break;
+    if (!listed.paths || pass > CHECKIN_PASSES) throw new ClaimError("UNMOUNT_FAILED", `${mountpoint} still lists a delegation after archil checkin: ${listed.said.trim().slice(0, 300)}`);
+    for (const path of listed.paths) await archil(host, ["checkin", path], host.timeoutMs.unmount);
+    await new Promise((r) => setTimeout(r, CHECKIN_PAUSE_MS));
+  }
+  await moveAside(host, mountpoint, "UNMOUNT_FAILED");
+}
+
+/** How many times release checks in what the client still lists under a mount before it gives up, and the pause between. */
+const CHECKIN_PASSES = 3;
+const CHECKIN_PAUSE_MS = 200;
+
+/**
+ * The paths under `mountpoint` the client lists an Active delegation on (the mountpoint itself included), or null when
+ * the list cannot be read (which counts as held); `said` is what the client printed.
+ */
+async function activeUnder(host: Host, mountpoint: string): Promise<{ paths: string[] | null; said: string }> {
   const d = await archil(host, ["delegations", "--json", mountpoint]);
   let list: unknown = null;
   try {
@@ -526,10 +548,11 @@ async function checkinAndMoveAside(host: Host, mountpoint: string): Promise<void
   } catch {
     list = null;
   }
-  const mine = (p: unknown) => p === mountpoint || (typeof p === "string" && p.startsWith(`${mountpoint}/`));
-  const held = !Array.isArray(list) || list.some((x: { path?: unknown; state?: unknown }) => x?.state === "Active" && mine(x.path));
-  if (held) throw new ClaimError("UNMOUNT_FAILED", `${mountpoint} still lists a delegation after archil checkin: ${(ok(d) ? d.stdout : detail(d)).trim().slice(0, 300)}`);
-  await moveAside(host, mountpoint, "UNMOUNT_FAILED");
+  const said = ok(d) ? d.stdout : detail(d);
+  if (!Array.isArray(list)) return { paths: null, said };
+  // Only a plain path at or under the mount, as the client names it: never one that climbs out of it.
+  const mine = (p: unknown): p is string => typeof p === "string" && (p === mountpoint || (p.startsWith(`${mountpoint}/`) && !p.split("/").includes("..")));
+  return { paths: [...new Set(list.filter((x: { path?: unknown; state?: unknown }) => x?.state === "Active" && mine(x.path)).map((x: { path: string }) => x.path))], said };
 }
 
 /**
