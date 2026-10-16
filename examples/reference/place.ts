@@ -41,7 +41,7 @@ export type Place = {
   /** Kills the runner: `process` ends the runner, `box` takes the place's machine away. The supervisor has written the kill line before it calls this. Safe on a runner that is already gone. */
   kill(runner: Runner, kind: 'process' | 'box'): Promise<void>;
   /** How the session stands, read the way the place reads it (a package's status reader), never from the store or `work/`: the supervisor is control-plane only. */
-  status?(): Promise<unknown>; // { record?: the run's record, delegations?: PlaceDelegation[] } for a place that has them
+  status?(): Promise<unknown>; // { record?: the run's record, delegations?: PlaceDelegation[], boxes?: HostBox[] } for a place that has them
   /** The next runner after a kill: a process kill restarts in the same place with the store intact; a box kill replaces the machine and restores from the last checkpoint, and says what it restored and replayed. */
   recover(last: Runner, kind: 'process' | 'box', order: RunnerOrder): Promise<{ runner: Runner; restored?: { checkpoint: string; head: number }; replayed?: { from: number; to: number }; /** A takeover that revoked the old holder's delegations (an Archil place): what was revoked, and how long the whole takeover took in ms (the revoke plus the start of the next holder). Written as a `revoke` host line. */ revoked?: PlaceDelegation[]; ms?: number }>;
   /** Takes a checkpoint at rest; reports what held it when it could not. A place that cannot lose its machine has none. */

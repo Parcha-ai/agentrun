@@ -397,11 +397,13 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const safeDelegation = <T extends { clientId: string; inodeId: string | number }>(delegation: T): T => ({ ...delegation, clientId: labelOf(clientLabels, 'client', delegation.clientId), inodeId: labelOf(inodeLabels, 'inode', String(delegation.inodeId)) });
   const labelOf = (labels: Map<string, string>, prefix: string, value: string) => { let label = labels.get(value); if (!label) { label = `${prefix}-${labels.size + 1}`; labels.set(value, label); } return label; };
   let reading: Promise<void> = Promise.resolve();
-  const readStatus = (): Promise<void> => {
+  const boxLabels = new Map<string, string>();
+  const boxReceipted = new Set<string>();
+  const readStatus = (final = false): Promise<void> => {
     if (!place.status) return Promise.resolve();
     reading = reading.then(async () => {
       try {
-        const status = (await place.status!()) as { record?: Record<string, unknown> | null; delegations?: unknown } | undefined;
+        const status = (await place.status!()) as { record?: Record<string, unknown> | null; delegations?: unknown; boxes?: unknown } | undefined;
         const record = status?.record;
         if (record && typeof record.run === 'string' && Number.isInteger(record.generation)) {
           lastGeneration = record.generation as number;
@@ -426,6 +428,24 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
           if (delegationSeen.get(id) === state) continue;
           delegationSeen.set(id, state);
           supervisor.host('delegation', { gen: lastGeneration ?? currentGen, ...safeDelegation(delegation) });
+        }
+        // The boxes the place made (a `HostBox` each, ended ones too): one `box.receipt` line per box when its `to` appears, or at the final read for one still open (`to`, `seconds` and `cost_usd` null). The box is `box-N` by first appearance, never the provider's
+        // id; `cost_usd` is seconds times the published per-second price, null when the box has none (the run's cost then reads unknown).
+        for (const entry of Array.isArray(status?.boxes) ? status!.boxes as unknown[] : []) {
+          const box = entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : undefined;
+          if (!box || typeof box.provider !== 'string' || typeof box.kind !== 'string') continue;
+          const at = (value: unknown) => (typeof value === 'number' ? value : typeof value === 'string' ? Date.parse(value) : Number.NaN);
+          const from = at(box.from);
+          const to = at(box.to);
+          const ended = Number.isFinite(to);
+          if (!Number.isFinite(from) || (!ended && !final)) continue;
+          const identity = JSON.stringify([box.provider, box.kind, box.from]);
+          const label = labelOf(boxLabels, 'box', identity);
+          if (boxReceipted.has(label)) continue;
+          boxReceipted.add(label);
+          const seconds = ended ? Math.max(0, (to - from) / 1000) : null;
+          const price = typeof box.usdPerSecond === 'number' && Number.isFinite(box.usdPerSecond) ? box.usdPerSecond : null;
+          supervisor.host('box.receipt', { box: label, provider: box.provider, kind: box.kind, from: box.from, to: ended ? box.to : null, seconds, usd_per_second: price, cost_usd: price !== null && seconds !== null ? seconds * price : null, source: typeof box.source === 'string' ? box.source.slice(0, 240) : null, priced: box.priced ?? null });
         }
       } catch { /* a reading never fails the run */ }
     });
@@ -533,7 +553,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     const last = processes.at(-1)?.outcome;
     const delivered = last && last.status === 'complete' && 'record' in last ? { record: last.record } : null;
     if (maxUsd !== null && meterKnown(recordDir) > maxUsd) overBudget = true;
-    await readStatus();
+    await readStatus(true);
     const processesStarted = processes.length;
     // The demo's result hook, reported by the process that delivered, shapes the result line and its blob; without one, the delivered record is the result.
     const made = processes.at(-1)?.outcome?.result;
