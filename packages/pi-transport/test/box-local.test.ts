@@ -236,17 +236,36 @@ describe.skipIf(!HAS_PROC)("local boxes: programs that outlive the program that 
 			expect(programsOf(box.id)).toEqual([]);
 		}));
 
-	it("destroy ends a program the box started that replaced its environment", () =>
-		withProvider(async (provider) => {
-			const box = await create(provider);
-			const started = await box.exec(["env", "-i", "/bin/sleep", "300"], undefined, context);
-			if (!started.ok) throw started.error;
-			await until(() => processesIn(box.facts().workspace).length > 0);
-			expect(programsOf(box.id)).toEqual([]);
-			await box.destroy(context);
-			await until(() => processesIn(box.facts().workspace).length === 0);
-			expect(processesIn(box.facts().workspace)).toEqual([]);
-		}));
+	// The program has replaced its environment once its own command line is what runs in the workspace: before that, the
+	// process there is the one that has not executed it yet, and it still carries the box's marker.
+	const replacedYet = (workspace: string) =>
+		processesIn(workspace).some((pid) => {
+			try {
+				return readFileSync(`/proc/${pid}/cmdline`, "latin1").startsWith("/bin/sleep\u0000300");
+			} catch {
+				return false;
+			}
+		});
+
+	for (const [label, argv] of [
+		["at once", ["env", "-i", "/bin/sleep", "300"]],
+		// The replacement comes a second after the start, as it does when a loaded machine is slow to execute it.
+		["a second after it started", ["sh", "-c", "sleep 1; exec env -i /bin/sleep 300"]],
+	] as const) {
+		it(`destroy ends a program the box started that replaced its environment ${label}`, () =>
+			withProvider(async (provider) => {
+				const box = await create(provider);
+				const started = await box.exec(argv, undefined, context);
+				if (!started.ok) throw started.error;
+				const workspace = box.facts().workspace;
+				await until(() => replacedYet(workspace), 10_000);
+				expect(replacedYet(workspace), "the program replaced its environment").toBe(true);
+				expect(programsOf(box.id)).toEqual([]);
+				await box.destroy(context);
+				await until(() => processesIn(workspace).length === 0, 10_000);
+				expect(processesIn(workspace)).toEqual([]);
+			}));
+	}
 
 	it("the watchdog ends such a program too", () =>
 		withProvider(async (provider) => {
