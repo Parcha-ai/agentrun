@@ -172,7 +172,7 @@ can reach, never through a symlink, and commits the ones that differ from what t
 trailers, then pushes it by sha. Nothing outside the allowlist is read, and nothing but that branch is written: the branch
 must hold the id, must not be `main`, `master` or the ref the session started from, and an existing branch that does not
 carry this session's trailer is refused. The directory must still be the one that was seeded (a rename and a link in its
-place is refused), and a checkout made for another remote, ref or session is never adopted.
+place is refused), and a checkout made for another remote, ref, branch or session is never adopted.
 
 Refusal is for the whole end, never a partial commit: a symlink, a device or any non-regular file at a path the allowlist
 reaches, a `.git` segment in any spelling, a file over `limits.maxFileBytes`, more than `limits.maxFiles` changes. Nothing

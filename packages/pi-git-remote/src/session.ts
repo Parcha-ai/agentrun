@@ -30,6 +30,8 @@ export type SeedRecord = {
   readonly ref: string;
   /** Identifies the remote the checkout came from: the same session on another remote never adopts it. */
   readonly remote: string;
+  /** The session branch the saved state describes: another branch never adopts it. */
+  readonly branch: string;
   /** The checkout directory's real path when it was made: a directory replaced by a link no longer matches. */
   readonly root: string;
   readonly sha: string;
@@ -137,7 +139,7 @@ async function readRecord(file: string): Promise<SeedRecord | undefined> {
   }
   const r = record as Partial<SeedRecord> | null;
   if (
-    !r || r.v !== RECORD_VERSION || typeof r.sessionId !== "string" || typeof r.ref !== "string" || typeof r.remote !== "string" || typeof r.root !== "string" ||
+    !r || r.v !== RECORD_VERSION || typeof r.sessionId !== "string" || typeof r.ref !== "string" || typeof r.remote !== "string" || typeof r.branch !== "string" || typeof r.root !== "string" ||
     typeof r.sha !== "string" || r.saved === null || typeof r.saved !== "object" || !Object.values(r.saved).every((h) => typeof h === "string")
   ) {
     throw refused("the session's seed record is not one this version wrote");
@@ -237,14 +239,14 @@ export function createSessionCheckout(options: SessionCheckoutOptions): SessionC
   async function seed(): Promise<Seeded> {
     const kept = await readRecord(options.seedFile);
     if (kept && (await directoryExists(dir))) {
-      if (kept.sessionId !== sessionId || kept.ref !== ref || kept.remote !== remote) throw refused("the checkout directory was seeded for another session, ref or remote");
+      if (kept.sessionId !== sessionId || kept.ref !== ref || kept.remote !== remote || kept.branch !== branch) throw refused("the checkout directory was seeded for another session, ref, remote or branch");
       if ((await realpath(dir)) !== kept.root) throw refused("the checkout directory is not where it was seeded");
       record = kept;
       return { sha: kept.sha, files: Object.keys(kept.saved), skipped: [], resumed: true };
     }
     const result = await repo.checkout(ref, { into: dir });
     const { hashes } = await scan(everything, () => false);
-    record = { v: RECORD_VERSION, sessionId, ref, remote, root: await realpath(dir), sha: result.sha, saved: Object.fromEntries(hashes) };
+    record = { v: RECORD_VERSION, sessionId, ref, remote, branch, root: await realpath(dir), sha: result.sha, saved: Object.fromEntries(hashes) };
     await writeRecord(options.seedFile, record);
     return { sha: result.sha, files: result.files, skipped: result.skipped, resumed: false };
   }

@@ -93,6 +93,11 @@ const MUTATIONS = [
     fails: ["session.test.mjs", "a deletion is seen when the allowlist is wider on a later start than at the seed"],
   },
   {
+    removes: "the branch in the seed record",
+    file: "dist/session.js", from: "|| kept.branch !== branch", to: "",
+    fails: ["session.test.mjs", "a checkout saved for one branch is not adopted under another branch pattern"],
+  },
+  {
     removes: "the prototype-free object for the changed paths",
     file: "dist/session.js", from: "Object.create(null)", to: "{}",
     fails: ["session.test.mjs", "a file named __proto__ is written and deleted like any other"],

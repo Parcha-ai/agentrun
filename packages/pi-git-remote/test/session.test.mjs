@@ -76,7 +76,7 @@ test("a second seed keeps the directory and the seeded commit, even after the re
 test("a directory seeded for another session or ref is refused, not adopted", async (t) => {
   const { options } = await open(t);
   await createSessionCheckout(options).seed();
-  await assert.rejects(createSessionCheckout({ ...options, ref: "dev" }).seed(), (error) => error.code === "refused" && /another session, ref or remote/.test(error.message));
+  await assert.rejects(createSessionCheckout({ ...options, ref: "dev" }).seed(), (error) => error.code === "refused" && /another session, ref, remote or branch/.test(error.message));
   await mkdir(path.join(options.checkoutDir, "extra"), { recursive: true });
   await assert.rejects(createSessionCheckout({ ...options, sessionId: "s2", seedFile: path.join(path.dirname(options.seedFile), "s2.json") }).seed(), (error) => error.code === "refused");
 });
@@ -207,7 +207,7 @@ test("a checkout made for one remote is never adopted for another", async (t) =>
   await createSessionCheckout(options).seed();
   const other = await seededRemote(path.join(root, "other"), { "notes/a.md": "alpha\n", "src/x.js": "x\n" });
   const repo = await openRepo({ dir: path.join(root, "host2"), remote: other.remote });
-  await assert.rejects(createSessionCheckout({ ...options, repo }).seed(), (error) => error.code === "refused" && /another session, ref or remote/.test(error.message));
+  await assert.rejects(createSessionCheckout({ ...options, repo }).seed(), (error) => error.code === "refused" && /another session, ref, remote or branch/.test(error.message));
 });
 
 test("a checkout directory replaced by a link is refused at the end and at a restart, and nothing is pushed", async (t) => {
@@ -283,4 +283,15 @@ test("a deletion is seen when the allowlist is wider on a later start than at th
   const outcome = await wide.end();
   assert.deepEqual([outcome.created, outcome.changed], [true, ["src/x.js"]]);
   assert.deepEqual(await treeAt(repo, outcome.sha), { "notes/a.md": "alpha\n" });
+});
+
+test("a checkout saved for one branch is not adopted under another branch pattern", async (t) => {
+  const { options, repo } = await open(t);
+  const checkout = createSessionCheckout(options);
+  await checkout.seed();
+  await writeFile(path.join(options.checkoutDir, "notes/b.md"), "beta\n");
+  await checkout.end();
+  const elsewhere = createSessionCheckout({ ...options, branch: "other/{sessionId}" });
+  await assert.rejects(elsewhere.seed(), (error) => error.code === "refused" && /another session, ref, remote or branch/.test(error.message));
+  assert.equal(await repo.resolve("other/s1"), undefined);
 });
