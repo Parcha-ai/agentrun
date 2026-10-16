@@ -112,10 +112,10 @@ recorded runs from static files. Every URL it builds is relative, so it works un
 
 | Piece | What |
 | --- | --- |
-| `page/run-page.js` | `mountRunPage(root, source, { theme })`: draws the history and the run page into `root` and keeps them current; returns `{ unmount }`. `theme` (`auto`, the default, following the system, `light` or `dark`) is `data-theme` on `root`; every color in `app.css` is a `--ar-*` token there (`--ar-bg`, `--ar-fg`, `--ar-muted`, `--ar-line`, `--ar-soft`, `--ar-accent`, `--ar-accent-soft`, `--ar-on-accent`, `--ar-ok`, `--ar-bad`, `--ar-bad-soft`, `--ar-warn`), set with no specificity, so a host overrides any of them with a rule of its own. A sandboxed file frame is told the theme's color scheme. It shows a new-run box, the message box, Stop and the Browser tab only when the source has `start`, `submit`, `stop` and `live`. A source with none of them is a replay: the page says so, reads each run once, and shows no live browser. |
+| `page/run-page.js` | `mountRunPage(root, source, { theme })`: draws the history and the run page into `root` and keeps them current; returns `{ unmount }`. `theme` (`auto`, the default, following the system, `light` or `dark`) is `data-theme` on `root`; every color in `app.css` is a `--ar-*` token there (`--ar-bg`, `--ar-fg`, `--ar-muted`, `--ar-line`, `--ar-soft`, `--ar-accent`, `--ar-accent-soft`, `--ar-on-accent`, `--ar-ok`, `--ar-bad`, `--ar-bad-soft`, `--ar-warn`), set with no specificity, so a host overrides any of them with a rule of its own. A sandboxed file frame is told the theme's color scheme. It shows a new-run box, the message box, Stop and the Browser tab only when the source has `start`, `submit`, `stop` and `live`. A source with none of them is a replay: the page says so, reads each run once, and shows no live browser. A user message over 600 characters or 8 lines shows its first 600 characters or 8 lines and a "Show the whole message" button (`aria-expanded`), live and in a replay; the state, and the keyboard focus on its button, are kept when the page repaints. What a person opened (these buttons, thinking and call rows) is closed on another run. A run record with an `input` (a replay of a recorded job) shows the run's first message as "Input", the input pretty-printed, with the message the agent got behind a "Show the message the agent got" button. |
 | `page/source.js` | The `RunSource` interface (JSDoc), `httpSource(base)` and `staticSource(base)`, and the rules both sides share: `RUN_ID`, `safePath`, `stateOf`, `costOf`. |
 | `replay.mjs` | `writeReplay(outDir, runs)`: the one writer of the static layout, which reads each run itself. `readRunEntries(storePath)`: the one reader of a run's store (the server reads a released run with it too). |
-| `pack-page.mjs` | `node examples/web/pack-page.mjs <outDir> [--data ./data/]`: the self-contained replay page. |
+| `pack-page.mjs` | `node examples/web/pack-page.mjs <outDir> [--data ./data/] [--theme auto]`: the self-contained replay page, drawn in `--theme` (`auto`, `light` or `dark`). |
 | `page/app.js`, `page/replay.js` | The two bootstraps: the server's page on `httpSource`, and a replay on `staticSource`. |
 
 A `RunSource` has `list()` (the history, newest first), `run(id)`, `timeline(id, { live, signal })` (a released run's
@@ -137,9 +137,10 @@ files?, summary? }`:
   refused: export it first. `rows` in place of `store` takes ready rows (tests).
 - `manifest`: a recording's `manifest.json` (`agentrun.recording/1`). The run's files are its result blob, as
   `result.<ext>`, and its job blob, as `job.<ext>`, out of the recording's `blobs/`, each checked against its SHA-256
-  name; nothing else (no frame, screenshot or evidence blob). The job blob names the job's input files; a recording does
-  not keep their contents. The manifest also gives the summary's title, start and end, and, only when its `providers`
-  is `"real"`, the cost.
+  name (and against the manifest's `sha256` for it, a job's `{ blob, sha256 }`, when it has one); nothing else (no frame, screenshot or evidence blob). The job blob names the job's input files; a recording does
+  not keep their contents; its `input` is written on the run record (`runs/<id>.json`, not the history's `runs.json`) for
+  the page to show as the run's input, and a job blob that is not a JSON object is refused. The manifest also gives the
+  summary's title, start and end, and, only when its `providers` is `"real"`, the cost.
 - `files`: with no manifest, a directory (dotfiles and links left out) or path to text or bytes.
 - `summary`, `run`: fields over the ones worked out (title, times, cost, `status: "done"`).
 
@@ -164,10 +165,12 @@ once, and two runs whose paths collide (ids `a` and `a.json`); every summary and
 no live view. It writes the new replay beside its directory and swaps it in, so a write that fails leaves the replay
 that was there whole. `pack-page.mjs` writes `index.html` (its Content-Security-Policy as a meta tag, since a
 static host sets no headers), `replay.js`, `run-page.js`, `source.js`, `app.css` and `timeline/`; the page reads the
-replay from the `replay-data` meta tag's address, `./data/` unless `--data` says otherwise. So:
+replay from the `replay-data` meta tag's address, `./data/` unless `--data` says otherwise, and `replay.js` mounts it in
+the `replay-theme` meta tag's theme, `auto` unless `--theme` (or `packPage`'s `theme`) says otherwise; the host ships no
+script of its own, and a theme other than `auto`, `light` or `dark` is refused. So:
 
 ```sh
-node examples/web/pack-page.mjs site/run
+node examples/web/pack-page.mjs site/run --theme dark
 # then write the replay into site/run/data with writeReplay, and serve site/ from any static host
 ```
 

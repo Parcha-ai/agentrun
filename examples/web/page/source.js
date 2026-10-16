@@ -25,7 +25,11 @@
  * @property {string | null} [error]
  */
 
-/** @typedef {RunSummary} Run */
+/**
+ * One run, as the run page heads it: its summary and, in a replay of a recorded job, the input the job was given (a JSON
+ * value), which the page shows in place of the run's first message. Never in the history's summaries.
+ * @typedef {RunSummary & { input?: unknown }} Run
+ */
 
 /**
  * The timeline as the page draws it: the rows (Grep's TimelineEvent shape, from @parcha/pi-durable-agent/timeline) in

@@ -71,6 +71,12 @@ class Element {
     this.html = null;
   }
   replaceChildren(...kids) {
+    const document = this.ownerDocument;
+    const kept = new Set(kids);
+    for (const old of this.nodes) {
+      if (kept.has(old) || !document.activeElement) continue;
+      for (let n = document.activeElement; n; n = n.parent) if (n === old) document.activeElement = null;
+    }
     this.nodes = [];
     this.children = [];
     this.append(...kids);
@@ -97,6 +103,10 @@ class Element {
   dispatchEvent(event) {
     event.target ??= this;
     for (let node = this; node; node = node.parent) for (const { type, fn } of node.listeners) if (type === event.type) fn(event);
+  }
+  /** The document's focus: set here, and dropped when the element leaves the page, as a browser drops it. */
+  focus() {
+    this.ownerDocument.activeElement = this;
   }
   click() {
     this.dispatchEvent({ type: "click", preventDefault() {} });
@@ -157,7 +167,7 @@ export function fakeDom({ hash = "#/" } = {}) {
     pending: () => timers.size + intervals.size,
     hashListeners: () => listeners.filter((l) => l.type === "hashchange").length,
   };
-  const document = { defaultView: window, createElement: (tag) => new Element(document, tag) };
+  const document = { defaultView: window, activeElement: null, createElement: (tag) => new Element(document, tag) };
   return { document, window, root: document.createElement("div") };
 }
 

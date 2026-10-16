@@ -50,8 +50,10 @@ const HASH = /^[0-9a-f]{64}$/;
 
 /**
  * A recording's files for its replay: the manifest's result blob as `result.<ext>` and its job blob as `job.<ext>`, out of
- * the recording's `blobs/`, each checked against its SHA-256 name. Nothing else: no frame, screenshot or evidence blob.
- * The job blob names the job's input files; a recording does not keep their contents.
+ * the recording's `blobs/`, each checked against its SHA-256 name, and against the manifest's `sha256` for it when it has
+ * one (a job's `{ blob, sha256 }`). Nothing else: no frame, screenshot or evidence blob.
+ * The job blob names the job's input files; a recording does not keep their contents. Its `job` is the job blob parsed
+ * (`{ workflow, input, files }`), so a replay can show the input the run was given; a job blob that is not JSON is refused.
  */
 export async function recordingFiles(manifestPath) {
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
@@ -59,16 +61,27 @@ export async function recordingFiles(manifestPath) {
   const blobs = join(dirname(manifestPath), "blobs");
   const names = await readdir(blobs).catch(() => []);
   const files = {};
+  let job;
   for (const [name, ref] of [["result", manifest.result], ["job", manifest.job]]) {
     if (!ref) continue;
     if (!HASH.test(ref.blob ?? "")) throw new Error(`${manifestPath}: the ${name} blob is not a SHA-256`);
     const found = names.filter((file) => file.startsWith(`${ref.blob}.`) && /^\.[a-z0-9]+$/.test(file.slice(64)));
     if (found.length !== 1) throw new Error(`${manifestPath}: the ${name} blob ${ref.blob} is not in blobs/ once`);
     const bytes = await readFile(join(blobs, found[0]));
-    if (createHash("sha256").update(bytes).digest("hex") !== ref.blob) throw new Error(`${manifestPath}: the ${name} blob does not match its SHA-256`);
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    if (digest !== ref.blob) throw new Error(`${manifestPath}: the ${name} blob does not match its SHA-256`);
+    if (ref.sha256 !== undefined && ref.sha256 !== digest) throw new Error(`${manifestPath}: the ${name}'s sha256 is not the SHA-256 of its blob`);
     files[`${name}${found[0].slice(64)}`] = bytes;
+    if (name === "job") {
+      try {
+        job = JSON.parse(bytes.toString("utf8"));
+      } catch {
+        throw new Error(`${manifestPath}: the job blob is not JSON`);
+      }
+      if (job === null || typeof job !== "object" || Array.isArray(job)) throw new Error(`${manifestPath}: the job blob is not a JSON object`);
+    }
   }
-  return { manifest, files };
+  return { manifest, files, job };
 }
 
 /** A directory's files as path -> bytes: no dotfile, no symlink, nothing outside it. */
@@ -92,7 +105,8 @@ async function filesOf(dir, base = dir, out = {}) {
  *   requests with no dollar figure
  * @property {string | Record<string, string | Uint8Array>} [files] without a manifest: a directory, or path -> content
  * @property {Partial<import("./page/source.js").RunSummary>} [summary] fields over the ones the replay works out
- * @property {Partial<import("./page/source.js").Run>} [run] as the run page heads it (default: the summary)
+ * @property {Partial<import("./page/source.js").Run>} [run] as the run page heads it (default: the summary, and the
+ *   recording's job `input` when its manifest has a job blob)
  */
 
 /** A usage row with no dollar figure: what a replay shows when its run's cost is not known to be real. */
@@ -144,7 +158,8 @@ async function readRun(input) {
     costUsd: m?.providers === "real" ? (m.cost?.usd ?? null) : null,
     ...input.summary,
   });
-  return { id, rows: summary.costUsd == null ? rows.map(countOnly) : rows, files, summary, run: released({ ...summary, ...input.run }) };
+  const given = recording?.job?.input;
+  return { id, rows: summary.costUsd == null ? rows.map(countOnly) : rows, files, summary, run: released({ ...summary, ...(given == null ? {} : { input: given }), ...input.run }) };
 }
 
 /**

@@ -101,6 +101,23 @@ export const THEMES = ["auto", "light", "dark"];
 /** What a sandboxed file frame's document is told its colors are, so it is not painted light on a dark page. */
 const FRAME_SCHEME = { auto: "light dark", light: "light", dark: "dark" };
 
+/** A user message is folded past this many characters or lines. */
+const FOLD_CHARS = 600;
+const FOLD_LINES = 8;
+
+/** The part of a long message the page shows folded: its first FOLD_LINES lines, cut to FOLD_CHARS characters (never
+ *  between the halves of a surrogate pair), then an ellipsis; null when the message is short enough to show whole. */
+export function messageHead(text) {
+  const lines = text.split("\n");
+  if (text.length <= FOLD_CHARS && lines.length <= FOLD_LINES) return null;
+  let head = lines.slice(0, FOLD_LINES).join("\n");
+  if (head.length > FOLD_CHARS) {
+    const end = /[\ud800-\udbff]/.test(head[FOLD_CHARS - 1]) ? FOLD_CHARS - 1 : FOLD_CHARS;
+    head = head.slice(0, end);
+  }
+  return `${head}…`;
+}
+
 /** Agent HTML for a sandboxed frame, told the page's color scheme: the meta goes after a doctype, so the document keeps
  *  its mode. */
 function themedFrame(html, theme) {
@@ -184,7 +201,7 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
   root.dataset.tab = "timeline";
   root.setAttribute("data-theme", theme);
 
-  const ui = { id: null, info: null, rows: [], state: "idle", cost: null, open: new Set(), follow: null, timer: null, sig: "", file: null, files: new Set(), filesSig: "", browserKey: "", shown: false, secs: new Map(), liveSince: new Map(), blobs: [] };
+  const ui = { id: null, info: null, rows: [], state: "idle", cost: null, open: new Set(), folds: new Map(), follow: null, timer: null, sig: "", file: null, files: new Set(), filesSig: "", browserKey: "", shown: false, secs: new Map(), liveSince: new Map(), blobs: [] };
   const timers = new Set();
   const later = (fn, ms) => {
     const t = win.setTimeout(() => (timers.delete(t), fn()), ms);
@@ -233,10 +250,50 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
     return known ? el("div", { class: "row file" }, "Saved ", el("a", { href: fileHref(known) }, known)) : null;
   }
 
+  /** A button that folds and unfolds something, its state in `ui.open` under `key` so a repaint keeps it (and `ui.folds`
+   *  holds the button drawn for `key`, so the repaint can hand its focus on); `apply(open)` draws the state. The same
+   *  button stays through a click, so the focus does. */
+  function foldButton(key, [closed, opened], apply) {
+    const button = btn({ class: "fold" });
+    ui.folds.set(key, button);
+    const sync = () => {
+      const open = ui.open.has(key);
+      button.setAttribute("aria-expanded", String(open));
+      button.textContent = open ? opened : closed;
+      apply(open);
+    };
+    button.addEventListener("click", () => {
+      if (ui.open.has(key)) ui.open.delete(key);
+      else ui.open.add(key);
+      sync();
+    });
+    sync();
+    return button;
+  }
+
+  /** The person's message: whole when short, else its head with a toggle for the rest. */
+  function userMessage(r) {
+    const text = r.text ?? r.summary ?? "";
+    const head = messageHead(text);
+    if (head === null) return el("div", { class: "row user" }, text);
+    const body = el("div", { class: "msg" });
+    return el("div", { class: "row user" }, body, foldButton(`${r.id}:whole`, ["Show the whole message", "Show less"], (open) => (body.textContent = open ? text : head)));
+  }
+
+  /** A recorded job's first message, shown as the input the job was given; the message the agent got is behind a toggle. */
+  function inputRow(r, input) {
+    const sent = el("div", { class: "msg", hidden: true });
+    const button = foldButton(`${r.id}:sent`, ["Show the message the agent got", "Hide the message the agent got"], (open) => {
+      sent.hidden = !open;
+      sent.replaceChildren(...(open ? [r.text ?? r.summary ?? ""] : []));
+    });
+    return el("div", { class: "row user input" }, el("div", { class: "tag" }, "Input"), el("pre", {}, JSON.stringify(input, null, 2)), button, sent);
+  }
+
   function rowNode(r) {
     switch (r.kind) {
       case "user_message":
-        return el("div", { class: "row user" }, r.text ?? r.summary);
+        return ui.info?.input != null && r.id === ui.rows.find((x) => x.kind === "user_message")?.id ? inputRow(r, ui.info.input) : userMessage(r);
       case "thinking":
         return thinking(r);
       case "text_block":
@@ -265,7 +322,10 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
       queued = false;
       const box = p.steps;
       const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+      const held = [...ui.folds].find(([, button]) => button === doc.activeElement)?.[0];
+      ui.folds = new Map();
       box.replaceChildren(...groupTimeline(ui.rows.filter((r) => r.kind !== "usage")).map(item).filter(Boolean));
+      if (held !== undefined) ui.folds.get(held)?.focus({ preventScroll: true });
       if (stick) box.scrollTop = box.scrollHeight;
       paintHead();
     });
@@ -344,7 +404,7 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
 
   function openRun() {
     closeRun();
-    Object.assign(ui, { info: null, rows: [], state: "idle", cost: null, sig: "", file: null, files: new Set(), filesSig: "", browserKey: "", shown: false, secs: new Map(), liveSince: new Map() });
+    Object.assign(ui, { info: null, rows: [], open: new Set(), state: "idle", cost: null, sig: "", file: null, files: new Set(), filesSig: "", browserKey: "", shown: false, secs: new Map(), liveSince: new Map() });
     p.view.hidden = true;
     p.run.hidden = false;
     for (const node of [p.steps, p.files, p.browser, p.title, p.pill, p.cost, p.err]) node.replaceChildren();
