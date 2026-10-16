@@ -446,10 +446,11 @@ export function baselineViewOf(label: string, other: Recording): BaselineView {
 /** What the shell hands a panel's view at a stop: the time, the run's own providers (`real` or `scripted`) when its manifest says, and
  *  the view inputs it holds: the focus, the baseline the manifest names, the selected citation, the result's JSON blobs read so far, and the
  *  playback clock (`now`, the time of the point at a stop). */
-export function viewContext(t: number, manifest: Manifest, inputs: { focus?: string; baseline?: BaselineView; cite?: string; json?: Map<string, Json>; now?: number; following?: boolean } = {}): ViewContext {
-  const { focus, baseline, cite, json, now, following } = inputs;
+export function viewContext(t: number, manifest: Manifest, inputs: { focus?: string; baseline?: BaselineView; cite?: string; json?: Map<string, Json>; now?: number; following?: boolean; blobType?: (sha: string) => string | undefined } = {}): ViewContext {
+  const { focus, baseline, cite, json, now, following, blobType } = inputs;
   return { t, now: now ?? t, ...(focus ? { focus } : {}), ...(baseline ? { baseline } : {}), ...(manifest.providers ? { providers: manifest.providers } : {}),
-    ...(cite !== undefined ? { cite } : {}), ...(json ? { json: (sha: string) => json.get(sha) } : {}), ...(following ? { following: true as const } : {}) };
+    ...(cite !== undefined ? { cite } : {}), ...(json ? { json: (sha: string) => json.get(sha) } : {}), ...(following ? { following: true as const } : {}),
+    ...(blobType ? { blobType } : {}) };
 }
 
 /** The chapter a point is in: the one with the greatest stop at or before it (a manifest's chapters keep the order it
@@ -683,7 +684,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     const drawn = (panel: Panel<unknown>) => {
       const state = cachedReduce(panel, lines, player.p, cacheOf(panel.id) as Map<number, never>);
       const section = el('section', { class: 'panel' }, el('h3', { text: panel.title }),
-        renderNode(panel.view(state, viewContext(t, recording.manifest, { focus: player.focus, baseline, cite: player.cite, json, now: head.clock, following })), player, frames, t, setFocus, setCite));
+        renderNode(panel.view(state, viewContext(t, recording.manifest, { focus: player.focus, baseline, cite: player.cite, json, now: head.clock, following, blobType: (sha) => recording.blobType(sha) })), player, frames, t, setFocus, setCite));
       sections.set(panel.id, section);
       return section;
     };

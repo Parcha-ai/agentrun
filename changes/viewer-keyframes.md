@@ -1,0 +1,5 @@
+---
+packages: repo
+kind: feature
+---
+The run viewer draws the pictures a cited result names (`apps/viewer`): a row of an `agentrun.cited/1` result that cites a file which is a picture in the recording's `blobs/` (PNG, JPEG, WebP or GIF) shows it as a small thumbnail, several side by side; any other file stays a link. A window of film the eyes saw as video, with no picture of its own, shows the keyframes the rows cite beside it, each captioned as that chapter's keyframe and noted as not what the eyes saw; a page keeps its own scan. Pictures come only from the recording. A panel's view reads a blob's media type through `ViewContext.blobType`.
