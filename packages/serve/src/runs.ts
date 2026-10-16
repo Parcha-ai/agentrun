@@ -3,10 +3,11 @@
 // sent SIGTERM; once its process has exited it is carried back to its agent home (`carryBack`), and it is finished.
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { closeSync, openSync } from "node:fs";
+import { open as openFile, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { carryBack, startRun } from "@parcha/pi-durable-agent";
+import { AgentHomeError, carryBack, startRun } from "@parcha/pi-durable-agent";
 import { registerLabel, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { type AgentEntry, type Agents, homeError } from "./agents.js";
 import { ASK_TOOL } from "./app.js";
@@ -22,10 +23,22 @@ const RELEASED = new Set(["sleeping", "paused", "done", "failed"]);
 const LEASE_MS = 90_000;
 const HOST = "agentrun-serve";
 const META = "serve.json";
+/** The run process's stderr, beside run.json: a file, so the process outlives a server that stops without stopping it. */
+const PROCESS_LOG = "process.log";
 const QUIET = /:run:(start|end)$/;
 const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+};
+/** Waits between carry backs that found the home busy: each attempt itself waits 5 s for the home's lock. */
+const CARRY_BACK_RETRIES_MS = [500, 1_000, 2_000, 4_000, 8_000];
 const readJson = (path: string) => readFile(path, "utf8").then((text) => JSON.parse(text) as Json, () => null);
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 const isLoopback = (host: string) => host === "localhost" || host === "[::1]" || host === "::1" || /^127\./.test(host);
@@ -54,6 +67,8 @@ export type Run = {
   /** The whole text of the run's newest assistant message: a row's text is cut at 2000 characters, an output is not. */
   answerText?: string;
   child?: ChildProcess;
+  /** The pid of a run process an earlier server started that still serves the run: supervised by its run.json. */
+  orphan?: number;
   feed?: AbortController;
   working: boolean;
   /** Messages this server sent the run that its rows do not show yet. */
@@ -68,7 +83,6 @@ export type Run = {
   settled: boolean;
   settling?: Promise<void>;
   updatedAt: string;
-  stderr: string;
 };
 
 const ASKED = "Asked you: ";
@@ -134,7 +148,21 @@ export function statusOf(run: Run): { status: Status; state: State } {
   return { status: "working", state: "idle" };
 }
 
-export type RunsOptions = { agents: Agents; doorTokenFile: string; doorToken: string; faux?: string; verbose?: boolean; drainTimeout?: string };
+export type RunsOptions = { agents: Agents; doorTokenFile: string; doorToken: string; faux?: string; drainTimeout?: string };
+
+/** The last line of the run process's log, for a failure's message. */
+async function lastLogLine(run: Run): Promise<string> {
+  const file = await openFile(join(run.dir, PROCESS_LOG)).catch(() => null);
+  if (!file) return "";
+  try {
+    const { size } = await file.stat();
+    const length = Math.min(size, 4096);
+    const { buffer } = await file.read(Buffer.alloc(length), 0, length, size - length);
+    return clip(buffer.toString("utf8").trim().split("\n").at(-1) ?? "", 300);
+  } finally {
+    await file.close();
+  }
+}
 
 export class Runs {
   private readonly runs = new Map<string, Run>();
@@ -191,13 +219,13 @@ export class Runs {
       run.endedAt = index.endedAt;
       if (run.outcome === "failed") run.error = { code: meta.error?.code ?? "run_failed", message: meta.error?.message ?? "The run failed.", retryable: false };
       run.settled = true;
-    } else if (this.doorOf(record)) this.connect(run);
+    } else if (record && this.doorOf(record)) this.adoptProcess(run, record);
     this.refresh(run);
     return run;
   }
 
   private blank(id: string, agentId: string, dir: string, meta: RunMeta): Run {
-    return { id, agentId, dir, meta, log: new RowLog(this.clock), rows: [], working: false, submitted: 0, stopped: false, cancel: false, settled: false, updatedAt: meta.created_at, stderr: "" };
+    return { id, agentId, dir, meta, log: new RowLog(this.clock), rows: [], working: false, submitted: 0, stopped: false, cancel: false, settled: false, updatedAt: meta.created_at };
   }
 
   private record(run: Run): Promise<Json | null> {
@@ -238,30 +266,37 @@ export class Runs {
     this.refresh(run);
   }
 
+  /** A live process: the child this server started, or one an earlier server started that still serves the run. */
+  private live(run: Run): boolean {
+    return Boolean(run.child || run.orphan);
+  }
+
+  /** How the run ends, from its rows: over its cap, a model error, or an answer (checked against an output_schema).
+   *  Undefined while it works, or when it stopped, waits or parked. */
+  private decide(run: Run): { outcome: Status; error?: RunError; abort?: boolean } | undefined {
+    const cap = run.meta.max_cost_usd;
+    const cost = costOf(run.rows);
+    if (cap !== undefined && cost !== null && cost > cap) return { outcome: "failed", abort: true, error: { code: "spend_cap_reached", message: `The run cost $${cost.toFixed(4)}, over its cap of $${cap}.`, retryable: false } };
+    if (run.working || run.submitted > 0) return undefined;
+    const last = meaningful(run.rows);
+    if (last?.kind === "error") return { outcome: "failed", error: { code: "run_failed", message: last.text ?? last.summary ?? "The run failed.", retryable: false } };
+    const answer = run.stopped ? undefined : answerOf(run.rows);
+    if (!answer) return undefined;
+    const schema = run.meta.output_schema;
+    const output = schema ? outputOf(run.answerText ?? answer.text) : undefined;
+    const issues = schema ? (output ? outputIssues(output, schema) : [{ message: "the final answer is not a JSON object" }]) : [];
+    if (!issues.length) return { outcome: "completed" };
+    return { outcome: "failed", error: { code: "output_invalid", message: `The run's final answer is not an output its agent's output_schema takes: ${issues.map((i) => i.message).join("; ")}.`, retryable: false } };
+  }
+
   /** Records the run's status as a change when it moves, and lets go of a live run that answered, failed or is over its cap. */
   private refresh(run: Run): void {
     this.mark(run);
-    if (!run.child || run.finishing || run.outcome) return;
-    const cap = run.meta.max_cost_usd;
-    const cost = costOf(run.rows);
-    if (cap !== undefined && cost !== null && cost > cap) {
-      run.error = { code: "spend_cap_reached", message: `The run cost $${cost.toFixed(4)}, over its cap of $${cap}.`, retryable: false };
-      return this.finish(run, "failed", true);
-    }
-    if (run.working || run.submitted > 0) return;
-    const last = meaningful(run.rows);
-    if (last?.kind === "error") {
-      run.error = { code: "run_failed", message: last.text ?? last.summary ?? "The run failed.", retryable: false };
-      this.finish(run, "failed");
-    } else if (!run.stopped && answerOf(run.rows)) {
-      const answer = answerOf(run.rows)!;
-      const schema = run.meta.output_schema;
-      const output = schema ? outputOf(run.answerText ?? answer.text) : undefined;
-      const issues = schema ? (output ? outputIssues(output, schema) : [{ message: "the final answer is not a JSON object" }]) : [];
-      if (!issues.length) return this.finish(run, "completed");
-      run.error = { code: "output_invalid", message: `The run's final answer is not an output its agent's output_schema takes: ${issues.map((i) => i.message).join("; ")}.`, retryable: false };
-      this.finish(run, "failed");
-    }
+    if (!this.live(run) || run.finishing || run.outcome) return;
+    const end = this.decide(run);
+    if (!end) return;
+    if (end.error) run.error = end.error;
+    this.finish(run, end.outcome, end.abort);
   }
 
   /** Let go of a live run with `outcome`: SIGTERM, after aborting its turn when it is still working. */
@@ -269,7 +304,43 @@ export class Runs {
     run.finishing = outcome;
     run.endedAt = new Date().toISOString();
     this.mark(run);
-    void (abortFirst ? this.abortTurn(run) : Promise.resolve()).then(() => run.child?.kill("SIGTERM"));
+    void (abortFirst ? this.abortTurn(run) : Promise.resolve()).then(() => this.terminate(run));
+  }
+
+  /** SIGTERM to the run's process: it drains, releases the run and exits. */
+  private terminate(run: Run): void {
+    if (run.child) run.child.kill("SIGTERM");
+    else if (run.orphan && alive(run.orphan)) process.kill(run.orphan, "SIGTERM");
+  }
+
+  /** Supervise a run process an earlier server started: follow its door, and settle the run once its run.json says it
+   *  let go (released, or its lease lapsed) or the process is gone. */
+  private adoptProcess(run: Run, record: Json): void {
+    const pid = isObject(record.holder) && Number.isSafeInteger(record.holder.pid) ? (record.holder.pid as number) : undefined;
+    if (!pid) return;
+    run.orphan = pid;
+    this.connect(run);
+    const timer = setInterval(() => {
+      void this.record(run).then((now) => {
+        if (run.orphan !== pid || (this.doorOf(now) && alive(pid))) return;
+        clearInterval(timer);
+        run.orphan = undefined;
+        void this.settle(run, null, !alive(pid) && !RELEASED.has(String(now?.status)));
+      });
+    }, 500);
+    timer.unref();
+  }
+
+  /** At start: every run of every agent that is not carried back is read, supervised when its process lives, and
+   *  carried back when it already ended. Nothing is woken. */
+  async recover(entries: AgentEntry[]): Promise<void> {
+    for (const entry of entries) {
+      for (const [id, index] of Object.entries(entry.state.runs)) {
+        if (index.endedAt) continue;
+        const run = await this.adopt(entry, id).catch(() => null);
+        if (run && !this.live(run) && !run.outcome) await this.settle(run, null, false);
+      }
+    }
   }
 
   /** The run's status, state and whether its rows are all in, as one more change of its log when any of them moves. */
@@ -293,7 +364,7 @@ export class Runs {
       while (!abort.signal.aborted) {
         const door = this.doorOf(await this.record(run));
         if (door) await this.follow(run, door, abort.signal).catch(() => undefined);
-        if (abort.signal.aborted || (!run.child && !this.doorOf(await this.record(run)))) break;
+        if (abort.signal.aborted || (!this.live(run) && !this.doorOf(await this.record(run)))) break;
         await sleep(200);
       }
       if (run.feed === abort) run.feed = undefined;
@@ -342,8 +413,8 @@ export class Runs {
       const record = await this.record(run);
       const door = this.doorOf(record);
       if (door) return door;
-      if (!run.child) {
-        if (launched) throw new ApiError("internal", `the run's process exited before it served: ${clip(run.stderr.trim().split("\n").at(-1) ?? "", 300)}`);
+      if (!this.live(run)) {
+        if (launched) throw new ApiError("internal", `the run's process exited before it served: ${await lastLogLine(run)}`);
         const fresh = record?.status === "running" && typeof record.heartbeatAt === "string" && Date.now() - Date.parse(record.heartbeatAt) < LEASE_MS;
         if (!fresh) this.launch(run), (launched = true);
       }
@@ -385,18 +456,16 @@ export class Runs {
   private launch(run: Run): void {
     if (run.child || this.closing || run.cancel) return;
     const env: NodeJS.ProcessEnv = { ...process.env, ...(this.options.faux ? { [FAUX_ENV]: this.options.faux } : {}), ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}) };
+    const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
     const child = spawn(process.execPath, [
       "--no-warnings=ExperimentalWarning", this.cli, "run", "--dir", run.dir, "--app", this.app,
       "--serve", "0", "--serve-host", "127.0.0.1", "--serve-token-file", this.options.doorTokenFile, "--drain-timeout", this.options.drainTimeout ?? "30s",
-    ], { stdio: ["ignore", "ignore", "pipe"], env });
+    ], { stdio: ["ignore", "ignore", log], env });
+    closeSync(log);
     run.child = child;
-    child.stderr?.on("data", (chunk: Buffer) => {
-      run.stderr = (run.stderr + chunk.toString("utf8")).slice(-4096);
-      if (this.options.verbose) process.stderr.write(`[run ${run.id}] ${chunk.toString("utf8")}`);
-    });
     child.once("exit", (code) => {
       if (run.child === child) run.child = undefined;
-      void this.settle(run, code);
+      void this.settle(run, code, true);
     });
     child.once("error", () => void (run.child === child && (run.child = undefined)));
     this.connect(run);
@@ -404,14 +473,15 @@ export class Runs {
 
   /** After the run's process exited: its rows from its released store, then, when it is over, its carry back. One at
    *  a time per run, and none once the run has its outcome. */
-  private settle(run: Run, code: number | null): Promise<void> {
+  private settle(run: Run, code: number | null, exited: boolean): Promise<void> {
     run.settling = (run.settling ?? Promise.resolve())
-      .then(() => (run.outcome ? undefined : this.settleOnce(run, code)))
+      .then(() => (run.outcome ? undefined : this.settleOnce(run, code, exited)))
       .catch((error: Error) => void process.stderr.write(`agentrun-serve: run ${run.id}: ${error.message}\n`));
     return run.settling;
   }
 
-  private async settleOnce(run: Run, code: number | null): Promise<void> {
+  /** `exited`: the process this server supervised exited; without a release that fails the run. */
+  private async settleOnce(run: Run, code: number | null, exited: boolean): Promise<void> {
     run.feed?.abort();
     run.feed = undefined;
     run.working = false;
@@ -421,22 +491,36 @@ export class Runs {
     let outcome: Status | undefined;
     if (run.cancel) outcome = "cancelled";
     else if (run.finishing) outcome = run.finishing;
-    else if (!released) {
+    else if (exited && !released) {
       outcome = "failed";
-      run.error = { code: "run_failed", message: `The run's process exited (${code ?? "signal"}) without releasing the run: ${clip(run.stderr.trim().split("\n").at(-1) ?? "", 300)}`, retryable: false };
+      run.error = { code: "run_failed", message: `The run's process exited (${code ?? "signal"}) without releasing the run: ${await lastLogLine(run)}`, retryable: false };
+    } else if (!this.doorOf(record)) {
+      const end = this.decide(run);
+      if (end?.error) run.error = end.error;
+      outcome = end?.outcome;
     }
     if (!outcome) return this.refresh(run);
-    const entry = await this.options.agents.get(run.agentId);
+    const entry = await this.agentWhenFree(run.agentId);
     const answer = answerOf(run.rows);
     const cost = costOf(run.rows);
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message };
     await writeFile(join(run.dir, META), `${JSON.stringify(run.meta)}\n`, { mode: 0o600 });
     if (entry) {
-      await carryBack(entry.home, { runId: run.id }, {
-        outcome,
-        ...(outcome === "completed" && answer ? { finalAnswer: clip(answer.text ?? answer.summary ?? "", 2000) } : {}),
-        ...(cost === null ? {} : { cost }),
-      }).catch(homeError);
+      // A home held by another writer is tried again with backoff; past the last try the run stays unsettled, and the
+      // next start carries it back.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await carryBack(entry.home, { runId: run.id }, {
+            outcome,
+            ...(outcome === "completed" && answer ? { finalAnswer: clip(answer.text ?? answer.summary ?? "", 2000) } : {}),
+            ...(cost === null ? {} : { cost }),
+          });
+          break;
+        } catch (error) {
+          if (!(error instanceof AgentHomeError && error.code === "busy") || attempt >= CARRY_BACK_RETRIES_MS.length) throw error;
+          await sleep(CARRY_BACK_RETRIES_MS[attempt]!);
+        }
+      }
       this.options.agents.forget(run.agentId);
       run.endedAt = (await this.options.agents.get(run.agentId))?.state.runs[run.id]?.endedAt ?? run.endedAt ?? new Date().toISOString();
     }
@@ -445,6 +529,18 @@ export class Runs {
     run.settled = true;
     run.updatedAt = new Date().toISOString();
     this.refresh(run);
+  }
+
+  /** The agent, read again while another writer holds its home, within the carry back's retries. */
+  private async agentWhenFree(id: string): Promise<AgentEntry | null> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.options.agents.get(id);
+      } catch (error) {
+        if (!(error instanceof ApiError && error.code === "home_busy") || attempt >= CARRY_BACK_RETRIES_MS.length) throw error;
+        await sleep(CARRY_BACK_RETRIES_MS[attempt]!);
+      }
+    }
   }
 
   // ---- acting ---------------------------------------------------------------------------------------------------------
@@ -472,8 +568,8 @@ export class Runs {
     void this.submit(run, options.content, "followUp", `first-${id}`).catch((error: Error) => {
       run.submitted = 0;
       run.error = { code: "run_failed", message: error.message, retryable: false };
-      if (run.child) this.finish(run, "failed");
-      else if (!run.cancel) void this.settle(run, null);
+      if (this.live(run)) this.finish(run, "failed");
+      else if (!run.cancel) void this.settle(run, null, true);
     });
     return run;
   }
@@ -505,7 +601,7 @@ export class Runs {
   /** Abort the turn that is running; the run stays open, `input_required` and idle. */
   async stop(run: Run): Promise<boolean> {
     const { status, state } = statusOf(run);
-    if (!run.child || !(status === "working" && state === "working") || run.submitted > 0) return false;
+    if (!this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return false;
     // Set before the abort: the turn's end can arrive before the door answers, and must not read as an answer.
     run.stopped = true;
     const answer = await this.toDoor(run, "/abort", {}).catch(() => null);
@@ -522,11 +618,11 @@ export class Runs {
   async cancel(run: Run): Promise<boolean> {
     if (run.outcome) return false;
     run.cancel = true;
-    if (run.child) {
+    if (this.live(run)) {
       // The turn is aborted first, so the drain that SIGTERM starts does not wait for it.
       await this.abortTurn(run);
-      run.child?.kill("SIGTERM");
-    } else await this.settle(run, null);
+      this.terminate(run);
+    } else await this.settle(run, null, false);
     return true;
   }
 
@@ -538,6 +634,10 @@ export class Runs {
       setTimeout(() => run.child?.exitCode === null && run.child.kill("SIGKILL"), 45_000).unref();
     }
     await Promise.all(live.map((run) => new Promise((resolve) => (run.child ? run.child.once("exit", resolve) : resolve(undefined)))));
+    // An adopted process is stopped the same way, and watched by its pid.
+    const adopted = [...this.runs.values()].filter((run) => run.orphan && alive(run.orphan));
+    for (const run of adopted) this.terminate(run);
+    for (const deadline = Date.now() + 45_000; adopted.some((run) => run.orphan && alive(run.orphan)) && Date.now() < deadline; ) await sleep(100);
     await sleep(0);
     await Promise.all([...this.runs.values()].map((run) => run.settling));
     for (const run of this.runs.values()) run.feed?.abort();

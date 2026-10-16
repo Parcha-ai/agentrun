@@ -23,6 +23,7 @@ export default function reply(context, faux) {
     return faux.message(faux.toolCall("write", { path: "report.md", content: "# Report\n\nThe answer is 42.\n" }), { stopReason: "toolUse" });
   }
   if (first.includes("Take your time") && users.length === 1) return slow(faux, 60_000, "Done slowly.");
+  if (first.includes("Answer soon") && users.length === 1) return slow(faux, 1_500, "Soon.");
   if (first.includes("Fail")) return faux.message("", { stopReason: "error", errorMessage: "the faux model failed on purpose" });
   if (first.includes("as JSON")) return faux.message(first.includes("wrongly") ? '{"answer": "forty-two"}' : '```json\n{"answer": 42}\n```');
   return faux.message(`On ${last}: done.`);

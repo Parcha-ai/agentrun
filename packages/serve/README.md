@@ -51,7 +51,6 @@ Without a model, capabilities name none and a run is refused with `409 agent_not
 | `--port N` | `7340` | The port on 127.0.0.1. `0` is any free port. |
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
 | `--allow-host NAME` | none | Another `Host` name to accept. Repeat it. |
-| `--verbose` | off | Forward each run process's stderr. |
 
 ## What it serves
 
@@ -75,7 +74,7 @@ here (`null`), and runs carry no browser sign-ins (`sign_ins: false`).
 
 1. `POST /agents/{id}/runs` starts the run in the home (`startRun`, host `agentrun-serve`), then its process:
    `pi-durable-disk run --dir <home>/runs/<id> --app <this package's app> --serve 0` on loopback, behind a token of its
-   own (`DIR/.door-token`). The run is `queued` until its first message shows.
+   own (`DIR/.door-token`), with its stderr in `runs/<id>/process.log`. The run is `queued` until its first message shows.
 2. The app gives the agent its definition's instructions and skills, the model this server binds, and the tools the
    definition names: the workspace's `read`, `write` and `edit`, and `ask_person`, which ends the turn; the timeline
    then shows a `waiting` row, and the run is `input_required` and `waiting` until a message answers it. `bash` is not
@@ -85,6 +84,14 @@ here (`null`), and runs carry no browser sign-ins (`sign_ins: false`).
    exited, the run's rows are read from its released store, and `carryBack` records its outcome, answer and cost in the
    home. The run is `completed` and its last page says `final`. A model error ends it `failed` (`run_failed`), and a
    run whose cost estimate passes its `max_cost_usd` ends `failed` (`spend_cap_reached`).
+
+5. When the server starts, it reads every run of every agent that is not carried back yet. A run process an earlier
+   server started and that still serves the run is supervised again, by its `run.json` and its pid; a run that already
+   ended is carried back. A carry back that finds the home held by another writer is tried again with backoff, and at
+   the next start.
+
+An `Idempotency-Key` answer is kept in `DATA/.idempotency.json` for `limits.idempotency_ttl_s` (a day), written before
+the answer is sent, so a retry after a restart gets the first answer.
 
 A run's `result.output` is null when the definition has no `output_schema`. With one, it is the final answer parsed as
 a JSON object (the whole answer, or one fenced `json` block), checked at the schema's top level (required properties and

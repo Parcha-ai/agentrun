@@ -1,7 +1,7 @@
 // The /v2 API over agent homes in a data directory: the contract agentrun.v2/0, served on loopback with a bearer token.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { chmod, lstat, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { extname, join, resolve } from "node:path";
@@ -18,6 +18,7 @@ export const DEFAULT_PORT = 7340;
 const VERSION: string = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
 const TOKEN_FILE = ".token";
 const DOOR_TOKEN_FILE = ".door-token";
+const IDEMPOTENCY_FILE = ".idempotency.json";
 const MAX_BODY = 1 << 20;
 const MAX_MESSAGE = 20_000;
 const MAX_WAIT_MS = 25_000;
@@ -41,8 +42,6 @@ export type ServeOptions = {
   faux?: string;
   /** Extra `Host` names to accept besides the loopback ones. */
   allowHosts?: string[];
-  /** Forward each run's process stderr. */
-  verbose?: boolean;
   drainTimeout?: string;
 };
 
@@ -161,11 +160,25 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const env = { ...process.env, ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}) };
   const caps = capabilities(env);
   const agents = new Agents(data);
-  const runs = new Runs({ agents, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.verbose ? { verbose: true } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}) });
+  const runs = new Runs({ agents, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}) });
   const expected = digest(`Bearer ${token}`);
-  const idempotency = new Map<string, { fingerprint: string; at: number; answer?: { status: number; body: unknown; headers: Record<string, string> } }>();
+  // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
+  // is sent, so a client that retries after a restart gets the first answer back.
+  type Kept = { fingerprint: string; at: number; answer?: { status: number; body: unknown; headers: Record<string, string> } };
+  const keptFile = join(data, IDEMPOTENCY_FILE);
+  const kept = JSON.parse(await readFile(keptFile, "utf8").catch(() => "null")) as { entries?: [string, Kept][] } | null;
+  const idempotency = new Map<string, Kept>((kept?.entries ?? []).filter(([, v]) => v?.answer && Date.now() - v.at <= IDEMPOTENCY_TTL_S * 1000));
+  let saving: Promise<void> = Promise.resolve();
+  const keep = () =>
+    (saving = saving.then(async () => {
+      const entries = [...idempotency].filter(([, v]) => v.answer);
+      await writeFile(`${keptFile}.partial`, JSON.stringify({ version: 1, entries }), { mode: 0o600 });
+      await rename(`${keptFile}.partial`, keptFile);
+    }));
   const host = options.host ?? "127.0.0.1";
   if (!isLoopback(host)) throw new Error(`agentrun-serve binds loopback only; ${host} is not loopback`);
+  // Runs an earlier server left: supervised again, or carried back when they already ended.
+  void agents.list().then((entries) => runs.recover(entries)).catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
 
   // ---- helpers --------------------------------------------------------------------------------------------------------
 
@@ -220,6 +233,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     try {
       const answer = await work();
       idempotency.set(slot, { fingerprint, at: now, answer: { status: answer.status, body: answer.body, headers: answer.headers ?? {} } });
+      await keep();
       return answer;
     } catch (error) {
       idempotency.delete(slot);

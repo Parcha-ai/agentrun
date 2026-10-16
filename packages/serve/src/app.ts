@@ -3,7 +3,7 @@
 // `ask_person`, which ends the agent's turn until the person answers.
 import { join, resolve } from "node:path";
 import type { TSchema } from "@earendil-works/pi-ai";
-import { createRegistry, defineExtension, defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
+import { createRegistry, defineExtension, defineTool, type Extension, type ToolRegistration } from "@earendil-works/pi-durable";
 import { openAgentHome, readAgentHome, type AgentHomeState } from "@parcha/pi-durable-agent";
 import { ArchilCodingTools, type AppContext, type AppOptions } from "@parcha/pi-durable-disk";
 import { runModels, thinkingOf } from "./model.js";
@@ -41,22 +41,27 @@ export function promptOf(state: Pick<AgentHomeState, "definition" | "skills">): 
   return [state.definition.instructions.trim(), ...(skills.length ? ["Your skills follow. Use the one that fits the step you are on.", ...skills] : [])].join("\n\n");
 }
 
+// pi-durable-disk's types name the pi-durable it resolves, which a build at another pi version (the pi-floor legs) can
+// hold apart from this package's own: the options cross that boundary as values, typed on this side.
+const CodingTools = ArchilCodingTools as unknown as Extension;
+
 export default async function app(where: AppContext): Promise<AppOptions> {
   const state = await readAgentHome(await openAgentHome(resolve(join(where.root, "..", ".."))));
   const { models, model } = await runModels(process.env);
   const registry = createRegistry();
-  registry.install(ArchilCodingTools);
+  registry.install(CodingTools);
   registry.install(defineExtension({ name: "person", tools: [askPerson] }));
-  const bound = new Map<string, ToolRegistration>([...(ArchilCodingTools.tools ?? []).map((tool) => [tool.name, tool] as const), [ASK_TOOL, askPerson as ToolRegistration]]);
+  const bound = new Map<string, ToolRegistration>([...(CodingTools.tools ?? []).map((tool) => [tool.name, tool] as const), [ASK_TOOL, askPerson as ToolRegistration]]);
   const tools: ToolRegistration[] = [];
   for (const name of state.definition.tools) {
     const tool = (BOUND_TOOLS as readonly string[]).includes(name) ? bound.get(name) : undefined;
     if (!tool) throw new Error(`the definition names the tool ${name}, which agentrun-serve does not bind (it binds ${BOUND_TOOLS.join(", ")})`);
     tools.push(tool);
   }
-  return {
+  const options = {
     models,
     registry,
     root: { agent: { model, thinkingLevel: thinkingOf(process.env), instructions: promptOf(state), tools } },
   };
+  return options as unknown as AppOptions;
 }
