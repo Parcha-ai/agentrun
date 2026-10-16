@@ -6,6 +6,8 @@
 // browser session's `spent` once priced, and each vision payment's `facts.cost_usd` (below; a failed look says what it cost); the latest
 // revision of a document is the one that counts. A recording with no priced part has no cost (null), and one unknown part makes it null.
 //
+// A box the place made (`box.receipt` host lines, one per box label, the first one counts) costs its `cost_usd`; a receipt with none (an unpriced box, one still open at the final read) makes the cost unknown, never 0.
+//
 // A vision payment, per look key (`facts.key`) over ok looks that are not native (a native look is the lead's own, priced in its usage:
 // it charges nothing and never makes cost unknown): each filing that is not kept, and a key whose first ok filing is kept once, priced
 // from it (the eyes answered a process that died before filing it); a kept filing after a payment adds nothing. A failed look is no
@@ -29,7 +31,9 @@ export function cost(lines: readonly Line[]): Cost {
   const latest = new Map<string, number | null>();
   let highest = -1;
   const looks = { seen: new Set<string>(), here: new Set<string>(), ok: new Set<string>(), priced: new Map<string, number>(), costs: [] as (number | null)[] };
+  const boxes = new Map<string, number | null>();
   for (const line of lines) {
+    if (line.channel === 'live' && line.source === 'host' && line.kind === 'box.receipt' && isObject(line.data) && typeof line.data.box === 'string' && !boxes.has(line.data.box)) boxes.set(line.data.box, number(line.data.cost_usd));
     if (line.channel !== 'durable') continue;
     if (typeof line.commit === 'number') {
       // A snapshot below a commit already seen is a restore: a new branch starts at its commit.
@@ -87,6 +91,7 @@ export function cost(lines: readonly Line[]): Cost {
     }
   }
   if (modelPriced) parts.model = model;
+  if (boxes.size) parts.box = [...boxes.values()].some((usd) => usd === null) ? null : [...boxes.values()].reduce<number>((sum, usd) => sum + (usd as number), 0);
   const named: Record<string, number | null> = {};
   for (const [key, usd] of latest) {
     const kind = key.slice(0, key.indexOf('\u0001'));

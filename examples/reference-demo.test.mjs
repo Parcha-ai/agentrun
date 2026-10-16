@@ -1825,7 +1825,7 @@ test('a box.receipt line is written for each box place.status() reports once its
   const recording = join(tmp, 'recording');
   const priced = { provider: 'prov', kind: 'sandbox', id: 'sbx-9f31c0', from: '2026-10-16T10:00:00.000Z', usdPerSecond: 0.0001, source: 'https://prices.example/page 2026-10-01', priced: true };
   const unpriced = { provider: 'prov', kind: 'sandbox', id: 'sbx-77ab12', from: '2026-10-16T10:01:00.000Z', source: 'none published', priced: false };
-  await demo({ ...options, argv: ['--kill', '--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
+  const result = await demo({ ...options, argv: ['--kill', '--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
     const inner = localPlace({ self, paths, destroyBoxes, requestFile });
     let boxes = [];
     return {
@@ -1841,6 +1841,7 @@ test('a box.receipt line is written for each box place.status() reports once its
   assert.deepEqual(receipts.map((row) => [row.box, row.seconds, row.usd_per_second, row.cost_usd, row.priced]), [['box-1', 30, 0.0001, 0.003, true], ['box-2', 120, null, null, false]], 'one per box, in order of first appearance; the unpriced box has no cost');
   assert.deepEqual(Object.keys(receipts[0]).sort(), ['box', 'cost_usd', 'from', 'kind', 'priced', 'provider', 'seconds', 'source', 'to', 'usd_per_second']);
   assert.ok(!readFileSync(join(recording, 'events.jsonl'), 'utf8').match(/sbx-9f31c0|sbx-77ab12/), 'the provider\'s id is not in the recording');
+  assert.equal(result.usd, null, 'one box has no price: the run\'s cost reads unknown, never the priced box alone');
   assert.deepEqual(validateRecording(recording), []);
   const plain = join(tmp, 'plain');
   await demo({ ...options, argv: ['--kill', '--json', '--record', plain] });
