@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { createReadStream } from "node:fs";
+import { mkdir, readFile, writeFile as writeFileText } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 import * as undici from "undici";
 import { closeDirectFetch, directFetch } from "../dist/providers/browserbase-net.js";
-import { applyBrowserbaseNoProxy, browserbaseGeolocation, browserbaseNoProxyHosts, browserbaseProvider, setDownloadBehavior, proxiesField, rewriteConnectUrl, SEARCH_QUERY_MAX, SEARCH_RESULTS_MAX } from "../dist/providers/browserbase.js";
+import { applyBrowserbaseNoProxy, browserbaseGeolocation, browserbaseNoProxyHosts, browserbaseProvider, fileProfileStore, setDownloadBehavior, proxiesField, rewriteConnectUrl, SEARCH_QUERY_MAX, SEARCH_RESULTS_MAX } from "../dist/providers/browserbase.js";
 import { bindConnectDial, installWebSocketWrapper, connectDialUrl, unbindConnectDial } from "../dist/providers/browserbase-net.js";
 import { fakeBrowserbase } from "./fixtures/fake-browserbase.mjs";
+import { scratch } from "./fixtures/scratch.mjs";
 const SHARED_KEY = "shared-account-key"; // a fake value, named so the source export's credential scan reads it as one
 const DIRECT_KEY = "bb_live_direct"; // a fake value, named so the source export's credential scan reads it as one
 
@@ -405,8 +408,190 @@ test("the real SDK client sends Fetch and Search exactly as Stagehand's facade d
 test("the shared CDP call names the host in a failed open and refuses an unanswered command", async () => {
   await assert.rejects(setDownloadBehavior("ws://127.0.0.1:9/x?signingKey=SECRETKEY"), (error) => /the CDP socket to 127\.0\.0\.1:9 failed/.test(error.message) && !error.message.includes("SECRETKEY"));
   const silent = http.createServer();
+  const open = new Set();
+  silent.on("connection", (c) => { open.add(c); c.on("close", () => open.delete(c)); });
   silent.on("upgrade", (req, socket) => { /* accepts the connection and never answers the upgrade */ });
   await new Promise((r) => silent.listen(0, "127.0.0.1", r));
   try { await assert.rejects(setDownloadBehavior(`ws://127.0.0.1:${silent.address().port}/x`, { timeoutMs: 150 }), /did not answer Browser\.setDownloadBehavior/); }
-  finally { silent.closeAllConnections?.(); silent.close(); }
+  finally { for (const c of open) c.destroy(); silent.close(); }
+});
+
+const PROFILE = { name: "work", save: true };
+const memoryStore = (initial = {}) => { const rows = new Map(Object.entries(initial)); let tail = Promise.resolve(); return { rows, resolve: (key, make) => (tail = tail.then(async () => { if (!rows.has(key)) rows.set(key, await make()); return rows.get(key); }, async () => { if (!rows.has(key)) rows.set(key, await make()); return rows.get(key); })) }; };
+const direct = () => ({ BROWSERBASE_API_KEY: `not-a-secret-direct-${(keySeq += 1)}`, BROWSERBASE_PROJECT_ID: "proj_1" });
+
+test("a profile is a Browserbase context made on first use, remembered by name, and reused with persist following save", async () => {
+  const profiles = memoryStore();
+  const env = proxied();
+  const first = rig({}, env, { profiles });
+  assert.equal(first.provider.caps.profiles, true);
+  await first.provider.create(spec({ profile: PROFILE }), new AbortController().signal);
+  assert.equal(first.fake.only("contexts.create").length, 1);
+  assert.deepEqual(first.fake.only("contexts.create")[0].body, {}, "behind the credential proxy the project is never named");
+  assert.equal(first.fake.only("contexts.create")[0].options.maxRetries, 0, "a context create the SDK could retry would leave a second, unreachable context");
+  assert.deepEqual(first.fake.only("sessions.create")[0].body.browserSettings.context, { id: "ctx_1", persist: true });
+  assert.equal([...profiles.rows.values()].join(), "ctx_1", "the name maps to the context id");
+  assert.equal(JSON.stringify([...profiles.rows.keys()]).includes(env.BROWSERBASE_API_KEY), false, "and the store's key never holds the API key");
+
+  const second = rig({}, env, { profiles });
+  await second.provider.create(spec({ tag: "ar-run1-2-1", profile: { name: "work", save: false } }), new AbortController().signal);
+  assert.equal(second.fake.only("contexts.create").length, 0, "the saved name finds its context");
+  assert.deepEqual(second.fake.only("sessions.create")[0].body.browserSettings.context, { id: "ctx_1", persist: false });
+
+  const plain = rig({}, proxied(), { profiles });
+  await plain.provider.create(spec(), new AbortController().signal);
+  assert.equal("context" in plain.fake.only("sessions.create")[0].body.browserSettings, false);
+
+  const keyed = rig({}, direct(), { profiles: memoryStore() });
+  await keyed.provider.create(spec({ profile: PROFILE }), new AbortController().signal);
+  assert.deepEqual(keyed.fake.only("contexts.create")[0].body, { projectId: "proj_1" }, "a direct key names its project");
+});
+
+test("two accounts that both call a profile work get two contexts; a context that cannot be made fails the create with no session and is tried again", async () => {
+  const profiles = memoryStore();
+  const a = rig({}, proxied(), { profiles });
+  const b = rig({}, proxied(), { profiles });
+  await a.provider.create(spec({ profile: PROFILE }), new AbortController().signal);
+  await b.provider.create(spec({ tag: "ar-run1-2-1", profile: PROFILE }), new AbortController().signal);
+  assert.equal(profiles.rows.size, 2);
+
+  const broken = rig({ contextError: Object.assign(new Error("502"), { status: 502 }) }, proxied(), { profiles: memoryStore() });
+  await assert.rejects(broken.provider.create(spec({ profile: PROFILE }), new AbortController().signal), /502/);
+  assert.equal(broken.fake.only("sessions.create").length, 0);
+  broken.fake.sdk.contexts.create = async () => ({ id: "ctx_late" });
+  await broken.provider.create(spec({ profile: PROFILE }), new AbortController().signal);
+  assert.equal(broken.fake.only("sessions.create")[0].body.browserSettings.context.id, "ctx_late");
+});
+
+test("one session at a time saves to a profile, and a saving session's release waits for Browserbase to write the context back", async () => {
+  const slept = [];
+  const profiles = memoryStore();
+  const { provider } = rig({}, proxied(), { profiles, sleep: async (ms) => { slept.push(ms); }, profileSettleMs: 4_000 });
+  const first = await provider.create(spec({ profile: PROFILE }), new AbortController().signal);
+  await assert.rejects(provider.create(spec({ tag: "ar-run1-2-1", metadata: { run: "run-2", label: "other" }, profile: PROFILE }), new AbortController().signal), (error) => error.failure?.code === "refused" && /one session at a time/.test(error.failure.message));
+  const reader = await provider.create(spec({ tag: "ar-run1-3-1", profile: { name: "work", save: false } }), new AbortController().signal);
+  await provider.release(reader);
+  assert.deepEqual(slept, [], "a session that does not save leaves nothing to wait for");
+  await provider.release(first);
+  assert.ok(slept.includes(4_000), "the saving session's release waited out the write-back");
+  assert.ok((await provider.create(spec({ tag: "ar-run1-4-1", profile: PROFILE }), new AbortController().signal)).id);
+});
+
+test("the default profile store is a file: first use is one create across processes, other names survive, and a file that is not ours, unreadable or malformed is never overwritten", async (t) => {
+  const dir = await scratch(t, "bb-profiles-");
+  const file = `${dir}/profiles.json`;
+  let made = 0;
+  const make = (id) => async () => { made += 1; await new Promise((r) => setTimeout(r, 120)); return id; };
+  const [x, y, z] = await Promise.all([fileProfileStore(file).resolve("acct|one", make("ctx_a")), fileProfileStore(file).resolve("acct|one", make("ctx_b")), fileProfileStore(file).resolve("acct|two", make("ctx_c"))]);
+  assert.ok(x === y && (x === "ctx_a" || x === "ctx_b"), "two first uses of one name get one and the same context");
+  assert.deepEqual([z, made], ["ctx_c", 2], "and made one context for it, one for the other name");
+  assert.match(await readFileText(file), new RegExp(`${x}[\\s\\S]*ctx_c|ctx_c[\\s\\S]*${x}`), "and both names are kept");
+  assert.equal(await fileProfileStore(file).resolve("acct|one", make("ctx_never")), x);
+  const bad = { "not json": "not json", "an array of contexts": '{"schema":"pi-browser.profiles.v1","contexts":[]}', "a non-string id": '{"schema":"pi-browser.profiles.v1","contexts":{"k":7}}', "an empty id": '{"schema":"pi-browser.profiles.v1","contexts":{"k":""}}', "another schema": '{"schema":"other","contexts":{}}' };
+  for (const [what, text] of Object.entries(bad)) {
+    const odd = `${dir}/odd.json`;
+    await writeFileText(odd, text);
+    await assert.rejects(fileProfileStore(odd).resolve("k2", make("ctx_x")), /profiles file/, what);
+    assert.equal(await readFileText(odd), text, `${what}: the file is left as it is`);
+  }
+  await mkdir(`${dir}/dir.json`);
+  await assert.rejects(fileProfileStore(`${dir}/dir.json`).resolve("k", make("ctx_y")), /EISDIR|illegal operation/, "a read error is an error, never an empty map");
+});
+
+test("a cancelled first use fails only its own caller; the next caller makes the context itself", async () => {
+  const profiles = memoryStore();
+  const { fake, provider } = rig({ contextDelayMs: 150 }, proxied(), { profiles });
+  const cancelled = new AbortController();
+  const first = provider.create(spec({ profile: { name: "work", save: false } }), cancelled.signal);
+  const second = provider.create(spec({ tag: "ar-run1-2-1", profile: { name: "work", save: false } }), new AbortController().signal);
+  cancelled.abort();
+  await assert.rejects(first);
+  assert.ok((await second).id, "the other caller was not failed by the first one's cancellation");
+  assert.ok(fake.only("contexts.create").length >= 1);
+});
+
+test("a relaunch on a saving profile waits for the old session's release instead of being refused; a different owner is refused at once", async () => {
+  const { provider } = rig({}, proxied(), { profiles: memoryStore(), sleep: async () => {}, profileSettleMs: 0 });
+  const mine = { metadata: { run: "run-1", label: "node-a" }, profile: PROFILE };
+  const old = await provider.create(spec({ ...mine }), new AbortController().signal);
+  await assert.rejects(provider.create(spec({ tag: "ar-run1-9-1", metadata: { run: "run-2", label: "node-a" }, profile: PROFILE }), new AbortController().signal), (error) => error.failure?.code === "refused");
+  const next = provider.create(spec({ tag: "ar-run1-2-1", ...mine }), new AbortController().signal);
+  setTimeout(() => { void provider.release(old); }, 250);
+  assert.ok((await next).id, "the replacement started once the old session was released");
+});
+
+test("a saving session that ended on its own, or whose create answer was lost and found nothing, no longer holds the profile", async () => {
+  const { fake, provider } = rig({}, proxied(), { profiles: memoryStore(), sleep: async () => {}, profileSettleMs: 0 });
+  const one = await provider.create(spec({ profile: PROFILE }), new AbortController().signal);
+  fake.sessions.get(one.id).status = "COMPLETED";
+  const two = await provider.create(spec({ tag: "ar-run1-2-1", metadata: { run: "run-2", label: "x" }, profile: PROFILE }), new AbortController().signal);
+  assert.ok(two.id, "an ended browser's claim is taken over");
+
+  const lost = rig({ createError: Object.assign(new Error("lost"), { status: 502 }) }, proxied(), { profiles: memoryStore(), sleep: async () => {}, profileSettleMs: 0 });
+  await assert.rejects(lost.provider.create(spec({ tag: "ar-run1-3-1", profile: PROFILE }), new AbortController().signal), /lost/);
+  await assert.rejects(lost.provider.create(spec({ tag: "ar-run1-4-1", metadata: { run: "run-3", label: "x" }, profile: PROFILE }), new AbortController().signal), (error) => error.failure?.code === "refused", "a create whose answer may have been lost keeps its claim until custody has looked for it");
+  assert.deepEqual(await lost.provider.findByTag("ar-run1-3-1"), []);
+  lost.fake.sdk.sessions.create = async (body) => ({ id: "sess_late", connectUrl: "wss://connect.usw2.browserbase.com/sess_late?signingKey=S" });
+  assert.ok((await lost.provider.create(spec({ tag: "ar-run1-5-1", metadata: { run: "run-3", label: "x" }, profile: PROFILE }), new AbortController().signal)).id, "and it is free once findByTag found no browser");
+});
+
+const readFileText = (file) => readFile(file, "utf8");
+
+test("a saver that takes over from a session which ended on its own waits for the write-back first, and a cancelled one stops waiting", async () => {
+  const events = [];
+  const { fake, provider } = rig({}, proxied(), { profiles: memoryStore(), sleep: async (ms) => { events.push(`sleep ${ms}`); }, profileSettleMs: 4_000 });
+  const real = fake.sdk.sessions.create;
+  fake.sdk.sessions.create = async (...args) => { events.push("create"); return real(...args); };
+  const one = await provider.create(spec({ profile: PROFILE }), new AbortController().signal);
+  fake.sessions.get(one.id).status = "COMPLETED";
+  events.length = 0;
+  await provider.create(spec({ tag: "ar-run1-2-1", metadata: { run: "run-2", label: "x" }, profile: PROFILE }), new AbortController().signal);
+  assert.deepEqual(events, ["sleep 4000", "create"], "the settle wait comes before the replacement is created");
+
+  const gate = Promise.withResolvers();
+  const held = rig({}, proxied(), { profiles: memoryStore(), sleep: () => gate.promise, profileSettleMs: 4_000 });
+  const ended = await held.provider.create(spec({ tag: "ar-run1-5-1", profile: { name: "slow", save: true } }), new AbortController().signal);
+  held.fake.sessions.get(ended.id).status = "COMPLETED";
+  const cancel = new AbortController();
+  const started = Date.now();
+  const waiting = held.provider.create(spec({ tag: "ar-run1-6-1", metadata: { run: "run-6", label: "w" }, profile: { name: "slow", save: true } }), cancel.signal);
+  setTimeout(() => cancel.abort(), 200);
+  await assert.rejects(waiting);
+  assert.ok(Date.now() - started < 2_000, "cancelling ends the wait for the write-back");
+  assert.equal(held.fake.only("sessions.create").length, 1, "and no replacement was created");
+  gate.resolve();
+});
+
+test("a session in the middle of its release's write-back wait still holds its profile", async () => {
+  let enter;
+  const entered = new Promise((resolve) => { enter = resolve; });
+  const gate = Promise.withResolvers();
+  const { fake, provider } = rig({}, proxied(), { profiles: memoryStore(), sleep: (ms) => { if (ms === 4_000) { enter(); return gate.promise; } return Promise.resolve(); }, profileSettleMs: 4_000 });
+  const ref = await provider.create(spec({ profile: PROFILE }), new AbortController().signal);
+  const release = provider.release(ref);
+  await entered;
+  assert.equal(fake.sessions.get(ref.id).status, "COMPLETED", "Browserbase already reports the session stopped");
+  const asked = Date.now();
+  await assert.rejects(provider.create(spec({ tag: "ar-run1-2-1", metadata: { run: "run-2", label: "x" }, profile: PROFILE }), new AbortController().signal), (error) => error.failure?.code === "refused", "yet it is the write-back wait that keeps the profile held");
+  assert.ok(Date.now() - asked < 1_500, `refused at once, as a running holder is (${Date.now() - asked} ms), not after waiting out the write-back`);
+  gate.resolve();
+  await release;
+  assert.ok((await provider.create(spec({ tag: "ar-run1-3-1", metadata: { run: "run-2", label: "x" }, profile: PROFILE }), new AbortController().signal)).id, "and it is free once the wait is over");
+});
+
+test("the profiles file's lock is never outlived by the context call it protects: a make slower than its limit is cut, writes nothing and frees the lock", async (t) => {
+  const dir = await scratch(t, "bb-profiles-limit-");
+  const file = `${dir}/profiles.json`;
+  const store = fileProfileStore(file, { makeLimitMs: 150 });
+  const started = Date.now();
+  let seenAbort = false;
+  // The limit is an unref'd timer, so the test holds the loop for it.
+  const hold = setInterval(() => {}, 50);
+  t.after(() => clearInterval(hold));
+  await assert.rejects(store.resolve("acct|profile:work", (signal) => new Promise((_, reject) => { signal.addEventListener("abort", () => { seenAbort = true; reject(new Error("stopped")); }); })), /took longer than 150 ms/);
+  assert.ok(Date.now() - started < 5_000);
+  assert.equal(seenAbort, true, "the call itself is told to stop");
+  await assert.rejects(readFileText(file), { code: "ENOENT" }, "nothing was written");
+  await assert.rejects(readFileText(`${file}.lock`), { code: "ENOENT" }, "the lock is free");
+  assert.equal(await store.resolve("acct|profile:work", async () => "ctx_ok"), "ctx_ok", "the next caller makes it");
 });

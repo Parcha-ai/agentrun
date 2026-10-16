@@ -1,0 +1,69 @@
+{
+  "input": "dab4ea9d49bbc250f9477d3e5e413b64e1c92e63b24b811399e65cf6e0b8b4b7",
+  "done": [
+    "/root/steps/0/items/0/body/steps/0",
+    "/root/steps/0/items/0/body/steps/1",
+    "/root/steps/0/items/1/body/steps/0"
+  ],
+  "states": {
+    "/root/steps/0/items/0/body/steps/1": {
+      "items": [
+        {
+          "id": "a"
+        },
+        {
+          "id": "b"
+        },
+        {
+          "id": "c"
+        }
+      ],
+      "item": {
+        "id": "a"
+      },
+      "item_index": 0,
+      "look": {
+        "id": "a",
+        "score": 1
+      },
+      "score": 2
+    },
+    "/root/steps/0/items/1/body/steps/0": {
+      "items": [
+        {
+          "id": "a"
+        },
+        {
+          "id": "b"
+        },
+        {
+          "id": "c"
+        }
+      ],
+      "item": {
+        "id": "b"
+      },
+      "item_index": 1,
+      "look": {
+        "id": "b",
+        "score": 1
+      }
+    }
+  },
+  "chains": {
+    "/root/steps/0/items/0/body": {
+      "index": 1,
+      "path": "/root/steps/0/items/0/body/steps/1"
+    },
+    "/root/steps/0/items/1/body": {
+      "index": 0,
+      "path": "/root/steps/0/items/1/body/steps/0"
+    }
+  },
+  "loops": {},
+  "routes": {},
+  "inputs": {
+    "/root/steps/0": "dab4ea9d49bbc250f9477d3e5e413b64e1c92e63b24b811399e65cf6e0b8b4b7"
+  },
+  "steps": {}
+}
