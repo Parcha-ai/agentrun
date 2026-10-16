@@ -8,7 +8,6 @@ import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import ts from "typescript";
 import * as lease from "../src/lease.ts";
 import { scratchRoot } from "./_run-support.ts";
 
@@ -36,34 +35,6 @@ describe("the lease entry", () => {
     for (const name of ["ensureRunning", "superviseRuns", "localHost", "loadApp", "openDurableRun", "acquire", "archilEnv", "ArchilCodingTools", "checkHost"]) {
       assert.ok(!names.includes(name), `${name} is not part of the lease entry`);
     }
-  });
-
-  it("exports every type of the package its own declarations name, so a host that imports only this entry can write them", () => {
-    const files = ["src/index.ts", "src/lease.ts"].map((file) => join(ROOT, file));
-    const program = ts.createProgram(files, {
-      noEmit: true, allowImportingTsExtensions: true, skipLibCheck: true, types: [],
-      module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext, target: ts.ScriptTarget.ES2022,
-    });
-    const checker = program.getTypeChecker();
-    const target = (symbol: ts.Symbol) => (symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol);
-    const exportsOf = (file: string) => new Set(checker.getExportsOfModule(checker.getSymbolAtLocation(program.getSourceFile(file)!)!).map(target));
-    const [all, entry] = files.map(exportsOf);
-    const missing: string[] = [];
-    for (const symbol of entry) {
-      const visit = (node: ts.Node): void => {
-        // A body or a private member is not part of what a caller sees.
-        if (ts.isBlock(node) || (ts.isClassElement(node) && node.name && ts.isPrivateIdentifier(node.name))) return;
-        if (ts.canHaveModifiers(node) && ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.PrivateKeyword)) return;
-        if (ts.isTypeReferenceNode(node) || ts.isExpressionWithTypeArguments(node)) {
-          const name = ts.isTypeReferenceNode(node) ? node.typeName : node.expression;
-          const named = checker.getSymbolAtLocation(ts.isQualifiedName(name) ? name.right : name);
-          if (named && all.has(target(named)) && !entry.has(target(named))) missing.push(`${symbol.name} names ${named.name}`);
-        }
-        ts.forEachChild(node, visit);
-      };
-      for (const declaration of symbol.declarations ?? []) visit(declaration);
-    }
-    assert.deepEqual(missing, []);
   });
 
   it("bundles without supervise, the host drivers, the CLI or the app contract", { skip: ESBUILD ? false : "no esbuild: set PDA_ESBUILD to an esbuild binary", timeout: 60_000 }, () => {

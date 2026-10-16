@@ -203,6 +203,13 @@ export function packageTarball(): Uint8Array {
   return new Uint8Array(r.stdout);
 }
 
+/**
+ * How the box installs the package's dependencies in PACKAGE_DIR (with `--prefix`). `npm install`, not `npm ci`: the
+ * directory is this package's working tree (`packageTarball`), whose lockfile is the workspace's, at the repository root,
+ * so it has none, and `npm ci` refuses a directory without one.
+ */
+export const PACKAGE_INSTALL = ["npm", "install", "--no-audit", "--no-fund", "--loglevel=error"] as const;
+
 const PREPARE = String.raw`
 set -euo pipefail
 t0=$(date +%s%N)
@@ -226,7 +233,7 @@ id pda >/dev/null 2>&1 || { sudo -n groupadd --gid ${PDA_ID} pda && sudo -n user
 sudo -n install -d -m 0755 ${PACKAGE_DIR}
 sudo -n tar -xzf /tmp/pda-pkg.tar.gz -C ${PACKAGE_DIR} --no-same-owner
 rm -f /tmp/pda-pkg.tar.gz
-sudo -n env PATH=/opt/node24/bin:/usr/bin:/bin HOME=/root npm ci --prefix ${PACKAGE_DIR} --no-audit --no-fund --loglevel=error >/dev/null
+sudo -n env PATH=/opt/node24/bin:/usr/bin:/bin HOME=/root ${PACKAGE_INSTALL.join(" ")} --prefix ${PACKAGE_DIR} >/dev/null
 sudo -n chown -R root:root ${PACKAGE_DIR}
 sudo -n chmod -R a+rX,go-w ${PACKAGE_DIR}
 step package

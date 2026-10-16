@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
-import { exitCodeOf, extractSnippet, isMissing, judge, loadSpec, readmeInstallArgs, strangerEnv, validateSpec } from './stranger.mjs';
+import { compareVersions, examplesInstallArgs, exitCodeOf, extractSnippet, isMissing, judge, loadSpec, parseIndex, readmeInstallArgs, runCommand, selectExamples, strangerEnv, validateSpec } from './stranger.mjs';
 
 const readme = ['# Title', '', '## Install', '```sh', 'npm i x', '```', '', '## Offline tests', 'text', '```js', 'one();', '```', '```js', 'two();', '```', '### Sub', '```js', 'sub();', '```', '## Next', '```js', 'next();', '```', ''].join('\n');
 
@@ -109,4 +109,98 @@ test('the browser spec accepts exactly the output its README shows under the com
   const ran = over => judge(browser, { exitCode: 0, stdout: shown, stderr: '', timedOut: false, ...over }).length;
   assert.equal(ran({}), 0);
   assert.deepEqual([ran({ stdout: `${shown}more\n` }), ran({ stdout: shown.slice(1) }), ran({ stdout: shown.replace('forty-two', 'forty-three') }), ran({ stderr: 'a warning\n' })], [1, 1, 1, 1]);
+});
+
+// ---- the examples' Since cells ----
+
+const index = [
+  '| Example | What it shows | Needs | Since | CI |', '|---|---|---|---|---|',
+  '| [01-durable-chat](01-durable-chat/) | a disk chat | Archil | checkout | no |',
+  '| [01-durable-chat/on-a-directory.mjs](01-durable-chat/on-a-directory.mjs) | quickstart | Linux | 0.1.0-beta.13 | yes |',
+  '| [kill-9](kill-9/) | survives kill -9 | Linux | 0.1.0-beta.13 | yes |',
+  '| [fork-into-many](fork-into-many/) | forks | Linux | 0.1.0-beta.14 | yes |',
+  '| [planned-move](planned-move/) | moves | Archil and Daytona | 0.1.0-beta.14 | no |',
+  '', 'text after the table', '',
+].join('\n');
+
+test('versions compare as releases and betas do: beta.9 is older than beta.10, a release is newer than its betas', () => {
+  assert.equal(compareVersions('0.1.0-beta.9', '0.1.0-beta.10'), -1);
+  assert.equal(compareVersions('0.1.0-beta.13', '0.1.0-beta.13'), 0);
+  assert.equal(compareVersions('0.1.0-beta.14', '0.1.0-beta.13'), 1);
+  assert.equal(compareVersions('0.1.0', '0.1.0-beta.14'), 1);
+  assert.equal(compareVersions('0.1.1-beta.1', '0.1.0'), 1);
+  assert.throws(() => compareVersions('checkout', '0.1.0'), /not a version/);
+});
+
+test("the index's example rows are read by their Since and CI headers, and a file's row (not a directory) is left out", () => {
+  assert.deepEqual(parseIndex(index), [
+    { name: '01-durable-chat', since: 'checkout', ci: 'no' },
+    { name: 'kill-9', since: '0.1.0-beta.13', ci: 'yes' },
+    { name: 'fork-into-many', since: '0.1.0-beta.14', ci: 'yes' },
+    { name: 'planned-move', since: '0.1.0-beta.14', ci: 'no' },
+  ]);
+  assert.throws(() => parseIndex('| Example | CI |\n|---|---|\n'), /needs "Since" and "CI"/);
+  assert.throws(() => parseIndex('no table'), /no table/);
+});
+
+test("a keyless example whose Since is at or below the registry's beta is walked, one above it is skipped with its reason", () => {
+  const rows = parseIndex(index);
+  const now = selectExamples(rows, '0.1.0-beta.13');
+  assert.deepEqual(now.run, [{ name: 'kill-9', since: '0.1.0-beta.13', version: '0.1.0-beta.13' }]);
+  assert.deepEqual(now.skipped, [
+    { name: '01-durable-chat', reason: 'not keyless (CI "no")' },
+    { name: 'fork-into-many', reason: "needs 0.1.0-beta.14, and the registry's beta is 0.1.0-beta.13" },
+    { name: 'planned-move', reason: 'not keyless (CI "no")' },
+  ]);
+  assert.deepEqual(selectExamples(rows, '0.1.0-beta.14').run.map(example => example.name), ['kill-9', 'fork-into-many']);
+  assert.throws(() => selectExamples([{ name: 'x', since: 'checkout', ci: 'yes' }], '0.1.0-beta.13'), /published version, not "checkout"/);
+});
+
+test('on a platform with a floor, an example installs the later of its Since and the floor, or is skipped until the registry has it', () => {
+  const rows = parseIndex(index);
+  // macOS runs no release before 0.1.0-beta.14: kill-9 (Since 0.1.0-beta.13) installs 0.1.0-beta.14 there.
+  assert.deepEqual(selectExamples(rows, '0.1.0-beta.14', '0.1.0-beta.14').run, [
+    { name: 'kill-9', since: '0.1.0-beta.13', version: '0.1.0-beta.14' },
+    { name: 'fork-into-many', since: '0.1.0-beta.14', version: '0.1.0-beta.14' },
+  ]);
+  const early = selectExamples(rows, '0.1.0-beta.13', '0.1.0-beta.14');
+  assert.deepEqual(early.run, []);
+  assert.deepEqual(early.skipped.find(example => example.name === 'kill-9'), { name: 'kill-9', reason: "needs 0.1.0-beta.14 on this platform, and the registry's beta is 0.1.0-beta.13" });
+  assert.deepEqual(selectExamples(rows, '0.1.0-beta.14').run.map(example => example.version), ['0.1.0-beta.13', '0.1.0-beta.14'], 'no floor: the Since');
+  const spec = { package: 'p', install: ['x'], command: ['x'], expect: { pattern: 'x' }, timeoutMs: 1, examples: { readme: 'R.md', heading: 'H', fence: 'sh', dir: 'd', timeoutMs: 1 } };
+  assert.deepEqual(validateSpec({ ...spec, examples: { ...spec.examples, platformFloors: { darwin: '0.1.0-beta.14' } } }, 'p').examples.platformFloors, { darwin: '0.1.0-beta.14' });
+  assert.throws(() => validateSpec({ ...spec, examples: { ...spec.examples, platformFloors: { darwin: 'soon' } } }, 'p'), /not a version/);
+});
+
+test("the install is the index's own install line with the package at the example's Since, and nothing else changes", () => {
+  const block = ['npm init -y && npm pkg set type=module', 'npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable @earendil-works/pi-ai @earendil-works/chord', 'node main.ts', ''].join('\n');
+  assert.deepEqual(examplesInstallArgs(block, '@parcha/pi-durable-disk', '0.1.0-beta.13'), ['install', '@parcha/pi-durable-disk@0.1.0-beta.13', '@earendil-works/pi-durable', '@earendil-works/pi-ai', '@earendil-works/chord']);
+  assert.throws(() => examplesInstallArgs('node main.ts\n', '@parcha/pi-durable-disk', '1.0.0'), /one npm install line, not 0/);
+  assert.throws(() => examplesInstallArgs('npm install @parcha/pi-durable-disk @x/y\n', '@parcha/pi-durable-disk', '1.0.0'), /names @parcha\/pi-durable-disk@beta/);
+});
+
+test("every keyless example in the repository's index names a published-looking version, and its directory is there", async () => {
+  const dir = new URL('../packages/pi-durable-disk/examples/', import.meta.url);
+  const rows = parseIndex(await readFile(new URL('README.md', dir), 'utf8'));
+  assert.ok(rows.some(row => row.name === 'kill-9'), 'the index lists kill-9');
+  const { run } = selectExamples(rows, '999.0.0');
+  assert.ok(run.length >= 4, `at least four keyless examples are walked, not ${run.length}`);
+  const listing = new Set(await readdir(dir));
+  for (const { name } of run) assert.ok(listing.has(name), `${name} has a directory`);
+  const spec = await loadSpec('pi-durable-disk');
+  const block = extractSnippet(await readFile(new URL(`../${spec.examples.readme}`, import.meta.url), 'utf8'), spec.examples);
+  examplesInstallArgs(block, spec.package, '0.1.0-beta.13');
+});
+
+test("an example's run ends after its command exits and a short grace, even if a process outside its group keeps an output pipe open", async () => {
+  // The command starts a detached child (a group of its own, so the timeout's group kill cannot reach it) that inherits the
+  // output pipes and lives a while, prints its pid and exits at once.
+  const script = "const { spawn } = require('node:child_process'); const c = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 15000)'], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] }); console.log(c.pid); c.unref();";
+  const started = Date.now();
+  const result = await runCommand(process.execPath, ['-e', script], { cwd: process.cwd(), env: { PATH: process.env.PATH }, timeoutMs: 60_000, group: true, graceMs: 300 });
+  const elapsed = Date.now() - started;
+  const lingering = Number(result.stdout.trim());
+  try { assert.ok(Number.isInteger(lingering) && lingering > 0, `the command printed its child's pid: ${result.stdout}`); } finally { if (lingering > 0) try { process.kill(lingering, 'SIGKILL'); } catch { /* already gone */ } }
+  assert.equal(result.exitCode, 0);
+  assert.ok(elapsed < 6000, `the run did not wait for the lingering child: ${elapsed} ms`);
 });
