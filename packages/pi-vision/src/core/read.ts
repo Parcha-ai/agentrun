@@ -310,9 +310,14 @@ export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext
   try {
     source = { path: data ? `${temp.value}/source${extensionOf(name)}` : name, kind, bytes: size, sha256: await sha256() };
     const request: KindRequest = { source, ...(data ? { data } : {}), name, mimeType: sniffed.mimeType ?? "application/octet-stream", ...(pixels ? { width: pixels.width, height: pixels.height } : {}), ...(ask ? { ask } : {}), ...(page !== undefined ? { page } : {}), ...(fromS !== undefined ? { fromS: Math.max(0, fromS) } : {}), ...(toS !== undefined ? { toS } : {}) };
-    // The images a reader makes are fitted for the model that will see them: the lead, or the eyes when the lead takes
-    // none. A source read where it is keeps no derivation.
-    const limits = !setup.limits.image.native && setup.eyes?.accepts.image ? { ...setup.limits, image: { ...setup.eyes.limits.image, native: false } } : setup.limits;
+    // The media a reader makes are fitted for the model that will see them: the lead, or the eyes when the lead takes no
+    // images, a video then planned as the eyes take it (the clip or a window of it for eyes that take video). A source
+    // read where it is keeps no derivation.
+    const eyes = setup.eyes;
+    const clipForEyes = eyes?.accepts.video === true && !setup.limits.video.native;
+    const limits = !setup.limits.image.native && eyes?.accepts.image
+      ? { ...setup.limits, image: { ...eyes.limits.image, native: false }, ...(clipForEyes ? { video: { ...eyes.limits.video, native: true }, requestBytes: eyes.limits.requestBytes } : {}) }
+      : setup.limits;
     try {
       result = await reader(request, { env: data ? holding(env, source.path, data, probe.mtimeMs) : env, signal: call.signal, limits, ...(data ? { deriveDir: setup.scope.deriveDir } : {}), tempDir: temp.value, images: setup.images, providers: setup.providers });
     } catch (error) {

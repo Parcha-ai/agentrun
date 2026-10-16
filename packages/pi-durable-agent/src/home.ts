@@ -3,12 +3,13 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import {
   type AgentAlias, type AgentDefinition, type AgentIdentity, type AgentSource, AliasesDoc, BindingsDoc, type BrowserProfile,
   DefinitionDoc, FORMAT_VERSION, IdentityDoc, LeasesDoc, type ProfileLease, ProfilesDoc, put, type RunRecord, RunsDoc,
   type SkillFile, SkillsDoc, SourceDoc, type ToolBindings,
 } from "./kinds.js";
-import { AgentHomeError, openStore, readFamily, type Store, withHome } from "./store.js";
+import { AgentHomeError, HEAD_SQL, openStore, readFamily, readHead, type Store, withHome } from "./store.js";
 
 export const AGENT_STORE_FILE = "agent.sqlite";
 
@@ -46,6 +47,9 @@ export function uuidv7(now = Date.now()): string {
 export const sha256 = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 
 const invalid = (message: string) => new AgentHomeError("invalid", message);
+
+/** An agent id or a run id: one URL path segment. A minted UUIDv7 is one. */
+export const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const isNames = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((name) => typeof name === "string" && name !== "") && new Set(value).size === value.length;
@@ -130,7 +134,9 @@ export function homeDir(dir: string): string {
  *  already holds an agent home is refused. */
 export async function createAgentHome(dir: string, options: { definition: AgentDefinitionInput; skills?: Record<string, string>; sha?: string; now?: number }): Promise<AgentHome> {
   const given = options?.definition?.id;
-  if (given !== undefined && (typeof given !== "string" || given === "")) throw invalid("the definition's id is not a non-empty string");
+  if (given !== undefined && (typeof given !== "string" || !ID_PATTERN.test(given))) {
+    throw invalid(`the definition's id ${JSON.stringify(given)} does not match ${ID_PATTERN.source}: letters, digits, ".", "_" or "-", at most 128, so it fits a URL`);
+  }
   const id = given ?? uuidv7();
   const definition = checkDefinition(options.definition, id);
   const skills = checkSkills(options.skills);
@@ -154,12 +160,15 @@ export async function createAgentHome(dir: string, options: { definition: AgentD
  *  with `agent.source`: a skill path absent from `skills` is removed. The definition's `id`, when given, must be the
  *  home's; `identity.name` follows the definition's `name`. With `from`, a compare-and-swap: the home's sha must be
  *  `from` (`null`: the home has none yet), or the refresh is refused (`stale`) before anything is written, so a host
- *  that read an older commit cannot move the cache back over a newer one; ancestry is the host's to judge. A home
- *  already at `sha` is then left as it is (`changed` false): a sha names one content. Runs already started keep the
- *  skills their workspace got. */
-export async function refreshAgentHome(home: AgentHome, options: { sha: string; from?: string | null; definition: AgentDefinitionInput; skills: Record<string, string>; now?: number }): Promise<{ changed: boolean }> {
+ *  that read an older commit cannot move the cache back over a newer one; ancestry is the host's to judge. With
+ *  `ifRevision`, a compare-and-swap on `homeRevision`, checked first: a home whose head commit moved since the caller
+ *  read it is refused (`stale`) the same way. A home already at `sha` is then left as it is (`changed` false): a sha
+ *  names one content. Runs already started keep the skills their workspace got. */
+export async function refreshAgentHome(home: AgentHome, options: { sha: string; from?: string | null; ifRevision?: number; definition: AgentDefinitionInput; skills: Record<string, string>; now?: number }): Promise<{ changed: boolean }> {
   const sha = checkSha(options?.sha);
   const from = options.from === undefined || options.from === null ? options.from : checkSha(options.from);
+  const ifRevision = options.ifRevision;
+  if (ifRevision !== undefined && !(Number.isSafeInteger(ifRevision) && ifRevision >= 0)) throw invalid(`ifRevision ${JSON.stringify(ifRevision)} is not a home revision (a non-negative integer)`);
   const given = options.definition?.id;
   if (given !== undefined && (typeof given !== "string" || given === "")) throw invalid("the definition's id is not a non-empty string");
   if (options.skills === undefined) throw invalid("a refresh names its skills: the set replaces the cached one");
@@ -168,6 +177,10 @@ export async function refreshAgentHome(home: AgentHome, options: { sha: string; 
     const state = await readState(store);
     if (given !== undefined && given !== state.identity.id) throw invalid(`the definition's id ${given} is not this agent's id ${state.identity.id}`);
     const definition = checkDefinition(options.definition, state.identity.id);
+    if (ifRevision !== undefined) {
+      const revision = await store.head();
+      if (revision !== ifRevision) throw new AgentHomeError("stale", `the agent home is at revision ${revision}, not ${ifRevision} as the refresh expected; nothing was written`);
+    }
     const current = state.source?.sha ?? null;
     if (from !== undefined && from !== current) {
       throw new AgentHomeError("stale", `the agent home's cache is at ${current ?? "no commit"}, not ${from ?? "no commit"} as the refresh expected; nothing was written`);
@@ -195,6 +208,18 @@ export async function openAgentHome(dir: string): Promise<AgentHome> {
 /** Everything the agent home holds now. */
 export async function readAgentHome(home: AgentHome): Promise<AgentHomeState> {
   return inHome(homeDir(home.dir), readState);
+}
+
+/** The agent store's head commit number: every write that changes the home moves it, so with the identity's id it is
+ *  the home's version (an ETag). One read-only query, under no lock (`HEAD_SQL`). */
+export async function homeRevision(home: AgentHome): Promise<number> {
+  const file = path.join(homeDir(home.dir), AGENT_STORE_FILE);
+  const db = new DatabaseSync(file, { readOnly: true, timeout: 5_000 });
+  try {
+    return await readHead(() => db.prepare(HEAD_SQL).get());
+  } finally {
+    db.close();
+  }
 }
 
 /** Record the agent's id in `host` (Parcha's expert id, for one). */
