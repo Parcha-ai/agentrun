@@ -1,6 +1,6 @@
-// What `--live` swaps for the scripted parts: the lead model and Jev's judge. The model is pi-ai's own catalog entry for openai/gpt-6-luna, with its price, and only its baseUrl
-// overridden to the scoped broker (an OpenAI-compatible endpoint that takes any placeholder key and adds its own credential), so pi-ai fills each call's usage.cost and `--max-usd`
-// meters real numbers. The GitHub tools (`github.ts`, read-only GETs) are `LiveParts.tools`: on --live the entry's door dispatches to them, with its crossings, filing and receipts; the scripted
+// What `--live` swaps for the scripted parts: the lead model and Jev's judge. The model is pi-ai's own catalog entry for openai/gpt-6-luna, with its price, so pi-ai fills each call's usage.cost
+// and `--max-usd` meters real numbers. By default it is OpenAI's own endpoint on `OPENAI_API_KEY`; with `DEMO_MODEL_BASE_URL` only its baseUrl is overridden, to an OpenAI-compatible endpoint that
+// holds its own credential (a gateway: any placeholder key is sent). The GitHub tools (`github.ts`, read-only GETs) are `LiveParts.tools`: on --live the entry's door dispatches to them, with its crossings, filing and receipts; the scripted
 // fixtures in `job.ts` are `fakes.tools`, which a live run never reads (no tool here is declared `local: "fakes"`).
 import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy';
 import { createModels, createProvider } from '@earendil-works/pi-ai/models';
@@ -9,11 +9,10 @@ import { createJevRunner } from '@parcha/agentrun-jev';
 import { githubTools } from './github.ts';
 import type { LiveParts } from '../reference/index.ts';
 
-export const BROKER = 'http://127.0.0.1:9421/v1';
 export const MODEL = 'gpt-6-luna';
 
-/** The provider: pi-ai's openai catalog entry for `MODEL`, its baseUrl replaced. Exported for the test that a response's usage is priced. */
-export function brokerProvider(baseUrl: string = BROKER) {
+/** The provider for a gateway: pi-ai's openai catalog entry for `MODEL`, its baseUrl replaced, any placeholder key. Exported for the test that a response's usage is priced. */
+export function brokerProvider(baseUrl: string) {
   const entry = openaiProvider().getModels().find((model) => model.id === MODEL);
   if (!entry) throw new Error(`pi-ai's openai catalog has no ${MODEL}`);
   return createProvider({
@@ -26,7 +25,8 @@ export function brokerProvider(baseUrl: string = BROKER) {
 
 export function live({ env }: { env: NodeJS.ProcessEnv }): LiveParts {
   const catalog = createModels();
-  catalog.setProvider(brokerProvider());
+  const gateway = env.DEMO_MODEL_BASE_URL?.trim();
+  catalog.setProvider(gateway ? brokerProvider(gateway) : openaiProvider());
   return {
     host: { models: { catalog, lead: { provider: 'openai', modelId: MODEL } }, decisions: { runJudge: createJevRunner() } },
     tools: githubTools(env),

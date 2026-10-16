@@ -14,6 +14,7 @@ It runs on scripted fakes: no key, no network, $0. **The twenty issues are synth
 | `AUTHOR-PROMPT.md` | what the user says to the drafting agent: describe, inspect, dry-run, save, learn, run |
 | `fixtures.json`, `TRUTH.md` | the twenty fictional issues, the files they name, and the scripted answers (17 of 20 types agree with the maintainers') |
 | `job.ts`, `run.ts`, `demo.json` | the job and fakes, the entry call, and the spec |
+| `analyze.mjs` | what a killed take's stores show: Jev requests sent against answers recorded, tool calls, and the model turns asked and committed in each process |
 | `live.ts`, `github.ts`, `pick-issues.mjs` | the live parts: the model and Jev's judge, the read-only GitHub tools, and the host's pick of the twenty issues |
 | `SETUP-PROMPT.md` | what a stranger gives their coding agent to set the demo up |
 
@@ -50,12 +51,14 @@ The label an issue carries is what the run is scored against, so nothing the res
 ## A live run
 
 ```sh
-source ~/.github-app-auth.sh parcha          # or any GITHUB_TOKEN with no scopes: public reads only
-node examples/issue-triage/pick-issues.mjs expressjs/express > input.json    # the 20 newest open issues that carry a maintainers' label (stderr: the composition)
-~/evals/agentrun-archil-tl/bin/with-typesafe npm run demo:issue-triage -- --live --input input.json --max-usd 2.5 --record <dir>
+export GITHUB_TOKEN=...          # optional: a token with no scopes reads public repositories (60 requests an hour without one)
+export TYPESAFE_API_KEY=...      # Jev's judge
+export OPENAI_API_KEY=...        # the lead model (or DEMO_MODEL_BASE_URL for an OpenAI-compatible gateway)
+node examples/issue-triage/pick-issues.mjs expressjs/express > input.json    # the 20 newest open issues that carry a maintainers' type label (stderr: the composition)
+npm run demo:issue-triage -- --live --input input.json --max-usd 2.5 --record <dir>
 ```
 
-The lead model is pi-ai's own catalog entry for `openai/gpt-6-luna` (its price included, so `--max-usd` meters real numbers) with only its base URL pointed at the scoped broker; Jev's judge is `createJevRunner` on `TYPESAFE_API_KEY`. Every GitHub call is a read-only GET. `--kill` adds the kill at the tenth `triage` question.
+The lead model is pi-ai's own catalog entry for `openai/gpt-6-luna` (its price included, so `--max-usd` meters real numbers) on `OPENAI_API_KEY`, or, with `DEMO_MODEL_BASE_URL`, with only its base URL pointed at an OpenAI-compatible gateway that holds its own credential; Jev's judge is `createJevRunner` on `TYPESAFE_API_KEY`. Every GitHub call is a read-only GET. `--kill` adds the kill at the tenth `triage` question.
 
 ## Choosing the repository for a live take
 

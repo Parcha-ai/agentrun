@@ -42,6 +42,24 @@
       "where": "https://github.com/settings/tokens (a token with no scopes reads public repositories)",
       "required": false,
       "for": "live"
+    },
+    {
+      "oneOf": [
+        {
+          "env": "OPENAI_API_KEY",
+          "why": "the lead model, gpt-6-luna on OpenAI",
+          "where": "https://platform.openai.com/api-keys",
+          "required": true
+        },
+        {
+          "env": "DEMO_MODEL_BASE_URL",
+          "why": "an OpenAI-compatible endpoint that holds its own credential, instead of a key",
+          "where": "your gateway's address",
+          "required": true
+        }
+      ],
+      "why": "the lead model",
+      "for": "live"
     }
   ],
   "programs": [
@@ -63,8 +81,7 @@
   ],
   "model": {
     "provider": "openai",
-    "id": "gpt-6-luna",
-    "via": "the scoped broker"
+    "id": "gpt-6-luna"
   },
   "browser": false
 }
