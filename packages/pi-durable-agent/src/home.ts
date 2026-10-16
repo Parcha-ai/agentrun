@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import {
   type AgentAlias, type AgentDefinition, type AgentIdentity, type AgentSource, AliasesDoc, BindingsDoc, type BrowserProfile,
   DefinitionDoc, FORMAT_VERSION, IdentityDoc, LeasesDoc, type ProfileLease, ProfilesDoc, put, type RunRecord, RunsDoc,
@@ -46,6 +47,9 @@ export function uuidv7(now = Date.now()): string {
 export const sha256 = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 
 const invalid = (message: string) => new AgentHomeError("invalid", message);
+
+/** An agent id or a run id: one URL path segment. A minted UUIDv7 is one. */
+export const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const isNames = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((name) => typeof name === "string" && name !== "") && new Set(value).size === value.length;
@@ -130,7 +134,9 @@ export function homeDir(dir: string): string {
  *  already holds an agent home is refused. */
 export async function createAgentHome(dir: string, options: { definition: AgentDefinitionInput; skills?: Record<string, string>; sha?: string; now?: number }): Promise<AgentHome> {
   const given = options?.definition?.id;
-  if (given !== undefined && (typeof given !== "string" || given === "")) throw invalid("the definition's id is not a non-empty string");
+  if (given !== undefined && (typeof given !== "string" || !ID_PATTERN.test(given))) {
+    throw invalid(`the definition's id ${JSON.stringify(given)} does not match ${ID_PATTERN.source}: letters, digits, ".", "_" or "-", at most 128, so it fits a URL`);
+  }
   const id = given ?? uuidv7();
   const definition = checkDefinition(options.definition, id);
   const skills = checkSkills(options.skills);
@@ -195,6 +201,26 @@ export async function openAgentHome(dir: string): Promise<AgentHome> {
 /** Everything the agent home holds now. */
 export async function readAgentHome(home: AgentHome): Promise<AgentHomeState> {
   return inHome(homeDir(home.dir), readState);
+}
+
+/** The agent store's head commit number: every write that changes the home moves it, so with the identity's id it is
+ *  the home's version (an ETag). One read-only query, under no lock: pi's Storage has no head query, and its SQLite
+ *  storage gives each commit `durable_metadata.next_seq` and stores the successor in the same transaction, so the head
+ *  is `next_seq - 1`. A store without that row fails closed (`format`). */
+export async function homeRevision(home: AgentHome): Promise<number> {
+  const file = path.join(homeDir(home.dir), AGENT_STORE_FILE);
+  const db = new DatabaseSync(file, { readOnly: true, timeout: 5_000 });
+  let row: { next_seq?: unknown } | undefined;
+  try {
+    row = db.prepare("SELECT next_seq FROM durable_metadata WHERE singleton = 1").get() as { next_seq?: unknown } | undefined;
+  } catch (error) {
+    throw new AgentHomeError("format", `the agent store has no readable head commit`, { cause: error });
+  } finally {
+    db.close();
+  }
+  const next = typeof row?.next_seq === "bigint" ? Number(row.next_seq) : row?.next_seq;
+  if (typeof next !== "number" || !Number.isSafeInteger(next) || next < 1) throw new AgentHomeError("format", `the agent store has no usable head commit (${JSON.stringify(row ?? null)})`);
+  return next - 1;
 }
 
 /** Record the agent's id in `host` (Parcha's expert id, for one). */
