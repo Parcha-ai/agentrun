@@ -18,6 +18,7 @@ test("a run starts queued, its timeline follows it to completed and final, and t
   const { rows, pages, last } = await follow(api, started.run_id, ["completed"]);
   assert.equal(pages[0].reset, true);
   assert.equal(last.final, true);
+  assert.equal(pages.find((p) => p.final).unchanged, false, "turning final is a change, so a long poll wakes for it");
   assert.deepEqual(rows.map((r) => r.kind), ["user_message", "thinking", "final_answer", "usage"]);
   assert.ok(rows.every((r, i) => i === 0 || r.seq > rows[i - 1].seq), "rows sort by seq");
   const run = (await api("GET", `/runs/${started.run_id}`)).body;
