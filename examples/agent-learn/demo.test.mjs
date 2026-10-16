@@ -114,6 +114,7 @@ test('a correction and a workflow go through the repository: learned, curated, a
 
   const transcript = lines.join('\n');
   assert.match(transcript, /^2\. Run 1 starts at main [0-9a-f]{7}: nothing learned yet$/m);
+  assert.match(transcript, /^ {3}proposed on runs\/run-2 at [0-9a-f]{7}: its notes and triage-crash's DSL records$/m);
   assert.match(transcript, /^5\. Curate counts the use and admits the workflow as a trial skill$/m);
   assert.match(transcript, /^ {3}a git revert of [0-9a-f]{7}, the commit that added it, would conflict: /m);
   assert.match(transcript, /^ {3}curate again: nothing to curate, the rule does not come back; /m);
@@ -122,14 +123,14 @@ test('a correction and a workflow go through the repository: learned, curated, a
   assert.doesNotMatch(transcript, new RegExp(secret), 'the transcript never prints the secret');
 });
 
-test('step 5 says what curation did when run 2 saves a workflow without saying when to use it, or saves none', async (t) => {
+test('run 2\'s propose line and step 5 say what happened when run 2 saves a workflow without saying when to use it, only marks a use, or does nothing', async (t) => {
   const inspect = { call: 'agentrun', args: { action: 'inspect', workflow: TRIAGE_WORKFLOW, input: ISSUES.second.input } };
   const save = { call: 'agentrun', args: { action: 'save', name: 'triage-crash' } };
   const step5 = async (run2) => {
     const lines = [];
     const out = await runDemo({ dir: join(await scratch(t), 'demo'), log: (line) => lines.push(line), run2 });
     const at = lines.findIndex((line) => line.startsWith('5. '));
-    return { out, text: lines.slice(at, lines.indexOf('', at)).join('\n') };
+    return { out, text: lines.slice(at, lines.indexOf('', at)).join('\n'), lines: lines.join('\n') };
   };
 
   const undescribed = await step5([inspect, save, {}]);
@@ -137,7 +138,15 @@ test('step 5 says what curation did when run 2 saves a workflow without saying w
   assert.match(undescribed.text, /^ {3}triage-crash has no skill: no learn\(workflow\) said when to use it, so later runs are not offered it$/m);
   assert.doesNotMatch(undescribed.out.run3.learned.join('\n'), /Workflows to try/);
 
+  assert.match(undescribed.lines, /^ {3}proposed on runs\/run-2 at [0-9a-f]{7}: triage-crash's DSL records$/m);
+
+  const used = await step5([{ call: 'learn', args: (context) => ({ type: 'used', id: /- (L-[0-9a-f]{12}) correction/.exec(JSON.stringify(context.messages))[1], text: 'It helped.' }) }, {}]);
+  assert.match(used.lines, /^ {3}proposed on runs\/run-2 at [0-9a-f]{7}: its notes$/m);
+  assert.match(used.text, /^5\. Curate counts the use$/m);
+  assert.match(used.text, /^ {3}run 2 saved no workflow, so there is no trial to admit$/m);
+
   const none = await step5([{}]);
+  assert.match(none.lines, /^ {3}proposed nothing \(empty\)$/m);
   assert.match(none.text, /^5\. Curate changes nothing for run 2$/m);
   assert.match(none.text, /^ {3}run 2 saved no workflow, so there is no trial to admit$/m);
   assert.deepEqual(none.out.run2.savedWorkflows, []);

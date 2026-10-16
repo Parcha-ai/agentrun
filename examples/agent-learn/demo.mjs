@@ -255,6 +255,17 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
   const asked = [];
   const judge = scriptedJudge(asked);
   const modelFor = (script) => (live ? liveModel(env) : scriptedModel(script));
+  const proposed = (sha, runId) => {
+    const files = gitRead(bare, ['ls-tree', '-r', '--name-only', sha, '--', `inbox/${runId}.md`, `inbox/${runId}/workflows`, `uses/${runId}.json`])
+      .toString('utf8').trim().split('\n').filter(Boolean);
+    const names = [...new Set(files.map((file) => file.split('/')[3]).filter((name) => name && files.some((f) => f.startsWith(`inbox/${runId}/workflows/${name}/`))))];
+    const parts = [
+      ...(files.includes(`inbox/${runId}.md`) ? ['its notes'] : []),
+      ...(names.length ? [`${names.join(' and ')}'s DSL records`] : []),
+      ...(files.includes(`uses/${runId}.json`) ? ['its workflow uses'] : []),
+    ];
+    return parts.length ? parts.join(' and ') : 'nothing of its own';
+  };
   const changed = (from, to) => {
     const rows = gitRead(bare, ['diff', '--name-status', '--no-renames', from, to]).toString('utf8').trim().split('\n').filter(Boolean).map((row) => row.split('\t'));
     const of = (status, verb) => (rows.some(([s]) => s === status) ? `${verb} ${shortPaths(rows.filter(([s]) => s === status).map(([, path]) => path))}` : '');
@@ -316,7 +327,7 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
   say(`   issue: "${ISSUES.second.input.title}" (its body is a stack trace)`);
   for (const line of callLines(r2)) say(`   ${line}`);
   say(`   answer: ${r2.answer}`);
-  say(f2.proposal.status === 'proposed' ? `   proposed on runs/run-2 at ${short(f2.proposal.sha)}: its notes and the workflow's DSL records` : `   proposed nothing (${f2.proposal.status})`);
+  say(f2.proposal.sha ? `   proposed on runs/run-2 at ${short(f2.proposal.sha)}: ${proposed(f2.proposal.sha, 'run-2')}` : `   proposed nothing (${f2.proposal.status})`);
   say();
 
   const c2 = await curateNow({ repo, judge, secrets: vault });
