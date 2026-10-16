@@ -112,10 +112,10 @@ export type LedgerRow = { kind: 'model' | 'tool' | 'judge' | 'browser'; name: st
 const json = (value: unknown) => `${JSON.stringify(value)}\n`;
 const quiet = <T,>(report: (event: T) => void) => (event: T) => { try { report(event); } catch { /* a status row never fails a call */ } };
 
-export type LocalHost = { host: Host; backend?: FakeBackend; ledger(): LedgerRow[]; evidence(): string[] };
+export type LocalHost = { host: Host; backend?: FakeBackend; ledger(): LedgerRow[]; evidence(): string[]; /** Makes the two logs empty files: done by `localHost` itself unless `options.deferLogs`, which a process on a disk not yet mounted sets and calls this once its claim is open. */ touchLogs(): void };
 
 /** The no-key host for a run at `place`, from the job's `fakes`: scripted lead, tools, judge and browser pages, a ledger row for every fake call, and the run's events under the place. `options.browser` swaps the fake browser for another; `options.recorder` records the run. */
-export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: BrowserPlane; recorder?: Recorder; boxes?: BoxProvider; live?: boolean; /** On a live run, the live parts' tools (`LiveParts.tools`): the effect door dispatches to these. A tool missing here runs from `fakes.tools` only when it is in `fakesDeclared` (demo.json's `tools` entry says `local: "fakes"`), else the call fails `no live source for <tool>`. Absent, every tool runs from `fakes.tools` as before. */ liveTools?: Fakes['tools']; fakesDeclared?: ReadonlySet<string> } = {}): LocalHost {
+export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: BrowserPlane; recorder?: Recorder; boxes?: BoxProvider; live?: boolean; deferLogs?: boolean; /** On a live run, the live parts' tools (`LiveParts.tools`): the effect door dispatches to these. A tool missing here runs from `fakes.tools` only when it is in `fakesDeclared` (demo.json's `tools` entry says `local: "fakes"`), else the call fails `no live source for <tool>`. Absent, every tool runs from `fakes.tools` as before. */ liveTools?: Fakes['tools']; fakesDeclared?: ReadonlySet<string> } = {}): LocalHost {
   const recorder = options.recorder;
   const ledgerFile = join(place.root, 'ledger.jsonl');
   // Kept by the effect's id (hashed into a file name): two effects with one `argsHash`, a poll and its next, never share an answer.
@@ -124,7 +124,8 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
   // Both logs exist from the start: a run that called nothing leaves an empty ledger, and a missing one was lost.
   // (A run under `pi-durable-disk run --app` builds its host before the run's directory exists: then the logs are made at their first row, and again when the run opens.)
   const append = (file: string, text: string) => { try { appendFileSync(file, text); } catch (error) { if ((error as { code?: string }).code !== 'ENOENT') throw error; mkdirSync(place.root, { recursive: true }); appendFileSync(file, text); } };
-  for (const log of [ledgerFile, eventsFile]) { try { appendFileSync(log, ''); } catch (error) { if ((error as { code?: string }).code !== 'ENOENT') throw error; } }
+  const touchLogs = () => { for (const log of [ledgerFile, eventsFile]) { try { appendFileSync(log, ''); } catch (error) { if ((error as { code?: string }).code !== 'ENOENT') throw error; } } };
+  if (!options.deferLogs) touchLogs();
   const incarnation = randomUUID();
   const count = (kind: LedgerRow['kind'], name: string, conversation?: string) =>
     append(ledgerFile, json({ kind, name, pid: process.pid, incarnation, ...(conversation ? { conversation } : {}) }));
@@ -233,7 +234,7 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
   const ledger = () => {
     try { return readFileSync(ledgerFile, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as LedgerRow); } catch { return []; }
   };
-  return { host, ...(backend ? { backend } : {}), ledger, evidence };
+  return { host, ...(backend ? { backend } : {}), ledger, evidence, touchLogs };
 }
 
 /** A status row as the recording's live line: the package's own record name, and the position and conversation it carries. */
