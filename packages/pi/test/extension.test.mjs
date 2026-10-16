@@ -1137,3 +1137,25 @@ test('a dry run pays nothing: no model, Jev or tool call, no run journal, and th
     assert.ok(app.branch.every(entry => entry.data?.report === undefined), 'no run report is kept');
   } finally { await app.shutdown(); await rm(cwd, { recursive: true, force: true }); }
 });
+
+test('a dry run is bounded: an endless synthetic loop stops at its step budget, and /agentrun stop ends one in flight, not run', async () => {
+  const app = await harness();
+  const done = { type: 'object', additionalProperties: false, required: ['done'], properties: { done: { type: 'boolean' } } };
+  const endless = { v: 2, name: 'Check until done', schemas: { Done: done }, output: { schemaId: 'Done', path: 'check' },
+    root: { node: 'loop', label: 'until-done', maxIters: 200000, until: { predicate: 'field_true', path: 'check.done' },
+      body: { node: 'agent', label: 'check', instructions: 'Read the note with read and say whether it is done.', tools: ['read'], out: 'Done', as: 'check' } } };
+  try {
+    await app.tool({ action: 'inspect', workflow: endless });
+    const bounded = await app.tool({ action: 'dry-run' });
+    assert.equal(bounded.details.dryRun.status, 'not_run');
+    assert.match(bounded.details.dryRun.skipped.join('\n'), /stopped after 10000 synthetic steps/);
+    const pending = app.tool({ action: 'dry-run' });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await app.command('stop');
+    assert.match(app.messages.at(-1).content, /Dry run stopped/);
+    const stopped = await pending;
+    assert.equal(stopped.details.dryRun.status, 'not_run');
+    assert.match(stopped.details.dryRun.skipped.join('\n'), /stopped before it finished/);
+    assert.equal(app.calls.length, 0);
+  } finally { await app.shutdown(); }
+});
