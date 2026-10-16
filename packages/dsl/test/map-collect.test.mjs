@@ -70,6 +70,24 @@ test('onItemFailure is "stop" or "collect"; failedAs is required with "collect",
   assert.match(validateWorkflow(parallel).errors.join('\n'), /both write state\.failed/);
 });
 
+test('each collect rule reports its rule code at the map', () => {
+  const issues = (map) => {
+    const checked = validateWorkflow(flow(map));
+    assert.equal(checked.ok, false);
+    assert.deepEqual(checked.issues.map((issue) => issue.message), checked.errors);
+    return checked.issues.filter((issue) => /onItemFailure|failedAs/.test(issue.message)).map(({ path, code }) => [path, code]);
+  };
+  const map = '/root/steps/0';
+  assert.deepEqual(issues({ onItemFailure: 'skip', body: priced }), [[map, 'NODE_FIELD_INVALID']]);
+  assert.deepEqual(issues({ onItemFailure: 'collect', body: priced }), [[map, 'NODE_FIELD_INVALID']]);
+  assert.deepEqual(issues(collect(priced, { failedAs: '$failed' })), [[map, 'STATE_KEY_RESERVED']]);
+  assert.deepEqual(issues(collect(priced, { failedAs: 'found' })), [[map, 'NODE_FIELD_INVALID']]);
+  // A key that belongs to the other form of the node, as `otherwise` on a route Jev chooses.
+  assert.deepEqual(issues({ failedAs: 'failed', body: priced }), [[map, 'NODE_KEY_UNKNOWN']]);
+  // A field of the wrong JSON type is the shape check's, at the field itself.
+  assert.deepEqual(issues({ onItemFailure: 3, body: priced }), [[`${map}/onItemFailure`, 'SHAPE_INVALID']]);
+});
+
 test('a collecting map keeps as aligned with its items: a later node zips them, and the failed item\'s row holds null', async () => {
   const events = [];
   const workflow = flow(collect(priced), [{ node: 'code', label: 'zip', code: 's => ({ rows: s.items.map((item, i) => ({ id: item.id, result: s.found[i] })) })' }]);
