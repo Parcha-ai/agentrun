@@ -457,6 +457,8 @@ async function usableCheckpoint(
 	vault: CheckpointVault,
 	session: string,
 	context: Context,
+	/** Only a checkpoint whose store ends at or before this head: the one a restore at that head started from. */
+	upToHead?: number,
 ): Promise<Checkpoint | undefined> {
 	const latest = await vault.latest(session, context);
 	if (!latest.ok || latest.value === undefined) return undefined;
@@ -464,6 +466,7 @@ async function usableCheckpoint(
 		const got = await vault.get(session, n, context);
 		const checkpoint = got.ok ? got.value : undefined;
 		if (checkpoint === undefined) continue;
+		if (upToHead !== undefined && checkpoint.seal.head > upToHead) continue;
 		if (!(await verifyStore(checkpoint.storeFile, checkpoint.seal, context)).ok) continue;
 		const tree = await manifestOf(vault.box, checkpoint.filesRoot, undefined, context);
 		if (!tree.ok) continue;
@@ -491,7 +494,9 @@ async function usableCheckpoint(
  */
 async function storeFromLog(vault: CheckpointVault, session: string, context: Context): Promise<Replayed | undefined> {
 	const log = await vault.readLog(session, 1, context);
-	if (!log.ok || log.value.entries.length === 0) return undefined;
+	// A log with a hole holds commits that cannot be replayed: restoring its prefix would drop them and let what they
+	// admitted run again, so it is not a log to restore from.
+	if (!log.ok || log.value.entries.length === 0 || log.value.gap) return undefined;
 	const directory = mkdtempSync(join(tmpdir(), "pi-transport-log-restore-"));
 	const file = join(directory, "store.db");
 	try {
@@ -504,22 +509,6 @@ async function storeFromLog(vault: CheckpointVault, session: string, context: Co
 		rmSync(directory, { recursive: true, force: true });
 		return undefined;
 	}
-}
-
-/** The newest checkpoint whose store ends at or before `head`: the one a restore at that head started from. */
-async function checkpointBefore(
-	vault: CheckpointVault,
-	session: string,
-	head: number,
-	context: Context,
-): Promise<Checkpoint | undefined> {
-	const latest = await vault.latest(session, context);
-	if (!latest.ok || latest.value === undefined) return undefined;
-	for (let n = latest.value.n; n >= 1; n -= 1) {
-		const got = await vault.get(session, n, context);
-		if (got.ok && got.value !== undefined && got.value.seal.head <= head) return got.value;
-	}
-	return undefined;
 }
 
 /**
@@ -659,10 +648,23 @@ async function restoreInto(
 			return err(new MoveError("ship", `the checkpoint's files did not reach the new box: ${tree.error.message}`));
 	} else {
 		// From the log alone no file comes back: the workspace is an empty directory.
-		const made = await place.box.exec(["mkdir", "-p", "--", place.workspace], undefined, context);
+		// The directory is made if it is not there, and must hold nothing: the notice says no file came back.
+		const made = await place.box.exec(
+			["sh", "-c", 'mkdir -p -- "$1" && ls -A -- "$1"', "sh", place.workspace],
+			undefined,
+			context,
+		);
 		const done = made.ok ? await finish(made.value) : made;
 		if (!done.ok || done.value.exitCode !== 0) {
 			return err(new MoveError("ship", `the new box has no workspace directory ${place.workspace}`));
+		}
+		if (new TextDecoder().decode(done.value.stdout).trim() !== "") {
+			return err(
+				new MoveError(
+					"ship",
+					`the new box's workspace ${place.workspace} is not empty: a restore from the log needs it empty`,
+				),
+			);
 		}
 	}
 	const host = options.host ?? "host";
@@ -796,7 +798,8 @@ export async function recoverHome(
 	// still told it was restored, from the checkpoint the lease's seal came from.
 	let notice = options.notice;
 	if (lease.move?.startsWith("restore-") && lease.seal !== undefined && options.vault !== undefined) {
-		const from = await checkpointBefore(options.vault, options.session, lease.seal.head, context);
+		// Verified again, not only read: a checkpoint whose files failed the check was not what the restore used.
+		const from = await usableCheckpoint(options.vault, options.session, context, lease.seal.head);
 		const made = (options.noticeOfRestore ?? restoreNotice)(
 			from,
 			options.calls ?? [],

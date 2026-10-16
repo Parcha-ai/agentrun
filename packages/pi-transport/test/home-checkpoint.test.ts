@@ -1044,6 +1044,84 @@ describe("recovering a session whose box is gone", () => {
 		expect(getOrThrow(await r.lease.current("s", context))?.epoch).toBe(1);
 	});
 
+	it("refuses a log with a hole: restoring its prefix would drop the commits after it and let what they admitted run again", async () => {
+		const r = await lost(false);
+		const directory = fresh("holey");
+		const holey = localVault(directory);
+		const shipped = await wholeLog(4);
+		getOrThrow(await holey.appendLog("s", shipped.slice(0, 2), context));
+		// Commit 4 reached the host and 3 did not: written as a disk that lost a write would leave it.
+		appendFileSync(join(directory, "s", "commits.jsonl"), `${JSON.stringify(shipped[3])}\n`);
+		getOrThrow(await r.fx.place.box.destroy(context));
+		const refused = await recoverHome(
+			{
+				session: "s",
+				ownership: r.lease,
+				places: { a: r.fx.place },
+				start: r.start,
+				notice: "unused",
+				vault: holey,
+				replace: r.replace,
+				restoreFromLog: true,
+			},
+			context,
+		);
+		expect(refused.ok ? "" : refused.error.code).toBe("no_checkpoint");
+		expect(r.replaced()).toBe(0);
+		// Nothing was dropped: commit 4 is still in the host's log.
+		expect(readFileSync(join(directory, "s", "commits.jsonl"), "utf8")).toContain(`"commit":4`);
+	});
+
+	it("refuses a new box whose workspace is not empty, before it takes the lease", async () => {
+		const r = await lost(false);
+		getOrThrow(await r.vault.appendLog("s", await wholeLog(3), context));
+		mkdirSync(r.target.workspace, { recursive: true });
+		writeFileSync(join(r.target.workspace, "left-over.txt"), "from another session");
+		getOrThrow(await r.fx.place.box.destroy(context));
+		const refused = await recoverHome(
+			{
+				session: "s",
+				ownership: r.lease,
+				places: { a: r.fx.place },
+				start: r.start,
+				notice: "unused",
+				vault: r.vault,
+				replace: r.replace,
+				restoreFromLog: true,
+			},
+			context,
+		);
+		expect(refused.ok ? "" : refused.error.code).toBe("ship");
+		expect(refused.ok ? "" : refused.error.message).toMatch(/not empty/);
+		expect(getOrThrow(await r.lease.current("s", context))?.epoch).toBe(1);
+	});
+
+	it("tells a restore from the log that was retried after its start failed that no checkpoint existed", async () => {
+		const r = await lost(false);
+		getOrThrow(await r.vault.appendLog("s", await wholeLog(3), context));
+		getOrThrow(await r.fx.place.box.destroy(context));
+		let starts = 0;
+		const failing: typeof r.start = async (at, epoch, ctx) => {
+			starts += 1;
+			if (starts === 1) return err(new MoveError("prepare", "the runner could not start"));
+			return r.start(at, epoch, ctx);
+		};
+		const options = {
+			session: "s",
+			ownership: r.lease,
+			start: failing,
+			notice: "the plain notice",
+			vault: r.vault,
+			replace: r.replace,
+			restoreFromLog: true,
+		};
+		expect((await recoverHome({ ...options, places: { a: r.fx.place } }, context)).ok).toBe(false);
+		getOrThrow(await recoverHome({ ...options, places: { x: r.target } }, context));
+		const order = (r.orders.at(-1) as { order: { move: { notice: string; kind: string } } }).order;
+		expect(order.move.kind).toBe("restore");
+		expect(order.move.notice).toContain("No checkpoint existed");
+	});
+
 	it("leaves a restore from a checkpoint as it was when the host opted in to the log", async () => {
 		const r = await lost(true);
 		getOrThrow(await r.fx.place.box.destroy(context));
