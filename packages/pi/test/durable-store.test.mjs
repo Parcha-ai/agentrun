@@ -8,6 +8,8 @@ import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { Harness, createRegistry } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { registerStoreConformance } from '@parcha/agentrun-dsl/recovery/testing';
+import { EffectOutcomeUnknownError, runWorkflow } from '@parcha/agentrun-dsl';
+import { FROZEN_SNAPSHOT_SCHEMA_V4, openRecovery, withRecovery } from '@parcha/agentrun-dsl/recovery';
 import { committedRoutes, documentStore, durableDoc, readJournal } from '@parcha/agentrun-pi/durable';
 
 const root = mkdtempSync(join(tmpdir(), 'agentrun-document-store-'));
@@ -73,6 +75,55 @@ test('document store: the readers see a journal from the store file, wherever th
   assert.deepEqual(committedRoutes({ pin: { routes: { 'root/0': { answer: 1 } } } }), { 'root/0': { answer: 1 } });
   assert.deepEqual(committedRoutes(null), {});
   await harness.close(ctx);
+});
+
+// A map whose items each make an outside call and run a nested map of calls; item b's call ends with its outcome unknown.
+const MAPPED = {
+  v: 2, name: 'mapped', schemas: { In: { type: 'object', required: ['items'], properties: { items: { type: 'array' } } }, Any: { type: 'object' } },
+  input: { schemaId: 'In' }, output: { schemaId: 'Any' },
+  root: { node: 'chain', steps: [{ node: 'map', label: 'each', itemsPath: 'items', as: 'found', maxConcurrency: 1, body: { node: 'chain', steps: [
+    { node: 'call', label: 'fetch', via: 'tool', tool: 'fetch', args: { id: '{item.id}' }, out: 'Any', as: 'got', deadline_s: 5 },
+    { node: 'map', label: 'parts', itemsPath: 'item.parts', as: 'subs', maxConcurrency: 1, body: { node: 'call', label: 'sub', via: 'tool', tool: 'sub', args: { part: '{item}' }, out: 'Any', as: 'sub', deadline_s: 5 } },
+  ] } }] },
+};
+
+test('document store: readJournal lists a keyed-layout journal\'s effects as the whole layout does, the ones its map items own included, nested maps too, once each, in the order they were admitted', async () => {
+  const run = async (layout, { together = 1, unknown = true } = {}) => {
+    const file = join(mkdtempSync(join(root, 'run-')), 'run.sqlite');
+    const harness = await open(file);
+    const workflow = structuredClone(MAPPED);
+    workflow.root.steps[0].maxConcurrency = together;
+    const driver = await openRecovery(documentStore(harness, 'run-1'), workflow, { key: 'run-1', layout });
+    const deps = withRecovery(driver, {
+      runEffect: async ({ node, input }) => {
+        if (unknown && node.label === 'fetch' && input.id === 'b') throw new EffectOutcomeUnknownError('fetch', 'deadline', 1, 'key', Promise.resolve({ status: 'rejected', reason: null }));
+        return { label: node.label, input };
+      },
+    });
+    const running = runWorkflow(workflow, { items: [{ id: 'a', parts: [1, 2] }, { id: 'b', parts: [3] }] }, deps);
+    if (unknown) await assert.rejects(running, EffectOutcomeUnknownError);
+    else assert.equal((await running).status, 'complete');
+    await driver.close();
+    await harness.close(ctx);
+    return { driver: durableDoc(file, 'agentrun.driver', 'run-1'), effects: readJournal(file, 'run-1').effects };
+  };
+  const whole = await run('v3');
+  const keyed = await run('v4');
+  assert.equal(keyed.driver.state.schema, FROZEN_SNAPSHOT_SCHEMA_V4);
+  assert.deepEqual(keyed.driver.effects, [], 'every effect of this run belongs to a map item, so the driver record lists none');
+  assert.deepEqual(keyed.effects.map(({ id, name, status }) => [id, name, status]), [
+    ['step:/root/steps/0/items/0/body/steps/0#call:0', 'fetch', 'completed'],
+    ['step:/root/steps/0/items/0/body/steps/1/items/0/body#call:0', 'sub', 'completed'],
+    ['step:/root/steps/0/items/0/body/steps/1/items/1/body#call:0', 'sub', 'completed'],
+    ['step:/root/steps/0/items/1/body/steps/0#call:0', 'fetch', 'unknown'],
+  ]);
+  assert.deepEqual(keyed.effects, whole.effects, 'both layouts list the same effects, each whole');
+  // Two items at once: the calls are admitted across the items, and both layouts list them in that order, not item by item.
+  const [wholeTogether, keyedTogether] = [await run('v3', { together: 2, unknown: false }), await run('v4', { together: 2, unknown: false })];
+  assert.deepEqual(keyedTogether.driver.effects, []);
+  assert.deepEqual(keyedTogether.effects, wholeTogether.effects);
+  assert.deepEqual(keyedTogether.effects.slice(0, 2).map(({ name }) => name), ['fetch', 'fetch'], 'both items\' calls were admitted before either item\'s nested ones');
+  assert.equal(keyedTogether.effects.length, 5);
 });
 
 test('document store: a key or an effect id with a NUL is refused, so two journals never name one effect document', async () => {
