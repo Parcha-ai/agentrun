@@ -1246,23 +1246,23 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
     }
   }
   {
-    const llmNodes: LlmNode[] = [];
-    const llmPointers = new Map<LlmNode, string>();
+    // Each placement with its pointer: one node object a TypeScript author placed twice is two nodes of the document.
+    const llmNodes: { node: LlmNode; ptr: string }[] = [];
     const collect = (node: WorkflowNode, ptr: string): void => {
       if (!node || typeof node !== "object") return;
-      if (node.node === "agent" || node.node === "decide" || node.node === "extract" || node.node === "report") { llmNodes.push(node); llmPointers.set(node, ptr); }
+      if (node.node === "agent" || node.node === "decide" || node.node === "extract" || node.node === "report") llmNodes.push({ node, ptr });
       if (node.node === "chain") (node.steps || []).forEach((step, i) => collect(step, `${ptr}/steps/${i}`));
       if (node.node === "parallel") (node.branches || []).forEach((branch, i) => collect(branch, `${ptr}/branches/${i}`));
       if (node.node === "map" || node.node === "loop") collect(node.body, `${ptr}/body`);
       if (node.node === "route") for (const [name, branch] of Object.entries(node.branches || {})) if (branch?.body) collect(branch.body, `${ptr}/branches/${pointerKey(name)}/body`);
     };
     collect(workflow?.root, "/root");
-    if (llmNodes.some((n) => n.node === "report")) {
-      for (const node of llmNodes) {
+    if (llmNodes.some(({ node }) => node.node === "report")) {
+      for (const { node, ptr } of llmNodes) {
         if (node.node === "report" || node.node === "agent") continue;
         const properties = ((Object.hasOwn(workflow.schemas, node.out) ? workflow.schemas[node.out] : undefined) as { properties?: Record<string, unknown> } | undefined)?.properties;
         if (properties && Object.prototype.hasOwnProperty.call(properties, "report_markdown")) {
-          fail("STRUCTURE_INVALID", llmPointers.get(node) ?? "/root", `root (${node.label}): a ${node.node} node must not emit report_markdown — the report node owns the report; drop the field from schema "${node.out}"`);
+          fail("STRUCTURE_INVALID", ptr, `root (${node.label}): a ${node.node} node must not emit report_markdown — the report node owns the report; drop the field from schema "${node.out}"`);
         }
       }
     }

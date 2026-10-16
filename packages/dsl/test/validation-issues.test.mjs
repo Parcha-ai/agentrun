@@ -126,6 +126,17 @@ test('a missing body is reported on the node that should hold it, never on the a
   assert.deepEqual([missing.path, missing.message], ['/root/steps/0', 'root.steps[0].body: unknown node kind "undefined"']);
 });
 
+test('one node object used at two positions is reported at each position', () => {
+  // A TypeScript author may place the same object twice; each placement is its own node in the document.
+  const shared = { node: 'extract', label: 'facts', instructions: 'Read it.', out: 'Facts', as: 'facts' };
+  const document = { v: 2, name: 'reuse', schemas: { ...schemas, Facts: { type: 'object', properties: { report_markdown: { type: 'string' } } } },
+    output: { schemaId: 'A' }, root: { node: 'chain', steps: [shared, { node: 'parallel', label: 'p', branches: [agent('x'), shared] }, { node: 'report', label: 'r', instructions: 'Write it.' }] } };
+  const result = validateWorkflow(document);
+  assertIssues(document, result, 'reused node');
+  const owned = result.issues.filter((issue) => issue.message.includes('must not emit report_markdown'));
+  assert.deepEqual(owned.map((issue) => issue.path), ['/root/steps/0', '/root/steps/1/branches/1']);
+});
+
 test('every invalid conformance case keeps the issue contract', () => {
   const dir = fileURLToPath(new URL('../../../spec/lean/conformance/', import.meta.url));
   let invalid = 0;
