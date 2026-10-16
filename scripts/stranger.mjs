@@ -62,6 +62,7 @@ export function validateSpec(spec, name) {
   if (spec.examples !== undefined) {
     for (const key of ['readme', 'heading', 'fence', 'dir']) assert.equal(typeof spec.examples[key], 'string', `${name}: examples.${key}`);
     assert.ok(Number.isInteger(spec.examples.timeoutMs) && spec.examples.timeoutMs > 0, `${name}: examples.timeoutMs`);
+    for (const floor of Object.values(spec.examples.platformFloors ?? {})) parseVersion(floor);
   }
   return spec;
 }
@@ -258,16 +259,19 @@ export function parseIndex(markdown) {
 }
 
 /**
- * Which examples to walk against the registry whose `beta` tag is `beta`: those that run with no key (CI "yes") and whose
- * Since is at or below it. An example above it is skipped with its reason. A keyless example must name a version.
+ * Which examples to walk against the registry whose `beta` tag is `beta`: those that run with no key (CI "yes"), each at
+ * the `version` it installs: its Since, or this platform's `floor` (the spec's `examples.platformFloors`: the first release
+ * that runs on it at all) when that is later. One whose version is above the beta is skipped with its reason. A keyless
+ * example must name a version.
  */
-export function selectExamples(rows, beta) {
+export function selectExamples(rows, beta, floor) {
   const run = []; const skipped = [];
   for (const { name, since, ci } of rows) {
     if (ci !== 'yes') { skipped.push({ name, reason: `not keyless (CI "${ci}")` }); continue; }
     assert.ok(/^\d/.test(since), `${name}: a keyless example's Since is a published version, not "${since}"`);
-    if (compareVersions(since, beta) > 0) skipped.push({ name, reason: `needs ${since}, and the registry's beta is ${beta}` });
-    else run.push({ name, since });
+    const version = floor !== undefined && compareVersions(since, floor) < 0 ? floor : since;
+    if (compareVersions(version, beta) > 0) skipped.push({ name, reason: `needs ${version}${version === since ? '' : ' on this platform'}, and the registry's beta is ${beta}` });
+    else run.push({ name, since, version });
   }
   return { run, skipped };
 }
@@ -281,9 +285,10 @@ export function examplesInstallArgs(block, packageName, version) {
 }
 
 /**
- * The Since cells, enforced: for every keyless example whose Since is at or below the registry's `beta`, install exactly
- * that version in an empty directory the way "Run one from an install" says, copy the example's files, run `node main.ts`
- * and expect its `ok:` line. An example above the beta is skipped with a reason. Results are `{ name, since, status, ... }`.
+ * The Since cells, enforced: for every keyless example whose version (its Since, or this platform's floor when later) is
+ * at or below the registry's `beta`, install exactly that version in an empty directory the way "Run one from an install"
+ * says, copy the example's files, run `node main.ts` and expect its `ok:` line. An example above the beta is skipped with
+ * a reason. Results are `{ name, since, version, status, ... }`.
  */
 async function walkExamples(spec, work, env) {
   const { examples } = spec;
@@ -292,16 +297,16 @@ async function walkExamples(spec, work, env) {
   const beta = tag.stdout.trim();
   assert.ok(tag.exitCode === 0 && beta, `the registry has no beta tag for ${spec.package}: ${tag.stderr.slice(-500)}`);
   const index = await readFile(join(root, examples.readme), 'utf8');
-  const { run, skipped } = selectExamples(parseIndex(index), beta);
+  const { run, skipped } = selectExamples(parseIndex(index), beta, examples.platformFloors?.[process.platform]);
   const results = skipped.map(({ name, reason }) => ({ name, status: 'skipped', reason }));
-  for (const version of [...new Set(run.map(example => example.since))]) {
+  for (const version of [...new Set(run.map(example => example.version))]) {
     const project = join(work, `examples-${version}`);
     await mkdir(project);
     await writeFile(join(project, 'package.json'), JSON.stringify({ name: 'stranger-examples', private: true, type: 'module' }));
     const args = [...examplesInstallArgs(extractSnippet(index, examples), spec.package, version), '--ignore-scripts', '--no-audit', '--no-fund'];
     const install = await npm(args, project);
-    for (const { name, since } of run.filter(example => example.since === version)) {
-      if (install.exitCode !== 0) { results.push({ name, since, status: 'failed', problems: [`npm install ${spec.package}@${version} failed (${install.exitCode}): ${install.stderr.slice(-1000)}`] }); continue; }
+    for (const { name, since } of run.filter(example => example.version === version)) {
+      if (install.exitCode !== 0) { results.push({ name, since, version, status: 'failed', problems: [`npm install ${spec.package}@${version} failed (${install.exitCode}): ${install.stderr.slice(-1000)}`] }); continue; }
       const target = join(project, name);
       await cp(join(root, examples.dir, name), target, { recursive: true, filter: source => !/(^|\/)README\.md$/.test(source) });
       const result = await runCommand('node', ['main.ts'], { cwd: target, env, timeoutMs: examples.timeoutMs, group: true });
@@ -311,7 +316,7 @@ async function walkExamples(spec, work, env) {
       // The first line that says why (a SyntaxError for a missing export, a "not ok"), else the last line of the output.
       const lines = output.split('\n').map(line => line.trim()).filter(Boolean);
       if (problems.length) problems.push(`output: ${(lines.find(line => /Error|not ok/.test(line)) ?? lines.at(-1) ?? '(none)').slice(0, 300)}`);
-      results.push({ name, since, status: problems.length ? 'failed' : 'passed', problems, output: output.slice(-1500) });
+      results.push({ name, since, version, status: problems.length ? 'failed' : 'passed', problems, output: output.slice(-1500) });
     }
   }
   return { beta, results };
@@ -347,8 +352,9 @@ async function main() {
   const outcome = await stranger(name, { registry, tarballs: given, readmeLine, examplesOnly });
   if (outcome.examples) {
     console.log(`${name}: examples against the registry's beta ${outcome.examples.beta}`);
-    for (const { name: example, since, status, reason, problems } of outcome.examples.results) {
-      console.log(status === 'skipped' ? `  ${example}: skipped, ${reason}` : `  ${example} (Since ${since}): ${status}${problems?.length ? `: ${problems.join('; ').slice(0, 400)}` : ''}`);
+    for (const { name: example, since, version, status, reason, problems } of outcome.examples.results) {
+      const at = version === since ? `Since ${since}` : `Since ${since}, ${version} on ${process.platform}`;
+      console.log(status === 'skipped' ? `  ${example}: skipped, ${reason}` : `  ${example} (${at}): ${status}${problems?.length ? `: ${problems.join('; ').slice(0, 400)}` : ''}`);
     }
   }
   if (outcome.status === 'missing') console.log(`${name}: ${MISSING}: ${outcome.reason}`);
