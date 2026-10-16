@@ -21,7 +21,8 @@ const boxTool = process.env.DEMO_BOX_TOOL ? {
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       const made = await context!.boxes!.create({ maxLifetimeMs: 60_000, labels: { 'agentrun-demo': 'install' } }, ctx);
       if (!made.ok) throw made.error;
-      const ran = await made.value.exec([process.execPath, '-e', 'setTimeout(() => console.log("installed"), 400)'], undefined, ctx);
+      // The first attempt's command outlasts any scheduling delay (the box is lost while it runs, and the loss must always beat its end); the second's is short.
+      const ran = await made.value.exec([process.execPath, '-e', `setTimeout(() => console.log("installed"), ${attempt === 1 ? 3000 : 50})`], undefined, ctx);
       const done = ran.ok ? await finish(ran.value, undefined) : undefined;
       await made.value.destroy(ctx);
       if (done?.ok && done.value.exitCode === 0) return { attempts: attempt };
