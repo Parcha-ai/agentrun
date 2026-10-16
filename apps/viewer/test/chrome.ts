@@ -1,10 +1,11 @@
-// Headless Chrome for the viewer's tests, every wait bounded and every process killed. Chrome runs in a process group of
-// its own, and the whole group is killed when a test is done with it or a bound passes: a helper Chrome started (a
-// renderer, the GPU process) inherits Chrome's stdout, and one left behind holds that pipe open. `spawnSync` waits for the
-// pipe to close, with the event loop blocked, so no test timeout can fire: that is how one test once held a CI job to its
-// limit. Nothing here waits on a pipe, a socket or a page without a bound that names what it waited for.
+// Headless Chrome for the viewer's tests, driven over the DevTools protocol in real time, every wait bounded and every
+// process killed. Chrome runs in a process group of its own, killed whole with SIGKILL when a test is done with it, a bound
+// passes or the test's signal aborts, so no helper it started (a renderer, the GPU process) is left behind. Two things
+// once held a CI job to its limit and are not used here: `spawnSync`, whose timeout sends SIGTERM and then waits for the
+// process to exit with the event loop blocked, and `--dump-dom` with `--virtual-time-budget`, which now and then never
+// finishes. Nothing here waits on a socket or a page without a bound that names what it waited for.
 import { spawn, type ChildProcess } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const chrome = process.env.CHROME_PATH ?? '/usr/bin/google-chrome';
@@ -25,31 +26,12 @@ function killGroup(browser: ChildProcess) {
   try { process.kill(-browser.pid, 'SIGKILL'); } catch { /* already gone */ }
 }
 
-/** The page's DOM after `--virtual-time-budget`, as `--dump-dom` prints it, within `ms`. */
-export async function dumpDom(url: string, profile: string, { ms = 20_000, budget = 6000, path = chrome, signal }: { ms?: number; budget?: number; path?: string; signal?: AbortSignal } = {}): Promise<string> {
-  const browser = spawn(path, [...base, `--user-data-dir=${profile}`, `--virtual-time-budget=${budget}`, '--dump-dom', url], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] });
-  // A test that times out aborts its signal: Chrome goes at once, before the test's cleanup removes what it uses.
-  const abort = () => killGroup(browser);
-  signal?.addEventListener('abort', abort, { once: true });
-  let out = '';
-  browser.stdout!.setEncoding('utf8').on('data', (chunk: string) => { out += chunk; });
-  const exited = new Promise<void>((resolve, reject) => { browser.once('exit', () => resolve()); browser.once('error', reject); });
-  const closed = new Promise<void>((resolve) => browser.stdout!.once('close', () => resolve()));
-  try {
-    await within(ms, `Chrome dumping ${url}`, signal ? Promise.race([exited, new Promise<never>((_, reject) => signal.addEventListener('abort', () => reject(new Error(`Chrome dumping ${url}: the test ended`)), { once: true }))]) : exited);
-  } finally {
-    // Its helpers go with it, so its stdout closes.
-    killGroup(browser);
-    signal?.removeEventListener('abort', abort);
-  }
-  await within(5000, `Chrome's output for ${url}`, closed);
-  return out;
-}
-
 /** A page in headless Chrome driven over the DevTools protocol, in real time. Chrome must be listening within `launchMs`,
  *  and every request to it answers within `requestMs`; `close` ends Chrome and every process it started, and never throws,
  *  and so does `signal`'s abort (a test's timeout). */
 export async function drivenPage(url: string, profile: string, { launchMs = 20_000, requestMs = 10_000, path = chrome, signal }: { launchMs?: number; requestMs?: number; path?: string; signal?: AbortSignal } = {}) {
+  // A profile used before may still hold the port file of a Chrome that is gone.
+  rmSync(join(profile, 'DevToolsActivePort'), { force: true });
   const browser = spawn(path, [...base, `--user-data-dir=${profile}`, '--remote-debugging-port=0', url], { detached: true, stdio: 'ignore' });
   let socket: WebSocket | undefined;
   const exited = new Promise<void>((resolve) => browser.once('exit', () => resolve()));
@@ -74,19 +56,36 @@ export async function drivenPage(url: string, profile: string, { launchMs = 20_0
     const opened = new WebSocket(target.webSocketDebuggerUrl);
     socket = opened;
     await within(requestMs, 'the DevTools socket opening', new Promise((resolve, reject) => { opened.addEventListener('open', resolve); opened.addEventListener('error', reject); }));
-    const waiting = new Map<number, (value: unknown) => void>();
+    // An answer that can no longer come fails at once: the socket closed or failed, or Chrome exited.
+    const waiting = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+    let gone: string | undefined;
+    const failAll = (why: string) => { gone ??= why; for (const each of waiting.values()) each.reject(new Error(why)); waiting.clear(); };
+    opened.addEventListener('close', () => failAll('the DevTools socket closed'));
+    opened.addEventListener('error', () => failAll('the DevTools socket failed'));
+    void exited.then(() => failAll('Chrome exited'));
     opened.addEventListener('message', (event) => {
       const message = JSON.parse(String(event.data)) as { id?: number; result?: { result?: { value?: unknown } } };
-      if (message.id !== undefined) waiting.get(message.id)?.(message.result?.result?.value);
+      if (message.id !== undefined) waiting.get(message.id)?.resolve(message.result?.result?.value);
     });
     let id = 0;
     const evaluate = (expression: string) => {
       id += 1;
       const mine = id;
-      return within(requestMs, `the page evaluating ${expression.slice(0, 60)}`, new Promise((resolve) => { waiting.set(mine, resolve); opened.send(JSON.stringify({ id: mine, method: 'Runtime.evaluate', params: { expression, returnByValue: true } })); }))
-        .finally(() => waiting.delete(mine));
+      return within(requestMs, `the page evaluating ${expression.slice(0, 60)}`, new Promise((resolve, reject) => {
+        if (gone) { reject(new Error(gone)); return; }
+        waiting.set(mine, { resolve, reject });
+        opened.send(JSON.stringify({ id: mine, method: 'Runtime.evaluate', params: { expression, returnByValue: true } }));
+      })).finally(() => waiting.delete(mine));
     };
-    return { evaluate, sleep, close };
+    /** Until `expression` is true on the page, polled, within `ms`; then the value of `read`. */
+    const once = async (expression: string, read: string, ms: number, what: string) => {
+      for (const until = Date.now() + ms; Date.now() < until && !signal?.aborted;) {
+        if (await evaluate(expression)) return evaluate(read);
+        await sleep(100);
+      }
+      throw new Error(`${what}: not so after ${ms / 1000} s`);
+    };
+    return { evaluate, once, sleep, close };
   } catch (error) {
     await close();
     throw error;

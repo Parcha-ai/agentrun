@@ -11,7 +11,7 @@ import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
-import { chrome, drivenPage, dumpDom } from './chrome.ts';
+import { chrome, drivenPage } from './chrome.ts';
 import { chapterAt, embedMessage, fromParent, parentOrigin, parentParam, steerOf } from '../src/app.ts';
 
 const noChrome = { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` };
@@ -73,24 +73,48 @@ test('a message steers only from the framing page itself, at the origin its URL 
 
 test('embedded, the page drops its header and fills its frame, and without &parent= it is steered by nothing', IN_CHROME, async (t) => {
   const out = mkdtempSync(join(tmpdir(), 'viewer-embed-'));
-  t.after(() => rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }), CLEANUP);
+  // One cleanup, in order: every Chrome first, then the files. The test's signal has killed them by then if it timed out.
+  const pages: Awaited<ReturnType<typeof drivenPage>>[] = [];
+  t.after(async () => {
+    for (const page of pages) await page.close();
+    rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }, CLEANUP);
   build(join(out, 'dist'), fixtures);
-  const page = (query: string) => dumpDom(`${pathToFileURL(join(out, 'dist', 'index.html')).href}?${query}`, join(out, 'profile'), { signal: t.signal });
-  const embedded = await page('r=reference-killed&embed=1');
+  // Each page in real time, over DevTools, in a Chrome of its own: read once the page has drawn, never a virtual-time dump.
+  let launched = 0;
+  const read = async (url: string, ready: string, value: string, what: string) => {
+    const page = await drivenPage(url, join(out, `profile-${launched += 1}`), { signal: t.signal });
+    pages.push(page);
+    try { return await page.once(ready, value, 20_000, what); } finally { await page.close(); }
+  };
+  const drawn = 'document.body.textContent.includes("paid calls made")';
+  const html = 'document.documentElement.outerHTML';
+  const viewer = (query: string) => `${pathToFileURL(join(out, 'dist', 'index.html')).href}?${query}`;
+  const embedded = String(await read(viewer('r=reference-killed&embed=1'), drawn, html, 'the embedded page drawn'));
   assert.match(embedded, /<html[^>]* class="embed"/);
   assert.doesNotMatch(embedded, /<h1>/);
   assert.match(embedded, /paid calls made/, 'the rest of the page is there');
-  assert.match(await page('r=reference-killed'), /<h1>/, 'not embedded: the header');
-  // Framed from a file, with no origin to name: it says where it is, and nothing it is sent moves it.
+  assert.match(String(await read(viewer('r=reference-killed'), drawn, html, 'the page drawn')), /<h1>/, 'not embedded: the header');
+  // Framed from a file, with no origin to name: it says where it is, and nothing it is sent moves it. Once its three
+  // messages are in, two seconds more for any move the frame's seek could cause.
   writeFileSync(join(out, 'dist', 'frame.html'), `<!doctype html><body><iframe src="index.html?r=reference-killed&embed=1"></iframe><script>
     addEventListener("message", (event) => {
       if (event.data.type === "ready") event.source.postMessage({ type: "seek", stop: 1 }, "*");
       const got = document.createElement("pre"); got.className = "got"; got.textContent = JSON.stringify(event.data); document.body.append(got);
     });</script></body>`);
-  const framed = await dumpDom(pathToFileURL(join(out, 'dist', 'frame.html')).href, join(out, 'profile'), { signal: t.signal });
-  const got = [...framed.matchAll(/<pre class="got">([^<]*)<\/pre>/g)].map((match) => JSON.parse(match[1]!.replaceAll('&quot;', '"')));
+  const messages = 'JSON.stringify([...document.querySelectorAll("pre.got")].map((each) => JSON.parse(each.textContent)))';
+  const frame = await drivenPage(pathToFileURL(join(out, 'dist', 'frame.html')).href, join(out, `profile-${launched += 1}`), { signal: t.signal });
+  pages.push(frame);
+  let got: { type: string; chapter?: { title: string } }[];
+  try {
+    await frame.once('document.querySelectorAll("pre.got").length >= 3', 'true', 20_000, 'the framed page\'s three messages');
+    await frame.sleep(2000);
+    got = JSON.parse(String(await frame.evaluate(messages))) as typeof got;
+  } finally {
+    await frame.close();
+  }
   assert.deepEqual(got.map((message) => message.type), ['ready', 'position', 'focus']);
-  assert.equal(got[1].chapter.title, 'the end', 'opened at the end, and the seek from an unnamed page was ignored');
+  assert.equal(got[1]!.chapter?.title, 'the end', 'opened at the end, and the seek from an unnamed page was ignored');
 });
 
 test('steered over http: the named parent\'s seek is obeyed; another type, and another origin, are ignored', IN_CHROME, async (t) => {

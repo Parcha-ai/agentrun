@@ -1,5 +1,5 @@
-// The bounds of test/chrome.ts, shown on a stand-in for Chrome that never finishes and does not die on SIGTERM, with a
-// helper of its own still running: each wait fails within its bound and names what it waited for, and nothing it started
+// The bounds of test/chrome.ts, shown on a stand-in for Chrome that never starts listening and does not die on SIGTERM,
+// with a helper of its own still running: each wait fails within its bound and names what it waited for, and nothing it started
 // is left running. (spawnSync, with a timeout, sends SIGTERM and then waits for such a process to exit: the event loop
 // blocked, no test timeout can fire.)
 import assert from 'node:assert/strict';
@@ -7,7 +7,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { drivenPage, dumpDom, within } from './chrome.ts';
+import { drivenPage, within } from './chrome.ts';
 
 /** A Chrome that hangs: it ignores SIGTERM, starts a helper that holds its stdout, writes both their pids, and never ends. */
 function hungChrome(dir: string) {
@@ -33,15 +33,6 @@ test('a wait past its bound fails and names what it waited for', { timeout: 5_00
   assert.equal(await within(1000, 'the thing', Promise.resolve(7)), 7);
 });
 
-test('a Chrome that never finishes its dump fails within the bound, and it and its helper are killed', { timeout: 15_000 }, async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'chrome-bounds-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }), { timeout: 5_000 });
-  const started = Date.now();
-  await assert.rejects(dumpDom('file:///nowhere.html', join(dir, 'profile'), { ms: 1000, path: hungChrome(dir) }), /Chrome dumping file:\/\/\/nowhere\.html: nothing after 1 s/);
-  assert.ok(Date.now() - started < 5000, `failed fast (${Date.now() - started} ms)`);
-  await ended(pidsIn(dir));
-});
-
 test('a Chrome that never starts listening fails within the launch bound, and it and its helper are killed', { timeout: 15_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'chrome-bounds-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }), { timeout: 5_000 });
@@ -57,7 +48,7 @@ test('a test that ends aborts its signal, and Chrome and its helper go at once, 
   const ending = new AbortController();
   setTimeout(() => ending.abort(), 500);
   const started = Date.now();
-  await assert.rejects(dumpDom('file:///nowhere.html', join(dir, 'profile'), { ms: 10_000, path: hungChrome(dir), signal: ending.signal }), /the test ended/);
+  await assert.rejects(drivenPage('http://127.0.0.1:9/', join(dir, 'profile'), { launchMs: 10_000, path: hungChrome(dir), signal: ending.signal }), /Chrome starting/);
   assert.ok(Date.now() - started < 5000, `ended with the signal (${Date.now() - started} ms), not the 10 s bound`);
   await ended(pidsIn(dir));
 });
