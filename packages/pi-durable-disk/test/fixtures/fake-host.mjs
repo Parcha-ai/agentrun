@@ -125,7 +125,9 @@ if (cmd === "mount") {
     const prev = state.holders[target];
     if (prev && state.mounts[prev]) state.mounts[prev].fenced = true;
     state.holders[target] = mp;
-    state.mounts[mp] = { source: `${target}[${region}]`, alive: true, fenced: false, delegation: b.mount === "no-delegation" ? null : "Active" };
+    // fileDelegations: delegations the client also holds on files under the mount (paths relative to it), which a
+    // checkin of the mountpoint leaves; each goes with a checkin of its own path, unless fileCheckinKeeps.
+    state.mounts[mp] = { source: `${target}[${region}]`, alive: true, fenced: false, delegation: b.mount === "no-delegation" ? null : "Active", files: b.fileDelegations ?? [] };
     if (state.proc) {
       state.nextPid = (state.nextPid ?? 7000) + 1;
       (state.daemons ??= {})[state.nextPid] = ["/usr/bin/archil", "mount", target, mp, "--region", region];
@@ -140,7 +142,10 @@ if (cmd === "mount") {
   const sub = m.source.replace(/\[.*\]$/, "").split(":")[1];
   const path = b.delegationsPath === "flat" ? mp : b.delegationsPath === "wrong" ? "/elsewhere" : `${mp}${sub}`;
   // The real client keeps listing a revoked delegation as Active.
-  exit(0, "", JSON.stringify(m.delegation ? [{ path, state: b.delegationState ?? m.delegation }] : [], null, 2) + "\n");
+  const files = (m.files ?? []).map((rel) => ({ path: `${mp}/${rel}`, state: "Active" }));
+  // bookkeeping: the client's own entries on the disk once a file under the mount was deleted; no checkin clears them.
+  if (b.bookkeeping) files.push({ path: `${mp}/.archil/client-7`, state: "Active" }, { path: `${mp}/.archil/client-7/unlinked`, state: "Active" });
+  exit(0, "", JSON.stringify([...(m.delegation ? [{ path, state: b.delegationState ?? m.delegation }] : []), ...files], null, 2) + "\n");
 } else if (cmd === "sync") {
   const mp = rest[rest.length - 1];
   if (b.syncHang) {
@@ -164,7 +169,15 @@ if (cmd === "mount") {
   exit(0);
 } else if (cmd === "checkin") {
   // Gives the delegation back to the server; the mount stays (as on a host that cannot unmount).
-  const mp = rest[rest.length - 1];
+  const asked = rest[rest.length - 1];
+  const owner = Object.keys(state.mounts).find((m) => asked.startsWith(`${m}/`));
+  if (owner && !state.mounts[asked]) {
+    // A file under a mount: its own delegation goes back.
+    if (!live(owner)) exit(1, NOT_RUNNING(owner));
+    if (!b.fileCheckinKeeps) state.mounts[owner].files = (state.mounts[owner].files ?? []).filter((rel) => `${owner}/${rel}` !== asked);
+    exit(0);
+  }
+  const mp = asked;
   if (!live(mp)) exit(1, NOT_RUNNING(mp));
   if (b.checkinFail) exit(1, "✗ Unable to check in: ServerError(\"timeout\")\n");
   if (!b.checkinKeeps) {

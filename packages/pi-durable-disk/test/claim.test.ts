@@ -894,6 +894,22 @@ test("Sysbox: a failed checkin, or a delegation still listed after it, leaves th
   assert.ok(k.read().mounts[k.root]);
 });
 
+test("Sysbox: the client's own bookkeeping under .archil/, which a deleted file leaves and no checkin clears, does not hold the run; the mount moves aside", async () => {
+  const r = disposeAfter(rig({ behave: { sysbox: true, bookkeeping: true } }));
+  const claim = await acquire(r.opts);
+  assert.deepEqual(await claim.release(), { via: "moved" });
+  assert.equal(r.calls("archil", "retire").length, 1);
+  assert.equal(r.read().mounts[r.root], undefined, "the path is free");
+});
+
+test("Sysbox: a delegation the checkin leaves on the run's own tree still holds it: UNMOUNT_FAILED, the mount left where it is", async () => {
+  const r = disposeAfter(rig({ behave: { sysbox: true, bookkeeping: true, fileDelegations: ["record/2/.spool/child-9-1.1.jsonl"], fileCheckinKeeps: true } }));
+  const claim = await acquire(r.opts);
+  await assert.rejects(claim.release(), (e: unknown) => e instanceof ClaimError && e.code === "UNMOUNT_FAILED" && /still lists a delegation/.test(e.message));
+  assert.equal(r.calls("archil", "retire").length, 0);
+  assert.ok(r.read().mounts[r.root]);
+});
+
 test("Sysbox: a move that leaves the path mounted, or a daemon that survives, is UNMOUNT_FAILED", async () => {
   const r = disposeAfter(rig({ behave: { sysbox: true, retireFail: true } }));
   const claim = await acquire(r.opts);
