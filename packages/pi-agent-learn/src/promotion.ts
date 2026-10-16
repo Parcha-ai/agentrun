@@ -29,9 +29,10 @@ export type DecisionOptions = {
 
 const short = (sha: string) => sha.slice(0, 12);
 
-/** A revision's uses since it took its current standing, oldest first: a restored revision's earlier failures never count again. */
+/** A revision's uses folded since it took its current standing, in the order they were folded: a restored revision's earlier
+ *  failures never count again. */
 export function periodUses(trial: Trial, revision: Revision): Use[] {
-  return trial.uses.filter((use) => use.sha256 === revision.sha256 && use.at >= revision.since);
+  return trial.uses.slice(revision.after).filter((use) => use.sha256 === revision.sha256);
 }
 
 /** The most recent superseded revision that can still run, and the newer superseded ones passed over. */
@@ -73,47 +74,73 @@ export function promotionDecision(trial: Trial, options: DecisionOptions = {}): 
   return { action: "hold", reason: `${short(live.sha256)} is active and its last uses did not all fail` };
 }
 
-export type ApplyOptions = {
-  /** The preconditions of a restored revision, which the trial does not keep. Absent: the trial's own stay. */
-  readonly whenOf?: (sha256: string) => readonly Precondition[] | undefined;
+/** A revision with the standing it takes now and none of what only a superseded revision keeps. */
+const taking = (revision: Revision, status: Revision["status"], since: string, after: number): Revision => {
+  const { when: _when, description: _description, ...rest } = revision;
+  return { ...rest, status, since, after };
 };
 
-/** The trial a decision leaves, at time `at`. Refuses a decision that does not apply. */
-export function applyDecision(trial: Trial, decision: Decision, at: string, options: ApplyOptions = {}): Trial {
+/**
+ * The trial a decision leaves, from the use at `at` that caused it, with `uses` folded so far. A promotion makes the trial
+ * active. A demotion makes the live revision demoted, and restores the revision it names with its preconditions, or, with
+ * none, leaves no revision live. The uses that follow count toward the new standing, not the ones before. Refuses a
+ * decision that does not apply.
+ */
+export function applyDecision(trial: Trial, decision: Decision, at: string): Trial {
   if (decision.action === "hold") return trial;
   const live = currentRevision(trial);
   if (!live || live.sha256 !== decision.sha256) throw new LearnError("invalid", `${short(decision.sha256)} is not the live revision`);
+  const after = trial.uses.length;
   if (decision.action === "promote") {
     if (live.status !== "trial") throw new LearnError("invalid", "only a trial is promoted");
-    return { ...trial, status: "active", revisions: trial.revisions.map((r) => (r === live ? { ...r, status: "active", since: at } : r)) };
+    return { ...trial, status: "active", revisions: trial.revisions.map((r) => (r === live ? taking(r, "active", at, after) : r)) };
   }
   const back = decision.rollbackTo;
   const target = back === null ? undefined : trial.revisions.find((r) => r.sha256 === back);
   if (back !== null && target?.status !== "superseded") throw new LearnError("invalid", `${short(back)} is not a superseded revision, so it cannot be restored`);
-  const revisions = trial.revisions.map((r): Revision => (r === live ? { ...r, status: "demoted", since: at } : r === target ? { ...r, status: "active", since: at } : r));
-  return back === null
-    ? { ...trial, status: "demoted", revisions }
-    : { ...trial, status: "active", when: options.whenOf?.(back) ?? trial.when, revisions };
+  const revisions = trial.revisions.map((r): Revision => (r === live ? taking(r, "demoted", at, after) : r === target ? taking(r, "active", at, after) : r));
+  return target
+    ? { ...trial, status: "active", when: target.when ?? [], revisions }
+    : { ...trial, status: "demoted", revisions };
 }
 
-export type AdmitRevision = { readonly name: string; readonly sha256: string; readonly run: string; readonly at: string; readonly when: readonly Precondition[] };
+export type AdmitRevision = {
+  readonly name: string;
+  readonly sha256: string;
+  readonly run: string;
+  readonly at: string;
+  readonly when: readonly Precondition[];
+  /** The description of the skill as it stands, kept with the revision this one replaces when that was active. */
+  readonly replacedDescription?: string;
+};
 export type Admission =
   | { readonly status: "admitted" | "unchanged"; readonly trial: Trial }
   | { readonly status: "refused"; readonly reason: "demoted" | "limit"; readonly detail: string };
 
 /**
- * A new revision becomes the live trial under its name. The revision it replaces is superseded when it was active (and can be
- * restored) and retired when it was a trial that had not proved itself. A digest the trial already holds changes nothing,
- * and a demoted one is refused: only a changed document, a new digest, can be tried under the name again.
+ * A new revision becomes the live trial under its name, with `when` as its preconditions. The revision it replaces is
+ * superseded when it was active, keeping its preconditions and the description of its skill so a rollback restores them, and
+ * retired when it was a trial that had not proved itself. Only the `LIMITS.restorable` newest superseded revisions keep
+ * that; an older one is retired. A digest the trial already holds changes nothing, and a demoted one is refused: only a
+ * changed document, a new digest, can be tried under the name again.
  */
 export function admitRevision(trial: Trial | undefined, input: AdmitRevision): Admission {
   const held = trial?.revisions.find((r) => r.sha256 === input.sha256);
   if (held?.status === "demoted") return { status: "refused", reason: "demoted", detail: `${short(input.sha256)} was demoted; a demoted revision is never tried again` };
   if (trial && held) return { status: "unchanged", trial };
   if (trial && trial.revisions.length >= LIMITS.revisions) return { status: "refused", reason: "limit", detail: `${input.name} already holds ${LIMITS.revisions} revisions` };
-  const fresh: Revision = { sha256: input.sha256, status: "trial", since: input.at, run: input.run };
-  const replaced = (trial?.revisions ?? []).map((r): Revision => (r.status === "active" ? { ...r, status: "superseded", since: input.at } : r.status === "trial" ? { ...r, status: "retired", since: input.at } : r));
-  return { status: "admitted", trial: { name: input.name, status: "trial", when: input.when, revisions: [...replaced, fresh], uses: trial?.uses ?? [] } };
+  const after = trial?.uses.length ?? 0;
+  const fresh: Revision = { sha256: input.sha256, status: "trial", since: input.at, run: input.run, after };
+  const replaced = (trial?.revisions ?? []).map((r): Revision => {
+    if (r.status === "active") {
+      return { ...taking(r, "superseded", input.at, r.after), when: trial!.when, ...(input.replacedDescription === undefined ? {} : { description: input.replacedDescription }) };
+    }
+    return r.status === "trial" ? taking(r, "retired", input.at, r.after) : r;
+  });
+  const superseded = replaced.map((r, index) => ({ r, index })).filter(({ r }) => r.status === "superseded").sort((a, b) => (a.r.since < b.r.since ? -1 : a.r.since > b.r.since ? 1 : a.index - b.index));
+  const forgotten = new Set(superseded.slice(0, Math.max(0, superseded.length - LIMITS.restorable)).map(({ index }) => index));
+  const revisions = replaced.map((r, index) => (forgotten.has(index) ? taking(r, "retired", r.since, r.after) : r));
+  return { status: "admitted", trial: { name: input.name, status: "trial", when: input.when, revisions: [...revisions, fresh], uses: trial?.uses ?? [] } };
 }
 
 export type IgnoredUse = { readonly use: Use; readonly reason: "unknown_revision" | "author" | "duplicate" };
@@ -123,26 +150,31 @@ export type Folded = { readonly trial: Trial; readonly applied: readonly Applied
 const order = (a: Use, b: Use) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.run < b.run ? -1 : a.run > b.run ? 1 : a.sha256 < b.sha256 ? -1 : a.sha256 > b.sha256 ? 1 : a.outcome < b.outcome ? -1 : a.outcome > b.outcome ? 1 : 0);
 
 /**
- * Appends uses to a trial in the order they happened and settles after each one, as if a curator had run between runs:
- * a decision stands from the use that caused it, so the uses that follow count toward the new standing. A use of a
- * revision the trial does not hold is left out, and so is one by the run that proposed the revision (the author's run
- * is not evidence for its own work) and one already folded. Only the newest `LIMITS.uses` are kept.
+ * Appends one run's uses to a trial and settles after each one, as if a curator had run between them. The uses of one call
+ * are folded in the order they happened; calls are folded in the order they are made, and that order, not any clock, decides
+ * which uses count toward a standing: a use that arrives after a decision counts toward the standing the decision gave. A use
+ * of a revision the trial does not hold is left out, and so is one by the run that proposed the revision (the author's run is
+ * not evidence for its own work) and one by a run already folded for that revision. Only the newest `LIMITS.uses` are kept.
  */
-export function foldUses(trial: Trial, incoming: readonly Use[], options: DecisionOptions & ApplyOptions = {}): Folded {
+export function foldUses(trial: Trial, incoming: readonly Use[], options: DecisionOptions = {}): Folded {
   let current = trial;
   const applied: Applied[] = [];
   const ignored: IgnoredUse[] = [];
+  const folded = new Set(trial.uses.map((use) => `${use.run}\n${use.sha256}`));
   for (const use of [...incoming].sort(order)) {
     const revision = current.revisions.find((r) => r.sha256 === use.sha256);
     if (!revision) ignored.push({ use, reason: "unknown_revision" });
     else if (revision.run === use.run) ignored.push({ use, reason: "author" });
-    else if (current.uses.some((held) => order(held, use) === 0)) ignored.push({ use, reason: "duplicate" });
+    else if (folded.has(`${use.run}\n${use.sha256}`)) ignored.push({ use, reason: "duplicate" });
     else {
-      const uses = [...current.uses, use].sort(order).slice(-LIMITS.uses);
-      current = { ...current, uses };
+      current = { ...current, uses: [...current.uses, use] };
+      if (current.uses.length > LIMITS.uses) {
+        const drop = current.uses.length - LIMITS.uses;
+        current = { ...current, uses: current.uses.slice(drop), revisions: current.revisions.map((r) => ({ ...r, after: Math.max(0, r.after - drop) })) };
+      }
       const decision = promotionDecision(current, options);
       if (decision.action !== "hold") {
-        current = applyDecision(current, decision, use.at, options);
+        current = applyDecision(current, decision, use.at);
         applied.push({ decision, at: use.at });
       }
     }

@@ -173,13 +173,66 @@ test("the order uses happened in decides, not the order they are folded: clean, 
   assert.deepEqual(folded.trial.uses.filter((u) => u.sha256 === sha("b")).map((u) => u.run), ["r1", "r2", "r3", "r4", "r5"]);
 });
 
-test("applying a decision restores the preconditions of the revision that comes back", () => {
+test("a superseded revision keeps its preconditions and its skill's description, and a demotion gives them back with it", () => {
   let trial = proven(undefined, "a", 1);
+  trial = { ...trial, when: WHEN };
   const other = [{ pointer: "/other", op: "exists" }];
-  trial = admitRevision(trial, { name: "audit", sha256: sha("b"), run: "w", at: at(5), when: other }).trial;
-  assert.deepEqual(trial.when, other);
-  const folded = foldUses(trial, [use("r1", "b", "failed", at(6)), use("r2", "b", "failed", at(7))], { whenOf: (digest) => (digest === sha("a") ? WHEN : undefined) });
-  assert.deepEqual(folded.trial.when, WHEN);
+  const admitted = admitRevision(trial, { name: "audit", sha256: sha("b"), run: "w", at: at(5), when: other, replacedDescription: "Look up a US company." });
+  assert.equal(admitted.status, "admitted");
+  trial = admitted.trial;
+  const a = trial.revisions.find((r) => r.sha256 === sha("a"));
+  assert.deepEqual([a.status, a.when, a.description], ["superseded", WHEN, "Look up a US company."]);
+  assert.deepEqual(trial.when, other, "the live revision's own checks are the trial's");
+  const folded = foldUses(trial, [use("r1", "b", "failed", at(6)), use("r2", "b", "failed", at(7))]);
+  assert.deepEqual(folded.trial.when, WHEN, "the restored revision's checks are back");
+  const back = folded.trial.revisions.find((r) => r.sha256 === sha("a"));
+  assert.deepEqual([back.status, "when" in back, "description" in back], ["active", false, false], "what it kept while superseded is the trial's again");
+  const none = admitRevision(trial, { name: "audit", sha256: sha("c"), run: "w", at: at(8), when: WHEN });
+  assert.deepEqual(none.trial.revisions.find((r) => r.sha256 === sha("b")).status, "retired", "a trial replaced before it proved itself keeps nothing");
+  assert.equal("description" in none.trial.revisions.find((r) => r.sha256 === sha("b")), false);
+});
+
+test("only the newest few superseded revisions can be restored: an older one is retired and can never come back", () => {
+  let trial = proven(undefined, "a", 1);
+  for (const [i, digest] of ["b", "c", "d", "e"].entries()) {
+    const admitted = admitRevision(trial, { name: "audit", sha256: sha(digest), run: "w", at: at(5 + i * 4), when: WHEN, replacedDescription: `description ${i}` });
+    trial = foldUses(admitted.trial, [use(`x${i}1`, digest, "frozen", at(6 + i * 4)), use(`x${i}2`, digest, "frozen", at(7 + i * 4)), use(`x${i}3`, digest, "frozen", at(8 + i * 4))]).trial;
+  }
+  assert.deepEqual(statusOf(trial), { a: "retired", b: "superseded", c: "superseded", d: "superseded", e: "active" });
+  assert.equal("when" in trial.revisions[0], false, "the retired one let go of what it kept");
+  const failed = foldUses(trial, [use("y1", "e", "failed", at(30)), use("y2", "e", "failed", at(31))]);
+  assert.deepEqual([live(failed.trial), failed.applied[0].decision.rollbackTo], ["d", sha("d")]);
+});
+
+test("the order uses were folded in decides, not a clock: a receipt that arrives late counts toward the standing that followed", () => {
+  const trial = admit(undefined, "a", 1);
+  const first = foldUses(trial, [use("r1", "a", "frozen", at(2)), use("r2", "a", "frozen", at(3)), use("r3", "a", "frozen", at(5))]);
+  assert.equal(first.trial.status, "active", "three clean uses were all there was, and they promote");
+  const late = foldUses(first.trial, [use("r4", "a", "failed", at(4))]);
+  assert.equal(late.trial.status, "active", "one failure, however early its time, is one failure in the standing it arrived in");
+  assert.deepEqual(periodUses(late.trial, late.trial.revisions[0]).map((u) => u.run), ["r4"]);
+  const second = foldUses(late.trial, [use("r5", "a", "failed", at(4, 30))]);
+  assert.deepEqual([second.trial.status, second.applied.map((a) => a.decision.action)], ["demoted", ["demote"]], "a second one demotes");
+});
+
+test("a run already folded for a revision is not folded again, but distinct uses that look alike in one call all count", () => {
+  const trial = admit(undefined, "a", 1);
+  const same = [use("r1", "a", "frozen", at(2)), use("r1", "a", "frozen", at(2)), use("r2", "a", "frozen", at(2))];
+  const once = foldUses(trial, same);
+  assert.equal(once.trial.uses.length, 3, "two tasks of one run that ended in the same millisecond are two uses");
+  assert.equal(once.trial.status, "active", "and three clean uses promote");
+  const again = foldUses(once.trial, [use("r1", "a", "frozen", at(2)), use("r1", "a", "failed", at(3))]);
+  assert.deepEqual(again.ignored.map((i) => i.reason), ["duplicate", "duplicate"], "a second call for the same run and revision is a replay");
+  assert.equal(again.trial.uses.length, 3);
+});
+
+test("the boundaries move when the oldest uses are dropped, so a standing still counts exactly its own uses", () => {
+  let trial = admit(undefined, "a", 1);
+  for (let i = 0; i < TRIAL_LIMITS.uses + 5; i += 1) trial = foldUses(trial, [use(`run-${i}`, "a", i % 2 ? "frozen" : "escalated", at(2, i % 60))]).trial;
+  assert.equal(trial.uses.length, TRIAL_LIMITS.uses);
+  assert.ok(trial.revisions[0].after <= trial.uses.length);
+  assert.equal(trial.status, "trial", "alternating never gives three clean in a row or two bad");
+  assert.deepEqual(parseTrial(renderTrial(trial), "audit"), trial);
 });
 
 test("only the newest uses are kept, and a long run of them never reaches the file cap", () => {
@@ -187,7 +240,7 @@ test("only the newest uses are kept, and a long run of them never reaches the fi
   const batch = Array.from({ length: TRIAL_LIMITS.uses + 20 }, (_, i) => use(`run-${i}`, "a", "frozen", at(2 + Math.floor(i / 60), i % 60)));
   trial = foldUses(trial, batch).trial;
   assert.equal(trial.uses.length, TRIAL_LIMITS.uses);
-  assert.equal(trial.uses.at(-1).run, "run-99");
+  assert.equal(trial.uses.at(-1).run, `run-${batch.length - 1}`);
   assert.deepEqual(parseTrial(renderTrial(trial), "audit"), trial);
 });
 

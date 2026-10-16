@@ -5,9 +5,11 @@ import { test } from "node:test";
 import { WorkflowStore } from "@parcha/agentrun-pi/workflows";
 import { local, openRepo } from "@parcha/pi-git-remote";
 import {
-  admitWorkflow, collectUses, collectWorkflows, createGuard, inboxWorkflowFiles, LearnError, MAX_RUN_WORKFLOWS, parseRunUses, parseTrial, proposeLearning, readTrial,
-  readSessionUses, readTrialIn, readUses, renderSkill, seedWorkflows, sessionEntries, settleWorkflowUses, usesSource, workflowsToTry,
+  collectUses, collectWorkflows, createGuard, inboxWorkflowFiles, LearnError, MAX_RUN_WORKFLOWS, parseRunUses, parseTrial, proposeLearning, readTrial,
+  readSessionUses, readTrialIn, readUses, renderSkill, schemaWhen, seedWorkflows, sessionEntries, settleWorkflowUses, usesSettler, usesSource, workflowAdmitter,
+  workflowsToTry,
 } from "../dist/index.js";
+import { admitInDir } from "../dist/workflows.js";
 import { agentRepo, scratch } from "./support.mjs";
 import { curateStep, runStoreWith, workDirWith, workflowDoc } from "./workflow-support.mjs";
 
@@ -24,15 +26,23 @@ const kyb = { name: "kyb-registry", description: WHEN };
 const noCandidates = { snapshot: async () => ({ order: [], byCall: {} }) };
 
 /** Admits `doc` as `name`, as curate would for the records a run saved: one commit on main. */
-async function admitted(repo, { name = kyb.name, doc = workflowDoc(), run = "author", description = WHEN, when = AT, allowExecutableCode = false } = {}) {
+async function admitted(repo, { name = kyb.name, doc = workflowDoc(), run = "author", description = WHEN, when = AT, allowExecutableCode = false, checks } = {}) {
   // `description: null` hands over the records alone, as a run that saved a workflow and noted no workflow learning does.
+  // `checks` are the revision's preconditions: a function of its document, as `workflowAdmitter` takes them.
   const { dir, saved } = await workDirWith({ [name]: doc });
   const digest = saved[name];
-  const { sha, result } = await curateStep(repo, async (checkout) => admitWorkflow({
+  const { sha, result } = await curateStep(repo, async (checkout) => admitInDir({
     dir: checkout, runId: run, name, ...(description === null ? {} : { description }), records: await records(dir, name, digest), now: () => new Date(when), allowExecutableCode,
+    ...(checks ? { when: checks } : {}),
   }));
   return { sha, result, digest };
 }
+
+/** What curate hands a port: main, and a way to read it. */
+const readOf = async (repo) => {
+  await repo.fetch();
+  return { main: await repo.resolve("main"), read: (file, sha) => repo.read(file, sha), list: (prefix, sha) => repo.list(prefix, sha) };
+};
 
 /** The run's uses as a `uses/<run id>.json` holds them. */
 const usesOf = (run, ...list) => ({ version: 1, run, uses: list.map(([name, sha256, outcome, when]) => ({ name, sha256, outcome, at: when })) });
@@ -67,12 +77,15 @@ test("a workflow a run saved travels run, inbox, curate: its records load throug
   await curator.fetch();
   const handed = {};
   for (const entry of await curator.list(`inbox/run-1/workflows/${kyb.name}`, proposed.sha)) handed[path.posix.basename(entry.path)] = await curator.read(entry.path, proposed.sha);
-  const { sha, result } = await curateStep(curator, (dir) => admitWorkflow({ dir, runId: "run-1", name: kyb.name, description: WHEN, records: handed, now: () => new Date(AT) }));
+  const admit = workflowAdmitter({ when: schemaWhen, now: () => new Date(AT) });
+  const result = await admit({ ...(await readOf(curator)), workflow: { run: "run-1", name: kyb.name, description: WHEN, records: handed, untrusted: false } });
   assert.equal(result.status, "admitted");
-  assert.equal(result.sha256, digest);
   assert.deepEqual(Object.keys(result.files).sort(), [
     `.agents/skills/${kyb.name}/SKILL.md`, `.agents/skills/${kyb.name}/trial.json`, `.pi/agentrun/workflows/${kyb.name}/${digest}.json`, `.pi/agentrun/workflows/${kyb.name}/latest`,
   ]);
+  const committed = await curator.commitTo("main", { files: result.files, message: "curate" });
+  await curator.push(committed.sha, "main");
+  const sha = committed.sha;
   assert.deepEqual(guard({ role: "curate", files: result.files }), [], "the guard admits exactly what curate writes");
 
   const fresh = await openRepo({ dir: path.join(root, "fresh"), remote: local(bare) });
@@ -90,7 +103,7 @@ test("a workflow a run saved travels run, inbox, curate: its records load throug
   assert.deepEqual(parseTrial(await readFile(path.join(dir, `.agents/skills/${kyb.name}/trial.json`), "utf8"), kyb.name), {
     name: kyb.name, status: "trial",
     when: [{ pointer: "/sku", op: "exists" }, { pointer: "/amount", op: "exists" }, { pointer: "/amount", op: "gte", value: 0 }, { pointer: "/amount", op: "lte", value: 1000 }],
-    revisions: [{ sha256: digest, status: "trial", since: AT, run: "run-1" }], uses: [],
+    revisions: [{ sha256: digest, status: "trial", since: AT, run: "run-1", after: 0 }], uses: [],
   });
   assert.equal((await readTrialIn(dir, kyb.name)).status, "trial");
   assert.deepEqual(await workflowsToTry({ repo: fresh, sha }, { sku: "A-1", amount: 5 }), [{ name: kyb.name, status: "trial" }]);
@@ -104,13 +117,13 @@ test("the same revision proposed again changes nothing, and the same candidate a
   const again = await admitted(repo, { run: "run-2", when: at(9) });
   assert.deepEqual([again.result.status, again.result.files, again.sha], ["unchanged", {}, first.sha]);
   const trial = await readTrial(repo, kyb.name, first.sha);
-  assert.deepEqual(trial.revisions, [{ sha256: first.digest, status: "trial", since: AT, run: "author" }]);
+  assert.deepEqual(trial.revisions, [{ sha256: first.digest, status: "trial", since: AT, run: "author", after: 0 }]);
 });
 
 test("preconditions decide what is tried: a workflow is offered for an input it fits and for no other", async () => {
   const root = await scratch();
   const { repo } = await agentRepo(root);
-  const { sha } = await admitted(repo, { doc: workflowDoc({ country: true }) });
+  const { sha } = await admitted(repo, { doc: workflowDoc({ country: true }), checks: schemaWhen });
   const offered = (input) => workflowsToTry({ repo, sha }, input);
   assert.deepEqual(await offered({ sku: "A-1", amount: 5, country: "us" }), [{ name: kyb.name, status: "trial" }]);
   assert.deepEqual(await offered({ sku: "A-1", amount: 5, country: "ca", extra: true }), [{ name: kyb.name, status: "trial" }], "other fields do not matter");
@@ -147,7 +160,7 @@ test("what is offered: live workflows only, active before trial, then by name, a
 test("promotion on receipts through git: three clean uses promote, a changed revision that fails twice rolls back, the failed one is never tried again", async () => {
   const root = await scratch();
   const { repo } = await agentRepo(root);
-  const first = await admitted(repo, { run: "author-1" });
+  const first = await admitted(repo, { run: "author-1", checks: schemaWhen });
   const d1 = first.digest;
   const status = async (sha) => (await readTrial(repo, kyb.name, sha)).status;
   let sha = first.sha;
@@ -165,13 +178,15 @@ test("promotion on receipts through git: three clean uses promote, a changed rev
   assert.deepEqual((await workflowsToTry({ repo, sha }, { sku: "A", amount: 1 })), [{ name: kyb.name, status: "active" }]);
 
   // A run improves the workflow: its revision is a trial, the old one is kept to come back to.
-  const second = await admitted(repo, { doc: workflowDoc({ country: true }), run: "author-2", when: at(11), description: "Look up a company in a US or Canadian registry." });
+  const second = await admitted(repo, { doc: workflowDoc({ country: true }), run: "author-2", when: at(11), description: "Look up a company in a US or Canadian registry.", checks: schemaWhen });
   const d2 = second.digest;
   assert.notEqual(d2, d1);
   let dir = await checkoutOf(repo, second.sha);
   assert.equal((await new WorkflowStore(dir).load(kyb.name)).digest, d2, "the store's latest is the trial");
   let trial = await readTrial(repo, kyb.name, second.sha);
   assert.deepEqual(trial.revisions.map((r) => [r.sha256, r.status]), [[d1, "superseded"], [d2, "trial"]]);
+  assert.equal(trial.revisions[0].description, WHEN, "the superseded revision keeps its own description");
+  assert.equal(await repo.read(`.agents/skills/${kyb.name}/SKILL.md`, second.sha), renderSkill(kyb.name, "Look up a company in a US or Canadian registry."), "the live revision is offered under its own");
   assert.ok(trial.when.some((c) => c.pointer === "/country" && c.op === "in"));
   assert.deepEqual(trial.uses.length, 3);
 
@@ -181,16 +196,18 @@ test("promotion on receipts through git: three clean uses promote, a changed rev
   const rolled = await settle(repo, usesOf("r5", [kyb.name, d2, "failed", at(13)]));
   assert.deepEqual(rolled.result.decisions.map((d) => [d.name, d.decision.action, d.decision.rollbackTo, d.at]), [[kyb.name, "demote", d1, at(13)]]);
   assert.deepEqual(guard({ role: "curate", files: rolled.result.files }), []);
-  assert.deepEqual(Object.keys(rolled.result.files).sort(), [`.agents/skills/${kyb.name}/trial.json`, `.pi/agentrun/workflows/${kyb.name}/latest`]);
+  assert.deepEqual(Object.keys(rolled.result.files).sort(), [`.agents/skills/${kyb.name}/SKILL.md`, `.agents/skills/${kyb.name}/trial.json`, `.pi/agentrun/workflows/${kyb.name}/latest`]);
+  assert.equal(rolled.result.files[`.agents/skills/${kyb.name}/SKILL.md`], renderSkill(kyb.name, WHEN), "the skill says what the restored revision was admitted to do, not what its replacement claimed");
   trial = await readTrial(repo, kyb.name, rolled.sha);
   assert.deepEqual([trial.status, trial.revisions.map((r) => [r.sha256, r.status])], ["active", [[d1, "active"], [d2, "demoted"]]]);
+  assert.equal("description" in trial.revisions[0], false);
   assert.deepEqual(trial.when, [{ pointer: "/sku", op: "exists" }, { pointer: "/amount", op: "exists" }, { pointer: "/amount", op: "gte", value: 0 }, { pointer: "/amount", op: "lte", value: 1000 }]);
   dir = await checkoutOf(repo, rolled.sha);
   assert.equal((await new WorkflowStore(dir).load(kyb.name)).digest, d1, "the store's latest is the restored revision");
   assert.deepEqual(await workflowsToTry({ repo, sha: rolled.sha }, { sku: "A", amount: 1 }), [{ name: kyb.name, status: "active" }]);
 
   // The demoted revision proposed again is refused.
-  const again = await admitted(repo, { doc: workflowDoc({ country: true }), run: "author-3", when: at(14) });
+  const again = await admitted(repo, { doc: workflowDoc({ country: true }), run: "author-3", when: at(14), checks: schemaWhen });
   assert.deepEqual([again.result.status, again.result.reason], ["refused", "demoted"]);
 
   // The restored one then fails twice since it came back: nothing is left to restore, the skill goes, the history stays.
@@ -249,7 +266,7 @@ test("admitting refuses what must not run unreviewed or is not what it says, and
   const { repo } = await agentRepo(root);
   const { dir: workDir, saved } = await workDirWith({ [kyb.name]: workflowDoc(), "with-code": workflowDoc({ code: true }), under_score: workflowDoc() });
   const good = await records(workDir, kyb.name, saved[kyb.name]);
-  const admit = async (input) => (await curateStep(repo, (dir) => admitWorkflow({ dir, runId: "run-1", name: kyb.name, description: WHEN, now: () => new Date(AT), ...input }))).result;
+  const admit = async (input) => (await curateStep(repo, (dir) => admitInDir({ dir, runId: "run-1", name: kyb.name, description: WHEN, now: () => new Date(AT), ...input }))).result;
   const refused = (result, reason) => assert.deepEqual([result.status, result.reason], ["refused", reason], result.detail);
 
   refused(await admit({ name: "under_score", records: await records(workDir, "under_score", saved.under_score) }), "name");
@@ -279,12 +296,12 @@ test("a workflow admitted without a description stays out of what is tried until
   assert.equal(bare.result.status, "admitted");
   assert.deepEqual(Object.keys(bare.result.files).sort(), [`.agents/skills/${kyb.name}/trial.json`, `.pi/agentrun/workflows/${kyb.name}/${bare.digest}.json`, `.pi/agentrun/workflows/${kyb.name}/latest`].sort());
   assert.deepEqual(await workflowsToTry({ repo, sha: bare.sha }, { sku: "A", amount: 1 }), []);
-  const described = await curateStep(repo, (dir) => admitWorkflow({ dir, runId: "run-2", name: kyb.name, description: WHEN }));
+  const described = await curateStep(repo, (dir) => admitInDir({ dir, runId: "run-2", name: kyb.name, description: WHEN }));
   assert.deepEqual([described.result.status, Object.keys(described.result.files)], ["described", [`.agents/skills/${kyb.name}/SKILL.md`]]);
   assert.deepEqual(await workflowsToTry({ repo, sha: described.sha }, { sku: "A", amount: 1 }), [{ name: kyb.name, status: "trial" }]);
-  const again = await curateStep(repo, (dir) => admitWorkflow({ dir, runId: "run-3", name: kyb.name, description: WHEN }));
+  const again = await curateStep(repo, (dir) => admitInDir({ dir, runId: "run-3", name: kyb.name, description: WHEN }));
   assert.deepEqual([again.result.status, again.result.files], ["unchanged", {}]);
-  const reworded = await curateStep(repo, (dir) => admitWorkflow({ dir, runId: "run-3", name: kyb.name, description: "Quote a SKU." }));
+  const reworded = await curateStep(repo, (dir) => admitInDir({ dir, runId: "run-3", name: kyb.name, description: "Quote a SKU." }));
   assert.equal(reworded.result.status, "described");
   assert.equal(await repo.read(`.agents/skills/${kyb.name}/SKILL.md`, reworded.sha), renderSkill(kyb.name, "Quote a SKU."));
 });
@@ -296,9 +313,94 @@ test("a checkout with a link where a directory should be is refused, never writt
   const checkout = path.join(await scratch(), "checkout");
   await mkdir(path.join(checkout, ".agents"), { recursive: true });
   await symlink(outside, path.join(checkout, ".agents", "skills"));
-  await assert.rejects(admitWorkflow({ dir: checkout, runId: "run-1", name: kyb.name, description: WHEN, records: await records(workDir, kyb.name, saved[kyb.name]) }), (e) => e instanceof LearnError && e.code === "invalid");
+  await assert.rejects(admitInDir({ dir: checkout, runId: "run-1", name: kyb.name, description: WHEN, records: await records(workDir, kyb.name, saved[kyb.name]) }), (e) => e instanceof LearnError && e.code === "invalid");
   assert.deepEqual(await readFile(path.join(outside, kyb.name, "SKILL.md")).catch((e) => e.code), "ENOENT");
-  await assert.rejects(admitWorkflow({ dir: "relative/dir", runId: "run-1", name: kyb.name }), (e) => e instanceof LearnError);
+  await assert.rejects(admitInDir({ dir: "relative/dir", runId: "run-1", name: kyb.name }), (e) => e instanceof LearnError);
+});
+
+test("a revision admitted without a description is offered under no one else's: the old skill is withheld until its own description arrives", async () => {
+  const root = await scratch();
+  const { repo } = await agentRepo(root);
+  const first = await admitted(repo, { checks: schemaWhen });
+  assert.deepEqual(await workflowsToTry({ repo, sha: first.sha }, { sku: "A", amount: 1 }), [{ name: kyb.name, status: "trial" }]);
+  for (const [i, run] of ["u1", "u2", "u3"].entries()) await settle(repo, usesOf(run, [kyb.name, first.digest, "frozen", at(8, 10 + i)]));
+  const second = await admitted(repo, { doc: workflowDoc({ limit: 40 }), run: "author-2", description: null, when: at(9), checks: schemaWhen });
+  assert.equal(second.result.files[`.agents/skills/${kyb.name}/SKILL.md`], null, "the skill that described the earlier revision goes");
+  assert.equal(await repo.read(`.agents/skills/${kyb.name}/SKILL.md`, second.sha), undefined);
+  assert.deepEqual(await workflowsToTry({ repo, sha: second.sha }, { sku: "A", amount: 1 }), [], "the new revision stays out of the section");
+  const trial = await readTrial(repo, kyb.name, second.sha);
+  assert.equal(trial.revisions[0].description, WHEN, "the earlier revision keeps its own for a rollback");
+  const described = await curateStep(repo, (dir) => admitInDir({ dir, runId: "run-3", name: kyb.name, description: "Quote a SKU, escalating above 40." }));
+  assert.equal(described.result.status, "described");
+  assert.deepEqual(await workflowsToTry({ repo, sha: described.sha }, { sku: "A", amount: 1 }), [{ name: kyb.name, status: "trial" }]);
+});
+
+test("the ports a curator calls: admitting, settling, and what each says", async () => {
+  const root = await scratch();
+  const { repo } = await agentRepo(root);
+  const admit = workflowAdmitter({ when: schemaWhen, now: () => new Date(AT) });
+  const candidate = async (name, doc, extra = {}) => {
+    const { dir, saved } = await workDirWith({ [name]: doc });
+    return { run: "author", name, description: WHEN, records: await records(dir, name, saved[name]), untrusted: false, ...extra };
+  };
+  const commit = async (files) => {
+    const made = await repo.commitTo("main", { files, message: "curate" });
+    await repo.push(made.sha, "main");
+    return made.sha;
+  };
+
+  const coded = await admit({ ...(await readOf(repo)), workflow: await candidate("with-code", workflowDoc({ code: true })) });
+  assert.deepEqual([coded.status, /^code:/.test(coded.reason)], ["held", true], "code is held for a person");
+  assert.equal((await workflowAdmitter({ allowExecutableCode: true })({ ...(await readOf(repo)), workflow: await candidate("with-code", workflowDoc({ code: true })) })).status, "admitted");
+  const named = await admit({ ...(await readOf(repo)), workflow: await candidate("under_score", workflowDoc()) });
+  assert.deepEqual([named.status, /skill/.test(named.reason)], ["refused", true]);
+  const nothing = await admit({ ...(await readOf(repo)), workflow: { run: "r", name: "never-saved", description: WHEN, records: {}, untrusted: false } });
+  assert.deepEqual([nothing.status, /^unknown:/.test(nothing.reason)], ["held", true]);
+  const bad = await admit({ ...(await readOf(repo)), workflow: { ...(await candidate(kyb.name, workflowDoc())), records: { "x.json": "{}" } } });
+  assert.equal(bad.status, "refused");
+
+  const first = await candidate(kyb.name, workflowDoc());
+  const made = await admit({ ...(await readOf(repo)), workflow: first });
+  assert.equal(made.status, "admitted");
+  assert.deepEqual(guard({ role: "curate", files: made.files }), []);
+  let main = await commit(made.files);
+  const digest = (await readTrial(repo, kyb.name, main)).revisions[0].sha256;
+  const again = await admit({ ...(await readOf(repo)), workflow: first });
+  assert.deepEqual([again.status, again.files], ["unchanged", undefined]);
+
+  const settle = usesSettler();
+  const settleRun = async (run, ...list) => {
+    const out = await settle({ ...(await readOf(repo)), run, uses: list.map(([outcome, when, name = kyb.name, sha = digest]) => ({ name, sha256: sha, outcome, at: when })) });
+    assert.deepEqual(guard({ role: "curate", files: out.files }), []);
+    if (Object.keys(out.files).length) main = await commit(out.files);
+    return out;
+  };
+  assert.deepEqual((await settleRun("r1", ["frozen", at(10)])).decisions.map((d) => [d.name, d.action, /1 use/.test(d.reason)]), [[kyb.name, "hold", true]]);
+  await settleRun("r2", ["frozen", at(11)]);
+  const promoted = await settleRun("r3", ["frozen", at(12)]);
+  assert.deepEqual(promoted.decisions.map((d) => [d.name, d.action]), [[kyb.name, "promote"]]);
+  assert.equal((await readTrial(repo, kyb.name, main)).status, "active");
+  const author = await settleRun("author", ["frozen", at(13)]);
+  assert.deepEqual(author.decisions.map((d) => [d.action, /author/.test(d.reason)]), [["hold", true]], "the writer's own use is named as left out");
+  const missing = await settleRun("r4", ["frozen", at(14), "no-such-flow", "f".repeat(64)]);
+  assert.deepEqual(missing.decisions, [{ name: "no-such-flow", action: "hold", reason: "no workflow is tried under this name, so its uses were left out" }]);
+  assert.deepEqual((await settle({ ...(await readOf(repo)), run: "r5", uses: [{ name: "Not A Name", sha256: "x", outcome: "frozen", at: "yesterday" }] })).decisions.map((d) => d.action), ["hold"], "a uses file that is not well formed holds, never throws");
+
+  // A second revision that fails twice: the port says demote and names the revision it restores.
+  const second = await candidate(kyb.name, workflowDoc({ country: true }), { run: "author-2", description: "Look up in a US or Canadian registry." });
+  main = await commit((await admit({ ...(await readOf(repo)), workflow: second })).files);
+  const d2 = (await readTrial(repo, kyb.name, main)).revisions.find((r) => r.status === "trial").sha256;
+  await settleRun("r6", ["escalated", at(15), kyb.name, d2]);
+  const demoted = await settleRun("r7", ["failed", at(16), kyb.name, d2]);
+  assert.deepEqual(demoted.decisions.map((d) => [d.action, d.rollbackTo]), [["demote", digest]]);
+  assert.equal(demoted.files[`.agents/skills/${kyb.name}/SKILL.md`], renderSkill(kyb.name, WHEN));
+
+  // A trial.json that does not parse holds its name and leaves the rest of the run's uses to be folded.
+  const broken = await repo.commitTo("main", { files: { ".agents/skills/broken-flow/trial.json": "{ nope" }, message: "damage" });
+  await repo.push(broken.sha, "main");
+  const held = await settle({ ...(await readOf(repo)), run: "r8", uses: [{ name: "broken-flow", sha256: "a".repeat(64), outcome: "frozen", at: at(17) }, { name: kyb.name, sha256: digest, outcome: "frozen", at: at(17) }] });
+  assert.deepEqual(held.decisions.map((d) => [d.name, d.action]).sort(), [["broken-flow", "hold"], [kyb.name, "hold"]]);
+  assert.match(held.decisions.find((d) => d.name === "broken-flow").reason, /does not parse/);
 });
 
 // ------------------------------------------------------------ what a run hands over
@@ -326,6 +428,21 @@ test("a workflow the run was seeded with and did not change is not proposed; a c
   assert.deepEqual(Object.keys(final.files).sort(), [`${final.sha256}.json`, "latest"]);
 });
 
+test("seeding again after a restart puts back nothing the run already has, so a better revision it saved is still proposed", async () => {
+  const root = await scratch();
+  const { repo } = await agentRepo(root);
+  const { sha } = await admitted(repo);
+  const { dir: workDir } = await workDirWith();
+  const hints = [{ name: kyb.name, status: "trial" }];
+  await seedWorkflows({ repo, sha, into: workDir, workflows: hints });
+  const store = new WorkflowStore(workDir);
+  const better = (await store.save(kyb.name, workflowDoc({ limit: 77 }))).digest;
+  const again = await seedWorkflows({ repo, sha, into: workDir, workflows: hints });
+  assert.equal(again.loaded.length, 1);
+  assert.equal((await store.load(kyb.name)).digest, better, "latest is still the revision the agent saved");
+  assert.deepEqual((await collectWorkflows({ repo, workDir, seedSha: sha })).found.map((f) => f.sha256), [better]);
+});
+
 test("what a run leaves in its store cannot stop it proposing: names pi cannot load, oversize records, a stray file and too many workflows are named, not fatal", async () => {
   const root = await scratch();
   const { repo, main } = await agentRepo(root);
@@ -350,6 +467,9 @@ test("what a run leaves in its store cannot stop it proposing: names pi cannot l
   assert.match(junk.skipped[0].reason, /workflow store could not be read/);
   assert.deepEqual((await collectWorkflows({ repo, workDir: (await workDirWith()).dir, seedSha: main })).found, [], "no store at all");
   await assert.rejects(collectWorkflows({ repo, workDir: "relative", seedSha: main }), LearnError);
+  await assert.rejects(collectWorkflows({ repo, workDir }), (e) => e instanceof LearnError && /seeded commit/.test(e.message));
+  const seeded = { snapshot: async () => ({ sha: main, index: [], omitted: [], workflows: [], copied: false }) };
+  assert.deepEqual((await collectWorkflows({ repo, workDir: many.dir, target: seeded })).found.length, MAX_RUN_WORKFLOWS, "the seeded commit comes from the run's own store");
 });
 
 // ------------------------------------------------------------ uses, read from a run's store
@@ -429,6 +549,34 @@ test("the receipts the agentrun pi tool leaves in its session give the same uses
   await assert.rejects(readSessionUses({ entries: "x", workDir, run: "run-9" }), LearnError);
 });
 
+test("a use of a name curate could not read back is named and left out, never a reason the whole file is refused", async () => {
+  const doc = workflowDoc();
+  const { dir: workDir, saved } = await workDirWith({ [kyb.name]: doc, under_score: doc });
+  const digest = saved[kyb.name];
+  const store = await runStoreWith([{ key: "a", workflow: doc, input: { sku: "A-1", amount: 5 } }]);
+  const durable = await readUses({ store, workDir, run: "run-9" });
+  assert.deepEqual(durable.doc.uses.map((u) => u.name), [kyb.name]);
+  assert.deepEqual(durable.skipped.map((s) => s.name), ["under_score"]);
+  assert.deepEqual(parseRunUses(JSON.stringify(durable.doc), "run-9"), durable.doc);
+  const entries = [{ type: "custom", customType: "agentrun:snapshot", data: { version: 1, runId: "r-1", createdAt: at(9), report: { digest, status: "complete" } } }];
+  const session = await readSessionUses({ entries, workDir, run: "run-9" });
+  assert.deepEqual(session.doc.uses.map((u) => u.name), [kyb.name]);
+  assert.deepEqual(session.skipped.map((s) => s.name), ["under_score"]);
+});
+
+test("a run resumed after a failure counts only once it ends again: the last snapshot of a run decides", async () => {
+  const doc = workflowDoc();
+  const { dir: workDir, saved } = await workDirWith({ [kyb.name]: doc });
+  const digest = saved[kyb.name];
+  const snapshot = (over) => ({ type: "custom", customType: "agentrun:snapshot", data: { version: 1, runId: "r-1", createdAt: at(9), ...over } });
+  const failed = snapshot({ report: { digest, status: "failed" } });
+  const resumed = snapshot({ createdAt: at(9, 5), running: true });
+  const unfinished = await readSessionUses({ entries: [failed, resumed], workDir, run: "run-9" });
+  assert.equal(unfinished.doc, undefined, "the earlier failure is not counted while its retry is unfinished");
+  const finished = await readSessionUses({ entries: [failed, resumed, snapshot({ createdAt: at(9, 9), report: { digest, status: "complete" } })], workDir, run: "run-9" });
+  assert.deepEqual(finished.doc.uses.map((u) => [u.outcome, u.at]), [["frozen", at(9, 9)]]);
+});
+
 test("a uses file that is not exactly what collectUses writes is refused", () => {
   const ok = { version: 1, run: "run-1", uses: [{ name: "kyb-registry", sha256: "a".repeat(64), outcome: "frozen", at: AT }] };
   assert.deepEqual(parseRunUses(JSON.stringify(ok), "run-1"), ok);
@@ -461,7 +609,7 @@ test("end to end with no model: a run saves a workflow, curate admits it, three 
   const handed = {};
   for (const entry of await curator.list(`inbox/run-1/workflows/${kyb.name}`, await curator.resolve("runs/run-1"))) handed[path.posix.basename(entry.path)] = await curator.read(entry.path, await curator.resolve("runs/run-1"));
   // Admitted in the past, so that the later runs, which really happen now, come after the standing it gave the trial.
-  let main = (await curateStep(curator, (dir) => admitWorkflow({ dir, runId: "run-1", name: kyb.name, description: WHEN, records: handed, now: () => new Date("2026-01-01T00:00:00.000Z") }))).sha;
+  let main = (await curateStep(curator, (dir) => admitInDir({ dir, runId: "run-1", name: kyb.name, description: WHEN, records: handed, now: () => new Date("2026-01-01T00:00:00.000Z") }))).sha;
 
   // Runs 2 to 4 are seeded from main: each is offered the workflow, has it in its own store, runs it, and proposes its use.
   const trials = [];

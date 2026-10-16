@@ -4,19 +4,21 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { inspectWorkflow, resolveSchemaForWorkflow, workflowSha256 } from "@parcha/agentrun-dsl";
+import type { Session } from "@earendil-works/pi-durable";
 import { recordingLines } from "@parcha/agentrun-pi/durable";
 import { WorkflowStore, WorkflowStoreError } from "@parcha/agentrun-pi/workflows";
-import type { Repo } from "@parcha/pi-git-remote";
+import type { Repo, TreeEntry } from "@parcha/pi-git-remote";
 import { Type } from "typebox";
 import { Compile } from "typebox/compile";
 import { LearnError } from "./errors.js";
 import { CAPS, LAYOUT, RUN_ID } from "./layout.js";
-import { type Admission, admitRevision, type Decision, foldUses, type IgnoredUse, type Thresholds } from "./promotion.js";
+import { type Admission, admitRevision, type Decision, foldUses, type IgnoredUse, promotionDecision, type Thresholds } from "./promotion.js";
 import type { UsesSource } from "./propose.js";
 import { MAX_WORKFLOW_HINTS, type WorkflowHint } from "./section.js";
+import { readSeed } from "./seed.js";
 import {
-  currentRevision, deriveWhen, matches, parseTrial, type Precondition, readTrial, renderTrial, skillName, skillPath, type Trial, trialPath, type Use,
-  type UseOutcome, workflowDir, WORKFLOW_SKILL_NAME,
+  currentRevision, deriveWhen, fitTrial, LIMITS, matches, MAX_NAME, parseTrial, type Precondition, readTrial, renderTrial, skillName, skillPath, type Trial, trialPath,
+  type Use, type UseOutcome, whenSize, workflowDir, WORKFLOW_SKILL_NAME,
 } from "./trial.js";
 
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -109,6 +111,18 @@ export function renderSkill(name: string, description: string): string {
   ].join("\n");
 }
 
+/** The description a skill file written by `renderSkill` holds. */
+function skillDescription(text: string): string | undefined {
+  const line = /^description: (".*")$/m.exec(text)?.[1];
+  if (line === undefined) return undefined;
+  try {
+    const value: unknown = JSON.parse(line);
+    return typeof value === "string" && value.trim() !== "" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // ---------------------------------------------------------------- what a run hands over
 
 export type FoundWorkflow = {
@@ -130,8 +144,10 @@ export type CollectWorkflowsOptions = {
   readonly repo: Pick<Repo, "list">;
   /** The run's working directory: the project directory of the run's own workflow store. */
   readonly workDir: string;
-  /** The commit the run was seeded from. */
-  readonly seedSha: string;
+  /** The commit the run was seeded from. Default: the one `seedLearning` recorded in `target`. */
+  readonly seedSha?: string;
+  /** The run's pi-durable store, for the seeded commit when `seedSha` is not given. */
+  readonly target?: Pick<Session, "snapshot">;
 };
 
 /**
@@ -144,9 +160,10 @@ export type CollectWorkflowsOptions = {
  */
 export async function collectWorkflows(options: CollectWorkflowsOptions): Promise<CollectedWorkflows> {
   const workDir = absolute(options.workDir, "workDir");
-  if (typeof options.seedSha !== "string" || options.seedSha === "") throw new LearnError("invalid", "collectWorkflows needs the seeded commit");
+  const seedSha = options.seedSha ?? (options.target ? (await readSeed(options.target))?.sha : undefined);
+  if (typeof seedSha !== "string" || seedSha === "") throw new LearnError("invalid", "collectWorkflows needs the seeded commit: pass seedSha, or the run's store holding a seed");
   const held = new Set<string>();
-  for (const entry of await options.repo.list(LAYOUT.workflows, options.seedSha)) {
+  for (const entry of await options.repo.list(LAYOUT.workflows, seedSha)) {
     const match = DIGEST_PATH.exec(entry.path);
     if (match) held.add(`${match[1]}/${match[2]}`);
   }
@@ -270,7 +287,14 @@ async function savedNames(workDir: string): Promise<{ byDigest: Map<string, stri
   return { byDigest };
 }
 
-function usesDoc(run: string, uses: RunUse[], skipped: SkippedWorkflow[]): ReadUses {
+/** The uses document, without any use of a name curate could not read back: the store accepts names the skill folder and the
+ *  uses file do not, so such a use is named in `skipped`, never a reason the whole file is refused. */
+function usesDoc(run: string, found: RunUse[], skipped: SkippedWorkflow[]): ReadUses {
+  const uses: RunUse[] = [];
+  for (const use of found) {
+    if (WORKFLOW_SKILL_NAME.test(use.name) && use.name.length <= 64) uses.push(use);
+    else skipped.push({ name: use.name, reason: "not a skill name, so its use cannot be read back" });
+  }
   if (uses.length > MAX_RUN_USES) {
     skipped.push({ reason: `${uses.length - MAX_RUN_USES} uses over the ${MAX_RUN_USES} one run hands over` });
     uses.length = MAX_RUN_USES;
@@ -348,8 +372,8 @@ export function sessionEntries(jsonl: string): unknown[] {
 }
 
 /**
- * The same uses, from the receipts the `agentrun` pi tool leaves in its session: each `agentrun:snapshot` entry that carries
- * a report is one run's end, the last one per run id. `complete` is `frozen`; `escalated` and `failed` are themselves;
+ * The same uses, from the receipts the `agentrun` pi tool leaves in its session: the last `agentrun:snapshot` entry of a run
+ * id says how it stands, and one that carries a report is its end (a run resumed after a failure carries none until it ends). `complete` is `frozen`; `escalated` and `failed` are themselves;
  * an `interrupted` run says nothing about the workflow. The name is the one the tool saved or loaded the workflow under when
  * the run's store holds that digest under it, else the names the store holds the digest under; a workflow run unsaved is no
  * use. The snapshot's time is the use's `at`. Entries are read, never trusted: only the fields used here are checked.
@@ -365,12 +389,14 @@ export async function readSessionUses(options: ReadSessionUsesOptions): Promise<
     const e = entry as { type?: unknown; customType?: unknown; data?: Snapshot & { version?: unknown } } | null;
     if (e === null || typeof e !== "object" || e.type !== "custom" || e.customType !== SNAPSHOT) return;
     const data = e.data;
-    if (data === null || typeof data !== "object" || data.version !== 1 || data.report === null || typeof data.report !== "object") return;
+    if (data === null || typeof data !== "object" || data.version !== 1) return;
     ends.set(typeof data.runId === "string" ? data.runId : `entry:${index}`, data);
   });
   const skipped: SkippedWorkflow[] = [];
   const uses: RunUse[] = [];
   for (const [id, snapshot] of [...ends].sort(([a], [b]) => (a < b ? -1 : 1))) {
+    // The last snapshot of a run decides: a run resumed after a failure has no report until it ends again.
+    if (snapshot.report === null || typeof snapshot.report !== "object") continue;
     const digest = snapshot.report?.digest;
     if (typeof digest !== "string" || !SHA256.test(digest)) continue;
     const held = saved.byDigest.get(digest);
@@ -401,8 +427,8 @@ export const usesSource = (options: ReadUsesOptions | ReadSessionUsesOptions): U
 
 // ---------------------------------------------------------------- admitting a workflow
 
-export type AdmitWorkflowInput = {
-  /** Curate's checkout of main: an absolute directory this call writes into. */
+export type AdmitInDirInput = {
+  /** A project directory holding main's files for this name (`trial.json`, `SKILL.md`): absolute, written into. */
   readonly dir: string;
   readonly runId: string;
   readonly name: string;
@@ -410,23 +436,26 @@ export type AdmitWorkflowInput = {
   readonly description?: string;
   /** The run's files for this name, as `collectWorkflows` made them: `<sha256>.json` and `latest`. Absent or empty: only the description is new. */
   readonly records?: Readonly<Record<string, string>>;
-  /** The preconditions to try it under; default: what its own input schema states (`deriveWhen`). */
-  readonly when?: readonly Precondition[];
+  /** The preconditions to try it under, a check on the run's input each, or a function of the workflow document. Default: none,
+   *  and the model decides from the description. */
+  readonly when?: readonly Precondition[] | ((workflow: unknown) => readonly Precondition[]);
   /** Admit a workflow with a code node or a shell or executor call. Default: refuse it, since nothing a person reviewed runs it. */
   readonly allowExecutableCode?: boolean;
   readonly now?: () => Date;
 };
-export type AdmitRefusal = "name" | "description" | "records" | "code" | "demoted" | "limit" | "unknown";
-export type AdmitWorkflowResult =
+export type AdmitRefusal = "name" | "description" | "records" | "code" | "demoted" | "limit" | "unknown" | "when";
+export type AdmitInDirResult =
   /** `admitted`: a new revision is the live trial. `described`: only the skill was written. `unchanged`: nothing was new. `files`
    *  are every repository path this call changed, as text, or null where it deleted one: commit exactly these. */
   | { readonly status: "admitted" | "described" | "unchanged"; readonly name: string; readonly sha256?: string; readonly files: Files }
   | { readonly status: "refused"; readonly name: string; readonly reason: AdmitRefusal; readonly detail: string };
-/** The hook curate calls for each workflow candidate that passed its judgments. */
-export type AdmitWorkflow = (input: AdmitWorkflowInput) => Promise<AdmitWorkflowResult>;
 
-const refuse = (name: string, reason: AdmitRefusal, detail: string): AdmitWorkflowResult => ({ status: "refused", name, reason, detail });
-const whenOf = (workflow: unknown) => deriveWhen(workflow, (schema) => resolveSchemaForWorkflow(workflow as never, schema));
+const refuse = (name: string, reason: AdmitRefusal, detail: string): AdmitInDirResult => ({ status: "refused", name, reason, detail });
+
+/** The preconditions a workflow's own input schema states about the top level of its input (`deriveWhen`, with the document's
+ *  schema references resolved): a ready `when` for `workflowAdmitter` and `usesSettler`, for a host whose workflows name their
+ *  input fields as its runs' inputs do. */
+export const schemaWhen = (workflow: unknown): Precondition[] => deriveWhen(workflow, (schema) => resolveSchemaForWorkflow(workflow as never, schema));
 
 export async function readTrialIn(dir: string, name: string): Promise<Trial | undefined> {
   const text = await readRegular(path.join(absolute(dir, "dir"), trialPath(name)));
@@ -434,14 +463,14 @@ export async function readTrialIn(dir: string, name: string): Promise<Trial | un
 }
 
 /**
- * Curate's hook for a workflow candidate: validate the run's records through the DSL's store in a scratch directory,
+ * The step under `workflowAdmitter`: validate the run's records through the DSL's store in a scratch directory,
  * refuse code nodes unless the host admits them, save the revision the run ended on into the checkout through the
  * store, write `.agents/skills/<name>/SKILL.md` (name and description, and a body that says to run the workflow with the
  * agentrun tool and to continue itself if it escalates) and `trial.json`. The new revision is the live trial and the one
  * it replaces is superseded, or retired when it had never proved itself. Idempotent: the same revision again changes
  * nothing, and a demoted one is refused. Returns the changed files for curate's one commit; never commits itself.
  */
-export async function admitWorkflow(input: AdmitWorkflowInput): Promise<AdmitWorkflowResult> {
+export async function admitInDir(input: AdmitInDirInput): Promise<AdmitInDirResult> {
   const dir = absolute(input.dir, "dir");
   const { name, runId } = input;
   if (typeof runId !== "string" || !RUN_ID.test(runId)) throw new LearnError("invalid", "the run id is not valid");
@@ -480,7 +509,10 @@ export async function admitWorkflow(input: AdmitWorkflowInput): Promise<AdmitWor
     if (!input.allowExecutableCode && inspectWorkflow(stored.workflow).requires.executableCode) {
       return refuse(name, "code", "the workflow runs code (a code node, or a shell or executor call), and nothing a person reviewed admits it");
     }
-    const admitted: Admission = admitRevision(held, { name, sha256, run: runId, at, when: input.when ?? whenOf(stored.workflow) });
+    const when = typeof input.when === "function" ? input.when(stored.workflow) : input.when ?? [];
+    if (whenSize(when) > LIMITS.whenChars) return refuse(name, "when", `preconditions are at most ${LIMITS.whenChars} characters as the file prints them`);
+    const skillText = await readRegular(path.join(dir, skillPath(name)));
+    const admitted: Admission = admitRevision(held, { name, sha256, run: runId, at, when, ...(skillText === undefined ? {} : { replacedDescription: skillDescription(skillText) }) });
     if (admitted.status === "refused") return refuse(name, admitted.reason, admitted.detail);
     if (admitted.status === "admitted") {
       const saved = await new WorkflowStore(dir).save(name, stored.workflow);
@@ -491,6 +523,11 @@ export async function admitWorkflow(input: AdmitWorkflowInput): Promise<AdmitWor
         const text = await readRegular(path.join(dir, workflowDir(name), file));
         if (text === undefined) throw new LearnError("missing", "the store's record is not in the checkout");
         files[`${workflowDir(name)}/${file}`] = text;
+      }
+      // A description belongs to the revision it was written for: the new one is offered under its own, or not at all.
+      if (description === undefined && skillText !== undefined) {
+        await unlink(path.join(dir, skillPath(name)));
+        files[skillPath(name)] = null;
       }
     }
   } else if (!held) {
@@ -506,7 +543,7 @@ export async function admitWorkflow(input: AdmitWorkflowInput): Promise<AdmitWor
     }
   }
   if (trial && trial !== held) {
-    const text = renderTrial(trial);
+    const text = renderTrial(fitTrial(trial));
     await writeRegular(dir, trialPath(name), text);
     files[trialPath(name)] = text;
   }
@@ -516,7 +553,7 @@ export async function admitWorkflow(input: AdmitWorkflowInput): Promise<AdmitWor
 // ---------------------------------------------------------------- folding uses at curate
 
 export type SettleOptions = {
-  /** Curate's checkout of main. */
+  /** A project directory holding main's files for the names used: `trial.json`, and the records of superseded revisions. */
   readonly dir: string;
   /** One run's `uses/<run id>.json`, parsed. */
   readonly uses: RunUses;
@@ -526,21 +563,24 @@ export type SettledDecision = { readonly name: string; readonly at: string; read
 export type Settled = {
   readonly files: Files;
   readonly decisions: readonly SettledDecision[];
+  /** Each name no decision was made for, and why: what its uses did not add up to, or that they were left out. */
+  readonly held: readonly { readonly name: string; readonly reason: string }[];
   readonly ignored: readonly (IgnoredUse & { readonly name: string })[];
 };
 
 /**
- * Curate's step for a run's `uses/<run id>.json`: append each use to its workflow's `trial.json` and settle after each one
- * by the ported promotion rules (`foldUses`). A promotion changes `trial.json`. A demotion with a rollback points the
- * store's `latest` at the revision restored, through the store, and gives back its preconditions; a demotion with nothing to
- * restore deletes the skill, so the agent is no longer told about the workflow, and keeps `trial.json` so the revision is
- * never tried again. Uses of a name with no trial, or of a revision it does not hold, are left out and named in `ignored`.
- * Returns the changed files for curate's one commit.
+ * The step under `usesSettler`, for a run's `uses/<run id>.json`: append each use to its workflow's `trial.json` and settle
+ * after each one by the ported promotion rules (`foldUses`). A promotion changes `trial.json`. When a demotion hands the
+ * name to another revision, the store's `latest` is pointed at it through the store, and its preconditions and the description
+ * of its skill, which it kept while superseded, come back with it; with none to restore, the skill is deleted, so the agent is
+ * no longer told about the workflow, and `trial.json` stays, so the revision is never tried again. Uses of a name with no
+ * trial, or of a revision it does not hold, are left out and named in `ignored`. Returns the changed files for one commit.
  */
 export async function settleWorkflowUses(options: SettleOptions): Promise<Settled> {
   const dir = absolute(options.dir, "dir");
   const files: Record<string, string | null> = {};
   const decisions: SettledDecision[] = [];
+  const held: { name: string; reason: string }[] = [];
   const ignored: (IgnoredUse & { name: string })[] = [];
   const byName = new Map<string, Use[]>();
   for (const use of options.uses.uses) byName.set(use.name, [...(byName.get(use.name) ?? []), { run: options.uses.run, sha256: use.sha256, outcome: use.outcome, at: use.at }]);
@@ -549,40 +589,51 @@ export async function settleWorkflowUses(options: SettleOptions): Promise<Settle
     const trial = await readTrialIn(dir, name);
     if (!trial) {
       for (const use of incoming) ignored.push({ name, use, reason: "unknown_revision" });
+      held.push({ name, reason: "no workflow is tried under this name, so its uses were left out" });
       continue;
     }
     const unrunnable = new Set<string>();
-    const restored = new Map<string, Awaited<ReturnType<WorkflowStore["load"]>>>();
+    const restorable = new Map<string, Awaited<ReturnType<WorkflowStore["load"]>>>();
     for (const revision of trial.revisions.filter((r) => r.status === "superseded")) {
       try {
-        restored.set(revision.sha256, await store.load(name, revision.sha256));
+        restorable.set(revision.sha256, await store.load(name, revision.sha256));
       } catch {
         unrunnable.add(revision.sha256);
       }
     }
-    const folded = foldUses(trial, incoming, {
-      ...(options.thresholds ? { thresholds: options.thresholds } : {}), unrunnable,
-      whenOf: (sha) => (restored.has(sha) ? whenOf(restored.get(sha)!.workflow) : undefined),
-    });
+    const rules = { ...(options.thresholds ? { thresholds: options.thresholds } : {}), unrunnable };
+    const folded = foldUses(trial, incoming, rules);
     for (const skip of folded.ignored) ignored.push({ name, ...skip });
-    for (const { decision, at } of folded.applied) {
-      decisions.push({ name, at, decision });
-      if (decision.action !== "demote") continue;
-      if (decision.rollbackTo !== null) {
-        await store.save(name, restored.get(decision.rollbackTo)!.workflow);
+    for (const { decision, at } of folded.applied) decisions.push({ name, at, decision });
+    if (!folded.applied.length) {
+      const left = folded.ignored.length ? `; ${folded.ignored.length} use${folded.ignored.length === 1 ? "" : "s"} left out (${[...new Set(folded.ignored.map((i) => i.reason))].join(", ")})` : "";
+      held.push({ name, reason: `${promotionDecision(folded.trial, rules).reason}${left}` });
+    }
+    const before = currentRevision(trial);
+    const now = currentRevision(folded.trial);
+    if (now?.sha256 !== before?.sha256) {
+      // The live revision changed hands: a rollback to a superseded revision, or no revision left.
+      const back = now ? trial.revisions.find((r) => r.sha256 === now.sha256) : undefined;
+      if (now && back) {
+        await store.save(name, restorable.get(now.sha256)!.workflow);
         files[`${workflowDir(name)}/latest`] = (await readRegular(path.join(dir, workflowDir(name), "latest")))!;
+      }
+      if (back?.description !== undefined) {
+        const skill = renderSkill(name, back.description);
+        await writeRegular(dir, skillPath(name), skill);
+        files[skillPath(name)] = skill;
       } else {
         await unlink(path.join(dir, skillPath(name))).catch((error) => { if (!isMissing(error)) throw error; });
         files[skillPath(name)] = null;
       }
     }
     if (folded.trial !== trial) {
-      const text = renderTrial(folded.trial);
+      const text = renderTrial(fitTrial(folded.trial));
       await writeRegular(dir, trialPath(name), text);
       files[trialPath(name)] = text;
     }
   }
-  return { files, decisions, ignored };
+  return { files, decisions, held, ignored };
 }
 
 // ---------------------------------------------------------------- tried on a run's input
@@ -650,6 +701,12 @@ export async function seedWorkflows(options: SeedWorkflowsOptions): Promise<Seed
       if (!live) throw new LearnError("missing", "no live revision");
       const record = await options.repo.read(`${workflowDir(name)}/${live.sha256}.json`, options.sha);
       if (record === undefined) throw new LearnError("missing", "the record is not in the repository");
+      // A host that starts again, after the agent saved a better revision, must not put the old one back as `latest`.
+      const present = await new WorkflowStore(into).list();
+      if (present.some((r) => r.name === name && r.digest === live.sha256)) {
+        loaded.push({ name, sha256: live.sha256 });
+        continue;
+      }
       const stored = await scratch(async (tmp) => {
         await writeRegular(tmp, `${workflowDir(name)}/${live.sha256}.json`, record);
         return new WorkflowStore(tmp).load(name, live.sha256);
@@ -661,4 +718,114 @@ export async function seedWorkflows(options: SeedWorkflowsOptions): Promise<Seed
     }
   }
   return { loaded, skipped };
+}
+
+// ---------------------------------------------------------------- the curator's ports
+
+/** What the curator hands a port: main's commit and a way to read it. */
+type CurateRead = {
+  readonly main: string;
+  read(path: string, sha: string): Promise<string | undefined>;
+  list(prefix: string, sha: string): Promise<readonly TreeEntry[]>;
+};
+
+/** Copies `paths` at main into a fresh directory under `root`, as regular files, and hands it to `use`; removes it after. */
+async function staged<T>(root: string | undefined, from: CurateRead, paths: (dir: string) => Promise<readonly string[]>, use: (dir: string) => Promise<T>): Promise<T> {
+  const dir = await mkdtemp(path.join(root ?? tmpdir(), "pi-agent-learn-stage-"));
+  try {
+    for (const file of await paths(dir)) {
+      const text = await from.read(file, from.main);
+      if (text !== undefined) await writeRegular(dir, file, text);
+    }
+    return await use(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+export type WorkflowAdmitterOptions = {
+  /** Where the scratch directory goes: a real directory. Default: the system's. */
+  readonly tmpRoot?: string;
+  /** The preconditions of each revision, from its document (`schemaWhen` is one). Default: none, and the model decides from
+   *  the description. Give `usesSettler` nothing: a revision keeps the preconditions it was admitted with. */
+  readonly when?: (workflow: unknown) => readonly Precondition[];
+  /** Admit a workflow with a code node or a shell or executor call. Default: hold it. */
+  readonly allowExecutableCode?: boolean;
+  readonly now?: () => Date;
+};
+
+/**
+ * The curator's `admitWorkflow` port, over `admitInDir`: it copies main's `trial.json` and skill for the name into a scratch
+ * directory, validates the run's records through the DSL's store there, saves the revision the run ended on, and writes the
+ * skill (from `description`, the agent's when-to-use text) and `trial.json`. `admitted` carries every path changed, text or
+ * null, for the one commit. A workflow with code in it, or one with no trial to describe, is `held`; a name pi cannot load, a
+ * record the store refuses, a demoted revision and the limits are `refused`. The curator's judgments of the `untrusted` text
+ * have already been made when the port is called, so the flag changes nothing here.
+ */
+export function workflowAdmitter(options: WorkflowAdmitterOptions = {}) {
+  return async (input: CurateRead & { readonly workflow: { readonly run: string; readonly name: string; readonly description?: string; readonly records: Readonly<Record<string, string>>; readonly untrusted: boolean } }):
+    Promise<{ status: "admitted"; files: Record<string, string | null>; reason: string } | { status: "unchanged"; reason: string } | { status: "held" | "refused"; reason: string }> => {
+    const { workflow } = input;
+    if (typeof workflow?.name !== "string" || !WORKFLOW_SKILL_NAME.test(workflow.name) || workflow.name.length > MAX_NAME) {
+      return { status: "refused", reason: "a workflow name is lowercase letters and digits in words joined by single hyphens, so pi can load it as a skill" };
+    }
+    const name = workflow.name;
+    const result = await staged(options.tmpRoot, input, async () => [trialPath(name), skillPath(name)], (dir) => admitInDir({
+      dir, runId: workflow.run, name, records: workflow.records,
+      ...(workflow.description === undefined ? {} : { description: workflow.description }),
+      ...(options.when ? { when: options.when } : {}), ...(options.allowExecutableCode ? { allowExecutableCode: true } : {}), ...(options.now ? { now: options.now } : {}),
+    }));
+    if (result.status === "refused") return { status: result.reason === "code" || result.reason === "unknown" ? "held" : "refused", reason: `${result.reason}: ${result.detail}` };
+    if (result.status === "unchanged") return { status: "unchanged", reason: "the same revision and description are already on main" };
+    return { status: "admitted", files: { ...result.files }, reason: result.status === "described" ? `${name}: its skill was written from the description` : `${name}: ${result.sha256!.slice(0, 12)} is the live trial` };
+  };
+}
+
+export type UsesSettlerOptions = {
+  /** Where the scratch directory goes: a real directory. Default: the system's. */
+  readonly tmpRoot?: string;
+  readonly thresholds?: Partial<Thresholds>;
+};
+
+/**
+ * The curator's `settleUses` port, over `settleWorkflowUses`: for the run's uses it copies main's `trial.json` of each name,
+ * and the records of its superseded revisions, into a scratch directory, folds the uses in by the promotion rules, and
+ * returns the changed files and one decision per promotion, demotion or name held, each with a reason that names no value from
+ * the case. A trial.json that does not parse holds its name, never the curation.
+ */
+export function usesSettler(options: UsesSettlerOptions = {}) {
+  return async (input: CurateRead & { readonly run: string; readonly uses: readonly RunUse[] }):
+    Promise<{ files: Record<string, string | null>; decisions: { name: string; action: "promote" | "demote" | "hold"; reason: string; rollbackTo?: string }[] }> => {
+    const decisions: { name: string; action: "promote" | "demote" | "hold"; reason: string; rollbackTo?: string }[] = [];
+    let uses: RunUses;
+    try {
+      uses = parseRunUses(JSON.stringify({ version: 1, run: input.run, uses: input.uses }), input.run);
+    } catch {
+      return { files: {}, decisions: [{ name: "uses", action: "hold", reason: "the uses file is not well formed, so none were folded" }] };
+    }
+    const result = await staged(options.tmpRoot, input, async () => [], async (dir) => {
+      for (const name of [...new Set(uses.uses.map((use) => use.name))].sort()) {
+        const text = await input.read(trialPath(name), input.main);
+        if (text === undefined) continue;
+        try {
+          const trial = parseTrial(text, name);
+          await writeRegular(dir, trialPath(name), text);
+          for (const revision of trial.revisions.filter((r) => r.status === "superseded")) {
+            const record = await input.read(`${workflowDir(name)}/${revision.sha256}.json`, input.main);
+            if (record !== undefined) await writeRegular(dir, `${workflowDir(name)}/${revision.sha256}.json`, record);
+          }
+        } catch (error) {
+          if (!(error instanceof LearnError)) throw error;
+          decisions.push({ name, action: "hold", reason: `its trial.json does not parse (${error.code}), so its uses were left out` });
+          uses = { ...uses, uses: uses.uses.filter((use) => use.name !== name) };
+        }
+      }
+      return settleWorkflowUses({ dir, uses, ...(options.thresholds ? { thresholds: options.thresholds } : {}) });
+    });
+    for (const { name, decision } of result.decisions) {
+      decisions.push({ name, action: decision.action, reason: decision.reason, ...(decision.action === "demote" && decision.rollbackTo ? { rollbackTo: decision.rollbackTo } : {}) });
+    }
+    for (const { name, reason } of result.held) decisions.push({ name, action: "hold", reason });
+    return { files: { ...result.files }, decisions };
+  };
 }

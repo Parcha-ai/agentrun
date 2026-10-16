@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CAPS, checkTrial, currentRevision, deriveWhen, LearnError, matches, parseTrial, renderTrial, skillName, TRIAL_LIMITS, trialPath } from "../dist/index.js";
+import { CAPS, checkTrial, currentRevision, deriveWhen, fitTrial, LearnError, matches, parseTrial, renderTrial, skillName, TRIAL_LIMITS, trialPath, whenSize } from "../dist/index.js";
 
 const sha = (c) => c.repeat(64);
 const at = (n) => `2026-10-16T${String(n).padStart(2, "0")}:00:00.000Z`;
 const trial = (over = {}) => ({
   name: "kyb-registry", status: "trial", when: [{ pointer: "/company", op: "exists" }],
-  revisions: [{ sha256: sha("a"), status: "trial", since: at(1), run: "run-1" }], uses: [], ...over,
+  revisions: [{ sha256: sha("a"), status: "trial", since: at(1), run: "run-1", after: 0 }], uses: [], ...over,
 });
+const WHEN_ONE = [{ pointer: "/company", op: "exists" }];
 const refused = (value, code = "format") => assert.throws(() => checkTrial(value), (e) => e instanceof LearnError && e.code === code);
 
 test("a trial renders as stable JSON and parses back to exactly what was written", () => {
@@ -19,7 +20,7 @@ test("a trial renders as stable JSON and parses back to exactly what was written
 });
 
 test("a trial that breaks its schema or its own invariants is refused, whichever way it breaks", () => {
-  const live = { sha256: sha("b"), status: "active", since: at(2), run: "run-2" };
+  const live = { sha256: sha("b"), status: "active", since: at(2), run: "run-2", after: 0 };
   refused({ ...trial(), extra: 1 });
   refused(trial({ name: "Kyb_Registry" }));
   refused(trial({ status: "paused" }));
@@ -30,34 +31,65 @@ test("a trial that breaks its schema or its own invariants is refused, whichever
   refused(trial({ when: [{ pointer: "/a", op: "eq" }] }));
   refused(trial({ when: [{ pointer: "/a", op: "eq", value: Array.from({ length: 12 }).reduce((inner) => ({ inner }), 1) }] }));
   refused(trial({ revisions: [] }));
-  refused(trial({ revisions: [{ sha256: "abc", status: "trial", since: at(1), run: "run-1" }] }));
-  refused(trial({ revisions: [{ sha256: sha("a"), status: "trial", since: "yesterday", run: "run-1" }] }));
-  refused(trial({ revisions: [{ sha256: sha("a"), status: "trial", since: at(1), run: "run-1" }, { sha256: sha("a"), status: "retired", since: at(1), run: "run-1" }] }));
-  refused(trial({ revisions: [{ sha256: sha("a"), status: "trial", since: at(1), run: "run-1" }, live] }));
+  refused(trial({ revisions: [{ sha256: "abc", status: "trial", since: at(1), run: "run-1", after: 0 }] }));
+  refused(trial({ revisions: [{ sha256: sha("a"), status: "trial", since: "yesterday", run: "run-1", after: 0 }] }));
+  refused(trial({ revisions: [{ sha256: sha("a"), status: "trial", since: at(1), run: "run-1", after: 0 }, { sha256: sha("a"), status: "retired", since: at(1), run: "run-1", after: 0 }] }));
+  refused(trial({ revisions: [{ sha256: sha("a"), status: "trial", since: at(1), run: "run-1", after: 0 }, live] }));
   refused(trial({ status: "active" }));
   refused(trial({ status: "demoted" }));
   refused(trial({ uses: [{ run: "run-2", sha256: sha("c"), outcome: "frozen", at: at(2) }] }));
   refused(trial({ uses: [{ run: "run-2", sha256: sha("a"), outcome: "clean", at: at(2) }] }));
   refused(trial({ uses: [{ run: "run-2", sha256: sha("a"), outcome: "frozen", at: "2026-10-16" }] }));
+  refused(trial({ revisions: [{ sha256: sha("a"), status: "trial", since: at(1), run: "run-1", after: 1 }] }));
+  refused(trial({ revisions: [{ sha256: sha("a"), status: "trial", since: at(1), run: "run-1", after: 0, description: "kept by a live revision" }] }));
+  refused(trial({ revisions: [{ sha256: sha("a"), status: "trial", since: at(1), run: "run-1", after: 0, when: [] }] }));
+  refused(trial({ when: Array.from({ length: 16 }, (_, i) => ({ pointer: `/field${i}`, op: "in", value: Array.from({ length: 32 }, (_, j) => `value-${j}`) })) }), "format");
+  const superseded = (digest, extra = {}) => ({ sha256: sha(digest), status: "superseded", since: at(2), run: "run-2", after: 0, ...extra });
+  refused(trial({ revisions: [{ sha256: sha("a"), status: "trial", since: at(1), run: "run-1", after: 0 }, superseded("b", { description: "  " })] }));
+  refused(trial({ revisions: [{ sha256: sha("a"), status: "trial", since: at(1), run: "run-1", after: 0 }, ...["b", "c", "d", "e"].map((d) => superseded(d))] }));
+  checkTrial(trial({ revisions: [{ sha256: sha("a"), status: "trial", since: at(1), run: "run-1", after: 0 }, ...["b", "c", "d"].map((d) => superseded(d, { when: WHEN_ONE, description: "when to use it" }))] }));
   assert.throws(() => parseTrial("{", "kyb-registry"), (e) => e.code === "format");
   assert.throws(() => parseTrial(renderTrial(trial()), "other-name"), (e) => e.code === "format");
   assert.throws(() => parseTrial(" ".repeat(CAPS.file + 1)), (e) => e.code === "too_large");
 });
 
 test("a name with no live revision is demoted, and the live one is whichever is a trial or active", () => {
-  const demoted = trial({ status: "demoted", revisions: [{ sha256: sha("a"), status: "demoted", since: at(3), run: "run-1" }] });
+  const demoted = trial({ status: "demoted", revisions: [{ sha256: sha("a"), status: "demoted", since: at(3), run: "run-1", after: 0 }] });
   checkTrial(demoted);
   assert.equal(currentRevision(demoted), undefined);
   assert.equal(currentRevision(trial())?.sha256, sha("a"));
 });
 
-test("a trial at every limit still fits the curator's file cap", () => {
-  const revisions = Array.from({ length: TRIAL_LIMITS.revisions }, (_, i) => ({ sha256: sha("0123456789abcdef"[i % 16]).slice(0, 63) + String(i % 10), status: "retired", since: at(1), run: "run-" + String(i).padStart(3, "0") }));
+test("a trial at every limit, with the longest run ids and the largest preconditions, still fits the curator's file cap", () => {
+  const long = (i) => `run-${String(i).padStart(3, "0")}-${"x".repeat(128 - 8)}`;
+  const biggest = [];
+  for (let i = 0; i < TRIAL_LIMITS.preconditions; i += 1) {
+    const next = [...biggest, { pointer: `/f${i}`, op: "in", value: Array.from({ length: TRIAL_LIMITS.inValues }, (_, j) => j % 10) }];
+    if (whenSize(next) > TRIAL_LIMITS.whenChars) break;
+    biggest.push(next.at(-1));
+  }
+  assert.ok(biggest.length > 3 && whenSize(biggest) <= TRIAL_LIMITS.whenChars);
+  const revisions = Array.from({ length: TRIAL_LIMITS.revisions }, (_, i) => ({ sha256: sha("0123456789abcdef"[i % 16]).slice(0, 63) + String(i % 10), status: "retired", since: at(1), run: long(i), after: TRIAL_LIMITS.uses }));
   revisions[0] = { ...revisions[0], status: "trial" };
-  const uses = Array.from({ length: TRIAL_LIMITS.uses }, (_, i) => ({ run: `run-${String(i).padStart(3, "0")}-with-a-longish-id`, sha256: revisions[0].sha256, outcome: "escalated", at: at(2) }));
-  const when = Array.from({ length: TRIAL_LIMITS.preconditions }, (_, i) => ({ pointer: `/field${i}`, op: "in", value: Array.from({ length: 8 }, (_, j) => `value-${j}`) }));
-  const text = renderTrial(trial({ revisions, uses, when }));
+  for (let i = 1; i <= TRIAL_LIMITS.restorable; i += 1) revisions[i] = { ...revisions[i], status: "superseded", when: biggest, description: "d".repeat(CAPS.text) };
+  const uses = Array.from({ length: TRIAL_LIMITS.uses }, (_, i) => ({ run: long(i), sha256: revisions[0].sha256, outcome: "escalated", at: at(2) }));
+  const text = renderTrial(trial({ revisions, uses, when: biggest }));
   assert.ok(Buffer.byteLength(text) <= CAPS.file, `${Buffer.byteLength(text)} bytes`);
+  assert.throws(() => checkTrial(trial({ when: [...biggest, { pointer: "/one-more", op: "in", value: Array.from({ length: 32 }, (_, j) => j % 10) }] })), (e) => e.code === "format");
+});
+
+test("the net under the limits: a trial over the cap loses its oldest uses first, never below the thresholds' reach, and the boundaries move with them", () => {
+  const size = (t) => Buffer.byteLength(`${JSON.stringify(t, null, 2)}\n`);
+  const uses = Array.from({ length: 200 }, (_, i) => ({ run: `run-${i}-${"x".repeat(100)}`, sha256: sha("a"), outcome: "frozen", at: at(2) }));
+  const many = trial({ uses, revisions: [{ sha256: sha("a"), status: "trial", since: at(1), run: "run-1", after: 150 }] });
+  assert.ok(size(many) > CAPS.file);
+  const fitted = fitTrial(many);
+  assert.ok(size(fitted) <= CAPS.file && fitted.uses.length >= TRIAL_LIMITS.threshold);
+  const dropped = uses.length - fitted.uses.length;
+  assert.deepEqual(fitted.uses, uses.slice(dropped), "the newest are the ones kept");
+  assert.equal(fitted.revisions[0].after, 150 - dropped);
+  const bulky = trial({ uses: uses.slice(0, TRIAL_LIMITS.threshold), when: Array.from({ length: 16 }, (_, i) => ({ pointer: `/f${i}`, op: "in", value: Array.from({ length: 32 }, (_, j) => `value-${j}`) })) });
+  assert.equal(fitTrial(bulky).uses.length, TRIAL_LIMITS.threshold, "it stops at the floor");
 });
 
 test("workflow names are skill names: lowercase words joined by single hyphens", () => {
@@ -100,6 +132,8 @@ test("deriveWhen states what a workflow's input schema requires, read from the d
   const doc = (properties, required, extra = {}) => ({ input: { schemaId: "In" }, schemas: { In: { type: "object", properties, required, ...extra } } });
   assert.deepEqual(deriveWhen(doc({ sku: { type: "string" }, note: { type: "string" } }, ["sku"])), [{ pointer: "/sku", op: "exists" }]);
   assert.deepEqual(deriveWhen(doc({ c: { enum: ["us", "ca"] } }, ["c"])), [{ pointer: "/c", op: "exists" }, { pointer: "/c", op: "in", value: ["us", "ca"] }]);
+  const states = Array.from({ length: 12 }, (_, i) => `s${i}`);
+  assert.deepEqual(deriveWhen(doc({ c: { enum: states } }, ["c"])), [{ pointer: "/c", op: "exists" }, { pointer: "/c", op: "in", value: states }], "a longer enumeration keeps its check");
   assert.deepEqual(deriveWhen(doc({ k: { const: "kyb" } }, ["k"])), [{ pointer: "/k", op: "exists" }, { pointer: "/k", op: "eq", value: "kyb" }]);
   assert.deepEqual(deriveWhen(doc({ n: { type: "number", minimum: 0, maximum: 5 } }, ["n"])), [{ pointer: "/n", op: "exists" }, { pointer: "/n", op: "gte", value: 0 }, { pointer: "/n", op: "lte", value: 5 }]);
   assert.deepEqual(deriveWhen(doc({ "a/b": { type: "string" } }, ["a/b"])), [{ pointer: "/a~1b", op: "exists" }]);

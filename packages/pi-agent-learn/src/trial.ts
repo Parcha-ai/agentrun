@@ -28,13 +28,17 @@ export const PRECONDITION_OPS = Object.freeze(["eq", "in", "exists", "gte", "lte
 
 export const LIMITS = Object.freeze({
   /** Revisions kept under one name; admission stops at the cap, never forgets a demoted digest. */
-  revisions: 60,
-  /** The newest uses kept; promotion and demotion thresholds never reach further back than `thresholds`. */
-  uses: 80,
+  revisions: 32,
+  /** The newest uses kept, in the order they were folded; thresholds never reach further back than twice `threshold`. */
+  uses: 30,
   preconditions: 16,
   inValues: 32,
   /** Largest promotion or demotion threshold. */
-  threshold: 40,
+  threshold: 15,
+  /** Superseded revisions that keep their preconditions and description so a rollback can restore them; an older one is retired. */
+  restorable: 3,
+  /** The preconditions of one revision, as the file prints them. */
+  whenChars: 1536,
 });
 
 export type Json = null | boolean | number | string | readonly Json[] | { readonly [key: string]: Json };
@@ -49,10 +53,16 @@ export type Precondition =
 export type Revision = {
   readonly sha256: string;
   readonly status: RevisionStatus;
-  /** When the revision took this status. */
+  /** When the revision took this status (the time of the use that earned it, or of its admission). */
   readonly since: string;
   /** The run that proposed it. Its own uses are never evidence for it. */
   readonly run: string;
+  /** How many uses had been folded when it took this status: only the uses after that count toward its next standing. The
+   *  order uses were folded in decides, never a clock. */
+  readonly after: number;
+  /** A superseded revision keeps what it was tried under, to restore with it: its preconditions and its skill's description. */
+  readonly when?: readonly Precondition[];
+  readonly description?: string;
 };
 
 export type Use = { readonly run: string; readonly sha256: string; readonly outcome: UseOutcome; readonly at: string };
@@ -85,13 +95,19 @@ export const TrialSchema = Type.Object({
   name: Type.String({ pattern: WORKFLOW_SKILL_NAME.source, maxLength: MAX_NAME }),
   status: Type.Union([Type.Literal("trial"), Type.Literal("active"), Type.Literal("demoted")]),
   when: Type.Array(PreconditionSchema, { maxItems: LIMITS.preconditions }),
-  revisions: Type.Array(Type.Object({ sha256: Hash, status: Type.Union([Type.Literal("trial"), Type.Literal("active"), Type.Literal("superseded"), Type.Literal("retired"), Type.Literal("demoted")]), since: Stamp, run: Run }, exact), { minItems: 1, maxItems: LIMITS.revisions }),
+  revisions: Type.Array(Type.Object({
+    sha256: Hash, status: Type.Union([Type.Literal("trial"), Type.Literal("active"), Type.Literal("superseded"), Type.Literal("retired"), Type.Literal("demoted")]),
+    since: Stamp, run: Run, after: Type.Integer({ minimum: 0, maximum: 1_000_000_000 }),
+    when: Type.Optional(Type.Array(PreconditionSchema, { maxItems: LIMITS.preconditions })), description: Type.Optional(Type.String({ maxLength: CAPS.text })),
+  }, exact), { minItems: 1, maxItems: LIMITS.revisions }),
   uses: Type.Array(Type.Object({ run: Run, sha256: Hash, outcome: Type.Union([Type.Literal("frozen"), Type.Literal("escalated"), Type.Literal("failed")]), at: Stamp }, exact), { maxItems: LIMITS.uses }),
 }, exact);
 
 const checker = Compile(TrialSchema);
 
 const bad = (message: string) => new LearnError("format", message);
+/** The preconditions' size as the file prints them, which is what the file cap counts. */
+export const whenSize = (when: readonly Precondition[]): number => JSON.stringify(when, null, 2).length;
 const validStamp = (value: string) => STAMP.test(value) && new Date(value).toISOString() === value;
 
 function isJson(value: unknown, depth = 0): value is Json {
@@ -110,22 +126,31 @@ export function checkTrial(value: unknown): asserts value is Trial {
     throw bad(`trial.json does not match its schema${first ? ` at ${first.instancePath || "/"} (${first.keyword})` : ""}`);
   }
   const trial = value as Trial;
-  for (const { op, value: operand } of trial.when as readonly { op: string; value?: unknown }[]) {
-    if (op !== "exists" && !isJson(operand)) throw bad("a precondition's value is not plain JSON");
-    if (op !== "exists" && JSON.stringify(operand).length > 512) throw bad("a precondition's value is over 512 characters");
-  }
+  const checkWhen = (when: readonly Precondition[]) => {
+    for (const { op, value: operand } of when as readonly { op: string; value?: unknown }[]) {
+      if (op !== "exists" && !isJson(operand)) throw bad("a precondition's value is not plain JSON");
+      if (op !== "exists" && JSON.stringify(operand).length > 512) throw bad("a precondition's value is over 512 characters");
+    }
+    if (whenSize(when) > LIMITS.whenChars) throw bad(`preconditions are over ${LIMITS.whenChars} characters`);
+  };
+  checkWhen(trial.when);
   const seen = new Set<string>();
   let live: Revision | undefined;
   for (const revision of trial.revisions) {
     if (seen.has(revision.sha256)) throw bad("a revision appears twice");
     seen.add(revision.sha256);
     if (!validStamp(revision.since)) throw bad("a revision's since is not a time");
+    if (revision.after > trial.uses.length) throw bad("a revision's after is past the uses held");
+    if (revision.status !== "superseded" && (revision.when !== undefined || revision.description !== undefined)) throw bad("only a superseded revision keeps preconditions and a description");
+    if (revision.when) checkWhen(revision.when);
+    if (revision.description !== undefined && (revision.description.trim() === "" || Buffer.byteLength(revision.description, "utf8") > CAPS.text)) throw bad("a revision's description is text of 1 to 1000 bytes");
     if (revision.status === "trial" || revision.status === "active") {
       if (live) throw bad("more than one revision is live");
       live = revision;
     }
   }
   if (trial.status !== (live?.status ?? "demoted")) throw bad("the status is not that of the live revision");
+  if (trial.revisions.filter((revision) => revision.status === "superseded").length > LIMITS.restorable) throw bad(`more than ${LIMITS.restorable} superseded revisions`);
   for (const use of trial.uses) {
     if (!seen.has(use.sha256)) throw bad("a use names a revision the trial does not hold");
     if (!validStamp(use.at)) throw bad("a use's at is not a time");
@@ -141,6 +166,19 @@ export function skillName(name: string): string {
     throw new LearnError("invalid", `a workflow name is lowercase letters and digits in words joined by single hyphens, at most ${MAX_NAME} characters`);
   }
   return name;
+}
+
+const sizeOf = (trial: Trial) => Buffer.byteLength(`${JSON.stringify(trial, null, 2)}\n`, "utf8");
+
+/** The trial with its oldest uses dropped, as far as `LIMITS.threshold` uses remain, until it fits the curator's file cap. The
+ *  limits are set so a trial fits at their maximum; this is the net under them. */
+export function fitTrial(trial: Trial): Trial {
+  let current = trial;
+  while (sizeOf(current) > CAPS.file && current.uses.length > LIMITS.threshold) {
+    const drop = Math.min(current.uses.length - LIMITS.threshold, Math.max(1, Math.ceil(current.uses.length / 4)));
+    current = { ...current, uses: current.uses.slice(drop), revisions: current.revisions.map((r) => ({ ...r, after: Math.max(0, r.after - drop) })) };
+  }
+  return current;
 }
 
 /** The file for a trial: byte-stable, under the curator's file cap. */
@@ -237,9 +275,11 @@ export function deriveWhen(workflow: unknown, resolveSchema?: (schema: Record<st
     if (property === null || typeof property !== "object") continue;
     const p = property as Record<string, unknown>;
     if (Object.hasOwn(p, "const") && isJson(p.const) && JSON.stringify(p.const).length <= 512) out.push({ pointer, op: "eq", value: p.const });
-    else if (Array.isArray(p.enum) && p.enum.length >= 1 && p.enum.length <= LIMITS.inValues && p.enum.every(scalar) && p.enum.every(isJson)) out.push({ pointer, op: "in", value: p.enum as Json[] });
+    else if (Array.isArray(p.enum) && p.enum.length >= 1 && p.enum.length <= LIMITS.inValues && p.enum.every(scalar) && p.enum.every((item) => isJson(item))) out.push({ pointer, op: "in", value: p.enum as Json[] });
     if (typeof p.minimum === "number" && Number.isFinite(p.minimum)) out.push({ pointer, op: "gte", value: p.minimum });
     if (typeof p.maximum === "number" && Number.isFinite(p.maximum)) out.push({ pointer, op: "lte", value: p.maximum });
   }
-  return out.slice(0, LIMITS.preconditions);
+  const kept = out.slice(0, LIMITS.preconditions);
+  while (kept.length && whenSize(kept) > LIMITS.whenChars) kept.pop();
+  return kept;
 }

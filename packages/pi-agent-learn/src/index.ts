@@ -16,17 +16,18 @@ export { type Caps, createGuard, guard } from "./guard.js";
 export { type Inbox, InboxFormatError, parseInbox, renderInbox } from "./inbox.js";
 export { type ProposeFilesOptions, type ProposeOptions, type ProposeResult, type ProposeTarget, proposeFiles, proposeLearning, type UsesSource, type WorkflowRecords } from "./propose.js";
 export {
-  type Admission, type AdmitRevision, admitRevision, applyDecision, type ApplyOptions, type Applied, type Decision, type DecisionOptions, type Folded, foldUses,
+  type Admission, type AdmitRevision, admitRevision, applyDecision, type Applied, type Decision, type DecisionOptions, type Folded, foldUses,
   type IgnoredUse, periodUses, PROMOTION_DEFAULTS, promotionDecision, type Thresholds, thresholdsOf,
 } from "./promotion.js";
 export {
-  checkTrial, currentRevision, deriveWhen, type Json, LIMITS as TRIAL_LIMITS, matches, parseTrial, type Precondition, PRECONDITION_OPS, PreconditionSchema,
+  checkTrial, currentRevision, deriveWhen, fitTrial, type Json, LIMITS as TRIAL_LIMITS, matches, parseTrial, type Precondition, PRECONDITION_OPS, PreconditionSchema,
   readTrial, renderTrial, type Revision, REVISION_STATUSES, type RevisionStatus, skillName, skillPath, type Trial, trialPath, TrialSchema, TRIAL_STATUSES,
-  type TrialStatus, type Use, USE_OUTCOMES, type UseOutcome, workflowDir, WORKFLOW_SKILL_NAME,
+  type TrialStatus, type Use, USE_OUTCOMES, type UseOutcome, whenSize, workflowDir, WORKFLOW_SKILL_NAME,
 } from "./trial.js";
 export {
-  type AdmitRefusal, admitWorkflow, type AdmitWorkflow, type AdmitWorkflowInput, type AdmitWorkflowResult, collectUses, collectWorkflows, type CollectedWorkflows,
+  type AdmitRefusal, collectUses, collectWorkflows, type CollectedWorkflows,
   type CollectWorkflowsOptions, type Files, type FoundWorkflow, inboxWorkflowFiles, MAX_RUN_USES, MAX_RUN_WORKFLOWS, parseRunUses, readTrialIn, readSessionUses, readUses,
   type ReadSessionUsesOptions, type ReadUses, type ReadUsesOptions, renderSkill, type RepoAt, type RunUse, type RunUses, seedWorkflows, type SeededWorkflows, sessionEntries, type SeedWorkflowsOptions,
-  settleWorkflowUses, type Settled, type SettledDecision, type SettleOptions, type SkippedWorkflow, usesSource, workflowsToTry,
+  schemaWhen, settleWorkflowUses, type Settled, type SettledDecision, type SettleOptions, type SkippedWorkflow, usesSettler, type UsesSettlerOptions, usesSource,
+  workflowAdmitter, type WorkflowAdmitterOptions, workflowsToTry,
 } from "./workflows.js";
