@@ -40,7 +40,8 @@ export interface CustodyPort<D extends BrowserDriver = BrowserDriver> {
   /** A rerun finds the session it launched. */
   relaunch(overrides: Overrides): Promise<AttachedSession<D>>;
   /** No session, or one already released, is not an error. */
-  release(): Promise<{ released: boolean; sessionId: string | null }>;
+  /** `ended`: the session was released, or is being released, before this call: by what and when (null while in flight). */
+  release(): Promise<{ released: boolean; sessionId: string | null; ended?: { reason: ReleaseReason; at: string | null } }>;
   /** Committed before the `run` is dispatched. */
   dispatching(effect: { callId: string; codeSha: string; url: string | null; observed: boolean; watched: boolean }): Promise<void>;
   journal(row: SentEffect): Promise<void>;
@@ -89,7 +90,7 @@ export function newSessionRecord(input: { plane: string; tag: string; provider: 
     settings: {
       proxies, verified: spec.verified && honours.verified !== false,
       geolocation: proxies && honours.geolocation !== false && typeof spec.proxies === "object" ? spec.proxies.geolocation : null,
-      region: honours.region === false ? null : spec.region ?? null, contextId: honours.context === false ? null : spec.contextId ?? null,
+      region: honours.region === false ? null : spec.region ?? null, contextId: honours.context === false ? null : spec.contextId ?? null, profile: spec.profile?.name ?? null,
     },
     navigation: [], lastUrl: null, pendingEffect: null, spent: startSpent(input.at),
   };
@@ -104,8 +105,13 @@ export function moveRecord(record: SessionRecord, next: { state: LeaseState; res
   if (next.state === "released" || next.state === "lost") record.endedAt = next.at;
 }
 
+export const PROFILE_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+const refused = (message: string): BrowserFailure => ({ ok: false, code: "refused", retryable: false, effect: "none", message });
+
 export function sessionSpec(config: BrowserConfig, tag: string, overrides: Overrides = {}): SessionSpec {
   const { policy } = config;
+  if (policy.profile && !PROFILE_NAME.test(policy.profile.name)) throw new BrowserFailureError(refused("browser profile: a profile name is 1 to 64 characters of letters, digits, dot, underscore and dash, starting with a letter or digit. No session was started."));
+  if (policy.profile && policy.contextId) throw new BrowserFailureError(refused("browser profile: a saved profile and a context id are two ways to ask for the same saved state; set one. No session was started."));
   const geolocation = overrides.geolocation === undefined ? policy.geolocation : overrides.geolocation;
   return {
     tag, maxLifetimeS: policy.sessionTimeoutS, idleTimeoutS: policy.idleReleaseS,
@@ -114,9 +120,14 @@ export function sessionSpec(config: BrowserConfig, tag: string, overrides: Overr
     ...(policy.region ? { region: policy.region } : {}),
     viewport: { ...VIEWPORT },
     ...(policy.contextId ? { contextId: policy.contextId } : {}),
+    ...(policy.profile ? { profile: { name: policy.profile.name, save: policy.profile.save } } : {}),
     ...(policy.navigation ? { navigation: policy.navigation } : {}),
     metadata: { run: config.run, label: config.label },
   };
+}
+
+export function profileRefusal(spec: SessionSpec, caps: ProviderCaps): BrowserFailure | null {
+  return spec.profile && !caps.profiles ? refused(`browser profile: this browser provider cannot keep a saved sign-in, so profile "${spec.profile.name}" cannot be used. No session was started.`) : null;
 }
 
 /** With proxies off a geolocation is refused up front: the session would browse from the provider's default place,
@@ -149,8 +160,11 @@ const failed = (error: unknown): ToolOutput => {
 export const custodyTools = {
   async browser_release(_args: unknown, port: CustodyPort): Promise<ToolOutput> {
     try {
-      const { released, sessionId } = await port.release();
-      return text({ ok: true, released, session_id: sessionId, ...(sessionId === null ? { note: "no open browser session" } : {}) });
+      const { released, sessionId, ended } = await port.release();
+      const note = ended
+        ? `The session was already ${ended.at ? `released (${ended.reason}, at ${ended.at})` : `being released (${ended.reason})`} before this call; there was nothing more to release.`
+        : sessionId === null ? "no open browser session" : null;
+      return text({ ok: true, released, session_id: sessionId, ...(ended ? { already_released: ended } : {}), ...(note ? { note } : {}) });
     } catch (error) { return failed(error); }
   },
   async browser_relaunch(args: { verified?: boolean; geolocation?: unknown }, port: CustodyPort): Promise<ToolOutput> {
