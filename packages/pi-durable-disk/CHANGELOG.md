@@ -2,6 +2,102 @@
 
 ## Unreleased
 
+## 0.1.0-beta.14 (2026-10-16)
+
+- **The root entry lists its exports, 134 instead of 0.1.0-beta.13's 228; the rest move to `./lease`, to a new `./internals`, or out of the package's entries.** Root values go from 136 to 46: 92 leave root (19 to `./lease`, 15 to `./internals`, 58 to no entry) and 2 are new. Who breaks: an import of one of the names below from `@parcha/pi-durable-disk`. What to do: import it from the entry named here; a name that no entry exports had no caller outside the package; open an issue if you need one.
+  - To `@parcha/pi-durable-disk/lease` only (the store and lease internals): `EXIT_DATAERR`, `EXIT_FENCED`, `EXIT_HELD`, `EXIT_SOFTWARE`, `LeaseLapsedError`, `OWNER_LOCK`, `PROFILE_PRAGMAS`, `STORE_FILE`, `StoreBusyError`, `StorePragmaError`, `assertPragmas`, `exitCodeFor`, `openArchilStore`, `openRunLease`, `ownWriteFenced`, `storeHead`, and the types `OpenOptions`, `PragmaMismatch`. The classes `Fence`, `FencedDatabase`, `StoreFencedError` also come from `./lease`; the root still exports them as types, so a signature that names them type-checks.
+  - To `@parcha/pi-durable-disk/internals`, a new entry with no compatibility promise (a name there can change or go in any release): `LABEL_FLEET`, `LABEL_RUN`, `RUN_JSON`, `createRunDir`, `findDelegations`, `isLeaseFresh`, `mintMountToken`, `parseRunRecord`, `pathlessResolver`, `removeMountToken`, `runPath`, `sandboxName`, `sandboxStatus`, `sweepSandboxes`, `unmountClaim`. `parseRunRecord` and `RUN_JSON` read a run's `run.json` directly, as the serve-and-park example does; `readRunStatus` (root) reads it through the control API.
+  - `workspaceBarrier` and `WorkspaceBarrierOptions` are deleted: nothing installed the barrier extension, and its tests go with it.
+  - `superviseRuns`, `checkHost` and `sweepTokens` are no longer exported: the `pi-durable-disk` CLI is the supported way to run the supervisor.
+  - No longer exported by any entry, each still used inside the package: `ARCHIL_FSTYPE`, `CLAIM_PROBE`, `CONTROL_TIMEOUT_MS`, `DAYTONA_API_URL`, `DEFAULT_HEARTBEAT_MS`, `DEFAULT_LEASE_EXPIRY_MS`, `DEFAULT_LEASE_MARGIN_MS`, `DEFAULT_MOUNT_ROOT`, `DOCKER_PARK_THRESHOLD_MS`, `LEASE_EXPIRY_MS`, `LOCAL_PARK_THRESHOLD_MS`, `MOUNT_TOKEN_TTL`, `READ_ONLY_TOOLS`, `RETRY_CODES`, `RUN_JSON_TEMP`, `RUN_STATUSES`, `START_BACKOFF_MAX_MS`, `START_MARK`, `STONITH_TIMEOUT_MS`, `TERMINAL_EXITS`, `TOKEN_GRACE_MS`, `TOKEN_PREFIX`, `TOKEN_TTL`, `WRITING_TOOLS`, `companionsOf`, `containerStatus`, `currentBootId`, `currentHolder`, `deviceName`, `diskKey`, `isLoopback`, `loadApp`, `matchDelegations`, `parseShow`, `parseTokenNickname`, `persistRecord`, `procStartTicks`, `readRunRecord`, `readServeToken`, `readStartMark`, `recordWake`, `replaySafe`, `revokeBestEffort`, `revokeCompanions`, `runCommand`, `runDocker`, `startGrace`, `takeOwnerLock`, `tarOneFile`, `tokenNickname`, `unitStatus`, `waitDeadline`, `withTimeouts`, `writeRunRecord`, and the types `CheckReport`, `CheckStep`, `OwnerLock`, `ServeCode`, `StartMark`, `TokenSweep`, `TokenSweepOptions`.
+  - New in the root entry: `archilControl`, `forkLocal`, and the types `ArchilControl`, `DiskClient`, `ForkLocalResult` (#479, #500). `TokenUser`, which `ArchilControl.listUsers()` returns, stays in the root entry.
+  - `./lease` gains parking (`leaseParkTarget`, `watchParking`, `drain`, `busyState` and their types) and the types `DurableRun` and `RunEnv` that `ParkTarget` names, so a host that opened its Harness over `openRunLease` parks it without importing the root entry.
+  - `test/entries.test.ts` pins every entry's values and types (`test/fixtures/entries.json`), and fails when an entry's declarations name a type of the package that the entry's caller cannot import.
+- Accept pi 1.3: the `@earendil-works/pi-durable` and `@earendil-works/chord` peer ranges now end below 1.4, with the floors unchanged (1.0.4, and 1.1.0 for `@parcha/pi-browser`). pi 1.3.0 pins its own packages to exact versions, so an install is all 1.2 or all 1.3; CI runs every package's whole suite on a 1.3.0 family as well as on 1.2.0.
+  - On pi-ai 1.3, a tool call whose arguments are not a JSON object reaches no tool: pi-durable refuses it and shows the model the text it sent. A durable node's `submit` then spends none of its submissions. Before 1.3 the tool ran with `{}`, so `submit` answered with the schema's violations and counted one submission.
+- New export `archilControl({ apiKey, disk, region })`: one Archil disk's control API (S3 reads and writes, delegations, token users, `listUsers`), the object `ensureRunning`, `superviseRuns`, `checkHost`, `fork` and the token janitor take as `control`. A library caller composing its own supervisor, such as one driving `daytonaHost`, which `supervise` does not start, builds it without depending on the `disk` client. It is the CLI's own builder, moved and exported; `supervise` now calls it, so both get the same object. Additive.
+- `beforeResume` receives `previous`: `run.json` as the run was left, before this open wrote over it, or null when there was none (a new run's first open). A host can tell how the run was left: `sleeping` with its `wakeAt` after a park, `paused` or `done` with the `detail` it set, `running` with the dead holder and no new seal after a crash, and on a fork's first open the record `fork` wrote (`paused`, generation 0, `detail.forkedFrom`). Before, the hook saw only this incarnation's `record`, whose `detail` the open has already reset to null. `RunLease` (`./lease`) has `previous` too. Additive.
+- **The CLI runs on a local directory: `pi-durable-disk run --dir PATH --app MODULE`, no disk and no key**
+  - `run --dir PATH` is the instance on a directory of this machine (`localRun`): the same app contract and exit codes as
+    on a disk (76 when another process holds the run, or when a process its last incarnation left will not die; 75 when
+    fenced) and the same run flags but the Archil ones. `--disk`, `--region`, `--mount-root`, `--archil` and
+    `--token-stdin` beside `--dir` are a usage error (exit 2). `--id` defaults to the directory's name. Example 01's app
+    runs as it is: `kill -9` the instance and run the same command again, and it resumes.
+  - `status --dir PATH` reads `run.json` from the directory and says whether its holder is still the process that claimed
+    it: `run --dir` records the instance's start ticks in the holder, so a later process that reuses the pid reads as
+    `stopped`, whatever the lease says (`running`, `stopped`, or `gone` from another boot).
+- **`forkLocal`: fork a run on a local directory into many**
+  - `forkLocal(from, [{ id, root }, ...])` copies a released, sealed run directory of this machine (`localRun`) into one new
+    run directory per target, with no disk and no mount: the copy `fork` makes, for one machine. Each fork starts `paused`
+    at generation 0 with the source's `sealedSeq`, so its first open is generation 1, and goes on on its own.
+  - The source is only read and stays byte for byte; every copy is made beside its target under a temporary name and none is published until all are
+    complete, so a failed batch leaves nothing behind. Targets keep the source directory's owner and mode. A source that is not released and sealed is `ForkError` `SOURCE_NOT_RELEASED`, a target that
+    exists is `TARGET_EXISTS`, and a target inside the source, a repeated directory or no target is `INVALID_ARGUMENT`.
+  - New exports: `forkLocal` and the `ForkLocalResult` type. A run's `commands/` records are not copied.
+- **A run on a local directory works on macOS, for development, and the README says what it costs**
+  - `localRun`, the no-key quickstart and `run --dir` / `status --dir` run on macOS. There is no `/proc` there, so the
+    process table comes from `ps` and `sysctl`: the commands a killed instance left running are recorded and ended at the
+    next open as on Linux (a walk every 0.5 s, `ps -E` for a command's mark, a process told from a later one by the second
+    it started), the lease watchdog kills the commands at a lapse, and `status --dir` knows its holder by pid and start.
+    Before, the open threw (`/proc/self/fd`), and with no boot id the commands went unrecorded.
+  - On macOS the run's root is addressed by its path (`openClaimDir`'s new `byPath`, its default there), each write
+    checked first against the directory opened; `noNewPrivs` defaults to false (no `no_new_privs` there, so commands keep
+    the user's rights); and the file tools are confined by path: each component opened by its full path with
+    `O_NOFOLLOW`, then the path checked to still name the directory held. It refuses an agent's paths out of `work/` and
+    the links in place, not a command that swaps a directory between that check and the operation. An app that passes
+    `noNewPrivs` keeps its choice.
+  - The store also sets SQLite's `fullfsync` and `checkpoint_fullfsync` on macOS, where `fsync` does not flush the drive's
+    cache, and refuses to open (`StorePragmaError`) unless they read back.
+  - `currentBootId()` and `procStartTicks()` read the same table: on macOS the boot session's uuid, and the second a
+    process started.
+  - A `macos-latest` CI job runs the stranger's no-key quickstart and the local run's tests on a Mac.
+  - `status --dir` says `unknown` when this machine's boot or process listing cannot be read, where it said `gone` or
+    `stopped`.
+- `launchStatus` (and so the Daytona host's `status`) reports a launch that ended as `failed` or `stopped` as soon as the launcher has saved its final `exited` record and no instance lives, even while the launcher's own process is still exiting. It used to say `running` until that process was gone, so a status read in that moment (a supervisor poll, or the terminal-exit test under load) saw a finished launch as live. `stop` returns at once with the recorded outcome and still sends SIGTERM to a launcher process that outstays its record.
+- `daytonaHost`'s in-box launcher runs when its path goes through a link. It ran its main only when `process.argv[1]` resolved to its own module path, which Node gives with links followed, so under a symlinked package directory (pnpm-style linked `node_modules`, or a link to an installed package) it exited 0 without doing anything and every start failed with "the instance ... did not start: " and no reason. It now compares the real path. And when the launcher gives no reason, the driver's error carries what it printed (its last 4 KB) or says it printed nothing; it prints only its state, never the token.
+- `daytonaHost` accepts a package installed with npm: a box path may contain `@`, so `packageDir: "/opt/app/node_modules/@scope/pkg"` (and the launcher inside it) is a plain absolute path. It was refused as `INVALID_ARGUMENT`. A path with a `..` segment is now refused too; the old pattern let `/opt/../etc` through.
+- A dead FUSE mount caught while its daemon's connection is being torn down now reads as dead. Right after a `kill -9` of the daemon, the stat that decides "dead" can be in flight, and the kernel ends it with `ECONNABORTED`; only a stat issued after the teardown gets `ENOTCONN`. `unmountClaim` (and so `release` and the takeover paths) and the local host driver's `stop` counted only `ENOTCONN`, so such a mount read as live: `UNMOUNT_FAILED`, or a dead mount left behind. Both now read either code as dead and clean the mount with `fusermount -u`; any other stat error still reads as live, and a live mount is still never forced.
+  - The local host driver decided "dead" by matching the English text "Transport endpoint is not connected" in `stat`'s stderr, which coreutils translates, so under any other locale a dead mount read as live. It now runs the stat in a child that prints the errno code, and the check reads that code (`DEAD_CONNECTION`, exported from the claim module); messages are never read.
+- The acceptance rig builds the supervisor's control API with the package's own `archilControl` (the one the CLI uses) instead of a hand-kept copy. The copy had no `exec`, and without `exec` a delegation the control API lists with no path (a dead client's private directory among them) cannot be attributed, so every supervisor pass on a disk that lists one refused with `CONTROL_API_FAILED`. The rig now starts runs on such a disk.
+- The live suites' runner (`test/live/ci.ts all`) no longer exits 13 instead of 1 when another live run holds the lock: its
+  lock holder stays referenced until the lock is decided, so a refused holder whose pipes close before its exit event no
+  longer leaves the process with nothing to wait on and its top-level await unsettled.
+- A local live runner, `test/live/ci.ts all`, for the ship skill to run before a change to this package ships: `npm run build && node packages/pi-durable-disk/test/live/ci.ts all` under a credential wrapper that exports `ARCHIL_API_KEY`, `PDA_LIVE_DISK` and `PDA_LIVE_REGION` for a scratch organisation and a scratch disk. It refuses to start without the key (the suites would otherwise skip and pass), runs the host suites and then the Docker suites, each under a deadline, always sweeps what a cut suite left (its systemd units, containers and mounts on the host, then its run directories and token users on the disk), prints the suites' timings, and ends on `ok: live disk check passed (...)` or `not ok: <step>: <reason>`. `all --slow` adds `supervise-slow`, the three supervise tests that wait out fixed windows (about 17 minutes), now a file of their own. The live suites now give their run directories the running user's uid rather than 1000.
+- **An example: fork one run into many**
+  - `examples/fork-into-many` runs on directories of this machine with pi-ai's faux model (no disk, no key, Linux). An agent
+    drafts a note and the run is released at that checkpoint; `forkLocal` copies the sealed run three times, and each fork
+    opens as generation 1 with the checkpoint's conversation and files, takes its own instruction and finishes. The source stays
+    byte for byte. It ends with one `ok:` line, and `test/examples/fork-into-many.test.ts` runs it on every change.
+- **An example: a coding agent that survives `kill -9`**
+  - `examples/kill-9` runs on a directory of this machine with pi-ai's faux model (no disk, no key, Linux). An agent writes
+    files in `work/`, is refused a write outside it, and starts a long `bash` command; the process is `SIGKILL`ed in the
+    middle of it. A second process opens the run, which ends the command the first left running; the files are intact, the cut
+    command comes back `interrupted` and is not run again, and the agent finishes. It ends with one `ok:` line, and `test/examples/kill-9.test.ts` runs it on every change.
+- New example, `examples/no-double-charge/` (`node examples/no-double-charge/main.ts`): a paid call that never double-charges across a `kill -9`, with no disk and no key. A fake payment server in the example counts charges by idempotency key and holds invoice 2's charge in flight while the agent is killed. The run reopens in a second process, the cut `charge` call comes back `interrupted` and isn't sent again, and the server ends with one charge per invoice. `test/examples/no-double-charge.test.ts` runs it in CI.
+- New example, `examples/planned-move/`: a run moves from this machine (a systemd unit) to a Daytona sandbox at a step boundary, by hand-over and not take-over. The first incarnation sets `paused` with where it is going and releases (sealing the store); the supervisor starts it in a box with `ensureRunning(..., { demand: true })`, which revokes nothing; the second incarnation's `beforeResume` reads `previous` and tells the agent it moved before any step resumes. It needs an Archil scratch disk, a Daytona key and a host set up for production, and the same run user uid on both hosts. Its test skips without the keys.
+- **An example, `serve-and-park`: an idle agent holds no process**
+  - An instance serves `POST /submit` on a directory of this machine. Its model is overloaded and pi retries after a long
+    wait, so the run parks: `run.json` says `sleeping` with `wakeAt`, the claim is released and the process exits 0. A
+    small restart loop opens the run again at `wakeAt`, the retry finishes, and a repeated `requestId` is answered with the
+    first submission instead of running again. No disk, no key: `node examples/serve-and-park/main.ts` after the build,
+    with pi-ai's faux model. A test runs it in `npm test`.
+- **Examples say which published version they need, and how to run one from an install**
+  - `examples/README.md` gains a "Since" column (the first published version that has what each example imports) and a
+    "Run one from an install" section: an empty directory, `npm init -y && npm pkg set type=module`, the README's install
+    line, the example's files, `node main.ts`. `fork-into-many` and `planned-move` need 0.1.0-beta.14 or later (`forkLocal`,
+    `archilControl` and `beforeResume`'s `previous` are not in 0.1.0-beta.13, where they stop at their import); each example's
+    README states its version. Checked by running each keyless example against the published 0.1.0-beta.13.
+- The failure table gains a Docker host and a Daytona host lost before the instance reaches running: a start still in the
+  driver fails typed and tries to remove what it made (attempted, not guaranteed: on Docker a removal that fails is left
+  for the operator to find by its `pda.run` label; on Daytona the box's TTL bounds it), no failed start is counted, and
+  the next tick starts again; a start that had
+  returned is held `starting` by the start mark until the start grace passes, then started again (revoking an orphaned
+  delegation first). Nothing is lost, since an instance writes `run.json` at its generation before it opens the store.
+  Timings are cited from the live suites where measured, and marked not measured on Docker and Daytona.
+- The README quotes the refusal an open writes when a process a killed incarnation's commands started will not die
+  (`COMMANDS_ALIVE`), for one survivor, word for word; a test builds the message from the code and fails if the README's
+  copy differs.
+
 ## 0.1.0-beta.13 (2026-10-14)
 
 **pi-durable 1.1**
