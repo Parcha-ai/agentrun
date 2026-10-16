@@ -134,6 +134,47 @@ test('a pause lets the effect in flight complete and commit, the task stays pend
   await harness.close(ctx);
 });
 
+test('a run stored in a schema newer than this build knows stays pending with its store intact: its waiters get the refusal, and a build that knows the schema completes it', async () => {
+  const file = fileOf(); let calls = 0; const flight = deferred(), release = deferred();
+  const flow = createWorkflowExtension(hostOf(async () => { calls += 1; flight.resolve(); await release.promise; return { price: 21 }; }));
+  let harness = await open(file, flow);
+  const run = await flow.start(harness, request(), ctx);
+  await flight.promise;
+  const stopping = flow.stop(harness, 'run-1', 'pause', ctx);
+  release.resolve();
+  assert.equal(await stopping, 'paused');
+  await harness.close(ctx);
+  /** The journal's state, restamped as a build with another schema would have written it. */
+  const stamp = async (schema) => {
+    const operator = await open(file, flow);
+    const journal = await documentStore(operator, 'run-1').open(recoveryBound(WORKFLOW));
+    const state = journal.state;
+    await journal.save({ ...state, schema });
+    await journal.close();
+    await operator.close(ctx);
+    return state.schema;
+  };
+  const known = await stamp('agentrun.frozen_run.v99');
+  harness = await open(file, flow);
+  const attached = await flow.start(harness, request(), ctx);
+  assert.equal(attached.started, 'attached');
+  await assert.rejects(within(attached.wait(ctx)), (error) => error.code === 'RECOVERY_SCHEMA_NEWER' && error.found === 'agentrun.frozen_run.v99');
+  assert.equal(await pending(harness.waitForTask(run.taskId, ctx), 200), true, 'the task does not end while this build holds it');
+  await harness.close(ctx);
+  harness = await open(file, flow);
+  assert.equal((await harness.getTask(run.taskId, ctx)).state.status, 'pending');
+  const journal = await documentStore(harness, 'run-1').open(recoveryBound(WORKFLOW));
+  assert.deepEqual([journal.state.schema, journal.effects().map((e) => [e.name, e.status])], ['agentrun.frozen_run.v99', [['quote', 'completed']]]);
+  await journal.close();
+  await harness.close(ctx);
+  await stamp(known);
+  harness = await open(file, flow);
+  harness.resume();
+  const settled = await harness.waitForTask(run.taskId, ctx);
+  assert.deepEqual([settled.state.outcome.status, settled.state.outcome.result.output, calls], ['completed', { total: 42 }, 1]);
+  await harness.close(ctx);
+});
+
 test('a cancel returns once pi marked the task, before it is terminal; the effect it cut stays unknown, the journal is cancelled and never resumes', async () => {
   let calls = 0; const flight = deferred();
   const flow = createWorkflowExtension(hostOf(({ signal }) => { calls += 1; flight.resolve(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })); }));

@@ -1,6 +1,7 @@
 // Shared by the local and live store suites: commit shapes, percentiles, the fault-injecting database, and a scoped store.
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import * as piDurable from "@earendil-works/pi-durable";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { EntryId, Storage, StorageWrite } from "@earendil-works/pi-durable";
 import type { SqliteDatabase, SqliteExecutor, SqliteValue } from "@earendil-works/pi-durable/storage/sqlite";
@@ -9,6 +10,14 @@ import { openArchilStore } from "../src/store.ts";
 import type { ArchilStore, Profile } from "../src/store.ts";
 
 export const ctx = BACKGROUND_CONTEXT;
+
+/**
+ * Whether `error` is a Session failed by a Storage error, as each pi version says it: pi-durable 1.2 and later throw
+ * `SessionFailed` (its `cause` the first error) after any Storage error; 1.0.4 and 1.1 poison the Session with an error
+ * that says so. Read from the namespace, so no version fails to load for a name it does not export.
+ */
+const SessionFailed = (piDurable as Record<string, unknown>).SessionFailed as (new (cause: unknown) => Error) | undefined;
+export const sessionFailed = (error: unknown): boolean => (SessionFailed ? error instanceof SessionFailed : error instanceof Error && /poisoned/.test(error.message));
 
 export const SQLITE_IOERR = 10;
 export const SQLITE_IOERR_WRITE = 778;
