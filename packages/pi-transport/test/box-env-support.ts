@@ -329,3 +329,41 @@ export function randomOperation(next: () => number): { label: string; run: Opera
 	const run = make();
 	return { label: `${label}(${args.map((arg) => JSON.stringify(arg)).join(", ")})`, run };
 }
+
+/** The longest a command's processes may take to be gone after `exec` has returned: a start that lands late is killed after `exec` returned, best effort and short. */
+export const GONE_BOUND_MS = 15_000;
+
+/**
+ * Wait until `isRunning` says no, polling, and return as soon as it does. Fails naming `what` after `boundMs`.
+ *
+ * `exec` returns the moment an abort or a timeout is answered. A start that was still on its way then lands late and is killed by a kill that runs AFTER `exec`
+ * has returned, best effort and short by design, so a check for absence made at once can see the command still running on a loaded box. This is the check made
+ * right: the poll ends the moment the group is gone, and "best effort" can become slow but never "never", because the poll fails after the bound.
+ */
+export async function waitNotRunning(
+	isRunning: () => Promise<boolean> | boolean,
+	what: string,
+	boundMs = GONE_BOUND_MS,
+	pollMs = 250,
+): Promise<void> {
+	const deadline = Date.now() + boundMs;
+	for (;;) {
+		const left = deadline - Date.now();
+		const still = new Error(`${what} was still running ${boundMs} ms after exec returned`);
+		if (left <= 0) throw still;
+		// A check that hangs is cut at the deadline, and one that answers late does not count as success.
+		let timer: NodeJS.Timeout | undefined;
+		const limit = new Promise<never>((_, reject) => {
+			timer = setTimeout(() => reject(still), left);
+		});
+		try {
+			if (!(await Promise.race([Promise.resolve(isRunning()), limit]))) {
+				if (Date.now() > deadline) throw still;
+				return;
+			}
+		} finally {
+			clearTimeout(timer);
+		}
+		await new Promise((resolve) => setTimeout(resolve, pollMs));
+	}
+}

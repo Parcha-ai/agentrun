@@ -146,6 +146,8 @@ describe("a runner program in a box, over the exec's own streams", () => {
 			process.kill(Number(readFileSync(`${first.store}.pid`, "utf8")), "SIGKILL");
 			await first.process.wait();
 			first.host.close("the runner was killed");
+			// What the dead process committed: the next one's opening may commit more, what pi recovers.
+			const died = getOrThrow(await storeHead(first.store));
 			const again = await startRunner(box, 1, models, records);
 			getOrThrow(await again.host.ready);
 			getOrThrow(await again.host.resume({ epoch: 1 }, context));
@@ -155,10 +157,14 @@ describe("a runner program in a box, over the exec's own streams", () => {
 			const head = getOrThrow(await storeHead(again.store));
 			// Every commit of the store, once, in order: what the dead process had not sent came from its outbox.
 			expect(log).toEqual(Array.from({ length: head - 1 }, (_, n) => n + 1));
-			// Lines for every commit but at most the one in flight when the process died; a snapshot from each process.
-			const missing = log.filter((commit) => !lines.has(commit));
-			expect(missing.length, `commits without lines: ${missing.join(", ")}`).toBeLessThanOrEqual(1);
+			// A snapshot from each process. Lines for every commit but at most the dead process's one in flight, and every
+			// commit without lines is in the next process's snapshot, the commits its opening made included.
 			expect(snapshots).toHaveLength(2);
+			const missing = log.filter((commit) => !lines.has(commit));
+			const lost = missing.filter((commit) => commit < died);
+			expect(lost.length, `the dead process's commits without lines: ${lost.join(", ")}`).toBeLessThanOrEqual(1);
+			const after = missing.filter((commit) => commit > Number(snapshots[1]));
+			expect(after, `commits without lines after the snapshot at ${snapshots[1]}`).toEqual([]);
 		} finally {
 			await box.destroy(context);
 			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });

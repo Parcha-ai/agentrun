@@ -109,6 +109,13 @@ const ran = await env.exec("wc -c notes/a.txt", { timeout: 10 }, BACKGROUND_CONT
   caller's timeout allows; with none it has no deadline, as in pi's local environment, unless `maxExecMs` sets one.
 - A command runs as a process group of its own. A timeout or an abort kills the whole group with a second exec, also
   on a box whose provider cannot stop a program it started.
+- The kill is confirmed, not assumed. The kill exec reads back that no live process of the group is left (a zombie does not
+  count: a container whose first process does not reap would otherwise keep a killed group "alive" for ever) and is sent
+  again, at 1, 2 and 4 seconds, when it fails, times out or finds the group alive. The whole confirmation has 10 seconds of
+  wall time, a call in flight included, so a stop answers `aborted` or `timeout` after at most 10 seconds more than before,
+  and only when a kill call failed. When the group could not be confirmed gone, the error is a `StoppedCommandError`: its
+  `killUnconfirmed` is `true`, and the command stays tracked, so `cleanup()` ends it with the rest. `killUnconfirmed` is
+  absent when the group was confirmed gone, which is the normal case.
 - The variables a caller asks for, `PATH` included, reach the command alone. The environment's own scripts keep the
   box's search path, so a `PATH` with no shell in it still runs a program named by its path.
 - Results match pi's `NodeExecutionEnv` on the same files: the same values and the same error codes. Messages differ.
@@ -412,11 +419,13 @@ runner's recorder made. Its hello says so, and the runner then:
 - **Puts each commit in an outbox before the store has it.** The writes go to `<store>.outbox.jsonl` beside the store,
   synced, then to the store, then to the host (`record`); the recorder's lines for the commit follow (`lines`), on the
   disk before the recorder's write returns, so a process that dies loses at most the lines of the commit in flight.
-  The host acknowledges writes and lines apart, and an acknowledged entry leaves the outbox.
+  The host acknowledges writes and lines apart, and an acknowledged entry leaves the outbox. The file is written again
+  once acknowledged rows far outnumber pending ones, so its size follows the work in flight, not the session's length.
 - **Sends what the host lacks, from where the host is.** On every connect the host says where its log is
   (`resend-after`), and the runner sends what it holds from there, in order, before anything new; a process that died
-  left its backlog in the outbox, and the next one sends it when it opens the store. A process's snapshot lines go
-  once, after the commits it opened at.
+  left its backlog in the outbox, and the next one sends it when it opens the store. A process's snapshot is the state
+  once pi has opened the store, after what pi commits in opening it (what it recovers from a process that died); its
+  lines go after those commits, once on each link, until the host acknowledges them.
 - **Starts no effect the host's log lacks.** A commit that admits an effect (pi's tool intent by default, `admitsTool`;
   `RunnerOptions.admits` adds an app's own) returns only once the host acknowledged it. Past `resumeWithinMs` the
   commit fails, pi stops the session, and the effect never ran.
