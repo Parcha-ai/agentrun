@@ -1,7 +1,7 @@
 import type { WorkflowDeps } from "@parcha/agentrun-dsl";
 import { GitRemoteError, modeRefusal, type Repo } from "@parcha/pi-git-remote";
 import { createHash } from "node:crypto";
-import { type Learning, learningId, renderLearning } from "./entry.js";
+import { type Learning, learningId, parseLearning, renderLearning } from "./entry.js";
 import { LearnError } from "./errors.js";
 import { guard } from "./guard.js";
 import { InboxFormatError, parseInbox } from "./inbox.js";
@@ -238,7 +238,64 @@ async function curateRuns(options: CurateOptions, thresholds: Thresholds, caps: 
   return { at, main, runs, skipped, pushes };
 }
 
-async function mainTip(repo: CurateRepo): Promise<string> {
+export type RetireOptions = {
+  readonly repo: Pick<Repo, "fetch" | "resolve" | "read" | "commitTo" | "push">;
+  readonly id: string;
+  /** Why, for the commit message. It names no value from the case; one the guard would refuse is withheld. */
+  readonly reason: string;
+  readonly secrets?: Iterable<string>;
+  /** Pushes after the first that a moved main rejected, before `contended`. Default 5. */
+  readonly retries?: number;
+};
+
+export type RetireResult = { readonly status: "retired" | "unchanged"; readonly main: string; readonly commit?: string };
+
+/**
+ * Takes a learning out on purpose, after it was used as well as before: one commit on main that sets its status to
+ * `retired`, keeps its file, and carries `Retired-Learning: <id>`, pushed without force and rebuilt on a moved main like
+ * a curate commit. A retired learning is never in `<learned>` again, and curation holds a run that learns it again in
+ * other words. Retiring a retired learning changes nothing. A `git revert` of the curate commit that added a learning
+ * still works while nothing else has touched its file.
+ */
+export async function retireLearning(options: RetireOptions): Promise<RetireResult> {
+  if (!options || typeof options !== "object" || !options.repo) throw new LearnError("invalid", "retireLearning needs { repo, id, reason }");
+  const path = learningPath(options.id);
+  if (typeof options.reason !== "string" || options.reason.trim() === "") throw new LearnError("invalid", "retiring a learning needs a reason");
+  const retries = options.retries ?? CURATE_CAPS.retries;
+  if (!Number.isSafeInteger(retries) || retries < 0) throw new LearnError("invalid", "retries must be a whole number");
+  const secrets = [...(options.secrets ?? [])];
+  const { repo, id } = options;
+  return exclusive(repo, async () => {
+    let main = await mainTip(repo);
+    try {
+      await repo.push(main, "main");
+    } catch (error) {
+      if (!(error instanceof GitRemoteError) || error.code !== "conflict") throw error;
+      main = await mainTip(repo);
+    }
+    for (let attempt = 0; ; attempt++) {
+      const text = await repo.read(path, main);
+      if (text === undefined) throw new LearnError("missing", `${id} is not on main`);
+      const entry = parseLearning(text);
+      if (entry.status === "retired") return { status: "unchanged", main };
+      const files = { [path]: renderLearning({ ...entry, status: "retired" }) };
+      const refusals = guard({ role: "curate", files, secrets });
+      if (refusals.length) throw new LearnError("invalid", `the retired learning's file is refused: ${refusalReason(refusals)}`);
+      const commit = await repo.commitTo("main", { files, message: `retire ${id}: ${safeReason(options.reason, secrets)}`, trailers: { "Retired-Learning": id }, parent: main });
+      try {
+        await repo.push(commit.sha, "main");
+      } catch (error) {
+        if (!(error instanceof GitRemoteError) || error.code !== "conflict") throw error;
+        if (attempt >= retries) throw new LearnError("contended", `main moved under every push retiring ${id} (${attempt + 1} pushes)`, { cause: error });
+        main = await mainTip(repo);
+        continue;
+      }
+      return { status: "retired", main: commit.sha, commit: commit.sha };
+    }
+  });
+}
+
+async function mainTip(repo: Pick<Repo, "fetch" | "resolve">): Promise<string> {
   await repo.fetch();
   const main = await repo.resolve("main");
   if (!main) throw new LearnError("missing", "the agent repository has no main");
@@ -423,7 +480,8 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     }
     const id = learningId(runId, candidate.text);
     if (entries.has(id)) {
-      lists.duplicates.push({ candidate: at, id, of: id, reason: "this learning is already on main" });
+      if (entries.get(id)!.status === "retired") lists.held.push({ candidate: at, id, of: id, reason: `relearns the retired ${id}` });
+      else lists.duplicates.push({ candidate: at, id, of: id, reason: "this learning is already on main" });
       continue;
     }
     const learning = { type, text: candidate.text };
@@ -433,12 +491,19 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
       continue;
     }
 
-    const compared = [...entries.values()]
-      .filter((e) => e.status === "active" && (e.type === type || e.id === candidate.id))
+    const related = (status: Learning["status"]) => [...entries.values()]
+      .filter((e) => e.status === status && (e.type === type || e.id === candidate.id))
       .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     let outcome: { kind: "duplicate" | "held"; of: string; reason: string } | undefined;
+    // A retired learning stays out: the same lesson in other words is held, never accepted.
+    for (const old of related("retired")) {
+      const dup = await ask("duplicate", { candidate: learning, existing: { id: old.id, type: old.type, text: old.text } });
+      if (dup.verdict === "no") continue;
+      outcome = { kind: "held", of: old.id, reason: dup.verdict === "budget" ? "the run's question budget is spent" : dup.verdict === "yes" ? `relearns the retired ${old.id} (${fixed(dup.p)})` : `unsure whether it relearns the retired ${old.id} (${fixed(dup.p)})` };
+      break;
+    }
     const replaces: string[] = [];
-    for (const existing of compared) {
+    for (const existing of outcome ? [] : related("active")) {
       const pair = { candidate: learning, existing: { id: existing.id, type: existing.type, text: existing.text } };
       const dup = await ask("duplicate", pair);
       if (dup.verdict === "yes") {

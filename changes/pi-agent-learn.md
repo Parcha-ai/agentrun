@@ -41,3 +41,22 @@ derived `<learned>` section would pass 4,096 bytes, and makes one commit per run
 `Learning-Id` trailers, pushed without force and rebuilt on a moved main at most five more times (then `contended`). A
 reverted learning stays reverted, a second curate changes nothing, and no reason in the report or a commit message names
 a value from the case. Learning files take an optional `supersededBy`; a candidate takes an optional `untrusted` mark.
+`retireLearning({ repo, id, reason })` takes a learning out after it was used, where a `git revert` of the commit that
+added it would conflict: one commit on main sets its status to the new `retired` (the file stays), with a
+`Retired-Learning` trailer, pushed like a curate commit. A retired learning never shows in `<learned>` again, and curate
+holds a run that learns it again in other words.
+
+Saved workflows are tried and promoted on receipts. `workflowAdmitter` is the curator's `AdmitWorkflow` port for a workflow candidate
+a run saved with the DSL's `agentrun` tool: it validates the run's records through the DSL's public store
+(`@parcha/agentrun-pi/workflows`), holds a workflow with code in it unless the host admits it, saves the revision through the store,
+and returns the files that admit it: the skill (`.agents/skills/<name>/SKILL.md`, whose description is the agent's when-to-use text)
+and `trial.json`, `{ name, status, when, revisions, uses }`, where `when` is optional typed checks on the run's input (a JSON pointer
+and `eq`, `in`, `exists`, `gte` or `lte`; `schemaWhen` derives them from a workflow's input schema). `usesSettler` is the `SettleUses`
+port: it folds a run's uses into `trial.json` by the rules of the archived harness. A trial is promoted after 3 clean uses in a row,
+the live revision is demoted after 2 failed or escalated ones and the previous active revision comes back with its checks and its
+description, a demoted revision is never tried again, the run that wrote a revision is no evidence for it, and uses count in the
+order they were folded, never a clock. `collectWorkflows` and `inboxWorkflowFiles` hand a run's new revisions to its inbox,
+`collectUses` reads from the run's store (read only, through `recordingLines`; or from the receipts of a pi session with
+`readSessionUses`) which saved workflow each durable workflow task ran and whether it finished `frozen`, `escalated` or `failed`,
+`workflowsToTry` lists the trial and active workflows whose checks hold on a run's input, for the `<learned>` section, and
+`seedWorkflows` puts them in the run's own store. The thresholds are the host's.
