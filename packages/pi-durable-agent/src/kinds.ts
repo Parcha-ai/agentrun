@@ -42,9 +42,19 @@ export type ProfileLease = { runId: string; expiresAt: string };
  *  the host (`startRun`, `durableProfileStore`), and no tool ever reads or returns a profile. */
 export type BrowserProfile = { provider: string; ref: string; state: string; startUrl?: string; allowedOrigins?: string[]; verifiedAt?: string; heldBy?: string };
 
+const defined: string[] = [];
+/** Every kind this package defines, in definition order. Each must be on exactly one of `./export.ts`'s two lists. */
+export const DEFINED_KINDS: readonly string[] = defined;
+
 const session = { version: FORMAT_VERSION, scope: "session" } as const;
-const singleton = (kind: string) => defineDoc<JsonObject>({ kind, ...session, initial: () => ({}) });
-const family = (kind: string) => defineDocFamily<JsonObject, null>({ kind, ...session, family: true, initial: () => ({}) });
+const singleton = (kind: string) => {
+  defined.push(kind);
+  return defineDoc<JsonObject>({ kind, ...session, initial: () => ({}) });
+};
+const family = (kind: string) => {
+  defined.push(kind);
+  return defineDocFamily<JsonObject, null>({ kind, ...session, family: true, initial: () => ({}) });
+};
 
 export const IdentityDoc = singleton("agent.identity");
 export const DefinitionDoc = singleton("agent.definition");
