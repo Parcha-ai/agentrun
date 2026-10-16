@@ -171,13 +171,16 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const keptFile = join(data, IDEMPOTENCY_FILE);
   const kept = JSON.parse(await readFile(keptFile, "utf8").catch(() => "null")) as { entries?: [string, Kept][] } | null;
   const idempotency = new Map<string, Kept>((kept?.entries ?? []).filter(([, v]) => v?.answer && Date.now() - v.at <= IDEMPOTENCY_TTL_S * 1000));
+  // A failed save rejects only its own caller: the next save starts from a settled chain and writes every kept key.
   let saving: Promise<void> = Promise.resolve();
   const keep = () =>
-    (saving = saving.then(async () => {
-      const entries = [...idempotency].filter(([, v]) => v.answer);
-      await writeFile(`${keptFile}.partial`, JSON.stringify({ version: 1, entries }), { mode: 0o600 });
-      await rename(`${keptFile}.partial`, keptFile);
-    }));
+    (saving = saving
+      .catch(() => undefined)
+      .then(async () => {
+        const entries = [...idempotency].filter(([, v]) => v.answer);
+        await writeFile(`${keptFile}.partial`, JSON.stringify({ version: 1, entries }), { mode: 0o600 });
+        await rename(`${keptFile}.partial`, keptFile);
+      }));
   const host = options.host ?? "127.0.0.1";
   if (!isLoopback(host)) throw new Error(`agentrun-serve binds loopback only; ${host} is not loopback`);
   // Runs an earlier server left: supervised again, or carried back when they already ended.
@@ -233,15 +236,18 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       return { ...known.answer, headers: { ...known.answer.headers, "idempotent-replayed": "true" } };
     }
     idempotency.set(slot, { fingerprint, at: now });
+    let answer: { status: number; body: unknown; headers?: Record<string, string> };
     try {
-      const answer = await work();
-      idempotency.set(slot, { fingerprint, at: now, answer: { status: answer.status, body: answer.body, headers: answer.headers ?? {} } });
-      await keep();
-      return answer;
+      answer = await work();
     } catch (error) {
       idempotency.delete(slot);
       throw error;
     }
+    // The work happened, so the key keeps its answer in memory even when the file write fails: a retry replays it
+    // instead of doing the work twice. Only a restart before the next good save loses it.
+    idempotency.set(slot, { fingerprint, at: now, answer: { status: answer.status, body: answer.body, headers: answer.headers ?? {} } });
+    await keep().catch((error: Error) => void process.stderr.write(`agentrun-serve: idempotency save: ${error.message}\n`));
+    return answer;
   }
 
   // ---- runs -----------------------------------------------------------------------------------------------------------

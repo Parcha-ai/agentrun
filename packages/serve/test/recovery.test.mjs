@@ -2,7 +2,7 @@
 // still replay, and a carry back that a busy home put off.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -125,4 +125,23 @@ test("a carry back that finds the home busy is tried again until it lands, so th
   const { last } = await follow(api, run.run_id, ["completed"]);
   assert.equal(last.final, true);
   assert.equal((await readAgentHome({ dir: join(data, "calc") })).runs[run.run_id].outcome, "completed");
+});
+
+test("one failed save of the kept keys neither fails its create nor stops the saves after it", async (t) => {
+  const data = join(await scratch(t), "agents");
+  const one = await startServe({ data, port: 0, faux: FAUX });
+  t.after(() => one.close());
+  const api = client(one.baseUrl, one.token);
+  const partial = join(data, ".idempotency.json.partial");
+  await mkdir(partial);
+  const first = await api("POST", "/agents", agent("save-a"), { "idempotency-key": "save-1" });
+  assert.equal(first.status, 201, "the create answers although its key could not be written");
+  await rm(partial, { recursive: true });
+  const second = await api("POST", "/agents", agent("save-b"), { "idempotency-key": "save-2" });
+  assert.equal(second.status, 201);
+  const kept = JSON.parse(await readFile(join(data, ".idempotency.json"), "utf8"));
+  const slots = kept.entries.map(([slot]) => slot.split("\n").pop());
+  assert.deepEqual(slots.sort(), ["save-1", "save-2"], "the next save lands, and carries the key the failed one missed");
+  const replay = await api("POST", "/agents", agent("save-a"), { "idempotency-key": "save-1" });
+  assert.equal(replay.headers.get("idempotent-replayed"), "true");
 });
