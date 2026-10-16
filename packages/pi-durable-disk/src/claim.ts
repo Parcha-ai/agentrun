@@ -706,6 +706,12 @@ async function verify(host: Host, ref: RunRef, mountpoint: string): Promise<void
  * verifying write is refused, MOUNTPOINT_NOT_EMPTY when the mountpoint cannot be emptied or archil still finds it not
  * empty, MOUNT_FAILED (exit 1) for a daemon of this host that is still running there.
  */
+/**
+ * The token an instance holds when it was given none (`--token-stdin` read nothing): enough to reuse its live mount, never
+ * to mount. A restart in place gets it from a driver that hands the token to the first incarnation only (localHost).
+ */
+export const NO_TOKEN = "none";
+
 export async function acquire(opts: AcquireOptions): Promise<Claim> {
   const { ref, token } = opts;
   const path = runPath(ref.id);
@@ -724,6 +730,11 @@ export async function acquire(opts: AcquireOptions): Promise<Claim> {
     else reused = true;
   }
   let stray: { to: string; entries: number } | null = null;
+  // No live mount to reuse and no token to mount with: a restart whose mount went with the failed incarnation. It cannot
+  // hold the run again, so it is fenced (75, terminal) at once, and the next start of the run brings a new token.
+  if (!reused && token === NO_TOKEN) {
+    throw new FencedError(`no live mount of ${path} to reuse at ${root}, and this incarnation was given no mount token: it cannot mount the run again; a new start brings a new token`, { code: "CLAIM_GONE_NO_TOKEN" });
+  }
   if (!reused) {
     await ensureMountpoint(host, root);
     await clearStaleDaemon(host, ref, root);

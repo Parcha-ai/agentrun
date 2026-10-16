@@ -342,7 +342,7 @@ An instance's exit code tells the host's process supervisor what to do:
 | 2 | Usage error | no |
 | 65 | Data error: the store is behind its seal (an acknowledged commit is missing), or `run.json` is unreadable. `run.json` says `failed` | never |
 | 70 | The store's head cannot be read (pi's schema moved). `run.json` says `failed` | never |
-| 75 | Fenced: the claim was revoked, its mount failed or left the mount table (`CLAIM_UNMOUNTED`), or the lease lapsed | never in place; the supervisor decides |
+| 75 | Fenced: the claim was revoked, its mount failed or left the mount table (`CLAIM_UNMOUNTED`), or the lease lapsed; or an incarnation given no mount token found no live mount to reuse (`CLAIM_GONE_NO_TOKEN`: a restart whose mount went with the failed incarnation) | never in place; the supervisor decides |
 | 76 | Held: another client holds the claim (a delegation, live or orphaned; the supervisor revokes orphans), or another process on this host holds the run's owner lock | never in place |
 
 ## Host drivers and the supervisor
@@ -413,7 +413,9 @@ without that guarantee.
 starts local units, so pass the driver to `ensureRunning`). The box comes from a snapshot that holds Node, the archil client
 (`libfuse2`), this package, the run user and the sudoers drop-in, or from a default image that the caller's `prepare` installs
 them into. A container sandbox has no systemd (PID 1 is the Daytona daemon), so an in-box launcher keeps the instance
-alive in place and never restarts it after exit 0, 65, 70, 75 or 76. The mount token is uploaded to a root-only file and
+alive in place and never restarts it after exit 0, 65, 70, 75 or 76. Every incarnation of an attempt gets the attempt's
+token on stdin. A restart whose mount is still live reuses it, and one whose mount went with the failed incarnation mounts
+again: after a takeover, that mount is `HeldError` (76, terminal). The token stays in the launcher's memory for the attempt. The mount token is uploaded to a root-only file and
 handed to the instance on stdin, never put in the sandbox's environment, which Daytona stores and returns on every read.
 Status comes from the sandbox state plus the launcher's own word, and `stop` drains the instance, then deletes the box. The
 archil client needs the sandbox's egress to Archil's mount servers (Daytona's Tier 3 or 4, full egress; a domain allowlist

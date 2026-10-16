@@ -849,6 +849,19 @@ test("a live mount that refuses to unmount is UNMOUNT_FAILED and never fusermoun
   assert.equal(await unmountClaim(join(r.dir, "nothing-here"), r.host), "none");
 });
 
+test("an incarnation given no token (a restart whose driver hands the token only to the first): it reuses a live mount, and with none to reuse it is fenced at once, CLAIM_GONE_NO_TOKEN, exit 75, with no mount tried", async () => {
+  // What the CLI hands acquire when --token-stdin read nothing (NO_TOKEN).
+  const NO_TOKEN = "none";
+  const r = disposeAfter(rig());
+  const first = await acquire(r.opts);
+  const again = await acquire({ ...r.opts, token: NO_TOKEN });
+  assert.equal(again.reused, true, "a live mount needs no token");
+  await first.release();
+  const mounts = r.calls("archil", "mount").length;
+  await assert.rejects(acquire({ ...r.opts, token: NO_TOKEN }), (e: unknown) => e instanceof FencedError && e.code === "CLAIM_GONE_NO_TOKEN" && exitCodeFor(e) === 75);
+  assert.equal(r.calls("archil", "mount").length, mounts, "never handed to archil, whose answer would be a misleading authentication failure");
+});
+
 // ---- a host that refuses every unmount of a FUSE mount (Sysbox: umount2 fails with ENOENT) -----------------------------
 
 const releasedUnder = (r: Rig) => Object.keys(r.read().mounts).filter((mp) => mp.startsWith(join(r.mountRoot, ".released") + "/"));
