@@ -47,6 +47,39 @@ test("commitTo starts a new branch at main, writes regular files, deletes with n
   assert.equal(root2.created, true);
 });
 
+test("allowEmpty makes a commit that changes no file, so its message and trailers are the record", async () => {
+  const root = await scratch();
+  const { dir, remote, main } = await seededRemote(root);
+  const repo = await openRepo({ dir: path.join(root, "host"), remote });
+  assert.deepEqual(await repo.commitTo(MAIN, { files: {}, message: "nothing" }), { sha: main, created: false });
+  const empty = await repo.commitTo(MAIN, { files: {}, message: "held one", trailers: { "Curated-Run": "r1" }, allowEmpty: true, parent: main });
+  assert.equal(empty.created, true);
+  await repo.push(empty.sha, MAIN);
+  const [entry] = await repo.log({ max: 1 });
+  assert.deepEqual(entry, { sha: empty.sha, parents: [main], subject: "held one", trailers: { "Curated-Run": ["r1"] } });
+  const tree = async (rev) => (await rawGit(["rev-parse", `${rev}^{tree}`], { gitDir: dir })).toString().trim();
+  assert.equal(await tree(empty.sha), await tree(main));
+});
+
+test("branches lists the branches under a prefix, here and on the remote, at the commit resolve gives", async () => {
+  const root = await scratch();
+  const { remote, main } = await seededRemote(root);
+  const repo = await openRepo({ dir: path.join(root, "host"), remote });
+  const other = await openRepo({ dir: path.join(root, "other"), remote });
+  const r1 = await other.commitTo("runs/r1", { files: { "inbox/r1.md": "1\n" }, message: "r1" });
+  await other.push(r1.sha, "runs/r1");
+  const r2 = await other.commitTo("runs/r2", { files: { "inbox/r2.md": "2\n" }, message: "r2" });
+  await other.push(r2.sha, "runs/r2");
+  const x = await other.commitTo("runsx", { files: { "x.md": "x\n" }, message: "x" });
+  await other.push(x.sha, "runsx");
+  const mine = await repo.commitTo("runs/r3", { files: { "inbox/r3.md": "3\n" }, message: "r3" });
+  assert.deepEqual(await repo.branches("runs/"), [{ name: "runs/r1", sha: r1.sha }, { name: "runs/r2", sha: r2.sha }, { name: "runs/r3", sha: mine.sha }]);
+  assert.deepEqual((await repo.branches("")).map((b) => b.name), ["main", "runs/r1", "runs/r2", "runs/r3", "runsx"]);
+  assert.equal((await repo.branches("")).find((b) => b.name === "main").sha, main);
+  assert.deepEqual(await repo.branches("nothing/"), []);
+  for (const bad of ["runs", "../", "runs//", "/"]) await assert.rejects(repo.branches(bad), { code: "refused" }, bad);
+});
+
 test("commitTo builds on an explicit parent and refuses a parent the branch is not at", async () => {
   const root = await scratch();
   const { remote, main } = await seededRemote(root);
@@ -311,7 +344,7 @@ test("a commit message holding control characters keeps its trailers, so a retry
   assert.deepEqual(await fresh.commitTo("runs/odd", { files: { "inbox/odd.md": "y\n" }, message: "retry", trailers: { "Run-Id": "odd" } }), { sha: made.sha, created: false });
 });
 
-test("a directory reopened without its push URL ignores the push side's refs, and leaves them for a handle that has one", async () => {
+test("a directory reopened without its push URL forgets the push side: its old refs no longer count", async () => {
   const root = await scratch();
   const { dir: mainDir, main } = await seededRemote(root);
   const hidden = await bareRepo(path.join(root, "hidden.git"));
@@ -324,9 +357,8 @@ test("a directory reopened without its push URL ignores the push side's refs, an
   await split.push(run.sha, "runs/r1");
   for (const ref of ["refs/heads/main", "refs/heads/runs/r1"]) await rawGit(["update-ref", "-d", ref], { gitDir: dir });
   const plain = await openRepo({ dir, remote: local(mainDir) });
-  assert.deepEqual(Object.keys(await refsOf(dir)).filter((ref) => ref.startsWith("refs/remotes/pushed/")), ["refs/remotes/pushed/main", "refs/remotes/pushed/runs/r1"]);
+  assert.deepEqual(Object.keys(await refsOf(dir)).filter((ref) => ref.startsWith("refs/remotes/pushed/")), []);
   assert.equal(await plain.resolve("runs/r1"), undefined);
   assert.equal(await plain.resolve(MAIN), main, "the fetch URL's main, not the push side's");
   assert.equal((await plain.commitTo("runs/r1", { files: { "inbox/r1.md": "y\n" }, message: "r1", trailers: { "Run-Id": "r1" } })).created, true);
-  assert.equal(await split.resolve(MAIN), ahead.sha, "the handle with the push URL still sees the newer tip");
 });

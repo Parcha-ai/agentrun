@@ -60,9 +60,12 @@ export type CommitOptions = {
   /** The commit to build on (a sha or a branch). When the branch exists, its tip must be this commit, or the call
    *  fails with `conflict`. Default: the branch's tip, else main's. */
   readonly parent?: string;
+  /** Make the commit even when `files` change nothing, for a commit whose message and trailers are the record. */
+  readonly allowEmpty?: boolean;
 };
 
 export type Committed = { readonly sha: string; readonly created: boolean };
+export type Branch = { readonly name: string; readonly sha: string };
 export type Skipped = { readonly path: string; readonly reason: string };
 export type CheckoutResult = { readonly sha: string; readonly files: readonly string[]; readonly skipped: readonly Skipped[] };
 export type MergeResult = { readonly sha: string; readonly changed: boolean; readonly fastForward: boolean };
@@ -92,6 +95,9 @@ export type Repo = {
   /** Copies the regular files of `ref` into the empty directory `into`, never executable. Symlinks, submodules, paths
    *  git's index refuses, case collisions and files over the size cap are skipped and named. */
   checkout(ref: string, options: { readonly into: string }): Promise<CheckoutResult>;
+  /** The branches whose names start with `prefix` (empty, or a branch name and a slash), here or on the remote, each at
+   *  the commit `resolve` gives for it, sorted by name. */
+  branches(prefix: string): Promise<Branch[]>;
   /** A file's text at a commit (a full sha, or a branch, fetched first); undefined when the path is absent or a
    *  directory. */
   read(path: string, ref: string): Promise<string | undefined>;
@@ -237,8 +243,8 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
       `+refs/heads/*:refs/remotes/${namespace}/*`], credential ? { credential } : {});
   }
 
-  // The push side's refs count only for a handle whose remote has a push URL of its own. They are never deleted here:
-  // another handle on this directory may still fetch and read them.
+  // The push side's refs count only while this remote has a push URL of its own; a directory opened before with one
+  // keeps refs that no fetch updates any more.
   const separatePush = remote.pushUrl !== undefined && remote.pushUrl !== remote.url;
   const remoteRefs = (branch: string) => [`refs/remotes/origin/${branch}`, ...(separatePush ? [`refs/remotes/pushed/${branch}`] : [])];
 
@@ -498,6 +504,29 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     return lsTree(await commitOf(sha), trimmed || undefined);
   }
 
+  async function branches(prefix: string): Promise<Branch[]> {
+    if (typeof prefix !== "string" || (prefix !== "" && !prefix.endsWith("/"))) throw refused("a branch prefix is empty or ends with a slash");
+    if (prefix !== "") checkBranch(prefix.slice(0, -1));
+    await fetchAll();
+    const names = new Set<string>();
+    for (const namespace of ["refs/heads/", ...remoteRefs("")]) {
+      for (const ref of (await text(["for-each-ref", "--format=%(refname)", `${namespace}${prefix}`])).split("\n").filter(Boolean)) {
+        const name = ref.slice(namespace.length);
+        try {
+          names.add(checkBranch(name));
+        } catch {
+          continue;
+        }
+      }
+    }
+    const out: Branch[] = [];
+    for (const name of [...names].sort()) {
+      const sha = await tipOf(name);
+      if (sha) out.push({ name, sha });
+    }
+    return out;
+  }
+
   async function commitTo(branchName: string, options: CommitOptions): Promise<Committed> {
     const branch = checkBranch(branchName);
     if (!options || typeof options !== "object") throw refused("commitTo needs { files, message }");
@@ -522,7 +551,7 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     const baseTree = base ? await treeOf(base) : EMPTY_TREE;
     const tree = await buildTree(base ? baseTree : undefined, options.files);
     await checkIntroduced(baseTree, tree);
-    if (base && tree === baseTree) return { sha: base, created: false };
+    if (base && tree === baseTree && options.allowEmpty !== true) return { sha: base, created: false };
     const sha = await commitTree(tree, base ? [base] : [], message);
     await moveBranch(branch, sha, localBefore);
     return { sha, created: true };
@@ -619,6 +648,10 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     };
   }
 
+  if (!separatePush) {
+    const stale = (await text(["for-each-ref", "--format=%(refname)", "refs/remotes/pushed/"])).split("\n").filter(Boolean);
+    if (stale.length) await git(["update-ref", "--stdin"], { input: stale.map((ref) => `delete ${ref}\n`).join("") });
+  }
   await fetchAll();
   return Object.freeze({
     dir,
@@ -629,6 +662,7 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
       await fetchAll();
       return resolveCommit(ref);
     }),
+    branches: serial(branches),
     checkout: serial(checkout),
     read: serial(read),
     list: serial(list),
