@@ -8,12 +8,10 @@
 // `node scripts/recording/gate.mjs <dist-dir>`: prints each problem and exits 1, or says what passed.
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { basename, join, relative } from 'node:path';
+import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { credentialIn, validateRecording } from './validate.mjs';
 
-// A blob still being written, `.<sha>.<ext>.tmp-<pid>`, renamed into place when whole: not published, not checked.
-const TEMP_BLOB = /^\..*\.tmp-\d+$/;
 const BLOB = /^([0-9a-f]{64})\.[a-z0-9]+$/;
 const TEXT = /\.(?:html|js|css|json|jsonl|txt|md|csv|svg|xml|yaml|yml|log)$/i;
 const GALLERY = 'window.AGENTRUN_GALLERY = ';
@@ -43,7 +41,6 @@ export function gateProblems(dist) {
       if (file.isFile() && (file.name === 'manifest.json' || file.name === 'events.jsonl')) continue;
       if (!file.isDirectory() || file.name !== 'blobs') { add(`${at}/${file.name}`, 'is not part of a recording: only its manifest, its lines and its blobs are published'); continue; }
       for (const blob of readdirSync(join(dir, 'blobs'), { withFileTypes: true })) {
-        if (TEMP_BLOB.test(blob.name)) continue;
         const named = BLOB.exec(blob.name);
         if (!blob.isFile() || !named) add(`${at}/blobs/${blob.name}`, 'is not a blob named by its SHA-256');
         else if (createHash('sha256').update(readFileSync(join(dir, 'blobs', blob.name))).digest('hex') !== named[1]) add(`${at}/blobs/${blob.name}`, 'does not hash to its name');
@@ -53,7 +50,7 @@ export function gateProblems(dist) {
   // Every text file that goes out is scanned: the page, the script, the gallery and every recording's files.
   const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? walk(join(dir, entry.name)) : [join(dir, entry.name)]));
   for (const file of existsSync(dist) ? walk(dist) : []) {
-    const found = TEXT.test(file) && !TEMP_BLOB.test(basename(file)) ? credentialIn(readFileSync(file, 'utf8')) : undefined;
+    const found = TEXT.test(file) ? credentialIn(readFileSync(file, 'utf8')) : undefined;
     if (found) add(relative(dist, file), `contains a ${found}`);
   }
   // The gallery holds the recordings beside the page, and no other, each entry exactly what its files give: the page
