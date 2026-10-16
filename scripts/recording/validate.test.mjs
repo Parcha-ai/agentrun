@@ -241,6 +241,17 @@ test('a move: the target\'s record anchors on its snapshot at open (3.2)', async
   assert.ok(dropped.some(problem => /highest commit seen before it is 3; a move keeps one store/.test(problem.message)) || dropped.some(problem => /restore record/.test(problem.message)));
 });
 
+test('draft 37: a restore whose pi committed once at open, snapshot at head 9: the record at commit 10 passes, at 11 fails', async t => {
+  // pi-transport's restore mid-turn: process 1 reached commit 12; the store reopens at the checkpoint's head 9 and pi
+  // commits once at open, so process 2's snapshot is at commit 9 and its first new commit, the moves record's, is 10.
+  const first = Array.from({ length: 12 }, (_, n) => durable(n + 1, 0, { t: n + 1 }));
+  const record = commit => durable(commit, 0, { source: 'transport', kind: 'transport.moves', t: 22, gen: 2, data: { doc: 'transport.moves', value: { moves: [{ kind: 'restore', head: 9, checkpoint: { head: 9, sha256: 'a'.repeat(64), bytes: 1, at: 'x' } }] } } });
+  const lines = at => [...first, durable(9, 0, { snapshot: true, t: 20, gen: 2 }), durable(9, 1, { snapshot: true, t: 21, gen: 2 }), record(at), durable(at, 1, { t: 23, gen: 2 })];
+  assert.deepEqual(validateRecording(await recording(t, { lines: lines(10), started: 2 })), []);
+  const late = validateRecording(await recording(t, { lines: lines(11), started: 2 }));
+  assert.ok(late.some(problem => /a restore's head is 9, but the process's first commit is 11/.test(problem.message)), JSON.stringify(late));
+});
+
 test('head is top-level: a move\'s head equals its seal.head, and a replayed restore has no drop', async t => {
   const snap = (commit, order, t, gen) => durable(commit, order, { snapshot: true, t, gen });
   const record = (value, commit, order, t, gen = 2) => durable(commit, order, { source: 'transport', kind: 'transport.moves', t, gen, data: { doc: 'transport.moves', value: { moves: [value] } } });
