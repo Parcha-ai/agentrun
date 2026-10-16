@@ -41,11 +41,11 @@ test("the observer journals every effect of S3's twelve fixtures; under deny it 
   // Cleanup is registered before Chrome is launched: a launch that fails must still close the server, or the process
   // never exits.
   let ref = null;
-  t.after(async () => { if (ref) await provider.release(ref); await server.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { if (ref) await provider.release(ref); await server.close(); await rm(root, { recursive: true, force: true }); }, { timeout: 30_000 });
   ref = await provider.create(spec("effects-matrix"), new AbortController().signal);
   const target = await provider.attach(ref);
   const driver = await cdpDriver(server.base)(target);
-  t.after(() => driver.close());
+  t.after(() => driver.close(), { timeout: 30_000 });
 
   for (const mode of ["journal", "deny"]) {
     const observer = await EffectObserver.open(target, mode === "deny" ? effectDecider("deny") : null);
@@ -97,7 +97,7 @@ function killChromes(profile) {
 async function crash(t, { script, hold, cut, env = {} }) {
   const server = await startServer();
   const dir = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), "effects-crash-"));
-  t.after(async () => { killChromes(dir); await server.close(); await rm(dir, { recursive: true, force: true }); });
+  t.after(async () => { killChromes(dir); await server.close(); await rm(dir, { recursive: true, force: true }); }, { timeout: 30_000 });
   const base = { DB: path.join(dir, "run.sqlite"), BASE: server.base, PROFILE: dir, SCRIPT: JSON.stringify(script) };
   server.hold(hold);
   const first = runChild({ ...base, ...env, MODE: "first", OUT: path.join(dir, "first.json") });
@@ -150,11 +150,11 @@ test("a held request leaves only once its journal row is saved, and flush return
   // Cleanup is registered before Chrome is launched: a launch that fails must still close the server, or the process
   // never exits.
   let ref = null;
-  t.after(async () => { if (ref) await provider.release(ref); await server.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { if (ref) await provider.release(ref); await server.close(); await rm(root, { recursive: true, force: true }); }, { timeout: 30_000 });
   ref = await provider.create(spec("effects-journal"), new AbortController().signal);
   const target = await provider.attach(ref);
   const driver = await cdpDriver(server.base)(target);
-  t.after(() => driver.close());
+  t.after(() => driver.close(), { timeout: 30_000 });
   const order = [{ goto: "/c" }, { click: "#order" }];
 
   const failing = await EffectObserver.open(target, effectDecider("ask", { approveEffect: async () => true }));
@@ -187,11 +187,11 @@ test("a decision that never comes is a refusal: at the observer's limit, or at o
   // Cleanup is registered before Chrome is launched: a launch that fails must still close the server, or the process
   // never exits.
   let ref = null;
-  t.after(async () => { if (ref) await provider.release(ref); await server.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { if (ref) await provider.release(ref); await server.close(); await rm(root, { recursive: true, force: true }); }, { timeout: 30_000 });
   ref = await provider.create(spec("effects-unanswered"), new AbortController().signal);
   const target = await provider.attach(ref);
   const driver = await cdpDriver(server.base)(target);
-  t.after(() => driver.close());
+  t.after(() => driver.close(), { timeout: 30_000 });
   const order = [{ goto: "/c" }, { click: "#order" }];
   const never = effectDecider("ask", { approveEffect: () => new Promise(() => {}) });
 
@@ -220,17 +220,17 @@ test("a cut call's refusal holds for what its page sends after the cut, until th
   // Cleanup is registered before Chrome is launched: a launch that fails must still close the server, or the process
   // never exits.
   let ref = null;
-  t.after(async () => { if (ref) await provider.release(ref); await server.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { if (ref) await provider.release(ref); await server.close(); await rm(root, { recursive: true, force: true }); }, { timeout: 30_000 });
   ref = await provider.create(spec("effects-after-cut"), new AbortController().signal);
   const target = await provider.attach(ref);
   const driver = await cdpDriver(server.base)(target);
-  t.after(() => driver.close());
+  t.after(() => driver.close(), { timeout: 30_000 });
   // The host approves everything, but only when the test says so: until then only the cut stands between a request and
   // the server (a host with a fixed answer time would race the cut on a loaded machine).
   let approve;
   const approval = new Promise((resolve) => { approve = resolve; });
   const observer = await EffectObserver.open(target, effectDecider("ask", { approveEffect: () => approval.then(() => true) }));
-  t.after(() => observer.close());
+  t.after(() => observer.close(), { timeout: 30_000 });
   const held = (rows) => [...rows.values()].map((row) => `${label(row)} ${row.held}`);
 
   const cut = recorder(observer);

@@ -17,6 +17,14 @@ export {
 	registerMoveConformance,
 } from "./move-conformance.ts";
 export {
+	askedKey,
+	type ReplayHeader,
+	type ReplayLine,
+	readReplaySet,
+	recordingClassifications,
+	replayClassifier,
+} from "./replay-classifier.ts";
+export {
 	createStoreConformance,
 	registerStoreConformance,
 	type StoreConformanceCase,

@@ -15,6 +15,8 @@ const CLIP_TIMEOUT_S = 180;
 const FRAME_QSCALE = 4;
 /** The constant rate factor of the one re-encode (x264, 1280 px, 6 fps: measured on synthetic video, 2026-10-09). */
 const REENCODE_CRF = 26;
+/** A window keeps its sound: copied as it is, or in the re-encode as mono AAC at 48 kbit/s, small beside the picture. */
+const REENCODE_AUDIO = ["-c:a", "aac", "-b:a", "48k", "-ac", "1"];
 const NEEDS = "ffmpeg and ffprobe (6.1 or later)";
 /** Options for every read of a source: local files only, and only the containers cameras, screen recorders and editors
  *  write, so a playlist or concat script posing as a video cannot make ffmpeg open other files or addresses. */
@@ -127,8 +129,8 @@ export function ffmpegProvider(): VideoProvider {
     async clip(source, { fromS, toS, maxBytes }, call) {
       const madeBy = await ready(call);
       const cut = (mode: "copy" | "encode") => derive(call, source, `w${sec(fromS)}-${sec(toS)}-${mode}`, "mp4", [
-        "-ss", sec(fromS), ...INPUT_GUARD, "-i", source.path, "-t", sec(toS - fromS), "-an",
-        ...(mode === "copy" ? ["-c", "copy"] : ["-vf", `${fit(VIDEO_REENCODE_EDGE)},fps=${VIDEO_REENCODE_FPS}`, "-c:v", "libx264", "-preset", "veryfast", "-crf", String(REENCODE_CRF), "-pix_fmt", "yuv420p"]),
+        "-ss", sec(fromS), ...INPUT_GUARD, "-i", source.path, "-t", sec(toS - fromS),
+        ...(mode === "copy" ? ["-c", "copy"] : ["-vf", `${fit(VIDEO_REENCODE_EDGE)},fps=${VIDEO_REENCODE_FPS}`, "-c:v", "libx264", "-preset", "veryfast", "-crf", String(REENCODE_CRF), "-pix_fmt", "yuv420p", ...REENCODE_AUDIO]),
         // The size limit stops a window that cannot fit as soon as it passes the budget, so no window is ever encoded whole.
         "-movflags", "+faststart", "-fs", String(maxBytes + 1),
       ], CLIP_TIMEOUT_S);
