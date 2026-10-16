@@ -2,7 +2,8 @@
 * { box-sizing: border-box; border-radius: 0; }
 [hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; }
-body { background: var(--bg); color: var(--fg); font: 14px/1.5 "Schibsted Grotesk", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; flex-direction: column; }
+body { background: var(--bg); color: var(--fg); font: 14px/1.5 "Schibsted Grotesk", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+.runs-app { height: 100%; display: flex; flex-direction: column; }
 a { color: var(--accent); }
 button, input, textarea { font: inherit; color: inherit; }
 .btn { border: 1px solid var(--fg); background: var(--bg); padding: 5px 12px; cursor: pointer; }
@@ -34,6 +35,7 @@ main > * { min-height: 0; overflow: auto; }
 .run, .view { display: flex; flex-direction: column; }
 .run .top-row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
 .run h1 { font-size: 16px; margin: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notice { background: var(--soft-accent); color: var(--fg); padding: 8px 16px; border-bottom: 1px solid var(--line); font-size: 13px; }
 .banner { background: var(--accent); color: #fff; padding: 10px 16px; display: flex; gap: 12px; align-items: center; }
 .banner b { letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; }
 .banner span { flex: 1; opacity: .92; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -41,9 +43,9 @@ main > * { min-height: 0; overflow: auto; }
 #steps { padding: 8px 0; }
 .tabs { display: flex; border-bottom: 1px solid var(--line); }
 .tabs button { flex: 1; border: 0; border-bottom: 2px solid transparent; background: none; padding: 10px; cursor: pointer; }
-body[data-tab=timeline] .tabs [data-tab=timeline], body[data-tab=files] .tabs [data-tab=files], body[data-tab=browser] .tabs [data-tab=browser] { border-bottom-color: var(--accent); font-weight: 600; }
+.runs-app[data-tab=timeline] .tabs [data-tab=timeline], .runs-app[data-tab=files] .tabs [data-tab=files], .runs-app[data-tab=browser] .tabs [data-tab=browser] { border-bottom-color: var(--accent); font-weight: 600; }
 .pane { display: none; flex: 1; min-height: 0; overflow: auto; }
-body[data-tab=timeline] #steps, body[data-tab=files] #files, body[data-tab=browser] #browser { display: block; }
+.runs-app[data-tab=timeline] #steps, .runs-app[data-tab=files] #files, .runs-app[data-tab=browser] #browser { display: block; }
 #browser iframe { display: block; width: 100%; height: 100%; min-height: 480px; border: 0; }
 .row { padding: 6px 16px; overflow-wrap: anywhere; }
 .row.user { background: var(--soft); border-left: 3px solid var(--fg); margin: 8px 0; padding: 8px 16px 8px 13px; white-space: pre-wrap; }
@@ -92,11 +94,11 @@ details[open] > summary:before { content: "-"; }
 @media (max-width: 1000px) {
   main { display: block; }
   main > .hist, main > .run, main > .view { display: none; height: 100%; border: 0; }
-  body[data-pane=hist] .hist, body[data-pane=run] .run, body[data-pane=run] .view { display: flex; }
+  .runs-app[data-pane=hist] .hist, .runs-app[data-pane=run] .run, .runs-app[data-pane=run] .view { display: flex; }
   .tabs { display: none; }
   .bar { display: flex; flex: none; border-top: 1px solid var(--fg); }
   .bar button { flex: 1; border: 0; background: none; padding: 12px 0; cursor: pointer; }
-  body[data-pane=hist] .bar [data-pane=hist], body[data-pane=run][data-tab=timeline] .bar [data-tab=timeline], body[data-pane=run][data-tab=files] .bar [data-tab=files], body[data-pane=run][data-tab=browser] .bar [data-tab=browser] { color: var(--accent); font-weight: 600; }
+  .runs-app[data-pane=hist] .bar [data-pane=hist], .runs-app[data-pane=run][data-tab=timeline] .bar [data-tab=timeline], .runs-app[data-pane=run][data-tab=files] .bar [data-tab=files], .runs-app[data-pane=run][data-tab=browser] .bar [data-tab=browser] { color: var(--accent); font-weight: 600; }
   .brand span { display: none; }
   .banner { flex-wrap: wrap; }
   .banner span { order: 3; flex-basis: 100%; white-space: normal; }

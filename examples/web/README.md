@@ -93,14 +93,76 @@ The page is at `/`. The data follows Grep's job routes.
   `request_sign_in`), and opens the Browser tab.
 - **After the run.** A run whose claim is released (sleeping, paused, done, failed) is read from its `store/run.sqlite`,
   opened read-only, with the same module. A live store is never opened: it is read only through its door.
-- **Files.** The tree under `work/`, dotfiles hidden. A "Saved" row links to the file it names, by the row's `path`. Markdown is rendered with HTML escaped, CSV as a table, text as text,
-  images inline. Agent-written HTML is shown in a sandboxed frame with no scripts. Other types are downloads.
+- **Files.** The tree under `work/`, dotfiles hidden. A "Saved" row links to the file it names, by the row's `path`.
+  Markdown is rendered with HTML escaped, CSV as a table, text as text, images inline. Agent-written HTML is shown in a
+  frame sandboxed with nothing allowed. Every file can be downloaded.
 - **Browser.** The run's live view in one frame, kept while the run sleeps so a person can sign in after the agent's turn
   ended. The frame reloads only when the view's address changes.
 - **Chat.** One message box under every tab, so a person can sign in on the Browser tab and answer "done" without leaving it.
 
-The page imports the same timeline module from `/timeline/`, which the server serves from the package's built files, found
-where Node resolves `@parcha/pi-durable-agent/timeline`. It has no dependencies and runs in Node and in the browser.
+The page imports the same timeline module from `timeline/` beside it, which the server serves from the package's built
+files, found where Node resolves `@parcha/pi-durable-agent/timeline`. It has no dependencies and runs in Node and in the
+browser.
+
+## The page and its source
+
+The run page is one module that reads only through a source, so the same page shows a live server's runs and a replay of
+recorded runs from static files. Every URL it builds is relative, so it works under any path.
+
+| Piece | What |
+| --- | --- |
+| `page/run-page.js` | `mountRunPage(root, source)`: draws the history and the run page into `root` and keeps them current; returns `{ unmount }`. It shows a new-run box, the message box, Stop and the Browser tab only when the source has `start`, `submit`, `stop` and `live`. A source with none of them is a replay: the page says so, reads each run once, and shows no live browser. |
+| `page/source.js` | The `RunSource` interface (JSDoc), `httpSource(base)` and `staticSource(base)`, and the rules both sides share: `RUN_ID`, `safePath`, `stateOf`, `costOf`. |
+| `replay.mjs` | `writeReplay(outDir, runs)`: the one writer of the static layout, which reads each run itself. `readRunEntries(storePath)`: the one reader of a run's store (the server reads a released run with it too). |
+| `pack-page.mjs` | `node examples/web/pack-page.mjs <outDir> [--data ./data/]`: the self-contained replay page. |
+| `page/app.js`, `page/replay.js` | The two bootstraps: the server's page on `httpSource`, and a replay on `staticSource`. |
+
+A `RunSource` has `list()` (the history, newest first), `run(id)`, `timeline(id, { live, signal })` (a released run's
+`{ rows, state, costUsd }`, or, for a live run, the same view each time it changes, until the run stops serving),
+`files(id)`, `file(id, path)` (a `Response`) and `search(q)`. A live source also has `start(text)`, `submit(id, text)`,
+`stop(id)` and `live(id, run)` (the live view's frame: `{ key, src }`, or null).
+
+- `httpSource(base)` is this server's routes under `base`, the address the page is served from.
+- `staticSource(base)` reads a replay under `base`. It has no way to act and no live view: a replay never carries one,
+  since a live view's address is a full-control token. Search looks at the runs' titles.
+
+A replay site computes nothing: `writeReplay(outDir, runs)` does the reading. Per run it takes `{ id, store, manifest?,
+files?, summary? }`:
+
+- `store`: the run's store, an exported one or a released run's own `store/run.sqlite`. Its rows are
+  `timelineOf(readRunEntries(store), { settled: true })`. A store that still holds a document of pi-durable-agent's
+  `SECRET_KINDS` (`browser.profiles`, `agent.leases`, `agent.bindings`, `agent.aliases`) is not exported, and the run is
+  refused: export it first. `rows` in place of `store` takes ready rows (tests).
+- `manifest`: a recording's `manifest.json` (`agentrun.recording/1`). The run's files are its result blob, as
+  `result.<ext>`, and its job blob, as `job.<ext>`, out of the recording's `blobs/`, each checked against its SHA-256
+  name; nothing else (no frame, screenshot or evidence blob). The job blob names the job's input files; a recording does
+  not keep their contents. The manifest also gives the summary's title, start and end, and cost.
+- `files`: with no manifest, a directory (dotfiles and links left out) or path to text or bytes.
+- `summary`, `run`: fields over the ones worked out (title, times, cost, `status: "done"`).
+
+The layout it writes:
+
+```
+<base>/runs.json                  { "version": 1, "runs": [RunSummary, ...] }, newest first
+<base>/runs/<id>.json             the Run
+<base>/runs/<id>/timeline.json    the rows, in order
+<base>/runs/<id>/files.json       [{ "path", "size" }, ...]
+<base>/runs/<id>/files/<path>     each file
+```
+
+`writeReplay` refuses, before it writes anything, a run id the page could not ask for and a file path that is absolute,
+has a `.` or `..` segment, names a dotfile, or names a file and a directory at once; every summary and run is written with
+`live: false` and no live view. `pack-page.mjs` writes `index.html` (its Content-Security-Policy as a meta tag, since a
+static host sets no headers), `replay.js`, `run-page.js`, `source.js`, `app.css` and `timeline/`; the page reads the
+replay from the `replay-data` meta tag's address, `./data/` unless `--data` says otherwise. So:
+
+```sh
+node examples/web/pack-page.mjs site/run
+# then write the replay into site/run/data with writeReplay, and serve site/ from any static host
+```
+
+A file view keeps the server's guards in a replay too: the page asks only for a path `safePath` allows, shows text as
+text, and puts agent-written HTML in a frame sandboxed with nothing allowed (no scripts, an origin of its own).
 
 ## Safety
 
@@ -121,8 +183,9 @@ where Node resolves `@parcha/pi-durable-agent/timeline`. It has no dependencies 
 
 ```sh
 npm run build -w @parcha/pi-durable-disk -w @parcha/pi-browser -w @parcha/pi-durable-agent
-node --test examples/web/server.test.mjs examples/web/agent/agent.test.mjs
+node --test examples/web/server.test.mjs examples/web/run-page.test.mjs examples/web/agent/agent.test.mjs
 ```
 
 The tests use a fake door that emits canned events, a fake run instance, and an agent home made in the test, with no
-network and no key.
+network and no key. The page's tests draw the packed page on a small DOM (`fake-dom.mjs`) over a fake source, live and
+replay, and read a replay written by `writeReplay` back through `staticSource` from a static host under a subpath.
