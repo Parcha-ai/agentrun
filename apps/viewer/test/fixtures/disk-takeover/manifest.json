@@ -1,0 +1,31 @@
+{
+  "format": "agentrun.recording/1",
+  "title": "A run on a disk place: a box deleted mid-call, a stalled holder fenced, three claims (hand fixture)",
+  "task": "disk-takeover",
+  "recorded": {
+    "started": "2026-10-15T10:00:00.000Z",
+    "ended": "2026-10-15T10:00:04.600Z"
+  },
+  "code": {
+    "repo": "https://github.com/Parcha-ai/agentrun",
+    "commit": "0000000000000000000000000000000000000000",
+    "packages": {
+      "@parcha/pi-durable-disk": "0.1.0-beta.14",
+      "@earendil-works/pi-durable": "1.1.0"
+    }
+  },
+  "model": "faux/faux-1",
+  "generations": 3,
+  "kills": 1,
+  "providers": "scripted",
+  "cost": {
+    "usd": null,
+    "parts": {
+      "faux/faux-1": 0
+    }
+  },
+  "source": {
+    "run": "hand",
+    "store_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  }
+}

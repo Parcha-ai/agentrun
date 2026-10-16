@@ -38,8 +38,12 @@ export type HostStatus = "running" | "stopped" | "failed" | "gone" | "unknown";
 /** A driver's description of one instance; the instance writes it into `run.json` as `holder`. */
 export type HostHandle = { driver: string; [key: string]: Json };
 
-/** Which start this is: the generation the instance will open (run.json's generation + 1), also in the token's nickname. */
-export type StartAttempt = { attempt: number };
+/**
+ * Which start this is: the generation the instance will open (run.json's generation + 1), also in the token's nickname.
+ * `env`: what this start adds to the instance's environment (a place's per-attempt order), merged over the driver's own
+ * `env`. PATH and PDA_HOLDER are the driver's: a start that sets either, or a name that is not a variable name, is refused.
+ */
+export type StartAttempt = { attempt: number; env?: Record<string, string> };
 
 /** Compute is disposable and pluggable: a driver is these three calls. */
 export interface HostDriver {
@@ -53,6 +57,14 @@ export interface HostDriver {
   status(handle: HostHandle): Promise<HostStatus>;
   /** Stop the instance and whatever it left on its host. A handle the driver cannot reach is a no-op. */
   stop(handle: HostHandle): Promise<void>;
+  /**
+   * Optional: take the instance away abruptly, as a crash would. No drain, no release, nothing cleaned: the run's claim is
+   * left as a crash leaves it (orphaned with its box, or held by a live mount until its lease lapses), and the
+   * supervisor's next pass decides what follows. A handle the driver cannot reach is a no-op.
+   */
+  kill?(handle: HostHandle): Promise<void>;
+  /** What `kill` takes: `process`, the instance's processes while its machine stays (a restart policy may bring them back), or `box`, its machine. */
+  readonly kills?: "process" | "box";
 }
 
 /** The control-plane calls the supervisor uses; an archil `Disk` satisfies it. */
@@ -140,6 +152,12 @@ export interface EnsureOptions {
   tokenTtl?: string;
   /** Prefix of each mount token's nickname. */
   tokenPrefix?: string;
+  /**
+   * A mount token the caller minted for this start (`mintMountToken`), for a caller that mints its own (a place's
+   * `token(attempt)`): a start uses it instead of minting one, and removes it as it would its own when the driver starts
+   * nothing or adopts. A decision that starts nothing leaves it to the caller.
+   */
+  mountToken?: { token: string; identifier: string; nickname: string };
   /** The caller has work for the run now: start a paused run, or a sleeping one before its `wakeAt`. */
   demand?: boolean;
   /** Create `runs/<id>/` with this owner when it does not exist and nothing holds it. */
@@ -446,7 +464,7 @@ async function startInstance(
   let token: { token: string; identifier: string; nickname: string };
   try {
     // The attempt is the generation the instance will write, so the token user names the incarnation it served.
-    token = await mintMountToken(opts.control, { run: { id: ref.id, attempt: why.generation + 1 }, prefix: opts.tokenPrefix, ttl: opts.tokenTtl ?? TOKEN_TTL, now: opts.now });
+    token = opts.mountToken ?? await mintMountToken(opts.control, { run: { id: ref.id, attempt: why.generation + 1 }, prefix: opts.tokenPrefix, ttl: opts.tokenTtl ?? TOKEN_TTL, now: opts.now });
   } catch (err) {
     throw new SuperviseError("CONTROL_API_FAILED", `minting a mount token for ${runPath(ref.id)} failed`, { cause: err });
   }

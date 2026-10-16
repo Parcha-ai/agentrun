@@ -9,7 +9,8 @@ Here the run starts on this machine (host A, a systemd unit) and moves to a Dayt
 
 ## What it needs
 
-- **pi-durable-disk 0.1.0-beta.14 or later.** It uses `beforeResume`'s `previous` and `archilControl`.
+- **pi-durable-disk 0.1.0-beta.14 or later.** It uses `beforeResume`'s `previous` and `archilControl`, which 0.1.0-beta.13 lacks
+  (the example stops at its import: `does not provide an export named 'archilControl'`).
 - **An Archil scratch disk and a key of a scratch organisation**, in `ARCHIL_API_KEY`, `PDA_LIVE_DISK` (`dsk-...`) and
   `PDA_LIVE_REGION` (default `aws-us-east-1`). The example creates and deletes `runs/move-*` and its token users on that
   disk.

@@ -190,7 +190,6 @@ describe("a home: starting and moving a session", () => {
 				const move = {
 					id: `move-${afterMs}`,
 					notice: "System notice: you now run in b.",
-					roots: { from: from.workspace, to: to.workspace },
 				};
 				getOrThrow(await target.resume({ epoch: 2, seal, move }, context));
 				const root = getOrThrow(await target.root(context));
@@ -231,7 +230,6 @@ describe("a home: the target's steps are safe to repeat", () => {
 			move: {
 				id: "move-1",
 				notice: "System notice: you now run in b.",
-				roots: { from: from.workspace, to: to.workspace },
 			},
 		};
 		return { to, order };
@@ -404,6 +402,21 @@ describe("a home: what it refuses", () => {
 		});
 	});
 
+	it("is busy while another runner at the same place holds the store, and opens it once that one closed", async () => {
+		await withWorld(async (made) => {
+			const options = made.home("a");
+			const first = await opened(options);
+			getOrThrow(await first.resume({ epoch: 1 }, context));
+			const second = await opened(options);
+			const refused = await second.resume({ epoch: 1 }, context);
+			expect(refused.ok ? "" : refused.error.code).toBe("busy");
+			expect(second.harness).toBeUndefined();
+			await first.close(context);
+			getOrThrow(await second.resume({ epoch: 1 }, context));
+			await second.close(context);
+		});
+	});
+
 	it("stays sealed until it is told to reopen, also in a new process, and then goes on with nothing cut", async () => {
 		await withWorld(async (made) => {
 			const options = made.home("a");
@@ -426,6 +439,31 @@ describe("a home: what it refuses", () => {
 			expect(made.effects().sort()).toEqual(everyRoundOnce);
 			expect(made.requests()).toBe(ROUNDS + 1);
 			await restarted.close(context);
+		});
+	});
+
+	it("resumes at its own epoch after a seal that failed once its store was closed, and goes on with nothing cut", async () => {
+		await withWorld(async (made) => {
+			const home = await opened(made.home("a"));
+			getOrThrow(await home.resume({ epoch: 1 }, context));
+			await start(home);
+			await sleep(70);
+			getOrThrow(await home.drain({ timeoutMs: 5_000 }, context));
+			// The seal closes the store first; an abort then stops it before its marker is written.
+			const controller = new AbortController();
+			controller.abort();
+			const failed = await home.seal(withAbortSignal(controller.signal, context));
+			expect(failed.ok).toBe(false);
+			expect(home.state).toBe("closed");
+			const reopened = await home.reopen({ epoch: 1 }, context);
+			expect(reopened.ok ? "" : reopened.error.code).toBe("wrong_state");
+			getOrThrow(await home.resume({ epoch: 1 }, context));
+			expect(home.state).toBe("open");
+			const root = getOrThrow(await home.root(context));
+			await root.waitForIdle(context);
+			expect(await transcript(root)).toMatchObject({ interrupted: 0, blocked: 0, answered: true });
+			expect(made.effects().sort()).toEqual(everyRoundOnce);
+			await home.close(context);
 		});
 	});
 
@@ -463,6 +501,7 @@ describe("a home: what it refuses", () => {
 				v: 1,
 				epoch: 2,
 				retired: true,
+				session: "session-1",
 			});
 			const ran = made.effects().length;
 			await sleep(200);
