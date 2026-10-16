@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Compile } from 'typebox/compile';
-import { ModelRuntime, ModelRegistry } from '@earendil-works/pi-coding-agent';
+import { ModelRuntime, ModelRegistry, VERSION as PI_VERSION } from '@earendil-works/pi-coding-agent';
 import { fauxProvider, fauxAssistantMessage, fauxToolCall, InMemoryCredentialStore } from '@earendil-works/pi-ai';
 import agentRunExtension, { createAgentRunExtension } from '../dist/extension.js';
 import { demoWorkflow } from '../dist/demo.js';
@@ -523,6 +523,10 @@ test('status describes readiness without credentials, network access or a model 
     await app.command('status');
     const message = app.messages.at(-1);
     assert.match(message.content, /Skill: loaded/);
+    // Every host CI runs this on is in the range of the package's pi-durable peer, so status names it supported.
+    const range = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).peerDependencies['@earendil-works/pi-durable'];
+    assert.ok(message.content.includes(`Pi host: ${PI_VERSION} (supported: ${range})\n`), message.content);
+    assert.doesNotMatch(message.content, /npm install -g/);
     assert.match(message.content, /connection not tested/);
     assert.doesNotMatch(message.content, /fake-test-key/);
     assert.equal(message.details.pi, true);
