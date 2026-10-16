@@ -293,3 +293,9 @@ A place that has `status()` reports its reading of the run (`{ record }`, a disk
 ### Crossings on a live host
 
 The judge and the model of a `--live` run have the crossings the fakes' have, by the same names and counting as `tapFakes`: `judge.asked <label>` and `judge.answered <label>` around each typed question, and `model.request turn <n>` before and `model.answered turn <n>` after each request (n counts the tool results so far). A kill at one lands with a paid question or request in flight; the judge seam's caps are outside them. They are put on the live host after the live parts are merged in, so a live part's own judge and model are tapped, not replaced.
+
+### The demo's own Jev caps, and a model whose key is not declared
+
+`models.judge.caps` in demo.json (`{ requests, tokens }`) sets the demo's own Jev caps. The defaults are 50 requests and 40,000 tokens; each given value is a positive integer at most 4 times the default (200 and 160,000), and anything else is refused at load, before any process starts. The judge seam still refuses the request after a cap is reached (`JEV_CAP_REACHED`, never sent), and `--max-usd` still applies.
+
+A model whose provider needs a key the demo does not declare is refused at load too, naming the group to add: no key is implied, and demo.json stays the one list the child's environment and the setup prompt read. The first case is `models.judge` (Jev): its demo needs a `keys` group with `TYPESAFE_API_KEY` or `OPENROUTER_API_KEY`.
