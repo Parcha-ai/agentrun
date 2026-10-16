@@ -17,6 +17,14 @@ Watch the recorded run: https://parcha-ai.github.io/agentrun/?r=disk
 
 On fakes the run lives in a directory of this machine and the kill is a `kill -9`; live it lives on an Archil disk in a Daytona sandbox, and the kill deletes the sandbox.
 
+### The live variant
+
+`live.ts` (with its box app, `live-app.ts`) runs it for real: **live: real Daytona sandbox deleted mid-job, real Archil disk, the template's supervisor and place; the lead is scripted.** The
+supervisor is the reference entry's `demo()` and the place is the disk package's `archilPlace` on `daytonaHost`. The app in each sandbox is a plain pi-durable-disk app: its scripted lead charges
+ten invoices, each charge appends a line to `work/charges.log` on the disk, and after the fifth the supervisor deletes the sandbox. A new sandbox takes the run over, and the count of lines on the
+disk is the evidence: ten, each invoice once. The charge that was paid and cut comes back to the agent as interrupted and is not sent again. It is not the gallery's recording: that one is the
+full job on fakes. A live run of it cost $0.0034 and took under a minute, most of it the new sandbox's install at boot.
+
 ## Keys and programs
 
 On fakes: `node` 22.19 or later, and nothing else. `SETUP-PROMPT.md` does the rest for you.

@@ -13,6 +13,6 @@ const raw = JSON.parse(readFileSync(new URL('./demo.json', import.meta.url), 'ut
 const spec = process.argv.includes('--live') ? raw : { ...raw, kills: raw.kills.map(({ kind, ...kill }: { kind?: string }) => kill) };
 const childApp = fileURLToPath(new URL('../reference/child-app.ts', import.meta.url));
 
-export const options: DemoOptions = { self: import.meta.url, spec, job, fakes, place: localPlace({ app: childApp }) };
+export const options: DemoOptions = { self: import.meta.url, spec, job, fakes, place: localPlace({ app: childApp }) as unknown as DemoOptions['place'] }; // the cast goes when the reference imports Place and PlaceSignal from the package (#566 adds a signal kind)
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await demo(options);
