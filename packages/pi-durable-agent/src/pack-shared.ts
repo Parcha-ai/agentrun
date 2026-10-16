@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { SECRET_KINDS } from "./export.js";
 import { AGENT_STORE_FILE, ID_PATTERN } from "./home.js";
 import { FORMAT_VERSION, type AgentDefinition } from "./kinds.js";
-import { AgentHomeError, LOCK_FILE } from "./store.js";
+import { AgentHomeError } from "./store.js";
 
 // What a packer and a reader agree on. A rule that one of them applies is here, so a pack the packer writes is a pack
 // the reader reads.
@@ -37,7 +37,8 @@ export const MANIFEST_LIMIT = 4 * 1024 * 1024;
 /** The most members a pack holds; a packer refuses to write more and a reader to read more. */
 export const MAX_MEMBERS = 200_000;
 export const SIDE_FILES = ["-wal", "-shm", "-journal"];
-export const LOCK_FILES = [LOCK_FILE, `${LOCK_FILE}-journal`];
+/** The most directories a work file may be nested in; a member deeper than this is refused. */
+export const MAX_DEPTH = 64;
 
 /** JSON with sorted keys: one text for one value. */
 export function canonical(value: unknown): string {
@@ -60,6 +61,7 @@ export function memberProblem(name: string, kind: "file" | "dir"): string | unde
   const parts = name.split("/");
   if (parts[0] !== "runs" || parts.length < 3 || !isRunId(parts[1])) return "it is not a member a home pack holds";
   if (kind === "file" && parts.length === 4 && parts[2] === "store" && parts[3] === "run.sqlite") return undefined;
+  if (parts[2] === "work" && parts.length - 3 > MAX_DEPTH) return `it is nested more than ${MAX_DEPTH} levels deep`;
   if (parts[2] === "work" && parts.slice(3).every(safeSegment) && (kind === "dir" || parts.length > 3)) return undefined;
   return "it is not a member a home pack holds";
 }

@@ -6,6 +6,9 @@ import { type FileHandle, open } from "node:fs/promises";
 export const BLOCK = 512;
 const MAX_OCTAL_SIZE = 0o77777777777;
 const PAX_LIMIT = 64 * 1024;
+const MAX_PAX_FIELDS = 64;
+/** The most the names of all the members may add up to, so what a listing holds and a reader walks stays bounded. */
+export const MAX_NAME_BYTES = 32 * 1024 * 1024;
 
 export type TarEntry = {
   /** `/` between segments; a directory ends in `/`. */
@@ -144,7 +147,7 @@ function paxFields(data: Buffer): Map<string, string> | undefined {
     if (space === -1 || !Number.isInteger(length) || length < 1 || at + length > data.length || data[at + length - 1] !== 0x0a) return undefined;
     const record = data.toString("utf8", space + 1, at + length - 1);
     const equals = record.indexOf("=");
-    if (equals < 1) return undefined;
+    if (equals < 1 || fields.size >= MAX_PAX_FIELDS) return undefined;
     fields.set(record.slice(0, equals), record.slice(equals + 1));
     at += length;
   }
@@ -153,12 +156,19 @@ function paxFields(data: Buffer): Map<string, string> | undefined {
 
 const KINDS: Record<string, string> = { "1": "a hard link", "2": "a symbolic link", "3": "a character device", "4": "a block device", "6": "a fifo", g: "a global pax header", L: "a GNU long name", K: "a GNU long link", S: "a sparse file" };
 
-/** The members of the tar in `file` (`size` bytes), without reading their data, or the problems that make it unreadable:
- *  a bad checksum, a truncated member, a link, a device or any type but a regular file and a directory, bytes after the
- *  end. Parsing stops at the first problem it cannot step over. */
+/**
+ * The members of the tar in `file` (`size` bytes), without reading their data, or the problem that makes it unreadable:
+ * a bad checksum, a truncated member, a link, a device or any type but a regular file and a directory, a global or a
+ * doubled pax header, more than 64 pax fields in one header, bytes after the end. Parsing stops at the first problem.
+ * The work is bounded by the input: at most `maxMembers` members and two header blocks for each (a member and its one
+ * pax header), so a tar of nothing but headers is refused after that many, and no header is copied into the next.
+ */
 export async function listTar(file: FileHandle, size: number, maxMembers = Number.POSITIVE_INFINITY): Promise<{ members: TarMember[]; problems: string[] }> {
   const members: TarMember[] = [];
   const problems: string[] = [];
+  const maxHeaders = 2 * maxMembers + 2;
+  let headers = 0;
+  let nameBytes = 0;
   let position = 0;
   let pax: Map<string, string> | undefined;
   for (;;) {
@@ -178,6 +188,10 @@ export async function listTar(file: FileHandle, size: number, maxMembers = Numbe
         if (!(await readAt(file, Math.min(64 * 1024, size - at), at)).every((byte) => byte === 0)) problems.push("there are bytes after the end of the tar");
       }
       if (pax) problems.push("a pax header has no member after it");
+      break;
+    }
+    if (++headers > maxHeaders) {
+      problems.push(`the tar has more than ${maxHeaders} header blocks`);
       break;
     }
     const given = number(block, 148, 8);
@@ -206,12 +220,15 @@ export async function listTar(file: FileHandle, size: number, maxMembers = Numbe
         problems.push("a pax header is too large or cut short");
         break;
       }
-      const fields = paxFields(await readAt(file, headerSize, position + BLOCK));
-      if (!fields) {
-        problems.push("a pax header is malformed");
+      if (pax) {
+        problems.push("two pax headers in a row");
         break;
       }
-      pax = new Map([...(pax ?? []), ...fields]);
+      pax = paxFields(await readAt(file, headerSize, position + BLOCK));
+      if (!pax) {
+        problems.push(`a pax header is malformed or holds more than ${MAX_PAX_FIELDS} fields`);
+        break;
+      }
       position += BLOCK + pad(headerSize);
       continue;
     }
@@ -226,11 +243,19 @@ export async function listTar(file: FileHandle, size: number, maxMembers = Numbe
     const regular = typeflag === "0";
     if (!regular && typeflag !== "5") {
       problems.push(`${name} is ${KINDS[typeflag] ?? `a member of type ${JSON.stringify(typeflag)}`}`);
-    } else {
-      const dir = typeflag === "5";
-      if (dir !== name.endsWith("/")) problems.push(`${name} is ${dir ? "a directory without" : "a file with"} a trailing slash`);
-      members.push({ name: dir ? name.replace(/\/+$/, "") : name, kind: dir ? "dir" : "file", size: dir ? 0 : length, mode, mtime, offset: position + BLOCK });
+      break;
     }
+    const dir = typeflag === "5";
+    if (dir !== name.endsWith("/")) {
+      problems.push(`${name} is ${dir ? "a directory without" : "a file with"} a trailing slash`);
+      break;
+    }
+    nameBytes += Buffer.byteLength(name);
+    if (nameBytes > MAX_NAME_BYTES) {
+      problems.push(`the member names add up to more than ${MAX_NAME_BYTES} bytes`);
+      break;
+    }
+    members.push({ name: dir ? name.replace(/\/+$/, "") : name, kind: dir ? "dir" : "file", size: dir ? 0 : length, mode, mtime, offset: position + BLOCK });
     position += BLOCK + (typeflag === "5" ? 0 : pad(length));
     if (position > size) {
       problems.push(`${name} is cut short: the tar ends inside it`);

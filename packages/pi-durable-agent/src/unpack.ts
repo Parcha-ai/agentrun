@@ -1,17 +1,17 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, mkdtemp, open, readdir, rename, rm, stat } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, open, rename, rm, rmdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { EXPORTABLE_KINDS } from "./export.js";
 import { AGENT_STORE_FILE, type AgentHome, type AgentHomeState, checkDefinition, checkSha, ID_PATTERN, isSkillPath, openAgentHome, readState, sha256 } from "./home.js";
 import { DefinitionDoc, FORMAT_VERSION, IdentityDoc, put, RunsDoc, SkillsDoc, SourceDoc } from "./kinds.js";
 import {
-  byName, canonical, documentKinds, type HomeManifest, invalid, isObject, isRunId, iso, LOCK_FILES, MANIFEST_LIMIT, MAX_MEMBERS, memberProblem, PACK_FORMAT, SIDE_FILES,
+  byName, canonical, documentKinds, type HomeManifest, invalid, isObject, isRunId, iso, MANIFEST_LIMIT, MAX_MEMBERS, memberProblem, PACK_FORMAT, SIDE_FILES,
   secretIn, SQLITE_MAGIC,
 } from "./pack-shared.js";
 import { SECRET_KINDS } from "./export.js";
-import { AgentHomeError, type HomeCheck, IMPORT_JOURNAL, openStore, recoverImport, withHome, writeJournal } from "./store.js";
+import { AgentHomeError, type HomeCheck, IMPORT_JOURNAL, markCommitted, openStore, recoverImport, withHome, writeJournal } from "./store.js";
 import { copyRange, listTar, readAt, type TarMember } from "./tar.js";
 
 // --- reading a pack ---------------------------------------------------------------------------------------------------
@@ -54,33 +54,48 @@ function readManifest(raw: unknown): { manifest: HomeManifest | null; problems: 
 
 /** Walk the pack: its members, its manifest and its stores. `extractTo` also writes every member but the manifest there,
  *  so what was judged is what was written. Nothing is written beside the pack otherwise except temporary files. */
-async function inspectPack(file: string, options: { maxBytes?: number; maxMembers?: number; extractTo?: string; onExtract?: (name: string, index: number) => void | Promise<void> } = {}): Promise<Inspection> {
+async function inspectPack(file: string, options: { maxBytes?: number; maxMembers?: number; extractTo?: string; inject?: (step: ImportStep) => void | Promise<void> } = {}): Promise<Inspection> {
   const info = await stat(file).catch(() => undefined);
   if (!info) throw new AgentHomeError("missing", `${file} does not exist`);
   if (!info.isFile()) throw invalid(`${file} is not a file`);
   const problems: Problem[] = [];
-  const bad = (check: Problem["check"], message: string) => void problems.push({ check, message });
-  if (options.maxBytes !== undefined && info.size > options.maxBytes) bad("size", `the pack is ${info.size} bytes, over the limit of ${options.maxBytes}`);
+  // Past fifty, more of the same says nothing new and costs memory.
+  const bad = (check: Problem["check"], message: string) => void (problems.length < 50 && problems.push({ check, message }));
+  if (options.maxBytes !== undefined && info.size > options.maxBytes) {
+    // Not one byte of it is read: a pack over the limit is refused on its size.
+    bad("size", `the pack is ${info.size} bytes, over the limit of ${options.maxBytes}`);
+    return { manifest: null, problems, bytes: info.size };
+  }
   const handle = await open(file, "r");
   const scratch = await mkdtemp(path.join(tmpdir(), "pi-durable-agent-read-"));
   let manifest: HomeManifest | null = null;
   let state: AgentHomeState | undefined;
   try {
+    await options.inject?.({ name: "parse", index: 0 });
     const listed = await listTar(handle, info.size, options.maxMembers ?? MAX_MEMBERS);
     for (const problem of listed.problems) bad("format", problem);
     const members: TarMember[] = listed.members;
     const seen = new Set<string>();
+    const refusedNames = new Set<string>();
     for (const member of members) {
       const why = memberProblem(member.name, member.kind);
-      if (why) bad("format", `${member.name}: ${why}`);
+      if (why) {
+        bad("format", `${member.name}: ${why}`);
+        refusedNames.add(member.name);
+      }
       if (seen.has(member.name)) bad("format", `${member.name} appears twice`);
       seen.add(member.name);
     }
     const files = new Set(members.filter((member) => member.kind === "file").map((member) => member.name));
     for (const member of members) {
-      const parts = member.name.split("/");
-      const under = parts.slice(0, -1).map((_, at) => parts.slice(0, at + 1).join("/")).find((ancestor) => files.has(ancestor));
-      if (under) bad("format", `${member.name} is inside ${under}, which is a file`);
+      if (refusedNames.has(member.name)) continue;
+      for (let end = member.name.lastIndexOf("/"); end > 0; end = member.name.lastIndexOf("/", end - 1)) {
+        const ancestor = member.name.slice(0, end);
+        if (files.has(ancestor)) {
+          bad("format", `${member.name} is inside ${ancestor}, which is a file`);
+          break;
+        }
+      }
     }
     const first = members[0];
     if (!first || first.name !== "manifest.json" || first.kind !== "file") bad("format", "the first member is not manifest.json");
@@ -110,7 +125,7 @@ async function inspectPack(file: string, options: { maxBytes?: number; maxMember
         return { manifest, problems, bytes: info.size };
       }
       const dest = options.extractTo && path.join(options.extractTo, ...member.name.split("/"));
-      if (dest) await options.onExtract?.(member.name, probes);
+      if (dest) await options.inject?.({ name: "extract", index: probes });
       if (member.kind === "dir") {
         if (dest) await mkdir(dest, { recursive: true });
         continue;
@@ -215,7 +230,7 @@ function checksOf(manifest: HomeManifest | null, problems: Problem[], bytes: num
  * definition and skills as the manifest says, the size as the manifest says. Only temporary files are written, and removed.
  * The checks are the contract's names for what this package can judge: format, definition, size and live_runs.
  */
-export async function readPack(file: string, options: { maxBytes?: number; maxMembers?: number } = {}): Promise<{ ok: boolean; manifest: HomeManifest | null; checks: HomeCheck[] }> {
+export async function readPack(file: string, options: { maxBytes?: number; maxMembers?: number; /** @internal */ inject?: (step: ImportStep) => void | Promise<void> } = {}): Promise<{ ok: boolean; manifest: HomeManifest | null; checks: HomeCheck[] }> {
   const inspection = await inspectPack(file, options);
   const checks = checksOf(inspection.manifest, inspection.problems, inspection.bytes);
   return { ok: checks.every((check) => check.status !== "fail"), manifest: inspection.manifest, checks };
@@ -225,8 +240,9 @@ export async function readPack(file: string, options: { maxBytes?: number; maxMe
 // --- importing a pack -------------------------------------------------------------------------------------------------
 
 export type ImportReport = { ok: true; agent_id: string; checks: HomeCheck[]; written: true; replaces: boolean };
-/** A point in an import: a member about to be extracted, a run directory moved, or the store's commit made. */
-export type ImportStep = { name: "extract" | "moved" | "committed"; index: number };
+/** A point in a read or an import: the pack about to be parsed, a member about to be extracted, the target checked, a run
+ *  directory moved, the store's commit made, the journal marked committed, the clean-up half done. */
+export type ImportStep = { name: "parse" | "extract" | "checked" | "moved" | "committed" | "marked" | "cleaned"; index: number };
 export type ImportOptions = {
   /** The target may already be a home. */
   replace?: boolean;
@@ -267,7 +283,7 @@ export async function importPack(file: string, dir: string, options: ImportOptio
   let crashed = false;
   try {
     await mkdir(extracted);
-    const inspection = await inspectPack(file, { maxBytes: options.maxBytes, maxMembers: options.maxMembers, extractTo: extracted, onExtract: (_name, index) => options.inject?.({ name: "extract", index }) });
+    const inspection = await inspectPack(file, { maxBytes: options.maxBytes, maxMembers: options.maxMembers, extractTo: extracted, inject: options.inject });
     const checks = checksOf(inspection.manifest, inspection.problems, inspection.bytes);
     const failed = checks.filter((check) => check.status === "fail");
     if (failed.length || !inspection.manifest || !inspection.state) {
@@ -281,10 +297,6 @@ export async function importPack(file: string, dir: string, options: ImportOptio
 
     if (!isHome()) {
       if (options.ifRevision !== undefined) throw new AgentHomeError("stale", `there is no home at ${dir}, so no revision ${options.ifRevision}; nothing was written`);
-      if (existsSync(target)) {
-        if ((await readdir(target)).some((name) => !LOCK_FILES.includes(name))) throw invalid(`${dir} is not empty and is not an agent home`);
-        await rm(target, { recursive: true, force: true });
-      }
       const store = await openStore(path.join(extracted, AGENT_STORE_FILE));
       try {
         await store.session.commit(async (tx) => {
@@ -294,10 +306,24 @@ export async function importPack(file: string, dir: string, options: ImportOptio
         await store.close();
       }
       await mkdir(path.join(extracted, "runs"), { recursive: true });
+      await options.inject?.({ name: "checked", index: 0 });
+      // The target is never deleted, whatever it holds: an empty directory goes by rmdir, and anything another process put
+      // there since makes this refuse. The rename then fills the place or fails, and never replaces a directory that has files.
+      const refuse = () => (existsSync(path.join(target, AGENT_STORE_FILE))
+        ? new AgentHomeError("exists", `${dir} became a home while the pack was read; nothing was written`)
+        : invalid(`${dir} is not empty and is not an agent home`));
+      if (existsSync(target)) {
+        try {
+          await rmdir(target);
+        } catch (error) {
+          if (["ENOTEMPTY", "EEXIST"].includes((error as NodeJS.ErrnoException).code ?? "")) throw refuse();
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      }
       try {
         await rename(extracted, target);
       } catch (error) {
-        if (["EEXIST", "ENOTEMPTY"].includes((error as NodeJS.ErrnoException).code ?? "")) throw new AgentHomeError("exists", `${dir} became a home while the pack was read; nothing was written`, { cause: error });
+        if (["EEXIST", "ENOTEMPTY"].includes((error as NodeJS.ErrnoException).code ?? "")) throw refuse();
         throw error;
       }
     } else {
@@ -331,7 +357,8 @@ export async function importPack(file: string, dir: string, options: ImportOptio
           .filter((move) => move.hadOld || move.hasNew);
         await mkdir(path.join(target, "runs"), { recursive: true });
         await mkdir(path.join(staging, "backup"));
-        if (moves.length) await writeJournal(target, { version: 1, staging, from, moves });
+        const journal = { version: 1 as const, staging, from, moves };
+        if (moves.length) await writeJournal(target, journal);
         const step = async (name: ImportStep["name"], index: number) => { await options.inject?.({ name, index }); };
         try {
           for (const [index, move] of moves.entries()) {
@@ -354,13 +381,18 @@ export async function importPack(file: string, dir: string, options: ImportOptio
             await writing.close();
           }
           await step("committed", moves.length);
+          // The commit has returned. Say so on disk before anything is cleaned up: a crash from here on finishes the
+          // clean-up and never rolls back, whether or not the commit changed a byte of the store.
+          if (moves.length) await markCommitted(target, journal);
+          await step("marked", moves.length);
+          await rm(staging, { recursive: true, force: true });
+          await step("cleaned", moves.length);
+          await rm(path.join(target, IMPORT_JOURNAL), { force: true });
         } catch (error) {
           if ((error as { crash?: boolean }).crash) crashed = true;
           else if (moves.length) await recoverImport(target);
           throw error;
         }
-        await rm(staging, { recursive: true, force: true });
-        await rm(path.join(target, IMPORT_JOURNAL), { force: true });
       });
     }
     const home = await openAgentHome(target);

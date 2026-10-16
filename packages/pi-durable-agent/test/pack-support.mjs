@@ -107,3 +107,44 @@ export const withManifest = (members, edit) =>
     edit(manifest);
     return { ...member, data: Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`) };
   });
+
+/** `count` header blocks of type `typeflag` (a pax header, say) with no data and nothing after them but the two zero blocks. */
+export function headersOnly(count, typeflag = "x") {
+  const one = header({ name: "PaxHeaders.0/x", typeflag, size: 0 });
+  return Buffer.concat([...Array(count).fill(one), Buffer.alloc(BLOCK * 2)]);
+}
+
+/** `count` pairs of a pax header (one field) and an empty directory, then the two zero blocks. */
+export function paxPairs(count) {
+  const body = " path=d/\n";
+  let length = body.length + 1;
+  while (String(length).length + body.length !== length) length = String(length).length + body.length;
+  const data = Buffer.from(`${length}${body}`);
+  const pax = header({ name: "PaxHeaders.0/d", typeflag: "x", size: data.length });
+  const padding = Buffer.alloc((BLOCK - (data.length % BLOCK)) % BLOCK);
+  const dir = header({ name: "d/", typeflag: "5" });
+  return Buffer.concat([...Array(count).fill(Buffer.concat([pax, data, padding, dir])), Buffer.alloc(BLOCK * 2)]);
+}
+
+/** A pax header with `fields` one-byte fields, then a file. */
+export function paxWithFields(fields) {
+  const data = Buffer.concat(Array.from({ length: fields }, (_, at) => {
+    const body = ` k${at}=v\n`;
+    let length = body.length + 1;
+    while (String(length).length + body.length !== length) length = String(length).length + body.length;
+    return Buffer.from(`${length}${body}`);
+  }));
+  return Buffer.concat([header({ name: "PaxHeaders.0/f", typeflag: "x", size: data.length }), data, Buffer.alloc((BLOCK - (data.length % BLOCK)) % BLOCK), header({ name: "f", typeflag: "0" }), Buffer.alloc(BLOCK * 2)]);
+}
+
+/** `count` directories whose pax path is `length` bytes long, then the two zero blocks. */
+export function longNames(count, length) {
+  const body = ` path=runs/x/work/${"a".repeat(length)}/\n`;
+  let size = body.length + 1;
+  while (String(size).length + body.length !== size) size = String(size).length + body.length;
+  const data = Buffer.from(`${size}${body}`);
+  const pax = header({ name: "PaxHeaders.0/d", typeflag: "x", size: data.length });
+  const padding = Buffer.alloc((BLOCK - (data.length % BLOCK)) % BLOCK);
+  const dir = header({ name: "d/", typeflag: "5" });
+  return Buffer.concat([...Array(count).fill(Buffer.concat([pax, data, padding, dir])), Buffer.alloc(BLOCK * 2)]);
+}

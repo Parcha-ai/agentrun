@@ -200,16 +200,18 @@ to a `.part` file, read back with `readPack`, and renamed into place only when i
 
 `readPack` returns `{ ok, manifest, checks }`. The checks use the contract's names for what the package can judge:
 `format` (the manifest first, `agentrun.home/N` with N at most this version's, every member on the allowlist and none
-inside a file, no `..`, no absolute path, no link or device, no store with a sign-in kind, at most `maxMembers`, nothing
-after the end), `definition` (the definition
+inside a file, no `..`, no absolute path, no link or device, no store with a sign-in kind, at most `maxMembers`, no global
+pax header, at most one pax header of at most 64 fields before a member, nothing after the end), `definition` (the definition
 is valid and is the one in `agent.sqlite`, the agent id is the same everywhere, each skill matches its `sha256` and
 size), `sign_ins` (`warn` when the source had sign-ins: they are to redo at the target), `size` (the pack is the size its
 manifest says, and within `maxBytes`) and `live_runs` (`warn` when runs travel as index entries only). Tools, vault and
 quote are the host's to judge. It writes only temporary files.
 
-`importPack` judges the pack and extracts it to a directory beside `dir` (a pack over `maxBytes`, or one whose manifest
-says so, is refused before anything is extracted). A `dir` that is absent or empty becomes a new home: the extracted
-directory is renamed into place. A `dir` that is already a home needs `replace`, must hold the same agent, and must
+`importPack` judges the pack and extracts it to a directory beside `dir`. A pack whose file is over `maxBytes` is refused
+on its size, before a byte of it is parsed; one whose manifest says it is over is refused before anything is extracted. A
+`dir` that is absent or empty becomes a new home: the extracted directory is renamed into place, after an empty `dir` is
+removed with `rmdir`. The target is never deleted recursively: whatever another process has put there since the check
+makes the import refuse (`exists` for a home, `invalid` otherwise) and leaves it as it is. A `dir` that is already a home needs `replace`, must hold the same agent, and must
 have no live run (`check`, with `live_runs` failed); `ifRevision` must still be its `homeRevision` (`stale`).
 
 A home is changed in place, under its own owner lock: the lock, `agent.sqlite`, `chrome/`, `repo/`, the home's
@@ -220,10 +222,13 @@ as an ended entry with outcome `not_carried_back`.
 
 The pack's run directories move into place before the commit, each old one set aside first in the staging directory
 beside the home, in the order of a journal, `.import-journal` (mode 0600), written first. A failure puts every one back.
-A crash leaves the journal for the next process that takes the home's lock, which settles it before anything else: when
-the store's head moved past the revision in the journal the commit landed and only the clean-up is left, otherwise every
-directory goes back. So a home is the old one or the new one, never a mix, and no old directory is deleted before the
-commit. Every refusal leaves the home, and the directory beside it, as they were.
+As soon as the store's commit returns, the journal is rewritten, synced, as `committed`, before any clean-up. A crash
+leaves the journal for the next process that takes the home's lock, which settles it before anything else: a `committed`
+journal (or an older one whose store head moved past the journal's) only has its clean-up left, even when the commit
+changed nothing in the store; otherwise every directory goes back. Recovery never deletes a run directory it cannot account
+for: when one it would restore, or one that should have arrived, is in neither of its places, it changes and removes
+nothing, keeps the journal and the staging directory, and says so. So a home is the old one or the new one, never a mix,
+and no old directory is deleted before the commit. Every refusal leaves the home, and the directory beside it, as they were.
 
 ```js
 import { importPack, packHome, readPack } from "@parcha/pi-durable-agent";

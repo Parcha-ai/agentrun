@@ -137,21 +137,33 @@ async function takeLock(file: string, waitMs: number): Promise<() => void> {
 
 const queues = new Map<string, Promise<void>>();
 
-/** The record of an import in progress, kept in the home. An import moves run directories before the store commits,
- *  so a crash between the two leaves this file for the next lock taker to settle: `recoverImport`. */
+/** The record of an import in progress, kept in the home. An import moves run directories before the store commits, so
+ *  a crash between the two leaves this file for the next lock taker to settle: `recoverImport`. */
 export const IMPORT_JOURNAL = ".import-journal";
 /** One run directory an import replaces: whether the home had one (it is set aside in `<staging>/backup/<id>`) and
  *  whether the pack brought one (extracted under the staging directory's `home` folder, in `runs/<id>`). */
 export type ImportMove = { id: string; hadOld: boolean; hasNew: boolean };
-/** `from` is the store's head commit before the import; `staging` is the directory beside the home that holds the extracted pack and the set-aside run directories. */
-export type ImportJournal = { version: 1; staging: string; from: number; moves: ImportMove[] };
+/** `from` is the store's head commit before the import; `staging` is the directory beside the home that holds the
+ *  extracted pack and the set-aside run directories. `phase` is `moving` until the store's commit has returned and the
+ *  journal has been rewritten, on disk, as `committed`: from then on only the clean-up is left. */
+export type ImportJournal = { version: 1; phase?: "moving" | "committed"; staging: string; from: number; moves: ImportMove[] };
 const AGENT_STORE = "agent.sqlite"; // AGENT_STORE_FILE, which home.ts defines and imports this file for
 
-/** Write the journal, whole or not at all, and on disk before the first run directory moves. */
-export async function writeJournal(home: string, journal: ImportJournal): Promise<void> {
-  const file = path.join(home, IMPORT_JOURNAL);
-  const part = `${file}.part`;
+async function syncDirectory(dir: string): Promise<void> {
+  const handle = await open(dir, "r");
   try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+/** Replace the journal whole or not at all: written and synced beside it, renamed over it, the directory synced. */
+async function putJournal(home: string, journal: ImportJournal): Promise<void> {
+  const file = path.join(home, IMPORT_JOURNAL);
+  const part = `${file}.tmp`;
+  try {
+    await rm(part, { force: true });
     const handle = await open(part, "w", 0o600);
     try {
       await handle.write(JSON.stringify(journal));
@@ -160,11 +172,17 @@ export async function writeJournal(home: string, journal: ImportJournal): Promis
       await handle.close();
     }
     await rename(part, file);
+    await syncDirectory(home);
   } catch (error) {
     await rm(part, { force: true });
     throw error;
   }
 }
+
+/** Write the journal, on disk before the first run directory moves. */
+export const writeJournal = (home: string, journal: Omit<ImportJournal, "phase">): Promise<void> => putJournal(home, { ...journal, phase: "moving" });
+/** Record, on disk, that the store's commit has returned. Nothing is cleaned up before this. */
+export const markCommitted = (home: string, journal: Omit<ImportJournal, "phase">): Promise<void> => putJournal(home, { ...journal, phase: "committed" });
 
 const RUN_DIR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 function parseJournal(text: string): ImportJournal | undefined {
@@ -172,6 +190,7 @@ function parseJournal(text: string): ImportJournal | undefined {
     const value = JSON.parse(text) as Partial<ImportJournal> | null;
     const moves = value?.moves;
     if (value?.version !== 1 || typeof value.staging !== "string" || !Number.isSafeInteger(value.from) || !Array.isArray(moves)) return undefined;
+    if (value.phase !== undefined && value.phase !== "moving" && value.phase !== "committed") return undefined;
     if (!moves.every((move) => move && typeof move.id === "string" && RUN_DIR.test(move.id) && typeof move.hadOld === "boolean" && typeof move.hasNew === "boolean")) return undefined;
     return value as ImportJournal;
   } catch {
@@ -179,9 +198,16 @@ function parseJournal(text: string): ImportJournal | undefined {
   }
 }
 
-/** Settle an import that did not finish, under the home's lock. When the store's head moved past `from` the commit
- *  landed: only the clean-up is left. Otherwise every run directory is put back as it was, newest move first, from
- *  `<staging>/backup`; the pack's directories are removed. Safe to repeat, so a crash during recovery is recovered next time. */
+/**
+ * Settle an import that did not finish, under the home's lock. The commit landed when the journal says `committed`, or,
+ * for a journal that never got that far, when the store's head moved past `from`. Then only the clean-up is left: each
+ * new run directory is made sure to be in place, and the staging directory (the old directories) is removed. Otherwise
+ * every run directory goes back: the pack's ones to where they were extracted, the old ones from `<staging>/backup`.
+ *
+ * It never deletes a run directory it cannot account for. When a directory it would restore, or one that should have
+ * arrived, is in neither of its places, nothing is changed and nothing is removed: the journal and the staging directory
+ * stay, and the error names them, for a person. Safe to repeat, so a crash during recovery is recovered next time.
+ */
 export async function recoverImport(home: string): Promise<void> {
   const file = path.join(home, IMPORT_JOURNAL);
   const journal = parseJournal(await readFile(file, "utf8").catch(() => ""));
@@ -193,18 +219,34 @@ export async function recoverImport(home: string): Promise<void> {
   const store = await openStore(path.join(home, AGENT_STORE));
   let head: number;
   try { head = await store.head(); } finally { await store.close(); }
-  if (head <= journal.from) {
-    for (const move of [...journal.moves].reverse()) {
-      const target = path.join(home, "runs", move.id);
-      const backup = path.join(staging, "backup", move.id);
-      if (existsSync(backup)) {
-        await rm(target, { recursive: true, force: true });
-        await rename(backup, target);
-      } else if (!move.hadOld && move.hasNew && !existsSync(path.join(staging, "home", "runs", move.id))) {
-        await rm(target, { recursive: true, force: true });
+  const committed = journal.phase === "committed" || head > journal.from;
+  const where = (id: string) => ({ target: path.join(home, "runs", id), backup: path.join(staging, "backup", id), staged: path.join(staging, "home", "runs", id) });
+  const stuck: string[] = [];
+  const steps: Array<() => Promise<void>> = [];
+  for (const move of journal.moves) {
+    const { target, backup, staged } = where(move.id);
+    const [inTarget, inBackup, inStaged] = [existsSync(target), existsSync(backup), existsSync(staged)];
+    if (committed) {
+      if (move.hasNew && !inTarget) {
+        if (inStaged) steps.push(() => rename(staged, target));
+        else if (inBackup) stuck.push(`${move.id} (the imported directory is gone and the old one is the only copy)`);
       }
+    } else if (inBackup) {
+      if ((inTarget && inStaged) || (inTarget && !move.hasNew)) stuck.push(`${move.id} (a directory stands where the old one goes, and the pack's copy has no place to return to)`);
+      else steps.push(async () => {
+        if (inTarget) await rename(target, staged);
+        await rename(backup, target);
+      });
+    } else if (move.hadOld) {
+      if (!inTarget || (move.hasNew && !inStaged)) stuck.push(`${move.id} (the old directory is in neither its place nor the backup)`);
+    } else if (move.hasNew && !inStaged && inTarget) {
+      steps.push(() => rename(target, staged));
     }
   }
+  if (stuck.length) {
+    throw new AgentHomeError("format", `the import journal in the agent home cannot be settled without deleting a run directory: ${stuck.join("; ")}. Nothing was changed or removed; the journal and ${staging} are kept for a person`);
+  }
+  for (const step of steps) await step();
   await rm(staging, { recursive: true, force: true });
   await rm(file, { force: true });
 }

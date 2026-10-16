@@ -9,7 +9,7 @@ import {
 } from "../dist/index.js";
 import { buildSignedInHome, checkExportClean, SIGN_IN_MARKER, signedInHomeSkip } from "./fixtures/signed-in-home.mjs";
 import { tarSize } from "../dist/tar.js";
-import { listTar, manifestOf, tamper, withManifest, writeTarFile } from "./pack-support.mjs";
+import { headersOnly, listTar, longNames, manifestOf, paxPairs, paxWithFields, tamper, withManifest, writeTarFile } from "./pack-support.mjs";
 import { defineDoc } from "@earendil-works/pi-durable";
 import { ctx, openSession, scratch } from "./support.mjs";
 
@@ -191,7 +191,7 @@ test("maxBytes refuses before anything is written; readPack judges the same limi
   const tight = await readPack(f.out, { maxBytes: 1000 });
   assert.equal(tight.ok, false);
   assert.match(tight.checks.find((check) => check.name === "size").message, /over the limit of 1000/);
-  assert.deepEqual(tight.manifest, manifest, "the manifest is still read");
+  assert.equal(tight.manifest, null, "a pack over the limit is refused on its size, unread");
 });
 
 test("reading a pack writes nothing beside it", skip, async () => {
@@ -342,6 +342,7 @@ const TAMPERED = {
   "a run the index does not list": [(m) => [...m, { name: "runs/ghost/work/a.txt", data: Buffer.from("x") }], "format", /ghost/],
   "a duplicate member": [(m) => [...m, m[1]], "format", /appears twice/],
   "an import journal": [(m) => [...m, { name: ".import-journal", data: Buffer.from("{}") }], "format", /\.import-journal: it is not a member a home pack holds/],
+  "a member nested too deep": [(m) => [...m, { name: `runs/signed-in/work/${Array(70).fill("d").join("/")}/f`, data: Buffer.from("x") }], "format", /nested more than 64 levels deep/],
   "a member inside a file": [(m) => [...m, { name: "runs/signed-in/work/notes.txt/inner", data: Buffer.from("x") }], "format", /is inside runs\/signed-in\/work\/notes\.txt, which is a file/],
   "the manifest not first": [(m) => [...m.slice(1), m[0]], "format", /first member/],
   "a higher format": [(m) => withManifest(m, (manifest) => { manifest.format = "agentrun.home/2"; }), "format", /this version reads agentrun\.home\/1/],
@@ -545,9 +546,13 @@ test("a pack over maxBytes, or whose manifest says it is, is refused before anyt
   const steps = [];
   const refused = (maxBytes, file = f.out) => assert.rejects(importPack(file, target, { maxBytes, inject: (step) => steps.push(step.name) }), (error) => error.code === "check" && error.checks.find((check) => check.name === "size").status === "fail");
   await refused(manifest.size_bytes - 1);
+  assert.deepEqual(steps, [], "a pack over the limit is refused on its size: not one byte of it is parsed");
   const lying = tamper(f.out, path.join(f.dir, "lying.tar"), (members) => withManifest(members, (edited) => { edited.size_bytes = 10 ** 9; }));
   await refused(manifest.size_bytes + 1000, lying);
-  assert.deepEqual(steps, [], "not one member was extracted");
+  assert.deepEqual(steps, ["parse"], "one whose manifest says it is over the limit is parsed for that, and not one member extracted");
+  const reads = [];
+  assert.equal((await readPack(f.out, { maxBytes: manifest.size_bytes - 1, inject: (step) => reads.push(step.name) })).ok, false);
+  assert.deepEqual(reads, [], "readPack parses nothing either");
   await importPack(f.out, path.join(parent, "ok"), { maxBytes: manifest.size_bytes, inject: (step) => steps.push(step.name) });
   assert.ok(steps.includes("extract"), "and a pack within the limit is");
   rmSync(path.join(parent, "ok"), { recursive: true });
@@ -648,4 +653,130 @@ test("a pack its own reader refuses is not written", skip, async () => {
   await assert.rejects(packHome(f.home, { out: f.out, now: NOW }), (error) => error.code === "check" && /its own reader refuses it: the manifest's definition is refused/.test(error.message) && error.checks.some((check) => check.status === "fail"));
   assert.equal(existsSync(f.out), false);
   assert.deepEqual(readdirSync(f.dir).filter((name) => name.includes(".part-")), []);
+});
+
+test("a tar of nothing but pax headers is refused at the second one, in a moment and without reading the rest", skip, async () => {
+  const dir = await scratch();
+  const many = path.join(dir, "headers.tar");
+  writeFileSync(many, headersOnly(100_000));
+  assert.ok(statSync(many).size > 50_000_000);
+  const rss = process.memoryUsage().rss;
+  const started = performance.now();
+  const read = await readPack(many);
+  assert.ok(performance.now() - started < 2000, `refused in ${Math.round(performance.now() - started)} ms`);
+  assert.match(read.checks.find((check) => check.name === "format").message, /two pax headers in a row/);
+  await assert.rejects(importPack(many, path.join(dir, "never")), (error) => error.code === "check");
+  assert.equal(existsSync(path.join(dir, "never")), false);
+  assert.ok(process.memoryUsage().rss - rss < 150_000_000, "and without holding what it read");
+});
+
+test("every header counts toward the bound: pax and member pairs stop at maxMembers, a global header, a doubled or a crowded pax header are refused", skip, async () => {
+  const dir = await scratch();
+  const file = (name, bytes) => { const at = path.join(dir, name); writeFileSync(at, bytes); return at; };
+  const pairs = await readPack(file("pairs.tar", paxPairs(20_000)), { maxMembers: 1000 });
+  assert.match(pairs.checks.find((check) => check.name === "format").message, /more than 1000 members/);
+  const global = await readPack(file("global.tar", headersOnly(3, "g")));
+  assert.match(global.checks.find((check) => check.name === "format").message, /global pax header/);
+  const crowded = await readPack(file("crowded.tar", paxWithFields(65)));
+  assert.match(crowded.checks.find((check) => check.name === "format").message, /more than 64 fields/);
+  const fine = await readPack(file("fields.tar", paxWithFields(64)));
+  assert.doesNotMatch(fine.checks.find((check) => check.name === "format").message, /pax/);
+  const bounded = await readPack(file("bounded.tar", headersOnly(50, "x")), { maxMembers: 5 });
+  assert.equal(bounded.ok, false);
+});
+
+/** A target whose store is the pack's, so an import's commit changes nothing, and whose run directories are not. */
+async function sameStore() {
+  const f = await fixture({ second: true });
+  await packHome(f.home, { out: f.out, now: NOW });
+  await importPack(f.out, f.home.dir, { replace: true });
+  writeFileSync(path.join(f.work, "OLD.txt"), "old signed-in\n");
+  writeFileSync(path.join(f.home.dir, "runs", "second", "work", "OLD.txt"), "old second\n");
+  return f;
+}
+const staging = (f) => readdirSync(path.dirname(f.home.dir)).filter((name) => name.includes(".import-"));
+const journalOf = (f) => JSON.parse(readFileSync(path.join(f.home.dir, ".import-journal"), "utf8"));
+
+test("a crash after the commit marker settles as the new home, even when the commit changed nothing in the store", skip, async () => {
+  for (const name of ["marked", "cleaned"]) {
+    const f = await sameStore();
+    const revision = await homeRevision(f.home);
+    await assert.rejects(importPack(f.out, f.home.dir, { replace: true, inject: killed({ name, index: 2 }) }), /killed/);
+    assert.equal(await homeRevision(f.home), revision, "the store commit was a no-op: the head did not move");
+    assert.equal(journalOf(f).phase, "committed");
+    assert.equal(staging(f).length, name === "marked" ? 1 : 0, name === "marked" ? "the staging directory is still there" : "the clean-up had removed it");
+    await readAgentHome(f.home);
+    for (const run of ["signed-in", "second"]) {
+      assert.equal(existsSync(path.join(f.home.dir, "runs", run, "work", "OLD.txt")), false, `${name}: the imported ${run} directory is in place`);
+    }
+    assert.equal(readFileSync(path.join(f.home.dir, "runs", "second", "work", "second.txt"), "utf8"), "second\n");
+    assert.equal(existsSync(path.join(f.home.dir, ".import-journal")), false);
+    assert.deepEqual(staging(f), []);
+  }
+});
+
+test("a crash after the commit but before its marker, with a commit that changed nothing, is rolled back whole", skip, async () => {
+  const f = await sameStore();
+  const before = tree(f.home.dir);
+  await assert.rejects(importPack(f.out, f.home.dir, { replace: true, inject: killed({ name: "committed", index: 2 }) }), /killed/);
+  assert.equal(journalOf(f).phase, "moving");
+  await readAgentHome(f.home);
+  assert.deepEqual(tree(f.home.dir), before, "the old home, with nothing lost");
+  assert.deepEqual(staging(f), []);
+});
+
+test("recovery that cannot put a run directory back deletes nothing and keeps the journal", skip, async () => {
+  const f = await diverged();
+  await assert.rejects(importPack(f.out, f.home.dir, { replace: true, inject: killed({ name: "moved", index: 1 }) }), /killed/);
+  const [kept] = staging(f);
+  const parent = path.dirname(f.home.dir);
+  rmSync(path.join(parent, kept, "backup"), { recursive: true });
+  const before = tree(f.home.dir);
+  await assert.rejects(readAgentHome(f.home), (error) => error.code === "format" && /without deleting a run directory/.test(error.message) && error.message.includes(kept));
+  assert.deepEqual(tree(f.home.dir), before, "no run directory was changed or removed");
+  assert.ok(existsSync(path.join(f.home.dir, ".import-journal")), "the journal is kept for a person");
+  assert.ok(existsSync(path.join(parent, kept)), "and so is the staging directory");
+  await assert.rejects(readAgentHome(f.home), /without deleting a run directory/);
+});
+
+test("a new home never deletes what another import put in the target between the check and the rename", skip, async () => {
+  const f = await fixture();
+  await packHome(f.home, { out: f.out, now: NOW });
+  const theirs = async (target) => {
+    const other = await createAgentHome(target, { definition: { version: 1, name: "Theirs", instructions: "x", skills: [], tools: [] } });
+    writeFileSync(path.join(target, "theirs.txt"), "mine\n");
+    return other;
+  };
+  const definition = { version: 1, name: "Theirs", instructions: "x", skills: [], tools: [] };
+  void definition;
+  for (const kind of ["empty", "absent"]) {
+    const target = path.join(f.dir, `race-${kind}`);
+    if (kind === "empty") mkdirSync(target);
+    let other;
+    await assert.rejects(importPack(f.out, target, { inject: async (step) => { if (step.name === "checked") other = await theirs(target); } }), (error) => error.code === "exists");
+    assert.equal((await readAgentHome(other)).definition.name, "Theirs", `${kind}: the other home survives`);
+    assert.equal(readFileSync(path.join(target, "theirs.txt"), "utf8"), "mine\n");
+    assert.deepEqual(readdirSync(f.dir).filter((name) => name.includes(".import-")), [], "and only the staged copy was cleaned up");
+  }
+  const target = path.join(f.dir, "race-files");
+  mkdirSync(target);
+  await assert.rejects(importPack(f.out, target, { inject: (step) => { if (step.name === "checked") writeFileSync(path.join(target, "mine.txt"), "mine\n"); } }), (error) => error.code === "invalid");
+  assert.equal(readFileSync(path.join(target, "mine.txt"), "utf8"), "mine\n");
+});
+
+test("names are bounded: a tar whose member names add up to too much is refused, and a work tree nested too deep is left out", skip, async () => {
+  const dir = await scratch();
+  const names = path.join(dir, "names.tar");
+  writeFileSync(names, longNames(9000, 4000));
+  const read = await readPack(names);
+  assert.match(read.checks.find((check) => check.name === "format").message, /member names add up to more than 33554432 bytes/);
+
+  const f = await fixture();
+  const deep = path.join(f.work, ...Array(70).fill("d"));
+  mkdirSync(deep, { recursive: true });
+  writeFileSync(path.join(deep, "f.txt"), "deep\n");
+  const { skipped } = await packHome(f.home, { out: f.out, now: NOW });
+  const entry = skipped.find((one) => /nested more than 64 levels deep/.test(one.reason));
+  assert.ok(entry, JSON.stringify(skipped));
+  assert.equal((await readPack(f.out)).ok, true);
 });
