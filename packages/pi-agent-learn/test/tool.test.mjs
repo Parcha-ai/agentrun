@@ -111,3 +111,18 @@ test("caps: text and evidence bytes, new learnings per run and used marks per ru
     await run.close();
   }
 });
+
+test("a guard that throws stores nothing, and its error never reaches the model", async () => {
+  const root = await scratch();
+  const secret = `tok-${"z".repeat(24)}`;
+  let seen = [];
+  const guard = () => { throw new Error(`bad value ${secret}`); };
+  const run = await openRun(path.join(root, "run.sqlite"), { extension: agentLearn({ guard }), steps: [() => learnCalls([LESSON]), (c) => { seen = toolResults(c); return done(); }] });
+  try {
+    await ask(run.harness);
+    assert.deepEqual(seen, [{ isError: true, text: "Not noted: the host could not check it. Nothing was stored." }]);
+    assert.deepEqual(await collectCandidates(run.harness), []);
+  } finally {
+    await run.close();
+  }
+});

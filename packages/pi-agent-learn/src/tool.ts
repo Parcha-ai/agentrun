@@ -1,6 +1,6 @@
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { defineDoc, defineTool, type Session, type ToolExecutionResult } from "@earendil-works/pi-durable";
+import { defineDoc, defineTool, type Session, type ToolExecutionResult, type ToolRegistration } from "@earendil-works/pi-durable";
 import { CAPS, LEARNING_ID } from "./layout.js";
 import { type Candidate, type Guard, LEARN_TYPES, type LearnType, type Refusal } from "./types.js";
 
@@ -16,7 +16,7 @@ export async function collectCandidates(target: Pick<Session, "snapshot">, conte
   return doc ? doc.order.map((callId) => structuredClone(doc.byCall[callId]!) as Candidate) : [];
 }
 
-type ToolContent = NonNullable<ToolExecutionResult["content"]>;
+type ToolContent = { type: "text"; text: string }[];
 type ToolParameters = Parameters<typeof defineTool>[0]["parameters"];
 
 /** pi-durable 1.1 reads a tool result's `content`; 1.2 and later read `output` and show a result without it as empty.
@@ -73,7 +73,7 @@ export type LearnToolOptions = {
 
 /** The `learn` tool: notes one candidate in the run's own store, keyed by the call id, and makes no model call. A rerun
  *  of the same call after a crash finds its candidate and stores nothing new. */
-export function learnTool(options: LearnToolOptions = {}) {
+export function learnTool(options: LearnToolOptions = {}): ToolRegistration {
   return defineTool({
     name: "learn",
     description:
@@ -88,7 +88,12 @@ export function learnTool(options: LearnToolOptions = {}) {
       if (input.type === "used" && input.id === undefined) return refused("Not noted: a used mark needs the id of the learning that helped.");
       const candidate: Candidate = { callId: api.callId, type: input.type, text: input.text, evidence, ...(input.id === undefined ? {} : { id: input.id }) };
       if (options.guard) {
-        const refusals = options.guard({ role: "run", candidates: [candidate], secrets: options.secrets?.() ?? [] });
+        let refusals: readonly Refusal[];
+        try {
+          refusals = options.guard({ role: "run", candidates: [candidate], secrets: [...(options.secrets?.() ?? [])] });
+        } catch {
+          return refused("Not noted: the host could not check it. Nothing was stored.");
+        }
         if (refusals.length) {
           const why = [...new Set(refusals.map((r) => REASONS[r.reason] ?? "it was refused"))].join("; ");
           return refused(`Not noted: ${why}. Restate it as a general rule without that.`);
