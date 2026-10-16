@@ -9,6 +9,7 @@ import {
 	readFileSync,
 	renameSync,
 	rmSync,
+	writeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,6 +26,7 @@ vi.mock("node:fs", async (importOriginal) => {
 		fsyncSync: vi.fn(actual.fsyncSync),
 		openSync: vi.fn(actual.openSync),
 		renameSync: vi.fn(actual.renameSync),
+		writeSync: vi.fn(actual.writeSync),
 	};
 });
 
@@ -169,6 +171,111 @@ describe("a runner's outbox", () => {
 		outbox.close();
 		const again = openOutbox(path, { head: commit + 2 });
 		expect(again.pending()).toEqual([{ commit: commit + 1, writes: writes(commit + 1) }]);
+		again.close();
+	});
+
+	/**
+	 * Makes writes misbehave as a disk may: each write that `which` picks takes the next of `faults` (`"half"` writes half
+	 * of what it was given, `"fail"` throws), and the rest are written as given. Gives back what undoes it.
+	 */
+	const faulty = (faults: ("half" | "fail")[], which: (fd: number) => boolean = () => true) => {
+		const real = vi.mocked(writeSync).getMockImplementation() as (...args: unknown[]) => number;
+		vi.mocked(writeSync).mockImplementation(((fd: number, data: string | Buffer, ...rest: unknown[]) => {
+			const fault = which(fd) ? faults.shift() : undefined;
+			if (fault === undefined) return real(fd, data, ...rest);
+			if (fault === "fail") throw Object.assign(new Error("no space left on the disk"), { code: "ENOSPC" });
+			const offset = Number(rest[0] ?? 0);
+			const bytes =
+				typeof data === "string"
+					? Buffer.from(data)
+					: data.subarray(offset, offset + Number(rest[1] ?? data.length));
+			return real(fd, bytes.subarray(0, Math.max(1, Math.floor(bytes.length / 2))));
+		}) as typeof writeSync);
+		return () => {
+			vi.mocked(writeSync).mockImplementation(real as typeof writeSync);
+		};
+	};
+
+	it("writes a row whole when the disk takes it in pieces: a short write goes on with the rest", () => {
+		const path = place();
+		const outbox = openOutbox(path, { head: 1 });
+		const restore = faulty(["half"]);
+		try {
+			outbox.entry(1, writes(1));
+			outbox.entry(2, writes(2));
+		} finally {
+			restore();
+		}
+		outbox.close();
+		const again = openOutbox(path, { head: 3 });
+		expect(again.pending()).toEqual([
+			{ commit: 1, writes: writes(1) },
+			{ commit: 2, writes: writes(2) },
+		]);
+		again.close();
+	});
+
+	it("writes the cleared-out file whole when the disk takes one of its rows in pieces", () => {
+		const path = place();
+		const outbox = openOutbox(path, { head: 1 });
+		const realOpen = vi.mocked(openSync).getMockImplementation() as (...args: Parameters<typeof openSync>) => number;
+		let temp: number | undefined;
+		vi.mocked(openSync).mockImplementation((...args: Parameters<typeof openSync>) => {
+			const fd = realOpen(...args);
+			if (temp === undefined && String(args[0]).endsWith(".tmp")) temp = fd;
+			return fd;
+		});
+		const faults: "half"[] = ["half"];
+		const restore = faulty(faults, (fd) => fd === temp);
+		// Read right after the clearing out the fault hit: a later one writes the file again from memory.
+		let parsedAfterFault: string | undefined;
+		try {
+			longSession(outbox, (ack) => {
+				ack();
+				if (faults.length === 0 && parsedAfterFault === undefined) {
+					const text = readFileSync(path, "utf8");
+					try {
+						for (const row of text.slice(0, text.lastIndexOf("\n")).split("\n")) JSON.parse(row);
+						parsedAfterFault = "every row whole";
+					} catch (cause) {
+						parsedAfterFault = String(cause);
+					}
+				}
+			});
+		} finally {
+			restore();
+			vi.mocked(openSync).mockImplementation(realOpen);
+		}
+		expect(parsedAfterFault).toBe("every row whole");
+		expect(rowsIn(path)).toBeLessThan(2_048);
+		outbox.close();
+		const again = openOutbox(path, { head: 3_002 });
+		expect(again.pending()).toEqual(keptOfLongSession);
+		again.close();
+	});
+
+	it("takes no row after one it could not write whole, and a reopen drops the fragment it left", () => {
+		const path = place();
+		const outbox = openOutbox(path, { head: 1 });
+		outbox.entry(1, writes(1));
+		const restore = faulty(["half", "fail"]);
+		const refused: unknown[] = [];
+		try {
+			for (const commit of [2, 3, 4]) {
+				try {
+					outbox.entry(commit, writes(commit));
+				} catch {
+					refused.push(commit);
+				}
+			}
+		} finally {
+			restore();
+		}
+		// The commit whose row broke never lands, and nothing is written after its fragment.
+		expect(refused).toEqual([2, 3, 4]);
+		outbox.close();
+		const again = openOutbox(path, { head: 2 });
+		expect(again.pending()).toEqual([{ commit: 1, writes: writes(1) }]);
 		again.close();
 	});
 
