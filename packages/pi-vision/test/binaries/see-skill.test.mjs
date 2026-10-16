@@ -1,6 +1,7 @@
 // The look skill's examples run as written: each ```js block of skills/look/SKILL.md runs in pi-codemode's sandbox with a
-// `bash` tool over a workspace the test builds and the handle's `vision.see`, and fake eyes answer with the fragments
-// they were shown. Needs pdftoppm, ffmpeg and ffprobe: `npm run test:binaries` runs it, `npm test` does not.
+// `bash` tool over a workspace the test builds and the handle's `vision.see` and `vision.judge`; fake eyes answer with
+// the fragments they were shown, and a fake Jev with each question type's shape. Needs pdftoppm, ffmpeg and ffprobe:
+// `npm run test:binaries` runs it, `npm test` does not.
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -11,9 +12,10 @@ import { imageHeader } from "@parcha/pi-vision";
 import { createVisionExtension } from "@parcha/pi-vision/durable";
 import { nodeVisionEnv } from "@parcha/pi-vision/node";
 import { fakeEyes, fixtureDir, pdfBytes, pngBytes } from "@parcha/pi-vision/testing";
+import { ANSWERS, fakeJev } from "../support/jev.mjs";
 
 const SKILL = fs.readFileSync(new URL("../../skills/look/SKILL.md", import.meta.url), "utf8");
-const [pdfPages, longVideo, manyImages, region, ...more] = [...SKILL.matchAll(/```js\n([\s\S]*?)```/g)].map((match) => match[1]);
+const [pdfPages, longVideo, manyImages, region, classify, aroundEyes, byExample, presence, tiles, edges, ...more] = [...SKILL.matchAll(/```js\n([\s\S]*?)```/g)].map((match) => match[1]);
 
 const dir = await fixtureDir("pi-vision-see-skill-");
 after(() => dir.remove());
@@ -24,24 +26,29 @@ fs.mkdirSync(path.join(cwd, "photos"));
 for (const name of ["attic.png", "hall.png", "roof.png"]) fs.writeFileSync(path.join(cwd, "photos", name), pngBytes(64, 48));
 fs.writeFileSync(path.join(cwd, "photos", "notes.txt"), "not a photo");
 fs.writeFileSync(path.join(cwd, "scan.png"), pngBytes(800, 1000));
+fs.mkdirSync(path.join(cwd, "examples"));
+for (const name of ["roof.png", "hall.png"]) fs.writeFileSync(path.join(cwd, "examples", name), pngBytes(320, 240));
 
 /** A bash tool as a host's code mode gives one: the command's output, or a rejection with it. */
 const bash = { name: "bash", execute: ({ command }) => new Promise((resolve, reject) => execFile("bash", ["-c", command], { cwd }, (error, stdout, stderr) => (error ? reject(new Error(`${stderr}${error.message}`)) : resolve(`${stdout}${stderr}`)))) };
-/** Runs one example: what it returned, every request the eyes saw, and the looks the host was told of. */
-async function example(code) {
+/** Runs one example: what it returned, every request the eyes saw, every request Jev got, and the looks the host was
+ *  told of. `answer` is the fake Jev's answer to a question. */
+async function example(code, answer) {
   const eyes = fakeEyes({ answers: [(request) => `saw ${request.parts.filter((p) => p.type === "image").map((p) => p.fragment).join(", ")}`] });
+  const jev = fakeJev(answer ? { answer } : {});
   const looks = [];
-  const vision = createVisionExtension({ eyes, evidence: { file: async (label) => ({ path: `evidence/${label}/${looks.length + 1}.md` }) }, scope: () => ({ label: "skill", deriveDir: ".vision" }), onLook: (look) => looks.push(look) });
-  const sandbox = new CodemodeSandbox({ tools: [bash], globals: [vision.see(nodeVisionEnv({ cwd }), { conversationId: "skill", callId: "1", model: undefined, signal: undefined })] });
+  const vision = createVisionExtension({ eyes, jev, evidence: { file: async (label) => ({ path: `evidence/${label}/${looks.length + 1}.md` }) }, scope: () => ({ label: "skill", deriveDir: ".vision" }), onLook: (look) => looks.push(look) });
+  const call = { conversationId: "skill", callId: "1", model: undefined, signal: undefined };
+  const sandbox = new CodemodeSandbox({ tools: [bash], globals: [vision.see(nodeVisionEnv({ cwd }), call), vision.judge(nodeVisionEnv({ cwd }), call)] });
   try {
     const run = await sandbox.execute(code);
     assert.ok(run.ok, run.ok ? "" : run.error.message);
-    return { value: run.value, requests: eyes.ledger.map((r) => r.parts.filter((p) => p.type === "image").map((p) => p.fragment)), looks };
+    return { value: run.value, requests: eyes.ledger.map((r) => r.parts.filter((p) => p.type === "image").map((p) => p.fragment)), judged: jev.requests.map((r) => r.request), looks };
   } finally { await sandbox.close(); }
 }
 
-test("the skill holds the four examples this test runs, and nothing more", () => {
-  assert.deepEqual([pdfPages, longVideo, manyImages, region].map((code) => typeof code), ["string", "string", "string", "string"]);
+test("the skill holds the ten examples this test runs, and nothing more", () => {
+  assert.deepEqual([pdfPages, longVideo, manyImages, region, classify, aroundEyes, byExample, presence, tiles, edges].map((code) => typeof code), Array(10).fill("string"));
   assert.deepEqual(more, []);
 });
 
@@ -75,4 +82,54 @@ test("a region: cropped with ffmpeg first, cited by where it was", async () => {
   const { value } = await example(region);
   assert.deepEqual(imageHeader(fs.readFileSync(path.join(cwd, ".look", "scan-top-right.png"))), { mimeType: "image/png", width: 400, height: 250, orientation: 1 });
   assert.equal(value, "saw scan.png#xywh=percent:50,0,50,25");
+});
+
+const PAGES = Array.from({ length: 12 }, (_, i) => `report.pdf#page=${i + 1}`);
+
+test("Jev: every page classified, one request a page, each named by its page", async () => {
+  const { value, judged } = await example(classify);
+  assert.deepEqual(judged.map((r) => r.state.images.map((i) => i.source)), PAGES.map((page) => [page]));
+  assert.deepEqual(value[0], { page: 1, kind: "table", signed: true });
+  assert.equal(value.length, 12);
+});
+
+test("Jev before and after the eyes: only the pages worth a look go to the eyes, and Jev checks what they said", async () => {
+  // Odd pages are invoices; the eyes are asked about the first and Jev confirms it.
+  const answer = (q, request) => (q.instructions.startsWith("Is `images[0].image` a readable page") ? { type: "noul", noul: parseInt(request.state.images[0].source.match(/p-(\d+)/)[1], 10) % 2 ? 0.9 : 0.1 } : ANSWERS[q.type](q));
+  const { value, requests, judged } = await example(aroundEyes, answer);
+  assert.deepEqual(value.pages, ["p-01.png", "p-03.png", "p-05.png", "p-07.png", "p-09.png", "p-11.png"]);
+  assert.deepEqual(requests, [[".look/pages/p-01.png"]], "the eyes saw one page, not twelve");
+  assert.equal(judged.length, 13, "twelve skips, then one check");
+  assert.equal(judged.at(-1).questions.same.instructions, "Does `images[0].image` show the invoice number saw .look/pages/p-01.png?");
+  assert.equal(value.confirmed, true);
+});
+
+test("Jev: photos classified by example images in the criteria", async () => {
+  const { value, judged } = await example(byExample);
+  assert.deepEqual(value, { "attic.png": "roof", "hall.png": "roof", "roof.png": "roof" });
+  assert.deepEqual(judged.map((r) => Object.keys(r.assets)), [["<roof>", "<hall>"], ["<roof>", "<hall>"], ["<roof>", "<hall>"]]);
+  assert.deepEqual(judged[0].questions.room.criteria, { roof: "A roof seen from outside, like <roof>", hall: "A hallway indoors, like <hall>", neither: "Neither of these." });
+});
+
+test("Jev: a presence noul beside the box, and the box as a region of the scan", async () => {
+  const { value, judged } = await example(presence);
+  assert.equal(value, "signature at scan.png#xywh=percent:50,25,50,50");
+  assert.deepEqual(Object.keys(judged[0].questions), ["present", "where"]);
+});
+
+test("Jev: tiles as the choice's options, then a box on the chosen tile, given back as a region of the whole scan", async () => {
+  const { value, judged } = await example(tiles);
+  assert.deepEqual(Object.keys(judged[0].assets), ["<tile top_left>", "<tile top_right>", "<tile bottom_left>", "<tile bottom_right>"]);
+  assert.deepEqual(judged[0].state.images.map((i) => i.source), ["scan.png"]);
+  for (const t of ["top_left", "top_right", "bottom_left", "bottom_right"]) assert.deepEqual(imageHeader(fs.readFileSync(path.join(cwd, ".look", "tiles", `${t}.png`))), { mimeType: "image/png", width: 400, height: 500, orientation: 1 });
+  assert.deepEqual(judged[1].state.images.map((i) => i.source), ["scan.png#xywh=percent:0,0,50,50"], "the first tile, named by where it was cut");
+  assert.equal(value, "scan.png#xywh=percent:25,12.5,25,25", "the box on the tile, as a region of the whole");
+});
+
+test("Jev: the box's crop asked about its four edges", async () => {
+  const { value, judged } = await example(edges);
+  assert.deepEqual(imageHeader(fs.readFileSync(path.join(cwd, ".look", "table.png"))), { mimeType: "image/png", width: 400, height: 500, orientation: 1 });
+  assert.deepEqual(Object.keys(judged[1].questions), ["left", "right", "top", "bottom"]);
+  assert.deepEqual(judged[1].state.images.map((i) => i.source), ["scan.png#xywh=percent:50,25,50,50"]);
+  assert.deepEqual(value, ["left", "right", "top", "bottom"], "every edge the fake says yes to");
 });
