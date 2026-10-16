@@ -2,10 +2,10 @@ export { type Learning, learningId, parseLearning, renderLearning, SCOPE, type S
 export { LearnError, type LearnErrorCode } from "./errors.js";
 export { agentLearn, type AgentLearnOptions } from "./extension.js";
 export {
-  assertNotRulesLocked, CAPS, COMMIT_SHA, inboxPath, isRulesLocked, LAYOUT, LEARNING_ID, learningPath, RULES_LOCKED, RUN_ID, runBranch, type Tier,
-  tierOf, usesPath,
+  assertNotRulesLocked, CAPS, COMMIT_SHA, inboxPath, inboxWorkflowDir, isRulesLocked, LAYOUT, LEARNING_ID, learningPath, RULES_LOCKED, RUN_ID, runBranch, type Tier,
+  tierOf, usesPath, WORKFLOW_NAME,
 } from "./layout.js";
-export { byUse, deriveSeed, indexLine, MAX_WORKFLOW_HINTS, renderSection, type SeedRecord, WORKFLOW_NAME, type WorkflowHint } from "./section.js";
+export { byUse, deriveSeed, indexLine, MAX_WORKFLOW_HINTS, renderSection, type SeedRecord, type WorkflowHint } from "./section.js";
 export { readSeed, SeedDoc, type Seeded, seedLearning, type SeedOptions, type Skipped } from "./seed.js";
 export { CandidatesDoc, collectCandidates, LEARN_PARAMETERS, learnTool, type LearnToolOptions } from "./tool.js";
 export {

@@ -1,6 +1,8 @@
 import type { Learning } from "./entry.js";
 import { LearnError } from "./errors.js";
-import { CAPS, LAYOUT } from "./layout.js";
+import { CAPS, LAYOUT, WORKFLOW_NAME } from "./layout.js";
+
+export { WORKFLOW_NAME } from "./layout.js";
 
 /** A saved workflow the host found for this run's input. The workflows lane fills these; none is the default. */
 export type WorkflowHint = {
@@ -8,7 +10,6 @@ export type WorkflowHint = {
   readonly status: "trial" | "active";
 };
 
-export const WORKFLOW_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 export const MAX_WORKFLOW_HINTS = 8;
 
 /** What a run was seeded with, kept in its store: the commit, and the index derived there. */
@@ -34,7 +35,7 @@ export function indexLine(learning: Learning): string | undefined {
   const first = learning.text.split("\n").find((line) => line.trim() !== "")!.trim();
   if (TAG.test(first)) return undefined;
   const chars = Array.from(first);
-  const shown = chars.length > LINE_CHARS ? `${chars.slice(0, LINE_CHARS - 1).join("")}…` : first;
+  const shown = chars.length > LINE_CHARS ? `${chars.slice(0, LINE_CHARS - 1).join("")}\u2026` : first;
   return `- ${learning.id} ${learning.type}: ${shown}${learning.uses > 0 ? ` (used ${learning.uses})` : ""}`;
 }
 
@@ -47,7 +48,7 @@ export function checkWorkflows(workflows: readonly WorkflowHint[]): WorkflowHint
   if (!Array.isArray(workflows)) throw new LearnError("invalid", "workflows is a list");
   if (workflows.length > MAX_WORKFLOW_HINTS) throw new LearnError("invalid", `at most ${MAX_WORKFLOW_HINTS} workflows to try`);
   return workflows.map((w) => {
-    if (!w || typeof w.name !== "string" || !WORKFLOW_NAME.test(w.name)) throw new LearnError("invalid", "a workflow name is 1 to 64 letters, digits, dots, dashes or underscores");
+    if (!w || typeof w.name !== "string" || !WORKFLOW_NAME.test(w.name)) throw new LearnError("invalid", "a workflow name is 1 to 64 lowercase letters, digits, dashes or underscores, starting with a letter or digit");
     if (w.status !== "trial" && w.status !== "active") throw new LearnError("invalid", "a workflow to try is trial or active");
     return { name: w.name, status: w.status };
   });

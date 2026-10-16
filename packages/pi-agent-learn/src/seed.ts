@@ -2,7 +2,8 @@ import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, type Session } from "@earendil-works/pi-durable";
 import { modeRefusal, type Repo } from "@parcha/pi-git-remote";
-import { lstat, mkdir, open, readFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { lstat, mkdir, open, readdir, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { type Learning, parseLearning } from "./entry.js";
 import { LearnError } from "./errors.js";
@@ -89,7 +90,10 @@ async function realDirectory(dir: string): Promise<void> {
   if (!stat.isDirectory()) throw new LearnError("invalid", `${dir} is not a directory`);
 }
 
-/** Writes each file as a new regular file; one already there with the same bytes is left, any other is refused. */
+const PARTIAL = /^\.L-[0-9a-f]{12}\.md\.[0-9a-f]{16}\.partial$/;
+
+/** Installs each file whole: written to a new temporary file beside it, then renamed over the name, so an interrupted
+ *  copy never leaves a partial file under the name, and a restart restores the stored bytes over whatever is there. */
 async function copyInto(into: string, files: ReadonlyMap<string, string>): Promise<string[]> {
   if (typeof into !== "string" || !path.isAbsolute(into)) throw new LearnError("invalid", "into is an absolute directory");
   const rel = [...files.keys()].map((id) => path.posix.join(LAYOUT.seeded, `${id}.md`));
@@ -100,21 +104,23 @@ async function copyInto(into: string, files: ReadonlyMap<string, string>): Promi
     at = path.join(at, part);
     await realDirectory(at);
   }
+  for (const name of await readdir(at)) if (PARTIAL.test(name)) await unlink(path.join(at, name));
   const written: string[] = [];
   for (const [id, text] of files) {
     if (!LEARNING_ID.test(id)) throw new LearnError("invalid", "not a learning id");
-    const file = path.join(at, `${id}.md`);
+    const partial = path.join(at, `.${id}.md.${randomBytes(8).toString("hex")}.partial`);
+    const handle = await open(partial, "wx", 0o644);
     try {
-      const handle = await open(file, "wx", 0o644);
-      try {
-        await handle.writeFile(text, "utf8");
-      } finally {
-        await handle.close();
-      }
+      await handle.writeFile(text, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    try {
+      await rename(partial, path.join(at, `${id}.md`));
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const stat = await lstat(file);
-      if (!stat.isFile() || (await readFile(file, "utf8")) !== text) throw new LearnError("invalid", `${path.posix.join(LAYOUT.seeded, `${id}.md`)} is already there and differs`);
+      await unlink(partial).catch(() => undefined);
+      throw new LearnError("invalid", `${path.posix.join(LAYOUT.seeded, `${id}.md`)} cannot be replaced: ${(error as NodeJS.ErrnoException).code ?? "error"}`, { cause: error });
     }
     written.push(path.posix.join(LAYOUT.seeded, `${id}.md`));
   }

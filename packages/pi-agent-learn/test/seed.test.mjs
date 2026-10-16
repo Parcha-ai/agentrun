@@ -135,7 +135,7 @@ test("a learning file that does not parse, is misnamed, is a symlink or is over 
   }
 });
 
-test("seedLearning refuses a missing ref, and a symlinked or occupied .agent/learnings in the run's directory", async () => {
+test("seedLearning refuses a missing ref, a relative directory, and a symlinked .agent; nothing is written through a link", async () => {
   const root = await scratch();
   const { repo } = await agentRepo(root, learningFiles([L1]));
   const run = await openRun(path.join(root, "run.sqlite"));
@@ -148,13 +148,45 @@ test("seedLearning refuses a missing ref, and a symlinked or occupied .agent/lea
     await symlink(path.join(root, "elsewhere"), path.join(work, ".agent"));
     await assert.rejects(seedLearning({ repo, target: run.harness, into: work }), { code: "invalid" });
     assert.deepEqual(await readdir(path.join(root, "elsewhere")), [], "nothing was written through the link");
-    const work2 = path.join(root, "work2");
-    await mkdir(path.join(work2, ".agent", "learnings"), { recursive: true });
-    await writeFile(path.join(work2, ".agent", "learnings", `${L1.id}.md`), "planted\n");
-    await assert.rejects(seedLearning({ repo, target: run.harness, into: work2 }), { code: "invalid" });
     await assert.rejects(seedLearning({ repo, target: run.harness, into: "relative/dir" }), { code: "invalid" });
   } finally {
     await run.close();
+  }
+});
+
+test("copies are installed whole: a restart after an interrupted copy, an edited copy or a planted link restores the stored bytes", async () => {
+  const root = await scratch();
+  const { repo, main } = await agentRepo(root, learningFiles([L1, L2]));
+  const stored = async (l) => repo.read(`learnings/${l.id}.md`, main);
+  const work = path.join(root, "work");
+  const dir = path.join(work, ".agent", "learnings");
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, `${L1.id}.md`), (await stored(L1)).slice(0, 20));
+  await writeFile(path.join(dir, `.${L1.id}.md.0123456789abcdef.partial`), "half a copy");
+  await writeFile(path.join(root, "outside.md"), "outside\n");
+  await symlink(path.join(root, "outside.md"), path.join(dir, `${L2.id}.md`));
+  const run = await openRun(path.join(root, "run.sqlite"));
+  try {
+    const seeded = await seedLearning({ repo, target: run.harness, into: work });
+    assert.deepEqual(seeded.files, [`.agent/learnings/${L1.id}.md`, `.agent/learnings/${L2.id}.md`]);
+    assert.deepEqual((await readdir(dir)).sort(), [`${L1.id}.md`, `${L2.id}.md`], "the leftover partial file is gone");
+    for (const l of [L1, L2]) {
+      const file = path.join(dir, `${l.id}.md`);
+      assert.ok((await lstat(file)).isFile(), "a regular file, not a link");
+      assert.equal(await readFile(file, "utf8"), await stored(l));
+    }
+    assert.equal(await readFile(path.join(root, "outside.md"), "utf8"), "outside\n", "the link's target was not written");
+  } finally {
+    await run.close();
+  }
+  const blocked = path.join(root, "work2");
+  await mkdir(path.join(blocked, ".agent", "learnings", `${L1.id}.md`, "inside"), { recursive: true });
+  const run2 = await openRun(path.join(root, "run2.sqlite"));
+  try {
+    await assert.rejects(seedLearning({ repo, target: run2.harness, into: blocked }), (e) => e instanceof LearnError && e.code === "invalid" && /cannot be replaced/.test(e.message));
+    assert.deepEqual((await readdir(path.join(blocked, ".agent", "learnings"))).filter((n) => n.endsWith(".partial")), [], "a failed install leaves no partial file");
+  } finally {
+    await run2.close();
   }
 });
 

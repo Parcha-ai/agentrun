@@ -94,6 +94,7 @@ repo/
   .pi/agentrun/workflows/<name>/   saved workflows, in the DSL's own layout
   learnings/<id>.md                one learning per file
   inbox/<run id>.md                a run's candidates, on runs/<run id> only
+  inbox/<run id>/workflows/<name>/ a workflow the run saved, the DSL's records byte for byte, on runs/<run id> only
   uses/<run id>.json               a run's workflow uses, on runs/<run id> only
   inbox/<run id>/workflows/<name>/ a run's saved workflow records, as the DSL wrote them, on runs/<run id> only
 ```
@@ -102,7 +103,7 @@ repo/
 segment of a path and in any spelling a file system or git could treat as the same file (case, Unicode compatibility
 forms, ignorable characters, trailing dots or spaces, an NTFS stream suffix, an 8.3 short name). `assertNotRulesLocked`
 throws for such a path; every writer calls it. `LAYOUT`, `tierOf`, `runBranch`, `inboxPath`, `usesPath`, `learningPath`
-and `CAPS` fix the rest of the layout and its size caps.
+`inboxWorkflowDir`, `WORKFLOW_NAME` and `CAPS` fix the rest of the layout and its size caps.
 
 A learning is one file: frontmatter, then the general rule.
 
@@ -130,12 +131,14 @@ over the run id and the text, so curating the same candidate twice cannot make t
 
 | Tool | Arguments | Returns |
 | --- | --- | --- |
-| `learn` | `{ type: "lesson" \| "fact" \| "correction" \| "used", text, evidence?: string[], id?: string }` | `[noted <n>]` |
+| `learn` | `{ type: "lesson" \| "fact" \| "correction" \| "used" \| "workflow", text, evidence?: string[], id?: string }` | `[noted <n>]` |
 
 `learn` writes one candidate into the run's own pi-durable store (the session document `learn.candidates`), keyed by the
 call id, inside the tool's commit. It is replay-safe: a call rerun after a crash finds its candidate and stores nothing
-new. It makes no model call. A `used` mark names the learning that helped by its id. Text is at most 1,000 bytes and
-evidence 1,000 bytes in all; a run notes at most 8 new learnings and 32 `used` marks. Evidence stays with the run and is
+new. It makes no model call. A `used` mark names the learning that helped by its id. A `workflow` note names a workflow
+the run saved (its name, by the DSL's rule: 1 to 64 lowercase letters, digits, dashes or underscores) and says in its
+text when to use it; a correction, lesson or fact may name the learning it replaces. Text is at most 1,000 bytes and
+evidence 1,000 bytes in all; a run makes at most 8 notes of every type but `used`, and 32 `used` marks. Evidence stays with the run and is
 never part of a learning. `agentLearn({ guard, secrets })` checks every call with the host's guard first; a refused call
 stores nothing and its result names the reason, never the value. The result carries its text under both `content` and
 `output`, so pi-durable 1.1, 1.2 and 1.3 all show it to the model.
@@ -157,7 +160,9 @@ const candidates = await collectCandidates(harness);
 
 `seedLearning` fetches, resolves `ref`, reads `learnings/*.md` at that commit, derives the index under the cap, records
 `{ sha, index, omitted, workflows, copied }` in the run's store as `learn.seed`, and copies the active learnings to
-`<into>/.agent/learnings/<id>.md` as new regular files for the agent to read. Edits there are never committed. A file
+`<into>/.agent/learnings/<id>.md` for the agent to read. Each copy is written to a temporary file and renamed over the
+name, so an interrupted copy never leaves a partial file, and seeding again restores the stored bytes over an edited copy
+or a link. Edits there are never committed. A file
 that is misnamed, does not parse, is a symlink or is over 4 KB is skipped and named in `skipped`. A run is seeded once:
 when its store already holds a seed, that commit is used again and the record is kept, so a restarted host never moves a
 run to a newer commit. `readSeed` returns the record; `collectCandidates` returns the run's candidates in order.
