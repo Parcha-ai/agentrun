@@ -22,6 +22,11 @@ is JSON and opens in a tab; the store is a SQLite file and downloads.
 The page opens a recording three ways: a bundled one (`?r=<id>`), one at a URL beside the page (`?src=<url>`, on a
 static host), or a recording folder dropped on the page or chosen with its picker (works from `file://` too).
 
+Add `&embed=1` to frame it in another page: no header (a recording that breaks the format still says so), the full
+width of its frame, and a small `postMessage` protocol (`PANELS.md`, "Embedding"): it posts `ready`, its `position`
+at each stop and its `focus`, and obeys `seek`, `focus` and `theme` only from the framing page whose origin its URL
+names with `&parent=<origin>`, each checked.
+
 - **Timeline.** The process lane comes from the supervisor's lines: a band per process, and a red mark with its label
   where a process was killed. The ticks under it are the journal's opens, a fact of the store. A restore (the run
   reopened a checkpoint after its box died) is a dashed mark: the commits after the checkpoint are a lost branch.

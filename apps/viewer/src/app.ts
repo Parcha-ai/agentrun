@@ -394,6 +394,60 @@ export function viewContext(t: number, manifest: Manifest, inputs: { focus?: str
     ...(cite !== undefined ? { cite } : {}), ...(json ? { json: (sha: string) => json.get(sha) } : {}) };
 }
 
+/** The chapter a point is in: the one with the greatest stop at or before it (a manifest's chapters keep the order it
+ *  declares, which need not be the order of their stops), by its index in that list, or -1 before every chapter. */
+export const chapterAt = (chapters: readonly { p: number }[], p: number): number =>
+  chapters.reduce((at, chapter, index) => (chapter.p <= p && (at < 0 || chapter.p >= chapters[at]!.p) ? index : at), -1);
+
+/** The embed protocol (PANELS.md, "Embedding"): what a framed viewer posts to the page that frames it. */
+export const embedMessage = (type: 'ready' | 'position' | 'focus', body: Record<string, Json>) => ({ source: 'agentrun-viewer', type, ...body });
+
+/** The origin of the page that frames this one, when the browser says what it is (an http or https page); else `*`, as
+ *  for a page opened from a file. */
+export const parentOrigin = (ancestor: string | undefined, referrer: string): string => {
+  const known = ancestor ?? (referrer ? new URL(referrer).origin : undefined);
+  return known !== undefined && /^https?:\/\//.test(known) ? known : '*';
+};
+
+/** The origin a framing page names with `&parent=`: an http or https origin, written as one. Only it may steer the viewer. */
+export const parentParam = (value: string | null): string | undefined => {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    return /^https?:$/.test(url.protocol) && url.origin === value ? url.origin : undefined;
+  } catch { return undefined; }
+};
+
+/** A command a framing page may send: seek (to a stop, a commit of a generation, or a time in seconds), focus (a workflow
+ *  path, or none), or theme. */
+export type Steer = { type: 'seek'; stop: number } | { type: 'seek'; commit: number; gen?: number } | { type: 'seek'; t: number }
+  | { type: 'focus'; path: string | null } | { type: 'theme'; theme: 'light' | 'dark' | 'auto' };
+
+/** A message as a command the viewer obeys, each field checked; anything else (another type, a field of the wrong kind,
+ *  a stop past the end, a path that is not a workflow path) is nothing. A message never carries code to run. */
+export function steerOf(data: unknown, last: number): Steer | undefined {
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined;
+  const message = data as Record<string, unknown>;
+  const whole = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0;
+  const only = (...keys: string[]) => Object.keys(message).every((key) => key === 'type' || key === 'source' || keys.includes(key));
+  if (message.type === 'seek') {
+    if (only('stop') && whole(message.stop) && message.stop <= last) return { type: 'seek', stop: message.stop };
+    if (only('commit', 'gen') && whole(message.commit) && (message.gen === undefined || whole(message.gen))) return { type: 'seek', commit: message.commit, ...(message.gen === undefined ? {} : { gen: message.gen as number }) };
+    if (only('t') && typeof message.t === 'number' && Number.isFinite(message.t) && message.t >= 0) return { type: 'seek', t: message.t };
+    return undefined;
+  }
+  if (message.type === 'focus' && only('path')) {
+    if (message.path === null) return { type: 'focus', path: null };
+    if (typeof message.path === 'string' && message.path.length <= 512 && /^\/[\w./:#-]*$/.test(message.path)) return { type: 'focus', path: message.path };
+    return undefined;
+  }
+  if (message.type === 'theme' && only('theme') && (message.theme === 'light' || message.theme === 'dark' || message.theme === 'auto')) return { type: 'theme', theme: message.theme };
+  return undefined;
+}
+
+/** A message may steer the viewer only when it comes from the framing page itself, at the origin its URL named. */
+export const fromParent = (origin: string, isParent: boolean, allowed: string | undefined): boolean => allowed !== undefined && isParent && origin === allowed;
+
 function play(recording: Recording, root: HTMLElement, params: URLSearchParams, base?: string) {
   const problems = validate(recording.manifest, recording.lines);
   const player: Player = { recording, stops: stopsOf(recording.lines), lanes: lanesOf(recording.lines), p: 0, playing: false, speed: 1, clock: 0 };
@@ -440,7 +494,10 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
 
   const header = el('header', {}, el('h1', { text: recording.manifest.title }), el('p', { class: 'meta', text:
     `${recording.manifest.task} · ${recording.manifest.model} · ${recording.manifest.generations} process${recording.manifest.generations === 1 ? '' : 'es'} · ${recording.manifest.kills} kill${recording.manifest.kills === 1 ? '' : 's'}${recording.manifest.providers ? ` · ${recording.manifest.providers} providers` : ''} · recorded ${recording.manifest.recorded.started} · code ${recording.manifest.code.commit.slice(0, 8)}` }));
-  if (problems.length) header.append(el('p', { class: 'problems', text: `This recording breaks the format: ${problems.slice(0, 3).join('; ')}` }));
+  // Embedded (`?embed=1`), the page is its frame's: no header, but a recording that breaks the format still says so.
+  const embedded = params.get('embed') === '1';
+  const problemsNote = problems.length ? el('p', { class: 'problems', text: `This recording breaks the format: ${problems.slice(0, 3).join('; ')}` }) : undefined;
+  if (problemsNote && !embedded) header.append(problemsNote);
   if (recording.manifest.result) {
     const link = blobLink(recording, recording.manifest.result.blob, recording.manifest.result.title, 'result');
     if (link) header.append(link);
@@ -470,8 +527,29 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const shown = panelsFor(lines);
   const featured = featuredPanel(shown, lines);
   const featuredBox = el('div', { class: 'featured' });
-  if (featured) root.replaceChildren(header, featuredBox, controls, counters, baselineRow, timeline, chapterList, focusBar, panels);
-  else root.replaceChildren(header, counters, baselineRow, timeline, controls, chapterList, focusBar, panels);
+  const top = embedded ? (problemsNote ? [problemsNote] : []) : [header];
+  if (embedded) document.documentElement.classList.add('embed');
+  if (featured) root.replaceChildren(...top, featuredBox, controls, counters, baselineRow, timeline, chapterList, focusBar, panels);
+  else root.replaceChildren(...top, counters, baselineRow, timeline, controls, chapterList, focusBar, panels);
+  // Framed, the viewer tells the framing page where the point is and what is focused, and obeys it (seek, focus, theme)
+  // only when its URL names that page's origin (`&parent=`): PANELS.md, "Embedding".
+  const framed = embedded && window.parent !== window;
+  const steeredBy = parentParam(params.get('parent'));
+  const target = steeredBy ?? parentOrigin(location.ancestorOrigins?.item(0) ?? undefined, document.referrer);
+  const post = (message: ReturnType<typeof embedMessage>) => window.parent.postMessage(message, target);
+  let postedStop: number | undefined;
+  let postedFocus: string | null | undefined;
+  const tellParent = () => {
+    if (player.p !== postedStop) {
+      postedStop = player.p;
+      const index = chapterAt(chapters, player.p);
+      const durable = lines.slice(0, player.p).findLast((line) => line.channel === 'durable');
+      post(embedMessage('position', { stop: player.p, gen: durable?.gen ?? null, commit: durable?.commit ?? null, t: player.p > 0 ? lines[player.p - 1]!.t : 0,
+        chapter: index < 0 ? null : { title: chapters[index]!.title, stop: chapters[index]!.p } }));
+    }
+    const focus = player.focus ?? null;
+    if (focus !== postedFocus) { postedFocus = focus; post(embedMessage('focus', { path: focus })); }
+  };
   const [previousButton, , nextButton] = [...controls.querySelectorAll('button')];
 
   const setFocus = (path: string | undefined) => { player.focus = path; draw(); };
@@ -488,6 +566,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     range.value = String(player.p);
     const line = lines[player.p - 1];
     position.textContent = player.p === 0 ? 'before the first line' : `${(t / 1000).toFixed(2)} s · ${line?.channel === 'durable' ? `after commit ${line.commit}${restored ? ` of generation ${line.gen}` : ''}` : `${line?.kind}`} · line ${player.p} of ${last}`;
+    if (framed) tellParent();
     chapterList.replaceChildren(...chapters.map((chapter) => {
       const button = el('button', { class: chapter.p === player.p ? 'current' : '', text: chapter.title });
       button.addEventListener('click', () => { if (chapter.focus) player.focus = chapter.focus; scrubTo(chapter.p); });
@@ -560,6 +639,24 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     playButton.textContent = player.playing ? 'pause' : 'play';
     if (player.playing) { if (player.p >= last) player.p = head.seek(0); wall = 0; cancelAnimationFrame(frame); frame = requestAnimationFrame(tick); } else syncUrl();
   });
+  if (framed) {
+    post(embedMessage('ready', { stops: last, chapters: chapters.map((chapter) => ({ title: chapter.title, stop: chapter.p })) }));
+    if (steeredBy) {
+      window.addEventListener('message', (event) => {
+        if (!fromParent(event.origin, event.source === window.parent, steeredBy)) return;
+        const steer = steerOf(event.data, last);
+        if (steer?.type === 'seek') {
+          if ('stop' in steer) scrubTo(steer.stop);
+          else if ('commit' in steer) scrubTo(afterCommit(steer.commit, steer.gen));
+          else { player.p = head.seekTime(steer.t * 1000); draw(); }
+        } else if (steer?.type === 'focus') setFocus(steer.path ?? undefined);
+        else if (steer?.type === 'theme') {
+          if (steer.theme === 'auto') delete document.documentElement.dataset.theme;
+          else document.documentElement.dataset.theme = steer.theme;
+        }
+      });
+    }
+  }
   draw();
   void resultJson(recording).then((read) => { if (read.size) { json = read; draw(); } });
   if (recording.manifest.baseline) {

@@ -18,9 +18,15 @@
       --token: #f2b73a; --glow: rgba(242, 183, 58, 0.4);
     }
   }
+  /* A framing page may choose the theme (embed protocol): dark here whatever the system's. */
+  :root[data-theme="dark"] {
+    --bg: #151514; --panel: #1f1f1d; --ink: #ecebe6; --muted: #a3a19a; --rule: #3a3935;
+    --band-0: #23493a; --band-1: #2c3560; --band-2: #5a4421; --band-3: #4a3058;
+  }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
   #viewer { max-width: 1200px; margin: 0 auto; padding: 16px; }
+  html.embed #viewer { max-width: none; margin: 0; padding: 8px; }
   h1 { font-size: 22px; margin: 0 0 4px; }
   h2 { font-size: 17px; margin: 24px 0 8px; }
   h3 { font-size: 14px; margin: 0 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
