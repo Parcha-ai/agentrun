@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { WorkflowObservation, workflowView, progressLines, formatWorkflowView, readable } from '../dist/workflow-view.js';
 import { runWorkflow, inspectWorkflow } from '@parcha/agentrun-dsl';
+import { workflowGraph } from '@parcha/agentrun-dsl/graph';
 import { restoreWorkflowSession } from '../dist/workflow-session.js';
 import { demoWorkflow, demoInput, scriptedDemoDeps } from '../dist/demo.js';
 import { supportTriageWorkflow, supportTriageInputs, scriptedSupportTriageDeps } from '../dist/triage-demo.js';
@@ -194,4 +195,16 @@ test('bounded observation never invokes getters, proxy traps or expands sparse g
     .runJudge({ label: 'fictional', state: value, questions: {}, kind: 'judge' });
   assert.equal(called, true); assert.equal(touched, 0);
   assert.equal(readable({ full: 'x'.repeat(30_000) }, Number.MAX_SAFE_INTEGER), JSON.stringify({ full: 'x'.repeat(30_000) }, null, 2));
+});
+
+test('the text view draws the graph the viewer draws: the same nodes, in the same order, with the same pointers, kinds and labels', () => {
+  const nested = { v: 2, name: 'nested', schemas: { Any: { type: 'object' } }, output: { schemaId: 'Any', path: 'final' }, root: { node: 'chain', steps: [
+    { node: 'map', label: 'each', itemsPath: 'items', as: 'outs', body: { node: 'workflow', label: 'sub', input: {}, out: 'Any', as: 'sub',
+      workflow: { v: 2, name: 'child', schemas: { Any: { type: 'object' } }, output: { schemaId: 'Any', path: 'res' }, root: { node: 'code', label: 'inner', code: 's => ({ res: {} })' } } } },
+    { node: 'route', label: 'choose', valuePath: 'pick', branches: { 'a/b': { body: { node: 'code', label: 'one', code: 's => ({})' } }, other: { body: { node: 'code', label: 'two', code: 's => ({})' } } }, otherwise: 'other' },
+  ] } };
+  for (const workflow of [demoWorkflow, supportTriageWorkflow, nested]) {
+    const view = workflowView(workflow);
+    assert.deepEqual(view.nodes.map(({ path, kind, label }) => ({ path, kind, label })), workflowGraph(workflow).nodes.map(({ path, kind, label }) => ({ path, kind, label })));
+  }
 });
