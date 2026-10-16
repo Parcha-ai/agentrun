@@ -194,7 +194,13 @@ test('a restore (3.2): a drop in commit at a generation\'s first snapshot is acc
   const none = await refused(restored);
   assert.equal(none.line, lost.length + 1 + 2);
   assert.match(none.message, /first snapshot is at commit 4, below the 7 already seen.*no transport\.moves restore record( after it)? with checkpoint head 5/);
-  assert.match((await refused([...restored, moves(4, 24)])).message, /checkpoint head 5/);
+  // Draft 37: pi may commit once at open, so a snapshot at the head (4) with the first new commit head + 1 (5) is accepted;
+  // a head below the snapshot's commit, or above the first new commit, is not.
+  assert.deepEqual(validateRecording(await recording(t, { lines: [...restored, moves(4, 24)], started: 2 })), []);
+  assert.match((await refused([...restored, moves(3, 24)])).message, /checkpoint head 5/);
+  assert.match((await refused([...restored, moves(6, 24)])).message, /checkpoint head 5/);
+  const twoAtOpen = [...lost, snap(4, 0, 20, 2), snap(4, 1, 21, 2), durable(6, 0, { t: 22, gen: 2 }), moves(4, 24)];
+  assert.ok(validateRecording(await recording(t, { lines: twoAtOpen, started: 2 })).some(problem => /a restore's head is 4, but the process's first commit is 6/.test(problem.message)), 'head + 2 is more than pi\'s one commit at open');
   assert.ok(validateRecording(await recording(t, { lines: [...restored, moves(5, 24, 2, 'move')], started: 2 })).some(problem => /no transport\.moves restore record( after it)? with checkpoint head 5/.test(problem.message)), 'a move is not a restore');
   // matched by process, not by generation value: the snapshot's gen is an earlier process's, and the record's is whatever the driver says
   assert.deepEqual(validateRecording(await recording(t, { lines: [...restored, moves(5, 24, 3)], started: 2 })), []);
