@@ -12,8 +12,8 @@ import { citation, parseCitation } from "./fragments.js";
 import type { CallContext, CallSetup, ImageContent, Json, Usage } from "./host.js";
 import { fitImage, type FitLimits, type PixelSize } from "./image.js";
 import { JEV_IMAGE_BYTES, JEV_MAX_EDGE, JEV_MIN_EDGE, JEV_MODEL, JEV_REQUEST_BYTES } from "./limits.js";
-import { AS_IS, gatherMedia, namesMedia, once, throwMiss, type MediaRequest } from "./media.js";
-import { firstLine, type Miss } from "./misses.js";
+import { aboutMedium, AS_IS, gatherMedia, namesMedia, once, requestedAbout, throwMiss, type About, type MediaMiss, type MediaRequest } from "./media.js";
+import { firstLine } from "./misses.js";
 import type { CodeGlobal } from "./see.js";
 
 /** A question as TypeSafe's API takes it. A `box` question's `image` is the index of the image it finds a thing in
@@ -87,22 +87,24 @@ export async function judge(input: unknown, env: VisionEnv | undefined, call: Ca
   let items: Fitted[] = [];
   const examples: (readonly [string, Fitted])[] = [];
   // The key names every image sent, the examples' too with their references, so a changed example is another judgment.
-  const record = (answered: string, body: string, facts: Partial<LookRecord["facts"]> = {}): LookRecord => {
-    const sha256 = blocksSha256([...items, ...examples.map(([, item]) => item)]);
-    const key = lookKey({ sha256, fragment: items.map((item) => item.fragment).join("\n"), model, plan: [request.questions, request.state ?? null, examples.map(([ref]) => ref)] });
-    return { tool: "look", args: { path: [...new Set(items.map((item) => item.fragment))].join(", "), ask: JSON.stringify(request.questions), model: answered, native: false, via: "jev" }, status: "ok", body, facts: { sha256, kind: "image", fragment: "", key, shown_blocks: items.length + examples.length, ...facts } };
+  // A miss before any image is fitted is filed as the medium it was about, never as an empty image.
+  const record = (answered: string, body: string, facts: Partial<LookRecord["facts"]> = {}, about?: About): LookRecord => {
+    const on = items.length ? undefined : about;
+    const sha256 = on ? on.sha256 : blocksSha256([...items, ...examples.map(([, item]) => item)]);
+    const key = lookKey({ sha256, fragment: on ? on.fragment : items.map((item) => item.fragment).join("\n"), model, plan: [request.questions, request.state ?? null, examples.map(([ref]) => ref)] });
+    return { tool: "look", args: { path: on ? on.path : [...new Set(items.map((item) => item.fragment))].join(", "), ask: JSON.stringify(request.questions), model: answered, native: false, via: "jev" }, status: "ok", body, facts: { sha256, kind: on ? on.kind : "image", fragment: on ? on.fragment : "", key, shown_blocks: items.length + examples.length, ...facts } };
   };
-  const fail = (cause: Miss, spent: Partial<LookRecord["facts"]> = { tokens_in: 0, tokens_out: 0, cost_usd: 0 }): Promise<never> =>
-    throwMiss(filing, VISION_JUDGE.name, call, cause, record(cause.model ?? "no vision route", "", spent));
-  if (!jev) return fail({ code: "no_vision_route", reason: "this host gives vision.judge no Jev port" });
+  const fail = ({ about, ...cause }: MediaMiss, spent: Partial<LookRecord["facts"]> = { tokens_in: 0, tokens_out: 0, cost_usd: 0 }): Promise<never> =>
+    throwMiss(filing, VISION_JUDGE.name, call, cause, record(cause.model ?? "no vision route", "", spent, about));
+  if (!jev) return fail({ code: "no_vision_route", reason: "this host gives vision.judge no Jev port", about: requestedAbout(request) });
 
   // Every image within Jev's limits, the examples after the images; a video goes as frames cut from it.
   const fitted = async (media: MediaRequest): Promise<Fitted[]> => {
     const out: Fitted[] = [];
     for (const { bytes, mimeType, fragment } of await gatherMedia(media, env, call, setup, VISION_JUDGE.name, fail)) {
-      if (mimeType.startsWith("video/")) return fail({ code: "unsupported", reason: `${fragment} is a video; Jev takes still images: cut frames with ffmpeg and pass them`, model });
+      if (mimeType.startsWith("video/")) return fail({ code: "unsupported", reason: `${fragment} is a video; Jev takes still images: cut frames with ffmpeg and pass them`, model, about: aboutMedium(fragment, "video", bytes) });
       const fit = await fitImage(setup.images ?? AS_IS, bytes, mimeType, JEV_FIT, { tiles: false });
-      if (fit.fit === "refused") return fail({ code: setup.images ? fit.code : "needs", reason: `${fragment}: ${fit.limit}, and ${setup.images ? fit.why : "no image processor is installed to fit it (Photon or sharp)"}`, model });
+      if (fit.fit === "refused") return fail({ code: setup.images ? fit.code : "needs", reason: `${fragment}: ${fit.limit}, and ${setup.images ? fit.why : "no image processor is installed to fit it (Photon or sharp)"}`, model, about: aboutMedium(fragment, "image", bytes) });
       const [block] = fit.blocks;
       out.push({ bytes: Buffer.from(block!.data, "base64"), data: block!.data, mime: block!.mimeType as JevImage["mime"], fragment, sent: block!, content: (fit.fit === "resized" && fit.content) || block! });
     }

@@ -160,6 +160,8 @@ test("a look that cannot be made throws with its code and is filed and told: no 
   assert.equal(box, "unsupported: Jev failed: A Box question needs a model that answers it. No request was sent.");
   assert.deepEqual([...none.misses, ...rows.misses].map((m) => [m.tool, m.code]), [["vision.judge", "no_vision_route"], ["vision.judge", "unsupported"], ["vision.judge", "look_failed"], ["vision.judge", "over_budget"], ["vision.judge", "unsupported"]]);
   assert.deepEqual(rows.filed.map((r) => [r.status, r.facts.cost_usd]), [["failed", 0], ["failed", undefined], ["failed", undefined], ["failed", 0]], "a miss before the request cost nothing, a box refused before any request too; a request that threw has no known price");
+  assert.deepEqual([none.filed[0].args.path, none.filed[0].facts.kind, none.filed[0].facts.sha256], ["p1.png", "unknown", ""], "a miss before any medium is read names the request's media");
+  assert.deepEqual([rows.filed[0].args.path, rows.filed[0].facts.kind, rows.filed[0].facts.sha256.length], ["clip.mp4", "video", 64], "a miss about one medium names it, its kind and the hash of its bytes");
 });
 
 // The kill: judge-child.mjs is one process of a run whose script asks two judgments, one image each.
