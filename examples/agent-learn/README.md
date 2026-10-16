@@ -103,7 +103,7 @@ that answers right on its own has nothing to learn; the correction is the signal
 | File | What |
 | --- | --- |
 | `agent/` | the agent the repository starts with: `agent.json`, `AGENTS.md` and `skills/triage/SKILL.md` (committed as `.agents/skills/triage/SKILL.md`) |
-| `host.mjs` | the host loop: `prepareRun`, `finishRun`, `curateNow`, and `agentHomeFor` |
+| `host.mjs` | the host loop: `prepareRun`, `learnExtension`, `finishRun`, `curateNow`, and `agentHomeFor` |
 | `demo.mjs` | the story: a bare repository, four runs, three curations and a retire, with a scripted model |
 | `demo.test.mjs` | offline checks of the story |
 
@@ -111,14 +111,13 @@ that answers right on its own has nothing to learn; the correction is the signal
 
 ```js
 import { createWorkflowTool } from "@parcha/agentrun-pi/durable";
-import { agentLearn, guard } from "@parcha/pi-agent-learn";
 import { local, openRepo } from "@parcha/pi-git-remote";
-import { agentHomeFor, curateNow, finishRun, prepareRun } from "./host.mjs";
+import { agentHomeFor, curateNow, finishRun, learnExtension, prepareRun } from "./host.mjs";
 
 const repo = await openRepo({ dir: "host-repo", remote: local("agent.git") });
 const home = await agentHomeFor({ dir: "home", repo });
 const run = await prepareRun({ home, repo, host: "my-host", input });   // fetch main, refresh the home, start, seed <learned> and trials
-const learn = agentLearn({ guard, secrets: () => vault });
+const learn = learnExtension({ secrets: vault, caseValues });            // agentLearn, its guard seeing this run's input values
 const workflowTool = createWorkflowTool({ projectDir: run.workspace, tools, task });
 // Install both in the run's registry, and root the conversation on them: { extensions: [learn, workflowTool.extension] }.
 await finishRun({ home, repo, run, secrets: vault, caseValues });       // carry back, then propose notes and saved workflows
@@ -131,6 +130,9 @@ List every extension the agent's conversation needs in the root agent's extensio
   is live), refreshes the agent home's cache with a compare-and-swap from the sha it holds (never back to an older main),
   starts the run at that sha, seeds the run's `<learned>` section from the same sha, and puts the trials that fit `input`
   into the run's own workflow store.
+- `learnExtension` is `agentLearn` with the guard given the host's secrets and the run's input values at every call, so a
+  note that would refuse the whole proposal at the end (a made-up id that repeats the issue number, say) is refused while
+  the model can still restate it.
 - The model gets `learn` and the `agentrun` tool. It never commits or pushes, and the repository's `.git` is never in its
   workspace. The workflow tool's `projectDir` is the run's workspace, where `finishRun` collects what it saved.
 - `finishRun` proposes the run's notes, the DSL records of the workflows it saved, and the trials it used, and refuses

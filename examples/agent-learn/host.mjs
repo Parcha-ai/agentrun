@@ -6,7 +6,7 @@ import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createSession } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import {
-  currentRevision, curate, LAYOUT, LearnError, proposeLearning, readTrial, seedLearning, seedWorkflows, workflowsToTry,
+  agentLearn, currentRevision, curate, guard, LAYOUT, LearnError, proposeLearning, readTrial, seedLearning, seedWorkflows, workflowsToTry,
 } from '@parcha/pi-agent-learn';
 import {
   AGENT_STORE_FILE, AgentHomeError, carryBack, createAgentHome, openAgentHome, readAgentHome, refreshAgentHome, startRun,
@@ -47,6 +47,12 @@ async function isLive(repo, name, sha) {
     if (error instanceof LearnError) return false;
     throw error;
   }
+}
+
+// The run's `learn` extension. The guard sees the host's secrets and this run's input values at the call, so a note that
+// would refuse the whole proposal at the end is refused while the model can still restate it.
+export function learnExtension({ secrets = [], caseValues = [] }) {
+  return agentLearn({ guard: (input) => guard({ ...input, caseValues }), secrets: () => secrets });
 }
 
 // Owner-only: the home's stores hold the agent's sign-ins.

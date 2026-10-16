@@ -7,7 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
-import { gitRead, ISSUES, runDemo, TRIAGE_WORKFLOW } from './demo.mjs';
+import { guard, renderInbox } from '@parcha/pi-agent-learn';
+import { gitRead, ISSUES, proposalStatus, runDemo, TRIAGE_WORKFLOW } from './demo.mjs';
 
 const RULE = /In this project an issue whose body has a stack trace is labeled bug and needs-repro/;
 
@@ -150,6 +151,37 @@ test('run 2\'s propose line and step 5 say what happened when run 2 saves a work
   assert.match(none.text, /^5\. Curate changes nothing for run 2$/m);
   assert.match(none.text, /^ {3}run 2 saved no workflow, so there is no trial to admit$/m);
   assert.deepEqual(none.out.run2.savedWorkflows, []);
+});
+
+test('a made-up learning id that repeats the issue number is refused at the call; the restated note is proposed', async (t) => {
+  const rule = 'In this project an issue whose body has a stack trace is labeled bug and needs-repro.';
+  const lines = [];
+  const out = await runDemo({
+    dir: join(await scratch(t), 'demo'), log: (line) => lines.push(line),
+    run1: [
+      {},
+      { call: 'learn', args: { type: 'correction', text: rule, id: 'L-a4821c9e530b' } },
+      { call: 'learn', args: { type: 'correction', text: rule } },
+      { say: 'bug, needs-repro: the body is a crash trace.' },
+    ],
+  });
+  const [refused, noted] = out.run1.turns[1].results;
+  assert.match(refused, /^Not noted: it repeats data from this case\./, 'the id holds the issue number 4821');
+  assert.equal(noted, '[noted 1]');
+  assert.equal(out.run1.proposal.status, 'proposed');
+  const inbox = gitRead(out.bare, ['show', `${out.run1.proposal.sha}:inbox/run-1.md`]).toString('utf8');
+  assert.doesNotMatch(inbox, /4821/, 'the refused id never reaches git');
+  assert.match(lines.join('\n'), /^ {3}learn\(correction L-a4821c9e530b\) -> Not noted: it repeats data from this case\./m);
+  assert.match(out.run2.learned.join('\n'), /correction: In this project an issue whose body has a stack trace/);
+});
+
+test('a refused proposal names each reason and where it hit, never the value', () => {
+  const candidates = [{ callId: 'call-1', type: 'correction', text: 'In this project a stack trace means needs-repro.', evidence: [], id: 'L-a4821c9e530b' }];
+  const refusals = guard({ role: 'run', runId: 'run-1', files: { 'inbox/run-1.md': renderInbox('run-1', candidates) }, candidates, caseValues: ISSUES.first.values });
+  const line = proposalStatus({ status: 'refused', refusals });
+  assert.equal(line, 'refused: case_data in inbox/run-1.md; case_data in candidates[0].id');
+  assert.doesNotMatch(line, /4821/);
+  assert.equal(proposalStatus({ status: 'empty' }), 'empty');
 });
 
 test('the command runs offline, prints the story and leaves nothing behind', async (t) => {

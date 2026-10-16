@@ -12,7 +12,7 @@ import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite
 import { workspaceFiles } from '@parcha/agentrun-dsl/recovery';
 import { createWorkflowTool } from '@parcha/agentrun-pi/durable';
 import { WorkflowStore } from '@parcha/agentrun-pi/workflows';
-import { agentLearn, guard, retireLearning } from '@parcha/pi-agent-learn';
+import { retireLearning } from '@parcha/pi-agent-learn';
 import { local, openRepo } from '@parcha/pi-git-remote';
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -21,7 +21,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { agentHomeFor, curateNow, finishRun, prepareRun } from './host.mjs';
+import { agentHomeFor, curateNow, finishRun, learnExtension, prepareRun } from './host.mjs';
 
 const AGENT_DIR = join(import.meta.dirname, 'agent');
 const HOST = 'agent-learn-demo';
@@ -141,8 +141,8 @@ async function promptOf(run) {
   return [run.definition.instructions, run.rules.trim(), ...skills].join('\n\n');
 }
 
-async function runOnce(run, inputs, model, vault) {
-  const learn = agentLearn({ guard, secrets: () => vault });
+async function runOnce(run, inputs, model, vault, caseValues) {
+  const learn = learnExtension({ secrets: vault, caseValues });
   // The workflow tool keeps the run's saved workflows in the run's own workspace, where finishRun collects them.
   const workflowTool = createWorkflowTool({
     projectDir: run.workspace,
@@ -224,6 +224,12 @@ export function objectsHolding(gitDir, needles) {
 }
 
 const short = (sha) => sha.slice(0, 7);
+
+/** Why a proposal made no commit: its status, and for a refusal each reason with the field or path it hit, never a value. */
+export function proposalStatus(proposal) {
+  if (proposal.status !== 'refused') return proposal.status;
+  return `refused: ${proposal.refusals.map((r) => `${r.reason}${r.field ? ` in ${r.field}` : ''}${r.path ? ` in ${r.path}` : ''}`).join('; ')}`;
+}
 const runLine = (r) => {
   const done = [...r.used.map((u) => `${u.id} used (${u.reason})`), ...r.accepted.map((a) => (a.workflow ? `workflow ${a.workflow} admitted as a trial` : `${a.id} accepted (${a.reason})`))];
   const rest = [...(r.held.length ? [`held: ${r.held.map((h) => h.reason).join('; ')}`] : []), ...(r.refused.length ? [`refused: ${r.refused.map((h) => h.reason).join('; ')}`] : [])];
@@ -242,8 +248,8 @@ async function agentFiles() {
   return files;
 }
 
-// `run2` replaces scripted run 2's steps, for tests of what the transcript says when a run saves less.
-export async function runDemo({ dir, live = false, env = process.env, log = () => {}, run2: run2Steps } = {}) {
+// `run1` and `run2` replace those scripted runs' steps, for tests of what the transcript says on other paths.
+export async function runDemo({ dir, live = false, env = process.env, log = () => {}, run1: run1Steps, run2: run2Steps } = {}) {
   const root = dir ? resolve(dir) : await mkdtemp(join(tmpdir(), 'agent-learn-demo-'));
   await mkdir(root, { recursive: true });
   await chmod(root, 0o755);
@@ -286,11 +292,11 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
 
   // Run 1 is corrected by the maintainer, and learns the project's rule as its AGENTS.md says to.
   const run1 = await prepareRun({ home, repo, host: HOST, runId: 'run-1', input: ISSUES.first.input });
-  const r1 = await runOnce(run1, [ISSUES.first.text, CORRECTION], modelFor([
+  const r1 = await runOnce(run1, [ISSUES.first.text, CORRECTION], modelFor(run1Steps ?? [
     {},
     { call: 'learn', args: { type: 'correction', text: RULE, evidence: ['the maintainer corrected the labels'] } },
     { say: 'bug, needs-repro: the body is a crash trace, and this project labels those needs-repro too.' },
-  ]), vault);
+  ]), vault, ISSUES.first.values);
   const f1 = await finishRun({ home, repo, run: run1, secrets: vault, caseValues: ISSUES.first.values });
   out.run1 = { run: run1, ...r1, ...f1 };
   say(`2. Run 1 starts at main ${short(run1.sha)}: ${run1.seeded.index.length ? `${run1.seeded.index.length} learnings` : 'nothing learned yet'}`);
@@ -300,7 +306,7 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
     for (const line of callLines(turn)) say(`   ${line}`);
     say(`   answer: ${turn.answer}`);
   }
-  say(f1.proposal.status === 'proposed' ? `   proposed on runs/run-1 at ${short(f1.proposal.sha)}; main has not moved` : `   proposed nothing (${f1.proposal.status})`);
+  say(f1.proposal.sha ? `   proposed on runs/run-1 at ${short(f1.proposal.sha)}; main has not moved` : `   proposed nothing (${proposalStatus(f1.proposal)})`);
   say();
 
   const c1 = await curateNow({ repo, judge, secrets: vault });
@@ -319,7 +325,7 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
     { call: 'agentrun', args: { action: 'save', name: WORKFLOW } },
     { call: 'learn', args: { type: 'workflow', id: WORKFLOW, text: WORKFLOW_WHEN } },
     {},
-  ]), vault);
+  ]), vault, ISSUES.second.values);
   const f2 = await finishRun({ home, repo, run: run2, secrets: vault, caseValues: ISSUES.second.values });
   out.run2 = { run: run2, ...r2, ...f2 };
   say(`4. Run 2 starts at main ${short(run2.sha)}. ${r2.fromRequest ? 'Its first model request carries' : 'Its <learned> section'}:`);
@@ -327,7 +333,7 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
   say(`   issue: "${ISSUES.second.input.title}" (its body is a stack trace)`);
   for (const line of callLines(r2)) say(`   ${line}`);
   say(`   answer: ${r2.answer}`);
-  say(f2.proposal.sha ? `   proposed on runs/run-2 at ${short(f2.proposal.sha)}: ${proposed(f2.proposal.sha, 'run-2')}` : `   proposed nothing (${f2.proposal.status})`);
+  say(f2.proposal.sha ? `   proposed on runs/run-2 at ${short(f2.proposal.sha)}: ${proposed(f2.proposal.sha, 'run-2')}` : `   proposed nothing (${proposalStatus(f2.proposal)})`);
   say();
 
   const c2 = await curateNow({ repo, judge, secrets: vault });
@@ -346,7 +352,7 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
   if (!saved.length) say('   run 2 saved no workflow, so there is no trial to admit');
   for (const name of saved.filter((n) => !admitted.includes(n))) {
     const why = items.find((item) => item.workflow === name)?.reason
-      ?? (f2.proposal.status === 'proposed' ? 'curation made no decision on it' : `the run proposed nothing (${f2.proposal.status})`);
+      ?? (f2.proposal.status === 'proposed' ? 'curation made no decision on it' : `the run proposed nothing (${proposalStatus(f2.proposal)})`);
     say(`   ${name} was not admitted: ${why}`);
   }
   for (const name of admitted) {
@@ -370,7 +376,7 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
   say();
 
   const run3 = await prepareRun({ home, repo, host: HOST, runId: 'run-3', input: ISSUES.second.input });
-  const r3 = await runOnce(run3, [ISSUES.second.text], modelFor([{}]), vault);
+  const r3 = await runOnce(run3, [ISSUES.second.text], modelFor([{}]), vault, ISSUES.second.values);
   const f3 = await finishRun({ home, repo, run: run3, secrets: vault, caseValues: ISSUES.second.values });
   out.run3 = { run: run3, ...r3, ...f3 };
   say(`7. Run 3 starts at main ${short(run3.sha)}. ${r3.fromRequest ? 'Its first model request carries' : 'Its <learned> section'}:`);
@@ -384,7 +390,7 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
   const r4 = await runOnce(run4, [ISSUES.first.text], scriptedModel([
     { call: 'learn', args: { type: 'fact', text: `The tracker's deploy token is ${vault[0]}; use it to post labels.` } },
     {},
-  ]), vault);
+  ]), vault, ISSUES.first.values);
   const f4 = await finishRun({ home, repo, run: run4, secrets: vault, caseValues: ISSUES.first.values });
   const needles = [vault[0], Buffer.from(vault[0]).toString('base64'), Buffer.from(vault[0]).toString('hex')].map((s) => Buffer.from(s));
   const gitDir = existsSync(join(repo.dir, '.git')) ? join(repo.dir, '.git') : repo.dir;
@@ -392,7 +398,7 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
   out.run4 = { run: run4, ...r4, ...f4, scan };
   say('8. Run 4 tries to learn a value the host holds as a secret');
   for (const [i, call] of r4.calls.entries()) say(`   learn(${call.arguments.type}) -> ${r4.results[i] ?? '(no result)'}`);
-  say(`   proposed ${f4.proposal.status === 'empty' ? 'nothing' : f4.proposal.status}; the secret (raw, base64 or hex) is in ${scan[0].holding + scan[1].holding} of ${scan[0].count + scan[1].count} git objects (remote and host repository)`);
+  say(`   proposed ${f4.proposal.status === 'empty' ? 'nothing' : proposalStatus(f4.proposal)}; the secret (raw, base64 or hex) is in ${scan[0].holding + scan[1].holding} of ${scan[0].count + scan[1].count} git objects (remote and host repository)`);
   say();
 
   out.log = gitRead(bare, ['log', '--oneline', 'main']).toString('utf8').trimEnd();
