@@ -1,0 +1,55 @@
+{
+  "name": "@parcha/pi-git-remote",
+  "version": "0.1.0-beta.14",
+  "private": true,
+  "description": "A git repository a host keeps for its agent: commits through plumbing, no repository hook, filter or driver ever runs, and the credential stays in the host's memory.",
+  "keywords": [
+    "pi",
+    "git",
+    "agent",
+    "plumbing",
+    "credentials"
+  ],
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "Parcha Labs, Inc.",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "prepack": "npm run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --test-concurrency=8 'test/*.test.mjs' 'test/hostile/*.test.mjs'"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Parcha-ai/agentrun.git",
+    "directory": "packages/pi-git-remote"
+  },
+  "bugs": {
+    "url": "https://github.com/Parcha-ai/agentrun/issues"
+  },
+  "homepage": "https://agentrun.ai",
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
+  }
+}
