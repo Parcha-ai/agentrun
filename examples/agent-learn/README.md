@@ -8,7 +8,10 @@ run's own branch, curation merges it to `main`, and run 2 starts at the new `mai
 applies it, marking it used. Run 2 also saves a workflow with the DSL's `agentrun` tool; curation counts the use, admits
 the workflow as a trial skill, and later runs are offered it. Then the maintainer withdraws the rule: `retireLearning`
 marks it retired in one commit, so run 3 labels without it, while the trial stays and history keeps every version. A run
-that tries to keep a secret proposes nothing.
+that tries to keep a secret proposes nothing. Then the trial earns its place: three more runs are offered it and run it with
+the `agentrun` tool, curation counts what the tool left in each run's store and promotes it to active on the third clean
+use, and a second revision that escalates twice in a row is demoted and the first comes back
+([A workflow earns its place](#a-workflow-earns-its-place)).
 
 It is the reference host loop for [`@parcha/pi-agent-learn`](../../packages/pi-agent-learn/README.md) on
 [`@parcha/pi-git-remote`](../../packages/pi-git-remote/README.md) and
@@ -23,7 +26,7 @@ Node 22.19 or later and git 2.40 or later. No key and no network: the model and 
 npm ci --ignore-scripts && npm run build && npm run demo:learn
 ```
 
-It takes a few seconds and prints the story (the shas differ on every run):
+It takes about ten seconds and prints the story (the shas differ on every run; steps 9 to 12 are [below](#a-workflow-earns-its-place)):
 
 ```
 2. Run 1 starts at main 246507b: nothing learned yet
@@ -78,12 +81,14 @@ With flags, run it as `node examples/agent-learn/demo.mjs <flags>`.
 | Flag | What it does |
 | --- | --- |
 | `--dir <path>` | keep the repository, the agent home and the runs there: `git --git-dir <path>/agent.git log --all` |
-| `--live` | run 1 to 3 on a real model (below), with the same maintainer correction; the judge and run 4 stay scripted |
+| `--live` | run 1 to 3 on a real model (below), with the same maintainer correction; the judge, run 4 and steps 9 to 12 stay scripted (and step 9 on is skipped, since it needs run 2's scripted workflow) |
 
 `node --test examples/agent-learn/demo.test.mjs` runs it offline and checks the story against the repository: run 1's
 first answer lacks the rule and its corrected one has it, run 2's request carries the rule and its answer applies it, the
 use is counted and the workflow lands as a trial in the DSL's own layout, main keeps the entry retired with every version
-in history, run 3's request has no rule and its answer does not apply it, and the secret is in no git object.
+in history, run 3's request has no rule and its answer does not apply it, and the secret is in no git object. It also
+checks that the trial is promoted on the third clean use and that a revision is demoted and rolled back after two
+escalations, each use read from the records the `agentrun` tool left in the run's own store.
 
 ### A real model
 
@@ -98,13 +103,78 @@ that answers right on its own has nothing to learn; the correction is the signal
 | `AGENT_MODEL_API_KEY` | no | its key, when it needs one |
 | `AGENT_THINKING` | no | `minimal`, `low`, `medium` (default), `high` or `xhigh` |
 
+## A workflow earns its place
+
+A saved workflow starts as a trial and keeps its place only on receipts. Curation never asks a model whether the workflow was
+good: it counts how each run that used it ended, as the `agentrun` tool recorded it.
+
+- **A use** is one run of the workflow by the `agentrun` tool in a run's own store, read by the host after the run
+  (`finishRun` passes the run's `workDir` to `proposeLearning`, which reads the tool's `agentrun.workflow` tasks), never
+  reported by the model. It ends `frozen` when the workflow finished the case by itself, `escalated` when a gate fired and
+  the agent took over, or `failed` when it did not finish. A run that only loads, inspects or dry-runs a workflow makes no use,
+  and neither does a workflow the run did not save under a name.
+- **Three clean uses promote.** A trial whose last three uses all ended `frozen` becomes `active`. The run that wrote a
+  revision is no evidence for it.
+- **Two failed or escalated uses in a row demote and roll back.** The live revision is marked `demoted`, and the revision it
+  replaced, kept as `superseded` with its preconditions and the description of its skill, is active again. With none to
+  restore, the name is demoted whole and its skill is removed, so no run is offered it.
+- **A demoted revision never returns.** Its record stays on main, so a run that saves the same document again has nothing
+  new to propose, and the admitter refuses it if a proposal for it reached curation anyway. Only a changed document, a new
+  digest, is tried under the name again.
+
+Steps 9 to 12 of the demo show each rule, with real runs on the scripted model. Runs 5 to 7 each load `triage-crash` by name
+and run it; every use below is what `proposeLearning` read from that run's store, and every decision is curation's:
+
+```
+9. A workflow earns its place: later runs are offered triage-crash and run it with the agentrun tool
+   a use is frozen when the workflow finished the case by itself; three frozen uses in a row promote the trial to active
+   run-5 starts at main 61a5dd7, offered triage-crash (trial)
+     issue: "Why does export drop my last row?" (its body is a stack trace)
+     agentrun(load triage-crash) -> loaded triage-crash 2bfc0cd79680 as this conversation's draft
+     agentrun(run) -> complete: labels bug,needs-repro
+     answer: bug, needs-repro: triage-crash labeled it, and the body is a crash trace.
+     proposed on runs/run-5 at 84c8f91: its workflow uses
+     uses/run-5.json: triage-crash 2bfc0cd79680 frozen at 2026-10-16T11:22:10.782Z
+     curate: run-5: triage-crash hold: 2bfc0cd79680 has 1 use in its trial; promotion needs its last 3 all frozen
+     main ec8d677 changes .agents/skills/triage-crash/trial.json
+     trial.json: trial; 2bfc0cd79680 trial; uses run-5 frozen
+   run-6 ... (the same: hold, 2 uses)
+   run-7 starts at main 15aacf4, offered triage-crash (trial)
+     ...
+     curate: run-7: triage-crash promote: its last 3 uses all finished frozen
+     main 79d62dc changes .agents/skills/triage-crash/trial.json
+     trial.json: trial -> active; 2bfc0cd79680 active; uses run-5 frozen, run-6 frozen, run-7 frozen
+```
+
+Run 8 then saves a second revision of the workflow, one that hands an issue with no body to a person. The first revision is
+active, so the new one is the live trial and the first is kept as superseded. Runs 9 and 10 are offered the trial and
+each get an issue with no body, so the tool's run ends `escalated` at the gate both times, and the second use demotes it:
+
+```
+11. Two issues in a row reach the new revision with no body: it escalates both times
+   run-9 starts at main 96b3637, offered triage-crash (trial)
+     issue: "Sync crashes on startup" (it has no body)
+     agentrun(load triage-crash) -> loaded triage-crash 5046cece45f8 as this conversation's draft
+     agentrun(run) -> escalated at "no body to read": the issue has no body, so there is nothing to read
+     uses/run-9.json: triage-crash 5046cece45f8 escalated at 2026-10-16T11:22:15.334Z
+     curate: run-9: triage-crash hold: 5046cece45f8 has 1 use in its trial; promotion needs its last 3 all frozen
+   run-10 starts at main af92bdb, offered triage-crash (trial)
+     ...
+     uses/run-10.json: triage-crash 5046cece45f8 escalated at 2026-10-16T11:22:16.560Z
+     curate: run-10: triage-crash demote, back to 2bfc0cd79680: its last 2 uses ended escalated, escalated
+     main e2f1da0 changes .agents/skills/triage-crash/SKILL.md, .agents/skills/triage-crash/trial.json, .pi/agentrun/workflows/triage-crash/latest
+     trial.json: trial -> active; 2bfc0cd79680 active, 5046cece45f8 demoted; uses run-5 frozen, run-6 frozen, run-7 frozen, run-9 escalated, run-10 escalated
+```
+
+Run 11 is offered the first revision again, as active. It saves the demoted document once more, and proposes nothing.
+
 ## The files
 
 | File | What |
 | --- | --- |
 | `agent/` | the agent the repository starts with: `agent.json`, `AGENTS.md` and `skills/triage/SKILL.md` (committed as `.agents/skills/triage/SKILL.md`) |
 | `host.mjs` | the host loop: `prepareRun`, `learnExtension`, `finishRun`, `curateNow`, and `agentHomeFor` |
-| `demo.mjs` | the story: a bare repository, four runs, three curations and a retire, with a scripted model |
+| `demo.mjs` | the story: a bare repository, four runs, three curations and a retire, then seven runs that try the workflow, with a scripted model |
 | `demo.test.mjs` | offline checks of the story |
 
 ## The host loop
@@ -170,4 +240,6 @@ both when the app does. Call `finishRun` after the session's store has closed.
 - `git revert` of the curate commit that added a learning works only before any run used it: a `used` mark changes the
   entry, and the revert then conflicts. It also takes out everything else that run added. `retireLearning` is the general
   way out.
-- This demo's runs never run a workflow, so no trial earns uses or promotion here; the workflows package's own tests do.
+- Steps 9 to 12 run the workflow with a scripted model, and its one tool, `issues.label`, is a stub that answers with the
+  labels it was given. A real host gives the workflow's tools to `createWorkflowTool` and runs the same loop.
+- A run that runs the workflow on several cases makes one use for each, and all of them count toward promotion or demotion.
