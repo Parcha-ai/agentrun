@@ -75,7 +75,7 @@ type Kept = { kept: boolean; value: JsonValue };
  *  since the adapter loads pi-durable's values only when it runs. */
 let keptDocs: Promise<ConversationDocFamilyToken<Kept, null>> | undefined;
 const kept = () => (keptDocs ??= import("@earendil-works/pi-durable").then(({ defineDocFamily }) =>
-  defineDocFamily<Kept, null>({ kind: "pi-vision.kept", version: 1, scope: "conversation", history: "latest", fork: "current", family: true, initial: () => ({ kept: false, value: null }) })));
+  defineDocFamily<Kept, null>({ kind: "vision.kept", version: 1, scope: "conversation", history: "latest", fork: "current", family: true, initial: () => ({ kept: false, value: null }) })));
 
 /** The call's memo port: a tool call's on its conversation, a hook's on pi's memos of its task (a hook runs inside its
  *  task, which a commit would wait on). The kept value when there is one, else the one the call's task holds (a value
