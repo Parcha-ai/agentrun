@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
@@ -20,7 +20,9 @@ import { counterFold, countersOf } from '../src/counters.ts';
 import { viewContext } from '../src/app.ts';
 import { visionAccountOf, visionKeptChars, visionMeters, visionPanel, type VisionState } from '../src/vision.ts';
 import { ACCOUNT, blobs, FILM, K, LOOKS, lines, manifest, PAGES, PHOTOS, RESULT, writeRecording } from './vision-hand.ts';
-import { drivenPage } from './driven-page.ts';
+import { closeLeftBrowsers, drivenPage } from './driven-page.ts';
+
+after(async () => { assert.deepEqual(await closeLeftBrowsers(), [], 'every browser a test started was closed by that test'); });
 
 const walk = (node: Node, visit: (node: Exclude<Node, string>) => void) => {
   if (typeof node === 'string') return;

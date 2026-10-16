@@ -7,15 +7,18 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
 import { finishedManifest, placeLines, tailOf } from '../src/follow.ts';
 import { blobsNamed } from '../src/app.ts';
 import { fileOrder, type Line } from '../src/format.ts';
 import { stopsOf } from '../src/replay.ts';
-import { chrome, drivenPage } from './driven-page.ts';
+import { chrome, closeLeftBrowsers, drivenPage } from './driven-page.ts';
 import { blobs, lines, manifest } from './vision-hand.ts';
+
+// A browser a test left open would hold this file's process: each is ended here, and the file fails.
+after(async () => { assert.deepEqual(await closeLeftBrowsers(), [], 'every browser a test started was closed by that test'); });
 
 /** A file that grows, or is replaced, served as a server that answers ranges would (206, or 416 when the range starts at
  *  or past its end) or as one that sends the whole file every time (200). */
@@ -216,8 +219,15 @@ test('the page follows a run as two writers grow it, through a kill and a second
   const page = early.filter((each) => each.kind === 'vision.looks' && JSON.stringify(each.data).includes('"kind":"pdf"')).at(-1)!.blobs![0]!;
   live.hold(page);
   live.append(early);
+  // One hook ends every page before the server and the profiles go: a profile is removed only once its browser has ended.
+  const pages: Awaited<ReturnType<typeof drivenPage>>[] = [];
+  t.after(async () => {
+    for (const each of pages) await each.close();
+    live.server.close();
+    rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  });
   const followed = await drivenPage(`http://127.0.0.1:${port}/viewer/index.html?follow=/run/`, join(out, 'profile'));
-  t.after(async () => { await followed.close(); live.server.close(); rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); });
+  pages.push(followed);
   const seen = async (page = followed) => JSON.parse(String(await page.evaluate(`JSON.stringify({ position: document.querySelector('.position')?.textContent ?? '', status: document.querySelector('.live-status')?.textContent ?? '',
     title: document.querySelector('h1')?.textContent ?? '', counters: document.querySelector('.counters')?.textContent ?? '', panels: [...document.querySelectorAll('.panel h3')].map((each) => each.textContent).join(' | '),
     chapters: [...document.querySelectorAll('.chapters button')].map((each) => each.textContent).join(' | '), missing: [...document.querySelectorAll('.missing')].map((each) => each.textContent).join(' | '),
@@ -256,7 +266,7 @@ test('the page follows a run as two writers grow it, through a kill and a second
   live.finish();
   const done = await until((now) => now.status === 'finished', 'the manifest is written');
   const fresh = await drivenPage(`http://127.0.0.1:${port}/viewer/index.html?src=/run/`, join(out, 'profile-fresh'));
-  t.after(async () => { await fresh.close(); });
+  pages.push(fresh);
   const opened = await until((now) => now.title === manifest.title, 'the finished recording opened fresh', fresh);
   for (const [at, stop] of stops.entries()) {
     const freshAt = String(await fresh.evaluate(shownAt(stop)));
@@ -272,7 +282,7 @@ test('the page follows a run as two writers grow it, through a kill and a second
   assert.equal(opened.problems, '');
   // Framed (`&embed=1`), a followed run draws its panels with no header.
   const framed = await drivenPage(`http://127.0.0.1:${port}/viewer/index.html?follow=/run/&embed=1`, join(out, 'profile-embed'));
-  t.after(async () => { await framed.close(); });
+  pages.push(framed);
   const embedded = await until((now) => now.panels.includes('What the eyes read'), 'the embedded page follows', framed);
   assert.equal(embedded.title, '', 'no header when embedded');
 });
