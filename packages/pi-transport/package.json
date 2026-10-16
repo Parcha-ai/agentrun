@@ -72,9 +72,9 @@
     "test:live": "vitest --run .live.test"
   },
   "peerDependencies": {
-    "@earendil-works/chord": ">=1.0.4 <1.3.0",
+    "@earendil-works/chord": ">=1.0.4 <1.4.0",
     "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-durable": ">=1.0.4 <1.3.0"
+    "@earendil-works/pi-durable": ">=1.0.4 <1.4.0"
   },
   "dependencies": {
     "typebox": "1.3.27"

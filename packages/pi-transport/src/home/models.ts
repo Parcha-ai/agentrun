@@ -4,16 +4,14 @@ import {
 	type AssistantMessage,
 	type AssistantMessageEvent,
 	type AssistantMessageEventStream,
-	type AssistantMessageFrame,
-	AssistantMessageFrameEncoder,
 	createAssistantMessageEventStream,
 	createModels,
 	createProvider,
 	type Model,
 	type Models,
 	type MutableModels,
-	parseStreamingJson,
 } from "@earendil-works/pi-ai";
+import { applyFrame, FrameEncoder, type ModelFrame } from "./frames.ts";
 import type { Frame } from "./link.ts";
 
 const DEFAULT_RESUME_WITHIN_MS = 30_000;
@@ -159,87 +157,6 @@ function endedHere(request: OpenRequest, stopReason: "error" | "aborted", errorM
 }
 
 /**
- * Apply one compact frame and return the pi-ai event it stands for. The block the frame touches and the content
- * array are copied, so the partial of an event already handed out never changes.
- */
-function rebuild(request: OpenRequest, frame: AssistantMessageFrame): AssistantMessageEvent {
-	if (frame.type === "start") {
-		request.partial = frame.partial;
-		return { type: "start", partial: frame.partial };
-	}
-	const before = request.partial;
-	if (before === undefined) throw new Error(`a ${frame.type} frame came before the start`);
-	const index = frame.contentIndex;
-	const put = (block: AssistantMessage["content"][number]): AssistantMessage => {
-		const content = [...before.content];
-		content[index] = block;
-		request.partial = { ...before, content };
-		return request.partial;
-	};
-	const copy = <T extends "text" | "thinking" | "toolCall">(type: T) => {
-		const block = before.content[index];
-		if (block?.type !== type) throw new Error(`a ${frame.type} frame at ${index} found ${block?.type ?? "nothing"}`);
-		return { ...block } as Extract<AssistantMessage["content"][number], { type: T }>;
-	};
-	switch (frame.type) {
-		case "text_start":
-			return { type: "text_start", contentIndex: index, partial: put(frame.content) };
-		case "text_delta": {
-			const block = copy("text");
-			block.text += frame.delta;
-			return { type: "text_delta", contentIndex: index, delta: frame.delta, partial: put(block) };
-		}
-		case "text_end": {
-			const block = copy("text");
-			block.text = frame.content;
-			if (frame.textSignature === undefined) delete block.textSignature;
-			else block.textSignature = frame.textSignature;
-			return { type: "text_end", contentIndex: index, content: frame.content, partial: put(block) };
-		}
-		case "thinking_start":
-			return { type: "thinking_start", contentIndex: index, partial: put(frame.content) };
-		case "thinking_delta": {
-			const block = copy("thinking");
-			block.thinking += frame.delta;
-			return { type: "thinking_delta", contentIndex: index, delta: frame.delta, partial: put(block) };
-		}
-		case "thinking_end": {
-			const block = copy("thinking");
-			block.thinking = frame.content;
-			if (frame.thinkingSignature === undefined) delete block.thinkingSignature;
-			else block.thinkingSignature = frame.thinkingSignature;
-			if (frame.redacted === undefined) delete block.redacted;
-			else block.redacted = frame.redacted;
-			return { type: "thinking_end", contentIndex: index, content: frame.content, partial: put(block) };
-		}
-		case "toolcall_start":
-			request.json.set(index, "");
-			return { type: "toolcall_start", contentIndex: index, partial: put(frame.toolCall) };
-		case "toolcall_checkpoint":
-		case "toolcall_delta": {
-			const block = copy("toolCall");
-			const delta = frame.type === "toolcall_delta" ? frame.delta : frame.json;
-			const json = frame.type === "toolcall_delta" ? (request.json.get(index) ?? "") + delta : delta;
-			request.json.set(index, json);
-			// The provider's own partial arguments are not on the wire: parsed here as pi-ai's adapters parse them.
-			block.arguments = parseStreamingJson(json);
-			return { type: "toolcall_delta", contentIndex: index, delta, partial: put(block) };
-		}
-		case "toolcall_end": {
-			const block = copy("toolCall");
-			block.id = frame.id;
-			block.name = frame.name;
-			block.arguments = frame.arguments;
-			if (frame.thoughtSignature === undefined) delete block.thoughtSignature;
-			else block.thoughtSignature = frame.thoughtSignature;
-			if (frame.namespace === undefined) delete block.namespace;
-			else block.namespace = frame.namespace;
-			return { type: "toolcall_end", contentIndex: index, toolCall: block, partial: put(block) };
-		}
-	}
-}
-
-/**
  * pi-ai models for a runner that holds no credential. Each provider of the host's catalog is mirrored by id with an
  * auth that says "configured" and holds nothing; a request is one `model` frame to the host, and the answer comes
  * back as pi-ai's compact frames, rebuilt here into the same events.
@@ -376,7 +293,7 @@ export function proxyModels(
 			request.seq = seq;
 			try {
 				if (frame.t === "model-frame") {
-					request.stream.push(rebuild(request, frame.frame as AssistantMessageFrame));
+					request.stream.push(applyFrame(request, frame.frame as ModelFrame));
 				} else if (frame.t === "model-end") {
 					const message = frame.message as AssistantMessage;
 					finish(request, { type: "done", reason: message.stopReason as "stop", message });
@@ -505,7 +422,7 @@ export function serveModels(
 				{ messages: request.messages as never },
 				requestOptions as Parameters<Models["streamSimple"]>[2],
 			);
-			const encoder = new AssistantMessageFrameEncoder();
+			const encoder = new FrameEncoder();
 			let ended = false;
 			for await (const event of events) {
 				if (event.type === "done") {
