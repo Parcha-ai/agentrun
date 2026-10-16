@@ -21,6 +21,7 @@ import { diskKey, dockerHost } from "../../src/hosts/docker.ts";
 import { readRunStatus, type HostHandle } from "../../src/supervise.ts";
 import { KEY_ENV, LIVE as ARCHIL_LIVE, REGION, scratchDisk, scratchDiskId } from "./_archil.ts";
 import { deletePrefix, delegationsOn, docker, fleetContainers, FLEET, IMAGE, LEDGER, ledger, NAME_PREFIX, removeContainer } from "./_docker.ts";
+import { g1StayedParked } from "./_park-watch.ts";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const CLI = join(REPO, "src/cli.ts");
@@ -159,11 +160,10 @@ test("parking through dockerHost: g1 exits 0 and stays exited while the run slee
   }, RETRY_MS + 60_000, 2_000);
   const before = watch.filter((w) => w.at < second.seenAt);
   const sleepingTicks = lines.filter((l) => l.action === "sleeping" && l.seenAt < second.seenAt).length;
-  const asParked = (g1: Seen | null) => g1?.status === "exited" && g1.exitCode === 0 && g1.restartCount === 0 && g1.startedAt === parked.startedAt;
-  // Starting g2, the driver removes the run's exited containers, g1 among them, in the same tick: from the first sample
-  // that sees g2, g1 may be gone, but never running again.
-  const g2At = before.find((w) => w.others.length > 0)?.at ?? second.seenAt;
-  const g1Unchanged = before.every((w) => asParked(w.g1) || (w.at >= g2At && w.g1 === null));
+  // g1's own record: until the wake it exists exactly as it parked, and from the wake on it is that or gone (starting g2 removes
+  // the run's exited containers, g1 among them). Nothing here waits for g2's container to be visible: how long after the
+  // removal it is created depends on the host's load (test/park-watch.test.ts holds the window still).
+  const g1Unchanged = g1StayedParked(before, parked, wakeAt);
   // The supervisor creates g2 inside the tick that reports its start, so g2 may show up once wakeAt has passed.
   const othersBeforeWake = [...new Set(before.filter((w) => w.at < wakeAt).flatMap((w) => w.others))];
   const othersAfterWake = [...new Set(before.filter((w) => w.at >= wakeAt).flatMap((w) => w.others))];
@@ -181,7 +181,7 @@ test("parking through dockerHost: g1 exits 0 and stays exited while the run slee
     g2: second.handle?.name,
   };
   assert.ok(before.filter((w) => w.at < wakeAt).length >= 20, `g1 was watched through the wait (${before.length} samples)`);
-  assert.ok(g1Unchanged, "g1 stayed exited 0, never restarted, until g2's start");
+  assert.ok(g1Unchanged, "g1 stayed exited 0, never restarted, and was not removed before the wake");
   assert.deepEqual(othersBeforeWake, [], "the run had no other container before its wake");
   assert.ok(othersAfterWake.every((n) => n === nameOf(2)), `after the wake only the supervisor's g2 (${othersAfterWake.join(", ")})`);
   assert.ok(sleepingTicks >= 10, `the supervisor left it sleeping (${sleepingTicks} ticks)`);
