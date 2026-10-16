@@ -19,5 +19,6 @@ that gives a session a repository it commits to at the end, with the host holdin
 the repository's `.agents/skills` (through `resources_discover`) and its `AGENTS.md` (through `before_agent_start`, as the seeded
 commit has it). On `session_shutdown` it commits the changes an allowlist of globs names to `sessions/{sessionId}`, built on the
 seeded commit with `Session-Id` and `Seeded-From` trailers, and pushes by sha; it never pushes `main`, refuses the whole end for a
-symlink or anything the package's limits refuse, and commits nothing the second time. Options, `--git-remote`, `--git-ref`,
+symlink or anything the package's limits refuse, compares the directory with what it held at the last save, and commits nothing
+the second time. Options, `--git-remote`, `--git-ref`,
 `--git-allow`, `--git-branch` and `--git-checkout-dir`, or the `gitRemote` key of pi's settings configure it.

@@ -73,9 +73,24 @@ const MUTATIONS = [
     fails: ["session.test.mjs", "a second end for the same session commits nothing"],
   },
   {
-    removes: "the seed record's list of the files the checkout copied",
-    file: "dist/session.js", from: "for (const p of seededAt.files)", to: "for (const p of entries.keys())",
-    fails: ["session.test.mjs", "a seeded entry the checkout skipped is not seen as a deletion"],
+    removes: "moving the saved state to the directory's state after each end",
+    file: "dist/session.js", from: "record = { ...seededAt, saved: Object.fromEntries(hashes) };", to: "record = seededAt;",
+    fails: ["session.test.mjs", "a file put back or removed after an earlier end is a change: the saved state moves with each end, and survives a restart"],
+  },
+  {
+    removes: "the check that the checkout directory is where it was seeded",
+    file: "dist/session.js", from: "(await realpath(dir)) !== seededAt.root", to: "false",
+    fails: ["session.test.mjs", "a checkout directory reached through a replaced parent is refused: it is no longer where it was seeded"],
+  },
+  {
+    removes: "the remote's identity in the seed record",
+    file: "dist/session.js", from: "kept.remote !== remote", to: "false",
+    fails: ["session.test.mjs", "a checkout made for one remote is never adopted for another"],
+  },
+  {
+    removes: "the prototype-free object for the changed paths",
+    file: "dist/session.js", from: "Object.create(null)", to: "{}",
+    fails: ["session.test.mjs", "a file named __proto__ is written and deleted like any other"],
   },
 ];
 

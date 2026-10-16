@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -8,7 +7,7 @@ import type { GitIdentity } from "./git.js";
 import type { Limits } from "./limits.js";
 import { local, type Remote } from "./remotes.js";
 import { openRepo } from "./repo.js";
-import { createSessionCheckout, DEFAULT_BRANCH, type EndOutcome, privateDirectory, type SessionCheckout, SESSION_PLACEHOLDER } from "./session.js";
+import { createSessionCheckout, DEFAULT_BRANCH, type EndOutcome, privateDirectory, remoteId, type SessionCheckout, SESSION_PLACEHOLDER } from "./session.js";
 
 export { DEFAULT_BRANCH, type EndOutcome, SESSION_ID_TRAILER } from "./session.js";
 
@@ -161,9 +160,8 @@ export function createGitRemoteExtension(options: GitRemoteOptions = {}): (pi: E
       const checkoutDir = path.resolve(ctx.cwd, (config.checkoutDir ?? path.join(config.stateDir, "checkouts", SESSION_PLACEHOLDER)).replaceAll(SESSION_PLACEHOLDER, sessionId));
       const [realCheckout, realCwd] = await Promise.all([realish(checkoutDir), realish(ctx.cwd)]);
       if (inside(realCheckout, realCwd) || inside(realCwd, realCheckout)) throw refused("the checkout directory and the session's working directory must be apart: the agent's files belong in one and the repository in the other");
-      const urls = `${config.remote.url}\0${config.remote.pushUrl ?? ""}`;
       const repo = await openRepo({
-        dir: path.join(config.stateDir, "repos", createHash("sha256").update(urls).digest("hex").slice(0, 16)),
+        dir: path.join(config.stateDir, "repos", remoteId(config.remote).slice(0, 16)),
         remote: config.remote,
         ...(options.git ? { git: options.git } : {}),
         ...(options.limits ? { limits: options.limits } : {}),

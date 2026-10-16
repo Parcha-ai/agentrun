@@ -166,19 +166,22 @@ it: an edit to the working file in the middle of a session changes nothing the m
 `--no-context-files` does not stop it: configuring a remote asked for its instructions.
 
 **What the end commits.** `session_shutdown` for `quit`, `new`, `resume` and `fork` ends the session; a `reload` does not, and
-the new runtime keeps the directory. The end reads the files the allowlist can reach, never through a symlink, and commits
-the ones that differ from the seeded commit, and the deletions, with `commitTo` on `sessions/<id>`, built on the seeded
-commit, with `Session-Id` and `Seeded-From` trailers, then pushes it by sha. Nothing outside the allowlist is read, and
-nothing but that branch is written: the branch must hold the id, must not be `main`, `master` or the ref the session
-started from, and an existing branch that does not carry this session's trailer is refused.
+the new runtime keeps the directory (an empty one included: a deletion is not undone). The end reads the files the allowlist
+can reach, never through a symlink, and commits the ones that differ from what the directory held when it was last saved
+(the seed, then each end), and the deletions, with `commitTo` on `sessions/<id>`, with `Session-Id` and `Seeded-From`
+trailers, then pushes it by sha. Nothing outside the allowlist is read, and nothing but that branch is written: the branch
+must hold the id, must not be `main`, `master` or the ref the session started from, and an existing branch that does not
+carry this session's trailer is refused. The directory must still be the one that was seeded (a rename and a link in its
+place is refused), and a checkout made for another remote, ref or session is never adopted.
 
 Refusal is for the whole end, never a partial commit: a symlink, a device or any non-regular file at a path the allowlist
 reaches, a `.git` segment in any spelling, a file over `limits.maxFileBytes`, more than `limits.maxFiles` changes. Nothing
 is pushed, pi reports the error, and the directory stays, so fixing it and ending again works. A symlink where the
-allowlist does not reach is ignored like any other file there. An end repeated for the same session finds its commit and
-commits nothing; it pushes the commit again, so a push that failed is retried. A session resumed later adds a commit on
-top of its branch and never removes what an earlier end committed. A forked session starts from the ref, not from its
-parent's directory.
+allowlist does not reach is ignored like any other file there. An end repeated for the same session finds nothing new and
+commits nothing; it pushes the branch's commit again, so a push that failed is retried. A session resumed later adds
+commits on top of its branch, and a file put back or removed after an earlier end is the change it is. If its directory is
+gone, it starts again from the ref and adds to the branch without removing what an earlier end committed. A forked session
+starts from the ref, not from its parent's directory.
 
 **What this does not do.** Pi's own `bash` tool has your permissions, so on a plain pi session the model can reach the host
 repository and the state directory like any other file of yours. The extension keeps git away from the model's tools, not from

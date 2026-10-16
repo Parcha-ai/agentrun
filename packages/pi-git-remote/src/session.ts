@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { GitRemoteError } from "./errors.js";
 import { type Allowlist, compileAllowlist } from "./glob.js";
-import { modeRefusal, pathRefusal } from "./limits.js";
+import { pathRefusal } from "./limits.js";
+import type { Remote } from "./remotes.js";
 import type { Repo } from "./repo.js";
 
 /** The trailer that names the session a commit came from. */
@@ -17,7 +18,25 @@ const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const PROTECTED = new Set(["main", "master", "HEAD"]);
 const RECORD_VERSION = 1;
 
-export type SeedRecord = { readonly v: 1; readonly sessionId: string; readonly ref: string; readonly sha: string; readonly files: readonly string[] };
+/**
+ * What a session keeps outside its checkout: where the files were seeded from, and the SHA-256 of every allowlisted file
+ * the directory held when it was last saved (the seed, then each end). A later end compares the directory with that, not
+ * with the seeded commit, so a file put back or removed after an earlier end is seen as the change it is.
+ */
+export type SeedRecord = {
+  readonly v: 1;
+  readonly sessionId: string;
+  readonly ref: string;
+  /** Identifies the remote the checkout came from: the same session on another remote never adopts it. */
+  readonly remote: string;
+  /** The checkout directory's real path when it was made: a directory replaced by a link no longer matches. */
+  readonly root: string;
+  readonly sha: string;
+  readonly saved: Readonly<Record<string, string>>;
+};
+
+/** A short, stable name for a remote, never holding a credential: a URL carries none. */
+export const remoteId = (remote: Remote): string => createHash("sha256").update(`${remote.url}\0${remote.pushUrl ?? ""}`).digest("hex");
 
 export type SessionCheckoutOptions = {
   readonly repo: Repo;
@@ -80,10 +99,7 @@ export function sessionBranch(pattern: string, sessionId: string, ref: string): 
   return bare;
 }
 
-function blobId(content: Uint8Array, length: number): string {
-  const header = Buffer.from(`blob ${content.byteLength}\0`);
-  return createHash(length === 64 ? "sha256" : "sha1").update(header).update(content).digest("hex");
-}
+const digest = (content: Uint8Array): string => createHash("sha256").update(content).digest("hex");
 
 async function readRegular(file: string, cap: number): Promise<Buffer | { readonly reason: string }> {
   let handle;
@@ -119,7 +135,10 @@ async function readRecord(file: string): Promise<SeedRecord | undefined> {
     throw refused("the session's seed record is not JSON");
   }
   const r = record as Partial<SeedRecord> | null;
-  if (!r || r.v !== RECORD_VERSION || typeof r.sessionId !== "string" || typeof r.ref !== "string" || typeof r.sha !== "string" || !Array.isArray(r.files) || !r.files.every((f) => typeof f === "string")) {
+  if (
+    !r || r.v !== RECORD_VERSION || typeof r.sessionId !== "string" || typeof r.ref !== "string" || typeof r.remote !== "string" || typeof r.root !== "string" ||
+    typeof r.sha !== "string" || r.saved === null || typeof r.saved !== "object" || !Object.values(r.saved).every((h) => typeof h === "string")
+  ) {
     throw refused("the session's seed record is not one this version wrote");
   }
   return r as SeedRecord;
@@ -132,14 +151,18 @@ async function writeRecord(file: string, record: SeedRecord): Promise<void> {
   await rename(temporary, file);
 }
 
-const isEmptyOrMissing = async (dir: string): Promise<boolean> => {
+/** Whether the checkout directory exists. One that is a link, or not a directory, is never used: the agent could point it anywhere. */
+async function directoryExists(dir: string): Promise<boolean> {
+  let stat;
   try {
-    return (await readdir(dir)).length === 0;
+    stat = await lstat(dir);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
   }
-};
+  if (stat.isSymbolicLink() || !stat.isDirectory()) throw refused(`${dir} is a link or not a directory: the checkout directory must be a directory of its own`);
+  return true;
+}
 
 /**
  * One session's checkout of a repository the host owns: seeded into a directory with no `.git` in it, read back at the
@@ -165,27 +188,13 @@ export function createSessionCheckout(options: SessionCheckoutOptions): SessionC
     return next;
   };
 
-  async function seed(): Promise<Seeded> {
-    const kept = await readRecord(options.seedFile);
-    if (kept && !(await isEmptyOrMissing(dir))) {
-      if (kept.sessionId !== sessionId || kept.ref !== ref) throw refused("the checkout directory was seeded for another session or ref");
-      record = kept;
-      return { sha: kept.sha, files: kept.files, skipped: [], resumed: true };
-    }
-    const result = await repo.checkout(ref, { into: dir });
-    record = { v: RECORD_VERSION, sessionId, ref, sha: result.sha, files: result.files };
-    await writeRecord(options.seedFile, record);
-    return { sha: result.sha, files: result.files, skipped: result.skipped, resumed: false };
-  }
+  const remote = remoteId(repo.remote);
 
-  /**
-   * The allowlisted regular files that differ from the seeded commit, read without following a symlink, and the paths that
-   * could be committed but cannot be. Only a changed file's bytes are kept, so memory follows the commit, not the tree.
-   */
-  async function collect(seededAt: SeedRecord): Promise<{ files: Record<string, Buffer | null>; bad: { path: string; reason: string }[] }> {
-    const entries = new Map((await repo.list("", seededAt.sha)).map((e) => [e.path, e]));
-    const files: Record<string, Buffer | null> = {};
-    const seen = new Set<string>();
+  /** The allowlisted regular files in the directory, never through a symlink, as path to SHA-256. `keep` says whose bytes to
+   *  hold (a changed file's): memory follows the commit, not the tree. Also the paths that could be committed but cannot be. */
+  async function scan(keep: (file: string, hash: string) => boolean): Promise<{ hashes: Map<string, string>; contents: Map<string, Buffer>; bad: { path: string; reason: string }[] }> {
+    const hashes = new Map<string, string>();
+    const contents = new Map<string, Buffer>();
     const bad: { path: string; reason: string }[] = [];
     const reaches = (p: string) => allow.matches(p) || allow.mayContain(p);
     const { maxFileBytes, maxFiles, maxTreeEntries } = repo.limits;
@@ -203,34 +212,55 @@ export function createSessionCheckout(options: SessionCheckoutOptions): SessionC
             bad.push({ path: p, reason: refusal });
             continue;
           }
-          if (seen.size >= maxTreeEntries) throw refused(`the checkout holds more than ${maxTreeEntries} allowlisted files`);
+          if (hashes.size >= maxTreeEntries) throw refused(`the checkout holds more than ${maxTreeEntries} allowlisted files`);
           const content = await readRegular(path.join(absolute, entry.name), maxFileBytes);
           if (!Buffer.isBuffer(content)) {
             bad.push({ path: p, reason: content.reason });
             continue;
           }
-          seen.add(p);
-          const was = entries.get(p);
-          if (!was || was.type !== "blob" || modeRefusal(was.mode) !== undefined || blobId(content, was.oid.length) !== was.oid) {
-            files[p] = content;
-            if (Object.keys(files).length > maxFiles) throw refused(`a commit may write at most ${maxFiles} paths: the checkout changes more`);
+          const hash = digest(content);
+          hashes.set(p, hash);
+          if (keep(p, hash)) {
+            contents.set(p, content);
+            if (contents.size > maxFiles) throw refused(`a commit may write at most ${maxFiles} paths: the checkout changes more`);
           }
         }
       }
     };
     await visit("");
-    // A path the allowlist names that was seeded and is gone is a deletion; a seeded path the checkout skipped was never there.
-    for (const p of seededAt.files) if (allow.matches(p) && !seen.has(p)) files[p] = null;
-    return { files, bad };
+    return { hashes, contents, bad };
+  }
+
+  async function seed(): Promise<Seeded> {
+    const kept = await readRecord(options.seedFile);
+    if (kept && (await directoryExists(dir))) {
+      if (kept.sessionId !== sessionId || kept.ref !== ref || kept.remote !== remote) throw refused("the checkout directory was seeded for another session, ref or remote");
+      if ((await realpath(dir)) !== kept.root) throw refused("the checkout directory is not where it was seeded");
+      record = kept;
+      return { sha: kept.sha, files: Object.keys(kept.saved), skipped: [], resumed: true };
+    }
+    const result = await repo.checkout(ref, { into: dir });
+    const { hashes } = await scan(() => false);
+    record = { v: RECORD_VERSION, sessionId, ref, remote, root: await realpath(dir), sha: result.sha, saved: Object.fromEntries(hashes) };
+    await writeRecord(options.seedFile, record);
+    return { sha: result.sha, files: result.files, skipped: result.skipped, resumed: false };
   }
 
   async function end(): Promise<EndOutcome> {
     if (!record) throw refused("this session has no seeded checkout to commit");
     const seededAt = record;
-    const { files, bad } = await collect(seededAt);
+    // The directory must be the one that was seeded: a rename and a link in its place would send any directory's files.
+    if (!(await directoryExists(dir)) || (await realpath(dir)) !== seededAt.root) throw refused("the checkout directory is gone or is not where it was seeded");
+    const saved = new Map(Object.entries(seededAt.saved));
+    const { hashes, contents, bad } = await scan((file, hash) => saved.get(file) !== hash);
     if (bad.length) {
       throw refused(`the checkout holds files that may not be committed: ${bad.slice(0, 20).map((b) => `${JSON.stringify(b.path)} (${b.reason})`).join(", ")}${bad.length > 20 ? ` and ${bad.length - 20} more` : ""}`, bad.map((b) => b.path));
     }
+    // A path is a plain key here: an object with a prototype would turn a file named __proto__ into nothing.
+    const files: Record<string, Buffer | null> = Object.create(null);
+    for (const [file, content] of contents) files[file] = content;
+    // A path saved earlier that the allowlist names and the directory no longer holds is a deletion; one the checkout never copied was never there.
+    for (const file of saved.keys()) if (allow.matches(file) && !hashes.has(file)) files[file] = null;
     const changed = Object.keys(files).sort();
 
     const tip = await repo.resolve(branch);
@@ -249,7 +279,11 @@ export function createSessionCheckout(options: SessionCheckoutOptions): SessionC
     // An end that found everything committed still pushes the commit: a push that failed the first time is retried, and a
     // push that already happened changes nothing.
     await repo.push(made.sha, branch);
-    return { sessionId, branch, sha: made.sha, created: made.created, changed };
+    const outcome: EndOutcome = { sessionId, branch, sha: made.sha, created: made.created, changed };
+    // Saved only once the push is out: a failed one leaves the same changes to find again.
+    record = { ...seededAt, saved: Object.fromEntries(hashes) };
+    await writeRecord(options.seedFile, record);
+    return outcome;
   }
 
   return Object.freeze({
