@@ -46,14 +46,14 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | @clack/core | 1.5.1 | MIT | pi-durable-disk | no | 1 |
 | @clack/prompts | 1.8.1 | MIT | pi-durable-disk | no | 1 |
 | @earendil-works/chord | 1.1.0 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
-| @earendil-works/pi-agent-core | 1.1.0 | MIT | pi, pi-browser | no | 1 |
+| @earendil-works/pi-agent-core | 1.1.0 | MIT | pi, pi-agent-learn, pi-browser | no | 1 |
 | @earendil-works/pi-ai | 1.1.0 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
-| @earendil-works/pi-codemode | 1.1.0 | MIT | pi, pi-browser | no | 1 |
-| @earendil-works/pi-coding-agent | 1.1.0 | MIT | pi, pi-browser | no | 1 |
+| @earendil-works/pi-codemode | 1.1.0 | MIT | pi, pi-agent-learn, pi-browser | no | 1 |
+| @earendil-works/pi-coding-agent | 1.1.0 | MIT | pi, pi-agent-learn, pi-browser | no | 1 |
 | @earendil-works/pi-durable | 1.1.0 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
-| @earendil-works/pi-mcp | 1.1.0 | MIT | pi, pi-browser | no | 1 |
+| @earendil-works/pi-mcp | 1.1.0 | MIT | pi, pi-agent-learn, pi-browser | no | 1 |
 | @earendil-works/pi-telemetry | 1.1.0 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
-| @earendil-works/pi-tui | 1.1.0 | MIT | pi, pi-browser | no | 1 |
+| @earendil-works/pi-tui | 1.1.0 | MIT | pi, pi-agent-learn, pi-browser | no | 1 |
 | @esbuild/aix-ppc64 | 0.28.2 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | yes | 1 |
 | @esbuild/android-arm | 0.28.2 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | yes | 1 |
 | @esbuild/android-arm64 | 0.28.2 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | yes | 1 |
@@ -95,7 +95,7 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | @protobufjs/path | 1.1.2 | BSD-3-Clause | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | @protobufjs/pool | 1.1.0 | BSD-3-Clause | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | @protobufjs/utf8 | 1.1.2 | BSD-3-Clause | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
-| @silvia-odwyer/photon-node | 0.3.4 | Apache-2.0 | pi, pi-browser, pi-vision | no | 1 |
+| @silvia-odwyer/photon-node | 0.3.4 | Apache-2.0 | pi, pi-agent-learn, pi-browser, pi-vision | no | 1 |
 | @smithy/core | 3.34.1 | Apache-2.0 | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | @smithy/credential-provider-imds | 4.5.2 | Apache-2.0 | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | @smithy/fetch-http-handler | 5.8.0 | Apache-2.0 | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
@@ -107,7 +107,7 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | @types/node | 18.19.130 | MIT | pi-browser | no | 1 |
 | @types/node | 22.20.4 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | @types/retry | 0.12.0 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
-| @typesafe-ai/sdk | 0.6.0 | MIT | jev, pi | no | 1 |
+| @typesafe-ai/sdk | 0.6.0 | MIT | jev, pi, pi-agent-learn | no | 1 |
 | @xmldom/xmldom | 0.9.12 | MIT | pi-vision | no | 1 |
 | abort-controller | 3.0.0 | MIT | pi-browser | no | 1 |
 | agent-base | 7.1.4 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
@@ -115,18 +115,18 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | agentkeepalive | 4.6.0 | MIT | pi-browser | no | 1 |
 | anynum | 1.0.1 | MIT | pi-durable-disk | no | 1 |
 | asynckit | 0.4.0 | MIT | pi-browser | no | 1 |
-| balanced-match | 4.0.4 | MIT | pi, pi-browser | no | 1 |
+| balanced-match | 4.0.4 | MIT | pi, pi-agent-learn, pi-browser | no | 1 |
 | base64-js | 1.5.1 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | bignumber.js | 9.3.1 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | boolbase | 1.0.0 | ISC | pi-browser | no | 1 |
 | bowser | 2.14.1 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
-| brace-expansion | 5.0.12 | MIT | pi, pi-browser | no | 1 |
+| brace-expansion | 5.0.12 | MIT | pi, pi-agent-learn, pi-browser | no | 1 |
 | buffer-equal-constant-time | 1.0.1 | BSD-3-Clause | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | call-bind-apply-helpers | 1.0.2 | MIT | pi-browser | no | 1 |
-| chalk | 6.0.0 | MIT | pi, pi-browser | no | 1 |
+| chalk | 6.0.0 | MIT | pi, pi-agent-learn, pi-browser | no | 1 |
 | combined-stream | 1.0.8 | MIT | pi-browser | no | 1 |
 | commander | 14.0.3 | MIT | pi-durable-disk | no | 1 |
-| cross-spawn | 7.0.6 | MIT | pi, pi-browser | no | 1 |
+| cross-spawn | 7.0.6 | MIT | pi, pi-agent-learn, pi-browser | no | 1 |
 | css-select | 5.2.2 | BSD-2-Clause | pi-browser | no | 1 |
 | css-what | 6.2.2 | BSD-2-Clause | pi-browser | no | 1 |
 | data-uri-to-buffer | 4.0.1 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
@@ -163,39 +163,39 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | function-bind | 1.1.2 | MIT | pi-browser | no | 1 |
 | gaxios | 7.3.1 | Apache-2.0 | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | gcp-metadata | 8.1.2 | Apache-2.0 | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
-| get-east-asian-width | 1.6.0 | MIT | pi, pi-browser | no | 1 |
+| get-east-asian-width | 1.6.0 | MIT | pi, pi-agent-learn, pi-browser | no | 1 |
 | get-intrinsic | 1.3.0 | MIT | pi-browser | no | 1 |
 | get-proto | 1.0.1 | MIT | pi-browser | no | 1 |
 | google-auth-library | 10.9.1 | Apache-2.0 | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | google-logging-utils | 1.1.3 | Apache-2.0 | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | gopd | 1.2.0 | MIT | pi-browser | no | 1 |
-| graceful-fs | 4.2.11 | ISC | pi, pi-browser | no | 1 |
-| grok-mermaid | 0.2.3 | Apache-2.0 | pi, pi-browser | no | 1 |
+| graceful-fs | 4.2.11 | ISC | pi, pi-agent-learn, pi-browser | no | 1 |
+| grok-mermaid | 0.2.3 | Apache-2.0 | pi, pi-agent-learn, pi-browser | no | 1 |
 | has-symbols | 1.1.0 | MIT | pi-browser | no | 1 |
 | has-tostringtag | 1.0.2 | MIT | pi-browser | no | 1 |
 | hasown | 2.0.4 | MIT | pi-browser | no | 1 |
 | he | 1.2.0 | MIT | pi-browser | no | 1 |
-| highlight.js | 10.7.3 | BSD-3-Clause | pi, pi-browser | no | 1 |
-| hosted-git-info | 9.0.3 | ISC | pi, pi-browser | no | 1 |
+| highlight.js | 10.7.3 | BSD-3-Clause | pi, pi-agent-learn, pi-browser | no | 1 |
+| hosted-git-info | 9.0.3 | ISC | pi, pi-agent-learn, pi-browser | no | 1 |
 | http-proxy-agent | 9.1.0 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | https-proxy-agent | 7.0.6 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | https-proxy-agent | 9.1.0 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | humanize-ms | 1.2.1 | MIT | pi-browser | no | 1 |
-| ignore | 7.0.8 | MIT | pi, pi-browser | no | 1 |
+| ignore | 7.0.8 | MIT | pi, pi-agent-learn, pi-browser | no | 1 |
 | is-unsafe | 2.0.2 | MIT | pi-durable-disk | no | 1 |
-| isexe | 2.0.0 | ISC | pi, pi-browser | no | 1 |
-| jiti | 2.7.0 | MIT | pi, pi-browser | no | 1 |
+| isexe | 2.0.0 | ISC | pi, pi-agent-learn, pi-browser | no | 1 |
+| jiti | 2.7.0 | MIT | pi, pi-agent-learn, pi-browser | no | 1 |
 | json-bigint | 1.0.0 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | json-schema-to-ts | 3.1.1 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | jwa | 2.0.1 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | jws | 4.0.1 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | long | 5.3.2 | Apache-2.0 | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
-| lru-cache | 11.5.3 | BlueOak-1.0.0 | pi, pi-browser | no | 1 |
-| marked | 18.0.11 | MIT | pi, pi-browser | no | 1 |
+| lru-cache | 11.5.3 | BlueOak-1.0.0 | pi, pi-agent-learn, pi-browser | no | 1 |
+| marked | 18.0.11 | MIT | pi, pi-agent-learn, pi-browser | no | 1 |
 | math-intrinsics | 1.1.0 | MIT | pi-browser | no | 1 |
 | mime-db | 1.52.0 | MIT | pi-browser | no | 1 |
 | mime-types | 2.1.35 | MIT | pi-browser | no | 1 |
-| minimatch | 10.2.6 | BlueOak-1.0.0 | pi, pi-browser | no | 1 |
+| minimatch | 10.2.6 | BlueOak-1.0.0 | pi, pi-agent-learn, pi-browser | no | 1 |
 | ms | 2.1.3 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | node-domexception | 1.0.0 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | node-fetch | 2.7.0 | MIT | pi-browser | no | 1 |
@@ -209,18 +209,18 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | p-retry | 4.6.2 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | partial-json | 0.1.7 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | path-expression-matcher | 1.6.2 | MIT | pi-durable-disk | no | 1 |
-| path-key | 3.1.1 | MIT | pi, pi-browser | no | 1 |
-| proper-lockfile | 4.1.2 | MIT | pi, pi-browser | no | 1 |
+| path-key | 3.1.1 | MIT | pi, pi-agent-learn, pi-browser | no | 1 |
+| proper-lockfile | 4.1.2 | MIT | pi, pi-agent-learn, pi-browser | no | 1 |
 | protobufjs | 7.6.6 | BSD-3-Clause | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | proxy-agent-negotiate | 1.1.0 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
-| quickjs-wasi | 3.6.2 | MIT | pi, pi-browser | no | 1 |
-| retry | 0.12.0 | MIT | pi, pi-browser | no | 1 |
+| quickjs-wasi | 3.6.2 | MIT | pi, pi-agent-learn, pi-browser | no | 1 |
+| retry | 0.12.0 | MIT | pi, pi-agent-learn, pi-browser | no | 1 |
 | retry | 0.13.1 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | safe-buffer | 5.2.1 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
-| semver | 7.8.5 | ISC | pi, pi-browser | no | 1 |
-| shebang-command | 2.0.0 | MIT | pi, pi-browser | no | 1 |
-| shebang-regex | 3.0.0 | MIT | pi, pi-browser | no | 1 |
-| signal-exit | 3.0.7 | ISC | pi, pi-browser | no | 1 |
+| semver | 7.8.5 | ISC | pi, pi-agent-learn, pi-browser | no | 1 |
+| shebang-command | 2.0.0 | MIT | pi, pi-agent-learn, pi-browser | no | 1 |
+| shebang-regex | 3.0.0 | MIT | pi, pi-agent-learn, pi-browser | no | 1 |
+| signal-exit | 3.0.7 | ISC | pi, pi-agent-learn, pi-browser | no | 1 |
 | sisteransi | 1.0.5 | MIT | pi-durable-disk | no | 1 |
 | standardwebhooks | 1.1.1 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | strnum | 2.4.2 | MIT | pi-durable-disk | no | 1 |
@@ -228,7 +228,7 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | ts-algebra | 2.0.0 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | tslib | 2.8.1 | 0BSD | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | typebox | 1.3.27 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 5 |
-| typebox | 1.3.7 | MIT | dsl, jev, pi | no | 1 |
+| typebox | 1.3.7 | MIT | dsl, jev, pi, pi-agent-learn | no | 1 |
 | undici-types | 5.26.5 | MIT | pi-browser | no | 1 |
 | undici-types | 6.21.0 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | undici | 6.29.0 | MIT | pi-browser | no | 1 |
@@ -239,9 +239,9 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | web-streams-polyfill | 4.0.0-beta.3 | MIT | pi-browser | no | 1 |
 | webidl-conversions | 3.0.1 | BSD-2-Clause | pi-browser | no | 1 |
 | whatwg-url | 5.0.0 | MIT | pi-browser | no | 1 |
-| which | 2.0.2 | ISC | pi, pi-browser | no | 1 |
+| which | 2.0.2 | ISC | pi, pi-agent-learn, pi-browser | no | 1 |
 | ws | 8.21.3 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
 | xml-naming | 0.3.0 | MIT | pi-durable-disk | no | 1 |
-| yaml | 2.9.0 | ISC | pi, pi-browser | no | 1 |
+| yaml | 2.9.0 | ISC | pi, pi-agent-learn, pi-browser | no | 1 |
 | zod | 4.4.3 | MIT | pi-browser | no | 2 |
 | zod | 4.6.5 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-transport, pi-vision | no | 1 |
