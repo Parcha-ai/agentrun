@@ -7,9 +7,9 @@ import { DatabaseSync } from "node:sqlite";
 import { setTimeout as sleep } from "node:timers/promises";
 
 /** What went wrong, by kind: `invalid` input, an agent home or run that `exists` or is `missing`, a home that stays
- *  `busy` past the wait, or a `format` this version does not read. */
+ *  `busy` past the wait, a `format` this version does not read, or a home whose cache is `stale` for the sha asked. */
 export class AgentHomeError extends Error {
-  readonly code: "invalid" | "exists" | "missing" | "busy" | "format";
+  readonly code: "invalid" | "exists" | "missing" | "busy" | "format" | "stale";
   constructor(code: AgentHomeError["code"], message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "AgentHomeError";
@@ -17,7 +17,41 @@ export class AgentHomeError extends Error {
   }
 }
 
-export type Store = { readonly storage: Storage; readonly session: Session; close(): Promise<void> };
+export type Store = {
+  readonly storage: Storage;
+  readonly session: Session;
+  /** The store's head commit number, read on its own connection. */
+  head(): Promise<number>;
+  close(): Promise<void>;
+};
+
+/** The SQL that reads pi's next commit number. pi's Storage has no head query; its SQLite storage gives each commit
+ *  `durable_metadata.next_seq` and stores the successor in the same transaction, so the head is `next_seq - 1`. */
+export const HEAD_SQL = "SELECT next_seq FROM durable_metadata WHERE singleton = 1";
+
+/** The head commit number from `HEAD_SQL`'s row. It fails closed (`format`) on a missing row and on a `next_seq` that is
+ *  not a safe integer of at least 1: absent, null, text, fractional, zero, negative or past 2^53 - 1. */
+export function headOf(row: { next_seq?: unknown } | undefined): number {
+  const value = row?.next_seq;
+  const next = typeof value === "bigint" ? Number(value) : value;
+  if (typeof next !== "number" || !Number.isSafeInteger(next) || next < 1) {
+    const seen = row === undefined ? "no durable_metadata row" : `next_seq ${typeof value === "bigint" ? `${value}n` : JSON.stringify(value) ?? String(value)}`;
+    throw new AgentHomeError("format", `the agent store has no usable head commit (${seen})`);
+  }
+  return next - 1;
+}
+
+/** The head commit number from one `HEAD_SQL` read; a read that throws (no `durable_metadata` table, a value
+ *  node:sqlite will not return) fails closed (`format`) too. */
+export async function readHead(read: () => unknown): Promise<number> {
+  let row: unknown;
+  try {
+    row = await read();
+  } catch (error) {
+    throw new AgentHomeError("format", "the agent store has no readable head commit", { cause: error });
+  }
+  return headOf(row as { next_seq?: unknown } | undefined);
+}
 
 const SYNCHRONOUS_FULL = 2;
 
@@ -34,7 +68,7 @@ export async function openStore(file: string): Promise<Store> {
   }
   const storage = await SqliteStorage.open(database);
   const session = createSession(storage);
-  return { storage, session, close: () => session.close(BACKGROUND_CONTEXT) };
+  return { storage, session, head: () => readHead(() => database.get(HEAD_SQL)), close: () => session.close(BACKGROUND_CONTEXT) };
 }
 
 /** Every current member of a session-scoped family, by key. */

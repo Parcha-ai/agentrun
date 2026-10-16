@@ -2,6 +2,7 @@ import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
 import type { StorageWrite } from "@earendil-works/pi-durable";
 import type { Result } from "@earendil-works/pi-durable/env";
+import { isPlacementRecord, writePlacement } from "../place/log.ts";
 import type { DrainOptions } from "./gate.ts";
 import { createKeys } from "./keys.ts";
 import { type Frame, LINK_VERSION, type Link } from "./link.ts";
@@ -177,6 +178,20 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 						...(home.noteSession === undefined ? {} : { session: home.noteSession }),
 					},
 				};
+			case "placement": {
+				// The log says jev or config, and nothing else: a record that says another is refused, not written.
+				if (!isPlacementRecord(args.record)) {
+					const error = Object.assign(new Error("not a placement record this home writes"), { code: "invalid" });
+					return { ok: false as const, error };
+				}
+				const harness = home.harness;
+				if (harness === undefined) {
+					const error = Object.assign(new Error("the session does not run here"), { code: "wrong_state" });
+					return { ok: false as const, error };
+				}
+				await writePlacement(harness, args.record, within);
+				return { ok: true as const, value: null };
+			}
 			default:
 				return { ok: false as const, error: new Error(`no such order: ${order}`) };
 		}

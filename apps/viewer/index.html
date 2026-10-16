@@ -18,9 +18,15 @@
       --token: #f2b73a; --glow: rgba(242, 183, 58, 0.4);
     }
   }
+  /* A framing page may choose the theme (embed protocol): dark here whatever the system's. */
+  :root[data-theme="dark"] {
+    --bg: #151514; --panel: #1f1f1d; --ink: #ecebe6; --muted: #a3a19a; --rule: #3a3935;
+    --band-0: #23493a; --band-1: #2c3560; --band-2: #5a4421; --band-3: #4a3058;
+  }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
   #viewer { max-width: 1200px; margin: 0 auto; padding: 16px; }
+  html.embed #viewer { max-width: none; margin: 0; padding: 8px; }
   h1 { font-size: 22px; margin: 0 0 4px; }
   h2 { font-size: 17px; margin: 24px 0 8px; }
   h3 { font-size: 14px; margin: 0 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
@@ -77,6 +83,7 @@
   .streaming { color: var(--open); }
   .has-cite { cursor: pointer; }
   .panel:has(.vz) { grid-column: 1 / -1; max-height: none; }
+  .panel:has(.disk) { max-height: none; overflow: visible; }
   .vz h5 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
   .vz-top { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; font-size: 12px; }
   .vz-badge { padding: 2px 7px; border: 1px solid var(--rule); border-radius: 4px; color: var(--muted); }
@@ -104,7 +111,7 @@
   .vz-tile.right { border-color: var(--done); } .vz-tile.wrong { border-color: var(--failed); }
   .vz-tile.missed { border: 2px dashed var(--failed); opacity: 0.6; } .vz-tile.cited { outline: 2px solid var(--focus); outline-offset: 1px; }
   .vz-entry { margin: 0 0 8px; font-size: 13px; } .vz-entry.cited { border-left: 3px solid var(--focus); padding-left: 6px; }
-  .vz-time { font: 11px ui-monospace, monospace; color: var(--open); }
+  .vz-time { font: 11px ui-monospace, monospace; color: var(--open); } .vz-name { font-weight: 600; }
   .vz-cite { display: inline-block; margin-left: 3px; padding: 0 4px; font: 10px ui-monospace, monospace; color: var(--focus); border: 1px solid var(--focus); border-radius: 3px; }
   .vz-cite.hot { background: var(--focus); color: #fff; }
   .vz-accuracy, .vz-weak { margin-top: 12px; } .vz-weak { max-height: 260px; overflow: auto; } .vz-weak p { margin: 0 0 4px; font-size: 13px; } .vz-accuracy p { margin: 0; } .vz-accuracy ul { margin: 2px 0 0; padding-left: 18px; font-size: 12px; }
