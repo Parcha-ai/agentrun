@@ -894,24 +894,19 @@ test("Sysbox: a failed checkin, or a delegation still listed after it, leaves th
   assert.ok(k.read().mounts[k.root]);
 });
 
-test("Sysbox: a delegation on a file under the run that the mountpoint's checkin leaves is checked in by its own path; the mount then moves aside", async () => {
-  const file = "record/2/.spool/child-9-1.1.jsonl";
-  const r = disposeAfter(rig({ behave: { sysbox: true, fileDelegations: [file] } }));
+test("Sysbox: the client's own bookkeeping under .archil/, which a deleted file leaves and no checkin clears, does not hold the run; the mount moves aside", async () => {
+  const r = disposeAfter(rig({ behave: { sysbox: true, bookkeeping: true } }));
   const claim = await acquire(r.opts);
   assert.deepEqual(await claim.release(), { via: "moved" });
-  const checkins = r.calls("archil", "checkin").map((c) => c.argv[1]);
-  assert.deepEqual(checkins, [r.root, join(r.root, file)], "the mountpoint, then the file the client still listed");
   assert.equal(r.calls("archil", "retire").length, 1);
   assert.equal(r.read().mounts[r.root], undefined, "the path is free");
 });
 
-test("Sysbox: a file delegation that stays listed after the bounded checkins is UNMOUNT_FAILED, and the mount stays where it is", async () => {
-  const file = "record/2/.spool/child-9-1.1.jsonl";
-  const r = disposeAfter(rig({ behave: { sysbox: true, fileDelegations: [file], fileCheckinKeeps: true } }));
+test("Sysbox: a delegation the checkin leaves on the run's own tree still holds it: UNMOUNT_FAILED, the mount left where it is", async () => {
+  const r = disposeAfter(rig({ behave: { sysbox: true, bookkeeping: true, fileDelegations: ["record/2/.spool/child-9-1.1.jsonl"], fileCheckinKeeps: true } }));
   const claim = await acquire(r.opts);
-  await assert.rejects(claim.release(), (e: unknown) => e instanceof ClaimError && e.code === "UNMOUNT_FAILED" && /still lists a delegation/.test(e.message) && e.message.includes(file));
-  assert.equal(r.calls("archil", "checkin").filter((c) => c.argv[1] === join(r.root, file)).length, 3, "three tries, then it gives up");
-  assert.equal(r.calls("archil", "retire").length, 0, "a mount that may still hold a delegation is never moved aside");
+  await assert.rejects(claim.release(), (e: unknown) => e instanceof ClaimError && e.code === "UNMOUNT_FAILED" && /still lists a delegation/.test(e.message));
+  assert.equal(r.calls("archil", "retire").length, 0);
   assert.ok(r.read().mounts[r.root]);
 });
 

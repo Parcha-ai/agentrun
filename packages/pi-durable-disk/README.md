@@ -417,9 +417,10 @@ alive in place and never restarts it after exit 0, 65, 70, 75 or 76. The mount t
 handed to the instance on stdin, never put in the sandbox's environment, which Daytona stores and returns on every read.
 Status comes from the sandbox state plus the launcher's own word, and `stop` drains the instance, then deletes the box. The
 archil client needs the sandbox's egress to Archil's mount servers (Daytona's Tier 3 or 4, full egress; a domain allowlist
-cannot mount). Where the kernel refuses every unmount (a Sysbox box), the claim's release checks the delegation in, then
-checks in by its own path any delegation the client still lists under the mount (up to three passes), and only when it
-lists none moves the mount aside (`archil-scoped retire`) and kills its daemon. Measured live on Daytona's hosted `us` region, about 6 ms from
+cannot mount). Where the kernel refuses every unmount (a Sysbox box), the claim's release checks the delegation in, moves the
+mount aside (`archil-scoped retire`) and kills its daemon. Before the move, the client must list no Active delegation
+under the mount. Its own bookkeeping under `.archil/` doesn't count: the client makes `.archil/client-<n>` and its
+`unlinked` whenever a file under the mount is deleted, and no checkin clears them once the mount is read-only. Measured live on Daytona's hosted `us` region, about 6 ms from
 `aws-us-east-1`: a box takes about 15 s to start an instance, an exclusive mount 142 ms and a commit 8.55 ms p50; a
 power-off, a freeze of the instance and its FUSE daemon, and a network partition were each taken over on another box (the
 power-off through the orphaned delegation, the freeze and the partition through the lease, the partitioned box stopped by

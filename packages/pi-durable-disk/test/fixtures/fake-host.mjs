@@ -140,6 +140,8 @@ if (cmd === "mount") {
   const path = b.delegationsPath === "flat" ? mp : b.delegationsPath === "wrong" ? "/elsewhere" : `${mp}${sub}`;
   // The real client keeps listing a revoked delegation as Active.
   const files = (m.files ?? []).map((rel) => ({ path: `${mp}/${rel}`, state: "Active" }));
+  // bookkeeping: the client's own entries on the disk once a file under the mount was deleted; no checkin clears them.
+  if (b.bookkeeping) files.push({ path: `${mp}/.archil/client-7`, state: "Active" }, { path: `${mp}/.archil/client-7/unlinked`, state: "Active" });
   exit(0, "", JSON.stringify([...(m.delegation ? [{ path, state: b.delegationState ?? m.delegation }] : []), ...files], null, 2) + "\n");
 } else if (cmd === "sync") {
   const mp = rest[rest.length - 1];
