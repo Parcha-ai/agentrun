@@ -13,7 +13,7 @@
     "targets": { "description": "Where the demo runs: hosted only when every tool has a hosted source.", "enum": [["local"], ["local", "hosted"]] },
     "kill": { "description": "The template's single kill; `kills` is the list.", "$ref": "#/definitions/crossingKill" },
     "kills": { "description": "What --kill does: each entry in order, one per process (examples/reference/demo-spec.ts).", "type": "array", "items": { "oneOf": [{ "$ref": "#/definitions/crossingKill" }, { "$ref": "#/definitions/stormKill" }] } },
-    "panels": { "description": "The viewer's own panel ids the recording draws.", "type": "array", "uniqueItems": true, "items": { "enum": ["lines", "pi-turns", "transport", "vision", "workflow-map"] } },
+    "panels": { "description": "The viewer's own panel ids the recording draws.", "type": "array", "uniqueItems": true, "items": { "enum": ["disk", "lines", "pi-turns", "transport", "vision", "workflow-map"] } },
     "tools": {
       "description": "The job's tools that are code of its own: where each runs locally, and the hosted executor tool it is granted (null when none).",
       "type": "array",
@@ -31,7 +31,23 @@
         }
       }
     },
-    "sources": { "description": "The demo's sources.json: the public pages or data the job reads, each checked by hand.", "type": "string", "pattern": "^examples/[^/]+/sources\\.json$" },
+    "sources": {
+      "description": "The checked files the job reads (examples/reference/demo-spec.ts): true for the sources.json beside the demo, or a path to one, from the repository when it starts with examples/ and else from the demo's directory.",
+      "oneOf": [{ "type": "boolean" }, { "type": "string", "pattern": "^(?!/)(?!(?:.*/)?\\.\\.(?:/|$))[^\\n]+\\.json$" }]
+    },
+    "browser": { "description": "false: the demo opens no page, so the entry creates no browser, live or on fakes. Default: a browser.", "type": "boolean" },
+    "codeMode": {
+      "description": "Code mode: a code tool whose sandbox has tools.bash and vision.see. Off by default.",
+      "oneOf": [{ "type": "boolean" }, { "type": "object", "additionalProperties": false, "properties": { "timeoutMs": { "type": "number", "exclusiveMinimum": 0 }, "outputChars": { "type": "integer", "minimum": 1 } } }]
+    },
+    "sites": {
+      "description": "The sites the agent can hand a task to (use_website): each runs a child agent in a browser of its own, starting at startUrl.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "object", "additionalProperties": false, "required": ["title", "description", "startUrl"],
+        "properties": { "title": { "type": "string", "minLength": 1 }, "description": { "type": "string", "minLength": 1 }, "startUrl": { "type": "string", "pattern": "^https?://[^\\s]+$" } }
+      }
+    },
     "boxes": {
       "description": "The box the job's tools run in (examples/reference/demo-spec.ts).",
       "type": "object", "additionalProperties": false, "required": ["kind"],
@@ -47,6 +63,8 @@
       "properties": {
         "point": { "type": "string", "minLength": 1 }, "why": { "type": "string", "minLength": 1 },
         "kind": { "enum": ["process", "box"] }, "target": { "enum": ["run", "tool"] }, "n": { "type": "integer", "minimum": 1 },
+        "hold": { "description": "At a crossing that parks (vision.filing): the kill waits until this many filings are parked, or waitMs has passed.", "type": "integer", "minimum": 1 },
+        "waitMs": { "description": "How long a parking crossing waits for hold filings (default 3000).", "type": "number", "minimum": 0 },
         "where": {
           "description": "Only a crossing whose info has these values counts (announced through cross(point, { info })); with n, the nth matching crossing. A storm has none.",
           "type": "object", "minProperties": 1, "additionalProperties": { "type": ["string", "number", "boolean"] }

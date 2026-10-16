@@ -4,7 +4,10 @@
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import test from 'node:test';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import Ajv from 'ajv';
+import TJS from 'typescript-json-schema';
 import { generated, output } from './generate-demo-schema.mjs';
 import { panelsShown } from '../apps/viewer/src/panels.ts';
 import '../apps/viewer/src/app.ts';
@@ -25,6 +28,30 @@ test('the template lists every DemoSpec field, so a misspelt one is refused, and
   assert.deepEqual([...demo.properties.panels.items.enum].sort(), panelsShown().map((panel) => panel.id).sort());
 });
 
+test('the template lists every field the reference entry\'s own DemoSpec type reads, with its values', () => {
+  // examples/reference/demo-spec.ts is the part of demo.json the entry acts on. A field it gains and the schema does not
+  // list fails here; the schema may list more (the DSL's DemoSpec, the template's claim, panels and targets).
+  const at = fileURLToPath(root);
+  const program = TJS.programFromConfig(resolve(at, 'examples/tsconfig.json'), [resolve(at, 'examples/reference/demo-spec.ts')]);
+  const typed = TJS.generateSchema(program, 'DemoSpec', { required: true, strictNullChecks: true, ref: false, ignoreErrors: false });
+  assert.ok(typed, 'the DemoSpec type gives a schema');
+  const listed = (schema, where) => Object.keys(schema.properties ?? {}).forEach((field) => assert.ok(field in where.properties, `${field} is read by the entry and missing from the schema`));
+  const enums = (schema, where) => Object.entries(schema.properties ?? {}).forEach(([field, value]) => {
+    const values = value.enum ?? (value.anyOf ?? []).flatMap((each) => each.enum ?? ('const' in each ? [each.const] : []));
+    if (values.length && where.properties[field]?.enum) assert.deepEqual([...where.properties[field].enum].sort(), [...values].sort(), `${field}'s values`);
+  });
+  listed(typed, demo);
+  const kinds = typed.properties.kills.items.anyOf;
+  const crossing = kinds.find((each) => each.properties?.point);
+  const storm = kinds.find((each) => each.properties?.storm);
+  listed(crossing, demo.definitions.crossingKill);
+  enums(crossing, demo.definitions.crossingKill);
+  listed(storm, demo.definitions.stormKill);
+  listed(storm.properties.storm, demo.definitions.stormKill.properties.storm);
+  listed(typed.properties.boxes, demo.properties.boxes);
+  enums(typed.properties.boxes, demo.properties.boxes);
+});
+
 test('every examples/*/demo.json is a valid demo', () => {
   const dirs = readdirSync(new URL('examples/', root), { withFileTypes: true }).filter((entry) => entry.isDirectory() && existsSync(new URL(`examples/${entry.name}/demo.json`, root)));
   for (const { name } of dirs) assert.deepEqual(problems(read(`examples/${name}/demo.json`)), [], `examples/${name}/demo.json`);
@@ -42,6 +69,8 @@ const sample = {
   tools: [{ name: 'landing', local: 'examples/sample/tools/index.ts', hosted: null }],
   input: { flag: '--input', shape: 'examples/sample/workflow.ts, Input', default: { project: 'x' }, variants: {}, fixtures: { spacedeck: 'examples/sample/fixtures/spacedeck' } },
   sources: 'examples/sample/sources.json', boxes: { kind: 'docker', image: 'node:22-slim' },
+  browser: true, codeMode: { timeoutMs: 30000, outputChars: 4000 },
+  sites: { atlas: { title: 'Atlas', description: 'The project tracker', startUrl: 'https://atlas.example.com/' } },
 };
 
 test('a whole demo.json is valid, and each kind of mistake is refused', () => {
@@ -53,7 +82,15 @@ test('a whole demo.json is valid, and each kind of mistake is refused', () => {
     'a key with no where': { ...sample, keys: [{ env: 'FAKE_A_KEY', why: 'w', required: true }] },
     'a kill target that is not run or tool': { ...sample, kills: [{ point: 'p', why: 'w', target: 'box' }] },
     'a storm with no gap': { ...sample, kills: [{ storm: { kills: 2 } }] },
-    'a field a kill does not have': { ...sample, kills: [{ point: 'p', why: 'w', hold: 6 }] },
+    'a field a kill does not have': { ...sample, kills: [{ point: 'p', why: 'w', holdMs: 6 }] },
+    'a hold that is not a whole number': { ...sample, kills: [{ point: 'vision.filing', why: 'w', hold: 1.5 }] },
+    'sources from the root of the disk': { ...sample, sources: '/srv/sources.json' },
+    'sources out of the demo\'s directory': { ...sample, sources: '../other/sources.json' },
+    'sources that are not a JSON file': { ...sample, sources: 'sources.txt' },
+    'a browser that is not true or false': { ...sample, browser: 'chrome' },
+    'a code mode field that does not exist': { ...sample, codeMode: { timeout: 5 } },
+    'a site with no start': { ...sample, sites: { atlas: { title: 'Atlas', description: 'd' } } },
+    'a site whose start is not a web address': { ...sample, sites: { atlas: { title: 'Atlas', description: 'd', startUrl: 'atlas' } } },
     'a where with no fields': { ...sample, kills: [{ point: 'p', why: 'w', where: {} }] },
     'a where whose value is not a string, number or boolean': { ...sample, kills: [{ point: 'p', why: 'w', where: { tool: ['install'] } }] },
     'a where that is a list': { ...sample, kills: [{ point: 'p', why: 'w', where: [{ tool: 'install' }] }] },
@@ -67,4 +104,8 @@ test('a whole demo.json is valid, and each kind of mistake is refused', () => {
   };
   for (const [what, value] of Object.entries(wrong)) assert.notDeepEqual(problems(value), [], what);
   assert.deepEqual(problems({ ...sample, targets: ['local', 'hosted'], tools: [{ name: 'landing', local: 'a.ts', hosted: 'landing' }] }), [], 'hosted when every tool has a hosted source');
+  // The reference entry's forms: sources beside the demo, or a path from its directory; code mode as a switch; a parking kill.
+  for (const sources of [true, false, 'sources.json', 'data/sources.json']) assert.deepEqual(problems({ ...sample, sources }), [], `sources ${JSON.stringify(sources)}`);
+  assert.deepEqual(problems({ ...sample, codeMode: true, browser: false }), []);
+  assert.deepEqual(problems({ ...sample, kills: [{ point: 'vision.filing', why: 'several kept', hold: 3, waitMs: 3000 }] }), []);
 });
