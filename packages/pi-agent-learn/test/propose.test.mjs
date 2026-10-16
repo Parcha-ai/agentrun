@@ -365,3 +365,21 @@ test("a seeded real run proposes with the commit it was seeded from, and an untr
     await run.close();
   }
 });
+
+test("a short case value that turns up in a call id, the seed or a digest does not refuse the proposal", async () => {
+  const root = await scratch();
+  const { dir, remote, main } = await seededRemote(root);
+  const repo = await host(root, remote);
+  const seed = `${"a".repeat(30)}4821${"b".repeat(6)}`;
+  const digest = `${"0".repeat(40)}4821${"f".repeat(20)}`;
+  const target = targetOf([candidate({ callId: "fc_68ad4821e0f3" }), candidate({ callId: "call_4821", text: "Another rule." })], seed);
+  const workflows = { kyb: { files: { [`${digest}.json`]: JSON.stringify({ digest }), latest: `${digest}\n` } } };
+  const result = await proposeLearning({ ...OPTIONS, runId: "run-4821", repo, target, workflows, caseValues: ["4821"] });
+  assert.equal(result.status, "proposed");
+  assert.equal(parseInbox(await repo.read("inbox/run-4821.md", result.sha)).seed, seed);
+  assert.equal(commitCount(dir, `${main}..refs/heads/runs/run-4821`), 1);
+  const leaking = await proposeLearning({ ...OPTIONS, runId: "run-2", repo, target: targetOf([candidate({ callId: "fc_1", text: "Order 4821 failed." })]), caseValues: ["4821"] });
+  assert.equal(leaking.status, "refused", "what the model wrote is still checked");
+  assert.deepEqual(leaking.refusals.map((r) => r.reason), ["case_data", "case_data"]);
+  assert.equal((await refsOf(dir))["refs/heads/runs/run-2"], undefined);
+});
