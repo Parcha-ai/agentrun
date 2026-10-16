@@ -16,13 +16,6 @@ import type { SqliteDatabase, SqliteExecutor, SqliteValue } from "@earendil-work
 import type { StorageConformanceProvider } from "@earendil-works/pi-durable/testing";
 import { PI_DURABLE_VERSION, registerConformance, runConformance, SCANS_HAVE_ORDER } from "./_conformance.ts";
 
-/**
- * A Session failed by a Storage error, as each pi version says it: pi-durable 1.2 throws `SessionFailed` (its `cause` the
- * first error) after any Storage error; 1.0.4 and 1.1 poison the Session with an error that says so. Read from the
- * namespace, so no version fails to load for a name it does not export.
- */
-const SessionFailed = (piDurable as Record<string, unknown>).SessionFailed as (new (cause: unknown) => Error) | undefined;
-const sessionFailed = (error: unknown): boolean => (SessionFailed ? error instanceof SessionFailed : error instanceof Error && /poisoned/.test(error.message));
 import {
   ctx,
   entryCommitter,
@@ -34,6 +27,7 @@ import {
   SQLITE_NOTADB,
   sqliteError,
   withStoreIn,
+  sessionFailed,
 } from "./_support.ts";
 import {
   assertPragmas,
