@@ -38,6 +38,10 @@ export type { CreateSandboxBody, DaytonaClient, DaytonaHostErrorCode, DaytonaHos
 export { requestRun, ServeConfigError, ServeError, serveRun } from "./serve.ts";
 export type { RequestOptions, RunResponse, RunServer, ServeConfigErrorCode, ServeErrorCode, ServeOptions } from "./serve.ts";
 
+// Places: where a run lives for a supervisor that kills it and brings it back (agentrun's reference place seam).
+export { archilPlace, localPlace, PlaceError } from "./place.ts";
+export type { ArchilPlaceOptions, LocalPlaceOptions, Place, PlaceContext, PlaceErrorCode, PlaceExit, PlaceKill, PlaceOutcome, PlacePaths, PlaceRecovery, PlaceRunner, PlaceSignal, PlaceStatus, RunnerOrder } from "./place.ts";
+
 // Parking: an idle run gives its host back.
 export { busyState, drain, leaseParkTarget, watchParking } from "./park.ts";
 export type { BusyState, DrainOptions, Parking, ParkOptions, ParkResult, ParkTarget } from "./park.ts";
