@@ -123,7 +123,7 @@ test('an unknown kind is dropped, and a kind a caller lists is kept', { timeout:
   assert.ok(!recordingLines(keptOut).lines.some((line) => line.kind.startsWith('browser.') || line.kind.startsWith('transport.')));
 });
 
-test('a store over 10 MB is refused and leaves no file; a cap above it is not accepted', { timeout: 120_000 }, async () => {
+test('a store over 10 MiB is refused and leaves no file; a cap above it is not accepted', { timeout: 120_000 }, async () => {
   const source = await build(join(dirOf(), 'run.sqlite'), async (harness) => {
     const journal = await documentStore(harness, 'big', { owner: 'big' }).open({ binding: 'b' });
     await journal.save({ filler: 'x'.repeat(EXPORT_MAX_BYTES + 1024) });
@@ -184,6 +184,18 @@ test('an image in an entry leaves the row for blobs: a reference with its hash, 
   const stored = rows(out, 'SELECT sha256, mime_type, bytes FROM blobs');
   assert.deepEqual(stored.map((row) => [row.sha256, row.mime_type, Buffer.from(row.bytes).equals(png)]), [[digest, 'image/png', true]]);
   assert.ok(!readFileSync(out).includes(Buffer.from(png.toString('base64'))), 'the base64 is nowhere in the file');
+});
+
+test('the limit is 10 MiB, 10,485,760 bytes: a file of exactly the cap is accepted and one byte over is refused', { timeout: 120_000 }, async () => {
+  assert.equal(EXPORT_MAX_BYTES, 10_485_760);
+  assert.throws(() => exportStore('unused', join(dirOf(), 'x.sqlite'), { exportable, maxBytes: EXPORT_MAX_BYTES + 1 }), (error) => error.code === 'bad_options');
+  const source = await build(join(dirOf(), 'run.sqlite'));
+  const dir = dirOf();
+  const size = exportStore(source, join(dir, 'measure.sqlite'), { exportable }).bytes;
+  const exact = exportStore(source, join(dir, 'exact.sqlite'), { exportable, maxBytes: size });
+  assert.equal(exact.bytes, size, 'a file of exactly maxBytes is accepted');
+  assert.throws(() => exportStore(source, join(dir, 'over.sqlite'), { exportable, maxBytes: size - 1 }), (error) => error.code === 'too_large');
+  assert.deepEqual(readdirSync(dir).sort(), ['exact.sqlite', 'measure.sqlite']);
 });
 
 test('an export that exists, a source that does not, and a source left as it was', { timeout: 120_000 }, async () => {

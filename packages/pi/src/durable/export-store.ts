@@ -38,8 +38,8 @@ export const SECRET_EXPORT_KINDS: readonly string[] = Object.freeze(["browser.pr
 /** The tables an export fills; every other table the store has is created empty. */
 export const EXPORT_STORE_TABLES: readonly string[] = Object.freeze(["documents", "document_revisions", "conversations", "entries", "blobs", "record_ids", "durable_metadata", "durable_schema"]);
 
-/** The size an export may reach: a caller's `maxBytes` can only lower it. */
-export const EXPORT_MAX_BYTES = 10 * 1024 * 1024;
+/** The size an export may reach: 10 MiB, 10,485,760 bytes exactly (the limit of the viewer's database tab); a file of that size is accepted, one byte more is refused. A caller's `maxBytes` can only lower it. */
+export const EXPORT_MAX_BYTES = 10_485_760;
 
 export type ExportStoreOptions = {
   exportable: {
@@ -50,7 +50,7 @@ export type ExportStoreOptions = {
   };
   /** Exact values (a key, a token, a session id) that no kept value or byte of the file may hold. Each must be at least 8 characters. */
   secrets?: readonly string[];
-  /** A cap below EXPORT_MAX_BYTES. A larger one is refused. */
+  /** A cap in bytes, at most EXPORT_MAX_BYTES (10 MiB). A larger one is refused. */
   maxBytes?: number;
 };
 
