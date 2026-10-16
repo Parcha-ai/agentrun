@@ -63,3 +63,11 @@ was killed at `effect.kept charge` before the store recorded the call, and settl
 kept in evidence (its call carries `via: "evidence"`) without calling again; the last five paid by generation 2. It is not a valid
 recording on its own (no manifest, no driver, pi or browser lines), and the tests only fold it.
 
+
+## disk-resumed
+
+A scripted run of the disk demo's job (a map of ten invoices, each item's body one `call` node, `charge`), killed once
+mid-map and resumed by a second process, recorded as it ran: the durable lines are its store's (`agentrun.driver` is
+`agentrun.frozen_run.v3`, whose last checkpoint lists every item's body done), with the live workflow events and the
+supervisor's `host` lines of both processes. It is the case a panel must read from durable state: a map whose body is
+one node gives the workflow document no steps to look for, and no judge answers. `test/node-status.test.ts` reads it.

@@ -214,9 +214,19 @@ blob the manifest names, `{ nodes: [{ path, kind, label, via? }], edges: [{ from
 Pointer into the workflow and an edge's `kind` one of `next`, `branch`, `route`, `item` and `child`. Each node is drawn
 in its chain, with what it opens into (a branch, a route's branches, a map's body, a child workflow) under it, and
 marked by what the run did there at the stop: done, running, failed or not reached, with counts for a node a map runs
-once per item. Done comes from the driver's checkpoint (`agentrun.driver`, every `done` path) and, in the keyed layout,
-each map item's `agentrun.items` record (committed, and its own `frame.done`); failed from an item record whose status
-is `"failed"` and from `pin.failures`; running from a live `node.start` with no `node.end` since, in the process that is
-running. An execution path names its node with each map item's and loop iteration's index taken out
-(`/root/steps/1/items/3/body` is `/root/steps/1/body`). Each open's snapshot starts it over. A recording whose manifest
-names no job does not draw it. Its test is `test/workflow-graph.test.ts`.
+once per item. A recording whose manifest names no job does not draw it. Its test is `test/workflow-graph.test.ts`.
+
+### Node status, one fold for every panel
+
+`./node-status.ts` is the one place a panel reads what the run did at a node, and both the workflow graph and the
+workflow map read it. Done comes from durable state: the driver's checkpoint (`agentrun.driver`, every `done` path, v3
+and v4) and, in the keyed layout, each map item's `agentrun.items` record (committed, and its own `frame.done`). Failed
+comes from a step record whose status is `"failed"` (`pin.steps`, an item's `frame.steps`), an item record whose status
+is `"failed"` and `pin.failures`. Live workflow events say only what is running now: a `node.start` with no `node.end`
+since, in the process that is running (a kill or the next process start ends it). A process that resumes finishes work
+from its journal and writes no live event for it, and a map whose body is one node gives the workflow document no step
+to look for, so done never comes from live events or the plan's steps. `pathStatus(state, path)` is one execution path's
+status; `nodeStatuses(state)` counts them per workflow node, an execution path naming its node with each map item's and
+loop iteration's index taken out (`/root/steps/1/items/3/body` is `/root/steps/1/body`). Each open's snapshot starts the
+fold over. The workflow map's branch is done when its item's body is (or the body's last step); a judge's verdict counts
+only in a recording with no durable line. Its test, `test/node-status.test.ts`, reads `test/fixtures/disk-resumed`.

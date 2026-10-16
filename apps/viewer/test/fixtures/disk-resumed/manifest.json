@@ -1,0 +1,51 @@
+{
+  "format": "agentrun.recording/1",
+  "providers": "scripted",
+  "job": {
+    "blob": "92ca0cde31183a44bb2727b944c62c04adadded75f3207dfab2d3332ac6b77e5",
+    "sha256": "92ca0cde31183a44bb2727b944c62c04adadded75f3207dfab2d3332ac6b77e5"
+  },
+  "title": "Run outlives its box",
+  "task": "disk-settle-invoices",
+  "model": "faux/faux-1",
+  "kills": 1,
+  "code": {
+    "repo": "Parcha-ai/agentrun",
+    "commit": "9a4a9b091725d90c5197a7b4ba906b09ca1a7a33",
+    "packages": {
+      "@parcha/agentrun-dsl": "0.1.0-beta.14",
+      "@parcha/agentrun-jev": "0.1.0-beta.14",
+      "@parcha/agentrun-pi": "0.1.0-beta.14",
+      "@parcha/pi-browser": "0.1.0-beta.14",
+      "@parcha/pi-durable-agent": "0.1.0-beta.14",
+      "@parcha/pi-durable-disk": "0.1.0-beta.14",
+      "@parcha/pi-transport": "0.1.0-beta.14",
+      "@parcha/pi-vision": "0.1.0-beta.14",
+      "@earendil-works/pi-durable": "1.1.0",
+      "@earendil-works/chord": "1.1.0",
+      "@earendil-works/pi-ai": "1.1.0",
+      "@earendil-works/pi-agent-core": "1.1.0",
+      "@earendil-works/pi-coding-agent": "1.1.0",
+      "@earendil-works/pi-tui": "1.1.0"
+    }
+  },
+  "result": {
+    "blob": "9f4bbb2e08659cd8000ad88345a7ab4a2968c7124e328fcf91612c351117ff81",
+    "title": "The record"
+  },
+  "generations": 2,
+  "cost": {
+    "usd": 0,
+    "parts": {
+      "model": 0
+    }
+  },
+  "recorded": {
+    "started": "2026-10-16T09:09:11.892Z",
+    "ended": "2026-10-16T09:10:00.491Z"
+  },
+  "source": {
+    "run": "disk",
+    "store_sha256": "97e8d54f8a7255106f66cf1b213c4a4d7b558d21310b1c2bfedc3d0d526dddda"
+  }
+}

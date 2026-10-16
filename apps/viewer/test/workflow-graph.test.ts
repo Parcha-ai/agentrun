@@ -4,7 +4,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Json, Line, Manifest } from '../src/format.ts';
-import { graphPathOf, nodeStatuses, workflowGraph, workflowGraphPanel, type WorkflowGraph } from '../src/workflow-graph.ts';
+import { workflowGraph, workflowGraphPanel, type WorkflowGraph } from '../src/workflow-graph.ts';
+import { graphPathOf, nodeStatuses } from '../src/node-status.ts';
 import { panelsFor, type Node } from '../src/panels.ts';
 import { reduceTo } from '../src/replay.ts';
 
@@ -124,7 +125,7 @@ test('an execution path names its workflow node with its instances taken out', (
   assert.equal(graphPathOf('/root/steps/3/branches/1'), '/root/steps/3/branches/1', 'a parallel branch is its own node');
   assert.equal(graphPathOf('/root/steps/2/branches/high/body'), '/root/steps/2/branches/high/body', 'a route branch is its own node');
   assert.equal(graphPathOf('/root/steps/1/items/0'), '/root/steps/1/items/0', 'an item itself, not its body, is left as it is');
-  assert.deepEqual([...nodeStatuses({ done: [`${MAP}/items/0/body`, `${MAP}/items/1/body`], items: {}, failures: [], started: [], snapshotAt: undefined })], [['/root/steps/1/body', { done: 2, running: 0, failed: 0 }]]);
+  assert.deepEqual([...nodeStatuses({ done: [`${MAP}/items/0/body`, `${MAP}/items/1/body`], failedSteps: [], items: {}, failures: [], started: [], snapshotAt: undefined })], [['/root/steps/1/body', { done: 2, running: 0, failed: 0 }]]);
 });
 
 test('until the job is read, or when it holds no workflow the graph can draw, the panel says so; a focus dims the nodes outside it', () => {
