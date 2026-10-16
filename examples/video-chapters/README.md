@@ -37,7 +37,7 @@ A `--live` run of the whole film (47 minutes, 47 windows) costs about $0.40 at t
 ## How it is built
 
 - `job.ts`: the workflow as data: one `agent` with the `code` tool, whose instructions are the task and pi-vision's look skill, then a `call` to `cite`; its default input (NASA's film whole, what `--live` reads) and the clip a run on fakes reads.
-- `code.ts`: the `code` tool, pi-codemode's sandbox with `tools.bash` (the run's workspace) and `vision.see` (the run's vision, bound to the call), replay-safe.
+- `codeMode` in `demo.json`: the reference entry's `code` tool, pi-codemode's sandbox with `tools.bash` (the run's workspace) and `vision.see` (the run's vision, bound to the call). A script a kill cut short is not run again; the agent's next script reads back the answers the first one kept in the workspace.
 - `tools.ts`: `cite`, which resolves each chapter's receipts to the looks the run filed and builds the cited result. `result.ts` keeps each keyframe as a blob of the recording.
 - `fakes.ts`: the scripted lead (it runs the script a model would write) and the scripted eyes. `models.ts`: the live lead and eyes.
 - `sources.json`: NASA's film by URL, size and SHA-256. `clip/`: 24 s of it, cut by `clip/cut.sh`, what a run on fakes reads (`ASSETS.md` names the source).

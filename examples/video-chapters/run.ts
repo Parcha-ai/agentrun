@@ -2,7 +2,6 @@
 // npm run demo:video-chapters -- --serve [--host <address>] [--port <n>] [--live] [--max-usd <n>]: the drop page and the live view.
 // A film, in chapters, on the reference entry: on fakes ($0, no key, no network) the committed clip; with --live NASA's film whole.
 import { demo, type DemoOptions } from '../reference/index.ts';
-import { codeMode } from './code.ts';
 import spec from './demo.json' with { type: 'json' };
 import { fakes } from './fakes.ts';
 import job, { clipInput } from './job.ts';
@@ -14,7 +13,6 @@ const film = sources.items[0]!;
 
 export const options: DemoOptions = {
   self: import.meta.url, spec, job, fakes: { ...fakes, input: clipInput }, live: liveParts, result,
-  extensions: ({ vision }) => [codeMode(vision)],
   // NASA's film is fetched and checked when an input reads it; the clip is the job's own file, and a dropped file is put in the workspace.
   sourcesFor: (input) => (input.film === `${film.id}.mp4` ? [{ id: film.id, url: film.url, bytes: film.bytes, sha256: film.sha256 }] : []),
   itemOf: (path) => path.split('#')[0] || null,
