@@ -114,6 +114,28 @@ without the lease never gets the `ref`; reusing a sign-in read-only waits for pi
 A new profile goes to the first run that carries it back. A lease expires after `leaseMs` (default 6 hours), so a run that
 died does not hold a profile forever; a run whose lease passed to another saves nothing back.
 
+## Following the agent's repo
+
+An agent's definition and skills can live in a git repo, with the agent home as their cache. The package does not
+read git: the host reads the definition and the skill files at a commit and passes them in with its sha (40 or 64
+lowercase hex digits, a SHA-1 or a SHA-256 commit).
+
+- `createAgentHome(dir, { definition, skills, sha })` and `refreshAgentHome(home, { sha, definition, skills })` write
+  the files and `agent.source` (`{ sha, refreshedAt }`) in one commit, so the sha always names the cached files. A
+  refresh replaces the definition and the skill set: a skill path not in the new set is removed. The definition's
+  `id`, when given, must be the agent's, and `identity.name` follows its `name`. A refresh at the sha the home already
+  has changes nothing (`{ changed: false }`): a sha names one content.
+- `refreshAgentHome(home, { sha, from, ... })` is a compare-and-swap: the home must be at `from` (`null`: no sha yet),
+  or the refresh is refused (`stale`) before anything is written. A host that read an older commit then cannot move
+  the cache back over a newer one; whether one commit follows another is for the host to judge, from git.
+- `startRun` records the home's sha on the run (`agent.runs`, and `sha` on what it returns), read under the same lock
+  as the skills it copies into the workspace. A run already started keeps its sha and its copy of the skills when the
+  home is refreshed.
+- `startRun(home, { host, sha })` refuses with `AgentHomeError` (`stale`) when the home's cache is at another commit,
+  or at none, so a run never starts on skills older than the host asked for: refresh first.
+
+A home with no `agent.source` (every home made before this) is not tied to a repo, and its runs record no sha.
+
 ## Stored kinds
 
 Every document is session-scoped, version 1, in the store named. Times are ISO 8601 strings in UTC. The kinds and their
@@ -122,11 +144,12 @@ fields are the stored format.
 | Kind | Store | Key | Value |
 |---|---|---|---|
 | `agent.identity` | agent | | `{ id, name, formatVersion }`. `id` is the definition's `id`, or a UUIDv7 minted at creation; never a host's id |
+| `agent.source` | agent | | `{ sha, refreshedAt }`: the repo commit the definition and skills were read from, written in their commit; absent for a home not tied to a repo |
 | `agent.definition` | agent | | `{ id, version, name, description?, instructions, skills, tools, input_schema?, output_schema?, workflow?, max_cost_usd? }`. `skills` and `tools` are names; `workflow` is an AgentRun workflow document. No model, no thinking level |
 | `agent.skills` | agent | path under `.agents/skills/` | `{ content, sha256 }` |
 | `agent.aliases` | agent | host | `{ externalId }`: the agent's id in that host |
 | `agent.bindings` | agent | host | `{ [tool]: target }`: where each tool runs in that host |
-| `agent.runs` | agent | run id | `{ path, host, startedAt, endedAt?, outcome?, finalAnswer?, cost? }`; `path` is relative to the home |
+| `agent.runs` | agent | run id | `{ path, host, startedAt, sha?, endedAt?, outcome?, finalAnswer?, cost? }`; `path` is relative to the home; `sha` is the home's `agent.source` when the run started |
 | `agent.leases` | agent | profile key | `{ runId, expiresAt }` |
 | `browser.profiles` | agent and run | profile key | `{ provider, ref, state, startUrl?, allowedOrigins?, verifiedAt?, heldBy? }`; `ref` is the provider's saved sign-in, `state` is `ready` once it names one, or `held` in a run store whose run has no lease on it (`ref` empty, `heldBy` the run that has) |
 
@@ -136,7 +159,7 @@ through the host, and no tool reads or returns a profile.
 ## Exporting a home
 
 An exporter (a copy of a home for a viewer, or for someone else to run) copies only the kinds on `EXPORTABLE_KINDS`:
-`agent.identity`, `agent.definition`, `agent.skills` and `agent.runs`. Every other kind is dropped, a kind this release
+`agent.identity`, `agent.definition`, `agent.source`, `agent.skills` and `agent.runs`. Every other kind is dropped, a kind this release
 does not know included. `SECRET_KINDS` names what never leaves the home: `browser.profiles` (saved sign-ins),
 `agent.leases`, and `agent.bindings` and `agent.aliases` (each host's own names for where the tools run and for the
 agent). Every kind this package defines is on exactly one of the two lists, and a test fails on a kind added to
@@ -181,11 +204,12 @@ origin, path and query keys but drops its query values, fragment and userinfo. `
 | `readAgentHome(home)` | Everything the home holds, read in one pass |
 | `setAlias(home, host, externalId)`, `setBindings(home, host, bindings)` | A host's id for the agent, and where its tools run there |
 | `startRun`, `carryBack` | A run's start and end, above |
+| `refreshAgentHome(home, { sha, from?, definition, skills })` | The cached definition and skills replaced by the ones at `sha` ([Following the agent's repo](#following-the-agents-repo)) |
 | `runPaths(home, runId)` | A run's `dir` (what `pi-durable-disk run --dir` takes), `storePath` (`store/run.sqlite`) and `workspace` (`work/`) |
 | `durableProfileStore(target, { provider?, signal? })` | pi-browser's `ProfileStore` over a run store; `target` is the host's Harness or any Session on the file |
 | `EXPORTABLE_KINDS`, `SECRET_KINDS`, `projectForExport(kind, value)` | What an exporter may copy, what never leaves the home, and one document as an exporter writes it ([Exporting a home](#exporting-a-home)) |
 | `timelineOf`, `timelineReducer`, `groupTimeline`, `renderText` | The timeline above, from `@parcha/pi-durable-agent/timeline` |
-| `AgentHomeError` | `code` is `invalid`, `exists`, `missing`, `busy` or `format` |
+| `AgentHomeError` | `code` is `invalid`, `exists`, `missing`, `busy`, `format` or `stale` |
 
 The package does not import pi-browser at run time: `ProfileStore` is declared here by shape. `npm run typecheck`
 (after the workspace build) checks that the declaration is exactly pi-browser's type, read from the return of
