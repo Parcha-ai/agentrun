@@ -162,7 +162,7 @@ export function parseTokenNickname(nickname: string, prefix: string = TOKEN_PREF
  * than one refresh. The nickname is given, or built from `run` so the user can be traced back to its run.
  */
 export async function mintMountToken(
-  control: ControlApi,
+  control: Pick<ControlApi, "addUser">,
   opts: { nickname?: string; run?: { id: string; attempt: number }; prefix?: string; ttl?: string; oneUse?: boolean; now?: () => number },
 ): Promise<{ token: string; identifier: string; nickname: string }> {
   const nickname = opts.nickname ?? (opts.run ? tokenNickname(opts.run.id, opts.run.attempt, (opts.now ?? Date.now)(), opts.prefix) : undefined);
@@ -177,7 +177,7 @@ export async function mintMountToken(
   return { token: user.token, identifier: user.identifier, nickname };
 }
 
-export async function removeMountToken(control: ControlApi, identifier: string): Promise<void> {
+export async function removeMountToken(control: Pick<ControlApi, "removeUser">, identifier: string): Promise<void> {
   try {
     await control.removeUser("token", identifier);
   } catch (err) {
@@ -461,9 +461,14 @@ async function mountEntry(host: Host, mountpoint: string): Promise<{ source: str
   return found;
 }
 
-function isOurs(entry: { source: string; fstype: string }, ref: RunRef): boolean {
-  const base = `${ref.disk}:/${runPath(ref.id)}`;
-  return entry.fstype === "fuse.archil" && (entry.source === base || entry.source === `${base}[${ref.region}]`);
+/** A path of a disk, as one exclusive mount names it: `runs/<id>` for a run, any safe path for `withClaim`. */
+export type MountTarget = { readonly disk: string; readonly region: string; readonly path: string };
+
+const targetOf = (ref: RunRef): MountTarget => ({ disk: ref.disk, region: ref.region, path: runPath(ref.id) });
+
+function isOurs(entry: { source: string; fstype: string }, target: MountTarget): boolean {
+  const base = `${target.disk}:/${target.path}`;
+  return entry.fstype === "fuse.archil" && (entry.source === base || entry.source === `${base}[${target.region}]`);
 }
 
 /**
@@ -573,15 +578,19 @@ async function ensureMountpoint(host: Host, dir: string): Promise<void> {
  * goes to the wrapper as one line on stdin (`bin/archil-scoped`), with or without sudo.
  */
 async function mountRun(host: Host, ref: RunRef, mountpoint: string, token: string, force: boolean): Promise<void> {
-  const path = runPath(ref.id);
-  const args = [host.archil, "mount", ...(force ? ["--force"] : []), `${ref.disk}:/${path}`, mountpoint, "--region", ref.region];
+  await mountTarget(host, targetOf(ref), mountpoint, token, force);
+}
+
+async function mountTarget(host: Host, target: MountTarget, mountpoint: string, token: string, force: boolean, held = ""): Promise<void> {
+  const { path } = target;
+  const args = [host.archil, "mount", ...(force ? ["--force"] : []), `${target.disk}:/${path}`, mountpoint, "--region", target.region];
   const r = await sh(asRoot(host, args), host.timeoutMs.mount, `${token}\n`);
   const entry = await mountEntry(host, mountpoint);
-  if (ok(r) && entry && isOurs(entry, ref)) return;
+  if (ok(r) && entry && isOurs(entry, target)) return;
   if (entry) await unmountWith(host, mountpoint).catch(() => {});
-  if (ok(r)) throw new ClaimError("MOUNT_FAILED", `archil mount ${path} exited 0 but ${mountpoint} is not an archil mount of the run`);
+  if (ok(r)) throw new ClaimError("MOUNT_FAILED", `archil mount ${path} exited 0 but ${mountpoint} is not an archil mount of ${path}`);
   if (STALE_MARKER.test(r.stderr)) throw new ClaimError("MOUNT_FAILED", `an archil daemon of this host still runs for ${mountpoint}: ${detail(r, token)}`);
-  if (!force && r.stderr.includes(HELD_MARKER)) throw new HeldError("claim", `${path} is held by another client (${detail(r, token)})`);
+  if (!force && r.stderr.includes(HELD_MARKER)) throw new HeldError("claim", `${path} is held by another client${held} (${detail(r, token)})`);
   if (r.stderr.includes(NOT_EMPTY_MARKER) || (MISLEADING_REFUSAL.test(r.stderr) && (await entries(mountpoint)) > 0)) {
     throw new ClaimError("MOUNTPOINT_NOT_EMPTY", `archil mount ${path} refused ${mountpoint}, which is not empty: ${detail(r, token)}`);
   }
@@ -679,7 +688,11 @@ async function moveStrayAside(host: Host, ref: RunRef, mountRoot: string, mountp
  * the run but not that this mount does.
  */
 async function verify(host: Host, ref: RunRef, mountpoint: string): Promise<void> {
-  const path = runPath(ref.id);
+  await verifyTarget(host, runPath(ref.id), mountpoint, `${JSON.stringify({ pid: process.pid, at: new Date().toISOString() })}\n`);
+}
+
+/** `verify` for any path; `probe` is what the claim probe holds. */
+async function verifyTarget(host: Host, path: string, mountpoint: string, probe: string): Promise<void> {
   const r = await archil(host, ["delegations", "--json", mountpoint]);
   if (!ok(r)) throw new ClaimError("CLAIM_NOT_VERIFIED", `archil delegations ${mountpoint}: ${detail(r)}`);
   let list: unknown;
@@ -692,7 +705,7 @@ async function verify(host: Host, ref: RunRef, mountpoint: string): Promise<void
   const active = Array.isArray(list) && list.some((d: { path?: unknown; state?: unknown }) => d?.state === "Active" && accepted.includes(d.path as string));
   if (!active) throw new ClaimError("CLAIM_NOT_VERIFIED", `${mountpoint} holds no Active delegation on ${path}: ${r.stdout.trim().slice(0, 300)}`);
   try {
-    await host.persist(join(mountpoint, CLAIM_PROBE), `${JSON.stringify({ pid: process.pid, at: new Date().toISOString() })}\n`);
+    await host.persist(join(mountpoint, CLAIM_PROBE), probe);
   } catch (err) {
     throw ownWriteFenced(join(mountpoint, CLAIM_PROBE), err);
   }
@@ -719,7 +732,7 @@ export async function acquire(opts: AcquireOptions): Promise<Claim> {
   let reused = false;
   const existing = await mountEntry(host, root);
   if (existing) {
-    if (!isOurs(existing, ref)) throw new ClaimError("MOUNTPOINT_BUSY", `${root} already holds ${existing.fstype} ${existing.source}`);
+    if (!isOurs(existing, targetOf(ref))) throw new ClaimError("MOUNTPOINT_BUSY", `${root} already holds ${existing.fstype} ${existing.source}`);
     if (await isDead(host, root)) await cleanDead(host, root);
     else reused = true;
   }
@@ -802,4 +815,51 @@ class ArchilClaim implements Claim {
     if (lost) throw lost;
     return { via };
   }
+}
+
+/** One exclusive mount of a path, as `withClaim` holds it: its own mountpoint, never reused. */
+export interface ExclusiveMount {
+  readonly root: string;
+  /** `archil sync`; a refusal (the mount was revoked) is a FencedError. */
+  barrier(): Promise<{ ms: number }>;
+  /** `archil unmount` (a dead mount is cleaned), and the mountpoint removed. */
+  unmount(): Promise<Unmounted>;
+}
+
+/**
+ * Mount `<disk>:/<path>` exclusively at `mountpoint`, a fresh directory of the caller's own, and verify it, with `probe` as
+ * the claim probe's content. Another client's delegation is HeldError CLAIM_HELD (`held` is added to its message); the
+ * rest fails as `acquire` does. Unlike `acquire`, a mount already there is never reused, and nothing is forced.
+ */
+export async function exclusiveMount(
+  target: MountTarget,
+  mountpoint: string,
+  token: string,
+  options: { readonly host?: ArchilHost; readonly probe: string; readonly held?: string },
+): Promise<ExclusiveMount> {
+  if (!token || /[\r\n]/.test(token)) throw new ClaimError("INVALID_ARGUMENT", "no mount token, or one with a line break");
+  const host = resolveHost(options.host);
+  if (await mountEntry(host, mountpoint)) throw new ClaimError("MOUNTPOINT_BUSY", `${mountpoint} is already a mount`);
+  await ensureMountpoint(host, mountpoint);
+  try {
+    await mountTarget(host, target, mountpoint, token, false, options.held);
+  } catch (err) {
+    await rmdir(mountpoint).catch(() => {});
+    throw err;
+  }
+  try {
+    await verifyTarget(host, target.path, mountpoint, options.probe);
+  } catch (err) {
+    await unmountWith(host, mountpoint).catch(() => {});
+    throw err;
+  }
+  return {
+    root: mountpoint,
+    async barrier() {
+      const r = await archil(host, ["sync", mountpoint], host.timeoutMs.sync);
+      if (ok(r)) return { ms: r.ms };
+      throw new FencedError(`archil sync ${mountpoint}: ${detail(r)}`);
+    },
+    unmount: () => unmountWith(host, mountpoint),
+  };
 }
