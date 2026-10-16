@@ -124,7 +124,7 @@ export {
 } from "./runner.ts";
 export { admitsTool, type Shipped, shippingStorage } from "./shipping.ts";
 export { type BoxRunnerOptions, boxRunner, type RunnerProgram } from "./start.ts";
-export { type StopRunner, stopRunner } from "./stop.ts";
+export { killRunner, type StopRunner, stopRunner } from "./stop.ts";
 export { checkpointStore, type Seal, StoreError, type StoreErrorCode, sealStore, verifyStore } from "./store.ts";
 export {
 	type ChangedReceipt,

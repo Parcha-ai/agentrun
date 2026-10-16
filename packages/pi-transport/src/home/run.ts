@@ -39,9 +39,18 @@ const HomeDoc = defineDoc<{ root?: string }>({
  * Why a home refused an order. `wrong_state`: the order does not fit what the home is doing. `stale_epoch`: the
  * order is for an epoch this home has left behind. `not_verified`: a store is here that no seal vouches for.
  * `seal_mismatch`: the store here is not the one the seal names. `app`: the app did not load or build. `store`: the
- * store could not be opened, sealed or removed. `busy`: another runner at this place holds the store.
+ * store could not be opened, sealed or removed. `busy`: another runner at this place holds the store. `invalid`: the
+ * order's arguments have the wrong shape.
  */
-export type HomeErrorCode = "wrong_state" | "stale_epoch" | "not_verified" | "seal_mismatch" | "app" | "store" | "busy";
+export type HomeErrorCode =
+	| "wrong_state"
+	| "stale_epoch"
+	| "not_verified"
+	| "seal_mismatch"
+	| "app"
+	| "store"
+	| "busy"
+	| "invalid";
 
 /** An order a home did not carry out. Returned, never thrown. */
 export class HomeError extends Error {
@@ -79,6 +88,11 @@ export type ResumeOrder = {
 		 */
 		readonly replayed?: { readonly from: number; readonly to: number };
 	};
+	/**
+	 * The session's environment for the app, handed to it as `AppContext.env`: over the link, never in argv, and a box
+	 * inherits none of the host's. Names and values are strings.
+	 */
+	readonly env?: Readonly<Record<string, string>>;
 };
 
 /** `closed`: nothing is open. `open`: the session runs. `sealed`: closed and sealed, waiting for the host's word. */
@@ -486,9 +500,26 @@ class SessionHome implements Home {
 	/** Open the store, bring the conversations here, admit the notice, resume. Every step is safe to repeat. */
 	async #open(order: ResumeOrder, context: Context): Promise<Result<void, HomeError>> {
 		const { app, session, store, workspace, where, models } = this.#options;
-		const built = await appOptions(app, { session, workspace, store, models, where });
+		const orderEnv = order.env ?? {};
+		if (
+			typeof orderEnv !== "object" ||
+			orderEnv === null ||
+			Object.values(orderEnv).some((value) => typeof value !== "string")
+		) {
+			return err(new HomeError("invalid", "the resume order's env must map names to strings"));
+		}
+		const built = await appOptions(app, {
+			session,
+			workspace,
+			store,
+			models,
+			where,
+			root: dirname(workspace),
+			epoch: order.epoch,
+			env: { ...orderEnv },
+		});
 		if (!built.ok) return err(new HomeError("app", built.error.message, built.error));
-		const { root: _root, onOpen, registry, ...rest } = built.value;
+		const { root: _root, onOpen, onResumed, registry, ...rest } = built.value;
 		const gate = createGate();
 		registry.install(gate.extension);
 		const { onCall } = this.#options;
@@ -544,6 +575,16 @@ class SessionHome implements Home {
 		this.#gate = gate;
 		this.#wrapped = wrapped;
 		this.#app = built.value;
+		if (onResumed !== undefined) {
+			// Not the order's to wait for: the app's own work goes on after the order answered.
+			const resumedContext = withoutAbortSignal(context);
+			void Promise.resolve()
+				.then(() => onResumed(harness, resumedContext))
+				.catch((cause) => {
+					process.stderr.write(`pi-transport: the app's onResumed failed: ${toError(cause).message}
+`);
+				});
+		}
 		return ok(undefined);
 	}
 

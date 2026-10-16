@@ -443,6 +443,8 @@ export type RecoverOptions = {
 	) => string;
 	/** The files of a restore are copied with these limits. */
 	readonly workspace?: WorkspaceOptions & { readonly maxBytes?: number };
+	/** The session's environment for the runner it starts, in its resume order (`ResumeOrder.env`). */
+	readonly env?: Readonly<Record<string, string>>;
 };
 
 /** Whether a box is gone for good: its provider says it ended, or does not know it. An error that is not that is not an answer. */
@@ -692,6 +694,7 @@ async function restoreInto(
 				head: seal.head,
 				...(replay === undefined ? {} : { replayed: { from: replay.from, to: replay.to } }),
 			},
+			...(options.env === undefined ? {} : { env: options.env }),
 		},
 		context,
 	);
@@ -823,6 +826,7 @@ export async function recoverHome(
 							...(lease.seal === undefined ? {} : { head: lease.seal.head }),
 						},
 					}),
+			...(options.env === undefined ? {} : { env: options.env }),
 		},
 		context,
 	);
