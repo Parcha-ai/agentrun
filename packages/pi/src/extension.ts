@@ -398,15 +398,18 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
    *  only when the user's command trusts this dry run. */
   const dryRun = async (ctx: ExtensionContext, s: Session, input: Record<string, unknown> | undefined, trusted: boolean, signal?: AbortSignal): Promise<WorkflowDryRun> => {
     if (!s.draft) throw new Error('Inspect a workflow first. Try /agentrun demo, or describe a task with /agentrun <task>.');
-    let sop: SopText | undefined, sopUnavailable: string | undefined;
-    try { sop = await sopFor(ctx, s, inspectWorkflow(s.draft).requires.sopSections); }
-    catch (error) { sopUnavailable = error instanceof Error ? error.message : String(error); }
-    // /agentrun stop, the tool call's own abort and the session's end each stop it.
+    const draft = s.draft;
+    // /agentrun stop, the tool call's own abort and the session's end each stop it, from before its first await on.
     const controller = new AbortController();
     s.dryRun?.abort(); s.dryRun = controller;
+    const stopped = AbortSignal.any([controller.signal, ...[signal, ctx.signal].filter((v): v is AbortSignal => !!v)]);
     try {
-      return await dryRunDraft(s.draft, { ...(input === undefined ? {} : { input }), ...(sop ? { sop: sop.text } : {}), ...(sopUnavailable ? { sopUnavailable } : {}),
-        trusted, trustedCommand: '/agentrun dry-run --trusted', signal: AbortSignal.any([controller.signal, ...[signal, ctx.signal].filter((v): v is AbortSignal => !!v)]) });
+      let sop: SopText | undefined, sopUnavailable: string | undefined;
+      try { sop = await sopFor(ctx, s, inspectWorkflow(draft).requires.sopSections); }
+      catch (error) { sopUnavailable = error instanceof Error ? error.message : String(error); }
+      if (stopped.aborted || s.closed) return { status: 'not_run', ok: true, skipped: ['The dry run was stopped before it started.'] };
+      return await dryRunDraft(draft, { ...(input === undefined ? {} : { input }), ...(sop ? { sop: sop.text } : {}), ...(sopUnavailable ? { sopUnavailable } : {}),
+        trusted, trustedCommand: '/agentrun dry-run --trusted', signal: stopped });
     } finally { if (s.dryRun === controller) s.dryRun = undefined; }
   };
   const launch = async (ctx: ExtensionContext, s: Session, input: Record<string, unknown>, trusted = false) => {
