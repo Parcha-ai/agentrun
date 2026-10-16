@@ -33,13 +33,13 @@ const hashOf = async (file: string) => createHash("sha256").update(await readFil
 const withRow = (rows: ManifestRow[], row: ManifestRow): ManifestRow[] =>
   [...rows.filter((r) => r.path !== row.path || (r.sha256 === row.sha256 && !(r.session === row.session && r.remote.name === row.remote.name))), row];
 
-async function withLock<T>(file: string, run: () => Promise<T>): Promise<T> {
+export async function withLock<T>(file: string, run: () => Promise<T>, what = "downloads/manifest.json"): Promise<T> {
   for (const deadline = Date.now() + 10_000; ; await new Promise((r) => setTimeout(r, 25 + Math.random() * 50))) {
     try { await (await open(file, "wx")).close(); break; }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       if (Date.now() - (await stat(file).then((s) => s.mtimeMs, () => Date.now())) > 30_000) await rm(file, { force: true });
-      else if (Date.now() > deadline) throw new Error("downloads/manifest.json is locked by another fetch");
+      else if (Date.now() > deadline) throw new Error(`${what} is locked by another writer`);
     }
   }
   try { return await run(); } finally { await rm(file, { force: true }); }

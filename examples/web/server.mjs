@@ -19,13 +19,15 @@ import { parseArgs } from "node:util";
 import { AGENT_STORE_FILE, carryBack, readAgentHome, startRun } from "@parcha/pi-durable-agent";
 import { timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
 import { ensureAgentHome } from "./agent/home.mjs";
+import { costOf, lastRow, RUN_ID, stateOf } from "./page/source.js";
+import { readRunEntries } from "./replay.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** The page imports the timeline from /timeline/: the package's own built modules, found where Node resolves them. */
 const TIMELINE = dirname(fileURLToPath(import.meta.resolve("@parcha/pi-durable-agent/timeline")));
 /** The name this server records as a run's host in the agent home. */
 const HOST = "examples-web";
-const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
+const ID = RUN_ID;
 const LEASE_MS = 90_000;
 const RELEASED = new Set(["sleeping", "paused", "done", "failed"]);
 const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
@@ -33,9 +35,10 @@ const TEXT_CAP = 512 * 1024;
 const SEARCH_FILE_CAP = 1024 * 1024;
 const TEXT_TYPES = new Set(["txt", "md", "markdown", "csv", "tsv", "json", "jsonl", "log", "yml", "yaml", "xml", "js", "mjs", "ts", "py", "sh", "toml", "ini", "css", "sql"]);
 const IMAGE_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
-const PAGE = { "/": ["index.html", "text/html; charset=utf-8"], "/app.js": ["app.js", "text/javascript; charset=utf-8"], "/app.css": ["app.css", "text/css; charset=utf-8"] };
+const JS = "text/javascript; charset=utf-8";
+const PAGE = { "/": ["index.html", "text/html; charset=utf-8"], "/app.js": ["app.js", JS], "/run-page.js": ["run-page.js", JS], "/source.js": ["source.js", JS], "/app.css": ["app.css", "text/css; charset=utf-8"] };
 const MODULE = /^\/timeline\/[a-z-]+\.js$/;
-const APP_CSP = "default-src 'self'; frame-src https: 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+const APP_CSP = "default-src 'self'; frame-src https: 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const FILE_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox; form-action 'none'";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -43,23 +46,9 @@ const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` 
 const readJson = (path) => readFile(path, "utf8").then(JSON.parse).catch(() => null);
 const isLoopback = (host) => host === "localhost" || host === "::1" || host === "[::1]" || /^127\./.test(host);
 
-const QUIET = /:run:(start|end)$/;
-/**
- * working while a run is in flight. Otherwise waiting when the newest row (not counting cost, run start and end, or
- * phases) is a wait for the person. A live run that ended on a successful tool result is waiting too: a run that is
- * not working and has no answer after its last result was ended by that tool (request_sign_in does this). A released
- * run's store cannot tell that apart from a run parked between steps, so there only a wait row counts.
- */
-function stateOf(rows, working, live = false) {
-  if (working) return "working";
-  const last = rows.findLast((r) => r.kind !== "usage" && r.kind !== "phase" && !QUIET.test(r.id));
-  if (last?.kind === "waiting") return "waiting";
-  return live && last?.kind === "tool_result" && last.tool_status === "success" ? "waiting" : "idle";
-}
-const costOf = (rows) => rows.findLast((r) => r.kind === "usage")?.usage?.usd ?? null;
 /** The agent's answer when the run's newest row (as `stateOf` counts them) is the agent's text; a wait is not one. */
 const answerOf = (rows) => {
-  const last = rows.findLast((r) => r.kind !== "usage" && r.kind !== "phase" && !QUIET.test(r.id));
+  const last = lastRow(rows);
   return last?.kind === "final_answer" || last?.kind === "text_block" ? last : undefined;
 };
 
@@ -179,16 +168,9 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
     const sig = `${st.mtimeMs}:${st.size}`;
     const hit = stores.get(run.id);
     if (hit?.sig === sig) return hit;
-    const { DatabaseSync } = await import("node:sqlite");
-    const entries = [];
+    let entries;
     try {
-      const db = new DatabaseSync(file, { readOnly: true });
-      try {
-        const conversation = db.prepare("SELECT MIN(conversation_id) AS id FROM entries").get()?.id;
-        if (conversation != null) for (const row of db.prepare("SELECT record FROM entries WHERE conversation_id = ? ORDER BY id").iterate(conversation)) entries.push(JSON.parse(row.record));
-      } finally {
-        db.close();
-      }
+      entries = await readRunEntries(file);
     } catch (cause) {
       throw new HttpError(500, `the store cannot be read: ${cause.message}`);
     }

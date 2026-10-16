@@ -342,7 +342,7 @@ An instance's exit code tells the host's process supervisor what to do:
 | 2 | Usage error | no |
 | 65 | Data error: the store is behind its seal (an acknowledged commit is missing), or `run.json` is unreadable. `run.json` says `failed` | never |
 | 70 | The store's head cannot be read (pi's schema moved). `run.json` says `failed` | never |
-| 75 | Fenced: the claim was revoked, its mount failed or left the mount table (`CLAIM_UNMOUNTED`), or the lease lapsed | never in place; the supervisor decides |
+| 75 | Fenced: the claim was revoked, its mount failed or left the mount table (`CLAIM_UNMOUNTED`), or the lease lapsed; or an incarnation given no mount token found no live mount to reuse (`CLAIM_GONE_NO_TOKEN`: a restart whose mount went with the failed incarnation) | never in place; the supervisor decides |
 | 76 | Held: another client holds the claim (a delegation, live or orphaned; the supervisor revokes orphans), or another process on this host holds the run's owner lock | never in place |
 
 ## Host drivers and the supervisor
@@ -419,12 +419,16 @@ placement is ambiguous). A box of unknown size gets no price, and neither does a
 model, which the driver doesn't map (`daytonaUsdPerSecond`). The box comes from a snapshot that holds Node, the archil client
 (`libfuse2`), this package, the run user and the sudoers drop-in, or from a default image that the caller's `prepare` installs
 them into. A container sandbox has no systemd (PID 1 is the Daytona daemon), so an in-box launcher keeps the instance
-alive in place and never restarts it after exit 0, 65, 70, 75 or 76. The mount token is uploaded to a root-only file and
+alive in place and never restarts it after exit 0, 65, 70, 75 or 76. Every incarnation of an attempt gets the attempt's
+token on stdin. A restart whose mount is still live reuses it, and one whose mount went with the failed incarnation mounts
+again: after a takeover, that mount is `HeldError` (76, terminal). The token stays in the launcher's memory for the attempt. The mount token is uploaded to a root-only file and
 handed to the instance on stdin, never put in the sandbox's environment, which Daytona stores and returns on every read.
 Status comes from the sandbox state plus the launcher's own word, and `stop` drains the instance, then deletes the box. The
 archil client needs the sandbox's egress to Archil's mount servers (Daytona's Tier 3 or 4, full egress; a domain allowlist
 cannot mount). Where the kernel refuses every unmount (a Sysbox box), the claim's release checks the delegation in, moves the
-mount aside (`archil-scoped retire`) and kills its daemon. Measured live on Daytona's hosted `us` region, about 6 ms from
+mount aside (`archil-scoped retire`) and kills its daemon. Before the move, the client must list no Active delegation
+under the mount. Its own bookkeeping under `.archil/` doesn't count: the client makes `.archil/client-<n>` and its
+`unlinked` whenever a file under the mount is deleted, and no checkin clears them once the mount is read-only. Measured live on Daytona's hosted `us` region, about 6 ms from
 `aws-us-east-1`: a box takes about 15 s to start an instance, an exclusive mount 142 ms and a commit 8.55 ms p50; a
 power-off, a freeze of the instance and its FUSE daemon, and a network partition were each taken over on another box (the
 power-off through the orphaned delegation, the freeze and the partition through the lease, the partitioned box stopped by
@@ -566,6 +570,8 @@ mount token reaches the journal, and that nothing is left behind. It needs syste
 | A zombie that never commits again | Its lease watchdog (a worker thread, so a main thread stuck in a FUSE request does not matter) kills its commands at 75 s without touching the mount | an in-flight command runs at most until the self-fence |
 | The mount is taken away under a live instance (an operator's `umount -l`, a cleanup's `fusermount -u`) | The instance writes `run.json` and creates its directories through the directory it opened at acquire, and checks before each write that the run's path is still that mount; at the next heartbeat the path names the local directory under the mountpoint, so it exits 75 (`CLAIM_UNMOUNTED`) | nothing of its own is written to the local disk; as host lost |
 | A run's mountpoint holds entries and nothing is mounted on it (files written by path after a mount vanished) | acquire moves the directory aside whole to `<mountRoot>/.stray/<run>-<tag>` (root-owned, 0700), puts an empty one in its place, logs one JSON line on stderr with the entry count (never a name or a byte of the files), and mounts; `MOUNTPOINT_NOT_EMPTY` when it cannot | nothing in the moved directory is read or brought into the run |
+| The mountpoint holds entries written since the starting incarnation began, before its claim mounted (an app's factory writing under `ctx.root`, which the CLI runs before the mount) | acquire refuses the start: `MOUNTPOINT_WRITTEN`, exit 65 (terminal, since a restart would write them again), naming the first few as `<mp>/...` in at most 240 characters; nothing moves aside and nothing mounts | the writes stay where the app left them, never silently lost; write in `onOpen`. The two rules side by side: this incarnation's own fresh writes are named (they are what the app must fix); an earlier incarnation's leftovers are counted, never named (they may be another incarnation's files) |
+| The mountpoint holds more entries than the stray check looks at (100,000), or one this process cannot read | acquire refuses the start: `MOUNTPOINT_UNCHECKED`, exit 65, naming none of the entries; nothing moves aside and nothing mounts. A directory keeps its time when a file in it is rewritten in place, so only a check that looked at every entry can rule out this incarnation's own writes | someone looks at the directory and moves it aside by hand |
 | A stale archil daemon on the mountpoint with no mount (a client that failed at a token refresh drops its mount and keeps its process and control socket) | acquire kills it (`archil-scoped stale`) before mounting; archil's refusal ("an older Archil process is still running", "Failed to bind control socket") is `MOUNT_FAILED` (exit 1), not 76 | none |
 | The FUSE daemon dies, the loop lives | I/O returns `ENOTCONN`, the claim is fenced, the instance exits 75 and the unit does not restart; the supervisor finds the claim orphaned, revokes it and starts an instance | as host lost |
 | Archil is unavailable or its write buffer is full | The commit fails, pi poisons the session, the instance exits 75; the supervisor retries | nothing is published past the last durable commit |
@@ -709,6 +715,40 @@ pi-durable, chord and their dependencies).
 `@parcha/pi-durable-disk/internals` holds the claim, status and Daytona plumbing this repository's examples and demos use:
 `runPath`, `unmountClaim`, `createRunDir`, the mount-token and delegation helpers, `isLeaseFresh`, and the Daytona labels,
 names and `sweepSandboxes`. It carries no compatibility promise: a name there can change or go in any release.
+
+### Seeding a new run
+
+`seed` (in `openDurableRun`'s options, and `openRunLease`'s) writes what a new run starts with before anything sees the
+run: its store file, a SQLite database the Harness then opens (saved sign-in profiles, say), and files in its
+workspace (`work/.agents/skills/`). `beforeResume` runs after the store is open, too late for that.
+
+```ts
+await openDurableRun(ref, {
+  ...localRun("/var/runs/run-1"),           // or a disk's mountToken
+  harness: { models, registry },
+  async seed({ storePath, workDir }) {      // also root: the claim's root
+    const db = new DatabaseSync(storePath);
+    db.exec("CREATE TABLE IF NOT EXISTS x_agent_profiles (name TEXT PRIMARY KEY, profile BLOB)");
+    db.close();                             // closed before it returns: the store opens it next
+    await cp(skillsDir, join(workDir, ".agents/skills"), { recursive: true });
+  },
+});
+```
+
+- **When it runs.** Once, on the open that finds no `run.json`: inside the run's first claim, with the owner lock held,
+  after `store/`, `work/` and `tmp/` exist, before `run.json` is written and before the store opens. Its step is
+  `seed`. What it wrote is made durable (the claim's barrier) before `run.json` publishes the run.
+- **When it doesn't.** Never for a run that has `run.json`, whatever its generation, and never on a fork's first open
+  (`fork` writes `run.json`).
+- **When it fails.** A seed that throws fails the open with its own error. A process killed while it seeds leaves the run
+  unpublished in the same way: no `run.json`, the claim let go. The next open seeds again, so a seed overwrites what an
+  earlier attempt wrote.
+- **How long it may take.** Under a supervisor, a seed must end within the start grace (`--start-grace`,
+  `startGraceMs`; default the lease expiry, 90 s). Past it, `ensureRunning` takes the start as failed and revokes the
+  claim. The seed's next write or its barrier is then refused, the instance is fenced (exit 75) with nothing published,
+  and the next start seeds again. A deployment whose seeds can take longer raises the start grace.
+- **On a local directory** (`localRun`) it is the same. As with `work/`, the files it writes are the operating system's
+  to flush; a SQLite database it commits with `synchronous = FULL` is durable when the commit returns.
 
 ### A run on a local directory
 

@@ -3,7 +3,7 @@
 // a mount token and uses the archil client: mount, verify, barrier, release, dead-mount cleanup.
 import { spawn } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
-import { mkdir, open, readdir, readFile, rmdir, stat } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, readFile, rmdir, stat } from "node:fs/promises";
 import { basename, isAbsolute, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -516,10 +516,14 @@ async function moveAside(host: Host, mountpoint: string, code: "UNMOUNT_FAILED" 
   if (!ok(r)) throw new ClaimError(code, `${mountpoint} was moved aside but its daemon was not stopped (${detail(r)})`);
 }
 
+/** The archil client's own directory on the disk, where it keeps its bookkeeping (`client-<n>`, `unlinked`). */
+const ARCHIL_BOOKKEEPING = ".archil";
+
 /**
  * Release a live mount the kernel will not unmount (Sysbox): `archil checkin` gives the delegation back, the client must
- * then list none on the run, and only then is the mount moved aside and its daemon killed. Any failed step leaves the
- * mount where it is, as UNMOUNT_FAILED: a mount that may still hold the delegation is never abandoned.
+ * then list none on the run (its own bookkeeping under `.archil/` is not the run's), and only then is the mount moved
+ * aside and its daemon killed. Any failed step leaves the mount where it is, as UNMOUNT_FAILED: a mount that may still
+ * hold the delegation is never abandoned.
  */
 async function checkinAndMoveAside(host: Host, mountpoint: string): Promise<void> {
   const c = await archil(host, ["checkin", mountpoint], host.timeoutMs.unmount);
@@ -531,7 +535,11 @@ async function checkinAndMoveAside(host: Host, mountpoint: string): Promise<void
   } catch {
     list = null;
   }
-  const mine = (p: unknown) => p === mountpoint || (typeof p === "string" && p.startsWith(`${mountpoint}/`));
+  // The client also lists its own bookkeeping on the disk, `<mp>/.archil/client-<n>` and its `unlinked` (made when a
+  // file under the mount is deleted), which a checkin of the run leaves and none can clear once the mount is read-only.
+  // It is outside the run's tree, so it never holds the run: every other delegation under the mount does.
+  const bookkeeping = (p: string) => p === `${mountpoint}/${ARCHIL_BOOKKEEPING}` || p.startsWith(`${mountpoint}/${ARCHIL_BOOKKEEPING}/`);
+  const mine = (p: unknown) => p === mountpoint || (typeof p === "string" && p.startsWith(`${mountpoint}/`) && !bookkeeping(p));
   const held = !Array.isArray(list) || list.some((x: { path?: unknown; state?: unknown }) => x?.state === "Active" && mine(x.path));
   if (held) throw new ClaimError("UNMOUNT_FAILED", `${mountpoint} still lists a delegation after archil checkin: ${(ok(d) ? d.stdout : detail(d)).trim().slice(0, 300)}`);
   await moveAside(host, mountpoint, "UNMOUNT_FAILED");
@@ -652,6 +660,54 @@ async function clearStaleDaemon(host: Host, ref: RunRef, mountpoint: string): Pr
   return pids;
 }
 
+/** The most entries of a bare mountpoint the stray check looks at; past it, nothing is moved aside. */
+export const STRAY_CHECK_LIMIT = 100_000;
+
+/**
+ * The entries under `dir` written since `since` (ms since the epoch), as paths relative to it, walked without following
+ * links. `unchecked` says why the walk could not look at every entry: more than `limit` of them, or one it could not
+ * read (an entry gone meanwhile is not one). A directory keeps its time when a file in it is rewritten in place, so only
+ * a walk that looked at every entry shows there is none.
+ */
+export async function writtenSince(dir: string, since: number, limit = STRAY_CHECK_LIMIT): Promise<{ fresh: string[]; unchecked: string | null }> {
+  const fresh: string[] = [];
+  const dirs = [""];
+  let seen = 0;
+  const failed = (error: unknown) => {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ENOENT" ? null : `an entry it cannot read (${code ?? "an unknown error"})`;
+  };
+  for (let i = 0; i < dirs.length; i++) {
+    const rel = dirs[i]!;
+    let names: string[];
+    try {
+      names = await readdir(join(dir, rel));
+    } catch (error) {
+      const unchecked = failed(error);
+      if (unchecked) return { fresh, unchecked };
+      continue;
+    }
+    for (const name of names.sort()) {
+      if (++seen > limit) return { fresh, unchecked: `more than ${limit} entries` };
+      const path = rel ? `${rel}/${name}` : name;
+      let st: Awaited<ReturnType<typeof lstat>>;
+      try {
+        st = await lstat(join(dir, path));
+      } catch (error) {
+        const unchecked = failed(error);
+        if (unchecked) return { fresh, unchecked };
+        continue;
+      }
+      if (st.mtimeMs >= since) fresh.push(path);
+      if (st.isDirectory()) dirs.push(path);
+    }
+  }
+  return { fresh, unchecked: null };
+}
+
+/** The exit of a start refused for the app's own writes before its claim (EX_DATAERR): a restart would write them again. */
+const EXIT_WRITTEN_BEFORE_MOUNT = 65;
+
 /** How many entries a directory holds; 0 when it cannot be read. */
 const entries = (dir: string) => readdir(dir).then((names) => names.length, () => 0);
 
@@ -661,10 +717,35 @@ const entries = (dir: string) => readdir(dir).then((names) => names.length, () =
  * directory with its owner and mode: archil refuses to mount over entries, and nothing in them may enter the run. One
  * line on stderr names the run and the count of entries, never a name or a byte of them. An unreadable mountpoint goes
  * to the wrapper too, which looks as root.
+ *
+ * Entries written since this process started are not an earlier incarnation's leftovers but this one's own writes
+ * before its claim mounted (an app's factory writing under ctx.root, which runs before the mount): moving them aside
+ * would lose them silently and the run would later find them gone (ENOENT). The start is refused instead,
+ * MOUNTPOINT_WRITTEN (exit 65, terminal: a restart writes them again), naming the first of them. A mountpoint whose
+ * entries the check cannot all look at (more than STRAY_CHECK_LIMIT, or one this process cannot read) may hide such a
+ * write, so it is refused too, MOUNTPOINT_UNCHECKED (exit 65: someone looks at it), naming none of them.
  */
 async function moveStrayAside(host: Host, ref: RunRef, mountRoot: string, mountpoint: string): Promise<{ to: string; entries: number } | null> {
   const names = await readdir(mountpoint).catch(() => null);
   if (names && names.length === 0) return null;
+  if (names) {
+    const { fresh, unchecked } = await writtenSince(mountpoint, performance.timeOrigin);
+    if (fresh.length > 0) {
+      const named = fresh.slice(0, 4).map((p) => `<mp>/${p}`).join(", ");
+      throw new ClaimError(
+        "MOUNTPOINT_WRITTEN",
+        `the bare mountpoint <mp> of ${runPath(ref.id)} holds ${fresh.length} entr${fresh.length === 1 ? "y" : "ies"} written since this incarnation started, before its claim mounted: ${named}`.slice(0, 240),
+        { exitCode: EXIT_WRITTEN_BEFORE_MOUNT },
+      );
+    }
+    if (unchecked) {
+      throw new ClaimError(
+        "MOUNTPOINT_UNCHECKED",
+        `the bare mountpoint <mp> of ${runPath(ref.id)} holds ${unchecked}, so this incarnation cannot rule out its own writes before its claim mounted: nothing is moved aside. Look at it, then move it aside by hand`,
+        { exitCode: EXIT_WRITTEN_BEFORE_MOUNT },
+      );
+    }
+  }
   const tag = Date.now().toString(36);
   const r = await archil(host, ["stray", mountpoint, tag]);
   if (!ok(r)) throw new ClaimError("MOUNTPOINT_NOT_EMPTY", `${mountpoint} is not empty and could not be moved aside: ${detail(r)}`);
@@ -719,6 +800,12 @@ async function verifyTarget(host: Host, path: string, mountpoint: string, probe:
  * verifying write is refused, MOUNTPOINT_NOT_EMPTY when the mountpoint cannot be emptied or archil still finds it not
  * empty, MOUNT_FAILED (exit 1) for a daemon of this host that is still running there.
  */
+/**
+ * The token an instance holds when it was given none (`--token-stdin` read nothing): enough to reuse its live mount, never
+ * to mount. A restart in place gets it from a driver that hands the token to the first incarnation only (localHost).
+ */
+export const NO_TOKEN = "none";
+
 export async function acquire(opts: AcquireOptions): Promise<Claim> {
   const { ref, token } = opts;
   const path = runPath(ref.id);
@@ -737,6 +824,11 @@ export async function acquire(opts: AcquireOptions): Promise<Claim> {
     else reused = true;
   }
   let stray: { to: string; entries: number } | null = null;
+  // No live mount to reuse and no token to mount with: a restart whose mount went with the failed incarnation. It cannot
+  // hold the run again, so it is fenced (75, terminal) at once, and the next start of the run brings a new token.
+  if (!reused && token === NO_TOKEN) {
+    throw new FencedError(`no live mount of ${path} to reuse at ${root}, and this incarnation was given no mount token: it cannot mount the run again; a new start brings a new token`, { code: "CLAIM_GONE_NO_TOKEN" });
+  }
   if (!reused) {
     await ensureMountpoint(host, root);
     await clearStaleDaemon(host, ref, root);

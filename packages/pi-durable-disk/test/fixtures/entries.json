@@ -146,6 +146,8 @@
       "RunRecord",
       "RunRef",
       "RunResponse",
+      "RunSeed",
+      "RunSeedDir",
       "RunServer",
       "RunStatus",
       "Runner",
@@ -229,6 +231,8 @@
       "RunLease",
       "RunRecord",
       "RunRef",
+      "RunSeed",
+      "RunSeedDir",
       "RunStatus",
       "StoreHeadSource",
       "Unmounted"

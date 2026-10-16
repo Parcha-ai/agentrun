@@ -19,6 +19,7 @@ import { foldCalls, groupTimeline } from "@parcha/pi-durable-agent/timeline";
 import { PROFILE } from "./agent/app.ts";
 import { ensureAgentHome } from "./agent/home.mjs";
 import { assistant, call, fakeDoor, makeRun, result, text, transcript, user } from "./fixtures.mjs";
+import { httpSource } from "./page/source.js";
 import { startServer } from "./server.mjs";
 
 /** A server over a new agent home made from examples/web/agent; `root` is the home's runs directory. */
@@ -279,6 +280,18 @@ test("files: dotfiles are hidden, nothing outside work/ is reachable, html is sa
   const big = await get(fileUrl("r1", "big.txt"));
   assert.equal(big.headers.get("x-truncated"), "1");
   assert.equal((await big.arrayBuffer()).byteLength, 512 * 1024);
+});
+
+test("httpSource reads a long text file cut short to show it, and whole to download it", async (t) => {
+  const { home, server } = await app(t);
+  await makeRun(home, "r1", { status: "done", files: { "big.txt": "x".repeat(600 * 1024) } });
+  const source = httpSource(`${server.url}/`);
+  const shown = await source.file("r1", "big.txt");
+  assert.equal(shown.headers.get("x-truncated"), "1");
+  assert.equal((await shown.arrayBuffer()).byteLength, 512 * 1024);
+  const whole = await source.file("r1", "big.txt", { download: true });
+  assert.equal(whole.headers.get("x-truncated"), null);
+  assert.equal((await whole.arrayBuffer()).byteLength, 600 * 1024);
 });
 
 test("search finds file contents, file names and a finished run's transcript, and skips dotfiles", async (t) => {
