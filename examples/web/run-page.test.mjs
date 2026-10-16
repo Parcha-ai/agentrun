@@ -113,6 +113,24 @@ test("a live source: the message box, stop, new run and the Browser tab, each ac
   assert.deepEqual([...view.fetched, ...view.window.fetched], []);
 });
 
+test("a replay whose run has no cost shows no dollar figure anywhere, though its rows carry one", async (t) => {
+  assert.ok(rows.some((r) => r.kind === "usage" && r.usage.usd === 0.05 && r.summary.includes("$")), "the rows hold a usage cost");
+  const unpriced = summary({ costUsd: null });
+  const view = await mount(t, { ...replaySource(), list: async () => [unpriced], run: async () => unpriced }, "#/run/r1");
+  assert.equal(view.find("cost").textContent, "r1", "the header names the run, with no figure from the rows");
+  assert.doesNotMatch(view.root.textContent, /\$/, "no dollar figure on the page");
+});
+
+test("a replay whose run has a cost shows it", async (t) => {
+  const view = await mount(t, { ...replaySource(), run: async () => summary({ costUsd: 0.12 }) }, "#/run/r1");
+  assert.equal(view.find("cost").textContent, "$0.120");
+});
+
+test("a live run with no summary cost still shows its rows' cost so far", async (t) => {
+  const view = await mount(t, { ...liveSource(), run: async () => summary({ status: "running", live: true, state: "waiting", liveView: { key: "k1" }, costUsd: null }) }, "#/run/r1");
+  assert.equal(view.find("cost").textContent, "$0.030");
+});
+
 test("a file view keeps every guard: agent HTML in a frame with nothing allowed, a path out of the workspace never asked for", async (t) => {
   const calls = [];
   const view = await mount(t, replaySource(calls), "#/run/r1/files/page.html");
@@ -201,19 +219,49 @@ async function referenceStore(dir) {
   return storePath;
 }
 
+/** The reference job's golden timeline as a replay of a recording that is not real shows it: the last row counts its
+ *  model requests and names no dollar figure. */
+async function unpricedGolden() {
+  const golden = await readFile(GOLDEN, "utf8");
+  const shown = golden.replace("Cost so far: $0 over 4 model requests", "4 model requests");
+  assert.notEqual(shown, golden, "the golden ends on the usage row");
+  return shown;
+}
+
 test("a recorded run through writeReplay: its store gives the golden rows, its manifest its result and its title", async () => {
   const dir = join(tmp, "recorded");
   const store = await referenceStore(dir);
   const out = join(dir, "data");
   await writeReplay(out, [{ id: "reference-job", store, manifest: new URL("manifest.json", RECORDING).pathname }]);
-  const rows = JSON.parse(await readFile(join(out, "runs", "reference-job", "timeline.json"), "utf8"));
-  assert.equal(`${renderText(rows)}\n`, await readFile(GOLDEN, "utf8"), "the golden rows");
-  assert.deepEqual(rows, timelineOf(await readRunEntries(store), { settled: true }), "the rows of the one store reader");
+  const text = await readFile(join(out, "runs", "reference-job", "timeline.json"), "utf8");
+  const rows = JSON.parse(text);
+  assert.equal(`${renderText(rows)}\n`, await unpricedGolden(), "the golden rows, the usage row without its dollar figure");
+  const stored = timelineOf(await readRunEntries(store), { settled: true });
+  assert.deepEqual(rows, stored.map((r) => (r.kind === "usage" ? { ...r, summary: "4 model requests", usage: { ...r.usage, usd: null } } : r)), "the rows of the one store reader");
+  assert.doesNotMatch(text, /\$/, "a scripted recording's replay names no dollar figure");
   const result = "36e45a1b7f0e6d02c266c85157ab7c69c8db99113a9d0374f48005bddcaf7b2b";
   assert.deepEqual(JSON.parse(await readFile(join(out, "runs", "reference-job", "files.json"), "utf8")).map((f) => f.path), ["result.json"], "the result blob, and no frame, screenshot or evidence");
   assert.deepEqual(await readFile(join(out, "runs", "reference-job", "files", "result.json")), await readFile(new URL(`blobs/${result}.json`, RECORDING)));
   const [listed] = JSON.parse(await readFile(join(out, "runs.json"), "utf8")).runs;
-  assert.deepEqual([listed.title, listed.startedAt, listed.costUsd, listed.live], ["The reference job, no key", "2026-10-14T23:01:10.811Z", 0, false]);
+  assert.deepEqual([listed.title, listed.startedAt, listed.costUsd, listed.live], ["The reference job, no key", "2026-10-14T23:01:10.811Z", null, false], "a scripted recording has no cost");
+  assert.equal(JSON.parse(await readFile(join(out, "runs", "reference-job.json"), "utf8")).costUsd, null);
+});
+
+test("a recording whose manifest says its providers are real keeps its cost and its usage rows", async () => {
+  const dir = join(tmp, "real");
+  const store = await referenceStore(dir);
+  await cp(RECORDING, join(dir, "rec"), { recursive: true });
+  const manifestPath = join(dir, "rec", "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  assert.equal(manifest.providers, "scripted", "the reference job is scripted as recorded");
+  await writeFile(manifestPath, JSON.stringify({ ...manifest, providers: "real", cost: { ...manifest.cost, usd: 0.07 } }));
+  const out = join(dir, "data");
+  await writeReplay(out, [{ id: "reference-job", store, manifest: manifestPath }]);
+  const [listed] = JSON.parse(await readFile(join(out, "runs.json"), "utf8")).runs;
+  assert.equal(listed.costUsd, 0.07);
+  const rows = JSON.parse(await readFile(join(out, "runs", "reference-job", "timeline.json"), "utf8"));
+  assert.deepEqual(rows, timelineOf(await readRunEntries(store), { settled: true }), "the rows as stored, the usage row's figure kept");
+  assert.equal(`${renderText(rows)}\n`, await readFile(GOLDEN, "utf8"));
 });
 
 test("writeReplay refuses a store that is not exported: a signed-in run's store, before writing anything", { skip: signedInHomeSkip }, async () => {

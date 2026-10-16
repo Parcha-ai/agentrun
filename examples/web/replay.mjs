@@ -10,7 +10,7 @@ import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { SECRET_KINDS } from "@parcha/pi-durable-agent/export";
 import { timelineOf } from "@parcha/pi-durable-agent/timeline";
-import { costOf, RUN_ID, safePath } from "./page/source.js";
+import { RUN_ID, safePath } from "./page/source.js";
 
 /** Open a store read-only, run `read` on it, close it. node:sqlite loads on first use. */
 async function readOnly(storePath, read) {
@@ -88,11 +88,19 @@ async function filesOf(dir, base = dir, out = {}) {
  * @property {string} [store] the run's store: an exported one, or a released run's own; its rows are read here
  * @property {object[]} [rows] ready rows in place of a store (tests)
  * @property {string} [manifest] a recording's manifest.json: the run's files and, unless the summary says, its title,
- *   times and cost
+ *   times and cost; a cost only when its `providers` is "real", else none (null), and its usage rows then count model
+ *   requests with no dollar figure
  * @property {string | Record<string, string | Uint8Array>} [files] without a manifest: a directory, or path -> content
  * @property {Partial<import("./page/source.js").RunSummary>} [summary] fields over the ones the replay works out
  * @property {Partial<import("./page/source.js").Run>} [run] as the run page heads it (default: the summary)
  */
+
+/** A usage row with no dollar figure: what a replay shows when its run's cost is not known to be real. */
+function countOnly(row) {
+  if (row.kind !== "usage") return row;
+  const requests = row.usage?.requests ?? 0;
+  return { ...row, summary: `${requests} model request${requests === 1 ? "" : "s"}`, usage: { ...row.usage, usd: null } };
+}
 
 /** What a replay never carries: a live run's view and its state of the moment. */
 function released(summary) {
@@ -131,10 +139,11 @@ async function readRun(input) {
     state: "idle",
     startedAt: m?.recorded?.started ?? rows[0]?.timestamp ?? new Date(0).toISOString(),
     endedAt: m?.recorded?.ended ?? rows.at(-1)?.timestamp ?? null,
-    costUsd: m ? (m.cost?.usd ?? null) : costOf(rows),
+    // A dollar figure only for a recording whose every priced part called a real provider (its manifest's `providers`).
+    costUsd: m?.providers === "real" ? (m.cost?.usd ?? null) : null,
     ...input.summary,
   });
-  return { id, rows, files, summary, run: released({ ...summary, ...input.run }) };
+  return { id, rows: summary.costUsd == null ? rows.map(countOnly) : rows, files, summary, run: released({ ...summary, ...input.run }) };
 }
 
 /**

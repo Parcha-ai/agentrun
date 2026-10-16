@@ -136,9 +136,15 @@ files?, summary? }`:
 - `manifest`: a recording's `manifest.json` (`agentrun.recording/1`). The run's files are its result blob, as
   `result.<ext>`, and its job blob, as `job.<ext>`, out of the recording's `blobs/`, each checked against its SHA-256
   name; nothing else (no frame, screenshot or evidence blob). The job blob names the job's input files; a recording does
-  not keep their contents. The manifest also gives the summary's title, start and end, and cost.
+  not keep their contents. The manifest also gives the summary's title, start and end, and, only when its `providers`
+  is `"real"`, the cost.
 - `files`: with no manifest, a directory (dotfiles and links left out) or path to text or bytes.
 - `summary`, `run`: fields over the ones worked out (title, times, cost, `status: "done"`).
+
+A replay names a dollar figure only for a recording that is real: a run whose cost is `null` (one with neither a real
+recording's manifest nor a cost in its `summary`) is written with its usage rows counting model requests and naming no
+amount, and the run page's header shows a replay's cost from its summary alone, never from its rows. A live run's
+header still falls back to the cost so far.
 
 The layout it writes:
 

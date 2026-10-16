@@ -294,7 +294,8 @@ export function mountRunPage(root, source) {
     const [cls, text] = label(info, ui.state);
     p.title.textContent = info.title;
     p.pill.replaceChildren(pill(cls, text));
-    p.cost.textContent = usd(info.costUsd ?? ui.cost) || info.id;
+    // A replay's figure is its summary's alone: a recording that is not real has none, never its rows' $0.
+    p.cost.textContent = usd(replay ? info.costUsd : (info.costUsd ?? ui.cost)) || info.id;
     if (p.stop) p.stop.hidden = !(info.live && ui.state === "working");
     const waiting = ui.state === "waiting" && !finished(info) && !replay;
     const view = can.live ? source.live(ui.id, info) : null;
