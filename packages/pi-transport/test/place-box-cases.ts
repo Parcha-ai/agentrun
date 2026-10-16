@@ -278,6 +278,8 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 					// The new box holds the store as the checkpoint had it: two steps done, the third run there, at the new epoch.
 					expect(exit.outcome?.record).toMatchObject({ done: 3, resumedFrom: 2, started: STARTED });
 					expect(exit.outcome?.generation).toBe(2);
+					// The lost box's attempt is behind the place; the restored one's recording comes home.
+					await place.recordHome?.bringHome(made.record, { final: true });
 					const status = await place.status();
 					expect((status.record.holder as { host: string }).host).not.toBe(lost);
 					expect(status.record.generation).toBe(2);
