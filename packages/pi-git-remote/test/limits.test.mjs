@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { test } from "node:test";
-import { caseCollisions, DEFAULT_LIMITS, GitRemoteError, modeRefusal, openRepo, pathRefusal } from "../dist/index.js";
+import { caseCollisions, DEFAULT_LIMITS, GitRemoteError, MAIN, modeRefusal, openRepo, pathRefusal } from "../dist/index.js";
 import { refsOf, scratch, seededRemote } from "./support.mjs";
 
 test("pathRefusal refuses .git in every spelling git or a case-insensitive file system treats as .git", () => {
@@ -82,4 +82,27 @@ test("commitTo refuses bad paths, too many files, files over the cap, a file and
   assert.deepEqual(await refsOf(repo.dir), before.host);
   const ok = await repo.commitTo("main", { files: { "c.md": "x".repeat(64) }, message: "at the cap" });
   assert.equal(ok.created, true);
+});
+
+test("merge and revert refuse a result with a file over the size cap, including one that two allowed edits make", async () => {
+  const root = await scratch();
+  const line = (c) => `${c.repeat(9)}\n`;
+  const base = ["a", "b", "c", "d"].map(line).join("");
+  const { remote, seeder } = await seededRemote(root, { "notes.md": base, "big.md": "z".repeat(100) });
+  const shrink = await seeder.commitTo(MAIN, { files: { "big.md": "small\n" }, message: "shrink" });
+  await seeder.push(shrink.sha, MAIN);
+  const repo = await openRepo({ dir: path.join(root, "host"), remote, limits: { maxFileBytes: 80 } });
+  const top = ["x", "y", "w"].map(line).join("");
+  const bottom = ["p", "q", "r"].map(line).join("");
+  await repo.commitTo(MAIN, { files: { "notes.md": top + base }, message: "top" });
+  const right = await seeder.commitTo("right", { files: { "notes.md": base + bottom }, message: "bottom" });
+  await seeder.push(right.sha, "right");
+  const huge = await seeder.commitTo("huge", { files: { "huge.md": "h".repeat(81) }, message: "huge" });
+  await seeder.push(huge.sha, "huge");
+  await repo.fetch();
+  const before = await refsOf(repo.dir);
+  await assert.rejects(repo.merge("right", MAIN), (e) => e.code === "refused" && /notes\.md.*100 bytes/.test(e.message));
+  await assert.rejects(repo.merge("huge", MAIN), (e) => e.code === "refused" && /huge\.md/.test(e.message));
+  await assert.rejects(repo.revert(shrink.sha, MAIN), (e) => e.code === "refused" && /big\.md/.test(e.message));
+  assert.deepEqual(await refsOf(repo.dir), before);
 });
