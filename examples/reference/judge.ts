@@ -32,8 +32,9 @@ const read = (file: string): Spent => {
  *  sent (checked and saved in one synchronous step, so concurrent questions cannot all pass the check, and a kill after the answer does not lose the count); its tokens are added
  *  when the answer arrives. */
 export function capJudge(runJudge: RunJudge, file: string, caps: { requests: number; tokens: number } = JEV_CAPS): RunJudge {
-  mkdirSync(dirname(file), { recursive: true });
   return async (request) => {
+    // The count's directory is made at the first question, not when the host is built: a process on a disk not yet mounted writes nothing under the run's directory before its claim is open.
+    mkdirSync(dirname(file), { recursive: true });
     const spent = read(file);
     if (spent.requests >= caps.requests || spent.tokens >= caps.tokens) {
       throw Object.assign(new Error(`The judge's cap is reached (${spent.requests} of ${caps.requests} requests, ${spent.tokens} of ${caps.tokens} tokens): this request was not sent.`), { code: 'JEV_CAP_REACHED', retryable: false });
