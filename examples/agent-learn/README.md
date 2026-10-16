@@ -15,8 +15,7 @@ model, judge and remote.
 Node 22.19 or later and git 2.40 or later. No key and no network: the model and the judge are scripted.
 
 ```sh
-npm ci --ignore-scripts && npm run build
-node examples/agent-learn/demo.mjs
+npm ci --ignore-scripts && npm run build && npm run demo:learn
 ```
 
 It takes a few seconds and prints the story (the shas differ on every run):
@@ -49,6 +48,8 @@ It takes a few seconds and prints the story (the shas differ on every run):
    learn(fact) -> Not noted: it holds a value the host keeps secret. Restate it as a general rule without that.
    proposed nothing; the secret (raw, base64 or hex) is in 0 of 34 git objects (remote and host repository)
 ```
+
+With flags, run it as `node examples/agent-learn/demo.mjs <flags>`.
 
 | Flag | What it does |
 | --- | --- |
@@ -111,7 +112,7 @@ await curateNow({ repo, judge, secrets: vault });                     // the onl
 
 **The judge.** `curateNow` takes the DSL's `runJudge` port: questions in, a probability per question out. Point it at a
 real judge with `createJevRunner()` of [`@parcha/agentrun-jev`](../../packages/jev/README.md), or at any function with the
-same shape. The questions and the thresholds stay in the host; the repository never holds them.
+same shape. The questions and thresholds live in the package and the host, never in the agent's repository.
 
 **The remote.** `openRepo` takes any remote of `@parcha/pi-git-remote`. A shared host gives each run a remote whose token
 can push only `runs/<run id>` (on code.storage, a namespace clones do not see), and gives curation the one token that can
@@ -123,8 +124,8 @@ const repo = await openRepo({ dir: hostRepoDir, remote });
 ```
 
 **The run.** Any pi-durable host works: open the run's store (`run.storePath`) with the `learn` extension installed and
-run the session in `run.workspace`; `pi-durable-disk run --dir <run.dir>` does both. Call `finishRun` after the session's
-store has closed.
+run the session in `run.workspace`; `pi-durable-disk run --dir <run.dir> --app <your app>` does both when the app installs
+`agentLearn`. Call `finishRun` after the session's store has closed.
 
 ## Limits
 
