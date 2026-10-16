@@ -604,6 +604,9 @@ It makes the box, and
 - Every runner of the session ships its commits into `vault`'s log (`recordSink`) and asks one model server: the log a
   lost box is restored from is always the one the runners wrote, and a runner that comes back is answered what was
   paid for, not charged again. The host passes only where the recorder's lines go (`recorder`).
+- `recordPlacement(record)` keeps a placement decision the host made (`jevPlacer`, on the host where Jev's key is) in
+  the session's store, through the runner that runs it now (`HomeHandle.recordPlacement`): the app reads it there
+  (`PlacementsDoc`, keyed by the record's id), and it reaches the vault's log with the session's commits.
 - A box is named by its label everywhere the place names one, never by its provider's id: the status record's
   `holder.host`, a crossing's `info.box`, and the place's own live lines, source `transport`, that it hands the host's
   `lines`: `box.created`, `box.killed` before a box kill, `box.ended`, `lease` at each epoch, and `restore` from the lost

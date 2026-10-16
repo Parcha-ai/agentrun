@@ -25,6 +25,7 @@ import type { RecordSink } from "../home/records.ts";
 import { boxRunner, type RunnerProgram } from "../home/start.ts";
 import { killRunner } from "../home/stop.ts";
 import type { WorkspaceOptions } from "../home/workspace.ts";
+import type { PlacementRecord } from "./placer.ts";
 
 /** The session's paths in the place, all in the box: its id (the session), its directory, its files and its store. */
 export type RunPlace = { id: string; root: string; work: string; store: string };
@@ -173,6 +174,12 @@ export type BoxPlace = {
 		replayed?: { from: number; to: number };
 	}>;
 	checkpoint(): Promise<{ taken: boolean; heldBy?: string }>;
+	/**
+	 * Keep a placement decision (`jevPlacer`'s, made on the host where Jev's key is) in the session's store, through the
+	 * runner that runs it now: the app reads it there (`PlacementsDoc`, keyed by its id), it travels with the session and
+	 * reaches the vault's log. Throws when no runner runs or the runner refuses the record (`invalid`).
+	 */
+	recordPlacement(record: PlacementRecord): Promise<void>;
 	release(): Promise<void>;
 	/** What the checkpoints of this place did. */
 	readonly stats: CheckpointStats;
@@ -734,6 +741,11 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 				taking = undefined;
 			});
 			return taking;
+		},
+		async recordPlacement(record) {
+			if (handle === undefined) throw new MoveError("resume", "no runner holds the session to keep the placement");
+			const kept = await handle.recordPlacement(record, context);
+			if (!kept.ok) throw kept.error;
 		},
 		async release() {
 			if (released) return;

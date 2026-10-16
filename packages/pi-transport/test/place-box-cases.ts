@@ -306,6 +306,54 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 		);
 
 		it(
+			"keeps a placement decision the host made in the session's store, through its runner, and refuses one it does not write",
+			async () => {
+				const made = world(setup);
+				try {
+					const place = await placeIn(made);
+					const runner = await place.start(orderOf(made, place, 1, { PARK_AT: "1" }));
+					await firstSignal(place, 1, "kill-request");
+					const decision = {
+						v: 1 as const,
+						id: "frame-3",
+						session: "run-1",
+						at: "2026-10-16T00:00:00.000Z",
+						phase: "message" as const,
+						what: "hands" as const,
+						by: "jev" as const,
+						current: "cpu",
+						target: "gpu",
+						moved: true,
+						reason: "frame 3 is deep: it needs the GPU",
+						latencyMs: 412,
+					};
+					await place.recordPlacement(decision);
+					// In the store, in a commit of the runner: the vault's log has it as the session's document.
+					const kept = (await logFrom1(made)).entries.flatMap(({ writes }) =>
+						writes.flatMap((write) =>
+							write.type === "document.create" && write.record.kind === "transport.placements"
+								? [{ key: write.record.key, value: write.content.value }]
+								: [],
+						),
+					);
+					expect(kept).toEqual([{ key: "frame-3", value: decision }]);
+					// Only jev or config chooses: any other record is refused, never written.
+					const refused = await place.recordPlacement({ ...decision, id: "frame-4", by: "host" as "jev" }).then(
+						() => "written",
+						(error: { code?: string }) => error.code,
+					);
+					expect(refused).toBe("invalid");
+					await place.kill(runner, "process");
+					await runner.exited;
+					await place.release();
+				} finally {
+					made.remove();
+				}
+			},
+			setup.timeoutMs ?? 60_000,
+		);
+
+		it(
 			"brings home a spool that grows while the runner runs, at every call, each line once",
 			async () => {
 				const made = world(setup);
