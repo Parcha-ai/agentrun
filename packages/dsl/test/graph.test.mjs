@@ -126,34 +126,36 @@ const statuses = (graph, state) => Object.fromEntries(graph.nodes.map((node) => 
 test('a finished parallel run: every node is done', async () => {
   const record = await ran(parallel, {});
   const graph = workflowGraph(parallel);
-  const state = nodeStatus(graph, record.pin ?? record);
+  const state = nodeStatus(graph, record.state);
   assert.deepEqual(statuses(graph, state), { '/root': 'done', fan: 'done', left: 'done', right: 'done', finish: 'done' });
 });
 
 test('a finished route: the taken branch is done and the other is not-run, whatever the branch is called', async () => {
   const record = await ran(choose, {});
   const graph = workflowGraph(choose);
-  const state = nodeStatus(graph, record.pin ?? record);
+  const state = nodeStatus(graph, record.state);
   assert.equal(state['/root/steps/1/branches/a~1b/body'], 'done');
   assert.equal(state['/root/steps/1/branches/other/body'], 'not-run');
   assert.equal(state['/root/steps/1'], 'done');
   assert.equal(state['/root'], 'done');
 });
 
-test('a run cut after its parallel branches: they are done, the last step has not run, and the chain is working', async () => {
+test('a run cut before its last step commits: the branches are done, the chain is working, and the last step shows nothing, because a code node leaves no mark in the frame until it commits', async () => {
   const record = await ran(parallel, {}, { cut: 'finish' });
   const graph = workflowGraph(parallel);
-  const state = nodeStatus(graph, record.pin ?? record);
-  assert.deepEqual(statuses(graph, state), { '/root': 'working', fan: 'done', left: 'done', right: 'done', finish: 'working' });
+  const state = nodeStatus(graph, record.state);
+  // The frame holds `inputs` for a step that started and has not committed only where the driver bound one (an agent step, a call);
+  // a code node that ran and was cut before its commit has left nothing, so the record cannot say `working` and does not.
+  assert.deepEqual(statuses(graph, state), { '/root': 'working', fan: 'done', left: 'done', right: 'done', finish: 'not-run' });
 });
 
 test('a nested map with a child workflow, whole-state and keyed layouts alike: the same status for every node', async () => {
   const graph = workflowGraph(nested);
-  const whole = nodeStatus(graph, (await ran(nested, { items: [1, 2, 3] })).pin);
+  const whole = nodeStatus(graph, (await ran(nested, { items: [1, 2, 3] })).state);
   assert.ok(Object.values(whole).every((value) => value === 'done'), JSON.stringify(whole));
   const keyed = await ran(nested, { items: [1, 2, 3] }, { layout: 'v4' });
   assert.ok(Object.keys(keyed.items ?? {}).length > 0, 'the keyed layout keeps the map items beside the frame');
-  assert.deepEqual(nodeStatus(graph, { pin: keyed.pin, items: Object.values(keyed.items) }), whole);
+  assert.deepEqual(nodeStatus(graph, { pin: keyed.state.pin, items: Object.values(keyed.items) }), whole);
   // The items alone say what ran inside the map, and nothing about the nodes around it.
   const alone = nodeStatus(graph, Object.values(keyed.items));
   assert.equal(alone['/root/steps/0/body'], 'done');

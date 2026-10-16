@@ -131,5 +131,13 @@ export function nodeStatus(graph: WorkflowGraph, source: StatusSource): Record<s
       : own.length ? "working"
       : "not-run";
   }
+  // A chain is never recorded as done itself: the driver commits its steps. It is done when its steps all are, which a
+  // run that ended on its last step shows. Children are finished before their parents: the nodes are walked from the end.
+  for (const node of [...graph.nodes].reverse()) {
+    if (node.kind !== "chain" || byNode.has(node.path)) continue;
+    const prefix = `${node.path}/steps/`;
+    const steps = graph.nodes.filter((other) => other.path.startsWith(prefix) && /^\d+$/.test(other.path.slice(prefix.length)));
+    if (steps.length && steps.every((step) => out[step.path] === "done")) out[node.path] = "done";
+  }
   return out;
 }
