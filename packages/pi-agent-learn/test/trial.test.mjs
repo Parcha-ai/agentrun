@@ -40,6 +40,8 @@ test("a trial that breaks its schema or its own invariants is refused, whichever
   refused(trial({ uses: [{ run: "run-2", sha256: sha("c"), outcome: "frozen", at: at(2) }] }));
   refused(trial({ uses: [{ run: "run-2", sha256: sha("a"), outcome: "clean", at: at(2) }] }));
   refused(trial({ uses: [{ run: "run-2", sha256: sha("a"), outcome: "frozen", at: "2026-10-16" }] }));
+  refused(trial({ uses: [{ run: "run-2", sha256: sha("a"), outcome: "frozen", at: "2026-99-16T08:00:00.000Z" }] }));
+  refused(trial({ revisions: [{ sha256: sha("a"), status: "trial", since: "2026-10-16T25:00:00.000Z", run: "run-1", after: 0 }] }));
   refused(trial({ revisions: [{ sha256: sha("a"), status: "trial", since: at(1), run: "run-1", after: 1 }] }));
   refused(trial({ revisions: [{ sha256: sha("a"), status: "trial", since: at(1), run: "run-1", after: 0, description: "kept by a live revision" }] }));
   refused(trial({ revisions: [{ sha256: sha("a"), status: "trial", since: at(1), run: "run-1", after: 0, when: [] }] }));

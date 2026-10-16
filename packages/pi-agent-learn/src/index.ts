@@ -14,11 +14,11 @@ export {
   type WorkflowCandidate, type WorkflowUse,
 } from "./types.js";
 export { type Caps, createGuard, guard } from "./guard.js";
-export { type Inbox, InboxFormatError, parseInbox, renderInbox } from "./inbox.js";
+export { type Inbox, type InboxCandidate, InboxFormatError, type InboxOptions, parseInbox, renderInbox } from "./inbox.js";
 export { type ProposeFilesOptions, type ProposeOptions, type ProposeResult, type ProposeTarget, proposeFiles, proposeLearning, type UsesSource, type WorkflowRecords } from "./propose.js";
 export {
   curate, CURATE_CAPS, type CurateCaps, type CurateItem, type CurateOptions, type CurateReport, type CurateRepo, type Cut, DEFAULT_THRESHOLDS, type Judge,
-  type Question, QUESTIONS, type RetireOptions, type RetireResult, retireLearning, type RunReport, type Thresholds,
+  type Question, QUESTIONS, type RetireOptions, type RetireResult, retireLearning, type RunReport, type RunsRepo, type Thresholds,
 } from "./curate.js";
 export {
   type Admission, type AdmitRevision, admitRevision, applyDecision, type Applied, type Decision, type DecisionOptions, type Folded, foldUses,

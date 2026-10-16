@@ -510,6 +510,9 @@ export async function admitInDir(input: AdmitInDirInput): Promise<AdmitInDirResu
   let trial = held;
   let status: "admitted" | "described" | "unchanged" = "unchanged";
   let sha256: string | undefined;
+  // The description is the live revision's: records for an older revision, delivered late, say nothing about it.
+  let describesLive = true;
+  let trialText: string | undefined;
 
   if (Object.keys(records).length) {
     const latest = records.latest;
@@ -541,7 +544,15 @@ export async function admitInDir(input: AdmitInDirInput): Promise<AdmitInDirResu
     const skillText = await readRegular(path.join(dir, skillPath(name)));
     const admitted: Admission = admitRevision(held, { name, sha256, run: runId, at, when, ...(skillText === undefined ? {} : { replacedDescription: skillDescription(skillText) }) });
     if (admitted.status === "refused") return refuse(name, admitted.reason, admitted.detail);
+    if (admitted.status === "unchanged") describesLive = held !== undefined && currentRevision(held)?.sha256 === sha256;
     if (admitted.status === "admitted") {
+      // Everything that can refuse has refused before the first file is written.
+      try {
+        trialText = renderTrial(fitTrial(admitted.trial));
+      } catch (error) {
+        if (!(error instanceof LearnError)) throw error;
+        return refuse(name, error.code === "too_large" ? "limit" : "when", `the trial cannot be kept: ${error.message}`);
+      }
       const saved = await new WorkflowStore(dir).save(name, stored.workflow);
       if (saved.digest !== sha256) throw new LearnError("invalid", "the store saved another digest than the one admitted");
       trial = admitted.trial;
@@ -561,7 +572,7 @@ export async function admitInDir(input: AdmitInDirInput): Promise<AdmitInDirResu
     return refuse(name, "unknown", "there is no trial under this name to describe, and the run handed over no records");
   }
 
-  if (description !== undefined && trial && currentRevision(trial)) {
+  if (description !== undefined && describesLive && trial && currentRevision(trial)) {
     const skill = renderSkill(name, description);
     if ((await readRegular(path.join(dir, skillPath(name)))) !== skill) {
       await writeRegular(dir, skillPath(name), skill);
@@ -569,10 +580,9 @@ export async function admitInDir(input: AdmitInDirInput): Promise<AdmitInDirResu
       if (status === "unchanged") status = "described";
     }
   }
-  if (trial && trial !== held) {
-    const text = renderTrial(fitTrial(trial));
-    await writeRegular(dir, trialPath(name), text);
-    files[trialPath(name)] = text;
+  if (trial && trial !== held && trialText !== undefined) {
+    await writeRegular(dir, trialPath(name), trialText);
+    files[trialPath(name)] = trialText;
   }
   return { status, name, ...(sha256 === undefined ? {} : { sha256 }), files };
 }
@@ -636,6 +646,17 @@ export async function settleWorkflowUses(options: SettleOptions): Promise<Settle
       const left = folded.ignored.length ? `; ${folded.ignored.length} use${folded.ignored.length === 1 ? "" : "s"} left out (${[...new Set(folded.ignored.map((i) => i.reason))].join(", ")})` : "";
       held.push({ name, reason: `${promotionDecision(folded.trial, rules).reason}${left}` });
     }
+    let trialText: string | undefined;
+    if (folded.trial !== trial) {
+      try {
+        trialText = renderTrial(fitTrial(folded.trial));
+      } catch (error) {
+        if (!(error instanceof LearnError)) throw error;
+        held.push({ name, reason: `its trial cannot be kept (${error.code}), so its uses were left out` });
+        for (let i = decisions.length - 1; i >= 0; i -= 1) if (decisions[i]!.name === name) decisions.splice(i, 1);
+        continue;
+      }
+    }
     const before = currentRevision(trial);
     const now = currentRevision(folded.trial);
     if (now?.sha256 !== before?.sha256) {
@@ -654,10 +675,9 @@ export async function settleWorkflowUses(options: SettleOptions): Promise<Settle
         files[skillPath(name)] = null;
       }
     }
-    if (folded.trial !== trial) {
-      const text = renderTrial(fitTrial(folded.trial));
-      await writeRegular(dir, trialPath(name), text);
-      files[trialPath(name)] = text;
+    if (trialText !== undefined) {
+      await writeRegular(dir, trialPath(name), trialText);
+      files[trialPath(name)] = trialText;
     }
   }
   return { files, decisions, held, ignored };

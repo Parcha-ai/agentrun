@@ -104,11 +104,12 @@ export const TrialSchema = Type.Object({
 }, exact);
 
 const checker = Compile(TrialSchema);
+const whenChecker = Compile(Type.Array(PreconditionSchema, { maxItems: LIMITS.preconditions }));
 
 const bad = (message: string) => new LearnError("format", message);
 /** The preconditions' size as the file prints them, which is what the file cap counts. */
 export const whenSize = (when: readonly Precondition[]): number => JSON.stringify(when, null, 2).length;
-const validStamp = (value: string) => STAMP.test(value) && new Date(value).toISOString() === value;
+const validStamp = (value: string) => STAMP.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
 
 function isJson(value: unknown, depth = 0): value is Json {
   if (depth > 8) return false;
@@ -121,6 +122,7 @@ function isJson(value: unknown, depth = 0): value is Json {
 
 /** Throws a `format` error unless `when` is plain JSON within the limits a revision's preconditions keep. */
 export function checkPreconditions(when: readonly Precondition[]): void {
+  if (!whenChecker.Check(when)) throw bad(`preconditions are at most ${LIMITS.preconditions}, each a pointer and one of ${PRECONDITION_OPS.join(", ")}`);
   for (const { op, value: operand } of when as readonly { op: string; value?: unknown }[]) {
     if (op !== "exists" && !isJson(operand)) throw bad("a precondition's value is not plain JSON");
     if (op !== "exists" && JSON.stringify(operand).length > 512) throw bad("a precondition's value is over 512 characters");

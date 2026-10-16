@@ -3,7 +3,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, type Session } from "@earendil-works/pi-durable";
 import { modeRefusal, type Repo } from "@parcha/pi-git-remote";
 import { randomBytes } from "node:crypto";
-import { lstat, mkdir, open, readdir, rename, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { type Learning, parseLearning } from "./entry.js";
 import { LearnError } from "./errors.js";
@@ -90,39 +90,46 @@ async function realDirectory(dir: string): Promise<void> {
   if (!stat.isDirectory()) throw new LearnError("invalid", `${dir} is not a directory`);
 }
 
-const PARTIAL = /^\.L-[0-9a-f]{12}\.md\.[0-9a-f]{16}\.partial$/;
-
-/** Installs each file whole: written to a new temporary file beside it, then renamed over the name, so an interrupted
- *  copy never leaves a partial file under the name, and a restart restores the stored bytes over whatever is there. */
+/** Installs each file whole: written into a staging directory this call creates under `.agent/` (never inside the
+ *  learnings directory), then renamed over its name, so an interrupted copy never leaves a partial file under the name
+ *  and a restart restores the stored bytes over whatever is there. A call removes only its own staging directory, so
+ *  concurrent calls never touch each other's files; one a crash interrupted is left where it is. */
 async function copyInto(into: string, files: ReadonlyMap<string, string>): Promise<string[]> {
   if (typeof into !== "string" || !path.isAbsolute(into)) throw new LearnError("invalid", "into is an absolute directory");
   const rel = [...files.keys()].map((id) => path.posix.join(LAYOUT.seeded, `${id}.md`));
   assertNotRulesLocked(rel);
+  for (const id of files.keys()) if (!LEARNING_ID.test(id)) throw new LearnError("invalid", "not a learning id");
   await mkdir(into, { recursive: true, mode: 0o755 });
-  let at = into;
-  for (const part of LAYOUT.seeded.split("/")) {
+  const [top, ...rest] = LAYOUT.seeded.split("/");
+  const agentDir = path.join(into, top!);
+  await realDirectory(agentDir);
+  let at = agentDir;
+  for (const part of rest) {
     at = path.join(at, part);
     await realDirectory(at);
   }
-  for (const name of await readdir(at)) if (PARTIAL.test(name)) await unlink(path.join(at, name));
+  const staging = path.join(agentDir, `.seeding-${randomBytes(8).toString("hex")}`);
+  await mkdir(staging, { mode: 0o700 });
   const written: string[] = [];
-  for (const [id, text] of files) {
-    if (!LEARNING_ID.test(id)) throw new LearnError("invalid", "not a learning id");
-    const partial = path.join(at, `.${id}.md.${randomBytes(8).toString("hex")}.partial`);
-    const handle = await open(partial, "wx", 0o644);
-    try {
-      await handle.writeFile(text, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
+  try {
+    for (const [id, text] of files) {
+      const partial = path.join(staging, `${id}.md`);
+      const handle = await open(partial, "wx", 0o644);
+      try {
+        await handle.writeFile(text, "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      try {
+        await rename(partial, path.join(at, `${id}.md`));
+      } catch (error) {
+        throw new LearnError("invalid", `${path.posix.join(LAYOUT.seeded, `${id}.md`)} cannot be replaced: ${(error as NodeJS.ErrnoException).code ?? "error"}`, { cause: error });
+      }
+      written.push(path.posix.join(LAYOUT.seeded, `${id}.md`));
     }
-    try {
-      await rename(partial, path.join(at, `${id}.md`));
-    } catch (error) {
-      await unlink(partial).catch(() => undefined);
-      throw new LearnError("invalid", `${path.posix.join(LAYOUT.seeded, `${id}.md`)} cannot be replaced: ${(error as NodeJS.ErrnoException).code ?? "error"}`, { cause: error });
-    }
-    written.push(path.posix.join(LAYOUT.seeded, `${id}.md`));
+  } finally {
+    await rm(staging, { recursive: true, force: true });
   }
   return written;
 }
