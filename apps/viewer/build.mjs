@@ -13,12 +13,16 @@ const here = fileURLToPath(new URL('.', import.meta.url));
 const out = process.argv.slice(2).find((arg) => !arg.startsWith('--')) ?? join(here, 'dist');
 const src = join(here, 'src');
 
-/** The one module the viewer takes from outside its own: the DSL's map-item rebuild (RECORDING.md draft 26), which a reader
- *  calls rather than reimplements. It is read from the DSL's source at every build, never copied here; it must import
- *  nothing, and it is inlined in a scope of its own, so only its exports join the viewer's. */
+/** The modules the viewer takes from outside its own: the DSL's, which a reader calls rather than reimplements: the map
+ *  item rebuild (RECORDING.md draft 26) and the workflow graph with what a run did at each node. Each is read from the
+ *  DSL's source at every build, never copied here; each must import nothing, and each is inlined in a scope of its own, so
+ *  only its exports join the viewer's. */
 export const DSL_ITEM_STATE = '../../../packages/dsl/src/recovery/item-state.ts';
-const pathOf = (name) => (name === DSL_ITEM_STATE ? join(here, '..', '..', 'packages', 'dsl', 'src', 'recovery', 'item-state.ts') : join(src, name));
-const IMPORT = /^import (?!type )[^;]*? from '(\.\/[\w-]+\.ts|\.\.\/\.\.\/\.\.\/packages\/dsl\/src\/recovery\/item-state\.ts)';$/gm;
+export const DSL_GRAPH = '../../../packages/dsl/src/graph.ts';
+const DSL_MODULES = new Set([DSL_ITEM_STATE, DSL_GRAPH]);
+const DSL_SOURCE = String.raw`\.\.\/\.\.\/\.\.\/packages\/dsl\/src\/(?:recovery\/item-state|graph)\.ts`;
+const pathOf = (name) => (DSL_MODULES.has(name) ? join(here, '..', '..', 'packages', 'dsl', 'src', ...name.slice('../../../packages/dsl/src/'.length).split('/')) : join(src, name));
+const IMPORT = new RegExp(String.raw`^import (?!type )[^;]*? from '(\.\/[\w-]+\.ts|${DSL_SOURCE})';$`, 'gm');
 
 /** The modules in an order where each comes after those it imports (a type-only import puts no order on them). */
 function ordered(entry) {
@@ -40,11 +44,11 @@ function ordered(entry) {
 /** What a module may import: only names from the viewer's own modules. A package would be a dependency; a bare
  *  `import './x.ts'` is neither followed nor removed, so x would be left out and the import left in a classic script. */
 export function checkModule(file, code) {
-  if (file === DSL_ITEM_STATE) {
+  if (DSL_MODULES.has(file)) {
     if (/^\s*(?:import\b|export\s[^;]*\sfrom\s)/m.test(code) || /\bimport\s*\(|\brequire\s*\(/.test(code)) throw new Error(`${file} imports something; the viewer inlines it only while it imports nothing`);
     return;
   }
-  if (/^\s*import\s[^;]*from\s+'(?!\.\/|\.\.\/\.\.\/\.\.\/packages\/dsl\/src\/recovery\/item-state\.ts')/m.test(code)) throw new Error(`${file} imports a package; the viewer has no dependencies`);
+  if (new RegExp(String.raw`^\s*import\s[^;]*from\s+'(?!\.\/|${DSL_SOURCE}')`, 'm').test(code)) throw new Error(`${file} imports a package; the viewer has no dependencies`);
   const bare = /^\s*import\s+'([^']+)';?\s*$/m.exec(code);
   if (bare) throw new Error(`${file} imports ${bare[1]} for its side effect alone; import a name from it, so the build includes it in order`);
 }
@@ -57,7 +61,7 @@ export function bundle(entry = 'app.ts') {
   const parts = modules.map((file) => {
     const code = stripTypeScriptTypes(readFileSync(pathOf(file), 'utf8'));
     checkModule(file, code);
-    if (file === DSL_ITEM_STATE) {
+    if (DSL_MODULES.has(file)) {
       // Its own names stay in its scope; only what it exports joins the viewer's.
       const exported = [...code.matchAll(/^export (?:async )?(?:function|const|let|class) ([A-Za-z_$][\w$]*)/gm)].map(([, name]) => name);
       for (const name of exported) {
@@ -66,7 +70,7 @@ export function bundle(entry = 'app.ts') {
       }
       return `// ${file} (the DSL's, read at build time)\nconst { ${exported.join(', ')} } = (() => {\n${code.replace(/^export (?=(?:async )?function |const |let |class )/gm, '')}\nreturn { ${exported.join(', ')} };\n})();`;
     }
-    const body = code.replace(/^import [^;]*? from '\.\/[\w-]+\.ts';$/gm, '').replace(/^import [^;]*? from '\.\.\/\.\.\/\.\.\/packages\/dsl\/src\/recovery\/item-state\.ts';$/gm, '').replace(/^export (?=(?:async )?function |const |let |class )/gm, '');
+    const body = code.replace(/^import [^;]*? from '\.\/[\w-]+\.ts';$/gm, '').replace(new RegExp(String.raw`^import [^;]*? from '${DSL_SOURCE}';$`, 'gm'), '').replace(/^export (?=(?:async )?function |const |let |class )/gm, '');
     for (const [, name] of body.matchAll(/^(?:async )?(?:function|const|let|class) ([A-Za-z_$][\w$]*)/gm)) {
       if (names.has(name)) throw new Error(`${file} and ${names.get(name)} both declare ${name} at the top level`);
       names.set(name, file);

@@ -8,7 +8,7 @@ import { frameFold, gapTitle, pictureAt, type FrameState } from './frames.ts';
 import { nextStop, playback, previousStop, reduceTo, snap, stopAt, stopsOf, linkedTime, timeParam, type Fold } from './replay.ts';
 import { citeStop } from './cite.ts';
 import { workflowMapPanel } from './workflow-map.ts';
-import { workflowGraph } from './workflow-graph.ts';
+import { workflowGraphPanel } from './workflow-graph.ts';
 import { opensInPage, typeOfName } from './blobs.ts';
 import { readAllEntries } from './folder.ts';
 import { diskPanel } from './disk.ts';

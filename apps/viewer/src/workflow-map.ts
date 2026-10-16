@@ -10,7 +10,8 @@ import {
   type CallFacts, type CallKind, type Fact, type Look, type Plan, type Repository, type Verdict,
 } from './audit-read.ts';
 import { h, register, type BaselineView, type Node, type Panel } from './panels.ts';
-import { nodeStatusAccepts, nodeStatusInit, nodeStatusReduce, pathStatus, type NodeStatusState } from './node-status.ts';
+import { nodeStatus, workflowGraph, type WorkflowGraph } from '../../../packages/dsl/src/graph.ts';
+import { itemSource, runRecordAccepts, runRecordInit, runRecordReduce, type RunRecord } from './node-status.ts';
 
 export type WmBranch = {
   id: string;
@@ -37,8 +38,10 @@ export type WmState = {
   convBranch: Record<string, string>;
   /** Effect id -> the branch that admitted it, while it is unknown. */
   open: Record<string, string>;
-  /** What the run did at each node, from durable state (node-status.ts): the one fold the graph panel reads too. */
-  status: NodeStatusState;
+  /** The driver's record at the stop (node-status.ts), which the DSL's `nodeStatus` reads, as the graph panel's does. */
+  record: RunRecord;
+  /** The workflow the run ran, from its `agentrun.workflow` line, which the DSL's `workflowGraph` draws. */
+  workflow?: Json;
   /** Evidence file path -> the blob that holds it. */
   evidence: Record<string, string>;
   camera: string | null;
@@ -59,14 +62,30 @@ const wmNumber = (value: Json | undefined): number | null => (typeof value === '
 const wmStepPath = (branchId: string, n: number) => `${branchId}/body/steps/${n}`;
 const wmSize = (state: WmState) => Math.max(state.plan?.items.length ?? 0, state.planned, ...Object.values(state.branches).map((branch) => branch.index + 1), 0);
 
-/** Whether the branch finished, by durable state: its item's body is done (a body of one node, or a chain the driver
- *  closed), or its body's last step is. A process that resumes finishes items from its journal with no live event, so
- *  only durable state says so. With no durable line at all, its judge has answered. */
+/** The map an item of it (`<map>/items/<i>`) belongs to. */
+const wmMapOf = (item: string) => item.replace(/\/items\/\d+$/, '');
+/** The workflow an `agentrun.workflow` line carries (`data.input.workflow`), the one `planOf` reads. */
+const wmWorkflowOf = (line: Line): Json | undefined => {
+  const input = typeof line.data === 'object' && line.data !== null && !Array.isArray(line.data) ? (line.data as Record<string, Json>).input : undefined;
+  return typeof input === 'object' && input !== null && !Array.isArray(input) ? (input as Record<string, Json>).workflow : undefined;
+};
+const wmGraphs = new WeakMap<object, WorkflowGraph>();
+/** What the DSL's `nodeStatus` says one item did, at the nodes of its map's body: the record's part that is that item's
+ *  (node-status.ts, `itemSource`). Undefined when there is no workflow or no durable record to ask. */
+function wmItemStatus(state: WmState, branch: WmBranch): Record<string, string> | undefined {
+  const workflow = state.workflow;
+  if (typeof workflow !== 'object' || workflow === null || (state.record.pin === undefined && Object.keys(state.record.items).length === 0)) return undefined;
+  let graph = wmGraphs.get(workflow);
+  if (!graph) { graph = workflowGraph(workflow); wmGraphs.set(workflow, graph); }
+  return nodeStatus(graph, itemSource(state.record, branch.id) as Parameters<typeof nodeStatus>[1]);
+}
+
+/** Whether the branch finished: the DSL's `nodeStatus` of the item's record says its map's body is done (a body of one
+ *  node, or a chain whose steps all are). A process that resumes finishes items from its journal with no live event, so
+ *  only durable state says so. With no workflow or no durable record to ask, its judge has answered. */
 function wmFinished(state: WmState, branch: WmBranch): boolean {
-  if (pathStatus(state.status, `${branch.id}/body`) === 'done') return true;
-  const steps = state.plan?.steps.length ?? 0;
-  if (steps > 0 && pathStatus(state.status, wmStepPath(branch.id, steps - 1)) === 'done') return true;
-  return state.status.done.length === 0 && Object.keys(state.status.items).length === 0 && branch.verdict !== undefined;
+  const done = wmItemStatus(state, branch);
+  return done ? done[`${wmMapOf(branch.id)}/body`] === 'done' : branch.verdict !== undefined;
 }
 
 /** What a branch's glyph shows: empty, working, done, or a finding (the judge raised a notice or an act). */
@@ -81,13 +100,13 @@ const WM_MARK: Record<WmGlyph, string> = { empty: '·', working: '◐', done: '�
 export const workflowMapPanel: Panel<WmState> = {
   id: 'workflow-map',
   title: 'The fan-out',
-  init: () => ({ planned: 0, branches: {}, convBranch: {}, open: {}, status: nodeStatusInit(), evidence: {}, camera: null, kills: [], highest: -1, inSnapshot: false, opened: false, counters: counterFold.init() }),
-  accepts: (line) => counterFold.accepts(line) || nodeStatusAccepts(line) || line.source === 'workflow' || line.source === 'pi' || line.source === 'vision'
+  init: () => ({ planned: 0, branches: {}, convBranch: {}, open: {}, record: runRecordInit(), evidence: {}, camera: null, kills: [], highest: -1, inSnapshot: false, opened: false, counters: counterFold.init() }),
+  accepts: (line) => counterFold.accepts(line) || runRecordAccepts(line) || line.source === 'workflow' || line.source === 'pi' || line.source === 'vision'
     || (line.source === 'browser' && line.kind === 'EvidenceRecord') || (line.source === 'host' && ['plan', 'camera', 'kill', 'process.started'].includes(line.kind)),
   reduce(state, line) {
     const counters = counterFold.accepts(line) ? counterFold.reduce(state.counters, line) : state.counters;
-    const status = nodeStatusReduce(state.status, line);
-    let next: WmState = counters === state.counters && status === state.status ? state : { ...state, counters, status };
+    const record = runRecordReduce(state.record, line);
+    let next: WmState = counters === state.counters && record === state.record ? state : { ...state, counters, record };
     if (line.source === 'host' && line.channel === 'live') return wmHost(next, line);
     if (line.channel === 'live') {
       const evidence = evidenceOf(line);
@@ -109,6 +128,8 @@ export const workflowMapPanel: Panel<WmState> = {
     }
     const plan = planOf(line);
     if (plan && JSON.stringify(plan) !== JSON.stringify(next.plan)) next = { ...next, plan };
+    const workflow = plan ? wmWorkflowOf(line) : undefined;
+    if (workflow !== undefined && workflow !== next.workflow) next = { ...next, workflow };
     if (finishedOf(line) && next.finishedAt === undefined) next = { ...next, finishedAt: line.t };
     const own = branchOf(line.path);
     const doc = docOf(line);
@@ -120,7 +141,7 @@ export const workflowMapPanel: Panel<WmState> = {
     if (doc) {
       const done = donePathsOf(doc);
       if (done) {
-        // A checkpoint is state (node-status.ts keeps its done set): the branches it names have been seen.
+        // A checkpoint is state (node-status.ts keeps it for the DSL's nodeStatus): the branches it names have been seen.
         const seen: Record<string, WmBranch> = {};
         for (const path of done) {
           const where = branchOf(path);
@@ -247,7 +268,7 @@ function wmBranchView(state: WmState, branch: WmBranch): Node {
   const labels = state.plan?.steps ?? WM_CALLS.map((call) => call.label);
   let reached = false;
   const steps = labels.map((label, index) => {
-    const done = state.plan ? wmFinished(state, branch) || pathStatus(state.status, wmStepPath(branch.id, index)) === 'done' : branch.calls[WM_CALLS[index]?.kind ?? 'registry'] === 'done';
+    const done = state.plan ? wmFinished(state, branch) || wmItemStatus(state, branch)?.[`${wmMapOf(branch.id)}/body/steps/${index}`] === 'done' : branch.calls[WM_CALLS[index]?.kind ?? 'registry'] === 'done';
     const status = done ? 'done' : !reached && branch.seen && !wmFinished(state, branch) ? 'working' : 'pending';
     if (!done) reached = true;
     return h('span', { class: `wm-node ${status}`, title: wmStepPath(branch.id, index) }, label);

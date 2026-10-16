@@ -159,9 +159,10 @@ runs the DSL's own `partialResults` with the page's SHA-256, for either layout. 
 `{ result }` or `{ unreadable }`, or a whole `{ unreadable }` when the list is missing, does not hash to its digest or
 is not a list of digests; every digest is checked.
 
-The DSL's module, `itemState` and `partialResults` both, is read from `packages/dsl/src/recovery/item-state.ts` each time
-the viewer is built, never copied here: it is the one file outside `apps/viewer` a viewer module may import, the build
-inlines it in a scope of its own, and it refuses to build if that module ever imports anything.
+The DSL's modules, `item-state.ts` (`itemState`, `partialResults`) and `graph.ts` (`workflowGraph`, `nodeStatus`), are
+read from the DSL's source each time the viewer is built, never copied here: they are the only files outside
+`apps/viewer` a viewer module may import, the build inlines each in a scope of its own, and it refuses to build if one
+ever imports anything.
 
 ## A panel in full
 
@@ -238,17 +239,16 @@ in its chain, with what it opens into (a branch, a route's branches, a map's bod
 marked by what the run did there at the stop: done, running, failed or not reached, with counts for a node a map runs
 once per item. A recording whose manifest names no job does not draw it. Its test is `test/workflow-graph.test.ts`.
 
-### Node status, one fold for every panel
+### Node status: the DSL's, asked the same way by every panel
 
-`./node-status.ts` is the one place a panel reads what the run did at a node, and both the workflow graph and the
-workflow map read it. Done comes from durable state: the driver's checkpoint (`agentrun.driver`, every `done` path, v3
-and v4) and, in the keyed layout, each map item's `agentrun.items` record (committed, and its own `frame.done`). Failed
-comes from a step record whose status is `"failed"` (`pin.steps`, an item's `frame.steps`), an item record whose status
-is `"failed"` and `pin.failures`. Live workflow events say only what is running now: a `node.start` with no `node.end`
-since, in the process that is running (a kill or the next process start ends it). A process that resumes finishes work
-from its journal and writes no live event for it, and a map whose body is one node gives the workflow document no step
-to look for, so done never comes from live events or the plan's steps. `pathStatus(state, path)` is one execution path's
-status; `nodeStatuses(state)` counts them per workflow node, an execution path naming its node with each map item's and
-loop iteration's index taken out (`/root/steps/1/items/3/body` is `/root/steps/1/body`). Each open's snapshot starts the
-fold over. The workflow map's branch is done when its item's body is (or the body's last step); a judge's verdict counts
-only in a recording with no durable line. Its test, `test/node-status.test.ts`, reads `test/fixtures/disk-resumed`.
+What a run did at a node, done, working, failed or not run, is the DSL's alone: `nodeStatus(graph, source)` from
+`packages/dsl/src/graph.ts`, beside `workflowGraph(workflow)`, inlined at build time like `item-state.ts` (it imports
+nothing). `./node-status.ts` keeps only what it reads, the driver's record at the stop: the latest checkpoint's frame
+(`agentrun.driver`'s `state.pin`) and each map item's latest `agentrun.items` record, starting over at each open's
+snapshot. `statusSource(record)` is the whole record, which the workflow graph asks of the job's workflow;
+`itemSource(record, item)` is one map item's part of it (the frame's paths under the item, and its own record), which
+the workflow map asks of the workflow its `agentrun.workflow` line carries, to say whether that item's body is done. No
+panel decides a node's status itself, so a resumed process's items, finished from its journal with no live event, and a
+map whose body is one node are done where the record says so. The workflow map counts a judge's verdict only for a
+recording with no workflow or no durable record to ask. The tests read the DSL's graph fixtures
+(`packages/dsl/test/fixtures/graph`: six shapes, finished and cut) and `test/fixtures/disk-resumed`.
