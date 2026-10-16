@@ -11,10 +11,11 @@ import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { acquire, findDelegations, type Claim } from "../../src/claim.ts";
-import { STORE_FILE } from "../../src/run.ts";
+import { openDurableRun, STORE_FILE, type RunSeed } from "../../src/run.ts";
+import { DatabaseSync } from "node:sqlite";
 import { parseRunRecord, type RunRecord } from "../../src/status.ts";
 import { openArchilStore } from "../../src/store.ts";
-import { alive, ctx, killQuietly, waitGone } from "../_run-support.ts";
+import { alive, ctx, killQuietly, scriptedHarness, waitGone } from "../_run-support.ts";
 import { LIVE, REGION, scratchDiskId } from "./_archil.ts";
 import { archilMounts, BASE, cleanMount, cleanupAll, control, daemonPid, LEDGER, ledger, newRun, prepareBase, ref, revokeRun, token } from "./_p4.ts";
 
@@ -556,3 +557,33 @@ for (const signal of ["KILL", "TERM"] as const) {
     }, /fenced \((?:CLAIM_UNMOUNTED|FENCED)\)/);
   });
 }
+
+test("seed on a mount: a new run starts with what its seed wrote, made durable before run.json; a later open does not seed", { skip: !LIVE, timeout: 300_000 }, async () => {
+  const id = await newRun("seed");
+  const scripted = scriptedHarness();
+  const fenced: unknown[] = [];
+  let calls = 0;
+  let runJsonThen = true;
+  const seed: RunSeed = async ({ root, storePath, workDir }) => {
+    calls++;
+    runJsonThen = existsSync(join(root, "run.json"));
+    const db = new DatabaseSync(storePath);
+    db.exec("PRAGMA synchronous = FULL; CREATE TABLE IF NOT EXISTS x_seed (k TEXT PRIMARY KEY); INSERT OR REPLACE INTO x_seed (k) VALUES ('profile-1')");
+    db.close();
+    mkdirSync(join(workDir, ".agents", "skills"), { recursive: true });
+    writeFileSync(join(workDir, ".agents", "skills", "sign-in.md"), "how to sign in\n");
+  };
+  const open = async (purpose: string) =>
+    openDurableRun(ref(id), { mountToken: await token(purpose), mountRoot: ROOT_A, harness: { models: scripted.models, registry: scripted.registry }, seed, onFenced: (error) => void fenced.push(error) });
+  const first = await open("seed-1");
+  assert.deepEqual([calls, runJsonThen, first.generation], [1, false, 1], "seeded once, before run.json, in generation 1");
+  assert.deepEqual((await first.store.database.all<{ k: string }>("SELECT k FROM x_seed")).map((row) => row.k), ["profile-1"]);
+  assert.equal(readFileSync(join(first.claim.work, ".agents", "skills", "sign-in.md"), "utf8"), "how to sign in\n");
+  await first.release();
+  const second = await open("seed-2");
+  assert.deepEqual([calls, second.generation], [1, 2], "not seeded again");
+  assert.deepEqual((await second.store.database.all<{ k: string }>("SELECT k FROM x_seed")).map((row) => row.k), ["profile-1"], "the seeded rows outlived a release and a remount");
+  await second.release();
+  assert.deepEqual(fenced, []);
+  results.seed = { generations: [first.generation, second.generation], seeds: calls };
+});

@@ -540,7 +540,7 @@ function visionReceipt(look: VisionLook, chosen: boolean): Node {
     row('filed', `${look.receipt ?? 'no receipt path'} · generation ${look.gen}${look.lost ? ' · lost branch' : ''}`));
 }
 
-function visionMetersView(state: VisionState, meters: VisionMeters): Node {
+function visionMetersView(state: VisionState, meters: VisionMeters, following = false): Node {
   const row = (name: string, value: string, title: string, extra = ''): Node => h('div', { class: `vz-meter${extra}`, title }, h('span', {}, name), h('b', {}, value));
   const measured = state.visionLines > 0;
   const stored = (name: string, value: string, title: string, extra = '') => row(name, measured ? value : 'not measured', measured ? title : 'No vision document line in this recording: nothing here can be counted.', extra);
@@ -551,7 +551,8 @@ function visionMetersView(state: VisionState, meters: VisionMeters): Node {
     meters.askedTwice > 0 && stored('asked twice', String(meters.askedTwice), 'A look key paid twice in one generation.', ' alarm'),
     row('possible extra payments', `${meters.possible} (observed)`, 'From live lines: a look started in a process that ended without filing it. Its eyes may have answered and been paid; no durable line says.', meters.possible > 0 ? ' alarm' : ''),
     stored('spend', measured ? `${meters.possible > 0 && meters.cost !== null ? 'at least ' : ''}${visionMoney(meters.cost)}` : 'unknown',
-      `Once per payment, with each failed look's own price; unknown when any is unknown.${meters.possible > 0 ? ' A lower bound: a possible payment is not in it.' : ''}`),
+      following ? 'A run followed while it goes: its spend is known once it finishes.'
+        : `Once per payment, with each failed look's own price; unknown when any is unknown.${meters.possible > 0 ? ' A lower bound: a possible payment is not in it.' : ''}`),
     stored('typed misses', meters.failed === 0 ? '0' : `${meters.failed}: ${meters.misses.map(([code, n]) => `${code} ${n}`).join(', ')}`, 'Failed LookRecords, by miss code.'));
 }
 
@@ -593,7 +594,7 @@ function visionView(state: VisionState, context: ViewContext): Node {
             : cited ? visionCitedView(cited, context.cite)
               : h('p', { class: 'empty' }, typeof parsed === 'string' ? `${parsed}: ` : 'The account is in the result: ', { tag: 'a', blob: state.result.blob, text: state.result.title })),
       h('div', { class: 'vz-col' },
-        h('h5', {}, 'Meters'), visionMetersView(state, meters),
+        h('h5', {}, 'Meters'), visionMetersView(state, context.following ? { ...meters, cost: null } : meters, context.following === true),
         account?.accuracy && visionAccuracyView(account.accuracy),
         shown && visionReceipt(shown, chosen !== undefined),
         context.cite !== undefined && !chosen && h('p', { class: 'empty' }, 'The look this citation names is not filed at this point.'),

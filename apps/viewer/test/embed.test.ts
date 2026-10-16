@@ -2,45 +2,23 @@
 // and what is focused, and it obeys that page (seek, focus, theme) only when its URL names the page's origin
 // (`&parent=`), each command checked. A message from another origin, or of another type, changes nothing.
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
 import { chapterAt, embedMessage, fromParent, parentOrigin, parentParam, steerOf } from '../src/app.ts';
+import { closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
 
 const chrome = process.env.CHROME_PATH ?? '/usr/bin/google-chrome';
 const noChrome = { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` };
+after(async () => { assert.deepEqual(await closeLeftBrowsers(), [], 'every browser a test started was closed by that test'); });
 const fixtures = new URL('fixtures/', import.meta.url).pathname;
-/** A page in headless Chrome driven over the DevTools protocol, in real time. */
-async function drivenPage(url: string, profile: string) {
-  const browser = spawn(chrome, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${profile}`, '--remote-debugging-port=0', url], { stdio: 'ignore' });
-  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-  let port: string | undefined;
-  for (let tries = 0; tries < 300 && !port; tries += 1) { await sleep(100); try { port = readFileSync(join(profile, 'DevToolsActivePort'), 'utf8').split('\n')[0]; } catch { /* not up yet */ } }
-  const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json() as { type: string; url: string; webSocketDebuggerUrl: string }[];
-  const socket = new WebSocket(targets.find((target) => target.type === 'page' && target.url.startsWith(url))?.webSocketDebuggerUrl ?? targets.find((target) => target.type === 'page')!.webSocketDebuggerUrl);
-  await new Promise((resolve) => socket.addEventListener('open', resolve));
-  const waiting = new Map<number, (value: unknown) => void>();
-  socket.addEventListener('message', (event) => { const message = JSON.parse(String(event.data)) as { id?: number; result?: { result?: { value?: unknown } } }; if (message.id !== undefined) waiting.get(message.id)?.(message.result?.result?.value); });
-  let id = 0;
-  const evaluate = (expression: string) => new Promise((resolve) => { id += 1; waiting.set(id, resolve); socket.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, returnByValue: true } })); });
-  const exited = new Promise((resolve) => browser.once('exit', resolve));
-  const close = async () => {
-    socket.close();
-    const { webSocketDebuggerUrl } = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json() as { webSocketDebuggerUrl: string };
-    const whole = new WebSocket(webSocketDebuggerUrl);
-    await new Promise((resolve) => whole.addEventListener('open', resolve));
-    whole.send(JSON.stringify({ id: 1, method: 'Browser.close' }));
-    await Promise.race([exited, sleep(10_000).then(() => browser.kill())]);
-  };
-  return { evaluate, sleep, close };
-}
 const flags = (profile: string) => ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${profile}`, '--virtual-time-budget=6000', '--dump-dom'];
 
 test('the chapter a point is in is the one with the greatest stop at or before it, whatever the order chapters are listed in', () => {
@@ -117,7 +95,6 @@ test('embedded, the page drops its header and fills its frame, and without &pare
 
 test('steered over http: the named parent\'s seek is obeyed; another type, and another origin, are ignored', noChrome, async (t) => {
   const out = mkdtempSync(join(tmpdir(), 'viewer-steer-'));
-  t.after(() => rmSync(out, { recursive: true, force: true }));
   build(join(out, 'dist'), fixtures);
   const server = createServer((request, response) => {
     const path = new URL(request.url!, 'http://localhost').pathname;
@@ -126,7 +103,9 @@ test('steered over http: the named parent\'s seek is obeyed; another type, and a
     response.writeHead(200, { 'content-type': file.endsWith('.html') ? 'text/html' : file.endsWith('.js') ? 'text/javascript' : 'application/octet-stream' }).end(readFileSync(file));
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => server.close());
+  // One hook ends the page before the server and the profile go: a profile is removed only once its browser has ended.
+  const pages: Awaited<ReturnType<typeof drivenPage>>[] = [];
+  t.after(() => closeAll(pages, () => { server.close(); rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); }));
   const port = (server.address() as AddressInfo).port;
   const parent = `http://127.0.0.1:${port}`;
   // The viewer is framed from another host name of the same server, so its origin differs from the parent's; a second
@@ -150,7 +129,7 @@ test('steered over http: the named parent\'s seek is obeyed; another type, and a
   // has sent its seek, or a minute (a cold Chrome can take most of that to load its first page); then two seconds more,
   // for any move it might cause.
   const page = await drivenPage(`${parent}/frame.html`, join(out, 'profile'));
-  t.after(() => page.close());
+  pages.push(page);
   const read = async () => JSON.parse(String(await page.evaluate('JSON.stringify([...document.querySelectorAll("pre.got")].map((each) => JSON.parse(each.textContent)))') ?? '[]')) as unknown[];
   let got: unknown[] = [];
   for (let tries = 0; tries < 600 && !got.includes('sent'); tries += 1) { await page.sleep(100); got = await read(); }

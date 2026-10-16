@@ -96,7 +96,7 @@ describe("localRun", () => {
     }
   });
 
-  it("ends the commands a SIGKILLed instance left running at the next open, before the Harness opens", { timeout: 60_000 }, async () => {
+  it("ends the commands a SIGKILLed instance left running at the next open, before afterClaim and run.json", { timeout: 60_000 }, async () => {
     const dir = scratchRoot("local-commands");
     const root = join(dir.root, "run");
     const instance = spawn(process.execPath, [LOCAL_COMMAND, root], { stdio: ["ignore", "pipe", "inherit"] });
@@ -111,14 +111,18 @@ describe("localRun", () => {
       assert.ok(alive(command), "the instance's SIGKILL does not reach its command, which leads a process group of its own");
       const scripted = scriptedHarness();
       const steps: [string, boolean][] = [];
+      let factorySaw: boolean | undefined;
       const run = await openDurableRun({ disk: "dsk-local", region: "local", id: "local-command" }, {
         ...localRun(root),
-        harness: { models: scripted.models, registry: scripted.registry },
+        afterClaim: async () => {
+          factorySaw = alive(command);
+          return { harness: { models: scripted.models, registry: scripted.registry } };
+        },
         onStep: (name) => void steps.push([name, alive(command)]),
       });
-      const at = (name: string) => steps.findIndex(([step]) => step === name);
-      assert.ok(at("commands") >= 0 && at("commands") < at("harness"), `the commands step comes before the Harness opens: ${JSON.stringify(steps)}`);
-      assert.deepEqual(steps[at("commands")], ["commands", false], "the command is gone once the commands step ends");
+      assert.deepEqual(steps.map(([step]) => step).slice(0, 5), ["acquire", "owner-lock", "layout", "commands", "after-claim"], "the reap, then the app's code, then run.json");
+      assert.deepEqual(steps[3], ["commands", false], "the command is gone once the commands step ends");
+      assert.equal(factorySaw, false, "afterClaim never runs beside the killed incarnation's command");
       assert.equal(run.generation, 2);
       await run.release();
     } finally {
