@@ -1,7 +1,7 @@
 // The reference entry as a demo's platform (item A of the entry brief): the spec's kills list through the supervisor (a named crossing, a storm, a box kind),
 // --input, --max-usd, the browser choice, and the box the job's tools run in. The demo here is the reference job itself, started through demo-fixture.ts.
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1269,4 +1269,56 @@ test('an operator kill (a control file the supervisor watches, never the child\'
   // A stale control file would kill the first process at once: it is refused.
   writeFileSync(control, '');
   await assert.rejects(() => demo({ ...options, argv: ['--json', '--operator-kill', control] }), /already exists/);
+});
+
+// ---- a blob appears whole or not at all --------------------------------------------------------------------------------------------------------
+
+test('a blob read while it is being written is absent or whole (written to a temporary name, synced, renamed), a blob already there is left alone, and the validator, the gate and the scan skip a temporary name', { timeout: 120_000 }, async (t) => {
+  const { spawn } = await import('node:child_process');
+  const { createHash } = await import('node:crypto');
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-blob-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const bytes = 192 * 1024 * 1024;
+  const sha = createHash('sha256').update(Buffer.alloc(bytes, 7)).digest('hex');
+  const finalName = `${sha}.bin`;
+  const blobs = join(tmp, 'blobs');
+  const child = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', '-e', `import("./examples/reference/record.ts").then((m) => process.stdout.write(m.keepBlob(process.argv[1], Buffer.alloc(${bytes}, 7), "bin")))`, tmp], { cwd: new URL('..', import.meta.url).pathname, stdio: ['ignore', 'pipe', 'inherit'] });
+  const exited = new Promise((resolve) => child.on('close', resolve));
+  const seen = { temporary: 0, whole: 0, absent: 0, torn: [] };
+  while (child.exitCode === null && child.signalCode === null) {
+    const names = existsSync(blobs) ? readdirSync(blobs) : [];
+    if (names.some((name) => /^\..*\.tmp-\d+$/.test(name))) seen.temporary += 1;
+    if (names.includes(finalName)) {
+      const size = statSync(join(blobs, finalName)).size;
+      if (size === bytes) seen.whole += 1; else seen.torn.push(size);
+    } else seen.absent += 1;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  await exited;
+  assert.deepEqual(seen.torn, [], 'the blob was never seen half written');
+  assert.ok(seen.temporary > 0, 'it was written under a temporary name first');
+  assert.equal(statSync(join(blobs, finalName)).size, bytes);
+  assert.deepEqual(readdirSync(blobs), [finalName], 'no temporary file is left');
+  assert.equal(createHash('sha256').update(readFileSync(join(blobs, finalName))).digest('hex'), sha, 'whole, and named by its own hash');
+  // Already there: left alone.
+  const { keepBlob, TEMP_BLOB } = await import('./reference/record.ts');
+  const before = statSync(join(blobs, finalName)).mtimeMs;
+  assert.equal(keepBlob(tmp, Buffer.alloc(bytes, 7), 'bin'), sha);
+  assert.equal(statSync(join(blobs, finalName)).mtimeMs, before);
+  // A temporary name is skipped by the validator, the gate and the scan.
+  const recording = join(tmp, 'rec');
+  mkdirSync(join(recording, 'blobs'), { recursive: true });
+  const lone = createHash('sha256').update('x').digest('hex');
+  writeFileSync(join(recording, 'blobs', `.${lone}.txt.tmp-123`), 'half of a blob');
+  assert.ok(TEMP_BLOB.test(`.${lone}.txt.tmp-123`) && !TEMP_BLOB.test(`${lone}.txt`));
+  const { scanRecording } = await import('./reference/secrets.ts');
+  assert.doesNotThrow(() => scanRecording(recording, [{ key: 'K', value: 'half of a blob' }]), 'the scan skips a blob still being written');
+  const { validateRecording } = await import('../scripts/recording/validate.mjs');
+  assert.ok(!validateRecording(recording).some((problem) => /tmp-/.test(JSON.stringify(problem))), 'the validator does not name it');
+  const dist = join(tmp, 'dist');
+  mkdirSync(join(dist, 'recordings'), { recursive: true });
+  cpSync(recording, join(dist, 'recordings', 'rec'), { recursive: true });
+  writeFileSync(join(dist, 'gallery.js'), 'window.AGENTRUN_GALLERY = [{"id":"rec"}];\n');
+  const { gateProblems } = await import('../scripts/recording/gate.mjs');
+  assert.ok(!gateProblems(dist).some((problem) => /tmp-/.test(problem.path)), 'the gate does not name it');
 });
