@@ -132,3 +132,27 @@ export function beat(dir) {
 }
 
 export const link = (target, path) => symlinkSync(target, path);
+
+const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".json": "application/json", ".md": "text/markdown; charset=utf-8", ".csv": "text/csv; charset=utf-8", ".png": "image/png" };
+
+/**
+ * A static host for a directory, as a replay's host would be: the files under `dir` at `<prefix>`, and nothing else, with
+ * no headers of its own (no CSP, no sandbox). `requests` lists the paths asked for.
+ */
+export async function serveStatic(dir, prefix = "/") {
+  const requests = [];
+  const server = createServer((req, res) => {
+    const path = decodeURIComponent(new URL(req.url, "http://static").pathname);
+    requests.push(path);
+    const rel = path.startsWith(prefix) ? path.slice(prefix.length) || "index.html" : null;
+    const file = rel === null || rel.split("/").includes("..") ? null : join(dir, rel.endsWith("/") ? `${rel}index.html` : rel);
+    let body;
+    try {
+      body = file && readFileSync(file);
+    } catch {}
+    if (!body) return void res.writeHead(404).end();
+    res.writeHead(200, { "content-type": TYPES[file.slice(file.lastIndexOf("."))] ?? "application/octet-stream" }).end(body);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return { url: `http://127.0.0.1:${server.address().port}${prefix}`, requests, close: () => new Promise((resolve) => (server.close(resolve), server.closeAllConnections())) };
+}
