@@ -597,8 +597,13 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         } else if (command === 'run' || command === 'run --trusted') {
           await launch(ctx, s, s.input, command === 'run --trusted');
         } else if (command === 'dry-run' || command === 'dry-run --trusted') {
-          const report = await dryRun(ctx, s, undefined, command === 'dry-run --trusted');
-          show(s, formatDryRun(report), { dryRun: report });
+          // As with /agentrun run: interactive Pi reads the next command only once this handler returns, so the dry run
+          // goes on in the background, where /agentrun stop reaches it. Headless callers await its answer.
+          stage(ctx, s, 'agent.run() · dry run · /agentrun stop ends it');
+          const pending = dryRun(ctx, s, undefined, command === 'dry-run --trusted')
+            .then(report => show(s, formatDryRun(report), { dryRun: report }), error => commandError(s, error))
+            .finally(() => stage(ctx, s));
+          if (!ctx.hasUI) await pending;
         } else if (commandLike || command.startsWith('-')) {
           show(s, `Unknown AgentRun command: ${raw}\n\n${help}`);
         } else {
