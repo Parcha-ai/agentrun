@@ -222,12 +222,12 @@ async function snapshotAt(storage: StoreReads, at: Seq) {
 }
 
 describe("openDurableRun", () => {
-  it("opens in order (claim, lock, run.json, store, seal, Harness) and writes run.json", async () => {
+  it("opens in order (claim, lock, layout, run.json, store, seal, Harness) and writes run.json", async () => {
     const dir = scratchRoot("order");
     try {
       const t = setup(dir.root);
       const run = await t.open();
-      assert.deepEqual(t.steps, ["acquire", "owner-lock", "run.json", "heartbeat", "layout", "store", "seal", "harness", "live", "resume"]);
+      assert.deepEqual(t.steps, ["acquire", "owner-lock", "layout", "run.json", "heartbeat", "store", "seal", "harness", "live", "resume"]);
       for (const path of [OWNER_LOCK, "store", "work", "tmp", join("store", STORE_FILE), RUN_JSON]) assert.ok(existsSync(join(dir.root, path)), path);
       assert.equal(existsSync(join(dir.root, RUN_JSON_TEMP)), false, "the temp file was renamed over run.json");
       const record = runJson(dir.root);
@@ -248,41 +248,59 @@ describe("openDurableRun", () => {
     }
   });
 
-  it("afterClaim runs once the claim is held (lock, run.json) and before the store and the Harness, which open with what it returns; a rejection, or no Harness options at all, lets the claim go", async () => {
+  it("afterClaim runs once the claim is held (lock, layout) and before this generation's run.json, the store and the Harness, which open with what it returns", async () => {
     const dir = scratchRoot("after-claim");
     try {
       const own = scriptedHarness();
-      let seen: { root: string; runJson: boolean } | undefined;
+      let seen: { root: string; work: boolean; runJson: boolean } | undefined;
       const t = setup(dir.root, {
         options: {
           harness: undefined,
           afterClaim: async (claim) => {
-            seen = { root: claim.root, runJson: existsSync(join(claim.root, RUN_JSON)) };
+            seen = { root: claim.root, work: existsSync(claim.work), runJson: existsSync(join(claim.root, RUN_JSON)) };
             return { harness: { models: own.models, registry: own.registry } };
           },
         },
       });
       const run = await t.open();
-      assert.deepEqual(t.steps, ["acquire", "owner-lock", "run.json", "heartbeat", "layout", "after-claim", "store", "seal", "harness", "live", "resume"]);
-      assert.deepEqual(seen, { root: dir.root, runJson: true }, "on the claimed directory, run.json already written");
+      assert.deepEqual(t.steps, ["acquire", "owner-lock", "layout", "after-claim", "run.json", "heartbeat", "store", "seal", "harness", "live", "resume"]);
+      assert.deepEqual(seen, { root: dir.root, work: true, runJson: false }, "on the claimed directory, laid out, before this incarnation's run.json");
       const root = await run.harness.root(ctx, { agent: own.agent });
       assert.equal((await (await root.submit({ type: "input", content: "hello" }, ctx)).wait(ctx)).status, "done", "the Harness has the options afterClaim returned");
       await run.release();
     } finally {
       dir.remove();
     }
-    for (const [name, options, refused] of [
-      ["a rejection", { afterClaim: async () => { throw new Error("the app module did not load"); } }, (e: unknown) => /did not load/.test((e as Error).message)],
-      ["no Harness options", { harness: undefined }, (e: unknown) => e instanceof RunError && e.code === "INVALID_ARGUMENT"],
-    ] as const) {
-      const d = scratchRoot("after-claim-refused");
-      try {
-        const t = setup(d.root, { options: options as Partial<OpenDurableRunOptions> });
-        await assert.rejects(t.open(), refused, name);
-        assert.ok(t.claim.log.includes("release"), `${name}: the claim was let go`);
-      } finally {
-        d.remove();
+  });
+
+  it("an afterClaim that fails publishes nothing: no run.json on a new run, the previous one untouched on a resume, the claim let go, and the next open runs it again", async () => {
+    const dir = scratchRoot("after-claim-refused");
+    try {
+      let calls = 0;
+      const refusing = { afterClaim: async () => { calls++; throw new Error("the app module did not load"); } };
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const t = setup(dir.root, { options: refusing });
+        await assert.rejects(t.open(), /did not load/);
+        assert.deepEqual(t.steps, ["acquire", "owner-lock", "layout"], "no run.json, no heartbeat");
+        assert.equal(existsSync(join(dir.root, RUN_JSON)), false, "a new run still has no run.json");
+        assert.deepEqual(t.claim.log, ["acquire", "release"], "the claim is let go, not fenced");
       }
+      assert.equal(calls, 2, "the next open ran afterClaim again");
+      await (await setup(dir.root).open()).release();
+      const left = readFileSync(join(dir.root, RUN_JSON), "utf8");
+      const resumed = setup(dir.root, { options: refusing });
+      await assert.rejects(resumed.open(), /did not load/);
+      assert.equal(readFileSync(join(dir.root, RUN_JSON), "utf8"), left, "a resume leaves the previous incarnation's run.json as it was");
+      assert.deepEqual(resumed.claim.log, ["acquire", "release"]);
+      const none = setup(dir.root, { options: { harness: undefined, afterClaim: async () => ({}) } });
+      await assert.rejects(none.open(), (e: unknown) => e instanceof RunError && e.code === "INVALID_ARGUMENT" && /afterClaim returned none/.test((e as Error).message));
+      assert.equal(readFileSync(join(dir.root, RUN_JSON), "utf8"), left, "no Harness options from afterClaim: refused the same way");
+      assert.deepEqual(none.claim.log, ["acquire", "release"]);
+      const neither = setup(dir.root, { options: { harness: undefined } });
+      await assert.rejects(neither.open(), (e: unknown) => e instanceof RunError && e.code === "INVALID_ARGUMENT");
+      assert.deepEqual(neither.claim.log, [], "no Harness options and no afterClaim: refused before any claim");
+    } finally {
+      dir.remove();
     }
   });
 
@@ -632,7 +650,7 @@ describe("openDurableRun", () => {
         assert.equal(refused.code, "STORE_BEHIND_SEAL");
         assert.equal(exitCodeFor(refused), 65);
         assert.deepEqual([refused.sealedSeq, refused.head], [sealed2, sealed1]);
-        assert.deepEqual(c.steps, ["acquire", "owner-lock", "run.json", "heartbeat", "layout", "store"], "refused at the seal step, before Harness.open");
+        assert.deepEqual(c.steps, ["acquire", "owner-lock", "layout", "run.json", "heartbeat", "store"], "refused at the seal step, before Harness.open");
         assert.deepEqual(c.claim.log, ["acquire", "release"], "the claim is released, not fenced");
         assert.equal(c.fenced.length, 0);
         const failed = runJson(dir.root);
@@ -677,7 +695,7 @@ describe("openDurableRun", () => {
         const refused = await t.open().then(() => null, (error: unknown) => error);
         assert.ok(refused instanceof RunError && refused.code === "STORE_HEAD_UNREADABLE", String(refused));
         assert.equal(exitCodeFor(refused), 70);
-        assert.deepEqual(t.steps, ["acquire", "owner-lock", "run.json", "heartbeat", "layout", "store"], "refused before Harness.open");
+        assert.deepEqual(t.steps, ["acquire", "owner-lock", "layout", "run.json", "heartbeat", "store"], "refused before Harness.open");
         assert.deepEqual(t.claim.log, ["acquire", "release"], "the claim is released, not fenced");
         const failed = runJson(dir.root);
         assert.equal(failed.status, "failed");
@@ -948,7 +966,7 @@ describe("fences during the run", () => {
       assert.equal(t.fenced.length, 1);
       assert.equal(t.fenced[0], refused);
       assert.ok(!t.claim.log.includes("release"));
-      assert.deepEqual(t.steps, ["acquire", "owner-lock"]);
+      assert.deepEqual(t.steps, ["acquire", "owner-lock", "layout"]);
     } finally {
       dir.remove();
     }

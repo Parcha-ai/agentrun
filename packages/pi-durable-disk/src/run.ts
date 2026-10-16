@@ -159,10 +159,12 @@ export interface OpenDurableRunOptions<Tool extends ToolRegistration = ToolRegis
    */
   readonly harness?: Omit<HarnessOptions<Tool>, "env">;
   /**
-   * Awaited once the claim is held (the run's directory mounted, its owner lock taken, `run.json` written) and before the
-   * store and the Harness open, with the claim's paths: what it returns (`harness`, `beforeResume`) goes into the open,
-   * over what these options give. For code that must run on the live directory, as an app module's factory does under
-   * the CLI. A rejection fails the open, and the claim is released.
+   * Awaited once the claim is held (the run's directory mounted, its owner lock taken, `store/`, `work/` and `tmp/` made,
+   * what a killed incarnation's commands left running reaped) and before this incarnation's `run.json`, with the claim's
+   * paths: what it returns (`harness`, `beforeResume`) goes into the open, over what these options give. For code that
+   * must run on the live directory, as an app module's factory does under the CLI. It runs before the heartbeat, inside a
+   * supervisor's start grace. A rejection fails the open with `run.json` as the open found it (none on a new run), so a
+   * supervisor counts a failed start and backs off; the claim is released.
    */
   readonly afterClaim?: (claim: Pick<Claim, "ref" | "root" | "work" | "store">) => Promise<AfterClaim<Tool>>;
   /** The run's environment, built on the claim; default `archilEnv(claim)`. Its `cleanup` is the lease's. */
@@ -242,9 +244,10 @@ export interface RunClaim {
 
 /**
  * The claim's lifecycle for an app that owns its store and Harness (`openDurableRun` without the store and the Harness). Open
- * order, all done by `openRunLease`: acquire and verify the claim, take the owner lock, write `run.json` (`running`,
- * generation + 1, this holder, a heartbeat, the previous seal kept), start the heartbeat and the self-fence (a timer and
- * a watchdog thread), create `store/`, `work/` and `tmp/`. The app then opens its store, calls `checkSeal` before
+ * order, all done by `openRunLease`: acquire and verify the claim, take the owner lock, create `store/`, `work/` and
+ * `tmp/`, reap what a killed incarnation's commands left running, write `run.json` (`running`, generation + 1, this
+ * holder, a heartbeat, the previous seal kept), start the heartbeat and the self-fence (a timer and a watchdog thread).
+ * The app then opens its store, calls `checkSeal` before
  * anything commits, opens its Harness over `observe(storage)`, and calls `live()`. Once fenced, every member that
  * writes rejects with the first fence; nothing is retried.
  */
@@ -594,12 +597,14 @@ class Lease implements RunLease {
   }
 
   /**
-   * The order after the claim. `run.json` is written (`running`, generation + 1, this holder, a heartbeat) and the
-   * heartbeat starts right after the owner lock, before the store and the Harness open, so a supervisor never sees the
-   * previous incarnation's stale heartbeat on a live claim. That first write keeps the previous `sealedSeq`, which the
-   * seal check still needs; `live()` clears it once the store is open.
+   * The order after the claim: the owner lock, the layout, the reap of a killed incarnation's commands, `afterClaim`
+   * (openDurableRun's), then `run.json` (`running`, generation + 1, this holder, a heartbeat) and the heartbeat, before
+   * the store and the Harness open. Nothing is published before that write: an open that fails earlier leaves `run.json`
+   * as it found it, so a supervisor counts a failed start and backs off; its start grace covers the steps before it.
+   * Once written, a supervisor never sees the previous incarnation's stale heartbeat on the live claim. That first write
+   * keeps the previous `sealedSeq`, which the seal check still needs; `live()` clears it once the store is open.
    */
-  async open(step: Step, holder: RunHolder): Promise<void> {
+  async open(step: Step, holder: RunHolder, afterClaim?: (claim: Claim) => Promise<void>): Promise<void> {
     const claim = this.rawClaim;
     // SQLite resolves symbolic links in a file name, `/proc/self/fd/<n>` included, so `owner.lock` is the one file opened
     // by path: right after the mount check, and the file it names must then be the one in the claim directory.
@@ -622,6 +627,23 @@ class Lease implements RunLease {
     const previous = await this.#readPrevious();
     this.#previous = previous;
     this.#lastSeq = previous?.sealedSeq ?? 0;
+    await step("layout", async () => {
+      for (const dir of [claim.store, claim.work, join(claim.root, "tmp")]) {
+        const under = relative(claim.root, dir);
+        if (under === "" || under.startsWith("..") || isAbsolute(under)) throw new RunError("INVALID_ARGUMENT", `${dir} is not under the claim root ${claim.root}`);
+        try {
+          await mkdir(join(this.#dir!.at, under), { recursive: true });
+        } catch (error) {
+          throw ownWriteFenced(dir, error);
+        }
+      }
+    });
+    // A claim that records its commands (a local run's): end what a killed incarnation left running, before any code of
+    // this incarnation runs, so no command of it still writes in work/ once the run resumes. A process of it that outlives
+    // its SIGKILL refuses the open (HeldError, 76): the run never resumes beside it, and its record stays for the next open.
+    const commands = claim.commands;
+    if (commands !== undefined) await step("commands", () => reapOrRefuse(commands));
+    if (afterClaim) await step("after-claim", () => afterClaim(claim));
     await step("run.json", async () => {
       const now = new Date().toISOString();
       this.#noteBeat(await this.#write(() => ({
@@ -646,17 +668,6 @@ class Lease implements RunLease {
         beatNs: this.#lastBeatNs,
         ownCgroup: this.#options.ownCgroup === true,
       });
-    });
-    await step("layout", async () => {
-      for (const dir of [claim.store, claim.work, join(claim.root, "tmp")]) {
-        const under = relative(claim.root, dir);
-        if (under === "" || under.startsWith("..") || isAbsolute(under)) throw new RunError("INVALID_ARGUMENT", `${dir} is not under the claim root ${claim.root}`);
-        try {
-          await mkdir(join(this.#dir!.at, under), { recursive: true });
-        } catch (error) {
-          throw ownWriteFenced(dir, error);
-        }
-      }
     });
   }
 
@@ -881,7 +892,7 @@ class Lease implements RunLease {
   }
 }
 
-async function openLease(ref: RunRef, options: OpenRunLeaseOptions, step: Step): Promise<Lease> {
+async function openLease(ref: RunRef, options: OpenRunLeaseOptions, step: Step, afterClaim?: (claim: Claim) => Promise<void>): Promise<Lease> {
   const context = options.context ?? BACKGROUND_CONTEXT;
   leaseOf(options.lease);
   let holder: RunHolder;
@@ -904,7 +915,7 @@ async function openLease(ref: RunRef, options: OpenRunLeaseOptions, step: Step):
   );
   const lease = new Lease(ref, claim, options, context);
   try {
-    await lease.open(step, holder);
+    await lease.open(step, holder, afterClaim);
   } catch (error) {
     await lease.abandon(error);
     throw error;
@@ -913,8 +924,9 @@ async function openLease(ref: RunRef, options: OpenRunLeaseOptions, step: Step):
 }
 
 /**
- * Open the claim's lifecycle for run `ref` (see `RunLease`): acquire and verify the claim, take the owner lock, write
- * `run.json` and start the heartbeat and the self-fence, create `store/`, `work/` and `tmp/`. Errors are typed as for
+ * Open the claim's lifecycle for run `ref` (see `RunLease`): acquire and verify the claim, take the owner lock, create
+ * `store/`, `work/` and `tmp/`, reap a killed incarnation's commands, write `run.json` and start the heartbeat and the
+ * self-fence. Errors are typed as for
  * `openDurableRun`: HeldError (76), FencedError (75, also passed to `onFenced`), RunRecordError (65), RunError
  * INVALID_ARGUMENT before any claim.
  */
@@ -1032,8 +1044,8 @@ class Run implements DurableRun {
 }
 
 /**
- * Open run `ref` on this host: the lease (`openRunLease`: claim, owner lock, `run.json`, heartbeat and
- * self-fence, layout), then the store, the seal check before anything commits, pi's Harness with the app's registry,
+ * Open run `ref` on this host: the lease (`openRunLease`: claim, owner lock, layout, the commands reap, then
+ * `afterClaim`, then `run.json`, heartbeat and self-fence), then the store, the seal check before anything commits, pi's Harness with the app's registry,
  * the seal cleared in `run.json`, resume.
  *
  * Errors are typed: HeldError (76) when another client, another process on this host or another connection holds the
@@ -1044,32 +1056,25 @@ export async function openDurableRun<Tool extends ToolRegistration = ToolRegistr
   ref: RunRef,
   options: OpenDurableRunOptions<Tool>,
 ): Promise<DurableRun> {
+  if (!options.harness && !options.afterClaim) throw new RunError("INVALID_ARGUMENT", "openDurableRun needs pi's Harness options, from its options or from afterClaim");
   const context = options.context ?? BACKGROUND_CONTEXT;
   const step = stepper(options.onStep);
   let env: RunEnv | undefined;
-  const lease = await openLease(ref, { ...options, context, cleanup: (c) => env?.cleanup(c) ?? Promise.resolve() }, step);
+  let opening: OpenDurableRunOptions<Tool> = options;
+  const given = options.afterClaim;
+  // Inside the lease's open, before run.json: a factory that fails publishes nothing of this incarnation.
+  const afterClaim =
+    given &&
+    (async ({ ref: claimRef, root, work, store }: Claim) => {
+      const got = await given({ ref: claimRef, root, work, store });
+      opening = { ...options, ...(got.harness ? { harness: got.harness } : {}), ...(got.beforeResume ? { beforeResume: got.beforeResume } : {}) };
+      if (!opening.harness) throw new RunError("INVALID_ARGUMENT", "openDurableRun needs pi's Harness options: afterClaim returned none, and its options give none");
+    });
+  // The lease's cleanup is the environment's: abandoning the lease cleans both.
+  const lease = await openLease(ref, { ...options, context, cleanup: (c) => env?.cleanup(c) ?? Promise.resolve() }, step, afterClaim);
   try {
-    // A claim that records its commands (a local run's): end what a killed incarnation left running, now that the owner
-    // lock is held and before the Harness opens, so no command of it still writes in work/ once the run resumes.
-    const commands = lease.rawClaim.commands;
-    // A process of a killed incarnation that outlives its SIGKILL refuses the open (HeldError, 76): the run never resumes
-    // beside it, and its record stays for the next open.
-    if (commands !== undefined) await step("commands", () => reapOrRefuse(commands));
     env = (options.env ?? ((c: Claim) => archilEnv(c)))(lease.rawClaim);
   } catch (error) {
-    await lease.abandon(error);
-    throw error;
-  }
-  let opening: OpenDurableRunOptions<Tool> = options;
-  try {
-    if (options.afterClaim) {
-      const { ref: claimRef, root, work, store } = lease.rawClaim;
-      const given = await step("after-claim", () => options.afterClaim!({ ref: claimRef, root, work, store }));
-      opening = { ...options, ...(given.harness ? { harness: given.harness } : {}), ...(given.beforeResume ? { beforeResume: given.beforeResume } : {}) };
-    }
-    if (!opening.harness) throw new RunError("INVALID_ARGUMENT", "openDurableRun needs pi's Harness options, from its options or from afterClaim");
-  } catch (error) {
-    // The lease's cleanup is the environment's (openLease's `cleanup` above): abandoning it cleans both.
     await lease.abandon(error);
     throw error;
   }

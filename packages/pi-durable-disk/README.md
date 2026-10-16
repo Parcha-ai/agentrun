@@ -269,13 +269,16 @@ An instance is `pi-durable-disk run --app <module> ...`: `openDurableRun` with t
 module whose default export is a function of where the run lives and returns pi's Harness options without `env` (the run
 builds `env` on its claim: the workspace is `<root>/work`), plus an optional `beforeResume` and an optional `onOpen`.
 
-The factory runs once the claim is held: the run's directory is mounted, its owner lock taken and `run.json` written
-(`openDurableRun`'s `afterClaim`). So `where.root` is the live directory whenever app code runs, and a factory may write
-under it (a recorder's spool, a `signals/` directory). Before, the factory ran before the mount, and its writes landed in
-the bare mountpoint and were lost. The Harness opens after the factory, with what it returns. Claim options, if one ever
-needs them, are static (CLI flags or the environment) and never returned by the factory, since the claim is taken before
-the factory runs. A module that does not load, or a factory that throws, fails the open with `APP_FAILED` (exit 1), and
-the claim is let go.
+The factory runs once the claim is held: the run's directory is mounted, its owner lock taken, `store/`, `work/` and
+`tmp/` made, and the commands a killed incarnation left running ended (`openDurableRun`'s `afterClaim`). This
+incarnation's `run.json` comes after it. So `where.root` is the live directory whenever app code runs, and a factory may
+write under it (a recorder's spool, a `signals/` directory). Before, the factory ran before the mount, and its writes
+landed in the bare mountpoint and were lost. The Harness opens after the factory, with what it returns. Claim options, if
+one ever needs them, are static (CLI flags or the environment) and never returned by the factory, since the claim is
+taken before the factory runs. A module that does not load, or a factory that throws, fails the open with `APP_FAILED`
+(exit 1), and the claim is let go. Such a start publishes nothing: a new run still has no `run.json`, and a resumed run
+keeps its previous one. A supervisor therefore counts it a failed start and backs off (`ensureRunning`), never starting
+it again on every tick.
 
 ```ts
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -586,7 +589,7 @@ about revocation, takeover and the lease's replacement do not apply. These do:
 
 | Failure | What happens | Effects |
 |---|---|---|
-| The instance crashes or is SIGKILLed | Its owner lock goes with the process. The next open of the directory (by the app, or whatever restarts it) takes the run, ends the commands the killed incarnation left running (its `commands` step, before the Harness opens), and `resume()`s from the last commit | running tasks go back to pending; effects in flight are `interrupted`, never rerun; no command of the killed incarnation still runs once the run resumes. pi makes each command the leader of its own process group, so the SIGKILL does not reach them and a local run has no unit cgroup: the instance records each command's group under `commands/` (by pid, start ticks and boot) and the next open kills what still matches. A command started within about 0.1 s before the kill can be missed |
+| The instance crashes or is SIGKILLed | Its owner lock goes with the process. The next open of the directory (by the app, or whatever restarts it) takes the run, ends the commands the killed incarnation left running (its `commands` step, before any code of the new incarnation runs), and `resume()`s from the last commit | running tasks go back to pending; effects in flight are `interrupted`, never rerun; no command of the killed incarnation still runs once the run resumes. pi makes each command the leader of its own process group, so the SIGKILL does not reach them and a local run has no unit cgroup: the instance records each command's group under `commands/` (by pid, start ticks and boot) and the next open kills what still matches. A command started within about 0.1 s before the kill can be missed |
 | A process the killed incarnation's commands started does not die at the next open (an uninterruptible wait, or one the run's user may not signal) | The open is refused: `HeldError` `COMMANDS_ALIVE`, exit 76, with the message below; the records stay | none: the run does not resume beside it. End those processes and open the run again |
 | Power loss or an OS crash | The store's commits are durable (SQLite at `synchronous = FULL`); `work/` is the operating system's to flush, since the claim's barrier syncs nothing | the store resumes from its last commit; files the agent wrote in `work/` can be older than what the store recorded |
 | A second process opens the run on this machine | The owner lock is refused (`HeldError`, exit 76) | none |
@@ -684,10 +687,12 @@ then list the prefix and check it is empty.
 
 ## Library
 
-`openDurableRun(ref, options)` is what `run` calls: mount, verify the claim, take the owner lock, write `run.json`, open
-the store, check the seal, open and resume the Harness, keep the lease. Its `afterClaim(claim)` is awaited between the
-claim and the store, with the claim's `ref`, `root`, `work` and `store`. What it returns (`harness`, `beforeResume`) goes
-into the open, so `harness` may come from there instead of the options. A rejection fails the open and lets the claim go. `acquire`, `ensureRunning`, `localHost`,
+`openDurableRun(ref, options)` is what `run` calls: mount, verify the claim, take the owner lock, make `store/`, `work/`
+and `tmp/`, end a killed incarnation's commands, write `run.json`, open the store, check the seal, open and resume the
+Harness, keep the lease. Its `afterClaim(claim)` is awaited once the claim is held and before `run.json`, with the
+claim's `ref`, `root`, `work` and `store`. What it returns (`harness`, `beforeResume`) goes into the open, so `harness`
+may come from there instead of the options. A rejection fails the open with `run.json` as the open found it and lets the
+claim go. `acquire`, `ensureRunning`, `localHost`,
 `archilEnv` and the typed errors (`FencedError`, `HeldError`, `StoreBehindSealError`) are exported for apps that compose
 their own lifecycle, and so are serve (`serveRun`, `requestRun`), parking (`watchParking`, `drain`, `busyState`, and
 `leaseParkTarget` for a Harness a host opened over `openRunLease`) and `fork`. `src/index.ts` lists every export; the

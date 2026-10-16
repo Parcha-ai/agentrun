@@ -224,14 +224,14 @@ describe("the CLI on a local directory", () => {
     }
   });
 
-  it("the app's factory runs once the claim is held: it sees run.json running, and what it writes under ctx.root is in the run", async () => {
+  it("the app's factory runs once the claim is held, before this incarnation's run.json, and what it writes under ctx.root is in the run", async () => {
     const dir = scratchRoot("cli-factory");
     try {
       const run = join(dir.root, "run");
       const saw = join(dir.root, "saw");
       const r = spawnSync(process.execPath, [CLI, "run", "--dir", run, "--app", fileURLToPath(new URL("./fixtures/factory-on-claim.ts", import.meta.url))], { env: { ...process.env, FACTORY_SAW: saw }, encoding: "utf8", timeout: 60_000 });
       assert.equal(r.status, 0, r.stderr);
-      assert.equal(readFileSync(saw, "utf8"), "running", "the claim was held (run.json written) when the factory ran");
+      assert.deepEqual(JSON.parse(readFileSync(saw, "utf8")), { runJson: "absent", ownerLock: true, work: true }, "the claim was held (owner lock, layout) and nothing of the run published yet");
       assert.equal(readFileSync(join(run, "factory.txt"), "utf8"), "written by the factory\n");
     } finally {
       dir.remove();
