@@ -1,4 +1,4 @@
-// The bounds of test/chrome.ts, shown on a stand-in for Chrome that never starts listening and does not die on SIGTERM,
+// The bounds of test/driven-page.ts, shown on a stand-in for Chrome that never starts listening and does not die on SIGTERM,
 // with a helper of its own still running: each wait fails within its bound and names what it waited for, and nothing it started
 // is left running. (spawnSync, with a timeout, sends SIGTERM and then waits for such a process to exit: the event loop
 // blocked, no test timeout can fire.)
@@ -7,7 +7,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { drivenPage, within } from './chrome.ts';
+import { drivenPage, within } from './driven-page.ts';
 
 /** A Chrome that hangs: it ignores SIGTERM, starts a helper that holds its stdout, writes both their pids, and never ends. */
 function hungChrome(dir: string) {

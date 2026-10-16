@@ -7,11 +7,11 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
-import { chrome, drivenPage } from './chrome.ts';
+import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
 import { chapterAt, embedMessage, fromParent, parentOrigin, parentParam, steerOf } from '../src/app.ts';
 
 const noChrome = { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` };
@@ -20,6 +20,7 @@ const fixtures = new URL('fixtures/', import.meta.url).pathname;
 const UNIT = { timeout: 5_000 };
 const IN_CHROME = { ...noChrome, timeout: 60_000 };
 const CLEANUP = { timeout: 20_000 };
+after(async () => { assert.deepEqual(await closeLeftBrowsers(), [], 'every browser a test started was closed by that test'); });
 
 test('the chapter a point is in is the one with the greatest stop at or before it, whatever the order chapters are listed in', UNIT, () => {
   const chapters = [{ p: 1 }, { p: 10 }, { p: 25 }];
@@ -75,10 +76,7 @@ test('embedded, the page drops its header and fills its frame, and without &pare
   const out = mkdtempSync(join(tmpdir(), 'viewer-embed-'));
   // One cleanup, in order: every Chrome first, then the files. The test's signal has killed them by then if it timed out.
   const pages: Awaited<ReturnType<typeof drivenPage>>[] = [];
-  t.after(async () => {
-    for (const page of pages) await page.close();
-    rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
-  }, CLEANUP);
+  t.after(() => closeAll(pages, () => rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })), CLEANUP);
   build(join(out, 'dist'), fixtures);
   // Each page in real time, over DevTools, in a Chrome of its own: read once the page has drawn, never a virtual-time dump.
   let launched = 0;
@@ -122,12 +120,11 @@ test('steered over http: the named parent\'s seek is obeyed; another type, and a
   // One cleanup, in order: Chrome first, then the server it reads, then the files. It runs even when the test times out
   // with its body still waiting, and the test's signal has killed Chrome by then.
   const held: { page?: Awaited<ReturnType<typeof drivenPage>>; server?: ReturnType<typeof createServer> } = {};
-  t.after(async () => {
-    await held.page?.close();
+  t.after(() => closeAll(held.page ? [held.page] : [], () => {
     held.server?.closeAllConnections();
     held.server?.close();
     rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
-  }, CLEANUP);
+  }), CLEANUP);
   build(join(out, 'dist'), fixtures);
   const server = createServer((request, response) => {
     const path = new URL(request.url!, 'http://localhost').pathname;

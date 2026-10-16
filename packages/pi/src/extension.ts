@@ -8,12 +8,9 @@ import {
   createGrepToolDefinition, createFindToolDefinition, createLsToolDefinition,
   VERSION as PI_VERSION, type ExtensionAPI, type ExtensionContext, type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
-import {
-  formatWorkflowTree, inspectWorkflow, AUTHOR_SKILL_NAME, loadAuthorReference, renderAuthorHostAddendum, type WorkflowDeps,
-} from '@parcha/agentrun-dsl';
+import { formatWorkflowTree, inspectWorkflow, AUTHOR_SKILL_NAME, type WorkflowDeps } from '@parcha/agentrun-dsl';
 import { createJevRunner } from '@parcha/agentrun-jev';
 import { createPiHostRunner, PI_MODEL_SETUP_MESSAGE } from './host-session.js';
-import { PI_HOST_ADDENDUM } from './host-addendum.js';
 import { piHostLine } from './pi-host.js';
 import { workflowToolContext } from './tool-context.js';
 import type { PiHostContext, PiToolDefinition } from './types.js';
@@ -29,6 +26,7 @@ import { readSopFile, missingSopSections, sopDigest, type SopText } from './sop.
 import { WorkflowStore, WorkflowStoreError } from './workflow-store.js';
 import { WorkflowObservation, workflowView, formatWorkflowView, progressLines, readable, type RunObservation } from './workflow-view.js';
 import { showWorkflowInspector } from './workflow-inspector.js';
+import { authoringReferences, describeTools, dryRunDraft, formatDryRun, inspectCandidate, workflowToolParameters, type WorkflowDryRun } from './workflow-tool.js';
 import { supportTriageWorkflow, supportTriageInputs, supportTriageTools, scriptedSupportTriageDeps } from './triage-demo.js';
 import { restoreWorkflowSession, workflowRunHistory, type WorkflowSessionSnapshot } from './workflow-session.js';
 
@@ -37,7 +35,7 @@ const constructors = {
   write: createWriteToolDefinition, grep: createGrepToolDefinition, find: createFindToolDefinition, ls: createLsToolDefinition,
 };
 const mutatingTools = new Set(['bash', 'edit', 'write']);
-const help = 'Describe a task: /agentrun <what you want done>\nTry support triage: /agentrun triage (fictional, no model calls)\nInspect: /agentrun · Change input: /agentrun input\nSave: /agentrun save <name> · Load: /agentrun load <name>\nLibrary: /agentrun list · History: /agentrun history\nRun: /agentrun run · SOP text: /agentrun sop <file> · Setup: /agentrun status\nStop: /agentrun stop (closing the inspector does not stop a run)\nOther examples: /agentrun demo | demo empty | demo live';
+const help = 'Describe a task: /agentrun <what you want done>\nTry support triage: /agentrun triage (fictional, no model calls)\nInspect: /agentrun · Change input: /agentrun input\nSave: /agentrun save <name> · Load: /agentrun load <name>\nLibrary: /agentrun list · History: /agentrun history\nRun: /agentrun run · Dry run: /agentrun dry-run · SOP text: /agentrun sop <file> · Setup: /agentrun status\nStop: /agentrun stop (closing the inspector does not stop a run)\nOther examples: /agentrun demo | demo empty | demo live';
 const textResult = (text: string, details: unknown = {}) => ({ content: [{ type: 'text' as const, text: safe(text) }], details });
 function singleTextInput(workflow: unknown): string | undefined {
   const source = workflow as { input?: { schemaId?: string }; schemas?: Record<string, any> } | undefined;
@@ -66,6 +64,8 @@ type Session = {
   savedName?: string; observation?: RunObservation; report?: ExtensionRunReport;
   runId?: string; persistenceWarning?: string; sop?: { file: string; sha256: string };
   pause?: () => void;
+  /** Stops the dry run in flight. */
+  dryRun?: AbortController;
   sessionFile: () => string | undefined;
 };
 
@@ -193,18 +193,10 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     if (s.busy && (workflow !== undefined || input !== undefined)) throw new Error('A workflow is running. Stop it before changing its definition or input.');
     const candidate = workflow === undefined ? s.draft : workflow;
     if (candidate === undefined) throw new Error('No workflow yet. Describe a task with /agentrun <task>.');
-    if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) {
-      throw new Error('Cannot inspect workflow: workflow must be a JSON object, not a JSON-encoded string or array. Pass the complete object directly.');
-    }
     // Include active tools available only with operator trust, without granting that trust.
     // Execution rechecks the actual per-run permissions and captures implementations.
     const checker = new WorkflowExtensionService({ allowedTools: toolSet(ctx, true).map(tool => tool.name), limits: serviceLimits });
-    let inspection;
-    try {
-      inspection = checker.preflight(candidate, input);
-    } catch (error) {
-      throw new Error(`Cannot inspect workflow: ${error instanceof Error ? error.message : 'Invalid workflow'}`);
-    }
+    const { inspection, tree } = inspectCandidate(checker, candidate, input);
     // Stage the definition and input together only after nonexecuting checks succeed.
     const nextDraft = workflow === undefined ? s.draft : structuredClone(workflow);
     const changed = !s.draft || inspectWorkflow(s.draft).sha256 !== inspection.sha256;
@@ -214,7 +206,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     if (input !== undefined) { s.observation = undefined; s.report = undefined; s.runId = undefined; }
     s.input = nextInput;
     if (workflow !== undefined || input !== undefined) persist(s);
-    return { inspection, tree: formatWorkflowTree(inspection) };
+    return { inspection, tree };
   };
   const view = (ctx: ExtensionContext, s: Session) => {
     const result = workflowView(s.draft, { input: s.input,
@@ -402,6 +394,24 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     } finally { s.busy = false; s.controller = undefined; s.pause = undefined; await driver?.close().catch(() => {}); stage(ctx, s); if (current === s && !s.closed && ctx.hasUI) ctx.ui.setWidget('agentrun', undefined); }
   };
 
+  /** The inspected draft on synthetic values, or `input`: nothing is paid, and the session's run is untouched. Code runs
+   *  only when the user's command trusts this dry run. */
+  const dryRun = async (ctx: ExtensionContext, s: Session, input: Record<string, unknown> | undefined, trusted: boolean, signal?: AbortSignal): Promise<WorkflowDryRun> => {
+    if (!s.draft) throw new Error('Inspect a workflow first. Try /agentrun demo, or describe a task with /agentrun <task>.');
+    const draft = s.draft;
+    // /agentrun stop, the tool call's own abort and the session's end each stop it, from before its first await on.
+    const controller = new AbortController();
+    s.dryRun?.abort(); s.dryRun = controller;
+    const stopped = AbortSignal.any([controller.signal, ...[signal, ctx.signal].filter((v): v is AbortSignal => !!v)]);
+    try {
+      let sop: SopText | undefined, sopUnavailable: string | undefined;
+      try { sop = await sopFor(ctx, s, inspectWorkflow(draft).requires.sopSections); }
+      catch (error) { sopUnavailable = error instanceof Error ? error.message : String(error); }
+      if (stopped.aborted || s.closed) return { status: 'not_run', ok: true, skipped: ['The dry run was stopped before it started.'] };
+      return await dryRunDraft(draft, { ...(input === undefined ? {} : { input }), ...(sop ? { sop: sop.text } : {}), ...(sopUnavailable ? { sopUnavailable } : {}),
+        trusted, trustedCommand: '/agentrun dry-run --trusted', signal: stopped });
+    } finally { if (s.dryRun === controller) s.dryRun = undefined; }
+  };
   const launch = async (ctx: ExtensionContext, s: Session, input: Record<string, unknown>, trusted = false) => {
     if (s.busy) throw new Error('A workflow is already running. Use /agentrun stop first.');
     // Capture host selection and permission before yielding the interactive command loop.
@@ -418,18 +428,14 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
 
   pi.registerTool({
     name: 'agentrun', label: 'AgentRun workflow',
-    description: `Use the ${AUTHOR_SKILL_NAME} skill to compose workflows.` + ' Describe lists available tools and their schemas. Inspect or run an AgentRun DSL workflow in this Pi session. First inspect to show its graph. Agent nodes capture the active Pi model when execution starts. Code needs the user command /agentrun run --trusted for each run. ' + (configuration.hostTools
+    description: `Use the ${AUTHOR_SKILL_NAME} skill to compose workflows.` + ' Describe lists available tools and their schemas. Inspect or run an AgentRun DSL workflow in this Pi session. First inspect to show its graph. Dry-run checks the inspected workflow on synthetic values (or the given input) with no model, Jev or tool call; code runs only with the user command /agentrun dry-run --trusted. Agent nodes capture the active Pi model when execution starts. Code needs the user command /agentrun run --trusted for each run. ' + (configuration.hostTools
       ? 'Only the explicit host-configured tools are available, including during trusted runs. Outer permission hooks are not inherited. '
       : 'Enabled read-only Pi built-ins are available to declared steps. Shell/write/edit need the trusted command for each run; custom extension tools and permission hooks are not inherited. The search and support_demo tools use fictional supplied sources only. ') + 'Save stores a named procedure revision, not its input or permission. Load preflights current host capabilities. Run always restarts; there is no checkpoint resume. Scripted demos stay scripted on rerun.',
-    parameters: Type.Object({ action: Type.Union(['describe', 'inspect', 'run', 'save', 'load', 'list'].map(value => Type.Literal(value))),
-      name: Type.Optional(Type.String({ description: 'Saved procedure name: lowercase letters, digits, hyphens or underscores.' })),
-      digest: Type.Optional(Type.String({ description: 'Optional exact saved SHA-256 revision to load.' })),
-      workflow: Type.Optional(Type.Record(Type.String(), Type.Unknown(), {
-        description: 'The complete AgentRun workflow JSON object. Pass the object directly, not a JSON-encoded string. Inspection validates its DSL structure.',
-      })), input: Type.Optional(Type.Record(Type.String(), Type.Unknown())) }),
+    parameters: workflowToolParameters(),
     executionMode: 'sequential',
     renderResult(result, options) {
-      const details = result.details as (ExtensionRunReport & { mode?: string; view?: ReturnType<typeof workflowView> }) | undefined;
+      const details = result.details as (ExtensionRunReport & { mode?: string; view?: ReturnType<typeof workflowView>; dryRun?: WorkflowDryRun }) | undefined;
+      if (details?.dryRun) return new Text(safe(formatDryRun(details.dryRun)), 0, 0);
       const text = details?.status && details.calls ? options?.expanded
         ? details.view ? formatWorkflowView({ ...details.view, output: undefined }) + (details.output === undefined ? '' : `\n\nOutput:\n${readable(details.output, Number.MAX_SAFE_INTEGER)}`) : formatRunReport(details, details.mode === 'scripted') : formatRunReport(details, details.mode === 'scripted')
         : details?.view ? formatWorkflowView(details.view) : result.content.filter(part => part.type === 'text').map(part => part.text).join('\n');
@@ -452,12 +458,14 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         return textResult(modelJson({ preview: formatWorkflowView(preview), workflow: s.draft, input: s.input }), { ...result, saved, view: preview });
       }
       if (args.action === 'describe') {
-        const details = { tools: toolSet(ctx).map(t => ({ name: t.name, description: t.description, parameters: t.parameters,
-          resultSchema: t.resultSchema ?? { type: 'object', properties: { content: { type: 'array', items: { type: 'object' } }, details: {} }, required: ['content'] },
-          resultContract: t.resultSchema ? 'Host-declared direct workflow call result.' : 'Pi result envelope; tool-specific details are not declared. Do not invent fields inside details.',
-        })),
-          limits: { ...limits }, structuralLimits: { ...extensionStructuralLimits }, ...readiness(ctx, s), authoring: { language: loadAuthorReference('language'), workflow: loadAuthorReference('workflow-format'), jev: loadAuthorReference('jev-decisions'), host: renderAuthorHostAddendum(PI_HOST_ADDENDUM) } };
+        const details = { tools: describeTools(toolSet(ctx)),
+          limits: { ...limits }, structuralLimits: { ...extensionStructuralLimits }, ...readiness(ctx, s), authoring: authoringReferences() };
         return textResult(JSON.stringify(details, null, 2), details);
+      }
+      if (args.action === 'dry-run') {
+        if (args.workflow !== undefined) throw new Error('Inspect the workflow first with action inspect, then dry-run without a workflow argument.');
+        const report = await dryRun(ctx, s, args.input, false, signal);
+        return textResult(modelJson({ dryRun: report }), { dryRun: report });
       }
       if (args.action === 'run' && args.workflow !== undefined) throw new Error('Inspect the workflow first with action inspect, then run without a workflow argument.');
       if (args.action === 'inspect') {
@@ -495,9 +503,9 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
           pi.sendUserMessage(`/skill:agentrun-author Edit the current procedure: ${request}. Inspect the candidate and explain the change. Do not run it yet.`, { expandPromptTemplates: true }); return;
         } else raw = action;
       }
-      const command = /^(help|status|stop|demo|triage|run|inspect)(?:\s|$)/i.test(raw) ? raw.toLowerCase().replace(/\s+/g, ' ') : raw;
+      const command = /^(help|status|stop|demo|triage|run|dry-run|inspect)(?:\s|$)/i.test(raw) ? raw.toLowerCase().replace(/\s+/g, ' ') : raw;
       const words = command.split(/\s+/);
-      const commandLike = /^(help|status|stop|demo|run)(?:-|$)/i.test(words[0])
+      const commandLike = /^(help|status|stop|demo|run|dry-run)(?:-|$)/i.test(words[0])
         && words.slice(1).every(word => word.startsWith('-') || ['live', 'empty'].includes(word));
         if (command === 'help' || command === '--help' || command === '-h') {
           show(s, help);
@@ -579,7 +587,8 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
           const ready = readiness(ctx, s);
           show(s, `agent.run() · ${s.busy ? 'running' : 'idle'}\nDemo: ready — /agentrun demo (no keys or model calls)\nWorkflow: ${s.draft ? `${modelJson(inspectWorkflow(s.draft).name)} · ${s.demo ? 'scripted' : 'live adapters'}` : 'none — load a saved procedure, run the demo, or describe a task'}\n\nFor your own workflows:\n${piHostLine(PI_VERSION)}\nSkill: ${ready.skill ? 'loaded — /agentrun <task>' : 'missing — enable package skills, then /reload'}\nPi: ${ready.pi ? 'selected model available (connection not tested)' : 'no usable active model — /login to connect a provider, then /model to select it'}\nJev: ${ready.jev ? 'configuration present (connection not tested)' : 'not configured — only needed for system one decisions; set TYPESAFE_API_KEY before starting Pi'}`, ready);
         } else if (command === 'stop') {
-          s.pause?.(); s.controller?.abort(); s.service.stop(); show(s, s.busy ? 'Stop requested. Already-started tool effects may still finish.' : 'Nothing is running.');
+          const dry = s.dryRun; dry?.abort();
+          s.pause?.(); s.controller?.abort(); s.service.stop(); show(s, s.busy ? 'Stop requested. Already-started tool effects may still finish.' : dry ? 'Dry run stopped.' : 'Nothing is running.');
         } else if (command === 'demo' || command === 'demo live' || command === 'demo empty') {
           inspect(ctx, s, demoWorkflow);
           s.demo = command === 'demo live' ? undefined : command === 'demo empty' ? 'empty' : 'scripted';
@@ -587,6 +596,14 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
           await launch(ctx, s, demoInput);
         } else if (command === 'run' || command === 'run --trusted') {
           await launch(ctx, s, s.input, command === 'run --trusted');
+        } else if (command === 'dry-run' || command === 'dry-run --trusted') {
+          // As with /agentrun run: interactive Pi reads the next command only once this handler returns, so the dry run
+          // goes on in the background, where /agentrun stop reaches it. Headless callers await its answer.
+          stage(ctx, s, 'agent.run() · dry run · /agentrun stop ends it');
+          const pending = dryRun(ctx, s, undefined, command === 'dry-run --trusted')
+            .then(report => show(s, formatDryRun(report), { dryRun: report }), error => commandError(s, error))
+            .finally(() => stage(ctx, s));
+          if (!ctx.hasUI) await pending;
         } else if (commandLike || command.startsWith('-')) {
           show(s, `Unknown AgentRun command: ${raw}\n\n${help}`);
         } else {
@@ -604,7 +621,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
   });
   const closeSession = async (retainFinal = false) => {
     if (!current) return;
-    const old = current, wasRunning = old.busy; old.clearStatus(); old.closed = true; old.pause?.(); old.controller?.abort(); await old.service.dispose();
+    const old = current, wasRunning = old.busy; old.clearStatus(); old.closed = true; old.dryRun?.abort(); old.pause?.(); old.controller?.abort(); await old.service.dispose();
     await old.inFlight;
     // Only before-switch/shutdown hooks still own the originating branch. A
     // session_tree event is already on another branch and must never receive this receipt.

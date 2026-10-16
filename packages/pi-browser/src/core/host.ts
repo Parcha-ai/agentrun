@@ -14,6 +14,9 @@ export type BrowserConfig = {
   policy: BrowserPolicy;
 };
 
+/** A named saved sign-in; `save` keeps the session's changes. One saver per profile within a process; across processes the last to end wins. */
+export type SavedProfile = { name: string; save: boolean };
+
 export type BrowserPolicy = {
   proxies: boolean;
   verified: boolean;
@@ -21,6 +24,7 @@ export type BrowserPolicy = {
   geolocation: Geo | null;
   region: string | null;
   contextId: string | null;
+  profile?: SavedProfile;
   sessionTimeoutS: number;
   idleReleaseS: number;
   batchTimeoutMs: number;
@@ -39,6 +43,7 @@ export type SessionSpec = {
   region?: string;
   viewport: { width: number; height: number };
   contextId?: string;
+  profile?: SavedProfile;
   navigation?: { allow?: string[]; block?: string[] };
   metadata: Record<string, string>;
 };
@@ -52,6 +57,7 @@ export type ProviderCaps = {
   maxLifetimeS: number;
   survivesDisconnect: boolean;
   releaseIsAsync: boolean;
+  profiles: boolean;
   extension: "uploaded-per-launch" | "preinstalled" | "loaded-locally";
   /** The session settings this provider applies; a setting left out is applied. */
   settings?: Partial<SessionSettingsSupport>;
@@ -111,7 +117,7 @@ export type SessionRecord = {
   releaseReason: ReleaseReason | null;
   plane: string;
   provider: string;
-  settings: { proxies: boolean; verified: boolean; geolocation: Geo | null; region: string | null; contextId: string | null };
+  settings: { proxies: boolean; verified: boolean; geolocation: Geo | null; region: string | null; contextId: string | null; profile: string | null };
   /** Every page the session moved to, in order; the last 500 kept. */
   navigation: Array<{ at: string; url: string }>;
   lastUrl: string | null;

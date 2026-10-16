@@ -4,6 +4,8 @@
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,6 +55,7 @@ describe("localPlace", () => {
     assert.deepEqual(place.kills, ["process"], "no box to lose without destroyBoxes");
     assert.equal(place.token, undefined, "a plain directory has no claim, so no token");
     assert.equal(place.signals, undefined, "no request file named, no signals");
+    assert.equal(place.requestFile, undefined);
 
     const first = await place.start({ gen: 1, env: { PLACE_ORDER: "one" } });
     const sleeper = Number(await waitFor("the first runner's sleeper", () => existsSync(join(root, "work", "sleeper.pid")) && readFileSync(join(root, "work", "sleeper.pid"), "utf8")));
@@ -62,13 +65,13 @@ describe("localPlace", () => {
     await place.kill(first, "process");
     const killed = await first.exited;
     assert.deepEqual([killed.exit, killed.signal], ["SIGKILL", "SIGKILL"]);
-    assert.deepEqual([killed.outcome?.status, killed.outcome?.generation], ["running", 1], "no line: run.json as the killed instance left it");
+    assert.deepEqual([killed.outcome?.status, killed.outcome?.generation], ["failed", 1], "no line: run.json as the killed instance left it (running), in the run's word: not delivered");
     await waitFor("the sleeper to die with its group", () => !alive(sleeper), 5_000);
 
     const { runner } = await place.recover(first, "process", { gen: 2, env: { PLACE_ORDER: "two", PLACE_SILENT: "1" } });
     const done = await runner.exited;
     assert.equal(done.exit, 0, done.stderr);
-    assert.deepEqual(done.outcome, { status: "done", generation: 2, code: null, record: { order: "two" } }, "the record from the detail of the last status");
+    assert.deepEqual(done.outcome, { status: "complete", generation: 2, code: null, record: { order: "two" } }, "done with the record from the detail of the last status: complete");
     assert.equal(readFileSync(join(root, "work", "gen-2"), "utf8"), "two");
     assert.deepEqual([(await place.status!()).record?.status, (await place.status!()).record?.generation], ["done", 2]);
   });
@@ -103,6 +106,23 @@ describe("localPlace", () => {
     await Promise.race([commandGone, sleep(5_000)]);
     assert.ok(!alive(mark.pid), "release ended the run's recorded command");
     assert.ok(!existsSync(join(root2, "commands")), "and cleared its records");
+  });
+});
+
+describe("localPlace outcome", () => {
+  it("run.json's outcome is in the run's word: complete when done with a delivered record, failed for done with none or a failed run", { timeout: 120_000 }, async () => {
+    const cases = [
+      [{}, "complete"],
+      [{ PLACE_NO_RECORD: "1" }, "failed"],
+      [{ PLACE_FAIL: "1" }, "failed"],
+    ] as const;
+    for (const [env, status] of cases) {
+      const place = localPlace({ app: APP })({ paths: pathsAt(scratch()) });
+      const runner = await place.start({ gen: 1, env: { PLACE_FINISH: "1", PLACE_SILENT: "1", ...env } });
+      const ended = await runner.exited;
+      assert.equal(ended.exit, 0, ended.stderr);
+      assert.equal(ended.outcome?.status, status, JSON.stringify({ env, outcome: ended.outcome }));
+    }
   });
 });
 
@@ -157,6 +177,7 @@ describe("localPlace signals", () => {
     mkdirSync(dir, { recursive: true });
     const requestFile = (attempt: number) => join(dir, `kill-${attempt}.json`);
     const place = localPlace({ app: APP })({ paths: pathsAt(dir), requestFile });
+    assert.equal(place.requestFile!(4), requestFile(4), "the request file is the supervisor's own, where signals reads");
     const it1 = place.signals!(1)[Symbol.asyncIterator]();
     const first = it1.next();
     writeFileSync(requestFile(1), '{"point":"paid-call.ackno');
@@ -165,9 +186,9 @@ describe("localPlace signals", () => {
     void first.then(() => (settled = true));
     await sleep(0);
     assert.equal(settled, false, "half a request is not one");
-    writeFileSync(`${requestFile(1)}.tmp`, JSON.stringify({ point: "paid-call.acknowledged", n: 2, pid: 7 }));
+    writeFileSync(`${requestFile(1)}.tmp`, JSON.stringify({ point: "paid-call.acknowledged", n: 2, pid: 7, nonce: "ab12" }));
     renameSync(`${requestFile(1)}.tmp`, requestFile(1));
-    assert.deepEqual(await first, { done: false, value: { kind: "kill-request", crossing: { point: "paid-call.acknowledged", n: 2, pid: 7 } } });
+    assert.deepEqual(await first, { done: false, value: { kind: "kill-request", crossing: { point: "paid-call.acknowledged", n: 2, pid: 7 }, nonce: "ab12" } }, "the nonce at the signal's top");
     assert.deepEqual(await it1.next(), { done: true, value: undefined }, "one request per attempt");
 
     const it2 = place.signals!(2)[Symbol.asyncIterator]();
@@ -192,6 +213,9 @@ class FakeControl implements SupervisorControl {
   ops: string[] = [];
   /** getObject of a key under this prefix never answers. */
   hangUnder: string | null = null;
+  /** getObject calls so far, and an error every getObject of a key under `failUnder` throws instead of answering. */
+  gets = 0;
+  failUnder: { prefix: string; error: Error } | null = null;
   /** The inode each run directory has, as the disk's `find -inum` reports it; and how many execs ran, and how many next fail. */
   inodes = new Map<string, number>();
   execs = 0;
@@ -203,7 +227,9 @@ class FakeControl implements SupervisorControl {
     this.objects.set(`runs/${ID}/run.json`, JSON.stringify({ run: ID, status: "running", generation: 1, sealedSeq: null, wakeAt: null, holder: null, heartbeatAt: new Date().toISOString(), updatedAt: new Date().toISOString(), detail: null, ...o }));
   }
   async getObject(key: string) {
+    this.gets++;
     if (this.hangUnder !== null && key.startsWith(this.hangUnder)) return new Promise<Uint8Array>(() => {});
+    if (this.failUnder !== null && key.startsWith(this.failUnder.prefix)) throw this.failUnder.error;
     const v = this.objects.get(key);
     if (v === undefined) throw Object.assign(new Error("NoSuchKey"), { status: 404, code: "NoSuchKey" });
     return new TextEncoder().encode(v);
@@ -332,7 +358,7 @@ describe("archilPlace", () => {
 
     await at.kill(first, "box");
     const ended = await first.exited;
-    assert.deepEqual([ended.exit, ended.signal, ended.outcome?.status, ended.outcome?.generation], ["SIGKILL", "SIGKILL", "running", 1]);
+    assert.deepEqual([ended.exit, ended.signal, ended.outcome?.status, ended.outcome?.generation], ["SIGKILL", "SIGKILL", "failed", 1]);
     assert.deepEqual(control.ops, ["kill box-1"]);
     control.ops.length = 0;
 
@@ -355,9 +381,29 @@ describe("archilPlace", () => {
     const runner = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
     control.runJson({ status: "done", generation: 1, detail: { record: { n: 3 }, storeSha256: "ab", code: "OK" } });
     states.set("box-1", "stopped");
-    assert.deepEqual(await runner.exited, { exit: "stopped", signal: null, outcome: { status: "done", generation: 1, code: "OK", record: { n: 3 }, storeSha256: "ab" }, stderr: "" });
+    assert.deepEqual(await runner.exited, { exit: "stopped", signal: null, outcome: { status: "complete", generation: 1, code: "OK", record: { n: 3 }, storeSha256: "ab" }, stderr: "" });
     await at.kill(runner, "box");
     assert.ok(!control.ops.includes("kill box-1"));
+  });
+
+  it("run.json's outcome is in the run's word: complete only when done with a delivered record; done with none, failed or abandoned is failed", async () => {
+    const cases = [
+      [{ status: "done", detail: { record: { n: 1 } } }, "complete"],
+      [{ status: "done", detail: { steps: 4 } }, "failed"],
+      [{ status: "done", detail: { record: null } }, "failed"],
+      [{ status: "done", detail: null }, "failed"],
+      [{ status: "failed", detail: { code: "APP_GAVE_UP", record: { n: 1 } } }, "failed"],
+      [{ status: "running" }, "failed"],
+    ] as const;
+    for (const [record, status] of cases) {
+      const control = new FakeControl();
+      const { host, states } = fakeHost(control);
+      const at = makePlace({ ...REF, control, host });
+      const runner = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
+      control.runJson({ generation: 1, ...record });
+      states.set("box-1", "stopped");
+      assert.equal((await runner.exited).outcome?.status, status, JSON.stringify(record));
+    }
   });
 
   it("a done run starts nothing: the token goes, and the runner ends as it begins", async () => {
@@ -368,7 +414,7 @@ describe("archilPlace", () => {
     const runner = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
     assert.equal(starts.length, 0);
     assert.deepEqual(control.users.size, 0, "the unused token user was removed");
-    assert.deepEqual((await runner.exited).outcome, { status: "done", generation: 4, code: null, record: "r" });
+    assert.deepEqual((await runner.exited).outcome, { status: "complete", generation: 4, code: null, record: "r" });
     await at.release();
   });
 
@@ -415,6 +461,46 @@ describe("archilPlace", () => {
     assert.equal(control.users.size, 1, "both removals failed: the user is still there");
     await at.release();
     assert.equal(control.users.size, 0, "release removed it");
+  });
+
+  it("signals: the attempt's request is read from the run's directory over S3, where requestFile says the runner writes it; return() ends a next() whose read hangs", async () => {
+    const control = new FakeControl();
+    const { host } = fakeHost(control);
+    const at = makePlace({ ...REF, control, host, signalPollMs: 5 });
+    assert.equal(at.requestFile!(3), `/mnt/fake/runs/${ID}/signals/kill-3.json`, "in the run's mount, outside work/");
+    assert.throws(() => at.requestFile!(0), (e: unknown) => e instanceof PlaceError && e.code === "INVALID_ARGUMENT");
+    const key = `runs/${ID}/signals/kill-3.json`;
+
+    const it3 = at.signals!(3)[Symbol.asyncIterator]();
+    const first = it3.next();
+    let settled = false;
+    void first.then(() => (settled = true));
+    control.objects.set(key, '{"point":"paid-call.ackn');
+    await sleep(40);
+    assert.equal(settled, false, "half a request is not one");
+    control.objects.set(key, JSON.stringify({ point: "paid-call.acknowledged", n: 1, pid: 4, nonce: "0f1e" }));
+    assert.deepEqual(
+      await first,
+      { done: false, value: { kind: "kill-request", crossing: { point: "paid-call.acknowledged", n: 1, pid: 4 }, nonce: "0f1e" } },
+      "the nonce is the signal's, read at its top, and not the crossing's; every other field stays in the crossing",
+    );
+    assert.deepEqual(await it3.next(), { done: true, value: undefined });
+
+    // No nonce, or one that is not a string: the signal has no nonce field, and the crossing none either.
+    for (const [request, attempt] of [[{ point: "p", n: 2 }, 5], [{ point: "p", n: 2, nonce: 7 }, 6]] as const) {
+      control.objects.set(`runs/${ID}/signals/kill-${attempt}.json`, JSON.stringify(request));
+      const got = (await at.signals!(attempt)[Symbol.asyncIterator]().next()).value as Record<string, unknown>;
+      assert.deepEqual(got, { kind: "kill-request", crossing: { point: "p", n: 2 } }, JSON.stringify(request));
+      assert.ok(!("nonce" in got), "no nonce field at all");
+    }
+
+    control.hangUnder = `runs/${ID}/signals/`;
+    const it4 = at.signals!(4)[Symbol.asyncIterator]();
+    const pending = it4.next();
+    await sleep(20);
+    await it4.return!();
+    const ended = await Promise.race([pending, new Promise((r) => setImmediate(() => r("late")))]);
+    assert.deepEqual(ended, { done: true, value: undefined }, "the return ended it though its read never answered");
   });
 
   it("a runner whose status reads fail stays killable: its exited reports the failure, and kill still kills", async () => {
@@ -474,6 +560,75 @@ describe("archilPlace", () => {
     await assert.rejects(other.status!(), (e: unknown) => (e as { code?: string }).code === "CONTROL_API_FAILED");
     assert.deepEqual((await other.status!()).delegations?.map((d) => d.clientId), ["c-1"], "the next call resolved it with a new resolver");
     assert.equal(control.execs, 2);
+  });
+
+  it("signals: a long poll attaches nothing to anything that lives as long as the iterator (the heap does not grow with polls)", { timeout: 120_000 }, async () => {
+    setFlagsFromString("--expose-gc");
+    const gc = runInNewContext("gc") as () => void;
+    const control = new FakeControl();
+    const { host } = fakeHost(control);
+    const at = makePlace({ ...REF, control, host, signalPollMs: 0 });
+    const it = at.signals!(9)[Symbol.asyncIterator]();
+    const pending = it.next();
+    const heapAfter = async (polls: number) => {
+      const until = control.gets + polls;
+      while (control.gets < until) await sleep(50);
+      gc();
+      return process.memoryUsage().heapUsed;
+    };
+    const before = await heapAfter(300);
+    const after = await heapAfter(3_000);
+    await it.return!();
+    assert.deepEqual(await pending, { done: true, value: undefined });
+    assert.ok(after - before < 1_000_000, `the heap grew ${after - before} bytes over 3000 polls`);
+  });
+
+  it("signals never reject: a lasting read failure is one signals-failed and then done; a short one is retried; a missing request is waited for", async () => {
+    const control = new FakeControl();
+    const { host } = fakeHost(control);
+    const at = makePlace({ ...REF, control, host, signalPollMs: 5, signalFailMs: 200 });
+    const prefix = `runs/${ID}/signals/`;
+    /** The next result, or the rejection as a value (which must never come), or "no word" after 5 s. */
+    const nextOf = (it: AsyncIterator<unknown>) =>
+      Promise.race([it.next().then((r) => r, (e: unknown) => ({ rejected: e })), new Promise((r) => setTimeout(() => r("no word after 5 s"), 5_000).unref())]);
+
+    // A failure shorter than signalFailMs, then the request: it is yielded.
+    const it1 = at.signals!(1)[Symbol.asyncIterator]();
+    const first = nextOf(it1);
+    control.failUnder = { prefix, error: Object.assign(new Error("503 Slow Down"), { status: 503 }) };
+    await sleep(60);
+    control.failUnder = null;
+    control.objects.set(`${prefix}kill-1.json`, JSON.stringify({ point: "p", n: 1 }));
+    assert.deepEqual(await first, { done: false, value: { kind: "kill-request", crossing: { point: "p", n: 1 } } });
+
+    // A read refused for good: one signals-failed (the read's own code when it has one, else SIGNALS_FAILED), then done.
+    for (const [error, code] of [
+      [Object.assign(new Error("AccessDenied"), { status: 403 }), "SIGNALS_FAILED"],
+      [Object.assign(new Error("getObject did not answer in 10000 ms"), { code: "CONTROL_API_FAILED" }), "CONTROL_API_FAILED"],
+      [Object.assign(new Error(`AccessDenied ${"x".repeat(1_000)}`), { status: 403 }), "SIGNALS_FAILED"],
+    ] as const) {
+      const it2 = at.signals!(2)[Symbol.asyncIterator]();
+      control.failUnder = { prefix, error };
+      const failed = (await nextOf(it2)) as { done: boolean; value: { kind: string; code: string; message: string } };
+      assert.equal(failed.done, false, JSON.stringify(failed));
+      assert.equal(failed.value.kind, "signals-failed");
+      assert.equal(failed.value.code, code);
+      assert.ok(`reading the kill request failed for 200 ms: ${error.message}`.startsWith(failed.value.message), failed.value.message);
+      assert.ok(failed.value.message.length <= 240, `the whole message is capped: ${failed.value.message.length} characters`);
+      assert.match(failed.value.message, /^reading the kill request failed for 200 ms: AccessDenied|^reading the kill request failed for 200 ms: getObject/);
+      assert.deepEqual(await nextOf(it2), { done: true, value: undefined }, "then the iterator ends");
+      control.failUnder = null;
+    }
+
+    // No request at all for longer than signalFailMs: a missing object is not a failure.
+    const it3 = at.signals!(3)[Symbol.asyncIterator]();
+    const pending = nextOf(it3);
+    let settled = false;
+    void pending.then(() => (settled = true));
+    await sleep(300);
+    assert.equal(settled, false, "still waiting, no signal and no rejection");
+    await it3.return!();
+    assert.deepEqual(await pending, { done: true, value: undefined });
   });
 
   it("a driver with no kill: kills is empty and kill refuses", async () => {
