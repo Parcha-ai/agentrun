@@ -74,6 +74,7 @@ Loading starts with empty input and does not execute. A save retains the definit
 | `/agentrun` | Inspect the current workflow, or show help if there is none. |
 | `/agentrun input <case or JSON>` | Set new input without changing the definition or running it. |
 | `/agentrun run` | Repeat the current workflow with its last supplied input. Scripted demos stay scripted; authored workflows use real adapters. |
+| `/agentrun dry-run` | Run the current workflow on synthetic values, with no model, Jev or tool call. |
 | `/agentrun save <name>` | Save an immutable, project-local definition revision. |
 | `/agentrun load <name> [digest]` | Load the newest or exact revision; input starts empty. |
 | `/agentrun list` | List saved revisions. |
@@ -117,6 +118,8 @@ Live mode uses your active Pi model and requires configured TypeSafe access for 
 By default, the extension exposes currently active Pi built-in `read`, `grep`, `find`, and `ls` tools. A workflow can narrow that set; it cannot enable a tool that the host has not supplied. The additional `search` tool reads only the bundled fictional demo sources.
 
 The user must issue `/agentrun run --trusted` for each run that needs code nodes or active built-in `bash`, `edit`, or `write` tools. This permits local, unsandboxed execution; authorization does not carry into the next run. A model cannot grant itself that permission with a tool argument.
+
+A dry run (`/agentrun dry-run`, the inspector's Dry-run action, or the tool's `dry-run` action, which also takes an `input`) runs the inspected workflow on synthetic values: agent and judge answers and tool results are synthesized from their schemas, so it makes no model, Jev or tool call, writes no run journal and leaves the last run's receipt as it was. Its `status` is `passed`, `failed` (`problems` say why), or `not_run`: a check could not run, for example a schema the generator cannot satisfy (`pattern`, `format`), a synthetic answer that escalated, or SOP text that was not supplied, and `skipped` says which. A `not_run` dry run proves nothing. A workflow with code nodes is `not_run` unless the user issues `/agentrun dry-run --trusted`, which runs its code in this process for that dry run only; a code node that throws is reported by its label, without what it threw.
 
 A workflow that names `sopSection`s needs SOP text. `/agentrun sop <file>` reads a Markdown file inside the project (up to 512 KiB) and checks that it has a `## <section>` heading for each section the workflow names; `/agentrun sop` shows what is set. The file's digest is kept with the session, and a run is refused if the file changed since it was supplied. A host that passes `sop` to `createAgentRunExtension` supplies the text itself and `/agentrun sop` is not used.
 
