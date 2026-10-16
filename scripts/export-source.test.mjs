@@ -142,6 +142,17 @@ test('formal model sources are archived and scanned as text; an unreviewed file 
   await assert.rejects(f.run(), /Unreviewed source-export file type: spec\/model\/Model\.toolbox/);
 });
 
+test('the code owners file is archived and scanned as text; another extensionless .github file still stops the export', async t => {
+  const f = await fixture(t);
+  await f.write('.github/CODEOWNERS', '* @example-owner\n');
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok((await f.listing()).includes('agentrun-dsl-source/.github/CODEOWNERS\n'));
+  assert.equal(receipt.files.find(file => file.path === '.github/CODEOWNERS')?.kind, 'text');
+  await f.write('.github/OWNERS', '* @example-owner\n');
+  await assert.rejects(f.run(), /Unreviewed source-export file type: \.github\/OWNERS/);
+});
+
 test('inventory generation works without build output and does not produce an archive', async t => {
   const f = await fixture(t);
   await f.run('--inventory-only');

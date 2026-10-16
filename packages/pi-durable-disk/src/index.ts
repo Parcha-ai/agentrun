@@ -4,7 +4,7 @@
 
 // The run: open it, on a disk or a local directory, with its environment, its claim and the errors it fails with.
 export { openDurableRun, RunError, StoreBehindSealError } from "./run.ts";
-export type { BeforeResume, DurableRun, LeaseOptions, OpenDurableRunOptions, OpenRunLeaseOptions, OpenStep, ReleaseStep, RunClaim, RunEnv, RunErrorCode, RunLease, StoreHeadSource, StoreReads } from "./run.ts";
+export type { BeforeResume, DurableRun, LeaseOptions, OpenDurableRunOptions, OpenRunLeaseOptions, OpenStep, ReleaseStep, RunClaim, RunEnv, RunErrorCode, RunLease, RunSeed, RunSeedDir, StoreHeadSource, StoreReads } from "./run.ts";
 export { localRun } from "./local-run.ts";
 export type { LocalRun } from "./local-run.ts";
 export { CLAIM_UNMOUNTED, openClaimDir, readLocalRunStatus, RunRecordError } from "./status.ts";
@@ -13,6 +13,9 @@ export { ArchilCodingTools, archilEnv, EnvClosedError, EnvError, markReadOnlySaf
 export type { ArchilEnvClaim, ArchilEnvFactory, ArchilEnvOptions, EnvErrorCode } from "./env.ts";
 export { acquire, ARCHIL_SCOPED, revoke, takeOver } from "./claim.ts";
 export type { AcquireOptions, ArchilHost, Claim, ControlApi, PathlessResolver, RunRef, Unmounted } from "./claim.ts";
+// A short exclusive claim on any path of a disk, and a consistent S3 read of a released file (an agent home beside the runs).
+export { readReleased, withClaim } from "./with-claim.ts";
+export type { ClaimControl, HeldPath, WithClaimOptions } from "./with-claim.ts";
 export { PathOutsideWorkError } from "./confine.ts";
 export type { RefusalReason } from "./confine.ts";
 export { ClaimError, FencedError, HeldError, PdaError } from "./errors.ts";

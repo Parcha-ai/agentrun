@@ -173,6 +173,10 @@ from an `agent.runs` record (it is the caller's own name for itself), or `undefi
 `EXPORTABLE_KINDS`. Kinds this package does not define, pi's own documents and another extension's, are not on the
 list, so they are dropped too.
 
+The three are also the subpath `@parcha/pi-durable-agent/export`, which imports no module: a writer that only filters
+kinds (a replay of exported stores, for one) loads them with `node:sqlite` alone, not the root, which loads
+pi-durable, chord and pi-ai.
+
 ## Moving a home
 
 One packer moves a home between a local server and a hosted one. `packHome(home, { out })` writes the pack,
@@ -282,7 +286,7 @@ origin, path and query keys but drops its query values, fragment and userinfo. `
 | `refreshAgentHome(home, { sha, from?, ifRevision?, definition, skills })` | The cached definition and skills replaced by the ones at `sha` ([Following the agent's repo](#following-the-agents-repo)) |
 | `runPaths(home, runId)` | A run's `dir` (what `pi-durable-disk run --dir` takes), `storePath` (`store/run.sqlite`) and `workspace` (`work/`) |
 | `durableProfileStore(target, { provider?, signal? })` | pi-browser's `ProfileStore` over a run store; `target` is the host's Harness or any Session on the file |
-| `EXPORTABLE_KINDS`, `SECRET_KINDS`, `projectForExport(kind, value)` | What an exporter may copy, what never leaves the home, and one document as an exporter writes it ([Exporting a home](#exporting-a-home)) |
+| `EXPORTABLE_KINDS`, `SECRET_KINDS`, `projectForExport(kind, value)` | What an exporter may copy, what never leaves the home, and one document as an exporter writes it ([Exporting a home](#exporting-a-home)). Also from `@parcha/pi-durable-agent/export`, which loads no other module, so an exporter or a site build needs neither pi-durable nor pi-ai |
 | `timelineOf`, `timelineReducer`, `groupTimeline`, `renderText` | The timeline above, from `@parcha/pi-durable-agent/timeline` |
 | `packHome(home, { out, maxBytes?, maxMembers?, exportRunStore?, now? })` | The pack of a home, above; returns `{ manifest, skipped }`, `skipped` being `{ path, reason }` |
 | `readPack(file, { maxBytes?, maxMembers? })` | `{ ok, manifest, checks }`, without writing a home |

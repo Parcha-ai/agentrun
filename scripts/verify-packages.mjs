@@ -259,7 +259,9 @@ import * as transportHands from '@parcha/pi-transport/hands';
 import * as transportHome from '@parcha/pi-transport/home';
 import * as transportTesting from '@parcha/pi-transport/testing';
 import * as piDurable from '@parcha/agentrun-pi/durable';
+import * as piWorkflows from '@parcha/agentrun-pi/workflows';
 import * as agentHome from '@parcha/pi-durable-agent';
+import * as agentExport from '@parcha/pi-durable-agent/export';
 import * as piSignin from '@parcha/agentrun-pi/signin';
 const { createPiRunner } = pi;
 assert.equal('authorWorkflow' in pi, false);
@@ -292,7 +294,9 @@ for (const name of ${JSON.stringify(boxProviders)}) assert.equal(typeof (await i
 assert.equal(typeof transportHands.boxEnv,'function');
 assert.equal(typeof transportHands.transport,'function'); assert.equal(typeof transport.TransportError,'function');
 assert.equal(piDurable.DECISION_RECEIPTS_DOC,'agentrun.decisions'); assert.equal(piDurable.DECISION_ROW_VERSION,1); { let opened=0; const writer=piDurable.createDecisionWriter({open:async()=>{opened++;throw new Error('never opened');}}); await writer.flush(); assert.equal(opened,0); }
+assert.equal(typeof piWorkflows.WorkflowStore,'function'); assert.equal(typeof piWorkflows.WorkflowStoreError,'function'); { const dir=await mkdtemp(join(tmpdir(),'wf-store-')); try { assert.deepEqual(await new piWorkflows.WorkflowStore(dir).list(),[]); } finally { await rm(dir,{recursive:true,force:true}); } }
 { const dir=await mkdtemp(join(tmpdir(),'agentrun-agent-home-')); try { const home=await agentHome.createAgentHome(join(dir,'acme'),{definition:{version:1,name:'consumer',instructions:'Answer.',skills:['s'],tools:[]},skills:{'s/SKILL.md':'# S'}}); const started=await agentHome.startRun(home,{runId:'r1',host:'consumer'}); assert.deepEqual(started,{...agentHome.runPaths(home,'r1'),runId:'r1',agent:{instructions:'Answer.',tools:[]},leases:[]}); assert.equal(await readFile(join(started.workspace,'.agents/skills/s/SKILL.md'),'utf8'),'# S'); assert.deepEqual(await agentHome.carryBack(home,started,{outcome:'completed'}),{changed:true,profiles:[],released:[]}); assert.equal((await agentHome.readAgentHome(home)).runs.r1.outcome,'completed'); } finally { await rm(dir,{recursive:true,force:true}); } }
+assert.deepEqual([agentExport.EXPORTABLE_KINDS,agentExport.SECRET_KINDS,agentExport.projectForExport],[agentHome.EXPORTABLE_KINDS,agentHome.SECRET_KINDS,agentHome.projectForExport]);
 { const ready=piSignin.checkKeys({name:'consumer',models:{lead:{needs:['text']}},keys:[{env:'CONSUMER_KEY',why:'w',where:'x',required:true}],programs:[],expectedCalls:0,expectedCost:0},{env:{}}); assert.equal(ready.exitCode,2); assert.equal(typeof piSignin.resolveModel,'function'); }
 assert.ok(loadAuthorReference('language').includes(authorContract()));
 console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,network:'prohibited'}));
@@ -374,6 +378,12 @@ const openStore = (store: DurableStore): Promise<RecoveryJournal> => { const con
 void openStore;
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'durable-consumer.ts'], consumer);
+  await writeFile(join(consumer, 'workflows-consumer.ts'), `import { WorkflowStore, WorkflowStoreError, type StoredWorkflow, type WorkflowRevision } from '@parcha/agentrun-pi/workflows';
+import type { Workflow } from '@parcha/agentrun-dsl';
+const keep = async (store: WorkflowStore, workflow: Workflow): Promise<[StoredWorkflow, WorkflowRevision[], WorkflowStoreError | undefined]> => [await store.save('copy', workflow), await store.list(), undefined];
+void keep;
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'workflows-consumer.ts'], consumer);
   await writeFile(join(consumer, 'archil-consumer.ts'), `import { openDurableRun, type RunRef } from '@parcha/pi-durable-disk';
 import { openRunLease } from '@parcha/pi-durable-disk/lease';
 const durable: [typeof openDurableRun, typeof openRunLease, RunRef | undefined] = [openDurableRun, openRunLease, undefined];
@@ -423,7 +433,13 @@ const oneRun = async (home: AgentHome, harness: Parameters<typeof durableProfile
 };
 void [oneRun, createAgentHome];
 `);
-  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'agent-consumer.ts'], consumer);
+  await writeFile(join(consumer, 'agent-export-consumer.ts'), `import { EXPORTABLE_KINDS, projectForExport, SECRET_KINDS } from '@parcha/pi-durable-agent/export';
+// An exporter's view: the two lists and one document as it may leave the home, from the subpath that loads nothing else.
+const kept: readonly string[] = EXPORTABLE_KINDS;
+const secret: readonly string[] = SECRET_KINDS;
+void [kept, secret, projectForExport('agent.runs', { path: 'runs/r1', host: 'h', startedAt: '' })];
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'agent-consumer.ts', 'agent-export-consumer.ts'], consumer);
   receipt.checks.push('Installed ESM imports, core execution, fake Jev/Pi adapters, and strict TypeScript consumer compilation passed.');
   await rm(join(receiptDir, 'packages'), { recursive: true, force: true });
   await mkdir(join(receiptDir, 'packages'), { recursive: true });

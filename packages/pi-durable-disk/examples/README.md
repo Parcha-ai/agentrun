@@ -7,14 +7,14 @@ change, and each one ends with a single `ok: ...` line naming what it showed.
 | Example | What it shows | Needs | Since | CI |
 |---|---|---|---|---|
 | [01-durable-chat](01-durable-chat/) | A chat survives its host being powered off: another host revokes the dead claim and goes on from the last committed message, nothing answered twice | Linux, the archil client, an Archil disk and API key | checkout | no |
-| [01-durable-chat/on-a-directory.mjs](01-durable-chat/on-a-directory.mjs) | The no-key quickstart: the same chat on a directory of this machine, killed after its third answer and finished by a second process | Linux, Node 22.19 or later | 0.1.0-beta.13 | yes |
+| [01-durable-chat/on-a-directory.mjs](01-durable-chat/on-a-directory.mjs) | The no-key quickstart: the same chat on a directory of this machine, killed after its third answer and finished by a second process | Linux or macOS, Node 22.19 or later | 0.1.0-beta.13 | yes |
 | [02-paid-effect](02-paid-effect/) | A paid charge cut mid-flight by a lost host is never sent twice: the new host records it `interrupted` and tells the model | Linux, the archil client, an Archil disk and API key | checkout | no |
-| [no-double-charge](no-double-charge/) | A paid call cut by `kill -9` is never sent twice: the next process gets it back `interrupted`, and the payment server has one charge per invoice | Linux, Node 22.19 or later | 0.1.0-beta.13 | yes |
-| [audit-across-crashes](audit-across-crashes/) | A run killed twice mid-call is accounted for from its store alone: a recorder in `beforeResume` snapshots every task, document and entry at each incarnation's head, and the account names the cut calls and who settled them | Linux, Node 22.19 or later | 0.1.0-beta.13 | yes |
-| [kill-9](kill-9/) | A coding agent survives `kill -9` in the middle of a long bash command: its files are intact, the cut command comes back `interrupted` and is never run again, its file tools stay in `work/`, and it finishes | Linux, Node 22.19 or later | 0.1.0-beta.13 | yes |
+| [no-double-charge](no-double-charge/) | A paid call cut by `kill -9` is never sent twice: the next process gets it back `interrupted`, and the payment server has one charge per invoice | Linux or macOS, Node 22.19 or later | 0.1.0-beta.13 | yes |
+| [audit-across-crashes](audit-across-crashes/) | A run killed twice mid-call is accounted for from its store alone: a recorder in `beforeResume` snapshots every task, document and entry at each incarnation's head, and the account names the cut calls and who settled them | Linux or macOS, Node 22.19 or later | 0.1.0-beta.13 | yes |
+| [kill-9](kill-9/) | A coding agent survives `kill -9` in the middle of a long bash command: its files are intact, the cut command comes back `interrupted` and is never run again, its file tools stay in `work/`, and it finishes | Linux or macOS, Node 22.19 or later | 0.1.0-beta.13 | yes |
 | [planned-move](planned-move/) | A run moves from this machine to a Daytona sandbox at a step boundary by hand-over: released and sealed, opened at the next generation, the agent told, nothing revoked or interrupted | Linux host with the archil client and systemd, an Archil disk and API key, a Daytona key (Tier 3 or 4) | 0.1.0-beta.14 | no |
-| [fork-into-many](fork-into-many/) | One run taken to a checkpoint and sealed is forked three ways: each fork is a run of its own, continues from the checkpoint with its own instruction, and the source stays byte for byte | Linux, Node 22.19 or later | 0.1.0-beta.14 | yes |
-| [serve-and-park](serve-and-park/) | An idle agent holds no process: a run that only waits on a long retry parks (the wake in `run.json`, the claim released, exit 0), a restart at `wakeAt` finishes it, and a repeated `requestId` is answered, not run again | Linux, Node 22.19 or later | 0.1.0-beta.15 | yes |
+| [fork-into-many](fork-into-many/) | One run taken to a checkpoint and sealed is forked three ways: each fork is a run of its own, continues from the checkpoint with its own instruction, and the source stays byte for byte | Linux or macOS, Node 22.19 or later | 0.1.0-beta.14 | yes |
+| [serve-and-park](serve-and-park/) | An idle agent holds no process: a run that only waits on a long retry parks (the wake in `run.json`, the claim released, exit 0), a restart at `wakeAt` finishes it, and a repeated `requestId` is answered, not run again | Linux or macOS, Node 22.19 or later | 0.1.0-beta.15 | yes |
 | [docker-quickstart.sh](docker-quickstart.sh) | Example 02 with every instance in a container, on macOS or Linux, with nothing installed but Docker and Node | Docker, an Archil disk and API key | checkout | no |
 | [verify-production-path.sh](verify-production-path.sh) | The README's production host setup, checked on a disposable root machine | a disposable Linux machine with root, Archil | checkout | no |
 
@@ -31,15 +31,16 @@ node examples/<name>/main.ts
 The quickstart is `node examples/01-durable-chat/on-a-directory.mjs`. Examples 01 and 02 on a disk, and the two scripts,
 run as their own READMEs and headers say.
 
-Node 22.19 or later runs the TypeScript directly. Linux only, for now: a run on a local directory holds its root through
-`/proc/self/fd` (see [A run on a local directory](../README.md#a-run-on-a-local-directory)).
+Node 22.19 or later runs the TypeScript directly. A run on a local directory runs on Linux, and on macOS for development
+([On macOS](../README.md#on-macos) says what is weaker there). On macOS every example needs 0.1.0-beta.14 or later, the
+first release that runs there, whatever its Since says.
 
 ## Run one from an install
 
 The examples on `main` are written against `main`, and what npm has is the last published beta (`npm view
 @parcha/pi-durable-disk dist-tags`). The **Since** column is the first published version that has what the example imports:
-older than that, it stops at its first import. To run one from an install, in an empty directory on Linux with Node 22.19 or
-later:
+older than that, it stops at its first import. To run one from an install, in an empty directory on Linux, or on macOS from
+0.1.0-beta.14, with Node 22.19 or later:
 
 ```sh
 npm init -y && npm pkg set type=module
@@ -57,9 +58,10 @@ warning on each start. Run it from the directory that holds `node_modules`, or f
 The `ExperimentalWarning` about SQLite on stderr is Node's own and harmless.
 
 The Since cells are checked, not just written: the `stranger` CI job (`scripts/stranger.mjs pi-durable-disk`, spec
-`scripts/stranger/pi-durable-disk.json`) installs each keyless example's Since from npm the way the section above says, runs it
-and expects its `ok:` line. An example whose Since is above the registry's `beta` tag is skipped, with the reason printed;
-`node scripts/stranger.mjs pi-durable-disk --examples` runs just this check.
+`scripts/stranger/pi-durable-disk.json`) installs each keyless example's Since from npm the way the section above says,
+runs it and expects its `ok:` line; on macOS it installs 0.1.0-beta.14 at the least (the spec's `platformFloors`), and the
+macOS CI job runs the same walk on a Mac. An example whose version is above the registry's `beta` tag is skipped, with the
+reason printed; `node scripts/stranger.mjs pi-durable-disk --examples` runs just this check.
 
 ## Writing an example
 
