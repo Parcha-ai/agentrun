@@ -201,3 +201,13 @@ in order (the orphan flag as seen, the revoke and the takeover time, the fence),
 repeated, cut by a kill (unknown, not sent again) or in flight. The paid-call verdicts are the shell's own counter fold
 (`appliedIn`), so the panel and the counters strip agree. A recording with no disk claim line (`shows`: a `run.json`, `delegation`, `revoke` or `fenced` host line) does not draw the
 panel at all, its title included. Its test, `test/disk.test.ts`, renders `test/fixtures/disk-takeover`.
+
+## The run's picture
+
+The run's result so far as an image (RECORDING.md draft 31): the recording's home side draws it from the run's committed
+results and writes it as a `picture` host line, `{ blob, label?, commit? }`, with no `gen`, since no process the run can
+lose writes it. The picture panel draws the latest picture at or before the stop, a gap before the first, and keeps the
+last one after the run ends, a kill included. It is any job's picture, read from the line alone. A recording with no
+`picture` line draws no picture panel; one with pictures shows it first (`featured`), since a run that draws its result as
+it goes is about that picture. The image is drawn at the panel's width with its pixels kept sharp. Its test is
+`test/picture.test.ts`.

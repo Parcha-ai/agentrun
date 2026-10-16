@@ -217,7 +217,14 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
     if (typeof line.kind !== 'string' || line.kind === '') note(`${at}: no kind`);
     if (isSupervisor(line)) {
       if (line.gen !== undefined) note(`${at}: a supervisor line (${line.kind}) has no event-level gen`);
-      if (!isInt((line.data as { gen?: unknown } | null)?.gen, 1)) note(`${at}: a supervisor line (${line.kind}) names its process in data.gen`);
+      // A picture is the recording's home side's (draft 31): it names no process, and says which blob it draws.
+      if (line.kind === 'picture') {
+        const picture = line.data as { blob?: unknown; label?: unknown; commit?: unknown } | null;
+        if (!(typeof picture?.blob === 'string' && /^[0-9a-f]{64}$/.test(picture.blob))) note(`${at}: a picture names its blob (a SHA-256) in data`);
+        if (picture?.label !== undefined && typeof picture.label !== 'string') note(`${at}: a picture's label is a string`);
+        if (picture?.commit !== undefined && !isInt(picture.commit)) note(`${at}: a picture's commit is a whole number`);
+        if (blobs && typeof picture?.blob === 'string' && !blobs.has(picture.blob)) note(`${at}: picture blob ${picture.blob} is not in blobs/`);
+      } else if (!isInt((line.data as { gen?: unknown } | null)?.gen, 1)) note(`${at}: a supervisor line (${line.kind}) names its process in data.gen`);
       const crossing = line.kind === 'kill' ? (line.data as { crossing?: { point?: unknown; n?: unknown } | null } | null)?.crossing : null;
       if (crossing !== null && crossing !== undefined && !(typeof crossing.point === 'string' && isInt(crossing.n))) note(`${at}: a kill's crossing is { point, n } or null`);
       const result = line.kind === 'result' ? (line.data as { blob?: unknown; title?: unknown } | null) : undefined;
