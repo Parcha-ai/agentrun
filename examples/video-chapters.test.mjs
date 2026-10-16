@@ -68,11 +68,16 @@ test('beat 1: on fakes, with no network, the agent\'s own script cuts the clip i
   // The recording's result is the same record with each chapter's keyframe kept as a blob and cited at its second.
   const manifest = JSON.parse(readFileSync(join(record, 'manifest.json'), 'utf8'));
   const kept = JSON.parse(readFileSync(join(record, 'blobs', `${manifest.result.blob}.json`), 'utf8'));
-  for (const row of kept.rows.slice(1)) {
+  const pictures = new Set();
+  for (const [at, row] of kept.rows.slice(1).entries()) {
     const keyframe = row.cites.find((cite) => cite.note === 'keyframe');
     assert.ok(keyframe && existsSync(join(record, 'blobs', `${keyframe.blob}.jpg`)), `${row.label} cites its keyframe, kept as a blob`);
-    assert.match(keyframe.fragment, /^#t=\d+$/);
+    const chapter = kept.video_chapters.chapters[at];
+    assert.equal(keyframe.fragment, `#t=${chapter.at_s}`);
+    assert.ok(chapter.at_s >= chapter.start_s && chapter.at_s < chapter.end_s, 'the keyframe is taken inside its chapter');
+    pictures.add(keyframe.blob);
   }
+  assert.equal(pictures.size, kept.rows.length - 1, 'one keyframe a chapter, each its own');
 });
 
 test('beat 2: killed inside the evidence sink at vision.filing, a fresh process runs the script again; the looks come back kept, the fold reads repeated 0 and unknown 0, each window paid once', { timeout: 300_000, skip: FFMPEG }, async (t) => {

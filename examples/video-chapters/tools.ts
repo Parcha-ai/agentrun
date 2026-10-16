@@ -1,15 +1,18 @@
-// The job's `cite` tool: every chapter's receipts resolved to the looks that back them, and the cited result built from them.
-// It reads only what the run filed under its directory; a receipt that is not an ok look there is dropped, and a chapter left
-// with none is dropped too, each with the reason.
-import { existsSync, readFileSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+// The job's `cite` tool: every chapter's receipts resolved to the looks that back them, each chapter's keyframe taken at the
+// second the agent chose for it (inside the chapter, one picture a chapter), and the cited result built from them. It reads only
+// what the run filed under its directory; a receipt that is not an ok look there is dropped, and a chapter left with none is
+// dropped too, each with the reason.
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { basename, join, relative, resolve } from 'node:path';
 import type { LookRecord } from '@parcha/pi-vision';
 
-export type Chapter = { title: string; start_s: number; end_s: number; note: string; at_s: number; keyframe: string; receipts: string[] };
-/** The video part of the result: each chapter with the looks it rests on (their keys) and its keyframe's path in the workspace. */
+export type Chapter = { title: string; start_s: number; end_s: number; note: string; at_s: number; receipts: string[] };
+/** The video part of the result: each chapter with the looks it rests on (their keys) and its keyframe's path in the workspace
+ *  (empty when none could be taken). */
 export type VideoChapters = {
   format: 'video-chapters/1'; film: string; summary: string;
-  chapters: (Omit<Chapter, 'receipts'> & { looks: string[] })[];
+  chapters: (Omit<Chapter, 'receipts'> & { keyframe: string; looks: string[] })[];
   dropped: { chapter: string; why: string }[];
 };
 export type Cite = { look?: string; blob?: string; fragment?: string; note?: string };
@@ -35,6 +38,14 @@ export const clock = (seconds: number) => {
 /** The window a look saw, as its fragment names it (`film#t=S,E`): `#t=S,E`. */
 const windowOf = (record: LookRecord) => /#t=[\d.]+(?:,[\d.]+)?/.exec(String(record.args.path))?.[0];
 
+/** One frame of the film at a second, as a JPEG in the workspace; the path, or '' when ffmpeg could not take it. */
+function keyframeAt(work: string, film: string, index: number, second: number): string {
+  const path = `.look/keys/${index + 1}-${second}.jpg`;
+  mkdirSync(join(work, '.look', 'keys'), { recursive: true });
+  try { execFileSync('ffmpeg', ['-v', 'error', '-y', '-ss', String(second), '-i', basename(film), '-frames:v', '1', '-q:v', '3', path], { cwd: work, stdio: 'ignore' }); } catch { return ''; }
+  return existsSync(join(work, path)) ? path : '';
+}
+
 /** The cited result: a summary row, then one row a chapter (its title, its start, its note), citing the looks of its windows. */
 export function citedOf(root: string, args: { film: string; summary: string; chapters: Chapter[] }): Cited {
   const dropped: VideoChapters['dropped'] = [];
@@ -43,10 +54,12 @@ export function citedOf(root: string, args: { film: string; summary: string; cha
   for (const chapter of args.chapters) {
     const looks = chapter.receipts.flatMap((receipt) => { const record = lookAt(root, receipt); return record ? [record] : []; });
     if (!looks.length) { dropped.push({ chapter: chapter.title, why: 'none of its receipts is an ok look this run filed' }); continue; }
-    const keyframe = existsSync(join(root, 'work', chapter.keyframe)) ? chapter.keyframe : '';
-    if (!keyframe) dropped.push({ chapter: chapter.title, why: `its keyframe ${chapter.keyframe} is not in the workspace` });
+    // The keyframe's second is inside the chapter: one the agent chose outside it is the chapter's middle.
+    const at = chapter.at_s >= chapter.start_s && chapter.at_s < chapter.end_s ? chapter.at_s : Math.round((chapter.start_s + chapter.end_s) / 2);
+    const keyframe = keyframeAt(join(root, 'work'), args.film, chapters.length, at);
+    if (!keyframe) dropped.push({ chapter: chapter.title, why: `no keyframe could be taken at ${at} s` });
     const { receipts: _receipts, ...kept } = chapter;
-    chapters.push({ ...kept, keyframe, looks: looks.map((record) => record.facts.key) });
+    chapters.push({ ...kept, at_s: at, keyframe, looks: looks.map((record) => record.facts.key) });
     rows.push({
       label: chapter.title, value: `${clock(chapter.start_s)} to ${clock(chapter.end_s)}`, note: chapter.note,
       cites: looks.map((record) => ({ look: record.facts.key, fragment: windowOf(record) ?? `#t=${chapter.start_s},${chapter.end_s}`, note: args.film })),
