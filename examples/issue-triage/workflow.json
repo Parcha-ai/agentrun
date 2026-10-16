@@ -1,0 +1,471 @@
+{
+  "v": 2,
+  "name": "issue-triage",
+  "schemas": {
+    "Input": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "minLength": 1,
+          "description": "owner/name of the public repository"
+        },
+        "numbers": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "description": "issue numbers to triage"
+        },
+        "label_map": {
+          "type": "object",
+          "description": "the maintainers' label names mapped onto the five: bug, feature, docs, question, needs-info",
+          "additionalProperties": {
+            "type": "string",
+            "enum": [
+              "bug",
+              "feature",
+              "docs",
+              "question",
+              "needs-info"
+            ]
+          }
+        }
+      },
+      "required": [
+        "repo",
+        "numbers",
+        "label_map"
+      ],
+      "additionalProperties": false
+    },
+    "IssueRecord": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "integer"
+        },
+        "title": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "number",
+        "title",
+        "body",
+        "labels",
+        "url"
+      ]
+    },
+    "LinkedPrs": {
+      "type": "object",
+      "properties": {
+        "prs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "number": {
+                "type": "integer"
+              },
+              "title": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              },
+              "paths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "number",
+              "title",
+              "state",
+              "paths"
+            ]
+          }
+        }
+      },
+      "required": [
+        "prs"
+      ]
+    },
+    "Research": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string",
+          "description": "What the issue asks, in two or three sentences, from what the tools returned."
+        },
+        "reproduces": {
+          "type": "string",
+          "enum": [
+            "yes",
+            "no",
+            "not stated"
+          ],
+          "description": "Whether the issue gives a way to reproduce what it reports."
+        },
+        "code_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Repository paths the issue or its pull requests name, that you read."
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "string",
+                "description": "issue, pr <number>, or a file path you read"
+              },
+              "quote": {
+                "type": "string",
+                "description": "A short quotation, at most 200 characters, copied from that source."
+              }
+            },
+            "required": [
+              "source",
+              "quote"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "summary",
+        "reproduces",
+        "code_paths",
+        "evidence"
+      ],
+      "additionalProperties": false
+    },
+    "LabelQuestion": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string",
+          "enum": [
+            "bug",
+            "feature",
+            "docs",
+            "question",
+            "needs-info"
+          ],
+          "description": "Which one label fits this issue best, going by what the issue asks for and the evidence read for it, not by who wrote it or how it is worded?",
+          "criteria": {
+            "bug": "The issue reports behaviour that contradicts the repository's own documentation or an earlier release, with a way to see it fail.",
+            "feature": "The issue asks for behaviour the project does not have, or a change to an API on purpose; nothing is broken today.",
+            "docs": "The issue is about wrong, missing or unclear documentation, a README or a guide; the code behaves as designed.",
+            "question": "The reporter asks how to use the project, or why it works as it does; no change is asked for.",
+            "needs-info": "What is reported cannot be acted on yet: no version, no way to reproduce, or no clear ask; the next step is a question back to the reporter."
+          }
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "additionalProperties": false
+    },
+    "GoodFirstQuestion": {
+      "type": "object",
+      "properties": {
+        "good_first_issue": {
+          "type": "boolean",
+          "description": "Is this a good first issue: could a newcomer to the project take it and finish it without a maintainer's design decision?",
+          "criteria": {
+            "true": "The change is small and local (one file or one function), the issue names where it is, the expected result is stated or checkable by a test, and a newcomer can do it without knowing the project's design.",
+            "false": "The change spans several modules, needs a design decision from a maintainer, depends on an unreleased change or an unclear ask, or needs knowledge of the project's internals."
+          }
+        }
+      },
+      "required": [
+        "good_first_issue"
+      ],
+      "additionalProperties": false
+    },
+    "Row": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "integer"
+        },
+        "title": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string",
+          "enum": [
+            "bug",
+            "feature",
+            "docs",
+            "question",
+            "needs-info"
+          ]
+        },
+        "label_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "good_first_issue": {
+          "type": "boolean"
+        },
+        "good_first_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "string"
+              },
+              "quote": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "quote"
+            ]
+          }
+        },
+        "maintainer_label": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            null,
+            "bug",
+            "feature",
+            "docs",
+            "question",
+            "needs-info"
+          ]
+        },
+        "agrees": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "number",
+        "title",
+        "url",
+        "label",
+        "label_confidence",
+        "good_first_issue",
+        "good_first_confidence",
+        "evidence",
+        "maintainer_label",
+        "agrees"
+      ],
+      "additionalProperties": false
+    },
+    "Result": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string"
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Row"
+          }
+        },
+        "agreement": {
+          "type": "object",
+          "properties": {
+            "agreed": {
+              "type": "integer"
+            },
+            "compared": {
+              "type": "integer"
+            },
+            "total": {
+              "type": "integer"
+            },
+            "summary": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "agreed",
+            "compared",
+            "total",
+            "summary"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "repo",
+        "rows",
+        "agreement"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "input": {
+    "schemaId": "Input"
+  },
+  "output": {
+    "schemaId": "Result",
+    "path": "result"
+  },
+  "root": {
+    "node": "chain",
+    "steps": [
+      {
+        "node": "map",
+        "label": "triage-each-issue",
+        "itemsPath": "numbers",
+        "as": "rows",
+        "resultPath": "row",
+        "maxConcurrency": 4,
+        "body": {
+          "node": "chain",
+          "steps": [
+            {
+              "node": "call",
+              "label": "read-issue",
+              "via": "tool",
+              "tool": "github_issue",
+              "args": {
+                "repo": "{repo}",
+                "number": "{item}"
+              },
+              "out": "IssueRecord",
+              "as": "issue",
+              "deadline_s": 30,
+              "retry": {
+                "attempts": 3,
+                "backoff_s": 1,
+                "on": [
+                  "timeout",
+                  "http_5xx",
+                  "http_429",
+                  "connection"
+                ]
+              }
+            },
+            {
+              "node": "call",
+              "label": "read-linked-prs",
+              "via": "tool",
+              "tool": "github_linked_prs",
+              "args": {
+                "repo": "{repo}",
+                "number": "{item}"
+              },
+              "out": "LinkedPrs",
+              "as": "linked",
+              "deadline_s": 30,
+              "retry": {
+                "attempts": 3,
+                "backoff_s": 1,
+                "on": [
+                  "timeout",
+                  "http_5xx",
+                  "http_429",
+                  "connection"
+                ]
+              }
+            },
+            {
+              "node": "agent",
+              "label": "research",
+              "state": {
+                "issue": "{issue}",
+                "linked_prs": "{linked.prs}"
+              },
+              "out": "Research",
+              "as": "research",
+              "requires": [
+                "issue.title"
+              ],
+              "tools": [
+                "read",
+                "grep",
+                "find",
+                "ls"
+              ],
+              "effort": "low",
+              "instructions": "You triage one issue of a public repository. Its record is in `issue` (title, body, the maintainers' labels are NOT shown to you) and the pull requests that mention it are in `linked_prs`. Read the code the issue or those pull requests name with the read-only tools you have (read, grep, find, ls): the repository's files are under `repo/` in your workspace. Report what the issue asks, whether it gives a way to reproduce what it reports, the paths you read, and at least one short quotation from each source you rely on (the issue itself, a pull request's title, a file). Quote; never paraphrase a quotation. If a path you want does not exist, say so in the summary and do not invent its contents. You decide nothing about labels here."
+            },
+            {
+              "node": "judge",
+              "label": "label",
+              "state": {
+                "title": "{issue.title}",
+                "body": "{issue.body}",
+                "summary": "{research.summary}",
+                "reproduces": "{research.reproduces}",
+                "evidence": "{research.evidence}",
+                "linked_prs": "{linked.prs}"
+              },
+              "out": "LabelQuestion",
+              "as": "decision"
+            },
+            {
+              "node": "judge",
+              "label": "good-first-issue",
+              "state": {
+                "title": "{issue.title}",
+                "summary": "{research.summary}",
+                "code_paths": "{research.code_paths}",
+                "evidence": "{research.evidence}"
+              },
+              "out": "GoodFirstQuestion",
+              "as": "starter"
+            },
+            {
+              "node": "code",
+              "label": "row",
+              "as": "row",
+              "code": "(s) => { const label = s.decision.label; const mapped = (s.issue.labels || []).map((name) => s.label_map[name]).filter((value) => value !== undefined); const maintainer = mapped.length ? mapped[0] : null; return { number: s.issue.number, title: s.issue.title, url: s.issue.url, label, label_confidence: s['decision$answers'].answers.label.confidence, good_first_issue: s.starter.good_first_issue, good_first_confidence: Math.abs(s['starter$answers'].answers.good_first_issue.noul - 0.5) * 2, evidence: s.research.evidence, maintainer_label: maintainer, agrees: maintainer === null ? null : maintainer === label }; }"
+            }
+          ]
+        }
+      },
+      {
+        "node": "code",
+        "label": "finish",
+        "code": "(s) => { const compared = s.rows.filter((row) => row.agrees !== null); const agreed = compared.filter((row) => row.agrees).length; return { result: { repo: s.repo, rows: s.rows, agreement: { agreed, compared: compared.length, total: s.rows.length, summary: 'Jev agreed with the maintainers on ' + agreed + ' of ' + compared.length + (compared.length < s.rows.length ? ' (' + (s.rows.length - compared.length) + ' without a maintainer label)' : '') } } }; }"
+      }
+    ]
+  }
+}

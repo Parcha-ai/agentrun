@@ -1,0 +1,390 @@
+{
+  "issues": [
+    {
+      "number": 101,
+      "title": "Route params with an encoded slash are decoded twice",
+      "body": "GET /files/a%252Fb gives req.params.name === 'a/b' but the docs say one decoding. Version 4.3, node 22. Failing case in test/params.js is attached.",
+      "labels": [
+        "bug"
+      ],
+      "url": "https://github.com/fictional/widget-router/issues/101",
+      "prs": [
+        {
+          "number": 9101,
+          "title": "decode params once",
+          "state": "open",
+          "paths": [
+            "lib/params.js"
+          ]
+        }
+      ],
+      "paths": [
+        "lib/params.js"
+      ]
+    },
+    {
+      "number": 102,
+      "title": "Add an option to let app.listen bind a unix socket path",
+      "body": "app.listen(path) works by accident. Please make it documented and tested: app.listen({ path }).",
+      "labels": [
+        "enhancement"
+      ],
+      "url": "https://github.com/fictional/widget-router/issues/102",
+      "prs": [],
+      "paths": [
+        "lib/listen.js"
+      ]
+    },
+    {
+      "number": 103,
+      "title": "The routing guide never mentions that mounted apps see a stripped url",
+      "body": "docs/guide/routing.md says req.url is untouched under app.use('/api', sub). It is stripped; req.originalUrl is the full one.",
+      "labels": [
+        "docs"
+      ],
+      "url": "https://github.com/fictional/widget-router/issues/103",
+      "prs": [],
+      "paths": [
+        "docs/guide/routing.md"
+      ]
+    },
+    {
+      "number": 104,
+      "title": "How do I read the raw body in an error handler?",
+      "body": "I use express.json() and my error handler needs the bytes that failed to parse. Is there a supported way?",
+      "labels": [
+        "question"
+      ],
+      "url": "https://github.com/fictional/widget-router/issues/104",
+      "prs": [],
+      "paths": []
+    },
+    {
+      "number": 105,
+      "title": "Server hangs sometimes",
+      "body": "It hangs. Please fix.",
+      "labels": [
+        "awaiting more info"
+      ],
+      "url": "https://github.com/fictional/widget-router/issues/105",
+      "prs": [],
+      "paths": []
+    },
+    {
+      "number": 106,
+      "title": "res.sendFile ignores the dotfiles option for nested paths",
+      "body": "Setting dotfiles: 'deny' blocks /.env but not /a/.env. Node 22, Linux. Reproduction repo linked.",
+      "labels": [
+        "bug"
+      ],
+      "url": "https://github.com/fictional/widget-router/issues/106",
+      "prs": [
+        {
+          "number": 9106,
+          "title": "check every segment for dotfiles",
+          "state": "open",
+          "paths": [
+            "lib/send-file.js"
+          ]
+        }
+      ],
+      "paths": [
+        "lib/send-file.js"
+      ]
+    },
+    {
+      "number": 107,
+      "title": "Is trust proxy supposed to read the leftmost X-Forwarded-For?",
+      "body": "Docs say 'the client's address'; I see the rightmost untrusted hop in 4.3. Which is intended?",
+      "labels": [
+        "question"
+      ],
+      "url": "https://github.com/fictional/widget-router/issues/107",
+      "prs": [],
+      "paths": [
+        "lib/proxy.js"
+      ]
+    },
+    {
+      "number": 108,
+      "title": "Typo in the res.redirect example",
+      "body": "The status table row for 308 reads 'Permanant Redirect'. One word in docs/api/response.md.",
+      "labels": [
+        "docs"
+      ],
+      "url": "https://github.com/fictional/widget-router/issues/108",
+      "prs": [],
+      "paths": [
+        "docs/api/response.md"
+      ]
+    },
+    {
+      "number": 109,
+      "title": "Support async route handlers that return a promise",
+      "body": "A rejected promise from a handler is not passed to next(err). Other routers do this; could we?",
+      "labels": [
+        "enhancement"
+      ],
+      "url": "https://github.com/fictional/widget-router/issues/109",
+      "prs": [
+        {
+          "number": 9109,
+          "title": "forward rejections to next",
+          "state": "draft",
+          "paths": [
+            "lib/layer.js",
+            "lib/route.js"
+          ]
+        }
+      ],
+      "paths": [
+        "lib/layer.js"
+      ]
+    },
+    {
+      "number": 110,
+      "title": "Does not work",
+      "body": "I upgraded and it does not work anymore.",
+      "labels": [
+        "awaiting more info"
+      ],
+      "url": "https://github.com/fictional/widget-router/issues/110",
+      "prs": [],
+      "paths": []
+    },
+    {
+      "number": 111,
+      "title": "Expose the matched route pattern as req.routePath",
+      "body": "Metrics middleware wants the pattern ('/users/:id'), not the URL. Today it is only on req.route.path inside the handler.",
+      "labels": [
+        "enhancement"
+      ],
+      "url": "https://github.com/fictional/widget-router/issues/111",
+      "prs": [],
+      "paths": [
+        "lib/route.js"
+      ]
+    },
+    {
+      "number": 112,
+      "title": "res.json with a BigInt throws a confusing error",
+      "body": "res.json({ id: 1n }) throws 'Do not know how to serialize a BigInt'. Please make this an error that names res.json, or support a replacer for it.",
+      "labels": [
+        "enhancement"
+      ],
+      "url": "https://github.com/fictional/widget-router/issues/112",
+      "prs": [],
+      "paths": [
+        "lib/response.js"
+      ]
+    },
+    {
+      "number": 113,
+      "title": "Why does app.get('/') run before my app.use('/') middleware?",
+      "body": "I registered middleware second and it ran second, as expected. But the docs example registers it first. Am I misreading the order?",
+      "labels": [
+        "question"
+      ],
+      "url": "https://github.com/fictional/widget-router/issues/113",
+      "prs": [],
+      "paths": []
+    },
+    {
+      "number": 114,
+      "title": "The cookie options table lacks the partitioned attribute",
+      "body": "res.cookie accepts partitioned since 4.2 (lib/response.js line 6) but the table in docs/api/cookie.md does not list it.",
+      "labels": [
+        "docs"
+      ],
+      "url": "https://github.com/fictional/widget-router/issues/114",
+      "prs": [],
+      "paths": [
+        "docs/api/cookie.md",
+        "lib/response.js"
+      ]
+    },
+    {
+      "number": 115,
+      "title": "req.query parser option 'simple' drops repeated keys",
+      "body": "With 'query parser': 'simple', ?a=1&a=2 gives a: '2'. The extended parser gives an array. The docs do not say the simple one keeps the last.",
+      "labels": [
+        "bug"
+      ],
+      "url": "https://github.com/fictional/widget-router/issues/115",
+      "prs": [],
+      "paths": [
+        "lib/query.js"
+      ]
+    },
+    {
+      "number": 116,
+      "title": "Allow app.set('etag', fn) to receive the response status",
+      "body": "Weak etags for 206 responses should be skipped; the function only gets the body today.",
+      "labels": [
+        "enhancement"
+      ],
+      "url": "https://github.com/fictional/widget-router/issues/116",
+      "prs": [],
+      "paths": [
+        "lib/etag.js"
+      ]
+    },
+    {
+      "number": 117,
+      "title": "Need more details on random 500s?",
+      "body": "Some requests give a 500 in production, never locally. Node version unknown, no logs.",
+      "labels": [
+        "awaiting more info"
+      ],
+      "url": "https://github.com/fictional/widget-router/issues/117",
+      "prs": [],
+      "paths": []
+    },
+    {
+      "number": 118,
+      "title": "Sub-app error handlers do not run for errors thrown in a parent's param callback",
+      "body": "router.param callbacks of the parent throw; the sub-app's four-argument handler never sees it. Failing test attached.",
+      "labels": [
+        "bug"
+      ],
+      "url": "https://github.com/fictional/widget-router/issues/118",
+      "prs": [
+        {
+          "number": 9118,
+          "title": "route param errors to the nearest handler",
+          "state": "open",
+          "paths": [
+            "lib/router.js"
+          ]
+        }
+      ],
+      "paths": [
+        "lib/router.js"
+      ]
+    },
+    {
+      "number": 119,
+      "title": "Document the order of res.format handlers",
+      "body": "res.format picks the first match in object key order. The reference should say so, with an example where order matters.",
+      "labels": [
+        "docs"
+      ],
+      "url": "https://github.com/fictional/widget-router/issues/119",
+      "prs": [],
+      "paths": [
+        "docs/api/response.md"
+      ]
+    },
+    {
+      "number": 120,
+      "title": "Can app.param take an array of names?",
+      "body": "app.param(['id','uid'], fn) works in 4.x by accident? I could not find it in the docs.",
+      "labels": [
+        "question"
+      ],
+      "url": "https://github.com/fictional/widget-router/issues/120",
+      "prs": [],
+      "paths": [
+        "lib/application.js"
+      ]
+    }
+  ],
+  "files": {
+    "lib/params.js": "// decodes a matched param; callers pass the raw segment\nexport const decodeParam = (raw) => decodeURIComponent(decodeURIComponent(raw));\n",
+    "lib/listen.js": "// listen(port | path | options)\nexport function listen(app, ...args) { return app.server.listen(...args); }\n",
+    "docs/guide/routing.md": "# Routing\n\nA mounted app receives req.url unchanged.\n",
+    "lib/send-file.js": "// only the last segment is checked\nexport const hidden = (path) => path.split('/').pop().startsWith('.');\n",
+    "lib/proxy.js": "// walks X-Forwarded-For from the right until a hop is not trusted\nexport const clientIp = (hops, trusted) => hops.findLast((hop) => !trusted(hop));\n",
+    "docs/api/response.md": "## res.format(object)\nPerforms content negotiation on the Accept header.\n",
+    "lib/layer.js": "// handle_request calls fn(req, res, next) and ignores the return value\nexport function handleRequest(layer, req, res, next) { layer.handle(req, res, next); }\n",
+    "lib/route.js": "// req.route is set when a route matches\nexport const match = (req, route) => { req.route = route; };\n",
+    "lib/response.js": "// cookie options: domain, encode, expires, httpOnly, maxAge, path, partitioned, priority, secure, sameSite\n",
+    "docs/api/cookie.md": "| sameSite | Boolean or String |\n",
+    "lib/query.js": "// simple: Object.fromEntries(new URLSearchParams(qs))\n",
+    "lib/etag.js": "// etag(body, encoding) -> string\nexport const etag = (body, encoding) => hash(body, encoding);\n",
+    "lib/router.js": "// processParams catches and calls done(err) of the PARENT stack\n",
+    "lib/application.js": "// param(name | names[], fn): arrays are flattened\nexport function param(app, names, fn) { [].concat(names).forEach((name) => app.router.param(name, fn)); }\n"
+  },
+  "script": {
+    "101": {
+      "label": "bug",
+      "good_first_issue": false
+    },
+    "102": {
+      "label": "feature",
+      "good_first_issue": false
+    },
+    "103": {
+      "label": "docs",
+      "good_first_issue": true
+    },
+    "104": {
+      "label": "question",
+      "good_first_issue": false
+    },
+    "105": {
+      "label": "needs-info",
+      "good_first_issue": false
+    },
+    "106": {
+      "label": "bug",
+      "good_first_issue": false
+    },
+    "107": {
+      "label": "needs-info",
+      "good_first_issue": false
+    },
+    "108": {
+      "label": "docs",
+      "good_first_issue": true
+    },
+    "109": {
+      "label": "feature",
+      "good_first_issue": false
+    },
+    "110": {
+      "label": "needs-info",
+      "good_first_issue": false
+    },
+    "111": {
+      "label": "feature",
+      "good_first_issue": false
+    },
+    "112": {
+      "label": "bug",
+      "good_first_issue": false
+    },
+    "113": {
+      "label": "question",
+      "good_first_issue": false
+    },
+    "114": {
+      "label": "docs",
+      "good_first_issue": true
+    },
+    "115": {
+      "label": "docs",
+      "good_first_issue": true
+    },
+    "116": {
+      "label": "feature",
+      "good_first_issue": false
+    },
+    "117": {
+      "label": "needs-info",
+      "good_first_issue": false
+    },
+    "118": {
+      "label": "bug",
+      "good_first_issue": false
+    },
+    "119": {
+      "label": "docs",
+      "good_first_issue": true
+    },
+    "120": {
+      "label": "question",
+      "good_first_issue": false
+    }
+  }
+}

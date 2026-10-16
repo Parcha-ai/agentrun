@@ -1,0 +1,11 @@
+{
+  "name": "issue-triage",
+  "title": "Triage a public repository's newest issues",
+  "claim": "Twenty issues are researched, labelled by Jev against five labels, judged as good first issues, and scored against the maintainers' own labels, and a run killed mid-way finishes without repeating a paid call.",
+  "models": { "lead": { "needs": ["text", "tools"] }, "judge": { "jev": true } },
+  "keys": [],
+  "programs": [{ "cmd": "node", "why": "runs the demo", "required": true, "min": "22.19.0" }],
+  "expectedCalls": 80,
+  "expectedCost": 1.5,
+  "kills": [{ "point": "judge.asked label", "why": "a typed question is in flight when the process dies; the resumed run takes its recorded answer and asks no second time" }]
+}
