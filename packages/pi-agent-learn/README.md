@@ -9,8 +9,9 @@ It builds on [`@parcha/pi-git-remote`](../pi-git-remote), which owns git, and on
 host owns git: no model tool commits or pushes, and the repository's `.git` is never in the agent's working directory.
 
 This package is held: it is built and tested in this repository and not published yet. This release has the contract
-the model sees and the host step that seeds a run. Proposing a run's notes, the guard every write goes through, curation
-and workflow trials come next, on the types this release fixes (`Guard`, `Candidate`, `WorkflowHint`).
+the model sees, the host step that seeds a run, the guard every write goes through, and the host step that proposes a
+run's notes. Curation and workflow trials come next, on the types this release fixes (`Guard`, `Candidate`,
+`WorkflowHint`).
 
 ## Quickstart (no key, no network)
 
@@ -95,6 +96,7 @@ repo/
   inbox/<run id>.md                a run's candidates, on runs/<run id> only
   inbox/<run id>/workflows/<name>/ a workflow the run saved, the DSL's records byte for byte, on runs/<run id> only
   uses/<run id>.json               a run's workflow uses, on runs/<run id> only
+  inbox/<run id>/workflows/<name>/ a run's saved workflow records, as the DSL wrote them, on runs/<run id> only
 ```
 
 `RULES_LOCKED` is the frozen list `["agent.json", "AGENTS.md"]`. `isRulesLocked(path)` is true for either name in any
@@ -176,6 +178,67 @@ run with `startRun(home, { host, sha })`, and seeds it with `seedLearning({ repo
 started.workspace })`. The runs index, `learn.seed` and the section then all name that sha.
 
 Every failure is a `LearnError` with a `code`: `invalid`, `format`, `missing`, `rules_locked` or `too_large`.
+
+## The guard
+
+```ts
+const refusals = guard({ role: "run", runId, files, candidates, secrets: vault.values(), caseValues });
+```
+
+`guard` returns every reason a write may not happen, or an empty list. It makes no model call, refuses and never
+redacts, and no refusal repeats the value it matched: a file name that holds a secret is left out of the refusal that
+names it. `createGuard(caps)` makes one with other byte and count caps than `CAPS`. Every writer runs it before anything
+reaches git: `agentLearn({ guard })` on each `learn` call (candidates only, no run id needed), `proposeLearning` on the
+whole proposal, and the curator on what it writes.
+
+| Reason | What it refuses |
+| --- | --- |
+| `secret_value` | A value in `secrets` as written; with its whitespace removed (a value split over lines); as base64 or base64url at any of the three alignments, wrapped or not; as hex in either case; percent or form encoded. Every string inside a `.json` file is searched past its escapes. A secret of fewer than 8 characters cannot be matched without false hits, so the guard answers `invalid` to everything until the host drops it. |
+| `secret_shape` | AWS access key ids (`AKIA`, `ASIA`), Google API keys, private-key blocks (public keys and certificates are fine), GitHub tokens, `sk-` keys, Slack tokens, JWTs, and a URL with a password (`user:pass@`; `user@` alone is fine). |
+| `invisible_unicode` | Zero-width, bidirectional, tag, variation-selector, private-use and control characters, in a path or a text. U+FE0F after an emoji, a joiner inside an emoji sequence, and a joiner or non-joiner between letters of a script that needs them (Persian and Urdu, the Indic scripts, Khmer, Myanmar, Sinhala) are text. |
+| `case_data` | Any value of 4 or more characters from `caseValues`, matched without case, over Unicode compatibility forms and with whitespace ignored (a value split by a line break is still found), in what the agent wrote: candidate texts, evidence and ids, the text of any other file, and the workflow or skill name in a path. Generated text is not checked, because a short value turns up in it by chance: a call id (never scanned, only checked to be printable ASCII), the run id, seed and digests (a hex run of 32 characters or more is skipped, unless a case value is itself such a hash), and the frame of an inbox that is exactly what `renderInbox` makes of its candidates. A learning states the rule, never the case. |
+| `rules_locked` | `AGENTS.md` and `agent.json` for every role, in any spelling (`isRulesLocked`). |
+| `path_not_allowed` | A path outside the role's own, any `.git` segment in any spelling, and a path that is not a plain relative one (`..`, `.`, `//`, a backslash, an absolute path, a control character). |
+| `too_large`, `too_many` | Over a cap in `CAPS`: bytes per text, per evidence list, per file, per inbox; files per write; new learnings and `used` marks per run. A refused write is never truncated. |
+| `invalid` | A run id, role, type, id or secret that is not well formed. |
+
+A run writes `inbox/<run id>.md`, `uses/<run id>.json`, and the DSL's saved workflow records as they are,
+`inbox/<run id>/workflows/<name>/<sha256>.json` and `inbox/<run id>/workflows/<name>/latest` (`<name>` is a workflow
+name, `WORKFLOW_NAME`: 1 to 64 lowercase letters, digits, dashes or underscores, starting with a letter or digit), and nothing else. The
+curator writes `learnings/L-<12 hex>.md` (it names every entry by its generated id; the index is derived at seed time and
+never stored, so `learnings/INDEX.md` is refused), `.agents/skills/<name>/SKILL.md` and `trial.json` (no other file or
+folder in a skill folder), and the DSL's workflow records, `.pi/agentrun/workflows/<name>/<sha256>.json` and `latest`.
+`trial.json` is the host's, so a
+run that proposes one is refused.
+
+## Proposing a run's notes
+
+```ts
+const result = await proposeLearning({ repo, runId, target: harness, secrets: vault.values(), caseValues, workflows });
+```
+
+`proposeLearning` is the host step at a run's terminal. It collects the run's candidates, renders `inbox/<run id>.md`
+(and `uses/<run id>.json` from the optional `uses` hook, which a later part supplies), adds the workflow records the
+host collected from the run's DSL store (`workflows`: per name, `{ files: { "<sha256>.json": text, latest: text } }`,
+committed byte for byte under `inbox/<run id>/workflows/<name>/`; a name or file name of any other shape refuses the
+proposal), guards the whole proposal as the
+`run` role, and makes one commit on `runs/<run id>` through `@parcha/pi-git-remote` with a `Run-Id` trailer, pushed by
+sha. The result is one of:
+
+- `{ status: "proposed", sha }`: the commit was made and pushed.
+- `{ status: "already", sha }`: the branch already held a commit for this run, from this host or a restarted one with an
+  empty local repository; none was made, and the push is repeated so a crash between commit and push heals.
+- `{ status: "empty" }`: the run noted nothing.
+- `{ status: "refused", refusals }`: any guard hit refuses all of it, and nothing is committed or pushed, so no ref or
+  object holds the refused value.
+
+A push the remote refuses throws a `GitRemoteError`. `proposeFiles` is the same guard-commit-push for files the caller
+has already rendered. `renderInbox` and `parseInbox` are the inbox's format: front matter (the run, and `seed`, the commit the run was seeded from,
+read from its `learn.seed` record, so a curator can stamp a learning with what the run actually saw; a run that was not
+seeded has none), the candidates for a person to read, and the candidates as one JSON line in the last fenced block, each
+with an `untrusted` mark. `proposeLearning({ untrusted: true })` marks every candidate untrusted: the host sets it when the run read
+untrusted content. `parseInbox` returns `{ run, seed?, candidates }` with `untrusted: boolean` on each candidate, and
+refuses a seed that is not a commit id.
 
 ## Versions
 
