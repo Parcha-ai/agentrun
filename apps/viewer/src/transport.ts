@@ -13,11 +13,11 @@
 //   browser: the latest `frame` session, drawn as the tile of the lane the session was in.
 // A count is proven only from the supervisor's host lines and from durable lines. A flight known only from a live line is "observed", and
 // the panel says so: it is drawn, never counted as proven (RECORDING.md section 4 rule 1). Paid calls, repeated and cost come from the
-// shell's own counter fold, and a cost that is null is "unknown", never $0; a recording with no durable line says "not measured".
+// shell's own counter fold, and a cost that is null is "not priced", never $0; a recording with no durable line says "not recorded".
 //
 // Pure: `accepts`, `reduce` and `view` read only their arguments. A scrub is a replay: the screen at a stop is the reduce of the lines
 // before it. Kinds it does not know are skipped.
-import { costLabel, counterFold, countersOf, repeatedLabel, type CounterState } from './counters.ts';
+import { costLabel, counterFold, countersOf, NOT_RECORDED, repeatedLabel, type CounterState } from './counters.ts';
 import { docOf } from './durable.ts';
 import { isSupervisor, processOf, type Json, type Line } from './format.ts';
 import { h, register, type Node, type Panel } from './panels.ts';
@@ -259,9 +259,9 @@ function counters(state: TransportState, now: number, providers?: 'real' | 'scri
     row('flights', flightText, undefined, 'flights'),
     row('checkpoints', state.checkpoints.length === 0 ? '0' : `${state.checkpoints.length} (observed: live lines)`, undefined, 'checkpoints'),
     row('bytes shipped', state.flights.length === 0 ? 'none yet' : unknown === state.flights.length ? 'not recorded' : unknown > 0 ? `${size(bytes)} known, ${unknown} flight${unknown === 1 ? '' : 's'} not recorded (observed)` : `${size(bytes)} (observed)`, undefined, 'bytes'),
-    row('paid calls', measured ? String(strip.paid.total) : 'not measured: no durable lines'),
-    row('repeated', measured ? repeatedLabel(strip) : 'not measured: no durable lines'),
-    // As the shell's strip: a cost nobody priced is unknown, with no durable line or with a part unknown, never $0; the
+    row('paid calls', measured ? String(strip.paid.total) : `${NOT_RECORDED}: no durable lines`),
+    row('repeated', measured ? repeatedLabel(strip) : `${NOT_RECORDED}: no durable lines`),
+    // As the shell's strip: a cost nobody priced is not priced, with no durable line or with a part unknown, never $0; the
     // boxes' time named at list price.
     row('cost', costLabel(strip.cost, strip.costLowerBound, providers, strip.costParts)));
 }

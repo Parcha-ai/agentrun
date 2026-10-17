@@ -147,15 +147,15 @@ test('an install that did not run in a box says so, never a clean log', () => {
   assert.match(text(find(tree, cls('wm-box'))[0]!), /replay: no box was started/);
 });
 
-test('the ledger sets the baseline recording\'s counters beside this run\'s, reads the cost as unknown and never as $0, and prices the kills', () => {
+test('the ledger sets the baseline recording\'s counters beside this run\'s, reads the cost as not priced and never as $0, and prices the kills', () => {
   assert.equal(find(at(indexOf((line) => line.kind === 'camera')).tree, cls('wm-ledger')).length, 0, 'not before the run ends');
   assert.equal(find(at(lines.length, undefined, false).tree, cls('wm-ledger')).length, 0, 'not without a baseline');
   const words = text(find(at(lines.length, undefined, true, 'real').tree, cls('wm-ledger'))[0]!);
   assert.match(words, /The price of chaos: no kills against 1 kills/);
-  assert.match(words, /cost\$1\.50unknown/, 'the run with kills priced nothing, so its cost is unknown');
-  assert.match(words, /paid calls repeated0not measured/, 'this run\'s effects report no calls, so its repeats are not measured, never 0');
+  assert.match(words, /cost\$1\.50not priced/, 'the run with kills priced nothing, so its cost is not priced');
+  assert.match(words, /paid calls repeated0not recorded/, 'this run\'s effects report no calls, so its repeats are not recorded, never 0');
   assert.match(words, /model turns committed60/);
-  assert.match(words, /Price of the kills: unknown/);
+  assert.match(words, /Price of the kills: not priced/);
 });
 
 test('reduce never changes the state it is given, and a scrub equals a fresh reduce', () => {
@@ -217,7 +217,7 @@ const price = (state: WmState, run: 'real' | 'scripted' | undefined, base: 'real
 
 test('the price of the kills is computed when the run and the baseline both priced real providers', () => {
   assert.equal(price(priced(), 'real', 'real'), 'Price of the kills: -$1.00.', 'this run $0.50 against the baseline $1.50: real variance, shown');
-  assert.equal(price(reduceTo(workflowMapPanel, lines, lines.length), 'real', 'real'), 'Price of the kills: unknown.', 'a real pair with an unpriced part is unknown, not a number');
+  assert.equal(price(reduceTo(workflowMapPanel, lines, lines.length), 'real', 'real'), 'Price of the kills: not priced.', 'a real pair with an unpriced part is not priced, not a number');
 });
 
 test('the price of the kills reads not comparable for a scripted run, a scripted baseline, two scripted runs, or a manifest with no providers on either side', () => {

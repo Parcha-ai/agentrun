@@ -94,7 +94,7 @@ test('the recorded fixtures read what their expected.json says', () => {
     const counters = counted(lines);
     if (expected === 'NOT MEASURED') {
       assert.equal(counters.pageActions.measured, false, name);
-      assert.deepEqual([repeatedLabel(counters), askedTwiceLabel(counters)], ['not measured', 'not measured'], `${name}: never 0`);
+      assert.deepEqual([repeatedLabel(counters), askedTwiceLabel(counters)], ['not recorded', 'not recorded'], `${name}: never 0`);
     } else {
       assert.equal(counters.pageActions.measured, true, name);
       assert.deepEqual({ repeated: counters.repeated, askedTwice: counters.askedTwice, possible: counters.pageActions.possible }, expected, name);
@@ -110,5 +110,5 @@ test('page actions are not measured only when every browser.sessions line carrie
   assert.equal(counted([...untimed.slice(0, -1), recorded.at(-1)!]).pageActions.measured, true, 'one line the recorder stamped is enough');
   const noBrowser = counted(parseLines(readFileSync(new URL('./fixtures/reference-killed/events.jsonl', import.meta.url), 'utf8')).filter((line) => line.kind !== 'browser.sessions'));
   assert.equal(noBrowser.pageActions.measured, true, 'a run with no browser has nothing unmeasured');
-  assert.notEqual(askedTwiceLabel(noBrowser), 'not measured');
+  assert.notEqual(askedTwiceLabel(noBrowser), 'not recorded');
 });

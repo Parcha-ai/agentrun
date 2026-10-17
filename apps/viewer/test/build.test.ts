@@ -64,7 +64,7 @@ test('the page opens from file:// and draws the recording: the counters and the 
   for (const shown of ['paid calls made', 'repeated', 'processes', 'journal opens', 'killed: killed in the lead\'s request after the browser read', 'Model turns']) {
     assert.ok(text.includes(shown), `the page shows ${shown}`);
   }
-  assert.match(text, /unknown cost/, 'the scripted judge reports no cost: unknown, never $0');
+  assert.match(text, /not priced cost/, 'the scripted judge reports no cost: not priced, never $0');
 });
 
 test('the page takes the manifest\'s chapters and baseline, marks a restore, and opens at a commit of a generation', noChrome, (t) => {
@@ -104,11 +104,11 @@ test('the page takes the manifest\'s chapters and baseline, marks a restore, and
   assert.match(lost, /after commit 5 of generation 1 · line 8 of 18/, 'commit 5 of the lost branch');
   assert.doesNotMatch(lost, /breaks the format/);
   const redo = pageText(join(out, 'dist'), join(out, 'profile'), 'r=restore-drill&at=2:5');
-  // A recording with no durable line: nothing from the store is measured, and cost is unknown, never $0.
+  // A recording with no durable line: nothing from the store is recorded, and cost is not priced, never $0.
   const liveOnly = pageText(join(out, 'dist'), join(out, 'profile'), 'r=live-only');
-  assert.match(liveOnly, /not measured paid calls made/);
-  assert.match(liveOnly, /not measured model turns/);
-  assert.match(liveOnly, /unknown cost/);
+  assert.match(liveOnly, /not recorded paid calls made/);
+  assert.match(liveOnly, /not recorded model turns/);
+  assert.match(liveOnly, /not priced cost/);
   assert.doesNotMatch(liveOnly, /\$0\.0000|0 paid calls made/);
   assert.match(liveOnly, /1 processes/, 'processes still come from the supervisor\'s lines');
   assert.match(redo, /after commit 5 of generation 2 · line 15 of 18/, 'commit 5 again, after the restore');

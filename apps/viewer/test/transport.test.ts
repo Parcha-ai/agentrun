@@ -95,8 +95,8 @@ test('the screen says what is proven and what is only observed, and never makes 
   assert.match(end, /2 of 2 · 1 box, 1 process/);
   assert.match(end, /5 moves, 1 restore \(observed: live lines\)/);
   assert.match(end, /observed \(live line\)/);
-  assert.match(end, /cost\s+unknown/);
-  assert.match(end, /paid calls\s+not measured: no durable lines/);
+  assert.match(end, /cost\s+not priced/);
+  assert.match(end, /paid calls\s+not recorded: no durable lines/);
   assert.doesNotMatch(end, /\$0/);
   assert.match(end, /Why here: by config \(no placement record in this recording\)/);
   assert.match(end, /the whole box/);
@@ -139,11 +139,11 @@ test('a restore marks the flights of the lost branch as lost, and they are still
   assert.match(screen(lines), /lost branch/);
 });
 
-test('a cost that is null is unknown, never $0', () => {
+test('a cost that is null is not priced, never $0', () => {
   const lines: Line[] = [{ channel: 'durable', source: 'workflow', kind: 'agentrun.decisions', gen: 1, t: 1, commit: 1, order: 0, data: { doc: 'agentrun.decisions', key: 'k', value: { receipts: [{ decision_id: 'a', run_key: 'k', cost_usd: null }] } } }];
   assert.ok(counterFold.accepts(lines[0]!) && transportPanel.accepts(lines[0]!));
   const text = screen(lines);
-  assert.match(text, /cost\s+unknown/);
+  assert.match(text, /cost\s+not priced/);
   assert.doesNotMatch(text, /\$0/);
 });
 
@@ -228,15 +228,15 @@ test('a restore that left paths out of its checkpoint says which, and a checkpoi
   assert.doesNotMatch(screen([...boxes, restore({})]), /left out of the checkpoint/);
 });
 
-test('the panel and the shell\'s strip agree on a recording with no durable line: paid calls and repeats not measured, cost unknown, never $0', () => {
+test('the panel and the shell\'s strip agree on a recording with no durable line: paid calls and repeats not recorded, cost not priced, never $0', () => {
   for (const each of [real, docker, t4]) {
     const strip = countersOf(each.lines.reduce((state, line) => (counterFold.accepts(line) ? counterFold.reduce(state, line) : state), counterFold.init()), true);
     assert.equal(strip.measured, false);
     assert.equal(strip.cost, null);
     const shown = screen(each.lines);
-    assert.match(shown, /paid calls\s+not measured/);
-    assert.match(shown, /repeated\s+not measured/);
-    assert.match(shown, /cost\s+unknown/);
+    assert.match(shown, /paid calls\s+not recorded/);
+    assert.match(shown, /repeated\s+not recorded/);
+    assert.match(shown, /cost\s+not priced/);
     assert.doesNotMatch(shown, /\$0/);
   }
 });

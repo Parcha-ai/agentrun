@@ -3,7 +3,7 @@
 // (PANELS.md): `accepts`, `reduce`, `view` are pure, so a scrub is a replay. The counters strip (counters.ts) already
 // folds RECORDING.md section 6, and this panel does not recount it: the ledger reads that fold's result for the storm run.
 import type { Json, Line } from './format.ts';
-import { counterFold, countersOf, repeatedLabel, type CounterState } from './counters.ts';
+import { counterFold, countersOf, NOT_PRICED, NOT_RECORDED, repeatedLabel, type CounterState } from './counters.ts';
 import { docOf, effectIdOf, effectOf, type DocLine } from './durable.ts';
 import {
   branchOf, callFactsOf, callKindOf, conversationOf, donePathsOf, evidenceOf, factsOf, finishedOf, looksOf, planOf, recordFactsOf, repositoryOf, verdictsOf,
@@ -303,14 +303,14 @@ const wmTail = (log: string) => log.split('\n').map((line) => line.trimEnd()).fi
 /** The price of chaos: the baseline recording's own counters against this run's. */
 function wmLedger(state: WmState, base: BaselineView, providers: 'real' | 'scripted' | undefined): Node {
   const mine = countersOf(state.counters, true);
-  const money = (usd: number | null) => (usd === null ? 'unknown' : `$${usd.toFixed(2)}`);
-  const seconds = (ms: number | null) => (ms === null ? 'unknown' : `${(ms / 1000).toFixed(0)} s`);
+  const money = (usd: number | null) => (usd === null ? NOT_PRICED : `$${usd.toFixed(2)}`);
+  const seconds = (ms: number | null) => (ms === null ? NOT_RECORDED : `${(ms / 1000).toFixed(0)} s`);
   const row = (label: string, without: string, withKills: string, alarm = false) => h('tr', { class: alarm ? 'alarm' : '' }, h('th', {}, label), h('td', {}, without), h('td', {}, withKills));
   // The price of the kills is a difference of two costs, so it is computed only when both runs priced real providers (draft 18): a scripted run
   // priced nothing, and a number against it would be a comparison of a replay with a paid run. A missing field on either side reads the same.
   const comparable = providers === 'real' && base.providers === 'real';
   const delta = !comparable ? `not comparable (run: ${providers ?? 'not recorded'}, baseline: ${base.providers ?? 'not recorded'}; the price needs both real)`
-    : base.counters.cost !== null && mine.cost !== null ? `${mine.cost - base.counters.cost >= 0 ? '+' : '-'}$${Math.abs(mine.cost - base.counters.cost).toFixed(2)}` : 'unknown';
+    : base.counters.cost !== null && mine.cost !== null ? `${mine.cost - base.counters.cost >= 0 ? '+' : '-'}$${Math.abs(mine.cost - base.counters.cost).toFixed(2)}` : NOT_PRICED;
   return h('div', { class: 'wm-ledger' },
     h('h4', {}, `The price of chaos: ${base.label} against ${state.kills.length} kills`),
     h('table', {},
