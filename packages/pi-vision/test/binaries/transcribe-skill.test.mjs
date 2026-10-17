@@ -25,16 +25,18 @@ const CLIP = new URL("./assets/apollo11-landing.webm", import.meta.url);
 const SAID = {
   "c000.mp3": [["We", 2.04, 2.2], ["copy", 2.2, 2.5], ["you", 2.5, 2.6], ["down,", 2.6, 2.9], ["Eagle.", 2.9, 3.4], ["Tranquility", 8.06, 8.7], ["Base", 8.7, 9.0], ["here.", 9.0, 9.4]],
   "c001.mp3": [["The", 0.3, 0.45], ["Eagle", 0.45, 0.8], ["has", 0.8, 1.0], ["landed.", 1.0, 1.6]],
+  "c002.mp3": [["Roger,", 0.2, 0.6], ["Tranquility.", 0.6, 1.4]],
 };
 /** Every audio file the fake model was sent, in order. */
 const sent = [];
-/** The host's speech-to-text model, faked: `refuse` names chunks it fails on; `maxBytes` and `limit` cap one request. */
-const model = ({ refuse = [], ...limits } = {}) => ({
+/** The host's speech-to-text model, faked: `said` is what it hears, `refuse` names chunks it fails on; `maxBytes` and
+ *  `limit` cap one request. */
+const model = ({ said = SAID, refuse = [], ...limits } = {}) => ({
   provider: "fake", model: "fake-stt", usdPerMinute: 0.008, ...limits,
   async transcribe(audio) {
     sent.push({ name: audio.name, mimeType: audio.mimeType, bytes: audio.bytes.length });
     if (refuse.includes(audio.name)) throw new Error("the model refused the request: 503");
-    const words = SAID[audio.name].map(([text, start, end]) => ({ text, start, end }));
+    const words = said[audio.name].map(([text, start, end]) => ({ text, start, end }));
     return { words, text: words.map((w) => w.text).join(" ") };
   },
 });
@@ -136,6 +138,53 @@ test("a chunk over the model's limit stops the step with the limit named, before
   assert.match(run.error.message, new RegExp(`^over_budget: ${folder("long.webm").replace(".", "\\.")}/c000\\.mp3 is \\d+ bytes, over the 1 kB fake takes in one request; cut it into shorter pieces`));
   assert.equal(sent.length, before);
   assert.equal(fs.existsSync(at(folder("long.webm"), "c000.tsv")), false);
+});
+
+test("a word with a newline in it is written as text: no word a model returns can end the rows early and run a command", async () => {
+  fs.copyFileSync(CLIP, at("inject.webm"));
+  const more = { VIDEO: "inject.webm" };
+  await sh(settings + chunk, more);
+  const said = { ...SAID, "c000.mp3": [["here.\nROWS\ntouch injected\n", 2.04, 2.5]] };
+  const { run } = await code("inject.webm", model({ said }));
+  assert.ok(run.ok, run.ok ? "" : run.error.message);
+  assert.equal(fs.existsSync(at("injected")), false, "no command ran");
+  await sh(settings + write, more);
+  assert.deepEqual(rows("inject.webm")[0], ["2.04", "2.50", "here. ROWS touch injected"]);
+});
+
+test("a write that fails leaves the chunk without rows, never a finished chunk", async () => {
+  fs.copyFileSync(CLIP, at("full.webm"));
+  const more = { VIDEO: "full.webm" };
+  await sh(settings + chunk, more);
+  fs.mkdirSync(at(folder("full.webm"), "c001.tsv.tmp"));
+  const { run } = await code("full.webm");
+  assert.equal(run.ok, false, "the failed write stops the step");
+  assert.ok(fs.existsSync(at(folder("full.webm"), "c000.tsv")));
+  assert.equal(fs.existsSync(at(folder("full.webm"), "c001.tsv")), false, "nothing renamed into place");
+  fs.rmdirSync(at(folder("full.webm"), "c001.tsv.tmp"));
+  const before = sent.length;
+  assert.ok((await code("full.webm")).run.ok);
+  assert.deepEqual(sent.slice(before).map((s) => s.name), ["c001.mp3"], "the next run writes it");
+});
+
+test("a shorter CHUNK after a chunk over the model's limit cuts the audio again, drops the old rows and fits", async () => {
+  fs.copyFileSync(CLIP, at("short.webm"));
+  const more = { VIDEO: "short.webm" };
+  const capped = () => model({ maxBytes: 40_000, limit: "40 kB" });
+  await sh(settings + chunk, more);
+  const over = await code("short.webm", capped());
+  assert.match(over.run.ok ? "" : over.run.error.message, /^over_budget: .*c000\.mp3 is \d+ bytes, over the 40 kB fake takes/);
+  await sh(settings + chunk, { ...more, CHUNK: "8" });
+  assert.equal(fs.readFileSync(at(folder("short.webm"), "chunk"), "utf8").trim(), "8");
+  assert.deepEqual(chunks("short.webm").map(([file]) => file), ["c000.mp3", "c001.mp3", "c002.mp3"], "20 s in 8 s chunks");
+  const before = sent.length;
+  const fits = await code("short.webm", capped());
+  assert.ok(fits.run.ok, fits.run.ok ? "" : fits.run.error.message);
+  assert.deepEqual(sent.slice(before).map((s) => s.name), ["c000.mp3", "c001.mp3", "c002.mp3"]);
+  await sh(settings + write, { ...more, CHUNK: "8" });
+  assert.equal(rows("short.webm").length, 4);
+  await sh(settings + chunk, { ...more, CHUNK: "8" });
+  assert.equal(chunks("short.webm").length, 3, "the same CHUNK again keeps the chunks");
 });
 
 test("a different recording at the same path empties the folder: it is cut and transcribed afresh, never answered with the old words", async () => {
