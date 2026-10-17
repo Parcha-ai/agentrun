@@ -147,3 +147,70 @@ Each is marked in the code with the package that owns it.
   A resumed workflow task would reach the browser before its sessions are reconciled. `assemble.ts` holds the task's
   steps until the reconcile has run, and until `start` has accepted this job's request: `start` refuses a request that is
   not the run's own with `RUN_STORE_BINDING_MISMATCH`, so a refused job never lets the saved task run.
+
+## The entry as a demo's platform: `demo()`
+
+A demo's `run.ts` is about twenty lines: its spec, its job, its fakes and one call. The entry reads the standard flags and runs the job on the no-key host.
+
+```ts
+import { demo } from '../reference/index.ts';
+import spec from './demo.json' with { type: 'json' };
+import { fakes } from './fakes.ts';
+import job from './job.ts';
+
+await demo({ self: import.meta.url, spec, job, fakes });
+```
+
+| Flag | What it does |
+|---|---|
+| (none) | the job on fakes: $0, no key |
+| `--live` | real models and services; refused unless the demo supplies them (`live`) |
+| `--kill` | the spec's `kills`, in order, each ending one process; a fresh process resumes on the same directory |
+| `--record <dir>` | an `agentrun.recording/1` directory, through the reference recorder |
+| `--input <path\|json>` | the job's input; the job's own is the default |
+| `--max-usd <n>` | stops the run past n dollars, metered on the recording's lines (default twice `expectedCost`); a run that finishes past it says so and exits 1 |
+| `--local-chrome` | with `--live` and no Browserbase key pair: a Chrome on your own machine (`CHROME_PATH`). Browserbase is used only when `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID` are both set, decided before anything starts (a half pair is named, never used); a local Chrome is never chosen for you |
+| `--dir <path>` | keeps the run's directory |
+| `--json` | the result as one JSON object |
+
+### The spec
+
+The parts of `demo.json` the entry acts on:
+
+- `kills`: a list. Each entry is a named crossing `{ point, why }` or a storm `{ storm: { kills, gapMs } }`. A crossing entry may add `kind: "box"` (the whole machine or sandbox was taken away; the supervisor destroys the process's boxes with it, and the kill line says `box`), `target` (`"run"`, the default: the process the run lives in dies; `"tool"`: a box a tool made is destroyed once at the crossing, the run's process lives, no kill line is written, and the transport box lines record the loss) and `n` (the nth time the crossing is taken, default 1). A storm kills `kills` times, each at the first crossing taken once the process has run `gapMs` and has opened the journal and begun its first node (a kill earlier leaves a generation the journal never recorded); a named point is taken as named. The template's single `kill` is a list of one.
+- `expectedCost`: dollars a live run is expected to cost; `--max-usd` defaults to twice it.
+- `input`: `{ fixtures: { <name>: "examples/<demo>/fixtures/<file>.json" } }`: the demo's captures, each a name (`[a-z0-9-]`) and the JSON file that is the job's input for it. `--input <name>` runs the job on that capture. A path outside `examples/<demo>/fixtures/` is refused; on fakes a bare name that is not a capture (and not a file) is refused with the list of captures; `--live` reads the real thing.
+- `boxes`: `{ kind: "local" | "docker", image?, runIn? }`. Docker is used only with `--live`: a no-key run uses a local box and starts no container. The provider is handed to the demo's tools as `context.boxes` (their second argument), with the crossings and transport lines below built in. A tool's `context` also carries `live` (false on a no-key run: one set of tools reads live or replays a capture) and the run's `place` (`{ root, work }`), where it reads the run's evidence files and the job's files. `runIn: true` also runs the job's own disk tools in a box of it.
+
+### Crossings
+
+A crossing is a named point the child takes; `kills[].point` names one, and the first time (or the nth) the child takes it, the child is killed with SIGKILL. A package adds its own through the same `cross` function (`vision.filing`).
+
+| Point | Where |
+|---|---|
+| `model.request turn <n>` / `model.answered turn <n>` | the scripted model's request, and its answer, at the turn after n tool results |
+| `judge.asked <label>` / `judge.answered <label>` | the judge's question and answer |
+| `tool.dispatch <tool>` / `tool.returned <tool>` | a scripted tool is called and returns. Never a kill point: between the dispatch and the host keeping the answer nothing records what the tool did, and a kill there leaves the call unknown |
+| `effect.kept <tool>` | the host has kept the tool's answer and the driver has not yet committed it. A kill point only when no other call is in that window. The resumed process settles the call from the kept answer: it is not sent again |
+| `receipt.filing <tool>` / `receipt.filed <tool>` | an evidence receipt is about to be filed, and has been |
+| `event <source>.<type>` | each row of events the run reports (`event workflow.node.start`, `event browser.launched`, `event vision.look`) |
+| `deliver.writing` / `deliver.written` | the delivery |
+| `transport.box.create` / `transport.box.created` | a box is about to be made, and exists |
+| `transport.box.exec` | a box command is in flight: started, its answer not yet read |
+| `transport.box.destroy` | a box is about to be destroyed |
+
+A crossing taken inside a tool call (`transport.box.*` from a tool that makes its own box) is never a `target: "run"` kill point, for the reason `tool.dispatch` is not. It can be a `target: "tool"` kill.
+
+The transport box lines are live lines of source `transport`: `box.created` `{ box, provider }`, `box.killed` `{ box, crossing }` (written before the box is destroyed) and `box.ended` `{ box, provider, killed }`.
+
+### The judge seam
+
+Every demo's typed questions pass through one seam that carries Jev's limits and Jev's price, whoever answers: at most 50 requests and 40,000 tokens (in and out) over the run. The next request after a cap is reached is refused with `JEV_CAP_REACHED` and is never sent; a failed request counts, a refused one does not. The count is kept in the run's directory, so a resumed process continues it. An answer that reports usage and no price of its own is priced at Jev's public list price, $0.042 per million input tokens and nothing for output (`jev-1.12`; source: the TypeSafe cookbook, 2026-07); a price the answer reports is kept.
+
+### What a demo hands the entry, besides its job
+
+`fakes.extensions` (pi extensions a no-key run installs beside the host's own) and `fakes.vision(host, running)` (the demo's vision lane on fakes: an eyes object, limits, an evidence sink; `running.harness` is undefined until the run is open). `DemoOptions.result(record, { dir, keep })` returns `{ json, title }`: the entry writes the run's result line and its blob from it (`agentrun.cited/1` for a payoff that cites what it read) instead of the raw delivered record; `keep` stores a file in the recording's blobs and returns its SHA-256.
+
+### What a live child's environment holds
+
+On `--live` the child is given exactly the environment names `demo.json` declares (every `env` in `keys`, the members of a `oneOf` group included, and in `programs`), plus the process basics (`PATH`, `HOME`, `TMPDIR`), and nothing else: an undeclared variable in the parent's environment never reaches it, so the spec and the child's environment cannot drift. A no-key run passes the demo's own `DEMO_*` settings (no secret). `LiveParts.vision(host, running)` is built the way `fakes.vision(host, running)` is: one seam for both.

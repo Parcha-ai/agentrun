@@ -26,7 +26,9 @@ Stagehand, undici, zod and the two HTML packages are dependencies. Four optional
 | `@earendil-works/pi-durable` and `@earendil-works/chord` | `/durable`, the adapter for a pi-durable Harness. |
 | `@browserbasehq/sdk` | the Browserbase provider. Kernel needs no SDK. |
 
-The pi peers are `@earendil-works/pi-durable` and `chord` `>=1.1.0 <1.3.0`, and `@earendil-works/pi-coding-agent` at any version, as pi's package guidance asks of the packages it supplies. The suite passes on pi 1.1 and 1.2, and the coding-agent entry's tests also pass on a pi 1.0.4 family.
+The pi peers are `@earendil-works/pi-durable` and `chord` `>=1.1.0 <1.4.0`, and `@earendil-works/pi-coding-agent` at any version, as pi's package guidance asks of the packages it supplies. The suite passes on pi 1.1, 1.2 and 1.3, and the coding-agent entry's tests also pass on a pi 1.0.4 family.
+
+pi 1.0.4 or 1.1.x users: pin `@earendil-works/pi-codemode` to the same version as `@earendil-works/pi-coding-agent` (`@1.0.4`, or `@1.1.0`), because pi-codemode 1.2.0 removed an export those versions import, or use pi 1.2.
 
 ## Quick start
 

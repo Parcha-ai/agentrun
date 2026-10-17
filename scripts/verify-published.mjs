@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { releasePackageNames, releasePackages } from './release-preflight.mjs';
+import { buildOverrides, findDrift } from './pi-family-pins.mjs';
 
 const exec = promisify(execFile);
 
@@ -76,6 +77,21 @@ export async function waitForRegistryVersions(registry, packages, { fetchImpl = 
   throw new Error(`Registry packuments never listed ${missing.join(', ')}`);
 }
 
+// The consumer has no lockfile of its own, so an @earendil-works package that another one depends on by range floats to the newest release
+// (pi-coding-agent at 1.1.0 beside a pi-codemode at 1.2.0 that dropped an export it imports). Every such edge is pinned to the version the
+// repository's lockfile holds, with the same overrides the package check's consumer gets, and the installed tree is checked against them.
+export async function installRegistryConsumer(consumer, { requested, root, registry = 'https://registry.npmjs.org/', run = exec }) {
+  const rootLock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8')).packages ?? {};
+  const npmMajor = Number((await run('npm', ['--version'])).stdout.trim().split('.')[0]);
+  const { overrides, held } = buildOverrides(rootLock, npmMajor);
+  await writeFile(join(consumer, 'package.json'), JSON.stringify({ name: 'agentrun-registry-consumer', private: true, type: 'module', overrides }));
+  await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', `--registry=${registry}`, ...requested], { cwd: consumer, timeout: 180_000, maxBuffer: 8 * 1024 * 1024 });
+  const lock = JSON.parse(await readFile(join(consumer, 'package-lock.json'), 'utf8'));
+  const drifted = findDrift(lock.packages, held);
+  assert.deepEqual(drifted, [], `The registry consumer holds @earendil-works packages the repository does not hold, or at versions it does not hold: ${drifted.join(', ')}`);
+  return lock;
+}
+
 export async function verifyPublished(root, selected, { allowAbsent = false, fetchImpl = fetch, wait, now } = {}) {
   assert.ok([...releasePackages, 'all'].includes(selected));
   assert.ok(!allowAbsent || selected !== 'all', 'Absence probes select exactly one package');
@@ -118,12 +134,10 @@ export async function verifyPublished(root, selected, { allowAbsent = false, fet
       receipt.registryVisible = await waitForRegistryVersions(plan.registry, plan.packages, { fetchImpl, wait, now });
       const consumer = await mkdtemp(join(tmpdir(), 'agentrun-registry-consumer-'));
       try {
-        await writeFile(join(consumer, 'package.json'), JSON.stringify({ name: 'agentrun-registry-consumer', private: true, type: 'module' }));
         // The Pi packages are optional peers of @parcha/agentrun-pi: a host supplies them, so the consumer does, at the versions the package is tested with.
         const piDev = JSON.parse(await readFile(join(root, 'packages/pi/package.json'), 'utf8')).devDependencies ?? {};
         const peers = ['@earendil-works/pi-coding-agent', '@earendil-works/pi-agent-core', '@earendil-works/pi-tui', '@earendil-works/pi-ai', 'typebox'].map(name => { assert.ok(piDev[name], `packages/pi has no dev dependency ${name}`); return `${name}@${piDev[name]}`; });
-        await exec('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', '--registry=https://registry.npmjs.org/', ...plan.packages.map(pkg => `${pkg.name}@${pkg.version}`), ...peers], { cwd: consumer, timeout: 180_000, maxBuffer: 8 * 1024 * 1024 });
-        const lock = JSON.parse(await readFile(join(consumer, 'package-lock.json'), 'utf8'));
+        const lock = await installRegistryConsumer(consumer, { requested: [...plan.packages.map(pkg => `${pkg.name}@${pkg.version}`), ...peers], root, registry: plan.registry });
         for (const pkg of plan.packages) assert.equal(lock.packages[`node_modules/${pkg.name}`].integrity, pkg.integrity, 'Installed archive integrity mismatch');
         await writeFile(join(consumer, 'deny-network.mjs'), `import net from 'node:net'; import http from 'node:http'; import https from 'node:https'; import {syncBuiltinESMExports} from 'node:module';
     const deny=()=>{throw new Error('Networking prohibited in registry smoke tests');};

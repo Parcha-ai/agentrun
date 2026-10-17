@@ -1,8 +1,9 @@
 // The ten-kill ledger on the reference job: the job runs on the no-key host and is ended with SIGKILL at a seeded random
 // point ten times, a fresh process resuming the directory each time. Every count is read from the store, the receipts and
-// the run's own rows. The same seed gives the same kills.
+// the run's own rows. The same seed draws the same first kill.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { reconcileEffects } from './reference/assemble.ts';
 import { classesOf, CLASSES, cutBrowserAction, cutInEffectWindow, isReduced, killAnywhere, planNext, progress, random, render } from './reference/kill-anywhere.ts';
 
 const failed = (ledger) => ledger.checks.filter((check) => !check.ok).map((check) => ({ check: check.name, detail: check.detail }));
@@ -56,11 +57,15 @@ test('a page action that errored is printed with the kill behind it and the ask 
   assert.match(lines, /page\.run +x2; 1 errored run result committed \(kill 2, 5\)/);
 });
 
-test('the same seed gives the same kills, and another seed gives others', { timeout: 300_000 }, async () => {
-  const where = (ledger) => ledger.kills.map((kill) => kill.landed && `${kill.landed.side} ${kill.landed.point}`);
+test('the same seed draws the same first kill, and another seed draws another; every ledger check and gate passes on both runs', { timeout: 300_000 }, async () => {
+  // Only the first kill's plan is compared: it lands before any process can diverge. Later landings depend on the order concurrent work takes inside a process, which varies under load.
   const [one, again, other] = [await killAnywhere({ seed: 300, kills: 6 }), await killAnywhere({ seed: 300, kills: 6 }), await killAnywhere({ seed: 65, kills: 6 })];
-  assert.deepEqual(where(again), where(one));
-  assert.notDeepEqual(where(other), where(one));
+  for (const [name, ledger] of [['seed 300', one], ['seed 300 again', again], ['seed 65', other]]) {
+    assert.deepEqual(failed(ledger), [], name);
+    assert.deepEqual(ledger.gates.filter((gate) => !gate.ok), [], name);
+  }
+  assert.deepEqual(again.kills[0].plan, one.kills[0].plan);
+  assert.notDeepEqual(other.kills[0].plan, one.kills[0].plan);
 });
 
 test('a cut before the host kept the effect\'s answer stops the next process on the unknown effect, and the tool is never dispatched again', { timeout: 120_000 }, async () => {
@@ -82,6 +87,27 @@ test('a cut after the host kept the effect\'s answer and before the driver commi
   assert.equal(cut.killed, 'SIGKILL');
   assert.equal(cut.resumed.status, 'complete');
   assert.deepEqual(cut.made, { killed: 1, total: 1 });
+});
+
+test('a call admitted and never sent (the kill lands between admission and the send) is sent again by the resume with the args the journal kept: exactly one send in all', { timeout: 120_000 }, async () => {
+  // Without a host `rerun` the resume refuses the unknown effect (the test above). With one, reconcile hands it the args the call was admitted with, and the call is sent once, by the resumed process.
+  const cut = await cutInEffectWindow('tool.dispatch search', { rerun: true });
+  assert.equal(cut.killed, 'SIGKILL');
+  assert.equal(cut.resumed.status, 'complete');
+  assert.deepEqual(cut.made, { killed: 0, total: 1 }, 'never sent by the killed process, sent once by the resumed one');
+  assert.deepEqual(cut.effects, { search: 1 }, 'one search in the host\'s ledger: nothing was repeated');
+});
+
+test('reconcile gives rerun the args the journal kept for the effect, and none when the record has none', async () => {
+  const asked = [];
+  const completed = [];
+  const rerun = async (effect) => { asked.push(effect); return effect.args === undefined ? undefined : { args: effect.args, value: { sent: effect.args } }; };
+  await reconcileEffects([
+    { id: 'a', argsHash: 'h1', intent: { tool: 'search' }, args: { query: 'Acme Ltd' } },
+    { id: 'b', argsHash: 'h2', intent: { tool: 'search' } },
+  ], async (id, value) => { completed.push([id, value]); }, { rerun });
+  assert.deepEqual(asked.map((effect) => [effect.id, effect.args]), [['a', { query: 'Acme Ltd' }], ['b', undefined]]);
+  assert.deepEqual(completed, [['a', { sent: { query: 'Acme Ltd' } }]], 'the one with args was sent and completed; the one without stays unknown');
 });
 
 test('the plan: a seed draws the same cuts, a window shrinks with the work left, and progress follows the order of an uncut run', () => {

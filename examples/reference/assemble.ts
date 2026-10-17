@@ -68,7 +68,8 @@ function runEnv(claim: Claim): RunEnv {
  *  the example's (a member you give replaces ours, except `onLook` and `onMiss`, which run after ours). It is called once when the
  *  extension is built, with a getter for the run's harness (undefined until the run is open). What differs per conversation is
  *  what the options themselves take: `limits`, `eyes` and `eyesModel` are given the conversation (`{ conversationId }`). */
-export type RunOptions = { env?: (claim: Claim) => RunEnv; vision?: (context: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions> };
+/** `layout`: the recovery driver's layout for the run, `v4` for the keyed one (the map items kept as `agentrun.items` documents); the driver's default when absent. It is the host's choice, not the job's. */
+export type RunOptions = { env?: (claim: Claim) => RunEnv; vision?: (context: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions>; layout?: 'v3' | 'v4' };
 
 /** `env`: where the run's tools act. Default: the claim's `work/`, through the disk package's confined environment. */
 export async function run(place: RunPlace, host: Host, job: Job, options: RunOptions = {}): Promise<RunResult> {
@@ -119,7 +120,7 @@ export async function run(place: RunPlace, host: Host, job: Job, options: RunOpt
   const ready = new Promise<void>((resolve) => { reconciled = resolve; });
   const flow = createWorkflowExtension({
     // A host settles what a killed process left unknown through the driver's own open: one generation, not two.
-    options: () => (host.tools.answered || host.tools.rerun ? { reconcile: (unknown, complete) => reconcileEffects(unknown, complete, host.tools) } : {}),
+    options: () => ({ ...(options.layout ? { layout: options.layout } : {}), ...(host.tools.answered || host.tools.rerun ? { reconcile: (unknown, complete) => reconcileEffects(unknown, complete, host.tools) } : {}) }),
     run: async ({ key, runtime, context, driver }) => {
       runtime.signal.throwIfAborted();
       await Promise.race([ready, once(runtime.signal, 'abort').then(() => { throw runtime.signal.reason; })]);
@@ -187,7 +188,8 @@ export async function run(place: RunPlace, host: Host, job: Job, options: RunOpt
 }
 
 /** An effect a killed process left unknown, as the driver hands it to `reconcile`: its intent and the calls its host reported before the kill. */
-export type UnknownEffect = { id: string; argsHash: string; intent?: { tool: string }; calls?: unknown[] };
+/** `args`: what the call was admitted with, which the journal keeps (absent on a record written before args were kept): a call admitted and never sent is sent again with them. */
+export type UnknownEffect = { id: string; argsHash: string; intent?: { tool: string }; args?: unknown; calls?: unknown[] };
 /** What `reconcile` is given to settle one: its value, and the receipt the driver records beside it (the calls it APPENDS to the effect's own). */
 export type Complete = (id: string, value: unknown, receipt?: { intent?: { tool: string; args?: unknown }; calls?: unknown[] }) => Promise<void>;
 
@@ -200,7 +202,7 @@ export async function reconcileEffects(unknown: UnknownEffect[], complete: Compl
     // The door keeps its answer by the effect's id, so one effect's answer is never another's (a poll and its next share an argsHash).
     const kept = answered ? await answered({ id: effect.id, argsHash: effect.argsHash }) : undefined;
     // Nothing kept: the host may run it again, when that is safe, by the effect's id (not its hash, which a retry shares).
-    const rerunAnswer = kept === undefined && rerun ? await rerun({ id: effect.id, intent: { tool: effect.intent.tool, argsHash: effect.argsHash } }) : undefined;
+    const rerunAnswer = kept === undefined && rerun ? await rerun({ id: effect.id, intent: { tool: effect.intent.tool, argsHash: effect.argsHash }, args: effect.args }) : undefined;
     const answer = kept ?? rerunAnswer;
     if (!answer) continue;
     // A host lists every applied call exactly once: settling from evidence finds the call applied, so when the effect's calls hold no applied

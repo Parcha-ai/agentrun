@@ -8,9 +8,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { build } from '../apps/viewer/build.mjs';
+import { build as buildViewer } from '../apps/viewer/build.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
+/** The viewer built as the build step builds it (`build.mjs --files`): the recordings as files with their index. */
+const build = (target, recordings) => buildViewer(target, recordings, { files: true });
 const workflow = readFileSync(join(root, '.github/workflows/pages.yml'), 'utf8');
 /** A top-level block of the workflow, its key line through the line before the next top-level key. */
 const block = (key) => {
@@ -40,7 +42,7 @@ test('the gate sits between the build and the upload, as the command run below a
     assert.ok(index > 0, String(match));
     return index;
   };
-  const order = [at((line) => line === 'run: node apps/viewer/build.mjs'), at((line) => line === `run: ${GATE}`),
+  const order = [at((line) => line === 'run: node apps/viewer/build.mjs --files'), at((line) => line === `run: ${GATE}`),
     at((line) => line.startsWith('uses: actions/upload-pages-artifact@')), at((line) => line.startsWith('uses: actions/deploy-pages@'))];
   assert.deepEqual(order, [...order].sort((a, b) => a - b));
   assert.match(workflow, /path: apps\/viewer\/dist\n/);

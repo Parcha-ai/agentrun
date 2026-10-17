@@ -2,7 +2,7 @@
 // disk and no key, to its end and across a kill -9; and the Archil flags refused beside --dir.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
@@ -10,6 +10,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { main } from "../src/cli.ts";
 import { currentBootId, procStartTicks } from "../src/hosts/local-host.ts";
+import { processTableHooks, type ProcessTable } from "../src/process-table.ts";
 import { scratchRoot } from "./_run-support.ts";
 
 const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
@@ -173,6 +174,66 @@ describe("the CLI on a local directory", () => {
       assert.equal(JSON.parse(readFileSync(join(named, "run.json"), "utf8")).run, "orders");
     } finally {
       live.kill("SIGKILL");
+      dir.remove();
+    }
+  });
+
+  it("status --dir says unknown, never gone or stopped, when this machine's process table cannot be read", async () => {
+    const dir = scratchRoot("cli-local-unreadable");
+    const root = join(dir.root, "chat");
+    const holder = { driver: "local", host: hostname(), bootId: "boot-1", pid: 4242, since: new Date().toISOString(), startTicks: 77 };
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, "run.json"), JSON.stringify({ run: "chat", status: "running", generation: 1, sealedSeq: null, wakeAt: null, holder, heartbeatAt: null, updatedAt: new Date().toISOString(), detail: null }));
+    /** A table (as on macOS) whose boot read and listing fail or answer as asked. */
+    const table = (boot: string | undefined, listing: "fails" | { start: number } | "gone"): ProcessTable => ({
+      walkMs: 500,
+      bootId: () => boot,
+      snapshot() {
+        if (listing === "fails") throw new Error("ps: cannot list processes");
+        return { info: (pid) => (pid === 4242 && listing !== "gone" ? { ppid: 1, pgrp: 4242, start: listing.start } : undefined), children: () => [], marked: () => false, commandLine: () => "?" };
+      },
+    });
+    const status = async (with_: ProcessTable) => {
+      const out: string[] = [];
+      const write = process.stdout.write;
+      processTableHooks.table = with_;
+      // Only the CLI's own lines: the test runner reports on this process's stdout too (Node 24 does, mid-test).
+      process.stdout.write = ((chunk: string | Uint8Array, ...rest: unknown[]) => {
+        if (typeof chunk === "string" && chunk.startsWith('{"at":')) return out.push(chunk) > 0;
+        return (write as (...args: unknown[]) => boolean).call(process.stdout, chunk, ...rest);
+      }) as typeof process.stdout.write;
+      try {
+        assert.equal(await main(["status", "--dir", root]), 0);
+      } finally {
+        process.stdout.write = write;
+        processTableHooks.table = undefined;
+      }
+      assert.equal(out.length, 1, out.join(""));
+      return (JSON.parse(out[0]!) as { holderStatus: string }).holderStatus;
+    };
+    try {
+      assert.equal(await status(table(undefined, { start: 77 })), "unknown", "the boot cannot be read");
+      assert.equal(await status(table("boot-1", "fails")), "unknown", "the processes cannot be listed");
+      // What a read does tell
+      assert.equal(await status(table("boot-1", { start: 77 })), "running");
+      assert.equal(await status(table("boot-1", { start: 78 })), "stopped");
+      assert.equal(await status(table("boot-1", "gone")), "stopped");
+      assert.equal(await status(table("boot-2", "fails")), "gone", "another boot, whatever the listing");
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("the app's factory runs once the claim is held, before this incarnation's run.json, and what it writes under ctx.root is in the run", async () => {
+    const dir = scratchRoot("cli-factory");
+    try {
+      const run = join(dir.root, "run");
+      const saw = join(dir.root, "saw");
+      const r = spawnSync(process.execPath, [CLI, "run", "--dir", run, "--app", fileURLToPath(new URL("./fixtures/factory-on-claim.ts", import.meta.url))], { env: { ...process.env, FACTORY_SAW: saw }, encoding: "utf8", timeout: 60_000 });
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual(JSON.parse(readFileSync(saw, "utf8")), { runJson: "absent", ownerLock: true, work: true }, "the claim was held (owner lock, layout) and nothing of the run published yet");
+      assert.equal(readFileSync(join(run, "factory.txt"), "utf8"), "written by the factory\n");
+    } finally {
       dir.remove();
     }
   });

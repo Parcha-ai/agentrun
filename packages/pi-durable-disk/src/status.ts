@@ -2,12 +2,14 @@
 // claim with write-to-temp, fsync, rename, and read by the supervisor (over the S3 API or a local mount). It is a hint
 // for the supervisor, never the source of truth: the store is. Any error writing it is a fence. The instance writes it
 // through its claim directory (`ClaimDir`), never by path, so a write cannot land under a mountpoint whose mount is gone.
-import { constants, readFileSync } from "node:fs";
+import { constants } from "node:fs";
 import { open, readFile, rename, rm, stat, type FileHandle } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 import type { JsonValue } from "@earendil-works/chord";
 import { FencedError, ownWriteFenced, PdaError } from "./errors.ts";
+import { thisBoot } from "./process-table.ts";
 
 export const RUN_JSON = "run.json";
 /** The temporary file every write goes through; renamed over `run.json` once it is fsynced. */
@@ -31,7 +33,7 @@ export type RunStatus = (typeof RUN_STATUSES)[number];
 export interface RunHolder {
   readonly driver: string;
   readonly host: string;
-  /** `/proc/sys/kernel/random/boot_id`; null where the platform has none. */
+  /** `/proc/sys/kernel/random/boot_id` (`kern.bootsessionuuid` on macOS); null where it cannot be read. */
   readonly bootId: string | null;
   readonly pid: number;
   /** When this incarnation claimed the run (ISO 8601). */
@@ -123,6 +125,17 @@ export async function readRunRecord(root: string | ClaimDir): Promise<RunRecord 
 }
 
 /**
+ * The status of a run on a local directory (`localRun`): `<root>/run.json`, where `root` is the directory `localRun(root)`
+ * takes (not its `work/`). Read as `readRunStatus` reads a disk's through the control API: the same strict parser and the
+ * same `RunRecord`. It only reads: no lock, no mount and no store are touched, so it is safe beside a live instance, whose
+ * next write replaces the file whole. A run with no `run.json` yet, or no directory, is `null`; a record that is malformed
+ * is `RunRecordError` (`RUN_JSON_INVALID`); any other read error is thrown.
+ */
+export async function readLocalRunStatus(root: string): Promise<RunRecord | null> {
+  return (await readRunRecord(root)) ?? null;
+}
+
+/**
  * True while the record's last heartbeat is younger than `expiryMs` on the reader's clock. The supervisor allows for
  * clock skew between hosts inside the expiry.
  */
@@ -177,6 +190,88 @@ export async function writeRunRecord(root: string | ClaimDir, record: RunRecord,
   }
 }
 
+// ---- the supervisor's start mark --------------------------------------------------------------------------------------
+
+/**
+ * The supervisor's record of its last start of a run, in the run's directory: the generation the instance will write,
+ * when, by whom, and the failed starts right before it (`failures`; `lastExit`, what the decision saw of the last one).
+ */
+export const START_MARK = "start.json";
+export type StartMark = { generation: number; at: string; by: string | null; failures: number; lastExit: string | null };
+
+/** A start mark's text as a mark, or null when it is not one (an unreadable mark gives no grace). */
+export function parseStartMark(text: string): StartMark | null {
+  try {
+    const v = JSON.parse(text) as Partial<StartMark>;
+    if (!Number.isSafeInteger(v.generation) || (v.generation as number) < 1 || typeof v.at !== "string" || !Number.isFinite(Date.parse(v.at))) return null;
+    const failures = Number.isSafeInteger(v.failures) && (v.failures as number) >= 0 ? (v.failures as number) : 0;
+    const lastExit = typeof v.lastExit === "string" ? v.lastExit : null;
+    return { generation: v.generation as number, at: v.at, by: typeof v.by === "string" ? v.by : null, failures, lastExit };
+  } catch {
+    return null;
+  }
+}
+
+// The keeper's code is plain CommonJS in a string, started with `eval: true` and no inherited Node flags, as the lease
+// watchdog's is (src/watchdog.ts says why). One refresh at a time, all synchronous: a stop (the message) is handled only
+// between two refreshes, so none is still writing once the thread has exited.
+const KEEPER_SOURCE = `"use strict";
+const fs = require("node:fs");
+const path = require("node:path");
+const { parentPort, workerData } = require("node:worker_threads");
+const { dir, name, everyMs } = workerData;
+const file = path.join(dir, name);
+function refresh() {
+  try {
+    const mark = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (mark === null || typeof mark !== "object" || mark.generation !== 1 || typeof mark.at !== "string" || !Number.isFinite(Date.parse(mark.at))) return;
+    const temp = file + ".tmp";
+    const fd = fs.openSync(temp, "w", 0o644);
+    try {
+      fs.writeSync(fd, JSON.stringify({ ...mark, at: new Date().toISOString() }));
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(temp, file);
+    const handle = fs.openSync(dir, "r");
+    try {
+      fs.fsyncSync(handle);
+    } finally {
+      fs.closeSync(handle);
+    }
+  } catch {
+    // absent, unreadable or refused
+  }
+}
+refresh();
+const timer = setInterval(refresh, everyMs);
+parentPort.once("message", () => {
+  clearInterval(timer);
+  parentPort.close();
+});
+`;
+
+/**
+ * Keeps a supervisor's start mark for generation 1 in `dir` fresh: its `at` rewritten every `everyMs` (temp file, fsync,
+ * rename, fsync the directory), the rest of it as the supervisor wrote it; nothing is made when there is none. On a thread of
+ * its own, so a caller whose thread is blocked (a synchronous import) is kept fresh too. Best effort: a refused write leaves
+ * the mark as it was. Returns the stop, which resolves once the thread has exited, so no write outlives it.
+ */
+export function keepStartMark(dir: string, everyMs: number): () => Promise<void> {
+  const worker = new Worker(KEEPER_SOURCE, { eval: true, workerData: { dir, name: START_MARK, everyMs }, execArgv: [] });
+  worker.unref();
+  worker.on("error", () => {
+    // the thread failed to start or threw: nothing more is refreshed, and the grace runs out as for any start
+  });
+  const exited = new Promise<void>((resolve) => worker.once("exit", () => resolve()));
+  return () => {
+    worker.ref();
+    worker.postMessage("stop");
+    return exited;
+  };
+}
+
 // ---- the claim directory ----------------------------------------------------------------------------------------------
 
 /** The FencedError code of a claim root that is no longer the mount the instance opened (unmounted, lazily or not). */
@@ -188,12 +283,14 @@ export const ARCHIL_FSTYPE = "fuse.archil";
  * A run root held open as a directory for the life of the instance. `at` is `/proc/self/fd/<n>`, a path the kernel
  * resolves through the open directory and never through the root's path (Node has no openat; the magic link stands in
  * for it): a file made, written or renamed under `at` is in the directory opened at acquire, or the call fails (ENOTCONN
- * once the FUSE daemon is gone). It never lands on the local disk under a mountpoint whose mount went away.
+ * once the FUSE daemon is gone). It never lands on the local disk under a mountpoint whose mount went away. macOS has no
+ * such link: there `at` is the root's path (`byPath`), and only the checks below stand between a write and a root that was
+ * replaced.
  */
 export interface ClaimDir {
   /** The root's path, as the claim names it. */
   readonly root: string;
-  /** `/proc/self/fd/<n>`. Throws once closed: the number may then name another file. */
+  /** `/proc/self/fd/<n>`, or the root's path `byPath`. Throws once closed: the number may then name another file. */
   readonly at: string;
   /**
    * Resolves while the root's path still resolves to the directory held open (same device, same inode). A mount that was
@@ -215,6 +312,12 @@ export interface OpenClaimDirOptions {
   readonly fstype?: string | null;
   /** Default `/proc/self/mountinfo`. */
   readonly mountinfo?: string;
+  /**
+   * `at` is the root's path, not `/proc/self/fd/<n>`: the default on macOS, which has none. A write is checked against the
+   * held directory first (`assertMounted`), but a root renamed and replaced between that check and the write gets the
+   * write. For a local directory only.
+   */
+  readonly byPath?: boolean;
 }
 
 /** `major:minor` of a device number, as `/proc/self/mountinfo` writes it (glibc's encoding). */
@@ -269,7 +372,8 @@ export async function openClaimDir(root: string, options: OpenClaimDirOptions = 
     await handle.close().catch(() => undefined);
     throw error instanceof FencedError ? error : unmounted(`checking the claim root ${root} failed: ${(error as Error).message}`, error);
   }
-  const at = `/proc/self/fd/${handle.fd}`;
+  const byPath = options.byPath ?? process.platform === "darwin";
+  const at = byPath ? root : `/proc/self/fd/${handle.fd}`;
   let closed = false;
   const same = (path: string, now: { dev: bigint; ino: bigint }, claims: { dev: bigint; ino: bigint }) => {
     if (now.dev === claims.dev && now.ino === claims.ino) return;
@@ -294,9 +398,16 @@ export async function openClaimDir(root: string, options: OpenClaimDirOptions = 
     },
     async assertSame(name) {
       if (closed) throw unmounted(`the claim directory of ${root} is closed`);
-      const [byPath, inDir] = await Promise.all([statOf(join(root, name)), statOf(join(at, name))]);
+      if (byPath) {
+        // No second way to name the entry: the root must still be the directory held, and the entry on its device.
+        const [dir, entry] = await Promise.all([statOf(root), statOf(join(root, name))]);
+        same(root, dir, held);
+        if (entry.dev !== held.dev) throw unmounted(`${name} in the claim directory is on device ${deviceName(entry.dev)}, not the claim's ${deviceName(held.dev)}`);
+        return;
+      }
+      const [named, inDir] = await Promise.all([statOf(join(root, name)), statOf(join(at, name))]);
       if (inDir.dev !== held.dev) throw unmounted(`${name} in the claim directory is on device ${deviceName(inDir.dev)}, not the claim's ${deviceName(held.dev)}`);
-      same(join(root, name), byPath, inDir);
+      same(join(root, name), named, inDir);
     },
     async close() {
       if (closed) return;
@@ -306,18 +417,10 @@ export async function openClaimDir(root: string, options: OpenClaimDirOptions = 
   };
 }
 
-function bootId(): string | null {
-  try {
-    return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() || null;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * This process as a holder: the host driver's `handle` (default driver `local`, this machine's host name and boot id)
  * with this process's pid and `since`. A handle whose named fields have the wrong type is refused (RunRecordError).
  */
 export function currentHolder(handle: Readonly<Record<string, JsonValue>> = {}, since: Date = new Date()): RunHolder {
-  return holderOf({ driver: "local", host: hostname(), bootId: bootId(), ...handle, pid: process.pid, since: since.toISOString() })!;
+  return holderOf({ driver: "local", host: hostname(), bootId: thisBoot(), ...handle, pid: process.pid, since: since.toISOString() })!;
 }

@@ -109,6 +109,13 @@ const ran = await env.exec("wc -c notes/a.txt", { timeout: 10 }, BACKGROUND_CONT
   caller's timeout allows; with none it has no deadline, as in pi's local environment, unless `maxExecMs` sets one.
 - A command runs as a process group of its own. A timeout or an abort kills the whole group with a second exec, also
   on a box whose provider cannot stop a program it started.
+- The kill is confirmed, not assumed. The kill exec reads back that no live process of the group is left (a zombie does not
+  count: a container whose first process does not reap would otherwise keep a killed group "alive" for ever) and is sent
+  again, at 1, 2 and 4 seconds, when it fails, times out or finds the group alive. The whole confirmation has 10 seconds of
+  wall time, a call in flight included, so a stop answers `aborted` or `timeout` after at most 10 seconds more than before,
+  and only when a kill call failed. When the group could not be confirmed gone, the error is a `StoppedCommandError`: its
+  `killUnconfirmed` is `true`, and the command stays tracked, so `cleanup()` ends it with the rest. `killUnconfirmed` is
+  absent when the group was confirmed gone, which is the normal case.
 - The variables a caller asks for, `PATH` included, reach the command alone. The environment's own scripts keep the
   box's search path, so a `PATH` with no shell in it still runs a program named by its path.
 - Results match pi's `NodeExecutionEnv` on the same files: the same values and the same error codes. Messages differ.
@@ -337,6 +344,193 @@ same in one process.
   app's `console.log` goes to the error output. It refuses a Node below 22.19.
 
 Not covered: in this release a home in a box runs its tools in its own box, and there are no box frames on the link.
+
+### Moving a home
+
+`moveHome(options)` moves a session's home from one box to another with no disk the two share, in seven steps:
+
+1. **Prepare.** Start the runner in the target box: check its Node (none, or one below 22.19, is `no_runtime`),
+   upload the runner file by its SHA-256 unless the box holds it (`boxRunner({ program: { file } })`), start it with
+   `Box.exec`. The session keeps working.
+2. **Drain** the source: the gate holds it still. A drain that does not complete gives the move up (`drain`, with
+   what held it) and the session works on.
+3. **Seal** the source's store.
+4. **Ship** the store and the workspace (`moveFile`, `moveWorkspace`), each checked on the target, one retry.
+5. **Take** the lease (`Ownership`, below): one conditional write, from epoch `e` to `e + 1`, with the seal and the
+   move's id in the record. **The point of no return.** It is tried only with a target that still answers. A take
+   whose answer was lost is read back: a record with this move's id is this move's.
+6. **Resume** the target at `e + 1`: it verifies the copy, points the conversations' directories at its own
+   workspace and admits the notice once. The store records the workspace it last ran in, so no root travels with
+   the order and a second resume rewrites nothing.
+7. **Retire** the source: it stops and deletes its copy. A source that does not answer is fenced by the epoch.
+   The boxes are the host's: it made them and passes them in each `Place`, and it ends or keeps the source's box
+   after the move.
+
+Before the take, a failure leaves the session where it was: the source is told to run again (`seal`, `ship`,
+`target`): a sealed source opens its store again, and one whose seal failed after it closed its store resumes at its
+own epoch; the error says whether it runs. A lost take (`lost`) means another host acted: this host deletes the copy it
+shipped, unless the lease names the target's own place (then the copy is that host's too), and does nothing more;
+the error's `lease` says where the session is. A session can move back to a place it left: that place's note refuses
+orders only at its epoch or before, and its workspace, the copy the session left behind, is emptied before anything
+lands. Only for a place whose note is this session's, and only the workspace's entries (links as links; never the
+directory above it or the store): a workspace that is not an absolute path in normal form, is a directory of the
+system, holds the store, or is the box's home, a directory above it or a link, is refused and nothing is removed.
+
+After the take, a failure is the target's to finish: `recoverHome(options)` reads the lease, starts the runner where
+it says and makes that home run. A target that never resumed, or a sealed home the lease names at a later epoch, is
+told to resume with the lease's seal and move id, and the `notice` the recovering host passes. A home sealed at the
+lease's epoch may be the source of a move that is about to take the next epoch for another place, so the lease
+decides: recovery takes that next epoch for the same place, with the seal the home reports, and resumes the home
+there; when the move took it first, the take is `lost`, recovery opens nothing, and its error's `lease` says where the
+session is. **Recovering a sealed home moves the epoch.** A host that starts again calls it. Never two runners on one
+store: a home holds its store alone (an exclusive SQLite lock on `<store>.lock`, which the system drops with the
+process), and a second runner at the same place is refused with `busy`; before `recoverHome` starts a runner it stops
+one that still runs there (`stopRunner`: the process its `<store>.pid` names, and only when that process's command
+line names this store), and a call that runner had in flight is cut, at most once. A runner names itself in
+`<store>.pid` when it starts, unless the file names another live runner of the store, and again whenever it takes the
+store into its hold, so a runner refused with `busy` never hides the one that holds it. A host whose runners a
+launcher keeps passes the launcher's stop as `stop`.
+
+`registerMoveConformance(runner, name, withPair)` (`./testing`) runs the handoff on two places of a provider: a move
+with nothing cut, a move given up at the drain and at the ship, a move there and back, a take whose answer was lost,
+a take another host won (to another place, and to the same place), a kill of the host,
+the source or the target just before each of the seven steps, and a kill of the target inside its own resume (after
+its marker, after the conversations point at it, between a tool's effect and its result), each followed by a
+recovery. Every case counts the move's notice in what the model is sent: once when the session moved, never when it
+stayed. Every round's effect is there once when the kill came while the session was held still (after the drain,
+before the target ran it). A kill while it ran (the host or the source before the drain held it, the host or the
+target once the target ran it) may cut the round that ran: pi does not run a call twice that was running when its
+process died, and tells the model it was interrupted. The suite accepts a missing effect only for such a round. Its lease is `leaseIn(dirStore(...))` in a temporary directory. The runner it needs is `runMain(moveConformanceApp)` bundled into
+one file.
+
+What a kill loses, in these words: a host, a source or a target process that dies loses nothing; the session
+finishes with every effect once when the kill came after the drain held it, and at most once when it came while
+the session ran. A box that dies with its disk loses the work since the last checkpoint, and the next section
+says what the host keeps so that it loses no more.
+
+### A checkpoint, and a box that is gone
+
+`pullCheckpoint({ session, place, home, epoch, vault, ... })` takes one moment of a session off its box. It holds the
+session (a short drain), makes a sealed copy of the store in the box (`checkpointStore`), takes the workspace manifest,
+pulls the store (`moveFile`) and the files that changed since the previous checkpoint (`moveChanged`) into the vault,
+checks all of it, and lets the session go. The session is held through the pull because a file it writes meanwhile
+would no longer match the manifest. `holdMs` bounds the hold (120 s by default): every phase of the pull draws on the same clock, and a pull that outruns it is skipped (`failed`) and lets the session go. A checkpoint exists only when the
+store and the files are both on the host and verified; a store without its files is never kept. The vault
+(`localVault(directory)`: put `begin`/`commit`, `latest`, `get`, `prune`) is the host's disk, a generation per
+checkpoint made with hard links so that a generation costs its delta, and the newest 3 are kept (`keep`).
+A pull that does not complete is skipped, never half kept: `busy` (the session did not come to rest, with what held
+it), `changed` (a file moved on), `too_large` (`workspace.maxBytes`) or `failed`; the previous checkpoint stays the
+latest. `checkpointStats()` counts the checkpoints taken and the skips by reason, for a panel that says "checkpoint
+skipped: still running".
+
+`recoverHome` gains `vault` and `replace(place, context)`. When the lease's box is **gone** (`Box.status` says
+`ended`, or the provider no longer has it; a timeout or an error is never gone), the host's `replace` makes a box for
+the same environment, the newest checkpoint that still checks out (an older generation when it does not) is copied in
+and verified, the lease is taken at the next epoch (move id `restore-<epoch>`, the checkpoint's seal) and the home
+resumes there. `recoverHome` never makes boxes. With no usable checkpoint it fails with `no_checkpoint` and changes
+nothing. The resume order's `move` says `kind: "restore"` and carries the checkpoint's `head` (`Seal.head`): commits of
+the lost box at or after it are gone and their sequence numbers are taken again, so whoever records the session's
+moves and commits drops that branch. The model is told once (request id `transport.move:restore-<epoch>`) when the
+checkpoint was taken and which calls ran since: those that may have had an effect and are not run again, and those
+safe to run again. The host knows the calls from `call` frames the runner sends (`onCall`; the tool name and the
+replay flag, never the arguments), kept in the host's memory (`HomeHandle.calls()`, the last 1000): a host that dies
+with the box loses that list, and the notice then names no calls.
+
+A workspace that holds what the session downloads again (a media cache) is left out of the checkpoint:
+`pullCheckpoint({ workspace: { exclude: ["media"] } })` takes patterns as `WorkspaceOptions.exclude` does (a name at any
+depth, or an anchored path; `*`, `**`, `?`). An excluded path is never listed for hashing, never pulled and not
+counted, however large; the record names what was left out (`Checkpoint.excluded`: patterns, the top-most entries,
+file count and bytes), and the restore notice says so: "Not restored: media (1 file, N bytes) are left out of checkpoints.
+Fetch them again if you need them." so that a replay-safe download tool runs again. Two budgets: `workspace.maxBytes` is
+the most the workspace may hold (excluded paths not counted), and `maxPullBytes` the most one pull may move (the store
+copy and every file the pull copies, also one whose time or mode changed with the same content); a pull over either is skipped as `too_large` before a file moves. The pause of a pull
+is `CheckpointStats.last.heldMs`.
+
+The commits between two checkpoints are kept too, on the record stream: a host that gives `connectHome` (or `boxRunner`) a
+`records` sink receives each commit's exact `StorageWrite` batch (`record { commit, writes }`), acknowledged after the sink
+has it. `recordSink(vault, session, context)` is that sink for the vault: `held` is where the vault's log is (`vault.through`),
+`append` keeps a commit on disk in order (`vault.appendLog`: ignores a repeat, refuses a gap with `through`, keeps nothing the
+latest checkpoint covers), and a checkpoint's `prune` cuts the log below the oldest generation kept. A restore takes the
+checkpoint's store, applies the unbroken run of commits from its head (`replayCommits`, through the store's own `Storage`,
+on a copy on the host and before any Harness opens it), seals the result, and gives the lease and the resume order that
+seal. The order's `move` says `replayed: { from, to }` and `head: to + 1`; the notice says the history was brought up to
+date. So a call the lost box admitted after the checkpoint is in the history the new box opens, and is settled by pi's
+recovery, not run again. A log that does not start where the checkpoint ends is not used: the restore is the checkpoint, as
+before.
+
+A model call paid between two checkpoints is not paid twice: `boxRunner` serves every runner it starts with one `serveModels` server (pass your own as `server`, and give it to `pullCheckpoint({ answers })`), so a replacement runner finds the answers already kept. A restore that did not replay every shipped commit drops the rest from the host's log (`dropLogAbove`), so a runner at the new epoch is not told the host holds commits it no longer has. A request can carry a `key` and a `position` (the store's
+next sequence number; `proxyModels({ keyOf })` makes them, the key must not change across a restore). `serveModels`
+keeps a completed answer by its key, not for `keepMs`, until `covered(head)`: a repeat from a rebuilt runner gets the
+kept frames (or joins the call still streaming) and `server.paid` does not move. A failure is not kept, so a retry
+pays. `pullCheckpoint({ answers: server })` lets go of the answers below the oldest generation it keeps.
+
+`registerRestoreConformance` (`./testing`) kills the whole box of the source or the target before each of the seven
+steps of a move and recovers; the suite runs on local boxes and on Docker.
+
+### The record stream: the host keeps the session's log
+
+A host that keeps a session's log holds its runners with `connectHome(link, { models, epoch, records })` (or
+`boxRunner({ ..., records })`), where `records` is a `RecordSink`: `held()` says where its log is,
+`{ after, linesAfter }` (`{ after: 0, linesAfter: 0 }` for a new session: a store's first commit is 1), `append(commit,
+writes)` keeps a commit's writes and settles once they are synced, and `lines(commit, lines, snapshot)` keeps what the
+runner's recorder made. Its hello says so, and the runner then:
+
+- **Puts each commit in an outbox before the store has it.** The writes go to `<store>.outbox.jsonl` beside the store,
+  synced, then to the store, then to the host (`record`); the recorder's lines for the commit follow (`lines`), on the
+  disk before the recorder's write returns, so a process that dies loses at most the lines of the commit in flight.
+  The host acknowledges writes and lines apart, and an acknowledged entry leaves the outbox. The file is written again
+  once acknowledged rows far outnumber pending ones, so its size follows the work in flight, not the session's length.
+- **Sends what the host lacks, from where the host is.** On every connect the host says where its log is
+  (`resend-after`), and the runner sends what it holds from there, in order, before anything new; a process that died
+  left its backlog in the outbox, and the next one sends it when it opens the store. A process's snapshot is the state
+  once pi has opened the store, after what pi commits in opening it (what it recovers from a process that died); its
+  lines go after those commits, once on each link, until the host acknowledges them.
+- **Starts no effect the host's log lacks.** A commit that admits an effect (pi's tool intent by default, `admitsTool`;
+  `RunnerOptions.admits` adds an app's own) returns only once the host acknowledged it. Past `resumeWithinMs` the
+  commit fails, pi stops the session, and the effect never ran.
+- **Seals only what the host holds.** A seal waits until the host has every commit and line, and fails as
+  `not_shipped` when it does not in time: the sealed store and the host's log end at the same commit.
+- **Keys each model request.** A model frame carries `key`, the SHA-256 of the session, the `pi.generation` task that
+  asks, the model and the request (its messages, the system message with the instructions and the tools among them,
+  and its options), and `position`, the store's next sequence. The same generation asking again, after a dropped link
+  or in a new process, asks under the same key; a new ask is a new generation and a new key.
+
+The host handles a link's frames one after another: a commit is in its log before any later frame is acted on, so a
+commit's lines are never written before the commit. Record frames are fenced by epoch like model frames: a home the
+lease left behind writes nothing to the log. The host's log alone rebuilds the store, row for row. The recorder runs in
+the runner's process: `runMain(app, { recording })`, with `@parcha/agentrun-pi/durable`'s `snapshotLines` and
+`recordCommits`. `registerMoveConformance(..., { records: true })` runs the move suite with the stream on.
+
+### Where a session runs: the placer
+
+A config whose `home` is `auto` lets Jev place the session. Each environment then has a `purpose`, the author's one
+line on what it is for, which is what Jev reads for it (required when auto places the session, never made up from the
+facts); `auto.rest` is where the session goes back when nothing needs it elsewhere (default the first declared
+environment) and `auto.threshold` how sure Jev must be (default 0.5).
+
+`jevPlacer(models, auto.classifier, { rest, threshold })` asks Jev through pi-ai's `Models.classify` (provider
+`typesafe`, model `jev-latest`): one call a decision, two questions. `need` is whether the step needs something `rest`
+cannot do, wherever the session is now; `where` is a choice among the environments, each by its purpose. Jev reads
+the step and each environment's purpose and facts (GPU, CPUs, memory, capabilities, isolation, region; not the
+provider, which names how a box is made). The session
+moves only for a need: `need` at least the threshold and `where` elsewhere. A session away from rest stays while its
+next step needs that place, and goes back to rest at a turn's end when nothing does, by the config. Code checks only
+structure: the judgment is Jev's.
+
+- **Jev or the config, nothing else.** Every decision is a `PlacementRecord` whose `by` is `jev` or `config`. A
+  decision Jev does not give (an error, an answer that is not one, the placer's own deadline, 15 s by default)
+  keeps the session where it is and says why in `error`.
+- **No stand-in.** `jevPlacer` refuses to build without the classifier model (`no_classifier`) or its provider's key
+  (`no_key`).
+- **Kept with the session.** `HomeHandle.recordPlacement(record)` writes the decision into the session's store
+  (`transport.placements`, keyed by its id) in a commit of its runner: it travels with the session, and with the
+  record stream it reaches the host's log. A record whose `by` is anything else is refused (`invalid`).
+- **Cost.** A decision's usage counts tokens; `costUsd` is `null` when the classifier has no price (pi-ai's catalog
+  gives TypeSafe none): unknown, not 0.
+
+`./testing` has `replayClassifier`, TypeSafe as a replay set keyed by the canonical question (an unknown question is
+an error, never an answer), and `recordingClassifications` to record one. This package's set, 40 decisions recorded
+against Jev, replays in its tests offline.
 
 ## Ownership: one writer per session
 

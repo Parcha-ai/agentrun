@@ -1,18 +1,41 @@
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
+import type { StorageWrite } from "@earendil-works/pi-durable";
 import type { Result } from "@earendil-works/pi-durable/env";
+import { isPlacementRecord, writePlacement } from "../place/log.ts";
 import type { DrainOptions } from "./gate.ts";
+import { createKeys } from "./keys.ts";
 import { type Frame, LINK_VERSION, type Link } from "./link.ts";
 import { type Catalog, type ProxyModels, proxyModels } from "./models.ts";
+import type { LinesSync } from "./outbox.ts";
+import { createShipper, type Recording, type Shipper } from "./records.ts";
 import { type Home, type HomeOptions, openHome, type ResumeOrder } from "./run.ts";
+
+/** How long a model request, or a seal waiting for the host to hold every commit, waits for a lost link. */
+const DEFAULT_RESUME_WITHIN_MS = 30_000;
+const DEFAULT_CROSSING_MS = 10_000;
 
 /** The exit code of a runner the host refused: its epoch is not the lease's. Its launcher must not start it again. */
 export const EXIT_REFUSED = 75;
 
 /** What a runner needs: a home's options, without models, which come from the host over the link. */
-export type RunnerOptions = Omit<HomeOptions, "models"> & {
+export type RunnerOptions = Omit<HomeOptions, "models" | "wrapStore"> & {
 	/** How long a model request waits for a lost link to come back. Default 30 s. */
 	readonly resumeWithinMs?: number;
+	/** How long a tool the host holds at its start waits for the host's `call-ack`. Default 10 s: past it the tool runs. */
+	readonly crossingMs?: number;
+	/**
+	 * The recorder to run in this process when the host takes the record stream: `@parcha/agentrun-pi/durable`'s
+	 * `snapshotLines` and `recordCommits`. Without it the host still gets every commit's writes, and no lines.
+	 */
+	readonly recording?: Recording;
+	/** When a commit's lines reach the disk (`LinesSync`). Default `each`. */
+	readonly linesSync?: LinesSync;
+	/**
+	 * Batches that admit an effect, whose commit waits until the host holds it (for `resumeWithinMs`): pi's tool intent
+	 * by default (`admitsTool`). An app whose own effects admit in a document adds them here.
+	 */
+	readonly admits?: (writes: readonly StorageWrite[]) => boolean;
 };
 
 /** How a runner ended. `retired`: a later epoch took the session. `refused`: the host refused this runner's epoch. */
@@ -56,9 +79,14 @@ function wire(error: Error & { code?: unknown; holdouts?: unknown }): WireError 
 export function createRunner(options: RunnerOptions, context: Context = BACKGROUND_CONTEXT): Runner {
 	let proxy: ProxyModels | undefined;
 	// The one opening of the home, with the models it opened with. A host that says hello meanwhile waits for it.
-	let opening: { readonly proxy: ProxyModels; readonly home: Promise<Result<Home, Error>> } | undefined;
+	let opening:
+		| { readonly proxy: ProxyModels; readonly shipper?: Shipper; readonly home: Promise<Result<Home, Error>> }
+		| undefined;
 	let home: Home | undefined;
 	let current: Link | undefined;
+	// Tools the host holds at their start (its `crossing`): a call waits for `call-ack` of its id, for `crossingMs` at most.
+	let holdTools = false;
+	const toolAcks = new Map<string, () => void>();
 	let finished = false;
 	let end: (how: RunnerEnd) => void = () => {};
 	const ended = new Promise<RunnerEnd>((resolve) => {
@@ -111,8 +139,19 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 			case "abandon":
 				home.abandon();
 				return { ok: true as const, value: null };
-			case "seal":
+			case "checkpoint":
+				return home.checkpoint(args as DrainOptions, within);
+			case "seal": {
+				// A move seals only what the host holds: the sealed store and the host's log end at the same commit.
+				const shipper = opening?.shipper;
+				if (shipper !== undefined && !(await shipper.drained(options.resumeWithinMs ?? DEFAULT_RESUME_WITHIN_MS))) {
+					const error = Object.assign(new Error("the host does not hold every commit of this store yet"), {
+						code: "not_shipped",
+					});
+					return { ok: false as const, error };
+				}
 				return home.seal(within);
+			}
 			case "submit": {
 				const root = await home.root(within);
 				if (!root.ok) return root;
@@ -130,7 +169,29 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 				return { ok: true as const, value: null };
 			}
 			case "status":
-				return { ok: true as const, value: { state: home.state, epoch: home.epoch ?? null } };
+				return {
+					ok: true as const,
+					value: {
+						state: home.state,
+						epoch: home.epoch ?? null,
+						...(home.sealed === undefined ? {} : { sealed: home.sealed }),
+						...(home.noteSession === undefined ? {} : { session: home.noteSession }),
+					},
+				};
+			case "placement": {
+				// The log says jev or config, and nothing else: a record that says another is refused, not written.
+				if (!isPlacementRecord(args.record)) {
+					const error = Object.assign(new Error("not a placement record this home writes"), { code: "invalid" });
+					return { ok: false as const, error };
+				}
+				const harness = home.harness;
+				if (harness === undefined) {
+					const error = Object.assign(new Error("the session does not run here"), { code: "wrong_state" });
+					return { ok: false as const, error };
+				}
+				await writePlacement(harness, args.record, within);
+				return { ok: true as const, value: null };
+			}
 			default:
 				return { ok: false as const, error: new Error(`no such order: ${order}`) };
 		}
@@ -141,12 +202,54 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 			link.close(`the host speaks version ${String(frame.v)} of the link; this runner speaks ${LINK_VERSION}`);
 			return;
 		}
+		holdTools = frame.crossing === true;
 		if (opening === undefined) {
+			// The host takes the record stream: every commit of this runner is shipped, from its first.
+			const shipper =
+				frame.records === true
+					? createShipper({
+							...(options.recording === undefined ? {} : { recording: options.recording }),
+							...(options.linesSync === undefined ? {} : { linesSync: options.linesSync }),
+							...(options.admits === undefined ? {} : { admits: options.admits }),
+							acknowledgeWithinMs: options.resumeWithinMs ?? DEFAULT_RESUME_WITHIN_MS,
+						})
+					: undefined;
+			// With the stream, each model request carries its key and the store position it was made at.
+			const keys = shipper === undefined ? undefined : createKeys(options.session, () => shipper.position());
 			const made = proxyModels(frame.catalog as Catalog, {
 				...(options.resumeWithinMs === undefined ? {} : { resumeWithinMs: options.resumeWithinMs }),
+				...(keys === undefined ? {} : { keyOf: (request) => keys.keyOf(request) }),
 			});
 			proxy = made;
-			opening = { proxy: made, home: openHome({ ...options, models: made.models }) };
+			const { recording: _recording, linesSync: _linesSync, admits: _admits, ...homeOptions } = options;
+			opening = {
+				proxy: made,
+				...(shipper === undefined ? {} : { shipper }),
+				home: openHome({
+					...homeOptions,
+					models: made.models,
+					// Told to the host as they happen, small and without arguments. A link that is down drops them.
+					onCall: async (event) => {
+						const to = current;
+						if (to === undefined) return;
+						send(to, { t: "call", ...event });
+						if (event.phase !== "start" || !holdTools) return;
+						await new Promise<void>((resolve) => {
+							const timer = setTimeout(() => {
+								toolAcks.delete(event.id);
+								resolve();
+							}, options.crossingMs ?? DEFAULT_CROSSING_MS);
+							toolAcks.set(event.id, () => {
+								clearTimeout(timer);
+								toolAcks.delete(event.id);
+								resolve();
+							});
+						});
+					},
+					...(shipper === undefined ? {} : { wrapStore: shipper.wrapStore(options.store) }),
+					...(keys === undefined ? {} : { extensions: [...(options.extensions ?? []), keys.extension] }),
+				}),
+			};
 		}
 		const mine = opening;
 		const opened = await mine.home;
@@ -162,6 +265,7 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 		home = opened.value;
 		if (link !== current) return;
 		mine.proxy.up((model) => (current === link ? send(link, model) : false));
+		mine.shipper?.up((record) => (current === link ? send(link, record) : false));
 		send(link, { t: "ready", v: LINK_VERSION, ok: true, session: options.session, state: opened.value.state });
 	};
 
@@ -181,7 +285,9 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 				if (frame.t === "hello") void hello(link, frame);
 				else if (frame.t === "refused") void stop("refused", EXIT_REFUSED, String(frame.reason ?? "refused"));
 				else if (frame.t === "cancel") running.get(frame.id)?.();
+				else if (frame.t === "call-ack") toolAcks.get(String(frame.id))?.();
 				else if (proxy?.receive(frame)) return;
+				else if (opening?.shipper?.receive(frame)) return;
 				else if (frame.t === "order") {
 					const active = home;
 					if (active === undefined) {
@@ -209,6 +315,7 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 				if (current !== link) return;
 				current = undefined;
 				proxy?.down(reason);
+				opening?.shipper?.down();
 				// No host is there to finish a move: held work goes on. A sealed home stays sealed.
 				if (home?.state === "open") home.abandon();
 			});

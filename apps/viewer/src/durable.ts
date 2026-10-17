@@ -74,10 +74,12 @@ export const receiptCountOf = (doc: DocLine): number | undefined => {
   return Array.isArray(value) ? value.length : isObj(value) ? Object.keys(value).length : 0;
 };
 
-/** A message's text, its image blocks' blobs, and its tool calls. */
-export const textOf = (message: Message): string =>
-  typeof message.content === 'string' ? message.content
-    : Array.isArray(message.content) ? message.content.map((block) => (isObj(block) && typeof block.text === 'string' ? block.text : '')).join('') : '';
+/** A message's text parts, in order (a string content is one part); its image blocks' blobs; its tool calls. */
+export const textPartsOf = (message: Message): string[] =>
+  typeof message.content === 'string' ? [message.content]
+    : Array.isArray(message.content) ? message.content.flatMap((block) => (isObj(block) && typeof block.text === 'string' ? [block.text] : [])) : [];
+/** A message's text: its text parts, each set apart from the next by a blank line. */
+export const textOf = (message: Message): string => textPartsOf(message).join('\n\n');
 export const toolCallsOf = (message: Message): { id: string; name: string; arguments: Json }[] =>
   Array.isArray(message.content)
     ? message.content.flatMap((block) => (isObj(block) && block.type === 'toolCall' ? [{ id: String(block.id), name: String(block.name), arguments: block.arguments ?? null }] : []))
@@ -93,6 +95,29 @@ export const browserChargesOf = (doc: DocLine): { tag: string; usd: number | nul
     const spent = isObj(session.spent) ? session.spent : undefined;
     return [{ tag: session.tag, usd: spent?.state === 'priced' && typeof spent.usd === 'number' ? spent.usd : null }];
   });
+};
+
+/** A page action a `browser.sessions` revision journals (RECORDING.md section 6): pi-browser writes each replay-unsafe
+ *  action as a session record's `pendingEffect` before it acts, and a later entry carries earlier ones as `prior`. Its key
+ *  is its `tool` (absent means `run`) and `codeSha`, in its conversation; it REACHED THE PAGE when this revision shows it
+ *  `finished` or with a `sent` row whose `held` is not `"denied"`. */
+export type PageAction = { callId: string; tool: string; codeSha: string; reached: boolean };
+export const pageActionsOf = (doc: DocLine): PageAction[] | undefined => {
+  if (doc.doc !== 'browser.sessions' || !isObj(doc.value) || !Array.isArray(doc.value.sessions)) return undefined;
+  const out: PageAction[] = [];
+  const visit = (entry: Json | undefined): void => {
+    if (Array.isArray(entry)) { entry.forEach(visit); return; }
+    if (!isObj(entry)) return;
+    // The entries a later one carries were dispatched before it: they come first.
+    visit(entry.prior);
+    if (typeof entry.callId === 'string' && typeof entry.codeSha === 'string') {
+      const sent = Array.isArray(entry.sent) ? entry.sent : [];
+      out.push({ callId: entry.callId, tool: typeof entry.tool === 'string' ? entry.tool : 'run', codeSha: entry.codeSha,
+        reached: entry.finished === true || sent.some((row) => isObj(row) && row.held !== 'denied') });
+    }
+  };
+  for (const session of doc.value.sessions) if (isObj(session)) visit(session.pendingEffect);
+  return out;
 };
 
 /** The LookRecords a `vision.*` document files, each with its place in the document's list (the list only grows, and
