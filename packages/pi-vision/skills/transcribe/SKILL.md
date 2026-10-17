@@ -17,13 +17,16 @@ file. The host picks the model, holds its key and pays for it; you never handle 
 ## 1. Name the video and the chunk length
 
 Each video gets its own folder under `.hear`, named by a hash of its path (its `video` file says which), so two videos
-never share audio, chunks or a transcript. Name a video the same way each time to find its transcript again. The last
-line prints the folder: step 3 names it.
+never share audio, chunks or a transcript. Name a video the same way each time to find its transcript again. The
+folder's `source` file is the SHA-256 of the video's bytes: a different recording at the same path empties the folder,
+so nothing of the old one is reused. The last line prints the folder: step 3 names it.
 
 ```bash
 : "${VIDEO:=talk.mp4}" "${CHUNK:=600}"
 H=".hear/$(node -p 'require("crypto").createHash("sha256").update(process.argv[1]).digest("hex").slice(0, 16)' "$VIDEO")"
-mkdir -p "$H" && printf '%s\n' "$VIDEO" > "$H/video" && echo "$H"
+SRC=$(node -e 'const h = require("crypto").createHash("sha256"); require("fs").createReadStream(process.argv[1]).on("data", (d) => h.update(d)).on("end", () => console.log(h.digest("hex")))' "$VIDEO")
+[ "$(cat "$H/source" 2>/dev/null)" = "$SRC" ] || { rm -rf "$H" && mkdir -p "$H" && echo "$SRC" > "$H/source"; }
+printf '%s\n' "$VIDEO" > "$H/video" && echo "$H"
 ```
 
 ## 2. Strip the audio once, then cut it in chunks

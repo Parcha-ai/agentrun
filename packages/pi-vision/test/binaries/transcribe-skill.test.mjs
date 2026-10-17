@@ -4,12 +4,13 @@
 // gives its video. A fake speech-to-text model says what each chunk says, by the chunk's name, in seconds of the chunk;
 // the transcript has it in seconds of the whole clip. Needs ffmpeg, ffprobe and node: `npm run test:binaries` runs it.
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { createVisionExtension } from "@parcha/pi-vision/durable";
 import { nodeVisionEnv } from "@parcha/pi-vision/node";
@@ -137,6 +138,27 @@ test("a chunk over the model's limit stops the step with the limit named, before
   assert.equal(fs.existsSync(at(folder("long.webm"), "c000.tsv")), false);
 });
 
+test("a different recording at the same path empties the folder: it is cut and transcribed afresh, never answered with the old words", async () => {
+  fs.copyFileSync(CLIP, at("swap.webm"));
+  const more = { VIDEO: "swap.webm" };
+  await sh(settings + chunk, more);
+  assert.ok((await code("swap.webm")).run.ok);
+  await sh(settings + write, more);
+  assert.equal(rows("swap.webm").length, 3);
+
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-i", fileURLToPath(CLIP), "-t", "8", "-c", "copy", at("swap.webm")]);
+  const before = sent.length;
+  await sh(settings, more);
+  assert.deepEqual(fs.readdirSync(at(folder("swap.webm"))).sort(), ["source", "video"], "the old recording's audio, chunks, rows and transcript are gone");
+  assert.equal(fs.readFileSync(at(folder("swap.webm"), "source"), "utf8").trim(), createHash("sha256").update(fs.readFileSync(at("swap.webm"))).digest("hex"));
+  await sh(settings + chunk, more);
+  assert.equal(chunks("swap.webm").length, 1, "the new 8 s recording, in one chunk");
+  assert.ok((await code("swap.webm")).run.ok);
+  assert.deepEqual(sent.slice(before).map((s) => s.name), ["c000.mp3"], "the new recording sent");
+  await sh(settings + write, more);
+  assert.equal(rows("swap.webm").length, 2, "only the new recording's rows");
+});
+
 test("a second video in the same workspace gets its own audio and chunks, and the first's are untouched", async () => {
   fs.copyFileSync(CLIP, at("other.webm"));
   const first = fs.readFileSync(at(folder("talk.mp4"), "chunks.csv"), "utf8");
@@ -166,6 +188,7 @@ test("a run cut short leaves only temporary files, and the next run redoes them 
   fs.copyFileSync(CLIP, at("cut.webm"));
   const cut = folder("cut.webm");
   fs.mkdirSync(at(cut), { recursive: true });
+  fs.writeFileSync(at(cut, "source"), `${createHash("sha256").update(fs.readFileSync(CLIP)).digest("hex")}\n`);
   fs.writeFileSync(at(cut, "audio.tmp.mp3"), Buffer.alloc(4096, 1));
   fs.writeFileSync(at(cut, "chunks.tmp.csv"), "c000.mp3,0.000000,1.000000\n");
   await sh(settings + chunk, { VIDEO: "cut.webm" });
