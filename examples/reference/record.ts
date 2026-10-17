@@ -75,7 +75,8 @@ export function keepBlob(dir: string, buffer: Buffer, extension: string): string
   mkdirSync(spool(dir), { recursive: true });
   const temporary = join(spool(dir), `blob-${hash}.${extension}.tmp-${process.pid}`);
   const descriptor = openSync(temporary, 'w');
-  try { writeSync(descriptor, buffer); fsyncSync(descriptor); } finally { closeSync(descriptor); }
+  // `writeSync` may write fewer bytes than asked (a full disk, a signal): every byte is written before the sync and the rename, or the call throws.
+  try { for (let offset = 0; offset < buffer.length;) offset += writeSync(descriptor, buffer, offset); fsyncSync(descriptor); } finally { closeSync(descriptor); }
   renameSync(temporary, at);
   return hash;
 }

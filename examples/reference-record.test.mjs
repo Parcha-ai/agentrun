@@ -193,6 +193,7 @@ test('a process killed while it writes a blob never leaves a torn file in blobs/
     const writeSync = fs.writeSync;
     if (process.env.KILL_AT === 'write') fs.writeSync = (fd, data, ...rest) => { writeSync(fd, data.subarray(0, data.length / 2)); die(); };
     if (process.env.KILL_AT === 'rename') fs.renameSync = die;
+    if (process.env.SHORT === '1') fs.writeSync = (fd, data, offset = 0) => writeSync(fd, data, offset, Math.min(1000, data.length - offset));
     syncBuiltinESMExports();
     const { keepBlob } = await import(${JSON.stringify(record)});
     keepBlob(process.argv[1], Buffer.from('x'.repeat(200_000)), 'txt');`;
@@ -203,6 +204,12 @@ test('a process killed while it writes a blob never leaves a torn file in blobs/
     assert.deepEqual(readdirSync(join(dir, 'blobs')), [], `no file, torn or whole, in blobs/ after a kill at ${at}`);
     assert.equal(readdirSync(join(dir, '.spool')).filter((name) => name.startsWith('blob-')).length, 1, 'the half-written bytes are a temporary file in .spool/');
   }
+  // A write that returns fewer bytes than asked (a full disk, a signal) is finished, not renamed short: the blob is whole.
+  const short = join(tmp, 'short');
+  const shorted = spawnSync(process.execPath, ['--no-warnings=ExperimentalWarning', '--input-type=module', '-e', script, short], { env: { ...process.env, SHORT: '1' } });
+  assert.equal(shorted.status, 0, String(shorted.stderr));
+  const shortHash = createHash('sha256').update(bytes).digest('hex');
+  assert.equal(readFileSync(join(short, 'blobs', `${shortHash}.txt`), 'utf8'), bytes, 'every byte is there when each write took 1000');
   // Without a kill the blob is whole under the hash of its bytes, and no temporary file is left.
   const whole = join(tmp, 'whole');
   const done = spawnSync(process.execPath, ['--no-warnings=ExperimentalWarning', '--input-type=module', '-e', script, whole], { env: { ...process.env } });
