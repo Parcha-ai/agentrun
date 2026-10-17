@@ -18,9 +18,10 @@ import { err, ok, type Result, toError } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { type App, type AppContext, type AppOptions, appOptions } from "./app.ts";
+import { type CallEvent, callsExtension } from "./calls.ts";
 import { createGate, type DrainError, type Drained, type DrainOptions, type Gate } from "./gate.ts";
 import { holdStore, type StoreHold } from "./lock.ts";
-import { type Seal, sealStore, verifyStore } from "./store.ts";
+import { checkpointStore, type Seal, sealStore, verifyStore } from "./store.ts";
 
 /** The entry kind of the notice a session gets when its home moved. */
 export const MOVE_ENTRY = "transport.move";
@@ -64,6 +65,19 @@ export type ResumeOrder = {
 		readonly id: string;
 		/** What the agent is told, once. */
 		readonly notice: string;
+		/** `restore`: the session continues from a checkpoint of a box that is gone; absent or `move` is a handoff. */
+		readonly kind?: "move" | "restore";
+		/**
+		 * A restore only: the checkpoint's head (`Seal.head`, the sequence number its next commit would take). Commits
+		 * of the lost box at or after it are gone and their numbers are taken again, so a recorder of moves and
+		 * commits drops that branch.
+		 */
+		readonly head?: number;
+		/**
+		 * A restore only: the commits of the lost box that were shipped to the host and applied to the checkpoint's store
+		 * before it opened, `from` to `to` inclusive. `head` is then `to + 1`.
+		 */
+		readonly replayed?: { readonly from: number; readonly to: number };
 	};
 };
 
@@ -82,6 +96,8 @@ export type HomeOptions = {
 	readonly models: HarnessOptions["models"];
 	/** Where the session's tools run. Default: pi's own environment in `workspace`. */
 	readonly env?: HarnessOptions["env"];
+	/** Told when a tool call begins and ends (name and replay flag only). */
+	readonly onCall?: (event: CallEvent) => void | Promise<void>;
 	/**
 	 * Called with the store each time the home opens it, before pi does: the Harness runs over the storage it returns.
 	 * `opened` runs with the Harness before anything commits through it; `closed` after the Harness closed. A runner
@@ -106,6 +122,9 @@ export type WrappedStore = {
 	readonly opened?: (harness: Harness) => void | Promise<void>;
 	readonly closed?: () => Promise<void>;
 };
+
+/** A copy of the store taken while the session is held, and the seal that vouches for it. */
+export type CheckpointTaken = { readonly seal: Seal; readonly path: string };
 
 /**
  * One place a session can run: its store, its workspace and the Harness over them, driven by orders. The host gives
@@ -136,6 +155,15 @@ export interface Home {
 	drain(options: DrainOptions | undefined, context: Context): Promise<Result<Drained, DrainError | HomeError>>;
 	/** Give a drain up: held work goes on. */
 	abandon(): void;
+	/**
+	 * Hold the session (a drain) and take a consistent copy of the store beside it, at `<store>.checkpoint`. The gate stays
+	 * closed afterwards, so that the caller can read the workspace at the same moment; `abandon` opens it. On failure the
+	 * gate is open again.
+	 */
+	checkpoint(
+		options: DrainOptions | undefined,
+		context: Context,
+	): Promise<Result<CheckpointTaken, DrainError | HomeError>>;
 	/** After a drain: close the Harness and seal the store. From then on only `reopen` or `retire` is taken. */
 	seal(context: Context): Promise<Result<Seal, HomeError>>;
 	/** The move was abandoned and the lease still names this home at `epoch`: open the sealed store again. */
@@ -298,6 +326,22 @@ class SessionHome implements Home {
 		this.#gate?.open();
 	}
 
+	async checkpoint(
+		options: DrainOptions | undefined,
+		context: Context,
+	): Promise<Result<CheckpointTaken, DrainError | HomeError>> {
+		const drained = await this.drain(options, context);
+		if (!drained.ok) return drained;
+		const path = `${this.#options.store}.checkpoint`;
+		await rm(path, { force: true });
+		const copied = await checkpointStore(this.#options.store, path, context);
+		if (!copied.ok) {
+			this.abandon();
+			return err(new HomeError("store", `could not take the checkpoint: ${copied.error.message}`, copied.error));
+		}
+		return ok({ seal: copied.value, path });
+	}
+
 	seal(context: Context): Promise<Result<Seal, HomeError>> {
 		return this.#serial(() => this.#seal(context));
 	}
@@ -447,6 +491,8 @@ class SessionHome implements Home {
 		const { root: _root, onOpen, registry, ...rest } = built.value;
 		const gate = createGate();
 		registry.install(gate.extension);
+		const { onCall } = this.#options;
+		if (onCall !== undefined) registry.install(callsExtension(registry, onCall));
 		for (const extension of this.#options.extensions ?? []) registry.install(extension);
 		const env: HarnessOptions["env"] =
 			this.#options.env ?? (async (target) => new NodeExecutionEnv({ cwd: target.cwd ?? workspace }));
