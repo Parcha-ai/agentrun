@@ -1071,6 +1071,32 @@ test('the child uses the sign-in file the recorder reads (AGENTRUN_HOME is hande
   assert.ok(!existsSync(join(recording, 'manifest.json')), 'the refused recording is not a finished one');
 });
 
+test('a token the sign-in rotated twice during the run, which the child learned and returned in its result, is not in the recording: the child redacts what it tells the supervisor with every token it has seen', { timeout: 300_000 }, async (t) => {
+  const { home } = await signInHome(t);
+  const second = `made-up-second-access-token-${'s'.repeat(30)}`;
+  const third = `made-up-third-access-token-${'h'.repeat(30)}`;
+  const recording = join(await mkdtemp(join(tmpdir(), 'reference-rotated-')), 'recording');
+  t.after(() => rm(join(recording, '..'), { recursive: true, force: true }));
+  // The access token goes first -> second -> third inside one run; the result the child returns carries the second, which the supervisor's own list (the first, then the file's last) never held.
+  const done = await run(t, {}, ['--json', '--record', recording], { AGENTRUN_HOME: home, DEMO_LEAK_STEPS: 'rotate,rotate2', DEMO_ROTATE_TOKEN: second, DEMO_ROTATE_TOKEN_2: third, DEMO_RESULT: '1', DEMO_RESULT_LEAK: second });
+  assert.equal(done.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(done.result.processes.at(-1)));
+  const files = filesIn(recording).filter((file) => !file.endsWith('.png'));
+  for (const value of [second, third]) assert.ok(!files.some((file) => readFileSync(file).includes(value)), 'an intermediate token is not in the recording');
+  assert.ok(files.some((file) => readFileSync(file, 'utf8').includes('[redacted]')), 'it was there to be redacted');
+});
+
+test('the final scan finds a token as a line stores it, JSON-escaped: one with a quote, a backslash or a newline', async (t) => {
+  const { scanRecording } = await import('./reference/secrets.ts');
+  const dir = await mkdtemp(join(tmpdir(), 'reference-scan-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const value = 'made-up-token-with-"quote"-and-\\back\nline-' + 'q'.repeat(20);
+  writeFileSync(join(dir, 'events.jsonl'), `${JSON.stringify({ data: { text: value } })}\n`);
+  assert.ok(!readFileSync(join(dir, 'events.jsonl'), 'utf8').includes(value), 'the line holds only the escaped form');
+  assert.throws(() => scanRecording(dir, [{ key: 'the key', value }]), /the key is in events\.jsonl/);
+  writeFileSync(join(dir, 'events.jsonl'), '{"data":{"text":"[redacted]"}}\n');
+  assert.doesNotThrow(() => scanRecording(dir, [{ key: 'the key', value }]));
+});
+
 test('the tracker keeps the union of every value seen, reads a changed auth.json before the next write, and reads it once more at the end', async (t) => {
   const { trackSecrets } = await import('./reference/secrets.ts');
   const { home, tokens } = await signInHome(t);

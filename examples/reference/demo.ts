@@ -29,7 +29,7 @@ import type { BoxProvider } from '@parcha/pi-transport';
 import type { VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import { pathsAt, placeAt, run, type Job, type RunOptions } from './assemble.ts';
 import { RUN_LABEL, tapBox } from './boxes.ts';
-import type { Recorder } from './record.ts';
+import type { Recorder, Redact } from './record.ts';
 import { capJudge } from './judge.ts';
 import { askToBeKilled, crossings, tapFakes, tapHost, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
 import { keepLooks, shownShots } from './looks.ts';
@@ -171,7 +171,7 @@ async function inBox(provider: BoxProvider, kind: 'local' | 'docker', place: { i
 }
 
 /** What one process of the run is made of, before it opens the store: the place, the host (the demo's, the live parts merged, the crossings and the judge caps on it), the job with its input, and the run's options. `made` is the demo's result hook, run on the delivered result. */
-export type Prepared = { models: Record<string, unknown> | undefined; place: RunPlace; host: Host; job: Job; runOptions: RunOptions; recorder: Recorder | undefined; /** Starts what writes under the run's directory: the recorder, the fetched sources, the box. Awaited once the claim is open (before `beforeResume`); `child()` has no claim to wait for and calls it at once. */ open(): Promise<void>; made(result: Awaited<ReturnType<typeof run>>): Promise<{ json: unknown; title: string } | undefined>; done(): Promise<void> };
+export type Prepared = { models: Record<string, unknown> | undefined; place: RunPlace; host: Host; job: Job; runOptions: RunOptions; recorder: Recorder | undefined; /** Takes every secret the process has seen out of a text (the sign-in's earlier tokens too): what the process prints for the supervisor passes through it. Absent when the recording redacts nothing. */ redact: Redact | undefined; /** Starts what writes under the run's directory: the recorder, the fetched sources, the box. Awaited once the claim is open (before `beforeResume`); `child()` has no claim to wait for and calls it at once. */ open(): Promise<void>; made(result: Awaited<ReturnType<typeof run>>): Promise<{ json: unknown; title: string } | undefined>; done(): Promise<void> };
 
 /** The outcome line a process reports on its way out: how the run ended, the record it delivered, what the demo's result hook made of it, and the hash of its store. */
 export function outcomeOf(result: Awaited<ReturnType<typeof run>>, storeSha256: string | undefined, made?: { json: unknown; title: string }, models?: Record<string, unknown>) {
@@ -246,7 +246,7 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   };
   const runOptions: RunOptions = { ...(boxes && boxSpec?.runIn ? { env: () => box!.env() } : {}), ...(options.spec.sites ? { sites: options.spec.sites } : {}), vision, ...(options.layout ? { layout: options.layout } : {}) };
   const made = async (result: Awaited<ReturnType<typeof run>>) => (result.status === 'complete' && options.result ? options.result(result.output, { dir: place.root, keep: (bytes, extension) => (recorder ? recorder.blob(bytes, extension) : createHash('sha256').update(bytes).digest('hex')) }) : undefined);
-  return { models: parts.models, place, host: local.host, job: { ...options.job, input }, runOptions, recorder, open, made, done: async () => { await box?.destroy(); } };
+  return { models: parts.models, place, host: local.host, job: { ...options.job, input }, runOptions, recorder, redact, open, made, done: async () => { await box?.destroy(); } };
 }
 
 const storeShaOf = (place: RunPlace) => {
@@ -262,7 +262,9 @@ async function child(options: DemoOptions) {
     const result = await run(prepared.place, prepared.host, prepared.job, prepared.runOptions);
     const made = await prepared.made(result);
     await prepared.recorder?.detach();
-    console.log(JSON.stringify({ outcome: outcomeOf(result, storeShaOf(prepared.place), made, prepared.models) }));
+    // What the process tells the supervisor passes through the process's own redaction: it has seen every token the sign-in held over the run, which the supervisor's own list may not.
+    const line = JSON.stringify({ outcome: outcomeOf(result, storeShaOf(prepared.place), made, prepared.models) });
+    console.log(prepared.redact ? prepared.redact(line) : line);
   } catch (error) {
     console.log(JSON.stringify({ outcome: { status: 'error', generation: null, code: (error as { code?: string }).code ?? null, message: String((error as Error).message).slice(0, 400) } }));
   } finally {
