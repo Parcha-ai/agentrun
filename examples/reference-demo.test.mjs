@@ -1877,3 +1877,26 @@ test('a kill at "judge.asked <label>" or "model.request turn <n>" lands on a liv
     assert.deepEqual([counted.processes, counted.kills, counted.repeated], [2, 1, 0], point);
   }
 });
+
+test('a live host whose fallback judge is the fakes\' (already tapped) has each crossing counted once; a judge the live parts supply is tapped here', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-tap-once-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const { localHost, placeAt } = await import('./reference/index.ts');
+  const { composeHost } = await import('./reference/demo.ts');
+  const place = await placeAt(join(tmp, 'run'));
+  const crossed = [];
+  const cross = (point) => { crossed.push(point); return false; };
+  const fakes = { model: () => { throw new Error('unused'); }, tools: {}, judge: async () => ({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }), pages: {}, start: 'about:blank' };
+  // The entry taps the fakes when the live parts supply tools; the live parts here supply tools only.
+  const { tapFakes } = await import('./reference/crossings.ts');
+  const host = localHost(place, tapFakes(fakes, cross)).host;
+  composeHost(host, { tools: { runEffect: async () => 'live' } }, cross, { open: 0 }, join(tmp, 'spent.jsonl'), true, true);
+  await host.decisions.runJudge({ label: 'verdict' });
+  assert.deepEqual(crossed.filter((point) => point.startsWith('judge.')), ['judge.asked verdict', 'judge.answered verdict'], 'once, not twice');
+  // A judge the live parts supply has no crossings of its own: it is tapped.
+  crossed.length = 0;
+  const other = localHost(place, tapFakes(fakes, cross)).host;
+  composeHost(other, { decisions: { runJudge: async () => ({ answers: {}, usage: { input_tokens: 1, output_tokens: 0 } }) } }, cross, { open: 0 }, join(tmp, 'spent2.jsonl'), true, true);
+  await other.decisions.runJudge({ label: 'verdict' });
+  assert.deepEqual(crossed.filter((point) => point.startsWith('judge.')), ['judge.asked verdict', 'judge.answered verdict']);
+});

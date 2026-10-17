@@ -155,10 +155,11 @@ export function tapHost(host: Host, cross: Cross, window: EffectWindow = { open:
 }
 
 /** The live host's judge and model with the crossings the fakes' have, by the same names and counting as `tapFakes`: `judge.asked <label>` and `judge.answered <label>` around each typed question, `model.request turn <n>` before and `model.answered turn <n>` after each
- *  request (n counts the tool results so far), so a kill at one of them lands on a live run with a paid question or request in flight. Call it on a live host, before the judge seam's caps; on fakes `tapFakes` has already put them there. */
-export function tapLive(host: Host, cross: Cross): void {
+ *  request (n counts the tool results so far), so a kill at one of them lands on a live run before a paid question or request is sent (the `asked` and `request` ones park the process before the provider is called) or after its answer and before the run keeps it (the `answered` ones); none cuts a request the provider has outstanding. Call it on a live host, before the judge seam's caps; on fakes `tapFakes` has already put them there. */
+export function tapLive(host: Host, cross: Cross, only: { judge?: boolean; model?: boolean } = {}): void {
   const judge = host.decisions.runJudge;
-  host.decisions = { ...host.decisions, runJudge: async (request) => { cross(`judge.asked ${request.label}`); const answer = await judge(request); cross(`judge.answered ${request.label}`); return answer; } };
+  if (only.judge !== false) host.decisions = { ...host.decisions, runJudge: async (request) => { cross(`judge.asked ${request.label}`); const answer = await judge(request); cross(`judge.answered ${request.label}`); return answer; } };
+  if (only.model === false) return;
   const catalog = host.models.catalog;
   const tapped = (member: (...args: any[]) => any, target: object) => (model: unknown, context: { messages: readonly { role: string }[] }, options?: unknown) => {
     const turn = context.messages.filter((message) => message.role === 'toolResult').length;
