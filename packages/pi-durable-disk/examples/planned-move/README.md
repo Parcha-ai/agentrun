@@ -33,8 +33,8 @@ Here the run starts on this machine (host A, a systemd unit) and moves to a Dayt
 
 ## Run it
 
-The example is three files (`main.ts`, `app.ts`, `box.ts`) that import only the package, its peers and `node:`. It runs from an
-install or from a checkout. The npm package does not ship `examples/`, so from an install you fetch the three files from GitHub
+The example is four files (`main.ts`, `app.ts`, `box.ts`, `pause.ts`) that import only the package, its peers and `node:`. It runs from an
+install or from a checkout. The npm package does not ship `examples/`, so from an install you fetch the four files from GitHub
 at the tag of the version you installed, for example
 `https://github.com/Parcha-ai/agentrun/tree/v0.1.0-beta.14/packages/pi-durable-disk/examples/planned-move`.
 
@@ -43,7 +43,7 @@ at the tag of the version you installed, for example
 ```sh
 npm init -y && npm pkg set type=module
 npm install @parcha/pi-durable-disk@0.1.0-beta.14 @earendil-works/pi-durable @earendil-works/pi-ai @earendil-works/chord
-# put main.ts, app.ts and box.ts in this directory, beside node_modules, from the tag of that version
+# put main.ts, app.ts, box.ts and pause.ts in this directory, beside node_modules, from the tag of that version
 node main.ts
 ```
 
@@ -79,8 +79,9 @@ The example prints `not ok: ...` and removes everything it made (the box, the un
 too. While it waits for host A's run to pause (up to 3 minutes), a host A instance that has ended without pausing it fails the wait
 at once, with the unit's state and its last journal lines, for example
 `not ok: host A's instance ended (unit failed) before the run paused: pi-durable-disk: fenced (STORE_FENCED): ...` (an instance that
-cannot use the store exits with that reason, exit 75). A `not ok: timed out waiting for the run to pause at its step boundary` means
-the instance is still running and has not paused the run; its own log is the systemd unit's journal, and the full journal is:
+cannot use the store exits with that reason, exit 75). A `not ok: timed out waiting for the run to pause at its step boundary` means the example could not confirm, within 3 minutes, that
+the run was paused and released; the instance may still be running, or its unit's state could not be read, or a delegation had not
+gone yet. The unit's own log is the systemd unit's journal, and the full journal is:
 
 ```sh
 sudo journalctl -u 'pda-move-<run id>-*' --no-pager | tail -40     # <run id> is on the first line the example printed
