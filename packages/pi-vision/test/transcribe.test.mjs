@@ -10,6 +10,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { receiptFacts } from "@parcha/pi-vision";
 import { createVisionExtension } from "@parcha/pi-vision/durable";
+import { nodeVisionEnv } from "@parcha/pi-vision/node";
 import { fakeTranscriptionFetch, pngBytes, SENTINEL_TRANSCRIBER_KEY } from "@parcha/pi-vision/testing";
 import { elevenLabsTranscriber, falTranscriber, openAiTranscriber } from "@parcha/pi-vision/transcribers";
 import { codeTool } from "./durable/code-tool.mjs";
@@ -46,6 +47,29 @@ test("fal through a pass-through: a bearer key at the pass-through's address, fa
     "http://broker.invalid/fal-queue/fal-ai/elevenlabs/requests/fake-1",
   ]);
   assert.ok(fake.requests.every((r) => r.headers.Authorization === `Bearer ${SENTINEL_TRANSCRIBER_KEY}`));
+});
+
+test("fal reads the key at each request, gives up on a job with no answer by its deadline, and stops waiting the moment the call is cancelled", async () => {
+  let n = 0;
+  const fake = fakeTranscriptionFetch("fal", { words: WORDS });
+  await falTranscriber({ apiKey: () => `${SENTINEL_TRANSCRIBER_KEY}-${(n += 1)}`, fetch: fake.fetch, pollMs: 1 }).transcribe(AUDIO, {});
+  assert.deepEqual(fake.requests.map((r) => r.headers.Authorization), [1, 2, 3, 4].map((i) => `Key ${SENTINEL_TRANSCRIBER_KEY}-${i}`), "a key rotated while the job is queued is used from the next request");
+
+  let polls = 0;
+  const stalled = async (url) => {
+    if (!String(url).endsWith("/status")) return new Response(JSON.stringify({ request_id: "r1", status_url: "https://queue.fal.run/x/requests/r1/status", response_url: "https://queue.fal.run/x/requests/r1" }));
+    polls += 1;
+    return new Response(JSON.stringify({ status: "IN_PROGRESS" }));
+  };
+  await assert.rejects(falTranscriber({ apiKey: key, fetch: stalled, pollMs: 5, timeoutMs: 40 }).transcribe(AUDIO, {}), /^Error: fal: no answer within timeoutMs 40; the job was IN_PROGRESS$/);
+  assert.ok(polls > 1, "polled until the deadline");
+
+  const cancel = new AbortController();
+  const started = Date.now();
+  const waiting = falTranscriber({ apiKey: key, fetch: stalled, pollMs: 60_000 }).transcribe(AUDIO, {}, cancel.signal);
+  setTimeout(() => cancel.abort(new Error("the call was cancelled")), 20);
+  await assert.rejects(waiting, /the call was cancelled/);
+  assert.ok(Date.now() - started < 5_000, "the wait between polls ends with the call");
 });
 
 test("ElevenLabs: multipart with scribe_v2, word times, the key as xi-api-key", async () => {
@@ -95,6 +119,19 @@ test("the global answers with the words, files and tells one receipt, reads the 
   assert.deepEqual(h.looks.map((l) => l.kept ?? false), [false, true], "told once as paid, then as kept");
   const everything = JSON.stringify({ seen, filed: h.filed, looks: h.looks, misses: h.misses, requests: fake.requests.map((x) => x.fields) });
   assert.equal(everything.includes(SENTINEL_TRANSCRIBER_KEY), false, "no answer, receipt, row or miss carries the key");
+});
+
+test("the length is found before the paid request, so nothing runs between a paid answer and its keeping", async () => {
+  const real = nodeVisionEnv({ cwd: workspace({ "landing.mp3": mp3() }) });
+  const order = [];
+  const env = { ...real, exec: (command, options, context) => { order.push(command[0]); return real.exec(command, options, context); } };
+  const h = host({ provider: "fake", model: "fake-stt", usdPerMinute: 0.006, transcribe: async () => { order.push("request"); return { words: WORDS, text: "Tranquility Base here. The Eagle" }; } });
+  const memo = new Map();
+  const call = { conversationId: "c", callId: "1", memo: async (k, compute) => (memo.has(k) ? memo.get(k) : (memo.set(k, await compute()), memo.get(k))) };
+  await h.vision.transcribe(env, call).execute({ path: "landing.mp3" });
+  const again = await h.vision.transcribe(env, call).execute({ path: "landing.mp3" });
+  assert.deepEqual(order, ["ffprobe", "request"], "probed, then asked; the kept answer neither probes nor asks");
+  assert.equal(again.kept, true);
 });
 
 test("a transcription that cannot be made throws its code: no model, over the provider's limit (named), not audio, a refused request; the key in none", async () => {
