@@ -61,3 +61,18 @@ export function itemSource(record: RunRecord, item: string): { pin: Json; items:
   const own = Object.values(record.items).filter((value) => { const at = recordItemOf(value); return at !== undefined && rrUnder(at, item); });
   return { pin: slice, items: own };
 }
+/** The map items the record names (`<map>/items/<i>`), each map's that a path runs inside: the frame's paths (`done`,
+ *  `steps`, `inputs`) and each keyed record's own item. Which items the run reached is the record's structure; what each
+ *  did is `nodeStatus`'s, asked of its `itemSource`. */
+export function recordItemsOf(record: RunRecord): string[] {
+  const pin = rrIsObj(record.pin) ? record.pin : {};
+  const paths = [
+    ...(Array.isArray(pin.done) ? pin.done.filter((path): path is string => typeof path === 'string') : []),
+    ...(rrIsObj(pin.steps) ? Object.keys(pin.steps) : []),
+    ...(rrIsObj(pin.inputs) ? Object.keys(pin.inputs) : []),
+    ...Object.values(record.items).map(recordItemOf).filter((path): path is string => path !== undefined),
+  ];
+  const found = new Set<string>();
+  for (const path of paths) for (const match of path.matchAll(/\/items\/\d+(?=\/|$)/g)) found.add(path.slice(0, match.index + match[0].length));
+  return [...found];
+}

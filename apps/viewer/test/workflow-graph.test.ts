@@ -125,3 +125,21 @@ test('a row reads as words: its kind, label, way and status apart, in its text a
   assert.match(page, /\.wg-node > span \{[^}]*margin-right/, 'the parts are set apart on the page');
   for (const status of ['done', 'working', 'failed', 'not-run']) assert.match(page, new RegExp(`\\.wg-node\\.${status} > \\.wg-status`), `a ${status} row's status is marked`);
 });
+
+test('a chain or a loop inside a chain draws its own steps inside it, before the step after it', () => {
+  // A nested chain has two `next` edges: one into its first step, one on to the outer chain's next step. Taking only one
+  // drew the outer step first and left the nested steps for after the rest.
+  const workflow = { root: { node: 'chain', steps: [
+    { node: 'chain', label: 'inner', steps: [{ node: 'agent', label: 'A' }, { node: 'agent', label: 'B' }] },
+    { node: 'loop', label: 'again', body: { node: 'agent', label: 'L' } },
+    { node: 'agent', label: 'C' },
+  ] } } as unknown as Json;
+  const drawn = viewed([], workflow);
+  assert.deepEqual(rows(drawn).map((row) => row.path), ['/root', '/root/steps/0', '/root/steps/0/steps/0', '/root/steps/0/steps/1', '/root/steps/1', '/root/steps/1/body', '/root/steps/2']);
+  const find = (node: Node, path: string): Node | undefined => (typeof node === 'string' || !('children' in node) ? undefined
+    : node.tag === 'li' && node.title === path ? node : (node.children ?? []).map((child) => find(child, path)).find(Boolean));
+  const inside = (path: string) => rows(find(drawn, path)!).map((row) => row.path).slice(1);
+  assert.deepEqual(inside('/root/steps/0'), ['/root/steps/0/steps/0', '/root/steps/0/steps/1'], 'the inner chain holds its steps');
+  assert.deepEqual(inside('/root/steps/1'), ['/root/steps/1/body'], 'the loop holds its body');
+  assert.deepEqual(inside('/root/steps/2'), []);
+});

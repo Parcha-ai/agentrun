@@ -4,7 +4,7 @@
 // stop (./node-status.ts keeps it), so this panel draws what the DSL says and decides no status itself. A panel
 // (PANELS.md): `accepts`, `reduce` and `view` are pure, so a scrub is a replay. A recording whose manifest names no job is
 // not drawn.
-import { nodeStatus, workflowGraph, type NodeState } from '../../../packages/dsl/src/graph.ts';
+import { nodeStatus, workflowGraph, type GraphEdge, type NodeState } from '../../../packages/dsl/src/graph.ts';
 import { under, type Json, type Manifest } from './format.ts';
 import { docOf } from './durable.ts';
 import { runRecordAccepts, runRecordInit, runRecordReduce, statusSource, type RunRecord } from './node-status.ts';
@@ -31,11 +31,15 @@ export const workflowGraphPanel: Panel<RunRecord> = {
     const statuses = nodeStatus(graph, statusSource(state) as Parameters<typeof nodeStatus>[1]);
     const byPath = new Map(graph.nodes.map((node) => [node.path, node]));
     const into = new Set(graph.edges.map((edge) => edge.to));
-    const nextOf = new Map(graph.edges.filter((edge) => edge.kind === 'next').map((edge) => [edge.from, edge.to]));
-    const inner = (path: string) => graph.edges.filter((edge) => edge.from === path && edge.kind !== 'next');
+    // A `next` edge to a node under its source enters a chain's first step or a loop's body, drawn inside it; one to a node
+    // beside it goes on to the step after. A nested chain or loop has both, so each is kept apart.
+    const enters = (edge: GraphEdge) => edge.kind === 'next' && under(edge.to, edge.from);
+    const nextOf = new Map(graph.edges.filter((edge) => edge.kind === 'next' && !enters(edge)).map((edge) => [edge.from, edge.to]));
+    const inner = (path: string) => graph.edges.filter((edge) => edge.from === path && (edge.kind !== 'next' || enters(edge)));
     const seen = new Set<string>();
     const dim = (path: string) => (focus !== undefined && !under(wgNodeOf(focus), path) && !under(path, wgNodeOf(focus)) ? ' dim' : '');
-    // A chain of nodes from `start` along its `next` edges, each with what it opens into (a branch, a route, an item, a child).
+    // A chain of nodes from `start` along its `next` edges, each with what it opens into (its steps or body, a branch, a
+    // route, an item, a child).
     const chain = (start: string): Node[] => {
       const out: Node[] = [];
       for (let at: string | undefined = start; at !== undefined && !seen.has(at); at = nextOf.get(at)) {
@@ -48,7 +52,7 @@ export const workflowGraphPanel: Panel<RunRecord> = {
           ...(node.via !== undefined ? [h('span', { class: 'wg-via' }, `via ${node.via}`)] : []), h('span', { class: 'wg-status' }, WG_TEXT[status])];
         out.push(h('li', { class: `wg-node ${node.kind} ${status}${dim(node.path)}`, title: node.path },
           ...parts.flatMap((part, index) => (index === 0 ? [part] : [' ', part])),
-          ...inner(node.path).map((edge) => h('div', { class: `wg-into ${edge.kind}` }, h('span', { class: 'wg-edge' }, edge.kind), h('ol', {}, ...chain(edge.to))))));
+          ...inner(node.path).map((edge) => h('div', { class: `wg-into ${edge.kind}` }, ...(enters(edge) ? [] : [h('span', { class: 'wg-edge' }, edge.kind)]), h('ol', {}, ...chain(edge.to))))));
       }
       return out;
     };

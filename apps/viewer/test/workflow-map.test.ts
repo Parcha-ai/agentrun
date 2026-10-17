@@ -360,3 +360,33 @@ test('a map inside a map\'s item: each row\'s cell reads off its records, in bot
     assert.deepEqual(cells.map((cell) => cell.id), ['/root/steps/0/items/0', '/root/steps/0/items/1'], `${run}: a cell per row, none per inner cell`);
   }
 });
+
+test('a map over a list an earlier step made: the record names the items that ran, and each gets its cell', () => {
+  // The input holds no list (a code step builds it before the map), so the plan names no item and no line carries an item's
+  // path: the checkpoint and the items' own records are all that say which items ran. An item the run never reached is in
+  // neither, so it has no cell.
+  const at = (commit: number, order: number, kind: string, data: Json): Line => ({ channel: 'durable', source: 'workflow', kind, gen: 1, t: commit * 10 + order, commit, order, data } as Line);
+  const fedOf = (workflow: Json, frame: Json, records: Record<string, Json>[]) => [
+    at(1, 0, 'agentrun.workflow', { id: 1, kind: 'agentrun.workflow', input: { key: 'run', workflow, input: {} } }),
+    at(2, 0, 'agentrun.driver', { doc: 'agentrun.driver', key: 'run', value: { generation: 1, state: { schema: 'agentrun.frozen_run.v4', pin: frame } }, version: 1 }),
+    ...records.map((record, n) => at(3, n, 'agentrun.items', { doc: 'agentrun.items', key: `run\u0000${String(record.map)}/items/${String(record.index)}`, value: record, version: 1 })),
+  ];
+  for (const shape of Object.keys(MAP_SHAPES)) {
+    for (const [variant, want] of [['finished', ['done', 'done', 'done']], ['cut', ['done', 'working']]] as const) {
+      const fed = fedOf(graphFixture(`${shape}.workflow.json`), graphFixture(`${shape}.${variant}.frame.json`), graphFixture(`${shape}.${variant}.items.json`) as Record<string, Json>[]);
+      const end = reduceTo(workflowMapPanel, fed, fed.length);
+      assert.deepEqual(end.plan?.items, [], `${shape}: the plan names no item`);
+      const cells = wmCellsOf(end);
+      assert.deepEqual(cells.map((cell) => cell.glyph), want, `${shape}, ${variant}`);
+      assert.deepEqual(cells.map((cell) => cell.id), want.map((_, index) => `/root/steps/0/items/${index}`), `${shape}, ${variant}: the map's items, none of a map inside one`);
+    }
+  }
+  // Only the checkpoint, stored whole (v3): its paths name the items.
+  const v3 = fedOf(graphFixture('map-v3.workflow.json'), graphFixture('map-v3.finished.frame.json'), []);
+  assert.deepEqual(wmCellsOf(reduceTo(workflowMapPanel, v3, v3.length)).map((cell) => cell.glyph), ['done', 'done', 'done']);
+  const twice = JSON.parse(readFileSync(new URL('fixtures/map-in-map/runs.json', import.meta.url), 'utf8')) as { workflow: Json; runs: Record<string, { frame: Json; items: Record<string, Json>[] }> };
+  for (const run of ['v3.cut', 'v4.cut']) {
+    const fed = fedOf(twice.workflow, twice.runs[run]!.frame, twice.runs[run]!.items);
+    assert.deepEqual(wmCellsOf(reduceTo(workflowMapPanel, fed, fed.length)).map((cell) => cell.id), ['/root/steps/0/items/0', '/root/steps/0/items/1'], `${run}: a cell per row, none per inner cell`);
+  }
+});

@@ -11,7 +11,7 @@ import {
 } from './audit-read.ts';
 import { h, register, type BaselineView, type Node, type Panel, type ViewContext } from './panels.ts';
 import { nodeStatus, workflowGraph, type WorkflowGraph } from '../../../packages/dsl/src/graph.ts';
-import { itemSource, runRecordAccepts, runRecordInit, runRecordReduce, type RunRecord } from './node-status.ts';
+import { itemSource, recordItemsOf, runRecordAccepts, runRecordInit, runRecordReduce, type RunRecord } from './node-status.ts';
 
 export type WmBranch = {
   id: string;
@@ -60,7 +60,19 @@ const wmNumber = (value: Json | undefined): number | null => (typeof value === '
 
 /** The path of step `n` of a branch's body. */
 const wmStepPath = (branchId: string, n: number) => `${branchId}/body/steps/${n}`;
-const wmSize = (state: WmState) => Math.max(state.plan?.items.length ?? 0, state.planned, ...Object.values(state.branches).map((branch) => branch.index + 1), 0);
+/** The map the grid draws: the plan's, else the one a line's branch is in, else the first the record names an item of. */
+const wmMapPath = (state: WmState): string | undefined => {
+  if (state.plan) return state.plan.mapPath;
+  const sample = Object.values(state.branches)[0] ?? recordItemsOf(state.record).map((item) => branchOf(item)).find(Boolean);
+  return sample ? wmMapOf(sample.id) : undefined;
+};
+/** The indexes of the grid's map's items the record names: a map over a list an earlier step made has no planned item, and
+ *  a process that resumes from its journal writes no line for the items it finishes, so only the record says they ran. */
+const wmRecorded = (state: WmState): number[] => {
+  const map = wmMapPath(state);
+  return map === undefined ? [] : recordItemsOf(state.record).map((item) => branchOf(item)).filter((where) => where !== undefined && wmMapOf(where.id) === map).map((where) => where!.index);
+};
+const wmSize = (state: WmState) => Math.max(state.plan?.items.length ?? 0, state.planned, ...Object.values(state.branches).map((branch) => branch.index + 1), ...wmRecorded(state).map((index) => index + 1), 0);
 
 /** The map an item of it (`<map>/items/<i>`) belongs to. */
 const wmMapOf = (item: string) => item.replace(/\/items\/\d+$/, '');
@@ -217,9 +229,8 @@ function wmHost(state: WmState, line: Line): WmState {
 
 const wmName = (state: WmState, branch: { index: number }) => state.plan?.items[branch.index] ?? `branch ${branch.index}`;
 const wmIdOf = (state: WmState, index: number): string | undefined => {
-  if (state.plan) return `${state.plan.mapPath}/items/${index}`;
-  const sample = Object.values(state.branches)[0];
-  return sample ? sample.id.replace(/\/items\/\d+$/, `/items/${index}`) : undefined;
+  const map = wmMapPath(state);
+  return map === undefined ? undefined : `${map}/items/${index}`;
 };
 
 /** The branch the camera is on: the focus when the viewer clicked one, else the scripted camera. */

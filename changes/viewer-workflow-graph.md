@@ -22,3 +22,9 @@ kind: feature
   gone from `./audit-read.ts`). A recording whose task names no workflow (no `agentrun.workflow`
   line) takes the workflow, and the plan the map lays out, from the job the manifest names; before, its items read
   working at the end and its zoomed item listed the steps of another workflow.
+- The graph draws a chain's steps and a loop's body inside it, before the step after it. A chain or loop inside a chain
+  has two `next` edges, one into its body and one on to the next outer step, and the panel kept only one of them: a
+  nested chain's steps were drawn after everything else, out of order.
+- The workflow map draws a cell for each item of its map that the record names (the checkpoint's paths and the items' own
+  records), as well as each planned item. A map over a list an earlier step built names no item in the input, and a
+  process that finishes items from its journal writes no line for them, so such a map drew no cell at all.
