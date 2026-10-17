@@ -13,6 +13,7 @@ import { readAllEntries } from './folder.ts';
 import { sha256Paused } from './receipt-key.ts';
 import { finishedManifest, placeLines, tailOf } from './follow.ts';
 import { diskPanel } from './disk.ts';
+import { picturePanel } from './picture.ts';
 import { transportPanel } from './transport.ts';
 import { visionPanel } from './vision.ts';
 

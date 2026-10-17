@@ -80,6 +80,9 @@
   .turn p { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .turn code { display: block; font-size: 12px; overflow-wrap: anywhere; }
   .turn img, img.blob { max-width: 100%; image-rendering: auto; border: 1px solid var(--rule); }
+  /* A run's picture is small and drawn whole: shown at the panel's width, its pixels kept sharp. */
+  img.picture { display: block; width: 100%; image-rendering: pixelated; border: 1px solid var(--rule); }
+  .picture-gap { aspect-ratio: 16 / 9; display: grid; place-items: center; border: 1px dashed var(--rule); color: var(--muted); }
   .streaming { color: var(--open); }
   .has-cite { cursor: pointer; }
   .panel:has(.vz) { grid-column: 1 / -1; max-height: none; }
