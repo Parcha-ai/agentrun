@@ -573,8 +573,9 @@ function visionMetersView(state: VisionState, meters: VisionMeters, following = 
     stored('repeated', String(meters.repeated), 'A look key paid again in a later generation.', meters.repeated > 0 ? ' alarm' : ' zero'),
     meters.askedTwice > 0 && stored('asked twice', String(meters.askedTwice), 'A look key paid twice in one generation.', ' alarm'),
     row('possible extra payments', `${meters.possible} (observed)`, 'From live lines: a look started in a process that ended without filing it. Its eyes may have answered and been paid; no durable line says.', meters.possible > 0 ? ' alarm' : ''),
-    stored('spend', measured ? `${meters.possible > 0 && meters.cost !== null ? 'at least ' : ''}${visionMoney(meters.cost)}` : NOT_PRICED,
-      following ? 'A run followed while it goes: its spend is known once it finishes.'
+    // The spend is a price, so before any vision line it reads as the strip's cost does: not priced, never $0.
+    row('spend', measured ? `${meters.possible > 0 && meters.cost !== null ? 'at least ' : ''}${visionMoney(meters.cost)}` : NOT_PRICED,
+      !measured ? 'No vision document line in this recording: nothing here is priced.' : following ? 'A run followed while it goes: its spend is known once it finishes.'
         : `Once per payment, with each failed look's own price; not priced while any has no price.${meters.possible > 0 ? ' A lower bound: a possible payment is not in it.' : ''}`),
     stored('typed misses', meters.failed === 0 ? '0' : `${meters.failed}: ${meters.misses.map(([code, n]) => `${code} ${n}`).join(', ')}`, 'Failed LookRecords, by miss code.'));
 }

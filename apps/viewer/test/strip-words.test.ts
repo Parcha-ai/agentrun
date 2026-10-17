@@ -10,6 +10,8 @@ import { counterFold, countersOf, rangeLabel, type Counters } from '../src/count
 import { parseLines } from '../src/format.ts';
 import { reduceTo } from '../src/replay.ts';
 import { lines as visionLines } from './vision-hand.ts';
+import { visionPanel } from '../src/vision.ts';
+import type { Node } from '../src/panels.ts';
 
 const fixture = (name: string) => parseLines(readFileSync(new URL(`./fixtures/${name}/events.jsonl`, import.meta.url), 'utf8'));
 const fold = (lines: ReturnType<typeof parseLines>, ended = true) => countersOf(reduceTo(counterFold, lines, lines.length), ended);
@@ -32,10 +34,11 @@ test('the strip shows a possible look payment, page action and re-ask as a range
   const strip = shown(possible);
   assert.equal(strip['looks paid'], '2–3');
   assert.equal(strip.repeated, '1–3');
-  assert.equal(strip['re-asks'], '1–2 over 1 turn');
+  assert.equal(strip['re-asks'], '1–2', 'a range that includes possible re-asks names no turn count: the proven turns are not all of them');
   const items = stripItems(possible);
   assert.match(items.find((item) => item.label === 'looks paid')!.title, /A range: 2 proven, and 1 more possible/);
-  assert.match(items.find((item) => item.label === 're-asks')!.title, /A range runs from the proven ones to every possible one/);
+  assert.match(items.find((item) => item.label === 're-asks')!.title, /^1 proven re-ask over 1 turn, and 1 more possible over 1 turn\. .*A range runs from the proven ones to every possible one/);
+  assert.equal(shown({ ...possible, modelTurns: { committed: 9, reasked: { proven: { turns: 2, reasks: 3 }, possible: { turns: 0, reasks: 0 } } } })['re-asks'], '3 over 2 turns', 'with nothing possible, the turns are named');
   const none = shown({ ...possible, vision: { native: 0, possible: 0 }, pageActions: { possible: 0, measured: true }, modelTurns: { committed: 9, reasked: { proven: { turns: 0, reasks: 0 }, possible: { turns: 0, reasks: 0 } } } });
   assert.deepEqual([none['looks paid'], none.repeated, none['re-asks']], ['2', '1', '0']);
 });
@@ -57,6 +60,18 @@ test('what a recording cannot give is not recorded, a cost nobody priced is not 
   const killed = fold(fixture('reference-killed'));
   assert.equal(killed.cost, null, 'the scripted judge reports no cost');
   assert.equal(shown(killed).cost, 'not priced');
+  assert.equal(shown({ ...killed, cost: null }, killed.measured, undefined, true).cost, 'not priced yet', 'a run followed while it goes is priced once it finishes');
+});
+
+test('the vision meters\' spend reads not priced before any vision line, as the strip\'s cost does', () => {
+  const words = (node: Node): string => (typeof node === 'string' ? node : 'text' in node ? node.text : 'children' in node ? (node.children ?? []).map(words).join(' ') : '');
+  const firstFiled = visionLines.findIndex((line) => line.channel === 'durable' && line.source === 'vision');
+  const reading = visionLines.findIndex((line) => line.source === 'pi' && line.kind === 'tool_execution_start');
+  assert.ok(reading >= 0 && reading < firstFiled, 'the hand recording starts a read before any look is filed');
+  const early = visionLines.slice(0, reading + 1);
+  const meters = words(visionPanel.view(reduceTo(visionPanel, early, early.length), { t: 0 })).replace(/\s+/g, ' ');
+  assert.match(meters, /spend not priced/);
+  assert.match(meters, /looks paid not recorded/);
 });
 
 test('no recording the viewer ships with or tests on shows the old words on its strip', () => {

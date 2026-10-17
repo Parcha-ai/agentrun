@@ -1,7 +1,7 @@
 // The page: load a recording, draw its timeline and counters, and replay it. Everything on screen at a stop is a
 // reduce of the lines before that stop; the DOM is redrawn from those reduces, never patched by events.
 import { FORMAT, parseLines, processOf, under, validate, type Json, type Line, type Manifest, type Recording } from './format.ts';
-import { askedTwiceLabel, costLabel, counterFold, countersOf, NOT_RECORDED, rangeLabel, repeatedLabel, type Counters } from './counters.ts';
+import { askedTwiceLabel, costLabel, counterFold, countersOf, NOT_PRICED, NOT_RECORDED, rangeLabel, repeatedLabel, type Counters } from './counters.ts';
 import { lanesOf, type Lanes, type Span } from './lanes.ts';
 import { animatedPanels, featuredPanel, panelsFor, type BaselineView, type Node, type Panel, type Props, type ViewContext } from './panels.ts';
 import { frameFold, gapTitle, pictureAt, type FrameState } from './frames.ts';
@@ -218,6 +218,7 @@ export type StripItem = { label: string; value: string; title: string; extra: st
  *  may have happened reads as a range, from the proven count to every possible one ("0–1"). */
 export function stripItems(counters: Counters, measured = counters.measured, providers?: 'real' | 'scripted', following = false): StripItem[] {
   const reasked = counters.modelTurns.reasked;
+  const turns = (n: number) => `${n} turn${n === 1 ? '' : 's'}`;
   const item = (label: string, value: string, title: string, extra = ''): StripItem => ({ label, value, title, extra });
   const stored = (label: string, value: string, title: string, extra = '') => (measured ? item(label, value, title, extra)
     : item(label, NOT_RECORDED, 'This recording has no durable lines: nothing from the store can be counted.'));
@@ -234,15 +235,16 @@ export function stripItems(counters: Counters, measured = counters.measured, pro
       `Calls admitted and never completed by a process that ended: whether each reached the outside is not known, and none is sent again blindly.${counters.inFlight > 0 ? ' Running: admitted by the live process, not finished yet.' : ''}`),
     stored('judge asks', String(counters.judge.answered + counters.judge.failed), `Answered ${counters.judge.answered}, failed ${counters.judge.failed}, re-asked ${counters.judge.reasked}.`),
     stored('model turns', String(counters.modelTurns.committed), 'Committed assistant turns.'),
-    stored('re-asks', reasked === null ? NOT_RECORDED
-      : `${rangeLabel(String(reasked.proven.reasks), reasked.possible.reasks)}${reasked.proven.reasks ? ` over ${reasked.proven.turns} turn${reasked.proven.turns === 1 ? '' : 's'}` : ''}`,
+    // A range that takes in possible re-asks names no turn count: the proven turns are not all of its turns. The title has both.
+    stored('re-asks', reasked === null ? NOT_RECORDED : reasked.possible.reasks ? rangeLabel(String(reasked.proven.reasks), reasked.possible.reasks)
+      : `${reasked.proven.reasks}${reasked.proven.reasks ? ` over ${turns(reasked.proven.turns)}` : ''}`,
       reasked === null
         ? 'No ask start was committed to this run\'s pi.live (or its version is not one this viewer knows), so a turn asked again cannot be shown.'
-        : 'Extra asks after a kill cut an ask, each counted once: proven when the cut ask had committed a partial (the model was answering), possible when only its start (the process may have died before calling the model). A range runs from the proven ones to every possible one; only proven ones count.',
+        : `${reasked.proven.reasks} proven re-ask${reasked.proven.reasks === 1 ? '' : 's'} over ${turns(reasked.proven.turns)}${reasked.possible.reasks ? `, and ${reasked.possible.reasks} more possible over ${turns(reasked.possible.turns)}` : ''}. Extra asks after a kill cut an ask, each counted once: proven when the cut ask had committed a partial (the model was answering), possible when only its start (the process may have died before calling the model). A range runs from the proven ones to every possible one; only proven ones count.`,
       reasked?.proven.reasks ? ' alarm' : ''),
     item('processes', String(counters.processes), 'From the supervisor\'s process lines.'),
     item('kills', String(counters.kills), 'From the supervisor\'s kill lines.'),
-    item('cost', costLabel(counters.cost, counters.costLowerBound, providers, counters.costParts), following ? 'A run followed while it goes: its cost is known once it finishes.' :
+    item('cost', following && counters.cost === null ? `${NOT_PRICED} yet` : costLabel(counters.cost, counters.costLowerBound, providers, counters.costParts), following ? 'A run followed while it goes: its cost is known once it finishes.' :
       `Not priced until a line prices a part, and while any priced part has no price: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}${providers === 'scripted' ? ' Scripted: at least one priced part was served by a fake, a cassette or a script, so this is not a provider\'s bill, though it may include real charges for the other parts.' : ''}${counters.costParts.boxes !== undefined ? ' Boxes: each box\'s time at its provider\'s published list price, an estimate, not the provider\'s invoice; unknown while a box has no receipt or its kind has no published price.' : ''}`),
     stored('journal opens', String(counters.journalOpens), 'A fact of the store: agentrun.driver\'s generation. It counts journal opens, which can exceed processes.', ' fact'),
   ];
