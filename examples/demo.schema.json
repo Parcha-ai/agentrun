@@ -17,7 +17,7 @@
       "properties": { "point": { "type": "string", "minLength": 1 }, "why": { "type": "string", "minLength": 1 } }
     },
     "kills": { "description": "What --kill does: each entry in order, one per process (examples/reference/demo-spec.ts).", "type": "array", "items": { "oneOf": [{ "$ref": "#/definitions/crossingKill" }, { "$ref": "#/definitions/stormKill" }] } },
-    "panels": { "description": "The viewer's own panel ids the recording draws.", "type": "array", "uniqueItems": true, "items": { "enum": ["disk", "lines", "pi-turns", "transport", "vision", "workflow-map"] } },
+    "panels": { "description": "The viewer's own panel ids the recording draws.", "type": "array", "uniqueItems": true, "items": { "enum": ["disk", "lines", "pi-turns", "picture", "transport", "vision", "workflow-map"] } },
     "tools": {
       "description": "The job's tools that are code of its own: where each runs locally, and the hosted executor tool it is granted (null when none).",
       "type": "array",

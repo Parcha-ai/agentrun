@@ -25,7 +25,12 @@ test('the DemoSpec schema is what its type gives', () => {
 
 test('the template lists every DemoSpec field, so a misspelt one is refused, and its panels are the viewer\'s own ids', () => {
   for (const key of Object.keys(spec.properties)) assert.ok(key in demo.properties, `${key} is a DemoSpec field the template does not list`);
-  assert.deepEqual([...demo.properties.panels.items.enum].sort(), panelsShown().map((panel) => panel.id).sort());
+  // The template is a static schema an editor reads, so it lists the ids itself: a panel the viewer gains fails here, in
+  // the pull request that adds it, until the template lists it too.
+  const listed = new Set(demo.properties.panels.items.enum);
+  const viewer = new Set(panelsShown().map((panel) => panel.id));
+  assert.deepEqual([...viewer].filter((id) => !listed.has(id)), [], 'viewer panels examples/demo.schema.json does not list in panels.items.enum');
+  assert.deepEqual([...listed].filter((id) => !viewer.has(id)), [], 'ids examples/demo.schema.json lists that are no viewer panel');
 });
 
 test('the template lists every field the reference entry\'s own DemoSpec type reads, with its values', () => {
