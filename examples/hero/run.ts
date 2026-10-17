@@ -7,6 +7,6 @@ import { job } from './job.ts';
 import { result } from './result.ts';
 
 /** What the supervisor and each process of the run read: the job, its fakes and the result it keeps. */
-export const options = { self: import.meta.url, spec, job, fakes, result };
+export const options = { self: import.meta.url, spec, job, fakes, result, keepRun: true };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await demo(options);
