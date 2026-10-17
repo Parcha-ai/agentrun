@@ -2,6 +2,7 @@
 // fails the wait at once, with what the instance logged, instead of timing out three minutes later. The wait's decision is a
 // function of three reads (the run's record, its delegations, the unit's state), so it runs here on fakes, with no keys.
 import { describe, it } from "node:test";
+import { readdirSync, readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import type { HostStatus, RunRecord } from "../../src/index.ts";
 import { pausedOrEnded, type PauseReads } from "../../examples/planned-move/pause.ts";
@@ -51,5 +52,16 @@ describe("pausedOrEnded", () => {
   it("does not fail a unit that paused the run and exited between the two reads: it reads the record once more first", async () => {
     const paused = record("paused");
     assert.equal(await pausedOrEnded(reads({ records: [record("running"), paused], states: ["stopped"] })), paused);
+  });
+});
+
+describe("the planned-move README", () => {
+  it("names every .ts file of the example, because the package ships none and a reader copies them from the tag", () => {
+    const dir = new URL("../../examples/planned-move/", import.meta.url);
+    const readme = readFileSync(new URL("README.md", dir), "utf8");
+    const copied = /put ([^\n]*?) in this directory/.exec(readme)?.[1] ?? "";
+    for (const file of readdirSync(dir).filter((name) => name.endsWith(".ts"))) {
+      assert.ok(copied.includes(file), `the copy instruction names ${file}: "${copied}"`);
+    }
   });
 });
