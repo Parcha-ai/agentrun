@@ -885,6 +885,64 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 		);
 
 		it(
+			"finishes a restore in its new box when that box took the session and its runner did not start: no third box",
+			async () => {
+				const made = world(setup);
+				try {
+					// The place's second box takes the session at the next epoch, then cannot start its runner, once.
+					let refused = 0;
+					const provider = rigged(made.provider, (box, n) =>
+						n !== 2
+							? box
+							: withExec(box, async (argv, run) => {
+									if (refused === 0 && argv.includes("--session")) {
+										refused += 1;
+										return err(new BoxError("unknown", "the test refuses the runner"));
+									}
+									return run();
+								}),
+					);
+					const place = await placeIn(made, { provider });
+					const runner = await place.start(orderOf(made, place, 1, { PARK_AT: "2" }));
+					await firstSignal(place, 1, "kill-request");
+					expect(await place.checkpoint()).toEqual({ taken: true });
+					await place.kill(runner, "box");
+					await runner.exited;
+					const failed = await place.recover(runner, "box", orderOf(made, place, 2)).then(
+						() => "restored",
+						(error: Error) => error.message,
+					);
+					expect(failed).toContain("could not start the runner");
+					expect(refused).toBe(1);
+					// The lease names the new box: it is the place's, at the new epoch, and it is not let go.
+					expect((await place.status()).record).toMatchObject({ generation: 2, holder: { host: "box-2" } });
+					expect(made.lines.filter(({ kind }) => kind === "box.ended").map(({ data }) => data.box)).toEqual([
+						"box-1",
+					]);
+					const recovered = await place.recover(runner, "box", orderOf(made, place, 3));
+					expect(recovered.runner.epoch).toBe(2);
+					const exit = await recovered.runner.exited;
+					expect(exit.outcome?.record).toMatchObject({ done: 3, resumedFrom: 2 });
+					expect((await place.status()).record).toMatchObject({ generation: 2, holder: { host: "box-2" } });
+					// No third box: the restore finished where the session was taken, its hop said once, from box-1 to box-2.
+					expect(made.lines.filter(({ kind }) => kind === "box.created").map(({ data }) => data.box)).toEqual([
+						"box-1",
+						"box-2",
+					]);
+					expect(
+						made.lines
+							.filter(({ kind }) => kind === "restore")
+							.map(({ data }) => [(data.from as { box: string }).box, (data.to as { box: string }).box]),
+					).toEqual([["box-1", "box-2"]]);
+					await place.release();
+				} finally {
+					made.remove();
+				}
+			},
+			(setup.timeoutMs ?? 60_000) * 2,
+		);
+
+		it(
 			"reads a restored runner's kill request in its new box, from the request file the place named before the loss",
 			async () => {
 				const made = world(setup);
