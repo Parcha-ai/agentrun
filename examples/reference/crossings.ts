@@ -29,6 +29,9 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
     const count = (map: Map<unknown, number>, kill: unknown, hit: boolean) => { const value = (map.get(kill) ?? 0) + (hit ? 1 : 0); map.set(kill, value); return value; };
     const info = options.info;
     if (log) appendFileSync(log, `${JSON.stringify({ point, n: cut ? n : 0, pid: process.pid, ...(info ? { info } : {}) } satisfies Crossing)}\n`);
+    // A run kill's `n` counts the matching crossings that could have been kill points: one suppressed by an open tool call is not the nth time, it is not a time at all. A crossing a tool kill takes still counts, so it is counted before that kill returns.
+    const run = plan?.run;
+    const timesEligible = cut && run && !('storm' in run) ? count(eligible, run, run.point === point && matches(run.where, info)) : 0;
     // A tool box destroyed at its crossing: once, at the nth matching time (a crossing that is not a kill point can be one: the box is the caller's to end).
     let tool = -1;
     plan?.tools.forEach((entry, index) => {
@@ -37,11 +40,8 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
       if (tool < 0 && !done.has(index) && times === entry.n) tool = index;
     });
     if (tool >= 0) { done.add(tool); return true; }
-    const run = plan?.run;
     if (!cut || !run) { if (point === 'event workflow.node.start') begun = true; return false; }
     // A named point is taken as named; a storm waits for the first node to have begun.
-    // A run kill's `n` counts the matching crossings that could have been kill points: one suppressed by an open tool call is not the nth time, it is not a time at all.
-    const timesEligible = 'storm' in run ? 0 : count(eligible, run, run.point === point && matches(run.where, info));
     const due = 'storm' in run ? begun && point !== 'event workflow.node.start' && Date.now() - started >= run.gapMs : run.point === point && matches(run.where, info) && timesEligible === run.n;
     if (point === 'event workflow.node.start') begun = true;
     if (due) process.kill(process.pid, 'SIGKILL');
