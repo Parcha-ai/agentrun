@@ -1,5 +1,9 @@
+import { existsSync } from "node:fs";
 import { afterAll } from "vitest";
 import { carriersOf, waitNotRunning } from "./box-env-support.ts";
+
+/** Whether this host shows processes under `/proc` (Linux does; macOS does not): the guards need it, and do nothing where it is not. */
+export const procAvailable = (path = "/proc/self/environ"): boolean => existsSync(path);
 
 /** A local box's programs carry `PI_TRANSPORT_BOX=<its id>`, and so does everything they start: a launcher's supervisor, its watchdog, the program. */
 const BOX_VARIABLE = "PI_TRANSPORT_BOX";
@@ -37,6 +41,7 @@ export function guardLeaks(): { readonly env: Readonly<Record<string, string>> }
 	const run = `${process.pid}-${Date.now()}`;
 	process.env[RUN_VARIABLE] = run;
 	afterAll(async () => {
+		if (!procAvailable()) return;
 		try {
 			await waitNotRunning(() => carriersOf(RUN_VARIABLE, run).length > 0, "a process this file started", 8_000);
 		} catch {
@@ -54,6 +59,7 @@ export function guardLeaks(): { readonly env: Readonly<Record<string, string>> }
  * pid and command of what it left; what it left is ended.
  */
 export async function assertNothingOfBox(boxId: string): Promise<void> {
+	if (!procAvailable()) return;
 	try {
 		await waitNotRunning(() => carriersOf(BOX_VARIABLE, boxId).length > 0, `a process of box ${boxId}`, 8_000);
 	} catch {

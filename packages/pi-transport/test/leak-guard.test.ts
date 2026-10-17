@@ -8,12 +8,19 @@ import { localBoxes } from "../src/box/local.ts";
 import { launch } from "../src/home/launch.ts";
 import { carriersOf } from "./box-env-support.ts";
 import { recording, until } from "./home-launch-support.ts";
-import { assertNothingOfBox, guardLeaks } from "./leak-guard.ts";
+import { assertNothingOfBox, guardLeaks, procAvailable } from "./leak-guard.ts";
 
 const context = BACKGROUND_CONTEXT;
 const { env: MARK } = guardLeaks();
 
-describe("the guard that fails a launcher case which leaves its supervisor", () => {
+describe("the guard knows whether this host has /proc", () => {
+	it("says no for a host that does not show processes, so its checks are skipped there", () => {
+		expect(procAvailable("/nonexistent-proc/self/environ")).toBe(false);
+		expect(procAvailable()).toBe(true);
+	});
+});
+
+describe.skipIf(!procAvailable())("the guard that fails a launcher case which leaves its supervisor", () => {
 	it("passes for a box that was destroyed with a launch running, and names what a surviving supervisor is", async () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-transport-leak-guard-"));
 		const box = getOrThrow(await localBoxes({ root }).create({ maxLifetimeMs: 10 * 60_000, env: MARK }, context));
