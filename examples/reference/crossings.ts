@@ -12,7 +12,7 @@ export type Cross = ((point: string, options?: { cut?: boolean; /** Facts about 
   park?(point: string, info?: Info): Promise<never> | undefined;
 };
 export type Info = Record<string, string | number | boolean>;
-export type Crossing = { point: string; n: number; pid: number; info?: Info };
+export type Crossing = { point: string; n: number; pid: number; info?: Info; /** A tool kill that fired at this crossing. */ landed?: true };
 
 /** A kill's `where` holds when every field it names equals the crossing's info field. */
 const matches = (where: Info | undefined, info: Info | undefined) => !where || Object.entries(where).every(([field, value]) => info?.[field] === value);
@@ -28,7 +28,9 @@ export function askToBeKilled(file: string, nonce?: string): Kill {
   return (crossing) => {
     const whole = `${file}.${process.pid}`;
     const descriptor = openSync(whole, 'w');
-    try { writeSync(descriptor, JSON.stringify({ ...crossing, ...(nonce !== undefined ? { nonce } : {}) })); fsyncSync(descriptor); } finally { closeSync(descriptor); }
+    const request = Buffer.from(JSON.stringify({ ...crossing, ...(nonce !== undefined ? { nonce } : {}) }));
+    // `writeSync` may write fewer bytes than asked (a full disk, a signal): every byte is written before the sync and the rename, or the call throws.
+    try { for (let offset = 0; offset < request.length;) offset += writeSync(descriptor, request, offset); fsyncSync(descriptor); } finally { closeSync(descriptor); }
     renameSync(whole, file);
     const directory = openSync(dirname(file), 'r');
     try { fsyncSync(directory); } finally { closeSync(directory); }
@@ -56,6 +58,10 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
     const count = (map: Map<unknown, number>, kill: unknown, hit: boolean) => { const value = (map.get(kill) ?? 0) + (hit ? 1 : 0); map.set(kill, value); return value; };
     const info = options.info;
     if (log) appendFileSync(log, `${JSON.stringify({ point, n: cut ? n : 0, pid: process.pid, ...(info ? { info } : {}) } satisfies Crossing)}\n`);
+    const run = plan?.run;
+    // A run kill's `n` counts EVERY crossing of its point (and `where`), eligible or not, so a demo's kill always lands when the run reaches the point n times or more; it lands at the first ELIGIBLE crossing at or after the nth (eligible: not while a tool call is
+    // between its dispatch and its kept answer). `ordinal` is the crossing's own number, which the kill line keeps. A crossing a tool kill takes still counts, so it is counted before that kill returns.
+    const ordinal = run && !('storm' in run) && run.point === point && matches(run.where, info) ? count(eligible, run, true) : 0;
     // A tool box destroyed at its crossing: once, at the nth matching time (a crossing that is not a kill point can be one: the box is the caller's to end).
     let tool = -1;
     plan?.tools.forEach((entry, index) => {
@@ -63,11 +69,8 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
       const times = count(seen, entry, true);
       if (tool < 0 && !done.has(index) && times === entry.n) tool = index;
     });
-    if (tool >= 0) { done.add(tool); return true; }
-    const run = plan?.run;
-    // A run kill's `n` counts EVERY crossing of its point (and `where`), eligible or not, so a demo's kill always lands when the run reaches the point n times or more; it lands at the first ELIGIBLE crossing at or after the nth (eligible: not while a tool call is
-    // between its dispatch and its kept answer). `ordinal` is the crossing's own number, which the kill line keeps.
-    const ordinal = run && !('storm' in run) && run.point === point && matches(run.where, info) ? count(eligible, run, true) : 0;
+    // A tool kill that fired is written to the log beside the crossings (n 0: it is no kill point), so the supervisor can tell a tool kill that landed from one that never did.
+    if (tool >= 0) { done.add(tool); if (log) appendFileSync(log, `${JSON.stringify({ point, n: 0, pid: process.pid, landed: true, ...(info ? { info } : {}) } satisfies Crossing)}\n`); return true; }
     if (!cut || !run) { if (point === 'event workflow.node.start') begun = true; return false; }
     // A kill with `hold` is taken by `park`, not here: the crossing parks the nth filing and the ones after it.
     if (!('storm' in run) && run.hold !== undefined) return false;
@@ -83,7 +86,8 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
     // The nth time the point is reached, counting the crossings that could have been kill points (the call that follows this one in `cross` has already counted this one).
     if ((eligible.get(run) ?? 0) < run.n) return undefined;
     parkedCount += 1;
-    const ask = () => { if (killAsked) return; killAsked = true; kill({ point, n, pid: process.pid }); };
+    // The kill waits for every tool call to return its kept answer: a parallel branch may have started one while the filing was parked, and a kill then would leave that call unknown.
+    const ask = () => { if (killAsked) return; if (window.open > 0) { setTimeout(ask, 20).unref(); return; } killAsked = true; kill({ point, n, pid: process.pid }); };
     if (parkedCount === 1) setTimeout(ask, run.waitMs ?? 3000).unref();
     if (parkedCount >= run.hold) ask();
     return new Promise<never>(() => {});
@@ -153,10 +157,11 @@ export function tapHost(host: Host, cross: Cross, window: EffectWindow = { open:
 }
 
 /** The live host's judge and model with the crossings the fakes' have, by the same names and counting as `tapFakes`: `judge.asked <label>` and `judge.answered <label>` around each typed question, `model.request turn <n>` before and `model.answered turn <n>` after each
- *  request (n counts the tool results so far), so a kill at one of them lands on a live run with a paid question or request in flight. Call it on a live host, before the judge seam's caps; on fakes `tapFakes` has already put them there. */
-export function tapLive(host: Host, cross: Cross): void {
+ *  request (n counts the tool results so far), so a kill at one of them lands on a live run before a paid question or request is sent (the `asked` and `request` ones park the process before the provider is called) or after its answer and before the run keeps it (the `answered` ones); none cuts a request the provider has outstanding. Call it on a live host, before the judge seam's caps; on fakes `tapFakes` has already put them there. */
+export function tapLive(host: Host, cross: Cross, only: { judge?: boolean; model?: boolean } = {}): void {
   const judge = host.decisions.runJudge;
-  host.decisions = { ...host.decisions, runJudge: async (request) => { cross(`judge.asked ${request.label}`); const answer = await judge(request); cross(`judge.answered ${request.label}`); return answer; } };
+  if (only.judge !== false) host.decisions = { ...host.decisions, runJudge: async (request) => { cross(`judge.asked ${request.label}`); const answer = await judge(request); cross(`judge.answered ${request.label}`); return answer; } };
+  if (only.model === false) return;
   const catalog = host.models.catalog;
   const tapped = (member: (...args: any[]) => any, target: object) => (model: unknown, context: { messages: readonly { role: string }[] }, options?: unknown) => {
     const turn = context.messages.filter((message) => message.role === 'toolResult').length;

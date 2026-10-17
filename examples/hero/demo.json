@@ -21,7 +21,7 @@
   "expectedCalls": 36,
   "expectedCost": 7.5,
   "kills": [
-    { "point": "effect.kept published", "n": 3, "why": "the third operator's published figure is kept and not yet committed: the worst moment for a paid call" }
+    { "point": "effect.kept published", "why": "a published figure is kept and not yet committed, with no other call running: the worst moment for a paid call" }
   ],
   "panels": ["workflow-map", "vision"],
   "sources": "examples/hero/sources.json",

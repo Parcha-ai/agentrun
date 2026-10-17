@@ -5,7 +5,7 @@
 // spools into `events.jsonl` and writes the manifest.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AttachInput, CommitRecorder, DurableLine } from './record-store.ts';
 
@@ -200,7 +200,8 @@ export function openRecorder(options: { dir: string; /** The recording's clock, 
         append(durableFile, `${redact(JSON.stringify({ ...line, data: moved.data, ...(blobs.length ? { blobs } : {}), t: line.t ?? clock() }))}\n`);
       });
     },
-    async detach() { const end = stop; stop = undefined; await end?.(); clearInterval(syncing); syncAll(); for (const setup of [...watching.values()]) await (await setup)?.stop(); watching.clear(); },
+    // Every watcher is stopped first (one still being set up finishes and may write), and only then is the last sync made: no line is written after it.
+    async detach() { const end = stop; stop = undefined; await end?.(); for (const setup of [...watching.values()]) await (await setup)?.stop(); watching.clear(); clearInterval(syncing); syncAll(); },
     memo(key, value, meta = {}) {
       const moved = moveImages({ memo: key, value }, keep);
       const line = { channel: 'durable', source: 'pi', kind: 'pi.memo', gen, t: Math.max(0, Date.now() - started), commit: latest, order: null, ...(meta.path !== undefined ? { path: meta.path } : {}), ...(meta.conv !== undefined ? { conv: meta.conv } : {}), data: moved.data, ...(moved.blobs.length ? { blobs: moved.blobs } : {}) };
@@ -290,7 +291,8 @@ export function followRecording(dir: string, options: { holdMs?: number | (() =>
   const events = join(dir, 'events.jsonl');
   if (!existsSync(events)) writeFileSync(events, '');
   const offsets = new Map<string, number>();
-  const partial = new Map<string, string>();
+  // The unfinished tail of each spool, as bytes: a multibyte character cut by a read is decoded with the rest of its line.
+  const partial = new Map<string, Buffer>();
   const pending: Record<string, unknown>[] = [];
   const next = new Map<number, number>();
   let latestCommit = -Infinity;
@@ -298,15 +300,21 @@ export function followRecording(dir: string, options: { holdMs?: number | (() =>
     const names = existsSync(spool(dir)) ? readdirSync(spool(dir)).filter((name) => name.endsWith('.jsonl')) : [];
     for (const name of names) {
       const path = join(spool(dir), name);
-      let bytes: Buffer;
-      try { bytes = readFileSync(path); } catch { continue; }
       const from = offsets.get(name) ?? 0;
-      if (bytes.length <= from) continue;
-      offsets.set(name, bytes.length);
-      const text = (partial.get(name) ?? '') + bytes.subarray(from).toString('utf8');
-      const parts = text.split('\n');
-      partial.set(name, parts.pop() ?? '');
-      for (const part of parts) {
+      // Only the bytes after the saved offset are read: a spool that has not grown costs one stat, however long the recording is.
+      let chunk: Buffer;
+      try {
+        const size = statSync(path).size;
+        if (size <= from) continue;
+        const descriptor = openSync(path, 'r');
+        try { chunk = Buffer.alloc(size - from); const got = readSync(descriptor, chunk, 0, chunk.length, from); chunk = chunk.subarray(0, got); } finally { closeSync(descriptor); }
+      } catch { continue; }
+      offsets.set(name, from + chunk.length);
+      const bytes = Buffer.concat([partial.get(name) ?? Buffer.alloc(0), chunk]);
+      const cut = bytes.lastIndexOf(10);
+      if (cut < 0) { partial.set(name, bytes); continue; }
+      partial.set(name, bytes.subarray(cut + 1));
+      for (const part of bytes.subarray(0, cut).toString('utf8').split('\n')) {
         if (!part) continue;
         try {
           const line = JSON.parse(part) as Record<string, unknown>;
@@ -321,7 +329,10 @@ export function followRecording(dir: string, options: { holdMs?: number | (() =>
     poll() {
       ingest();
       const watermark = Date.now() - started - holdOf();
-      const ready = pending.filter((line) => (line.t as number) < watermark && !(line.channel === 'durable' && line.order === null && (line.commit as number) >= latestCommit));
+      // A memo waits for a later commit (the lines of its own are then all in), and nothing that sorts after it is placed before it: a later live line appended first would put the memo after it.
+      const waiting = pending.filter((line) => line.channel === 'durable' && line.order === null && (line.commit as number) >= latestCommit).sort(compareLines);
+      const first = waiting[0];
+      const ready = pending.filter((line) => (line.t as number) < watermark && !waiting.includes(line) && (first === undefined || compareLines(line, first) < 0));
       if (!ready.length) return;
       ready.sort(compareLines);
       for (const line of ready) pending.splice(pending.indexOf(line), 1);
