@@ -1,16 +1,19 @@
 import { randomUUID } from "node:crypto";
+import { copyFileSync, rmSync } from "node:fs";
 import { posix } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { withoutAbortSignal } from "@earendil-works/chord/context";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import type { Box } from "../box/box.ts";
 import { finish } from "../box/files.ts";
+import { type Checkpoint, type CheckpointVault, restoreNotice } from "./checkpoint.ts";
+import { replayCommits } from "./commit-log.ts";
 import type { DrainOptions } from "./gate.ts";
-import type { HomeHandle } from "./host.ts";
+import type { CallRecord, HomeHandle } from "./host.ts";
 import type { Holder, LeaseRecord, Ownership } from "./ownership.ts";
 import { type StopRunner, stopRunner } from "./stop.ts";
-import type { Seal } from "./store.ts";
-import { moveFile, moveWorkspace, type WorkspaceOptions } from "./workspace.ts";
+import { type Seal, sealStore, verifyStore } from "./store.ts";
+import { manifestOf, moveFile, moveWorkspace, type WorkspaceOptions } from "./workspace.ts";
 
 /** One place a session's home can be: an environment, its box, and where the store and the workspace are in it. */
 export type Place = {
@@ -49,7 +52,8 @@ export type MoveErrorCode =
 	| "target"
 	| "lost"
 	| "take"
-	| "resume";
+	| "resume"
+	| "no_checkpoint";
 
 /** A move that did not complete, and where it stopped. Returned, never thrown. */
 export class MoveError extends Error {
@@ -267,7 +271,10 @@ export async function moveHome(options: MoveOptions, context: Context): Promise<
 
 	await step("resume");
 	target.setEpoch(next);
-	const resumed = await target.resume({ epoch: next, seal, move: { id, notice: options.notice } }, context);
+	const resumed = await target.resume(
+		{ epoch: next, seal, move: { id, notice: options.notice, kind: "move", head: seal.head } },
+		context,
+	);
 	if (!resumed.ok) {
 		return err(new MoveError("resume", `the target took the session and did not resume: ${resumed.error.message}`));
 	}
@@ -411,7 +418,245 @@ export type RecoverOptions = {
 	 * `stopRunner`: the process named in `<store>.pid`. A host whose runners a launcher keeps passes the launcher's stop.
 	 */
 	readonly stop?: StopRunner;
+	/**
+	 * Where the host keeps checkpoints, and how it makes a box to restore one into. Together they let a session whose
+	 * box is gone live again: both are needed, and `recoverHome` never makes a box itself.
+	 */
+	readonly vault?: CheckpointVault;
+	readonly replace?: (place: Place, context: Context) => Promise<Result<Place, MoveError>>;
+	/** Who this host is, for the lease it takes when it restores. Default `host`. */
+	readonly host?: string;
+	/** The tool calls the host saw begin, from the dead home's handle: the restored session is told of those since the checkpoint. */
+	readonly calls?: readonly CallRecord[];
+	/** The text of the notice a restored session gets. Default `restoreNotice`. */
+	readonly noticeOfRestore?: (
+		checkpoint: Checkpoint,
+		calls: readonly CallRecord[],
+		replayed?: { readonly from: number; readonly to: number; readonly count: number },
+	) => string;
+	/** The files of a restore are copied with these limits. */
+	readonly workspace?: WorkspaceOptions & { readonly maxBytes?: number };
 };
+
+/** Whether a box is gone for good: its provider says it ended, or does not know it. An error that is not that is not an answer. */
+async function boxGone(box: Box, context: Context): Promise<boolean> {
+	const status = await box.status(context);
+	if (status.ok) return status.value.state === "ended";
+	return status.error.code === "gone" || status.error.code === "not_found";
+}
+
+/** The newest checkpoint whose store and tree are what its record says, or `undefined`. */
+async function usableCheckpoint(
+	vault: CheckpointVault,
+	session: string,
+	context: Context,
+): Promise<Checkpoint | undefined> {
+	const latest = await vault.latest(session, context);
+	if (!latest.ok || latest.value === undefined) return undefined;
+	for (let n = latest.value.n; n >= 1; n -= 1) {
+		const got = await vault.get(session, n, context);
+		const checkpoint = got.ok ? got.value : undefined;
+		if (checkpoint === undefined) continue;
+		if (!(await verifyStore(checkpoint.storeFile, checkpoint.seal, context)).ok) continue;
+		const tree = await manifestOf(vault.box, checkpoint.filesRoot, undefined, context);
+		if (!tree.ok) continue;
+		const mine = (
+			entries: readonly {
+				path: string;
+				kind: string;
+				bytes: number;
+				mode?: number;
+				target?: string;
+				sha256?: string;
+			}[],
+		) =>
+			JSON.stringify(
+				entries.map((e) => [e.path, e.kind, e.bytes, e.mode ?? null, e.target ?? null, e.sha256 ?? null]),
+			);
+		if (mine(tree.value.entries) === mine(checkpoint.manifest.entries)) return checkpoint;
+	}
+	return undefined;
+}
+
+/** The newest checkpoint whose store ends at or before `head`: the one a restore at that head started from. */
+async function checkpointBefore(
+	vault: CheckpointVault,
+	session: string,
+	head: number,
+	context: Context,
+): Promise<Checkpoint | undefined> {
+	const latest = await vault.latest(session, context);
+	if (!latest.ok || latest.value === undefined) return undefined;
+	for (let n = latest.value.n; n >= 1; n -= 1) {
+		const got = await vault.get(session, n, context);
+		if (got.ok && got.value !== undefined && got.value.seal.head <= head) return got.value;
+	}
+	return undefined;
+}
+
+/**
+ * The session's box is gone: build its home again in a box the caller makes, from the latest checkpoint that still
+ * checks out, and take the lease at the next epoch. A home at the old epoch that was only unreachable is refused at its
+ * next model request and ends.
+ */
+async function restoreHome(
+	options: RecoverOptions & {
+		readonly vault: CheckpointVault;
+		readonly replace: NonNullable<RecoverOptions["replace"]>;
+	},
+	record: LeaseRecord,
+	gone: Place,
+	context: Context,
+): Promise<
+	Result<
+		{
+			readonly lease: LeaseRecord;
+			readonly home: HomeHandle;
+			readonly restored: Checkpoint;
+			readonly replayed?: { readonly from: number; readonly to: number; readonly count: number };
+		},
+		MoveError
+	>
+> {
+	const { session, vault } = options;
+	const checkpoint = await usableCheckpoint(vault, session, context);
+	if (checkpoint === undefined) {
+		return err(new MoveError("no_checkpoint", `the box of ${session} is gone and no checkpoint of it checks out`));
+	}
+	// The commits the runner shipped after the checkpoint are applied to a copy of its store on the host, through the
+	// store's own Storage and before any Harness opens it: the session then has the admissions it made since.
+	const replay = await replayedStore(vault, session, checkpoint, context);
+	try {
+		const made = await options.replace(gone, context);
+		if (!made.ok) return made;
+		return await restoreInto(options, record, checkpoint, replay, made.value, context);
+	} finally {
+		if (replay !== undefined) rmSync(replay.file, { force: true });
+	}
+}
+
+type Replayed = {
+	readonly file: string;
+	readonly seal: Seal;
+	readonly from: number;
+	readonly to: number;
+	readonly count: number;
+};
+
+/** A copy of the checkpoint's store with the shipped commits since applied, or `undefined` when there are none to apply. */
+async function replayedStore(
+	vault: CheckpointVault,
+	session: string,
+	checkpoint: Checkpoint,
+	context: Context,
+): Promise<Replayed | undefined> {
+	const log = await vault.readLog(session, checkpoint.seal.head, context);
+	if (!log.ok || log.value.entries.length === 0) return undefined;
+	const file = `${checkpoint.storeFile}.replay-${randomUUID()}`;
+	try {
+		copyFileSync(checkpoint.storeFile, file);
+		const applied = await replayCommits(file, checkpoint.seal.head, log.value.entries, context);
+		// An error leaves the commits before it applied: the store is a whole prefix of the session's.
+		const to = applied.ok ? applied.value.to : applied.error.applied;
+		if (to < checkpoint.seal.head) {
+			rmSync(file, { force: true });
+			return undefined;
+		}
+		const seal = await sealStore(file, context);
+		if (!seal.ok) {
+			rmSync(file, { force: true });
+			return undefined;
+		}
+		return { file, seal: seal.value, from: checkpoint.seal.head, to, count: to - checkpoint.seal.head + 1 };
+	} catch {
+		rmSync(file, { force: true });
+		return undefined;
+	}
+}
+
+async function restoreInto(
+	options: RecoverOptions & {
+		readonly vault: CheckpointVault;
+		readonly replace: NonNullable<RecoverOptions["replace"]>;
+	},
+	record: LeaseRecord,
+	checkpoint: Checkpoint,
+	replay: Replayed | undefined,
+	place: Place,
+	context: Context,
+): Promise<
+	Result<
+		{
+			readonly lease: LeaseRecord;
+			readonly home: HomeHandle;
+			readonly restored: Checkpoint;
+			readonly replayed?: { readonly from: number; readonly to: number; readonly count: number };
+		},
+		MoveError
+	>
+> {
+	const { session, vault, ownership } = options;
+	const id = `restore-${record.epoch + 1}`;
+	const seal = replay?.seal ?? checkpoint.seal;
+	// The commits the lost box shipped and this restore did not replay are a branch that no longer exists: the runner at
+	// the new epoch commits those numbers again, so the log must not say it holds them.
+	const dropped = await vault.dropLogAbove(session, seal.head - 1, context);
+	if (!dropped.ok) return err(new MoveError("ship", `the host's log could not be rewound: ${dropped.error.message}`));
+	const file = await moveFile(
+		vault.box,
+		replay?.file ?? checkpoint.storeFile,
+		place.box,
+		place.store,
+		seal,
+		undefined,
+		context,
+	);
+	if (!file.ok)
+		return err(new MoveError("ship", `the checkpoint's store did not reach the new box: ${file.error.message}`));
+	const tree = await moveWorkspace(
+		vault.box,
+		place.box,
+		{ fromRoot: checkpoint.filesRoot, toRoot: place.workspace, ...options.workspace },
+		context,
+	);
+	if (!tree.ok)
+		return err(new MoveError("ship", `the checkpoint's files did not reach the new box: ${tree.error.message}`));
+	const host = options.host ?? "host";
+	const holder = { environment: place.environment, provider: place.provider, box: place.box.id, host };
+	const taken = await ownership.take(session, holder, record.epoch, { move: id, seal }, context);
+	if (!taken.ok) {
+		const code = taken.error.code === "lost" ? "lost" : "take";
+		return err(new MoveError(code, `the lease was not taken: ${taken.error.message}`));
+	}
+	const epoch = taken.value.epoch;
+	const started = await options.start(place, epoch, context);
+	if (!started.ok) return started;
+	const home = started.value;
+	const ready = await home.ready;
+	if (!ready.ok) return err(new MoveError("resume", `the restored home did not answer: ${ready.error.message}`));
+	const notice = (options.noticeOfRestore ?? restoreNotice)(checkpoint, options.calls ?? [], replay);
+	const resumed = await home.resume(
+		{
+			epoch,
+			seal,
+			move: {
+				id,
+				notice,
+				kind: "restore",
+				head: seal.head,
+				...(replay === undefined ? {} : { replayed: { from: replay.from, to: replay.to } }),
+			},
+		},
+		context,
+	);
+	if (!resumed.ok) return err(new MoveError("resume", `the restored home did not run: ${resumed.error.message}`));
+	return ok({
+		lease: taken.value,
+		home,
+		restored: checkpoint,
+		...(replay === undefined ? {} : { replayed: { from: replay.from, to: replay.to, count: replay.count } }),
+	});
+}
 
 /**
  * What a host that starts again does: read the lease, stop a runner that still runs where it says, start one there,
@@ -426,7 +671,17 @@ export type RecoverOptions = {
 export async function recoverHome(
 	options: RecoverOptions,
 	context: Context,
-): Promise<Result<{ readonly lease: LeaseRecord; readonly home: HomeHandle }, MoveError>> {
+): Promise<
+	Result<
+		{
+			readonly lease: LeaseRecord;
+			readonly home: HomeHandle;
+			readonly restored?: Checkpoint;
+			readonly replayed?: { readonly from: number; readonly to: number; readonly count: number };
+		},
+		MoveError
+	>
+> {
 	const found = await options.ownership.current(options.session, context);
 	if (!found.ok) return err(new MoveError("take", `the lease cannot be read: ${found.error.message}`));
 	const record = found.value;
@@ -438,6 +693,11 @@ export async function recoverHome(
 		return err(
 			new MoveError("resume", `the lease names the environment "${record.holder.environment}", which is not known`),
 		);
+	}
+	// A box that is gone cannot be stopped or reopened: the session lives again from the latest checkpoint, if the host
+	// keeps them and can make a box.
+	if (options.vault !== undefined && options.replace !== undefined && (await boxGone(place.box, context))) {
+		return restoreHome({ ...options, vault: options.vault, replace: options.replace }, record, place, context);
 	}
 	// Never two runners on one store: one that still runs there is stopped first, and its call in flight is cut.
 	const stopped = await (options.stop ?? stopRunner)(place, context);
@@ -488,11 +748,27 @@ export async function recoverHome(
 			home.setEpoch(lease.epoch);
 		}
 	}
+	// A restore the host did not finish (the start or the readiness failed after the take) is finished here: the model is
+	// still told it was restored, from the checkpoint the lease's seal came from.
+	let notice = options.notice;
+	if (lease.move?.startsWith("restore-") && lease.seal !== undefined && options.vault !== undefined) {
+		const from = await checkpointBefore(options.vault, options.session, lease.seal.head, context);
+		if (from !== undefined) notice = (options.noticeOfRestore ?? restoreNotice)(from, options.calls ?? []);
+	}
 	const resumed = await home.resume(
 		{
 			epoch: lease.epoch,
 			...(lease.seal === undefined ? {} : { seal: lease.seal }),
-			...(lease.move === undefined ? {} : { move: { id: lease.move, notice: options.notice } }),
+			...(lease.move === undefined
+				? {}
+				: {
+						move: {
+							id: lease.move,
+							notice,
+							kind: lease.move.startsWith("restore-") ? "restore" : "move",
+							...(lease.seal === undefined ? {} : { head: lease.seal.head }),
+						},
+					}),
 		},
 		context,
 	);

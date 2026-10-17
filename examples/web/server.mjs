@@ -160,11 +160,14 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
   }
 
   // A run carried back is done, whatever run.json says of its last instance.
+  // A run with no run.json (a pack carries none, so every run of an imported home) and an endedAt was carried back at its
+  // source: its store is as released as one whose run.json says so.
+  const releasedRun = (run) => RELEASED.has(run.record?.status) || (run.record === null && run.index.endedAt !== undefined);
   const statusOf = (run) => (run.index.endedAt ? "done" : run.record ? (run.record.status === "running" && !doorOf(run.record) ? "lost" : run.record.status) : children.has(run.id) ? "starting" : "unknown");
 
   /** The run's transcript from its store, opened read-only; only for a run whose claim is released. */
   async function readStore(run) {
-    if (!RELEASED.has(run.record?.status)) throw new HttpError(409, "the run is live: read it through its door");
+    if (!releasedRun(run)) throw new HttpError(409, "the run is live: read it through its door");
     const file = join(run.dir, "store", "run.sqlite");
     const st = await stat(file).catch(() => null);
     if (!st) return { rows: [], state: "idle", costUsd: null, title: "" };
@@ -268,7 +271,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
 
   async function summary(run) {
     const status = statusOf(run);
-    const store = RELEASED.has(run.record?.status) ? await readStore(run).catch(() => null) : null;
+    const store = releasedRun(run) ? await readStore(run).catch(() => null) : null;
     const view = await liveView(run);
     const { browser, note } = await browserOf(run);
     const door = doorOf(run.record);
