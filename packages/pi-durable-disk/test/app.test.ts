@@ -48,11 +48,15 @@ test("a missing module, no default function, a throwing one, or no options: AppE
   assert.ok(!(TERMINAL_EXITS as readonly number[]).includes(1), "exit 1 is not terminal: Restart=on-failure retries it");
 });
 
-test("run with an app module that does not load exits 1 before anything mounts", async () => {
+test("run with an app module that does not load: the factory runs once the claim is held, so it exits 1 there and lets the claim go (a second open is not held)", async () => {
   const quiet = process.stderr.write;
-  process.stderr.write = () => true;
+  const lines: string[] = [];
+  process.stderr.write = ((chunk: string | Uint8Array) => (lines.push(String(chunk)), true)) as typeof process.stderr.write;
   try {
-    assert.equal(await main(["run", "--disk", "d", "--region", "r", "--id", "r1", "--mount-root", join(dir, "mnt"), "--app", join(dir, "nope.mjs")]), 1);
+    const args = ["run", "--dir", join(dir, "run-nope"), "--app", join(dir, "nope.mjs")];
+    assert.equal(await main(args), 1);
+    assert.equal(await main(args), 1, "not 76: the first open let its claim go");
+    assert.ok(lines.some((l) => l.includes('"event":"app failed"') && l.includes("APP_FAILED")), lines.join(""));
   } finally {
     process.stderr.write = quiet;
   }

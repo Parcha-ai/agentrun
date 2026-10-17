@@ -120,10 +120,39 @@ async function foldedIntoHeld(root, path, was, is, removed, directories) {
     if (files.includes(path)) bullets.push(bulletOf(fragment.body));
   }
   if (bullets.length === 0) return false;
+  return heldSection(was, bullets) === unreleasedSection(is ?? '');
+}
+
+/** The Unreleased section a held changelog has when `bullets` are appended to `was`'s, as the fold writes it. */
+function heldSection(was, bullets) {
   const lines = was.split('\n');
   appendToUnreleased(lines, bullets);
   while (lines.at(-1) === '') lines.pop();
-  return unreleasedSection(`${lines.join('\n')}\n`) === unreleasedSection(is ?? '');
+  return unreleasedSection(`${lines.join('\n')}\n`);
+}
+
+/**
+ * What an earlier fold of this release left in the held changelog at `file`, when it is exactly that: the fragments a first fold
+ * deleted (gone from the tree, present at the merge base with `base`) appended to the merge base's Unreleased section in fold order.
+ * A release that folds, merges main and folds a late fragment again must write what one fold of all of them writes, so the run
+ * those fragments made is taken back to the merge base's text (never touching it) and rebuilt with the late ones in fold order.
+ * Undefined when there is nothing to rebuild: no earlier fold, no base to compare with, or a section that is not the fold's output
+ * (a hand edit stays, and the new bullets are appended after it as before).
+ */
+async function earlierFold(root, file, base, current, fragments, directories) {
+  let mergeBase;
+  try { mergeBase = (await git(root, ['merge-base', base, 'HEAD'])).trim(); } catch { return undefined; }
+  const was = await gitShow(root, mergeBase, file);
+  if (was === null || !was.split('\n').some(unreleasedHeading)) return undefined;
+  const prior = [];
+  for (const fragment of await removedFragments(root, mergeBase, new Set(directories.values()))) {
+    const files = await Promise.all(fragment.packages.map(name => changelogFor(root, directories, name)));
+    if (files.includes(file)) prior.push(fragment);
+  }
+  if (prior.length === 0 || heldSection(was, [...prior].sort(foldOrder).map(fragment => bulletOf(fragment.body))) !== unreleasedSection(current)) return undefined;
+  const section = unreleasedSection(was).split('\n');
+  while (section.at(-1) === '') section.pop();
+  return { section, bullets: [...prior, ...fragments].sort(foldOrder).map(fragment => bulletOf(fragment.body)) };
 }
 
 /**
@@ -173,20 +202,23 @@ const sectionEnd = (lines, heading) => {
  * fragment goes to its package's own changelog, else the root. A changelog with neither held bullets nor fragments is untouched;
  * one that already has the version's section gets the fragments' bullets appended to it. A held package (its manifest says
  * `"private": true`) ships nothing in this release, so its changelog is never dated: its fragments' bullets are appended to its
- * Unreleased section, which keeps its name and its entries.
+ * Unreleased section, which keeps its name and its entries. With `base` (a ref the release merges main from), a held changelog whose
+ * Unreleased section is the output of an earlier fold of this release is rebuilt from the merge base's text with the earlier and the
+ * new fragments together in fold order, so folding in two commits gives what folding once gives (see `earlierFold`).
  */
-export async function fold(root, version, date) {
+export async function fold(root, version, date, base) {
   assert.match(version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/, 'The version is like 0.1.0-beta.13');
   assert.match(date, /^\d{4}-\d{2}-\d{2}$/, 'The date is YYYY-MM-DD');
   const directories = await workspacePackages(root);
   const fragments = await loadFragments(root);
   // Every changelog that exists is visited, so a package changelog that holds bullets and gets no fragment is dated too.
   const targets = new Map([['CHANGELOG.md', []]]);
+  const owners = new Map();
   for (const file of await changelogPaths(root)) if (file !== 'CHANGELOG.md' && await readOptional(join(root, file)) !== null) targets.set(file, []);
   for (const fragment of [...fragments].sort(foldOrder)) {
     const files = new Set();
     for (const name of fragment.packages) files.add(await changelogFor(root, directories, name));
-    for (const file of files) targets.set(file, [...(targets.get(file) ?? []), bulletOf(fragment.body)]);
+    for (const file of files) { targets.set(file, [...(targets.get(file) ?? []), bulletOf(fragment.body)]); owners.set(file, [...(owners.get(file) ?? []), fragment]); }
   }
   // Every new text is built before anything is written, and a failed write puts the changelogs and fragments back, so a retry
   // never appends a bullet twice.
@@ -201,7 +233,9 @@ export async function fold(root, version, date) {
       // A package this release does not publish gets no version section: its fragments join what its Unreleased section holds.
       if (bullets.length === 0) continue;
       assert.ok(unreleased >= 0, `${file} has no Unreleased heading to add to`);
-      appendToUnreleased(lines, bullets);
+      const earlier = base ? await earlierFold(root, file, base, original, owners.get(file), directories) : undefined;
+      if (earlier) lines.splice(unreleased, sectionEnd(lines, unreleased) - unreleased, ...earlier.section);
+      appendToUnreleased(lines, earlier ? earlier.bullets : bullets);
     } else if (existing >= 0) {
       if (bullets.length === 0) continue;
       lines.splice(sectionEnd(lines, existing), 0, ...bullets);
@@ -274,8 +308,8 @@ async function main() {
     console.log(`Changes: ${fragments.length} fragment(s) valid; no Unreleased section edited${isFold ? ' (the fold)' : ''}.`);
   } else if (args[0] === '--fold') {
     const version = args[1];
-    const result = await fold(root, version, option('--date') ?? new Date().toISOString().slice(0, 10));
+    const result = await fold(root, version, option('--date') ?? new Date().toISOString().slice(0, 10), option('--base') ?? 'origin/main');
     console.log(`Folded ${result.folded} fragment(s) into ${result.files.join(', ') || 'no changelog'}.`);
-  } else throw new Error('Usage: node scripts/changes.mjs --check [--base <commit>] | --fold <version> [--date YYYY-MM-DD]');
+  } else throw new Error('Usage: node scripts/changes.mjs --check [--base <commit>] | --fold <version> [--date YYYY-MM-DD] [--base <ref>]');
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch(error => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });
