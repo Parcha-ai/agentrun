@@ -489,7 +489,7 @@ const extension: (pi: ExtensionAPI) => void = createGitRemoteExtension(options);
 void extension;
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'git-consumer.ts'], consumer);
-  await writeFile(join(consumer, 'learn-consumer.ts'), `import { agentLearn, collectCandidates, LearnError, seedLearning, type Candidate, type Guard, type Refusal, type Seeded, type WorkflowHint } from '@parcha/pi-agent-learn';
+  await writeFile(join(consumer, 'learn-consumer.ts'), `import { agentLearn, collectCandidates, curate, LearnError, seedLearning, type Candidate, type CurateReport, type Guard, type Judge, type Refusal, type Seeded, type WorkflowHint } from '@parcha/pi-agent-learn';
 import type { Repo } from '@parcha/pi-git-remote';
 // A host seeds a run from its agent repository, installs the extension with its guard, and reads the run's candidates after.
 const guard: Guard = (input) => (input.candidates ?? []).filter((c: Candidate) => c.text.includes('secret')).map((): Refusal => ({ reason: 'secret_value', detail: 'a secret' }));
@@ -498,7 +498,9 @@ const start = async (repo: Repo, harness: Parameters<typeof seedLearning>[0]['ta
   return [seeded, await collectCandidates(harness)];
 };
 const code = (error: unknown) => (error instanceof LearnError ? error.code : undefined);
-void [start, code, agentLearn({ guard, secrets: () => [] })];
+// The curator writes main; its judge is the DSL's System One port.
+const curated = (repo: Repo, judge: Judge): Promise<CurateReport> => curate({ repo, judge, thresholds: { general: { yes: 0.9 } } });
+void [start, code, curated, agentLearn({ guard, secrets: () => [] })];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'learn-consumer.ts'], consumer);
   receipt.checks.push('Installed ESM imports, core execution, fake Jev/Pi adapters, and strict TypeScript consumer compilation passed.');

@@ -20,6 +20,31 @@ test("a learning renders to one fixed file and parses back to the same learning"
   assert.equal(parseLearning(renderLearning(multi)).text, "First line.\n\nMore detail.");
 });
 
+test("a superseded learning names what replaced it; the key is written only when set and only on a superseded one", () => {
+  const old = { ...ENTRY, status: "superseded", supersededBy: "L-cafecafecafe" };
+  const file = renderLearning(old);
+  assert.ok(file.includes('supersedes: ["L-ba9876543210"]\nsupersededBy: L-cafecafecafe\n---\n'));
+  assert.deepEqual(parseLearning(file), old);
+  assert.ok(!renderLearning(ENTRY).includes("supersededBy"));
+  for (const bad of [{ ...ENTRY, supersededBy: "L-cafecafecafe" }, { ...old, supersededBy: "L-nope" }, { ...old, supersededBy: old.id }]) {
+    assert.throws(() => renderLearning(bad), { code: "format" });
+  }
+  assert.throws(() => parseLearning(file.replace("status: superseded", "status: active")), { code: "format" });
+  const retired = { ...old, status: "retired" };
+  assert.deepEqual(parseLearning(renderLearning(retired)), retired, "a retired learning keeps what superseded it");
+  assert.throws(() => parseLearning(file.replace("supersededBy: L-cafecafecafe", "supersededBy: L-cafecafecafe\nsupersededBy: L-cafecafecafe")), { code: "format" });
+});
+
+test("provenance says when its sha is the run branch's base rather than the seed, and only then", () => {
+  const based = { ...ENTRY, provenance: { ...ENTRY.provenance, shaFrom: "branch-base" } };
+  const file = renderLearning(based);
+  assert.ok(file.includes("  untrusted: true\n  shaFrom: branch-base\nuses: 4\n"));
+  assert.deepEqual(parseLearning(file), based);
+  assert.ok(!renderLearning(ENTRY).includes("shaFrom"));
+  assert.throws(() => renderLearning({ ...ENTRY, provenance: { ...ENTRY.provenance, shaFrom: "seed" } }), { code: "format" });
+  assert.throws(() => parseLearning(file.replace("shaFrom: branch-base", "shaFrom: other")), { code: "format" });
+});
+
 test("the id is L- and 12 hex of SHA-256 over the run id and the text: the same pair always gives the same id", () => {
   const id = learningId("run-1", ENTRY.text);
   assert.match(id, /^L-[0-9a-f]{12}$/);

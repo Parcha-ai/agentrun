@@ -3,7 +3,9 @@ import { LearnError } from "./errors.js";
 import { CAPS, COMMIT_SHA, LEARNING_ID, RUN_ID } from "./layout.js";
 import { ENTRY_TYPES, type EntryType } from "./types.js";
 
-export const STATUSES = Object.freeze(["active", "superseded", "archived"] as const);
+/** `retired`: taken out on purpose by `retireLearning`; the file stays, it is never shown again, and curation holds a
+ *  run that learns it again. */
+export const STATUSES = Object.freeze(["active", "superseded", "archived", "retired"] as const);
 export type Status = (typeof STATUSES)[number];
 
 /** `all`, or a short lowercase name of the inputs a learning applies to. */
@@ -22,17 +24,24 @@ export type Learning = {
     readonly sha: string;
     /** True when a proposing run had read content the host does not trust. */
     readonly untrusted: boolean;
+    /** `branch-base` when the first run's inbox did not name its seed: `sha` is then the main commit its branch starts
+     *  from. Absent when `sha` is the seed. */
+    readonly shaFrom?: "branch-base";
   };
   /** How many runs marked it `used`. */
   readonly uses: number;
   /** The learnings this one replaces. */
   readonly supersedes: readonly string[];
+  /** For a superseded learning, the one that replaced it. */
+  readonly supersededBy?: string;
   /** The general rule. Never this case's data. */
   readonly text: string;
 };
 
 const KEYS = ["id", "type", "scope", "status", "provenance", "uses", "supersedes"] as const;
+const OPTIONAL_KEYS = ["supersededBy"] as const;
 const PROVENANCE_KEYS = ["runs", "sha", "untrusted"] as const;
+const OPTIONAL_PROVENANCE_KEYS = ["shaFrom"] as const;
 
 /** `L-` and 12 hex digits of SHA-256 over the run id and the text: the same run and text always give the same id. */
 export function learningId(runId: string, text: string): string {
@@ -57,9 +66,15 @@ function checkLearning(l: Learning): void {
   if (new Set(p.runs).size !== p.runs.length) throw bad("provenance.runs repeats a run");
   if (typeof p.sha !== "string" || !COMMIT_SHA.test(p.sha)) throw bad("provenance.sha is not a commit id");
   if (typeof p.untrusted !== "boolean") throw bad("provenance.untrusted is not true or false");
+  if (p.shaFrom !== undefined && p.shaFrom !== "branch-base") throw bad("provenance.shaFrom is not branch-base");
   if (!Number.isSafeInteger(l.uses) || l.uses < 0) throw bad("uses is not a whole number");
   if (!Array.isArray(l.supersedes) || !l.supersedes.every((s) => typeof s === "string" && LEARNING_ID.test(s))) throw bad("supersedes is not a list of learning ids");
   if (l.supersedes.includes(l.id)) throw bad("a learning cannot supersede itself");
+  if (l.supersededBy !== undefined) {
+    if (typeof l.supersededBy !== "string" || !LEARNING_ID.test(l.supersededBy)) throw bad("supersededBy is not a learning id");
+    if (l.supersededBy === l.id) throw bad("a learning cannot supersede itself");
+    if (l.status !== "superseded" && l.status !== "retired") throw bad("only a superseded or retired learning names what superseded it");
+  }
   if (typeof l.text !== "string" || l.text.trim() === "") throw bad("the text is empty");
   if (/\r/.test(l.text)) throw bad("the text holds a carriage return");
 }
@@ -78,8 +93,10 @@ export function renderLearning(learning: Learning): string {
     `  runs: ${JSON.stringify(p.runs)}`,
     `  sha: ${p.sha}`,
     `  untrusted: ${p.untrusted}`,
+    ...(p.shaFrom === undefined ? [] : [`  shaFrom: ${p.shaFrom}`]),
     `uses: ${learning.uses}`,
     `supersedes: ${JSON.stringify(learning.supersedes)}`,
+    ...(learning.supersededBy === undefined ? [] : [`supersededBy: ${learning.supersededBy}`]),
     "---",
     learning.text.replace(/\s+$/, ""),
     "",
@@ -114,16 +131,16 @@ export function parseLearning(file: string): Learning {
   let inProvenance = false;
   for (const line of head) {
     const nested = line.startsWith("  ");
-    const match = /^([a-z]+):(?: (.*))?$/.exec(nested ? line.slice(2) : line);
+    const match = /^([a-zA-Z]+):(?: (.*))?$/.exec(nested ? line.slice(2) : line);
     if (!match) throw bad(`the frontmatter line ${JSON.stringify(line.slice(0, 40))} is not "key: value"`);
     const [, key, value = ""] = match as unknown as [string, string, string | undefined];
     if (nested) {
-      if (!inProvenance || !(PROVENANCE_KEYS as readonly string[]).includes(key)) throw bad(`unexpected nested key ${key}`);
+      if (!inProvenance || ![...PROVENANCE_KEYS, ...OPTIONAL_PROVENANCE_KEYS].includes(key as never)) throw bad(`unexpected nested key ${key}`);
       if (provenance.has(key)) throw bad(`provenance.${key} appears twice`);
       provenance.set(key, value);
       continue;
     }
-    if (!(KEYS as readonly string[]).includes(key)) throw bad(`unknown key ${key}`);
+    if (![...KEYS, ...OPTIONAL_KEYS].includes(key as never)) throw bad(`unknown key ${key}`);
     if (fields.has(key)) throw bad(`${key} appears twice`);
     fields.set(key, value);
     inProvenance = key === "provenance";
@@ -140,9 +157,13 @@ export function parseLearning(file: string): Learning {
     type: fields.get("type") as EntryType,
     scope: fields.get("scope")!,
     status: fields.get("status") as Status,
-    provenance: { runs: jsonList(provenance.get("runs")!, "provenance.runs"), sha: provenance.get("sha")!, untrusted: untrusted === "true" },
+    provenance: {
+      runs: jsonList(provenance.get("runs")!, "provenance.runs"), sha: provenance.get("sha")!, untrusted: untrusted === "true",
+      ...(provenance.has("shaFrom") ? { shaFrom: provenance.get("shaFrom") as "branch-base" } : {}),
+    },
     uses: Number(uses),
     supersedes: jsonList(fields.get("supersedes")!, "supersedes"),
+    ...(fields.has("supersededBy") ? { supersededBy: fields.get("supersededBy")! } : {}),
     text: file.slice(end + 5).replace(/\s+$/, ""),
   };
   checkLearning(learning);
