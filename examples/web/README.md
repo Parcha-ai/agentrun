@@ -59,9 +59,11 @@ default.
    releases the browser (Browserbase saves the sign-in into the agent's context), then the run.
 4. When the process has exited, the server calls `carryBack`: the run's sign-in goes back to the home, and the run's index
    entry gets its outcome, and its answer and cost as its released store holds them (an answer given while the run
-   drained included). A server that stopped before a carry back does it when it starts again.
+   drained included). A server that stopped before a carry back does it when it starts again. A message that comes
+   between the exit and the carry back waits for it, so it never starts the run again.
 5. A run carried back is finished. A message to it is refused (`409`, `RUN_FINISHED`) and never wakes it; the page says
-   so and offers a new run, which starts from the home, signed in.
+   so and offers a new run, which starts from the home, signed in. An instance still up for a run that another writer
+   of the home carried back is sent SIGTERM.
 
 The next run starts signed in.
 

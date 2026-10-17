@@ -129,7 +129,9 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
   const exits = new Map();
   const startErrors = new Map();
   const stores = new Map();
-  const settling = new Set();
+  const settling = new Map();
+  // Finished, even to a read of the home that began before the carry back landed.
+  const carried = new Set();
   const tunnels = new Set();
   let pageOrigin = origin ?? "";
 
@@ -316,27 +318,29 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
       if (children.get(id) === child) children.delete(id);
       exits.set(id, code ?? "signal");
     };
-    child.once("exit", (code) => (ended(code), track(settle(id))));
+    child.once("exit", (code) => (ended(code), track(id, settle(id))));
     child.once("error", () => ended("error"));
     void watch(id, child);
   }
 
   // ---- a run's end: released once it answered, its sign-ins carried back to the home ------------------------------------
-  const track = (work) => {
-    const done = work.catch((error) => console.error(`run: ${error.message}`)).finally(() => settling.delete(done));
-    settling.add(done);
+  const track = (id, work) => {
+    const done = work.catch((error) => console.error(`run: ${error.message}`)).finally(() => settling.get(id) === done && settling.delete(id));
+    settling.set(id, done);
   };
 
   /**
    * A run this server started, not yet carried back, is released once it has answered: idle, its newest row the agent's
    * text (a request_sign_in wait is not an answer). SIGTERM lets its instance release the browser, so Browserbase saves
-   * the sign-in, then the run; `settle` carries it back when the process has exited.
+   * the sign-in, then the run; `settle` carries it back when the process has exited. An instance of a run already
+   * carried back is stopped the same way.
    */
   async function watch(id, child) {
     while (children.get(id) === child) {
       await sleep(watchMs);
       const run = await loadRun(id).catch(() => null);
-      if (!run || run.index.endedAt) return;
+      if (!run) return;
+      if (run.index.endedAt) return void (children.get(id) === child && child.kill("SIGTERM"));
       const door = doorOf(run.record);
       const live = door ? await doorState(door).catch(() => null) : null;
       if (live?.state !== "idle" || !answerOf(live.rows)) continue;
@@ -357,10 +361,14 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
     if (!answer) return;
     const cost = costOf(rows);
     await carryBack(home, { runId: id }, { outcome: "completed", finalAnswer: clip(answer.text ?? answer.summary ?? "", 2_000), ...(cost == null ? {} : { cost }) });
+    carried.add(id);
     reread();
   }
 
-  /** The door of run `id`, starting or waking the run (the start command, on its directory) when it is not live. */
+  /**
+   * The door of run `id`, starting or waking the run (the start command, on its directory) when it is not live. A run
+   * whose last instance has exited is not started again until `settle` has decided whether to carry it back.
+   */
   async function ensureLive(id, timeoutMs = 45_000) {
     const deadline = Date.now() + timeoutMs;
     for (let launched = false; ; await sleep(250)) {
@@ -368,9 +376,9 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
       if (!run) throw new HttpError(404, "no such run");
       const door = doorOf(run.record);
       if (door) return door;
-      if (run.index.endedAt) throw finishedRun();
+      if (run.index.endedAt || carried.has(id)) throw finishedRun();
       if (["done", "failed"].includes(run.record?.status)) throw new HttpError(409, `the run is ${run.record.status}`);
-      if (!children.has(id) && startable(run.record)) {
+      if (!children.has(id) && !settling.has(id) && startable(run.record)) {
         if (launched && exits.has(id)) throw new HttpError(502, `the start command exited (${exits.get(id)})`);
         if (!start.length) throw new HttpError(501, "this server has no --start command, so it cannot wake a run");
         launch(id);
@@ -639,7 +647,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
   const address = server.address();
   if (isLoopback(host)) names = new Set(["localhost", "127.0.0.1", "[::1]", host, ...allowHosts].map((h) => `${h.toLowerCase()}:${address.port}`));
   // A run released before this server last stopped, and never carried back, is carried back now.
-  for (const [id, entry] of Object.entries((await homeState()).runs)) if (!entry.endedAt) track(settle(id));
+  for (const [id, entry] of Object.entries((await homeState()).runs)) if (!entry.endedAt) track(id, settle(id));
 
   const url = `http://${host.includes(":") ? `[${host}]` : host}:${address.port}`;
   pageOrigin = origin ?? url;
@@ -656,7 +664,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
       }
       await Promise.all(live.map((child) => new Promise((resolve) => (child.exitCode !== null ? resolve() : child.once("exit", resolve)))));
       await sleep(0);
-      await Promise.all(settling);
+      await Promise.all(settling.values());
       for (const socket of tunnels) socket.destroy();
       await new Promise((resolve) => (server.close(resolve), server.closeAllConnections()));
     },
