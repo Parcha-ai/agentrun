@@ -109,8 +109,10 @@ export async function transcribe(input: unknown, env: VisionEnv | undefined, cal
 
   const at = record("");
   const ask = async (): Promise<Heard> => {
+    // Nothing runs between a paid answer and its keeping: the length is found before the request.
+    const probed = heard.usdPerMinute === undefined ? undefined : await durationOf(env, request.path, call.signal);
     const t = await heard.transcribe({ bytes: read.value, mimeType: sniffed.mimeType ?? "application/octet-stream", name: request.path.split("/").pop()! }, request.language ? { language: request.language } : {}, call.signal);
-    const seconds = t.durationS ?? (heard.usdPerMinute === undefined ? undefined : await durationOf(env, request.path, call.signal));
+    const seconds = t.durationS ?? probed;
     const costUsd = heard.usdPerMinute === undefined || seconds === undefined ? null : Math.round((seconds / 60) * heard.usdPerMinute * 1e6) / 1e6;
     return { words: t.words.map(({ text, start, end }) => ({ text, start, end })), text: t.text, provider: heard.provider, model: t.model ?? heard.model, costUsd };
   };
