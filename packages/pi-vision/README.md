@@ -10,7 +10,9 @@ The host keeps what is its own: which model looks and its price, where receipts 
 their stored instructions do not change. No tool is added. For many pages, a long video or many images the agent
 writes code: the `look` skill (`skills/look/SKILL.md`) shows it how to render pages and cut frames with bash and ask
 about them with `vision.see`, the one function this package puts in a host's code mode. Only the answer, where it
-looked and the price enter the caller's context.
+looked and the price enter the caller's context. For what is said in a long recording, the `transcribe` skill
+(`skills/transcribe/SKILL.md`) shows it how to strip the audio, have a speech-to-text model write one timestamped
+transcript through an OpenAI-compatible endpoint the host gives, and search it with `rg` to the second.
 
 ## Status
 
