@@ -2,13 +2,15 @@
 // transcript tells against the repository itself.
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { chmod, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { promisify } from 'node:util';
-import { guard, renderInbox } from '@parcha/pi-agent-learn';
-import { gitRead, ISSUES, proposalStatus, runDemo, TRIAGE_WORKFLOW } from './demo.mjs';
+import { recordingLines } from '@parcha/agentrun-pi/durable';
+import { WorkflowStore } from '@parcha/agentrun-pi/workflows';
+import { admitRevision, guard, parseTrial, readUses, renderInbox, renderTrial, trialPath, usesSettler, workflowAdmitter } from '@parcha/pi-agent-learn';
+import { gitRead, ISSUES, proposalStatus, runDemo, runOnce, scriptedModel, TRIAGE_WORKFLOW } from './demo.mjs';
 
 const RULE = /In this project an issue whose body has a stack trace is labeled bug and needs-repro/;
 
@@ -18,6 +20,24 @@ async function scratch(t) {
   t.after(() => rm(dir, { recursive: true, force: true }));
   return dir;
 }
+
+// The default story, run once for the tests that only read it.
+let story;
+const storyOf = () => (story ??= (async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'agent-learn-demo-test-'));
+  try {
+    await chmod(dir, 0o755);
+    const lines = [];
+    return { dir, lines, out: await runDemo({ dir: join(dir, 'demo'), log: (line) => lines.push(line) }) };
+  } catch (error) {
+    await rm(dir, { recursive: true, force: true });
+    throw error;
+  }
+})());
+after(async () => {
+  const done = await story?.catch(() => undefined);
+  if (done) await rm(done.dir, { recursive: true, force: true });
+});
 
 function objects(gitDir) {
   const all = gitRead(gitDir, ['cat-file', '--batch-all-objects', '--batch']);
@@ -32,8 +52,7 @@ function objects(gitDir) {
 }
 
 test('a correction and a workflow go through the repository: learned, curated, applied, used, retired; a secret reaches no git object', async (t) => {
-  const lines = [];
-  const out = await runDemo({ dir: join(await scratch(t), 'demo'), log: (line) => lines.push(line) });
+  const { out, lines } = await storyOf();
   const git = (...args) => gitRead(out.bare, args).toString('utf8').trim();
   const [seed] = git('rev-list', '--max-parents=0', 'main').split('\n');
 
@@ -84,12 +103,12 @@ test('a correction and a workflow go through the repository: learned, curated, a
 
   // Retiring takes the rule out after it was used; curation does not bring it back; the trial stays.
   assert.equal(out.retire.status, 'retired');
-  assert.equal(git('rev-parse', 'main'), out.retire.main);
+  assert.equal(out.curate3.main, out.retire.main, 'curating again moves nothing');
   assert.equal(git('rev-parse', `${out.retire.main}^`), out.curate2.main, 'one retire commit');
   assert.deepEqual(out.curate3.runs, [], 'curating again brings nothing back');
-  assert.match(git('show', `main:learnings/${out.ruleId}.md`), /^status: retired$/m, 'main keeps the entry, retired');
+  assert.match(git('show', `${out.retire.main}:learnings/${out.ruleId}.md`), /^status: retired$/m, 'main keeps the entry, retired');
   assert.equal(git('log', '--format=%H', 'main', '--', `learnings/${out.ruleId}.md`).split('\n').length, 3, 'history keeps every version: added, used, retired');
-  assert.equal(git('show', 'main:.agents/skills/triage-crash/trial.json'), trialText, 'the workflow trial is untouched');
+  assert.equal(git('show', `${out.retire.main}:.agents/skills/triage-crash/trial.json`), trialText, 'the workflow trial is untouched');
 
   // Run 3 does not see the rule and does not apply it; it is offered the trial, which is in its own workflow store.
   assert.equal(out.run3.run.sha, out.retire.main, 'run 3 starts at the retire commit');
@@ -124,12 +143,211 @@ test('a correction and a workflow go through the repository: learned, curated, a
   assert.doesNotMatch(transcript, new RegExp(secret), 'the transcript never prints the secret');
 });
 
+const TRIAL_JSON = '.agents/skills/triage-crash/trial.json';
+
+/** The tool's own records in a finished run's store: its `agentrun.workflow` tasks, as pi-durable committed them. */
+const toolTasks = (run) => recordingLines(run.storePath).lines.filter((line) => line.kind === 'agentrun.workflow').map((line) => line.data);
+
+test('a trial is promoted to active on its third clean run, each use read from the records the agentrun tool left in the run\'s own store', async () => {
+  const { out } = await storyOf();
+  const git = (...args) => gitRead(out.bare, args).toString('utf8').trim();
+  const [{ sha256: digest }] = out.run3.run.workflows.loaded;
+  const { clean } = out.earned;
+  assert.deepEqual(clean.map((r) => r.run.runId), ['run-5', 'run-6', 'run-7']);
+
+  for (const r of clean) {
+    const id = r.run.runId;
+    // The run ran the saved workflow through the real tool: load it by name, then run it.
+    assert.deepEqual(r.calls.map((c) => `${c.name} ${c.arguments.action}`), ['agentrun load', 'agentrun run']);
+    assert.equal(JSON.parse(r.results[0]).saved.digest, digest, 'it loaded the revision on main');
+    assert.equal(JSON.parse(r.results[1]).outcome.status, 'complete');
+    // What the tool left in the store: one workflow task, keyed by the tool, ended complete.
+    const [task, ...more] = toolTasks(r.run);
+    assert.equal(more.length, 0, 'one task for one run');
+    assert.match(task.input.key, /^agentrun:\d+:[0-9a-f]{64}:[0-9a-f]+$/);
+    assert.equal(task.state.status, 'terminal');
+    assert.equal(task.state.outcome.result.status, 'complete');
+    // readUses reads those records, and the run proposed exactly what it read: its use, and nothing else.
+    const read = await readUses({ store: r.run.storePath, workDir: r.run.workspace, run: id });
+    assert.deepEqual(read.skipped, []);
+    assert.deepEqual(read.doc.uses.map((u) => [u.name, u.sha256, u.outcome]), [['triage-crash', digest, 'frozen']]);
+    assert.equal(r.proposal.status, 'proposed');
+    assert.deepEqual(JSON.parse(git('show', `${r.proposal.sha}:uses/${id}.json`)), read.doc);
+    assert.equal(git('diff', '--name-only', `${r.proposal.sha}^`, r.proposal.sha), `uses/${id}.json`);
+  }
+
+  // Curation folds each use into trial.json: two holds, then the third frozen use promotes.
+  assert.deepEqual(clean.map((r) => r.curate.runs.map((run) => run.settled.map((d) => d.reason.split(':')[0]))), [[['hold']], [['hold']], [['promote']]]);
+  assert.match(clean[0].curate.runs[0].settled[0].reason, /has 1 use in its trial; promotion needs its last 3 all frozen$/);
+  assert.match(clean[1].curate.runs[0].settled[0].reason, /has 2 uses in its trial; promotion needs its last 3 all frozen$/);
+  assert.match(clean[2].curate.runs[0].settled[0].reason, /^promote: its last 3 uses all finished frozen$/);
+  assert.deepEqual(clean.map((r) => r.trial.status), ['trial', 'trial', 'active']);
+  assert.equal(clean[0].run.sha, out.retire.main, 'run 5 starts where the story left main');
+  assert.equal(clean[1].run.sha, clean[0].curate.main, 'each run starts at the commit that counted the one before');
+  for (const [i, r] of clean.entries()) {
+    assert.equal(git('diff', '--name-only', i ? clean[i - 1].curate.main : out.retire.main, r.curate.main), TRIAL_JSON, 'a use changes trial.json and nothing else');
+  }
+  const promoted = JSON.parse(git('show', `${clean[2].curate.main}:${TRIAL_JSON}`));
+  assert.equal(promoted.status, 'active');
+  assert.deepEqual(promoted.revisions.map((r) => [r.sha256, r.status, r.run]), [[digest, 'active', 'run-2']]);
+  assert.deepEqual(promoted.uses.map((u) => [u.run, u.sha256, u.outcome]), clean.map((r) => [r.run.runId, digest, 'frozen']));
+  assert.equal(JSON.parse(git('show', `${clean[1].curate.main}:${TRIAL_JSON}`)).status, 'trial', 'two clean uses are not enough');
+  assert.equal(git('show', `${clean[2].curate.main}:.pi/agentrun/workflows/triage-crash/latest`), digest, 'the skill and the record stay as they were');
+
+  // An active workflow is offered without the trial mark.
+  assert.match(out.earned.v2.learned.join('\n'), /^ *Workflows to try first for this input: triage-crash\. Run one with the agentrun tool/m);
+  assert.match(out.log, /curate: run run-7: .* 1 settled/);
+});
+
+test('a revision that escalates twice in a row is demoted and the one it replaced comes back; the demoted revision never returns', async () => {
+  const { out, lines } = await storyOf();
+  const git = (...args) => gitRead(out.bare, args).toString('utf8').trim();
+  const [{ sha256: first }] = out.run3.run.workflows.loaded;
+  const { v2, escalated, again } = out.earned;
+  const trialAt = (sha) => JSON.parse(git('show', `${sha}:${TRIAL_JSON}`));
+
+  // Run 8 saves a second revision while the first is active: it is the live trial and the first is kept to restore.
+  const second = JSON.parse(v2.results[1]).digest;
+  assert.notEqual(second, first);
+  assert.deepEqual(v2.curate.runs.map((r) => r.accepted.map((a) => a.workflow)), [['triage-crash']]);
+  const afterSecond = trialAt(v2.curate.main);
+  assert.equal(afterSecond.status, 'trial');
+  assert.deepEqual(afterSecond.revisions.map((r) => [r.sha256, r.status]), [[first, 'superseded'], [second, 'trial']]);
+  assert.match(afterSecond.revisions[0].description, /stack trace: it labels the issue bug and needs-repro\.$/, 'the superseded revision keeps its description');
+  assert.match(git('show', `${v2.curate.main}:.agents/skills/triage-crash/SKILL.md`), /hands an issue with no body to a person/);
+
+  // Runs 9 and 10 load that revision and the tool's run escalates at its gate; the store's task ended complete with an escalated result.
+  assert.deepEqual(escalated.map((r) => r.run.runId), ['run-9', 'run-10']);
+  for (const r of escalated) {
+    assert.deepEqual(r.calls.map((c) => `${c.name} ${c.arguments.action}`), ['agentrun load', 'agentrun run']);
+    assert.equal(JSON.parse(r.results[0]).saved.digest, second, 'the run was offered and loaded the live trial');
+    const { outcome } = JSON.parse(r.results[1]);
+    assert.equal(outcome.status, 'escalated');
+    assert.equal(outcome.escalation.label, 'no body to read');
+    const [task] = toolTasks(r.run);
+    assert.equal(task.state.outcome.status, 'completed');
+    assert.equal(task.state.outcome.result.status, 'escalated');
+    const read = await readUses({ store: r.run.storePath, workDir: r.run.workspace, run: r.run.runId });
+    assert.deepEqual(read.doc.uses.map((u) => [u.name, u.sha256, u.outcome]), [['triage-crash', second, 'escalated']]);
+    assert.deepEqual(JSON.parse(git('show', `${r.proposal.sha}:uses/${r.run.runId}.json`)), read.doc);
+  }
+  assert.match(escalated[0].curate.runs[0].settled[0].reason, /^hold: /, 'one escalation is not enough');
+  assert.equal(escalated[0].trial.status, 'trial');
+  assert.equal(escalated[1].curate.runs[0].settled.length, 1);
+  assert.equal(escalated[1].curate.runs[0].settled[0].reason, `demote, back to ${first.slice(0, 12)}: its last 2 uses ended escalated, escalated`);
+
+  // The rollback is one commit: the first revision is active again, its description is the skill's, and `latest` names it.
+  const rolled = trialAt(escalated[1].curate.main);
+  assert.equal(rolled.status, 'active');
+  assert.deepEqual(rolled.revisions.map((r) => [r.sha256, r.status]), [[first, 'active'], [second, 'demoted']]);
+  assert.deepEqual(git('diff', '--name-only', escalated[0].curate.main, escalated[1].curate.main).split('\n').sort(), [
+    '.agents/skills/triage-crash/SKILL.md', TRIAL_JSON, '.pi/agentrun/workflows/triage-crash/latest',
+  ].sort());
+  assert.equal(git('show', `${escalated[1].curate.main}:.pi/agentrun/workflows/triage-crash/latest`), first);
+  const skill = git('show', `${escalated[1].curate.main}:.agents/skills/triage-crash/SKILL.md`);
+  assert.match(skill, /stack trace: it labels the issue bug and needs-repro\./);
+  assert.doesNotMatch(skill, /no body/);
+  assert.match(git('show', `${escalated[1].curate.main}:.pi/agentrun/workflows/triage-crash/${second}.json`), /no body to read/, 'the demoted revision stays in history and on main');
+
+  // The next run is offered the first revision again, as active, and holds it in its own store.
+  assert.equal(again.run.sha, escalated[1].curate.main);
+  assert.match(again.learned.join('\n'), /^ *Workflows to try first for this input: triage-crash\. Run one with the agentrun tool/m);
+  assert.deepEqual(again.run.workflows.loaded, [{ name: 'triage-crash', sha256: first }]);
+
+  // That run saves the demoted document again: the repository already holds its digest, so nothing is proposed and main stays.
+  assert.equal(JSON.parse(again.results[1]).digest, second, 'the run saved the demoted revision again');
+  assert.equal(again.proposal.status, 'empty');
+  assert.deepEqual(again.curate.runs, []);
+  assert.equal(again.curate.main, escalated[1].curate.main);
+  assert.equal(git('rev-parse', 'main'), escalated[1].curate.main);
+  assert.match(lines.join('\n'), /^12\. The demoted revision never returns: run 11 saves it again$/m);
+
+  // And if a proposal for it did reach curation, the admitter refuses it: only a changed document is tried again.
+  const read = (path, sha) => { try { return gitRead(out.bare, ['show', `${sha}:${path}`]).toString('utf8'); } catch { return undefined; } };
+  const record = read(`.pi/agentrun/workflows/triage-crash/${second}.json`, escalated[1].curate.main);
+  const refused = await workflowAdmitter()({
+    main: escalated[1].curate.main, read, list: async () => [],
+    workflow: { run: 'run-12', name: 'triage-crash', records: { [`${second}.json`]: record, latest: `${second}\n` }, untrusted: false },
+  });
+  assert.equal(refused.status, 'refused');
+  assert.match(refused.reason, /^demoted: [0-9a-f]{12} was demoted; a demoted revision is never tried again$/);
+});
+
+test('the tool\'s other records are read the same way: a tool that is down is a failed use, two cases in one run are two records but one use, and a dry run is none', async (t) => {
+  const root = await scratch(t);
+  const issue = ISSUES.third;
+  const steps = (action) => [
+    { call: 'agentrun', args: { action: 'load', name: 'triage-crash', input: issue.input } },
+    { call: 'agentrun', args: { action } },
+    { say: 'bug: the body is a crash trace.' },
+  ];
+  const run = async (name, action, effect, script = steps(action)) => {
+    const dir = join(root, name);
+    await mkdir(join(dir, 'store'), { recursive: true });
+    await mkdir(join(dir, 'work'));
+    await new WorkflowStore(join(dir, 'work')).save('triage-crash', TRIAGE_WORKFLOW);
+    const handle = { workspace: join(dir, 'work'), storePath: join(dir, 'store', 'run.sqlite'), definition: { instructions: 'Triage the issue.', skills: [] }, rules: '', seeded: { section: '' } };
+    const r = await runOnce(handle, [issue.text], scriptedModel(script), [], issue.values, effect);
+    return { handle, ...r };
+  };
+
+  const labels = async ({ input }) => ({ labels: input.labels });
+  let twos = 0;
+  const runTwo = (effect) => run(`two-${++twos}`, 'run', effect, [
+    { call: 'agentrun', args: { action: 'load', name: 'triage-crash', input: ISSUES.third.input } },
+    { call: 'agentrun', args: { action: 'run' } },
+    { call: 'agentrun', args: { action: 'run', input: ISSUES.fourth.input } },
+    { say: 'bug, needs-repro: triage-crash labeled both.' },
+  ]);
+
+  const down = await run('down', 'run', async () => { throw new Error('the tracker is down'); });
+  const digest = JSON.parse(down.results[0]).saved.digest;
+  assert.equal(JSON.parse(down.results[1]).outcome.status, 'refused');
+  const [task] = toolTasks(down.handle);
+  assert.equal(task.state.outcome.status, 'failed');
+  const failed = await readUses({ store: down.handle.storePath, workDir: down.handle.workspace, run: 'run-1' });
+  assert.deepEqual(failed.skipped, []);
+  assert.deepEqual(failed.doc.uses.map((u) => [u.name, u.sha256, u.outcome]), [['triage-crash', digest, 'failed']]);
+
+  // Two cases in one run are two tasks under two keys, so two records in the run's uses file. Curation takes a run as one use
+  // of a revision, the worst outcome winning: one frozen and one failed case make a failed use, never two uses.
+  const writer = admitRevision(undefined, { name: 'triage-crash', sha256: digest, run: 'writer', at: '2026-01-01T00:00:00.000Z', when: [] }).trial;
+  const settle = (uses) => usesSettler()({
+    main: 'main', run: 'run-1', uses, list: async () => [],
+    read: async (path) => (path === trialPath('triage-crash') ? renderTrial(writer) : undefined),
+  });
+  const usesOf = async (r) => (await readUses({ store: r.handle.storePath, workDir: r.handle.workspace, run: 'run-1' })).doc.uses;
+
+  const two = await runTwo(labels);
+  assert.deepEqual(two.results.slice(1, 3).map((r) => JSON.parse(r).outcome.status), ['complete', 'complete']);
+  assert.equal(toolTasks(two.handle).length, 2);
+  const both = await usesOf(two);
+  assert.deepEqual(both.map((u) => [u.name, u.sha256, u.outcome]), [['triage-crash', digest, 'frozen'], ['triage-crash', digest, 'frozen']], 'the store holds a record for each case');
+  const counted = await settle(both);
+  assert.deepEqual(parseTrial(counted.files[trialPath('triage-crash')], 'triage-crash').uses.map((u) => [u.run, u.outcome]), [['run-1', 'frozen']], 'one run with two cases is one use');
+  assert.deepEqual(counted.decisions.map((d) => d.action), ['hold']);
+  assert.match(counted.decisions[0].reason, /has 1 use in its trial; .*left out \(same_run\)$/);
+
+  const mixed = await runTwo(async (params) => {
+    if (params.input.title === ISSUES.fourth.input.title) throw new Error('the tracker is down');
+    return labels(params);
+  });
+  assert.deepEqual(mixed.results.slice(1, 3).map((r) => JSON.parse(r).outcome.status), ['complete', 'refused']);
+  assert.deepEqual((await usesOf(mixed)).map((u) => u.outcome).sort(), ['failed', 'frozen']);
+  assert.deepEqual(parseTrial((await settle(await usesOf(mixed))).files[trialPath('triage-crash')], 'triage-crash').uses.map((u) => [u.run, u.outcome]), [['run-1', 'failed']], 'the worse case is the run\'s use');
+
+  const dry = await run('dry', 'dry-run', async () => { throw new Error('a dry run calls no tool'); });
+  assert.equal(JSON.parse(dry.results[1]).dryRun.status, 'passed');
+  assert.deepEqual(toolTasks(dry.handle), [], 'a dry run starts no task');
+  assert.equal((await readUses({ store: dry.handle.storePath, workDir: dry.handle.workspace, run: 'run-1' })).doc, undefined);
+});
+
 test('run 2\'s propose line and step 5 say what happened when run 2 saves a workflow without saying when to use it, only marks a use, or does nothing', async (t) => {
   const inspect = { call: 'agentrun', args: { action: 'inspect', workflow: TRIAGE_WORKFLOW, input: ISSUES.second.input } };
   const save = { call: 'agentrun', args: { action: 'save', name: 'triage-crash' } };
   const step5 = async (run2) => {
     const lines = [];
-    const out = await runDemo({ dir: join(await scratch(t), 'demo'), log: (line) => lines.push(line), run2 });
+    const out = await runDemo({ dir: join(await scratch(t), 'demo'), log: (line) => lines.push(line), run2, promotion: false });
     const at = lines.findIndex((line) => line.startsWith('5. '));
     return { out, text: lines.slice(at, lines.indexOf('', at)).join('\n'), lines: lines.join('\n') };
   };
@@ -157,7 +375,7 @@ test('a made-up learning id and a note that repeats the issue number are refused
   const rule = 'In this project an issue whose body has a stack trace is labeled bug and needs-repro.';
   const lines = [];
   const out = await runDemo({
-    dir: join(await scratch(t), 'demo'), log: (line) => lines.push(line),
+    dir: join(await scratch(t), 'demo'), log: (line) => lines.push(line), promotion: false,
     run1: [
       {},
       { call: 'learn', args: { type: 'correction', text: rule, id: 'L-a4821c9e530b' } },
@@ -194,6 +412,9 @@ test('the command runs offline, prints the story and leaves nothing behind', asy
   });
   assert.match(stdout, /^model: scripted \(no key, no network\); judge: scripted$/m);
   assert.match(stdout, /^ {5}- L-[0-9a-f]{12} correction: In this project an issue whose body has a stack trace is labeled bug and needs-repro/m);
-  assert.match(stdout, /^git log --oneline main\n {2}[0-9a-f]{7} retire L-[0-9a-f]{12}: the maintainer withdrew the rule$/m);
+  assert.match(stdout, /^9\. A workflow earns its place: later runs are offered triage-crash and run it with the agentrun tool$/m);
+  assert.match(stdout, /^ {5}curate: run-7: triage-crash promote: its last 3 uses all finished frozen$/m);
+  assert.match(stdout, /^ {5}curate: run-10: triage-crash demote, back to [0-9a-f]{12}: its last 2 uses ended escalated, escalated$/m);
+  assert.match(stdout, /^git log --oneline main\n {2}[0-9a-f]{7} curate: run run-10: .* 1 settled\n(?: {2}[0-9a-f]{7} .*\n)*? {2}[0-9a-f]{7} retire L-[0-9a-f]{12}: the maintainer withdrew the rule\n/m);
   assert.deepEqual(await readdir(tmp), [], 'the temporary directory is removed');
 });
