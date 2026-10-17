@@ -487,7 +487,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       if (killFailed || (killed && killed.label === 'max-usd')) break;
       if (killed) {
         // An operator's kill is not the plan's: a kill still planned for the attempt the operator ended is planned for the next.
-        if (killed.label === 'operator' && queued) remaining.unshift(queued);
+        if (killed.label === 'operator' && queued) remaining.unshift({ ...queued, tools: notLanded(queued.tools, log) });
         previous = { runner, kind: killed.kind };
         continue;
       }
@@ -502,9 +502,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       }
       // The process ended on its own with a kill still planned for it (and any that follow): none of them landed.
       // A tool kill of this attempt that fired is on the child's log: it landed, however the process then ended.
-      const landed = rows<Crossing>(log).filter((crossing) => crossing.landed).map((crossing) => crossing.point);
       for (const left of [plan, ...remaining]) {
-        const tools = left === plan ? left.tools.filter((entry) => { const at = 'point' in entry ? landed.indexOf(entry.point) : -1; if (at >= 0) landed.splice(at, 1); return at < 0; }) : left.tools;
+        const tools = left === plan ? notLanded(left.tools, log) : left.tools;
         for (const entry of [...(left.run ? [left.run] : []), ...tools]) if ('point' in entry) unlanded.push(entry.point); else unlanded.push(`storm (gap ${entry.gapMs} ms)`);
       }
       break;
@@ -550,6 +549,12 @@ export function plainText(value: unknown): string {
   const text = typeof value === 'string' ? value : JSON.stringify(value) ?? '';
   // A path runs from its `/` to the next `:`, `;`, `,`, quote or end of line, spaces and all: a directory named `Client Files` is not left half in the recording.
   return text.replace(/(?<![\w/:.-])\/[^\n:;,"'`]*/g, '<path>').slice(0, 240);
+}
+
+/** The tool kills of an attempt that did not fire: those the child's log (`landed` rows) does not show. A kill that landed is not carried to the next attempt, where it would take another box. */
+export function notLanded<T extends object>(tools: readonly T[], log: string): T[] {
+  const landed = rows<Crossing>(log).filter((crossing) => crossing.landed).map((crossing) => crossing.point);
+  return tools.filter((entry) => { const at = 'point' in entry ? landed.indexOf(String(entry.point)) : -1; if (at >= 0) landed.splice(at, 1); return at < 0; });
 }
 
 const readEventsOf = (dir: string) => rows<Record<string, unknown>>(join(dir, 'events.jsonl'));

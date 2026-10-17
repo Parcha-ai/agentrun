@@ -1550,3 +1550,26 @@ test('the slow status tick does not queue a read behind one still running: a pla
   // Boundary reads (start, exit, result) plus the ticks that found no read running; a tick queued behind every slow read would make six or more.
   assert.ok(reads <= 5, `the status was read ${reads} times in ${Date.now() - started} ms`);
 });
+
+test('an operator kill carries to the next attempt only the tool kills that did not land, and a control that cannot be removed is a failed kill, not a crash', { timeout: 300_000 }, async (t) => {
+  const { notLanded } = await import('./reference/demo.ts');
+  const dir = await mkdtemp(join(tmpdir(), 'reference-landed-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const log = join(dir, 'crossings.jsonl');
+  const row = (extra) => `${JSON.stringify({ point: 'transport.box.exec', n: 0, pid: 1, ...extra })}\n`;
+  writeFileSync(log, row({}) + row({ landed: true }) + row({ point: 'transport.tool.started' }));
+  const tools = [{ point: 'transport.box.exec', n: 1 }, { point: 'transport.box.exec', n: 2 }, { point: 'transport.tool.started', n: 1 }];
+  assert.deepEqual(notLanded(tools, log), [tools[1], tools[2]], 'one landed kill at that point is spent; the one that has not fired, and other points, are carried');
+  assert.deepEqual(notLanded(tools, join(dir, 'no-log')), tools, 'nothing landed when the child wrote no log');
+  // A control that cannot be removed (a directory made by mistake): a failed kill on the normal path, and the supervisor does not crash.
+  const { tmp, options } = await specWith(t, { name: 'reference' });
+  const control = join(tmp, 'control');
+  let asked = false;
+  const place = ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner, start: async (order) => { const runner = await inner.start(order); if (!asked) { asked = true; setTimeout(() => mkdirSync(control), 50); } return runner; } };
+  };
+  const bad = await demo({ ...options, argv: ['--json', '--operator-kill', control], place });
+  assert.equal(bad.failedKills.length, 1, 'the control that could not be removed is a failed kill');
+  assert.equal(bad.kills.length, 0, 'and no kill happened');
+});
