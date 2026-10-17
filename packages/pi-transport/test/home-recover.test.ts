@@ -94,7 +94,9 @@ describe("recovering a session from its lease", () => {
 			);
 			expect(recovered.lease.epoch).toBe(2);
 			expect(runner.started).toEqual(["stop b", "b@2"]);
-			expect(runner.orders).toEqual([{ resume: { epoch: 2, seal: SEAL, move: { id: "move-1", notice: NOTICE } } }]);
+			expect(runner.orders).toEqual([
+				{ resume: { epoch: 2, seal: SEAL, move: { id: "move-1", notice: NOTICE, kind: "move", head: SEAL.head } } },
+			]);
 		});
 	});
 
@@ -173,7 +175,13 @@ describe("recovering a session from its lease", () => {
 				),
 			);
 			expect(runner.orders).toEqual([
-				{ resume: { epoch: 2, seal: SEAL, move: { id: "move-back", notice: NOTICE } } },
+				{
+					resume: {
+						epoch: 2,
+						seal: SEAL,
+						move: { id: "move-back", notice: NOTICE, kind: "move", head: SEAL.head },
+					},
+				},
 			]);
 		});
 	});

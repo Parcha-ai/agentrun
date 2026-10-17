@@ -33,8 +33,11 @@ export type DemoSpec = {
   kill?: { point: string; why: string };
   /** The dollars a live run is expected to cost. `--max-usd` defaults to twice this. */
   expectedCost?: number;
-  /** The job's input: where its default lives and what it looks like, for `--input`. The job's own `input` is the default. */
-  input?: { shape?: string };
+  /** The job's input: what it looks like, for `--input` (the job's own `input` is the default). `fixtures` maps a capture's name (`[a-z0-9-]`) to its fixture, a JSON file at `examples/<demo>/fixtures/...`: `--input <name>` runs the job on it. */
+  input?: { shape?: string; fixtures?: Record<string, string> };
+  /** The keys and programs the demo needs (the DSL's DemoSpec): each `{ env, ... }` or a `oneOf` group of them. A live child's environment is exactly these names. */
+  keys?: unknown[];
+  programs?: unknown[];
   /** The box the job's tools run in. */
   boxes?: BoxSpec;
   [other: string]: unknown;
@@ -114,4 +117,46 @@ export function maxUsdOf(flag: string | undefined, spec: DemoSpec): number | nul
     return value;
   }
   return typeof spec.expectedCost === 'number' ? spec.expectedCost * 2 : null;
+}
+
+/** The box a run uses: Docker is used only with `--live`; a no-key run uses a local box instead, so it starts no container. */
+export function effectiveBoxes(spec: DemoSpec, live: boolean): BoxSpec | undefined {
+  if (!spec.boxes) return undefined;
+  return spec.boxes.kind === 'docker' && !live ? { ...spec.boxes, kind: 'local' } : spec.boxes;
+}
+
+/** `--input`: a JSON object (inline or a file), or the name of one of the demo's captures (`input.fixtures`), which is read from the path the map gives. The path must be a file under
+ *  `examples/<demo>/fixtures/` (no `..`). On fakes a bare name that is not a capture, and not a file either, is refused with the captures there are; `--live` takes any input the job accepts. */
+export function inputOf(argument: string, spec: DemoSpec, where: { demo: string; root: string; live: boolean; read: (path: string) => string; kind: (path: string) => 'file' | 'directory' | undefined }): Record<string, unknown> {
+  const captures = spec.input?.fixtures ?? {};
+  const bare = !argument.trimStart().startsWith('{') && /^[a-z0-9][a-z0-9-]*$/.test(argument);
+  if (bare && Object.hasOwn(captures, argument)) {
+    const path = captures[argument]!;
+    const under = `examples/${where.demo}/fixtures/`;
+    if (typeof path !== 'string' || !path.startsWith(under) || path.split('/').some((part) => part === '..' || part === '.' || part === '') || path.includes('\\') || path.includes('\0')) throw new Error(`capture "${argument}" points at ${JSON.stringify(path)}, which is not a path under ${under}`);
+    const file = `${where.root}/${path}`;
+    const kind = where.kind(file);
+    if (kind !== 'file') throw new Error(`capture "${argument}" is ${path}, which ${kind === 'directory' ? 'is a directory: a capture read as the input is a JSON file' : 'does not exist: put the capture there'}`);
+    return parseInput(where.read(file), () => { throw new Error('unreachable'); });
+  }
+  if (bare && !where.live && where.kind(argument) === undefined) {
+    const names = Object.keys(captures);
+    throw new Error(`--input ${argument} is not a capture of ${where.demo}, and a run on fakes replays a capture. ${names.length ? `The captures are: ${names.join(', ')}.` : 'It has none.'} Run with --live to read the real thing.`);
+  }
+  return parseInput(argument, where.read);
+}
+
+/** The environment names a demo declares in demo.json: every `env` of its `keys` (a `oneOf` group's members included, however deep a member's own group nests) and of its `programs`. A live child is given these and nothing else. */
+export function declaredEnv(spec: DemoSpec): Set<string> {
+  const names = new Set<string>();
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) { for (const member of value) walk(member); return; }
+    if (value === null || typeof value !== 'object') return;
+    const record = value as Record<string, unknown>;
+    if (typeof record.env === 'string' && record.env) names.add(record.env);
+    walk(record.oneOf);
+  };
+  walk(spec.keys);
+  walk(spec.programs);
+  return names;
 }
