@@ -282,10 +282,11 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   // Where the session lives, as paths in the place: computed, not made. The supervisor touches nothing under them; the place makes them.
   const paths = pathsAt(dir);
   const requestFile = (attempt: number) => join(scratch, `kill-${attempt}.json`);
-  const place = options.place ? await options.place({ paths, self: options.self, destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live), requestFile }) : localPlace({ self: options.self, paths, requestFile, ...(spec.boxes ? { destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live) } : {}) });
+  let place!: Place;
   // Metering: the recording's lines as they stand, folded; past the cap the supervisor stops the run.
   const meterTimer = maxUsd === null ? undefined : setInterval(() => { if (meterKnown(recordDir) > maxUsd) overBudget = true; }, 250);
   try {
+    place = options.place ? await options.place({ paths, self: options.self, destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live), requestFile }) : localPlace({ self: options.self, paths, requestFile, ...(spec.boxes ? { destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live) } : {}) });
     const remaining = childPlansOf(plans);
     let runner: Runner | undefined;
     let previous: { runner: Runner; kind: 'process' | 'box' } | undefined;
@@ -293,6 +294,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       // Past the cap, no further process is started: the budget is checked before every restart.
       if (overBudget && processes.length > 0) break;
       const plan = remaining.shift() ?? { tools: [] };
+      // A kill this attempt plans that the place cannot make is refused before the attempt starts: the run is not stopped first, and no machine loss is recorded.
+      const planned = plan.run?.kind ?? 'process';
+      if (!place.kills.includes(planned)) throw new Error(`the ${place.name} place cannot lose its ${planned}: this kill is not one it can make`);
       const gen = processes.length + 1;
       const log = join(scratch, `crossings-${gen}.jsonl`);
       const request = join(scratch, `kill-${gen}.json`);
@@ -306,31 +310,41 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       // A kill the place cannot make is recorded and ends the attempt: it is never an unhandled rejection.
       let killed: { point: string | null; n: number | null; label: string | null; why: string; kind: 'process' | 'box' } | undefined;
       let killFailed = false;
+      let decided = false;
+      // A kill that fails ends the attempt at once: the supervisor does not wait for a process the place could not stop.
+      let giveUp!: () => void;
+      const gaveUp = new Promise<void>((resolve) => { giveUp = resolve; });
+      const failed = (code: string, message: string, kind: 'process' | 'box') => {
+        killFailed = true;
+        failedKills.push({ gen, code });
+        supervisor.host('kill.failed', { gen, code, message: message.slice(0, 240), kind });
+        giveUp();
+      };
       const decide = async (asked: { point: string; n: number } | undefined) => {
-        if (killed) return;
-        const kind = plan.run?.kind ?? 'process';
+        if (decided) return;
+        decided = true;
+        const kind = asked ? (plan.run?.kind ?? 'process') : 'process';
         killed = asked
           ? { point: asked.point, n: asked.n, label: plan.run && !('storm' in plan.run) ? plan.run.point : asked.point, why: plan.run?.why ?? 'a kill', kind }
           : { point: null, n: null, label: 'max-usd', why: `past --max-usd ${maxUsd}`, kind: 'process' };
         supervisor.host('kill', { gen, label: killed.label, crossing: killed.point === null ? null : { point: killed.point, n: killed.n }, side: 'child', kind: killed.kind });
         kills.push({ gen, point: killed.point, kind: killed.kind, why: killed.why });
-        try { await place.kill(runner!, killed.kind); } catch (error) {
-          const code = String((error as { code?: unknown } | null)?.code ?? 'KILL_FAILED');
-          killFailed = true;
-          failedKills.push({ gen, code });
-          supervisor.host('kill.failed', { gen, code, message: String((error as Error | null)?.message ?? error).slice(0, 240), kind: killed.kind });
-        }
+        try { await place.kill(runner!, killed.kind); } catch (error) { failed(String((error as { code?: unknown } | null)?.code ?? 'KILL_FAILED'), String((error as Error | null)?.message ?? error), killed.kind); }
       };
       const iterator = place.signals?.(gen)[Symbol.asyncIterator]();
       const pump = (async () => {
         if (!iterator) return;
         for (let next = await iterator.next(); !next.done; next = await iterator.next()) if (next.value.kind === 'kill-request') await decide(next.value.crossing);
       })();
-      const watch = setInterval(() => { if (!killed && overBudget) void decide(undefined); }, 20);
-      const result = await runner.exited;
+      // The budget's stop is kept: the attempt does not finish (nor the place release) until the kill, with its provider cleanup, is done.
+      let deciding: Promise<void> = Promise.resolve();
+      const watch = setInterval(() => { if (!decided && overBudget) deciding = decide(undefined); }, 20);
+      const exit = await Promise.race([runner.exited, gaveUp.then(() => undefined)]);
+      const result: Exit = exit ?? { exit: null, signal: null, stderr: 'the place could not stop this process' };
       clearInterval(watch);
       await iterator?.return?.();
       await pump;
+      await deciding;
       processes.push(result);
       if (killFailed || (killed && killed.label === 'max-usd')) break;
       if (killed) { previous = { runner, kind: killed.kind }; continue; }
@@ -368,9 +382,11 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     return { processes, kills, record: delivered?.record ?? null, dir, ...(values.record ? { recording: values.record } : {}), usd, maxUsd, overBudget, failedKills };
   } finally {
     if (meterTimer) clearInterval(meterTimer);
-    await place.release();
-    await served.close();
-    if (!values.record && !values.dir) await rm(scratch, { recursive: true, force: true });
+    // The backend and the scratch are closed whatever the place did: a place that failed to be made, or to be released, leaves neither open.
+    try { await place?.release(); } finally {
+      await served.close();
+      if (!values.record && !values.dir) await rm(scratch, { recursive: true, force: true });
+    }
   }
 }
 

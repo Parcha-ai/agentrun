@@ -429,7 +429,9 @@ test('a place that cannot lose its machine refuses a box kill, and says which pl
   Object.assign(process.env, { DEMO_SPEC: file });
   t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
   const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
-  await assert.rejects(() => demo({ ...options, argv: ['--kill', '--json', '--record', join(tmp, 'recording')], place: recordingPlace([], join(tmp, 'recording'), { kills: ['process'] }) }), /the fake place cannot lose its box/);
+  const calls = [];
+  await assert.rejects(() => demo({ ...options, argv: ['--kill', '--json', '--record', join(tmp, 'recording')], place: recordingPlace(calls, join(tmp, 'recording'), { kills: ['process'] }) }), /the fake place cannot lose its box/);
+  assert.deepEqual(calls.map((call) => call.call), ['release'], 'refused before anything started or was killed: the run was not stopped first, and no box loss was recorded');
 });
 
 test('a kill the place cannot make is recorded as a host line with its code and ends the attempt cleanly: no unhandled rejection, no further attempt', { timeout: 300_000 }, async (t) => {
@@ -456,6 +458,68 @@ test('a kill the place cannot make is recorded as a host line with its code and 
   const failed = lines.find((line) => line.kind === 'kill.failed');
   assert.deepEqual([failed.data.gen, failed.data.code], [1, 'KILL_FAILED']);
   assert.ok(lines.findIndex((line) => line.kind === 'kill') < lines.findIndex((line) => line.kind === 'kill.failed'), 'the kill line first, then the failure');
+});
+
+const specWith = async (t, spec) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-place-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'demo.json');
+  writeFileSync(file, JSON.stringify(spec));
+  Object.assign(process.env, { DEMO_SPEC: file });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  return { tmp, options };
+};
+
+test('a place that rejects a kill without stopping the process does not hang the supervisor: it records the failure and ends, whether the kill was planned or the budget\'s', { timeout: 120_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference', expectedCost: 0.05, kills: [{ point: 'judge.asked verdict', why: 'the place will fail to kill' }] });
+  const pids = [];
+  t.after(() => { for (const pid of pids) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } } });
+  // The kill rejects and the process is left running: its exit never comes (the child parks for a minute at the crossing).
+  const place = ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner, start: async (order) => { const runner = await inner.start(order); pids.push(runner.pid); return { ...runner, exited: new Promise(() => {}) }; }, kill: async () => { throw Object.assign(new Error('the provider refused'), { code: 'KILL_REFUSED' }); } };
+  };
+  const started = Date.now();
+  const planned = await demo({ ...options, argv: ['--kill', '--json', '--record', join(tmp, 'planned')], place });
+  assert.ok(Date.now() - started < 30_000, 'it did not wait for the exit of a process that was never stopped');
+  assert.deepEqual(planned.failedKills, [{ gen: 1, code: 'KILL_REFUSED' }]);
+  assert.equal(planned.processes.length, 1);
+  // The budget's stop fails the same way.
+  process.env.DEMO_JUDGE_COST = '0.3'; process.env.DEMO_LINGER_MS = '20000';
+  const budget = await demo({ ...options, argv: ['--json', '--record', join(tmp, 'budget')], place });
+  assert.deepEqual(budget.failedKills, [{ gen: 1, code: 'KILL_REFUSED' }]);
+});
+
+test('the budget\'s stop is awaited: the place has finished killing (its provider cleanup too) before the supervisor finishes the attempt and releases the place', { timeout: 120_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference', expectedCost: 0.05 });
+  process.env.DEMO_JUDGE_COST = '0.3'; process.env.DEMO_LINGER_MS = '20000';
+  const order = [];
+  const place = ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner, kill: async (runner, kind) => { await inner.kill(runner, kind); await new Promise((resolve) => setTimeout(resolve, 500)); order.push('kill done'); }, release: async () => { order.push('release'); } };
+  };
+  const result = await demo({ ...options, argv: ['--json', '--record', join(tmp, 'recording')], place });
+  assert.equal(result.overBudget, true);
+  assert.deepEqual(order, ['kill done', 'release'], 'the kill, with its slow cleanup, ended before the place was released');
+});
+
+test('a place that cannot be made, or released, leaves nothing open: the scratch is removed and the error is the one the place raised', { timeout: 120_000 }, async (t) => {
+  const { options } = await specWith(t, { name: 'reference' });
+  let scratch;
+  await assert.rejects(() => demo({ ...options, argv: ['--json'], place: async ({ paths }) => { scratch = paths.root; throw new Error('the provider is down'); } }), /the provider is down/);
+  assert.equal(existsSync(scratch), false, 'a place that failed to be made left no scratch behind');
+  let root;
+  await assert.rejects(() => demo({ ...options, argv: ['--json'], place: ({ paths, self, destroyBoxes, requestFile }) => { root = paths.root; return { ...localPlace({ self, paths, destroyBoxes, requestFile }), release: async () => { throw new Error('release failed'); } }; } }), /release failed/);
+  assert.equal(existsSync(root), false, 'a place that failed to release still had its scratch removed');
+});
+
+test('a box kill is carried out once: the recovery that follows does not stop the old runner (nor ask the providers to destroy its boxes) again', { timeout: 300_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'the machine is lost', kind: 'box' }] });
+  let destroyed = 0;
+  const result = await demo({ ...options, argv: ['--kill', '--json', '--record', join(tmp, 'recording')], place: ({ paths, self, requestFile }) => localPlace({ self, paths, requestFile, destroyBoxes: () => { destroyed += 1; } }) });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.equal(destroyed, 1, 'the boxes were destroyed once for one box kill');
 });
 
 test('the place\'s signals carry the kill request: a place with its own signals() is the one the supervisor reads, not the files', { timeout: 300_000 }, async (t) => {
