@@ -52,10 +52,11 @@ test('a node\'s first request carries its system text, its task with the deliver
   assert.equal(requests.length, 1, 'the record ends the node\'s run');
   const [first] = requests;
   assert.deepEqual(systemOf(first).sections, { task: 'The procedure, section 2.\n\nDecide buy or pass.\n\nStance for decide with 0 tools.' });
-  assert.equal(first.find((message) => message.role === 'user').content, ['{"claim":"x"}',
+  // The node's input is the user turn's first part and its delivery contract the second, so a viewer can fold the contract.
+  assert.deepEqual(first.find((message) => message.role === 'user').content, [{ type: 'text', text: '{"claim":"x"}' }, { type: 'text', text: [
     'When you are done, call the `submit` tool ONCE with the Verdict record as its arguments. The arguments are validated against the required schema; if validation fails you get the problems back and may fix and resubmit.',
     `Required JSON Schema (authoritative): ${JSON.stringify(VERDICT)}`,
-    'Only a successful `submit` call counts as delivering. Do not answer in plain text.'].join('\n'));
+    'Only a successful `submit` call counts as delivering. Do not answer in plain text.'].join('\n') }]);
   assert.deepEqual(submitOf(first), { name: 'submit', description: 'Deliver the Verdict record. Submit it inline as the tool arguments. It ends the run. These parameters are the output schema: submit validates the record against it and returns the violations to fix, up to 8 per call.',
     parameters: { type: 'object', additionalProperties: true, properties: { verdict: { type: 'string', description: 'buy or pass' } } } });
   assert.deepEqual(opened, [{ conversation: opened[0].conversation, attempt: 0, resumed: false }]);
@@ -85,7 +86,7 @@ test('the host\'s reading and the node\'s verify clause are one round: the first
   assert.deepEqual(record, { verdict: 'hold' }, 'the second structurally valid record is the record');
   assert.deepEqual(toolResults(requests[1]), ['policy (host): fails - names no decision\nverify (verify): fails - /: violates "the verify clause of Verdict" - say buy or pass']);
   assert.deepEqual(read, [['Verdict', true], ['Verdict', false]]);
-  assert.match(requests[0].find((message) => message.role === 'user').content, /\nA schema-valid record is then reviewed against the procedure that governs this run before it is accepted; /);
+  assert.match(requests[0].find((message) => message.role === 'user').content[1].text, /\nA schema-valid record is then reviewed against the procedure that governs this run before it is accepted; /);
   assert.equal(requests.length, 2);
   await harness.close(ctx);
 });
@@ -119,7 +120,7 @@ test('a schema that requires a field its properties do not declare is delivered 
   assert.deepEqual(await runNode(verdict({ schema })), { a: 'x', b: 'y' });
   assert.equal(requests.length, 2, 'the record without the undeclared field is rejected by the schema, and the next is delivered');
   assert.deepEqual(Object.keys(submitOf(requests[0]).parameters.properties), ['a'], 'the tool shows the declared field');
-  assert.ok(requests[0].find((message) => message.role === 'user').content.includes(`Required JSON Schema (authoritative): ${JSON.stringify(schema)}`), 'the task shows the whole schema');
+  assert.ok(requests[0].find((message) => message.role === 'user').content[1].text.includes(`Required JSON Schema (authoritative): ${JSON.stringify(schema)}`), 'the task shows the whole schema');
   const open = await rig([submit({ verdict: 'buy' }), say('never asked')]);
   assert.deepEqual(await open.runNode(verdict({ schema: { type: ['object', 'null'], required: ['verdict'], properties: { verdict: { type: 'string' } } } })), { verdict: 'buy' }, 'a root that admits an object among others');
   await harness.close(ctx);
