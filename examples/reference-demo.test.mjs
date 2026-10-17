@@ -133,6 +133,7 @@ test('the boxes capability: a tool\'s box is destroyed once at "a box command in
   const { result, recording } = await run(t, { boxes: { kind: 'local' }, kills: [{ point: 'transport.box.exec', why: 'the install box is lost with its command running', target: 'tool' }] }, ['--kill', '--json'], { DEMO_BOX_TOOL: '1' });
   assert.deepEqual(result.processes.map((process) => [process.signal, process.outcome?.status]), [[null, 'complete']], 'one process: the run itself was not killed');
   assert.deepEqual(result.kills, []);
+  assert.deepEqual(result.unlanded, [], 'the tool kill landed: a run that finished is not told its kill never did');
   assert.equal(result.record.company, 'Acme Ltd');
   assert.deepEqual(validateRecording(recording), []);
   const lines = readEvents(recording);
@@ -469,7 +470,9 @@ test('a place that cannot lose its machine refuses a box kill, and says which pl
   Object.assign(process.env, { DEMO_SPEC: file });
   t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
   const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
-  await assert.rejects(() => demo({ ...options, argv: ['--kill', '--json', '--record', join(tmp, 'recording')], place: recordingPlace([], join(tmp, 'recording'), { kills: ['process'] }) }), /the fake place cannot lose its box/);
+  const calls = [];
+  await assert.rejects(() => demo({ ...options, argv: ['--kill', '--json', '--record', join(tmp, 'recording')], place: recordingPlace(calls, join(tmp, 'recording'), { kills: ['process'] }) }), /the fake place cannot lose its box/);
+  assert.deepEqual(calls.map((call) => call.call), ['release'], 'refused before anything started or was killed: the run was not stopped first, and no box loss was recorded');
 });
 
 test('a kill the place cannot make is recorded as a host line with its code and ends the attempt cleanly: no unhandled rejection, no further attempt', { timeout: 300_000 }, async (t) => {
@@ -496,6 +499,68 @@ test('a kill the place cannot make is recorded as a host line with its code and 
   const failed = lines.find((line) => line.kind === 'kill.failed');
   assert.deepEqual([failed.data.gen, failed.data.code], [1, 'KILL_FAILED']);
   assert.ok(lines.findIndex((line) => line.kind === 'kill') < lines.findIndex((line) => line.kind === 'kill.failed'), 'the kill line first, then the failure');
+});
+
+const specWith = async (t, spec) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-place-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'demo.json');
+  writeFileSync(file, JSON.stringify(spec));
+  Object.assign(process.env, { DEMO_SPEC: file });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  return { tmp, options };
+};
+
+test('a place that rejects a kill without stopping the process does not hang the supervisor: it records the failure and ends, whether the kill was planned or the budget\'s', { timeout: 120_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference', expectedCost: 0.05, kills: [{ point: 'judge.asked verdict', why: 'the place will fail to kill' }] });
+  const pids = [];
+  t.after(() => { for (const pid of pids) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } } });
+  // The kill rejects and the process is left running: its exit never comes (the child parks for a minute at the crossing).
+  const place = ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner, start: async (order) => { const runner = await inner.start(order); pids.push(runner.pid); return { ...runner, exited: new Promise(() => {}) }; }, kill: async () => { throw Object.assign(new Error('the provider refused'), { code: 'KILL_REFUSED' }); } };
+  };
+  const started = Date.now();
+  const planned = await demo({ ...options, argv: ['--kill', '--json', '--record', join(tmp, 'planned')], place });
+  assert.ok(Date.now() - started < 30_000, 'it did not wait for the exit of a process that was never stopped');
+  assert.deepEqual(planned.failedKills, [{ gen: 1, code: 'KILL_REFUSED' }]);
+  assert.equal(planned.processes.length, 1);
+  // The budget's stop fails the same way.
+  process.env.DEMO_JUDGE_COST = '0.3'; process.env.DEMO_LINGER_MS = '20000';
+  const budget = await demo({ ...options, argv: ['--json', '--record', join(tmp, 'budget')], place });
+  assert.deepEqual(budget.failedKills, [{ gen: 1, code: 'KILL_REFUSED' }]);
+});
+
+test('the budget\'s stop is awaited: the place has finished killing (its provider cleanup too) before the supervisor finishes the attempt and releases the place', { timeout: 120_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference', expectedCost: 0.05 });
+  process.env.DEMO_JUDGE_COST = '0.3'; process.env.DEMO_LINGER_MS = '20000';
+  const order = [];
+  const place = ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner, kill: async (runner, kind) => { await inner.kill(runner, kind); await new Promise((resolve) => setTimeout(resolve, 500)); order.push('kill done'); }, release: async () => { order.push('release'); } };
+  };
+  const result = await demo({ ...options, argv: ['--json', '--record', join(tmp, 'recording')], place });
+  assert.equal(result.overBudget, true);
+  assert.deepEqual(order, ['kill done', 'release'], 'the kill, with its slow cleanup, ended before the place was released');
+});
+
+test('a place that cannot be made, or released, leaves nothing open: the scratch is removed and the error is the one the place raised', { timeout: 120_000 }, async (t) => {
+  const { options } = await specWith(t, { name: 'reference' });
+  let scratch;
+  await assert.rejects(() => demo({ ...options, argv: ['--json'], place: async ({ paths }) => { scratch = paths.root; throw new Error('the provider is down'); } }), /the provider is down/);
+  assert.equal(existsSync(scratch), false, 'a place that failed to be made left no scratch behind');
+  let root;
+  await assert.rejects(() => demo({ ...options, argv: ['--json'], place: ({ paths, self, destroyBoxes, requestFile }) => { root = paths.root; return { ...localPlace({ self, paths, destroyBoxes, requestFile }), release: async () => { throw new Error('release failed'); } }; } }), /release failed/);
+  assert.equal(existsSync(root), false, 'a place that failed to release still had its scratch removed');
+});
+
+test('a box kill is carried out once: the recovery that follows does not stop the old runner (nor ask the providers to destroy its boxes) again', { timeout: 300_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'the machine is lost', kind: 'box' }] });
+  let destroyed = 0;
+  const result = await demo({ ...options, argv: ['--kill', '--json', '--record', join(tmp, 'recording')], place: ({ paths, self, requestFile }) => localPlace({ self, paths, requestFile, destroyBoxes: () => { destroyed += 1; } }) });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.equal(destroyed, 1, 'the boxes were destroyed once for one box kill');
 });
 
 test('the place\'s signals carry the kill request: a place with its own signals() is the one the supervisor reads, not the files', { timeout: 300_000 }, async (t) => {
@@ -534,8 +599,10 @@ test('a kill while the child works: the resumed run finds the site task by its r
   assert.deepEqual(result.unlanded ?? [], []);
   assert.equal(result.record.answer, 'Acme Ltd was incorporated on 2019-03-04.');
   assert.deepEqual(validateRecording(recording), []);
-  const children = readEvents(recording).filter((line) => line.channel === 'durable' && line.data?.doc?.endsWith('.children')).flatMap((line) => Object.keys(line.data.value.byRequest ?? {}));
-  assert.deepEqual([...new Set(children)], ['registry:3f2b8a1c-7d4e-4b9a-8c1d-5e6f7a8b9c0d'], 'one child, kept under its site and request id');
+  const children = new Map();
+  for (const line of readEvents(recording).filter((line) => line.channel === 'durable' && line.data?.doc?.endsWith('.children'))) for (const [key, value] of Object.entries(line.data.value.byRequest ?? {})) children.set(key, [...(children.get(key) ?? []), JSON.stringify(value)]);
+  assert.deepEqual([...children.keys()], ['registry:3f2b8a1c-7d4e-4b9a-8c1d-5e6f7a8b9c0d'], 'one child, kept under its site and request id');
+  assert.equal(new Set(children.get('registry:3f2b8a1c-7d4e-4b9a-8c1d-5e6f7a8b9c0d')).size, 1, 'under that key, every revision names the same child conversation: a resume that started another would replace the id under one key');
 });
 test('hold: the nth filing and those after it are parked until `hold` are parked or waitMs has passed, then the kill; without a hold the kill is at the crossing', (t) => {
   const kills = [];
@@ -776,7 +843,8 @@ test('the manifest hook adds fields, the run is named by the input file, and --s
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const earlier = join(tmp, 'weak-eyes-pass');
   mkdirSync(earlier);
-  writeFileSync(join(earlier, 'manifest.json'), JSON.stringify({ title: 'A weak-eyes pass' }));
+  writeFileSync(join(earlier, 'manifest.json'), JSON.stringify({ title: 'A weak-eyes pass', format: 'agentrun.recording/1', recorded: { started: '2026-10-16T00:00:00.000Z', ended: '2026-10-16T00:01:00.000Z' } }));
+  writeFileSync(join(earlier, 'events.jsonl'), '');
   writeFileSync(join(tmp, 'apollo-11.json'), '{"company":"Acme Ltd"}');
   const first = await run(t, {}, ['--json', '--input', join(tmp, 'apollo-11.json'), '--see-also', earlier], { DEMO_MANIFEST: '1' });
   const manifest = JSON.parse(readFileSync(join(first.recording, 'manifest.json'), 'utf8'));
@@ -791,6 +859,11 @@ test('the manifest hook adds fields, the run is named by the input file, and --s
   assert.ok(!('see_also' in bare));
   await assert.rejects(() => run(t, {}, ['--json'], { DEMO_MANIFEST: 'reserved' }), /"source" is written by the entry/);
   await assert.rejects(() => run(t, {}, ['--json', '--see-also', join(tmp, 'nope')]), /not a finished recording/);
+  // A manifest with only a title is no recording: it has no format, no end and no lines.
+  const titled = join(tmp, 'titled');
+  mkdirSync(titled);
+  writeFileSync(join(titled, 'manifest.json'), JSON.stringify({ title: 'Earlier pass' }));
+  await assert.rejects(() => run(t, {}, ['--json', '--see-also', titled]), /not a finished recording/);
 });
 
 test('a kill\'s where: only a crossing whose info has those values counts, and n is the nth matching one', async (t) => {
@@ -1006,6 +1079,32 @@ test('the child uses the sign-in file the recorder reads (AGENTRUN_HOME is hande
   assert.ok(!existsSync(join(recording, 'manifest.json')), 'the refused recording is not a finished one');
 });
 
+test('a token the sign-in rotated twice during the run, which the child learned and returned in its result, is not in the recording: the child redacts what it tells the supervisor with every token it has seen', { timeout: 300_000 }, async (t) => {
+  const { home } = await signInHome(t);
+  const second = `made-up-second-access-token-${'s'.repeat(30)}`;
+  const third = `made-up-third-access-token-${'h'.repeat(30)}`;
+  const recording = join(await mkdtemp(join(tmpdir(), 'reference-rotated-')), 'recording');
+  t.after(() => rm(join(recording, '..'), { recursive: true, force: true }));
+  // The access token goes first -> second -> third inside one run; the result the child returns carries the second, which the supervisor's own list (the first, then the file's last) never held.
+  const done = await run(t, {}, ['--json', '--record', recording], { AGENTRUN_HOME: home, DEMO_LEAK_STEPS: 'rotate,rotate2', DEMO_ROTATE_TOKEN: second, DEMO_ROTATE_TOKEN_2: third, DEMO_RESULT: '1', DEMO_RESULT_LEAK: second });
+  assert.equal(done.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(done.result.processes.at(-1)));
+  const files = filesIn(recording).filter((file) => !file.endsWith('.png'));
+  for (const value of [second, third]) assert.ok(!files.some((file) => readFileSync(file).includes(value)), 'an intermediate token is not in the recording');
+  assert.ok(files.some((file) => readFileSync(file, 'utf8').includes('[redacted]')), 'it was there to be redacted');
+});
+
+test('the final scan finds a token as a line stores it, JSON-escaped: one with a quote, a backslash or a newline', async (t) => {
+  const { scanRecording } = await import('./reference/secrets.ts');
+  const dir = await mkdtemp(join(tmpdir(), 'reference-scan-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const value = 'made-up-token-with-"quote"-and-\\back\nline-' + 'q'.repeat(20);
+  writeFileSync(join(dir, 'events.jsonl'), `${JSON.stringify({ data: { text: value } })}\n`);
+  assert.ok(!readFileSync(join(dir, 'events.jsonl'), 'utf8').includes(value), 'the line holds only the escaped form');
+  assert.throws(() => scanRecording(dir, [{ key: 'the key', value }]), /the key is in events\.jsonl/);
+  writeFileSync(join(dir, 'events.jsonl'), '{"data":{"text":"[redacted]"}}\n');
+  assert.doesNotThrow(() => scanRecording(dir, [{ key: 'the key', value }]));
+});
+
 test('the tracker keeps the union of every value seen, reads a changed auth.json before the next write, and reads it once more at the end', async (t) => {
   const { trackSecrets } = await import('./reference/secrets.ts');
   const { home, tokens } = await signInHome(t);
@@ -1024,6 +1123,66 @@ test('the tracker keeps the union of every value seen, reads a changed auth.json
   writeFileSync(file, JSON.stringify(stored));
   assert.ok(tracked.final().some((secret) => secret.value === last), 'the final read sees the newest token');
   assert.ok(tracked.final().some((secret) => secret.value === tokens.access), 'and every earlier one');
+
+
+});
+
+test('a crossing a tool kill takes still counts for a run kill at the same point: the run kill at n 2 fires on the second matching crossing', async (t) => {
+  const kills = [];
+  const real = process.kill;
+  process.kill = (pid, signal) => { kills.push(signal); return true; };
+  t.after(() => { process.kill = real; });
+  const cross = crossings({ run: { point: 'transport.tool.started', kind: 'process', target: 'run', why: 'second', n: 2 }, tools: [{ point: 'transport.tool.started', kind: 'box', target: 'tool', why: 'first', n: 1 }] }, undefined);
+  assert.equal(cross('transport.tool.started'), true, 'the tool kill takes the first crossing');
+  assert.deepEqual(kills, []);
+  assert.equal(cross('transport.tool.started'), false);
+  assert.deepEqual(kills, ['SIGKILL'], 'the run kill is the second matching crossing, not the third');
+});
+
+test('a held kill waits for every tool call to return before it asks: a tool a parallel branch started while the filing was parked is never cut', async () => {
+  const fired = [];
+  const window = { open: 0 };
+  const cross = crossings({ run: { point: 'vision.filing', kind: 'process', target: 'run', why: 'held', n: 1, hold: 3, waitMs: 30 }, tools: [] }, undefined, Date.now(), (crossing) => fired.push(crossing.point), window);
+  cross('vision.filing');
+  assert.ok(cross.park('vision.filing'), 'the first filing is parked');
+  window.open = 1;
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.deepEqual(fired, [], 'the wait is over, and a tool call is running: no kill yet');
+  window.open = 0;
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.deepEqual(fired, ['vision.filing'], 'the tool returned: now the kill is asked');
+});
+
+test('a look is kept with the images of its own read: a read that produced no image finds none (not the previous read\'s), and a film window keeps only the frames inside it', async () => {
+  const { shownShots } = await import('./reference/looks.ts');
+  const shown = shownShots();
+  const afterTool = shown.extension.hooks[0].handlers.afterTool;
+  const png = (text) => ({ type: 'image', data: Buffer.from(text).toString('base64'), mimeType: 'image/png' });
+  const record = (path, args = {}) => ({ args: { path, model: 'm', native: false, ...args }, status: 'ok', facts: { key: 'k' } });
+  await afterTool({ id: '1', name: 'read', arguments: { path: 'a.png' } }, { output: [png('A')], details: { evidence: 'evidence/a.json' } }, { conversationId: 7 });
+  await afterTool({ id: '2', name: 'read', arguments: { path: 'b.png' } }, { output: [{ type: 'text', text: 'the file is gone' }], details: {} }, { conversationId: 7 });
+  assert.equal(shown.of('7', record('b.png'), 'read'), undefined, 'the failed read finds no images, not a.png\'s');
+  assert.equal(shown.of('7', record('a.png'), 'read').images.length, 1);
+  assert.equal(shown.of('7', record('a.png'), 'read').receipt, 'evidence/a.json');
+  await afterTool({ id: '3', name: 'read', arguments: { path: 'film.webm' } }, { output: [{ type: 'text', text: 'Frame at 1 s.' }, png('F1'), { type: 'text', text: 'Frame at 9 s.' }, png('F9')], details: {} }, { conversationId: 7 });
+  assert.deepEqual(shown.of('7', record('film.webm', { from_s: 0, to_s: 5 }), 'read').images.map((image) => image.at), [1], 'only the frame inside the window');
+  assert.deepEqual(shown.of('7', record('film.webm', { from_s: 5, to_s: 10 }), 'read').images.map((image) => image.at), [9]);
+  // A screenshot is found as the newest of its tool.
+  await afterTool({ id: '4', name: 'screenshot', arguments: {} }, { output: [png('S')], details: { evidence: 'evidence/shot.json' } }, { conversationId: 7 });
+  assert.equal(shown.of('7', record('a screenshot result'), 'screenshot').images.length, 1);
+});
+
+test('a directory a run already used keeps its identity: a demo whose name differs from the saved run\'s resumes it under the saved name', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-identity-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'run');
+  const first = await run(t, {}, ['--json', '--dir', dir]);
+  assert.equal(first.result.processes.at(-1).outcome.status, 'complete');
+  assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).run, 'reference');
+  // The same directory again, by a demo of another name (a directory saved before the run was named for its demo): it is not refused, and stays what it was.
+  const again = await run(t, { name: 'another-demo' }, ['--json', '--dir', dir]);
+  assert.equal(again.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(again.result.processes.at(-1)));
+  assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).run, 'reference');
 });
 
 // ---- the place answers where the kill request is, and the supervisor honors it only with the attempt's nonce ---------------------------------------
@@ -1249,6 +1408,10 @@ test('a place\'s signals may end with signals-failed or throw: a signals.failed 
   assert.equal(messageOf(new Error('cannot reach /srv/elsewhere/x and /run/root/store/run.sqlite at http://host/a/b'), '/run/root'), 'cannot reach <path> and /run/root/store/run.sqlite at http://host/a/b');
   assert.equal(messageOf('/run/root and /run/rootless', '/run/root'), '/run/root and <path>');
   assert.equal(messageOf('x'.repeat(500), '/run/root').length, 240);
+  // A path outside the run is replaced whole: a folder with a space in its name, and a Windows drive path.
+  assert.equal(messageOf('could not read /home/alice/Private Documents/report.txt now', '/run/root'), 'could not read <path> now');
+  assert.equal(messageOf('could not read C:\\Users\\alice\\private.txt, giving up', '/run/root'), 'could not read <path>, giving up');
+  assert.equal(messageOf('could not read C:\\Users\\alice\\My Files\\x.txt now', '/run/root'), 'could not read <path> now');
   // kill.failed: the same scrub.
   writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] }));
   const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
@@ -1459,6 +1622,49 @@ test('the follower appends whole lines to events.jsonl in section 3\'s order as 
   assert.ok(existsSync(join(dir, 'manifest.json')) && !existsSync(spool('')), 'the manifest is last, and the spool is gone');
 });
 
+test('the follower holds later lines behind a memo that waits, decodes a character a read cut in two whole, and reads only new bytes', async (t) => {
+  const { startedAt, followRecording } = await import('./reference/record.ts');
+  const { syncBuiltinESMExports } = await import('node:module');
+  const fs = (await import('node:fs')).default;
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-follow-order-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'rec');
+  mkdirSync(join(dir, '.spool'), { recursive: true });
+  startedAt(dir);
+  const spool = (name) => join(dir, '.spool', name);
+  const line = (over) => JSON.stringify({ channel: 'live', source: 'workflow', kind: 'x', gen: 1, seq: 0, data: {}, ...over });
+  const durable = (over) => JSON.stringify({ channel: 'durable', source: 'workflow', kind: 'agentrun.driver', gen: 1, data: {}, ...over });
+  const events = () => readFileSync(join(dir, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((entry) => JSON.parse(entry));
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const follower = followRecording(dir, { holdMs: 0 });
+  // A memo (t 10, commit 1) waits for a later commit; a live line at t 20 must not be placed before it.
+  appendFileSync(spool('durable-1.jsonl'), `${durable({ t: 8, commit: 1, order: 0, seq: 0 })}\n${durable({ t: 10, commit: 1, order: null, seq: 1 })}\n`);
+  appendFileSync(spool('live-1.jsonl'), `${line({ t: 20, seq: 2 })}\n`);
+  await wait(40); follower.poll();
+  assert.deepEqual(events().map((entry) => entry.t), [8], 'the memo waits, and the later live line waits behind it');
+  appendFileSync(spool('durable-1.jsonl'), `${durable({ t: 15, commit: 2, order: 0, seq: 3 })}\n`);
+  await wait(40); follower.poll();
+  assert.deepEqual(events().map((entry) => entry.t), [8, 10, 15, 20], 'the next poll places the memo, then what follows it, in order');
+  // A multibyte character cut by a read: both halves are decoded together.
+  const whole = Buffer.from(`${line({ t: 30, seq: 4, data: { text: 'caf\u00e9 \u2014 \u{1f680}' } })}\n`);
+  const cut = whole.indexOf(Buffer.from('\u00e9')) + 1;
+  appendFileSync(spool('live-2.jsonl'), whole.subarray(0, cut));
+  await wait(40); follower.poll();
+  appendFileSync(spool('live-2.jsonl'), whole.subarray(cut));
+  await wait(40); follower.poll();
+  assert.equal(events().at(-1).data.text, 'caf\u00e9 \u2014 \u{1f680}', 'no replacement characters');
+  // Reading: the spools are read from the saved offset, not whole again: no readFileSync of a spool file once the follower is made.
+  const real = fs.readFileSync;
+  const reads = [];
+  fs.readFileSync = (path, ...rest) => { if (String(path).includes('.spool')) reads.push(String(path)); return real(path, ...rest); };
+  syncBuiltinESMExports();
+  t.after(() => { fs.readFileSync = real; syncBuiltinESMExports(); });
+  appendFileSync(spool('live-1.jsonl'), `${line({ t: 40, seq: 5 })}\n`);
+  await wait(40); follower.poll(); follower.poll();
+  assert.deepEqual(reads, [], 'the spools are not read whole on a poll');
+  assert.equal(events().at(-1).t, 40);
+});
+
 test('--record: a reader polling events.jsonl mid-run sees only whole lines in order and append-only, the finished file validates, and the manifest names the job blob (always, when the entry knows the job)', { timeout: 300_000 }, async (t) => {
   const { compareLines } = await import('./reference/record.ts');
   const tmp = await mkdtemp(join(tmpdir(), 'reference-live-'));
@@ -1509,6 +1715,24 @@ test('the follower redacts every line it places (a line a box\'s child wrote wit
   follower.close();
   finishRecording(dir, { title: 't', task: 't', model: 'faux/faux-1', kills: 0, code: { repo: 'r', commit: 'c', packages: {} }, cost: { usd: 0, parts: {} }, source: { run: 'x', store_sha256: '0'.repeat(64) }, redact });
   assert.ok(!readFileSync(join(dir, 'events.jsonl'), 'utf8').includes(secret) && !readFileSync(join(dir, 'manifest.json'), 'utf8').includes(secret));
+
+});
+
+test('code mode: a command\'s output is clipped while it streams (head kept, the rest counted), a command stops with its script, and the tool\'s description carries the declaration of vision.see', { timeout: 300_000 }, async (t) => {
+  // Output: 100000 characters from one command; the script is given the first 100 and a count of the rest.
+  const loud = ['const ran = await tools.bash({ command: "head -c 100000 /dev/zero | tr \'\\\\0\' x" });', 'await tools.bash({ command: "printf %s " + JSON.stringify(ran.output) + " > out.txt" });', 'return ran.output.length;'].join('\n');
+  const clipped = await run(t, { codeMode: { outputChars: 100 } }, ['--json'], { DEMO_CODE: loud, DEMO_CODE_ON: '' });
+  const out = readFileSync(join(clipped.result.dir, 'work', 'out.txt'), 'utf8');
+  assert.ok(out.startsWith('x'.repeat(100)) && out.includes('[99900 more characters not shown]') && out.length < 200, `the script got the head and a count: ${out.slice(0, 160)}`);
+  // Cancellation: the script's deadline passes while a command is sleeping; the command does not go on to write its file.
+  const slow = 'await tools.bash({ command: "sleep 4; echo late > late.txt" }); return 1;';
+  const cut = await run(t, { codeMode: { timeoutMs: 1500 } }, ['--json'], { DEMO_CODE: slow, DEMO_CODE_ON: '' });
+  await new Promise((resolve) => setTimeout(resolve, 6000));
+  assert.ok(!existsSync(join(cut.result.dir, 'work', 'late.txt')), 'the command stopped with its script');
+  // The declaration the model reads is in the tool\'s description.
+  const { codeModeExtension } = await import('./reference/code-mode.ts');
+  const tool = codeModeExtension({ see: () => ({ signature: '(request: { ask: string }): Promise<{ text: string }>', description: 'Ask the eyes about images.' }) }, {}).tools[0];
+  assert.match(tool.description, /vision\.see` is declared as `\(request: \{ ask: string \}\): Promise<\{ text: string \}>`: Ask the eyes about images\./);
 });
 
 test('a run.json line is an allowlist: a holder\'s sandbox id, name and mountpoint and any other field are dropped, and a detail is text of at most 240 with every absolute path as <path>', { timeout: 300_000 }, async (t) => {
@@ -1531,9 +1755,82 @@ test('a run.json line is an allowlist: a holder\'s sandbox id, name and mountpoi
   const [line] = readEvents(recording).filter((entry) => entry.source === 'host' && entry.kind === 'run.json');
   assert.deepEqual(Object.keys(line.data).sort(), ['detail', 'gen', 'generation', 'heartbeatAt', 'holder', 'run', 'sealedSeq', 'status', 'updatedAt', 'wakeAt']);
   assert.deepEqual(line.data.holder, { driver: 'archil', host: 'host-1', bootId: 'boot-1', pid: 12, since: 's' });
-  assert.ok(line.data.detail.startsWith('mounted at <path> and <path>:') && line.data.detail.length <= 240);
+  assert.ok(line.data.detail.startsWith('mounted at <path>:') && line.data.detail.length <= 240, 'a path runs to the next delimiter');
   const text = readFileSync(join(recording, 'events.jsonl'), 'utf8');
   for (const leaked of ['sbx-123456', 'sandbox-of-the-demo', '/mnt/archil', 'a-real-host-name', 'a-real-boot-id', 'a field nobody listed']) assert.ok(!text.includes(leaked), `${leaked} is not in the recording`);
+
+});
+
+test('a kill request written in short pieces is whole when it is renamed into place: the supervisor reads the complete request', { timeout: 60_000 }, async (t) => {
+  const { spawn } = await import('node:child_process');
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-request-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'kill-1.json');
+  const crossings_ = new URL('./reference/crossings.ts', import.meta.url).href;
+  const script = `
+    import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+    const writeSync = fs.writeSync;
+    fs.writeSync = (fd, data, offset = 0) => writeSync(fd, data, offset, Math.min(5, data.length - offset));
+    syncBuiltinESMExports();
+    const { askToBeKilled } = await import(${JSON.stringify(crossings_)});
+    askToBeKilled(process.argv[1], 'a-nonce')({ point: 'judge.asked verdict', n: 1, pid: process.pid });`;
+  const child = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', '--input-type=module', '-e', script, file], { stdio: 'ignore' });
+  t.after(() => { try { child.kill('SIGKILL'); } catch { /* gone */ } });
+  for (let waited = 0; !existsSync(file) && waited < 20_000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { point: 'judge.asked verdict', n: 1, pid: child.pid, nonce: 'a-nonce' }, 'the whole request, though each write took 5 bytes');
+});
+
+test('a path in a detail is replaced whole, spaces and all; and a machine named like one of the recording\'s own words is not redacted out of its lines', async () => {
+  const { plainText } = await import('./reference/demo.ts');
+  const { machineSecrets, redactorOf } = await import('./reference/secrets.ts');
+  assert.equal(plainText('cannot open /tmp/Client Files/store: no such file'), 'cannot open <path>: no such file');
+  assert.equal(plainText('wrote /home/alice/Private Documents/report.txt, then stopped'), 'wrote <path>, then stopped');
+  assert.equal(machineSecrets('host').some((secret) => secret.key.includes('host name')), false, 'a machine named host: its name is a word of the recording');
+  assert.equal(machineSecrets('greppy-mrb').some((secret) => secret.value === 'greppy-mrb'), true, 'an ordinary name is taken');
+  const line = '{"channel":"live","source":"host","kind":"run.json","data":{"holder":{"host":"host-1"}}}';
+  const redact = redactorOf(machineSecrets('host').filter((secret) => secret.key.includes('host name')));
+  assert.equal(redact ? redact(line) : line, line, 'the lines of the format are unchanged');
+});
+
+test('the slow status tick does not queue a read behind one still running: a place whose reads take seconds is read a bounded number of times', { timeout: 120_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-slow-status-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'spec.json');
+  writeFileSync(file, JSON.stringify({ name: 'reference' }));
+  Object.assign(process.env, { DEMO_SPEC: file, DEMO_LINGER_MS: '7000' });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  let reads = 0;
+  const started = Date.now();
+  await demo({ ...options, argv: ['--json', '--record', join(tmp, 'recording')], place: ({ paths, self, destroyBoxes, requestFile }) => ({
+    ...localPlace({ self, paths, destroyBoxes, requestFile }),
+    status: async () => { reads += 1; await new Promise((resolve) => setTimeout(resolve, 2500)); return { record: null }; },
+  }) });
+  // Boundary reads (start, exit, result) plus the ticks that found no read running; a tick queued behind every slow read would make six or more.
+  assert.ok(reads <= 5, `the status was read ${reads} times in ${Date.now() - started} ms`);
+});
+
+test('an operator kill carries to the next attempt only the tool kills that did not land, and a control that cannot be removed is a failed kill, not a crash', { timeout: 300_000 }, async (t) => {
+  const { notLanded } = await import('./reference/demo.ts');
+  const dir = await mkdtemp(join(tmpdir(), 'reference-landed-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const log = join(dir, 'crossings.jsonl');
+  const row = (extra) => `${JSON.stringify({ point: 'transport.box.exec', n: 0, pid: 1, ...extra })}\n`;
+  writeFileSync(log, row({}) + row({ landed: true }) + row({ point: 'transport.tool.started' }));
+  const tools = [{ point: 'transport.box.exec', n: 1 }, { point: 'transport.box.exec', n: 2 }, { point: 'transport.tool.started', n: 1 }];
+  assert.deepEqual(notLanded(tools, log), [tools[1], tools[2]], 'one landed kill at that point is spent; the one that has not fired, and other points, are carried');
+  assert.deepEqual(notLanded(tools, join(dir, 'no-log')), tools, 'nothing landed when the child wrote no log');
+  // A control that cannot be removed (a directory made by mistake): a failed kill on the normal path, and the supervisor does not crash.
+  const { tmp, options } = await specWith(t, { name: 'reference' });
+  const control = join(tmp, 'control');
+  let asked = false;
+  const place = ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner, start: async (order) => { const runner = await inner.start(order); if (!asked) { asked = true; setTimeout(() => mkdirSync(control), 50); } return runner; } };
+  };
+  const bad = await demo({ ...options, argv: ['--json', '--operator-kill', control], place });
+  assert.equal(bad.failedKills.length, 1, 'the control that could not be removed is a failed kill');
+  assert.equal(bad.kills.length, 0, 'and no kill happened');
 });
 
 // ---- LiveParts.tools ---------------------------------------------------------------------------------------------------------------------------

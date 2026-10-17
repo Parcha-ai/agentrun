@@ -9,23 +9,30 @@
 // as a box place reads them (it has only run.json), releases the run and exits 0.
 import type { AppContext, AppOptions } from '@parcha/pi-durable-disk';
 import { appOf } from './assemble.ts';
-import { outcomeOf, prepareChild, type DemoOptions } from './demo.ts';
+import { IMPORTING_DEMO, outcomeOf, prepareChild, type DemoOptions } from './demo.ts';
 
 export default async function app(ctx: AppContext): Promise<AppOptions> {
   const entry = process.env.DEMO_ENTRY;
   if (!entry) throw new Error('child-app needs DEMO_ENTRY, the file URL of the demo module that exports `options`.');
-  const { options } = (await import(entry)) as { options?: DemoOptions };
+  // A demo's module may call `demo(options)` at its top level, as its own command does: while it is imported for its `options`, that call does nothing.
+  const importing = globalThis as Record<symbol, unknown>;
+  importing[IMPORTING_DEMO] = true;
+  let options: DemoOptions | undefined;
+  try { options = ((await import(entry)) as { options?: DemoOptions }).options; } finally { delete importing[IMPORTING_DEMO]; }
   if (!options) throw new Error(`${entry} exports no \`options\` (the DemoOptions the demo passes to demo()).`);
   // The attempt's nonce goes into the kill request and out of the environment before anything starts.
   const killNonce = process.env.KILL_NONCE;
   delete process.env.KILL_NONCE;
   const prepared = await prepareChild(options, process.env, { id: ctx.ref.id, root: ctx.root, work: ctx.work, store: ctx.store }, killNonce);
   const opened = await appOf(prepared.place, prepared.host, prepared.job, prepared.runOptions, async ({ result, storeSha256 }) => {
-    const made = await prepared.made(result);
-    await prepared.recorder?.detach();
-    console.log(JSON.stringify({ outcome: outcomeOf(result, storeSha256, made, prepared.models) }));
-    await prepared.done();
-  });
+    // The recorder is detached and the prepared parts released whether or not the result hook and the report succeed.
+    try {
+      const made = await prepared.made(result);
+      await prepared.recorder?.detach();
+      const line = JSON.stringify({ outcome: outcomeOf(result, storeSha256, made, prepared.models) });
+      console.log(prepared.redact ? prepared.redact(line) : line);
+    } finally { await prepared.done(); }
+  }, prepared.models ? { models: prepared.models } : {}, prepared.redact);
   // Nothing under the run's directory is written before the claim is open: the recorder, the fetched files and the box start here, once the store is open and before it resumes (a write earlier would land on the bare
   // mountpoint, which the mount then hides). The lines produced before this are held in memory and written, in order, when the recorder starts.
   const beforeResume = opened.beforeResume;
