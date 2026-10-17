@@ -32,7 +32,7 @@ export type Shown = { conversationId: string; callId: string; args: Record<strin
  *  lead never holds it. `keep` stores an image's bytes (a recording's blob) and returns its SHA-256. It changes no result. */
 export function shownShots(options: { keep?: (bytes: Buffer, extension: string) => string; onShown?: (shown: Shown) => void } = {}) {
   // Each conversation's reads, newest last: a look finds the read it was of by its path (a screenshot by its receipt), never "the last one".
-  const byConversation = new Map<string, { receipt: string | null; images: ShownImage[]; path?: string }[]>();
+  const byConversation = new Map<string, { tool: string; receipt: string | null; images: ShownImage[]; path?: string }[]>();
   const extension = {
     name: 'entry-shown', tools: [], wraps: [],
     hooks: [{ task: 'pi.tool', handlers: { afterTool: async (call: { id: string; name: string; arguments?: Record<string, unknown> }, result: Record<string, unknown>, api: { conversationId: unknown }) => {
@@ -49,7 +49,7 @@ export function shownShots(options: { keep?: (bytes: Buffer, extension: string) 
       });
       const evidence = (result.details as { evidence?: unknown } | undefined)?.evidence;
       const list = byConversation.get(String(api.conversationId)) ?? [];
-      list.push({ receipt: typeof evidence === 'string' ? evidence : null, images, ...(call.name === 'read' && typeof call.arguments?.path === 'string' ? { path: call.arguments.path } : {}) });
+      list.push({ tool: call.name, receipt: typeof evidence === 'string' ? evidence : null, images, ...(call.name === 'read' && typeof call.arguments?.path === 'string' ? { path: call.arguments.path } : {}) });
       byConversation.set(String(api.conversationId), list.slice(-50));
       // One live line per read: its arguments (the question left out), the media facts, and the captions with the images (the page's text layer is not kept).
       if (call.name === 'read' && options.onShown) {
@@ -62,9 +62,10 @@ export function shownShots(options: { keep?: (bytes: Buffer, extension: string) 
   } as unknown as Extension;
   return {
     extension,
-    /** The images the eyes were shown for this look: the newest read of the look's own file (or screenshot, by its receipt), and for a film window only the frames inside it. A look whose read produced no image finds none. */
-    of: (conversationId: string, record?: LookRecord, receipt?: string | null) => {
-      const entry = [...(byConversation.get(conversationId) ?? [])].reverse().find((read) => (record && read.path !== undefined && read.path === record.args.path) || (receipt && read.receipt === receipt));
+    /** The images the eyes were shown for this look: for a `read`, the newest read of the look's own file, and for a film window only the frames inside it; for another tool whose result held the image (a screenshot), that tool's newest. A look whose read produced no image finds none. */
+    of: (conversationId: string, record: LookRecord | undefined, tool: string) => {
+      const reads = [...(byConversation.get(conversationId) ?? [])].reverse();
+      const entry = tool === 'read' ? reads.find((read) => read.tool === 'read' && record && read.path === record.args.path) : reads.find((read) => read.tool === tool);
       if (!entry) return undefined;
       const from = record?.args.from_s;
       const to = record?.args.to_s;
@@ -77,10 +78,10 @@ export function shownShots(options: { keep?: (bytes: Buffer, extension: string) 
  *  images it was of and the data set's item it belongs to (`itemOf` the record's path). `filed` holds each filed record by its receipt path, so a miss, which names only the receipt, finds its
  *  record. `harness` is the run's, undefined until it is open. `cites` (a file) gets one line per look kept: what a result cites a screenshot by. */
 export function keepLooks(harness: () => Harness | undefined, options: { shown?: ReturnType<typeof shownShots>; cites?: string; itemOf?: (path: string) => string | null; filed?: Map<string, LookRecord> } = {}): Pick<VisionAdapterOptions, 'onLook' | 'onMiss'> {
-  const keep = async (conversationId: string, receipt: string | null, record: LookRecord | undefined, miss: MissEvent | null) => {
+  const keep = async (conversationId: string, tool: string, receipt: string | null, record: LookRecord | undefined, miss: MissEvent | null) => {
     const open = harness();
     if (!open || !record) return;
-    const shot = options.shown?.of(conversationId, record, receipt);
+    const shot = options.shown?.of(conversationId, record, tool);
     // A record's optional facts may be undefined, which a document does not hold: it is kept as its JSON.
     const value = JSON.parse(JSON.stringify({
       receipt: shot?.receipt ?? receipt, record, item: options.itemOf?.(String(record.args.path)) ?? null, images: shot?.images ?? [],
@@ -90,7 +91,7 @@ export function keepLooks(harness: () => Harness | undefined, options: { shown?:
     if (options.cites && value.receipt) appendFileSync(options.cites, `${JSON.stringify({ receipt: value.receipt, look: record.facts.key, blob: value.images[0]?.blob ?? null })}\n`);
   };
   return {
-    onLook: (look) => keep(look.conversationId, look.receipt, look.record, null),
-    onMiss: (miss) => keep(miss.conversationId, miss.receipt, miss.receipt === null ? undefined : options.filed?.get(miss.receipt), miss),
+    onLook: (look) => keep(look.conversationId, look.tool, look.receipt, look.record, null),
+    onMiss: (miss) => keep(miss.conversationId, miss.tool, miss.receipt, miss.receipt === null ? undefined : options.filed?.get(miss.receipt), miss),
   };
 }
