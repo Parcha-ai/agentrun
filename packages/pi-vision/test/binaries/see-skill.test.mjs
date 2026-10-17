@@ -138,16 +138,61 @@ test("Jev: the box's crop asked about its four edges", async () => {
   assert.deepEqual(value, ["left", "right", "top", "bottom"], "every edge the fake says yes to");
 });
 
-test("the skill's window cut is the same bytes when it is made again, a WebM copy too, so its look is found again", async () => {
-  const cut = SKILL.match(/`(mkdir -p \.look\/clips && ffmpeg [^`]*-c copy[^`]*)`/)[1];
-  assert.match(cut, /-fflags \+bitexact/);
-  execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=70:size=160x120:rate=5", "-c:v", "libvpx", "-b:v", "100k", path.join(cwd, "talk.webm")]);
-  const webm = cut.replaceAll("talk.mp4", "talk.webm").replace(".look/clips/60.mp4", ".look/clips/60.webm");
-  const sha = async (command) => {
-    await new Promise((resolve, reject) => execFile("bash", ["-c", command], { cwd }, (error) => (error ? reject(error) : resolve())));
-    return createHash("sha256").update(fs.readFileSync(path.join(cwd, ".look", "clips", "60.webm"))).digest("hex");
-  };
-  assert.equal(await sha(webm), await sha(webm), "cut twice with the skill's flags: the same bytes");
-  const plain = webm.replace(" -fflags +bitexact", "");
-  assert.notEqual(await sha(plain), await sha(plain), "without the flag the muxer writes a fresh id each time");
+/** The skill's window cut, as written in its text. */
+const CUT = SKILL.match(/`(mkdir -p \.look\/clips && ffmpeg [^`]*)`/)[1];
+const run = (command) => new Promise((resolve, reject) => execFile("bash", ["-c", command], { cwd }, (error, stdout, stderr) => (error ? reject(new Error(`${stderr}${error.message}`)) : resolve(stdout))));
+/** The frame at `at` seconds of a video, small and grey, decoded with or without the container's edit list. */
+const frameAt = (file, at, editList = true) => execFileSync("ffmpeg", ["-v", "error", ...(editList ? [] : ["-ignore_editlist", "1"]), "-ss", String(at), "-i", path.join(cwd, file), "-frames:v", "1", "-vf", "scale=32:24", "-f", "rawvideo", "-pix_fmt", "gray", "-"]);
+const distance = (a, b) => a.reduce((sum, v, i) => sum + Math.abs(v - b[i]), 0) / a.length;
+
+test("the skill's window cut is the same bytes when it is made again, from an MP4 or a WebM, so its look is found again", async () => {
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=95:size=160x120:rate=5", "-c:v", "libvpx", "-b:v", "100k", path.join(cwd, "talk.webm")]);
+  for (const source of ["talk.mp4", "talk.webm"]) {
+    const sha = async () => {
+      await run(CUT.replaceAll("talk.mp4", source));
+      return createHash("sha256").update(fs.readFileSync(path.join(cwd, ".look", "clips", "60.mp4"))).digest("hex");
+    };
+    assert.equal(await sha(), await sha(), `${source} cut twice with the skill's flags: the same bytes`);
+  }
+});
+
+test("the skill's window starts at its second 0 for every decoder: a copy starts at the keyframe before it, which a decoder that ignores the edit list shows first", async () => {
+  // Keyframes every 25 s, so the one before 60 is at 50.
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=95:size=160x120:rate=5", "-g", "125", "-sc_threshold", "0", "-pix_fmt", "yuv420p", path.join(cwd, "talk.mp4")]);
+  const [at50, at60] = [frameAt("talk.mp4", 50), frameAt("talk.mp4", 60)];
+  await run(CUT);
+  for (const editList of [true, false]) assert.ok(distance(frameAt(".look/clips/60.mp4", 0, editList), at60) < 8, `second 0 is 60 with the edit list ${editList ? "read" : "ignored"}`);
+  await run("mkdir -p .look/clips && ffmpeg -v error -y -ss 60 -t 30 -i talk.mp4 -c copy -fflags +bitexact .look/clips/copy.mp4");
+  assert.ok(distance(frameAt(".look/clips/copy.mp4", 0), at60) < 8, "a copy read with its edit list starts at 60");
+  assert.ok(distance(frameAt(".look/clips/copy.mp4", 0, false), at50) < 8, "a copy read without it starts at the keyframe at 50");
+});
+
+/** `pdf` with every page's crop box set to `box` (points), its cross-reference table written again. */
+function withCropBox(pdf, box) {
+  const body = Buffer.from(pdf).toString("latin1").replace(/\/MediaBox \[[^\]]*\]/g, (media) => `${media} /CropBox [${box.join(" ")}]`);
+  const objects = body.slice(0, body.lastIndexOf("xref\n"));
+  const offsets = [...objects.matchAll(/^(\d+) 0 obj$/gm)].map((match) => match.index);
+  const table = offsets.map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("");
+  return Buffer.from(`${objects}xref\n0 ${offsets.length + 1}\n0000000000 65535 f \n${table}trailer\n<< /Size ${offsets.length + 1} /Root 1 0 R >>\nstartxref\n${objects.length}\n%%EOF\n`, "latin1");
+}
+
+test("every page the skill renders is its crop box, the area a citation's percents are of, not the whole sheet", async () => {
+  const commands = [...SKILL.matchAll(/pdftoppm [^"`]*?\.look\/[\w/]+/g)].map((match) => match[0]);
+  assert.equal(commands.length, 4, "the three page renders and the region");
+  // Half-inch margins cropped from a 612 x 792 point page leave 540 x 720.
+  fs.writeFileSync(path.join(cwd, "cropped.pdf"), withCropBox(pdfBytes(Array.from({ length: 3 }, (_, i) => ({ lines: [`Invented page ${i + 1}`] }))), [36, 36, 576, 756]));
+  assert.equal(execFileSync("pdfinfo", ["-box", path.join(cwd, "cropped.pdf")], { encoding: "utf8" }).match(/CropBox:\s+([\d. ]+)/)[1].trim().split(/\s+/).map(Number).join(), "36,36,576,756");
+  for (const command of commands) {
+    assert.match(command, /-cropbox /);
+    await run(`rm -rf .look && mkdir -p .look/pages && ${command.replace("report.pdf", "cropped.pdf").replace(/-f 3 -l 3/, "-f 2 -l 2")}`);
+    const dpi = Number(command.match(/-r (\d+)/)[1]);
+    const [width, height] = [540, 720].map((points) => Math.ceil((points * dpi) / 72));
+    const files = execFileSync("find", [".look", "-name", "*.png"], { cwd, encoding: "utf8" }).trim().split("\n");
+    assert.ok(files.length >= 1, command);
+    for (const file of files) {
+      const size = imageHeader(fs.readFileSync(path.join(cwd, file)));
+      if (command.includes(" -W ")) assert.deepEqual([size.width, size.height], [Math.min(1275, width - 1275), 825], `${command}: the region, cut from the crop box`);
+      else assert.ok(Math.abs(size.width - width) <= 1 && Math.abs(size.height - height) <= 1, `${command}: ${size.width}x${size.height}, not the crop box's ${width}x${height}`);
+    }
+  }
 });
