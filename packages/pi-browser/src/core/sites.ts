@@ -18,6 +18,7 @@ export function useWebsiteContract(sites: readonly SiteInfo[]): ToolContract {
       "Hand a task to an agent that works on one of these websites in its own browser, and get back what it found or did:",
       ...sites.map((site) => `- ${site.site}: ${site.title}. ${site.description}`),
       "Give a new request_id (a UUID) for each new task. Calling again with the request_id of a finished task answers its result without running it again; a task that failed runs again, and may repeat what it already did on the site.",
+      "Several calls in one turn run at once, each agent in its own browser.",
     ].join("\n"),
     parameters: {
       type: "object", additionalProperties: false, required: ["site", "request_id", "instructions"],
@@ -27,7 +28,7 @@ export function useWebsiteContract(sites: readonly SiteInfo[]): ToolContract {
         instructions: { type: "string", maxLength: MAX_SITE_INSTRUCTIONS, description: "What to do on the website and what to report back." },
       },
     },
-    effect: "effect", replay: "safe", executionMode: "sequential", evidence: "none", listedWhen: "sites",
+    effect: "effect", replay: "safe", executionMode: "parallel", evidence: "none", listedWhen: "sites",
   };
 }
 

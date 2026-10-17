@@ -1,6 +1,6 @@
 {
   "name": "@parcha/pi-agent-learn",
-  "version": "0.1.0-beta.14",
+  "version": "0.1.0-beta.15",
   "private": true,
   "description": "An agent that learns in its own git repository: a learn tool that costs nothing, a <learned> prompt section read at a fixed commit, and the host steps that seed a run from it.",
   "keywords": [
@@ -40,8 +40,8 @@
     "test": "node --test --test-concurrency=8 'test/*.test.mjs'"
   },
   "dependencies": {
-    "@parcha/agentrun-dsl": "0.1.0-beta.14",
-    "@parcha/pi-git-remote": "0.1.0-beta.14"
+    "@parcha/agentrun-dsl": "0.1.0-beta.15",
+    "@parcha/pi-git-remote": "0.1.0-beta.15"
   },
   "peerDependencies": {
     "@earendil-works/chord": ">=1.1.0 <1.4.0",
@@ -51,7 +51,7 @@
     "@earendil-works/chord": "1.1.0",
     "@earendil-works/pi-ai": "1.1.0",
     "@earendil-works/pi-durable": "1.1.0",
-    "@parcha/pi-durable-agent": "0.1.0-beta.14"
+    "@parcha/pi-durable-agent": "0.1.0-beta.15"
   },
   "repository": {
     "type": "git",
