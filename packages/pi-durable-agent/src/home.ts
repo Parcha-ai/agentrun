@@ -123,6 +123,38 @@ export async function inHome<T>(dir: string, work: (store: Store) => Promise<T>)
   });
 }
 
+export const RUN_STORE_FILE = "run.sqlite";
+/** A run directory's store, in pi-durable-disk's run layout. */
+export const runStoreIn = (runDir: string): string => path.join(runDir, "store", RUN_STORE_FILE);
+
+/**
+ * How a host reaches an agent home's own files. `claim(fn)` runs `fn` with the directory that holds `agent.sqlite`
+ * while the host holds it alone (a local directory; on a disk, a claim of the home's `agent/`); the package takes
+ * `owner.lock` there too, inside the claim. `runStore(run)` gives a local, closed copy of a released run's
+ * `run.sqlite`, or the file itself; the package only reads it, from a copy of its own.
+ */
+export type HomeAccess = {
+  claim<T>(fn: (agentDir: string) => Promise<T>): Promise<T>;
+  runStore(run: { runId: string; path: string }): Promise<string>;
+};
+
+/** The home as a directory of this machine, `home.dir`, with its runs under it: what every call does by default. */
+export function localAccess(home: AgentHome): HomeAccess {
+  return {
+    claim: (fn) => fn(homeDir(home.dir)),
+    runStore: async (run) => runStoreIn(path.join(homeDir(home.dir), run.path)),
+  };
+}
+
+/** `work` on the home's agent store as its only writer: inside `access`'s claim, under `owner.lock` in the claimed
+ *  directory. */
+export async function inClaimedHome<T>(home: AgentHome, access: HomeAccess | undefined, work: (store: Store) => Promise<T>): Promise<T> {
+  return (access ?? localAccess(home)).claim(async (agentDir) => {
+    if (!existsSync(path.join(agentDir, AGENT_STORE_FILE))) throw new AgentHomeError("missing", `the claimed directory holds no ${AGENT_STORE_FILE}`);
+    return inHome(agentDir, work);
+  });
+}
+
 export function homeDir(dir: string): string {
   const resolved = path.resolve(dir);
   if (!existsSync(path.join(resolved, AGENT_STORE_FILE))) throw new AgentHomeError("missing", `${dir} is not an agent home (no ${AGENT_STORE_FILE})`);
@@ -206,20 +238,23 @@ export async function openAgentHome(dir: string): Promise<AgentHome> {
 }
 
 /** Everything the agent home holds now. */
-export async function readAgentHome(home: AgentHome): Promise<AgentHomeState> {
-  return inHome(homeDir(home.dir), readState);
+export async function readAgentHome(home: AgentHome, options: { access?: HomeAccess } = {}): Promise<AgentHomeState> {
+  return inClaimedHome(home, options.access, readState);
 }
 
 /** The agent store's head commit number: every write that changes the home moves it, so with the identity's id it is
- *  the home's version (an ETag). One read-only query, under no lock (`HEAD_SQL`). */
-export async function homeRevision(home: AgentHome): Promise<number> {
-  const file = path.join(homeDir(home.dir), AGENT_STORE_FILE);
-  const db = new DatabaseSync(file, { readOnly: true, timeout: 5_000 });
-  try {
-    return await readHead(() => db.prepare(HEAD_SQL).get());
-  } finally {
-    db.close();
-  }
+ *  the home's version (an ETag). One read-only query (`HEAD_SQL`): under no lock by default, inside the claim with
+ *  `access`. */
+export async function homeRevision(home: AgentHome, options: { access?: HomeAccess } = {}): Promise<number> {
+  const read = async (agentDir: string) => {
+    const db = new DatabaseSync(path.join(agentDir, AGENT_STORE_FILE), { readOnly: true, timeout: 5_000 });
+    try {
+      return await readHead(() => db.prepare(HEAD_SQL).get());
+    } finally {
+      db.close();
+    }
+  };
+  return options.access ? options.access.claim(read) : read(homeDir(home.dir));
 }
 
 /** Record the agent's id in `host` (Parcha's expert id, for one). */

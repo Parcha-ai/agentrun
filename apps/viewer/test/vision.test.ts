@@ -152,7 +152,10 @@ test('?cite= lands after the commit that filed the look it names', () => {
 test('a miss shows by its code, and a failed look with no code says so', () => {
   const view = viewAt(end, { cite: K.photo2 });
   assert.match(text(find(view, cls('vz-receipt'))[0]!), /missed over_budget: an image over the eyes' limit/);
-  assert.equal(find(view, cls('vz-tile')).filter(cls('missed')).length, 1);
+  const missed = find(view, cls('vz-tile')).filter(cls('missed'));
+  assert.equal(missed.length, 1);
+  assert.equal(text(missed[0]!).trim(), 'over budget', 'a missed tile says its code');
+  assert.ok('title' in missed[0]! && missed[0].title?.endsWith(': over_budget, an image over the eyes\' limit'), 'and its reason on hover');
   const noCode = lines.map((line) => (JSON.stringify(line.data).includes('"over_budget"') && line.channel === 'durable' ? { ...line, data: JSON.parse(JSON.stringify(line.data).replace(/,"miss":\{[^}]*\}/, '')) } : line));
   assert.deepEqual(visionMeters(stateAt(noCode.length, noCode)).misses, [['code not recorded', 1]]);
 });
@@ -228,7 +231,7 @@ test('the account: entries with their chips, the photo sort against the captions
   assert.deepEqual(dropped.map(text), ['0', '1'], 'one digit dropped from each stamp');
   assert.deepEqual(visionKeptChars('00 00 00 12', '00 00 00 2'), [true, true, true, true, true, true, true, true, true, false, true]);
   const tiles = find(view, cls('vz-tile'));
-  assert.deepEqual(tiles.map((tile) => [text(tile).trim(), cls('right')(tile), cls('wrong')(tile)]), [['ground', true, false], ['', false, false], ['crew', false, true]]);
+  assert.deepEqual(tiles.map((tile) => [text(tile).trim(), cls('right')(tile), cls('wrong')(tile)]), [['ground', true, false], ['over budget', false, false], ['crew', false, true]]);
   assert.ok(tiles.every((tile) => 'path' in tile && tile.path?.startsWith('/root/steps/1/items/')), 'a photo tile focuses its branch');
   assert.equal(find(viewAt(end, { focus: '/root/steps/1/items/0' }), cls('dim')).length, 2, 'the other branches dim');
   assert.doesNotMatch(text(find(view, cls('vz-lane'))[1]!), /eyes-weak/, 'the weaker eyes are not drawn in the lanes once the account names them');

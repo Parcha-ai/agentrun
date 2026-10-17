@@ -6,6 +6,7 @@ import { constants } from "node:fs";
 import { open, readFile, rename, rm, stat, type FileHandle } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 import type { JsonValue } from "@earendil-works/chord";
 import { FencedError, ownWriteFenced, PdaError } from "./errors.ts";
 import { thisBoot } from "./process-table.ts";
@@ -187,6 +188,88 @@ export async function writeRunRecord(root: string | ClaimDir, record: RunRecord,
     if (error instanceof FencedError && error.code === CLAIM_UNMOUNTED) throw error;
     throw ownWriteFenced(join(typeof root === "string" ? root : root.root, RUN_JSON), error);
   }
+}
+
+// ---- the supervisor's start mark --------------------------------------------------------------------------------------
+
+/**
+ * The supervisor's record of its last start of a run, in the run's directory: the generation the instance will write,
+ * when, by whom, and the failed starts right before it (`failures`; `lastExit`, what the decision saw of the last one).
+ */
+export const START_MARK = "start.json";
+export type StartMark = { generation: number; at: string; by: string | null; failures: number; lastExit: string | null };
+
+/** A start mark's text as a mark, or null when it is not one (an unreadable mark gives no grace). */
+export function parseStartMark(text: string): StartMark | null {
+  try {
+    const v = JSON.parse(text) as Partial<StartMark>;
+    if (!Number.isSafeInteger(v.generation) || (v.generation as number) < 1 || typeof v.at !== "string" || !Number.isFinite(Date.parse(v.at))) return null;
+    const failures = Number.isSafeInteger(v.failures) && (v.failures as number) >= 0 ? (v.failures as number) : 0;
+    const lastExit = typeof v.lastExit === "string" ? v.lastExit : null;
+    return { generation: v.generation as number, at: v.at, by: typeof v.by === "string" ? v.by : null, failures, lastExit };
+  } catch {
+    return null;
+  }
+}
+
+// The keeper's code is plain CommonJS in a string, started with `eval: true` and no inherited Node flags, as the lease
+// watchdog's is (src/watchdog.ts says why). One refresh at a time, all synchronous: a stop (the message) is handled only
+// between two refreshes, so none is still writing once the thread has exited.
+const KEEPER_SOURCE = `"use strict";
+const fs = require("node:fs");
+const path = require("node:path");
+const { parentPort, workerData } = require("node:worker_threads");
+const { dir, name, everyMs } = workerData;
+const file = path.join(dir, name);
+function refresh() {
+  try {
+    const mark = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (mark === null || typeof mark !== "object" || mark.generation !== 1 || typeof mark.at !== "string" || !Number.isFinite(Date.parse(mark.at))) return;
+    const temp = file + ".tmp";
+    const fd = fs.openSync(temp, "w", 0o644);
+    try {
+      fs.writeSync(fd, JSON.stringify({ ...mark, at: new Date().toISOString() }));
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(temp, file);
+    const handle = fs.openSync(dir, "r");
+    try {
+      fs.fsyncSync(handle);
+    } finally {
+      fs.closeSync(handle);
+    }
+  } catch {
+    // absent, unreadable or refused
+  }
+}
+refresh();
+const timer = setInterval(refresh, everyMs);
+parentPort.once("message", () => {
+  clearInterval(timer);
+  parentPort.close();
+});
+`;
+
+/**
+ * Keeps a supervisor's start mark for generation 1 in `dir` fresh: its `at` rewritten every `everyMs` (temp file, fsync,
+ * rename, fsync the directory), the rest of it as the supervisor wrote it; nothing is made when there is none. On a thread of
+ * its own, so a caller whose thread is blocked (a synchronous import) is kept fresh too. Best effort: a refused write leaves
+ * the mark as it was. Returns the stop, which resolves once the thread has exited, so no write outlives it.
+ */
+export function keepStartMark(dir: string, everyMs: number): () => Promise<void> {
+  const worker = new Worker(KEEPER_SOURCE, { eval: true, workerData: { dir, name: START_MARK, everyMs }, execArgv: [] });
+  worker.unref();
+  worker.on("error", () => {
+    // the thread failed to start or threw: nothing more is refreshed, and the grace runs out as for any start
+  });
+  const exited = new Promise<void>((resolve) => worker.once("exit", () => resolve()));
+  return () => {
+    worker.ref();
+    worker.postMessage("stop");
+    return exited;
+  };
 }
 
 // ---- the claim directory ----------------------------------------------------------------------------------------------
