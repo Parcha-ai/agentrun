@@ -41,9 +41,9 @@ async function listen(url, token) {
 
 test("the live grid fans one task out to three child agents, streams each one's browser to its tile, and releases every browser", { skip: NO_CHROME, timeout: 180_000 }, async (t) => {
   const site = await startSite();
-  t.after(() => site.close());
+  t.after(() => site.close(), { timeout: 30_000 });
   const root = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), "live-grid-"));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }), { timeout: 30_000 });
   const sites = [`${site.base}/a`, `${site.base}/b`, `${site.base}/a?third`];
 
   const core = createFauxCore({ api: "faux-api", provider: "faux", models: [{ id: "faux-1", input: ["text"] }] });
@@ -70,7 +70,7 @@ test("the live grid fans one task out to three child agents, streams each one's 
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: path.join(root, "profiles"), args: [LOOPBACK_ONLY] } });
   grid = await startLiveGrid({ makeProvider: () => provider, models: { modelRuntime, parent: model, child: model }, maxChildren: 3, root: path.join(root, "work"), env: {} });
   let closed = false;
-  t.after(async () => { if (!closed) await grid.close(); });
+  t.after(async () => { if (!closed) await grid.close(); }, { timeout: 30_000 });
 
   const page = await fetch(grid.url);
   assert.equal(page.status, 200);

@@ -15,6 +15,10 @@ process serves the job's pages as Chrome's proxy, and every other host fails to 
 `-- --box docker` runs the job's tools in a box of `@parcha/pi-transport` (`boxEnv`) while the run's store stays on the
 disk: a local box's workspace is the run's `work/`; a Docker box is a container (`debian:bookworm-slim`, which Docker
 pulls if it is not there) that the job's files are uploaded to. The box is destroyed when the run ends.
+`-- --record <dir>` keeps the run as an `agentrun.recording/1` directory the run viewer (`apps/viewer`) plays. Before
+it finishes one, the recorder scans every line, every text blob and the manifest with `scan.ts`, the one scanner the
+repository's recording validator and the hosted gallery's gate import: a credential's shape or a machine path stops
+it with what it found and where, and the directory is left without a manifest, so it is never a finished recording.
 
 ## The job
 
@@ -175,7 +179,8 @@ The parts of `demo.json` the entry acts on:
 
 - `kills`: a list. Each entry is a named crossing `{ point, why }` or a storm `{ storm: { kills, gapMs } }`. A crossing entry may add `kind: "box"` (the whole machine or sandbox was taken away; the supervisor destroys the process's boxes with it, and the kill line says `box`), `target` (`"run"`, the default: the process the run lives in dies; `"tool"`: a box a tool made is destroyed once at the crossing, the run's process lives, no kill line is written, and the transport box lines record the loss) and `n` (the nth time the crossing is taken, default 1). A storm kills `kills` times, each at the first crossing taken once the process has run `gapMs` and has opened the journal and begun its first node (a kill earlier leaves a generation the journal never recorded); a named point is taken as named. The template's single `kill` is a list of one.
 - `expectedCost`: dollars a live run is expected to cost; `--max-usd` defaults to twice it.
-- `boxes`: `{ kind: "local" | "docker", image?, runIn? }`. The provider is handed to the demo's tools as `context.boxes` (their second argument), with the crossings and transport lines below built in. A tool's `context` also carries the run's `place` (`{ root, work }`), where it reads the run's evidence files and the job's files. `runIn: true` also runs the job's own disk tools in a box of it.
+- `input`: `{ fixtures: { <name>: "examples/<demo>/fixtures/<file>.json" } }`: the demo's captures, each a name (`[a-z0-9-]`) and the JSON file that is the job's input for it. `--input <name>` runs the job on that capture. A path outside `examples/<demo>/fixtures/` is refused; on fakes a bare name that is not a capture (and not a file) is refused with the list of captures; `--live` reads the real thing.
+- `boxes`: `{ kind: "local" | "docker", image?, runIn? }`. Docker is used only with `--live`: a no-key run uses a local box and starts no container. The provider is handed to the demo's tools as `context.boxes` (their second argument), with the crossings and transport lines below built in. A tool's `context` also carries `live` (false on a no-key run: one set of tools reads live or replays a capture) and the run's `place` (`{ root, work }`), where it reads the run's evidence files and the job's files. `runIn: true` also runs the job's own disk tools in a box of it.
 
 ### Crossings
 
@@ -201,3 +206,11 @@ The transport box lines are live lines of source `transport`: `box.created` `{ b
 ### The judge seam
 
 Every demo's typed questions pass through one seam that carries Jev's limits and Jev's price, whoever answers: at most 50 requests and 40,000 tokens (in and out) over the run. The next request after a cap is reached is refused with `JEV_CAP_REACHED` and is never sent; a failed request counts, a refused one does not. The count is kept in the run's directory, so a resumed process continues it. An answer that reports usage and no price of its own is priced at Jev's public list price, $0.042 per million input tokens and nothing for output (`jev-1.12`; source: the TypeSafe cookbook, 2026-07); a price the answer reports is kept.
+
+### What a demo hands the entry, besides its job
+
+`fakes.extensions` (pi extensions a no-key run installs beside the host's own) and `fakes.vision(host, running)` (the demo's vision lane on fakes: an eyes object, limits, an evidence sink; `running.harness` is undefined until the run is open). `DemoOptions.result(record, { dir, keep })` returns `{ json, title }`: the entry writes the run's result line and its blob from it (`agentrun.cited/1` for a payoff that cites what it read) instead of the raw delivered record; `keep` stores a file in the recording's blobs and returns its SHA-256.
+
+### What a live child's environment holds
+
+On `--live` the child is given exactly the environment names `demo.json` declares (every `env` in `keys`, the members of a `oneOf` group included, and in `programs`), plus the process basics (`PATH`, `HOME`, `TMPDIR`), and nothing else: an undeclared variable in the parent's environment never reaches it, so the spec and the child's environment cannot drift. A no-key run passes the demo's own `DEMO_*` settings (no secret). `LiveParts.vision(host, running)` is built the way `fakes.vision(host, running)` is: one seam for both.
