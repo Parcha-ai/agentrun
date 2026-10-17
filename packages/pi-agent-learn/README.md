@@ -273,6 +273,11 @@ probability, over the candidate's own text, never a paraphrase (`QUESTIONS` hold
 | `supersedes` | the same pairs | 0.8, 0.2 | it is written and the existing one becomes `superseded`, naming it in `supersededBy` |
 | `contradicts` | the same pairs | 0.5, 0.2 | it is held |
 
+A judge on a general model rather than Jev does best asking it for `{ answer: "yes" | "no", confidence }`, with
+`confidence` from 0.5 to 1, and deriving the yes-probability itself: `{ type: "noul", noul }`, where `noul` is the
+confidence for a yes and 1 minus it for a no. Asked for a bare probability, a model reads it as how sure it is of its
+answer, so a sure no comes back as a likely yes.
+
 An answer between the two cuts holds the candidate; nothing uncertain is accepted. `thresholds` overrides any cut,
 `DEFAULT_THRESHOLDS` are the defaults above. A `used` mark counts one use per run for an active learning and needs no
 judgment. A workflow (its records under `inbox/<run id>/workflows/<name>/` and the `description`, the agent's
