@@ -11,8 +11,8 @@ their stored instructions do not change. No tool is added. For many pages, a lon
 writes code: the `look` skill (`skills/look/SKILL.md`) shows it how to render pages and cut frames with bash and ask
 about them with `vision.see`, the one function this package puts in a host's code mode. Only the answer, where it
 looked and the price enter the caller's context. For what is said in a long recording, the `transcribe` skill
-(`skills/transcribe/SKILL.md`) shows it how to strip the audio, have a speech-to-text model write one timestamped
-transcript through an OpenAI-compatible endpoint the host gives, and search it with `rg` to the second.
+(`skills/transcribe/SKILL.md`) shows it how to strip the audio, have a speech-to-text model on fal's queue (reached
+through the address the host gives) write one timestamped transcript, and search it with `rg` to the second.
 
 ## Status
 
