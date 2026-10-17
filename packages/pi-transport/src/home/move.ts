@@ -113,6 +113,11 @@ export type MoveOptions = {
 	readonly drain?: DrainOptions;
 	readonly workspace?: WorkspaceOptions & { readonly maxBytes?: number };
 	readonly id?: string;
+	/**
+	 * The session's environment for the target's app, in its resume order (`ResumeOrder.env`): a box inherits none of
+	 * the host's, so a move without it opens the session with an empty one.
+	 */
+	readonly env?: Readonly<Record<string, string>>;
 	/** Called before each step. A test stops a move here. */
 	readonly onStep?: (step: MoveStep) => void | Promise<void>;
 };
@@ -156,7 +161,7 @@ export async function moveHome(options: MoveOptions, context: Context): Promise<
 		if (status.value.state === "open") return "the source runs on";
 		const back =
 			status.value.state === "closed"
-				? await from.home.resume({ epoch }, cleanup)
+				? await from.home.resume({ epoch, ...(options.env === undefined ? {} : { env: options.env }) }, cleanup)
 				: await from.home.reopen(epoch, cleanup);
 		return back.ok
 			? "the source runs again"
@@ -297,7 +302,12 @@ export async function moveHome(options: MoveOptions, context: Context): Promise<
 		seal,
 	};
 	const resumed = await target.resume(
-		{ epoch: next, seal, move: { id, notice: options.notice, kind: "move", head: seal.head, record } },
+		{
+			epoch: next,
+			seal,
+			move: { id, notice: options.notice, kind: "move", head: seal.head, record },
+			...(options.env === undefined ? {} : { env: options.env }),
+		},
 		context,
 	);
 	if (!resumed.ok) {

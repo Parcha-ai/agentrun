@@ -175,7 +175,8 @@ export type ResumeOrder = {
 	};
 	/**
 	 * The session's environment for the app, handed to it as `AppContext.env`: over the link, never in argv, and a box
-	 * inherits none of the host's. Names and values are strings.
+	 * inherits none of the host's. Names and values are strings. An order without one keeps the environment this home
+	 * last opened with: a reopen, or a resume in the same process, gives the app the same one.
 	 */
 	readonly env?: Readonly<Record<string, string>>;
 };
@@ -297,6 +298,8 @@ class SessionHome implements Home {
 	#harness: Harness | undefined;
 	#gate: Gate | undefined;
 	#app: AppOptions | undefined;
+	/** The environment the app was last given, for an order that brings none (a reopen sends only its epoch). */
+	#env: Readonly<Record<string, string>> | undefined;
 	#wrapped: WrappedStore | undefined;
 	#marker: Marker | undefined;
 	#drained = false;
@@ -585,7 +588,7 @@ class SessionHome implements Home {
 	/** Open the store, bring the conversations here, admit the notice, resume. Every step is safe to repeat. */
 	async #open(order: ResumeOrder, context: Context): Promise<Result<void, HomeError>> {
 		const { app, session, store, workspace, where, models } = this.#options;
-		const orderEnv = order.env ?? {};
+		const orderEnv = order.env ?? this.#env ?? {};
 		if (
 			typeof orderEnv !== "object" ||
 			orderEnv === null ||
@@ -593,6 +596,7 @@ class SessionHome implements Home {
 		) {
 			return err(new HomeError("invalid", "the resume order's env must map names to strings"));
 		}
+		this.#env = { ...orderEnv };
 		const built = await appOptions(app, {
 			session,
 			workspace,

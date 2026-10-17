@@ -160,6 +160,10 @@ export type BoxPlace = {
 	readonly paths: RunPlace;
 	readonly kills: ReadonlyArray<KillKind>;
 	start(order: RunnerOrder): Promise<Runner>;
+	/**
+	 * Where attempt `attempt`'s runner writes its kill request, in the place's box. An order that names it and is given
+	 * to `recover` for a lost box has it made the new box's, so `signals(attempt)` reads where the runner writes.
+	 */
 	requestFile(attempt: number): string;
 	signals(attempt: number): AsyncIterable<PlaceSignal>;
 	kill(runner: Runner, kind: KillKind): Promise<void>;
@@ -208,8 +212,8 @@ async function output(box: Box, argv: readonly string[]): Promise<Uint8Array | u
 	return finished.value.stdout;
 }
 
-/** The files of a directory in the box, by name, with their sizes: none when it does not exist. */
-async function sizesIn(box: Box, dir: string): Promise<Map<string, number>> {
+/** The files of a directory in the box, by name, with their sizes: none when it does not exist, `undefined` when the listing failed. */
+async function sizesIn(box: Box, dir: string): Promise<Map<string, number> | undefined> {
 	const listed = await output(box, [
 		"sh",
 		"-c",
@@ -217,8 +221,9 @@ async function sizesIn(box: Box, dir: string): Promise<Map<string, number>> {
 		"sh",
 		dir,
 	]);
+	if (listed === undefined) return undefined;
 	const sizes = new Map<string, number>();
-	for (const line of new TextDecoder().decode(listed ?? new Uint8Array()).split("\n")) {
+	for (const line of new TextDecoder().decode(listed).split("\n")) {
 		const tab = line.indexOf("\t");
 		if (tab > 0) sizes.set(line.slice(tab + 1), Number(line.slice(0, tab)));
 	}
@@ -295,15 +300,19 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 	let box = made.value;
 	let paths = pathsIn(box, session);
 	let clockSkewMs = await skewOf(box);
-	const homePlace = (): HomePlace => ({
-		environment,
-		provider: options.provider.name,
-		box,
-		store: paths.store,
-		workspace: paths.work,
+	const placeOf = (one: Box): HomePlace => {
+		const at = pathsIn(one, session);
 		// A move's or a restore's durable record names the box as the place's lines do.
-		label: labelOf(box),
-	});
+		return {
+			environment,
+			provider: options.provider.name,
+			box: one,
+			store: at.store,
+			workspace: at.work,
+			label: labelOf(one),
+		};
+	};
+	const homePlace = (): HomePlace => placeOf(box);
 	const counter: CrossingCounter = crossingCounter();
 	const stats = checkpointStats();
 	// One record stream and one model server for every runner of the session, whatever box it runs in: the vault's log
@@ -336,9 +345,18 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 	const spooled = new Map<string, number>();
 	const recordDir = (n: number) => recordings.get(n)?.dir ?? posix.join(paths.root, `record-${n}`);
 
-	/** The order's environment with every carried host path made a path in the box. */
+	/**
+	 * The order's environment with every carried host path made a path in the box, and the request file the place named
+	 * for this attempt made the one in the box at `root`: a supervisor writes the order before a lost box is replaced.
+	 */
 	const inBox = (order: RunnerOrder, root: string): { env: Record<string, string>; carried: Map<string, string> } => {
 		const env = { ...order.env };
+		const named = posix.join(paths.root, `kill-${order.gen}.json`);
+		if (root !== paths.root) {
+			for (const [name, value] of Object.entries(env)) {
+				if (value === named) env[name] = posix.join(root, `kill-${order.gen}.json`);
+			}
+		}
 		const carried = new Map<string, string>();
 		for (const name of options.carry ?? []) {
 			const there = env[name];
@@ -375,9 +393,17 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 		}
 	};
 
-	/** What is new of one attempt's recording, home: whole blobs first, then the spool's whole lines. */
+	/**
+	 * What is new of one attempt's recording, home: the spool's sizes are read first, then the whole blobs come, then the
+	 * spool's whole lines up to those sizes. A runner writes a blob before its line, so a line within the sizes has its
+	 * blob listed after them; a line written later comes with the next call.
+	 */
 	const bringAttempt = async (n: number, from: Box, dir: string, into: string) => {
 		const mismatched: string[] = [];
+		const spool = posix.join(dir, ".spool");
+		const sizes = await sizesIn(from, spool);
+		if (sizes === undefined)
+			throw new RecordHomeError("CARRY_FAILED", `the spool of attempt ${n} could not be listed`);
 		const blobs = posix.join(dir, "blobs");
 		const listedBlobs = await output(from, ["sh", "-c", 'cd "$1" 2>/dev/null || exit 0; ls -A', "sh", blobs]);
 		if (listedBlobs === undefined)
@@ -399,8 +425,7 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 			await mkdir(join(into, "blobs"), { recursive: true });
 			await writeWhole(target, bytes);
 		}
-		const spool = posix.join(dir, ".spool");
-		for (const [name, size] of await sizesIn(from, spool)) {
+		for (const [name, size] of sizes) {
 			if (!name.endsWith(".jsonl")) continue;
 			const key = `${n}/${name}`;
 			const have = spooled.get(key) ?? 0;
@@ -431,19 +456,26 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 		}
 	};
 
+	const bringAll = async (into: string) => {
+		for (const [n, recording] of recordings) {
+			if (recording.box === undefined || recording.into !== into) continue;
+			// An attempt of a box the place left behind (a lost box replaced) brought home what it could at its end.
+			if (recording.box !== box) continue;
+			const there = await provider.attach(recording.box.id, BACKGROUND_CONTEXT);
+			if (there.ok && there.value === undefined) {
+				throw new RecordHomeError("BOX_GONE", `the box of attempt ${n} is gone`);
+			}
+			await bringAttempt(n, recording.box, recording.dir, recording.into);
+		}
+	};
+	// One copy at a time: two that overlapped would read the same offsets and write the same lines and blobs twice.
+	let bringing: Promise<void> = Promise.resolve();
 	const recordHome: RecordHome = {
 		dir: recordDir,
-		async bringHome(into) {
-			for (const [n, recording] of recordings) {
-				if (recording.box === undefined || recording.into !== into) continue;
-				// An attempt of a box the place left behind (a lost box replaced) brought home what it could at its end.
-				if (recording.box !== box) continue;
-				const there = await provider.attach(recording.box.id, BACKGROUND_CONTEXT);
-				if (there.ok && there.value === undefined) {
-					throw new RecordHomeError("BOX_GONE", `the box of attempt ${n} is gone`);
-				}
-				await bringAttempt(n, recording.box, recording.dir, recording.into);
-			}
+		bringHome(into) {
+			const run = bringing.then(() => bringAll(into));
+			bringing = run.catch(() => {});
+			return run;
 		},
 	};
 
@@ -556,6 +588,13 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 	};
 
 	const holder = (): Holder => ({ environment, provider: options.provider.name, box: box.id, host });
+
+	/** A box made in place of a lost one that the session does not live in: destroyed, and ended in the lines. */
+	const letGo = async (one: Box | undefined) => {
+		if (one === undefined) return;
+		const destroyed = await one.destroy(context).catch(() => undefined);
+		if (destroyed?.ok === true) gone(one, false);
+	};
 
 	const place: BoxPlace = {
 		name: `box:${options.provider.name}`,
@@ -699,17 +738,25 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 								vault: options.vault,
 								// Before any checkpoint, the session is rebuilt from the vault's log alone: a box kill needs no rest.
 								restoreFromLog: true,
-								replace: async () => {
-									box = next;
-									paths = pathsIn(next, session);
-									clockSkewMs = await skewOf(next);
-									return ok(homePlace());
-								},
+								// The new box is the place's only once the session lives in it: a restore that fails leaves
+								// the lost box the one the lease names, and a retry restores from it again.
+								replace: async () => ok(placeOf(next)),
 							}),
 				},
 				context,
-			);
-			if (!recovered.ok) throw recovered.error;
+			).catch(async (error: unknown) => {
+				await letGo(next);
+				throw error;
+			});
+			if (!recovered.ok) {
+				await letGo(next);
+				throw recovered.error;
+			}
+			if (next !== undefined) {
+				box = next;
+				paths = pathsIn(next, session);
+				clockSkewMs = await skewOf(next);
+			}
 			handle = recovered.value.home;
 			epoch = recovered.value.lease.epoch;
 			const { restored, replayed } = recovered.value;

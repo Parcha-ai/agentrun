@@ -13,5 +13,6 @@ in its status, its crossings and its own `transport` lines (`lines`: `box.create
 `restore`), keeps the host's placement decisions in the session's store (`recordPlacement`), reports the run's status, carries the files an order names back from the box (`carry`), and brings a
 recording written in the box home when its supervisor asks (`recordHome`, `clockSkewMs`).
 The app contract gains `AppContext.env` (the session's environment, from `ResumeOrder.env`, over the link), `root` and
-`epoch`, and `onResumed`, called once the session has resumed and not awaited by the order; `recoverHome` takes `env`,
+`epoch`, and `onResumed`, called once the session has resumed and not awaited by the order; `recoverHome` and
+`moveHome` take `env`, a home keeps the environment it last opened with for an order that brings none (a reopen),
 `boxRunner` takes `onProcess`, and a home refuses an order whose `env` is not names to strings (`invalid`).
