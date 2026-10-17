@@ -103,7 +103,10 @@ generic cited result `agentrun.cited/1` (RECORDING.md: rows of a label and a val
 both, and where and when it was read). A panel that shows what a run delivered reads the generic one and ignores fields it does not know.
 The vision panel draws a cited file that is a picture in the recording (PNG, JPEG, WebP or GIF) small in its row, and
 for a window of film the eyes saw with no picture of their own, shows the pictures a row cites beside that window,
-labelled as that row's keyframe, never as what the eyes saw.
+labelled as that row's keyframe, never as what the eyes saw. A transcription (RECORDING.md draft 38: a record of a
+look's shape with tool `transcribe`, its body rows `start<TAB>end<TAB>words` in seconds) is drawn in a speech lane as
+those rows, a video's too, never as a picture or a window of film; a `#t=` cite of its look, or of the file it heard,
+marks the row its second falls in, and a cited second that falls in no row is said to.
 
 A redraw keeps the reader's place: each scrolled element's offset and the element with the keyboard focus, found again
 by place alone (at each step its tag, its first class and its rank among such siblings), never by its text.
