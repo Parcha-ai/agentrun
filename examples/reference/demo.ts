@@ -342,5 +342,3 @@ function seeAlsoOf(path: string): { recording: string; label: string } {
   if (!manifest || typeof manifest.format !== 'string' || typeof manifest.recorded?.ended !== 'string' || !existsSync(join(path, 'events.jsonl'))) throw unfinished();
   return { recording: basename(path), label: typeof manifest.title === 'string' ? manifest.title : basename(path) };
 }
-  return { recording: basename(path), label: title ?? basename(path) };
-}
