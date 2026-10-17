@@ -1,6 +1,6 @@
 {
   "name": "@parcha/pi-durable-disk",
-  "version": "0.1.0-beta.14",
+  "version": "0.1.0-beta.15",
   "description": "A durable pi host on a network disk (Archil): one owner per run, a fence, durable commits, and a supervisor.",
   "keywords": [
     "pi",
@@ -56,7 +56,7 @@
     "test": "node --test --test-timeout=240000 'test/*.test.ts' 'test/examples/*.test.ts'",
     "test:acceptance": "node --test --test-concurrency=1 'test/acceptance/*.test.ts'",
     "test:live": "node --test --test-concurrency=1 'test/live/*.test.ts'",
-    "test:live:claim": "node --test --test-concurrency=1 test/live/claim.live.test.ts",
+    "test:live:claim": "node --test --test-concurrency=1 test/live/claim.live.test.ts test/live/record-home.live.test.ts",
     "test:live:env": "node --test --test-concurrency=1 test/live/env.live.test.ts",
     "test:live:lifecycle": "node --test --test-concurrency=1 test/live/lifecycle.live.test.ts",
     "test:live:run": "node --test --test-concurrency=1 test/live/run.live.test.ts",
