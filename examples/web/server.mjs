@@ -19,13 +19,15 @@ import { parseArgs } from "node:util";
 import { AGENT_STORE_FILE, carryBack, readAgentHome, startRun } from "@parcha/pi-durable-agent";
 import { timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
 import { ensureAgentHome } from "./agent/home.mjs";
+import { costOf, lastRow, RUN_ID, stateOf } from "./page/source.js";
+import { readRunEntries } from "./replay.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** The page imports the timeline from /timeline/: the package's own built modules, found where Node resolves them. */
 const TIMELINE = dirname(fileURLToPath(import.meta.resolve("@parcha/pi-durable-agent/timeline")));
 /** The name this server records as a run's host in the agent home. */
 const HOST = "examples-web";
-const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
+const ID = RUN_ID;
 const LEASE_MS = 90_000;
 const RELEASED = new Set(["sleeping", "paused", "done", "failed"]);
 const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
@@ -33,9 +35,10 @@ const TEXT_CAP = 512 * 1024;
 const SEARCH_FILE_CAP = 1024 * 1024;
 const TEXT_TYPES = new Set(["txt", "md", "markdown", "csv", "tsv", "json", "jsonl", "log", "yml", "yaml", "xml", "js", "mjs", "ts", "py", "sh", "toml", "ini", "css", "sql"]);
 const IMAGE_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
-const PAGE = { "/": ["index.html", "text/html; charset=utf-8"], "/app.js": ["app.js", "text/javascript; charset=utf-8"], "/app.css": ["app.css", "text/css; charset=utf-8"] };
+const JS = "text/javascript; charset=utf-8";
+const PAGE = { "/": ["index.html", "text/html; charset=utf-8"], "/app.js": ["app.js", JS], "/run-page.js": ["run-page.js", JS], "/source.js": ["source.js", JS], "/app.css": ["app.css", "text/css; charset=utf-8"] };
 const MODULE = /^\/timeline\/[a-z-]+\.js$/;
-const APP_CSP = "default-src 'self'; frame-src https: 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+const APP_CSP = "default-src 'self'; frame-src https: 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const FILE_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox; form-action 'none'";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -43,23 +46,9 @@ const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` 
 const readJson = (path) => readFile(path, "utf8").then(JSON.parse).catch(() => null);
 const isLoopback = (host) => host === "localhost" || host === "::1" || host === "[::1]" || /^127\./.test(host);
 
-const QUIET = /:run:(start|end)$/;
-/**
- * working while a run is in flight. Otherwise waiting when the newest row (not counting cost, run start and end, or
- * phases) is a wait for the person. A live run that ended on a successful tool result is waiting too: a run that is
- * not working and has no answer after its last result was ended by that tool (request_sign_in does this). A released
- * run's store cannot tell that apart from a run parked between steps, so there only a wait row counts.
- */
-function stateOf(rows, working, live = false) {
-  if (working) return "working";
-  const last = rows.findLast((r) => r.kind !== "usage" && r.kind !== "phase" && !QUIET.test(r.id));
-  if (last?.kind === "waiting") return "waiting";
-  return live && last?.kind === "tool_result" && last.tool_status === "success" ? "waiting" : "idle";
-}
-const costOf = (rows) => rows.findLast((r) => r.kind === "usage")?.usage?.usd ?? null;
 /** The agent's answer when the run's newest row (as `stateOf` counts them) is the agent's text; a wait is not one. */
 const answerOf = (rows) => {
-  const last = rows.findLast((r) => r.kind !== "usage" && r.kind !== "phase" && !QUIET.test(r.id));
+  const last = lastRow(rows);
   return last?.kind === "final_answer" || last?.kind === "text_block" ? last : undefined;
 };
 
@@ -140,7 +129,9 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
   const exits = new Map();
   const startErrors = new Map();
   const stores = new Map();
-  const settling = new Set();
+  const settling = new Map();
+  // Finished, even to a read of the home that began before the carry back landed.
+  const carried = new Set();
   const tunnels = new Set();
   let pageOrigin = origin ?? "";
 
@@ -168,27 +159,23 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
   }
 
   // A run carried back is done, whatever run.json says of its last instance.
+  // A run with no run.json (a pack carries none, so every run of an imported home) and an endedAt was carried back at its
+  // source: its store is as released as one whose run.json says so.
+  const releasedRun = (run) => RELEASED.has(run.record?.status) || (run.record === null && run.index.endedAt !== undefined);
   const statusOf = (run) => (run.index.endedAt ? "done" : run.record ? (run.record.status === "running" && !doorOf(run.record) ? "lost" : run.record.status) : children.has(run.id) ? "starting" : "unknown");
 
   /** The run's transcript from its store, opened read-only; only for a run whose claim is released. */
   async function readStore(run) {
-    if (!RELEASED.has(run.record?.status)) throw new HttpError(409, "the run is live: read it through its door");
+    if (!releasedRun(run)) throw new HttpError(409, "the run is live: read it through its door");
     const file = join(run.dir, "store", "run.sqlite");
     const st = await stat(file).catch(() => null);
     if (!st) return { rows: [], state: "idle", costUsd: null, title: "" };
     const sig = `${st.mtimeMs}:${st.size}`;
     const hit = stores.get(run.id);
     if (hit?.sig === sig) return hit;
-    const { DatabaseSync } = await import("node:sqlite");
-    const entries = [];
+    let entries;
     try {
-      const db = new DatabaseSync(file, { readOnly: true });
-      try {
-        const conversation = db.prepare("SELECT MIN(conversation_id) AS id FROM entries").get()?.id;
-        if (conversation != null) for (const row of db.prepare("SELECT record FROM entries WHERE conversation_id = ? ORDER BY id").iterate(conversation)) entries.push(JSON.parse(row.record));
-      } finally {
-        db.close();
-      }
+      entries = await readRunEntries(file);
     } catch (cause) {
       throw new HttpError(500, `the store cannot be read: ${cause.message}`);
     }
@@ -283,7 +270,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
 
   async function summary(run) {
     const status = statusOf(run);
-    const store = RELEASED.has(run.record?.status) ? await readStore(run).catch(() => null) : null;
+    const store = releasedRun(run) ? await readStore(run).catch(() => null) : null;
     const view = await liveView(run);
     const { browser, note } = await browserOf(run);
     const door = doorOf(run.record);
@@ -331,27 +318,29 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
       if (children.get(id) === child) children.delete(id);
       exits.set(id, code ?? "signal");
     };
-    child.once("exit", (code) => (ended(code), track(settle(id))));
+    child.once("exit", (code) => (ended(code), track(id, settle(id))));
     child.once("error", () => ended("error"));
     void watch(id, child);
   }
 
   // ---- a run's end: released once it answered, its sign-ins carried back to the home ------------------------------------
-  const track = (work) => {
-    const done = work.catch((error) => console.error(`run: ${error.message}`)).finally(() => settling.delete(done));
-    settling.add(done);
+  const track = (id, work) => {
+    const done = work.catch((error) => console.error(`run: ${error.message}`)).finally(() => settling.get(id) === done && settling.delete(id));
+    settling.set(id, done);
   };
 
   /**
    * A run this server started, not yet carried back, is released once it has answered: idle, its newest row the agent's
    * text (a request_sign_in wait is not an answer). SIGTERM lets its instance release the browser, so Browserbase saves
-   * the sign-in, then the run; `settle` carries it back when the process has exited.
+   * the sign-in, then the run; `settle` carries it back when the process has exited. An instance of a run already
+   * carried back is stopped the same way.
    */
   async function watch(id, child) {
     while (children.get(id) === child) {
       await sleep(watchMs);
       const run = await loadRun(id).catch(() => null);
-      if (!run || run.index.endedAt) return;
+      if (!run) return;
+      if (run.index.endedAt) return void (children.get(id) === child && child.kill("SIGTERM"));
       const door = doorOf(run.record);
       const live = door ? await doorState(door).catch(() => null) : null;
       if (live?.state !== "idle" || !answerOf(live.rows)) continue;
@@ -372,10 +361,14 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
     if (!answer) return;
     const cost = costOf(rows);
     await carryBack(home, { runId: id }, { outcome: "completed", finalAnswer: clip(answer.text ?? answer.summary ?? "", 2_000), ...(cost == null ? {} : { cost }) });
+    carried.add(id);
     reread();
   }
 
-  /** The door of run `id`, starting or waking the run (the start command, on its directory) when it is not live. */
+  /**
+   * The door of run `id`, starting or waking the run (the start command, on its directory) when it is not live. A run
+   * whose last instance has exited is not started again until `settle` has decided whether to carry it back.
+   */
   async function ensureLive(id, timeoutMs = 45_000) {
     const deadline = Date.now() + timeoutMs;
     for (let launched = false; ; await sleep(250)) {
@@ -383,9 +376,9 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
       if (!run) throw new HttpError(404, "no such run");
       const door = doorOf(run.record);
       if (door) return door;
-      if (run.index.endedAt) throw finishedRun();
+      if (run.index.endedAt || carried.has(id)) throw finishedRun();
       if (["done", "failed"].includes(run.record?.status)) throw new HttpError(409, `the run is ${run.record.status}`);
-      if (!children.has(id) && startable(run.record)) {
+      if (!children.has(id) && !settling.has(id) && startable(run.record)) {
         if (launched && exits.has(id)) throw new HttpError(502, `the start command exited (${exits.get(id)})`);
         if (!start.length) throw new HttpError(501, "this server has no --start command, so it cannot wake a run");
         launch(id);
@@ -654,7 +647,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
   const address = server.address();
   if (isLoopback(host)) names = new Set(["localhost", "127.0.0.1", "[::1]", host, ...allowHosts].map((h) => `${h.toLowerCase()}:${address.port}`));
   // A run released before this server last stopped, and never carried back, is carried back now.
-  for (const [id, entry] of Object.entries((await homeState()).runs)) if (!entry.endedAt) track(settle(id));
+  for (const [id, entry] of Object.entries((await homeState()).runs)) if (!entry.endedAt) track(id, settle(id));
 
   const url = `http://${host.includes(":") ? `[${host}]` : host}:${address.port}`;
   pageOrigin = origin ?? url;
@@ -671,7 +664,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
       }
       await Promise.all(live.map((child) => new Promise((resolve) => (child.exitCode !== null ? resolve() : child.once("exit", resolve)))));
       await sleep(0);
-      await Promise.all(settling);
+      await Promise.all(settling.values());
       for (const socket of tunnels) socket.destroy();
       await new Promise((resolve) => (server.close(resolve), server.closeAllConnections()));
     },

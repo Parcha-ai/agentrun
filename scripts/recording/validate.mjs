@@ -8,32 +8,16 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { TEXT_FILE, credentialIn, credentialInFile, credentialInValue } from '../../examples/reference/scan.ts';
 
 export const FORMAT = 'agentrun.recording/1';
 export const SOURCES = ['workflow', 'pi', 'browser', 'vision', 'transport', 'host'];
 const CHANNELS = ['durable', 'live'];
 const SHA256 = /^[0-9a-f]{64}$/;
 
-// The credential shapes the package check and the source export refuse (scripts/export-source.mjs), with the machine paths.
-const FORBIDDEN = [
-  ['machine path', /\/(?:home|Users)\/[A-Za-z0-9._-]+\//],
-  ['private key', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/],
-  ['github token', /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})\b/],
-  ['provider secret', /\bsk-(?:proj-|ant-api\d+-)?[A-Za-z0-9_-]{30,}\b/],
-  ['aws access key', /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/],
-  ['credential url', /https?:\/\/[^\s/:]+:[^\s/@]+@/],
-  ['bearer secret', /\bBearer\s+[A-Za-z0-9._-]{24,}/],
-  ['literal credential', /(?:api[_-]?key|password|access[_-]?token|auth[_-]?token|client[_-]?secret)['"]?\s*[=:]\s*['"][^'"\n]{8,}['"]/i],
-];
-export const credentialIn = text => FORBIDDEN.find(([, pattern]) => pattern.test(text))?.[0];
-/** The credential shape in any string or key of a decoded JSON value: the raw text can hide one behind an escape (`\u0073k-`). */
-export function credentialInValue(value) {
-  if (typeof value === 'string') return credentialIn(value);
-  if (Array.isArray(value)) { for (const inner of value) { const found = credentialInValue(inner); if (found) return found; } return undefined; }
-  if (isObject(value)) { for (const [key, inner] of Object.entries(value)) { const found = credentialIn(key) ?? credentialInValue(inner); if (found) return found; } }
-  return undefined;
-}
-const TEXT_BLOB = /^(?:json|jsonl|txt|md|html|csv|svg|xml|yaml|yml|log)$/i;
+// The credential and machine-path scan is the reference example's own (examples/reference/scan.ts): one scanner, which its
+// recorder runs before it finishes a recording and which this validator and the gallery's gate import.
+export { credentialIn, credentialInValue } from '../../examples/reference/scan.ts';
 
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const isInt = value => Number.isInteger(value);
@@ -142,7 +126,7 @@ export function validateRecording(dir) {
     const text = readFileSync(manifestPath, 'utf8');
     try { manifest = JSON.parse(text); } catch (error) { add('manifest.json', `is not JSON: ${error.message}`); }
     if (manifest !== undefined) for (const message of manifestProblems(manifest)) add('manifest.json', message);
-    const found = credentialIn(text) ?? (manifest === undefined ? undefined : credentialInValue(manifest));
+    const found = credentialInFile('manifest.json', text);
     if (found) add('manifest.json', `contains a ${found}`);
   }
   const blobs = blobFiles(dir);
@@ -155,10 +139,8 @@ export function validateRecording(dir) {
     const bytes = readFileSync(file);
     if (createHash('sha256').update(bytes).digest('hex') !== hash) add(where, `blob ${hash} does not hash to its name`, line);
     // A blob is kept whole and shared with the recording, so its text is checked as the lines are: raw, and decoded when it is JSON.
-    if (TEXT_BLOB.test(file.slice(file.lastIndexOf('.') + 1))) {
-      const text = bytes.toString('utf8');
-      let found = credentialIn(text);
-      if (!found) { try { found = credentialInValue(JSON.parse(text)); } catch { /* not one JSON value */ } }
+    if (TEXT_FILE.test(file)) {
+      const found = credentialInFile(file, bytes.toString('utf8'));
       if (found) add(where, `blob ${hash} contains a ${found}`, line);
     }
   };
