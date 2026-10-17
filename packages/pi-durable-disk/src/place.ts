@@ -5,8 +5,9 @@
 // place seam (examples/reference/place.ts) structurally. The supervisor reads nothing under the run's directory: the
 // outcome, the run's record and its delegations come through the place.
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { extname, join, posix, resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
+import { dirname, extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Delegation } from "disk";
 import { DEFAULT_MOUNT_ROOT, findDelegations, mintMountToken, pathlessResolver, removeMountToken, runPath, type RunRef } from "./claim.ts";
@@ -22,6 +23,7 @@ import {
   TOKEN_TTL,
   type EnsureOptions,
   type EnsureResult,
+  type HostBox,
   type HostDriver,
   type HostHandle,
   type HostStatus,
@@ -32,7 +34,10 @@ import {
 export type PlaceKill = "process" | "box";
 /** The run's paths in the place: its id, its directory, and the `work` and `store` under it. */
 export type PlacePaths = { id: string; root: string; work: string; store: string };
-/** How the run stood when a runner ended: the instance's own report, or `run.json` as it left it. */
+/**
+ * How the run stood when a runner ended: the instance's own report, or `run.json` as it left it. `status` is the run's
+ * word: `complete` when it delivered, else `failed`.
+ */
 export type PlaceOutcome = { status: string; generation: number | null; code?: string | null; message?: string; record?: unknown; storeSha256?: string };
 /** How a runner ended. `exit`: the exit code or signal (local), or the host's status (`stopped`, `failed`, `gone`) or `SIGKILL` when the place killed it (archil). */
 export type PlaceExit = { exit: number | string | null; signal: string | null; outcome?: PlaceOutcome; stderr: string };
@@ -41,7 +46,12 @@ export type PlaceRunner = { epoch: number; pid?: number; exited: Promise<PlaceEx
 /** What a runner is handed: its number in the run, its environment, and for a place with a token, the attempt's mount token. */
 export type RunnerOrder = { gen: number; env: Record<string, string>; stdin?: string };
 /** What the place reads of the run, the way it reads it: `run.json`, and on a disk the run's delegations. */
-export type PlaceStatus = { record: RunRecord | null; delegations?: Pick<Delegation, "clientId" | "inodeId" | "path" | "isOrphaned" | "isPending">[] };
+/**
+ * What the place reads of the run, the way it reads it: `run.json`; on a disk, the run's delegations; and the boxes the
+ * place made for its runners, each as a receipt (`HostBox`: provider, kind, from, to, list price per second and where
+ * that price was read), when its host driver makes boxes. A box the place released stays listed with its end.
+ */
+export type PlaceStatus = { record: RunRecord | null; delegations?: Pick<Delegation, "clientId" | "inodeId" | "path" | "isOrphaned" | "isPending">[]; boxes?: HostBox[] };
 /** What a recovery did. A takeover on a disk lists what it revoked, and `ms` is the whole of it (revoke and start). */
 export type PlaceRecovery = {
   runner: PlaceRunner;
@@ -50,13 +60,41 @@ export type PlaceRecovery = {
   revoked?: Pick<Delegation, "clientId" | "inodeId" | "path" | "isOrphaned">[];
   ms?: number;
 };
-/** What a runner announces to its supervisor: a crossing it took, or a request to be killed at one (it parks there until the kill). */
-export type PlaceSignal = { kind: "crossing" | "kill-request"; crossing: { point: string; n: number; pid?: number; info?: Record<string, unknown> } };
+/**
+ * What a runner announces to its supervisor: a crossing it took, or a request to be killed at one (it parks there until
+ * the kill). `signals-failed` is the place's own last word when it could not read the requests: it ends the iterator,
+ * which never rejects. `code` is the failing read's error code when it has one (CONTROL_API_FAILED for a read that timed
+ * out), else SIGNALS_FAILED.
+ */
+export type PlaceSignal =
+  | {
+      kind: "crossing" | "kill-request";
+      crossing: { point: string; n: number; pid?: number; info?: Record<string, unknown> };
+      /** The attempt's nonce the runner wrote into its request, lifted out of `crossing`: the supervisor honors a kill request only with the nonce it minted for that attempt. */
+      nonce?: string;
+    }
+  | { kind: "signals-failed"; code: string; message: string };
 /**
  * What the supervisor hands a place factory: the run's paths as it computed them, how to take the boxes the run made,
  * and where attempt n's runner writes its kill request (a file of the supervisor's machine).
  */
 export type PlaceContext = { paths: PlacePaths; self?: string; destroyBoxes?: () => void | Promise<void>; requestFile?: (attempt: number) => string };
+
+/**
+ * Where an attempt's runner records (its RECORD_DIR, in the place) and how the place brings that recording home. For a
+ * place whose runners cannot write the supervisor's recording directory.
+ */
+export interface PlaceRecordHome {
+  /** The directory, in the place, attempt `attempt`'s runner records into. */
+  dir(attempt: number): string;
+  /**
+   * Brings home into `into` what the runners recorded: blobs first, then the new whole lines of each `.spool/*.jsonl`.
+   * Idempotent; `final` is the call after the runner ended, when nothing is still landing.
+   */
+  bringHome(into: string, options?: { final?: boolean }): Promise<void>;
+  /** How far the place's clock is from the supervisor's, when it knows. */
+  readonly clockSkewMs?: number;
+}
 
 export interface Place {
   /** `local` or `archil`, for the recording's lines. */
@@ -67,6 +105,11 @@ export interface Place {
   /** What this place can lose. */
   readonly kills: ReadonlyArray<PlaceKill>;
   start(order: RunnerOrder): Promise<PlaceRunner>;
+  /**
+   * Where attempt `attempt`'s runner writes its kill request, as a path in the place (the supervisor puts it in the
+   * runner's order). A place with `signals` has it, and `signals(attempt)` reads what is written there.
+   */
+  requestFile?(attempt: number): string;
   /**
    * The kill requests (and crossings) attempt `attempt`'s runner announces. The supervisor stops reading with `return()`
    * once the runner has exited, and `return()` ends a pending `next()`.
@@ -81,9 +124,11 @@ export interface Place {
   move?(to: Place): Promise<Record<string, unknown>>;
   /** Lets the run go: stops what still runs (its commands too) and removes what the place made for it (tokens), never the run's directory. */
   release(): Promise<void>;
+  /** A place whose runners record where the supervisor cannot read says where, and brings the recording home. */
+  readonly recordHome?: PlaceRecordHome;
 }
 
-export type PlaceErrorCode = "INVALID_ARGUMENT" | "HELD" | "START_TIMED_OUT" | "STATUS_FAILED" | "KILL_UNSUPPORTED" | "RELEASE_FAILED";
+export type PlaceErrorCode = "INVALID_ARGUMENT" | "HELD" | "START_TIMED_OUT" | "STATUS_FAILED" | "KILL_UNSUPPORTED" | "RELEASE_FAILED" | "BOX_GONE" | "CARRY_FAILED" | "BLOB_MISMATCH" | "DIRS_REFUSED";
 
 export class PlaceError extends PdaError {
   constructor(code: PlaceErrorCode, message: string, options: { cause?: unknown } = {}) {
@@ -96,15 +141,32 @@ const CLI = fileURLToPath(new URL(`./cli${extname(import.meta.url)}`, import.met
 const SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 /** After the instance exits, how long its output may take to close (a command it left running can hold it open). */
 const OUTPUT_GRACE_MS = 2_000;
+/** How often a local place looks for a kill request (a file of this machine). */
+const LOCAL_SIGNAL_POLL_MS = 20;
+/** How long reads of a kill request may fail without a break before `signals` says so. */
+const SIGNAL_FAIL_MS = 60_000;
+/** An S3 read of a key that is not there (yet): the only failure a request poll expects. */
+const notThere = (error: unknown): boolean => {
+  const e = error as { status?: unknown; statusCode?: unknown; code?: unknown };
+  return e.status === 404 || e.statusCode === 404 || e.code === "NoSuchKey";
+};
 const STDERR_KEEP = 600;
+/** The longest message a place reports in a signal, as a kill line's. */
+const MESSAGE_KEEP = 240;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-/** The outcome `run.json` gives: its status and generation, and what the app put in its last detail. */
+/**
+ * The outcome `run.json` gives, in the run's vocabulary rather than the record's: `complete` when the run is `done` and
+ * delivered a record (the detail of the app's last status carries one), `failed` for anything else (done with no result,
+ * failed, or a run its instance left `running`, `paused` or `sleeping`). Its generation, and what the app put in that
+ * detail.
+ */
 function outcomeOf(record: RunRecord | null | undefined): PlaceOutcome | undefined {
   if (!record) return undefined;
   const detail = record.detail !== null && typeof record.detail === "object" && !Array.isArray(record.detail) ? (record.detail as Record<string, unknown>) : {};
+  const delivered = record.status === "done" && "record" in detail && detail.record !== null && detail.record !== undefined;
   return {
-    status: record.status,
+    status: delivered ? "complete" : "failed",
     generation: record.generation,
     code: typeof detail.code === "string" ? detail.code : null,
     ...(typeof detail.message === "string" ? { message: detail.message } : {}),
@@ -231,7 +293,15 @@ export function localPlace(options: LocalPlaceOptions): (ctx: PlaceContext) => P
       kills: ctx.destroyBoxes ? ["process", "box"] : ["process"],
       start,
       // The runner is a child of this machine, so its kill request is the supervisor's own file.
-      ...(ctx.requestFile ? { signals: (attempt: number) => requestSignals(ctx.requestFile!(attempt)) } : {}),
+      ...(ctx.requestFile
+        ? {
+            requestFile: ctx.requestFile,
+            signals: (attempt: number) => {
+              const file = ctx.requestFile!(attempt);
+              return requestSignals(async () => (existsSync(file) ? readFileSync(file, "utf8") : undefined), LOCAL_SIGNAL_POLL_MS, SIGNAL_FAIL_MS);
+            },
+          }
+        : {}),
       kill,
       status: async () => ({ record: (await readRunRecord(root)) ?? null }),
       recover: async (last, kind, order) => {
@@ -266,32 +336,56 @@ export function localPlace(options: LocalPlaceOptions): (ctx: PlaceContext) => P
   };
 }
 
-const SIGNAL_POLL_MS = 20;
-
 /**
- * The kill request a runner writes whole (by rename) into `file` when it parks at its planned crossing, as one signal.
- * A custom iterator, not a generator: `return()` must end a pending `next()`, which a generator would queue behind the
- * poll.
+ * The kill request a runner writes whole when it parks at its planned crossing, as one signal, read with `read` every
+ * `pollMs` until it names a crossing. `read` answers undefined while there is no request yet; a read that fails is tried
+ * again, and once reads have failed for `failMs` without a break, the iterator yields one `signals-failed` and ends (a
+ * runner parked at its crossing would otherwise wait with no word of why). It never rejects. A custom iterator, not a
+ * generator: `return()` must end a
+ * pending `next()`, which a generator would queue behind the poll, and it does even while a read is in flight (a read
+ * over the network can hang). Each wait has its own wake, dropped after it, so a long poll attaches nothing to anything
+ * that lives as long as the iterator.
  */
-function requestSignals(file: string): AsyncIterable<PlaceSignal> {
+function requestSignals(read: () => Promise<string | undefined>, pollMs: number, failMs: number): AsyncIterable<PlaceSignal> {
   return {
     [Symbol.asyncIterator]() {
       let closed = false;
       let wake: (() => void) | undefined;
+      /** `work`, or undefined as soon as `return()` runs. */
+      const unlessReturned = <T>(work: Promise<T>): Promise<T | undefined> =>
+        new Promise<T | undefined>((resolve, reject) => {
+          wake = () => resolve(undefined);
+          work.then(resolve, reject);
+        }).finally(() => {
+          wake = undefined;
+        });
+      let failingSince: number | undefined;
       return {
         async next(): Promise<IteratorResult<PlaceSignal>> {
-          for (;;) {
-            if (closed) return { done: true, value: undefined };
-            const crossing = existsSync(file) ? requestIn(file) : undefined;
-            if (crossing) {
-              closed = true;
-              return { done: false, value: { kind: "kill-request", crossing } };
+          while (!closed) {
+            let text: string | undefined;
+            try {
+              text = await unlessReturned(read());
+              failingSince = undefined;
+            } catch (error) {
+              failingSince ??= Date.now();
+              if (!closed && Date.now() - failingSince >= failMs) {
+                closed = true;
+                const code = (error as { code?: unknown } | null)?.code;
+                const message = `reading the kill request failed for ${failMs} ms: ${String((error as Error | null)?.message ?? error)}`.slice(0, MESSAGE_KEEP);
+                return { done: false, value: { kind: "signals-failed", code: typeof code === "string" && code ? code : "SIGNALS_FAILED", message } };
+              }
             }
-            await new Promise<void>((r) => {
-              const timer = setTimeout(r, SIGNAL_POLL_MS);
-              wake = () => (clearTimeout(timer), r());
-            });
+            const request = closed || text === undefined ? undefined : requestIn(text);
+            if (request) {
+              closed = true;
+              // The nonce is the signal's, not the crossing's: a supervisor reads it at the top, as from any place.
+              const { nonce, ...crossing } = request;
+              return { done: false, value: { kind: "kill-request", crossing, ...(typeof nonce === "string" ? { nonce } : {}) } };
+            }
+            if (!closed) await unlessReturned(sleep(pollMs));
           }
+          return { done: true, value: undefined };
         },
         async return(): Promise<IteratorResult<PlaceSignal>> {
           closed = true;
@@ -303,11 +397,18 @@ function requestSignals(file: string): AsyncIterable<PlaceSignal> {
   };
 }
 
-/** The crossing a request file names: `point` and `n` at least; anything else (a half write, another file) is not one yet. */
-function requestIn(file: string): PlaceSignal["crossing"] | undefined {
+/** What a kill request file holds: the crossing, with the attempt's nonce beside its fields. */
+type RequestCrossing = Extract<PlaceSignal, { crossing: unknown }>["crossing"] & { nonce?: unknown };
+
+/**
+ * What a request names: `point` and `n` at least, with every other field it carries; the per-attempt nonce the
+ * supervisor put in the order (never the place's token) is lifted out of the crossing into the signal. Anything else (a
+ * half write, another file) is not one yet.
+ */
+function requestIn(text: string): RequestCrossing | undefined {
   try {
-    const v = JSON.parse(readFileSync(file, "utf8")) as Partial<PlaceSignal["crossing"]>;
-    return v && typeof v.point === "string" && typeof v.n === "number" && Number.isFinite(v.n) ? (v as PlaceSignal["crossing"]) : undefined;
+    const v = JSON.parse(text) as Partial<RequestCrossing> | null;
+    return v && typeof v.point === "string" && typeof v.n === "number" && Number.isFinite(v.n) ? (v as RequestCrossing) : undefined;
   } catch {
     return undefined;
   }
@@ -329,8 +430,11 @@ function outcomeLine(line: string): PlaceOutcome | undefined {
 export interface ArchilPlaceOptions {
   disk: string;
   region: string;
-  /** The disk's control API (`archilControl`). The place holds it; no instance ever does. */
-  control: SupervisorControl;
+  /**
+   * The disk's control API (`archilControl`). The place holds it; no instance ever does. With `listObjects` (as
+   * `archilControl` has), the place has `recordHome`.
+   */
+  control: SupervisorControl & Partial<RecordControl>;
   /**
    * The driver that runs the instance (`localHost`, `dockerHost`, `daytonaHost`), set up with the app the instance runs.
    * Its `kill` and `kills` are the place's.
@@ -346,9 +450,269 @@ export interface ArchilPlaceOptions {
   pollMs?: number;
   /** How long a start waits on a mount another start has in flight. Default 60 s. */
   startTimeoutMs?: number;
+  /** How often `signals` reads the attempt's kill request over S3. Default 500 ms (the runner waits at its crossing). */
+  signalPollMs?: number;
+  /**
+   * How long those reads may fail (anything but a missing object) without a break before the iterator yields one
+   * `signals-failed` and ends. Default 60 s.
+   */
+  signalFailMs?: number;
 }
 
 type Minted = { token: string; identifier: string; nickname: string; removed: boolean };
+
+/** Where in the run's directory an Archil place's runners write their kill requests. */
+const REQUESTS = "signals";
+
+// ---- bringing a recording home ------------------------------------------------------------------------------------------
+
+/** The listing `recordHome` reads the run's recordings with: S3 ListObjects, each object's size when the API gives it. */
+export interface RecordControl {
+  listObjects(prefix: string, options?: { recursive?: boolean }): Promise<{ objects: { key: string; size?: number }[] }>;
+}
+
+/** Where in the run's directory an Archil place's runners record, one directory per attempt. */
+const RECORDS = "record";
+const BLOB_NAME = /^([0-9a-f]{64})\.[A-Za-z0-9]{1,16}$/;
+const SPOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,200}\.jsonl$/;
+const NEWLINE = 0x0a;
+
+/** A message for a recording's line: at most 240 characters, so it never carries more than the line can hold. */
+const said = (text: string): string => text.slice(0, MESSAGE_KEEP);
+
+/**
+ * Every byte of `bytes` to `fd`: a write may take fewer bytes than it was given, so it goes on from where the last one
+ * stopped. A write that takes none fails, as one that throws (a full disk) does.
+ */
+export function writeAll(fd: number, bytes: Uint8Array, write: (fd: number, bytes: Uint8Array, offset: number, length: number) => number = writeSync): void {
+  for (let at = 0; at < bytes.length; ) {
+    const n = write(fd, bytes, at, bytes.length - at);
+    if (!(n > 0)) throw new PlaceError("CARRY_FAILED", `a write took no bytes, ${bytes.length - at} of ${bytes.length} left`);
+    at += n;
+  }
+}
+
+/** `bytes` into `file` whole: a temporary file, fsync, rename, then the directory's fsync. */
+function writeWhole(file: string, bytes: Uint8Array): void {
+  const dir = dirname(file);
+  mkdirSync(dir, { recursive: true });
+  const tmp = join(dir, `.${randomUUID()}.tmp`);
+  const fd = openSync(tmp, "wx", 0o644);
+  try {
+    writeAll(fd, bytes);
+    fsyncSync(fd);
+  } catch (error) {
+    closeSync(fd);
+    rmSync(tmp, { force: true });
+    throw error;
+  }
+  closeSync(fd);
+  renameSync(tmp, file);
+  syncDir(dir);
+}
+
+/** `bytes` at the end of `file`, fsynced; a file it creates is made durable in its directory too. */
+function appendDurably(file: string, bytes: Uint8Array): void {
+  const dir = dirname(file);
+  const created = !existsSync(file);
+  mkdirSync(dir, { recursive: true });
+  const fd = openSync(file, "a", 0o644);
+  try {
+    writeAll(fd, bytes);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  if (created) syncDir(dir);
+}
+
+/** How long a carrier waits for another one appending to the same destination file. */
+const CARRY_LOCK_WAIT_MS = 5_000;
+/** A lock file with no holder written yet (its taker is between the create and the write) counts as held this long. */
+const CARRY_LOCK_UNNAMED_MS = 10_000;
+
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+};
+
+/**
+ * `fn` while holding `lock`, a file created exclusively that names its holder's pid, so two carriers on one destination
+ * (two places, two processes) never append at once. A lock whose holder is gone (its process ended) is taken over; one a
+ * live holder keeps past CARRY_LOCK_WAIT_MS is CARRY_FAILED. `fn` is synchronous, so the lock is held only for it.
+ */
+async function withCarryLock(lock: string, fn: () => void): Promise<void> {
+  for (const t0 = Date.now(); ; ) {
+    let fd: number | undefined;
+    try {
+      fd = openSync(lock, "wx", 0o644);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    if (fd !== undefined) {
+      // Once created, the lock goes on every way out: a failed write of the pid or close of the file included.
+      try {
+        try {
+          writeAll(fd, new TextEncoder().encode(String(process.pid)));
+        } finally {
+          closeSync(fd);
+        }
+        fn();
+      } finally {
+        rmSync(lock, { force: true });
+      }
+      return;
+    }
+    let holder = 0;
+    let ageMs = 0;
+    try {
+      holder = Number(readFileSync(lock, "utf8").trim());
+      ageMs = Date.now() - statSync(lock).mtimeMs;
+    } catch (error) {
+      // Released meanwhile: take it on the next turn. Any other failure to read it (its mode, the disk) is the carry's.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" && Date.now() - t0 <= CARRY_LOCK_WAIT_MS) continue;
+      throw new PlaceError("CARRY_FAILED", said(`reading the carry lock ${lock} failed: ${(error as Error)?.message ?? error}`), { cause: error });
+    }
+    const gone = Number.isSafeInteger(holder) && holder > 0 ? !alive(holder) : ageMs > CARRY_LOCK_UNNAMED_MS;
+    if (gone) {
+      rmSync(lock, { force: true });
+      continue;
+    }
+    if (Date.now() - t0 > CARRY_LOCK_WAIT_MS) throw new PlaceError("CARRY_FAILED", said(`another carrier (pid ${holder || "unnamed"}) holds ${lock} past ${CARRY_LOCK_WAIT_MS} ms`));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+function syncDir(dir: string): void {
+  const fd = openSync(dir, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** The blob hashes (SHA-256, hex) a recording's line names in its `blobs`; none for a line that is not JSON or names none. */
+function blobsOf(line: Uint8Array): string[] {
+  try {
+    const v = JSON.parse(new TextDecoder().decode(line)) as { blobs?: unknown };
+    return Array.isArray(v?.blobs) ? v.blobs.filter((b): b is string => typeof b === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Brings home into `into` what the runners recorded under `prefix` (`runs/<id>/record/`), read through the control (S3
+ * ListObjects and GetObject: nothing takes the run's claim). It keeps no state: a blob is home when `into/blobs/<name>`
+ * exists, and a spool file's carried bytes are what `into/.spool/<name>` holds, so a second call, or a call from another
+ * process, carries nothing twice. Carriers that overlap on one destination never append at once: the place runs one call
+ * at a time per destination, and every append happens under a lock file beside its spool file (`.<name>.lock`, naming
+ * its holder's pid), where the destination's size is read again so only the lines past it are appended. A lock whose
+ * holder is gone is taken over; one held past 5 s is CARRY_FAILED. Every write is carried to its last byte.
+ * - Blobs first: each one not yet home is fetched, checked against the hash its name carries, and written whole into
+ *   `into/blobs`. One whose bytes do not match is skipped; everything else is brought home, then the call throws
+ *   BLOB_MISMATCH, and the next call tries that blob again.
+ * - Then lines: the new whole lines of each `.spool/<name>.jsonl`, the recorder's segments (`<stream>.<n>.jsonl`), each
+ *   with its own offset: what `into/.spool/<name>` already holds. A file is fetched only when it grew since this place
+ *   last fetched it (the SDK has no ranged read). A line whose blobs are not home yet waits for the next call, so no line arrives before its blob; on
+ *   `final` it is carried anyway, and its missing blobs are CARRY_FAILED once everything else is home.
+ * - A listing or fetch that fails is CARRY_FAILED. The recording is on the run's disk, not in the box, so a lost box
+ *   costs only what it had not fsynced: this place never throws BOX_GONE.
+ */
+async function carryHome(control: Pick<SupervisorControl, "getObject"> & RecordControl, prefix: string, into: string, final: boolean, fetched: Map<string, number>): Promise<void> {
+  const fetch = async (key: string): Promise<Uint8Array> => {
+    try {
+      return await control.getObject(key);
+    } catch (error) {
+      throw new PlaceError("CARRY_FAILED", said(`reading ${key.slice(prefix.length)} of the run's recording failed: ${(error as Error)?.message ?? error}`), { cause: error });
+    }
+  };
+  let objects: { key: string; size?: number }[];
+  try {
+    objects = (await control.listObjects(prefix, { recursive: true })).objects;
+  } catch (error) {
+    throw new PlaceError("CARRY_FAILED", said(`listing the run's recording failed: ${(error as Error)?.message ?? error}`), { cause: error });
+  }
+  // `<attempt>/blobs/<name>` and `<attempt>/.spool/<name>.jsonl`; anything else (`started`, a box's temporary file) is not carried.
+  const parts = (key: string) => key.slice(prefix.length).split("/");
+  const blobs = objects.filter((o) => {
+    const p = parts(o.key);
+    return p.length === 3 && p[1] === "blobs" && BLOB_NAME.test(p[2]);
+  });
+  const spools = objects.filter((o) => {
+    const p = parts(o.key);
+    return p.length === 3 && p[1] === ".spool" && SPOOL_NAME.test(p[2]);
+  });
+  const home = (name: string) => existsSync(join(into, "blobs", name));
+  const mismatched: string[] = [];
+  for (const blob of blobs) {
+    const name = parts(blob.key)[2];
+    if (home(name)) continue;
+    const bytes = await fetch(blob.key);
+    if (createHash("sha256").update(bytes).digest("hex") !== BLOB_NAME.exec(name)![1]) {
+      mismatched.push(name);
+      continue;
+    }
+    writeWhole(join(into, "blobs", name), bytes);
+  }
+  // A line names its blobs by hash; the file is `<hash>.<ext>`.
+  const homeHashes = new Set(existsSync(join(into, "blobs")) ? readdirSync(join(into, "blobs")).map((n) => BLOB_NAME.exec(n)?.[1]).filter((h): h is string => h !== undefined) : []);
+  const waiting = new Set<string>();
+  for (const spool of spools) {
+    const name = parts(spool.key)[2];
+    const dest = join(into, ".spool", name);
+    const carried = existsSync(dest) ? statSync(dest).size : 0;
+    // Not fetched again while its size is what this place last fetched and nothing in it waited for a blob (a partial
+    // last line keeps it bigger than what is home). Never skipped on `final`. Only a saving: what is home is still what
+    // the destination holds.
+    // Per destination: what this place fetched for one `into` says nothing of another.
+    const cacheKey = `${resolve(into)}\0${spool.key}`;
+    if (spool.size !== undefined && (spool.size <= carried || (!final && fetched.get(cacheKey) === spool.size))) continue;
+    const bytes = await fetch(spool.key);
+    if (bytes.length <= carried) continue;
+    let heldForBlob = false;
+    let end = carried;
+    for (let at = carried; at < bytes.length; ) {
+      const nl = bytes.indexOf(NEWLINE, at);
+      if (nl < 0) break; // a line still being written
+      const missing = blobsOf(bytes.subarray(at, nl)).filter((hash) => !homeHashes.has(hash));
+      if (missing.length > 0 && !final) {
+        heldForBlob = true;
+        break;
+      }
+      for (const b of missing) waiting.add(b);
+      end = nl + 1;
+      at = nl + 1;
+    }
+    if (end > carried) {
+      // Another carrier on this destination (another place, another process) may have appended since `carried` was read.
+      // Under the file's lock, what the destination holds now decides: only the lines past it are appended.
+      mkdirSync(dirname(dest), { recursive: true });
+      await withCarryLock(join(dirname(dest), `.${name}.lock`), () => {
+        const now = existsSync(dest) ? statSync(dest).size : 0;
+        if (end > now) appendDurably(dest, bytes.subarray(now, end));
+      });
+    }
+    if (heldForBlob) fetched.delete(cacheKey);
+    else fetched.set(cacheKey, bytes.length);
+  }
+  if (mismatched.length > 0) {
+    throw new PlaceError("BLOB_MISMATCH", said(`${mismatched.length} blob(s) of the run's recording do not hash to their names: ${mismatched.join(", ")}`));
+  }
+  if (final && waiting.size > 0) {
+    throw new PlaceError("CARRY_FAILED", said(`${waiting.size} blob(s) the run's recording names never reached its disk: ${[...waiting].join(", ")}`));
+  }
+}
+const countFrom1 = (attempt: number): number => {
+  if (!Number.isSafeInteger(attempt) || attempt < 1) throw new PlaceError("INVALID_ARGUMENT", `attempt ${attempt} is not a count from 1`);
+  return attempt;
+};
+const requestName = (attempt: number): string => `kill-${countFrom1(attempt)}.json`;
 
 /**
  * The run on an Archil disk, its instance run by a host driver. `token(attempt)` mints the attempt's mount token through
@@ -356,7 +720,8 @@ type Minted = { token: string; identifier: string; nickname: string; removed: bo
  * directory with `ensure.create` and writes the start mark) with that token and the order's environment. A kill is the
  * driver's `kill`: `process` or `box`, whichever the driver takes. A recovery is the takeover: the dead holder's
  * delegations revoked (its lease counts as expired, since the place killed it) and the next instance started, which
- * `revoked` and `ms` report. A runner ends when the driver no longer reports it running, or when the place killed it; its
+ * `revoked` and `ms` report. A runner writes its kill request in the run's directory (`requestFile`), and `signals` reads
+ * it over S3. A runner ends when the driver no longer reports it running, or when the place killed it; its
  * outcome is `run.json` read over S3, with `code`, `message`, `record` and `storeSha256` from the detail of the last
  * status the app set. `release` stops every instance it started and removes every token it minted; the run's directory
  * stays (`deleteRunTree`).
@@ -368,6 +733,8 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
   const control = withTimeouts(options.control, options.ensure?.controlTimeoutMs ?? CONTROL_TIMEOUT_MS);
   const pollMs = options.pollMs ?? 1_000;
   const startTimeoutMs = options.startTimeoutMs ?? 60_000;
+  const signalPollMs = options.signalPollMs ?? 500;
+  const signalFailMs = options.signalFailMs ?? SIGNAL_FAIL_MS;
   return (ctx) => {
     const ref: RunRef = { disk: options.disk, region: options.region, id: options.id ?? ctx.paths.id };
     runPath(ref.id);
@@ -377,8 +744,37 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
     const paths: PlacePaths = { id: ref.id, root, work: posix.join(root, "work"), store: posix.join(root, "store") };
     const minted = new Map<string, Minted>();
     const handles: HostHandle[] = [];
+    /** Every handle the place started, released or not: the boxes it reports. */
+    const started: HostHandle[] = [];
     const killed = new Map<PlaceRunner, () => void>();
     let resolver = pathlessResolver(control);
+    const records = `${runPath(ref.id)}/${RECORDS}/`;
+    const recording = typeof options.control.listObjects === "function";
+    const owner = options.ensure?.create;
+    /**
+     * Before attempt `gen`'s runner starts: the EMPTY directories it writes into, `signals/` and, with `recordHome`,
+     * `record/<gen>/.spool/` and `record/<gen>/blobs/`, made over the control (PutObject with the owner, as createRunDir
+     * does: an exec mkdir would make them root's) and owned by the run user (`ensure.create`), in ensureRunning's window
+     * where no delegation holds the run (a held run refuses them: DIRS_REFUSED). A directory a process
+     * made by path on an Archil mount was seen to refuse file creates afterwards (ENOENT), and one made over the control
+     * does not. Every file in them stays the runner's (its kill request, its started, its spool), and a runner that
+     * makes them itself finds them made. Without an owner nothing is made: a directory the run user does not own would
+     * refuse the runner's files.
+     */
+    const makeDirs = async (gen: number): Promise<void> => {
+      if (!owner) return;
+      const run = `${runPath(ref.id)}/`;
+      const dirs = [`${run}${REQUESTS}/`, ...(recording ? [`${run}${RECORDS}/`, `${run}${RECORDS}/${gen}/`, `${run}${RECORDS}/${gen}/.spool/`, `${run}${RECORDS}/${gen}/blobs/`] : [])];
+      for (const dir of dirs) {
+        try {
+          if (!(await control.headObject(dir))) await control.putObject(dir, "", { uid: owner.uid, gid: owner.gid, mode: owner.mode ?? 0o755 });
+        } catch (error) {
+          throw new PlaceError("DIRS_REFUSED", said(`making ${dir.slice(run.length)} in the run over the control was refused: ${(error as Error)?.message ?? error}`), { cause: error });
+        }
+      }
+    };
+    const fetchedSizes = new Map<string, number>();
+    const carrying = new Map<string, Promise<void>>();
     const handleOf = new Map<PlaceRunner, HostHandle>();
 
     const mint = async (attempt: number): Promise<Minted> => {
@@ -432,7 +828,11 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
       const m = given && !given.removed ? given : await mint(order.gen);
       // The driver gets the order's environment with each start; everything else is the host's own.
       const driver: HostDriver = {
-        start: (r, token, attempt) => host.start(r, token, { attempt: attempt?.attempt ?? order.gen, env: order.env }),
+        // Inside ensureRunning, after its revoke and start mark: no delegation holds the run, so S3 takes the writes.
+        start: async (r, token, attempt) => {
+          await makeDirs(order.gen);
+          return host.start(r, token, { attempt: attempt?.attempt ?? order.gen, env: order.env });
+        },
         status: (h) => host.status(h),
         stop: (h) => host.stop(h),
       };
@@ -459,6 +859,7 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
           // An adopted instance mounts with an earlier start's token: this one is unused, removed as above.
           if (result.adopted) await drop(m).catch(() => {});
           handles.push(result.handle);
+          started.push(result.handle);
           const w = watch(result.handle);
           const mark = result.startMark ? await readStartMark(control, ref.id).catch(() => null) : null;
           const runner: PlaceRunner = { epoch: mark?.generation ?? order.gen, exited: w.exited };
@@ -508,6 +909,43 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
       paths,
       kills: host.kill && host.kills ? [host.kills] : [],
       token: async (attempt) => (await mint(attempt)).token,
+      ...(recording
+        ? {
+            recordHome: {
+              // In the run's directory, so the runner's delegation covers it and deleteRunTree removes it.
+              dir: (attempt: number) => posix.join(root, RECORDS, String(countFrom1(attempt))),
+              // One carry at a time per destination in this place; another place or process is held off by the file lock.
+              bringHome: (into: string, carry: { final?: boolean } = {}) => {
+                const key = resolve(into);
+                const run = (carrying.get(key) ?? Promise.resolve()).catch(() => {}).then(() => carryHome(control as SupervisorControl & RecordControl, records, into, carry.final === true, fetchedSizes));
+                const settled = run.then(() => {}, () => {});
+                carrying.set(key, settled);
+                void settled.then(() => {
+                  if (carrying.get(key) === settled) carrying.delete(key);
+                });
+                return run;
+              },
+            },
+          }
+        : {}),
+      // The request goes in the run's directory, outside work/ where the agent's tools are confined, and the place reads
+      // it over S3: a runner on a box of its own cannot reach the supervisor's files.
+      requestFile: (attempt) => posix.join(root, REQUESTS, requestName(attempt)),
+      signals: (attempt) => {
+        const key = `${runPath(ref.id)}/${REQUESTS}/${requestName(attempt)}`;
+        return requestSignals(
+          async () => {
+            try {
+              return new TextDecoder().decode(await control.getObject(key));
+            } catch (error) {
+              if (notThere(error)) return undefined;
+              throw error;
+            }
+          },
+          signalPollMs,
+          signalFailMs,
+        );
+      },
       start: async (order) => (await ensure(order, false)).runner,
       kill,
       status: async () => {
@@ -522,7 +960,8 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
             throw error;
           }),
         ]);
-        return { record, delegations: delegations.map(({ clientId, inodeId, path, isOrphaned, isPending }) => ({ clientId, inodeId, path, isOrphaned, isPending })) };
+        const boxes = host.box ? started.map((h) => host.box!(h)).filter((b): b is HostBox => b !== null) : undefined;
+        return { record, delegations: delegations.map(({ clientId, inodeId, path, isOrphaned, isPending }) => ({ clientId, inodeId, path, isOrphaned, isPending })), ...(boxes ? { boxes } : {}) };
       },
       recover: async (last, kind, order) => {
         if (killed.has(last)) await kill(last, kind);

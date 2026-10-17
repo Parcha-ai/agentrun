@@ -152,7 +152,7 @@ export async function exportFrameTracks(options: TrackOptions): Promise<Track[]>
         const hash = (row.blobs as string[] | undefined)?.[0];
         if (!hash || names.has(hash) || skip.has(hash)) continue;
         let bytes: Uint8Array | null | undefined;
-        try { bytes = await options.readBlob(hash); } catch { bytes = null; }
+        try { bytes = await bounded(async () => options.readBlob(hash), options, deadline); } catch (error) { if (error instanceof TrackExportError) throw error; bytes = null; }
         throwIfAborted(options.signal);
         const reason = !bytes ? "missing" : sha256(bytes) !== hash ? "hash_mismatch" : jpegSize(bytes) === null ? "not_a_jpeg" : null;
         if (reason || !bytes) { skip.add(hash); skipped.push({ sha256: hash, reason: reason ?? "missing" }); continue; }
@@ -192,6 +192,23 @@ export async function exportFrameTracks(options: TrackOptions): Promise<Track[]>
 }
 
 const throwIfAborted = (signal: AbortSignal | undefined): void => { if (signal?.aborted) throw new TrackExportError("aborted", "the export was aborted"); };
+
+/** A read of a blob settles with the read, or fails at the session's deadline (`ffmpeg_timeout`) or at the signal (`aborted`), whichever is first: a store
+ *  that never answers cannot hold the export past either. The read itself is not cancelled; its answer, if one ever comes, is dropped. */
+function bounded<T>(read: () => Promise<T>, options: TrackOptions, deadline: number): Promise<T> {
+  const { signal } = options;
+  return new Promise<T>((resolve, reject) => {
+    if (signal?.aborted) return reject(new TrackExportError("aborted", "the export was aborted"));
+    const left = deadline - Date.now();
+    if (left <= 0) return reject(new TrackExportError("ffmpeg_timeout", `the export did not finish within ${options.timeoutMs ?? 120_000} ms`));
+    const timer = setTimeout(() => settle(() => reject(new TrackExportError("ffmpeg_timeout", `the export did not finish within ${options.timeoutMs ?? 120_000} ms`))), left);
+    const onAbort = () => settle(() => reject(new TrackExportError("aborted", "the export was aborted")));
+    let done = false;
+    const settle = (finish: () => void) => { if (done) return; done = true; clearTimeout(timer); signal?.removeEventListener("abort", onAbort); finish(); };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    read().then((value) => settle(() => resolve(value)), (error) => settle(() => reject(error)));
+  });
+}
 
 const quote = (file: string): string => `'${file.replaceAll("'", "'\\''")}'`;
 
