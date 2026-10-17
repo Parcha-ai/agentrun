@@ -1,7 +1,10 @@
 // Supervisor unit tests every branch of ensureRunning over a fake control API and a fake host
 // driver, plus two racing supervisors over a fake server that admits one exclusive mount. No Archil, no network.
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Delegation } from "disk";
 import {
   ensureRunning,
@@ -20,7 +23,8 @@ import {
   type SupervisorControl,
 } from "../src/supervise.ts";
 import { PdaError } from "../src/errors.ts";
-import { RunRecordError } from "../src/status.ts";
+import { RUN_JSON, RunRecordError } from "../src/status.ts";
+import { main } from "../src/cli.ts";
 import { parseTokenNickname, tokenNickname } from "../src/claim.ts";
 
 const REF = { disk: "dsk-0000000000000001", region: "aws-us-east-1", id: "r1" };
@@ -1011,6 +1015,71 @@ test("backoff: a mark written before the count existed reads as 0 failures", asy
   at(10_000);
   const s = await tick();
   assert.ok(s.action === "started" && s.failures === 1);
+});
+
+/**
+ * Every start runs the real instance, `run --dir <run> --app <module>`, to its exit, and the run's directory stands for
+ * the disk: what the instance left in its run.json is what the control API reads next.
+ */
+class CliHost extends FakeHost {
+  readonly argv: string[];
+  readonly dir: string;
+  exits: number[] = [];
+  constructor(control: FakeControl, dir: string, app: string) {
+    super(control);
+    this.dir = dir;
+    this.argv = ["run", "--dir", dir, "--id", REF.id, "--app", app];
+  }
+  override async start(ref: typeof REF, token: string): Promise<HostHandle> {
+    const handle = await super.start(ref, token);
+    const write = process.stderr.write;
+    process.stderr.write = (() => true) as typeof process.stderr.write;
+    try {
+      this.exits.push(await main(this.argv));
+    } finally {
+      process.stderr.write = write;
+    }
+    const file = join(this.dir, RUN_JSON);
+    if (existsSync(file)) this.control.objects.set(`runs/${REF.id}/run.json`, readFileSync(file, "utf8"));
+    else this.control.objects.delete(`runs/${REF.id}/run.json`);
+    return handle;
+  }
+}
+
+test("backoff over the real instance: an app module whose factory fails is started on the backoff schedule, never once a tick, on a new run and on a resume", async () => {
+  const scratch = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pda-backoff-"));
+  after(() => rmSync(scratch, { recursive: true, force: true }));
+  const ran = join(scratch, "factory-ran.txt");
+  const app = join(scratch, "broken-app.mjs");
+  writeFileSync(app, `import { appendFileSync } from "node:fs";\nexport default async (ctx) => { appendFileSync(${JSON.stringify(ran)}, ctx.root + "\\n"); throw new Error("no model key"); };\n`);
+  // A crashed incarnation's record: generation 3, its heartbeat long stale, no delegation left.
+  const crashed = JSON.stringify(running({ heartbeatAt: ago(3_600_000) }));
+  for (const resume of [false, true]) {
+    const dir = join(scratch, resume ? "resume" : "new", REF.id);
+    const r = rig();
+    const host = new CliHost(r.control, dir, app);
+    if (resume) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, RUN_JSON), crashed);
+      r.control.objects.set(`runs/${REF.id}/run.json`, crashed);
+    }
+    writeFileSync(ran, "");
+    let t = NOW;
+    const starts: { ms: number; failures: number; lastExit: unknown }[] = [];
+    for (let ms = 0; ms <= 100_000; ms += 3_000) {
+      t = NOW + ms;
+      const d = await ensureRunning(REF, host, r.opts({ now: () => t, supervisorId: "sup-1", leaseExpiryMs: 6_000 }));
+      if (d.action === "started") starts.push({ ms, failures: d.failures, lastExit: d.lastExit });
+    }
+    const name = resume ? "resume" : "new run";
+    assert.deepEqual(starts.map((s) => s.ms), [0, 6_000, 18_000, 42_000, 90_000], `${name}: the backoff schedule (one start per tick would be 34)`);
+    assert.deepEqual(starts.map((s) => s.failures), [0, 1, 2, 3, 4], name);
+    assert.ok(starts.slice(1).every((s) => s.lastExit === "no-delegation"), name);
+    assert.deepEqual(host.exits, [1, 1, 1, 1, 1], `${name}: every start exited 1 (APP_FAILED), which a unit may retry`);
+    assert.equal(readFileSync(ran, "utf8"), `${dir}\n`.repeat(5), `${name}: the factory ran on every start, on the claimed directory`);
+    if (resume) assert.equal(readFileSync(join(dir, RUN_JSON), "utf8"), crashed, "the crashed incarnation's run.json is as it was");
+    else assert.equal(existsSync(join(dir, RUN_JSON)), false, "a new run never got a run.json");
+  }
 });
 
 // ---- the follow-up: control timeouts, the token janitor ---------------------------------------------------------

@@ -9,12 +9,13 @@ import { createServer, request as httpRequest } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { durableProfileStore, readAgentHome, startRun } from "@parcha/pi-durable-agent";
+import { carryBack, durableProfileStore, readAgentHome, startRun } from "@parcha/pi-durable-agent";
 import { foldCalls, groupTimeline } from "@parcha/pi-durable-agent/timeline";
 import { PROFILE } from "./agent/app.ts";
 import { ensureAgentHome } from "./agent/home.mjs";
@@ -132,6 +133,40 @@ const asking = [
   assistant(2, [call("c1", "request_sign_in", { site: "the practice site", reason: "The secure page needs a sign-in." })]),
   result(3, "c1", "request_sign_in", ASKED, false, { site: "the practice site", reason: "The secure page needs a sign-in." }),
 ];
+
+test("a run of an imported home has no run.json: its endedAt in the home's index makes it done and reads its store; without one it is not read as released", async (t) => {
+  const { home, root, get, json } = await app(t);
+  const tiny = (dir) => {
+    rmSync(join(dir, "store"), { recursive: true });
+    mkdirSync(join(dir, "store"));
+    const db = new DatabaseSync(join(dir, "store", "run.sqlite"));
+    db.exec("CREATE TABLE entries (id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL, head INTEGER, commit_seq INTEGER NOT NULL, record TEXT NOT NULL CHECK (json_valid(record))) STRICT");
+    const insert = db.prepare("INSERT INTO entries (id, conversation_id, head, commit_seq, record) VALUES (?, ?, NULL, ?, ?)");
+    for (const entry of transcript.slice(0, 8)) insert.run(entry.id, entry.conversationId, entry.id, JSON.stringify(entry));
+    db.close();
+  };
+  const arrived = await makeRun(home, "arrived", { files: { "report.md": "# Report" } });
+  await carryBack(home, { runId: "arrived" }, { outcome: "completed", cost: 0.02 });
+  const unended = await makeRun(home, "unended");
+  const restarted = await makeRun(home, "restarted", { status: "running" });
+  await carryBack(home, { runId: "restarted" }, { outcome: "completed" });
+  for (const dir of [arrived, unended]) {
+    tiny(dir);
+    rmSync(join(dir, "run.json"));
+  }
+  const run = await json("/runs/arrived");
+  assert.equal(run.status, "done");
+  assert.equal(run.costUsd, 0.03, "its store's rows give the cost, as for any released run");
+  const stored = await json("/runs/arrived/timeline");
+  assert.equal(stored.rows[0].kind, "user_message", "the rows of its store");
+  assert.ok(stored.rows.some((r) => r.kind === "waiting"));
+  assert.equal(stored.state, "waiting");
+  assert.deepEqual((await json("/runs/arrived/files")).files.map((f) => f.path), ["report.md"]);
+  assert.equal((await get("/runs/unended/timeline")).status, 409, "a run no one carried back and no run.json says released is not read from its store");
+  assert.equal((await json("/runs/unended")).status, "unknown");
+  tiny(restarted);
+  assert.equal((await get("/runs/restarted/timeline")).status, 409, "a run that has a run.json is judged by it, as before, whatever its index says");
+});
 
 test("a turn that ends on request_sign_in is a wait: its own group, the reason, the waiting state, no blank assistant bubble", async (t) => {
   const { home, root, get, post, json } = await app(t);
