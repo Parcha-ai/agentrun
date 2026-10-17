@@ -11,8 +11,9 @@ their stored instructions do not change. No tool is added. For many pages, a lon
 writes code: the `look` skill (`skills/look/SKILL.md`) shows it how to render pages and cut frames with bash and ask
 about them with `vision.see`, or have Jev judge them with typed answers (`vision.judge`): the two functions this
 package puts in a host's code mode. Only the answers, where they looked and the price enter the caller's context. The
-`find` skill (`skills/find/SKILL.md`) uses both to find the second a thing is first seen in a long video, and its box,
-coarse to fine: the transcript's words narrow the search, Jev scores frames, the eyes name the second, Jev draws the box.
+`find` skill (`skills/find/SKILL.md`) finds every time a phrase is said in a long video, from its transcript, and the
+second a thing is first seen and its box, coarse to fine: the words narrow the search, Jev scores frames, the eyes
+name the second, Jev draws the box.
 
 ## Status
 
