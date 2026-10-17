@@ -29,7 +29,7 @@ import type { BoxProvider } from '@parcha/pi-transport';
 import type { VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import { pathsAt, placeAt, run, type Job, type RunOptions } from './assemble.ts';
 import { RUN_LABEL, tapBox } from './boxes.ts';
-import type { Recorder } from './record.ts';
+import type { Recorder, Redact } from './record.ts';
 import { capJudge } from './judge.ts';
 import { askToBeKilled, crossings, tapFakes, tapHost, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
 import { keepLooks, shownShots } from './looks.ts';
@@ -45,7 +45,7 @@ import { scanRecording, signInFile, trackSecrets } from './secrets.ts';
 
 /** What `--live` swaps for the scripted parts: host members (models, tools, decisions, the browser plane) and vision options. The demo supplies them from its
  *  own keys; a demo that supplies none refuses `--live`. */
-export type LiveParts = { host?: Partial<Host>; /** Which models the live parts chose (flags, defaults, the sign-in's plan): reported with the run's outcome, and handed to `manifest` as `models`. */ models?: Record<string, unknown>; /** The live vision options, built from the host and the running run exactly as `fakes.vision` is: one seam for both. */ vision?: (host: Host, running: { readonly harness: Harness | undefined }, context: { input: Record<string, unknown>; place: { root: string; work: string } }) => Partial<VisionAdapterOptions> };
+export type LiveParts = { host?: Partial<Host>; /** Which models the live parts chose (flags, defaults, the sign-in's plan): reported with the run's outcome, and handed to `manifest` as `models`. */ models?: Record<string, string>; /** The live vision options, built from the host and the running run exactly as `fakes.vision` is: one seam for both. */ vision?: (host: Host, running: { readonly harness: Harness | undefined }, context: { input: Record<string, unknown>; place: { root: string; work: string } }) => Partial<VisionAdapterOptions> };
 /** The model choices on the command line, handed to the demo's `live` part. */
 export type LiveModels = { provider?: string; model?: string; eyesModel?: string };
 const RESERVED = new Set(['format', 'title', 'task', 'model', 'generations', 'kills', 'code', 'cost', 'recorded', 'source', 'result', 'providers', 'see_also', 'job', 'store', 'baseline']);
@@ -59,7 +59,7 @@ export type DemoOptions = {
   fakes: Fakes;
   live?: (context: { env: NodeJS.ProcessEnv; browser: 'fake' | 'browserbase' | 'chrome'; /** What `--provider`, `--model` and `--eyes-model` named (each absent when not given): the demo's sign-in plan decides what they mean. */ models: LiveModels }) => LiveParts | Promise<LiveParts>;
   /** Fields the demo adds to the manifest, from the run it just finished (never a field the entry writes: `format`, `source`, `result`, `providers`, ...). It runs in the supervisor, once, after the last process. */
-  manifest?: (context: { dir: string; record: unknown; input: Record<string, unknown> | undefined; live: boolean; /** What the live parts reported choosing (`LiveParts.models`); absent on fakes. */ models?: Record<string, unknown> }) => Record<string, unknown>;
+  manifest?: (context: { dir: string; record: unknown; input: Record<string, unknown> | undefined; live: boolean; /** What the live parts reported choosing (`LiveParts.models`); absent on fakes. */ models?: Record<string, string> }) => Record<string, unknown>;
   /** The run's result, as the recording shows it: the entry writes the result line and its blob from `json` (`agentrun.cited/1` for a payoff that cites what it read) instead of the raw delivered record. `keep` stores a file in the recording's blobs and returns its SHA-256; `dir` is the run's directory, where the run's own files are. It runs in the process that delivered. */
   result?: (record: unknown, context: { dir: string; keep(bytes: Uint8Array | string, extension: string): string }) => { json: unknown; title: string } | Promise<{ json: unknown; title: string }>;
   /** The source items an input needs (`{ id, url, bytes, sha256 }`): only these are fetched, on --live or --fetch-sources; without either, a run that lacks one of their files (not in `job.files`) is refused in one line. */
@@ -72,6 +72,8 @@ export type DemoOptions = {
   root?: string;
   /** The recovery driver's layout for the run (`v4`: the keyed one); the driver's default when absent. A host's choice, so it is not the job's. */
   layout?: 'v3' | 'v4';
+  /** Keep the run's directory when neither `--dir` nor `--record` is given, and say where it is (`run directory: <path>`): a demo whose result is files there (the hero's `out/snapshot.html`) needs them to outlive the command. */
+  keepRun?: boolean;
 };
 
 export type DemoResult = {
@@ -98,7 +100,11 @@ export type DemoResult = {
 const FLAGS = { child: { type: 'boolean' }, live: { type: 'boolean' }, kill: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, 'local-chrome': { type: 'boolean' }, 'fetch-sources': { type: 'boolean' }, cache: { type: 'string' }, dir: { type: 'string' }, json: { type: 'boolean' }, provider: { type: 'string' }, model: { type: 'string' }, 'eyes-model': { type: 'string' }, 'see-also': { type: 'string', multiple: true } } as const;
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
+/** Set while `pi-durable-disk run --app` imports a demo's module for its `options`: the module's own top-level `demo(options)` then does nothing, so it is safe to import. */
+export const IMPORTING_DEMO = Symbol.for('agentrun.reference.importing-demo');
+
 export async function demo(options: DemoOptions): Promise<DemoResult | undefined> {
+  if ((globalThis as Record<symbol, unknown>)[IMPORTING_DEMO]) return undefined;
   const { values } = parseArgs({ args: options.argv ?? process.argv.slice(2), options: FLAGS });
   if (values.child) { await child(options); return undefined; }
   const result = await supervise(options, values);
@@ -167,10 +173,10 @@ async function inBox(provider: BoxProvider, kind: 'local' | 'docker', place: { i
 }
 
 /** What one process of the run is made of, before it opens the store: the place, the host (the demo's, the live parts merged, the crossings and the judge caps on it), the job with its input, and the run's options. `made` is the demo's result hook, run on the delivered result. */
-export type Prepared = { models: Record<string, unknown> | undefined; place: RunPlace; host: Host; job: Job; runOptions: RunOptions; recorder: Recorder | undefined; /** Starts what writes under the run's directory: the recorder, the fetched sources, the box. Awaited once the claim is open (before `beforeResume`); `child()` has no claim to wait for and calls it at once. */ open(): Promise<void>; made(result: Awaited<ReturnType<typeof run>>): Promise<{ json: unknown; title: string } | undefined>; done(): Promise<void> };
+export type Prepared = { models: Record<string, string> | undefined; place: RunPlace; host: Host; job: Job; runOptions: RunOptions; recorder: Recorder | undefined; /** Takes every secret the process has seen out of a text (the sign-in's earlier tokens too): what the process prints for the supervisor passes through it. Absent when the recording redacts nothing. */ redact: Redact | undefined; /** Starts what writes under the run's directory: the recorder, the fetched sources, the box. Awaited once the claim is open (before `beforeResume`); `child()` has no claim to wait for and calls it at once. */ open(): Promise<void>; made(result: Awaited<ReturnType<typeof run>>): Promise<{ json: unknown; title: string } | undefined>; done(): Promise<void> };
 
 /** The outcome line a process reports on its way out: how the run ended, the record it delivered, what the demo's result hook made of it, and the hash of its store. */
-export function outcomeOf(result: Awaited<ReturnType<typeof run>>, storeSha256: string | undefined, made?: { json: unknown; title: string }, models?: Record<string, unknown>) {
+export function outcomeOf(result: Awaited<ReturnType<typeof run>>, storeSha256: string | undefined, made?: { json: unknown; title: string }, models?: Record<string, string>) {
   return { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 240) } : {}), ...(result.status === 'complete' ? { record: result.output } : {}), ...(made ? { result: made } : {}), ...(models ? { models } : {}), ...(storeSha256 ? { storeSha256 } : {}) };
 }
 
@@ -192,6 +198,8 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   const parts = live ? await options.live!({ env, browser: browserKind, models: env.MODELS ? (JSON.parse(env.MODELS) as LiveModels) : {} }) : {};
   // Docker only with --live: a no-key run uses a local box, so it starts no container.
   const boxSpec = effectiveBoxes(options.spec, live);
+  // `pi-durable-disk run --app` opens the run's tools on the claim's own environment and cannot take another: a job that must run in a box is refused there, not run outside it.
+  if (at && boxSpec?.runIn) throw new Error('boxes.runIn is not supported under pi-durable-disk run --app: the app opens its tools on the claim\'s own environment, not in a box. Run the demo through its own command, or drop runIn.');
   const provider = await boxProvider(boxSpec, place);
   const boxes = provider ? tapBox(provider, { cross, window, ...(env.RUN_LABEL ? { runLabel: env.RUN_LABEL } : {}), ...(recorder ? { recorder } : {}) }) : undefined;
   const local = localHost(place, live ? options.fakes : tapFakes(options.fakes, cross), { browser: fakeBrowser(env.BACKEND!), live, deferLogs: true, ...(recorder ? { recorder } : {}), ...(boxes ? { boxes } : {}) });
@@ -241,7 +249,7 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   };
   const runOptions: RunOptions = { ...(boxes && boxSpec?.runIn ? { env: () => box!.env() } : {}), ...(options.spec.sites ? { sites: options.spec.sites } : {}), vision, ...(options.layout ? { layout: options.layout } : {}) };
   const made = async (result: Awaited<ReturnType<typeof run>>) => (result.status === 'complete' && options.result ? options.result(result.output, { dir: place.root, keep: (bytes, extension) => (recorder ? recorder.blob(bytes, extension) : createHash('sha256').update(bytes).digest('hex')) }) : undefined);
-  return { models: parts.models, place, host: local.host, job: { ...options.job, input }, runOptions, recorder, open, made, done: async () => { await box?.destroy(); } };
+  return { models: parts.models, place, host: local.host, job: { ...options.job, input }, runOptions, recorder, redact, open, made, done: async () => { await box?.destroy(); } };
 }
 
 const storeShaOf = (place: RunPlace) => {
@@ -260,7 +268,9 @@ async function child(options: DemoOptions) {
     const result = await run(prepared.place, prepared.host, prepared.job, prepared.runOptions);
     const made = await prepared.made(result);
     await prepared.recorder?.detach();
-    console.log(JSON.stringify({ outcome: outcomeOf(result, storeShaOf(prepared.place), made, prepared.models) }));
+    // What the process tells the supervisor passes through the process's own redaction: it has seen every token the sign-in held over the run, which the supervisor's own list may not.
+    const line = JSON.stringify({ outcome: outcomeOf(result, storeShaOf(prepared.place), made, prepared.models) });
+    console.log(prepared.redact ? prepared.redact(line) : line);
   } catch (error) {
     console.log(JSON.stringify({ outcome: { status: 'error', generation: null, code: (error as { code?: string }).code ?? null, message: String((error as Error).message).slice(0, 400) } }));
   } finally {
@@ -344,15 +354,18 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const unlanded: string[] = [];
   let overBudget = false;
   // Where the session lives, as paths in the place: computed, not made. The supervisor touches nothing under them; the place makes them.
-  // One fresh run id per invocation, the same across its processes (every kill and resume): a second run of one demo on a shared disk never finds the first's run.json `done` or its old signals files.
-  const runId = `${spec.name}-${randomBytes(4).toString('hex')}`;
+  // A directory a run already used keeps its identity (run.json's `run`, whatever name this version would give it): a saved run resumes under the name it was started with.
+  const savedId = (() => { try { const saved = (JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')) as { run?: unknown }).run; return typeof saved === 'string' && saved ? saved : undefined; } catch { return undefined; } })();
+  // Otherwise one fresh run id per invocation, the same across its processes (every kill and resume): a second run of one demo on a shared disk never finds the first's run.json `done` or its old signals files.
+  const runId = savedId ?? `${spec.name}-${randomBytes(4).toString('hex')}`;
   const paths = pathsAt(dir, runId);
   base.RUN_ID = paths.id;
   const requestFile = (attempt: number) => join(scratch, `kill-${attempt}.json`);
-  const place = options.place ? await options.place({ paths, self: options.self, destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live), requestFile }) : localPlace({ self: options.self, paths, requestFile, ...(spec.boxes ? { destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live) } : {}) });
+  let place!: Place;
   // Metering: the recording's lines as they stand, folded; past the cap the supervisor stops the run.
   const meterTimer = maxUsd === null ? undefined : setInterval(() => { if (meterKnown(recordDir) > maxUsd) overBudget = true; }, 250);
   try {
+    place = options.place ? await options.place({ paths, self: options.self, destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live), requestFile }) : localPlace({ self: options.self, paths, requestFile, ...(spec.boxes ? { destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live) } : {}) });
     const remaining = childPlansOf(plans);
     let runner: Runner | undefined;
     let previous: { runner: Runner; kind: 'process' | 'box' } | undefined;
@@ -360,6 +373,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       // Past the cap, no further process is started: the budget is checked before every restart.
       if (overBudget && processes.length > 0) break;
       const plan = remaining.shift() ?? { tools: [] };
+      // A kill this attempt plans that the place cannot make is refused before the attempt starts: the run is not stopped first, and no machine loss is recorded.
+      const planned = plan.run?.kind ?? 'process';
+      if (!place.kills.includes(planned)) throw new Error(`the ${place.name} place cannot lose its ${planned}: this kill is not one it can make`);
       const gen = processes.length + 1;
       const log = join(scratch, `crossings-${gen}.jsonl`);
       // Where this attempt's runner writes its kill request: the place answers it (the child never derives it); the scratch default is for a place that does not.
@@ -376,20 +392,26 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       // A kill the place cannot make is recorded and ends the attempt: it is never an unhandled rejection.
       let killed: { point: string | null; n: number | null; label: string | null; why: string; kind: 'process' | 'box' } | undefined;
       let killFailed = false;
+      let decided = false;
+      // A kill that fails ends the attempt at once: the supervisor does not wait for a process the place could not stop.
+      let giveUp!: () => void;
+      const gaveUp = new Promise<void>((resolve) => { giveUp = resolve; });
+      const failed = (code: string, message: string, kind: 'process' | 'box') => {
+        killFailed = true;
+        failedKills.push({ gen, code });
+        supervisor.host('kill.failed', { gen, code, message: message.slice(0, 240), kind });
+        giveUp();
+      };
       const decide = async (asked: { point: string; n: number } | undefined) => {
-        if (killed) return;
-        const kind = plan.run?.kind ?? 'process';
+        if (decided) return;
+        decided = true;
+        const kind = asked ? (plan.run?.kind ?? 'process') : 'process';
         killed = asked
           ? { point: asked.point, n: asked.n, label: plan.run && !('storm' in plan.run) ? plan.run.point : asked.point, why: plan.run?.why ?? 'a kill', kind }
           : { point: null, n: null, label: 'max-usd', why: `past --max-usd ${maxUsd}`, kind: 'process' };
         supervisor.host('kill', { gen, label: killed.label, crossing: killed.point === null ? null : { point: killed.point, n: killed.n }, side: 'child', kind: killed.kind });
         kills.push({ gen, point: killed.point, kind: killed.kind, why: killed.why });
-        try { await place.kill(runner!, killed.kind); } catch (error) {
-          const code = String((error as { code?: unknown } | null)?.code ?? 'KILL_FAILED');
-          killFailed = true;
-          failedKills.push({ gen, code });
-          supervisor.host('kill.failed', { gen, code, message: String((error as Error | null)?.message ?? error).slice(0, 240), kind: killed.kind });
-        }
+        try { await place.kill(runner!, killed.kind); } catch (error) { failed(String((error as { code?: unknown } | null)?.code ?? 'KILL_FAILED'), String((error as Error | null)?.message ?? error), killed.kind); }
       };
       const iterator = place.signals?.(gen)[Symbol.asyncIterator]();
       const pump = (async () => {
@@ -401,11 +423,15 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
           await decide(next.value.crossing);
         }
       })();
-      const watch = setInterval(() => { if (!killed && overBudget) void decide(undefined); }, 20);
-      const result = await runner.exited;
+      // The budget's stop is kept: the attempt does not finish (nor the place release) until the kill, with its provider cleanup, is done.
+      let deciding: Promise<void> = Promise.resolve();
+      const watch = setInterval(() => { if (!decided && overBudget) deciding = decide(undefined); }, 20);
+      const exit = await Promise.race([runner.exited, gaveUp.then(() => undefined)]);
+      const result: Exit = exit ?? { exit: null, signal: null, stderr: 'the place could not stop this process' };
       clearInterval(watch);
       await iterator?.return?.();
       await pump;
+      await deciding;
       processes.push(result);
       if (killFailed || (killed && killed.label === 'max-usd')) break;
       if (killed) { previous = { runner, kind: killed.kind }; continue; }
@@ -419,7 +445,12 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
         continue;
       }
       // The process ended on its own with a kill still planned for it (and any that follow): none of them landed.
-      for (const left of [plan, ...remaining]) for (const entry of [...(left.run ? [left.run] : []), ...left.tools]) if ('point' in entry) unlanded.push(entry.point); else unlanded.push(`storm (gap ${entry.gapMs} ms)`);
+      // A tool kill of this attempt that fired is on the child's log: it landed, however the process then ended.
+      const landed = rows<Crossing>(log).filter((crossing) => crossing.landed).map((crossing) => crossing.point);
+      for (const left of [plan, ...remaining]) {
+        const tools = left === plan ? left.tools.filter((entry) => { const at = 'point' in entry ? landed.indexOf(entry.point) : -1; if (at >= 0) landed.splice(at, 1); return at < 0; }) : left.tools;
+        for (const entry of [...(left.run ? [left.run] : []), ...tools]) if ('point' in entry) unlanded.push(entry.point); else unlanded.push(`storm (gap ${entry.gapMs} ms)`);
+      }
       break;
     }
     // What the run delivered and its store's hash come from the last runner's own report: nothing is read under the run's directory.
@@ -449,9 +480,11 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     return { processes, kills, record: delivered?.record ?? null, dir, runId, ...(values.record ? { recording: values.record } : {}), usd, maxUsd, overBudget, failedKills, unlanded };
   } finally {
     if (meterTimer) clearInterval(meterTimer);
-    await place.release();
-    await served.close();
-    if (!values.record && !values.dir) await rm(scratch, { recursive: true, force: true });
+    // The backend and the scratch are closed whatever the place did: a place that failed to be made, or to be released, leaves neither open.
+    try { await place?.release(); } finally {
+      await served.close();
+      if (!values.record && !values.dir && !options.keepRun) await rm(scratch, { recursive: true, force: true });
+    }
   }
 }
 
@@ -466,6 +499,7 @@ function summarize(options: DemoOptions, result: DemoResult) {
   if (result.unlanded.length) console.log(`kills that never landed: ${result.unlanded.join(', ')}`);
   console.log(`cost: ${result.usd === null ? 'unknown' : `$${result.usd}`}${result.maxUsd === null ? '' : ` (cap $${result.maxUsd})`}${result.overBudget ? ' — over the cap' : ''}`);
   if (result.recording) console.log(`recording: ${result.recording}`);
+  if (options.keepRun) console.log(`run directory: ${result.dir}`);
 }
 
 /** The demo's `sources.json`: `true` is the one beside `run.ts`; a path is relative to the demo's directory, or to the repository when it starts with `examples/` (as demo.json's schema writes it). */
@@ -476,7 +510,10 @@ function sourcesPath(options: DemoOptions): string {
 
 /** A `--see-also` recording, linked by its directory's name and labeled by its manifest's title: the recording must be a finished one. */
 function seeAlsoOf(path: string): { recording: string; label: string } {
-  let title: string | undefined;
-  try { title = (JSON.parse(readFileSync(join(path, 'manifest.json'), 'utf8')) as { title?: string }).title; } catch { throw new Error(`--see-also ${basename(path)}: not a finished recording (no manifest.json)`); }
-  return { recording: basename(path), label: title ?? basename(path) };
+  const unfinished = () => new Error(`--see-also ${basename(path)}: not a finished recording (it needs a manifest.json with its format and end time, and an events.jsonl)`);
+  let manifest: { title?: unknown; format?: unknown; recorded?: { ended?: unknown } } | undefined;
+  try { manifest = JSON.parse(readFileSync(join(path, 'manifest.json'), 'utf8')); } catch { throw new Error(`--see-also ${basename(path)}: not a finished recording (no manifest.json)`); }
+  // The example stands alone (no validator): a finished recording names its format and its end, and holds its lines.
+  if (!manifest || typeof manifest.format !== 'string' || typeof manifest.recorded?.ended !== 'string' || !existsSync(join(path, 'events.jsonl'))) throw unfinished();
+  return { recording: basename(path), label: typeof manifest.title === 'string' ? manifest.title : basename(path) };
 }
