@@ -483,6 +483,10 @@ describe("the record stream", () => {
 				},
 				down: (from) => real.down(from),
 				close: () => real.close(),
+				covered: (head) => real.covered(head),
+				get kept() {
+					return real.kept;
+				},
 				get paid() {
 					return real.paid;
 				},
@@ -537,6 +541,10 @@ describe("the record stream", () => {
 				},
 				down: (from) => real.down(from),
 				close: () => real.close(),
+				covered: (head) => real.covered(head),
+				get kept() {
+					return real.kept;
+				},
 				get paid() {
 					return real.paid;
 				},
@@ -579,6 +587,10 @@ describe("the record stream", () => {
 				},
 				down: (from) => real.down(from),
 				close: () => real.close(),
+				covered: (head) => real.covered(head),
+				get kept() {
+					return real.kept;
+				},
 				get paid() {
 					return real.paid;
 				},
