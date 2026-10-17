@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
+import { receiptFacts } from "@parcha/pi-vision";
 import { createVisionExtension } from "@parcha/pi-vision/durable";
 import { fakeTranscriptionFetch, pngBytes, SENTINEL_TRANSCRIBER_KEY } from "@parcha/pi-vision/testing";
 import { elevenLabsTranscriber, falTranscriber, openAiTranscriber } from "@parcha/pi-vision/transcribers";
@@ -88,7 +89,8 @@ test("the global answers with the words, files and tells one receipt, reads the 
   assert.deepEqual([again.words, again.costUsd, again.kept], [WORDS, 0.003, true], "read back: the same words, the price it was paid");
   assert.equal(fake.requests.length, 1, "one request for the file");
   const [r] = h.filed;
-  assert.deepEqual([r.tool, r.args.path, r.args.ask, r.args.model, r.args.via, r.facts.kind, r.facts.cost_usd, r.facts.provider], ["look", "film.mp4#t=780,840", "transcribe", "whisper-1", "openai", "audio", 0.003, "openai"]);
+  assert.deepEqual([r.tool, r.args, r.facts.kind, r.facts.cost_usd, r.facts.provider], ["transcribe", { path: "film.mp4#t=780,840", model: "whisper-1", native: false, via: "openai" }, "audio", 0.003, "openai"]);
+  assert.deepEqual(Object.keys(receiptFacts(r)), ["sha256", "kind", "key", "cost_usd", "provider"], "the receipt's facts: the look's, with no fragment");
   assert.equal(r.body, "3.06\t4.30\tTranquility Base here.\n5.50\t5.90\tThe Eagle", "the receipt is the transcript in rows, a row at each pause");
   assert.deepEqual(h.looks.map((l) => l.kept ?? false), [false, true], "told once as paid, then as kept");
   const everything = JSON.stringify({ seen, filed: h.filed, looks: h.looks, misses: h.misses, requests: fake.requests.map((x) => x.fields) });
@@ -102,7 +104,7 @@ test("a transcription that cannot be made throws its code: no model, over the pr
   assert.equal((await ran(none.vision, cwd, ask("landing.mp3"))).value, "no_vision_route: this host gives vision.transcribe no speech-to-text model");
   const fal = fakeTranscriptionFetch("fal", { words: WORDS });
   const capped = host(falTranscriber({ apiKey: key, fetch: fal.fetch, pollMs: 1 }));
-  assert.match((await ran(capped.vision, cwd, ask("big.mp3"))).value, /^over_budget: big\.mp3 is 2600010 bytes, over the 2\.5 MB \(10 minutes 25 seconds at 32 kbps\) fal takes in one request; cut it into shorter pieces/);
+  assert.match((await ran(capped.vision, cwd, ask("big.mp3"))).value, /^over_budget: big\.mp3 is 2600010 bytes, over the 2\.5 MB \(measured: 10 minutes 25 seconds at 32 kbps\) fal takes in one request; cut it into shorter pieces/);
   assert.equal(fal.requests.length, 0, "refused before any request");
   assert.match((await ran(capped.vision, cwd, ask("scan.png"))).value, /^unsupported: scan\.png reads as image, not audio or a video/);
   const refused = fakeTranscriptionFetch("elevenlabs", { words: WORDS, refuse: { status: 401, body: '{"detail":"invalid api key"}' } });
@@ -112,6 +114,25 @@ test("a transcription that cannot be made throws its code: no model, over the pr
   assert.deepEqual(denied.filed.map((r) => [r.status, r.facts.kind, r.facts.cost_usd]), [["failed", "audio", undefined]], "a request that threw has no known price");
   const everything = JSON.stringify([none, capped, denied].map(({ filed, looks, misses }) => ({ filed, looks, misses })));
   assert.equal(everything.includes(SENTINEL_TRANSCRIBER_KEY), false);
+});
+
+test("never words without times: OpenAI's text-only models are refused before any request, and an answer with no word times is a miss at its price, read back without paying", async () => {
+  const cwd = workspace({ "landing.mp3": mp3() });
+  const fake = fakeTranscriptionFetch("openai", { words: WORDS });
+  const named = host(openAiTranscriber({ apiKey: key, fetch: fake.fetch, model: "gpt-4o-transcribe" }));
+  const ask = `try { await vision.transcribe({ path: "landing.mp3" }); return "transcribed"; } catch (error) { return error.message; }`;
+  assert.equal((await ran(named.vision, cwd, ask)).value, "unsupported: OpenAI gives word times only from whisper-1; gpt-4o-transcribe answers with text alone, and vision.transcribe never gives words without their seconds");
+  assert.equal(fake.requests.length, 0, "refused before any request");
+  assert.deepEqual(named.filed.map((r) => [r.tool, r.status, r.facts.cost_usd]), [["transcribe", "failed", 0]]);
+
+  let sent = 0;
+  const textOnly = async () => { sent += 1; return new Response(JSON.stringify({ text: "Tranquility Base here.", duration: 30 }), { headers: { "content-type": "application/json" } }); };
+  const compatible = host(openAiTranscriber({ apiKey: key, fetch: textOnly, baseUrl: "http://speech.invalid/v1", model: "text-only", usdPerMinute: 0.006 }));
+  const seen = await ran(compatible.vision, cwd, twice);
+  assert.deepEqual(seen.value, Array(2).fill("unsupported: openai text-only answered without word times; vision.transcribe never gives words without their seconds, so name a model that times its words"));
+  assert.equal(sent, 1, "asked once: the second call reads the kept answer back");
+  assert.deepEqual(compatible.filed.map((r) => [r.status, r.facts.cost_usd, r.facts.kept ?? false]), [["failed", 0.003, false], ["failed", 0.003, true]], "the paid answer's price, then the same answer kept");
+  assert.deepEqual(compatible.misses.map((m) => m.code), ["unsupported", "unsupported"]);
 });
 
 const CHILD = path.join(import.meta.dirname, "durable", "transcribe-child.mjs");

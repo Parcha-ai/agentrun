@@ -3,6 +3,7 @@
 // and OpenAI's transcriptions with `whisper-1` (the one OpenAI model that gives word times). The host passes a function
 // that returns the key at each request; nothing a transcriber returns or throws carries it. Words come back in one
 // shape whatever the provider gave: `{ text, start, end }` in seconds.
+import { ProviderMiss } from "./core/derive.js";
 import type { Transcriber, TranscriptWord } from "./core/transcribe.js";
 
 type Fetch = typeof globalThis.fetch;
@@ -42,8 +43,8 @@ export type FalTranscriberOptions = Common & {
   readonly pollMs?: number;
 };
 
-/** fal's queue: the audio goes inline as a data URI, measured to work at 2.5 MB (10 minutes 25 seconds at 32 kbps; a
- *  ten-minute piece ffmpeg cuts runs a little over its 2.4 MB) and to fail at 4.8 MB. */
+/** fal's queue: the audio goes inline as a data URI. fal states no size limit; 2.5 MB (10 minutes 25 seconds at 32 kbps;
+ *  a ten-minute piece ffmpeg cuts runs a little over its 2.4 MB) was measured to work, 4.8 MB to fail. */
 export function falTranscriber(options: FalTranscriberOptions): Transcriber {
   const model = options.model ?? "fal-ai/elevenlabs/speech-to-text/scribe-v2";
   const queue = (options.queueUrl ?? "https://queue.fal.run").replace(/\/+$/, "");
@@ -51,7 +52,7 @@ export function falTranscriber(options: FalTranscriberOptions): Transcriber {
   const via = (url: string) => url.replace("https://queue.fal.run", queue);
   const usd = options.usdPerMinute ?? (model === "fal-ai/elevenlabs/speech-to-text/scribe-v2" ? 0.008 : undefined);
   return {
-    provider: "fal", model, maxBytes: 2_500_000, limit: "2.5 MB (10 minutes 25 seconds at 32 kbps)",
+    provider: "fal", model, maxBytes: 2_500_000, limit: "2.5 MB (measured: 10 minutes 25 seconds at 32 kbps)",
     ...(usd === undefined ? {} : { usdPerMinute: usd }),
     async transcribe(audio, request, signal) {
       const auth = { Authorization: `${options.auth === "bearer" ? "Bearer" : "Key"} ${key(options, "fal")}` };
@@ -108,7 +109,9 @@ export function elevenLabsTranscriber(options: ElevenLabsTranscriberOptions): Tr
 }
 
 export type OpenAiTranscriberOptions = Common & {
-  /** Default `whisper-1`: OpenAI gives word times only from it (`verbose_json` with word granularity). */
+  /** Default `whisper-1`: OpenAI gives word times only from it (`verbose_json` with word granularity). At OpenAI's own
+   *  address another model is an `unsupported` miss before any request; a compatible server at `baseUrl` is asked as
+   *  named, and an answer without word times is the same miss. */
   readonly model?: string;
   /** Default `https://api.openai.com/v1`. */
   readonly baseUrl?: string;
@@ -118,11 +121,13 @@ export type OpenAiTranscriberOptions = Common & {
 export function openAiTranscriber(options: OpenAiTranscriberOptions): Transcriber {
   const model = options.model ?? "whisper-1";
   const base = (options.baseUrl ?? "https://api.openai.com/v1").replace(/\/+$/, "");
+  const untimed = base === "https://api.openai.com/v1" && model !== "whisper-1";
   const fetch = options.fetch ?? globalThis.fetch;
   return {
     provider: "openai", model, maxBytes: 25e6, limit: "25 MB",
     ...(options.usdPerMinute === undefined ? {} : { usdPerMinute: options.usdPerMinute }),
     async transcribe(audio, request, signal) {
+      if (untimed) throw new ProviderMiss("unsupported", `OpenAI gives word times only from whisper-1; ${model} answers with text alone, and vision.transcribe never gives words without their seconds`);
       const form = new FormData();
       form.set("model", model);
       form.set("file", new Blob([new Uint8Array(audio.bytes)], { type: audio.mimeType }), audio.name);

@@ -196,9 +196,14 @@ carries it.
 
 | Provider | Key a stranger sets | Transcriber | Model (default) | One request takes |
 | --- | --- | --- | --- | --- |
-| fal | `FAL_KEY` (`Authorization: Key`) | `falTranscriber({ apiKey: () => process.env.FAL_KEY })` | `fal-ai/elevenlabs/speech-to-text/scribe-v2`, $0.008 a minute | 2.5 MB, inline (10 minutes 25 seconds at 32 kbps) |
+| fal | `FAL_KEY` (`Authorization: Key`) | `falTranscriber({ apiKey: () => process.env.FAL_KEY })` | `fal-ai/elevenlabs/speech-to-text/scribe-v2`, $0.008 a minute | 2.5 MB inline, measured (fal states no limit): 10 minutes 25 seconds at 32 kbps |
 | ElevenLabs | `ELEVENLABS_API_KEY` (`xi-api-key`) | `elevenLabsTranscriber({ apiKey: () => process.env.ELEVENLABS_API_KEY })` | `scribe_v2` | 3 GB |
 | OpenAI | `OPENAI_API_KEY` (bearer) | `openAiTranscriber({ apiKey: () => process.env.OPENAI_API_KEY })` | `whisper-1`, the one OpenAI model with word times | 25 MB |
+
+Each transcriber has its own default model, since the providers name them differently; `model` names another. Never
+words without times: a model that answers with text alone is an `unsupported` miss that says so. OpenAI's
+`gpt-4o-transcribe` and `gpt-4o-mini-transcribe` give no word times, so at OpenAI's own address any model but
+`whisper-1` is that miss before any request; any other model that answers without word times is that miss at its price.
 
 A gateway that passes fal's queue through with its own bearer key is `falTranscriber({ apiKey, queueUrl, auth:
 "bearer" })`; fal's own addresses in its answers are rewritten to `queueUrl`.
@@ -212,12 +217,12 @@ const sandbox = new CodemodeSandbox({ tools, globals: [vision.see(api.env, call)
 ```
 
 A file over the provider's limit is an `over_budget` miss that names it, before any request; the agent cuts the file
-into pieces and transcribes each (the `transcribe` skill shows how). Each transcript is filed and told like a look
-(`via` the provider, kind `audio` or `video`, the words as rows in the receipt) at its list price per audio minute,
-the length from the provider or from `ffprobe` in the environment (none known is filed as unknown, never $0), and kept
-as a memo before it is told, so a file asked again, or after a cut call, costs nothing. `usdPerMinute` on a
-transcriber sets the price where the package names none. Without `transcriber`, every transcription is a
-`no_vision_route` miss.
+into pieces and transcribes each (the `transcribe` skill shows how). Each transcript is filed and told in the shape of a
+look, as tool `transcribe` (`args` the path, model and `via` the provider; kind `audio` or `video`; the words as rows of
+start, end and words in the receipt's body), at its list price per audio minute, the length from the provider or from
+`ffprobe` in the environment (none known is filed as unknown, never $0), and kept as a memo before it is told, so a
+file asked again, or after a cut call, costs nothing. `usdPerMinute` on a transcriber sets the price where the package
+names none. Without `transcriber`, every transcription is a `no_vision_route` miss.
 
 ## For a host: what a program is started with
 
