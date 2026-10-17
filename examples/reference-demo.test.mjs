@@ -480,3 +480,42 @@ test('fakes.extensions are for a no-key run: a live host does not install them',
   assert.deepEqual(localHost(await placeAt(join(tmp, 'a')), fakes, { live: false }).host.tools.extensions, [scripted]);
   assert.deepEqual(localHost(await placeAt(join(tmp, 'b')), fakes, { live: true }).host.tools.extensions, []);
 });
+
+test('the model flags reach the demo\'s live part, and are refused without --live or a model with a provider', { timeout: 300_000 }, async (t) => {
+  const programs = [{ name: 'fixture spec', env: 'DEMO_SPEC' }, { name: 'fixture probe', env: 'DEMO_LIVE_PROBE' }];
+  const keys = [[{ env: 'BROWSERBASE_API_KEY' }, { env: 'BROWSERBASE_PROJECT_ID' }]];
+  const browser = Object.fromEntries(['BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID'].map((name) => [name, `value-for-${name.toLowerCase()}`]));
+  const { result } = await run(t, { keys, programs }, ['--json', '--live', '--provider', 'openai', '--model', 'gpt-6', '--eyes-model', 'gemini-4'], { DEMO_LIVE_PROBE: '1', ...browser });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.deepEqual(JSON.parse(readFileSync(join(result.dir, 'models-seen.json'), 'utf8')), { provider: 'openai', model: 'gpt-6', eyesModel: 'gemini-4' });
+  await assert.rejects(() => run(t, {}, ['--json', '--model', 'gpt-6']), /need --live/);
+  await assert.rejects(() => run(t, { keys, programs }, ['--json', '--live', '--provider', 'openai'], { DEMO_LIVE_PROBE: '1', ...browser }), /--provider needs --model/);
+});
+
+test('the manifest hook adds fields, the run is named by the input file, and --see-also links finished recordings by name', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-manifest-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const earlier = join(tmp, 'weak-eyes-pass');
+  mkdirSync(earlier);
+  writeFileSync(join(earlier, 'manifest.json'), JSON.stringify({ title: 'A weak-eyes pass', format: 'agentrun.recording/1', recorded: { started: '2026-10-16T00:00:00.000Z', ended: '2026-10-16T00:01:00.000Z' } }));
+  writeFileSync(join(earlier, 'events.jsonl'), '');
+  writeFileSync(join(tmp, 'apollo-11.json'), '{"company":"Acme Ltd"}');
+  const first = await run(t, {}, ['--json', '--input', join(tmp, 'apollo-11.json'), '--see-also', earlier], { DEMO_MANIFEST: '1' });
+  const manifest = JSON.parse(readFileSync(join(first.recording, 'manifest.json'), 'utf8'));
+  assert.deepEqual(manifest.sources, [{ file: 'a.pdf', sha256: 'ab' }]);
+  assert.deepEqual(manifest.models, { lead: 'x' });
+  assert.equal(manifest.source.run, 'reference-apollo-11');
+  assert.deepEqual(manifest.see_also, [{ recording: 'weak-eyes-pass', label: 'A weak-eyes pass' }], 'linked by name, not by the path on this machine');
+  assert.equal(manifest.format, 'agentrun.recording/1');
+  const plain = await run(t, {}, ['--json']);
+  const bare = JSON.parse(readFileSync(join(plain.recording, 'manifest.json'), 'utf8'));
+  assert.equal(bare.source.run, 'reference');
+  assert.ok(!('see_also' in bare));
+  await assert.rejects(() => run(t, {}, ['--json'], { DEMO_MANIFEST: 'reserved' }), /"source" is written by the entry/);
+  await assert.rejects(() => run(t, {}, ['--json', '--see-also', join(tmp, 'nope')]), /not a finished recording/);
+  // A manifest with only a title is no recording: it has no format, no end and no lines.
+  const titled = join(tmp, 'titled');
+  mkdirSync(titled);
+  writeFileSync(join(titled, 'manifest.json'), JSON.stringify({ title: 'Earlier pass' }));
+  await assert.rejects(() => run(t, {}, ['--json', '--see-also', titled]), /not a finished recording/);
+});

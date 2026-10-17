@@ -178,6 +178,10 @@ export type Header = {
   result?: { blob: string; title: string };
   /** `real` when every priced part (model, eyes, browser, a door's outside call) is a real provider's; `scripted` when any is served by a fake, a cassette or a script. Default `scripted`: the reference example's parts are the faux's. */
   providers?: 'real' | 'scripted';
+  /** Other recorded runs of this demo, linked only. */
+  see_also?: { recording: string; label: string }[];
+  /** Manifest fields the demo adds (never one the entry writes itself). */
+  extra?: Record<string, unknown>;
 };
 
 const readLines = (path: string): Record<string, unknown>[] => {
@@ -213,9 +217,9 @@ export function finishRecording(dir: string, header: Header): { lines: number } 
   writeFileSync(join(dir, 'events.jsonl'), all.map((line) => JSON.stringify(line)).join('\n') + (all.length ? '\n' : ''));
   const store = existsSync(header.source.store) ? createHash('sha256').update(readFileSync(header.source.store)).digest('hex') : '0'.repeat(64);
   const started = readFileSync(startedFile(dir), 'utf8');
-  const { source, cost, generations, ...rest } = header;
+  const { source, cost, generations, extra, ...rest } = header;
   const started_ = all.filter((line) => line.source === 'host' && line.kind === 'process.started').length;
-  const manifest = JSON.stringify({ format: FORMAT, providers: 'scripted', ...rest, generations: generations ?? Math.max(1, started_), cost: typeof cost === 'function' ? cost(all) : cost, recorded: { started, ended: new Date().toISOString() }, source: { run: source.run, store_sha256: store } }, null, 2) + '\n';
+  const manifest = JSON.stringify({ ...extra, format: FORMAT, providers: 'scripted', ...rest, generations: generations ?? Math.max(1, started_), cost: typeof cost === 'function' ? cost(all) : cost, recorded: { started, ended: new Date().toISOString() }, source: { run: source.run, store_sha256: store } }, null, 2) + '\n';
   const inManifest = credentialInFile('manifest.json', manifest);
   const found = [...scanRecording(dir), ...(inManifest ? [{ file: 'manifest.json', found: inManifest }] : [])];
   if (found.length) {
