@@ -943,6 +943,53 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 		);
 
 		it(
+			"restores into another box when the box that took the session is gone before its restore is finished",
+			async () => {
+				const made = world(setup);
+				try {
+					let refused = 0;
+					const provider = rigged(made.provider, (box, n) =>
+						n !== 2
+							? box
+							: withExec(box, async (argv, run) => {
+									if (refused === 0 && argv.includes("--session")) {
+										refused += 1;
+										return err(new BoxError("unknown", "the test refuses the runner"));
+									}
+									return run();
+								}),
+					);
+					const place = await placeIn(made, { provider });
+					const runner = await place.start(orderOf(made, place, 1, { PARK_AT: "2" }));
+					await firstSignal(place, 1, "kill-request");
+					expect(await place.checkpoint()).toEqual({ taken: true });
+					await place.kill(runner, "box");
+					await runner.exited;
+					await place.recover(runner, "box", orderOf(made, place, 2)).catch(() => undefined);
+					expect((await place.status()).record).toMatchObject({ generation: 2, holder: { host: "box-2" } });
+					// The box that took the session is lost too, before the supervisor asks again.
+					const second = getOrThrow(await made.provider.attach(made.ids[1] as string, context));
+					getOrThrow((await second?.destroy(context)) ?? ok(undefined));
+					const recovered = await place.recover(runner, "box", orderOf(made, place, 3));
+					expect(recovered.runner.epoch).toBe(3);
+					expect(recovered.restored).toEqual({ checkpoint: expect.any(String), head: expect.any(Number) });
+					const exit = await recovered.runner.exited;
+					expect(exit.outcome?.record).toMatchObject({ done: 3, resumedFrom: 2 });
+					expect((await place.status()).record).toMatchObject({ generation: 3, holder: { host: "box-3" } });
+					expect(
+						made.lines
+							.filter(({ kind }) => kind === "restore")
+							.map(({ data }) => [(data.from as { box: string }).box, (data.to as { box: string }).box]),
+					).toEqual([["box-2", "box-3"]]);
+					await place.release();
+				} finally {
+					made.remove();
+				}
+			},
+			(setup.timeoutMs ?? 60_000) * 2,
+		);
+
+		it(
 			"reads a restored runner's kill request in its new box, from the request file the place named before the loss",
 			async () => {
 				const made = world(setup);
