@@ -1410,6 +1410,23 @@ test('code mode is off by default; on, the agent\'s `code` tool runs a script wh
   assert.equal(readFileSync(join(spec.result.dir, 'work', 'proof.txt'), 'utf8').trim(), 'hello');
 });
 
+test('code mode: a command\'s output is clipped while it streams (head kept, the rest counted), a command stops with its script, and the tool\'s description carries the declaration of vision.see', { timeout: 300_000 }, async (t) => {
+  // Output: 100000 characters from one command; the script is given the first 100 and a count of the rest.
+  const loud = ['const ran = await tools.bash({ command: "head -c 100000 /dev/zero | tr \'\\\\0\' x" });', 'await tools.bash({ command: "printf %s " + JSON.stringify(ran.output) + " > out.txt" });', 'return ran.output.length;'].join('\n');
+  const clipped = await run(t, { codeMode: { outputChars: 100 } }, ['--json'], { DEMO_CODE: loud, DEMO_CODE_ON: '' });
+  const out = readFileSync(join(clipped.result.dir, 'work', 'out.txt'), 'utf8');
+  assert.ok(out.startsWith('x'.repeat(100)) && out.includes('[99900 more characters not shown]') && out.length < 200, `the script got the head and a count: ${out.slice(0, 160)}`);
+  // Cancellation: the script's deadline passes while a command is sleeping; the command does not go on to write its file.
+  const slow = 'await tools.bash({ command: "sleep 4; echo late > late.txt" }); return 1;';
+  const cut = await run(t, { codeMode: { timeoutMs: 1500 } }, ['--json'], { DEMO_CODE: slow, DEMO_CODE_ON: '' });
+  await new Promise((resolve) => setTimeout(resolve, 6000));
+  assert.ok(!existsSync(join(cut.result.dir, 'work', 'late.txt')), 'the command stopped with its script');
+  // The declaration the model reads is in the tool\'s description.
+  const { codeModeExtension } = await import('./reference/code-mode.ts');
+  const tool = codeModeExtension({ see: () => ({ signature: '(request: { ask: string }): Promise<{ text: string }>', description: 'Ask the eyes about images.' }) }, {}).tools[0];
+  assert.match(tool.description, /vision\.see` is declared as `\(request: \{ ask: string \}\): Promise<\{ text: string \}>`: Ask the eyes about images\./);
+});
+
 test('a run.json line is an allowlist: a holder\'s sandbox id, name and mountpoint and any other field are dropped, and a detail is text of at most 240 with every absolute path as <path>', { timeout: 300_000 }, async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-allowlist-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
