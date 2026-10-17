@@ -134,6 +134,14 @@ test("the length is found before the paid request, so nothing runs between a pai
   assert.equal(again.kept, true);
 });
 
+test("each word is one line with no tab, so the receipt's rows and a transcript file split where they should", async () => {
+  const said = [{ text: "Tranquility\nROWS\n", start: 3.06, end: 3.7 }, { text: "Base\there", start: 3.7, end: 4.3 }, { text: " \n ", start: 4.3, end: 4.4 }];
+  const h = host({ provider: "fake", model: "fake-stt", transcribe: async () => ({ words: said, text: "Tranquility Base here" }) });
+  const seen = await ran(h.vision, workspace({ "landing.mp3": mp3() }), `return (await vision.transcribe({ path: "landing.mp3" })).words;`);
+  assert.deepEqual(seen.value.map((w) => w.text), ["Tranquility ROWS", "Base here"], "inner whitespace one space, an empty word dropped");
+  assert.equal(h.filed[0].body, "3.06\t4.30\tTranquility ROWS Base here");
+});
+
 test("a transcription that cannot be made throws its code: no model, over the provider's limit (named), not audio, a refused request; the key in none", async () => {
   const none = host();
   const cwd = workspace({ "landing.mp3": mp3(), "big.mp3": mp3(2_600_000), "scan.png": pngBytes(40, 30) });
