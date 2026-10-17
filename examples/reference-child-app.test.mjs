@@ -89,3 +89,31 @@ test('nothing is written under the run\'s directory before the claim is open: th
   assert.ok(lines.some((line) => line.source === 'host' && line.kind === 'process.started'));
   await prepared.recorder.detach();
 });
+
+test('a demo module that calls demo(options) at its top level, as its own command does, is safe to import for the app: the nested graph fixture runs to the end through it', { timeout: 180_000 }, async (t) => {
+  const nested = new URL('./fixtures/graph-nested/run.ts', import.meta.url).href;
+  const { dir, start } = await instance(t, { DEMO_ENTRY: nested });
+  const result = await start();
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.outcome.status, 'complete');
+  assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).status, 'done');
+});
+
+test('a job that must run in a box is refused under the app, not run outside the box: the app cannot take the box as its environment', { timeout: 60_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-app-box-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const spec = join(tmp, 'demo.json');
+  writeFileSync(spec, JSON.stringify({ name: 'reference' }));
+  process.env.DEMO_SPEC = spec;
+  const { options } = await import(FIXTURE.href);
+  const { prepareChild } = await import('./reference/demo.ts');
+  const place = { id: 'reference', root: join(tmp, 'root'), work: join(tmp, 'root', 'work'), store: join(tmp, 'root', 'store') };
+  await assert.rejects(() => prepareChild({ ...options, spec: { ...options.spec, boxes: { kind: 'local', runIn: true } } }, { BACKEND: 'http://127.0.0.1:1' }, place), /boxes\.runIn is not supported under pi-durable-disk run --app/);
+});
+
+test('the run\'s final status carries the models the live parts chose, so a place that reads only run.json (a box place) hands them to manifest() too', async () => {
+  const { finalDetail } = await import('./reference/assemble.ts');
+  const done = { status: 'complete', generation: 1, output: { company: 'Acme' } };
+  assert.deepEqual(finalDetail(done, 'ab', { models: { lead: 'openai/gpt-6-luna', eyes: 'google/gemini-3.8-flash' } }), { status: 'complete', record: { company: 'Acme' }, storeSha256: 'ab', models: { lead: 'openai/gpt-6-luna', eyes: 'google/gemini-3.8-flash' } });
+  assert.deepEqual(finalDetail({ status: 'refused', generation: 1, code: 'X', message: 'm' }, undefined), { status: 'refused' }, 'nothing extra when the live parts chose none');
+});
