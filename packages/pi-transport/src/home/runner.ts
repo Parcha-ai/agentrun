@@ -13,6 +13,7 @@ import { type Home, type HomeOptions, openHome, type ResumeOrder } from "./run.t
 
 /** How long a model request, or a seal waiting for the host to hold every commit, waits for a lost link. */
 const DEFAULT_RESUME_WITHIN_MS = 30_000;
+const DEFAULT_CROSSING_MS = 10_000;
 
 /** The exit code of a runner the host refused: its epoch is not the lease's. Its launcher must not start it again. */
 export const EXIT_REFUSED = 75;
@@ -21,6 +22,8 @@ export const EXIT_REFUSED = 75;
 export type RunnerOptions = Omit<HomeOptions, "models" | "wrapStore"> & {
 	/** How long a model request waits for a lost link to come back. Default 30 s. */
 	readonly resumeWithinMs?: number;
+	/** How long a tool the host holds at its start waits for the host's `call-ack`. Default 10 s: past it the tool runs. */
+	readonly crossingMs?: number;
 	/**
 	 * The recorder to run in this process when the host takes the record stream: `@parcha/agentrun-pi/durable`'s
 	 * `snapshotLines` and `recordCommits`. Without it the host still gets every commit's writes, and no lines.
@@ -81,6 +84,9 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 		| undefined;
 	let home: Home | undefined;
 	let current: Link | undefined;
+	// Tools the host holds at their start (its `crossing`): a call waits for `call-ack` of its id, for `crossingMs` at most.
+	let holdTools = false;
+	const toolAcks = new Map<string, () => void>();
 	let finished = false;
 	let end: (how: RunnerEnd) => void = () => {};
 	const ended = new Promise<RunnerEnd>((resolve) => {
@@ -133,6 +139,8 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 			case "abandon":
 				home.abandon();
 				return { ok: true as const, value: null };
+			case "checkpoint":
+				return home.checkpoint(args as DrainOptions, within);
 			case "seal": {
 				// A move seals only what the host holds: the sealed store and the host's log end at the same commit.
 				const shipper = opening?.shipper;
@@ -194,6 +202,7 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 			link.close(`the host speaks version ${String(frame.v)} of the link; this runner speaks ${LINK_VERSION}`);
 			return;
 		}
+		holdTools = frame.crossing === true;
 		if (opening === undefined) {
 			// The host takes the record stream: every commit of this runner is shipped, from its first.
 			const shipper =
@@ -219,6 +228,24 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 				home: openHome({
 					...homeOptions,
 					models: made.models,
+					// Told to the host as they happen, small and without arguments. A link that is down drops them.
+					onCall: async (event) => {
+						const to = current;
+						if (to === undefined) return;
+						send(to, { t: "call", ...event });
+						if (event.phase !== "start" || !holdTools) return;
+						await new Promise<void>((resolve) => {
+							const timer = setTimeout(() => {
+								toolAcks.delete(event.id);
+								resolve();
+							}, options.crossingMs ?? DEFAULT_CROSSING_MS);
+							toolAcks.set(event.id, () => {
+								clearTimeout(timer);
+								toolAcks.delete(event.id);
+								resolve();
+							});
+						});
+					},
 					...(shipper === undefined ? {} : { wrapStore: shipper.wrapStore(options.store) }),
 					...(keys === undefined ? {} : { extensions: [...(options.extensions ?? []), keys.extension] }),
 				}),
@@ -258,6 +285,7 @@ export function createRunner(options: RunnerOptions, context: Context = BACKGROU
 				if (frame.t === "hello") void hello(link, frame);
 				else if (frame.t === "refused") void stop("refused", EXIT_REFUSED, String(frame.reason ?? "refused"));
 				else if (frame.t === "cancel") running.get(frame.id)?.();
+				else if (frame.t === "call-ack") toolAcks.get(String(frame.id))?.();
 				else if (proxy?.receive(frame)) return;
 				else if (opening?.shipper?.receive(frame)) return;
 				else if (frame.t === "order") {

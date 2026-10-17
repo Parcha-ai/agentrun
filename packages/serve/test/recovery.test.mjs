@@ -82,6 +82,101 @@ test("a run released but not carried back when its server stopped is carried bac
   assert.equal((await readAgentHome({ dir: join(data, "calc") })).runs[runId].outcome, "completed");
 });
 
+test("a run store still locked when the next server reads it is read again once free, so the run still ends final", async (t) => {
+  const { data, runId, pid } = await crashMidRun(t, "Answer soon.");
+  await sleep(2_500);
+  process.kill(pid, "SIGTERM");
+  for (let i = 0; alive(pid); i++) {
+    assert.ok(i < 200, "the run's process exits on SIGTERM");
+    await sleep(50);
+  }
+  // Another holder keeps the run's store locked across the next server's start, as the run's own process does until it exits.
+  const store = new DatabaseSync(join(data, "calc", "runs", runId, "store", "run.sqlite"), { timeout: 0 });
+  store.exec("PRAGMA locking_mode = EXCLUSIVE");
+  store.exec("BEGIN EXCLUSIVE");
+  store.exec("COMMIT");
+  let busy;
+  const refused = new Promise((resolve) => (busy = resolve));
+  const next = await startServe({ data, port: 0, faux: FAUX, carryBackRetry: { delaysMs: Array(20).fill(50), onBusy: (id) => busy(id) } });
+  t.after(() => next.close());
+  assert.equal(await Promise.race([refused, sleep(10_000).then(() => "the locked store was never tried again")]), runId);
+  store.close();
+  const api = client(next.baseUrl, next.token);
+  const { last } = await follow(api, runId, ["completed"]);
+  assert.equal(last.final, true);
+  assert.equal((await readAgentHome({ dir: join(data, "calc") })).runs[runId].outcome, "completed");
+});
+
+/** A run that answered and released, shown to the next server as still running under a stand-in process that stays
+ *  alive: what a server adopts when the run's process outlived the server before it. `release()` then writes the run's
+ *  released record, still naming the live stand-in. */
+async function adoptedStandIn(t) {
+  const { data, runId, pid } = await crashMidRun(t, "Answer soon.");
+  await sleep(2_500);
+  process.kill(pid, "SIGTERM");
+  for (let i = 0; alive(pid); i++) {
+    assert.ok(i < 200, "the run's process exits on SIGTERM");
+    await sleep(50);
+  }
+  const file = join(data, "calc", "runs", runId, "run.json");
+  const released = JSON.parse(await readFile(file, "utf8"));
+  const standIn = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  t.after(() => standIn.kill("SIGKILL"));
+  const holder = { ...released.holder, pid: standIn.pid, serve: "http://127.0.0.1:9" };
+  await writeFile(file, JSON.stringify({ ...released, status: "running", heartbeatAt: new Date().toISOString(), holder }));
+  return { data, runId, standIn, release: () => writeFile(file, JSON.stringify({ ...released, holder })) };
+}
+
+/** The next server, once it has adopted the run: a read of the run answers only after the server has taken it up. */
+async function adopting(t, data, runId, options = {}) {
+  const next = await startServe({ data, port: 0, faux: FAUX, ...options });
+  t.after(() => next.close());
+  const api = client(next.baseUrl, next.token);
+  assert.equal((await api("GET", `/runs/${runId}`)).status, 200);
+  return api;
+}
+
+test("an adopted run that released is read only once its process has exited, so its store is never read while held", async (t) => {
+  const { data, runId, standIn, release } = await adoptedStandIn(t);
+  let busy = 0;
+  const api = await adopting(t, data, runId, { carryBackRetry: { delaysMs: Array(20).fill(50), onBusy: () => busy++ } });
+  const store = new DatabaseSync(join(data, "calc", "runs", runId, "store", "run.sqlite"), { timeout: 0 });
+  store.exec("PRAGMA locking_mode = EXCLUSIVE");
+  store.exec("BEGIN EXCLUSIVE");
+  store.exec("COMMIT");
+  await release();
+  await sleep(2_000);
+  assert.equal(busy, 0, "the store was not read while the run's process lived");
+  assert.equal((await api("GET", `/runs/${runId}/timeline?after=0`)).body.final, false);
+  store.close();
+  standIn.kill("SIGKILL");
+  const { last } = await follow(api, runId, ["completed"]);
+  assert.equal(last.final, true);
+  assert.equal((await readAgentHome({ dir: join(data, "calc") })).runs[runId].outcome, "completed");
+});
+
+test("an adopted run whose process lives on 30 s after it released is read anyway, and the server says so", async (t) => {
+  const { data, runId, release } = await adoptedStandIn(t);
+  const lines = [];
+  const write = process.stderr.write;
+  process.stderr.write = function (chunk, ...rest) {
+    lines.push(String(chunk));
+    return write.call(this, chunk, ...rest);
+  };
+  t.after(() => (process.stderr.write = write));
+  const api = await adopting(t, data, runId);
+  await release();
+  const releasedAt = Date.now();
+  let page;
+  for (let i = 0; !(page = (await api("GET", `/runs/${runId}/timeline?after=0`)).body).final; i++) {
+    assert.ok(i < 240, "the run ends final within a minute of its release");
+    await sleep(250);
+  }
+  assert.ok(Date.now() - releasedAt >= 30_000, "it waited the 30 s for the process to exit first");
+  assert.equal(page.status, "completed");
+  assert.ok(lines.some((line) => line.includes(runId) && line.includes("has not exited; reading its store anyway")));
+});
+
 test("Idempotency-Key answers outlive a restart for the retention capabilities state", async (t) => {
   const data = join(await scratch(t), "agents");
   const one = await startServe({ data, port: 0, faux: FAUX });
