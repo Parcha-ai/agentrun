@@ -1,6 +1,6 @@
 ---
 name: transcribe
-description: Turn the speech in a long video or audio file into one timestamped transcript file, then search it with rg to find where something is said, to the second. Use when a question is about what is said in a recording, or to narrow where to look in a long video before looking at its frames, and cite each answer as file#t=seconds.
+description: Turn the speech in a long video or audio file into one timestamped transcript file with vision.transcribe, then search it with rg to find where something is said, to the second. Use when a question is about what is said in a recording, or to narrow where to look in a long video before looking at its frames, and cite each answer as file#t=seconds.
 ---
 
 # Transcribe a long video, then search it
@@ -9,30 +9,29 @@ Write the transcript once, then search the file as often as you like. It is one 
 at a pause or after 20 words): start and end in seconds of the whole video, then the words. A row is a citation:
 `talk.mp4#t=803.06`.
 
-The steps run in a shell. The speech-to-text model runs on fal's queue, reached through the host: the host gives the
-queue's address as `FAL_QUEUE_URL` (by default `$OPENAI_BASE_URL` without its `/v1`, plus `/fal-queue`) and its key as
-`OPENAI_API_KEY`, sent as a bearer token. The task or the host names the model; Scribe v2 is the default here. Never
-write a URL or a key into a file or a command you print.
+Steps 1, 2, 4 and 5 run in a shell. Step 3 runs in code mode, where `tools.bash({ command })` runs a command and returns
+its output, and `vision.transcribe({ path, fragment })` has the host's speech-to-text model write what one audio file
+says: `{ words: [{ text, start, end }], text, provider, model, costUsd, receipts, kept }`, the times in seconds of that
+file. The host picks the model, holds its key and pays for it; you never handle an address or a key.
 
-Where the shell has no network, the host names another way to make this call with the same arguments (the model, the
-audio file, word timestamps); use it in place of `curl` in step 3.
-
-## 1. Name the video, the chunk length and the model
+## 1. Name the video and the chunk length
 
 Each video gets its own folder under `.hear`, named by a hash of its path (its `video` file says which), so two videos
-never share audio, chunks or a transcript. Name a video the same way each time to find its transcript again.
+never share audio, chunks or a transcript. Name a video the same way each time to find its transcript again. The last
+line prints the folder: step 3 names it.
 
 ```bash
-: "${VIDEO:=talk.mp4}" "${CHUNK:=600}" "${STT_MODEL:=fal-ai/elevenlabs/speech-to-text/scribe-v2}"
+: "${VIDEO:=talk.mp4}" "${CHUNK:=600}"
 H=".hear/$(node -p 'require("crypto").createHash("sha256").update(process.argv[1]).digest("hex").slice(0, 16)' "$VIDEO")"
-mkdir -p "$H" && printf '%s\n' "$VIDEO" > "$H/video"
+mkdir -p "$H" && printf '%s\n' "$VIDEO" > "$H/video" && echo "$H"
 ```
 
 ## 2. Strip the audio once, then cut it in chunks
 
-16 kHz mono is all speech needs, about 14 MB an hour. Ten-minute chunks keep each call small; ffmpeg writes where each
-one starts in `chunks.csv`, so the words get the time of the whole video. Each file is written under a temporary name
-and renamed once it is complete, so a run that was cut short is redone, never taken as done.
+16 kHz mono is all speech needs, about 14 MB an hour. A ten-minute chunk at 32 kbps is about 2.4 MB, which every model
+the host can name takes in one request; ffmpeg writes where each one starts in `chunks.csv`, so the words get the time
+of the whole video. Each file is written under a temporary name and renamed once it is complete, so a run that was cut
+short is redone, never taken as done.
 
 ```bash
 [ -s "$H/audio.mp3" ] || { ffmpeg -v error -y -i "$VIDEO" -vn -ac 1 -ar 16000 -b:a 32k "$H/audio.tmp.mp3" &&
@@ -44,75 +43,43 @@ and renamed once it is complete, so a run that was cut short is redone, never ta
 
 ## 3. Transcribe each chunk, never twice
 
-Each chunk goes to the queue once, as a data URI: a 10-minute chunk at 32 kbps is a 3.2 MB request, which the queue
-takes; a 20-minute one comes back with an error instead of words. The queue answers with a request id and two
-addresses on fal's own host: call them through `FAL_QUEUE_URL` instead. The submit answer is kept as `c000.req.json`
-and the transcript as `c000.json`: a chunk with a transcript is never sent again, and one with only a request is
-polled, never sent again, so a run cut short pays for nothing twice. Each chunk is a paid call: at Scribe v2's list
-price, $0.008 an audio minute, an hour is six chunks and about $0.48. Stop when the task's budget would be passed.
+Each chunk's rows are kept beside it as `c000.tsv`: a chunk that has them is never sent again, and `vision.transcribe`
+keeps each answer it paid for, so a run cut short pays for nothing twice. Each word's time is its chunk's start plus its
+own; a pause of 0.8 s or more starts a new row. Each chunk is a paid call, and `costUsd` says what it cost: at Scribe
+v2's list price, $0.008 an audio minute, an hour is six chunks and about $0.48. Stop when the task's budget would be
+passed. A call that cannot be made throws an Error whose message starts with its code (`no_vision_route` when this run
+has no speech-to-text model, `over_budget` naming the model's limit, `look_failed`); the chunks done so far stay done.
 
-```bash
-: "${FAL_QUEUE_URL:=${OPENAI_BASE_URL%/v1}/fal-queue}"
-H="$H" FAL_QUEUE_URL="$FAL_QUEUE_URL" STT_MODEL="$STT_MODEL" node --input-type=module -e '
-import fs from "node:fs";
-const { H: dir, FAL_QUEUE_URL: queue, STT_MODEL: model, OPENAI_API_KEY: key } = process.env;
-const auth = { Authorization: `Bearer ${key}` };
-const via = (url) => url.replace("https://queue.fal.run", queue);
-const keep = (file, value) => { fs.writeFileSync(file + ".tmp", JSON.stringify(value)); fs.renameSync(file + ".tmp", file); };
-const json = async (res, what) => {
-  if (!res.ok) throw new Error(what + ": " + res.status + " " + (await res.text()).slice(0, 300));
-  return res.json();
-};
-for (const line of fs.readFileSync(dir + "/chunks.csv", "utf8").trim().split("\n")) {
-  const chunk = dir + "/" + line.split(",")[0].replace(/\.mp3$/, "");
-  if (fs.existsSync(chunk + ".json")) continue;
-  if (!fs.existsSync(chunk + ".req.json")) {
-    const body = JSON.stringify({ audio_url: "data:audio/mpeg;base64," + fs.readFileSync(chunk + ".mp3").toString("base64") });
-    const res = await fetch(queue + "/" + model, { method: "POST", headers: { ...auth, "Content-Type": "application/json" }, body });
-    keep(chunk + ".req.json", await json(res, "submit " + chunk));
+```js
+const video = "talk.mp4", H = ".hear/1541da8e8c9bd056"; // the folder step 1 printed
+const done = [];
+for (const line of (await tools.bash({ command: `cat ${H}/chunks.csv` })).trim().split("\n")) {
+  const [file, start, end] = line.split(",");
+  const rows = `${H}/${file.replace(/\.mp3$/, ".tsv")}`;
+  if ((await tools.bash({ command: `[ -e ${rows} ] && echo kept || echo new` })).trim() === "kept") continue;
+  const heard = await vision.transcribe({ path: `${H}/${file}`, fragment: `${video}#t=${Number(start)},${Number(end)}` });
+  const out = [];
+  for (const w of heard.words) {
+    const at = Number(start) + w.start, row = out.at(-1);
+    if (row && at - row.end < 0.8 && row.words.length < 20) row.words.push(w.text);
+    else out.push({ start: at, words: [w.text] });
+    out.at(-1).end = Number(start) + w.end;
   }
-  const req = JSON.parse(fs.readFileSync(chunk + ".req.json", "utf8"));
-  let status = "IN_QUEUE";
-  for (let i = 0; i < 600 && !["COMPLETED", "FAILED", "CANCELLED"].includes(status); i++) {
-    if (i) await new Promise((done) => setTimeout(done, 1000));
-    status = (await json(await fetch(via(req.status_url), { headers: auth }), "poll " + chunk + " (its request is kept)")).status;
-  }
-  if (status !== "COMPLETED") throw new Error(chunk + ": " + status + "; remove " + chunk + ".req.json to send it again");
-  const answer = await json(await fetch(via(req.response_url), { headers: auth }), "fetch " + chunk + " (its request is kept)");
-  if (!Array.isArray(answer.words)) throw new Error(chunk + ": " + JSON.stringify(answer).slice(0, 300) + "; remove " + chunk + ".req.json to send it again");
-  keep(chunk + ".json", answer);
+  const tsv = out.map((r) => `${r.start.toFixed(2)}\t${r.end.toFixed(2)}\t${r.words.join(" ")}\n`).join("");
+  await tools.bash({ command: `cat > ${rows}.tmp <<'ROWS'\n${tsv}ROWS\nmv ${rows}.tmp ${rows}` });
+  done.push({ file, rows: out.length, costUsd: heard.costUsd, receipts: heard.receipts });
 }
-'
+return done;
 ```
 
 ## 4. Write one transcript of the whole video
 
-Each word's time is its chunk's start plus its own; a pause of 0.8 s or more starts a new row. The words come as
-`{ word, start, end }` (OpenAI's `verbose_json`) or as `{ text, start, end, type }` (fal and ElevenLabs, with `spacing`
-entries between words): read both.
+The chunks' rows, in order. A chunk without its rows stops this step with an error, so a transcript never leaves out a
+piece of the video without saying so.
 
 ```bash
-H="$H" node -e '
-const fs = require("fs");
-const dir = process.env.H;
-const rows = [];
-let row = null;
-for (const line of fs.readFileSync(dir + "/chunks.csv", "utf8").trim().split("\n")) {
-  const [file, start] = line.split(",");
-  const { words = [] } = JSON.parse(fs.readFileSync(dir + "/" + file.replace(/\.mp3$/, ".json"), "utf8"));
-  for (const w of words) {
-    if (w.type && w.type !== "word") continue;
-    const text = String(w.word ?? w.text).trim();
-    const at = Number(start) + w.start;
-    if (row && (at - row.end >= 0.8 || row.words.length === 20)) { rows.push(row); row = null; }
-    row ??= { start: at, words: [] };
-    row.end = Number(start) + w.end;
-    row.words.push(text);
-  }
-}
-if (row) rows.push(row);
-fs.writeFileSync(dir + "/transcript.tsv", rows.map((r) => [r.start.toFixed(2), r.end.toFixed(2), r.words.join(" ")].join("\t")).join("\n") + "\n");
-'
+(cd "$H" && sed 's/\.mp3,.*/.tsv/' chunks.csv | xargs cat) > "$H/transcript.tmp.tsv" &&
+  mv "$H/transcript.tmp.tsv" "$H/transcript.tsv"
 ```
 
 ## 5. Search it
