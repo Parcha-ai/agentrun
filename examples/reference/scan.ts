@@ -1,7 +1,9 @@
 // The one scan for what a published recording must never hold: a credential's shape or a machine path. It lives here so a
 // copied example keeps it: the recorder (record.ts) scans a recording before it finishes one, and the repository's
 // validator and the hosted gallery's gate (scripts/recording/) import this same module.
+import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
+import { hostname, networkInterfaces, userInfo } from 'node:os';
 import { join, relative } from 'node:path';
 
 /** The credential shapes a published recording must never hold, with the machine paths. The source export keeps its own
@@ -66,3 +68,60 @@ export function scanRecording(dir: string): { file: string; found: string }[] {
   walk(dir);
   return out;
 }
+
+/** One of this machine's own values, and what it is. */
+export type MachineValue = { kind: string; value: string };
+const TAILNET = /^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/;
+
+/** What a machine says about itself: its host name, boot id (empty when it has none), home directory and network addresses. */
+export type MachineReading = { hostname: string; bootId: string; homedir: string; addresses: string[] };
+
+/** This machine's own reading: Linux's `/proc/sys/kernel/random/boot_id` or macOS's `kern.bootsessionuuid` for the boot id. */
+export function readMachine(): MachineReading {
+  let bootId = '';
+  try { bootId = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(); } catch { /* not Linux */ }
+  if (!bootId && process.platform === 'darwin') try { bootId = execFileSync('sysctl', ['-n', 'kern.bootsessionuuid'], { encoding: 'utf8' }).trim(); } catch { /* no sysctl */ }
+  let homedir = '';
+  try { homedir = userInfo().homedir; } catch { /* a user with no entry */ }
+  return { hostname: hostname(), bootId, homedir, addresses: Object.values(networkInterfaces()).flatMap((each) => (each ?? []).map((address) => address.address)) };
+}
+
+/** Home directories every machine has the same way: they name no one, and `/root` is also where a workflow's execution
+ *  paths start (`/root/steps/0`). */
+const SHARED_HOMES = new Set(['/', '/root', '/var/root']);
+
+/** A machine's own values, from its reading (this machine's, read when asked, by default) and never written anywhere: its
+ *  host name and the short form before the first dot, its boot id, its home directory, and each address it has in
+ *  100.64.0.0/10 (a tailnet's; the addresses, never the range). A recording or a fixture made on it holds none of them.
+ *  A value that names nothing of its own is not taken, since it would match ordinary text: a name under 4 characters or
+ *  `localhost`, a boot id under 16, a home directory every machine shares (`/`, `/root`, `/var/root`). */
+export function machineValues(reading: MachineReading = readMachine()): MachineValue[] {
+  const found: MachineValue[] = [];
+  const add = (kind: string, value: string) => { if (!found.some((each) => each.value === value)) found.push({ kind, value }); };
+  for (const each of [reading.hostname, reading.hostname.split('.')[0] ?? '']) if (each.length >= 4 && each !== 'localhost') add('host name', each);
+  if (reading.bootId.length >= 16) add('boot id', reading.bootId);
+  if (reading.homedir.length >= 4 && !SHARED_HOMES.has(reading.homedir.replace(/\/+$/, '') || '/')) add('home directory', reading.homedir);
+  for (const address of reading.addresses) if (TAILNET.test(address)) add('tailnet address', address);
+  return found;
+}
+
+const NAME = /[A-Za-z0-9-]/;
+const PATH = /[A-Za-z0-9._-]/;
+/** Whether `value` at `at` in `text` stands whole. A name, boot id or address goes on through a hyphen, and through a dot
+ *  with more of a name after it (`build` is not in `build-agent`, `ci.build` or `build.other.org`, but a sentence may end
+ *  `build.`). A home directory is a path: another path may go on after it (`<home>/x`), a longer name may not (`<home>2`). */
+const whole = (text: string, at: number, value: MachineValue): boolean => {
+  const before = text[at - 1];
+  const after = text[at + value.value.length];
+  if (value.kind === 'home directory') return !(before !== undefined && PATH.test(before)) && !(after !== undefined && PATH.test(after));
+  const dotted = (dot: string | undefined, next: string | undefined) => dot === '.' && next !== undefined && /[A-Za-z0-9]/.test(next);
+  return !(before !== undefined && NAME.test(before)) && !dotted(before, text[at - 2])
+    && !(after !== undefined && NAME.test(after)) && !dotted(after, text[at + value.value.length + 1]);
+};
+
+/** The kind of the first of `values` a text holds whole: never as part of a longer name, number or path. */
+export const machineValueIn = (text: string, values: readonly MachineValue[]): string | undefined =>
+  values.find((value) => {
+    for (let at = text.indexOf(value.value); at >= 0; at = text.indexOf(value.value, at + 1)) if (whole(text, at, value)) return true;
+    return false;
+  })?.kind;
