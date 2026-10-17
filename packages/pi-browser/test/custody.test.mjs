@@ -175,6 +175,26 @@ test("a host pause: a conversation that continues keeps its session; one that is
   assert.deepEqual([ended.tally.creates, ended.tally.liveAtEnd], [2, 0]);
 });
 
+test("killed while a person holds the browser: the restart keeps it held though the conversation is done, calls wait, the host's close releases it", async (t) => {
+  const { tally, result, seen } = await scenario(t, { script: ["browser_read", "snapshot"], script2: ["browser_read", "snapshot", "browser_read"], cutAt: "held", inactive: true });
+  const [record] = result.sessions.sessions;
+  assert.deepEqual(result.reconcile.kept, [record.tag], "a held row is never released by reconcile");
+  assert.equal(seen[1].isError, false, "the hold reran on the session it held");
+  assert.equal(failure(seen[2]).code, "waiting_for_human");
+  assert.deepEqual([tally.creates, tally.releases, tally.liveAtEnd], [1, 1, 0]);
+  assert.deepEqual([record.state, record.releaseReason, record.fence], ["released", "close", 1]);
+  assert.deepEqual(result.inventory.rows, {});
+});
+
+test("a held session the provider ended while the host was down is lost; the next call opens a fresh one", async (t) => {
+  const { tally, result, seen } = await scenario(t, { script: ["browser_read", "snapshot"], script2: ["browser_read", "snapshot", "browser_read"], cutAt: "held", between: (b) => b.endAll() });
+  assert.equal(result.reconcile.lost.length, 1);
+  assert.deepEqual([result.sessions.sessions[0].state, result.sessions.sessions[0].releaseReason], ["released", "ended"]);
+  assert.equal(seen[2].isError, false);
+  assert.match(failure(seen[2]).notice, /ended during an interruption/);
+  assert.deepEqual([tally.creates, tally.liveAtEnd], [2, 0]);
+});
+
 test("the host ends a conversation: its session is released by the task, and the host channel hears it with the conversation's label", async (t) => {
   const { tally, result } = await scenario(t, { script: ["browser_read"], script2: ["browser_read", "browser_read"] });
   assert.deepEqual([tally.creates, tally.releases, tally.liveAtEnd], [1, 1, 0]);

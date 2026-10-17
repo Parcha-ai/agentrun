@@ -16,11 +16,13 @@ class TargetsUnlistedError extends Error {
  *  so a new attach would be refused. The close is sent here through the worker's own RPC, and the worker keeps running:
  *  a worker closed under load is sometimes never restarted, and its attach waits out Stagehand's 60 s init deadline.
  *  With no worker running nothing is held, and the worker is woken until it is listed. A target list the browser does
- *  not give by DISCOVERY_MS is not a list without a worker: the attach fails. */
-export async function installedExtension(cdpUrl: string, signal?: AbortSignal, known?: string): Promise<string | null> {
+ *  not give by DISCOVERY_MS is not a list without a worker: the attach fails. `replyMs`: how long the close waits for the
+ *  runtime's reply. An init still running in the extension answers it only once that init ends, since the runtime runs
+ *  both one after the other; the socket outlives the deadline by that much more. */
+export async function installedExtension(cdpUrl: string, signal?: AbortSignal, known?: string, replyMs = CLOSE_REPLY_MS): Promise<string | null> {
   const socket = new WebSocket(cdpUrl);
   const deadline = Date.now() + DISCOVERY_MS;
-  const timer = setTimeout(() => socket.close(), DISCOVERY_MS + CLEANUP_MS);
+  const timer = setTimeout(() => socket.close(), DISCOVERY_MS + CLEANUP_MS - CLOSE_REPLY_MS + replyMs);
   const stop = () => socket.close();
   signal?.addEventListener("abort", stop, { once: true });
   // A call the browser does not answer within `ms` (the deadline, unless shorter) settles empty, as does every call once
@@ -50,10 +52,13 @@ export async function installedExtension(cdpUrl: string, signal?: AbortSignal, k
         for (const listener of listeners) listener({ method: "closed" });
         reject(new Error("the CDP socket closed"));
       };
+      // A throw in a socket listener ends the process: a frame that is not JSON is dropped.
       socket.onmessage = (event) => {
-        const message = JSON.parse(String(event.data));
-        if (message.id !== undefined) pending.get(message.id)?.(message.result);
-        else for (const listener of listeners) listener(message);
+        try {
+          const message = JSON.parse(String(event.data));
+          if (message?.id !== undefined) pending.get(message.id)?.(message.result);
+          else for (const listener of listeners) listener(message);
+        } catch {}
       };
     });
     let id = known ?? null;
@@ -96,7 +101,7 @@ export async function installedExtension(cdpUrl: string, signal?: AbortSignal, k
       await call("Runtime.enable", {}, sessionId);
       await call("Runtime.addBinding", { name: SEND_TO_HOST }, sessionId);
       const replied = new Promise<void>((resolve) => {
-        const wait = setTimeout(resolve, CLOSE_REPLY_MS);
+        const wait = setTimeout(resolve, replyMs);
         listeners.add((event) => {
           if (event.method === "closed") { clearTimeout(wait); return resolve(); }
           if (event.method !== "Runtime.bindingCalled" || event.sessionId !== sessionId || event.params?.name !== SEND_TO_HOST) return;

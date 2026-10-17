@@ -1,9 +1,11 @@
 // A code comes from typed facts only (status, class names, cause-chain codes, refusal constants by identity), never
 // from an error's message.
 
+import { UNANSWERED_CALL } from "./unanswered.js";
+
 export const FAILURE_CODES = Object.freeze([
   "browser_unavailable", "auth", "timeout", "aborted", "refused", "stale_snapshot", "session_ended",
-  "session_replaced", "effect_unknown", "code_error", "command_failed", "not_content", "blocked", "rate_limited",
+  "session_replaced", "effect_unknown", "code_error", "command_failed", "not_content", "blocked", "rate_limited", "waiting_for_human",
 ] as const);
 export type FailureCode = (typeof FAILURE_CODES)[number];
 
@@ -21,7 +23,8 @@ export const browserFailure = (code: FailureCode, message: string, options: { re
   ({ ok: false, code, retryable: options.retryable ?? false, effect: options.effect ?? "none", message, ...(options.detail === undefined ? {} : { detail: options.detail }) });
 
 /** `timedOut`: the call ran to the driver's batch deadline, which Stagehand reports as a plain Error. */
-export type FailureFacts = { sessionEnded?: boolean; aborted?: boolean; timedOut?: boolean };
+/** `action`: what an effectful call ran, named when it threw; "Your browser code" when unset. */
+export type FailureFacts = { sessionEnded?: boolean; aborted?: boolean; timedOut?: boolean; action?: string };
 
 export const NO_HYDRATED_SNAPSHOT_ERROR = "No hydrated snapshot exists for the active page; call snapshot first.";
 export const NAVIGATED_SNAPSHOT_ERROR = "The active page navigated after its snapshot; call snapshot again.";
@@ -41,7 +44,8 @@ const lostLoopback = (error: unknown): boolean => {
 };
 
 const UNREACHABLE_CAUSES = new Set(["ECONNREFUSED", "ENOTFOUND", "ECONNRESET", "EAI_AGAIN", "EPIPE", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT"]);
-const UNREACHABLE_NAMES = new Set(["CDPConnectionClosedError"]);
+// A host call the browser left unanswered past its deadline is a dropped connection too.
+const UNREACHABLE_NAMES = new Set(["CDPConnectionClosedError", UNANSWERED_CALL]);
 
 export type TransportFact = { status?: number; errorName?: string; causeCode?: string };
 
@@ -61,11 +65,23 @@ export function transportFactOf(error: unknown): TransportFact {
   return out;
 }
 
+/** An error's text with its cause's: a JSON-RPC error object (Stagehand's extension answers with one) gives its own text
+ *  and code, never "[object Object]". */
+function withCause(own: string, cause: unknown): string {
+  if (cause instanceof Error) return [own, cause.message].filter(Boolean).join(": ");
+  if (!cause) return own;
+  if (typeof cause !== "object") return [own, String(cause)].filter(Boolean).join(": ");
+  const { code, message } = cause as { code?: unknown; message?: unknown };
+  const text = typeof message === "string" && message && message !== own ? `: ${message}` : "";
+  const tag = typeof code === "number" || (typeof code === "string" && code) ? ` (code ${code})` : "";
+  return `${own}${text}${tag}`;
+}
+
 export function classifyBrowserError(error: unknown, effectful: boolean, facts: FailureFacts = {}): BrowserFailure {
   // Stagehand wraps SDK failures with { cause }: the HTTP status and the real message live on the cause.
   const cause = (error as any)?.cause;
   const own = error instanceof Error ? error.message : String(error);
-  const message = [own, cause instanceof Error ? cause.message : cause ? String(cause) : ""].filter(Boolean).join(": ");
+  const message = withCause(own, cause);
   const fact = transportFactOf(error);
   const status = fact.status ?? Number((error as any)?.statusCode ?? cause?.statusCode ?? NaN);
   const effect = effectful ? "possibly_effected" : "none";
@@ -77,5 +93,5 @@ export function classifyBrowserError(error: unknown, effectful: boolean, facts: 
   if (facts.timedOut || fact.errorName === "TimeoutError") return browserFailure("timeout", "The browser call timed out. Take a fresh snapshot before acting again; split a long `run` into smaller batches; if the page never loads, use web_fetch or another source.", { retryable: true, effect, detail });
   if (isStaleSnapshot(own)) return browserFailure("stale_snapshot", message, { retryable: true, detail });
   if ((fact.causeCode && UNREACHABLE_CAUSES.has(fact.causeCode)) || (fact.errorName && UNREACHABLE_NAMES.has(fact.errorName)) || lostLoopback(error)) return browserFailure("browser_unavailable", "The browser could not be reached on this lane. The browser plane is unavailable for this run; use web_fetch or executor tools.", { effect, detail });
-  return browserFailure(effectful ? "code_error" : "command_failed", effectful ? `Your browser code threw: ${message.slice(0, 600)}` : `The browser call failed: ${message.slice(0, 600)}`, { retryable: true, effect, detail });
+  return browserFailure(effectful ? "code_error" : "command_failed", effectful ? `${facts.action ?? "Your browser code"} threw: ${message.slice(0, 600)}` : `The browser call failed: ${message.slice(0, 600)}`, { retryable: true, effect, detail });
 }

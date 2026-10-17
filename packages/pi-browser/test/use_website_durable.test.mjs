@@ -38,11 +38,12 @@ function script(requestIds, { childTurn } = {}) {
   return { seen, responses: () => Array.from({ length: 40 }, () => respond) };
 }
 
-async function open(storage, backend, responses, sites = localSites({ shop: SITES.shop })) {
+async function open(storage, backend, responses, sites = localSites({ shop: SITES.shop }), extra = {}) {
   const browser = createBrowserExtension({
     provider: () => backend.provider, driver: fakeDriver(backend),
     evidence: { file: async (label, record) => ({ path: `evidence/${label}/${record.tool}.md`, bodyLine: 1 }) },
     sites: { port: sites, listing: await sites.list(new AbortController().signal) },
+    ...extra,
   });
   const model = fauxProvider({ models: [{ id: "faux-1" }] });
   model.setResponses(responses);
@@ -191,6 +192,94 @@ test("two use_website calls in one turn run at once, and each child is recorded 
   assert.deepEqual([backend.tally().creates, backend.tally().releases], [2, 2], "each child had its own browser, released");
 });
 
+async function sharedFanout(t, provider) {
+  const calls = [{ site: "shop", requestId: randomUUID() }, { site: "news", requestId: randomUUID() }];
+  const backend = new FakeBackend({ start: START, pages: { [START]: PAGE, [NEWS]: { url: NEWS, title: "News", text: "Headlines", html: "<html><body><h1>News</h1></body></html>" } }, caps: { sharedBrowser: true } });
+  // Forced race: a child's first turn waits until the other child has started too, or two seconds pass.
+  let started = 0, running = 0, most = 0;
+  let bothStarted;
+  const both = new Promise((resolve) => { bothStarted = resolve; });
+  const childTurn = async (_url, turn) => {
+    if (turn > 1) { running -= 1; return; }
+    running += 1;
+    most = Math.max(most, running);
+    started += 1;
+    if (started === 2) bothStarted();
+    await Promise.race([both, new Promise((resolve) => setTimeout(resolve, 2_000))]);
+  };
+  const { responses } = fanout(calls, { childTurn });
+  const { harness, browser } = await open(new MemoryStorage(), backend, responses(), localSites(SITES), provider ? { provider: provider(backend) } : {});
+  t.after(() => harness.close(ctx));
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), CONFIG); } });
+  await (await root.submit({ type: "input", content: "Read both sites." }, ctx)).wait(ctx);
+
+  return { most, answers: await results(root), calls };
+}
+const allRead = (calls) => calls.map(({ site, requestId }) => ({ ok: true, site, request_id: requestId, report: `Read ${SITES[site].startUrl}` }));
+
+test("on a provider whose sessions share one browser, two use_website calls in one turn run their children one at a time (#1078)", async (t) => {
+  const { most, answers, calls } = await sharedFanout(t);
+  assert.equal(most, 1, "one child at a time on one browser");
+  assert.deepEqual(answers, allRead(calls));
+});
+
+test("a child whose provider cannot be looked up waits its turn, rather than risk a browser another child is using (#1078)", async (t) => {
+  // The host's factory fails its first call for each conversation (the turn check), then answers: the children's own
+  // browser calls reach the shared browser.
+  const asked = new Set();
+  const flaky = (backend) => ({ conversationId }) => {
+    if (!asked.has(conversationId)) { asked.add(conversationId); throw new Error("the provider is briefly unavailable"); }
+    return backend.provider;
+  };
+  const { most, answers, calls } = await sharedFanout(t, flaky);
+  assert.equal(most, 1, "one child at a time");
+  assert.deepEqual(answers, allRead(calls));
+});
+
+/** Two use_website calls in one turn on one shared browser. Each child's driver takes a while to close, as a Stagehand close can.
+ *  At each child's first model turn: how many drivers had finished closing. */
+async function sharedCleanup(t, storage = new MemoryStorage()) {
+  const calls = [{ site: "shop", requestId: randomUUID() }, { site: "news", requestId: randomUUID() }];
+  const backend = new FakeBackend({ start: START, pages: { [START]: PAGE, [NEWS]: { url: NEWS, title: "News", text: "Headlines", html: "<html><body><h1>News</h1></body></html>" } }, caps: { sharedBrowser: true } });
+  let closed = 0;
+  const slowClose = async (...args) => {
+    const driver = await fakeDriver(backend)(...args);
+    return { ...driver, close: async () => { await new Promise((resolve) => setTimeout(resolve, 300)); await driver.close(); closed += 1; } };
+  };
+  const closedAtStart = [];
+  const childTurn = async (_url, turn) => { if (turn === 1) closedAtStart.push(closed); };
+  const { responses } = fanout(calls, { childTurn });
+  const { harness, browser } = await open(storage, backend, responses(), localSites(SITES), { driver: slowClose });
+  t.after(() => harness.close(ctx));
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), CONFIG); } });
+  await (await root.submit({ type: "input", content: "Read both sites." }, ctx)).wait(ctx);
+  return { closedAtStart, closed: () => closed, answers: await results(root), calls, backend };
+}
+
+test("on a provider whose sessions share one browser, the next child starts only after the child before it has closed its browser (#1099)", async (t) => {
+  const { closedAtStart, closed, answers, calls, backend } = await sharedCleanup(t);
+  assert.deepEqual(closedAtStart, [0, 1], "the second child's turn began after the first child's driver had closed");
+  assert.deepEqual(answers, allRead(calls));
+  assert.deepEqual([backend.tally().creates, closed()], [2, 2]);
+});
+
+test("a child whose report read throws still closes its browser in its own turn, and the next child starts after that close (#1099)", async (t) => {
+  // The report read is the only descending scan of more than one entry; the first one throws.
+  class ReportReadFails extends MemoryStorage {
+    fails = 1;
+    async scanEntries(query, limit, cursor, context) {
+      if (query.order === "descending" && limit > 1 && this.fails > 0) { this.fails -= 1; throw new Error("the report read failed"); }
+      return super.scanEntries(query, limit, cursor, context);
+    }
+  }
+  const storage = new ReportReadFails();
+  const { closedAtStart, closed, answers, backend } = await sharedCleanup(t, storage);
+  assert.equal(storage.fails, 0, "a report read threw");
+  assert.deepEqual(closedAtStart, [0, 1], "the second child's turn began after the failed child's driver had closed");
+  assert.deepEqual(answers.map((answer) => answer.ok).sort(), [false, true], JSON.stringify(answers));
+  assert.deepEqual([backend.tally().creates, closed()], [2, 2], "the failed child's driver was closed too");
+});
+
 test("two overlapping use_website calls with the same request_id share one child", async (t) => {
   const requestId = randomUUID();
   const calls = [{ site: "shop", requestId }, { site: "shop", requestId }];
@@ -245,4 +334,22 @@ test("after a crash mid-fan-out, each replayed use_website re-awaits its own chi
   assert.deepEqual(await results(again), calls.map(({ site, requestId }) => ({ ok: true, site, request_id: requestId, report: `Read ${SITES[site].startUrl}` })));
   assert.deepEqual((await two.harness.snapshot(two.browser.docs.Children, again.id, ctx)).byRequest, before, "the same two children, no new one");
   assert.deepEqual(Object.fromEntries(second.turns), { [START]: 1, [NEWS]: 1 }, "each child finished its task once, from where it stopped");
+});
+
+test("a use_website child is offered neither browser_upload nor browser_downloads, though its parent is", async (t) => {
+  const requestId = randomUUID();
+  const backend = new FakeBackend({ start: START, pages: { [START]: PAGE } });
+  const { responses } = script([requestId]);
+  const workspace = scratchSync(t, "use-website-files-");
+  const { harness, browser } = await open(new MemoryStorage(), backend, responses(), undefined, { workspace: () => workspace });
+  t.after(() => harness.close(ctx));
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } }, init: async (tx, id) => { Object.assign(await tx.doc(browser.docs.Config, id), CONFIG); } });
+  await (await root.submit({ type: "input", content: "What does the shop charge for the 8 GB board?" }, ctx)).wait(ctx);
+
+  const parentTools = (await root.agent(ctx)).tools.map((tool) => tool.name);
+  assert.ok(parentTools.includes("browser_upload") && parentTools.includes("browser_downloads"), parentTools.join());
+  const childId = (await harness.snapshot(browser.docs.Children, root.id, ctx)).byRequest[`shop:${requestId}`];
+  const childTools = (await (await harness.conversation(childId, ctx)).agent(ctx)).tools.map((tool) => tool.name);
+  assert.ok(childTools.includes("snapshot"), childTools.join());
+  assert.deepEqual(childTools.filter((name) => name === "browser_upload" || name === "browser_downloads"), [], "only the child's report crosses back: no files in, none out");
 });

@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import * as failures from "../dist/index.js";
+import { STAGEHAND_INIT_IN_PROGRESS } from "../dist/driver/stagehand.js";
 import { classifyBrowserError, FAILURE_CODES, NAVIGATED_SNAPSHOT_ERROR, NO_HYDRATED_SNAPSHOT_ERROR, STALE_SNAPSHOT_ID_ERROR, transportFactOf } from "../dist/index.js";
 
 const named = (name, message = "boom", extra = {}) => Object.assign(new Error(message), { name }, extra);
@@ -122,4 +123,21 @@ test("transport facts end on a cyclic cause chain and on a value that is not an 
   cyclic.cause = cyclic;
   assert.deepEqual(transportFactOf(cyclic), {});
   for (const value of [null, undefined, "string", 7]) assert.deepEqual(transportFactOf(value), {});
+});
+
+test("a JSON-RPC error object as the cause gives the message its own text and code, never [object Object]", () => {
+  const answered = (message, cause) => new Error(message, { cause });
+  const same = classifyBrowserError(answered(STAGEHAND_INIT_IN_PROGRESS, { code: -32603, message: STAGEHAND_INIT_IN_PROGRESS, data: { name: "Error" } }), false);
+  assert.equal(same.message, `The browser call failed: ${STAGEHAND_INIT_IN_PROGRESS} (code -32603)`);
+  assert.equal(same.detail, `${STAGEHAND_INIT_IN_PROGRESS} (code -32603)`);
+  const other = classifyBrowserError(answered("the extension refused", { code: 7, message: "busy elsewhere" }), true);
+  assert.equal(other.message, "Your browser code threw: the extension refused: busy elsewhere (code 7)");
+  for (const failure of [same, other, classifyBrowserError(answered("bare", { data: 1 }), false)]) assert.ok(!failure.message.includes("[object Object]"), failure.message);
+  assert.equal(classifyBrowserError(answered("outer", new Error("inner")), false).message, "The browser call failed: outer: inner");
+});
+
+test("Stagehand's extension refuses a second init with exactly the text the driver waits on", () => {
+  const stagehand = path.dirname(fileURLToPath(import.meta.resolve("@browserbasehq/stagehand")));
+  const worker = fs.readFileSync(path.join(stagehand, "extension", "service-worker.js"), "utf8");
+  assert.ok(worker.includes(`throw new Error(${JSON.stringify(STAGEHAND_INIT_IN_PROGRESS)})`));
 });

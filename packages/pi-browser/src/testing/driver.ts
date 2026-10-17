@@ -1,5 +1,5 @@
 import type { AttachTarget } from "../core/host.js";
-import { type FakeBackend, FakeProviderError, type FakeScreenshotOptions, type FixturePage } from "./backend.js";
+import { type FakeBackend, type FakeBox, FakeProviderError, type FakeScreenshotOptions, type FixturePage } from "./backend.js";
 
 export type FakeDriver = {
   snapshot(): Promise<string>;
@@ -8,20 +8,25 @@ export type FakeDriver = {
   /** The page's URL without a `read` row. */
   url(): Promise<string>;
   screenshot(options?: FakeScreenshotOptions): Promise<{ data: string; mimeType: string; width: number; height: number }>;
+  /** Where the viewport is, and for an element (by snapshot ID or CSS selector) how many match and the box of the one that does. */
+  locate(target?: { id?: string; selector?: string }): Promise<{ viewport: { width: number; height: number }; matches?: number; box?: FakeBox | null }>;
   page(): Promise<FixturePage>;
+  setInputFiles(selector: string, file: { name: string; mimeType: string; buffer: Uint8Array }): Promise<void>;
   close(): Promise<void>;
 };
 
 export type FakeDriverFactory = (target: AttachTarget) => Promise<FakeDriver>;
 
-type Face = Pick<FakeBackend["driverFace"], "connect" | "snapshot" | "run" | "url" | "screenshot" | "page" | "close">;
+type Face = Pick<FakeBackend["driverFace"], "connect" | "snapshot" | "run" | "url" | "screenshot" | "locate" | "page" | "setInputFiles" | "close">;
 
 const bind = (face: Face, id: string): FakeDriver => ({
   snapshot: () => face.snapshot(id),
   run: (input) => face.run(id, input),
   url: () => face.url(id),
   screenshot: (options) => face.screenshot(id, options),
+  locate: (target) => face.locate(id, target),
   page: () => face.page(id),
+  setInputFiles: (selector, file) => face.setInputFiles(id, selector, file),
   close: () => face.close(id),
 });
 
@@ -43,7 +48,9 @@ export function remoteDriver(url: string): FakeDriverFactory {
     run: (id, input) => rpc("run", [id, input]),
     url: (id) => rpc("url", [id]),
     screenshot: (id, options) => rpc("screenshot", [id, options]),
+    locate: (id, target) => rpc("locate", [id, target]),
     page: (id) => rpc("page", [id]),
+    setInputFiles: (id, selector, file) => rpc("setInputFiles", [id, selector, { ...file, buffer: Buffer.from(file.buffer).toString("base64") }]),
     close: (id) => rpc("close", [id]),
   };
   return async (target) => bind(face, await face.connect(target));
