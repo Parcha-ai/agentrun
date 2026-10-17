@@ -497,7 +497,8 @@ test('the manifest hook adds fields, the run is named by the input file, and --s
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const earlier = join(tmp, 'weak-eyes-pass');
   mkdirSync(earlier);
-  writeFileSync(join(earlier, 'manifest.json'), JSON.stringify({ title: 'A weak-eyes pass' }));
+  writeFileSync(join(earlier, 'manifest.json'), JSON.stringify({ title: 'A weak-eyes pass', format: 'agentrun.recording/1', recorded: { started: '2026-10-16T00:00:00.000Z', ended: '2026-10-16T00:01:00.000Z' } }));
+  writeFileSync(join(earlier, 'events.jsonl'), '');
   writeFileSync(join(tmp, 'apollo-11.json'), '{"company":"Acme Ltd"}');
   const first = await run(t, {}, ['--json', '--input', join(tmp, 'apollo-11.json'), '--see-also', earlier], { DEMO_MANIFEST: '1' });
   const manifest = JSON.parse(readFileSync(join(first.recording, 'manifest.json'), 'utf8'));
@@ -512,4 +513,9 @@ test('the manifest hook adds fields, the run is named by the input file, and --s
   assert.ok(!('see_also' in bare));
   await assert.rejects(() => run(t, {}, ['--json'], { DEMO_MANIFEST: 'reserved' }), /"source" is written by the entry/);
   await assert.rejects(() => run(t, {}, ['--json', '--see-also', join(tmp, 'nope')]), /not a finished recording/);
+  // A manifest with only a title is no recording: it has no format, no end and no lines.
+  const titled = join(tmp, 'titled');
+  mkdirSync(titled);
+  writeFileSync(join(titled, 'manifest.json'), JSON.stringify({ title: 'Earlier pass' }));
+  await assert.rejects(() => run(t, {}, ['--json', '--see-also', titled]), /not a finished recording/);
 });

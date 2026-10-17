@@ -335,7 +335,12 @@ function summarize(options: DemoOptions, result: DemoResult) {
 
 /** A `--see-also` recording, linked by its directory's name and labeled by its manifest's title: the recording must be a finished one. */
 function seeAlsoOf(path: string): { recording: string; label: string } {
-  let title: string | undefined;
-  try { title = (JSON.parse(readFileSync(join(path, 'manifest.json'), 'utf8')) as { title?: string }).title; } catch { throw new Error(`--see-also ${basename(path)}: not a finished recording (no manifest.json)`); }
+  const unfinished = () => new Error(`--see-also ${basename(path)}: not a finished recording (it needs a manifest.json with its format and end time, and an events.jsonl)`);
+  let manifest: { title?: unknown; format?: unknown; recorded?: { ended?: unknown } } | undefined;
+  try { manifest = JSON.parse(readFileSync(join(path, 'manifest.json'), 'utf8')); } catch { throw new Error(`--see-also ${basename(path)}: not a finished recording (no manifest.json)`); }
+  // The example stands alone (no validator): a finished recording names its format and its end, and holds its lines.
+  if (!manifest || typeof manifest.format !== 'string' || typeof manifest.recorded?.ended !== 'string' || !existsSync(join(path, 'events.jsonl'))) throw unfinished();
+  return { recording: basename(path), label: typeof manifest.title === 'string' ? manifest.title : basename(path) };
+}
   return { recording: basename(path), label: title ?? basename(path) };
 }
