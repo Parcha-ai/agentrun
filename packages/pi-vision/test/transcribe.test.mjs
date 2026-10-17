@@ -97,12 +97,12 @@ test("the global answers with the words, files and tells one receipt, reads the 
 
 test("a transcription that cannot be made throws its code: no model, over the provider's limit (named), not audio, a refused request; the key in none", async () => {
   const none = host();
-  const cwd = workspace({ "landing.mp3": mp3(), "big.mp3": mp3(2_500_000), "scan.png": pngBytes(40, 30) });
+  const cwd = workspace({ "landing.mp3": mp3(), "big.mp3": mp3(2_600_000), "scan.png": pngBytes(40, 30) });
   const ask = (file) => `try { await vision.transcribe({ path: "${file}" }); return "transcribed"; } catch (error) { return error.message; }`;
   assert.equal((await ran(none.vision, cwd, ask("landing.mp3"))).value, "no_vision_route: this host gives vision.transcribe no speech-to-text model");
   const fal = fakeTranscriptionFetch("fal", { words: WORDS });
   const capped = host(falTranscriber({ apiKey: key, fetch: fal.fetch, pollMs: 1 }));
-  assert.match((await ran(capped.vision, cwd, ask("big.mp3"))).value, /^over_budget: big\.mp3 is 2500010 bytes, over the 2\.4 MB \(10 minutes at 32 kbps\) fal takes in one request; cut it into shorter pieces/);
+  assert.match((await ran(capped.vision, cwd, ask("big.mp3"))).value, /^over_budget: big\.mp3 is 2600010 bytes, over the 2\.5 MB \(10 minutes 25 seconds at 32 kbps\) fal takes in one request; cut it into shorter pieces/);
   assert.equal(fal.requests.length, 0, "refused before any request");
   assert.match((await ran(capped.vision, cwd, ask("scan.png"))).value, /^unsupported: scan\.png reads as image, not audio or a video/);
   const refused = fakeTranscriptionFetch("elevenlabs", { words: WORDS, refuse: { status: 401, body: '{"detail":"invalid api key"}' } });

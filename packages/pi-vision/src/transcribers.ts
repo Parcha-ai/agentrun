@@ -42,7 +42,8 @@ export type FalTranscriberOptions = Common & {
   readonly pollMs?: number;
 };
 
-/** fal's queue: the audio goes inline as a data URI, measured to work up to 10 minutes at 32 kbps (2.4 MB). */
+/** fal's queue: the audio goes inline as a data URI, measured to work at 2.5 MB (10 minutes 25 seconds at 32 kbps; a
+ *  ten-minute piece ffmpeg cuts runs a little over its 2.4 MB) and to fail at 4.8 MB. */
 export function falTranscriber(options: FalTranscriberOptions): Transcriber {
   const model = options.model ?? "fal-ai/elevenlabs/speech-to-text/scribe-v2";
   const queue = (options.queueUrl ?? "https://queue.fal.run").replace(/\/+$/, "");
@@ -50,7 +51,7 @@ export function falTranscriber(options: FalTranscriberOptions): Transcriber {
   const via = (url: string) => url.replace("https://queue.fal.run", queue);
   const usd = options.usdPerMinute ?? (model === "fal-ai/elevenlabs/speech-to-text/scribe-v2" ? 0.008 : undefined);
   return {
-    provider: "fal", model, maxBytes: 2_400_000, limit: "2.4 MB (10 minutes at 32 kbps)",
+    provider: "fal", model, maxBytes: 2_500_000, limit: "2.5 MB (10 minutes 25 seconds at 32 kbps)",
     ...(usd === undefined ? {} : { usdPerMinute: usd }),
     async transcribe(audio, request, signal) {
       const auth = { Authorization: `${options.auth === "bearer" ? "Bearer" : "Key"} ${key(options, "fal")}` };
