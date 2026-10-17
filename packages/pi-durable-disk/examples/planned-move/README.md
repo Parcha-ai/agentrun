@@ -76,15 +76,15 @@ ok: the run moved from host-a to a Daytona box at step 2, with no revoke and no 
 ## If it fails
 
 The example prints `not ok: ...` and removes everything it made (the box, the unit, the token users, the run's tree), on a failure
-too. A `not ok: timed out waiting for the run to pause at its step boundary` (it waits 3 minutes) says only that host A's instance
-did not reach `paused`; the reason is in that instance's own log, which is the systemd unit's journal:
+too. While it waits for host A's run to pause (up to 3 minutes), a host A instance that has ended without pausing it fails the wait
+at once, with the unit's state and its last journal lines, for example
+`not ok: host A's instance ended (unit failed) before the run paused: pi-durable-disk: fenced (STORE_FENCED): ...` (an instance that
+cannot use the store exits with that reason, exit 75). A `not ok: timed out waiting for the run to pause at its step boundary` means
+the instance is still running and has not paused the run; its own log is the systemd unit's journal, and the full journal is:
 
 ```sh
 sudo journalctl -u 'pda-move-<run id>-*' --no-pager | tail -40     # <run id> is on the first line the example printed
 ```
-
-An instance that cannot use the store exits at once with its reason (`pi-durable-disk: fenced (STORE_FENCED): ...`, exit 75), and
-the example still waits out the three minutes.
 
 ## How it works
 
