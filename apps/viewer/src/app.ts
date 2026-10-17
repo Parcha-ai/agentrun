@@ -107,6 +107,7 @@ async function digestOf(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
 function blobsAt(root: string, whole = false) {
   const urls: Record<string, string> = {};
   const types: Record<string, string | undefined> = {};
+  const texts: Record<string, string> = {};
   const missing = new Map<string, { tries: number; at: number }>();
   let round = 0;
   const found = async (sha: string, url: string): Promise<boolean> => {
@@ -122,11 +123,14 @@ function blobsAt(root: string, whole = false) {
     const type = typeOfName(url) ?? 'application/octet-stream';
     urls[sha] = URL.createObjectURL(new Blob([bytes], { type: opensInPage(type) || type.startsWith('image/') ? type : 'application/octet-stream' }));
     types[sha] = type;
+    // Its JSON is kept as read: a page served with `connect-src 'self'` may not fetch the blob: URL.
+    if (type.split(';')[0] === 'application/json') texts[sha] = new TextDecoder().decode(bytes);
     return true;
   };
   return {
     url: (sha: string) => urls[sha],
     type: (sha: string) => (types[sha] ?? (urls[sha] ? typeOfName(urls[sha]!) : undefined)),
+    text: (sha: string): string | undefined => texts[sha],
     /** Looks for the blobs not found yet, and those due again; says how many it found. */
     async find(shas: readonly string[]): Promise<number> {
       round += 1;
@@ -151,7 +155,7 @@ async function fromUrl(base: string): Promise<Recording> {
   const lines = parseLines(await (await fetch(`${root}events.jsonl`)).text());
   const blobs = blobsAt(root);
   await blobs.find(blobsNamed(manifest, lines));
-  return { id: root, manifest, lines, blobUrl: blobs.url, blobType: blobs.type };
+  return { id: root, manifest, lines, blobUrl: blobs.url, blobType: blobs.type, find: blobs.find };
 }
 
 async function fromFiles(files: File[]): Promise<Recording> {
@@ -179,6 +183,8 @@ type Player = {
   recording: Recording;
   /** A run followed while it goes: a blob not read yet is loading, not missing. */
   following?: boolean;
+  /** A blob a view draws that the shell has not found: asks for it, and says whether it is still being looked for. */
+  want?: (sha: string) => boolean;
   stops: boolean[];
   lanes: Lanes;
   p: number;
@@ -317,7 +323,7 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
   if (typeof node === 'string') return document.createTextNode(node);
   if (node.tag === 'img' && 'blob' in node) {
     const url = player.recording.blobUrl(node.blob);
-    return url ? Object.assign(el('img', { class: node.class ?? 'blob' }), { src: url, alt: node.alt }) : el('span', { class: 'missing', text: `[${node.alt}: ${player.following ? 'loading' : 'not in this recording'}]` });
+    return url ? Object.assign(el('img', { class: node.class ?? 'blob' }), { src: url, alt: node.alt }) : el('span', { class: 'missing', text: `[${node.alt}: ${player.want?.(node.blob) || player.following ? 'loading' : 'not in this recording'}]` });
   }
   if (node.tag === 'a' && 'href' in node) {
     // A page outside the recording: linked only when it is a web address, and opened apart from the viewer.
@@ -325,7 +331,7 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
     return web ? Object.assign(el('a', { class: node.class ?? 'blob', text: node.text }), { href: node.href, target: '_blank', rel: 'noopener noreferrer' }) : el('span', { class: node.class ?? 'blob', text: node.text });
   }
   if (node.tag === 'a' && 'blob' in node && 'text' in node) {
-    return blobLink(player.recording, node.blob, node.text, node.class ?? 'blob', 'fragment' in node ? node.fragment : undefined) ?? el('span', { class: 'missing', text: `[${node.text}: ${player.following ? 'loading' : 'not in this recording'}]` });
+    return blobLink(player.recording, node.blob, node.text, node.class ?? 'blob', 'fragment' in node ? node.fragment : undefined) ?? el('span', { class: 'missing', text: `[${node.text}: ${player.want?.(node.blob) || player.following ? 'loading' : 'not in this recording'}]` });
   }
   if (node.tag === 'frame' && 'session' in node) {
     const picture = pictureAt(frames, node.session, t);
@@ -407,6 +413,15 @@ export function restorePlace(root: HTMLElement, place: ReturnType<typeof placeIn
   if (place.focus !== undefined) (all.find((node) => placeKey(node, root) === place.focus) as HTMLElement | undefined)?.focus({ preventScroll: true });
 }
 
+/** A blob's text. An embedded blob's data: URL is decoded in the page: a page served with `connect-src 'self'` may not
+ *  fetch one. */
+async function textAt(url: string): Promise<string> {
+  const data = /^data:[^,]*?(;base64)?,/.exec(url);
+  if (!data) return (await fetch(url)).text();
+  const body = url.slice(data[0].length);
+  return data[1] ? new TextDecoder().decode(Uint8Array.from(atob(body), (each) => each.charCodeAt(0))) : decodeURIComponent(body);
+}
+
 /** The JSON blobs a recording's result names (the manifest's and each `result` line's), and the job that ran (the
  *  manifest's `job`), parsed. One that does not load or parse is left out, and the views say they cannot read it. */
 async function resultJson(recording: Recording): Promise<Map<string, Json>> {
@@ -420,7 +435,7 @@ async function resultJson(recording: Recording): Promise<Map<string, Json>> {
   await Promise.all([...named].map(async (sha) => {
     const url = recording.blobUrl(sha);
     if (!url || recording.blobType(sha)?.split(';')[0] !== 'application/json') return;
-    try { parsed.set(sha, await (await fetch(url)).json() as Json); } catch { /* not readable here */ }
+    try { parsed.set(sha, JSON.parse(recording.heldText?.(sha) ?? await textAt(url)) as Json); } catch { /* not readable here */ }
   }));
   return parsed;
 }
@@ -448,11 +463,11 @@ export function baselineViewOf(label: string, other: Recording): BaselineView {
 /** What the shell hands a panel's view at a stop: the time, the run's own providers (`real` or `scripted`) when its manifest says, and
  *  the view inputs it holds: the focus, the baseline the manifest names, the selected citation, the result's JSON blobs read so far, and the
  *  playback clock (`now`, the time of the point at a stop). */
-export function viewContext(t: number, manifest: Manifest, inputs: { focus?: string; baseline?: BaselineView; cite?: string; json?: Map<string, Json>; now?: number; following?: boolean } = {}): ViewContext {
-  const { focus, baseline, cite, json, now, following } = inputs;
+export function viewContext(t: number, manifest: Manifest, inputs: { focus?: string; baseline?: BaselineView; cite?: string; json?: Map<string, Json>; now?: number; following?: boolean; blobType?: (sha: string) => string | undefined } = {}): ViewContext {
+  const { focus, baseline, cite, json, now, following, blobType } = inputs;
   return { t, now: now ?? t, ...(focus ? { focus } : {}), ...(baseline ? { baseline } : {}), ...(manifest.providers ? { providers: manifest.providers } : {}),
     ...(cite !== undefined ? { cite } : {}), ...(json ? { json: (sha: string) => json.get(sha) } : {}), ...(following ? { following: true as const } : {}),
-    ...(typeof manifest.job?.blob === 'string' ? { job: manifest.job.blob } : {}) };
+    ...(typeof manifest.job?.blob === 'string' ? { job: manifest.job.blob } : {}), ...(blobType ? { blobType } : {}) };
 }
 
 /** The chapter a point is in: the one with the greatest stop at or before it (a manifest's chapters keep the order it
@@ -519,6 +534,18 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   let following = live !== undefined;
   let problems = following ? [] : validate(recording.manifest, recording.lines);
   const player: Player = { recording, following, stops: stopsOf(recording.lines), lanes: lanesOf(recording.lines), p: 0, playing: false, speed: 1, clock: 0 };
+  // A blob no line names (a picture a result cites) is looked for by its name in blobs/ the first time a view draws it.
+  const looked = new Map<string, boolean>();
+  const wanted = new Set<string>();
+  if (recording.find) player.want = (sha) => { if (!looked.has(sha)) wanted.add(sha); return looked.get(sha) !== true; };
+  const findWanted = () => {
+    const due = [...wanted];
+    wanted.clear();
+    if (!recording.find || due.length === 0) return;
+    for (const sha of due) looked.set(sha, false);
+    // One of them may be a result's blob, which only a read of the results draws.
+    void recording.find(due).catch(() => undefined).then(() => { for (const sha of due) looked.set(sha, true); readResults(); draw(); });
+  };
   const caches = new Map<unknown, Map<number, unknown>>();
   const cacheOf = (key: unknown) => caches.get(key) ?? caches.set(key, new Map()).get(key)!;
   let lines = recording.lines;
@@ -659,6 +686,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     focusBar.replaceChildren(...(player.focus ? [el('span', { text: `Focused on ${player.focus}` }), Object.assign(el('button', { text: 'clear focus' }), { onclick: () => setFocus(undefined) })] : []),
       ...(player.cite !== undefined ? [el('span', { text: `Citation ${player.cite.length > 16 ? `${player.cite.slice(0, 12)}…` : player.cite}` }), Object.assign(el('button', { text: 'clear citation' }), { onclick: () => setCite(undefined) })] : []));
     drawPanels(t);
+    findWanted();
     syncUrl();
   }
 
@@ -686,7 +714,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     const drawn = (panel: Panel<unknown>) => {
       const state = cachedReduce(panel, lines, player.p, cacheOf(panel.id) as Map<number, never>);
       const section = el('section', { class: 'panel' }, el('h3', { text: panel.title }),
-        renderNode(panel.view(state, viewContext(t, recording.manifest, { focus: player.focus, baseline, cite: player.cite, json, now: head.clock, following })), player, frames, t, setFocus, setCite));
+        renderNode(panel.view(state, viewContext(t, recording.manifest, { focus: player.focus, baseline, cite: player.cite, json, now: head.clock, following, blobType: (sha) => recording.blobType(sha) })), player, frames, t, setFocus, setCite));
       sections.set(panel.id, section);
       return section;
     };
@@ -874,7 +902,7 @@ async function followRun(target: string, root: HTMLElement, params: URLSearchPar
   const base = url.href;
   const tail = tailOf(`${base}events.jsonl`);
   const blobs = blobsAt(base, true);
-  const recording: Recording = { id: base, lines: [], blobUrl: blobs.url, blobType: blobs.type, manifest: {
+  const recording: Recording = { id: base, lines: [], blobUrl: blobs.url, blobType: blobs.type, heldText: blobs.text, find: blobs.find, manifest: {
     format: FORMAT, title: 'A run, followed live', task: '', recorded: { started: '', ended: '' }, code: { repo: '', commit: '', packages: {} },
     model: '', generations: 0, kills: 0, cost: { usd: null, parts: {} }, source: { run: '', store_sha256: '' },
   } };

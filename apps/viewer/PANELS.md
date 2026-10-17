@@ -97,7 +97,8 @@ The shell gives `view` a context: `t`, the time of the current point; `focus`, t
 as unknown); `cite`, the selected citation if there is one (a node with `cite` selects it, `?cite=` opens with it, and selecting one
 moves no stop, so the screen it was clicked on stays); `json(sha)`, the parsed JSON of a blob the manifest's `result`
 or a `result` line names, or of the manifest's `job`, undefined until the shell has read it; `job`, the SHA-256 of the
-job blob when the manifest names one (`{ workflow, input, files }`, read with `json(job)`); and `baseline` when the manifest names one (`BaselineView`: its label, the counters of that other recording at its end,
+job blob when the manifest names one (`{ workflow, input, files }`, read with `json(job)`); `blobType(sha)`, a blob's media
+type from its name in `blobs/` (undefined until the shell has found it), so a view can draw a picture a result cites and link any other file; and `baseline` when the manifest names one (`BaselineView`: its label, the counters of that other recording at its end,
 and how long it ran in ms, or null; another real recording, opened beside this one, never typed-in numbers). When
 `counters.measured` is false the recording has no durable line, so its counts are not measured and its cost is
 unknown: show that, never its zeros.
@@ -105,6 +106,9 @@ unknown: show that, never its zeros.
 A run's result is the demo's own JSON, and two formats are known to the vision panel: `apollo11.account/1`, and the
 generic cited result `agentrun.cited/1` (RECORDING.md: rows of a label and a value, each citing a blob, a look or
 both, and where and when it was read). A panel that shows what a run delivered reads the generic one and ignores fields it does not know.
+The vision panel draws a cited file that is a picture in the recording (PNG, JPEG, WebP or GIF) small in its row, and
+for a window of film the eyes saw with no picture of their own, shows the pictures a row cites beside that window,
+labelled as that row's keyframe, never as what the eyes saw.
 
 A redraw keeps the reader's place: each scrolled element's offset and the element with the keyboard focus, found again
 by place alone (at each step its tag, its first class and its rank among such siblings), never by its text.

@@ -29,12 +29,12 @@ export type { AppContext, AppModule, AppOptions } from "./app.ts";
 
 // The supervisor and the host drivers.
 export { archilControl, deleteRunTree, ensureRunning, readRunStatus, SuperviseError } from "./supervise.ts";
-export type { ArchilControl, CheckControl, CheckOptions, DiskClient, EnsureOptions, EnsureResult, HostDriver, HostHandle, HostStatus, Json, StartAttempt, StartReason, StonithOutcome, SuperviseErrorCode, SupervisorControl, TokenUser } from "./supervise.ts";
+export type { ArchilControl, CheckControl, CheckOptions, DiskClient, EnsureOptions, EnsureResult, HostBox, HostDriver, HostHandle, HostStatus, Json, StartAttempt, StartReason, StonithOutcome, SuperviseErrorCode, SupervisorControl, TokenUser } from "./supervise.ts";
 export { localHost, LocalHostError } from "./hosts/local-host.ts";
 export type { LocalHostOptions, Ran, Runner } from "./hosts/local-host.ts";
 export { dockerHost, DockerHostError } from "./hosts/docker.ts";
 export type { ContainerInfo, DockerHostOptions, DockerRan, DockerRunner } from "./hosts/docker.ts";
-export { DaytonaApiError, daytonaHost, DaytonaHostError, daytonaRest } from "./hosts/daytona.ts";
+export { DAYTONA_LIST_PRICES, DaytonaApiError, daytonaHost, DaytonaHostError, daytonaRest, daytonaUsdPerSecond } from "./hosts/daytona.ts";
 export type { CreateSandboxBody, DaytonaClient, DaytonaHostErrorCode, DaytonaHostOptions, DaytonaRestOptions, ExecResult, SandboxInfo } from "./hosts/daytona.ts";
 
 // Serve: one HTTP request runs one turn.
@@ -43,7 +43,7 @@ export type { RequestOptions, RunResponse, RunServer, ServeConfigErrorCode, Serv
 
 // Places: where a run lives for a supervisor that kills it and brings it back (agentrun's reference place seam).
 export { archilPlace, localPlace, PlaceError } from "./place.ts";
-export type { ArchilPlaceOptions, LocalPlaceOptions, Place, PlaceContext, PlaceErrorCode, PlaceExit, PlaceKill, PlaceOutcome, PlacePaths, PlaceRecovery, PlaceRunner, PlaceSignal, PlaceStatus, RunnerOrder } from "./place.ts";
+export type { ArchilPlaceOptions, LocalPlaceOptions, Place, PlaceContext, PlaceErrorCode, PlaceExit, PlaceKill, PlaceOutcome, PlacePaths, PlaceRecordHome, PlaceRecovery, PlaceRunner, PlaceSignal, PlaceStatus, RecordControl, RunnerOrder } from "./place.ts";
 
 // Parking: an idle run gives its host back.
 export { busyState, drain, leaseParkTarget, watchParking } from "./park.ts";
