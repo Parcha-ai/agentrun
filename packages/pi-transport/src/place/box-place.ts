@@ -590,10 +590,31 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 	const holder = (): Holder => ({ environment, provider: options.provider.name, box: box.id, host });
 
 	/** A box made in place of a lost one that the session does not live in: destroyed, and ended in the lines. */
-	const letGo = async (one: Box | undefined) => {
-		if (one === undefined) return;
+	const letGo = async (one: Box) => {
 		const destroyed = await one.destroy(context).catch(() => undefined);
 		if (destroyed?.ok === true) gone(one, false);
+	};
+
+	// A box made in place of a lost one that took the session and did not resume it: the next `recover` finishes the
+	// restore there, and `from` is the box the hop is from.
+	let taken: { box: Box; from: Box } | undefined;
+
+	/**
+	 * After a restore into `one` failed, the lease decides what `one` is. Named by it (taken, not resumed), `one` is the
+	 * place's box: its files and its store are the session's now, and the next `recover` finishes there. Named another,
+	 * it never held the session and is let go. With the lease unread, it is kept for the release and not used.
+	 */
+	const afterFailure = async (one: Box | undefined, from: Box) => {
+		if (one === undefined) return;
+		const lease = await options.ownership.current(session, context);
+		if (!lease.ok) return;
+		if (lease.value?.holder.box !== one.id) return letGo(one);
+		box = one;
+		paths = pathsIn(one, session);
+		clockSkewMs = await skewOf(one);
+		epoch = lease.value.epoch;
+		taken = { box: one, from };
+		line("lease", { epoch, holder: where(one) });
 	};
 
 	const place: BoxPlace = {
@@ -710,8 +731,11 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 			// The place the lease names: a lost box is found gone there, and its replacement is made first, so that the
 			// order's paths are the new box's.
 			const named = homePlace();
+			// A restore whose new box took the session and failed after: finished in that box, with no box made.
+			const finishing = kind === "box" && taken?.box === box ? taken : undefined;
+			taken = undefined;
 			let next: Box | undefined;
-			if (kind === "box") {
+			if (kind === "box" && finishing === undefined) {
 				// A box lost other than by `kill` ended too: the session waits for its next box.
 				gone(named.box, false);
 				const made = await provider.create(options.spec, context);
@@ -745,11 +769,13 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 				},
 				context,
 			).catch(async (error: unknown) => {
-				await letGo(next);
+				await afterFailure(next, named.box);
 				throw error;
 			});
 			if (!recovered.ok) {
-				await letGo(next);
+				await afterFailure(next, named.box);
+				// A restore that failed again where it was being finished is finished there next time.
+				if (finishing !== undefined && taken === undefined) taken = finishing;
 				throw recovered.error;
 			}
 			if (next !== undefined) {
@@ -760,16 +786,18 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 			handle = recovered.value.home;
 			epoch = recovered.value.lease.epoch;
 			const { restored, replayed } = recovered.value;
-			if (next !== undefined) {
-				// The hop: from the lost box to the one the session lives in now, each by its label.
+			// The hop: from the lost box to the one the session lives in now, each by its label. A finished restore's lease
+			// line was written when its box took the session.
+			const from = next !== undefined ? named.box : finishing?.from;
+			if (from !== undefined) {
 				const head = replayed !== undefined ? replayed.to + 1 : restored?.seal.head;
-				line("lease", { epoch, holder: where(box) });
+				if (next !== undefined) line("lease", { epoch, holder: where(box) });
 				line("restore", {
 					id: recovered.value.lease.move ?? `restore-${epoch}`,
 					kind: "restore",
 					epoch,
 					...(head === undefined ? {} : { head }),
-					from: where(named.box),
+					from: where(from),
 					to: where(box),
 					...(restored === undefined ? {} : { checkpoint: { n: restored.n, head: restored.seal.head } }),
 					...(replayed === undefined ? {} : { replayed: { from: replayed.from, to: replayed.to } }),
