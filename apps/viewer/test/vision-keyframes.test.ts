@@ -3,13 +3,13 @@
 // row pairs with it, each labelled as that chapter's keyframe, never as what the eyes saw. On the hand recording of
 // vision-hand.ts delivering chapters, and on the film recording FILM_RECORDING names, when there is one.
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
@@ -18,6 +18,7 @@ import { parseLines, validate, type Json, type Line } from '../src/format.ts';
 import type { Node, ViewContext } from '../src/panels.ts';
 import { reduceTo } from '../src/replay.ts';
 import { visionCitedOf, visionPanel } from '../src/vision.ts';
+import { closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
 import { blobs, CHAPTERS, CITED, deliverInstead, FILM, K, lines, PHOTOS, RESULT, SCANS, withoutFilmFrames, writeRecording } from './vision-hand.ts';
 
 const walk = (node: Node, visit: (node: Exclude<Node, string>) => void) => {
@@ -93,11 +94,13 @@ test('the page draws the chapters\' keyframes in their rows and on the film, fro
 });
 
 /** A static host's policy: pictures may be data: or blob: URLs, but the page fetches only from its own origin. */
+// A browser a test left open would hold this file's process: each is ended here, and the file fails.
+after(async () => { assert.deepEqual(await closeLeftBrowsers(), [], 'every browser a test started was closed by that test'); });
+
 const POLICY = "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self'; base-uri 'none'; object-src 'none'";
 
 test('over HTTP, with a host policy that fetches only from its own origin, the chapters draw with their keyframes: embedded, opened by URL, or followed', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` }, async (t) => {
   const out = mkdtempSync(join(tmpdir(), 'viewer-keyframes-http-'));
-  t.after(() => rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));
   writeRecording(join(out, 'recordings', 'vision-chapters'), frameless);
   deliverInstead(join(out, 'recordings', 'vision-chapters'), CHAPTERS as unknown as Json);
   mkdirSync(join(out, 'none'));
@@ -116,15 +119,23 @@ test('over HTTP, with a host policy that fetches only from its own origin, the c
       .end(request.method === 'HEAD' ? undefined : readFileSync(file));
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => server.close());
-  const dump = (page: string) => new Promise<string>((resolve) => {
-    const browser = spawn(chrome, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${join(out, `profile-${asked.length}`)}`,
-      '--virtual-time-budget=8000', '--dump-dom', `http://127.0.0.1:${(server.address() as AddressInfo).port}/${page}`], { stdio: ['ignore', 'pipe', 'ignore'] });
-    let text = '';
-    browser.stdout.on('data', (chunk: Buffer) => { text += chunk; });
-    browser.on('close', () => resolve(text));
-  });
+  // One hook ends every page (killed and awaited when it does not close) before the server and the profiles go.
+  const pages: Awaited<ReturnType<typeof drivenPage>>[] = [];
+  t.after(() => closeAll(pages, () => { server.close(); rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); }));
   const drawn = (dom: string, className: string) => (dom.match(new RegExp(`<img [^>]*class="${className}"[^>]*>`, 'g')) ?? []).filter((img) => /src="[^"]+"/.test(img));
+  // The page as it stands once its keyframes are drawn, or after 30 s.
+  const dump = async (opened: string) => {
+    const page = await drivenPage(`http://127.0.0.1:${(server.address() as AddressInfo).port}/${opened}`, join(out, `profile-${pages.length}`));
+    pages.push(page);
+    let dom = '';
+    for (let tries = 0; tries < 300; tries += 1) {
+      dom = String(await page.evaluate('document.documentElement.outerHTML') ?? '');
+      if (drawn(dom, 'vz-keyframe').length >= 3 && drawn(dom, 'vz-frame').length >= 3) break;
+      await page.sleep(100);
+    }
+    await page.close();
+    return dom;
+  };
   // At the end, with no citation: the film lane shows the window it read last, and its keyframes.
   for (const opened of ['site/index.html?r=vision-chapters', 'viewer/index.html?src=/rec/', 'viewer/index.html?follow=/rec/']) {
     const dom = await dump(`${opened}&t=999999`);
