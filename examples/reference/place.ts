@@ -62,16 +62,19 @@ export function localPlace(options: { self: string; paths: RunPlace; destroyBoxe
     });
     return { epoch: 1, pid: proc.pid!, exited };
   };
+  // A runner the supervisor has stopped: `recover` does not stop it again (a box's providers are not asked twice).
+  const stopped = new WeakSet<Runner>();
   const kill = async (runner: Runner, kind: 'process' | 'box') => {
     if (runner.pid !== undefined) { try { process.kill(runner.pid, 'SIGKILL'); } catch { /* already gone */ } }
     await runner.exited;
     if (kind === 'box') await options.destroyBoxes?.();
+    stopped.add(runner);
   };
   return {
     name: 'local', paths: options.paths, kills: options.destroyBoxes ? ['process', 'box'] : ['process'],
     start, kill,
     ...(options.requestFile ? { signals: (attempt) => localSignals(options.requestFile!(attempt)) } : {}),
-    recover: async (last, kind, order) => { await kill(last, kind); return { runner: await start(order) }; },
+    recover: async (last, kind, order) => { if (!stopped.has(last)) await kill(last, kind); return { runner: await start(order) }; },
     release: async () => undefined,
   };
 }
