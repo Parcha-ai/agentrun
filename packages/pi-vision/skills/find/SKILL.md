@@ -1,11 +1,42 @@
 ---
 name: find
-description: Find the second a thing is first seen in a long video, and its box, coarse to fine and for cents. Words narrow the search, Jev scores frames, the span is halved, the eyes name the second with the sound, and Jev checks that frame and draws the box. Use when a question asks when or where something appears in a video longer than a minute or two, and cite the answer as video#t=seconds&xywh=percent:x,y,w,h.
+description: Find when a phrase is said in a long video (every time it is said, picked by what is said around it), or the second a thing is first seen and its box, coarse to fine and for cents. Words narrow the search, Jev scores frames, the span is halved, the eyes name the second with the sound, and Jev checks that frame and draws the box. Use when a question asks when something is said or appears in a video longer than a minute or two, and cite the answer as video#t=seconds or video#t=seconds&xywh=percent:x,y,w,h.
 ---
 
-# Find a thing in a long video, to the second and its box
+# Find a thing in a long video, to the second
 
-Never look at every frame. Search coarse to fine, and pay for each step only where the step before points:
+Two questions: when a phrase is said, and when a thing is first seen and where. The first needs only the transcript.
+The second never looks at every frame.
+
+## Heard: every time a phrase is said
+
+The transcript answers alone, for $0: the `transcribe` skill's transcript of the video, found by its name (no
+transcript: write one with that skill first). A phrase may be said more than once, word for word (a line replayed in
+an opening before the story, a name called twice), so find every time it is said, each with the rows before and after
+it. Then pick the one the question means by what is said around it, and name the others in the answer: "said at
+`talk.mp4#t=803.06`, after the question is asked; also at 122.70, in the opening". A row starts where its first word is
+said; a phrase cut by the end of a row is found across the two rows, and cited at the first.
+
+```js
+const task = { video: "film.mp4", phrase: "umbrella by the door" };
+const heard = (await tools.bash({ command: `grep -lxF '${task.video}' .hear/*/video 2>/dev/null || true` })).split("\n")[0].replace(/\/video$/, "");
+if (!heard) return { transcript: null, hits: [] };
+const rows = (await tools.bash({ command: `cat ${heard}/transcript.tsv` })).split("\n").filter(Boolean).map((row) => row.split("\t"));
+const plain = (text) => ` ${text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()} `;
+const has = (text) => plain(text).includes(plain(task.phrase));
+const hits = [];
+rows.forEach(([start, , text], i) => {
+  const next = rows[i + 1]?.[2] ?? "";
+  if (!has(text) && !(has(`${text} ${next}`) && !has(next))) return;
+  hits.push({ at: Number(start), cite: `${task.video}#t=${start}`, said: has(text) ? text : `${text} ${next}`,
+    before: rows.slice(Math.max(0, i - 2), i).map((r) => r[2]).join(" "), after: rows.slice(i + 1, i + 3).map((r) => r[2]).join(" ") });
+});
+return { transcript: `${heard}/transcript.tsv`, hits };
+```
+
+## Seen: coarse to fine, to the second and the box
+
+Search coarse to fine, and pay for each step only where the step before points:
 
 1. **Words narrow the search.** Where the thing is named aloud or in a chapter title, the rows that name it give
    windows around them. No hit, or no transcript: the whole video is the window.
@@ -146,9 +177,10 @@ return { window, spentUsd: spent };
 ## 4. The eyes name the second
 
 Cut the minute and ask the eyes at which second the thing is first seen. Cut it by encoding, not by stream copy: a copy
-starts at the keyframe before the window and some decoders count its seconds from there, so a second the eyes name
-would be off by up to a keyframe interval. Encoded without B-frames, its second 0 is the window's start for every
-decoder, and the bitexact flags make the same window the same bytes, so an answer already paid for is found again.
+starts at the keyframe before the window, and only its edit list says where the window begins, so a decoder that
+ignores the edit list counts the seconds from the keyframe. Encoded without B-frames, second 0 is the window's start
+for every decoder, and the bitexact flags make the same window the same bytes, so an answer already paid for is found
+again.
 Eyes that take no video get a frame a second instead, each named by its time.
 
 ```js

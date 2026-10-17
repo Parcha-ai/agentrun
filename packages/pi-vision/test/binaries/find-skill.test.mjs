@@ -19,7 +19,7 @@ import { fakeEyes, fixtureDir } from "@parcha/pi-vision/testing";
 import { USD_PER_MTOK } from "../support/jev.mjs";
 
 const SKILL = fs.readFileSync(new URL("../../skills/find/SKILL.md", import.meta.url), "utf8");
-const [narrow, scan, halve, name, check, ...more] = [...SKILL.matchAll(/```js\n([\s\S]*?)```/g)].map((match) => match[1]);
+const [heard, narrow, scan, halve, name, check, ...more] = [...SKILL.matchAll(/```js\n([\s\S]*?)```/g)].map((match) => match[1]);
 
 const FIRST = 187;
 const JEV_USD = (1000 * USD_PER_MTOK) / 1e6;
@@ -39,13 +39,14 @@ video(path.join(cwd, "film.mp4"));
 video(path.join(cwd, "film-best.mp4"), { scale: 4 });
 video(path.join(cwd, "glimpse.mp4"), { red: false });
 video(path.join(cwd, "plain.mp4"), { red: false, orange: false });
+const ONCE = ["12.00\t14.40\tGood morning, it looks like rain.", "190.50\t193.20\tSomeone left an umbrella by the door.", "260.10\t262.00\tThat is all for today."];
 /** The transcribe skill's transcript of film.mp4, as it leaves it: one row a phrase, start and end in seconds. */
-function transcript(on) {
+function transcript(rows = ONCE) {
   fs.rmSync(path.join(cwd, ".hear"), { recursive: true, force: true });
-  if (!on) return;
+  if (!rows) return;
   fs.mkdirSync(path.join(cwd, ".hear", "0123456789abcdef"), { recursive: true });
   fs.writeFileSync(path.join(cwd, ".hear", "0123456789abcdef", "video"), "film.mp4\n");
-  fs.writeFileSync(path.join(cwd, ".hear", "0123456789abcdef", "transcript.tsv"), "12.00\t14.40\tGood morning, it looks like rain.\n190.50\t193.20\tSomeone left an umbrella by the door.\n260.10\t262.00\tThat is all for today.\n");
+  fs.writeFileSync(path.join(cwd, ".hear", "0123456789abcdef", "transcript.tsv"), `${rows.join("\n")}\n`);
 }
 
 const isRed = (r, g, b) => r > 150 && g < 100 && b < 100;
@@ -110,7 +111,8 @@ function watchingEyes({ video: takesVideo = true } = {}) {
 
 /** A bash tool as a host's code mode gives one: the command's output, or a rejection with it. */
 const bash = { name: "bash", execute: ({ command }) => new Promise((resolve, reject) => execFile("bash", ["-c", command], { cwd, maxBuffer: 1 << 26 }, (error, stdout, stderr) => (error ? reject(new Error(`${stderr}${error.message}`)) : resolve(`${stdout}${stderr}`)))) };
-/** Runs the given steps in order, each in a sandbox of its own over the same workspace and the same eyes and Jev. */
+/** Runs the given steps in order, each in a sandbox of its own over the same workspace and the same eyes and Jev; `task`
+ *  is the search's task.json after them. */
 async function steps(codes, { eyes = watchingEyes(), jev = pixelJev() } = {}) {
   const vision = createVisionExtension({ eyes, jev: { judge: jev.judge }, evidence: { file: async () => null }, scope: () => ({ label: "find", deriveDir: ".vision" }) });
   const values = [];
@@ -123,20 +125,38 @@ async function steps(codes, { eyes = watchingEyes(), jev = pixelJev() } = {}) {
       values.push(run.value);
     } finally { await sandbox.close(); }
   }
-  return { values, eyes, jev, task: JSON.parse(fs.readFileSync(path.join(cwd, ".find", "umbrella", "task.json"), "utf8")) };
+  const kept = path.join(cwd, ".find", "umbrella", "task.json");
+  return { values, eyes, jev, task: fs.existsSync(kept) ? JSON.parse(fs.readFileSync(kept, "utf8")) : null };
 }
 /** Step 1 with one of the task's fields set otherwise. */
 const narrowWith = (from, to) => { const code = narrow.replace(from, to); assert.notEqual(code, narrow, `the task line holds ${from}`); return code; };
 const xywh = (cite) => cite.split("xywh=percent:")[1].split(",").map(Number);
 const near = (got, want, by, what) => got.forEach((v, i) => assert.ok(Math.abs(v - want[i]) <= by, `${what}: ${got} is not within ${by} of ${want}`));
 
-test("the skill holds the five steps this test runs, and nothing more", () => {
-  assert.deepEqual([narrow, scan, halve, name, check].map((code) => typeof code), Array(5).fill("string"));
+test("the skill holds the heard search and the five steps this test runs, and nothing more", () => {
+  assert.deepEqual([heard, narrow, scan, halve, name, check].map((code) => typeof code), Array(6).fill("string"));
   assert.deepEqual(more, []);
 });
 
+test("heard: every time the phrase is said, with the rows around it; a phrase cut by a row's end is found across the two rows", async () => {
+  transcript(["12.00\t14.40\tGood morning, it looks like rain.", "40.00\t41.50\tRemember the umbrella", "41.70\t43.40\tby the door, she said.",
+    "120.00\t121.00\tLeave the umbrella by the doorway.", "190.50\t193.20\tSomeone left an umbrella by the door.", "193.90\t195.10\tAn umbrella by the door again?", "260.10\t262.00\tThat is all for today."]);
+  const { values: [found], jev, eyes } = await steps([heard]);
+  assert.equal(found.transcript, ".hear/0123456789abcdef/transcript.tsv");
+  assert.deepEqual(found.hits.map((h) => [h.at, h.cite, h.said]), [
+    [40, "film.mp4#t=40.00", "Remember the umbrella by the door, she said."],
+    [190.5, "film.mp4#t=190.50", "Someone left an umbrella by the door."],
+    [193.9, "film.mp4#t=193.90", "An umbrella by the door again?"],
+  ], "split across two rows, then twice in a row; never 'by the doorway'");
+  assert.deepEqual([found.hits[0].before, found.hits[0].after], ["Good morning, it looks like rain.", "by the door, she said. Leave the umbrella by the doorway."]);
+  assert.deepEqual([found.hits[1].before, found.hits[1].after], ["by the door, she said. Leave the umbrella by the doorway.", "An umbrella by the door again? That is all for today."]);
+  assert.deepEqual([jev.requests.length, eyes.ledger.length], [0, 0], "the transcript answers alone");
+  transcript(null);
+  assert.deepEqual((await steps([heard])).values[0], { transcript: null, hits: [] });
+});
+
 test("the loop: the transcript's hit narrows the search, Jev scans the window, the eyes name the second, Jev checks it and boxes it", async () => {
-  transcript(true);
+  transcript();
   const { values: [words, scanned, halved, named, checked], eyes, jev, task } = await steps([narrow, scan, halve, name, check]);
   assert.deepEqual(words.windows, [[130, 254]], "a minute either side of the one row that says umbrella");
   assert.deepEqual(words.hits, ["190.50\t193.20\tSomeone left an umbrella by the door."]);
@@ -156,7 +176,7 @@ test("the loop: the transcript's hit narrows the search, Jev scans the window, t
 });
 
 test("no transcript: the whole video is the window, and a lookalike Jev half believes does not start the search", async () => {
-  transcript(false);
+  transcript(null);
   const { values: [words, scanned, halved, named, checked], task } = await steps([narrow, scan, halve, name, check]);
   assert.deepEqual([words.transcript, words.windows], [null, [[0, 300]]]);
   assert.deepEqual(task.scores.filter(([, p]) => p === 0.6).map(([t]) => t), [100, 110, 120, 130], "the lookalike's frames");
@@ -165,7 +185,7 @@ test("no transcript: the whole video is the window, and a lookalike Jev half bel
 });
 
 test("only a lookalike: the search starts from the best frame, and the eyes, seeing nothing, name no second", async () => {
-  transcript(false);
+  transcript(null);
   const { values: [, scanned, halved, named], eyes } = await steps([narrowWith('video: "film.mp4", best: "film.mp4"', 'video: "glimpse.mp4", best: "glimpse.mp4"'), scan, halve, name]);
   assert.deepEqual(scanned.likely, []);
   assert.deepEqual(halved.window, [65, 125], "around the span from 90 to 100, where the best frame scored 0.6");
@@ -174,7 +194,7 @@ test("only a lookalike: the search starts from the best frame, and the eyes, see
 });
 
 test("a coarse scan is halved to a minute before the eyes watch it", async () => {
-  transcript(false);
+  transcript(null);
   const { values: [, scanned, halved, named, checked], jev } = await steps([narrowWith("scanFrames: 300", "scanFrames: 4"), scan, halve, name, check]);
   assert.deepEqual([scanned.step, scanned.likely], [75, [225]], "frames at 0, 75, 150 and 225: the span 150 to 225 holds the first second");
   assert.deepEqual(jev.requests.slice(4, 8).map((r) => r.source), [160, 169, 179, 188].map((t) => `film.mp4#t=${t}`), "four frames across the span's first half");
@@ -183,7 +203,7 @@ test("a coarse scan is halved to a minute before the eyes watch it", async () =>
 });
 
 test("the eyes' minute is encoded, not copied: a copy starts at the keyframe before it, and a decoder that ignores the edit list names a later second", async () => {
-  transcript(true);
+  transcript();
   await steps([narrow, scan, halve]);
   const copied = name.replace(/-c:v libx264 [^$]*?-flags \+bitexact/, "-c copy -fflags +bitexact");
   assert.notEqual(copied, name);
@@ -194,7 +214,7 @@ test("the eyes' minute is encoded, not copied: a copy starts at the keyframe bef
 });
 
 test("eyes that take no video get a frame a second of the minute, each named by its time", async () => {
-  transcript(true);
+  transcript();
   const { values: [, , , named, checked], eyes } = await steps([narrow, scan, halve, name, check], { eyes: watchingEyes({ video: false }) });
   const shown = eyes.ledger.flatMap((r) => r.parts.filter((p) => p.type === "image").map((p) => p.fragment));
   assert.deepEqual(shown, Array.from({ length: 60 }, (_, i) => `film.mp4#t=${155 + i}`));
@@ -202,7 +222,7 @@ test("eyes that take no video get a frame a second of the minute, each named by 
 });
 
 test("the frames checked come from the best copy, and the box is cited on the video the question named", async () => {
-  transcript(true);
+  transcript();
   const { values: [, , , , checked], jev } = await steps([narrowWith('best: "film.mp4"', 'best: "film-best.mp4"'), scan, halve, name, check]);
   assert.deepEqual(jev.requests.slice(0, 13).map((r) => `${r.size.width}x${r.size.height}`), Array(13).fill("373x280"), "the scan's 160x120 frames, grown to Jev's smallest edge");
   assert.deepEqual(jev.requests.slice(13).map((r) => `${r.size.width}x${r.size.height}`), Array(3).fill("640x480"), "the checked frames are the best copy's");
@@ -211,14 +231,14 @@ test("the frames checked come from the best copy, and the box is cited on the vi
 });
 
 test("a budget: the scan stops once it is spent, and says what it spent", async () => {
-  transcript(true);
+  transcript();
   const { values: [, scanned] } = await steps([narrowWith("budgetUsd: 0.1", "budgetUsd: 0.0001"), scan]);
   assert.equal(scanned.frames, 3, "three frames at $0.000042 pass $0.0001");
   assert.ok(scanned.spentUsd >= 0.0001 && scanned.spentUsd < 0.0002);
 });
 
 test("not found: no frame scores even 0.5, so the eyes are never asked and the two best frames are given", async () => {
-  transcript(false);
+  transcript(null);
   const { values: [, scanned, halved], eyes } = await steps([narrowWith('video: "film.mp4", best: "film.mp4"', 'video: "plain.mp4", best: "plain.mp4"'), scan, halve]);
   assert.deepEqual(scanned.likely, []);
   assert.deepEqual(halved, { found: false, best: [[0, 0.05], [10, 0.05]] });
