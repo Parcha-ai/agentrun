@@ -19,7 +19,7 @@ import { carryBack, durableProfileStore, readAgentHome, startRun } from "@parcha
 import { foldCalls, groupTimeline } from "@parcha/pi-durable-agent/timeline";
 import { PROFILE } from "./agent/app.ts";
 import { ensureAgentHome } from "./agent/home.mjs";
-import { assistant, call, fakeDoor, makeRun, result, text, transcript, user } from "./fixtures.mjs";
+import { assistant, call, fakeDoor, frameLine, jpegSha, makeRun, result, signInGap, signInRun, text, transcript, user, writeFrames } from "./fixtures.mjs";
 import { httpSource } from "./page/source.js";
 import { startServer } from "./server.mjs";
 
@@ -688,4 +688,74 @@ test("the page and its timeline module are served; nothing else under /timeline 
   assert.equal((await get("/timeline/index.js")).status, 200);
   assert.equal((await get("/timeline/group.js")).headers.get("content-type"), "text/javascript; charset=utf-8");
   for (const path of ["/timeline/../server.mjs", "/timeline/%2e%2e/server.mjs", "/timeline/x.mjs", "/timeline/", "/rows.mjs"]) assert.equal((await get(path)).status, 404, path);
+});
+
+test("GET /agent: the saved sign-ins, their sites and when they last worked, never a ref; a run started on them says so, and holds them", async (t) => {
+  const waiting = await fakeDoor({ snapshot: asking, hold: true });
+  t.after(() => waiting.close());
+  const dir = await mkdtemp(join(tmpdir(), "web-signins-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  process.env.FAKE_DOOR = waiting.url;
+  const { home, root, get, post, json } = await app(t, { start: [process.execPath, fakeInstance(dir)] });
+  const first = await startRun(home, { runId: "first", host: "test" });
+  await signInRun(first.storePath, {
+    [PROFILE]: { ref: "ctx-secret-ref", allowedOrigins: ["https://the-internet.herokuapp.com", "not an origin", "https://x.example/path"], startUrl: "https://the-internet.herokuapp.com/login", verifiedAt: "2026-10-16T05:58:00.000Z" },
+    plain: { ref: "ctx-plain-ref" },
+  });
+  await carryBack(home, first, { outcome: "completed" });
+
+  const body = await (await get("/agent")).text();
+  assert.ok(!/ctx-secret-ref|ctx-plain-ref|\/login/.test(body), "no ref and no start address");
+  assert.deepEqual(JSON.parse(body), {
+    name: "Site reporter",
+    signIns: [
+      { key: PROFILE, provider: "browserbase", state: "ready", sites: ["https://the-internet.herokuapp.com"], verifiedAt: "2026-10-16T05:58:00.000Z", heldBy: null },
+      { key: "plain", provider: "browserbase", state: "ready", sites: [], verifiedAt: null, heldBy: null },
+    ],
+  });
+
+  const { id } = await (await post("/runs", { content: "Log in again" })).json();
+  const started = [{ key: PROFILE, provider: "browserbase", sites: ["https://the-internet.herokuapp.com"] }, { key: "plain", provider: "browserbase", sites: [] }];
+  assert.deepEqual(JSON.parse(readFileSync(join(root, id, "web.json"), "utf8")).signedIn, started, "recorded when the run started");
+  assert.deepEqual((await json(`/runs/${id}`)).signedIn, started);
+  assert.deepEqual((await json("/agent")).signIns.map((s) => s.heldBy), [id, id], "the new run holds both");
+  const later = await (await post("/runs", { content: "And another" })).json();
+  assert.deepEqual((await json(`/runs/${later.id}`)).signedIn, [], "a run whose profiles another run holds starts signed out");
+  assert.deepEqual((await json("/runs/first")).signedIn, [], "a run with no record of it says nothing");
+});
+
+test("a run's frames: its lines and the JPEGs they name, no-store, to this page only; never among its files or in search, never by another name or through a link", async (t) => {
+  const { home, root, get, json } = await app(t);
+  const dir = await makeRun(home, "r", { status: "done", entries: transcript, files: { "notes.md": "# Notes" } });
+  await makeRun(home, "plain", { status: "done", entries: transcript });
+  const [a, b] = [Buffer.from([0xff, 0xd8, 0xff, 0xd9, 1]), Buffer.from([0xff, 0xd8, 0xff, 0xd9, 2])];
+  const lines = [frameLine(1, 1_000, jpegSha(a)), signInGap(2, 2_000, 1_000), frameLine(3, 9_000, jpegSha(b))];
+  writeFrames(dir, lines, [a, b]);
+  assert.deepEqual([(await json("/runs/r")).frames, (await json("/runs/plain")).frames], [true, false]);
+
+  const all = await get("/runs/r/frames");
+  assert.equal(all.status, 200);
+  for (const [name, value] of [["content-type", "application/x-ndjson; charset=utf-8"], ["cache-control", "no-store"], ["cross-origin-resource-policy", "same-origin"], ["x-content-type-options", "nosniff"]]) assert.equal(all.headers.get(name), value, name);
+  assert.deepEqual((await all.text()).trim().split("\n").map((l) => JSON.parse(l)), lines);
+  const jpeg = await get(`/runs/r/frames/${jpegSha(a)}.jpg`);
+  assert.deepEqual([jpeg.status, jpeg.headers.get("content-type"), jpeg.headers.get("cache-control")], [200, "image/jpeg", "no-store"]);
+  assert.deepEqual(Buffer.from(await jpeg.arrayBuffer()), a);
+
+  symlinkSync(join(dir, "work", "notes.md"), join(dir, "frames", "blobs", `${"c".repeat(64)}.jpg`));
+  for (const path of [`/runs/r/frames/${jpegSha(a)}.png`, `/runs/r/frames/${jpegSha(a).toUpperCase()}.jpg`, `/runs/r/frames/blobs%2F${jpegSha(a)}.jpg`, `/runs/r/frames/${"d".repeat(64)}.jpg`, `/runs/r/frames/${"c".repeat(64)}.jpg`, "/runs/r/frames/..%2Fstore%2Frun.sqlite", "/runs/plain/frames"]) {
+    assert.equal((await get(path)).status, 404, path);
+  }
+  for (const headers of [{ "sec-fetch-site": "cross-site" }, { "sec-fetch-site": "same-site" }, { origin: "https://elsewhere.example" }]) {
+    assert.equal((await get("/runs/r/frames", { headers })).status, 403, JSON.stringify(headers));
+    assert.equal((await get(`/runs/r/frames/${jpegSha(a)}.jpg`, { headers })).status, 403);
+  }
+  assert.equal((await get("/runs/r/frames", { headers: { "sec-fetch-site": "same-origin" } })).status, 200);
+
+  assert.deepEqual((await json("/runs/r/files")).files.map((f) => f.path), ["notes.md"], "frames/ is not the run's files");
+  assert.deepEqual((await json(`/search?q=${jpegSha(b).slice(0, 16)}`)).results, [], "nor in search");
+  rmSync(join(dir, "frames"), { recursive: true });
+  mkdirSync(join(root, "elsewhere", "blobs"), { recursive: true });
+  writeFileSync(join(root, "elsewhere", "frames.jsonl"), "{}\n");
+  symlinkSync(join(root, "elsewhere"), join(dir, "frames"));
+  assert.equal((await get("/runs/r/frames")).status, 404, "a frames/ that is a link is not the run's");
 });

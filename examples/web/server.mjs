@@ -5,7 +5,9 @@
 // read through its door; a released run's transcript is read from its store, read-only. Binds to loopback unless you
 // pass --host.
 // Routes follow Grep's: GET /runs, GET /runs/{id}, GET /runs/{id}/timeline (SSE while live, JSON when released),
-// GET /runs/{id}/files[/{path}], POST /runs, POST /runs/{id}/messages, POST /runs/{id}/stop, GET /search?q=.
+// GET /runs/{id}/files[/{path}], POST /runs, POST /runs/{id}/messages, POST /runs/{id}/stop, GET /search?q=; and GET
+// /agent (the agent and its saved sign-ins, never their refs) and GET /runs/{id}/frames[/{sha256}.jpg] (what the run's
+// browser showed, for the page's replay player).
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
@@ -40,6 +42,7 @@ const PAGE = { "/": ["index.html", "text/html; charset=utf-8"], "/app.js": ["app
 const MODULE = /^\/timeline\/[a-z-]+\.js$/;
 const APP_CSP = "default-src 'self'; frame-src https: 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const FILE_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox; form-action 'none'";
+const FRAME_BLOB = /^([0-9a-f]{64})\.jpg$/;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
@@ -292,8 +295,53 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
       liveView: view ? { key: view.key } : null,
       browser,
       liveNote: view ? null : note,
+      signedIn: signedInOf(run.meta),
+      frames: await hasFrames(run),
       error: startErrors.get(run.id) ?? null,
     };
+  }
+
+  // ---- sign-ins: the sites a profile is for, never its ref ----------------------------------------------------------
+  /** A profile as the page shows it: `/v2`'s SignIn shape. */
+  const signInOf = (key, profile, lease, runs) => ({
+    key,
+    provider: typeof profile.provider === "string" ? profile.provider : null,
+    state: typeof profile.state === "string" ? profile.state : null,
+    sites: (Array.isArray(profile.allowedOrigins) ? profile.allowedOrigins : []).filter((o) => typeof o === "string" && URL.parse(o)?.origin === o),
+    verifiedAt: typeof profile.verifiedAt === "string" ? profile.verifiedAt : null,
+    heldBy: lease && Date.parse(lease.expiresAt) > Date.now() && !runs[lease.runId]?.endedAt ? lease.runId : null,
+  });
+
+  async function agentInfo() {
+    const state = await homeState();
+    const own = (record, key) => (Object.hasOwn(record, key) ? record[key] : undefined);
+    return { name: state.definition.name, signIns: Object.entries(state.profiles).map(([key, profile]) => signInOf(key, profile, own(state.leases, key), state.runs)) };
+  }
+
+  /** The saved sign-ins a run started with (web.json, written when it was started): ready, and the run's to use. */
+  const signedInOf = (meta) => (Array.isArray(meta.signedIn) ? meta.signedIn.filter((s) => typeof s?.key === "string").map(({ key, provider, sites }) => ({ key, provider: provider ?? null, sites: Array.isArray(sites) ? sites : [] })) : []);
+
+  // ---- frames: <run>/frames/, the agent app's, outside work/ ----------------------------------------------------------
+  const framesDir = (run) => join(run.dir, "frames");
+  async function hasFrames(run) {
+    const st = await lstat(join(framesDir(run), "frames.jsonl")).catch(() => null);
+    return Boolean(st?.isFile() && st.size > 0);
+  }
+
+  /** The run's frame lines, or one JPEG they name: a regular file under frames/, never a link, never cached. */
+  async function serveFrames(res, run, name) {
+    const headers = { "cache-control": "no-store", "x-content-type-options": "nosniff", "cross-origin-resource-policy": "same-origin", "referrer-policy": "no-referrer" };
+    const blob = name === undefined ? null : FRAME_BLOB.exec(name);
+    if (name !== undefined && !blob) throw new HttpError(404, "no such frame");
+    const dir = framesDir(run);
+    const path = blob ? join(dir, "blobs", `${blob[1]}.jpg`) : join(dir, "frames.jsonl");
+    for (const at of [dir, ...(blob ? [join(dir, "blobs")] : []), path]) {
+      const st = await lstat(at).catch(() => null);
+      if (!st || st.isSymbolicLink() || (at === path ? !st.isFile() : !st.isDirectory())) throw new HttpError(404, blob ? "no such frame" : "no frames");
+    }
+    const st = await stat(path);
+    res.writeHead(200, { ...headers, "content-type": blob ? "image/jpeg" : "application/x-ndjson; charset=utf-8", "content-length": st.size });
+    await pipeline(createReadStream(path), res).catch(() => {});
   }
 
   async function listRuns() {
@@ -417,9 +465,12 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
     if (typeof content !== "string" || !content.trim()) throw new HttpError(400, "content must be a non-empty string");
     if (!start.length) throw new HttpError(501, "this server has no --start command, so it cannot start a run");
     const id = `r${Date.now().toString(36)}-${randomBytes(2).toString("hex")}`;
+    const { profiles } = await homeState();
     const run = await startRun(home, { runId: id, host: HOST });
     reread();
-    await writeFile(join(run.dir, "web.json"), JSON.stringify({ title: clip(content.trim().replace(/\s+/g, " "), 80), createdAt: new Date().toISOString() }));
+    // The saved sign-ins this run starts with: ready ones it holds the save lease for (the others reach it without a ref).
+    const signedIn = run.leases.filter((key) => profiles[key]?.state === "ready").map((key) => ({ key, provider: profiles[key].provider, sites: signInOf(key, profiles[key], null, {}).sites }));
+    await writeFile(join(run.dir, "web.json"), JSON.stringify({ title: clip(content.trim().replace(/\s+/g, " "), 80), createdAt: new Date().toISOString(), signedIn }));
     launch(id);
     submit(id, content).then(
       (r) => r.status >= 400 && startErrors.set(id, r.body?.message ?? r.body?.error ?? "the first message was refused"),
@@ -568,6 +619,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
     const viewer = /^\/live\/([^/]+)\//.exec(path);
     if (viewer && (req.method === "GET" || req.method === "HEAD")) return proxyLive(req, res, viewer[1]);
     if (req.method === "GET" && path === "/runs") return send(res, 200, { runs: await listRuns(), canStart: start.length > 0 });
+    if (req.method === "GET" && path === "/agent") return send(res, 200, await agentInfo());
     if (req.method === "POST" && path === "/runs") return send(res, 202, { id: await createRun((await bodyOf(req)).content) });
     if (req.method === "GET" && path === "/search") {
       const q = (url.searchParams.get("q") ?? "").trim();
@@ -597,6 +649,9 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
           }
           return serveFile(res, run, rel, url.searchParams.get("download") === "1");
         }
+        case "frames":
+          if (m[3] !== undefined && m[3].includes("/")) throw new HttpError(404, "no such frame");
+          return serveFrames(res, run, m[3]);
         case "live": {
           const view = await liveView(run);
           if (!view) throw new HttpError(404, "no live view");
@@ -627,6 +682,11 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
       return send(res, 400, { error: "BAD_REQUEST", message: "the request target is not a URL" });
     }
     if (names && !names.has((req.headers.host ?? "").toLowerCase())) return send(res, 403, { error: "FORBIDDEN", message: "unexpected Host header" });
+    // What the run's browser showed goes only to this page: no other site's request, whatever it asks for.
+    if (/^\/runs\/[^/]+\/frames(\/|$)/.test(url.pathname)) {
+      const site = req.headers["sec-fetch-site"];
+      if ((site && site !== "same-origin" && site !== "none") || (req.headers.origin && req.headers.origin !== `http://${req.headers.host}`)) return send(res, 403, { error: "FORBIDDEN", message: "cross-origin request" });
+    }
     if (req.method === "POST") {
       const origin = req.headers.origin;
       if ((origin && origin !== `http://${req.headers.host}`) || !String(req.headers["content-type"]).startsWith("application/json")) return send(res, 403, { error: "FORBIDDEN", message: "cross-origin or non-JSON request" });
