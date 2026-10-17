@@ -1854,7 +1854,8 @@ test('on --live the effect door dispatches to LiveParts.tools (with its receipt)
   assert.notEqual(missing.result.processes.at(-1).outcome.status, 'complete');
   assert.ok(JSON.stringify(missing.result.processes.at(-1)).includes('no live source for search') || readFileSync(join(missing.recording, 'events.jsonl'), 'utf8').includes('no live source for search'), 'it says why');
   // On fakes, live tools are never looked at.
-  const fakes = await run(t, {}, ['--json'], { DEMO_LIVE_PROBE: '', DEMO_LIVE_TOOLS: 'search' });
+  const fakes = await run(t, {}, ['--json'], { DEMO_LIVE_PROBE: '1', DEMO_LIVE_TOOLS: 'search' });
   assert.equal(fakes.result.processes.at(-1).outcome.status, 'complete');
   assert.ok(!fromLive(fakes.result.dir), 'fakes.tools never see LIVE');
+  assert.ok(!existsSync(join(fakes.result.dir, 'models-seen.json')), 'the live hook is supplied and is never called on fakes');
 });
