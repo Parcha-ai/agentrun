@@ -19,12 +19,12 @@ test('a scripted run says so, and its zero is $0', () => {
   assert.equal(costLabel(0, true, 'scripted'), 'at least scripted, $0');
 });
 
-test('a real run, or one whose manifest does not say, reads in dollars to four places; unknown is unknown', () => {
+test('a real run, or one whose manifest does not say, reads in dollars to four places; a cost with an unpriced part is not priced', () => {
   assert.equal(costLabel(0.0125, false, 'real'), '$0.0125');
   assert.equal(costLabel(0, false, 'real'), '$0.0000');
   assert.equal(costLabel(0.5, false), '$0.5000');
-  assert.equal(costLabel(null, false, 'scripted'), 'unknown');
-  assert.equal(costLabel(null, true), 'unknown');
+  assert.equal(costLabel(null, false, 'scripted'), 'not priced');
+  assert.equal(costLabel(null, true), 'not priced');
 });
 
 test('on the page, a bundled scripted run reads scripted, $0 and says its providers', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` }, (t) => {

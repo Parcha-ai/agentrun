@@ -76,7 +76,9 @@ focus and a way to clear it. Give a node the `path` of the workflow position it 
 7. **Skip kinds you do not know.** The format adds kinds without a new version.
 8. **Use `t` only to place things in time.** Durable facts are ordered by `(commit, order)`, and after a restore a
    commit number names two commits, so pair it with the line's `gen`.
-9. **Show unknown as unknown.** A cost that is `null` is "unknown", never `$0`.
+9. **Show unknown as unknown.** A cost that is `null` is "not priced" (`NOT_PRICED`), and a count the recording cannot
+   give is "not recorded" (`NOT_RECORDED`), never `$0` or 0; a count with more that may have happened is a range,
+   `rangeLabel` ("0–1"). All three are in `./counters.ts`.
 
 ## Browser pictures
 
@@ -95,8 +97,8 @@ moves no stop, so the screen it was clicked on stays); `json(sha)`, the parsed J
 or a `result` line names, undefined until the shell has read it; `blobType(sha)`, a blob's media type from its name in
 `blobs/` (undefined until the shell has found it), so a view can draw a picture a result cites and link any other file; and `baseline` when the manifest names one (`BaselineView`: its label, the counters of that other recording at its end,
 and how long it ran in ms, or null; another real recording, opened beside this one, never typed-in numbers). When
-`counters.measured` is false the recording has no durable line, so its counts are not measured and its cost is
-unknown, a box's receipt notwithstanding: show that, never its zeros. `counters.costParts` is the cost by part (the
+`counters.measured` is false the recording has no durable line, so its counts are not recorded and its cost is not
+priced, a box's receipt notwithstanding: show that, never its zeros. `counters.costParts` is the cost by part (the
 model's usage as `lead`, `judge`, `eyes`, `browser`, and `boxes`, each box's `box.receipt` at list price); `costLabel`
 draws it as the strip does, naming the boxes apart at list price, and in a scripted run the other parts scripted.
 

@@ -160,7 +160,7 @@ test('a miss shows by its code, and a failed look with no code says so', () => {
   assert.deepEqual(visionMeters(stateAt(noCode.length, noCode)).misses, [['code not recorded', 1]]);
 });
 
-test('a key paid again in a later generation is repeated, and twice in one is asked twice; an unknown price is unknown', () => {
+test('a key paid again in a later generation is repeated, and twice in one is asked twice; an unknown price is not priced', () => {
   const again = (gen: number, commit: number): Line => ({ channel: 'durable', source: 'vision', kind: 'vision.looks', gen, t: 99_999, commit, order: 0, conv: 1,
     data: { doc: 'vision.looks', key: `again-${commit}`, value: { looks: [{ ...(LOOKS.page1 as object), receipt: `evidence/read/look-again-${commit}.json` }] } } });
   const later = [...lines, again(2, 900)];
@@ -171,7 +171,7 @@ test('a key paid again in a later generation is repeated, and twice in one is as
   assert.equal(visionMeters(stateAt(twice.length, twice)).askedTwice, 1);
   const unpriced = lines.map((line) => (line.channel === 'durable' && JSON.stringify(line.data).includes(K.photo1) ? { ...line, data: JSON.parse(JSON.stringify(line.data).replace('"cost_usd":0.0012', '"cost_usd":null')) } : line));
   assert.equal(visionMeters(stateAt(unpriced.length, unpriced)).cost, null);
-  assert.match(text(viewAt(unpriced.length, {}, unpriced)), /spend unknown/);
+  assert.match(text(viewAt(unpriced.length, {}, unpriced)), /spend not priced/);
 });
 
 test('one document per look key, its filings in a growing list: each filing counts once, and an identical one paid again is repeated', () => {

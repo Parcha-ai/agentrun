@@ -52,11 +52,11 @@ test('two applied calls of one effect inside one process are asked twice, not re
   assert.deepEqual(pair([effect('e', 'unknown', 1, [applied, applied]), effect('e', 'unknown', 2), effect('e', 'completed', 2, [applied])]), [1, 1], 'twice in process 1 and once more in process 2');
 });
 
-test('an effect whose host reports no calls has its repeats not measured: never shown as 0', () => {
+test('an effect whose host reports no calls has its repeats not recorded: never shown as 0', () => {
   const none = counters([effect('a', 'unknown', 1), effect('a', 'completed', 1), effect('a', 'completed', 1, undefined, true)]);
-  assert.deepEqual([none.repeated, none.repeatedNotMeasured, repeatedLabel(none)], [0, 1, 'not measured']);
+  assert.deepEqual([none.repeated, none.repeatedNotMeasured, repeatedLabel(none)], [0, 1, 'not recorded']);
   const redone = counters([effect('a', 'unknown', 1), effect('a', 'completed', 1), effect('a', 'unknown', 2), effect('a', 'completed', 2)]);
-  assert.deepEqual([redone.repeated, repeatedLabel(redone)], [0, 'not measured'], 'its own completion in two processes is not a measured call');
+  assert.deepEqual([redone.repeated, repeatedLabel(redone)], [0, 'not recorded'], 'its own completion in two processes is not a measured call');
   const measured = counters([effect('a', 'unknown', 1, [{ outcome: 'applied' }]), effect('a', 'completed', 1, [{ outcome: 'applied' }])]);
   assert.deepEqual([measured.repeated, measured.repeatedNotMeasured, repeatedLabel(measured)], [0, 0, '0']);
   const mixed = counters([effect('a', 'completed', 1), effect('b', 'unknown', 1, [{ outcome: 'applied' }]), effect('b', 'unknown', 2), effect('b', 'completed', 2, [{ outcome: 'applied' }])]);

@@ -201,7 +201,7 @@ function liveServer(dist: string, options: { absent?: boolean } = {}) {
 
 const listen = async (server: Server) => { await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve)); return (server.address() as AddressInfo).port; };
 
-/** What a page shows at a stop: the counters but cost (a followed run's is unknown until it finishes), the lines panel. */
+/** What a page shows at a stop: the counters but cost (a followed run's is not priced until it finishes), the lines panel. */
 const shownAt = (stop: number) => `(async () => {
   const range = document.querySelector('.controls input[type=range]');
   range.value = String(${stop}); range.dispatchEvent(new Event('input'));
@@ -247,7 +247,7 @@ test('the page follows a run as two writers grow it, through a kill and a second
   };
   const first = await until((now) => now.position.includes(`line ${early.length} of ${early.length}`), 'the lines written so far, the cursor on the newest');
   assert.equal(first.status, 'live');
-  assert.match(first.counters, /unknown\s*cost/, 'a run that goes has no cost yet');
+  assert.match(first.counters, /not priced yet\s*cost/, 'a run that goes has no cost yet');
   assert.match(first.missing, /loading/, 'a blob served half written does not hash to its name: it is loading, not missing');
   assert.doesNotMatch(first.missing, /not in this recording/);
 
@@ -257,7 +257,7 @@ test('the page follows a run as two writers grow it, through a kill and a second
   await until((now) => now.position.includes(`line ${restart + 3} of ${restart + 3}`) && /1\s*kills?/.test(now.counters), 'the kill and the next process, followed');
   live.append(run.slice(restart + 3));
   const whole = await until((now) => now.position.includes(`line ${run.length} of ${run.length}`) && now.missing === '', 'the rest of the run, followed, every blob read whole');
-  assert.match(whole.counters, /unknown\s*cost/, 'the cost stays unknown until the manifest is written');
+  assert.match(whole.counters, /not priced yet\s*cost/, 'the cost stays not priced until the manifest is written');
   // Before the finish the writer replaces the file in the merge's order: the page reads it again from its start.
   live.rewrite();
   await followed.sleep(2500);
@@ -283,7 +283,7 @@ test('the page follows a run as two writers grow it, through a kill and a second
   await fresh.evaluate(shownAt(run.length));
   const [end, freshEnd] = [await seen(), await seen(fresh)];
   for (const field of ['title', 'counters', 'panels', 'chapters', 'position', 'problems', 'missing'] as const) assert.equal(end[field], freshEnd[field], `the finished page's ${field} is a fresh load's`);
-  assert.doesNotMatch(end.counters, /unknown\s*cost/, 'once finished, the cost is the recording\'s');
+  assert.doesNotMatch(end.counters, /not priced\s*(yet\s*)?cost/, 'once finished, the cost is the recording\'s');
   assert.equal(done.problems, '');
   assert.equal(opened.problems, '');
   // Framed (`&embed=1`), a followed run draws its panels with no header.

@@ -36,7 +36,7 @@ turns, and 9 possible. It is not a valid recording on its own (no manifest), and
 
 Real recordings of a session that moved between machines (the transport panel's tests): the whole route on Daytona and Modal boxes, the same route on
 Docker stand-ins, and one hop to a Modal T4 with its wait. They are host recordings: the supervisor's `host` lines, the transport live lines, and the browser's
-frames. They have no durable lines (a boxed home's commits are not shipped to the host yet), so the panel's counters read "not measured" on them. Only the
+frames. They have no durable lines (a boxed home's commits are not shipped to the host yet), so the panel's counters read "not recorded" on them. Only the
 frames and the result's summary are kept as blobs; the film itself is left out (the result's summary still names its blob). The edits are the
 temporary directory in a local box's workspace path (from a private scratch path to `/tmp/`) and the manifest's `cost.usd`, which is `null`: with no durable
 line the cost is unknown (RECORDING.md section 6), and it was `0` when these were recorded.

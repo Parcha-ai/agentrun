@@ -494,13 +494,24 @@ export function countersOf(state: CounterState, ended: boolean): Counters {
   };
 }
 
-/** The cost on the strip: unknown when it is; a scripted run (its manifest's `providers`: at least one priced part was a
+/** The words a count or a price reads when the recording gives no number, never 0 (RECORDING.md section 6): a count the
+ *  recording does not hold what it needs for is not recorded (section 6's NOT MEASURED), and a cost with a part nobody
+ *  priced is not priced (section 6's null). Every panel that shows the strip's counts uses these. */
+export const NOT_RECORDED = 'not recorded';
+export const NOT_PRICED = 'not priced';
+/** A count with more that may have happened (a payment, a repeat or a re-ask no durable line proves): the range from the
+ *  proven count to that count with every possible one, "0–1"; a count that is not a number keeps its words and says how
+ *  many more are possible. */
+export const rangeLabel = (count: string, possible: number): string =>
+  (possible === 0 ? count : /^\d+$/.test(count) ? `${count}–${Number(count) + possible}` : `${count}, ${possible} possible`);
+
+/** The cost on the strip: not priced when a part has no price; a scripted run (its manifest's `providers`: at least one priced part was a
  *  fake, a cassette or a script) says so, and its zero is "$0", never "$0.0000", since that is not a provider's bill; a
  *  real run's in dollars to four places. A box's time is real whatever the run's providers, an estimate at list price
  *  (draft 33), so when the boxes cost something they are named apart: a scripted run names its other parts scripted
  *  ("scripted lead, boxes $0.0047 at list price"), never "scripted, $0" while its boxes cost something (draft 35). */
 export const costLabel = (cost: number | null, lowerBound: boolean, providers?: 'real' | 'scripted', parts: Partial<Record<CostPart, number | null>> = {}): string => {
-  if (cost === null) return 'unknown';
+  if (cost === null) return NOT_PRICED;
   const at = lowerBound ? 'at least ' : '';
   const boxes = parts.boxes ?? 0;
   if (boxes === 0) {
@@ -516,7 +527,7 @@ export const costLabel = (cost: number | null, lowerBound: boolean, providers?: 
   return `${at}${named}, ${atList}${rest > 0 ? `, $${cost.toFixed(4)} in all` : ''}`;
 };
 
-/** The strip's repeated: "not measured" when nothing measured repeats and an effect's host reported no calls, never 0. */
-export const repeatedLabel = (counters: Counters): string => (counters.repeated === 0 && (counters.repeatedNotMeasured > 0 || !counters.pageActions.measured) ? 'not measured' : String(counters.repeated));
-/** The strip's asked twice: "not measured" when nothing measured was asked twice and the browser's page actions are not measured. */
-export const askedTwiceLabel = (counters: Counters): string => (counters.askedTwice === 0 && !counters.pageActions.measured ? 'not measured' : String(counters.askedTwice));
+/** The strip's repeated: not recorded when nothing measured repeats and an effect's host reported no calls, never 0. */
+export const repeatedLabel = (counters: Counters): string => (counters.repeated === 0 && (counters.repeatedNotMeasured > 0 || !counters.pageActions.measured) ? NOT_RECORDED : String(counters.repeated));
+/** The strip's asked twice: not recorded when nothing measured was asked twice and the browser's page actions are not measured. */
+export const askedTwiceLabel = (counters: Counters): string => (counters.askedTwice === 0 && !counters.pageActions.measured ? NOT_RECORDED : String(counters.askedTwice));

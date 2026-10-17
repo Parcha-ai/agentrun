@@ -39,11 +39,11 @@ test('a box is counted once, whatever number of receipts name it', () => {
   assert.ok(Math.abs(got.cost! - 0.002) < 1e-12, String(got.cost));
 });
 
-test('a receipt whose kind has no published price makes the cost unknown, never 0', () => {
+test('a receipt whose kind has no published price makes the cost not priced, never 0', () => {
   const got = counters([lead(0), receipt('box-1', 40, 0.00005), receipt('box-2', 600, null)]);
   assert.equal(got.cost, null);
   assert.equal(got.costParts.boxes, null);
-  assert.equal(costLabel(got.cost, got.costLowerBound, 'scripted', got.costParts), 'unknown');
+  assert.equal(costLabel(got.cost, got.costLowerBound, 'scripted', got.costParts), 'not priced');
 });
 
 test('a box pi-transport started is unknown until its own receipt; a receipt the supervisor wrote is not that box\'s', () => {
@@ -92,6 +92,6 @@ test('the transport panel\'s cost row reads as the strip: its box at list price,
   const textOf = (node: Node | undefined): string => (node === undefined ? '' : typeof node === 'string' ? node : 'children' in node ? (node.children ?? []).map(textOf).join(' ') : 'text' in node ? node.text : '');
   const lines = [live('host', 'process.started', { gen: 1 }), created('box-1'), lead(0)];
   const screen = (shown: Line[]) => textOf(transportPanel.view(reduceTo(transportPanel, shown, shown.length), { t: 2000, providers: 'scripted' })).replace(/\s+/g, ' ');
-  assert.match(screen(lines), /cost unknown/, 'the box has no receipt yet');
+  assert.match(screen(lines), /cost not priced/, 'the box has no receipt yet');
   assert.match(screen([...lines, receipt('box-1', 40, 0.00005, 'transport')]), /cost scripted lead, boxes \$0\.0020 at list price/);
 });

@@ -1,7 +1,7 @@
 // The page: load a recording, draw its timeline and counters, and replay it. Everything on screen at a stop is a
 // reduce of the lines before that stop; the DOM is redrawn from those reduces, never patched by events.
 import { FORMAT, parseLines, processOf, under, validate, type Json, type Line, type Manifest, type Recording } from './format.ts';
-import { askedTwiceLabel, costLabel, counterFold, countersOf, repeatedLabel, type Counters } from './counters.ts';
+import { askedTwiceLabel, costLabel, counterFold, countersOf, NOT_PRICED, NOT_RECORDED, rangeLabel, repeatedLabel, type Counters } from './counters.ts';
 import { lanesOf, type Lanes, type Span } from './lanes.ts';
 import { animatedPanels, featuredPanel, panelsFor, type BaselineView, type Node, type Panel, type Props, type ViewContext } from './panels.ts';
 import { frameFold, gapTitle, pictureAt, type FrameState } from './frames.ts';
@@ -211,37 +211,48 @@ function cachedReduce<S>(fold: Fold<S>, lines: Line[], p: number, cache: Map<num
 
 // ---- drawing -------------------------------------------------------------------------------------------------
 
-/** The strip. `measured`: the recording has durable lines; without them every count from the store is not measured
- *  and cost is unknown, never 0 (processes and kills still come from the supervisor's lines). */
-
-function drawCounters(counters: Counters, measured = counters.measured, providers?: 'real' | 'scripted', following = false): HTMLElement {
+/** One item of the strip: its label, its value, the title that explains it, and its class's extra (` alarm`, ` fact`). */
+export type StripItem = { label: string; value: string; title: string; extra: string };
+/** The strip. `measured`: the recording has durable lines; without them every count from the store is not recorded
+ *  and cost is not priced, never 0 (processes and kills still come from the supervisor's lines). A count with more that
+ *  may have happened reads as a range, from the proven count to every possible one ("0–1"). */
+export function stripItems(counters: Counters, measured = counters.measured, providers?: 'real' | 'scripted', following = false): StripItem[] {
   const reasked = counters.modelTurns.reasked;
-  const item = (label: string, value: string, title: string, extra = '') => el('div', { class: `counter${extra}`, title }, el('span', { class: 'value', text: value }), el('span', { class: 'label', text: label }));
+  const turns = (n: number) => `${n} turn${n === 1 ? '' : 's'}`;
+  const item = (label: string, value: string, title: string, extra = ''): StripItem => ({ label, value, title, extra });
   const stored = (label: string, value: string, title: string, extra = '') => (measured ? item(label, value, title, extra)
-    : item(label, 'not measured', 'This recording has no durable lines: nothing from the store can be counted.'));
-  return el('div', { class: 'counters' },
+    : item(label, NOT_RECORDED, 'This recording has no durable lines: nothing from the store can be counted.'));
+  return [
     stored('paid calls made', String(counters.paid.total), `Workflow effects completed: ${counters.paid.workflow}. Agent receipts: ${counters.paid.agent}. Vision looks paid: ${counters.paid.vision}.`),
-    stored('looks paid', `${counters.paid.vision}${counters.vision.possible ? ` + ${counters.vision.possible} possible` : ''}`,
-      `Looks the eyes answered and billed, per look key${counters.vision.native ? `; ${counters.vision.native} the lead looked at itself, which charge nothing` : ''}.${counters.vision.possible ? ` ${counters.vision.possible} more possible: a look started in a process that ended before filing it, so no durable line shows whether it was paid, and the cost is a lower bound.` : ''}`),
-    stored('repeated', `${repeatedLabel(counters)}${counters.pageActions.possible ? ` + ${counters.pageActions.possible} possible` : ''}`,
-      `An applied call in a later process than an earlier applied one.${counters.repeatedNotMeasured > 0 ? ` ${counters.repeatedNotMeasured} effects report no calls: their repeats are not measured, never shown as 0.` : ''}${counters.pageActions.possible ? ` ${counters.pageActions.possible} more possible: a browser page action dispatched again after one that never showed reaching the page, so no durable line says whether it was applied twice.` : ''}${counters.pageActions.measured ? '' : ' The browser\'s page actions are not measured: its session records are an export\'s, which keeps only their latest revision.'}`,
+    stored('looks paid', rangeLabel(String(counters.paid.vision), counters.vision.possible),
+      `Looks the eyes answered and billed, per look key${counters.vision.native ? `; ${counters.vision.native} the lead looked at itself, which charge nothing` : ''}.${counters.vision.possible ? ` A range: ${counters.paid.vision} proven, and ${counters.vision.possible} more possible: a look started in a process that ended before filing it, so no durable line shows whether it was paid, and the cost is a lower bound.` : ''}`),
+    stored('repeated', rangeLabel(repeatedLabel(counters), counters.pageActions.possible),
+      `An applied call in a later process than an earlier applied one.${counters.repeatedNotMeasured > 0 ? ` ${counters.repeatedNotMeasured} effects report no calls: their repeats are not recorded, never shown as 0.` : ''}${counters.pageActions.possible ? ` A range: ${counters.pageActions.possible} more possible, a browser page action dispatched again after one that never showed reaching the page, so no durable line says whether it was applied twice.` : ''}${counters.pageActions.measured ? '' : ' The browser\'s page actions are not recorded: its session records are an export\'s, which keeps only their latest revision.'}`,
       counters.repeated > 0 ? ' alarm' : ''),
-    stored('asked twice', askedTwiceLabel(counters), `A call dispatched twice in one process: the model asking again.${counters.pageActions.measured ? '' : ' The browser\'s page actions are not measured: its session records are an export\'s.'}`),
-    stored(counters.inFlight > 0 ? 'unknown (in flight)' : 'unknown', counters.inFlight > 0 ? `${counters.unknown} (${counters.inFlight})` : String(counters.unknown), 'Effects admitted and never completed.'),
+    stored('asked twice', askedTwiceLabel(counters), `A call dispatched twice in one process: the model asking again.${counters.pageActions.measured ? '' : ' The browser\'s page actions are not recorded: its session records are an export\'s.'}`),
+    // Section 6's unknown: calls admitted and never completed, so whether each reached the outside is in doubt.
+    stored('calls in doubt', counters.inFlight > 0 ? `${counters.unknown} (${counters.inFlight} running)` : String(counters.unknown),
+      `Calls admitted and never completed by a process that ended: whether each reached the outside is not known, and none is sent again blindly.${counters.inFlight > 0 ? ' Running: admitted by the live process, not finished yet.' : ''}`),
     stored('judge asks', String(counters.judge.answered + counters.judge.failed), `Answered ${counters.judge.answered}, failed ${counters.judge.failed}, re-asked ${counters.judge.reasked}.`),
     stored('model turns', String(counters.modelTurns.committed), 'Committed assistant turns.'),
-    stored('re-asks', reasked === null ? 'not measured'
-      : `${reasked.proven.reasks}${reasked.proven.reasks ? ` over ${reasked.proven.turns} turn${reasked.proven.turns === 1 ? '' : 's'}` : ''}${reasked.possible.reasks ? ` + ${reasked.possible.reasks} possible` : ''}`,
+    // A range that takes in possible re-asks names no turn count: the proven turns are not all of its turns. The title has both.
+    stored('re-asks', reasked === null ? NOT_RECORDED : reasked.possible.reasks ? rangeLabel(String(reasked.proven.reasks), reasked.possible.reasks)
+      : `${reasked.proven.reasks}${reasked.proven.reasks ? ` over ${turns(reasked.proven.turns)}` : ''}`,
       reasked === null
         ? 'No ask start was committed to this run\'s pi.live (or its version is not one this viewer knows), so a turn asked again cannot be shown.'
-        : 'Extra asks after a kill cut an ask, each counted once: proven when the cut ask had committed a partial (the model was answering), possible when only its start (the process may have died before calling the model). Only proven ones count.',
+        : `${reasked.proven.reasks} proven re-ask${reasked.proven.reasks === 1 ? '' : 's'} over ${turns(reasked.proven.turns)}${reasked.possible.reasks ? `, and ${reasked.possible.reasks} more possible over ${turns(reasked.possible.turns)}` : ''}. Extra asks after a kill cut an ask, each counted once: proven when the cut ask had committed a partial (the model was answering), possible when only its start (the process may have died before calling the model). A range runs from the proven ones to every possible one; only proven ones count.`,
       reasked?.proven.reasks ? ' alarm' : ''),
     item('processes', String(counters.processes), 'From the supervisor\'s process lines.'),
     item('kills', String(counters.kills), 'From the supervisor\'s kill lines.'),
-    item('cost', costLabel(counters.cost, counters.costLowerBound, providers, counters.costParts), following ? 'A run followed while it goes: its cost is known once it finishes.' :
-      `Unknown until a line prices a part, and when any priced part is unknown: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}${providers === 'scripted' ? ' Scripted: at least one priced part was served by a fake, a cassette or a script, so this is not a provider\'s bill, though it may include real charges for the other parts.' : ''}${counters.costParts.boxes !== undefined ? ' Boxes: each box\'s time at its provider\'s published list price, an estimate, not the provider\'s invoice; unknown while a box has no receipt or its kind has no published price.' : ''}`),
+    item('cost', following && counters.cost === null ? `${NOT_PRICED} yet` : costLabel(counters.cost, counters.costLowerBound, providers, counters.costParts), following ? 'A run followed while it goes: its cost is known once it finishes.' :
+      `Not priced until a line prices a part, and while any priced part has no price: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}${providers === 'scripted' ? ' Scripted: at least one priced part was served by a fake, a cassette or a script, so this is not a provider\'s bill, though it may include real charges for the other parts.' : ''}${counters.costParts.boxes !== undefined ? ' Boxes: each box\'s time at its provider\'s published list price, an estimate, not the provider\'s invoice; unknown while a box has no receipt or its kind has no published price.' : ''}`),
     stored('journal opens', String(counters.journalOpens), 'A fact of the store: agentrun.driver\'s generation. It counts journal opens, which can exceed processes.', ' fact'),
-  );
+  ];
+}
+
+function drawCounters(counters: Counters, measured = counters.measured, providers?: 'real' | 'scripted', following = false): HTMLElement {
+  return el('div', { class: 'counters' }, ...stripItems(counters, measured, providers, following).map(({ label, value, title, extra }) =>
+    el('div', { class: `counter${extra}`, title }, el('span', { class: 'value', text: value }), el('span', { class: 'label', text: label }))));
 }
 
 function drawTimeline(player: Player, onScrub: (t: number) => void, onFocus: (path: string) => void): SVGSVGElement {
