@@ -96,7 +96,9 @@ or a `result` line names, undefined until the shell has read it; `blobType(sha)`
 `blobs/` (undefined until the shell has found it), so a view can draw a picture a result cites and link any other file; and `baseline` when the manifest names one (`BaselineView`: its label, the counters of that other recording at its end,
 and how long it ran in ms, or null; another real recording, opened beside this one, never typed-in numbers). When
 `counters.measured` is false the recording has no durable line, so its counts are not measured and its cost is
-unknown: show that, never its zeros.
+unknown, a box's receipt notwithstanding: show that, never its zeros. `counters.costParts` is the cost by part (the
+model's usage as `lead`, `judge`, `eyes`, `browser`, and `boxes`, each box's `box.receipt` at list price); `costLabel`
+draws it as the strip does, naming the boxes apart at list price, and in a scripted run the other parts scripted.
 
 A run's result is the demo's own JSON, and two formats are known to the vision panel: `apollo11.account/1`, and the
 generic cited result `agentrun.cited/1` (RECORDING.md: rows of a label and a value, each citing a blob, a look or
