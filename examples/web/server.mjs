@@ -5,7 +5,9 @@
 // read through its door; a released run's transcript is read from its store, read-only. Binds to loopback unless you
 // pass --host.
 // Routes follow Grep's: GET /runs, GET /runs/{id}, GET /runs/{id}/timeline (SSE while live, JSON when released),
-// GET /runs/{id}/files[/{path}], POST /runs, POST /runs/{id}/messages, POST /runs/{id}/stop, GET /search?q=.
+// GET /runs/{id}/files[/{path}], POST /runs, POST /runs/{id}/messages, POST /runs/{id}/stop, GET /search?q=; and GET
+// /agent (the agent and its saved sign-ins, never their refs) and GET /runs/{id}/frames[/{sha256}.jpg] (what the run's
+// browser showed, for the page's replay player).
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
@@ -40,6 +42,7 @@ const PAGE = { "/": ["index.html", "text/html; charset=utf-8"], "/app.js": ["app
 const MODULE = /^\/timeline\/[a-z-]+\.js$/;
 const APP_CSP = "default-src 'self'; frame-src https: 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const FILE_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox; form-action 'none'";
+const FRAME_BLOB = /^([0-9a-f]{64})\.jpg$/;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
@@ -129,7 +132,9 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
   const exits = new Map();
   const startErrors = new Map();
   const stores = new Map();
-  const settling = new Set();
+  const settling = new Map();
+  // Finished, even to a read of the home that began before the carry back landed.
+  const carried = new Set();
   const tunnels = new Set();
   let pageOrigin = origin ?? "";
 
@@ -157,11 +162,14 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
   }
 
   // A run carried back is done, whatever run.json says of its last instance.
+  // A run with no run.json (a pack carries none, so every run of an imported home) and an endedAt was carried back at its
+  // source: its store is as released as one whose run.json says so.
+  const releasedRun = (run) => RELEASED.has(run.record?.status) || (run.record === null && run.index.endedAt !== undefined);
   const statusOf = (run) => (run.index.endedAt ? "done" : run.record ? (run.record.status === "running" && !doorOf(run.record) ? "lost" : run.record.status) : children.has(run.id) ? "starting" : "unknown");
 
   /** The run's transcript from its store, opened read-only; only for a run whose claim is released. */
   async function readStore(run) {
-    if (!RELEASED.has(run.record?.status)) throw new HttpError(409, "the run is live: read it through its door");
+    if (!releasedRun(run)) throw new HttpError(409, "the run is live: read it through its door");
     const file = join(run.dir, "store", "run.sqlite");
     const st = await stat(file).catch(() => null);
     if (!st) return { rows: [], state: "idle", costUsd: null, title: "" };
@@ -265,7 +273,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
 
   async function summary(run) {
     const status = statusOf(run);
-    const store = RELEASED.has(run.record?.status) ? await readStore(run).catch(() => null) : null;
+    const store = releasedRun(run) ? await readStore(run).catch(() => null) : null;
     const view = await liveView(run);
     const { browser, note } = await browserOf(run);
     const door = doorOf(run.record);
@@ -287,8 +295,53 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
       liveView: view ? { key: view.key } : null,
       browser,
       liveNote: view ? null : note,
+      signedIn: signedInOf(run.meta),
+      frames: await hasFrames(run),
       error: startErrors.get(run.id) ?? null,
     };
+  }
+
+  // ---- sign-ins: the sites a profile is for, never its ref ----------------------------------------------------------
+  /** A profile as the page shows it: `/v2`'s SignIn shape. */
+  const signInOf = (key, profile, lease, runs) => ({
+    key,
+    provider: typeof profile.provider === "string" ? profile.provider : null,
+    state: typeof profile.state === "string" ? profile.state : null,
+    sites: (Array.isArray(profile.allowedOrigins) ? profile.allowedOrigins : []).filter((o) => typeof o === "string" && URL.parse(o)?.origin === o),
+    verifiedAt: typeof profile.verifiedAt === "string" ? profile.verifiedAt : null,
+    heldBy: lease && Date.parse(lease.expiresAt) > Date.now() && !runs[lease.runId]?.endedAt ? lease.runId : null,
+  });
+
+  async function agentInfo() {
+    const state = await homeState();
+    const own = (record, key) => (Object.hasOwn(record, key) ? record[key] : undefined);
+    return { name: state.definition.name, signIns: Object.entries(state.profiles).map(([key, profile]) => signInOf(key, profile, own(state.leases, key), state.runs)) };
+  }
+
+  /** The saved sign-ins a run started with (web.json, written when it was started): ready, and the run's to use. */
+  const signedInOf = (meta) => (Array.isArray(meta.signedIn) ? meta.signedIn.filter((s) => typeof s?.key === "string").map(({ key, provider, sites }) => ({ key, provider: provider ?? null, sites: Array.isArray(sites) ? sites : [] })) : []);
+
+  // ---- frames: <run>/frames/, the agent app's, outside work/ ----------------------------------------------------------
+  const framesDir = (run) => join(run.dir, "frames");
+  async function hasFrames(run) {
+    const st = await lstat(join(framesDir(run), "frames.jsonl")).catch(() => null);
+    return Boolean(st?.isFile() && st.size > 0);
+  }
+
+  /** The run's frame lines, or one JPEG they name: a regular file under frames/, never a link, never cached. */
+  async function serveFrames(res, run, name) {
+    const headers = { "cache-control": "no-store", "x-content-type-options": "nosniff", "cross-origin-resource-policy": "same-origin", "referrer-policy": "no-referrer" };
+    const blob = name === undefined ? null : FRAME_BLOB.exec(name);
+    if (name !== undefined && !blob) throw new HttpError(404, "no such frame");
+    const dir = framesDir(run);
+    const path = blob ? join(dir, "blobs", `${blob[1]}.jpg`) : join(dir, "frames.jsonl");
+    for (const at of [dir, ...(blob ? [join(dir, "blobs")] : []), path]) {
+      const st = await lstat(at).catch(() => null);
+      if (!st || st.isSymbolicLink() || (at === path ? !st.isFile() : !st.isDirectory())) throw new HttpError(404, blob ? "no such frame" : "no frames");
+    }
+    const st = await stat(path);
+    res.writeHead(200, { ...headers, "content-type": blob ? "image/jpeg" : "application/x-ndjson; charset=utf-8", "content-length": st.size });
+    await pipeline(createReadStream(path), res).catch(() => {});
   }
 
   async function listRuns() {
@@ -313,27 +366,29 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
       if (children.get(id) === child) children.delete(id);
       exits.set(id, code ?? "signal");
     };
-    child.once("exit", (code) => (ended(code), track(settle(id))));
+    child.once("exit", (code) => (ended(code), track(id, settle(id))));
     child.once("error", () => ended("error"));
     void watch(id, child);
   }
 
   // ---- a run's end: released once it answered, its sign-ins carried back to the home ------------------------------------
-  const track = (work) => {
-    const done = work.catch((error) => console.error(`run: ${error.message}`)).finally(() => settling.delete(done));
-    settling.add(done);
+  const track = (id, work) => {
+    const done = work.catch((error) => console.error(`run: ${error.message}`)).finally(() => settling.get(id) === done && settling.delete(id));
+    settling.set(id, done);
   };
 
   /**
    * A run this server started, not yet carried back, is released once it has answered: idle, its newest row the agent's
    * text (a request_sign_in wait is not an answer). SIGTERM lets its instance release the browser, so Browserbase saves
-   * the sign-in, then the run; `settle` carries it back when the process has exited.
+   * the sign-in, then the run; `settle` carries it back when the process has exited. An instance of a run already
+   * carried back is stopped the same way.
    */
   async function watch(id, child) {
     while (children.get(id) === child) {
       await sleep(watchMs);
       const run = await loadRun(id).catch(() => null);
-      if (!run || run.index.endedAt) return;
+      if (!run) return;
+      if (run.index.endedAt) return void (children.get(id) === child && child.kill("SIGTERM"));
       const door = doorOf(run.record);
       const live = door ? await doorState(door).catch(() => null) : null;
       if (live?.state !== "idle" || !answerOf(live.rows)) continue;
@@ -354,10 +409,14 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
     if (!answer) return;
     const cost = costOf(rows);
     await carryBack(home, { runId: id }, { outcome: "completed", finalAnswer: clip(answer.text ?? answer.summary ?? "", 2_000), ...(cost == null ? {} : { cost }) });
+    carried.add(id);
     reread();
   }
 
-  /** The door of run `id`, starting or waking the run (the start command, on its directory) when it is not live. */
+  /**
+   * The door of run `id`, starting or waking the run (the start command, on its directory) when it is not live. A run
+   * whose last instance has exited is not started again until `settle` has decided whether to carry it back.
+   */
   async function ensureLive(id, timeoutMs = 45_000) {
     const deadline = Date.now() + timeoutMs;
     for (let launched = false; ; await sleep(250)) {
@@ -365,9 +424,9 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
       if (!run) throw new HttpError(404, "no such run");
       const door = doorOf(run.record);
       if (door) return door;
-      if (run.index.endedAt) throw finishedRun();
+      if (run.index.endedAt || carried.has(id)) throw finishedRun();
       if (["done", "failed"].includes(run.record?.status)) throw new HttpError(409, `the run is ${run.record.status}`);
-      if (!children.has(id) && startable(run.record)) {
+      if (!children.has(id) && !settling.has(id) && startable(run.record)) {
         if (launched && exits.has(id)) throw new HttpError(502, `the start command exited (${exits.get(id)})`);
         if (!start.length) throw new HttpError(501, "this server has no --start command, so it cannot wake a run");
         launch(id);
@@ -406,9 +465,12 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
     if (typeof content !== "string" || !content.trim()) throw new HttpError(400, "content must be a non-empty string");
     if (!start.length) throw new HttpError(501, "this server has no --start command, so it cannot start a run");
     const id = `r${Date.now().toString(36)}-${randomBytes(2).toString("hex")}`;
+    const { profiles } = await homeState();
     const run = await startRun(home, { runId: id, host: HOST });
     reread();
-    await writeFile(join(run.dir, "web.json"), JSON.stringify({ title: clip(content.trim().replace(/\s+/g, " "), 80), createdAt: new Date().toISOString() }));
+    // The saved sign-ins this run starts with: ready ones it holds the save lease for (the others reach it without a ref).
+    const signedIn = run.leases.filter((key) => profiles[key]?.state === "ready").map((key) => ({ key, provider: profiles[key].provider, sites: signInOf(key, profiles[key], null, {}).sites }));
+    await writeFile(join(run.dir, "web.json"), JSON.stringify({ title: clip(content.trim().replace(/\s+/g, " "), 80), createdAt: new Date().toISOString(), signedIn }));
     launch(id);
     submit(id, content).then(
       (r) => r.status >= 400 && startErrors.set(id, r.body?.message ?? r.body?.error ?? "the first message was refused"),
@@ -557,6 +619,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
     const viewer = /^\/live\/([^/]+)\//.exec(path);
     if (viewer && (req.method === "GET" || req.method === "HEAD")) return proxyLive(req, res, viewer[1]);
     if (req.method === "GET" && path === "/runs") return send(res, 200, { runs: await listRuns(), canStart: start.length > 0 });
+    if (req.method === "GET" && path === "/agent") return send(res, 200, await agentInfo());
     if (req.method === "POST" && path === "/runs") return send(res, 202, { id: await createRun((await bodyOf(req)).content) });
     if (req.method === "GET" && path === "/search") {
       const q = (url.searchParams.get("q") ?? "").trim();
@@ -586,6 +649,9 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
           }
           return serveFile(res, run, rel, url.searchParams.get("download") === "1");
         }
+        case "frames":
+          if (m[3] !== undefined && m[3].includes("/")) throw new HttpError(404, "no such frame");
+          return serveFrames(res, run, m[3]);
         case "live": {
           const view = await liveView(run);
           if (!view) throw new HttpError(404, "no live view");
@@ -616,6 +682,11 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
       return send(res, 400, { error: "BAD_REQUEST", message: "the request target is not a URL" });
     }
     if (names && !names.has((req.headers.host ?? "").toLowerCase())) return send(res, 403, { error: "FORBIDDEN", message: "unexpected Host header" });
+    // What the run's browser showed goes only to this page: no other site's request, whatever it asks for.
+    if (/^\/runs\/[^/]+\/frames(\/|$)/.test(url.pathname)) {
+      const site = req.headers["sec-fetch-site"];
+      if ((site && site !== "same-origin" && site !== "none") || (req.headers.origin && req.headers.origin !== `http://${req.headers.host}`)) return send(res, 403, { error: "FORBIDDEN", message: "cross-origin request" });
+    }
     if (req.method === "POST") {
       const origin = req.headers.origin;
       if ((origin && origin !== `http://${req.headers.host}`) || !String(req.headers["content-type"]).startsWith("application/json")) return send(res, 403, { error: "FORBIDDEN", message: "cross-origin or non-JSON request" });
@@ -636,7 +707,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
   const address = server.address();
   if (isLoopback(host)) names = new Set(["localhost", "127.0.0.1", "[::1]", host, ...allowHosts].map((h) => `${h.toLowerCase()}:${address.port}`));
   // A run released before this server last stopped, and never carried back, is carried back now.
-  for (const [id, entry] of Object.entries((await homeState()).runs)) if (!entry.endedAt) track(settle(id));
+  for (const [id, entry] of Object.entries((await homeState()).runs)) if (!entry.endedAt) track(id, settle(id));
 
   const url = `http://${host.includes(":") ? `[${host}]` : host}:${address.port}`;
   pageOrigin = origin ?? url;
@@ -653,7 +724,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
       }
       await Promise.all(live.map((child) => new Promise((resolve) => (child.exitCode !== null ? resolve() : child.once("exit", resolve)))));
       await sleep(0);
-      await Promise.all(settling);
+      await Promise.all(settling.values());
       for (const socket of tunnels) socket.destroy();
       await new Promise((resolve) => (server.close(resolve), server.closeAllConnections()));
     },

@@ -1163,23 +1163,35 @@ describe("fences during the run", () => {
 describe("the watchdog thread", () => {
   it("kills the run's commands at the deadline while a store commit blocks the main thread, then the instance exits 75", { timeout: 30_000 }, async () => {
     const dir = scratchRoot("blocked");
-    const blockMs = 2_500;
-    const child = spawn(process.execPath, ["test/fixtures/blocked-commit.ts", dir.root, String(blockMs)], { stdio: ["ignore", "pipe", "pipe"] });
+    // The self-fence is 4 s after the last heartbeat started. A heartbeat is a run.json write with two fsyncs and can wait
+    // behind another such write, so a start costs up to four fsyncs between successful heartbeats: a slow CI disk took an
+    // 800 ms fence past its limit while the instance started (exit 75 before its first line). 4 s holds fsyncs of up to
+    // about 1 s. The block outlasts the fence by 3.5 s, so the watchdog still has to act while the thread is stuck.
+    const [expiryMs, marginMs] = [4_200, 200];
+    const fenceMs = expiryMs - marginMs;
+    const blockMs = 7_500;
+    const child = spawn(process.execPath, ["test/fixtures/blocked-commit.ts", dir.root, String(blockMs), String(expiryMs), String(marginMs)], { stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
     child.stderr!.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
     let pid = 0;
     try {
       const exit = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
       const lines = createInterface({ input: child.stdout! })[Symbol.asyncIterator]();
-      const started = JSON.parse((await lines.next()).value as string) as { pid: number; heartbeatAt: string };
+      // A line that never comes (the instance ended first) fails with how it ended, not as a JSON parse error.
+      const next = async <T>(what: string): Promise<T> => {
+        const line = await lines.next();
+        if (line.done) assert.fail(`the instance ended before ${what}: exit ${await exit}; ${stderr.trim().split("\n").slice(-2).join(" | ")}`);
+        return JSON.parse(line.value) as T;
+      };
+      const started = await next<{ pid: number; heartbeatAt: string }>("its first line");
       pid = started.pid;
-      const blocking = JSON.parse((await lines.next()).value as string) as { blocking: number };
+      const blocking = await next<{ blocking: number }>("the blocking commit");
       while (alive(pid) && Date.now() < blocking.blocking + blockMs + 5_000) await new Promise((resolve) => setTimeout(resolve, 5));
       const deadAt = Date.now();
       assert.equal(alive(pid), false, "the command died");
       assert.ok(deadAt < blocking.blocking + blockMs, `the command died ${deadAt - blocking.blocking} ms into a ${blockMs} ms block, while the main thread was still stuck`);
       const sinceBeat = deadAt - Date.parse(started.heartbeatAt);
-      assert.ok(sinceBeat >= 800 && sinceBeat < blockMs, `the command died ${sinceBeat} ms after the last heartbeat started (self-fence at 800 ms, block of ${blockMs} ms)`);
+      assert.ok(sinceBeat >= fenceMs && sinceBeat < blockMs, `the command died ${sinceBeat} ms after the last heartbeat started (self-fence at ${fenceMs} ms, block of ${blockMs} ms)`);
       assert.equal(child.exitCode, null, "the instance was still blocked when its command died");
       assert.equal(await exit, 75, stderr);
       assert.match(stderr, /fenced \(LEASE_LAPSED\).*seen by the watchdog/);

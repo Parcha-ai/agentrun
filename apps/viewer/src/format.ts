@@ -53,7 +53,11 @@ export type Manifest = {
 };
 
 /** A recording as the viewer holds it: its manifest, its lines in file order, and where a blob's bytes are. */
-export type Recording = { id: string; manifest: Manifest; lines: Line[]; blobUrl(sha: string): string | undefined; blobType(sha: string): string | undefined };
+export type Recording = { id: string; manifest: Manifest; lines: Line[]; blobUrl(sha: string): string | undefined; blobType(sha: string): string | undefined;
+  /** Read from a server, whose `blobs/` cannot be listed: finds blobs by their names there, and says how many it found. */
+  find?(shas: readonly string[]): Promise<number>;
+  /** The text of a blob the shell already read whole (a followed run's JSON), undefined for any other. */
+  heldText?(sha: string): string | undefined };
 
 const SOURCES = new Set(['workflow', 'pi', 'browser', 'vision', 'transport', 'host']);
 const isInt = (value: unknown, min = 0) => Number.isInteger(value) && (value as number) >= min;
@@ -150,8 +154,9 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
   // 3.2 goes by process. A restore is accepted only with its restore record, naming the checkpoint's head: that
   // process's line after its snapshot (whose gen is an earlier process's). Every move record carries `head`, the target's
   // first new commit: its process's first non-snapshot commit equals it, and the record's own commit is at or above it.
-  // A move continues the sequence (its head is one above the last commit seen and equals seal.head); a restore's head is
-  // replayed.to + 1 when it replayed, else checkpoint.head.
+  // A restore's process may also start at head + 1 when pi committed once at open (draft 37): its own snapshot is then at
+  // commit head, so that commit's state is in it. A move continues the sequence (its head is one above the last commit
+  // seen and equals seal.head); a restore's head is replayed.to + 1 when it replayed, else checkpoint.head.
   const restores = restoresOf(lines);
   const processAt = processesOf(lines);
   const restoreHeads = new Map<number, number[]>();
@@ -160,11 +165,13 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
   const moves: { at: string; process: number; commit: number; move: Move }[] = [];
   const seenBefore = new Map<number, number>();
   const firstNew = new Map<number, number>();
+  const snapshotOf = new Map<number, number>();
   let seen = -1;
   lines.forEach((line, index) => {
     if (line.channel !== 'durable' || !isInt(line.commit)) return;
     if (restores.has(index)) seen = line.commit!;
     const process = processAt[index]!;
+    if (line.snapshot === true && !snapshotOf.has(process)) snapshotOf.set(process, line.commit!);
     if (line.snapshot !== true && !firstNew.has(process)) { seenBefore.set(process, seen); firstNew.set(process, line.commit!); }
     seen = Math.max(seen, line.commit!);
     // A snapshot carries earlier moves' records as state: only a record a process writes is its own move.
@@ -177,7 +184,9 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
   });
   for (const { at, process, commit, move } of moves) {
     if (move.head === undefined) { note(`${at}: a transport.moves record has no head`); continue; }
-    if (firstNew.get(process) !== move.head) note(`${at}: the ${move.kind}'s head ${move.head} is not process ${process}'s first new commit ${firstNew.get(process)}`);
+    const first = firstNew.get(process);
+    const atOpen = move.kind === 'restore' && first === move.head + 1 && snapshotOf.get(process) === move.head;
+    if (first !== move.head && !atOpen) note(`${at}: the ${move.kind}'s head ${move.head} is not process ${process}'s first new commit ${first}`);
     if (commit < move.head) note(`${at}: the ${move.kind} record is at commit ${commit}, below its head ${move.head}`);
     if (move.kind === 'move') {
       if (move.seal !== undefined && move.seal !== move.head) note(`${at}: a move's head ${move.head} is not its seal.head ${move.seal}`);
@@ -233,6 +242,14 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
     if (isSupervisor(line)) {
       if (line.gen !== undefined) note(`${at}: a supervisor line (${line.kind}) has no event-level gen`);
       if (GEN_HOST_KINDS.has(line.kind) && !isInt((line.data as { gen?: unknown } | null)?.gen, 1)) note(`${at}: a supervisor line (${line.kind}) names its process in data.gen`);
+      // A picture is the recording's home side's (draft 31): it names no process, and says which blob it draws.
+      if (line.kind === 'picture') {
+        const picture = line.data as { blob?: unknown; label?: unknown; commit?: unknown } | null;
+        if (!(typeof picture?.blob === 'string' && /^[0-9a-f]{64}$/.test(picture.blob))) note(`${at}: a picture names its blob (a SHA-256) in data`);
+        if (picture?.label !== undefined && typeof picture.label !== 'string') note(`${at}: a picture's label is a string`);
+        if (picture?.commit !== undefined && !isInt(picture.commit)) note(`${at}: a picture's commit is a whole number`);
+        if (blobs && typeof picture?.blob === 'string' && !blobs.has(picture.blob)) note(`${at}: picture blob ${picture.blob} is not in blobs/`);
+      }
       const crossing = line.kind === 'kill' ? (line.data as { crossing?: { point?: unknown; n?: unknown } | null } | null)?.crossing : null;
       if (crossing !== null && crossing !== undefined && !(typeof crossing.point === 'string' && isInt(crossing.n))) note(`${at}: a kill's crossing is { point, n } or null`);
       const result = line.kind === 'result' ? (line.data as { blob?: unknown; title?: unknown } | null) : undefined;
@@ -255,7 +272,9 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
       const restored = restores.get(index);
       if (restored !== undefined) {
         // The lost branch: the durable rules start again from the restored generation's snapshot.
-        if (!(restoreHeads.get(index) ?? []).includes(restored + 1)) note(`${at}: the commits go back to ${restored} with no restore record of head ${restored + 1} after it`);
+        // Its head is the commit after the snapshot's, or the snapshot's own when pi committed once at open (draft 37).
+        const heads = restoreHeads.get(index) ?? [];
+        if (!heads.includes(restored + 1) && !heads.includes(restored)) note(`${at}: the commits go back to ${restored} with no restore record of head ${restored + 1} after it`);
         last = { commit: restored, order: Infinity };
         lastGen = line.gen ?? lastGen;
         return;

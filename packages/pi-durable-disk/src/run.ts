@@ -23,6 +23,7 @@ import {
   DEFAULT_HEARTBEAT_MS,
   DEFAULT_LEASE_EXPIRY_MS,
   DEFAULT_LEASE_MARGIN_MS,
+  keepStartMark,
   openClaimDir,
   persistRecord,
   readRunRecord,
@@ -668,7 +669,15 @@ class Lease implements RunLease {
     if (seed !== undefined && previous === undefined) {
       await step("seed", async () => {
         await this.#dir!.assertMounted();
-        await seed({ root: claim.root, storePath: join(claim.store, STORE_FILE), workDir: claim.work });
+        // While a new run seeds it has no `run.json` heartbeat, and a supervisor keeps a start in its grace only while its
+        // start mark is younger than the grace: the mark is kept fresh until the seed ends, through the held claim directory.
+        // A seeder that dies stops, and the grace runs out as for any start.
+        const stop = keepStartMark(this.#dir!.at, this.#lease.heartbeatMs);
+        try {
+          await seed({ root: claim.root, storePath: join(claim.store, STORE_FILE), workDir: claim.work });
+        } finally {
+          await stop();
+        }
         await this.#dir!.assertMounted();
         await claim.barrier();
       });
