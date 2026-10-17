@@ -1299,3 +1299,22 @@ test('one fresh run id per invocation, shared by its processes: a second run of 
   assert.deepEqual([kills(first), kills(second)], [1, 1], 'each run made its own kill');
   assert.equal(readEvents(second).filter((line) => line.kind === 'kill.request.ignored').length, 0, 'the second run saw none of the first\'s signals');
 });
+
+test('a kill request written in short pieces is whole when it is renamed into place: the supervisor reads the complete request', { timeout: 60_000 }, async (t) => {
+  const { spawn } = await import('node:child_process');
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-request-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'kill-1.json');
+  const crossings_ = new URL('./reference/crossings.ts', import.meta.url).href;
+  const script = `
+    import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+    const writeSync = fs.writeSync;
+    fs.writeSync = (fd, data, offset = 0) => writeSync(fd, data, offset, Math.min(5, data.length - offset));
+    syncBuiltinESMExports();
+    const { askToBeKilled } = await import(${JSON.stringify(crossings_)});
+    askToBeKilled(process.argv[1], 'a-nonce')({ point: 'judge.asked verdict', n: 1, pid: process.pid });`;
+  const child = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', '--input-type=module', '-e', script, file], { stdio: 'ignore' });
+  t.after(() => { try { child.kill('SIGKILL'); } catch { /* gone */ } });
+  for (let waited = 0; !existsSync(file) && waited < 20_000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { point: 'judge.asked verdict', n: 1, pid: child.pid, nonce: 'a-nonce' }, 'the whole request, though each write took 5 bytes');
+});

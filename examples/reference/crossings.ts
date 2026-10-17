@@ -28,7 +28,9 @@ export function askToBeKilled(file: string, nonce?: string): Kill {
   return (crossing) => {
     const whole = `${file}.${process.pid}`;
     const descriptor = openSync(whole, 'w');
-    try { writeSync(descriptor, JSON.stringify({ ...crossing, ...(nonce !== undefined ? { nonce } : {}) })); fsyncSync(descriptor); } finally { closeSync(descriptor); }
+    const request = Buffer.from(JSON.stringify({ ...crossing, ...(nonce !== undefined ? { nonce } : {}) }));
+    // `writeSync` may write fewer bytes than asked (a full disk, a signal): every byte is written before the sync and the rename, or the call throws.
+    try { for (let offset = 0; offset < request.length;) offset += writeSync(descriptor, request, offset); fsyncSync(descriptor); } finally { closeSync(descriptor); }
     renameSync(whole, file);
     const directory = openSync(dirname(file), 'r');
     try { fsyncSync(directory); } finally { closeSync(directory); }
