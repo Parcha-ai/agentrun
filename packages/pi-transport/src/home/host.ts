@@ -2,11 +2,12 @@ import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import type { PlacementRecord } from "../place/placer.ts";
+import { type Crossing, type CrossingCounter, crossingCounter } from "./crossing.ts";
 import type { Drained, DrainOptions } from "./gate.ts";
 import { type Frame, LINK_VERSION, type Link } from "./link.ts";
 import { catalogOf, type ModelServer, serveModels } from "./models.ts";
 import { inSinkOrder, type RecordSink, receiveRecords } from "./records.ts";
-import type { HomeState, ResumeOrder } from "./run.ts";
+import type { CheckpointTaken, HomeState, ResumeOrder } from "./run.ts";
 import type { Seal } from "./store.ts";
 
 /** What a runner said when the link came up. */
@@ -30,6 +31,17 @@ export class RemoteError extends Error {
 	}
 }
 
+/** A tool call a runner reported: when it began, and when it ended if it did. Times are the host's own clock. */
+export type CallRecord = {
+	readonly id: string;
+	readonly tool: string;
+	readonly replay: "safe" | "unsafe";
+	readonly startedAt: number;
+	readonly endedAt?: number;
+};
+
+const CALL_LEDGER_LIMIT = 1_000;
+
 /** The host's hold on one runner: orders out, answers back, and the runner's model requests served. */
 export interface HomeHandle {
 	/** Settles when the runner said it is ready, or the link went down first. */
@@ -40,6 +52,13 @@ export interface HomeHandle {
 	seal(context: Context): Promise<Result<Seal, RemoteError>>;
 	reopen(epoch: number, context: Context): Promise<Result<void, RemoteError>>;
 	retire(epoch: number, context: Context): Promise<Result<void, RemoteError>>;
+	/**
+	 * Hold the session and have the runner copy its store beside it (`Home.checkpoint`). The session stays held until
+	 * `abandon`, so the caller can read the workspace at the same moment.
+	 */
+	checkpoint(options: DrainOptions | undefined, context: Context): Promise<Result<CheckpointTaken, RemoteError>>;
+	/** The tool calls this runner reported, oldest first, the last 1,000. Kept in this process only. */
+	calls(): readonly CallRecord[];
 	submit(
 		content: string,
 		requestId: string | undefined,
@@ -80,6 +99,15 @@ export type ConnectOptions = {
 	 * and a seal waits until they are all here.
 	 */
 	readonly records?: RecordSink;
+	/**
+	 * Announced when a tool call of this home starts (`transport.tool.started`, with the tool's name). The runner holds the
+	 * tool until this returns (or `info.release()`), so a handler that kills the runner leaves the tool not started.
+	 */
+	readonly crossing?: Crossing;
+	/** What `crossing` is told about this home: the session and its box. */
+	readonly crossingFor?: { readonly session: string; readonly box: string };
+	/** The place's counter, so that `n` counts across handles. Default: this handle's own. */
+	readonly crossingCount?: CrossingCounter;
 };
 
 const MODEL_FRAMES = new Set(["model", "model-abort", "model-resume"]);
@@ -100,6 +128,11 @@ function isSeal(value: unknown): value is Seal {
 		typeof seal.sha256 === "string" &&
 		/^[0-9a-f]{64}$/.test(seal.sha256)
 	);
+}
+
+function isCheckpoint(value: unknown): value is CheckpointTaken {
+	const taken = value as { seal?: unknown; path?: unknown } | null;
+	return typeof taken === "object" && taken !== null && isSeal(taken.seal) && typeof taken.path === "string";
 }
 
 /**
@@ -149,8 +182,10 @@ export function connectHome(link: Link, options: ConnectOptions): HomeHandle {
 		settleReady = resolve;
 	});
 	const reply = (frame: Frame) => link.send(frame);
+	const ledger: CallRecord[] = [];
 
 	const { records } = options;
+	const count = options.crossingCount ?? crossingCounter();
 	/** What the runner's ready says: the home's state, or why it is not ready. Needs nothing from the log. */
 	const readyOf = (frame: Frame): Result<Ready, RemoteError> => {
 		if (frame.ok !== true) return err(fromWire(frame.error));
@@ -165,6 +200,48 @@ export function connectHome(link: Link, options: ConnectOptions): HomeHandle {
 	let readyHeard: Result<Ready, RemoteError> | undefined;
 	const answersQueued = new Map<number, number>();
 	const handle = async (frame: Frame): Promise<void> => {
+		if (frame.t === "call") {
+			// A report from another epoch is a home the lease left behind: its calls are ignored.
+			if (frame.epoch !== epoch || typeof frame.id !== "string" || typeof frame.tool !== "string") return;
+			const at = Date.now();
+			if (frame.phase === "start" && options.crossing !== undefined) {
+				// Detached: a handler that sleeps must not hold up this link's other frames (the record stream's acknowledgements).
+				const id = String(frame.id);
+				let released = false;
+				const release = () => {
+					if (released) return;
+					released = true;
+					link.send({ t: "call-ack", id });
+				};
+				const where = options.crossingFor;
+				void Promise.resolve()
+					.then(() =>
+						options.crossing?.("transport.tool.started", {
+							session: where?.session ?? "",
+							epoch,
+							box: where?.box ?? "",
+							tool: frame.tool as string,
+							n: count("transport.tool.started"),
+							release,
+						}),
+					)
+					.catch(() => {})
+					.finally(release);
+			}
+			if (frame.phase === "start") {
+				ledger.push({
+					id: frame.id,
+					tool: frame.tool,
+					replay: frame.replay === "safe" ? "safe" : "unsafe",
+					startedAt: at,
+				});
+				if (ledger.length > CALL_LEDGER_LIMIT) ledger.shift();
+			} else if (frame.phase === "end") {
+				const at_ = ledger.findLastIndex((record) => record.id === frame.id);
+				if (at_ >= 0) ledger[at_] = { ...(ledger[at_] as CallRecord), endedAt: at };
+			}
+			return;
+		}
 		if (MODEL_FRAMES.has(frame.t) || RECORD_FRAMES.has(frame.t)) {
 			// A home the lease left behind has no model, and writes nothing to the session's log.
 			if (frame.epoch !== epoch) {
@@ -231,6 +308,7 @@ export function connectHome(link: Link, options: ConnectOptions): HomeHandle {
 		v: LINK_VERSION,
 		catalog: catalogOf(options.models),
 		...(records === undefined ? {} : { records: true }),
+		...(options.crossing === undefined ? {} : { crossing: true }),
 	});
 
 	const order = <T>(name: string, args: Readonly<Record<string, unknown>>, context: Context) =>
@@ -266,6 +344,9 @@ export function connectHome(link: Link, options: ConnectOptions): HomeHandle {
 		resume: (resumeOrder, context) => order("resume", resumeOrder, context),
 		drain: (drainOptions, context) => order("drain", drainOptions ?? {}, context),
 		abandon: (context) => order("abandon", {}, context),
+		checkpoint: async (checkpointOptions, context) =>
+			checked(await order<unknown>("checkpoint", checkpointOptions ?? {}, context), isCheckpoint, "checkpoint"),
+		calls: () => [...ledger],
 		seal: async (context) => checked(await order<unknown>("seal", {}, context), isSeal, "seal"),
 		reopen: (to, context) => order("reopen", { epoch: to }, context),
 		retire: (to, context) => order("retire", { epoch: to }, context),

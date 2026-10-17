@@ -52,7 +52,7 @@ function opener(root: string, seed?: RunSeed, claimOptions?: Parameters<typeof f
 }
 
 describe("seed", () => {
-  it("runs once on a new run, after the owner lock and before run.json, and what it wrote is in the store the run opens", async () => {
+  it("runs once on a new run, after the owner lock and the layout and before run.json, and what it wrote is in the store the run opens", async () => {
     const dir = scratchRoot("seed-new");
     try {
       const seen: { calls: number; runJsonThen?: boolean; dir?: Parameters<RunSeed>[0] } = { calls: 0 };
@@ -63,7 +63,7 @@ describe("seed", () => {
       assert.equal(seen.calls, 1);
       assert.equal(seen.runJsonThen, false, "no run.json yet while it seeds");
       assert.deepEqual(seen.dir, { root: dir.root, storePath: join(dir.root, "store", STORE_FILE), workDir: join(dir.root, "work") });
-      assert.deepEqual(t.steps.slice(0, 4), ["acquire", "owner-lock", "seed", "run.json"]);
+      assert.deepEqual(t.steps.slice(0, 5), ["acquire", "owner-lock", "layout", "seed", "run.json"]);
       assert.deepEqual(atBarrier[0], { seeded: 1, runJson: false }, "what it wrote is made durable (the claim's barrier) after it, before run.json publishes the run");
       const rows = await run.store.database.all<{ k: string }>("SELECT k FROM x_seed");
       assert.deepEqual(rows.map((row) => row.k), ["profile-1"], "the seeded table is in the opened store");
@@ -148,6 +148,100 @@ describe("seed", () => {
       await run.release();
     } finally {
       child.kill("SIGKILL");
+      dir.remove();
+    }
+  });
+});
+
+describe("afterClaim and seed: the open's order", () => {
+  const ref = { disk: "dsk-local", region: "local", id: "seed-order" };
+  /** A local run whose afterClaim (an app's factory) returns the Harness options and, when given, a seed. */
+  function open(root: string, o: { seed?: RunSeed; optionsSeed?: RunSeed; refuse?: Error; factory?: () => void } = {}) {
+    const steps: string[] = [];
+    const scripted = scriptedHarness();
+    let factoryCalls = 0;
+    const run = openDurableRun(ref, {
+      ...localRun(root),
+      afterClaim: async () => {
+        factoryCalls++;
+        o.factory?.();
+        if (o.refuse) throw o.refuse;
+        return { harness: { models: scripted.models, registry: scripted.registry }, ...(o.seed ? { seed: o.seed } : {}) };
+      },
+      ...(o.optionsSeed ? { seed: o.optionsSeed } : {}),
+      onStep: (step) => void steps.push(step),
+    });
+    return { run, steps, factoryCalls: () => factoryCalls };
+  }
+  const OPEN = ["acquire", "owner-lock", "layout", "commands", "after-claim", "seed", "run.json", "heartbeat", "store", "seal", "harness", "live", "resume"];
+
+  it("a new run: acquire, owner lock, layout, the commands reap, afterClaim, seed, run.json, heartbeat, store, Harness; a resume: the same without seed", async () => {
+    const dir = scratchRoot("seed-order");
+    try {
+      const root = join(dir.root, "run");
+      const seen = { calls: 0 };
+      const first = open(root, { seed: seeding(seen, root) });
+      const opened = await first.run;
+      assert.deepEqual(first.steps, OPEN);
+      await opened.release();
+      const again = open(root, { seed: seeding(seen, root) });
+      const resumed = await again.run;
+      assert.deepEqual(again.steps, OPEN.filter((step) => step !== "seed"), "a resume never seeds");
+      assert.equal(seen.calls, 1);
+      assert.equal(resumed.generation, 2);
+      await resumed.release();
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("afterClaim's seed runs over the options' one, once, on the claim's paths, after what the factory wrote; without one the options' seed runs", async () => {
+    const dir = scratchRoot("seed-given");
+    try {
+      const root = join(dir.root, "run");
+      const calls: string[] = [];
+      let seenDir: Parameters<RunSeed>[0] | undefined;
+      let factoryWrote: boolean | undefined;
+      const t = open(root, {
+        factory: () => writeFileSync(join(root, "work", "from-the-factory.txt"), "x"),
+        seed: (d) => {
+          calls.push("afterClaim's");
+          seenDir = d;
+          factoryWrote = existsSync(join(d.workDir, "from-the-factory.txt"));
+        },
+        optionsSeed: () => void calls.push("the options'"),
+      });
+      await (await t.run).release();
+      assert.deepEqual(calls, ["afterClaim's"]);
+      assert.deepEqual(seenDir, { root, storePath: join(root, "store", STORE_FILE), workDir: join(root, "work") });
+      assert.equal(factoryWrote, true, "the seed runs after the factory, on the same claimed directory");
+      const other = join(dir.root, "other");
+      const fallback = open(other, { optionsSeed: () => void calls.push("the options'") });
+      await (await fallback.run).release();
+      assert.deepEqual(calls, ["afterClaim's", "the options'"], "afterClaim gave no seed: the options' one runs");
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("an afterClaim that throws on a new run seeds nothing and publishes nothing; the next open runs afterClaim and the seed again", async () => {
+    const dir = scratchRoot("seed-after-claim-throws");
+    try {
+      const root = join(dir.root, "run");
+      const seen = { calls: 0 };
+      const refused = new Error("the app module did not load");
+      const t = open(root, { seed: seeding(seen, root), refuse: refused });
+      await assert.rejects(t.run, (error: unknown) => error === refused);
+      assert.deepEqual(t.steps, ["acquire", "owner-lock", "layout", "commands"], "no after-claim step completed, no seed, no run.json");
+      assert.equal(seen.calls, 0);
+      assert.equal(existsSync(join(root, RUN_JSON)), false);
+      const retry = open(root, { seed: seeding(seen, root) });
+      const run = await retry.run;
+      assert.equal(retry.factoryCalls(), 1);
+      assert.equal(seen.calls, 1, "the next open seeds");
+      assert.equal(run.generation, 1);
+      await run.release();
+    } finally {
       dir.remove();
     }
   });

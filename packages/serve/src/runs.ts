@@ -39,6 +39,12 @@ const alive = (pid: number) => {
 };
 /** Waits between carry backs that found the home busy: each attempt itself waits 5 s for the home's lock. */
 const CARRY_BACK_RETRIES_MS = [500, 1_000, 2_000, 4_000, 8_000];
+/** How long a run's process may live on after it released the run before its store is read anyway: the process holds the
+ *  store's exclusive lock until it exits. */
+const EXIT_AFTER_RELEASE_MS = 30_000;
+/** SQLITE_BUSY or SQLITE_LOCKED: another connection holds the database. */
+const sqliteBusy = (error: unknown) => isObject(error) && error.code === "ERR_SQLITE_ERROR" && typeof error.errcode === "number" && [5, 6].includes(error.errcode & 0xff);
+const warn = (runId: string, text: string) => void process.stderr.write(`agentrun-serve: run ${runId}: ${text}\n`);
 const readJson = (path: string) => readFile(path, "utf8").then((text) => JSON.parse(text) as Json, () => null);
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 const isLoopback = (host: string) => host === "localhost" || host === "[::1]" || host === "::1" || /^127\./.test(host);
@@ -215,7 +221,7 @@ export class Runs {
     this.runs.set(id, run);
     const record = await this.record(run);
     // Only a store no live instance holds is opened: released, or left by an instance whose lease lapsed.
-    if (index.endedAt || !this.doorOf(record)) await this.readStore(run);
+    if (index.endedAt || !this.doorOf(record)) await this.storeWhenFree(run);
     if (index.endedAt) {
       run.outcome = (["completed", "failed", "cancelled"].includes(String(index.outcome)) ? index.outcome : "completed") as Status;
       run.endedAt = index.endedAt;
@@ -322,9 +328,15 @@ export class Runs {
     if (!pid) return;
     run.orphan = pid;
     this.connect(run);
+    let releasedAt: number | undefined;
     const timer = setInterval(() => {
       void this.record(run).then((now) => {
         if (run.orphan !== pid || (this.doorOf(now) && alive(pid))) return;
+        if (RELEASED.has(String(now?.status)) && alive(pid)) {
+          releasedAt ??= Date.now();
+          if (Date.now() - releasedAt < EXIT_AFTER_RELEASE_MS) return;
+          warn(run.id, `its process ${pid} released the run ${EXIT_AFTER_RELEASE_MS / 1000} s ago and has not exited; reading its store anyway`);
+        }
         clearInterval(timer);
         run.orphan = undefined;
         void this.settle(run, null, !alive(pid) && !RELEASED.has(String(now?.status)));
@@ -339,7 +351,7 @@ export class Runs {
     for (const entry of entries) {
       for (const [id, index] of Object.entries(entry.state.runs)) {
         if (index.endedAt) continue;
-        const run = await this.adopt(entry, id).catch(() => null);
+        const run = await this.adopt(entry, id).catch((error: Error) => (warn(id, `not recovered: ${error.message}; the next start tries again`), null));
         if (run && !this.live(run) && !run.outcome) await this.settle(run, null, false);
       }
     }
@@ -478,7 +490,7 @@ export class Runs {
   private settle(run: Run, code: number | null, exited: boolean): Promise<void> {
     run.settling = (run.settling ?? Promise.resolve())
       .then(() => (run.outcome ? undefined : this.settleOnce(run, code, exited)))
-      .catch((error: Error) => void process.stderr.write(`agentrun-serve: run ${run.id}: ${error.message}\n`));
+      .catch((error: Error) => warn(run.id, `not settled: ${error.message}; the next start tries again`));
     return run.settling;
   }
 
@@ -489,7 +501,7 @@ export class Runs {
     run.working = false;
     const record = await this.record(run);
     const released = RELEASED.has(String(record?.status));
-    if (released) await this.readStore(run);
+    if (released) await this.storeWhenFree(run);
     let outcome: Status | undefined;
     if (run.cancel) outcome = "cancelled";
     else if (run.finishing) outcome = run.finishing;
@@ -519,7 +531,7 @@ export class Runs {
           });
           break;
         } catch (error) {
-          if (!(error instanceof AgentHomeError && error.code === "busy") || !(await this.retryBusy(run.id, attempt))) throw error;
+          if (!(error instanceof AgentHomeError && error.code === "busy") || !(await this.retryBusy(run.id, attempt, "its agent home"))) throw error;
         }
       }
       this.options.agents.forget(run.agentId);
@@ -532,13 +544,25 @@ export class Runs {
     this.refresh(run);
   }
 
-  /** After refusal `attempt` for a busy home: waits out the next delay and says whether to try again. */
-  private async retryBusy(runId: string, attempt: number): Promise<boolean> {
+  /** After refusal `attempt` because `what` is busy: waits out the next delay and says whether to try again. */
+  private async retryBusy(runId: string, attempt: number, what: string): Promise<boolean> {
     const delays = this.options.carryBackRetry?.delaysMs ?? CARRY_BACK_RETRIES_MS;
     this.options.carryBackRetry?.onBusy?.(runId, attempt);
     if (attempt >= delays.length) return false;
+    warn(runId, `${what} is busy; trying again in ${delays[attempt]} ms (${attempt + 1} of ${delays.length})`);
     await sleep(delays[attempt]!);
     return true;
+  }
+
+  /** The run's store, read again while another connection holds it, within the same retries. */
+  private async storeWhenFree(run: Run): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.readStore(run);
+      } catch (error) {
+        if (!sqliteBusy(error) || !(await this.retryBusy(run.id, attempt, "its store"))) throw error;
+      }
+    }
   }
 
   /** The agent, read again while another writer holds its home, within the carry back's retries. */
@@ -547,7 +571,7 @@ export class Runs {
       try {
         return await this.options.agents.get(id);
       } catch (error) {
-        if (!(error instanceof ApiError && error.code === "home_busy") || !(await this.retryBusy(runId, attempt))) throw error;
+        if (!(error instanceof ApiError && error.code === "home_busy") || !(await this.retryBusy(runId, attempt, "its agent home"))) throw error;
       }
     }
   }
