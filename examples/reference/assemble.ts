@@ -225,20 +225,25 @@ export async function compose(place: RunPlace, host: Host, job: Job, options: Ru
   };
 }
 
+/** What the run's final status carries in `run.json` (the one thing a box place reads): how it ended, the record, the store's hash, and what the host adds (`extra`: the models the live parts chose, so a remote recording's manifest() sees them too). */
+export function finalDetail(result: RunResult, storeSha256: string | undefined, extra: Record<string, unknown> = {}) {
+  return { status: result.status, ...(result.status === 'complete' ? { record: result.output } : {}), ...(storeSha256 ? { storeSha256 } : {}), ...extra };
+}
+
 /** The same run as options for `pi-durable-disk run --app`: the instance claims the run, fences it, opens the store and resumes it; `onOpen` drives the job on it and, when it has delivered, writes the run's final
  *  status, `done` with the record and the hash of the store, releases the run and ends the process. `report` is told how the run ended before the process does (the child prints its outcome line there). */
-export async function appOf(place: RunPlace, host: Host, job: Job, options: RunOptions, report: (outcome: { result: RunResult; storeSha256: string | undefined }) => void | Promise<void>): Promise<AppOptions> {
+export async function appOf(place: RunPlace, host: Host, job: Job, options: RunOptions, report: (outcome: { result: RunResult; storeSha256: string | undefined }) => void | Promise<void>, extra: Record<string, unknown> = {}, redact?: (text: string) => string): Promise<AppOptions> {
   const composed = await compose(place, host, job, options);
   return {
     registry: composed.registry, models: composed.models, ...(composed.beforeResume ? { beforeResume: composed.beforeResume } : {}),
     async onOpen(durable) {
-      const result = await composed.drive(durable);
-      await composed.cleanup(durable.harness);
+      // The browser sessions are released whether or not the run's drive succeeded.
+      const result = await composed.drive(durable).finally(() => composed.cleanup(durable.harness));
       const storeFile = join(place.store, 'run.sqlite');
       const storeSha256 = existsSync(storeFile) ? createHash('sha256').update(readFileSync(storeFile)).digest('hex') : undefined;
       await report({ result, storeSha256 });
       // A box place has only run.json: the record and the store's hash are in the final status as well.
-      await durable.setStatus(result.status === 'complete' ? 'done' : 'failed', { status: result.status, ...(result.status === 'complete' ? { record: result.output as JsonValue } : {}), ...(storeSha256 ? { storeSha256 } : {}) } as JsonValue);
+      await durable.setStatus(result.status === 'complete' ? 'done' : 'failed', (redact ? JSON.parse(redact(JSON.stringify(finalDetail(result, storeSha256, extra)))) : finalDetail(result, storeSha256, extra)) as JsonValue);
       await durable.release();
       process.exit(0);
     },
