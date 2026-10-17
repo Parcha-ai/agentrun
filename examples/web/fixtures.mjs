@@ -1,10 +1,15 @@
 // Fakes for the runs app's tests: pi-shaped entries, a fake door (a local HTTP server that answers like a run's
 // `serveRun`: SSE events, status, submit, abort), and runs of a real agent home with run.json, a tiny store and work files.
+import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { startRun } from "@parcha/pi-durable-agent";
+import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { createRegistry, defineDocFamily, Harness } from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { durableProfileStore, startRun } from "@parcha/pi-durable-agent";
 
 const cost = (total) => ({ input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total } });
 export const user = (id, text) => ({ id, conversationId: 1, kind: "pi.user", model: [{ role: "user", content: text, timestamp: id }] });
@@ -155,4 +160,33 @@ export async function serveStatic(dir, prefix = "/") {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   return { url: `http://127.0.0.1:${server.address().port}${prefix}`, requests, close: () => new Promise((resolve) => (server.close(resolve), server.closeAllConnections())) };
+}
+
+const Profiles = defineDocFamily({ kind: "browser.profiles", version: 1, scope: "session", family: true, initial: () => ({}) });
+
+/** A run's store signed in, as the agent app leaves it: each profile (key -> `{ ref, ...fields }`) made, then its
+ *  fields (`allowedOrigins`, `startUrl`, `verifiedAt`) committed. `carryBack` then gives them to the home. */
+export async function signInRun(storePath, profiles) {
+  const harness = await Harness.open(await openNodeSqliteStorage(storePath), { models: createModels(), registry: createRegistry(), onReport: () => {} }, ctx);
+  try {
+    for (const [key, { ref, ...fields }] of Object.entries(profiles)) {
+      await durableProfileStore(harness).resolve(key, async () => ref);
+      if (Object.keys(fields).length) await harness.commit(async (tx) => void Object.assign(await tx.doc(Profiles, key, null), fields), ctx);
+    }
+  } finally {
+    await harness.close(ctx);
+  }
+}
+
+export const jpegSha = (bytes) => createHash("sha256").update(bytes).digest("hex");
+/** A frame line as the agent app keeps it. */
+export const frameLine = (seq, t, sha) => ({ channel: "live", source: "browser", kind: "frame", t, conv: 1, data: { session: "s1", provider: "browserbase", w: 800, h: 500, mime: "image/jpeg" }, blobs: [sha], seq });
+/** The gap the agent app writes while the person signs in. */
+export const signInGap = (seq, t, from) => ({ channel: "live", source: "browser", kind: "frame.gap", t, conv: 1, data: { session: "s1", from, reason: "credential_on_page", detail: "host" }, seq });
+
+/** A run's frames as the agent app writes them: `frames/frames.jsonl` and `frames/blobs/<sha256>.jpg`, owner-only. */
+export function writeFrames(dir, lines, jpegs = []) {
+  mkdirSync(join(dir, "frames", "blobs"), { recursive: true, mode: 0o700 });
+  for (const bytes of jpegs) writeFileSync(join(dir, "frames", "blobs", `${jpegSha(bytes)}.jpg`), bytes, { mode: 0o600 });
+  writeFileSync(join(dir, "frames", "frames.jsonl"), lines.map((line) => `${JSON.stringify(line)}\n`).join(""), { mode: 0o600 });
 }

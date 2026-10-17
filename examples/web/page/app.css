@@ -94,8 +94,46 @@ details[open] > summary:before { content: "-"; }
 .viewer th { background: var(--ar-soft); }
 .hits a { display: block; padding: 10px 16px; border-bottom: 1px solid var(--ar-line); color: inherit; text-decoration: none; }
 .hits a:hover { background: var(--ar-accent-soft); }
+.signins { padding: 10px 16px; border-bottom: 1px solid var(--ar-line); }
+.signins b { font: 11px var(--ar-mono); text-transform: uppercase; letter-spacing: .05em; color: var(--ar-muted); }
+.signins .saved { margin-top: 6px; font-size: 13px; line-height: 1.35; overflow-wrap: break-word; }
+.signins .what { font-weight: 600; }
+.signins .about { color: var(--ar-muted); font-size: 12px; }
+.signins .held { white-space: nowrap; }
+.started { padding: 6px 16px; border-bottom: 1px solid var(--ar-line); font: 12px var(--ar-mono); color: var(--ar-ok); }
+.float { position: fixed; right: 16px; bottom: 76px; z-index: 20; width: 440px; height: 320px; display: flex; flex-direction: column; background: var(--ar-bg); border: 1px solid var(--ar-fg); box-shadow: 0 8px 24px color-mix(in srgb, var(--ar-fg) 18%, transparent); }
+.float[data-size=large] { width: min(1100px, calc(100vw - 332px)); top: 60px; height: auto; }
+.float[data-size=min] { height: auto; }
+.float[data-size=min] .float-body { display: none; }
+.float-bar { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--ar-line); background: var(--ar-soft); }
+.float-bar b { font: 11px var(--ar-mono); text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; }
+.float-note { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.float[data-waiting="1"] .float-bar { background: var(--ar-accent); color: var(--ar-on-accent); border-color: var(--ar-accent); }
+.float[data-waiting="1"] .float-bar .btn { background: var(--ar-on-accent); color: var(--ar-accent); border-color: var(--ar-on-accent); }
+.float-bar .btn { padding: 2px 8px; font-size: 12px; }
+.float-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.float-body iframe { flex: 1; width: 100%; border: 0; }
+.chip { position: fixed; right: 16px; bottom: 76px; z-index: 20; border: 1px solid var(--ar-accent); background: var(--ar-accent); color: var(--ar-on-accent); padding: 6px 14px; cursor: pointer; font: 12px var(--ar-mono); text-transform: uppercase; letter-spacing: .05em; }
+.player { padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; }
+.screen { position: relative; background: var(--ar-soft); border: 1px solid var(--ar-line); display: flex; justify-content: center; align-items: center; min-height: 240px; }
+.screen img { display: block; max-width: 100%; max-height: 62vh; }
+.gap-note { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--ar-accent-soft); color: var(--ar-accent); font-weight: 600; text-align: center; padding: 16px; }
+.caption { font-size: 13px; color: var(--ar-muted); }
+.controls { display: flex; align-items: center; gap: 12px; }
+.scrub { position: relative; flex: 1; height: 24px; display: flex; align-items: center; }
+.scrub input { width: 100%; margin: 0; accent-color: var(--ar-accent); }
+.marks { position: absolute; left: 0; right: 0; top: 50%; height: 10px; margin-top: -5px; pointer-events: none; z-index: 1; }
+.marks svg { display: block; width: 100%; height: 100%; }
+.marks rect { fill: var(--ar-warn); fill-opacity: .55; stroke: var(--ar-warn); stroke-width: 1px; vector-effect: non-scaling-stroke; }
+.gaps { list-style: none; margin: 0; padding: 0; font-size: 13px; color: var(--ar-muted); }
 .bar { display: none; }
 @media (max-width: 1000px) {
+  .float { left: 8px; right: 8px; bottom: 128px; width: auto; height: 40vh; }
+  .float[data-size=large] { width: auto; top: 56px; height: auto; }
+  .float-bar { flex-wrap: wrap; }
+  .float-bar b { flex: 1; }
+  .float-note { order: 5; flex-basis: 100%; white-space: normal; }
+  .chip { bottom: 128px; }
   main { display: block; }
   main > .hist, main > .run, main > .view { display: none; height: 100%; border: 0; }
   .runs-app[data-pane=hist] .hist, .runs-app[data-pane=run] .run, .runs-app[data-pane=run] .view { display: flex; }

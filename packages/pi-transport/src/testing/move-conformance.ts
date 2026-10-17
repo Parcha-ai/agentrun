@@ -1119,6 +1119,67 @@ export function registerRestoreConformance(
 			timeoutMs,
 		);
 
+		runner.it(
+			"rebuilds from the host's log alone when no checkpoint was ever taken: every commit from the first, an empty workspace, and none of what the lost box admitted runs again",
+			() =>
+				withTrio((trio) =>
+					withVault((vault) =>
+						withRun(
+							false,
+							trio,
+							async (run) => {
+								await sleep(1_900);
+								getOrThrow(await run.home.drain({ timeoutMs: 10_000 }, context));
+								const beforeKill = await run.effects(trio.a);
+								if (beforeKill.length === 0) throw new Error("the session ran nothing before the kill");
+								const live = getOrThrow(await run.home.seal(context));
+								const deadline = Date.now() + 10_000;
+								while (Date.now() < deadline) {
+									const log = getOrThrow(await vault.readLog(SESSION, 1, context));
+									if (log.entries.length > 0 && (log.entries.at(-1) as LogEntry).commit >= live.head - 1)
+										break;
+									await sleep(50);
+								}
+								getOrThrow(await trio.a.box.destroy(context));
+								const recovered = getOrThrow(
+									await recoverHome(
+										{
+											session: SESSION,
+											ownership: run.lease,
+											places: { [trio.a.environment]: trio.a },
+											start: run.start,
+											notice: NOTICE,
+											vault,
+											replace: replacing(trio),
+											restoreFromLog: true,
+											noticeOfRestore: () => NOTICE,
+										},
+										context,
+									),
+								);
+								equal(recovered.restored, undefined, "no checkpoint was used");
+								equal(recovered.replayed?.from, 1, "the first commit replayed");
+								equal(recovered.replayed?.to, live.head - 1, "the last commit replayed");
+								equal(recovered.lease.seal?.head, live.head, "the head the lease vouches for");
+								getOrThrow(await recovered.home.idle(context));
+								const inNewBox = await run.effects(trio.c);
+								// What the lost box admitted is in the store the new box opened: none of it runs again.
+								equal(
+									inNewBox.filter((round) => beforeKill.includes(round)),
+									[],
+									"rounds run again in the new box",
+								);
+								if (inNewBox.length === 0) throw new Error("the session did not go on in the new box");
+								equal(run.notices(), 1, "the notices the model saw");
+								equal(await run.held(), { epoch: 2, environment: trio.a.environment }, "the lease");
+							},
+							{ holdMs: RESTORE_HOLD_MS, sink: recordSink(vault, SESSION, context) },
+						),
+					),
+				),
+			timeoutMs,
+		);
+
 		for (const who of ["source", "target"] as const) {
 			for (const step of STEPS) {
 				const lost = leaseLost(step, who);
