@@ -222,12 +222,12 @@ async function snapshotAt(storage: StoreReads, at: Seq) {
 }
 
 describe("openDurableRun", () => {
-  it("opens in order (claim, lock, run.json, store, seal, Harness) and writes run.json", async () => {
+  it("opens in order (claim, lock, layout, run.json, store, seal, Harness) and writes run.json", async () => {
     const dir = scratchRoot("order");
     try {
       const t = setup(dir.root);
       const run = await t.open();
-      assert.deepEqual(t.steps, ["acquire", "owner-lock", "run.json", "heartbeat", "layout", "store", "seal", "harness", "live", "resume"]);
+      assert.deepEqual(t.steps, ["acquire", "owner-lock", "layout", "run.json", "heartbeat", "store", "seal", "harness", "live", "resume"]);
       for (const path of [OWNER_LOCK, "store", "work", "tmp", join("store", STORE_FILE), RUN_JSON]) assert.ok(existsSync(join(dir.root, path)), path);
       assert.equal(existsSync(join(dir.root, RUN_JSON_TEMP)), false, "the temp file was renamed over run.json");
       const record = runJson(dir.root);
@@ -243,6 +243,62 @@ describe("openDurableRun", () => {
       assert.equal(run.claim.root, dir.root);
       await run.release();
       assert.deepEqual(t.claim.log, ["acquire", "cleanup", "barrier", "release"]);
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("afterClaim runs once the claim is held (lock, layout) and before this generation's run.json, the store and the Harness, which open with what it returns", async () => {
+    const dir = scratchRoot("after-claim");
+    try {
+      const own = scriptedHarness();
+      let seen: { root: string; work: boolean; runJson: boolean } | undefined;
+      const t = setup(dir.root, {
+        options: {
+          harness: undefined,
+          afterClaim: async (claim) => {
+            seen = { root: claim.root, work: existsSync(claim.work), runJson: existsSync(join(claim.root, RUN_JSON)) };
+            return { harness: { models: own.models, registry: own.registry } };
+          },
+        },
+      });
+      const run = await t.open();
+      assert.deepEqual(t.steps, ["acquire", "owner-lock", "layout", "after-claim", "run.json", "heartbeat", "store", "seal", "harness", "live", "resume"]);
+      assert.deepEqual(seen, { root: dir.root, work: true, runJson: false }, "on the claimed directory, laid out, before this incarnation's run.json");
+      const root = await run.harness.root(ctx, { agent: own.agent });
+      assert.equal((await (await root.submit({ type: "input", content: "hello" }, ctx)).wait(ctx)).status, "done", "the Harness has the options afterClaim returned");
+      await run.release();
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("an afterClaim that fails publishes nothing: no run.json on a new run, the previous one untouched on a resume, the claim let go, and the next open runs it again", async () => {
+    const dir = scratchRoot("after-claim-refused");
+    try {
+      let calls = 0;
+      const refusing = { afterClaim: async () => { calls++; throw new Error("the app module did not load"); } };
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const t = setup(dir.root, { options: refusing });
+        await assert.rejects(t.open(), /did not load/);
+        assert.deepEqual(t.steps, ["acquire", "owner-lock", "layout"], "no run.json, no heartbeat");
+        assert.equal(existsSync(join(dir.root, RUN_JSON)), false, "a new run still has no run.json");
+        assert.deepEqual(t.claim.log, ["acquire", "release"], "the claim is let go, not fenced");
+      }
+      assert.equal(calls, 2, "the next open ran afterClaim again");
+      await (await setup(dir.root).open()).release();
+      const left = readFileSync(join(dir.root, RUN_JSON), "utf8");
+      const resumed = setup(dir.root, { options: refusing });
+      await assert.rejects(resumed.open(), /did not load/);
+      assert.equal(readFileSync(join(dir.root, RUN_JSON), "utf8"), left, "a resume leaves the previous incarnation's run.json as it was");
+      assert.deepEqual(resumed.claim.log, ["acquire", "release"]);
+      const none = setup(dir.root, { options: { harness: undefined, afterClaim: async () => ({}) } });
+      await assert.rejects(none.open(), (e: unknown) => e instanceof RunError && e.code === "INVALID_ARGUMENT" && /afterClaim returned none/.test((e as Error).message));
+      assert.equal(readFileSync(join(dir.root, RUN_JSON), "utf8"), left, "no Harness options from afterClaim: refused the same way");
+      assert.deepEqual(none.claim.log, ["acquire", "release"]);
+      const neither = setup(dir.root, { options: { harness: undefined } });
+      await assert.rejects(neither.open(), (e: unknown) => e instanceof RunError && e.code === "INVALID_ARGUMENT");
+      assert.deepEqual(neither.claim.log, [], "no Harness options and no afterClaim: refused before any claim");
     } finally {
       dir.remove();
     }
@@ -594,7 +650,7 @@ describe("openDurableRun", () => {
         assert.equal(refused.code, "STORE_BEHIND_SEAL");
         assert.equal(exitCodeFor(refused), 65);
         assert.deepEqual([refused.sealedSeq, refused.head], [sealed2, sealed1]);
-        assert.deepEqual(c.steps, ["acquire", "owner-lock", "run.json", "heartbeat", "layout", "store"], "refused at the seal step, before Harness.open");
+        assert.deepEqual(c.steps, ["acquire", "owner-lock", "layout", "run.json", "heartbeat", "store"], "refused at the seal step, before Harness.open");
         assert.deepEqual(c.claim.log, ["acquire", "release"], "the claim is released, not fenced");
         assert.equal(c.fenced.length, 0);
         const failed = runJson(dir.root);
@@ -639,7 +695,7 @@ describe("openDurableRun", () => {
         const refused = await t.open().then(() => null, (error: unknown) => error);
         assert.ok(refused instanceof RunError && refused.code === "STORE_HEAD_UNREADABLE", String(refused));
         assert.equal(exitCodeFor(refused), 70);
-        assert.deepEqual(t.steps, ["acquire", "owner-lock", "run.json", "heartbeat", "layout", "store"], "refused before Harness.open");
+        assert.deepEqual(t.steps, ["acquire", "owner-lock", "layout", "run.json", "heartbeat", "store"], "refused before Harness.open");
         assert.deepEqual(t.claim.log, ["acquire", "release"], "the claim is released, not fenced");
         const failed = runJson(dir.root);
         assert.equal(failed.status, "failed");
@@ -910,7 +966,7 @@ describe("fences during the run", () => {
       assert.equal(t.fenced.length, 1);
       assert.equal(t.fenced[0], refused);
       assert.ok(!t.claim.log.includes("release"));
-      assert.deepEqual(t.steps, ["acquire", "owner-lock"]);
+      assert.deepEqual(t.steps, ["acquire", "owner-lock", "layout"]);
     } finally {
       dir.remove();
     }
@@ -1107,23 +1163,35 @@ describe("fences during the run", () => {
 describe("the watchdog thread", () => {
   it("kills the run's commands at the deadline while a store commit blocks the main thread, then the instance exits 75", { timeout: 30_000 }, async () => {
     const dir = scratchRoot("blocked");
-    const blockMs = 2_500;
-    const child = spawn(process.execPath, ["test/fixtures/blocked-commit.ts", dir.root, String(blockMs)], { stdio: ["ignore", "pipe", "pipe"] });
+    // The self-fence is 4 s after the last heartbeat started. A heartbeat is a run.json write with two fsyncs and can wait
+    // behind another such write, so a start costs up to four fsyncs between successful heartbeats: a slow CI disk took an
+    // 800 ms fence past its limit while the instance started (exit 75 before its first line). 4 s holds fsyncs of up to
+    // about 1 s. The block outlasts the fence by 3.5 s, so the watchdog still has to act while the thread is stuck.
+    const [expiryMs, marginMs] = [4_200, 200];
+    const fenceMs = expiryMs - marginMs;
+    const blockMs = 7_500;
+    const child = spawn(process.execPath, ["test/fixtures/blocked-commit.ts", dir.root, String(blockMs), String(expiryMs), String(marginMs)], { stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
     child.stderr!.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
     let pid = 0;
     try {
       const exit = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
       const lines = createInterface({ input: child.stdout! })[Symbol.asyncIterator]();
-      const started = JSON.parse((await lines.next()).value as string) as { pid: number; heartbeatAt: string };
+      // A line that never comes (the instance ended first) fails with how it ended, not as a JSON parse error.
+      const next = async <T>(what: string): Promise<T> => {
+        const line = await lines.next();
+        if (line.done) assert.fail(`the instance ended before ${what}: exit ${await exit}; ${stderr.trim().split("\n").slice(-2).join(" | ")}`);
+        return JSON.parse(line.value) as T;
+      };
+      const started = await next<{ pid: number; heartbeatAt: string }>("its first line");
       pid = started.pid;
-      const blocking = JSON.parse((await lines.next()).value as string) as { blocking: number };
+      const blocking = await next<{ blocking: number }>("the blocking commit");
       while (alive(pid) && Date.now() < blocking.blocking + blockMs + 5_000) await new Promise((resolve) => setTimeout(resolve, 5));
       const deadAt = Date.now();
       assert.equal(alive(pid), false, "the command died");
       assert.ok(deadAt < blocking.blocking + blockMs, `the command died ${deadAt - blocking.blocking} ms into a ${blockMs} ms block, while the main thread was still stuck`);
       const sinceBeat = deadAt - Date.parse(started.heartbeatAt);
-      assert.ok(sinceBeat >= 800 && sinceBeat < blockMs, `the command died ${sinceBeat} ms after the last heartbeat started (self-fence at 800 ms, block of ${blockMs} ms)`);
+      assert.ok(sinceBeat >= fenceMs && sinceBeat < blockMs, `the command died ${sinceBeat} ms after the last heartbeat started (self-fence at ${fenceMs} ms, block of ${blockMs} ms)`);
       assert.equal(child.exitCode, null, "the instance was still blocked when its command died");
       assert.equal(await exit, 75, stderr);
       assert.match(stderr, /fenced \(LEASE_LAPSED\).*seen by the watchdog/);

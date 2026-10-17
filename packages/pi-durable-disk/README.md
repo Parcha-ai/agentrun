@@ -267,7 +267,18 @@ Each example's README lists the exact commands the demo runs, so you can run the
 
 An instance is `pi-durable-disk run --app <module> ...`: `openDurableRun` with the app's options. The module is an ES
 module whose default export is a function of where the run lives and returns pi's Harness options without `env` (the run
-builds `env` on its claim: the workspace is `<root>/work`), plus an optional `beforeResume` and an optional `onOpen`:
+builds `env` on its claim: the workspace is `<root>/work`), plus an optional `beforeResume` and an optional `onOpen`.
+
+The factory runs once the claim is held: the run's directory is mounted, its owner lock taken, `store/`, `work/` and
+`tmp/` made, and the commands a killed incarnation left running ended (`openDurableRun`'s `afterClaim`). This
+incarnation's `run.json` comes after it. So `where.root` is the live directory whenever app code runs, and a factory may
+write under it (a recorder's spool, a `signals/` directory). Before, the factory ran before the mount, and its writes
+landed in the bare mountpoint and were lost. The Harness opens after the factory, with what it returns. Claim options, if
+one ever needs them, are static (CLI flags or the environment) and never returned by the factory, since the claim is
+taken before the factory runs. A module that does not load, or a factory that throws, fails the open with `APP_FAILED`
+(exit 1), and the claim is let go. Such a start publishes nothing: a new run still has no `run.json`, and a resumed run
+keeps its previous one. A supervisor therefore counts it a failed start and backs off (`ensureRunning`), never starting
+it again on every tick.
 
 ```ts
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -278,7 +289,7 @@ import { ArchilCodingTools } from "@parcha/pi-durable-disk";
 import type { AppContext, AppOptions } from "@parcha/pi-durable-disk";
 
 export default async function app(where: AppContext): Promise<AppOptions> {
-  // where = { ref: { disk, region, id }, root, work, store }: known before anything mounts.
+  // where = { ref: { disk, region, id }, root, work, store }: the claim is held, so root is the live run directory.
   const models = createModels();
   models.setProvider(openaiProvider());       // reads OPENAI_API_KEY from the instance's environment
   const registry = createRegistry();          // every extension the run's tasks need
@@ -309,7 +320,8 @@ rerun. Any other tool is an effect: its intent is committed before it starts, an
 was `interrupted`, never run again. `run.setStatus("done" | "failed" | "paused" | "sleeping", detail)` records the run's
 status in `run.json`; `done` and `failed` run the durability barrier first. `run.release()` closes the Harness, kills the
 run's commands, runs the barrier, seals `run.json` with the store's last sequence, and unmounts. A module that is missing
-or throws, or an `onOpen` that rejects, is `AppError` (exit 1, which the unit retries). A `beforeResume` that rejects
+or throws, or an `onOpen` that rejects, is `AppError` (exit 1, which the unit retries; a module that fails lets the claim
+go first). A `beforeResume` that rejects
 fails the open (its step is `before-resume`) and releases the claim. Besides the Harness, the hook gets `storage`, the
 store the Harness was opened over as four reads (`scanConversations`, `scanTasks`, `scanDocuments`, `document`) with no
 way to a write, and `head`, the store's last committed sequence: a recorder snapshots every document at `head` there.
@@ -410,7 +422,13 @@ except after exit 65, 70, 75 or 76. `localHost({ mode: "child" })` runs a detach
 without that guarantee.
 
 `daytonaHost({ client, snapshot, ... })` runs each instance in a Daytona sandbox of its own (library only: `supervise`
-starts local units, so pass the driver to `ensureRunning`). The box comes from a snapshot that holds Node, the archil client
+starts local units, so pass the driver to `ensureRunning`). Its `box(handle)` is that sandbox's receipt: its size
+(vCPUs, memory, disk), when it was made and when the driver deleted it, and its list price per second at
+`DAYTONA_LIST_PRICES`. Those are Daytona's published rates, with the page and the date they were read
+(https://www.daytona.io/pricing, 2026-10-16): $0.0504 per vCPU-hour, $0.0162 per GiB-hour of memory and $0.000108 per
+GiB-hour of disk past the first 5 GiB, billed per second. The page's "first 5 free" footnote is applied to disk only (its
+placement is ambiguous). A box of unknown size gets no price, and neither does a box with a GPU: the page prices GPUs per
+model, which the driver doesn't map (`daytonaUsdPerSecond`). The box comes from a snapshot that holds Node, the archil client
 (`libfuse2`), this package, the run user and the sudoers drop-in, or from a default image that the caller's `prepare` installs
 them into. A container sandbox has no systemd (PID 1 is the Daytona daemon), so an in-box launcher keeps the instance
 alive in place and never restarts it after exit 0, 65, 70, 75 or 76. Every incarnation of an attempt gets the attempt's
@@ -583,7 +601,7 @@ about revocation, takeover and the lease's replacement do not apply. These do:
 
 | Failure | What happens | Effects |
 |---|---|---|
-| The instance crashes or is SIGKILLed | Its owner lock goes with the process. The next open of the directory (by the app, or whatever restarts it) takes the run, ends the commands the killed incarnation left running (its `commands` step, before the Harness opens), and `resume()`s from the last commit | running tasks go back to pending; effects in flight are `interrupted`, never rerun; no command of the killed incarnation still runs once the run resumes. pi makes each command the leader of its own process group, so the SIGKILL does not reach them and a local run has no unit cgroup: the instance records each command's group under `commands/` (by pid, start ticks and boot) and the next open kills what still matches. A command started within about 0.1 s before the kill can be missed |
+| The instance crashes or is SIGKILLed | Its owner lock goes with the process. The next open of the directory (by the app, or whatever restarts it) takes the run, ends the commands the killed incarnation left running (its `commands` step, before any code of the new incarnation runs), and `resume()`s from the last commit | running tasks go back to pending; effects in flight are `interrupted`, never rerun; no command of the killed incarnation still runs once the run resumes. pi makes each command the leader of its own process group, so the SIGKILL does not reach them and a local run has no unit cgroup: the instance records each command's group under `commands/` (by pid, start ticks and boot) and the next open kills what still matches. A command started within about 0.1 s before the kill can be missed |
 | A process the killed incarnation's commands started does not die at the next open (an uninterruptible wait, or one the run's user may not signal) | The open is refused: `HeldError` `COMMANDS_ALIVE`, exit 76, with the message below; the records stay | none: the run does not resume beside it. End those processes and open the run again |
 | Power loss or an OS crash | The store's commits are durable (SQLite at `synchronous = FULL`); `work/` is the operating system's to flush, since the claim's barrier syncs nothing | the store resumes from its last commit; files the agent wrote in `work/` can be older than what the store recorded |
 | A second process opens the run on this machine | The owner lock is refused (`HeldError`, exit 76) | none |
@@ -681,8 +699,13 @@ then list the prefix and check it is empty.
 
 ## Library
 
-`openDurableRun(ref, options)` is what `run` calls: mount, verify the claim, take the owner lock, write `run.json`, open
-the store, check the seal, open and resume the Harness, keep the lease. `acquire`, `ensureRunning`, `localHost`,
+`openDurableRun(ref, options)` is what `run` calls: mount, verify the claim, take the owner lock, make `store/`, `work/`
+and `tmp/`, end a killed incarnation's commands, write `run.json`, open the store, check the seal, open and resume the
+Harness, keep the lease. Its `afterClaim(claim)` is awaited once the claim is held and before `run.json`, with the
+claim's `ref`, `root`, `work` and `store`. What it returns (`harness`, `beforeResume`, `seed`) goes into the open, so
+`harness` may come from there instead of the options, and a factory can give a new run its seed (over the options'
+`seed`); the seed runs right after `afterClaim` and before `run.json`, on a new run only. A rejection fails the open with `run.json` as the open found it and lets the
+claim go. `acquire`, `ensureRunning`, `localHost`,
 `archilEnv` and the typed errors (`FencedError`, `HeldError`, `StoreBehindSealError`) are exported for apps that compose
 their own lifecycle, and so are serve (`serveRun`, `requestRun`), parking (`watchParking`, `drain`, `busyState`, and
 `leaseParkTarget` for a Harness a host opened over `openRunLease`) and `fork`. `src/index.ts` lists every export; the
@@ -730,17 +753,24 @@ await openDurableRun(ref, {
 ```
 
 - **When it runs.** Once, on the open that finds no `run.json`: inside the run's first claim, with the owner lock held,
-  after `store/`, `work/` and `tmp/` exist, before `run.json` is written and before the store opens. Its step is
-  `seed`. What it wrote is made durable (the claim's barrier) before `run.json` publishes the run.
+  after `store/`, `work/` and `tmp/` exist, a killed incarnation's commands are ended and `afterClaim` has run, before
+  `run.json` is written and before the store opens. Its step is `seed`. What it wrote is made durable (the claim's
+  barrier) before `run.json` publishes the run.
+- **From the app.** `afterClaim` may return `seed` (as `AfterClaim`), over the options' one, so a factory that runs on the
+  claimed directory can give the run its starting state.
 - **When it doesn't.** Never for a run that has `run.json`, whatever its generation, and never on a fork's first open
   (`fork` writes `run.json`).
 - **When it fails.** A seed that throws fails the open with its own error. A process killed while it seeds leaves the run
   unpublished in the same way: no `run.json`, the claim let go. The next open seeds again, so a seed overwrites what an
   earlier attempt wrote.
-- **How long it may take.** Under a supervisor, a seed must end within the start grace (`--start-grace`,
-  `startGraceMs`; default the lease expiry, 90 s). Past it, `ensureRunning` takes the start as failed and revokes the
-  claim. The seed's next write or its barrier is then refused, the instance is fenced (exit 75) with nothing published,
-  and the next start seeds again. A deployment whose seeds can take longer raises the start grace.
+- **How long it may take.** A new run has no `run.json` heartbeat while it seeds. A supervisor keeps a start in its grace
+  (`--start-grace`, `startGraceMs`; default the lease expiry, 90 s) only while its start mark (`start.json`) is younger
+  than the grace. So while the seed runs, the instance rewrites the mark's time every heartbeat, through its claim, when a
+  supervisor's mark for generation 1 is there. It does so on a thread of its own, so a seed that holds its thread (a
+  synchronous import through `DatabaseSync`) is covered too. A live seed of any length stays `starting`. A seeder that dies stops
+  rewriting, the grace runs out as for any start, and the claim is revoked. If the claim is revoked while the seed still
+  runs, its next write or its barrier is refused, the instance is fenced (exit 75) with nothing published, and the next
+  start seeds again.
 - **On a local directory** (`localRun`) it is the same. As with `work/`, the files it writes are the operating system's
   to flush; a SQLite database it commits with `synchronous = FULL` is durable when the commit returns.
 
@@ -867,7 +897,35 @@ id and directory as the supervisor computed them.
   - A recovery is the takeover: the killed holder's delegations are revoked whatever its lease says, and the next
     instance starts. It reports `revoked` and `ms`. A newer incarnation than the one the place killed (another
     supervisor's) gets the usual lease and start-grace checks instead, so a live one is `HELD`, not revoked.
-  - `status()` reads `run.json` over S3 and lists the run's delegations.
+  - `status()` reads `run.json` over S3 and lists the run's delegations, plus, when its host driver makes boxes
+    (`daytonaHost`), a receipt for each box the place started, released ones included (`boxes`, `HostBox`). A receipt
+    has the provider, the kind, `from` and `to` (null while it lives). It also has the published list price per second
+    (`usdPerSecond`), the page that price was read from (`source`) and the ISO date it was read (`priced`). A box with
+    no price has none of those three, never a price of 0. No field holds the provider's id of the box.
+  - `recordHome` (when the control can list, as `archilControl`'s can): an attempt's runner records into
+    `recordHome.dir(attempt)`, `<root>/record/<attempt>`, in the run's directory, so its delegation covers it and
+    `deleteRunTree` removes it. `bringHome(into, { final })` reads that directory through the control (S3 list and get:
+    nothing takes the run's claim) and brings the recording into the supervisor's `into`.
+    - Blobs come first, each checked against the hash its name carries and written whole (a temporary file, fsync,
+      rename). One that doesn't match is skipped; everything else still comes home, then the call throws
+      `BLOB_MISMATCH`.
+    - Then the new whole lines of each `.spool/*.jsonl` segment, with an offset per file name: what `into` already
+      holds of it. So a second call, or a call from another process, brings nothing twice. A line waits while a blob it
+      names isn't home yet. On `final` it comes home anyway, and the call throws `CARRY_FAILED` naming the blob.
+    - Carriers that overlap on one `into` never append at once. The place runs one call at a time per destination, and
+      each append happens under a lock file beside its spool file (`.<name>.lock`, naming its holder's pid), after the
+      destination's size is read again, so only the lines past it are appended. A lock whose holder is gone is taken
+      over; one held past 5 s is `CARRY_FAILED`. A second `into` gets every line: what the place fetched for one
+      destination says nothing of another.
+    - A list or get that fails is `CARRY_FAILED`.
+    - The recording is on the disk, not in the box, so a final call after a box kill still brings home everything the
+      box fsynced: this place never throws `BOX_GONE`.
+    - With `ensure.create` (the run user's uid and gid), the place makes the EMPTY directories the runner writes into
+      at each start: `signals/`, `record/<attempt>/.spool/` and `record/<attempt>/blobs/`. It makes them over the
+      control, owned by the run user, mode 0755, in ensureRunning's window where no delegation holds the run. A
+      directory a process made by path on an Archil mount was seen to refuse file creates afterwards (ENOENT), and one
+      made over the control didn't. Every file in them stays the runner's. A refused put fails the start
+      (`DIRS_REFUSED`, as the cause of `HOST_START_FAILED`), and without an owner nothing is made.
   - `requestFile(attempt)` is `<root>/signals/kill-<attempt>.json`, in the run's directory and outside `work/`, and
     `signals(attempt)` reads `runs/<id>/signals/kill-<attempt>.json` over S3 every 500 ms (`signalPollMs`). A runner on
     a box of its own can't reach the supervisor's files, so its request travels through the disk. The runner must write

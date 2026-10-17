@@ -169,6 +169,63 @@ test("an edit of a held package's Unreleased is still refused: appended by hand,
   assert.deepEqual(await unreleasedEdits(root, 'HEAD'), { fold: true, edited: [] });
 }));
 
+/** The release PR that folds, merges main, then folds a late fragment in a second commit: `late` is a fragment main gained after the first fold. */
+async function foldInTwoBatches(root, git, first, late) {
+  await git('branch', '-M', 'main');
+  await heldTree(root, git, first);
+  await git('checkout', '-q', '-b', 'release');
+  await fold(root, '0.1.0-beta.15', '2026-10-20', 'main');
+  await git('add', '-A'); await git('commit', '-q', '-m', 'fold');
+  await git('checkout', '-q', 'main');
+  for (const [name, text] of Object.entries(late)) await writeFile(join(root, 'changes', name), text);
+  await git('add', '-A'); await git('commit', '-q', '-m', 'a late fragment lands on main');
+  await git('checkout', '-q', 'release');
+  await git('merge', '-q', '--no-edit', 'main');
+  return fold(root, '0.1.0-beta.15', '2026-10-20', 'main');
+}
+
+test("a held package's changelog folded in two commits (a late fragment that sorts earlier) is the single fold's text, and passes the check", () => repo(async (root, git) => {
+  await foldInTwoBatches(root, git,
+    { 'pi-transport-record-stream.md': fragment('@parcha/pi-transport', 'feature', 'Record stream.'), 'pi-transport-tests-leave-no-sleeper.md': fragment('@parcha/pi-transport', 'ci', 'No sleeper.') },
+    { 'pi-transport-placer.md': fragment('@parcha/pi-transport', 'feature', 'Placer.') });
+  // The single fold's order: kind, then file name: placer, record-stream (features), then no-sleeper (ci).
+  assert.equal(await readFile(join(root, heldPath), 'utf8'), `${heldLog}- Placer.\n- Record stream.\n- No sleeper.\n`);
+  assert.deepEqual(await unreleasedEdits(root, 'main'), { fold: true, edited: [] });
+  // The same three in one fold give the same text.
+  await repo(async single => {
+    await heldPackage(single, heldLog);
+    for (const [name, kind, body] of [['record-stream', 'feature', 'Record stream.'], ['tests-leave-no-sleeper', 'ci', 'No sleeper.'], ['placer', 'feature', 'Placer.']]) {
+      await writeFile(join(single, `changes/pi-transport-${name}.md`), fragment('@parcha/pi-transport', kind, body));
+    }
+    await fold(single, '0.1.0-beta.15', '2026-10-20');
+    assert.equal(await readFile(join(single, heldPath), 'utf8'), `${heldLog}- Placer.\n- Record stream.\n- No sleeper.\n`);
+  });
+}));
+
+test("a second fold keeps a held changelog's earlier text where it was: only this release's run is rebuilt", () => repo(async (root, git) => {
+  await foldInTwoBatches(root, git,
+    { 'pi-transport-record-stream.md': fragment('@parcha/pi-transport', 'feature', 'Record stream.') },
+    { 'pi-transport-placer.md': fragment('@parcha/pi-transport', 'breaking', 'Placer.') });
+  assert.equal(await readFile(join(root, heldPath), 'utf8'), `${heldLog}- Placer.\n- Record stream.\n`, 'the held entry stays first');
+}));
+
+test("a held changelog hand-edited between the two folds is not rebuilt: the late bullet is appended after it, and the check refuses the edit", () => repo(async (root, git) => {
+  await git('branch', '-M', 'main');
+  await heldTree(root, git, { 'pi-transport-record-stream.md': fragment('@parcha/pi-transport', 'feature', 'Record stream.') });
+  await git('checkout', '-q', '-b', 'release');
+  await fold(root, '0.1.0-beta.15', '2026-10-20', 'main');
+  await writeFile(join(root, heldPath), `${await readFile(join(root, heldPath), 'utf8')}- Written by hand.\n`);
+  await git('add', '-A'); await git('commit', '-q', '-m', 'fold, and a hand edit');
+  await git('checkout', '-q', 'main');
+  await writeFile(join(root, 'changes/pi-transport-placer.md'), fragment('@parcha/pi-transport', 'breaking', 'Placer.'));
+  await git('add', '-A'); await git('commit', '-q', '-m', 'a late fragment lands on main');
+  await git('checkout', '-q', 'release');
+  await git('merge', '-q', '--no-edit', 'main');
+  await fold(root, '0.1.0-beta.15', '2026-10-20', 'main');
+  assert.equal(await readFile(join(root, heldPath), 'utf8'), `${heldLog}- Record stream.\n- Written by hand.\n- Placer.\n`);
+  assert.deepEqual((await unreleasedEdits(root, 'main')).edited, [heldPath]);
+}));
+
 test("a fragment deleted for another package does not excuse an edit of a held changelog, and a published changelog is never excused by one", () => repo(async (root, git) => {
   await heldTree(root, git, { 'vision.md': fragment('@parcha/pi-vision', 'fix', 'Vision fix.') });
   await rm(join(root, 'changes/vision.md'));
