@@ -731,9 +731,14 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 			// The place the lease names: a lost box is found gone there, and its replacement is made first, so that the
 			// order's paths are the new box's.
 			const named = homePlace();
-			// A restore whose new box took the session and failed after: finished in that box, with no box made.
-			const finishing = kind === "box" && taken?.box === box ? taken : undefined;
+			// A restore whose new box took the session and failed after: finished in that box, with no box made, while
+			// that box is there. Gone, it is lost like any box: the session is restored into another from the vault.
+			let finishing = kind === "box" && taken?.box === box ? taken : undefined;
 			taken = undefined;
+			if (finishing !== undefined) {
+				const there = await provider.attach(finishing.box.id, context);
+				if (there.ok && there.value === undefined) finishing = undefined;
+			}
 			let next: Box | undefined;
 			if (kind === "box" && finishing === undefined) {
 				// A box lost other than by `kill` ended too: the session waits for its next box.
