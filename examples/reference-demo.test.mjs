@@ -935,13 +935,13 @@ test('a look is kept with the images of its own read: a read that produced no im
   const record = (path, args = {}) => ({ args: { path, model: 'm', native: false, ...args }, status: 'ok', facts: { key: 'k' } });
   await afterTool({ id: '1', name: 'read', arguments: { path: 'a.png' } }, { output: [png('A')], details: { evidence: 'evidence/a.json' } }, { conversationId: 7 });
   await afterTool({ id: '2', name: 'read', arguments: { path: 'b.png' } }, { output: [{ type: 'text', text: 'the file is gone' }], details: {} }, { conversationId: 7 });
-  assert.equal(shown.of('7', record('b.png')), undefined, 'the failed read finds no images, not a.png\'s');
-  assert.equal(shown.of('7', record('a.png')).images.length, 1);
-  assert.equal(shown.of('7', record('a.png')).receipt, 'evidence/a.json');
+  assert.equal(shown.of('7', record('b.png'), 'read'), undefined, 'the failed read finds no images, not a.png\'s');
+  assert.equal(shown.of('7', record('a.png'), 'read').images.length, 1);
+  assert.equal(shown.of('7', record('a.png'), 'read').receipt, 'evidence/a.json');
   await afterTool({ id: '3', name: 'read', arguments: { path: 'film.webm' } }, { output: [{ type: 'text', text: 'Frame at 1 s.' }, png('F1'), { type: 'text', text: 'Frame at 9 s.' }, png('F9')], details: {} }, { conversationId: 7 });
-  assert.deepEqual(shown.of('7', record('film.webm', { from_s: 0, to_s: 5 })).images.map((image) => image.at), [1], 'only the frame inside the window');
-  assert.deepEqual(shown.of('7', record('film.webm', { from_s: 5, to_s: 10 })).images.map((image) => image.at), [9]);
-  // A screenshot is found by its receipt.
+  assert.deepEqual(shown.of('7', record('film.webm', { from_s: 0, to_s: 5 }), 'read').images.map((image) => image.at), [1], 'only the frame inside the window');
+  assert.deepEqual(shown.of('7', record('film.webm', { from_s: 5, to_s: 10 }), 'read').images.map((image) => image.at), [9]);
+  // A screenshot is found as the newest of its tool.
   await afterTool({ id: '4', name: 'screenshot', arguments: {} }, { output: [png('S')], details: { evidence: 'evidence/shot.json' } }, { conversationId: 7 });
-  assert.equal(shown.of('7', record('evidence/shot.json'), 'evidence/shot.json').images.length, 1);
+  assert.equal(shown.of('7', record('a screenshot result'), 'screenshot').images.length, 1);
 });
