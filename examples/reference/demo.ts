@@ -477,16 +477,19 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   // A place whose child writes its recording inside the place brings it home through `recordHome.bringHome`: every status tick while a runner runs, and once more, final, after the runner has exited (before the follower closes, the manifest and the release). A tick that fails is
   // retried at the next one; a final failure refuses the recording unless the attempt's box was lost (then the attempt's lines after its last carried tick are a gap, like a kill losing its in-flight commit).
   let carrying: Promise<void> = Promise.resolve();
+  // The slow tick does not queue a carry behind one still running (a transfer can take seconds): the final carry, which the result waits for, then waits behind at most one.
+  let carryBusy = false;
   let carryRefusal: { gen: number; code: string } | undefined;
   const carry = (gen: number, final: boolean, lost: () => boolean): Promise<void> => {
     if (!place.recordHome) return Promise.resolve();
     carrying = carrying.then(async () => {
+      carryBusy = true;
       try { await place.recordHome!.bringHome(recordDir, { final }); } catch (error) {
         const code = String((error as { code?: unknown } | null)?.code ?? 'CARRY_FAILED');
         const gone = lost() || code === 'BOX_GONE';
         supervisor.host('recording.carry.failed', { gen, code, message: plainText((error as Error | null)?.message ?? error), ...(final && gone ? { lost: true } : {}) });
         if (final && !gone) carryRefusal ??= { gen, code };
-      }
+      } finally { carryBusy = false; }
     });
     return carrying;
   };
@@ -575,7 +578,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
           try { rmSync(operatorKill, { force: true }); deciding = decide('operator'); } catch (error) { decided = true; failed(String((error as { code?: unknown } | null)?.code ?? 'OPERATOR_KILL_UNUSABLE'), 'the operator\'s kill control could not be removed', 'process'); }
         } else if (overBudget) deciding = decide(undefined);
       }, 20);
-      const tick = setInterval(() => { if (!inflight) void readStatus(); void carry(gen, false, () => false); }, 2000);
+      const tick = setInterval(() => { if (!inflight) void readStatus(); if (!carryBusy) void carry(gen, false, () => false); }, 2000);
       const exit = await Promise.race([runner.exited, gaveUp.then(() => undefined)]);
       const result: Exit = exit ?? { exit: null, signal: null, stderr: 'the place could not stop this process' };
       clearInterval(watch);

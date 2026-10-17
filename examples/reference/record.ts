@@ -200,7 +200,8 @@ export function openRecorder(options: { dir: string; /** The recording's clock, 
         append(durableFile, `${redact(JSON.stringify({ ...line, data: moved.data, ...(blobs.length ? { blobs } : {}), t: line.t ?? clock() }))}\n`);
       });
     },
-    async detach() { const end = stop; stop = undefined; await end?.(); clearInterval(syncing); syncAll(); for (const setup of [...watching.values()]) await (await setup)?.stop(); watching.clear(); },
+    // Every watcher is stopped first (one still being set up finishes and may write), and only then is the last sync made: no line is written after it.
+    async detach() { const end = stop; stop = undefined; await end?.(); for (const setup of [...watching.values()]) await (await setup)?.stop(); watching.clear(); clearInterval(syncing); syncAll(); },
     memo(key, value, meta = {}) {
       const moved = moveImages({ memo: key, value }, keep);
       const line = { channel: 'durable', source: 'pi', kind: 'pi.memo', gen, t: Math.max(0, Date.now() - started), commit: latest, order: null, ...(meta.path !== undefined ? { path: meta.path } : {}), ...(meta.conv !== undefined ? { conv: meta.conv } : {}), data: moved.data, ...(moved.blobs.length ? { blobs: moved.blobs } : {}) };

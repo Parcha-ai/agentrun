@@ -2180,3 +2180,16 @@ test('boxes of one provider, kind and start are two boxes, labelled box-N when t
   writeFileSync(join(dir, '.spool', 'supervisor-1.jsonl'), `${receipt('box-1', 1)}\n${receipt('box-2', null)}\n`);
   assert.equal(meterKnown(dir), 1, 'the priced box counts against the cap, though the other has no price');
 });
+
+test('the slow tick does not queue a carry behind one still running: a place whose transfers take seconds is carried a bounded number of times', { timeout: 120_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference' });
+  process.env.DEMO_LINGER_MS = '7000';
+  let carries = 0;
+  const started = Date.now();
+  await demo({ ...options, argv: ['--json', '--record', join(tmp, 'recording')], place: ({ paths, self, destroyBoxes, requestFile }) => ({
+    ...localPlace({ self, paths, destroyBoxes, requestFile }),
+    recordHome: { dir: (attempt) => join(tmp, 'box', `record-${attempt}`), bringHome: async () => { carries += 1; await new Promise((resolve) => setTimeout(resolve, 2500)); } },
+  }) });
+  // The ticks that found no carry running, plus the final one; a tick queued behind every slow carry would make six or more.
+  assert.ok(carries <= 4, `carried ${carries} times in ${Date.now() - started} ms`);
+});
