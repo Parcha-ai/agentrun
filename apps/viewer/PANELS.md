@@ -18,6 +18,7 @@ const myPanel: Panel<MyState> = {
   reduce: (state, line) => nextState,             // one line in, the next state out
   view: (state, { t, focus, baseline }) => node,  // the screen for a state
   shows: (line) => line.kind === 'frame',          // optional: the lines a recording needs to draw this panel at all
+  showsFor: (manifest) => manifest.job !== undefined, // optional: the recordings, by their manifest, it is for
 };
 register(myPanel);                // when its module loads; extensions' panels show first, in this order
 ```
@@ -34,6 +35,9 @@ this once over every line of the recording, never up to the stop, so a panel nev
 stop before its first line it is drawn with its state before any line. Give a panel `shows` when its `accepts` takes
 lines that are not its story: the transport panel reduces the counters' lines for its own counters, but draws only for
 a recording with `transport` lines.
+
+A panel with `showsFor` is drawn only for a recording whose manifest it says yes to, whatever its lines: the workflow
+graph panel needs the job that ran, so a recording whose manifest names no `job` does not draw it.
 
 ## What `view` returns
 
@@ -92,8 +96,9 @@ The shell gives `view` a context: `t`, the time of the current point; `focus`, t
 `following` when the run is followed while it goes and has not finished (its cost is not known yet: a view shows cost
 as unknown); `cite`, the selected citation if there is one (a node with `cite` selects it, `?cite=` opens with it, and selecting one
 moves no stop, so the screen it was clicked on stays); `json(sha)`, the parsed JSON of a blob the manifest's `result`
-or a `result` line names, undefined until the shell has read it; `blobType(sha)`, a blob's media type from its name in
-`blobs/` (undefined until the shell has found it), so a view can draw a picture a result cites and link any other file; and `baseline` when the manifest names one (`BaselineView`: its label, the counters of that other recording at its end,
+or a `result` line names, or of the manifest's `job`, undefined until the shell has read it; `job`, the SHA-256 of the
+job blob when the manifest names one (`{ workflow, input, files }`, read with `json(job)`); `blobType(sha)`, a blob's media
+type from its name in `blobs/` (undefined until the shell has found it), so a view can draw a picture a result cites and link any other file; and `baseline` when the manifest names one (`BaselineView`: its label, the counters of that other recording at its end,
 and how long it ran in ms, or null; another real recording, opened beside this one, never typed-in numbers). When
 `counters.measured` is false the recording has no durable line, so its counts are not measured and its cost is
 unknown: show that, never its zeros.
@@ -140,6 +145,29 @@ names; any other message, origin or field is ignored, and no message carries cod
 | `theme` | `theme`: `light`, `dark` or `auto` | sets the page's colours; `auto` follows the system |
 
 Without `&parent=`, the viewer still posts, and listens to nothing.
+
+## Rebuild a v4 item's state
+
+A v4 run (RECORDING.md section 5, draft 26: the keyed layout) keeps each map item in an `agentrun.items` document, its
+states as deltas against its map's base, and each base in an `agentrun.states` document. A panel never rebuilds an
+item's state itself: it imports `itemStateOf(item, states, path)` from `./items.ts`, which runs the DSL's own
+`itemState` with the page's SHA-256 (`sha256Hex`, `./receipt-key.ts`). It returns `{ state }`, or `{ unreadable }`
+saying why (the base is missing, a digest differs, the item keeps no state at that path), and a panel shows such an item
+as unreadable, never a guess. `statesBySha(values)` turns the `agentrun.states` values a panel keeps into the lookup
+`itemStateOf` takes.
+
+A failed map's finished results (draft 27) are the driver's `state.pin.partial.results`. A v3 pin keeps them inline. In
+the keyed layout, `results` is the SHA-256 of an `agentrun.states` document whose state is the list of slots, one per
+item in index order, each `null` (the item never finished) or the SHA-256 of the document holding that item's result,
+any JSON value. A panel never reads them itself: it imports `partialResultsOf(partial, states)` from `./items.ts`, which
+runs the DSL's own `partialResults` with the page's SHA-256, for either layout. It returns `{ slots }`, each `null`,
+`{ result }` or `{ unreadable }`, or a whole `{ unreadable }` when the list is missing, does not hash to its digest or
+is not a list of digests; every digest is checked.
+
+The DSL's modules, `item-state.ts` (`itemState`, `partialResults`) and `graph.ts` (`workflowGraph`, `nodeStatus`), are
+read from the DSL's source each time the viewer is built, never copied here: they are the only files outside
+`apps/viewer` a viewer module may import, the build inlines each in a scope of its own, and it refuses to build if one
+ever imports anything.
 
 ## A panel in full
 
@@ -206,3 +234,31 @@ in order (the orphan flag as seen, the revoke and the takeover time, the fence),
 repeated, cut by a kill (unknown, not sent again) or in flight. The paid-call verdicts are the shell's own counter fold
 (`appliedIn`), so the panel and the counters strip agree. A recording with no disk claim line (`shows`: a `run.json`, `delegation`, `revoke` or `fenced` host line) does not draw the
 panel at all, its title included. Its test, `test/disk.test.ts`, renders `test/fixtures/disk-takeover`.
+
+## The workflow graph
+
+The job's workflow drawn as its nodes and edges, beside the workflow map: the DSL's graph of the workflow in the job
+blob the manifest names, `{ nodes: [{ path, kind, label, via? }], edges: [{ from, to, kind }] }`, with `path` a JSON
+Pointer into the workflow and an edge's `kind` one of `next`, `branch`, `route`, `item` and `child`. Each node is drawn
+in its chain, with what it opens into (a branch, a route's branches, a map's body, a child workflow) under it, and
+marked by what the run did there at the stop: done, running, failed or not reached, with counts for a node a map runs
+once per item. A recording whose manifest names no job does not draw it. Its test is `test/workflow-graph.test.ts`.
+
+### Node status: the DSL's, asked the same way by every panel
+
+What a run did at a node, done, working, failed or not run, is the DSL's alone: `nodeStatus(graph, source)` from
+`packages/dsl/src/graph.ts`, beside `workflowGraph(workflow)`, inlined at build time like `item-state.ts` (it imports
+nothing). `./node-status.ts` keeps only what it reads, the driver's record at the stop: the latest checkpoint's frame
+(`agentrun.driver`'s `state.pin`) and each map item's latest `agentrun.items` record, starting over at each open's
+snapshot. `statusSource(record)` is the whole record, which the workflow graph asks of the job's workflow;
+`itemSource(record, item)` is one map item's part of it (the frame's paths under the item, and the records of the item
+and of the items of a map inside it), which
+the workflow map asks with `{ item }`, the item as the instance, to say whether that item's body is done. It asks of the
+workflow its `agentrun.workflow` line carries, else of the job's (a task that names no workflow); the job also gives it
+the plan it lays out. Whether an item has started is asked the same way (`wmStarted`: a line of it, or its body not `not-run`), so no panel
+reads a checkpoint's done paths by hand; the grid is `wmCellsOf(state)`, one cell per item the plan or a line names.
+No panel decides a node's status itself, so a resumed process's items, finished from its journal with no live event, and
+a map whose body is one node are done where the record says so. The workflow map counts a judge's verdict only for a
+recording with no workflow anywhere or no durable record to ask. The tests read the DSL's graph fixtures
+(`packages/dsl/test/fixtures/graph`: six shapes, finished and cut, and the nested shape's recording),
+`test/fixtures/map-in-map` (a map inside a map's item, from the DSL's own driver) and `test/fixtures/disk-resumed`.

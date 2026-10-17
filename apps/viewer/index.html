@@ -85,6 +85,20 @@
   .panel:has(.vz) { grid-column: 1 / -1; max-height: none; }
   .panel:has(.disk) { max-height: none; overflow: visible; }
   .vz h5 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  .workflow-graph ol { margin: 4px 0; padding-left: 1.7em; }
+  .workflow-graph .wg-node { padding: 2px 0; }
+  .wg-node > span { margin-right: 0.6em; }
+  .wg-kind { font: 11px ui-monospace, monospace; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .wg-label { font-weight: 600; }
+  .wg-via { font-size: 12px; color: var(--muted); }
+  .wg-status { font: 12px ui-monospace, monospace; padding: 0 5px; border: 1px solid var(--rule); border-radius: 3px; }
+  .wg-node.done > .wg-status { color: var(--done); border-color: var(--done); }
+  .wg-node.working > .wg-status { color: var(--open); border-color: var(--open); }
+  .wg-node.failed > .wg-status { color: var(--failed); border-color: var(--failed); }
+  .wg-node.not-run > .wg-status { color: var(--muted); border-style: dashed; }
+  .wg-node.dim { opacity: 0.45; }
+  .wg-into { margin: 2px 0 4px; }
+  .wg-edge { font: 11px ui-monospace, monospace; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
   .vz-top { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; font-size: 12px; }
   .vz-badge { padding: 2px 7px; border: 1px solid var(--rule); border-radius: 4px; color: var(--muted); }
   .vz-badge.red { border-color: var(--kill); color: var(--kill); } .vz-badge.ok { border-color: var(--done); color: var(--done); }

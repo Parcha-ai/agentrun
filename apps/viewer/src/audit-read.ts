@@ -19,12 +19,15 @@ export type Plan = { mapPath: string; items: string[]; steps: string[] };
 export function planOf(line: Line): Plan | undefined {
   if (line.channel !== 'durable' || line.source !== 'workflow' || line.kind !== 'agentrun.workflow' || !auditIsObj(line.data)) return undefined;
   const input = auditIsObj(line.data.input) ? line.data.input : undefined;
-  const workflow = input && auditIsObj(input.workflow) ? input.workflow : undefined;
-  const root = workflow && auditIsObj(workflow.root) ? workflow.root : undefined;
+  return input ? planOfWorkflow(input.workflow, input.input) : undefined;
+}
+/** The same, from a workflow document and the input it ran on (the job blob's `workflow` and `input`). */
+export function planOfWorkflow(workflow: Json | undefined, input: Json | undefined): Plan | undefined {
+  const root = auditIsObj(workflow) && auditIsObj(workflow.root) ? workflow.root : undefined;
   if (!root) return undefined;
   const found = findMap(root, '/root', 0);
   if (!found) return undefined;
-  const given = input && auditIsObj(input.input) ? input.input : {};
+  const given = auditIsObj(input) ? input : {};
   const list = typeof found.node.itemsPath === 'string' ? auditPath(given, found.node.itemsPath) : undefined;
   const items = Array.isArray(list) ? list.map((each) => (auditIsObj(each) && typeof each.name === 'string' ? (typeof each.version === 'string' ? `${each.name}@${each.version}` : each.name) : String(each))) : [];
   const body = auditIsObj(found.node.body) ? found.node.body : undefined;
@@ -61,23 +64,6 @@ export function finishedOf(line: Line): boolean {
   const state = auditIsObj(line.data.state) ? line.data.state : undefined;
   const outcome = state && auditIsObj(state.outcome) ? state.outcome : undefined;
   return state?.status === 'terminal' && outcome?.status === 'completed';
-}
-
-/** Every execution path a driver checkpoint lists as done, at any depth of its state. */
-export function donePathsOf(doc: DocLine): string[] | undefined {
-  if (doc.doc !== 'agentrun.driver' || !auditIsObj(doc.value) || !auditIsObj(doc.value.state)) return undefined;
-  const found = new Set<string>();
-  const walk = (value: Json | undefined, depth: number) => {
-    if (depth > 8) return;
-    if (Array.isArray(value)) { for (const item of value) walk(item, depth + 1); return; }
-    if (!auditIsObj(value)) return;
-    for (const [key, child] of Object.entries(value)) {
-      if (key === 'done' && Array.isArray(child)) for (const path of child) { if (typeof path === 'string' && path.startsWith('/')) found.add(path); }
-      else walk(child, depth + 1);
-    }
-  };
-  walk(doc.value.state, 0);
-  return [...found].sort();
 }
 
 /** The audit call an effect is: the tool it names. The three calls of a branch are `registry`, `advisories`, `install`. */

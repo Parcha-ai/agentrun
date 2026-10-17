@@ -8,6 +8,7 @@ import { frameFold, gapTitle, pictureAt, type FrameState } from './frames.ts';
 import { nextStop, playback, previousStop, reduceTo, snap, stopAt, stopsOf, linkedTime, timeParam, type Fold } from './replay.ts';
 import { citeStop } from './cite.ts';
 import { workflowMapPanel } from './workflow-map.ts';
+import { workflowGraphPanel } from './workflow-graph.ts';
 import { opensInPage, typeOfName } from './blobs.ts';
 import { readAllEntries } from './folder.ts';
 import { sha256Paused } from './receipt-key.ts';
@@ -421,10 +422,11 @@ async function textAt(url: string): Promise<string> {
   return data[1] ? new TextDecoder().decode(Uint8Array.from(atob(body), (each) => each.charCodeAt(0))) : decodeURIComponent(body);
 }
 
-/** The JSON blobs a recording's result names (the manifest's and each `result` line's), parsed. One that does not load
- *  or parse is left out, and the views say they cannot read it. */
+/** The JSON blobs a recording's result names (the manifest's and each `result` line's), and the job that ran (the
+ *  manifest's `job`), parsed. One that does not load or parse is left out, and the views say they cannot read it. */
 async function resultJson(recording: Recording): Promise<Map<string, Json>> {
   const named = new Set<string>(recording.manifest.result ? [recording.manifest.result.blob] : []);
+  if (typeof recording.manifest.job?.blob === 'string') named.add(recording.manifest.job.blob);
   for (const line of recording.lines) {
     const blob = line.source === 'host' && line.kind === 'result' ? (line.data as { blob?: unknown } | null)?.blob : undefined;
     if (typeof blob === 'string') named.add(blob);
@@ -465,7 +467,7 @@ export function viewContext(t: number, manifest: Manifest, inputs: { focus?: str
   const { focus, baseline, cite, json, now, following, blobType } = inputs;
   return { t, now: now ?? t, ...(focus ? { focus } : {}), ...(baseline ? { baseline } : {}), ...(manifest.providers ? { providers: manifest.providers } : {}),
     ...(cite !== undefined ? { cite } : {}), ...(json ? { json: (sha: string) => json.get(sha) } : {}), ...(following ? { following: true as const } : {}),
-    ...(blobType ? { blobType } : {}) };
+    ...(typeof manifest.job?.blob === 'string' ? { job: manifest.job.blob } : {}), ...(blobType ? { blobType } : {}) };
 }
 
 /** The chapter a point is in: the one with the greatest stop at or before it (a manifest's chapters keep the order it
@@ -628,7 +630,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const controls = el('div', { class: 'controls' }, el('button', { text: 'previous commit' }), playButton, el('button', { text: 'next commit' }), speed, range, position);
   // The first registered panel that calls itself featured for this recording is shown first, with the controls right under it; the rest follow as before.
   // The panels this recording draws, judged once over all its lines: a panel with nothing here never shows, not even its title.
-  let shown = panelsFor(lines);
+  let shown = panelsFor(lines, recording.manifest);
   let featured = featuredPanel(shown, lines);
   const featuredBox = el('div', { class: 'featured' });
   if (embedded) document.documentElement.classList.add('embed');
@@ -805,7 +807,8 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     restored = player.lanes.restores.length > 0;
     measured = lines.some((line) => line.channel === 'durable');
     range.max = String(last);
-    const now = panelsFor(lines);
+    // A panel the manifest decides on (`showsFor`) is drawn once the finished run's manifest is in.
+    const now = panelsFor(lines, recording.manifest);
     const nowFeatured = featuredPanel(now, lines);
     const moved = nowFeatured !== featured;
     shown = now;

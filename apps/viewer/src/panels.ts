@@ -2,7 +2,7 @@
 // the lines before the stop that it accepts, then its view. The shell owns the DOM: a view returns plain nodes, and any
 // node with a `path` focuses every panel on that path when clicked. Focus is a view input (RECORDING.md section 4 rule
 // 4): the shell drops no line for it, and each view shows what is under the focused path its own way.
-import { processOf, under, type Json, type Line } from './format.ts';
+import { processOf, under, type Json, type Line, type Manifest } from './format.ts';
 import { isAsk } from './live.ts';
 import type { Fold } from './replay.ts';
 import type { Counters } from './counters.ts';
@@ -37,6 +37,8 @@ export type BaselineView = { label: string; counters: Counters; ms: number | nul
 export type ViewContext = { t: number; /** The playback clock in ms: the time of the point at a stop (a scrub sets it), and running between stops while playing. A view that draws motion reads it. */ now?: number; focus?: string; baseline?: BaselineView; providers?: 'real' | 'scripted'; cite?: string; json?: (sha: string) => Json | undefined;
   /** The run is followed while it goes and has not finished: its cost is not known yet. */
   following?: true;
+  /** The SHA-256 of the job blob the manifest names (`manifest.job.blob`: `{ workflow, input, files }`), which `json` reads once the shell has it. */
+  job?: string;
   /** A blob's media type, from its name in `blobs/` (undefined until the shell has found it): a view tells a picture it may
    *  draw from a file it links. */
   blobType?: (sha: string) => string | undefined };
@@ -55,6 +57,9 @@ export type Panel<S> = Fold<S> & {
   /** Which lines a recording must hold for this panel to be drawn at all; without it, `accepts` says. A panel with no such
    *  line in the whole recording is not drawn, its title included. */
   shows?(line: Line): boolean;
+  /** Which recordings this panel is for, by their manifest (without it, every one): a panel whose manifest says no is not
+   *  drawn, whatever its lines. */
+  showsFor?(manifest: Manifest): boolean;
 };
 
 /** The panel the shell shows first for this recording: the first registered one whose `featured` says yes. */
@@ -122,6 +127,8 @@ export const turnsPanel: Panel<{ turns: Turn[]; streaming: Record<string, boolea
 /** The panels the shell shows, in order: the extensions' first, then its own two, the run's lines and the model's turns. */
 export const panelsShown = (): Panel<any>[] => [...registry, linesPanel, turnsPanel];
 
-/** The panels a recording draws: each with a line it is for (`shows`, else `accepts`) anywhere in the whole recording.
- *  Judged over every line, never up to the stop, so a panel never appears mid-scrub. */
-export const panelsFor = (lines: readonly Line[]): Panel<any>[] => panelsShown().filter((panel) => lines.some((line) => (panel.shows ? panel.shows(line) : panel.accepts(line))));
+/** The panels a recording draws: each its manifest is for (`showsFor`, when the panel has it), with a line it is for
+ *  (`shows`, else `accepts`) anywhere in the whole recording. Judged over every line, never up to the stop, so a panel
+ *  never appears mid-scrub. A panel with `showsFor` is drawn only when the manifest is given. */
+export const panelsFor = (lines: readonly Line[], manifest?: Manifest): Panel<any>[] => panelsShown().filter((panel) =>
+  (!panel.showsFor || (manifest !== undefined && panel.showsFor(manifest))) && lines.some((line) => (panel.shows ? panel.shows(line) : panel.accepts(line))));
