@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { existsSync } from 'node:fs';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Compile } from 'typebox/compile';
-import { ModelRuntime, ModelRegistry } from '@earendil-works/pi-coding-agent';
+import { ModelRuntime, ModelRegistry, VERSION as PI_VERSION } from '@earendil-works/pi-coding-agent';
 import { fauxProvider, fauxAssistantMessage, fauxToolCall, InMemoryCredentialStore } from '@earendil-works/pi-ai';
 import agentRunExtension, { createAgentRunExtension } from '../dist/extension.js';
 import { demoWorkflow } from '../dist/demo.js';
@@ -523,6 +524,10 @@ test('status describes readiness without credentials, network access or a model 
     await app.command('status');
     const message = app.messages.at(-1);
     assert.match(message.content, /Skill: loaded/);
+    // Every host CI runs this on is in the range of the package's pi-durable peer, so status names it supported.
+    const range = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).peerDependencies['@earendil-works/pi-durable'];
+    assert.ok(message.content.includes(`Pi host: ${PI_VERSION} (supported: ${range})\n`), message.content);
+    assert.doesNotMatch(message.content, /npm install -g/);
     assert.match(message.content, /connection not tested/);
     assert.doesNotMatch(message.content, /fake-test-key/);
     assert.equal(message.details.pi, true);
@@ -1055,4 +1060,149 @@ test('only explicit host null limits allow native execution beyond default model
     assert.equal(attempts, 108); assert.equal(app.calls.length, 108);
   } finally { await app.shutdown(); }
   for (const value of [Infinity, -1, 0, 'unlimited']) assert.throws(() => createAgentRunExtension({ runtimeLimits: { modelRequests: value } }), /runtimeLimits/);
+});
+
+// A dry run: the inspected draft on synthetic values (or the given input), with no model, Jev or tool call.
+const flags = { type: 'object', additionalProperties: false, required: ['supported'], properties: { supported: { type: 'boolean', description: 'Does the fictional note support its claim?' } } };
+
+test('a dry run of a draft whose schema the generator cannot synthesize is not run, never passed', async () => {
+  const app = await harness();
+  const definition = { ...workflow(), schemas: { Result: resultSchema, Ticket: { type: 'object', additionalProperties: false, required: ['id'], properties: { id: { type: 'string', pattern: '^T-[0-9]+$' } } } }, input: { schemaId: 'Ticket' } };
+  try {
+    await app.tool({ action: 'inspect', workflow: definition });
+    const result = await app.tool({ action: 'dry-run' });
+    assert.equal(result.details.dryRun.status, 'not_run');
+    assert.equal(result.details.dryRun.ok, true);
+    assert.match(result.details.dryRun.skipped.join('\n'), /pattern/);
+    assert.equal(JSON.parse(result.content[0].text).dryRun.status, 'not_run', 'the model reads the same status');
+    const shown = app.tools.get('agentrun').renderResult(result).render(120).join('\n');
+    assert.match(shown, /Dry run not run/); assert.match(shown, /not proof/); assert.doesNotMatch(shown, /passed/);
+    await app.command('dry-run');
+    assert.equal(app.messages.at(-1).details.dryRun.status, 'not_run');
+    assert.match(app.messages.at(-1).content, /Dry run not run/);
+    assert.equal(app.calls.length, 0);
+  } finally { await app.shutdown(); }
+});
+
+test('a model-called dry run runs no code node; the trusted command runs it, and a failing one returns problems without its thrown text', async () => {
+  const app = await harness({ withModel: false });
+  globalThis.__dryRunProbe = 0;
+  const failing = workflow({ node: 'code', label: 'format-result', code: '((function(){}).constructor("globalThis.__dryRunProbe++")(), s => { throw new Error("private-dry-run-body"); })' });
+  try {
+    await app.tool({ action: 'inspect', workflow: failing });
+    const untrusted = await app.tool({ action: 'dry-run' });
+    assert.equal(untrusted.details.dryRun.status, 'not_run');
+    assert.match(untrusted.details.dryRun.skipped.join('\n'), /format-result/);
+    assert.match(untrusted.details.dryRun.skipped.join('\n'), /\/agentrun dry-run --trusted/);
+    await app.command('dry-run');
+    assert.equal(app.messages.at(-1).details.dryRun.status, 'not_run');
+    assert.equal(globalThis.__dryRunProbe, 0, 'no code ran without the trusted command');
+    await app.command('dry-run --trusted');
+    const failed = app.messages.at(-1);
+    assert.equal(failed.details.dryRun.status, 'failed');
+    assert.equal(failed.details.dryRun.ok, false);
+    assert.match(failed.details.dryRun.problems.join('\n'), /format-result/);
+    assert.match(failed.content, /Dry run failed/);
+    assert.doesNotMatch(JSON.stringify(failed), /private-dry-run-body/);
+    assert.ok(globalThis.__dryRunProbe > 0, 'the trusted dry run ran the code');
+    // The trusted dry run authorizes nothing else: the model still cannot run code.
+    await assert.rejects(app.tool({ action: 'run' }), /\/agentrun run --trusted for each run/);
+    await app.tool({ action: 'inspect', workflow: workflow({ node: 'code', label: 'format-result', code: 's => ({result:{content:"computed"}})' }) });
+    await app.command('dry-run --trusted');
+    assert.equal(app.messages.at(-1).details.dryRun.status, 'passed');
+    assert.equal(app.calls.length, 0);
+  } finally { await app.shutdown(); delete globalThis.__dryRunProbe; }
+});
+
+test('a dry run pays nothing: no model, Jev or tool call, no run journal, and the session keeps no report', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'agentrun-dry-run-'));
+  let judged = 0, attempts = 0;
+  const app = await harness({ cwd, extensionOptions: { createJudge: () => async () => { judged++; throw new Error('a dry run must not reach Jev'); }, onToolAttempt: () => { attempts++; } } });
+  const definition = { ...workflow(), schemas: { Result: resultSchema, Flags: flags }, root: { node: 'chain', steps: [
+    { node: 'call', label: 'find-note', via: 'tool', tool: 'read', args: { path: 'note.txt' }, out: 'Result', as: 'found', deadline_s: 5 },
+    { node: 'agent', label: 'read-note', instructions: 'Read the supplied file with read and submit its exact text.', tools: ['read'], out: 'Result', as: 'result' },
+    { node: 'judge', label: 'supported', state: { text: '{result.content}' }, out: 'Flags', as: 'flags' },
+  ] } };
+  try {
+    await app.tool({ action: 'inspect', workflow: definition });
+    const result = await app.tool({ action: 'dry-run' });
+    assert.equal(result.details.dryRun.status, 'passed');
+    assert.match(app.tools.get('agentrun').renderResult(result).render(120).join('\n'), /Dry run passed/);
+    await app.command('dry-run');
+    assert.equal(app.messages.at(-1).details.dryRun.status, 'passed');
+    assert.equal(app.calls.length, 0, 'no model call');
+    assert.equal(judged, 0, 'no Jev call');
+    assert.equal(attempts, 0, 'no tool call');
+    assert.equal(existsSync(join(cwd, '.pi', 'agentrun', 'runs')), false, 'no run journal');
+    assert.ok(app.branch.every(entry => entry.data?.report === undefined), 'no run report is kept');
+  } finally { await app.shutdown(); await rm(cwd, { recursive: true, force: true }); }
+});
+
+test('a dry run is bounded: an endless synthetic loop stops at its step budget, and /agentrun stop ends one in flight, not run', async () => {
+  const app = await harness();
+  const done = { type: 'object', additionalProperties: false, required: ['done'], properties: { done: { type: 'boolean' } } };
+  const endless = { v: 2, name: 'Check until done', schemas: { Done: done }, output: { schemaId: 'Done', path: 'check' },
+    root: { node: 'loop', label: 'until-done', maxIters: 200000, until: { predicate: 'field_true', path: 'check.done' },
+      body: { node: 'agent', label: 'check', instructions: 'Read the note with read and say whether it is done.', tools: ['read'], out: 'Done', as: 'check' } } };
+  try {
+    await app.tool({ action: 'inspect', workflow: endless });
+    const bounded = await app.tool({ action: 'dry-run' });
+    assert.equal(bounded.details.dryRun.status, 'not_run');
+    assert.match(bounded.details.dryRun.skipped.join('\n'), /stopped after 10000 synthetic steps/);
+    const pending = app.tool({ action: 'dry-run' });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await app.command('stop');
+    assert.match(app.messages.at(-1).content, /Dry run stopped/);
+    const stopped = await pending;
+    assert.equal(stopped.details.dryRun.status, 'not_run');
+    assert.match(stopped.details.dryRun.skipped.join('\n'), /stopped before it finished/);
+    assert.equal(app.calls.length, 0);
+  } finally { await app.shutdown(); }
+});
+
+test('a stop given while a dry run reads its SOP file is taken: the trusted dry run runs no code and is not run', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'agentrun-dry-run-sop-'));
+  const app = await harness({ cwd, withModel: false });
+  globalThis.__dryRunStopProbe = 0;
+  const definition = { ...workflow(), root: { node: 'chain', steps: [
+    { node: 'agent', label: 'read-note', instructions: 'Read the supplied file with read and submit its exact text.', tools: ['read'], out: 'Result', as: 'result', sopSection: 'Policy' },
+    { node: 'code', label: 'count', code: '((function(){}).constructor("globalThis.__dryRunStopProbe++")(), s => ({ result: s.result }))' },
+  ] } };
+  try {
+    await app.tool({ action: 'inspect', workflow: definition });
+    await writeFile(join(cwd, 'policy.md'), '# Policy\n\n## Policy\nRead the note.\n');
+    await app.command('sop policy.md');
+    const pending = app.command('dry-run --trusted');
+    await app.command('stop');
+    assert.match(app.messages.at(-1).content, /Dry run stopped/);
+    await pending;
+    assert.equal(app.messages.at(-1).details.dryRun.status, 'not_run');
+    assert.match(app.messages.at(-1).details.dryRun.skipped.join('\n'), /stopped before it/);
+    assert.equal(globalThis.__dryRunStopProbe, 0, 'no code ran after the stop');
+    await app.command('dry-run --trusted');
+    assert.equal(app.messages.at(-1).details.dryRun.status, 'passed', 'a later dry run is not stopped');
+    assert.ok(globalThis.__dryRunStopProbe > 0);
+  } finally { await app.shutdown(); delete globalThis.__dryRunStopProbe; await rm(cwd, { recursive: true, force: true }); }
+});
+
+test('in an interactive session /agentrun dry-run returns at once, as /agentrun run does, so /agentrun stop reaches it and its answer comes after', async () => {
+  // Interactive Pi takes one command at a time: the next is read only once the last one's handler returns.
+  const app = await harness({ hasUI: true });
+  const endless = { v: 2, name: 'Check until done', schemas: { Done: { type: 'object', additionalProperties: false, required: ['done'], properties: { done: { type: 'boolean' } } } },
+    output: { schemaId: 'Done', path: 'check' },
+    root: { node: 'loop', label: 'until-done', maxIters: 200000, until: { predicate: 'field_true', path: 'check.done' },
+      body: { node: 'extract', label: 'check', instructions: 'Say whether the fictional task is done.', out: 'Done', as: 'check' } } };
+  try {
+    await app.tool({ action: 'inspect', workflow: endless });
+    const before = app.messages.length;
+    const answered = () => app.messages.slice(before).find(message => message.details?.dryRun);
+    await app.command('dry-run');
+    assert.equal(answered(), undefined, 'the command returned before the dry run ended');
+    await app.command('stop');
+    assert.match(app.messages.at(-1).content, /Dry run stopped/);
+    await waitUntil(() => answered());
+    assert.equal(answered().details.dryRun.status, 'not_run');
+    assert.match(answered().details.dryRun.skipped.join('\n'), /stopped before it (started|finished)/, 'the stop ended it, not its step budget');
+    assert.equal(app.calls.length, 0);
+  } finally { await app.shutdown(); }
 });

@@ -53,7 +53,11 @@ export type Manifest = {
 };
 
 /** A recording as the viewer holds it: its manifest, its lines in file order, and where a blob's bytes are. */
-export type Recording = { id: string; manifest: Manifest; lines: Line[]; blobUrl(sha: string): string | undefined; blobType(sha: string): string | undefined };
+export type Recording = { id: string; manifest: Manifest; lines: Line[]; blobUrl(sha: string): string | undefined; blobType(sha: string): string | undefined;
+  /** Read from a server, whose `blobs/` cannot be listed: finds blobs by their names there, and says how many it found. */
+  find?(shas: readonly string[]): Promise<number>;
+  /** The text of a blob the shell already read whole (a followed run's JSON), undefined for any other. */
+  heldText?(sha: string): string | undefined };
 
 const SOURCES = new Set(['workflow', 'pi', 'browser', 'vision', 'transport', 'host']);
 const isInt = (value: unknown, min = 0) => Number.isInteger(value) && (value as number) >= min;
@@ -61,6 +65,10 @@ const isInt = (value: unknown, min = 0) => Number.isInteger(value) && (value as 
 /** The supervisor's lines: every live `host` line (`process.started`, `kill`, `result`), written outside the run's
  *  processes, with no event-level gen and their own seq. */
 export const isSupervisor = (line: Line) => line.channel === 'live' && line.source === 'host';
+/** The supervisor's line kinds whose fields name the process they are about (`data.gen`, RECORDING.md section 5's host
+ *  row). The others name none (a `picture`, a `box.receipt`), and a kind this viewer does not know is not checked for it. */
+export const GEN_HOST_KINDS: ReadonlySet<string> = new Set(['process.started', 'kill', 'result', 'kill.failed', 'kill.request.ignored', 'signals.failed',
+  'recording.carry.failed', 'run.json', 'delegation', 'revoke', 'fenced']);
 /** The process a supervisor line is about, from its data (an earlier recording put it on the line). */
 export const processOf = (line: Line): number | undefined => {
   const gen = (line.data as { gen?: unknown } | null)?.gen;
@@ -92,6 +100,17 @@ export function restoresOf(lines: Line[]): Map<number, number> {
   });
   return restores;
 }
+
+/** Where a line stands among lines of the same `t` (a millisecond): the supervisor's kill of a process, then the next
+ *  process's start, then the lines that process writes (durable, then live), and the supervisor's result last. */
+const tieRank = (line: Line) => (line.source === 'host' && line.channel === 'live' ? ({ kill: -2, 'process.started': -1, result: 2 } as Record<string, number>)[line.kind] ?? 1 : line.channel === 'durable' ? 0 : 1);
+/** A memo line has no place of its own inside its commit (`order` null): it follows the lines the store gave the commit. */
+const orderIn = (line: Line) => ((line.order as number | null | undefined) === null ? Infinity : line.order ?? 0);
+
+/** The file order of `events.jsonl` (section 3), the one a recorder's merge writes: by `t`; a tie by the rank above, then
+ *  `(commit, order)`, then `seq`. */
+export const fileOrder = (a: Line, b: Line): number =>
+  a.t - b.t || tieRank(a) - tieRank(b) || (a.commit ?? 0) - (b.commit ?? 0) || orderIn(a) - orderIn(b) || (a.seq ?? 0) - (b.seq ?? 0);
 
 /** `events.jsonl`'s lines, in file order. */
 export function parseLines(text: string): Line[] {
@@ -217,7 +236,7 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
     if (typeof line.kind !== 'string' || line.kind === '') note(`${at}: no kind`);
     if (isSupervisor(line)) {
       if (line.gen !== undefined) note(`${at}: a supervisor line (${line.kind}) has no event-level gen`);
-      if (!isInt((line.data as { gen?: unknown } | null)?.gen, 1)) note(`${at}: a supervisor line (${line.kind}) names its process in data.gen`);
+      if (GEN_HOST_KINDS.has(line.kind) && !isInt((line.data as { gen?: unknown } | null)?.gen, 1)) note(`${at}: a supervisor line (${line.kind}) names its process in data.gen`);
       const crossing = line.kind === 'kill' ? (line.data as { crossing?: { point?: unknown; n?: unknown } | null } | null)?.crossing : null;
       if (crossing !== null && crossing !== undefined && !(typeof crossing.point === 'string' && isInt(crossing.n))) note(`${at}: a kill's crossing is { point, n } or null`);
       const result = line.kind === 'result' ? (line.data as { blob?: unknown; title?: unknown } | null) : undefined;

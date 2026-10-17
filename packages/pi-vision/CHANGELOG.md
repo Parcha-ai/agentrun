@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.1.0-beta.15 (2026-10-16)
+
+- `read` of a video on a lead that takes no images, with eyes that take video, gives the eyes the file or the asked window as one clip within their inline budget. Before, the eyes got 8 frames by seek. Eyes that take no video still get frames, and a lead that takes images or video still sees the video itself as before.
+  A window cut from a video keeps its sound: a stream copy keeps the audio track, and the one re-encode carries it as mono AAC at 48 kbit/s.
+- A paid look is kept on the conversation, not only on the tool call that paid for it: the pi-durable adapter keeps a tool call's `vision:look:<key>` answers and `vision:told:<key>` marks in a conversation document (`vision.kept`), committed right after the answer, so a later call of the same conversation that asks the same finds it. On a host whose code-mode tool is not replay-safe, pi never runs a cut call again: a kill after the eyes answered and before the look was filed made the next script ask and pay again, and the first payment never reached the host. Now that call reads every answer back at $0, tells the host once of a look whose filing was cut, and again as kept of one it was already told. An answer or mark already kept on the call's task, where these memos lived before, is read from there and never paid for again, so a replay-safe call a crash cut before an upgrade still reads back what it paid for. A hook's memos (the guard's) stay on its task.
+- A look that misses is filed as what it was about. A `vision.see` miss about one medium (a video over the eyes' budget, a video the eyes do not take, an image that will not fit, a path that does not read) names that medium as the agent named it, its kind, the SHA-256 of its bytes and the page or window its name cites. Before, the record had an empty path, kind `image` and the hash of no bytes. A miss before any medium is read names the request's media, kind `unknown` and no hash. A `read` miss of a page or a video window carries that page or window, as a look of it would.
+
 ## 0.1.0-beta.14 (2026-10-16)
 
 - Breaking: `look` is not a tool, and its exports are removed (`LOOK_TOOL`, `ToolContract`, `JsonSchema`, `VisionHandle.tools`, `install.look`, and the caps `LOOK_PAGES_PER_CALL`, `LOOK_FRAMES_PER_CALL`, `LOOK_MAX_USD`, `LOOK_CONCURRENCY`); no version built `look`, so only a host that imported these names changes, and it passes its own caps where it wants one (`plan(facts, selector, limits, "ask", { pages, frames })`, `priceLook(..., capUsd)`), since there is none by default.

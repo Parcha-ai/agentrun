@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.0-beta.15 (2026-10-16)
+
+- `@parcha/pi-browser`: a session can ask for a named saved profile. `SessionSpec` and `BrowserPolicy` take `profile: { name, save }`, `ProviderCaps` gains `profiles`, and the session record names the profile (the name only; older records read as none). The local Chrome (`cdp`) keeps a named profile in its own directory, and a session can work from a copy that is never saved; Kernel keeps one through its own profiles (created on first use, one saver per profile); Browserbase keeps one as a context made on first use and remembered by name. A provider that cannot keep a profile, a profile beside a context id and a bad name are refused with the typed envelope before any session or record is made. A host can pass an optional `crossing` callback that is called at the two page-action moments a kill sweep needs (after one page action's answer is committed and before the next is dispatched; after a page action's driver call returned and before its answer is committed). `use_website` calls in one turn now run at once, each child in its own browser. `browser_release` on a session that already ended, or is ending, answers `already_released: { reason, at }` and one sentence beside `released`, which keeps its meaning.
+- `@parcha/pi-browser`: a `snapshot` or `browser_read` that lands in a document a navigation replaced waits for the new one and reads once more, instead of failing with Chrome's "Cannot find context with specified id". The held-runtime reset (Stagehand's extension) fails on a target list the browser never gives, instead of reading it as "nothing held", and closes its last wake page before the socket goes, so a runtime still held no longer refuses the next attach. `exportFrameTracks` bounds each blob read by the session's deadline and the abort signal.
+
 ## 0.1.0-beta.14 (2026-10-16)
 
 - Accept pi 1.3: the `@earendil-works/pi-durable` and `@earendil-works/chord` peer ranges now end below 1.4, with the floors unchanged (1.0.4, and 1.1.0 for `@parcha/pi-browser`). pi 1.3.0 pins its own packages to exact versions, so an install is all 1.2 or all 1.3; CI runs every package's whole suite on a 1.3.0 family as well as on 1.2.0.

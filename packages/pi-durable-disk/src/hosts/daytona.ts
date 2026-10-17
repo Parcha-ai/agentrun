@@ -15,7 +15,8 @@
 // in it, the commands a crashed incarnation detached included. The supervisor holds the API key; boxes never do.
 import { DEFAULT_MOUNT_ROOT, runPath, type RunRef } from "../claim.ts";
 import { PdaError } from "../errors.ts";
-import type { HostDriver, HostHandle, HostStatus } from "../supervise.ts";
+import type { HostBox, HostDriver, HostHandle, HostStatus, StartAttempt } from "../supervise.ts";
+import { attemptEnv } from "./attempt-env.ts";
 import { LAUNCH_DIR, type LaunchSpec, type LaunchState, type LaunchStatus } from "./daytona-launch.ts";
 import { TERMINAL_EXITS } from "./local-host.ts";
 
@@ -29,12 +30,45 @@ export type SandboxInfo = {
   id: string;
   name: string;
   state?: string;
+  /** The box's size as Daytona allocates it: vCPUs, GPUs, memory and disk (the API's GB). */
+  cpu?: number;
+  gpu?: number;
+  memory?: number;
+  disk?: number;
+  createdAt?: string;
   snapshot?: string;
   labels?: Record<string, string>;
   target?: string;
   toolboxProxyUrl?: string;
   errorReason?: string;
 };
+
+/**
+ * Daytona's published list prices, as its pricing page gave them on `readOn`: billed per second, quoted per hour, for
+ * each vCPU, each GiB of memory and each GiB of disk. The page's footnote "Price per GiB after first 5 free" is applied
+ * to storage (disk) only: its placement is ambiguous and could be read as covering memory too, so this is a choice.
+ * The page lists GPU rates per GPU model; this driver does not map a box's GPU to a model, so a GPU box is unpriced.
+ */
+export const DAYTONA_LIST_PRICES = {
+  page: "https://www.daytona.io/pricing",
+  readOn: "2026-10-16",
+  vcpuPerHour: 0.0504,
+  memoryGiBPerHour: 0.0162,
+  diskGiBPerHour: 0.000108,
+  freeDiskGiB: 5,
+} as const;
+
+/**
+ * A box's list price per second at DAYTONA_LIST_PRICES, from its size; null when its size is unknown or it has a GPU
+ * (priced per GPU model on the page, which this driver does not map).
+ */
+export function daytonaUsdPerSecond(size: Pick<SandboxInfo, "cpu" | "gpu" | "memory" | "disk">): number | null {
+  const { cpu, memory, disk, gpu } = size;
+  const count = (n: unknown) => typeof n === "number" && Number.isFinite(n) && n >= 0;
+  if (!count(cpu) || !count(memory) || !count(disk) || (gpu !== undefined && gpu !== 0)) return null;
+  const p = DAYTONA_LIST_PRICES;
+  return (cpu! * p.vcpuPerHour + memory! * p.memoryGiBPerHour + Math.max(0, disk! - p.freeDiskGiB) * p.diskGiBPerHour) / 3600;
+}
 
 export type CreateSandboxBody = {
   name: string;
@@ -169,7 +203,7 @@ export function daytonaRest(options: DaytonaRestOptions): DaytonaClient {
 
 // ---- the driver ------------------------------------------------------------------------------------------------------
 
-export type DaytonaHostErrorCode = "INVALID_ARGUMENT" | "START_FAILED" | "STOP_FAILED" | "DAYTONA_API_FAILED";
+export type DaytonaHostErrorCode = "INVALID_ARGUMENT" | "START_FAILED" | "STOP_FAILED" | "KILL_FAILED" | "DAYTONA_API_FAILED";
 
 export class DaytonaHostError extends PdaError {
   constructor(code: DaytonaHostErrorCode, message: string, options: { cause?: unknown } = {}) {
@@ -289,7 +323,7 @@ function lastJson<T>(text: string): T | null {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export function daytonaHost(opts: DaytonaHostOptions): HostDriver & { readonly fleet: string; readonly mountRoot: string } {
+export function daytonaHost(opts: DaytonaHostOptions): HostDriver & Required<Pick<HostDriver, "kill" | "kills">> & { readonly fleet: string; readonly mountRoot: string } {
   const client = opts.client;
   const fleet = opts.fleet ?? "pda";
   const prefix = opts.namePrefix ?? "pda-";
@@ -363,13 +397,22 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & { readonly f
     return r;
   }
 
+  /** Each box this driver made, for its receipt: what Daytona said of it, when it was made, and when it ended. */
+  const made = new Map<string, { info: SandboxInfo; from: string; to: string | null }>();
+  const ended = (id: string) => {
+    const m = made.get(id);
+    if (m && m.to === null) m.to = new Date(now()).toISOString();
+  };
+
   return {
     fleet,
     mountRoot,
+    kills: "box",
 
-    async start(ref: RunRef, mountToken: string): Promise<HostHandle> {
+    async start(ref: RunRef, mountToken: string, attempt?: StartAttempt): Promise<HostHandle> {
       runPath(ref.id);
       if (!mountToken) throw new DaytonaHostError("INVALID_ARGUMENT", "no mount token");
+      const extra = attemptEnv(attempt, (m) => new DaytonaHostError("INVALID_ARGUMENT", m));
       const t0 = now();
       const name = sandboxName(prefix, ref.id, t0);
       const body: CreateSandboxBody = {
@@ -384,15 +427,17 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & { readonly f
         ...(opts.network?.allowList ? { networkAllowList: opts.network.allowList } : {}),
       };
       let box = await createOrAdopt(body, ref.id);
+      made.set(box.id, { info: box, from: box.createdAt ?? new Date(t0).toISOString(), to: null });
       try {
         box = await waitStarted(box, t0 + startTimeoutMs);
+        made.get(box.id)!.info = { ...made.get(box.id)!.info, ...box };
         const prepared = now();
         if (opts.prepare) await opts.prepare(box, client);
         const prepareMs = now() - prepared;
         const handle: HostHandle = { driver: "daytona", fleet, target: box.target ?? opts.target ?? null, sandboxId: box.id, name, mountpoint: `${mountRoot}/${runPath(ref.id)}` };
         const spec: LaunchSpec = {
           argv: [...command, "run", "--disk", ref.disk, "--region", ref.region, "--id", ref.id, "--mount-root", mountRoot, "--archil", archil, ...(opts.runArgs ?? []), "--token-stdin"],
-          env: { ...opts.env, PDA_HOLDER: JSON.stringify(handle) },
+          env: { ...opts.env, ...extra, PDA_HOLDER: JSON.stringify(handle) },
           user,
           group,
           restart: opts.restart !== false,
@@ -411,7 +456,9 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & { readonly f
         }
         return handle;
       } catch (err) {
+        // The box was made and is deleted now: its receipt ends here, deleted or not (a delete that failed is the sweep's).
         await client.remove(box.id).catch(() => {});
+        ended(box.id);
         if (err instanceof DaytonaHostError) throw err;
         throw new DaytonaHostError("START_FAILED", `starting an instance in ${name} failed: ${(err as Error).message}`, { cause: err });
       }
@@ -425,7 +472,10 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & { readonly f
       } catch (err) {
         throw new DaytonaHostError("DAYTONA_API_FAILED", `reading sandbox ${h.name}: ${(err as Error).message}`, { cause: err });
       }
-      if (!box) return "gone";
+      if (!box) {
+        ended(h.sandboxId as string);
+        return "gone";
+      }
       // The label, not the id in a handle, decides whose box this is: a handle can never reach another fleet's box.
       if (box.labels?.[LABEL_FLEET] !== fleet) return "unknown";
       const s = sandboxStatus(box.state);
@@ -460,6 +510,48 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & { readonly f
           throw new DaytonaHostError("STOP_FAILED", `deleting sandbox ${h.name} failed: ${(err as Error).message}`, { cause: first });
         }
       }
+      ended(id);
+    },
+
+    async kill(h: HostHandle): Promise<void> {
+      if (!mine(h)) return;
+      const id = h.sandboxId as string;
+      let box: SandboxInfo | null;
+      try {
+        box = await client.get(id);
+      } catch (err) {
+        throw new DaytonaHostError("KILL_FAILED", `reading sandbox ${h.name} to confirm it is this fleet's: ${(err as Error).message}`, { cause: err });
+      }
+      if (box === null || box.labels?.[LABEL_FLEET] !== fleet) return;
+      // The box goes with everything in it, the instance and its mount: no launcher stop, no drain.
+      try {
+        await client.remove(id);
+      } catch (first) {
+        // A delete refused mid-transition: power the box off, then delete again.
+        await client.stop(id, true).catch(() => {});
+        try {
+          await client.remove(id);
+        } catch (err) {
+          throw new DaytonaHostError("KILL_FAILED", `deleting sandbox ${h.name} failed: ${(err as Error).message}`, { cause: first });
+        }
+      }
+      ended(id);
+    },
+
+    box(h: HostHandle): HostBox | null {
+      if (!mine(h)) return null;
+      const m = made.get(h.sandboxId as string);
+      if (!m) return null;
+      const { cpu, gpu, memory, disk } = m.info;
+      const usdPerSecond = daytonaUsdPerSecond(m.info);
+      const size = [cpu, memory, disk].every((n) => typeof n === "number") ? ` ${cpu} vCPU, ${memory} GiB memory, ${disk} GiB disk${gpu ? `, ${gpu} GPU` : ""}` : "";
+      return {
+        provider: "daytona",
+        kind: `sandbox${size}`,
+        from: m.from,
+        to: m.to,
+        ...(usdPerSecond === null ? {} : { usdPerSecond, source: DAYTONA_LIST_PRICES.page, priced: DAYTONA_LIST_PRICES.readOn }),
+      };
     },
   };
 }

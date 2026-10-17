@@ -8,8 +8,8 @@ import * as entry from './reference/index.ts';
 import { fakes, job } from './reference/job.ts';
 
 test('the entry exports the names another example builds on, and nothing else', () => {
-  assert.deepEqual(Object.keys(entry).sort(), ['RUN_KEY', 'codeOf', 'cost', 'finishRecording', 'localHost', 'openRecorder', 'openSupervisor', 'packageCommitRecorder', 'placeAt', 'run']);
-  for (const name of ['run', 'cost', 'placeAt', 'localHost', 'openRecorder', 'openSupervisor', 'finishRecording', 'codeOf', 'packageCommitRecorder']) assert.equal(typeof entry[name], 'function', name);
+  assert.deepEqual(Object.keys(entry).sort(), ['BOX_CROSSINGS', 'JEV_CAPS', 'JEV_LIST_PRICE', 'RUN_KEY', 'capJudge', 'chooseBrowser', 'codeOf', 'cost', 'crossings', 'demo', 'finishRecording', 'jevCost', 'killsOf', 'localHost', 'maxUsdOf', 'openRecorder', 'openSupervisor', 'packageCommitRecorder', 'parseInput', 'placeAt', 'plansOf', 'run', 'tapBox', 'tapFakes', 'tapHost']);
+  for (const name of ['tapBox', 'demo', 'crossings', 'tapFakes', 'tapHost', 'chooseBrowser', 'killsOf', 'maxUsdOf', 'parseInput', 'plansOf', 'run', 'cost', 'placeAt', 'localHost', 'openRecorder', 'openSupervisor', 'finishRecording', 'codeOf', 'packageCommitRecorder']) assert.equal(typeof entry[name], 'function', name);
 });
 
 test('another example runs a job of its own through the entry alone', { timeout: 120_000 }, async (t) => {

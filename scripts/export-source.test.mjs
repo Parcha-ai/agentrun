@@ -20,7 +20,7 @@ async function fixture(t) {
   await write('scripts/export-source.mjs', exporter);
   await write('package.json', JSON.stringify({ name: 'fixture', private: true }));
   await write('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
-    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi': {}, 'packages/pi-durable-disk': {}, 'packages/pi-browser': {}, 'packages/pi-vision': {}, 'packages/pi-transport': {}, 'packages/pi-durable-agent': {},
+    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi': {}, 'packages/pi-durable-disk': {}, 'packages/pi-browser': {}, 'packages/pi-vision': {}, 'packages/pi-transport': {}, 'packages/pi-durable-agent': {}, 'packages/serve': {}, 'packages/pi-git-remote': {}, 'packages/pi-agent-learn': {},
   } }));
   await write('docs/guide.md', '# Public fixture\n');
   await write('packages/dsl/schema/workflow.schema.json', '{}\n');
@@ -142,6 +142,17 @@ test('formal model sources are archived and scanned as text; an unreviewed file 
   await assert.rejects(f.run(), /Unreviewed source-export file type: spec\/model\/Model\.toolbox/);
 });
 
+test('the code owners file is archived and scanned as text; another extensionless .github file still stops the export', async t => {
+  const f = await fixture(t);
+  await f.write('.github/CODEOWNERS', '* @example-owner\n');
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok((await f.listing()).includes('agentrun-dsl-source/.github/CODEOWNERS\n'));
+  assert.equal(receipt.files.find(file => file.path === '.github/CODEOWNERS')?.kind, 'text');
+  await f.write('.github/OWNERS', '* @example-owner\n');
+  await assert.rejects(f.run(), /Unreviewed source-export file type: \.github\/OWNERS/);
+});
+
 test('inventory generation works without build output and does not produce an archive', async t => {
   const f = await fixture(t);
   await f.run('--inventory-only');
@@ -154,7 +165,7 @@ test('inventory generation works without build output and does not produce an ar
 
 test('the dependency inventory follows the runtime graph only: a lock that changes a dev-only entry gives the same bytes, a runtime dependency changes them', async t => {
   const f = await fixture(t);
-  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent'].map(name => [`packages/${name}`, {}]));
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn'].map(name => [`packages/${name}`, {}]));
   const lock = ({ dev, runtime } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
     '': dev ? { devDependencies: { 'dev-tool': dev } } : {},
     ...workspaces,
