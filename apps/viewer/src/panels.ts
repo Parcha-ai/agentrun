@@ -36,7 +36,10 @@ export type BaselineView = { label: string; counters: Counters; ms: number | nul
  *  undefined until the shell has read it, and for any other blob. */
 export type ViewContext = { t: number; /** The playback clock in ms: the time of the point at a stop (a scrub sets it), and running between stops while playing. A view that draws motion reads it. */ now?: number; focus?: string; baseline?: BaselineView; providers?: 'real' | 'scripted'; cite?: string; json?: (sha: string) => Json | undefined;
   /** The run is followed while it goes and has not finished: its cost is not known yet. */
-  following?: true };
+  following?: true;
+  /** A blob's media type, from its name in `blobs/` (undefined until the shell has found it): a view tells a picture it may
+   *  draw from a file it links. */
+  blobType?: (sha: string) => string | undefined };
 
 /** A node's class under a focus: a line with a path outside the focused branch is dimmed; one with no path stays. */
 const dimmed = (path: string | undefined, focus: string | undefined) => (focus !== undefined && path !== undefined && !under(path, focus) ? ' dim' : '');
