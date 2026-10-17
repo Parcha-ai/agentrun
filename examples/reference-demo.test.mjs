@@ -1622,6 +1622,49 @@ test('the follower appends whole lines to events.jsonl in section 3\'s order as 
   assert.ok(existsSync(join(dir, 'manifest.json')) && !existsSync(spool('')), 'the manifest is last, and the spool is gone');
 });
 
+test('the follower holds later lines behind a memo that waits, decodes a character a read cut in two whole, and reads only new bytes', async (t) => {
+  const { startedAt, followRecording } = await import('./reference/record.ts');
+  const { syncBuiltinESMExports } = await import('node:module');
+  const fs = (await import('node:fs')).default;
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-follow-order-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'rec');
+  mkdirSync(join(dir, '.spool'), { recursive: true });
+  startedAt(dir);
+  const spool = (name) => join(dir, '.spool', name);
+  const line = (over) => JSON.stringify({ channel: 'live', source: 'workflow', kind: 'x', gen: 1, seq: 0, data: {}, ...over });
+  const durable = (over) => JSON.stringify({ channel: 'durable', source: 'workflow', kind: 'agentrun.driver', gen: 1, data: {}, ...over });
+  const events = () => readFileSync(join(dir, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((entry) => JSON.parse(entry));
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const follower = followRecording(dir, { holdMs: 0 });
+  // A memo (t 10, commit 1) waits for a later commit; a live line at t 20 must not be placed before it.
+  appendFileSync(spool('durable-1.jsonl'), `${durable({ t: 8, commit: 1, order: 0, seq: 0 })}\n${durable({ t: 10, commit: 1, order: null, seq: 1 })}\n`);
+  appendFileSync(spool('live-1.jsonl'), `${line({ t: 20, seq: 2 })}\n`);
+  await wait(40); follower.poll();
+  assert.deepEqual(events().map((entry) => entry.t), [8], 'the memo waits, and the later live line waits behind it');
+  appendFileSync(spool('durable-1.jsonl'), `${durable({ t: 15, commit: 2, order: 0, seq: 3 })}\n`);
+  await wait(40); follower.poll();
+  assert.deepEqual(events().map((entry) => entry.t), [8, 10, 15, 20], 'the next poll places the memo, then what follows it, in order');
+  // A multibyte character cut by a read: both halves are decoded together.
+  const whole = Buffer.from(`${line({ t: 30, seq: 4, data: { text: 'caf\u00e9 \u2014 \u{1f680}' } })}\n`);
+  const cut = whole.indexOf(Buffer.from('\u00e9')) + 1;
+  appendFileSync(spool('live-2.jsonl'), whole.subarray(0, cut));
+  await wait(40); follower.poll();
+  appendFileSync(spool('live-2.jsonl'), whole.subarray(cut));
+  await wait(40); follower.poll();
+  assert.equal(events().at(-1).data.text, 'caf\u00e9 \u2014 \u{1f680}', 'no replacement characters');
+  // Reading: the spools are read from the saved offset, not whole again: no readFileSync of a spool file once the follower is made.
+  const real = fs.readFileSync;
+  const reads = [];
+  fs.readFileSync = (path, ...rest) => { if (String(path).includes('.spool')) reads.push(String(path)); return real(path, ...rest); };
+  syncBuiltinESMExports();
+  t.after(() => { fs.readFileSync = real; syncBuiltinESMExports(); });
+  appendFileSync(spool('live-1.jsonl'), `${line({ t: 40, seq: 5 })}\n`);
+  await wait(40); follower.poll(); follower.poll();
+  assert.deepEqual(reads, [], 'the spools are not read whole on a poll');
+  assert.equal(events().at(-1).t, 40);
+});
+
 test('--record: a reader polling events.jsonl mid-run sees only whole lines in order and append-only, the finished file validates, and the manifest names the job blob (always, when the entry knows the job)', { timeout: 300_000 }, async (t) => {
   const { compareLines } = await import('./reference/record.ts');
   const tmp = await mkdtemp(join(tmpdir(), 'reference-live-'));
