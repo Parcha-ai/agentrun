@@ -47,6 +47,61 @@ const MUTATIONS = [
     file: "dist/git.js", from: '"-c", "credential.helper=",', to: "",
     fails: ["credential.test.mjs", "real git reads the credential through the fd-3 helper, and never runs a helper from the repository's config"],
   },
+  {
+    removes: "the refusal of a symlink the allowlist reaches",
+    file: "dist/session.js", from: 'if (reaches(p))', to: "if (false)",
+    fails: ["session.test.mjs", "a symlink the allowlist reaches refuses the whole end, and nothing is pushed"],
+  },
+  {
+    removes: "the allowlist's match on a file",
+    file: "dist/session.js", from: "else if (scope.matches(p)) {", to: "else if (true) {",
+    fails: ["session.test.mjs", "a change that no pattern names is never committed"],
+  },
+  {
+    removes: "the check that an existing session branch carries this session's trailer",
+    file: "dist/session.js", from: "if (mine.length === 0)", to: "if (false)",
+    fails: ["session.test.mjs", "a branch of the session's name that carries no Session-Id trailer is never added to"],
+  },
+  {
+    removes: "the refusal of main, master and HEAD as a session branch",
+    file: "dist/session.js", from: "PROTECTED.has(bare) ||", to: "false ||",
+    fails: ["session.test.mjs", "the session branch holds the id exactly once and is never a protected name or the seed's own branch"],
+  },
+  {
+    removes: "building a later end on the session branch's own tip",
+    file: "dist/session.js", from: "parent: tip ?? seededAt.sha,", to: "parent: seededAt.sha,",
+    fails: ["session.test.mjs", "a second end for the same session commits nothing"],
+  },
+  {
+    removes: "moving the saved state to the directory's state after each end",
+    file: "dist/session.js", from: "record = { ...seededAt, saved: Object.fromEntries(next) };", to: "record = seededAt;",
+    fails: ["session.test.mjs", "a file put back or removed after an earlier end is a change: the saved state moves with each end, and survives a restart"],
+  },
+  {
+    removes: "the check that the checkout directory is where it was seeded",
+    file: "dist/session.js", from: "(await realpath(dir)) !== seededAt.root", to: "false",
+    fails: ["session.test.mjs", "a checkout directory reached through a replaced parent is refused: it is no longer where it was seeded"],
+  },
+  {
+    removes: "the remote's identity in the seed record",
+    file: "dist/session.js", from: "kept.remote !== remote", to: "false",
+    fails: ["session.test.mjs", "a checkout made for one remote is never adopted for another"],
+  },
+  {
+    removes: "the seed's record of every file, not only the ones the allowlist names",
+    file: "dist/session.js", from: "scan(everything, () => false)", to: "scan(allow, () => false)",
+    fails: ["session.test.mjs", "a deletion is seen when the allowlist is wider on a later start than at the seed"],
+  },
+  {
+    removes: "the branch in the seed record",
+    file: "dist/session.js", from: "|| kept.branch !== branch", to: "",
+    fails: ["session.test.mjs", "a checkout saved for one branch is not adopted under another branch pattern"],
+  },
+  {
+    removes: "the prototype-free object for the changed paths",
+    file: "dist/session.js", from: "Object.create(null)", to: "{}",
+    fails: ["session.test.mjs", "a file named __proto__ is written and deleted like any other"],
+  },
 ];
 
 /** Whether this git, with no attr.tree, reads HEAD's .gitattributes in a bare repository: a union merge it names then

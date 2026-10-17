@@ -56,7 +56,19 @@ export async function signIn(options: SignInOptions = {}): Promise<SignedIn> {
       if (event.type === "auth_url" && (named = new URL(event.url).searchParams.get("agent_name_hint")) !== agentName) return stop.abort();
       inner.notify(event);
     },
-    prompt: (prompt) => stop.signal.aborted ? Promise.reject(stop.signal.reason) : inner.prompt(prompt),
+    // pi-ai's login ends only when the browser's callback comes or this prompt rejects, and its callback server holds
+    // port 1455 until then: a cancel rejects the prompt even when the interaction's own prompt does not watch it.
+    prompt: (prompt) => {
+      if (stop.signal.aborted) return Promise.reject(stop.signal.reason);
+      const cancel = prompt.signal;
+      if (!cancel) return inner.prompt(prompt);
+      if (cancel.aborted) return Promise.reject(cancel.reason);
+      return new Promise((resolve, reject) => {
+        const onAbort = () => reject(cancel.reason);
+        cancel.addEventListener("abort", onAbort, { once: true });
+        inner.prompt(prompt).then(resolve, reject).finally(() => cancel.removeEventListener("abort", onAbort));
+      });
+    },
   };
   // A variable, not a literal: pi-ai before 1.1 has no `agentName` in its `LoginOptions` type, and the page check above
   // refuses those versions at run time.
