@@ -3,12 +3,12 @@
 // receipt and moves its lane, a miss shows by its code, and the account's photo sort and weaker eyes are drawn as the
 // result says. A second test plays the scripted recording named by VISION_RECORDING, when there is one.
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
@@ -20,6 +20,9 @@ import { counterFold, countersOf } from '../src/counters.ts';
 import { viewContext } from '../src/app.ts';
 import { visionAccountOf, visionKeptChars, visionMeters, visionPanel, type VisionState } from '../src/vision.ts';
 import { ACCOUNT, blobs, FILM, K, LOOKS, lines, manifest, PAGES, PHOTOS, RESULT, writeRecording } from './vision-hand.ts';
+import { closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
+
+after(async () => { assert.deepEqual(await closeLeftBrowsers(), [], 'every browser a test started was closed by that test'); });
 
 const walk = (node: Node, visit: (node: Exclude<Node, string>) => void) => {
   if (typeof node === 'string') return;
@@ -266,32 +269,6 @@ test('the page from file:// reads the account from the result blob, and ?cite= o
   assert.match(cited, /clear citation/);
 });
 
-/** A page in a headless Chrome driven over its debugging protocol: what an expression in the page evaluates to. */
-async function drivenPage(url: string, profile: string) {
-  const browser = spawn(chrome, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${profile}`, '--remote-debugging-port=0', '--window-size=1280,1600', url], { stdio: 'ignore' });
-  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-  let port: string | undefined;
-  for (let tries = 0; tries < 200 && !port; tries += 1) { await sleep(100); try { port = readFileSync(join(profile, 'DevToolsActivePort'), 'utf8').split('\n')[0]; } catch { /* not up yet */ } }
-  const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json() as { type: string; webSocketDebuggerUrl: string }[];
-  const socket = new WebSocket(targets.find((target) => target.type === 'page')!.webSocketDebuggerUrl);
-  await new Promise((resolve) => socket.addEventListener('open', resolve));
-  const waiting = new Map<number, (value: unknown) => void>();
-  socket.addEventListener('message', (event) => { const message = JSON.parse(String(event.data)) as { id?: number; result?: { result?: { value?: unknown } } }; if (message.id !== undefined) waiting.get(message.id)?.(message.result?.result?.value); });
-  let id = 0;
-  const evaluate = (expression: string) => new Promise((resolve) => { id += 1; waiting.set(id, resolve); socket.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, awaitPromise: true, returnByValue: true } })); });
-  const exited = new Promise((resolve) => browser.once('exit', resolve));
-  // Closed as a browser closes, so no helper of its is still writing to the profile when the test removes it.
-  const close = async () => {
-    socket.close();
-    const { webSocketDebuggerUrl } = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json() as { webSocketDebuggerUrl: string };
-    const whole = new WebSocket(webSocketDebuggerUrl);
-    await new Promise((resolve) => whole.addEventListener('open', resolve));
-    whole.send(JSON.stringify({ id: 1, method: 'Browser.close' }));
-    await Promise.race([exited, sleep(10_000).then(() => browser.kill())]);
-  };
-  return { evaluate, sleep, close };
-}
-
 test('a redraw after a chip is chosen keeps the account where the reader scrolled it, and the focus on the chip', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` }, async (t) => {
   const out = mkdtempSync(join(tmpdir(), 'viewer-vision-scroll-'));
   const dir = join(out, 'recordings', 'vision-long');
@@ -303,7 +280,7 @@ test('a redraw after a chip is chosen keeps the account where the reader scrolle
   for (const file of ['manifest.json', 'events.jsonl']) writeFileSync(join(dir, file), readFileSync(join(dir, file), 'utf8').replaceAll(RESULT, sha));
   build(join(out, 'dist'), join(out, 'recordings'));
   const page = await drivenPage(`${pathToFileURL(join(out, 'dist', 'index.html')).href}?r=vision-long`, join(out, 'profile'));
-  t.after(async () => { await page.close(); rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); });
+  t.after(() => closeAll([page], () => rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })));
   let ready = false;
   for (let tries = 0; tries < 100 && !ready; tries += 1) { await page.sleep(100); ready = await page.evaluate('(() => { const a = document.querySelector(".vz-account"); return !!a && a.scrollHeight > a.clientHeight + 300; })()') === true; }
   assert.ok(ready, 'the account scrolls');
