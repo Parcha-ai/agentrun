@@ -318,7 +318,9 @@ export function meter(recordDir: string): number | null {
 
 /** What is known to have been spent so far: the priced parts summed, whether or not another part is unknown. The spend cap compares this, so an unknown price never switches it off. */
 export function meterKnown(recordDir: string): number {
-  return Object.values(cost(spoolLines(recordDir)).parts).reduce<number>((sum, part) => sum + (part ?? 0), 0);
+  const folded = cost(spoolLines(recordDir));
+  // A box part with an unpriced box is null, but the boxes that are priced were spent all the same.
+  return Object.values(folded.parts).reduce<number>((sum, part) => sum + (part ?? 0), 0) + (folded.parts.box === null ? folded.boxKnown : 0);
 }
 
 /** A run's boxes taken away with its machine: every box that carries the run's label, tool-made ones too, destroyed through the provider. A box that will not be destroyed is an error. */
@@ -447,24 +449,23 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
           delegationSeen.set(id, state);
           supervisor.host('delegation', { gen: lastGeneration ?? currentGen, ...safeDelegation(delegation) });
         }
-        // The boxes the place made (a `HostBox` each, ended ones too): one `box.receipt` line per box when its `to` appears, or at the final read for one still open (`to`, `seconds` and `cost_usd` null). The box is `box-N` by first appearance, never the provider's
-        // id; `cost_usd` is seconds times the published per-second price, null when the box has none (the run's cost then reads unknown).
-        for (const entry of Array.isArray(status?.boxes) ? status!.boxes as unknown[] : []) {
+        // The boxes the place made (a `HostBox` each, ended ones too): one `box.receipt` line per box when its `to` appears, or at the final read for one still open (`to`, `seconds` and `cost_usd` null). A box is its place in the
+        // place's list (the place lists the boxes it started, in the order it started them, so equal provider, kind and start never make two boxes one), and it is `box-N` by first appearance, labelled when it first shows, before its
+        // receipt; never the provider's id. `cost_usd` is seconds times the published per-second price, null when the box has none (the run's cost then reads unknown).
+        (Array.isArray(status?.boxes) ? status!.boxes as unknown[] : []).forEach((entry, index) => {
+          const label = labelOf(boxLabels, 'box', String(index));
           const box = entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : undefined;
-          if (!box || typeof box.provider !== 'string' || typeof box.kind !== 'string') continue;
+          if (!box || typeof box.provider !== 'string' || typeof box.kind !== 'string') return;
           const at = (value: unknown) => (typeof value === 'number' ? value : typeof value === 'string' ? Date.parse(value) : Number.NaN);
           const from = at(box.from);
           const to = at(box.to);
           const ended = Number.isFinite(to);
-          if (!Number.isFinite(from) || (!ended && !final)) continue;
-          const identity = JSON.stringify([box.provider, box.kind, box.from]);
-          const label = labelOf(boxLabels, 'box', identity);
-          if (boxReceipted.has(label)) continue;
+          if (!Number.isFinite(from) || (!ended && !final) || boxReceipted.has(label)) return;
           boxReceipted.add(label);
           const seconds = ended ? Math.max(0, (to - from) / 1000) : null;
           const price = typeof box.usdPerSecond === 'number' && Number.isFinite(box.usdPerSecond) ? box.usdPerSecond : null;
           supervisor.host('box.receipt', { box: label, provider: box.provider, kind: box.kind, from: box.from, to: ended ? box.to : null, seconds, usd_per_second: price, cost_usd: price !== null && seconds !== null ? seconds * price : null, source: typeof box.source === 'string' ? box.source.slice(0, 240) : null, priced: box.priced ?? null });
-        }
+        });
       } catch { /* a reading never fails the run */ } finally { inflight = false; }
     });
     return reading;

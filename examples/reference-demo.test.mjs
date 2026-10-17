@@ -2017,3 +2017,29 @@ test('a box.receipt line is written for each box place.status() reports once its
   await demo({ ...options, argv: ['--kill', '--json', '--record', plain] });
   assert.equal(lines(plain, 'box.receipt').length, 0);
 });
+
+test('boxes of one provider, kind and start are two boxes, labelled box-N when they first appear (not when they end), and the cap counts the priced boxes beside an unpriced one', { timeout: 300_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] });
+  const recording = join(tmp, 'recording');
+  const same = { provider: 'prov', kind: 'sandbox', from: '2026-10-16T10:00:00.000Z', usdPerSecond: 1, source: 'list', priced: true };
+  await demo({ ...options, argv: ['--kill', '--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    let boxes = [];
+    return {
+      ...inner,
+      status: async () => ({ record: null, boxes }),
+      start: async (order) => { boxes = [same, same]; return inner.start(order); },
+      // The second box ends first, then the first: the labels follow the order the boxes appeared in.
+      kill: async (runner, kind) => { boxes = [same, { ...same, to: '2026-10-16T10:00:20.000Z' }]; await inner.kill(runner, kind); },
+      recover: async (last, kind, order) => { const next = await inner.recover(last, kind, order); boxes = [{ ...same, to: '2026-10-16T10:00:10.000Z' }, { ...same, to: '2026-10-16T10:00:20.000Z' }]; return next; },
+    };
+  } });
+  const receipts = readEvents(recording).filter((line) => line.source === 'host' && line.kind === 'box.receipt').map((line) => [line.data.box, line.data.seconds]);
+  assert.deepEqual(receipts, [['box-2', 20], ['box-1', 10]], 'two boxes with equal fields are two; box-1 is the one that appeared first, though it ended last');
+  // The cap: a $1 box and an unpriced one: the cost is unknown, and the spend so far counts the $1.
+  const dir = join(tmp, 'meter');
+  mkdirSync(join(dir, '.spool'), { recursive: true });
+  const receipt = (box, cost_usd) => JSON.stringify({ channel: 'live', source: 'host', kind: 'box.receipt', t: 1, seq: 0, data: { box, cost_usd } });
+  writeFileSync(join(dir, '.spool', 'supervisor-1.jsonl'), `${receipt('box-1', 1)}\n${receipt('box-2', null)}\n`);
+  assert.equal(meterKnown(dir), 1, 'the priced box counts against the cap, though the other has no price');
+});
