@@ -11,6 +11,8 @@ export type CrossingKill = {
   target?: 'run' | 'tool';
   /** The nth time the child takes the crossing (default 1): the third box command in flight, say. */
   n?: number;
+  /** Only a crossing whose info has these values counts (`transport.tool.started` fires for every tool: `{ tool: 'install' }` is the install step). With `n`: the nth matching crossing. */
+  where?: Record<string, string | number | boolean>;
 };
 /** A storm: `kills` kills, each at the first crossing the child takes once it has run `gapMs` since it started (a crossing between a tool's dispatch and the
  *  host keeping its answer is never cut: nothing records what the tool did yet). */
@@ -50,6 +52,8 @@ export function killsOf(spec: DemoSpec): KillSpec[] {
     if (kill.kind !== undefined && kill.kind !== 'process' && kill.kind !== 'box') throw new Error(`a kill's kind is "process" or "box", not ${JSON.stringify(kill.kind)}`);
     if (!('storm' in kill) && kill.target !== undefined && kill.target !== 'run' && kill.target !== 'tool') throw new Error(`a kill's target is "run" or "tool", not ${JSON.stringify(kill.target)}`);
     if (!('storm' in kill) && kill.n !== undefined && !(Number.isInteger(kill.n) && kill.n >= 1)) throw new Error('a kill\'s n is a positive integer');
+    if ('storm' in kill && (kill as { where?: unknown }).where !== undefined) throw new Error('a storm has no where: it takes the first crossing it can');
+    if (!('storm' in kill) && kill.where !== undefined && (kill.where === null || typeof kill.where !== 'object' || Array.isArray(kill.where) || !Object.keys(kill.where).length || !Object.values(kill.where).every((value) => ['string', 'number', 'boolean'].includes(typeof value)))) throw new Error('a kill\'s where is an object of fields (strings, numbers, booleans) the crossing\'s info must equal');
     if ('storm' in kill) {
       if (!Number.isInteger(kill.storm.kills) || kill.storm.kills < 1 || !(kill.storm.gapMs >= 0)) throw new Error('a storm names kills (a positive integer) and gapMs (0 or more)');
     } else if (typeof kill.point !== 'string' || !kill.point || typeof kill.why !== 'string') throw new Error('a kill names a point and says why');
@@ -58,7 +62,7 @@ export function killsOf(spec: DemoSpec): KillSpec[] {
 }
 
 /** One kill the supervisor hands one process: the crossing to die at, or a storm's gap. */
-export type Plan = { point: string; kind: 'process' | 'box'; why: string; target: 'run' | 'tool'; n: number } | { storm: true; gapMs: number; kind: 'process' | 'box'; why: string; target: 'run' };
+export type Plan = { point: string; kind: 'process' | 'box'; why: string; target: 'run' | 'tool'; n: number; where?: Record<string, string | number | boolean> } | { storm: true; gapMs: number; kind: 'process' | 'box'; why: string; target: 'run' };
 /** What one process is handed: the kill that ends it (if any), and the tool boxes it destroys on the way. */
 export type ChildPlan = { run?: Plan; tools: Plan[] };
 
@@ -67,7 +71,7 @@ export function plansOf(kills: KillSpec[]): Plan[] {
   return kills.flatMap((kill): Plan[] => {
     const kind = kill.kind ?? 'process';
     if ('storm' in kill) return Array.from({ length: kill.storm.kills }, (_, index) => ({ storm: true as const, gapMs: kill.storm.gapMs, kind, target: 'run' as const, why: `storm ${index + 1} of ${kill.storm.kills}` }));
-    return [{ point: kill.point, kind, why: kill.why, target: kill.target ?? 'run', n: kill.n ?? 1 }];
+    return [{ point: kill.point, kind, why: kill.why, target: kill.target ?? 'run', n: kill.n ?? 1, ...(kill.where ? { where: kill.where } : {}) }];
   });
 }
 

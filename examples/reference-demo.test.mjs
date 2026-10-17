@@ -519,3 +519,56 @@ test('the manifest hook adds fields, the run is named by the input file, and --s
   writeFileSync(join(titled, 'manifest.json'), JSON.stringify({ title: 'Earlier pass' }));
   await assert.rejects(() => run(t, {}, ['--json', '--see-also', titled]), /not a finished recording/);
 });
+
+test('a kill\'s where: only a crossing whose info has those values counts, and n is the nth matching one', async (t) => {
+  const kills = [];
+  const real = process.kill;
+  process.kill = (pid, signal) => { kills.push(signal); return true; };
+  t.after(() => { process.kill = real; });
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-where-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const log = join(tmp, 'cross.jsonl');
+  const [plan] = plansOf(killsOf({ name: 'x', kills: [{ point: 'transport.tool.started', where: { tool: 'install' }, why: 'the install step' }] }));
+  assert.deepEqual(plan.where, { tool: 'install' });
+  const cross = crossings({ run: plan, tools: [] }, log);
+  cross('transport.tool.started', { info: { tool: 'fetch' } });
+  cross('transport.tool.started');
+  assert.deepEqual(kills, [], 'other tools and a crossing without info are not it');
+  cross('transport.tool.started', { info: { tool: 'install' } });
+  assert.deepEqual(kills, ['SIGKILL'], 'the install step is');
+  assert.deepEqual(readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line).info), [{ tool: 'fetch' }, undefined, { tool: 'install' }], 'the crossing log records the info');
+  // With n: the second install, not the second crossing.
+  kills.length = 0;
+  const second = crossings({ run: { ...plan, n: 2 }, tools: [] }, undefined);
+  for (const tool of ['install', 'fetch', 'fetch']) second('transport.tool.started', { info: { tool } });
+  assert.deepEqual(kills, []);
+  second('transport.tool.started', { info: { tool: 'install' } });
+  assert.deepEqual(kills, ['SIGKILL']);
+  // A matching crossing inside an open tool call is not a time at all, as for any run kill.
+  kills.length = 0;
+  const window = { open: 1 };
+  const guarded = crossings({ run: plan, tools: [] }, undefined, Date.now(), window);
+  guarded('transport.tool.started', { info: { tool: 'install' } });
+  assert.deepEqual(kills, []);
+  window.open = 0;
+  guarded('transport.tool.started', { info: { tool: 'install' } });
+  assert.deepEqual(kills, ['SIGKILL']);
+  // A tool box takes where too.
+  const box = crossings({ run: undefined, tools: [{ point: 'transport.box.exec', kind: 'box', why: 'x', target: 'tool', n: 1, where: { tool: 'install' } }] }, undefined);
+  assert.equal(box('transport.box.exec', { info: { tool: 'fetch' } }), false);
+  assert.equal(box('transport.box.exec', { info: { tool: 'install' } }), true);
+  for (const where of [{}, [], 'install', { tool: {} }, { tool: null }]) assert.throws(() => killsOf({ name: 'x', kills: [{ point: 'p', why: 'w', where }] }), /where is an object/);
+  assert.throws(() => killsOf({ name: 'x', kills: [{ storm: { kills: 1, gapMs: 0 }, where: { tool: 'x' } }] }), /storm has no where/);
+});
+
+test('a crossing a tool kill takes still counts for a run kill at the same point: the run kill at n 2 fires on the second matching crossing', async (t) => {
+  const kills = [];
+  const real = process.kill;
+  process.kill = (pid, signal) => { kills.push(signal); return true; };
+  t.after(() => { process.kill = real; });
+  const cross = crossings({ run: { point: 'transport.tool.started', kind: 'process', target: 'run', why: 'second', n: 2 }, tools: [{ point: 'transport.tool.started', kind: 'box', target: 'tool', why: 'first', n: 1 }] }, undefined);
+  assert.equal(cross('transport.tool.started'), true, 'the tool kill takes the first crossing');
+  assert.deepEqual(kills, []);
+  assert.equal(cross('transport.tool.started'), false);
+  assert.deepEqual(kills, ['SIGKILL'], 'the run kill is the second matching crossing, not the third');
+});
