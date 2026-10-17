@@ -11,6 +11,7 @@ import { fileLook, fileTold, keptAnswer, lookKey, type Filing, type LookRecord }
 import type { CallContext, CallSetup } from "./host.js";
 import { sniffKind, SNIFF_BYTES, type Kind } from "./kinds.js";
 import { once, throwMiss } from "./media.js";
+import { ProviderMiss } from "./derive.js";
 import { firstLine, type Miss } from "./misses.js";
 import type { CodeGlobal } from "./see.js";
 
@@ -29,6 +30,7 @@ export type Transcriber = {
   readonly limit?: string;
   /** The list price per audio minute. Absent, a transcript's price is unknown (null), never 0. */
   readonly usdPerMinute?: number;
+  /** Throws a `ProviderMiss` only before it sends a request; anything else it throws may have been billed. */
   transcribe(audio: { readonly bytes: Uint8Array; readonly mimeType: string; readonly name: string }, options: { readonly language?: string }, signal?: AbortSignal): Promise<Transcript>;
 };
 export type TranscribeRequest = { readonly path: string; readonly fragment?: string; readonly language?: string };
@@ -82,7 +84,7 @@ export async function transcribe(input: unknown, env: VisionEnv | undefined, cal
   let sha256 = "", kind: Kind = "unknown";
   const plan = [heard?.provider ?? null, request.language ?? null];
   const record = (body: string, facts: Partial<LookRecord["facts"]> = {}): LookRecord => ({
-    tool: "look", args: { path: fragment, ask: "transcribe", model, native: false, ...(heard ? { via: heard.provider } : {}) }, status: "ok", body,
+    tool: "transcribe", args: { path: fragment, model, native: false, ...(heard ? { via: heard.provider } : {}) }, status: "ok", body,
     facts: { sha256, kind, fragment: "", key: lookKey({ sha256, fragment: "", ask: "transcribe", model, plan }), ...(heard ? { provider: heard.provider } : {}), ...facts },
   });
   const fail = (cause: Miss, spent: Partial<LookRecord["facts"]> = { cost_usd: 0 }): Promise<never> => throwMiss(filing, VISION_TRANSCRIBE.name, call, cause, record("", spent));
@@ -118,8 +120,13 @@ export async function transcribe(input: unknown, env: VisionEnv | undefined, cal
       ({ answer, readBack } = await keptAnswer<Heard>(call.memo, at.facts.key, ask));
     } catch (error) {
       if (call.signal?.aborted) throw error;
+      if (error instanceof ProviderMiss) return fail({ code: error.code, reason: error.message, model });
       // A request that threw may still have been billed: its price is not known, so none is filed.
       return fail({ code: "look_failed", reason: `${heard.provider} failed: ${firstLine(error)}`, model }, {});
+    }
+    if (answer.words.length === 0 && answer.text.trim() !== "") {
+      const spent = { cost_usd: answer.costUsd, ...(readBack ? { kept: true as const } : {}) };
+      return fail({ code: "unsupported", reason: `${answer.provider} ${answer.model} answered without word times; vision.transcribe never gives words without their seconds, so name a model that times its words`, model: answer.model }, spent);
     }
     const filed = { ...at, args: { ...at.args, model: answer.model }, body: rows(answer.words), facts: { ...at.facts, cost_usd: answer.costUsd, ...(readBack ? { kept: true as const } : {}) } };
     const receipt = await fileTold(call.memo, at.facts.key, filing, (to, told) => fileLook(to, VISION_TRANSCRIBE.name, filed, { usage: null, costUsd: answer.costUsd, ...(told ? { kept: true } : {}) }));
