@@ -77,7 +77,8 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
     // A named point is taken as named; a storm waits for the first node to have begun.
     const due = 'storm' in run ? begun && point !== 'event workflow.node.start' && Date.now() - started >= run.gapMs : ordinal > 0 && ordinal >= run.n && !fired;
     if (point === 'event workflow.node.start') begun = true;
-    if (due) { fired = true; kill({ point, n: ordinal, pid: process.pid }); }
+    // The crossing's own number for a named kill; a storm has none (its kill is at whichever crossing comes), so it keeps the process's crossing counter.
+    if (due) { fired = true; kill({ point, n: 'storm' in run ? n : ordinal, pid: process.pid }); }
     return false;
   }) as Cross;
   (cross as { park: NonNullable<Cross['park']> }).park = (point, info) => {
@@ -87,7 +88,7 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
     if ((eligible.get(run) ?? 0) < run.n) return undefined;
     parkedCount += 1;
     // The kill waits for every tool call to return its kept answer: a parallel branch may have started one while the filing was parked, and a kill then would leave that call unknown.
-    const ask = () => { if (killAsked) return; if (window.open > 0) { setTimeout(ask, 20).unref(); return; } killAsked = true; kill({ point, n, pid: process.pid }); };
+    const ask = () => { if (killAsked) return; if (window.open > 0) { setTimeout(ask, 20).unref(); return; } killAsked = true; kill({ point, n: eligible.get(run) ?? 0, pid: process.pid }); };
     if (parkedCount === 1) setTimeout(ask, run.waitMs ?? 3000).unref();
     if (parkedCount >= run.hold) ask();
     return new Promise<never>(() => {});

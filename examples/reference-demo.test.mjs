@@ -2232,3 +2232,16 @@ test('the slow tick does not queue a carry behind one still running: a place who
   // The ticks that found no carry running, plus the final one; a tick queued behind every slow carry would make six or more.
   assert.ok(carries <= 4, `carried ${carries} times in ${Date.now() - started} ms`);
 });
+
+test('a kill line carries the crossing\'s own number: a held kill the point\'s count (not the process\'s), and a storm the process\'s crossing counter (not zero)', async () => {
+  const fired = [];
+  const held = crossings({ run: { point: 'vision.filing', kind: 'process', target: 'run', why: 'held', n: 1, hold: 1 }, tools: [] }, undefined, Date.now(), (crossing) => fired.push(crossing.n));
+  for (const other of ['judge.asked a', 'judge.answered a', 'model.request turn 0']) held(other);
+  held('vision.filing');
+  assert.ok(held.park('vision.filing') instanceof Promise);
+  assert.deepEqual(fired, [1], 'the first filing is the first crossing of its point, whatever came before');
+  const storm = crossings({ run: { storm: true, kills: 1, gapMs: 0 }, tools: [] }, undefined, Date.now() - 10_000, (crossing) => fired.push(crossing.n));
+  storm('event workflow.node.start');
+  storm('judge.asked a');
+  assert.ok(fired.at(-1) > 0, `a storm kill has the process's crossing number, not 0: ${fired.at(-1)}`);
+});
