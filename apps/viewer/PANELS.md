@@ -256,7 +256,12 @@ and of the items of a map inside it), which
 the workflow map asks with `{ item }`, the item as the instance, to say whether that item's body is done. It asks of the
 workflow its `agentrun.workflow` line carries, else of the job's (a task that names no workflow); the job also gives it
 the plan it lays out. Whether an item has started is asked the same way (`wmStarted`: a line of it, or its body not `not-run`), so no panel
-reads a checkpoint's done paths by hand; the grid is `wmCellsOf(state)`, one cell per item the plan or a line names.
+reads a checkpoint's done paths by hand; the grids are `wmCellsOf(state)`: for each map not inside another map's body
+(each map node of the workflow, then any map a line or the record names an item of), one cell per item the plan, a line
+or the record names, and a grid of its own, named by the map's label, when there is more than one map. The legend counts
+the cells drawn. A zoomed item lists its own map's body's steps. The fan-out is drawn only for a recording whose lines
+name a map: an item's path, the supervisor's plan, a map item's record, a checkpoint with an item's path, or a workflow
+with a map node.
 No panel decides a node's status itself, so a resumed process's items, finished from its journal with no live event, and
 a map whose body is one node are done where the record says so. The workflow map counts a judge's verdict only for a
 recording with no workflow anywhere or no durable record to ask. The tests read the DSL's graph fixtures

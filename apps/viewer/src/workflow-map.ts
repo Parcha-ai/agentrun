@@ -60,19 +60,33 @@ const wmNumber = (value: Json | undefined): number | null => (typeof value === '
 
 /** The path of step `n` of a branch's body. */
 const wmStepPath = (branchId: string, n: number) => `${branchId}/body/steps/${n}`;
-/** The map the grid draws: the plan's, else the one a line's branch is in, else the first the record names an item of. */
-const wmMapPath = (state: WmState): string | undefined => {
-  if (state.plan) return state.plan.mapPath;
-  const sample = Object.values(state.branches)[0] ?? recordItemsOf(state.record).map((item) => branchOf(item)).find(Boolean);
-  return sample ? wmMapOf(sample.id) : undefined;
+/** The DSL's graph of a workflow, drawn once per document. */
+const wmGraphOf = (workflow: Json | undefined): WorkflowGraph | undefined => {
+  if (typeof workflow !== 'object' || workflow === null) return undefined;
+  let graph = wmGraphs.get(workflow);
+  if (!graph) { graph = workflowGraph(workflow); wmGraphs.set(workflow, graph); }
+  return graph;
 };
-/** The indexes of the grid's map's items the record names: a map over a list an earlier step made has no planned item, and
- *  a process that resumes from its journal writes no line for the items it finishes, so only the record says they ran. */
-const wmRecorded = (state: WmState): number[] => {
-  const map = wmMapPath(state);
-  return map === undefined ? [] : recordItemsOf(state.record).map((item) => branchOf(item)).filter((where) => where !== undefined && wmMapOf(where.id) === map).map((where) => where!.index);
-};
-const wmSize = (state: WmState) => Math.max(state.plan?.items.length ?? 0, state.planned, ...Object.values(state.branches).map((branch) => branch.index + 1), ...wmRecorded(state).map((index) => index + 1), 0);
+/** The maps the fan-out draws, a grid each, in the order the workflow writes them: every map node not inside another
+ *  map's body (an item of the outer map stands for all that runs inside it), then any other map the lines or the record
+ *  name an item of (a run whose workflow is not in the recording). */
+function wmMaps(state: WmState): string[] {
+  const maps: string[] = [];
+  const add = (map: string) => { if (!maps.includes(map)) maps.push(map); };
+  for (const node of wmGraphOf(state.workflow)?.nodes ?? []) if (node.kind === 'map' && !maps.some((outer) => node.path.startsWith(`${outer}/body`))) add(node.path);
+  if (state.plan) add(state.plan.mapPath);
+  for (const branch of Object.values(state.branches)) add(wmMapOf(branch.id));
+  for (const item of recordItemsOf(state.record)) { const where = branchOf(item); if (where) add(wmMapOf(where.id)); }
+  return maps;
+}
+/** How many cells a map's grid has: its planned items (the plan's map, or the first one when only the supervisor's plan
+ *  says how many), and each item a line or the record names. A map over a list an earlier step made has no planned item,
+ *  and a process that resumes from its journal writes no line for the items it finishes, so only the record says they ran. */
+function wmSizeOf(state: WmState, map: string, first: boolean): number {
+  const recorded = recordItemsOf(state.record).map((item) => branchOf(item)).filter((where) => where !== undefined && wmMapOf(where.id) === map);
+  return Math.max(state.plan?.mapPath === map ? state.plan.items.length : 0, (state.plan ? state.plan.mapPath === map : first) ? state.planned : 0,
+    ...Object.values(state.branches).filter((branch) => wmMapOf(branch.id) === map).map((branch) => branch.index + 1), ...recorded.map((where) => where!.index + 1), 0);
+}
 
 /** The map an item of it (`<map>/items/<i>`) belongs to. */
 const wmMapOf = (item: string) => item.replace(/\/items\/\d+$/, '');
@@ -82,14 +96,23 @@ const wmWorkflowOf = (line: Line): Json | undefined => {
   return typeof input === 'object' && input !== null && !Array.isArray(input) ? (input as Record<string, Json>).workflow : undefined;
 };
 const wmGraphs = new WeakMap<object, WorkflowGraph>();
+/** The steps of a map's body as the workflow writes them, each with its node's path: a chain's steps, or the body itself.
+ *  Undefined when the recording holds no workflow. */
+function wmStepsOf(state: WmState, map: string): { label: string; path: string }[] | undefined {
+  const graph = wmGraphOf(state.workflow);
+  if (!graph) return undefined;
+  const body = `${map}/body`;
+  const steps = graph.nodes.filter((node) => node.path.startsWith(`${body}/steps/`) && /^\d+$/.test(node.path.slice(body.length + 7)));
+  const own = graph.nodes.find((node) => node.path === body);
+  return steps.length ? steps.map((node) => ({ label: node.label, path: node.path })) : own ? [{ label: own.label, path: own.path }] : undefined;
+}
 /** What the DSL's `nodeStatus` says one item did, at the nodes of its map's body: asked of the record's part that is that
  *  item's (node-status.ts, `itemSource`) with the item's execution path (`branch.id`, `<map>/items/<i>`, the path an
  *  `agentrun.items` key ends in). Undefined when there is no workflow or no durable record to ask. */
 function wmItemStatus(state: WmState, branch: WmBranch): Record<string, string> | undefined {
   const workflow = state.workflow;
   if (typeof workflow !== 'object' || workflow === null || (state.record.pin === undefined && Object.keys(state.record.items).length === 0)) return undefined;
-  let graph = wmGraphs.get(workflow);
-  if (!graph) { graph = workflowGraph(workflow); wmGraphs.set(workflow, graph); }
+  const graph = wmGraphOf(workflow)!;
   // The item is the instance (`{ item }`): its body is done when the item is, whatever the rest of the map has done.
   return nodeStatus(graph, itemSource(state.record, branch.id) as Parameters<typeof nodeStatus>[1], { item: branch.id });
 }
@@ -119,9 +142,24 @@ export function wmGlyphOf(state: WmState, branch: WmBranch): WmGlyph {
 }
 const WM_MARK: Record<WmGlyph, string> = { empty: '·', working: '◐', done: '●', finding: '◆' };
 
+/** Whether a line names a map: an item's path, the supervisor's plan, a map item's record, a checkpoint with an item's
+ *  path in it, or a workflow with a map node. The fan-out is drawn only for a recording with one. */
+function wmNamesMap(line: Line): boolean {
+  if (branchOf(line.path) !== undefined || (line.source === 'host' && line.kind === 'plan')) return true;
+  const doc = docOf(line);
+  if (doc?.doc === 'agentrun.items') return true;
+  const value = doc?.doc === 'agentrun.driver' && typeof doc.value === 'object' && doc.value !== null && !Array.isArray(doc.value) ? doc.value.state : undefined;
+  const pin = typeof value === 'object' && value !== null && !Array.isArray(value) ? value.pin : undefined;
+  const done = typeof pin === 'object' && pin !== null && !Array.isArray(pin) ? pin.done : undefined;
+  if (Array.isArray(done) && done.some((path) => typeof path === 'string' && path.includes('/items/'))) return true;
+  const workflow = line.channel === 'durable' && line.source === 'workflow' && line.kind === 'agentrun.workflow' ? wmWorkflowOf(line) : undefined;
+  return wmGraphOf(workflow)?.nodes.some((node) => node.kind === 'map') ?? false;
+}
+
 export const workflowMapPanel: Panel<WmState> = {
   id: 'workflow-map',
   title: 'The fan-out',
+  shows: wmNamesMap,
   init: () => ({ planned: 0, branches: {}, convBranch: {}, open: {}, record: runRecordInit(), evidence: {}, camera: null, kills: [], highest: -1, inSnapshot: false, opened: false, counters: counterFold.init() }),
   accepts: (line) => counterFold.accepts(line) || runRecordAccepts(line) || line.source === 'workflow' || line.source === 'pi' || line.source === 'vision'
     || (line.source === 'browser' && line.kind === 'EvidenceRecord') || (line.source === 'host' && ['plan', 'camera', 'kill', 'process.started'].includes(line.kind)),
@@ -150,7 +188,9 @@ export const workflowMapPanel: Panel<WmState> = {
     }
     const plan = planOf(line);
     if (plan && JSON.stringify(plan) !== JSON.stringify(next.plan)) next = { ...next, plan };
-    const workflow = plan ? wmWorkflowOf(line) : undefined;
+    // The workflow is kept whatever it holds: a map inside a parallel or a route lays out no plan, and the DSL's status of its
+    // items needs the workflow all the same.
+    const workflow = line.channel === 'durable' && line.source === 'workflow' && line.kind === 'agentrun.workflow' ? wmWorkflowOf(line) : undefined;
     if (workflow !== undefined && workflow !== next.workflow) next = { ...next, workflow };
     if (finishedOf(line) && next.finishedAt === undefined) next = { ...next, finishedAt: line.t };
     const own = branchOf(line.path);
@@ -227,11 +267,7 @@ function wmHost(state: WmState, line: Line): WmState {
 
 // ---- the view -----------------------------------------------------------------------------------------------------
 
-const wmName = (state: WmState, branch: { index: number }) => state.plan?.items[branch.index] ?? `branch ${branch.index}`;
-const wmIdOf = (state: WmState, index: number): string | undefined => {
-  const map = wmMapPath(state);
-  return map === undefined ? undefined : `${map}/items/${index}`;
-};
+const wmName = (state: WmState, map: string, index: number) => (state.plan?.mapPath === map ? state.plan.items[index] : undefined) ?? `branch ${index}`;
 
 /** The branch the camera is on: the focus when the viewer clicked one, else the scripted camera. */
 function wmZoomed(state: WmState, focus: string | undefined): WmBranch | undefined {
@@ -251,30 +287,36 @@ function wmWithJob(state: WmState, context: ViewContext): WmState {
   return { ...state, workflow, ...(plan ? { plan } : {}) };
 }
 
-/** The grid: one cell per item the plan or a line names, each with its glyph. An item no line has touched is asked of the
- *  record all the same (`wmStarted`), so a run resumed from its journal shows what its items did. */
-export function wmCellsOf(given: WmState, context: Pick<ViewContext, 'json' | 'job'> = {}): { index: number; id?: string; branch?: WmBranch; glyph: WmGlyph }[] {
+/** The grids: for each map, one cell per item the plan, a line or the record names, each with its glyph. An item no line
+ *  has touched is asked of the record all the same (`wmStarted`), so a run resumed from its journal shows what its items
+ *  did. A map with no item yet has no cell. */
+export function wmCellsOf(given: WmState, context: Pick<ViewContext, 'json' | 'job'> = {}): { map: string; index: number; id: string; branch: WmBranch; glyph: WmGlyph }[] {
   const state = wmWithJob(given, context as ViewContext);
-  return Array.from({ length: wmSize(state) }, (_, index) => {
-    const id = wmIdOf(state, index);
-    const branch = (id ? state.branches[id] : Object.values(state.branches).find((each) => each.index === index)) ?? (id ? wmNew(id, index) : undefined);
-    return { index, ...(id ? { id } : {}), ...(branch ? { branch } : {}), glyph: branch ? wmGlyphOf(state, branch) : 'empty' };
-  });
+  return wmMaps(state).flatMap((map, at) => Array.from({ length: wmSizeOf(state, map, at === 0) }, (_, index) => {
+    const id = `${map}/items/${index}`;
+    const branch = state.branches[id] ?? wmNew(id, index);
+    return { map, index, id, branch, glyph: wmGlyphOf(state, branch) };
+  }));
 }
 
 function wmView(given: WmState, context: ViewContext): Node {
   const state = wmWithJob(given, context);
   const zoom = wmZoomed(state, context.focus);
-  const size = wmSize(state);
   const grid = wmCellsOf(state, context);
-  const cells = grid.map(({ index, id, branch, glyph }) =>
-    h('span', { class: `wm-glyph ${glyph}${branch?.cut ? ' cut' : ''}${zoom?.index === index ? ' zoomed' : ''}`, ...(id ? { path: id } : {}),
-      title: `${wmName(state, { index })}: ${glyph}${branch?.cut ? `, cut by ${branch.cut} kill${branch.cut === 1 ? '' : 's'}` : ''}` }, WM_MARK[glyph]));
+  const maps = [...new Set(grid.map((cell) => cell.map))];
+  const graph = wmGraphOf(state.workflow);
+  const glyphs = (map: string) => grid.filter((cell) => cell.map === map).map(({ index, id, branch, glyph }) =>
+    h('span', { class: `wm-glyph ${glyph}${branch.cut ? ' cut' : ''}${zoom?.id === id ? ' zoomed' : ''}`, path: id,
+      title: `${wmName(state, map, index)}: ${glyph}${branch.cut ? `, cut by ${branch.cut} kill${branch.cut === 1 ? '' : 's'}` : ''}` }, WM_MARK[glyph]));
+  // The legend counts the cells drawn, every map's: what is not done, a finding or working is waiting.
   const count = (glyph: WmGlyph) => grid.filter((cell) => cell.glyph === glyph).length;
   return h('div', { class: `wm${zoom ? ' zoom' : ''}` },
     h('div', { class: 'wm-map' },
-      h('div', { class: 'wm-legend' }, `${count('done')} done · ${count('finding')} found something · ${count('working')} working · ${size - count('done') - count('finding') - count('working')} waiting`),
-      h('div', { class: 'wm-grid' }, ...cells),
+      h('div', { class: 'wm-legend' }, `${count('done')} done · ${count('finding')} found something · ${count('working')} working · ${count('empty')} waiting`),
+      // One map draws its grid alone; several draw a grid each, named by the map's label (its path when the workflow is not in the recording).
+      ...(maps.length <= 1 ? [h('div', { class: 'wm-grid' }, ...maps.flatMap(glyphs))]
+        : maps.flatMap((map) => [h('div', { class: 'wm-grid-name', title: map }, `${graph?.nodes.find((node) => node.path === map)?.label ?? map} · ${grid.filter((cell) => cell.map === map).length}`),
+          h('div', { class: 'wm-grid' }, ...glyphs(map))])),
       wmKills(state)),
     zoom && wmBranchView(state, zoom),
     context.baseline && state.finishedAt !== undefined && wmLedger(state, context.baseline, context.providers));
@@ -293,13 +335,16 @@ const WM_CALLS: { kind: CallKind; label: string }[] = [{ kind: 'registry', label
 
 /** The branch's whole graph: each step of its body, done, working or still to come, and the evidence side by side. */
 function wmBranchView(state: WmState, branch: WmBranch): Node {
-  const labels = state.plan?.steps ?? WM_CALLS.map((call) => call.label);
+  // The steps of the branch's own map's body, as the workflow writes them; with no workflow, the audit's three calls.
+  const map = wmMapOf(branch.id);
+  const written = wmStepsOf(state, map);
+  const labels = written?.map((step) => step.label) ?? WM_CALLS.map((call) => call.label);
   let reached = false;
   const steps = labels.map((label, index) => {
-    const done = state.plan ? wmFinished(state, branch) || wmItemStatus(state, branch)?.[`${wmMapOf(branch.id)}/body/steps/${index}`] === 'done' : branch.calls[WM_CALLS[index]?.kind ?? 'registry'] === 'done';
+    const done = written ? wmFinished(state, branch) || wmItemStatus(state, branch)?.[written[index]!.path] === 'done' : branch.calls[WM_CALLS[index]?.kind ?? 'registry'] === 'done';
     const status = done ? 'done' : !reached && wmStarted(state, branch) && !wmFinished(state, branch) ? 'working' : 'pending';
     if (!done) reached = true;
-    return h('span', { class: `wm-node ${status}`, title: wmStepPath(branch.id, index) }, label);
+    return h('span', { class: `wm-node ${status}`, title: written ? `${branch.id}${written[index]!.path.slice(map.length)}` : wmStepPath(branch.id, index) }, label);
   });
   const install = branch.facts.install;
   const registry = branch.facts.registry;
@@ -314,7 +359,7 @@ function wmBranchView(state: WmState, branch: WmBranch): Node {
     ...(advisories?.advisories ?? []).map((id) => `Advisory ${id}${advisories?.summaries?.[id] ? `: ${advisories.summaries[id]}` : ''}`),
   ].filter(Boolean);
   return h('div', { class: 'wm-branch', path: branch.id },
-    h('h4', {}, `${wmName(state, branch)}${branch.verdict ? ` · verdict ${branch.verdict.answer}${branch.verdict.confidence === null ? '' : ` (${Math.round(branch.verdict.confidence * 100)}%)`}` : ''}`),
+    h('h4', {}, `${wmName(state, wmMapOf(branch.id), branch.index)}${branch.verdict ? ` · verdict ${branch.verdict.answer}${branch.verdict.confidence === null ? '' : ` (${Math.round(branch.verdict.confidence * 100)}%)`}` : ''}`),
     h('div', { class: 'wm-graph' }, ...steps),
     h('div', { class: 'wm-evidence' },
       h('section', { class: 'wm-box' },
