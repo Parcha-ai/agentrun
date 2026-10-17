@@ -1,4 +1,5 @@
 // The box place's cases, for any provider: a test file calls `registerBoxPlaceCases` with its boxes and its runner.
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,9 +7,10 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
-import { getOrThrow } from "@earendil-works/pi-durable/env";
+import { err, getOrThrow, ok } from "@earendil-works/pi-durable/env";
 import { describe, expect, it } from "vitest";
-import type { BoxProvider, BoxSpec } from "../src/box/box.ts";
+import { type Box, BoxError, type BoxProvider, type BoxSpec } from "../src/box/box.ts";
+import { finish } from "../src/box/files.ts";
 import { type BoxReceipt, type BoxReceipts, boxReceipts } from "../src/box/receipts.ts";
 import { localVault } from "../src/home/checkpoint.ts";
 import { dirStore } from "../src/home/dir-store.ts";
@@ -72,15 +74,53 @@ function world(setup: BoxPlaceSetup) {
 }
 type World = ReturnType<typeof world>;
 
+/** `inner`, each box it makes passed through `rig` with its number (1 for the first): a case breaks a box this way. */
+function rigged(inner: BoxProvider, rig: (box: Box, n: number) => Box): BoxProvider {
+	let count = 0;
+	return {
+		name: inner.name,
+		async create(spec, context) {
+			const created = await inner.create(spec, context);
+			if (!created.ok) return created;
+			count += 1;
+			return ok(rig(created.value, count));
+		},
+		attach: (id, context) => inner.attach(id, context),
+		list: (labels, context) => inner.list(labels, context),
+	};
+}
+
+/** `box` with its `exec` given to `exec`, which may run the box's own (`run`); every other member is the box's. */
+function withExec(
+	box: Box,
+	exec: (argv: readonly string[], run: () => ReturnType<Box["exec"]>) => ReturnType<Box["exec"]>,
+): Box {
+	return new Proxy(box, {
+		get(target, key) {
+			if (key === "exec")
+				return (argv: readonly string[], options: Parameters<Box["exec"]>[1], at: Parameters<Box["exec"]>[2]) =>
+					exec(argv, () => target.exec(argv, options, at));
+			const value = Reflect.get(target, key, target);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+}
+
+/** A short program in `box`, run to its end. */
+async function inBoxRun(box: Box, argv: readonly string[]): Promise<void> {
+	const done = await finish(getOrThrow(await box.exec(argv, undefined, context)));
+	if (!done.ok || done.value.exitCode !== 0) throw new Error(`${argv.slice(0, 3).join(" ")} failed in the box`);
+}
+
 async function placeIn(
 	made: World,
-	more: { models?: Models; program?: RunnerProgram; receipts?: BoxReceipts } = {},
+	more: { models?: Models; program?: RunnerProgram; receipts?: BoxReceipts; provider?: BoxProvider } = {},
 ): Promise<BoxPlace> {
 	return getOrThrow(
 		await boxPlace(
 			{
 				session: "run-1",
-				provider: made.provider,
+				provider: more.provider ?? made.provider,
 				spec: made.setup.spec,
 				environment: "box",
 				ownership: leaseIn(dirStore(join(made.host, "lease"))),
@@ -175,6 +215,27 @@ const lines = (path: string) =>
 		.split("\n")
 		.filter((line) => line !== "")
 		.map((line) => JSON.parse(line) as Record<string, unknown>);
+
+/** The first signal of a kind for attempt `gen` within `ms`, or `none`: the iterator is ended either way. */
+async function signalWithin(
+	place: BoxPlace,
+	gen: number,
+	kind: PlaceSignal["kind"],
+	ms: number,
+): Promise<PlaceSignal | "none"> {
+	const iterator = place.signals(gen)[Symbol.asyncIterator]();
+	const timer = setTimeout(() => void iterator.return?.(), ms);
+	try {
+		for (;;) {
+			const next = await iterator.next();
+			if (next.done) return "none";
+			if (next.value.kind === kind) return next.value;
+		}
+	} finally {
+		clearTimeout(timer);
+		await iterator.return?.();
+	}
+}
 
 /** The first signal of a kind for attempt `gen`, the iterator ended after it. */
 async function firstSignal(place: BoxPlace, gen: number, kind: PlaceSignal["kind"]): Promise<PlaceSignal> {
@@ -650,6 +711,199 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 						commit: head,
 						writes: ["task"],
 					});
+					await place.release();
+				} finally {
+					made.remove();
+				}
+			},
+			(setup.timeoutMs ?? 60_000) * 1.5,
+		);
+		it(
+			"brings a recording home once when two calls overlap: each line once, each blob whole",
+			async () => {
+				const made = world(setup);
+				try {
+					const place = await placeIn(made);
+					const runner = await place.start(orderOf(made, place, 1));
+					await runner.exited;
+					const recordHome = place.recordHome;
+					if (recordHome === undefined) throw new Error("a place with a recording has recordHome");
+					// A supervisor's tick and its final call, at once: the second reads what the first brought.
+					await Promise.all([
+						recordHome.bringHome(made.record, {}),
+						recordHome.bringHome(made.record, { final: true }),
+					]);
+					const steps = spoolFiles(made).flatMap((name) =>
+						lines(join(made.record, ".spool", name)).map((line) => line.step),
+					);
+					expect(steps).toEqual([1, 2, 3]);
+					expect(readdirSync(join(made.record, "blobs")).sort()).toHaveLength(3);
+					await place.release();
+				} finally {
+					made.remove();
+				}
+			},
+			setup.timeoutMs ?? 60_000,
+		);
+
+		it(
+			"brings home no line before its blob, though both were written while it read the recording",
+			async () => {
+				const made = world(setup);
+				try {
+					// A blob and its line the runner writes as the place reads the spool's sizes, before it lists the blobs or
+					// after: in either order, the line comes home only with its blob.
+					const text = "step 99";
+					const hash = createHash("sha256").update(text).digest("hex");
+					let dir: string | undefined;
+					const provider = rigged(made.provider, (box) =>
+						withExec(box, async (argv, run) => {
+							if (dir !== undefined && argv.some((arg) => arg.includes("wc -c"))) {
+								const at = dir;
+								dir = undefined;
+								await inBoxRun(box, [
+									"sh",
+									"-c",
+									'mkdir -p "$1/blobs" "$1/.spool" && printf %s "$2" > "$1/blobs/$3" && printf "%s\\n" "$4" >> "$1/.spool/written-late.jsonl"',
+									"sh",
+									at,
+									text,
+									hash,
+									JSON.stringify({ step: 99, blob: hash }),
+								]);
+							}
+							return run();
+						}),
+					);
+					const place = await placeIn(made, { provider });
+					const runner = await place.start(orderOf(made, place, 1));
+					await runner.exited;
+					const recordHome = place.recordHome;
+					if (recordHome === undefined) throw new Error("a place with a recording has recordHome");
+					const homeLines = () => spoolFiles(made).flatMap((name) => lines(join(made.record, ".spool", name)));
+					dir = recordHome.dir(1);
+					await recordHome.bringHome(made.record, {});
+					for (const line of homeLines())
+						expect(readFileSync(join(made.record, "blobs", String(line.blob)), "utf8")).toBe(`step ${line.step}`);
+					await recordHome.bringHome(made.record, { final: true });
+					expect(
+						homeLines()
+							.map((line) => line.step)
+							.sort((a, b) => Number(a) - Number(b)),
+					).toEqual([1, 2, 3, 99]);
+					expect(readFileSync(join(made.record, "blobs", hash), "utf8")).toBe(text);
+					await place.release();
+				} finally {
+					made.remove();
+				}
+			},
+			setup.timeoutMs ?? 60_000,
+		);
+
+		it(
+			"says CARRY_FAILED when the spool cannot be listed in a box that is still there, and brings it on the next call",
+			async () => {
+				const made = world(setup);
+				try {
+					let refuse = false;
+					const provider = rigged(made.provider, (box) =>
+						withExec(box, async (argv, run) => {
+							if (refuse && argv.some((arg) => arg.includes("wc -c"))) {
+								refuse = false;
+								return err(new BoxError("unknown", "the test refuses the listing"));
+							}
+							return run();
+						}),
+					);
+					const place = await placeIn(made, { provider });
+					const runner = await place.start(orderOf(made, place, 1));
+					await runner.exited;
+					const recordHome = place.recordHome;
+					if (recordHome === undefined) throw new Error("a place with a recording has recordHome");
+					refuse = true;
+					expect(await codeOf(recordHome.bringHome(made.record, { final: true }))).toBe("CARRY_FAILED");
+					await recordHome.bringHome(made.record, { final: true });
+					expect(
+						spoolFiles(made).flatMap((name) => lines(join(made.record, ".spool", name)).map((line) => line.step)),
+					).toEqual([1, 2, 3]);
+					await place.release();
+				} finally {
+					made.remove();
+				}
+			},
+			setup.timeoutMs ?? 60_000,
+		);
+
+		it(
+			"restores a lost box again after a restore that failed in its new box: from the lost box, never a fresh store",
+			async () => {
+				const made = world(setup);
+				try {
+					// The first box made in place of the lost one (the place's second) cannot take the restored store, once.
+					let refused = 0;
+					const provider = rigged(made.provider, (box, n) =>
+						n !== 2
+							? box
+							: withExec(box, async (argv, run) => {
+									if (refused === 0 && argv[0] === "sh" && argv.at(-1)?.endsWith("/session/run.sqlite")) {
+										refused += 1;
+										return err(new BoxError("unknown", "the test refuses the store"));
+									}
+									return run();
+								}),
+					);
+					const place = await placeIn(made, { provider });
+					const runner = await place.start(orderOf(made, place, 1, { PARK_AT: "2" }));
+					await firstSignal(place, 1, "kill-request");
+					expect(await place.checkpoint()).toEqual({ taken: true });
+					await place.kill(runner, "box");
+					await runner.exited;
+					const failed = await place.recover(runner, "box", orderOf(made, place, 2)).then(
+						() => "restored",
+						(error: Error) => error.message,
+					);
+					expect(failed).toContain("did not reach the new box");
+					expect(refused).toBe(1);
+					// The session is still the lost box's, and the box that failed is let go.
+					expect(((await place.status()).record.holder as { host: string }).host).toBe("box-1");
+					expect(made.lines.filter(({ kind }) => kind === "box.ended").map(({ data }) => data.box)).toEqual([
+						"box-1",
+						"box-2",
+					]);
+					const recovered = await place.recover(runner, "box", orderOf(made, place, 3));
+					expect(recovered.runner.epoch).toBe(2);
+					expect(recovered.restored).toEqual({ checkpoint: expect.any(String), head: expect.any(Number) });
+					const exit = await recovered.runner.exited;
+					expect(exit.outcome?.record).toMatchObject({ done: 3, resumedFrom: 2 });
+					expect(((await place.status()).record.holder as { host: string }).host).toBe("box-3");
+					await place.release();
+				} finally {
+					made.remove();
+				}
+			},
+			(setup.timeoutMs ?? 60_000) * 2,
+		);
+
+		it(
+			"reads a restored runner's kill request in its new box, from the request file the place named before the loss",
+			async () => {
+				const made = world(setup);
+				try {
+					const place = await placeIn(made);
+					const runner = await place.start(orderOf(made, place, 1, { PARK_AT: "2" }));
+					await firstSignal(place, 1, "kill-request");
+					expect(await place.checkpoint()).toEqual({ taken: true });
+					await place.kill(runner, "box");
+					await runner.exited;
+					// The supervisor's order for the next attempt, made before the place has the new box.
+					const recovered = await place.recover(runner, "box", orderOf(made, place, 2, { PARK_AT: "3" }));
+					expect(await signalWithin(place, 2, "kill-request", 15_000)).toEqual({
+						kind: "kill-request",
+						crossing: { point: "fixture.step", n: 3 },
+						nonce: "nonce-2",
+					});
+					await place.kill(recovered.runner, "process");
+					await recovered.runner.exited;
 					await place.release();
 				} finally {
 					made.remove();

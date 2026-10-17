@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,6 +22,7 @@ import { tapStorage } from "./commit-tap.ts";
 
 const context = BACKGROUND_CONTEXT;
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "home-move-runner.fixture.ts");
+const ENV_FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "home-move-env-runner.fixture.ts");
 
 /** The `transport.moves` documents a commit's writes create, with the move id each is keyed by. */
 const movesIn = (writes: readonly StorageWrite[]) =>
@@ -234,6 +235,68 @@ describe("a move's durable record (transport.moves)", () => {
 			expect(record?.commit).toBe(value.head);
 			expect(log.filter(({ commit }) => commit < (value.head as number)).length).toBe((value.head as number) - 1);
 			for (const box of boxes) expect(JSON.stringify(value)).not.toContain(box.id);
+			moved.home.close("the test is done");
+		} finally {
+			for (const box of boxes) await box.destroy(context);
+			rmSync(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+		}
+	}, 60_000);
+
+	it("hands the target's app the session's environment it is given, as recoverHome does", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "pi-transport-moves-"));
+		const provider = localBoxes({ root: join(directory, "boxes") });
+		const boxes: Box[] = [];
+		const place = async (environment: string): Promise<Place> => {
+			const box = getOrThrow(await provider.create({ maxLifetimeMs: 10 * 60_000 }, context));
+			boxes.push(box);
+			const workspace = box.facts().workspace;
+			return {
+				environment,
+				provider: "local",
+				box,
+				workspace,
+				store: join(dirname(workspace), "session", "run.sqlite"),
+			};
+		};
+		try {
+			const a = await place("a");
+			const b = await place("b");
+			const start = boxRunner({
+				program: { argv: [process.execPath, "--experimental-strip-types", "--no-warnings", ENV_FIXTURE] },
+				session: "session-1",
+				models: createModels(),
+			});
+			const lease = leaseIn(dirStore(join(directory, "lease")));
+			getOrThrow(
+				await lease.take(
+					"session-1",
+					{ environment: "a", provider: "local", box: a.box.id, host: "host-1" },
+					0,
+					undefined,
+					context,
+				),
+			);
+			const env = { NAME: "value" };
+			const home = getOrThrow(await start(a, 1, context));
+			getOrThrow(await home.ready);
+			getOrThrow(await home.resume({ epoch: 1, env }, context));
+			const moved = getOrThrow(
+				await moveHome(
+					{
+						session: "session-1",
+						host: "host-1",
+						ownership: lease,
+						from: { place: a, home, epoch: 1 },
+						to: b,
+						start,
+						notice: "You moved.",
+						env,
+					},
+					context,
+				),
+			);
+			getOrThrow(await moved.home.idle(context));
+			expect(JSON.parse(readFileSync(join(dirname(b.workspace), "env-2.json"), "utf8"))).toEqual(env);
 			moved.home.close("the test is done");
 		} finally {
 			for (const box of boxes) await box.destroy(context);

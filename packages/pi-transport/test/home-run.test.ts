@@ -200,6 +200,27 @@ describe("a home: starting and moving a session", () => {
 		});
 	});
 
+	it("keeps the environment it was given for a reopen after its seal, and for a resume in the same process", async () => {
+		await withWorld(async (made) => {
+			const base = made.home("a");
+			const given: AppContext["env"][] = [];
+			const app: App = async (ctx) => {
+				given.push(ctx.env);
+				return base.app(ctx);
+			};
+			const home = await opened({ ...base, app });
+			getOrThrow(await home.resume({ epoch: 1, env: { NAME: "value" } }, context));
+			getOrThrow(await home.drain({ timeoutMs: 5_000 }, context));
+			getOrThrow(await home.seal(context));
+			// A reopen's order is its epoch alone.
+			getOrThrow(await home.reopen({ epoch: 1 }, context));
+			await home.close(context);
+			getOrThrow(await home.resume({ epoch: 1 }, context));
+			expect(given).toEqual([{ NAME: "value" }, { NAME: "value" }, { NAME: "value" }]);
+			await home.close(context);
+		});
+	});
+
 	it("moves a running session to another home with nothing cut, one notice and its directory rewritten", async () => {
 		for (const afterMs of [0, 40, 90, 150, 220]) {
 			await withWorld(async (made) => {
