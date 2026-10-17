@@ -13,7 +13,7 @@ The recorded gallery take is a real run and comes with the live run; `--record <
 ## What you will see
 
 1. The job: nine operators' dashboards, each opened in a browser session of its own and all at once. The numbers exist only in the charts, so vision reads them; where the operator also publishes the mix as data, a `call` fetches it as the check. The run ends in `snapshot.html`, a table of the nine grids with each reading linked to the screenshot it came from.
-2. A kill and resume (`--kill`): the process dies after the host has kept the third published figure and before the driver committed it. The resumed process settles the call from the kept answer, so each figure is fetched once per grid in all and the recording's own fold reads repeated 0.
+2. A kill and resume (`--kill`): the process dies after the host has kept a published figure (the first one kept while no other call is running, so the kill is reachable however the nine branches overlap, and for any input) and before the driver committed it. The resumed process settles the call from the kept answer, so each figure is fetched once per grid in all and the recording's own fold reads repeated 0.
 3. Receipts with cost: every look the eyes were shown is filed with its screenshot, so the strip counts it and the manifest's cost holds the eyes' price (a number, never a 0 it did not earn). The result is `agentrun.cited/1`: each number names the screenshot (`blob`) and the look (`look`) that read it, and a grid that was not read is a row with no cite.
 
 | Flag | What it does |

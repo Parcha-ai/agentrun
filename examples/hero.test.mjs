@@ -101,11 +101,11 @@ test('beat 2, a kill and resume: killed inside a paid call, the resumed process 
   assert.equal(published.length, 9);
   assert.equal(run.eyesRequests, 9);
   // How the nine fetches split between the two processes is the scheduler's (on a loaded machine all nine branches can fetch before the third kept crossing is taken alone), so the claims are the ones that hold under any
-  // schedule: the killed process fetched at least the three it had kept when the kill came, at most two processes fetched, and the resumed one never re-fetched what the first kept: nine fetches in all, one per grid.
+  // schedule: the killed process fetched at least the one it had kept when the kill came, at most two processes fetched, and the resumed one never re-fetched what the first kept: nine fetches in all, one per grid.
   const byProcess = new Map();
   for (const row of published) byProcess.set(row.incarnation, (byProcess.get(row.incarnation) ?? 0) + 1);
   assert.ok(byProcess.size <= 2, `at most the two processes fetched: ${JSON.stringify([...byProcess])}`);
-  assert.ok(byProcess.get(published[0].incarnation) >= 3, `the killed process fetched at least the three it kept: ${JSON.stringify([...byProcess])}`);
+  assert.ok(byProcess.get(published[0].incarnation) >= 1, `the killed process fetched at least the one it kept: ${JSON.stringify([...byProcess])}`);
   assert.equal([...byProcess.values()].reduce((sum, count) => sum + count, 0), 9, 'nine fetches in all: none twice across the kill');
   assert.deepEqual(validateRecording(run.recording), []);
   const counted = fold(readEvents(run.recording));
@@ -176,4 +176,23 @@ test('the template: demo.json names what the demo is, and job.ts is data', async
   assert.ok(!/"(model|provider)"/.test(JSON.stringify(job)));
   for (const [name, property] of Object.entries(workflow.schemas.Input.properties)) assert.ok(property.description, `input ${name} has a description`);
   assert.deepEqual(job.input.operators, NINE);
+});
+
+test('the kill is reachable whatever the input: a two-operator run is killed and resumed, with the kept answer settled and nothing paid twice', { timeout: 300_000 }, async (t) => {
+  const run = await hero(t, ['--kill', '--input', JSON.stringify({ at: '2026-10-15T12:00:00Z', operators: ['caiso', 'ercot'] })]);
+  assert.deepEqual(run.processes.map((process) => [process.signal, process.outcome?.status ?? null]), [['SIGKILL', null], [null, 'complete']], 'a kill and a resume, not a run that finished without either');
+  assert.deepEqual(run.unlanded ?? [], []);
+  const published = run.ledger.filter((row) => row.kind === 'tool' && row.name === 'published');
+  assert.equal(published.length, 2, 'one fetch per grid in all');
+});
+
+test('the hero keeps its snapshot by default: with no --dir and no --record the run directory outlives the command, and the summary says where it is', { timeout: 240_000 }, async (t) => {
+  const lines = [];
+  const log = console.log;
+  console.log = (...args) => { lines.push(args.join(' ')); };
+  let result;
+  try { result = await demo({ ...options, argv: [] }); } finally { console.log = log; }
+  t.after(() => rm(join(result.dir, '..'), { recursive: true, force: true }));
+  assert.ok(existsSync(join(result.dir, 'out', 'snapshot.html')), 'the snapshot is still there after the command');
+  assert.ok(lines.includes(`run directory: ${result.dir}`), 'and the summary names the directory');
 });
