@@ -118,3 +118,22 @@ test('a long transcript shows a window of its rows around the cited second; a mi
   assert.equal(find(failed, cls('vz-line')).length, 0);
   assert.match(text(failed), /missed: over_budget, too long for one request/);
 });
+
+test('a cite of the file a transcription heard selects that transcription, an earlier one included', () => {
+  // The row cites only the audio file: its chip selects the file's transcription, so the cited second is marked even though a
+  // later transcription is the one shown by default.
+  const row = find(view(lines), cls('vz-entry'))[1]!;
+  const chip = find(row, (each) => cls('vz-cite')(each) && 'cite' in each)[0]!;
+  assert.equal('cite' in chip ? chip.cite : undefined, K.audio, 'the file\'s chip names its transcription');
+  assert.deepEqual(find(row, (each) => each.tag === 'a').map((each) => ('blob' in each ? each.blob : undefined)), [AUDIO], 'and the file stays a link');
+  const speech = lane(view(lines, { cite: K.audio }), /^Speech/)!;
+  assert.match(text(find(speech, (each) => each.tag === 'h5')[0]!), /landing\.mp3/);
+  assert.match(text(speech), /#t=10\.5 is in no row of this transcript/);
+});
+
+test('with no citation the latest transcription is shown, a missed one too', () => {
+  const missed = [...lines.slice(0, -1), filed({ key: K.long, path: 'long.mp3', sha: sha256('long'), kind: 'audio', body: '', status: 'failed', miss: { code: 'over_budget', reason: 'too long for one request' } as unknown as Json }), result];
+  const speech = lane(view(missed), /^Speech/)!;
+  assert.match(text(find(speech, (each) => each.tag === 'h5')[0]!), /^Speech · long\.mp3 · 3 files transcribed$/);
+  assert.match(text(speech), /missed: over_budget, too long for one request/);
+});

@@ -500,13 +500,13 @@ function visionPhotos(looks: VisionLook[], chosen: VisionLook | undefined, accou
 /** The rows a transcription is drawn with, at most: a window that starts three rows before the first cited one. */
 const VISION_ROWS = 12;
 
-/** What the run heard: the transcript of the chosen transcription, else of the latest, as its rows, with the row each
+/** What the run heard: the transcript of the chosen transcription, else of the latest (a missed one too: it is news), as its rows, with the row each
  *  cited second of it falls in marked and each cited second that falls in no row said. No lane when nothing was
  *  transcribed. `momentsOf` gives the fragments the result cites the look, or its file, at. */
 function visionSpeech(looks: VisionLook[], chosen: VisionLook | undefined, momentsOf: (look: VisionLook) => string[]): Node | false {
   const heard = visionOnce(looks.filter((look) => visionLane(look) === 'speech'));
   if (heard.length === 0) return false;
-  const shown = chosen && visionLane(chosen) === 'speech' ? chosen : heard.findLast((look) => look.status === 'ok') ?? heard.at(-1)!;
+  const shown = chosen && visionLane(chosen) === 'speech' ? chosen : heard.at(-1)!;
   const rows = shown.status === 'ok' ? visionTranscript(shown.body) : undefined;
   const moments = momentsOf(shown).map((fragment) => visionWindow(fragment)).filter((moment): moment is { from: number; to?: number } => moment.from !== undefined);
   const falls = (row: { start: number; end: number }, moment: { from: number; to?: number }) => row.start <= (moment.to ?? moment.from) && moment.from <= row.end;
@@ -559,21 +559,24 @@ function visionAccountView(account: VisionAccount, cite: string | undefined, eye
 /** A cited result's rows, one a line: its label, its value, its note, and a chip per cite: a look's opens its receipt
  *  and moves its lane, a file's opens the file, a page known only by its address is linked. A row that cites nothing
  *  says so. */
-function visionCitedView(cited: VisionCitedResult, cite: string | undefined, isImage: (sha: string) => boolean): Node {
+function visionCitedView(cited: VisionCitedResult, cite: string | undefined, isImage: (sha: string) => boolean, heardOf: (sha: string) => string | undefined): Node {
+  // A cite of a file a transcription heard, with no look named, selects that transcription: the second it names is in its rows.
+  const lookOf = (each: VisionCitedRow['cites'][number]) => each.look ?? (each.blob && !isImage(each.blob) ? heardOf(each.blob) : undefined);
   const chip = (each: VisionCitedRow['cites'][number], label: string): Node[] => {
     const words = each.fragment ? visionChipText(each.fragment) : each.look ? 'look' : each.blob ? 'file' : 'page';
     const about = [each.note, each.url, each.at].filter(Boolean).join(' · ');
+    const look = lookOf(each);
     return [
-      ...(each.look ? [h('span', { class: `vz-cite${each.look === cite ? ' hot' : ''}`, cite: each.look, title: about || 'the look that read it' }, words)] : []),
+      ...(look ? [h('span', { class: `vz-cite${look === cite ? ' hot' : ''}`, cite: look, title: about || (each.look ? 'the look that read it' : 'the transcription of this file') }, words)] : []),
       // A picture in the recording is drawn small in its row; any other file is a link to it.
       ...(each.blob && isImage(each.blob) ? [h('span', { class: 'vz-keyframes', title: about || label }, { tag: 'img', blob: each.blob, alt: label, class: 'vz-keyframe' })] : []),
-      ...(each.blob && !isImage(each.blob) ? [h('span', { ...(about ? { title: about } : {}) }, { tag: 'a', blob: each.blob, text: each.look ? 'file' : words, class: 'vz-cite', ...(each.fragment ? { fragment: each.fragment } : {}) })] : []),
+      ...(each.blob && !isImage(each.blob) ? [h('span', { ...(about ? { title: about } : {}) }, { tag: 'a', blob: each.blob, text: look ? 'file' : words, class: 'vz-cite', ...(each.fragment ? { fragment: each.fragment } : {}) })] : []),
       // A page named only by its address was not kept in the recording: it is linked, and says so.
       ...(!each.look && !each.blob && each.url ? [h('span', { ...(about ? { title: about } : {}) }, { tag: 'a', href: each.url, text: words, class: 'vz-cite' }, h('span', { class: 'vz-note' }, ' not kept'))] : []),
     ];
   };
   return h('div', { class: 'vz-account' },
-    ...cited.rows.map((row) => h('p', { class: `vz-entry${row.cites.some((each) => each.look !== undefined && each.look === cite) ? ' cited' : ''}` },
+    ...cited.rows.map((row) => h('p', { class: `vz-entry${row.cites.some((each) => cite !== undefined && lookOf(each) === cite) ? ' cited' : ''}` },
       h('span', { class: 'vz-name' }, row.label), ' ', h('b', {}, row.value), row.note !== undefined && h('span', { class: 'vz-note' }, ` · ${row.note}`), ' ',
       ...(row.cites.length ? row.cites.flatMap((each) => chip(each, row.label)) : [h('span', { class: 'vz-note' }, 'cites nothing')]))));
 }
@@ -679,7 +682,7 @@ function visionView(state: VisionState, context: ViewContext): Node {
         h('h5', {}, cited ? cited.title ?? state.result?.title ?? 'The result' : 'The account'),
         !state.result ? h('p', { class: 'empty' }, 'Not delivered yet.')
           : account ? h('div', {}, ...visionAccountView(account, context.cite, meters.eyes.find((model) => model !== account.weak?.model)))
-            : cited ? visionCitedView(cited, context.cite, isImage)
+            : cited ? visionCitedView(cited, context.cite, isImage, (sha) => state.looks.find((look) => visionLane(look) === 'speech' && look.sha256 === sha)?.key)
               : h('p', { class: 'empty' }, typeof parsed === 'string' ? `${parsed}: ` : 'The account is in the result: ', { tag: 'a', blob: state.result.blob, text: state.result.title })),
       h('div', { class: 'vz-col' },
         h('h5', {}, 'Meters'), visionMetersView(state, context.following ? { ...meters, cost: null } : meters, context.following === true),
