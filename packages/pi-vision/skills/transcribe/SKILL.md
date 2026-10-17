@@ -59,23 +59,27 @@ const { H: dir, FAL_QUEUE_URL: queue, STT_MODEL: model, OPENAI_API_KEY: key } = 
 const auth = { Authorization: `Bearer ${key}` };
 const via = (url) => url.replace("https://queue.fal.run", queue);
 const keep = (file, value) => { fs.writeFileSync(file + ".tmp", JSON.stringify(value)); fs.renameSync(file + ".tmp", file); };
+const json = async (res, what) => {
+  if (!res.ok) throw new Error(what + ": " + res.status + " " + (await res.text()).slice(0, 300));
+  return res.json();
+};
 for (const line of fs.readFileSync(dir + "/chunks.csv", "utf8").trim().split("\n")) {
   const chunk = dir + "/" + line.split(",")[0].replace(/\.mp3$/, "");
   if (fs.existsSync(chunk + ".json")) continue;
   if (!fs.existsSync(chunk + ".req.json")) {
     const body = JSON.stringify({ audio_url: "data:audio/mpeg;base64," + fs.readFileSync(chunk + ".mp3").toString("base64") });
     const res = await fetch(queue + "/" + model, { method: "POST", headers: { ...auth, "Content-Type": "application/json" }, body });
-    if (!res.ok) throw new Error("submit " + chunk + ": " + res.status + " " + (await res.text()).slice(0, 300));
-    keep(chunk + ".req.json", await res.json());
+    keep(chunk + ".req.json", await json(res, "submit " + chunk));
   }
   const req = JSON.parse(fs.readFileSync(chunk + ".req.json", "utf8"));
   let status = "IN_QUEUE";
   for (let i = 0; i < 600 && !["COMPLETED", "FAILED", "CANCELLED"].includes(status); i++) {
     if (i) await new Promise((done) => setTimeout(done, 1000));
-    status = (await (await fetch(via(req.status_url), { headers: auth })).json()).status;
+    status = (await json(await fetch(via(req.status_url), { headers: auth }), "poll " + chunk + " (its request is kept)")).status;
   }
-  const answer = status === "COMPLETED" ? await (await fetch(via(req.response_url), { headers: auth })).json() : {};
-  if (!Array.isArray(answer.words)) throw new Error(chunk + ": " + status + " " + JSON.stringify(answer).slice(0, 300) + "; remove " + chunk + ".req.json to send it again");
+  if (status !== "COMPLETED") throw new Error(chunk + ": " + status + "; remove " + chunk + ".req.json to send it again");
+  const answer = await json(await fetch(via(req.response_url), { headers: auth }), "fetch " + chunk + " (its request is kept)");
+  if (!Array.isArray(answer.words)) throw new Error(chunk + ": " + JSON.stringify(answer).slice(0, 300) + "; remove " + chunk + ".req.json to send it again");
   keep(chunk + ".json", answer);
 }
 '

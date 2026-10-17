@@ -40,6 +40,10 @@ const server = http.createServer((req, res) => {
       return reply(200, { request_id: id, status_url: `${fal(id)}/status`, response_url: fal(id) });
     }
     const status = /^\/fal-queue\/fal-ai\/elevenlabs\/requests\/([^/]+)\/status$/.exec(url);
+    if (req.method === "GET" && status && status[1].startsWith("denied")) {
+      polls.set(status[1], (polls.get(status[1]) ?? 0) + 1);
+      return reply(401, { detail: "the key was refused" });
+    }
     if (req.method === "GET" && status && answers.has(status[1])) {
       const n = (polls.get(status[1]) ?? 0) + 1;
       polls.set(status[1], n);
@@ -153,4 +157,16 @@ test("a run cut short leaves only temporary files, and the next run redoes them 
   assert.equal(lines.length, 2, "the whole clip, in two chunks");
   assert.ok(Number(lines[1].split(",")[2]) > 19, "the last chunk ends at the clip's end");
   assert.equal(fs.existsSync(path.join(cut, "chunks.tmp.csv")), false);
+});
+
+test("a queue that refuses a poll stops the run at once with its own error, and the request is kept for the next run", async () => {
+  fs.copyFileSync(CLIP, path.join(cwd, "refused.webm"));
+  await sh(settings + chunk, { VIDEO: "refused.webm" });
+  const kept = path.join(folder("refused.webm"), "c000.req.json");
+  fs.writeFileSync(kept, JSON.stringify({ request_id: "denied-1", status_url: `${fal("denied-1")}/status`, response_url: fal("denied-1") }));
+  const before = submits.length;
+  await assert.rejects(sh(settings + chunk + transcribe, { VIDEO: "refused.webm" }), /poll .*c000 \(its request is kept\): 401 .*the key was refused/);
+  assert.equal(polls.get("denied-1"), 1, "one refused poll, not a loop of them");
+  assert.equal(submits.length, before, "nothing sent");
+  assert.ok(fs.existsSync(kept), "the request is kept");
 });
