@@ -7,6 +7,7 @@ import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { describe, expect, it } from "vitest";
 import type { Box } from "../src/box/box.ts";
 import { localBoxes } from "../src/box/local.ts";
+import { serveModels } from "../src/home/models.ts";
 import type { Place } from "../src/home/move.ts";
 import { boxRunner } from "../src/home/start.ts";
 
@@ -81,6 +82,38 @@ describe("starting a runner in a box", () => {
 				expect(getOrThrow(await second.ready).state).toBe("closed");
 				second.close("done");
 				expect(uploads()).toBe(1);
+			});
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	it("serves every runner it starts with one model server, so a replacement runner finds the answers already paid for", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "pi-transport-runner-server-"));
+		try {
+			const file = join(directory, "runner.mjs");
+			writeFileSync(file, STUB);
+			await withPlace(`${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`, async (place) => {
+				const start = boxRunner({ program: { file }, session: "s", models: createModels() });
+				const first = getOrThrow(await start(place, 1, context));
+				getOrThrow(await first.ready);
+				first.close("done");
+				const second = getOrThrow(await start(place, 2, context));
+				getOrThrow(await second.ready);
+				expect(second.models).toBe(first.models);
+				second.close("done");
+				// A server of the caller's is the one used.
+				const mine = serveModels(createModels());
+				const third = getOrThrow(
+					await boxRunner({ program: { file }, session: "s", models: createModels(), server: mine })(
+						place,
+						3,
+						context,
+					),
+				);
+				getOrThrow(await third.ready);
+				expect(third.models).toBe(mine);
+				third.close("done");
 			});
 		} finally {
 			rmSync(directory, { recursive: true, force: true });

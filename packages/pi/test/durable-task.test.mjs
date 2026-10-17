@@ -615,3 +615,18 @@ test('options is told its phase: the abort handler opens the driver too, and a h
   assert.deepEqual(asked, [['abort', 1]]);
   await harness.close(ctx);
 });
+
+test('a caller with no Harness of its own (a tool\'s api) starts and reads a run by naming its conversation, and cannot start one with a cancel', async () => {
+  const flow = createWorkflowExtension(hostOf(async () => ({ price: 21 })));
+  const harness = await open(fileOf(), flow);
+  const caller = { commit: harness.commit.bind(harness), snapshot: harness.snapshot.bind(harness), getTask: harness.getTask.bind(harness), waitForTask: harness.waitForTask.bind(harness) };
+  const conversationId = (await harness.root(ctx)).id;
+  await assert.rejects(flow.start(caller, request('no-root'), ctx), /options\.conversationId/);
+  await assert.rejects(flow.start(caller, request('no-abort'), ctx, { conversationId, stop: { action: 'cancel' } }), /abort a task/);
+  assert.equal(await flow.read(caller, 'no-abort', ctx), undefined, 'the refused start committed nothing');
+  const run = await flow.start(caller, request('caller'), ctx, { conversationId });
+  const outcome = await within(run.wait(ctx));
+  assert.deepEqual([run.started, outcome.status, outcome.output], ['created', 'complete', { total: 42 }]);
+  assert.equal((await flow.read(caller, 'caller', ctx)).outcome.status, 'complete');
+  await harness.close(ctx);
+});
