@@ -155,3 +155,14 @@ test('an install that downloads a browser from Google storage names that host, f
   assert.ok(hosts.includes('storage.googleapis.com'), `the browser's host is named: ${JSON.stringify(result.outbound)}`);
   assert.match(result.scriptLog, /Chromium .* downloaded/);
 });
+
+test('a trace past the limit is cut at a whole line and says so', needsDocker, async () => {
+  const label = `install-probe-trace-${process.pid}`;
+  const { boxId } = await startInstall('is-number', '7.0.0', { labels: { run: label }, traceLimitBytes: 1024 });
+  let result = await attachInstall(boxId, { waitMs: 5_000 });
+  while ('running' in result) result = await attachInstall(boxId, { waitMs: 5_000 });
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.traceTruncated, true);
+  assert.ok(Array.isArray(result.outbound));
+  assert.deepEqual(await attachInstall(boxId), { gone: true });
+});

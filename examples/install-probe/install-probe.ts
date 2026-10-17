@@ -7,10 +7,12 @@
 // longer exists (it was killed, ended, or was already read). Only `{ gone: true }` calls for a fresh `startInstall`, which is
 // safe to repeat: boxes share nothing. There is no retry in this file, and no dedupe: a second `startInstall` is a second box.
 //
-// What the outbound list is: the connections `strace` saw the install's processes make (`connect`), with the host names the
-// install asked the resolver for (read from the DNS queries it sent). An address is matched to a name by resolving the queried
-// names again in the same box once the install ended, so a name is left out when nothing matches. It is what was seen, not a
-// proof of what was not.
+// What the outbound list is: the connections `strace` saw the install's processes make (`connect`). A host name comes first from
+// the DNS answers the install itself received (the address in the answer, the name it was asked for). An address no answer
+// named is matched by asking the resolver again for the queried names, in the same box once the install ended; that is a
+// fallback (a CDN's addresses rotate) and a best effort, so a name is left out when nothing matches or the lookup fails. The
+// trace the host reads is capped (`traceLimitBytes`), and `traceTruncated` says when connections past the cap are not in the
+// list. It is what was seen, not a proof of what was not.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
@@ -23,7 +25,15 @@ const run = promisify(execFile);
 export const SEEN = 'connections seen by strace' as const;
 
 export type Outbound = { host?: string; ip: string; port: number; at: number };
-export type InstallResult = { exitCode: number; scriptLog: string; outbound: Outbound[]; durationMs: number; seen: typeof SEEN };
+export type InstallResult = {
+  exitCode: number;
+  scriptLog: string;
+  outbound: Outbound[];
+  durationMs: number;
+  seen: typeof SEEN;
+  /** Present (true) when the trace passed `traceLimitBytes` and the connections after the cut are not in `outbound`. */
+  traceTruncated?: true;
+};
 /** `{ running: true }`: the install has not ended; ask again. `{ gone: true }`: no box by that id: start a new install. */
 export type InstallAttach = InstallResult | { running: true } | { gone: true };
 export type InstallOptions = {
@@ -33,6 +43,8 @@ export type InstallOptions = {
   timeoutMs?: number;
   /** Labels on the box, so a stray one is findable: `docker ps --filter label=<key>=<value>`. */
   labels?: Record<string, string>;
+  /** How much of the connection trace the host reads. Default 4 MiB; past it the list is cut at a whole line and `traceTruncated` is set. */
+  traceLimitBytes?: number;
   /** The docker program. Default `docker`. */
   docker?: string;
 };
@@ -64,6 +76,7 @@ const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_WAIT_MS = 25_000;
 const POLL_MS = 500;
 const LOG_TAIL_BYTES = 20 * 1024;
+const DEFAULT_TRACE_LIMIT_BYTES = 4 * 1024 * 1024;
 const DIRECTORY = '/workspace/probe';
 /** The box ends itself this long after the install's own limit, whatever happens to the machine that started it. */
 const LIFETIME_SLACK_MS = 3 * 60_000;
@@ -75,6 +88,7 @@ const RUN_SCRIPT = `#!/bin/sh
 cd ${DIRECTORY} || exit 1
 spec=$1
 limit=$2
+trace_limit=$3
 ms() { date +%s%3N; }
 if ! command -v strace >/dev/null 2>&1; then
   apt-get update -qq > prepare.log 2>&1
@@ -95,8 +109,14 @@ code=$?
 ms > ../install.end
 cd ..
 # What the host reads: every connection and send, and only the receives that look like a DNS answer (a download would fill the
-# trace with its own data otherwise).
-grep -E 'connect\\(|send(to|mmsg)?\\(|recv(from|msg|mmsg)\\(.*"(\\\\x[0-9a-f]{2}){2}\\\\x[89a-f][0-9a-f]\\\\x[0-9a-f]{2}\\\\x00\\\\x01\\\\x00' trace.log > net.log
+# trace with its own data otherwise). The host reads at most trace_limit bytes of it, cut at a whole line; net.truncated says so.
+grep -E 'connect\\(|send(to|mmsg)?\\(|recv(from|msg|mmsg)\\(.*"(\\\\x[0-9a-f]{2}){2}\\\\x[89a-f][0-9a-f]\\\\x[0-9a-f]{2}\\\\x00\\\\x01\\\\x00' trace.log > net.all
+if [ "$(wc -c < net.all)" -gt "$trace_limit" ]; then
+  head -c "$trace_limit" net.all | sed '$d' > net.log
+  echo 1 > net.truncated
+else
+  mv net.all net.log
+fi
 echo "$code" > exit.part
 mv exit.part exit
 `;
@@ -149,7 +169,8 @@ export async function startInstall(name: string, version: string, options: Insta
     if (!uploaded.ok) throw new InstallBoxError(`the install script could not be uploaded: ${uploaded.error.message}`, uploaded.error);
     // Detached, with no pipe back: the install goes on when this process is killed.
     const limit = String(Math.max(1, Math.ceil(timeoutMs / 1000)));
-    const started = await exec(box, ['sh', '-c', `setsid sh ${DIRECTORY}/run.sh "$1" "$2" </dev/null >/dev/null 2>&1 & echo started`, 'sh', `${name}@${version}`, limit]);
+    const traceLimit = String(Math.max(1024, Math.floor(options.traceLimitBytes ?? DEFAULT_TRACE_LIMIT_BYTES)));
+    const started = await exec(box, ['sh', '-c', `setsid sh ${DIRECTORY}/run.sh "$1" "$2" "$3" </dev/null >/dev/null 2>&1 & echo started`, 'sh', `${name}@${version}`, limit, traceLimit]);
     if (started === undefined || !started.stdout.includes('started')) throw new InstallBoxError('the install did not start in the box');
   } catch (cause) {
     await box.destroy(BACKGROUND_CONTEXT);
@@ -190,15 +211,17 @@ export async function attachInstall(boxId: string, options: AttachOptions = {}):
   const end = await read('install.end');
   const trace = await read('net.log');
   const scriptLog = await read('install.log', LOG_TAIL_BYTES);
+  const truncated = (await read('net.truncated'))?.trim() === '1';
   if (exitText === undefined || trace === undefined || scriptLog === undefined) return { gone: true };
   // A name comes from the DNS answer the install received. Only an address no answer named is matched by asking the resolver
   // again (a CDN's addresses rotate, so that is a fallback and can miss).
   const addresses = answerNames(trace);
   let outbound = outboundOf(trace, addresses);
   if (outbound.some((connection) => connection.host === undefined)) {
+    // Best effort: the result is already read, so a lookup that fails, times out or finds the box gone leaves that name out.
     for (const host of dnsNames(trace)) {
-      const resolved = await exec(box, ['getent', 'ahosts', host]);
-      if (resolved === undefined) return { gone: true };
+      const resolved = await exec(box, ['getent', 'ahosts', host]).catch(() => undefined);
+      if (resolved === undefined) continue;
       for (const line of resolved.stdout.split('\n')) {
         const ip = line.trim().split(/\s+/)[0];
         if (ip && !addresses.has(ip)) addresses.set(ip, host);
@@ -212,6 +235,7 @@ export async function attachInstall(boxId: string, options: AttachOptions = {}):
     outbound,
     durationMs: Math.max(0, Number(end?.trim()) - Number(start?.trim())) || 0,
     seen: SEEN,
+    ...(truncated ? { traceTruncated: true as const } : {}),
   };
   // The result is in hand: the box has nothing more to give. A failed removal leaves a box that ends by its lifetime.
   await box.destroy(BACKGROUND_CONTEXT);

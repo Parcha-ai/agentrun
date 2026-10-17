@@ -24,9 +24,12 @@ const result = await installProbe('is-number', '7.0.0');
 
 ## What it is not
 
-- **Not a verdict.** `outbound` is what `strace` saw (`connect` calls), with host names read from the DNS queries the install
-  sent and matched to addresses by resolving those names again in the same box. A name is left out when nothing matches.
-  It is what was seen, not a proof of what was not.
+- **Not a verdict.** `outbound` is what `strace` saw (`connect` calls). A host name comes first from the DNS answers the
+  install itself received. An address no answer named is matched by resolving the queried names again in the same box after
+  the install ended; that is a fallback (a CDN's addresses rotate) and a best effort, so a name is left out when nothing
+  matches or the lookup fails. The trace the host reads is capped at `traceLimitBytes` (4 MiB by default): past it
+  `traceTruncated` is `true` and the connections after the cut are not listed. It is what was seen, not a proof of what
+  was not.
 - **Not a sandbox for the host's trust.** The box has network access by design (the install needs the registry), so a
   package's script can reach the internet from the box.
 - **Not a scanner.** It reads no source and judges nothing; what the connections mean is the caller's to decide.
