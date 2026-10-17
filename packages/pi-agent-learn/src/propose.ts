@@ -1,3 +1,4 @@
+import type { Session } from "@earendil-works/pi-durable";
 import type { Repo } from "@parcha/pi-git-remote";
 import { type Caps, createGuard } from "./guard.js";
 import { renderInbox } from "./inbox.js";
@@ -5,6 +6,7 @@ import { COMMIT_SHA, inboxPath, inboxWorkflowDir, RUN_ID, runBranch, usesPath, W
 import { readSeed } from "./seed.js";
 import { collectCandidates } from "./tool.js";
 import type { Candidate, Refusal } from "./types.js";
+import { collectUses, collectWorkflows } from "./workflows.js";
 
 /** What `collectCandidates` reads: a pi-durable Harness or a session. */
 export type ProposeTarget = Parameters<typeof collectCandidates>[0];
@@ -67,16 +69,35 @@ export type ProposeOptions = Omit<ProposeFilesOptions, "files" | "candidates"> &
   readonly workflows?: WorkflowRecords;
   /** Set when the run read untrusted content: every candidate is marked untrusted in the inbox. */
   readonly untrusted?: boolean;
+  /**
+   * The run's working directory, where its workflow store lives. When given, the step collects what the run saved
+   * (`collectWorkflows`) and how it used the workflows it had (`collectUses`, read from `target` when that is an open
+   * Session) and proposes them with its candidates, so a host that passes it cannot forget the workflow pieces. An explicit
+   * `workflows` or `uses` wins over what is collected.
+   */
+  readonly workDir?: string;
+  /** The commit the run was seeded from, for `workDir`'s workflows. Default: the seed in `target`, else main. */
+  readonly seedSha?: string;
 };
 
 /** The host step at a run's terminal: collect the run's candidates (and uses), render `inbox/<run id>.md` with the run's
  *  seed commit (and `uses/<run id>.json`), add the workflow records, and propose them. */
 export async function proposeLearning(options: ProposeOptions): Promise<ProposeResult> {
-  const { target, uses: usesSource, workflows, untrusted, ...rest } = options;
+  const { target, uses: usesSource, workflows, untrusted, workDir, seedSha, ...rest } = options;
   const candidates = await collectCandidates(target);
-  const uses = await usesSource?.(target);
-  const records = Object.entries(workflows ?? {}).flatMap(([name, { files }]) => Object.entries(files).map(([file, content]) => [name, file, content] as const));
-  if (candidates.length === 0 && uses === undefined && records.length === 0) return { status: "empty" };
+  let records = workflows;
+  let uses = await usesSource?.(target);
+  if (workDir !== undefined && typeof rest.runId === "string" && RUN_ID.test(rest.runId)) {
+    if (workflows === undefined) {
+      const baseline = seedSha ?? (await readSeed(target))?.sha ?? (await rest.repo.resolve("main"));
+      if (baseline !== undefined) records = (await collectWorkflows({ repo: rest.repo, workDir, seedSha: baseline })).records;
+    }
+    if (usesSource === undefined && typeof (target as { commit?: unknown }).commit === "function") {
+      uses = await collectUses({ target: target as unknown as Pick<Session, "commit">, workDir, run: rest.runId });
+    }
+  }
+  const pairs = Object.entries(records ?? {}).flatMap(([name, { files }]) => Object.entries(files).map(([file, content]) => [name, file, content] as const));
+  if (candidates.length === 0 && uses === undefined && pairs.length === 0) return { status: "empty" };
   if (typeof rest.runId !== "string" || !RUN_ID.test(rest.runId)) return { status: "refused", refusals: [{ reason: "invalid", detail: "the run id is not valid" }] };
   const files: Record<string, string> = {};
   // The commit the run was seeded from, which a reader stamps on what it learned; a run that was not seeded has none.
@@ -93,7 +114,7 @@ export async function proposeLearning(options: ProposeOptions): Promise<ProposeR
     if (json === undefined) return { status: "refused", refusals: [{ reason: "invalid", field: "uses", detail: "the uses are not JSON" }] };
     files[usesPath(rest.runId)] = `${json}\n`;
   }
-  for (const [name, file, content] of records) {
+  for (const [name, file, content] of pairs) {
     if (!WORKFLOW_NAME.test(name)) return { status: "refused", refusals: [{ reason: "invalid", field: "workflows", detail: "a workflow name is not valid" }] };
     files[`${inboxWorkflowDir(rest.runId, name)}${file}`] = content;
   }

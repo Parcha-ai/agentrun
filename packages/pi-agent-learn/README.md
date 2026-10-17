@@ -10,8 +10,7 @@ host owns git: no model tool commits or pushes, and the repository's `.git` is n
 
 This package is held: it is built and tested in this repository and not published yet. This release has the contract
 the model sees, the host step that seeds a run, the guard every write goes through, the host step that proposes a
-run's notes, and the curator that merges them to `main`. Workflow trials come next, on the types this release fixes
-(`Guard`, `Candidate`, `WorkflowHint`, `AdmitWorkflow`).
+run's notes, the curator that merges them to `main`, and saved workflows that are tried and promoted on receipts.
 
 ## Quickstart (no key, no network)
 
@@ -91,6 +90,7 @@ repo/
   agent.json                       rules tier: the agent definition; no learning writes it
   AGENTS.md                        rules tier: the standing rules; no learning writes it
   .agents/skills/<name>/SKILL.md   skills
+  .agents/skills/<name>/trial.json a workflow's standing and uses; the host writes it, never a run
   .pi/agentrun/workflows/<name>/   saved workflows, in the DSL's own layout
   learnings/<id>.md                one learning per file
   inbox/<run id>.md                a run's candidates, on runs/<run id> only
@@ -173,7 +173,7 @@ into one directory at once both finish whole. Edits there are never committed. A
 that is misnamed, does not parse, is a symlink or is over 4 KB is skipped and named in `skipped`. A run is seeded once:
 when its store already holds a seed, that commit is used again and the record is kept, so a restarted host never moves a
 run to a newer commit. `readSeed` returns the record; `collectCandidates` returns the run's candidates in order.
-`workflows` is a list of `{ name, status: "trial" | "active" }`, at most 8; it is empty until workflow trials land.
+`workflows` is a list of `{ name, status: "trial" | "active" }`, at most 8: what `workflowsToTry` returns (below).
 
 With [`@parcha/pi-durable-agent`](../pi-durable-agent), the run starts at the same commit: the host reads `agent.json` and
 `.agents/skills/` at the sha with `repo.read` and `repo.list`, keeps the agent home on it (`createAgentHome(dir, {
@@ -249,7 +249,7 @@ refuses a seed that is not a commit id.
 
 ```ts
 import { createJevRunner } from "@parcha/agentrun-jev";
-const report = await curate({ repo, judge: createJevRunner(), secrets: vault.values(), admitWorkflow, settleUses });
+const report = await curate({ repo, judge: createJevRunner(), secrets: vault.values() });
 ```
 
 `curate` is the host step that writes `main`, and the only one. It takes each branch `runs/<run id>` whose run no
@@ -281,8 +281,9 @@ with the files to write under `.pi/agentrun/workflows/<name>/` and `.agents/skil
 `refused`. A run's `uses/<run id>.json` goes to the `settleUses` hook, which folds the uses into the workflows' trials
 and answers the files to write and one decision per workflow (`promote`, `demote` or `hold`). Curation guards what
 either hook returns, refuses a rules-tier path or any path outside the named workflows' folders, and holds a workflow
-or the uses when its hook is not installed. Both ports (`AdmitWorkflow`, `SettleUses`, `RepoRead`, `WorkflowUse`) are
-this package's types; the workflows lane implements them. When the
+or the uses when its hook is turned off. Both ports (`AdmitWorkflow`, `SettleUses`, `RepoRead`, `WorkflowUse`) are
+this package's types, and `workflowAdmitter()` and `usesSettler()` are their implementations: when `admitWorkflow` or
+`settleUses` is omitted, curate uses them, so a host cannot forget the workflow pieces, and `null` turns one off. When the
 `<learned>` section derived from the active learnings would pass 4,096 bytes, the least-used are archived first, this
 run's new ones last, and the report names each.
 
@@ -308,6 +309,92 @@ await retireLearning({ repo, id: "L-3f2a9c1d0e7b", reason: "it sent runs to the 
 history, carries `Retired-Learning: <id>`, and is pushed without force with the same retries. A retired learning is
 never in `<learned>` again, and curate compares every new candidate with the retired learnings of its type, so a run
 that learns it again in other words is held, naming the retired id. Retiring it twice changes nothing.
+
+## Workflows
+
+A workflow the agent saved with the DSL's `agentrun` tool is a candidate like a learning, and it earns its place on
+receipts. The agent keeps writing it in its own working directory, where the tool's store lives. The host moves it between
+that directory and the repository only through the DSL's public store, `@parcha/agentrun-pi/workflows`, and never parses a
+record itself.
+
+```ts
+// At run start: what to try for this input, put in the run's own store so the agentrun tool finds it by name.
+const hints = await workflowsToTry({ repo, sha }, input);
+const seeded = await seedLearning({ repo, ref: sha, target: harness, into: workDir, workflows: hints });
+await seedWorkflows({ repo, sha: seeded.sha, into: workDir, workflows: seeded.workflows });
+
+// At the run's terminal: with the working directory, the step collects what the run saved that the repository did not
+// hold, and how it used what it had, and proposes them with the run's candidates. Explicit `workflows` or `uses` win.
+await proposeLearning({ repo, runId, target: harness, workDir });
+
+// In curate: the two ports are the defaults, so there is nothing to pass.
+await curate({ repo, judge });
+```
+
+List every extension the agent's conversation needs in the root agent's extensions, including agentLearn and the workflow tool;
+installing in the registry alone is not enough. The shape is `{ extensions: [learn.extension, workflowTool.extension] }`.
+
+`proposeLearning({ workDir })` reads the run's uses from `target` when it is an open Session (a commit that only scans the
+workflow tasks and writes nothing); pass `uses: usesSource({ store, workDir, run })` to read them from the run's store file
+instead, or from the receipts of a pi session. Without a seed in `target` (`seedSha` overrides it) the baseline for "new" is
+main.
+
+**Admitting.** `workflowAdmitter` is the curator's `AdmitWorkflow` port. It copies main's `trial.json` and skill for the name
+into a scratch directory, loads the run's records through the DSL's store there, which refuses a record whose name, metadata
+or SHA-256 does not match, then saves the revision the run ended on (what `latest` names) through the store. It writes
+`.agents/skills/<name>/SKILL.md` (the `description`, the agent's when-to-use text, is its description; the body says to run
+the workflow with the agentrun tool and to continue the task itself if it escalates) and `trial.json`, and returns every
+path changed, as text, or `null` where one was deleted, for the curator's one commit. The name must be a skill name:
+lowercase letters and digits in words joined by single hyphens, because the skill folder carries it and pi refuses other
+names (`refused`). A workflow with a code node, or a shell or executor call, is `held` unless the host passes
+`allowExecutableCode`: nothing a person reviewed runs it. A record the store refuses, a demoted revision and the limits are
+`refused`; the same revision and description again are `unchanged`. A revision admitted without a description is kept but
+offered to no run until one arrives, and the skill that described the revision before it is withheld, not offered for the
+new one (a call with no records describes an existing name).
+
+**Standing.** `trial.json` holds `{ name, status, when, revisions, uses }`. The new revision is the live trial under its
+name. The revision it replaces is `superseded` if it was active, keeping its preconditions and the description of its skill
+so a demotion can restore both, or `retired` if it never proved itself; only the 3 newest superseded revisions keep that. A
+demoted revision stays in the list so it is never tried again. `status` is that of the live revision, or `demoted` when there
+is none. `when` is a list of typed checks on the run's input, each a JSON pointer and one of `eq`, `in`, `exists`, `gte`,
+`lte` (numbers only: a string is never coerced), never a pattern over prose. The default is none, and the model decides from
+the description; `workflowAdmitter({ when })` takes a function of the workflow document, and `schemaWhen` is one: what the
+workflow's own input schema says about the top level of its input (each required property must exist, a constant must be
+equal, an enumeration of scalars must contain the value, a number's bounds hold). `workflowsToTry` offers a name whose skill
+and `trial.json` are at the commit, whose live revision is a trial or active and whose record is there, and whose checks hold
+on the input: active first, then by name, at most 8. The file stays under the curator's cap at every limit: 32 revisions, 30
+uses, 16 checks of at most 1,536 characters printed.
+
+**Uses.** A use is one `agentrun.workflow` task in the run's store (`@parcha/agentrun-pi/durable`'s `createWorkflowExtension`),
+read from the store file with `recordingLines` (one read transaction, never written; open or closed) or from the open Session. It counts when the
+task's workflow has the digest of a revision the run's own store holds under a name. The outcome is `frozen` when the workflow
+completed, `escalated` when a gate fired and the host's ladder took over, `failed` when the task failed or faulted. A task
+that is not finished, was cancelled or was orphaned says nothing about the workflow and is named in `skipped`, and so is a use
+of a name the skill folder cannot carry. A run key started again after a failure is one use, by its last task. The task's end
+is the use's time. `uses/<run id>.json` is `{ version: 1, run, uses: [{ name, sha256, outcome, at }] }`. When the agent ran the
+workflow with the `agentrun` pi tool in a pi session instead, `readSessionUses({ entries, workDir, run })` reads the same uses
+from the receipts the tool leaves there (`agentrun:snapshot` entries; `sessionEntries` reads them from the session file): the
+last snapshot of a run decides, so a run resumed after a failure counts only once it ends again; `complete` is `frozen`, an
+`interrupted` run is left out, and the name is the one the tool saved or loaded the workflow under, when the run's store holds
+that digest under it.
+
+**Promotion.** `usesSettler` is the curator's `SettleUses` port: it copies main's `trial.json` of each name used, and the
+records of its superseded revisions, into a scratch directory, and folds the run's uses in, appending each to its workflow's
+`trial.json` and settling after each one (`settleWorkflowUses`, `foldUses`, `promotionDecision`). Promotion rests on
+independent evidence: a run's uses of one revision are one use, the worst outcome winning (failed over escalated over frozen,
+so one bad case in a run counts against the run), however many inputs the run gave it. A trial is promoted when its last 3
+uses, which are 3 distinct runs, all finished `frozen`; the live revision is demoted when its last 2 uses, the last 2 runs that
+used it, both failed or escalated, and the most recent superseded revision that the store can still load comes back, with `latest`, its preconditions and its skill's
+description. With none to restore the name is demoted whole, its skill is deleted so the agent is no longer told about it, and
+`trial.json` stays, so a demoted revision is never promoted or tried again; only a changed document, with a new digest, is
+tried under the name again. A standing counts the uses folded since it began, in the order they were folded, never a clock: a
+use that arrives after a decision counts toward the standing the decision gave, and a restored revision's failures from before
+it was superseded never demote it again. Only the newest 30 uses are kept, and receipts for other revisions never push out the live
+revision's own newest uses. The run that wrote a revision is no evidence for it, however many cases it ran, and a run already folded for a
+revision is not folded again. The thresholds are the host's: `usesSettler({ thresholds: { promoteAfter, demoteAfter } })`,
+1 to 15. A frozen workflow never fails a case: the agent is the fallback, and a use only moves the workflow's own standing.
+The decisions come back one per promotion, demotion or name held, each with a reason that names no value from the case; a
+`trial.json` that does not parse holds its name and never stops curation.
 
 ## Versions
 
