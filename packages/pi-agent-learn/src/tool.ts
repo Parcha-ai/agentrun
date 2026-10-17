@@ -86,17 +86,23 @@ export function learnTool(options: LearnToolOptions = {}): ToolRegistration {
     parameters: LEARN_PARAMETERS as unknown as ToolParameters,
     replay: "safe",
     execute: async (args, api, context) => {
-      const input = args as unknown as { type: LearnType; text: string; evidence?: string[]; id?: string };
+      const { id: named, ...input } = args as unknown as { type: LearnType; text: string; evidence?: string[]; id?: string };
+      // A blank id is no id.
+      let id = named?.trim() === "" ? undefined : named;
       const evidence = input.evidence ?? [];
       if (bytes(input.text) > CAPS.text) return refused(`Not noted: the text is over ${CAPS.text} bytes. Say it shorter.`);
       if (bytes(evidence.join("")) > CAPS.evidence) return refused(`Not noted: the evidence is over ${CAPS.evidence} bytes in all.`);
-      if (input.type === "used" && input.id === undefined) return refused("Not noted: a used mark needs the id of the learning that helped.");
-      if (input.type === "workflow" && (input.id === undefined || !WORKFLOW_NAME.test(input.id))) return refused("Not noted: a workflow note needs the saved workflow's name as id (lowercase letters, digits, dashes or underscores).");
-      if (input.type !== "workflow" && input.id !== undefined) {
+      if (input.type === "used" && id === undefined) return refused("Not noted: a used mark needs the id of the learning that helped.");
+      if (input.type === "workflow" && (id === undefined || !WORKFLOW_NAME.test(id))) return refused("Not noted: a workflow note needs the saved workflow's name as id (lowercase letters, digits, dashes or underscores).");
+      if (input.type !== "workflow" && id !== undefined) {
         const seed = await api.snapshot(SeedDoc, context);
-        if (!seed?.sha || !seededIds(seed).includes(input.id)) return refused(`Not noted: ${input.id} is not a learning you were given; leave id out for a new learning.`);
+        if (!seed?.sha || !seededIds(seed).includes(id)) {
+          if (input.type === "used") return refused(`Not noted: ${id} is not a learning you were given.`);
+          // A new note keeps only an id that names a learning this run was given; any other is dropped, never stored.
+          id = undefined;
+        }
       }
-      const candidate: Candidate = { callId: api.callId, type: input.type, text: input.text, evidence, ...(input.id === undefined ? {} : { id: input.id }) };
+      const candidate: Candidate = { callId: api.callId, type: input.type, text: input.text, evidence, ...(id === undefined ? {} : { id }) };
       if (options.guard) {
         let refusals: readonly Refusal[];
         try {

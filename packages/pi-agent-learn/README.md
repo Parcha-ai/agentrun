@@ -139,10 +139,11 @@ over the run id and the text, so curating the same candidate twice cannot make t
 
 `learn` writes one candidate into the run's own pi-durable store (the session document `learn.candidates`), keyed by the
 call id, inside the tool's commit. It is replay-safe: a call rerun after a crash finds its candidate and stores nothing
-new. It makes no model call. A `used` mark names the learning that helped by its id. A `workflow` note names a workflow
+new. It makes no model call. A `used` mark names the learning that helped by its id, which must be a learning this run
+was given (listed in its section, or over the cap), or the mark is refused at the call. A `workflow` note names a workflow
 the run saved (its name, by the DSL's rule: 1 to 64 lowercase letters, digits, dashes or underscores) and says in its
-text when to use it. Any other id must name a learning this run was given (listed in its section, or over the cap), so a
-made-up id is refused at the call and the model can leave it out. Text is at most 1,000 bytes and
+text when to use it. A lesson, fact or correction keeps an id only when it names a learning this run was given; any other
+id, a blank one included, is dropped and the note kept without it. Text is at most 1,000 bytes and
 evidence 1,000 bytes in all; a run makes at most 8 notes of every type but `used`, and 32 `used` marks. Evidence stays with the run and is
 never part of a learning. `agentLearn({ guard, secrets, caseValues })` checks every call with the host's guard first,
 with the host's secrets and this run's input values; a refused call stores nothing and its result names the reason,

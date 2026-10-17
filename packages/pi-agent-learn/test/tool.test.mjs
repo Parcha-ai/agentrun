@@ -146,16 +146,15 @@ test("a workflow note names a saved workflow by the DSL's name rules and says wh
   try {
     await seedIds(run.harness, ["L-0123456789ab"]);
     await ask(run.harness);
-    assert.deepEqual(seen.map((r) => r.isError), [false, true, true, true, true, false]);
+    assert.deepEqual(seen.map((r) => r.isError), [false, true, true, true, false, false]);
     assert.match(seen[1].text, /needs the saved workflow's name as id/);
-    assert.equal(seen[4].text, "Not noted: kyb-us-registry is not a learning you were given; leave id out for a new learning.");
-    assert.deepEqual((await collectCandidates(run.harness)).map(({ type, id }) => ({ type, id })), [{ type: "workflow", id: "kyb-us-registry" }, { type: "correction", id: "L-0123456789ab" }]);
+    assert.deepEqual((await collectCandidates(run.harness)).map(({ type, id }) => ({ type, id })), [{ type: "workflow", id: "kyb-us-registry" }, { type: "correction", id: undefined }, { type: "correction", id: "L-0123456789ab" }]);
   } finally {
     await run.close();
   }
 });
 
-test("an id on used, lesson, fact or correction must name a learning this run was given; a made-up one is refused at the call", async () => {
+test("an id on lesson, fact or correction that names no learning this run was given is dropped and the note kept; a used mark's is refused", async () => {
   const root = await scratch();
   const given = "L-00000000000a";
   const overCap = "L-00000000000b";
@@ -165,6 +164,7 @@ test("an id on used, lesson, fact or correction must name a learning this run wa
       { type: "lesson", id: "L-a4821c9e530b", text: "Search the registry by the legal name." },
       { type: "used", id: "L-ffffffffffff", text: "Helped." },
       { type: "fact", id: "not-an-id", text: "A fact." },
+      { type: "correction", id: "new", text: "The registry lists officers under Principals." },
       { type: "used", id: given, text: "It found the company." },
       { type: "correction", id: overCap, text: "The registry now lists officers under Officers." },
       { type: "lesson", text: "A new lesson needs no id." },
@@ -174,22 +174,53 @@ test("an id on used, lesson, fact or correction must name a learning this run wa
   try {
     await seedIds(run.harness, [given], [overCap]);
     await ask(run.harness);
-    assert.deepEqual(seen.map((r) => r.isError), [true, true, true, false, false, false]);
-    assert.equal(seen[0].text, "Not noted: L-a4821c9e530b is not a learning you were given; leave id out for a new learning.");
-    assert.equal(seen[1].text, "Not noted: L-ffffffffffff is not a learning you were given; leave id out for a new learning.");
-    assert.deepEqual((await collectCandidates(run.harness)).map(({ type, id }) => ({ type, id })), [{ type: "used", id: given }, { type: "correction", id: overCap }, { type: "lesson", id: undefined }]);
+    assert.deepEqual(seen.map((r) => r.isError), [false, true, false, false, false, false, false]);
+    assert.equal(seen[1].text, "Not noted: L-ffffffffffff is not a learning you were given.");
+    const stored = await collectCandidates(run.harness);
+    assert.deepEqual(stored.map(({ type, id }) => ({ type, id })), [
+      { type: "lesson", id: undefined }, { type: "fact", id: undefined }, { type: "correction", id: undefined },
+      { type: "used", id: given }, { type: "correction", id: overCap }, { type: "lesson", id: undefined },
+    ]);
+    assert.deepEqual(stored.filter((c) => c.id === undefined).map((c) => Object.hasOwn(c, "id")), [false, false, false, false], "a dropped id is never stored");
   } finally {
     await run.close();
   }
   let unseeded = [];
-  const bare = await openRun(path.join(root, "bare.sqlite"), { steps: [() => learnCalls([{ type: "used", id: given, text: "Helped." }]), (c) => { unseeded = toolResults(c); return done(); }] });
+  const bare = await openRun(path.join(root, "bare.sqlite"), { steps: [() => learnCalls([{ type: "used", id: given, text: "Helped." }, { type: "lesson", id: given, text: "A lesson." }]), (c) => { unseeded = toolResults(c); return done(); }] });
   try {
     await ask(bare.harness);
-    assert.equal(unseeded[0].isError, true, "a run that was not seeded was given no learning");
+    assert.deepEqual(unseeded.map((r) => r.isError), [true, false], "a run that was not seeded was given no learning");
+    assert.deepEqual((await collectCandidates(bare.harness)).map(({ type, id }) => ({ type, id })), [{ type: "lesson", id: undefined }]);
   } finally {
     await bare.close();
   }
   assert.match(LEARN_PARAMETERS.properties.id.description, /^Only to name a learning listed in <learned> \(type used\) or a workflow name \(type workflow\); leave it out for a new learning\.$/);
+});
+
+test("a blank id is no id: a new note is kept without one, a used mark and a workflow note still need one", async () => {
+  const root = await scratch();
+  let seen = [];
+  const run = await openRun(path.join(root, "run.sqlite"), { steps: [
+    () => learnCalls([
+      { type: "lesson", id: " ", text: "Search the registry by the legal name." },
+      { type: "correction", id: "\t \n", text: "The registry lists officers under Principals." },
+      { type: "used", id: "  ", text: "Helped." },
+      { type: "workflow", id: " ", text: "Use it for a US company." },
+    ]),
+    (c) => { seen = toolResults(c); return done(); },
+  ] });
+  try {
+    await seedIds(run.harness, ["L-0123456789ab"]);
+    await ask(run.harness);
+    assert.deepEqual(seen.map((r) => r.isError), [false, false, true, true]);
+    assert.match(seen[2].text, /used mark needs the id/);
+    assert.match(seen[3].text, /needs the saved workflow's name as id/);
+    const stored = await collectCandidates(run.harness);
+    assert.deepEqual(stored.map(({ type }) => type), ["lesson", "correction"]);
+    assert.ok(stored.every((c) => !Object.hasOwn(c, "id")), "a blank id is never stored");
+  } finally {
+    await run.close();
+  }
 });
 
 test("agentLearn passes the run's case values to the guard at the call, so case data is refused where the model can restate it", async () => {

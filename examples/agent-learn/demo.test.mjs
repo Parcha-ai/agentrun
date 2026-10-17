@@ -371,7 +371,7 @@ test('run 2\'s propose line and step 5 say what happened when run 2 saves a work
   assert.deepEqual(none.out.run2.savedWorkflows, []);
 });
 
-test('a made-up learning id and a note that repeats the issue number are refused at the call; the restated note is proposed', async (t) => {
+test('a made-up learning id on a new note is dropped and the note proposed; a used mark with one and a note that repeats the issue number are refused at the call', async (t) => {
   const rule = 'In this project an issue whose body has a stack trace is labeled bug and needs-repro.';
   const lines = [];
   const out = await runDemo({
@@ -379,19 +379,19 @@ test('a made-up learning id and a note that repeats the issue number are refused
     run1: [
       {},
       { call: 'learn', args: { type: 'correction', text: rule, id: 'L-a4821c9e530b' } },
+      { call: 'learn', args: { type: 'used', text: 'It helped.', id: 'L-ffffffffffff' } },
       { call: 'learn', args: { type: 'correction', text: `Issue 4821: ${rule}` } },
-      { call: 'learn', args: { type: 'correction', text: rule } },
       { say: 'bug, needs-repro: the body is a crash trace.' },
     ],
   });
-  const [unseeded, repeated, noted] = out.run1.turns[1].results;
-  assert.match(unseeded, /^Not noted: L-a4821c9e530b is not a learning you were given; leave id out for a new learning\./, 'an id that names no seeded learning is refused');
+  const [dropped, unknown, repeated] = out.run1.turns[1].results;
+  assert.equal(dropped, '[noted 1]', 'an id that names no seeded learning is dropped and the note kept');
+  assert.equal(unknown, 'Not noted: L-ffffffffffff is not a learning you were given.', 'a used mark must name a learning it was given');
   assert.match(repeated, /^Not noted: it repeats data from this case\./, 'the text holds the issue number 4821');
-  assert.equal(noted, '[noted 1]');
   assert.equal(out.run1.proposal.status, 'proposed');
   const inbox = gitRead(out.bare, ['show', `${out.run1.proposal.sha}:inbox/run-1.md`]).toString('utf8');
-  assert.doesNotMatch(inbox, /4821/, 'neither refused note reaches git');
-  assert.match(lines.join('\n'), /^ {3}learn\(correction L-a4821c9e530b\) -> Not noted: L-a4821c9e530b is not a learning you were given/m);
+  assert.doesNotMatch(inbox, /4821/, 'neither the refused note nor the dropped id reaches git');
+  assert.match(lines.join('\n'), /^ {3}learn\(correction L-a4821c9e530b\) -> \[noted 1\]$/m);
   assert.match(out.run2.learned.join('\n'), /correction: In this project an issue whose body has a stack trace/);
 });
 
