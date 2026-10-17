@@ -15,21 +15,24 @@
 // The supervisor serves the fake browser's backend on loopback so its sessions outlive a killed child, and writes the host lines (`process.started`, `kill`
 // with its `kind`, `result`) from outside every process.
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { basename, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { FakeBackend, remoteDriver, remoteProvider } from '@parcha/pi-browser/testing';
+import type { Harness } from '@earendil-works/pi-durable';
 import type { BoxProvider } from '@parcha/pi-transport';
+import type { VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import { placeAt, run, type Job, type RunOptions } from './assemble.ts';
 import { RUN_LABEL, tapBox } from './boxes.ts';
 import { capJudge } from './judge.ts';
 import { crossings, tapFakes, tapHost, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
-import { childPlansOf, chooseBrowser, killsOf, maxUsdOf, parseInput, plansOf, type ChildPlan, type DemoSpec } from './demo-spec.ts';
+import { inputOf, declaredEnv, childPlansOf, chooseBrowser, effectiveBoxes, killsOf, maxUsdOf, plansOf, type ChildPlan, type DemoSpec } from './demo-spec.ts';
 import { cost } from './fold.ts';
 import { localHost, type BrowserPlane, type Fakes, type Host } from './host.ts';
 import { codeOf, finishRecording, openRecorder, openSupervisor } from './record.ts';
@@ -37,7 +40,7 @@ import { packageCommitRecorder } from './record-store.ts';
 
 /** What `--live` swaps for the scripted parts: host members (models, tools, decisions, the browser plane) and vision options. The demo supplies them from its
  *  own keys; a demo that supplies none refuses `--live`. */
-export type LiveParts = { host?: Partial<Host>; vision?: RunOptions['vision'] };
+export type LiveParts = { host?: Partial<Host>; /** The live vision options, built from the host and the running run exactly as `fakes.vision` is: one seam for both. */ vision?: (host: Host, running: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions> };
 export type DemoOptions = {
   /** `import.meta.url` of the demo's `run.ts`: the file the supervisor starts, with `--child`, as each process of the run. */
   self: string;
@@ -45,15 +48,19 @@ export type DemoOptions = {
   job: Job;
   fakes: Fakes;
   live?: (context: { env: NodeJS.ProcessEnv; browser: 'fake' | 'browserbase' | 'chrome' }) => LiveParts | Promise<LiveParts>;
+  /** The run's result, as the recording shows it: the entry writes the result line and its blob from `json` (`agentrun.cited/1` for a payoff that cites what it read) instead of the raw delivered record. `keep` stores a file in the recording's blobs and returns its SHA-256; `dir` is the run's directory, where the run's own files are. It runs in the process that delivered. */
+  result?: (record: unknown, context: { dir: string; keep(bytes: Uint8Array | string, extension: string): string }) => { json: unknown; title: string } | Promise<{ json: unknown; title: string }>;
   /** The arguments to read (default `process.argv.slice(2)`). */
   argv?: string[];
   /** The root of the repository, for the recording's `code` (default: two directories above the entry). */
   root?: string;
+  /** The recovery driver's layout for the run (`v4`: the keyed one); the driver's default when absent. A host's choice, so it is not the job's. */
+  layout?: 'v3' | 'v4';
 };
 
 export type DemoResult = {
   /** How each process ended: its exit or signal, and the outcome it printed. */
-  processes: Array<{ exit: number | string | null; signal: string | null; outcome?: { status: string; generation: number | null; code?: string | null; message?: string }; stderr: string }>;
+  processes: Array<{ exit: number | string | null; signal: string | null; outcome?: { status: string; generation: number | null; code?: string | null; message?: string; result?: { json: unknown; title: string } }; stderr: string }>;
   kills: Array<{ gen: number; point: string | null; kind: 'process' | 'box'; why: string }>;
   /** The record the job delivered, or null. */
   record: unknown;
@@ -117,9 +124,9 @@ export function mergeParts(host: Host, parts: Partial<Host> | undefined): void {
 }
 
 /** The demo's box provider: its `boxes` declaration, a directory of this machine (`local`) or Docker. */
-async function boxProvider(spec: DemoSpec, place: { root: string }) {
-  if (!spec.boxes) return undefined;
-  return spec.boxes.kind === 'local' ? (await import('@parcha/pi-transport/box/local')).localBoxes({ root: join(place.root, 'boxes') }) : (await import('@parcha/pi-transport/box/docker')).dockerBoxes(spec.boxes.image ? { image: spec.boxes.image } : undefined);
+async function boxProvider(boxes: ReturnType<typeof effectiveBoxes>, place: { root: string }) {
+  if (!boxes) return undefined;
+  return boxes.kind === 'local' ? (await import('@parcha/pi-transport/box/local')).localBoxes({ root: join(place.root, 'boxes') }) : (await import('@parcha/pi-transport/box/docker')).dockerBoxes(boxes.image ? { image: boxes.image } : undefined);
 }
 
 /** One box the job's own tools (the disk package's shell and files) run in: a directory of this machine whose workspace is the run's `work/`, or a container the
@@ -149,17 +156,23 @@ async function child(options: DemoOptions) {
   let box: Awaited<ReturnType<typeof inBox>> | undefined;
   try {
     const parts = live ? await options.live!({ env, browser: browserKind }) : {};
-    const provider = await boxProvider(options.spec, place);
+    // Docker only with --live: a no-key run uses a local box, so it starts no container.
+    const boxSpec = effectiveBoxes(options.spec, live);
+    const provider = await boxProvider(boxSpec, place);
     const boxes = provider ? tapBox(provider, { cross, window, ...(env.RUN_LABEL ? { runLabel: env.RUN_LABEL } : {}), ...(recorder ? { recorder } : {}) }) : undefined;
-    const local = localHost(place, live ? options.fakes : tapFakes(options.fakes, cross), { browser: fakeBrowser(env.BACKEND!), ...(recorder ? { recorder } : {}), ...(boxes ? { boxes } : {}) });
+    const local = localHost(place, live ? options.fakes : tapFakes(options.fakes, cross), { browser: fakeBrowser(env.BACKEND!), live, ...(recorder ? { recorder } : {}), ...(boxes ? { boxes } : {}) });
     // The live parts are merged into the host member by member FIRST, then the platform wraps the final host: the crossings (so a live `status` or `tools` still has them) and the judge seam's
     // caps (Jev's), which a live judge is held to too.
     composeHost(local.host, parts.host, cross, window, join(place.root, 'judge-spent.jsonl'));
-    if (boxes && options.spec.boxes?.runIn) box = await inBox(boxes, options.spec.boxes.kind, place, options.job.files ?? {});
+    if (boxes && boxSpec?.runIn) box = await inBox(boxes, boxSpec.kind, place, options.job.files ?? {});
     const input = env.INPUT ? (JSON.parse(env.INPUT) as Record<string, unknown>) : options.job.input;
-    const result = await run(place, local.host, { ...options.job, input }, { ...(box ? { env: box.env } : {}), ...(parts.vision ? { vision: parts.vision } : {}) });
+    // The vision lane: the demo's own on fakes (`fakes.vision`), and the live parts' on --live.
+    const vision: RunOptions['vision'] = (running) => ({ ...(live ? {} : options.fakes.vision?.(local.host, running) ?? {}), ...(parts.vision?.(local.host, running) ?? {}) });
+    const result = await run(place, local.host, { ...options.job, input }, { ...(box ? { env: box.env } : {}), vision, ...(options.layout ? { layout: options.layout } : {}) });
+    // The demo's result hook: what the recording shows as the run's result, made where the run's own files are.
+    const made = result.status === 'complete' && options.result ? await options.result(result.output, { dir: place.root, keep: (bytes, extension) => (recorder ? recorder.blob(bytes, extension) : createHash('sha256').update(bytes).digest('hex')) }) : undefined;
     await recorder?.detach();
-    console.log(JSON.stringify({ outcome: { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 240) } : {}) } }));
+    console.log(JSON.stringify({ outcome: { status: result.status, generation: result.generation, ...(result.status === 'refused' ? { code: result.code, message: result.message.slice(0, 240) } : {}), ...(made ? { result: made } : {}) } }));
   } catch (error) {
     console.log(JSON.stringify({ outcome: { status: 'error', generation: null, code: (error as { code?: string }).code ?? null, message: String((error as Error).message).slice(0, 400) } }));
   } finally {
@@ -208,8 +221,8 @@ export function meterKnown(recordDir: string): number {
 }
 
 /** A run's boxes taken away with its machine: every box that carries the run's label, tool-made ones too, destroyed through the provider. A box that will not be destroyed is an error. */
-export async function destroyBoxes(spec: DemoSpec, runLabel: string, root: string): Promise<void> {
-  const provider = await boxProvider(spec, { root });
+export async function destroyBoxes(spec: DemoSpec, runLabel: string, root: string, live = false): Promise<void> {
+  const provider = await boxProvider(effectiveBoxes(spec, live), { root });
   if (!provider) return;
   const listed = await provider.list({ [RUN_LABEL]: runLabel }, ctx);
   if (!listed.ok) throw listed.error;
@@ -229,7 +242,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const browser = chooseBrowser({ live, env: process.env, localChrome: values['local-chrome'] === true });
   const plans = values.kill ? plansOf(killsOf(spec)) : [];
   const maxUsd = maxUsdOf(values['max-usd'], spec);
-  const input = values.input === undefined ? undefined : parseInput(values.input, (path) => readFileSync(path, 'utf8'));
+  const kindOf = (path: string) => { try { const stat = statSync(path); return stat.isFile() ? 'file' as const : stat.isDirectory() ? 'directory' as const : undefined; } catch { return undefined; } };
+  const demoDir = dirname(fileURLToPath(options.self));
+  const input = values.input === undefined ? undefined : inputOf(values.input, spec, { demo: basename(demoDir), root: options.root ?? ROOT, live, read: (path) => readFileSync(path, 'utf8'), kind: kindOf });
   if (values.record && (existsSync(join(values.record, '.spool')) || existsSync(join(values.record, 'manifest.json')))) throw new Error(`${values.record} already holds a recording or an unfinished one: record into a directory of its own`);
 
   const scratch = await mkdtemp(join(tmpdir(), `agentrun-${spec.name}-`));
@@ -243,9 +258,10 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   // A label no other run shares, on every box this run makes: cleanup finds these and no others.
   const runLabel = randomUUID();
   const base: Record<string, string> = { RUN_LABEL: runLabel, HOME: scratch, TMPDIR: scratch, DIR: dir, RECORD_DIR: recordDir, BACKEND: served.url, BROWSER: browser, ...(live ? { LIVE: '1' } : {}), ...(input ? { INPUT: JSON.stringify(input) } : {}) };
-  // A live child needs what the demo's live parts read from the environment, and nothing else of ours.
-  // And any `DEMO_*` variable, the demo's own settings.
-  for (const name of Object.keys(process.env)) if ((live && /^(BROWSERBASE_|BB_|CHROME_PATH|PI_BROWSER_|HERO_|OPENROUTER_|OPENAI_|ANTHROPIC_)/.test(name)) || name.startsWith('DEMO_')) base[name] = process.env[name]!;
+  // A live child gets exactly the environment names the demo declares in demo.json (every key, the members of a `oneOf` group included, and the programs' env), plus the process basics above; nothing undeclared reaches it.
+  // A no-key run passes the demo's own `DEMO_*` settings (no secret) so a test can steer it.
+  const declared = declaredEnv(spec);
+  for (const name of Object.keys(process.env)) if ((live && declared.has(name)) || (!live && name.startsWith('DEMO_'))) base[name] = process.env[name]!;
   const processes: DemoResult['processes'] = [];
   const kills: DemoResult['kills'] = [];
   let overBudget = false;
@@ -268,7 +284,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
         const kind = plan.run?.kind ?? 'process';
         supervisor.host('kill', { gen, label: plan.run && !('storm' in plan.run) ? plan.run.point : at?.point ?? null, crossing: at ? { point: at.point, n: at.n } : null, side: 'child', kind });
         kills.push({ gen, point: at?.point ?? null, kind, why: plan.run?.why ?? 'a kill' });
-        if (kind === 'box') await destroyBoxes(spec, runLabel, dir);
+        if (kind === 'box') await destroyBoxes(spec, runLabel, dir, live);
         continue;
       }
       break;
@@ -276,9 +292,12 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     const delivered = (() => { try { return JSON.parse(readFileSync(join(dir, 'out', 'record.json'), 'utf8')) as { record: unknown }; } catch { return null; } })();
     if (maxUsd !== null && meterKnown(recordDir) > maxUsd) overBudget = true;
     const processesStarted = processes.length;
-    const blob = delivered ? openRecorder({ dir: recordDir }).blob(readFileSync(join(dir, 'out', 'record.json')), 'json') : undefined;
-    if (blob) supervisor.host('result', { gen: processesStarted, blob, title: 'The record' }, { blobs: [blob] });
-    const resultBlob = blob ? { blob, title: 'The record' } : undefined;
+    // The demo's result hook, reported by the process that delivered, shapes the result line and its blob; without one, the delivered record is the result.
+    const made = processes.at(-1)?.outcome?.result as { json: unknown; title: string } | undefined;
+    const blob = made ? openRecorder({ dir: recordDir }).blob(JSON.stringify(made.json, null, 2), 'json') : delivered ? openRecorder({ dir: recordDir }).blob(readFileSync(join(dir, 'out', 'record.json')), 'json') : undefined;
+    const resultTitle = made?.title ?? 'The record';
+    if (blob) supervisor.host('result', { gen: processesStarted, blob, title: resultTitle }, { blobs: [blob] });
+    const resultBlob = blob ? { blob, title: resultTitle } : undefined;
     finishRecording(recordDir, {
       title: spec.title ?? spec.name, task: job.workflow.name ?? spec.name, model: live ? 'live' : 'faux/faux-1', generations: processesStarted, kills: kills.length,
       code: codeOf(options.root ?? ROOT), cost, source: { run: 'reference', store: join(dir, 'store', 'run.sqlite') }, ...(resultBlob ? { result: resultBlob } : {}), ...(live ? { providers: 'real' as const } : {}),

@@ -4,7 +4,9 @@ export {
   type GitRunnerOptions, HARDENING,
 } from "./git.js";
 export { caseCollisions, DEFAULT_LIMITS, type FileContent, foldPath, type Limits, modeRefusal, pathRefusal } from "./limits.js";
-export { type CredentialSource, type GitCredential, local, type Remote } from "./remotes.js";
+export {
+  codeStorage, type CodeStorageOptions, type CredentialSource, type GitCredential, https, type HttpsOptions, local, type Remote,
+} from "./remotes.js";
 export {
   type Branch, type CheckoutResult, type CommitOptions, type Committed, type LogEntry, type LogOptions, MAIN, type MergeResult, openRepo, type Repo,
   type RepoOptions, type RevertResult, RUN_ID_TRAILER, type Skipped, type Trailers, type TreeEntry,
