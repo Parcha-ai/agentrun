@@ -14,14 +14,18 @@ host gives its base URL and key in the environment, as `OPENAI_BASE_URL` (ending
 task or the host names the model; Scribe v2 is the default here. Never write a URL or a key into a file or a command
 you print.
 
-A code-mode host without network gives the same call as a host function with the same arguments (the model, the
+Where the shell has no network, the host names another way to make this call with the same arguments (the model, the
 audio file, word timestamps); use it in place of `curl` in step 3.
 
 ## 1. Name the video, the chunk length and the model
 
+Each video gets its own folder under `.hear`, named for its path, so two videos never share audio, chunks or a
+transcript.
+
 ```bash
 : "${VIDEO:=talk.mp4}" "${CHUNK:=600}" "${STT_MODEL:=fal-ai/elevenlabs/speech-to-text/scribe-v2}"
-mkdir -p .hear
+H=".hear/${VIDEO//\//_}"
+mkdir -p "$H"
 ```
 
 ## 2. Strip the audio once, then cut it in chunks
@@ -30,9 +34,9 @@ mkdir -p .hear
 one starts in `chunks.csv`, so the words get the time of the whole video.
 
 ```bash
-[ -s .hear/audio.mp3 ] || ffmpeg -v error -y -i "$VIDEO" -vn -ac 1 -ar 16000 -b:a 32k .hear/audio.mp3
-[ -s .hear/chunks.csv ] || ffmpeg -v error -y -i .hear/audio.mp3 -f segment -segment_time "$CHUNK" \
-  -segment_list .hear/chunks.csv -segment_list_type csv -c copy .hear/c%03d.mp3
+[ -s "$H/audio.mp3" ] || ffmpeg -v error -y -i "$VIDEO" -vn -ac 1 -ar 16000 -b:a 32k "$H/audio.mp3"
+[ -s "$H/chunks.csv" ] || ffmpeg -v error -y -i "$H/audio.mp3" -f segment -segment_time "$CHUNK" \
+  -segment_list "$H/chunks.csv" -segment_list_type csv -c copy "$H/c%03d.mp3"
 ```
 
 ## 3. Transcribe each chunk, never twice
@@ -42,7 +46,7 @@ at Scribe v2's list price, $0.008 an audio minute, an hour is six chunks and abo
 would be passed.
 
 ```bash
-for c in .hear/c[0-9]*.mp3; do
+for c in "$H"/c[0-9]*.mp3; do
   [ -s "${c%.mp3}.json" ] && continue
   curl -sS --fail "$OPENAI_BASE_URL/audio/transcriptions" -H "Authorization: Bearer $OPENAI_API_KEY" \
     -F model="$STT_MODEL" -F file=@"$c" -F response_format=verbose_json -F "timestamp_granularities[]=word" \
@@ -57,13 +61,14 @@ Each word's time is its chunk's start plus its own; a pause of 0.8 s or more sta
 entries between words): read both.
 
 ```bash
-node -e '
+H="$H" node -e '
 const fs = require("fs");
+const dir = process.env.H;
 const rows = [];
 let row = null;
-for (const line of fs.readFileSync(".hear/chunks.csv", "utf8").trim().split("\n")) {
+for (const line of fs.readFileSync(dir + "/chunks.csv", "utf8").trim().split("\n")) {
   const [file, start] = line.split(",");
-  const { words = [] } = JSON.parse(fs.readFileSync(".hear/" + file.replace(/\.mp3$/, ".json"), "utf8"));
+  const { words = [] } = JSON.parse(fs.readFileSync(dir + "/" + file.replace(/\.mp3$/, ".json"), "utf8"));
   for (const w of words) {
     if (w.type && w.type !== "word") continue;
     const text = String(w.word ?? w.text).trim();
@@ -75,7 +80,7 @@ for (const line of fs.readFileSync(".hear/chunks.csv", "utf8").trim().split("\n"
   }
 }
 if (row) rows.push(row);
-fs.writeFileSync(".hear/transcript.tsv", rows.map((r) => [r.start.toFixed(2), r.end.toFixed(2), r.words.join(" ")].join("\t")).join("\n") + "\n");
+fs.writeFileSync(dir + "/transcript.tsv", rows.map((r) => [r.start.toFixed(2), r.end.toFixed(2), r.words.join(" ")].join("\t")).join("\n") + "\n");
 '
 ```
 
@@ -84,7 +89,7 @@ fs.writeFileSync(".hear/transcript.tsv", rows.map((r) => [r.start.toFixed(2), r.
 `rg` prints each matching row with its start; `grep -n -i` takes the same arguments where `rg` is not installed.
 
 ```bash
-rg -n -i 'eagle has landed' .hear/transcript.tsv
+rg -n -i 'eagle has landed' "$H/transcript.tsv"
 ```
 
 Answer with the words and the place: "The Eagle has landed" at `talk.mp4#t=807.12`. To see what happens there, cut that

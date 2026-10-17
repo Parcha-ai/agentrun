@@ -58,8 +58,9 @@ fs.copyFileSync(CLIP, path.join(cwd, "landing.webm"));
 const env = { ...process.env, VIDEO: "landing.webm", CHUNK: "12", OPENAI_BASE_URL: `http://127.0.0.1:${server.address().port}/v1`, OPENAI_API_KEY: "test-key" };
 delete env.STT_MODEL;
 /** Runs shell code in the workspace as an agent's shell would, resolving its output. */
-const sh = (code) => new Promise((resolve, reject) => execFile("bash", ["-euo", "pipefail", "-c", code], { cwd, env }, (error, stdout, stderr) => (error ? reject(new Error(`${stderr}${error.message}`)) : resolve(stdout))));
-const rows = () => fs.readFileSync(path.join(cwd, ".hear/transcript.tsv"), "utf8").trim().split("\n").map((line) => line.split("\t"));
+const sh = (code, more = {}) => new Promise((resolve, reject) => execFile("bash", ["-euo", "pipefail", "-c", code], { cwd, env: { ...env, ...more } }, (error, stdout, stderr) => (error ? reject(new Error(`${stderr}${error.message}`)) : resolve(stdout))));
+const HEAR = path.join(cwd, ".hear", "landing.webm");
+const rows = () => fs.readFileSync(path.join(HEAR, "transcript.tsv"), "utf8").trim().split("\n").map((line) => line.split("\t"));
 
 test("the skill holds the five steps this test runs, and nothing more", () => {
   assert.deepEqual([settings, chunk, transcribe, write, search].map((code) => typeof code), ["string", "string", "string", "string", "string"]);
@@ -68,7 +69,7 @@ test("the skill holds the five steps this test runs, and nothing more", () => {
 
 test("two chunks transcribed once each, one transcript in seconds of the whole clip, and a phrase found with its second", async () => {
   await sh(settings + chunk + transcribe + write);
-  const starts = fs.readFileSync(path.join(cwd, ".hear/chunks.csv"), "utf8").trim().split("\n").map((line) => Number(line.split(",")[1]));
+  const starts = fs.readFileSync(path.join(HEAR, "chunks.csv"), "utf8").trim().split("\n").map((line) => Number(line.split(",")[1]));
   assert.equal(starts.length, 2, "a 20 s clip in 12 s chunks is two");
   assert.ok(Math.abs(starts[1] - 12) < 0.1, `the second chunk starts at ${starts[1]}`);
 
@@ -87,7 +88,7 @@ test("two chunks transcribed once each, one transcript in seconds of the whole c
     [at(starts[1] + 0.3), at(starts[1] + 1.6), "The Eagle has landed."],
   ], "both word shapes read, a pause starting a row, the second chunk's words at its start plus their own");
 
-  const found = await sh(search).catch(() => sh(search.replace(/^rg /m, "grep ")));
+  const found = await sh(settings + search).catch(() => sh(settings + search.replace(/^rg /m, "grep ")));
   assert.equal(found.trim(), `3:${at(starts[1] + 0.3)}\t${at(starts[1] + 1.6)}\tThe Eagle has landed.`, "the row and its start, which is the second to cite");
 });
 
@@ -96,4 +97,15 @@ test("run again, the skill sends nothing: each chunk's answer is the cache", asy
   await sh(settings + chunk + transcribe + write);
   assert.equal(requests.length, before);
   assert.equal(rows().length, 3);
+});
+
+test("a second video in the same workspace gets its own audio and chunks, and the first's are untouched", async () => {
+  fs.copyFileSync(CLIP, path.join(cwd, "other.webm"));
+  const first = fs.readFileSync(path.join(HEAR, "chunks.csv"), "utf8");
+  await sh(settings + chunk, { VIDEO: "other.webm" });
+  const other = path.join(cwd, ".hear", "other.webm");
+  assert.ok(fs.statSync(path.join(other, "audio.mp3")).size > 1000, "its own audio");
+  assert.equal(fs.readFileSync(path.join(other, "chunks.csv"), "utf8").trim().split("\n").length, 2, "its own chunks");
+  assert.equal(fs.readFileSync(path.join(HEAR, "chunks.csv"), "utf8"), first);
+  assert.equal(fs.existsSync(path.join(other, "transcript.tsv")), false, "no transcript borrowed from the first video");
 });
