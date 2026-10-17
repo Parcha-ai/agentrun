@@ -52,7 +52,7 @@ describe("openRunLease", () => {
     try {
       const t = leaseAt(dir.root);
       const lease = await t.open();
-      assert.deepEqual(t.steps, ["acquire", "owner-lock", "run.json", "heartbeat", "layout"], "no store, no Harness");
+      assert.deepEqual(t.steps, ["acquire", "owner-lock", "layout", "run.json", "heartbeat"], "no store, no Harness");
       assert.deepEqual([lease.generation, lease.sealedSeq, lease.record.status], [1, null, "running"]);
       const store = await appStore(lease);
       await lease.checkSeal({ database: store.database, file: store.file });
