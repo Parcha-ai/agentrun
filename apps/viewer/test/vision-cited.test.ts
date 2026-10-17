@@ -112,7 +112,9 @@ test('an address that is not a web page stays text, a fragment is encoded into i
       { label: 'A data address', value: 1, cites: [{ url: 'data:text/html,<b>x</b>' }] },
       { label: 'A blob address', value: 2, cites: [{ url: 'blob:https://example.org/0b1c' }] },
       { label: 'A host-relative address', value: 3, cites: [{ url: '//example.org/page' }] },
-      { label: 'A quoted fragment', value: 4, cites: [{ blob: FILM[1]!, fragment: 'page=2"><img src=x onerror=1>' }, { blob: FILM[1]! }] },
+      // A file that is not a picture, so its cites are links (a picture is drawn in its row instead).
+      { label: 'A quoted fragment', value: 4, cites: [{ blob: SCANS, fragment: 'page=2"><img src=x onerror=1>' }, { blob: SCANS }] },
+      { label: 'A quoted fragment on a picture', value: 5, cites: [{ blob: FILM[1]!, fragment: 'page=2"><img src=x onerror=1>' }] },
     ],
   };
   writeRecording(join(out, 'recordings', 'vision-links'));
@@ -131,6 +133,7 @@ test('an address that is not a web page stays text, a fragment is encoded into i
   assert.equal(hrefs.length, 2, 'both links of the quoted row are drawn');
   assert.ok(hrefs[0]!.endsWith('#page=2%22%3E%3Cimg%20src=x%20onerror=1%3E'), `the fragment is encoded into the href: ${hrefs[0]!.slice(-60)}`);
   assert.equal(hrefs[0]!.split('#')[0], hrefs[1], 'before its #, the fragment link is the same file\'s plain link');
+  assert.match(row('A quoted fragment on a picture'), /<img [^>]*class="vz-keyframe"[^>]*src="data:image\/png/, 'a picture with the same fragment is drawn in its row');
   assert.doesNotMatch(ran.stdout, /<img[^>]*src="x"/, 'nothing in the fragment became an element');
 });
 
