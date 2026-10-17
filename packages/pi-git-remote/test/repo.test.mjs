@@ -47,6 +47,39 @@ test("commitTo starts a new branch at main, writes regular files, deletes with n
   assert.equal(root2.created, true);
 });
 
+test("allowEmpty makes a commit that changes no file, so its message and trailers are the record", async () => {
+  const root = await scratch();
+  const { dir, remote, main } = await seededRemote(root);
+  const repo = await openRepo({ dir: path.join(root, "host"), remote });
+  assert.deepEqual(await repo.commitTo(MAIN, { files: {}, message: "nothing" }), { sha: main, created: false });
+  const empty = await repo.commitTo(MAIN, { files: {}, message: "held one", trailers: { "Curated-Run": "r1" }, allowEmpty: true, parent: main });
+  assert.equal(empty.created, true);
+  await repo.push(empty.sha, MAIN);
+  const [entry] = await repo.log({ max: 1 });
+  assert.deepEqual(entry, { sha: empty.sha, parents: [main], subject: "held one", trailers: { "Curated-Run": ["r1"] } });
+  const tree = async (rev) => (await rawGit(["rev-parse", `${rev}^{tree}`], { gitDir: dir })).toString().trim();
+  assert.equal(await tree(empty.sha), await tree(main));
+});
+
+test("branches lists the branches under a prefix, here and on the remote, at the commit resolve gives", async () => {
+  const root = await scratch();
+  const { remote, main } = await seededRemote(root);
+  const repo = await openRepo({ dir: path.join(root, "host"), remote });
+  const other = await openRepo({ dir: path.join(root, "other"), remote });
+  const r1 = await other.commitTo("runs/r1", { files: { "inbox/r1.md": "1\n" }, message: "r1" });
+  await other.push(r1.sha, "runs/r1");
+  const r2 = await other.commitTo("runs/r2", { files: { "inbox/r2.md": "2\n" }, message: "r2" });
+  await other.push(r2.sha, "runs/r2");
+  const x = await other.commitTo("runsx", { files: { "x.md": "x\n" }, message: "x" });
+  await other.push(x.sha, "runsx");
+  const mine = await repo.commitTo("runs/r3", { files: { "inbox/r3.md": "3\n" }, message: "r3" });
+  assert.deepEqual(await repo.branches("runs/"), [{ name: "runs/r1", sha: r1.sha }, { name: "runs/r2", sha: r2.sha }, { name: "runs/r3", sha: mine.sha }]);
+  assert.deepEqual((await repo.branches("")).map((b) => b.name), ["main", "runs/r1", "runs/r2", "runs/r3", "runsx"]);
+  assert.equal((await repo.branches("")).find((b) => b.name === "main").sha, main);
+  assert.deepEqual(await repo.branches("nothing/"), []);
+  for (const bad of ["runs", "../", "runs//", "/"]) await assert.rejects(repo.branches(bad), { code: "refused" }, bad);
+});
+
 test("commitTo builds on an explicit parent and refuses a parent the branch is not at", async () => {
   const root = await scratch();
   const { remote, main } = await seededRemote(root);

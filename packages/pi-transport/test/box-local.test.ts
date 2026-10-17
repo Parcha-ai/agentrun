@@ -259,11 +259,7 @@ describe.skipIf(!HAS_PROC)("local boxes: programs that outlive the program that 
 			const box = await create(provider);
 			// The program is not running when the starter exits: a loaded machine starts it late.
 			await output(box, ["sh", "-c", "(sleep 2; setsid sleep 300 >/dev/null 2>&1) >/dev/null 2>&1 &"]);
-			await until(() =>
-				programsOf(box.id).some((pid) =>
-					readFileSync(`/proc/${pid}/cmdline`, "latin1").startsWith("sleep\u0000300"),
-				),
-			);
+			await until(() => sleeping(box.id));
 			await box.destroy(context);
 			await until(() => programsOf(box.id).length === 0);
 			expect(programsOf(box.id)).toEqual([]);

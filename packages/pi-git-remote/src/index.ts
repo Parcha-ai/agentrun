@@ -8,6 +8,6 @@ export {
   codeStorage, type CodeStorageOptions, type CredentialSource, type GitCredential, https, type HttpsOptions, local, type Remote,
 } from "./remotes.js";
 export {
-  type CheckoutResult, type CommitOptions, type Committed, type LogEntry, type LogOptions, MAIN, type MergeResult, openRepo, type Repo,
+  type Branch, type CheckoutResult, type CommitOptions, type Committed, type LogEntry, type LogOptions, MAIN, type MergeResult, openRepo, type Repo,
   type RepoOptions, type RevertResult, RUN_ID_TRAILER, type Skipped, type Trailers, type TreeEntry,
 } from "./repo.js";
