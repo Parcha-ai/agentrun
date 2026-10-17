@@ -11,7 +11,7 @@ export type Cross = ((point: string, options?: { cut?: boolean; /** Facts about 
   park?(point: string, info?: Info): Promise<never> | undefined;
 };
 export type Info = Record<string, string | number | boolean>;
-export type Crossing = { point: string; n: number; pid: number; info?: Info };
+export type Crossing = { point: string; n: number; pid: number; info?: Info; /** A tool kill that fired at this crossing. */ landed?: true };
 
 /** A kill's `where` holds when every field it names equals the crossing's info field. */
 const matches = (where: Info | undefined, info: Info | undefined) => !where || Object.entries(where).every(([field, value]) => info?.[field] === value);
@@ -60,7 +60,8 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
       const times = count(seen, entry, true);
       if (tool < 0 && !done.has(index) && times === entry.n) tool = index;
     });
-    if (tool >= 0) { done.add(tool); return true; }
+    // A tool kill that fired is written to the log beside the crossings (n 0: it is no kill point), so the supervisor can tell a tool kill that landed from one that never did.
+    if (tool >= 0) { done.add(tool); if (log) appendFileSync(log, `${JSON.stringify({ point, n: 0, pid: process.pid, landed: true, ...(info ? { info } : {}) } satisfies Crossing)}\n`); return true; }
     if (!cut || !run) { if (point === 'event workflow.node.start') begun = true; return false; }
     // A kill with `hold` is taken by `park`, not here: the crossing parks the nth filing and the ones after it.
     if (!('storm' in run) && run.hold !== undefined) return false;
@@ -76,7 +77,8 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
     // The nth time the point is reached, counting the crossings that could have been kill points (the call that follows this one in `cross` has already counted this one).
     if ((eligible.get(run) ?? 0) < run.n) return undefined;
     parkedCount += 1;
-    const ask = () => { if (killAsked) return; killAsked = true; kill({ point, n, pid: process.pid }); };
+    // The kill waits for every tool call to return its kept answer: a parallel branch may have started one while the filing was parked, and a kill then would leave that call unknown.
+    const ask = () => { if (killAsked) return; if (window.open > 0) { setTimeout(ask, 20).unref(); return; } killAsked = true; kill({ point, n, pid: process.pid }); };
     if (parkedCount === 1) setTimeout(ask, run.waitMs ?? 3000).unref();
     if (parkedCount >= run.hold) ask();
     return new Promise<never>(() => {});

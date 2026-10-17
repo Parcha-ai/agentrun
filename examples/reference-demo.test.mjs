@@ -133,6 +133,7 @@ test('the boxes capability: a tool\'s box is destroyed once at "a box command in
   const { result, recording } = await run(t, { boxes: { kind: 'local' }, kills: [{ point: 'transport.box.exec', why: 'the install box is lost with its command running', target: 'tool' }] }, ['--kill', '--json'], { DEMO_BOX_TOOL: '1' });
   assert.deepEqual(result.processes.map((process) => [process.signal, process.outcome?.status]), [[null, 'complete']], 'one process: the run itself was not killed');
   assert.deepEqual(result.kills, []);
+  assert.deepEqual(result.unlanded, [], 'the tool kill landed: a run that finished is not told its kill never did');
   assert.equal(result.record.company, 'Acme Ltd');
   assert.deepEqual(validateRecording(recording), []);
   const lines = readEvents(recording);
@@ -886,4 +887,37 @@ test('a crossing a tool kill takes still counts for a run kill at the same point
   assert.deepEqual(kills, []);
   assert.equal(cross('transport.tool.started'), false);
   assert.deepEqual(kills, ['SIGKILL'], 'the run kill is the second matching crossing, not the third');
+});
+
+test('a held kill waits for every tool call to return before it asks: a tool a parallel branch started while the filing was parked is never cut', async () => {
+  const fired = [];
+  const window = { open: 0 };
+  const cross = crossings({ run: { point: 'vision.filing', kind: 'process', target: 'run', why: 'held', n: 1, hold: 3, waitMs: 30 }, tools: [] }, undefined, Date.now(), (crossing) => fired.push(crossing.point), window);
+  cross('vision.filing');
+  assert.ok(cross.park('vision.filing'), 'the first filing is parked');
+  window.open = 1;
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.deepEqual(fired, [], 'the wait is over, and a tool call is running: no kill yet');
+  window.open = 0;
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.deepEqual(fired, ['vision.filing'], 'the tool returned: now the kill is asked');
+});
+
+test('a look is kept with the images of its own read: a read that produced no image finds none (not the previous read\'s), and a film window keeps only the frames inside it', async () => {
+  const { shownShots } = await import('./reference/looks.ts');
+  const shown = shownShots();
+  const afterTool = shown.extension.hooks[0].handlers.afterTool;
+  const png = (text) => ({ type: 'image', data: Buffer.from(text).toString('base64'), mimeType: 'image/png' });
+  const record = (path, args = {}) => ({ args: { path, model: 'm', native: false, ...args }, status: 'ok', facts: { key: 'k' } });
+  await afterTool({ id: '1', name: 'read', arguments: { path: 'a.png' } }, { output: [png('A')], details: { evidence: 'evidence/a.json' } }, { conversationId: 7 });
+  await afterTool({ id: '2', name: 'read', arguments: { path: 'b.png' } }, { output: [{ type: 'text', text: 'the file is gone' }], details: {} }, { conversationId: 7 });
+  assert.equal(shown.of('7', record('b.png')), undefined, 'the failed read finds no images, not a.png\'s');
+  assert.equal(shown.of('7', record('a.png')).images.length, 1);
+  assert.equal(shown.of('7', record('a.png')).receipt, 'evidence/a.json');
+  await afterTool({ id: '3', name: 'read', arguments: { path: 'film.webm' } }, { output: [{ type: 'text', text: 'Frame at 1 s.' }, png('F1'), { type: 'text', text: 'Frame at 9 s.' }, png('F9')], details: {} }, { conversationId: 7 });
+  assert.deepEqual(shown.of('7', record('film.webm', { from_s: 0, to_s: 5 })).images.map((image) => image.at), [1], 'only the frame inside the window');
+  assert.deepEqual(shown.of('7', record('film.webm', { from_s: 5, to_s: 10 })).images.map((image) => image.at), [9]);
+  // A screenshot is found by its receipt.
+  await afterTool({ id: '4', name: 'screenshot', arguments: {} }, { output: [png('S')], details: { evidence: 'evidence/shot.json' } }, { conversationId: 7 });
+  assert.equal(shown.of('7', record('evidence/shot.json'), 'evidence/shot.json').images.length, 1);
 });

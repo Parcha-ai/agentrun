@@ -381,7 +381,12 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
         continue;
       }
       // The process ended on its own with a kill still planned for it (and any that follow): none of them landed.
-      for (const left of [plan, ...remaining]) for (const entry of [...(left.run ? [left.run] : []), ...left.tools]) if ('point' in entry) unlanded.push(entry.point); else unlanded.push(`storm (gap ${entry.gapMs} ms)`);
+      // A tool kill of this attempt that fired is on the child's log: it landed, however the process then ended.
+      const landed = rows<Crossing>(log).filter((crossing) => crossing.landed).map((crossing) => crossing.point);
+      for (const left of [plan, ...remaining]) {
+        const tools = left === plan ? left.tools.filter((entry) => { const at = 'point' in entry ? landed.indexOf(entry.point) : -1; if (at >= 0) landed.splice(at, 1); return at < 0; }) : left.tools;
+        for (const entry of [...(left.run ? [left.run] : []), ...tools]) if ('point' in entry) unlanded.push(entry.point); else unlanded.push(`storm (gap ${entry.gapMs} ms)`);
+      }
       break;
     }
     // What the run delivered and its store's hash come from the last runner's own report: nothing is read under the run's directory.
