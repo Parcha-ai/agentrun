@@ -40,11 +40,14 @@ export function signInSecrets(file: string): Secret[] {
   return found;
 }
 
-/** This machine's own host name and boot id (where `/proc/sys/kernel/random/boot_id` exists): a recording shows labels for a holder's, never these. A short or generic name is not taken (it would damage the lines around it). */
-export function machineSecrets(): Secret[] {
+/** Words the recording format itself is written in (its channels, sources, kinds and keys, and the values of its fixed fields): a host name that is one of them is not taken, because replacing it would rewrite the lines around it
+ *  (a machine named `host` would turn every `"source":"host"` into `"source":"[redacted]"`). Such a name says nothing about the machine anyway. */
+const RECORDING_WORDS = new Set(['host', 'process', 'kill', 'result', 'live', 'durable', 'workflow', 'browser', 'vision', 'transport', 'data', 'source', 'kind', 'channel', 'child', 'supervisor', 'run', 'status', 'point', 'label', 'side', 'null', 'true', 'false', 'blob', 'title', 'cost', 'model', 'done', 'failed', 'error', 'complete', 'revoke', 'delegation', 'receipt', 'localhost']);
+
+/** This machine's own host name and boot id (where `/proc/sys/kernel/random/boot_id` exists): a recording shows labels for a holder's, never these. A short or generic name, or one of the recording's own words, is not taken (it would damage the lines around it). `name` is for a test. */
+export function machineSecrets(name: string = hostname()): Secret[] {
   const found: Secret[] = [];
-  const name = hostname();
-  if (name.length >= 4 && name !== 'localhost') found.push({ key: 'this machine\'s host name', value: name });
+  if (name.length >= 4 && !RECORDING_WORDS.has(name.toLowerCase())) found.push({ key: 'this machine\'s host name', value: name });
   try { const boot = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(); if (boot.length >= 16) found.push({ key: 'this machine\'s boot id', value: boot }); } catch { /* not a machine that has one */ }
   return found;
 }

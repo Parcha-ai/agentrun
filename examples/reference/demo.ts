@@ -369,9 +369,12 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const bootLabels = new Map<string, string>();
   const labelOf = (labels: Map<string, string>, prefix: string, value: string) => { let label = labels.get(value); if (!label) { label = `${prefix}-${labels.size + 1}`; labels.set(value, label); } return label; };
   let reading: Promise<void> = Promise.resolve();
+  // The slow tick does not queue a read behind one still running (a place's reads can take seconds): the boundary reads, which a result waits for, then wait behind at most one.
+  let inflight = false;
   const readStatus = (): Promise<void> => {
     if (!place.status) return Promise.resolve();
     reading = reading.then(async () => {
+      inflight = true;
       try {
         const record = ((await place.status!()) as { record?: Record<string, unknown> | null } | undefined)?.record;
         if (!record || typeof record.run !== 'string' || !Number.isInteger(record.generation)) return;
@@ -385,7 +388,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
         const safeHolder = holder ? { ...kept(holder, ['driver', 'pid', 'since']), ...(typeof holder.host === 'string' ? { host: labelOf(hostLabels, 'host', holder.host) } : {}), ...(typeof holder.bootId === 'string' ? { bootId: labelOf(bootLabels, 'boot', holder.bootId) } : {}) } : undefined;
         const detail = record.detail === undefined || record.detail === null ? undefined : plainText(record.detail);
         supervisor.host('run.json', { gen: record.generation, ...kept(record, ['run', 'status', 'generation', 'sealedSeq', 'wakeAt', 'heartbeatAt', 'updatedAt']), ...(safeHolder ? { holder: safeHolder } : {}), ...(detail ? { detail } : {}) });
-      } catch { /* a reading never fails the run */ }
+      } catch { /* a reading never fails the run */ } finally { inflight = false; }
     });
     return reading;
   };
@@ -455,7 +458,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       // The budget's stop is kept: the attempt does not finish (nor the place release) until the kill, with its provider cleanup, is done.
       let deciding: Promise<void> = Promise.resolve();
       const watch = setInterval(() => { if (!decided && overBudget) deciding = decide(undefined); }, 20);
-      const tick = setInterval(() => { void readStatus(); }, 2000);
+      const tick = setInterval(() => { if (!inflight) void readStatus(); }, 2000);
       const exit = await Promise.race([runner.exited, gaveUp.then(() => undefined)]);
       const result: Exit = exit ?? { exit: null, signal: null, stderr: 'the place could not stop this process' };
       clearInterval(watch);
@@ -524,7 +527,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
 /** A place's detail as the recording holds it: text of at most 240 characters, every absolute path replaced by `<path>`. */
 export function plainText(value: unknown): string {
   const text = typeof value === 'string' ? value : JSON.stringify(value) ?? '';
-  return text.replace(/(?<![\w/:.-])\/(?:[\w.@%+~-]+\/?)+/g, '<path>').slice(0, 240);
+  // A path runs from its `/` to the next `:`, `;`, `,`, quote or end of line, spaces and all: a directory named `Client Files` is not left half in the recording.
+  return text.replace(/(?<![\w/:.-])\/[^\n:;,"'`]*/g, '<path>').slice(0, 240);
 }
 
 const readEventsOf = (dir: string) => rows<Record<string, unknown>>(join(dir, 'events.jsonl'));

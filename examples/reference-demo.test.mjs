@@ -1405,7 +1405,7 @@ test('a run.json line is an allowlist: a holder\'s sandbox id, name and mountpoi
   const [line] = readEvents(recording).filter((entry) => entry.source === 'host' && entry.kind === 'run.json');
   assert.deepEqual(Object.keys(line.data).sort(), ['detail', 'gen', 'generation', 'heartbeatAt', 'holder', 'run', 'sealedSeq', 'status', 'updatedAt', 'wakeAt']);
   assert.deepEqual(line.data.holder, { driver: 'archil', host: 'host-1', bootId: 'boot-1', pid: 12, since: 's' });
-  assert.ok(line.data.detail.startsWith('mounted at <path> and <path>:') && line.data.detail.length <= 240);
+  assert.ok(line.data.detail.startsWith('mounted at <path>:') && line.data.detail.length <= 240, 'a path runs to the next delimiter');
   const text = readFileSync(join(recording, 'events.jsonl'), 'utf8');
   for (const leaked of ['sbx-123456', 'sandbox-of-the-demo', '/mnt/archil', 'a-real-host-name', 'a-real-boot-id', 'a field nobody listed']) assert.ok(!text.includes(leaked), `${leaked} is not in the recording`);
 
@@ -1428,4 +1428,34 @@ test('a kill request written in short pieces is whole when it is renamed into pl
   t.after(() => { try { child.kill('SIGKILL'); } catch { /* gone */ } });
   for (let waited = 0; !existsSync(file) && waited < 20_000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { point: 'judge.asked verdict', n: 1, pid: child.pid, nonce: 'a-nonce' }, 'the whole request, though each write took 5 bytes');
+});
+
+test('a path in a detail is replaced whole, spaces and all; and a machine named like one of the recording\'s own words is not redacted out of its lines', async () => {
+  const { plainText } = await import('./reference/demo.ts');
+  const { machineSecrets, redactorOf } = await import('./reference/secrets.ts');
+  assert.equal(plainText('cannot open /tmp/Client Files/store: no such file'), 'cannot open <path>: no such file');
+  assert.equal(plainText('wrote /home/alice/Private Documents/report.txt, then stopped'), 'wrote <path>, then stopped');
+  assert.equal(machineSecrets('host').some((secret) => secret.key.includes('host name')), false, 'a machine named host: its name is a word of the recording');
+  assert.equal(machineSecrets('greppy-mrb').some((secret) => secret.value === 'greppy-mrb'), true, 'an ordinary name is taken');
+  const line = '{"channel":"live","source":"host","kind":"run.json","data":{"holder":{"host":"host-1"}}}';
+  const redact = redactorOf(machineSecrets('host').filter((secret) => secret.key.includes('host name')));
+  assert.equal(redact ? redact(line) : line, line, 'the lines of the format are unchanged');
+});
+
+test('the slow status tick does not queue a read behind one still running: a place whose reads take seconds is read a bounded number of times', { timeout: 120_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-slow-status-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'spec.json');
+  writeFileSync(file, JSON.stringify({ name: 'reference' }));
+  Object.assign(process.env, { DEMO_SPEC: file, DEMO_LINGER_MS: '7000' });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  let reads = 0;
+  const started = Date.now();
+  await demo({ ...options, argv: ['--json', '--record', join(tmp, 'recording')], place: ({ paths, self, destroyBoxes, requestFile }) => ({
+    ...localPlace({ self, paths, destroyBoxes, requestFile }),
+    status: async () => { reads += 1; await new Promise((resolve) => setTimeout(resolve, 2500)); return { record: null }; },
+  }) });
+  // Boundary reads (start, exit, result) plus the ticks that found no read running; a tick queued behind every slow read would make six or more.
+  assert.ok(reads <= 5, `the status was read ${reads} times in ${Date.now() - started} ms`);
 });
