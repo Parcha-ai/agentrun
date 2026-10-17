@@ -554,3 +554,15 @@ test('a kill\'s where: only a crossing whose info has those values counts, and n
   for (const where of [{}, [], 'install', { tool: {} }, { tool: null }]) assert.throws(() => killsOf({ name: 'x', kills: [{ point: 'p', why: 'w', where }] }), /where is an object/);
   assert.throws(() => killsOf({ name: 'x', kills: [{ storm: { kills: 1, gapMs: 0 }, where: { tool: 'x' } }] }), /storm has no where/);
 });
+
+test('a crossing a tool kill takes still counts for a run kill at the same point: the run kill at n 2 fires on the second matching crossing', async (t) => {
+  const kills = [];
+  const real = process.kill;
+  process.kill = (pid, signal) => { kills.push(signal); return true; };
+  t.after(() => { process.kill = real; });
+  const cross = crossings({ run: { point: 'transport.tool.started', kind: 'process', target: 'run', why: 'second', n: 2 }, tools: [{ point: 'transport.tool.started', kind: 'box', target: 'tool', why: 'first', n: 1 }] }, undefined);
+  assert.equal(cross('transport.tool.started'), true, 'the tool kill takes the first crossing');
+  assert.deepEqual(kills, []);
+  assert.equal(cross('transport.tool.started'), false);
+  assert.deepEqual(kills, ['SIGKILL'], 'the run kill is the second matching crossing, not the third');
+});
