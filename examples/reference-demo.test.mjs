@@ -982,3 +982,16 @@ test('a look is kept with the images of its own read: a read that produced no im
   await afterTool({ id: '4', name: 'screenshot', arguments: {} }, { output: [png('S')], details: { evidence: 'evidence/shot.json' } }, { conversationId: 7 });
   assert.equal(shown.of('7', record('evidence/shot.json'), 'evidence/shot.json').images.length, 1);
 });
+
+test('a directory a run already used keeps its identity: a demo whose name differs from the saved run\'s resumes it under the saved name', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-identity-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'run');
+  const first = await run(t, {}, ['--json', '--dir', dir]);
+  assert.equal(first.result.processes.at(-1).outcome.status, 'complete');
+  assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).run, 'reference');
+  // The same directory again, by a demo of another name (a directory saved before the run was named for its demo): it is not refused, and stays what it was.
+  const again = await run(t, { name: 'another-demo' }, ['--json', '--dir', dir]);
+  assert.equal(again.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(again.result.processes.at(-1)));
+  assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).run, 'reference');
+});
