@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -16,7 +16,7 @@ const { env: MARK } = guardLeaks();
 describe("the guard knows whether this host has /proc", () => {
 	it("says no for a host that does not show processes, so its checks are skipped there", () => {
 		expect(procAvailable("/nonexistent-proc/self/environ")).toBe(false);
-		expect(procAvailable()).toBe(true);
+		expect(procAvailable()).toBe(existsSync("/proc/self/environ"));
 	});
 });
 
