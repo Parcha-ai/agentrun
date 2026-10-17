@@ -229,8 +229,8 @@ export async function appOf(place: RunPlace, host: Host, job: Job, options: RunO
   return {
     registry: composed.registry, models: composed.models, ...(composed.beforeResume ? { beforeResume: composed.beforeResume } : {}),
     async onOpen(durable) {
-      const result = await composed.drive(durable);
-      await composed.cleanup(durable.harness);
+      // The browser sessions are released whether or not the run's drive succeeded.
+      const result = await composed.drive(durable).finally(() => composed.cleanup(durable.harness));
       const storeFile = join(place.store, 'run.sqlite');
       const storeSha256 = existsSync(storeFile) ? createHash('sha256').update(readFileSync(storeFile)).digest('hex') : undefined;
       await report({ result, storeSha256 });
