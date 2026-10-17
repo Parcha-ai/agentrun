@@ -48,9 +48,10 @@ const ascii = (bytes: Uint8Array, at: number, text: string): boolean => bytes.le
 const latin1 = (bytes: Uint8Array, at: number, length: number): string => String.fromCharCode(...bytes.subarray(at, at + length));
 const hex = (bytes: Uint8Array): string => Array.from(bytes.subarray(0, 8), (byte) => byte.toString(16).padStart(2, "0")).join(" ");
 
-/** The pixels a header states, the EXIF orientation (1 to 8; 1 when the file states none) and the MIME type. `width`
- *  and `height` are the stored ones: a quarter-turn orientation (5 to 8) shows the image the other way round. */
-export type ImageHeader = { readonly mimeType: string; readonly width: number; readonly height: number; readonly orientation: number };
+/** The pixels a header states, the EXIF orientation (1 to 8; 1 when the file states none), the MIME type, and whether a
+ *  JPEG is progressive. `width` and `height` are the stored ones: a quarter-turn orientation (5 to 8) shows the image
+ *  the other way round. */
+export type ImageHeader = { readonly mimeType: string; readonly width: number; readonly height: number; readonly orientation: number; readonly progressive?: true };
 
 const shape = (mimeType: string, width: number, height: number, orientation = 1): ImageHeader | null => (width > 0 && height > 0 ? { mimeType, width, height, orientation } : null);
 
@@ -75,7 +76,11 @@ function jpegHeader(bytes: Uint8Array, view: DataView): ImageHeader | null {
     if (bytes[i] !== 0xff || marker === 0xff) { i += 1; continue; }
     if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) { i += 2; continue; }
     // A start-of-frame segment (C0 to CF, except the DHT, JPG and DAC markers) holds the size.
-    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) return shape("image/jpeg", view.getUint16(i + 7), view.getUint16(i + 5), orientation);
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+      const size = shape("image/jpeg", view.getUint16(i + 7), view.getUint16(i + 5), orientation);
+      // C2, C6, CA and CE start a progressive frame.
+      return size && (marker & 0x3) === 0x2 ? { ...size, progressive: true } : size;
+    }
     if (marker === 0xe1 && ascii(bytes, i + 4, "Exif\0\0")) orientation = orientationOf(tiffTags(view, i + 10, [274]).get(274));
     i += 2 + view.getUint16(i + 2);
   }
