@@ -1,0 +1,91 @@
+{
+  "description": "A map with onItemFailure \"collect\" still stops on an effect whose outcome is unknown, after collecting another item's declared failure: the run fails on it, and nothing it collected reaches state.",
+  "workflow": {
+    "v": 2,
+    "name": "map-collect-unknown",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "map",
+      "label": "each",
+      "itemsPath": "items",
+      "as": "results",
+      "onItemFailure": "collect",
+      "failedAs": "failed",
+      "maxConcurrency": 1,
+      "body": {
+        "node": "call",
+        "label": "fetch",
+        "via": "tool",
+        "tool": "fetch",
+        "args": {
+          "id": "{item}"
+        },
+        "out": "Any",
+        "as": "got",
+        "deadline_s": 5
+      }
+    }
+  },
+  "input": {
+    "items": [
+      "a",
+      "b",
+      "c",
+      "d"
+    ]
+  },
+  "script": {
+    "effect": {
+      "/root/items/0/body": {
+        "result": {
+          "id": "a"
+        }
+      },
+      "/root/items/1/body": {
+        "throw": "the provider refused b",
+        "itemFailure": "PROVIDER_REFUSED"
+      },
+      "/root/items/2/body": {
+        "result": {
+          "id": "c"
+        }
+      },
+      "/root/items/3/body": {
+        "throw": "outcome unknown",
+        "unknown": true
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "failed",
+    "error": {
+      "kind": "adapter"
+    },
+    "events": {
+      "/root/items/0/body": [
+        "node.start:fetch",
+        "node.end:fetch:ok"
+      ],
+      "/root/items/1/body": [
+        "node.start:fetch",
+        "node.end:fetch:failed"
+      ],
+      "/root/items/2/body": [
+        "node.start:fetch",
+        "node.end:fetch:ok"
+      ],
+      "/root/items/3/body": [
+        "node.start:fetch",
+        "node.end:fetch:failed"
+      ]
+    }
+  }
+}

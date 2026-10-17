@@ -64,7 +64,7 @@ def containsReport : Node → Bool
   | .report .. | .artifact .. => true
   | .chain steps => containsReportList steps
   | .parallel _ branches => containsReportList branches
-  | .map _ _ body _ _ | .loop _ body _ _ => containsReport body
+  | .map _ _ body _ _ _ _ | .loop _ body _ _ => containsReport body
   | .route _ _ branches _ _ _ | .routeValue _ _ branches _ _ _ => containsReportNamed branches
   | _ => false
 def containsReportList : List Node → Bool
@@ -81,7 +81,7 @@ def countReports : Node → Nat
   | .report .. | .artifact .. => 1
   | .chain steps => countReportsList steps
   | .parallel _ branches => countReportsList branches
-  | .map _ _ body _ _ | .loop _ body _ _ => countReports body
+  | .map _ _ body _ _ _ _ | .loop _ body _ _ => countReports body
   | .route _ _ branches _ _ _ | .routeValue _ _ branches _ _ _ => countReportsNamed branches
   | _ => 0
 def countReportsList : List Node → Nat
@@ -96,7 +96,7 @@ end
 def Node.declaredAs : Node → Option String
   | .code _ as => as
   | .gen _ _ _ as _ _ _ => as
-  | .map _ _ _ as _ => some as
+  | .map _ _ _ as _ _ _ => some as
   | .judge _ _ _ as _ => some as
   | .pick _ _ _ _ _ as _ => some as
   | .sift _ _ _ _ _ _ as _ => some as
@@ -111,7 +111,9 @@ otherwise the node's `as`; no descent into map bodies or child workflows. It ign
 labels, `<as>$answers`, `<as>$verify` and code patches. -/
 def declaredWrites : Node → List String
   | .report .. => ["report_markdown"]
-  | .map _ _ _ as _ => if as.isEmpty then [] else [as]
+  | .map _ _ _ as _ _ fa => (if as.isEmpty then [] else [as]) ++ (match fa with
+      | some k => if k.isEmpty then [] else [k]
+      | none => [])
   | .chain steps => declaredWritesList steps
   | .parallel _ branches => declaredWritesList branches
   | .loop _ body _ _ => declaredWrites body
@@ -183,6 +185,20 @@ def itemsErrors (avail : Option (List String)) (p : Path) : List String :=
   match avail with
   | some A => if A.contains (headOf p) then [] else ["itemsPath has no upstream producer"]
   | none => []
+
+/-- `onItemFailure` and `failedAs` as the validator checks them: `onItemFailure` is `"stop"` or `"collect"`;
+`failedAs` is required with `"collect"`, refused otherwise, not blank, not a `"$"` key and not `as`. -/
+def collectErrors (as : String) (oif fa : Option String) : List String :=
+  (match oif with
+    | none | some "stop" | some "collect" => []
+    | some _ => ["onItemFailure must be \"stop\" or \"collect\""]) ++
+  (if oif == some "collect" then
+    (match fa with
+      | none => ["onItemFailure \"collect\" needs failedAs"]
+      | some k => if k.trim.isEmpty then ["onItemFailure \"collect\" needs failedAs"]
+        else if startsWithDollar k then ["failedAs must not name an engine-owned \"$\" state key"]
+        else if k == as then ["failedAs must differ from as"] else [])
+  else if fa.isSome then ["failedAs is written only with onItemFailure \"collect\""] else [])
 
 /-- The reserved-key rules applied to every node. -/
 def dollarErrors : Node → List String
@@ -270,11 +286,11 @@ def walk : Node → Addr → VEnv → VOut
             | none => ["path must be a workspace-relative file"]) ++
           requiresErrors env.avail requires
         checked := checkedAt env.avail addr }
-  | n@(.map _ itemsPath body as _), addr, env =>
+  | n@(.map _ itemsPath body as _ oif fa), addr, env =>
     let r := walk body (addr ++ [.body]) { env with avail := none }
     { r with
       errors := dollarErrors n ++ itemsErrors env.avail itemsPath ++
-        (if as.isEmpty then ["as required"] else []) ++
+        (if as.isEmpty then ["as required"] else []) ++ collectErrors as oif fa ++
         (if containsReport body then ["a report node cannot live inside a map body"] else []) ++ r.errors
       avail := none }
   | n@(.parallel _ branches), addr, env =>

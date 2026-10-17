@@ -1,0 +1,36 @@
+{
+  "description": "failedAs is written only with onItemFailure \"collect\": a map that names it without collecting is refused.",
+  "workflow": {
+    "v": 2,
+    "name": "map-collect-invalid",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "map",
+      "label": "each",
+      "itemsPath": "items",
+      "as": "results",
+      "failedAs": "failed",
+      "body": {
+        "node": "code",
+        "label": "double",
+        "code": "s => ({ doubled: s.item * 2 })"
+      }
+    }
+  },
+  "input": {
+    "items": [
+      1,
+      2
+    ]
+  },
+  "expected": {
+    "valid": false
+  }
+}
