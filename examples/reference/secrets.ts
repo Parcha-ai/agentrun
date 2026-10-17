@@ -104,7 +104,8 @@ export function scanRecording(dir: string, secrets: readonly Secret[]): void {
   for (const file of filesUnder(dir)) {
     const bytes = readFileSync(file);
     for (const secret of secrets) {
-      if (bytes.includes(secret.value)) throw new Error(`the recording holds a secret that the redaction should have removed: ${secret.key} is in ${relative(dir, file)}`);
+      // Raw, and as written inside a JSON string (a line holds a token with a quote, a backslash or a newline escaped): the redaction takes both forms out, so the scan looks for both.
+      if (bytes.includes(secret.value) || bytes.includes(JSON.stringify(secret.value).slice(1, -1))) throw new Error(`the recording holds a secret that the redaction should have removed: ${secret.key} is in ${relative(dir, file)}`);
     }
   }
 }
