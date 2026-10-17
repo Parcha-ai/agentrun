@@ -5,7 +5,7 @@
 // and the page fetches a recording when it is opened, so the page stays small; that needs a static host, not file://.
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
-import { extname, join } from 'node:path';
+import { basename, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MIME } from './src/blobs.ts';
 
@@ -57,19 +57,22 @@ export function build(target = out, recordingsDir = join(here, 'recordings'), { 
   writeFileSync(join(target, 'viewer.js'), `(() => {\n'use strict';\n${parts.join('\n')}\n})();\n`);
   writeFileSync(join(target, 'index.html'), readFileSync(join(here, 'index.html')));
 
+  // A recorder writes a blob as `.<sha>.<ext>.tmp-<pid>` and renames it once whole, so a copy of a recording taken while
+  // it goes may hold such a name: it is not a blob yet, and is neither listed nor shipped.
+  const unfinished = (name) => /^\..*\.tmp-\d+$/.test(name);
   const gallery = [];
   for (const id of existsSync(recordingsDir) ? readdirSync(recordingsDir).sort() : []) {
     const dir = join(recordingsDir, id);
     if (!existsSync(join(dir, 'manifest.json'))) continue;
     const blobs = {};
-    for (const file of existsSync(join(dir, 'blobs')) ? readdirSync(join(dir, 'blobs')) : []) {
+    for (const file of existsSync(join(dir, 'blobs')) ? readdirSync(join(dir, 'blobs')).filter((name) => !unfinished(name)) : []) {
       const ext = extname(file).slice(1);
       // Embedded, a blob is a data: URL; shipped as files, its path in the recording's directory.
       blobs[file.slice(0, -ext.length - 1)] = files ? `blobs/${file}` : `data:${MIME[ext] ?? 'application/octet-stream'};base64,${readFileSync(join(dir, 'blobs', file)).toString('base64')}`;
     }
     const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
     gallery.push(files ? { id, manifest, blobs } : { id, manifest, events: readFileSync(join(dir, 'events.jsonl'), 'utf8'), blobs });
-    cpSync(dir, join(target, 'recordings', id), { recursive: true });
+    cpSync(dir, join(target, 'recordings', id), { recursive: true, filter: (source) => !unfinished(basename(source)) });
   }
   if (files) {
     mkdirSync(join(target, 'recordings'), { recursive: true });

@@ -55,6 +55,9 @@ const gate = (t, recordings) => {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, 'scripts/recording'), { recursive: true });
   for (const name of ['gate.mjs', 'validate.mjs']) cpSync(join(root, 'scripts/recording', name), join(dir, 'scripts/recording', name));
+  // Both import the one scanner, which lives in the reference example.
+  mkdirSync(join(dir, 'examples/reference'), { recursive: true });
+  cpSync(join(root, 'examples/reference/scan.ts'), join(dir, 'examples/reference/scan.ts'));
   build(join(dir, 'apps/viewer/dist'), recordings);
   return new Promise((resolve) => execFile('bash', ['-c', GATE], { cwd: dir }, (error, stdout, stderr) => resolve({ code: error ? error.code : 0, stdout, stderr })));
 };
