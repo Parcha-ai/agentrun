@@ -203,7 +203,7 @@ export async function dryRunWorkflow(workflow: Workflow, opts: DryRunOptions = {
     }
     return { ok: true, status: "passed" };
   } catch (error) {
-    if (stopped) return { ok: true, skipped: [stopped] };
+    if (stopped) return { ok: true, status: "not_run", skipped: [stopped] };
     if (error instanceof WorkflowOutputInvalidError) {
       return { ok: false, status: "failed", problems: error.problems, stage: error.stage };
     }
