@@ -199,7 +199,7 @@ carries it.
 
 | Provider | Key a stranger sets | Transcriber | Model (default) | One request takes |
 | --- | --- | --- | --- | --- |
-| fal | `FAL_KEY` (`Authorization: Key`) | `falTranscriber({ apiKey: () => process.env.FAL_KEY })` | `fal-ai/elevenlabs/speech-to-text/scribe-v2`, $0.008 a minute | 2.4 MB, inline (10 minutes at 32 kbps) |
+| fal | `FAL_KEY` (`Authorization: Key`) | `falTranscriber({ apiKey: () => process.env.FAL_KEY })` | `fal-ai/elevenlabs/speech-to-text/scribe-v2`, $0.008 a minute | 2.5 MB, inline (10 minutes 25 seconds at 32 kbps) |
 | ElevenLabs | `ELEVENLABS_API_KEY` (`xi-api-key`) | `elevenLabsTranscriber({ apiKey: () => process.env.ELEVENLABS_API_KEY })` | `scribe_v2` | 3 GB |
 | OpenAI | `OPENAI_API_KEY` (bearer) | `openAiTranscriber({ apiKey: () => process.env.OPENAI_API_KEY })` | `whisper-1`, the one OpenAI model with word times | 25 MB |
 
