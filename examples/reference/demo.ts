@@ -564,7 +564,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
 export function messageOf(error: unknown, root: string): string {
   const own = resolve(root);
   const text = String((error as { message?: unknown } | null)?.message ?? error);
-  return text.replace(/(?<![\w/:.-])\/(?:[\w.@%+~-]+\/?)+/g, (path) => (path === own || path.startsWith(`${own}/`) ? path : '<path>')).slice(0, 240);
+  // A directory in a path may have spaces in its name (`Private Documents`): a path's folders are words joined by single spaces, and only its last part ends at a space, so `/srv/x and /run/y` is two paths, not one. A Windows drive path is replaced too.
+  return text.replace(/(?<![\w/:.-])\/(?:[\w.@%+~-]+(?: [\w.@%+~-]+)*\/)*[\w.@%+~-]+\/?|\b[A-Za-z]:\\(?:[^\\\n;,"'`]+\\)*[^\s\\;,"'`]+/g, (path) => (path === own || path.startsWith(`${own}/`) ? path : '<path>')).slice(0, 240);
 }
 
 /** A place's detail as the recording holds it: text of at most 240 characters, every absolute path replaced by `<path>`. */
