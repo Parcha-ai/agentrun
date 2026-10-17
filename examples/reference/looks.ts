@@ -31,7 +31,8 @@ export type Shown = { conversationId: string; callId: string; args: Record<strin
 /** The screenshot each conversation last took, from a hook installed before vision's guard: the guard then hands the image to the eyes and the
  *  lead never holds it. `keep` stores an image's bytes (a recording's blob) and returns its SHA-256. It changes no result. */
 export function shownShots(options: { keep?: (bytes: Buffer, extension: string) => string; onShown?: (shown: Shown) => void } = {}) {
-  const byConversation = new Map<string, { receipt: string | null; images: ShownImage[] }>();
+  // Each conversation's reads, newest last: a look finds the read it was of by its path (a screenshot by its receipt), never "the last one".
+  const byConversation = new Map<string, { receipt: string | null; images: ShownImage[]; path?: string }[]>();
   const extension = {
     name: 'entry-shown', tools: [], wraps: [],
     hooks: [{ task: 'pi.tool', handlers: { afterTool: async (call: { id: string; name: string; arguments?: Record<string, unknown> }, result: Record<string, unknown>, api: { conversationId: unknown }) => {
@@ -47,7 +48,9 @@ export function shownShots(options: { keep?: (bytes: Buffer, extension: string) 
         return [{ type: 'image' as const, mimeType, ...(second ? { at: Number(second) } : {}), blob: options.keep ? options.keep(bytes, EXTENSIONS[mimeType] ?? 'bin') : createHash('sha256').update(bytes).digest('hex') }];
       });
       const evidence = (result.details as { evidence?: unknown } | undefined)?.evidence;
-      byConversation.set(String(api.conversationId), { receipt: typeof evidence === 'string' ? evidence : null, images });
+      const list = byConversation.get(String(api.conversationId)) ?? [];
+      list.push({ receipt: typeof evidence === 'string' ? evidence : null, images, ...(call.name === 'read' && typeof call.arguments?.path === 'string' ? { path: call.arguments.path } : {}) });
+      byConversation.set(String(api.conversationId), list.slice(-50));
       // One live line per read: its arguments (the question left out), the media facts, and the captions with the images (the page's text layer is not kept).
       if (call.name === 'read' && options.onShown) {
         const { ask: _ask, ...args } = call.arguments ?? {};
@@ -57,7 +60,17 @@ export function shownShots(options: { keep?: (bytes: Buffer, extension: string) 
       return undefined;
     } } }],
   } as unknown as Extension;
-  return { extension, of: (conversationId: string) => byConversation.get(conversationId) };
+  return {
+    extension,
+    /** The images the eyes were shown for this look: the newest read of the look's own file (or screenshot, by its receipt), and for a film window only the frames inside it. A look whose read produced no image finds none. */
+    of: (conversationId: string, record?: LookRecord, receipt?: string | null) => {
+      const entry = [...(byConversation.get(conversationId) ?? [])].reverse().find((read) => (record && read.path !== undefined && read.path === record.args.path) || (receipt && read.receipt === receipt));
+      if (!entry) return undefined;
+      const from = record?.args.from_s;
+      const to = record?.args.to_s;
+      return { receipt: entry.receipt, images: from !== undefined && to !== undefined ? entry.images.filter((image) => image.at === undefined || (image.at >= from && image.at <= to)) : entry.images };
+    },
+  };
 }
 
 /** The vision options that keep each reported look in `VisionLooks`, in its own commit, once the look is reported (a look that failed too: its miss `{ code, reason }`), with the screenshot or the
@@ -67,7 +80,7 @@ export function keepLooks(harness: () => Harness | undefined, options: { shown?:
   const keep = async (conversationId: string, receipt: string | null, record: LookRecord | undefined, miss: MissEvent | null) => {
     const open = harness();
     if (!open || !record) return;
-    const shot = options.shown?.of(conversationId);
+    const shot = options.shown?.of(conversationId, record, receipt);
     // A record's optional facts may be undefined, which a document does not hold: it is kept as its JSON.
     const value = JSON.parse(JSON.stringify({
       receipt: shot?.receipt ?? receipt, record, item: options.itemOf?.(String(record.args.path)) ?? null, images: shot?.images ?? [],
