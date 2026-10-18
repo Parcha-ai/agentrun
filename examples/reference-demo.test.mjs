@@ -1386,6 +1386,55 @@ test('a holder\'s host and boot id are labels in the recording (host-1, host-2, 
   assert.deepEqual(validateRecording(recording), []);
 });
 
+// ---- the operator's kill ------------------------------------------------------------------------------------------------------------------------
+
+test('an operator kill (a control file the supervisor watches, never the child\'s request file) kills through the place, writes a kill line with crossing null and label operator, and the run resumes with repeated 0', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-operator-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'spec.json');
+  writeFileSync(file, JSON.stringify({ name: 'reference' }));
+  Object.assign(process.env, { DEMO_SPEC: file });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const control = join(tmp, 'control', 'kill-now');
+  mkdirSync(join(tmp, 'control'));
+  const recording = join(tmp, 'recording');
+  // The operator\'s page, here a test: once the judge has answered in the first process, it makes the control file.
+  const killed = [];
+  const placeOn = (trigger) => ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner, start: async (order) => {
+      const runner = await inner.start(order);
+      const waiting = setInterval(() => { try { if (readFileSync(order.env.CROSS_LOG, 'utf8').includes(trigger) && !killed.length) { killed.push(order.gen); writeFileSync(control, ''); clearInterval(waiting); } } catch { /* not yet */ } }, 5);
+      runner.exited.then(() => clearInterval(waiting));
+      return runner;
+    } };
+  };
+  const place = placeOn('judge.answered verdict');
+  const result = await demo({ ...options, argv: ['--json', '--record', recording, '--operator-kill', control], place });
+  assert.deepEqual(result.processes.map((process) => [process.signal, process.outcome?.status ?? null]), [['SIGKILL', null], [null, 'complete']], JSON.stringify(result.processes));
+  assert.equal(result.record.company, 'Acme Ltd');
+  assert.ok(!existsSync(control), 'the supervisor consumed the control file');
+  const lines = readEvents(recording);
+  const kills = lines.filter((line) => line.source === 'host' && line.kind === 'kill');
+  assert.deepEqual(kills.map((line) => [line.data.gen, line.data.label, line.data.crossing, line.data.kind]), [[1, 'operator', null, 'process']]);
+  assert.deepEqual(result.kills.map((kill) => [kill.gen, kill.point, kill.why]), [[1, null, 'the operator asked']]);
+  const counted = fold(lines);
+  assert.deepEqual([counted.processes, counted.kills, counted.repeated, counted.unknown], [2, 1, 0, 0]);
+  assert.deepEqual(validateRecording(recording), []);
+  // The plan\'s own kill is not lost: an operator kill that ends an attempt first leaves its planned kill for the next one.
+  killed.length = 0;
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'planned' }] }));
+  const { options: planned } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const both = await demo({ ...planned, argv: ['--kill', '--json', '--operator-kill', control], place: placeOn('model.request turn 0') });
+  assert.deepEqual(both.kills.map((kill) => [kill.gen, kill.point ?? 'operator']), [[1, 'operator'], [2, 'judge.asked verdict']]);
+  assert.deepEqual(both.unlanded, []);
+  assert.equal(both.processes.at(-1).outcome.status, 'complete');
+  // A stale control file would kill the first process at once: it is refused.
+  writeFileSync(control, '');
+  await assert.rejects(() => demo({ ...options, argv: ['--json', '--operator-kill', control] }), /already exists/);
+});
+
 // ---- code mode ---------------------------------------------------------------------------------------------------------------------------------
 
 test('code mode is off by default; on, the agent\'s `code` tool runs a script whose bash runs in work/, whose vision.see is the composed handle\'s, and which reaches nothing else', { timeout: 300_000 }, async (t) => {
@@ -1502,4 +1551,27 @@ test('the slow status tick does not queue a read behind one still running: a pla
   }) });
   // Boundary reads (start, exit, result) plus the ticks that found no read running; a tick queued behind every slow read would make six or more.
   assert.ok(reads <= 5, `the status was read ${reads} times in ${Date.now() - started} ms`);
+});
+
+test('an operator kill carries to the next attempt only the tool kills that did not land, and a control that cannot be removed is a failed kill, not a crash', { timeout: 300_000 }, async (t) => {
+  const { notLanded } = await import('./reference/demo.ts');
+  const dir = await mkdtemp(join(tmpdir(), 'reference-landed-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const log = join(dir, 'crossings.jsonl');
+  const row = (extra) => `${JSON.stringify({ point: 'transport.box.exec', n: 0, pid: 1, ...extra })}\n`;
+  writeFileSync(log, row({}) + row({ landed: true }) + row({ point: 'transport.tool.started' }));
+  const tools = [{ point: 'transport.box.exec', n: 1 }, { point: 'transport.box.exec', n: 2 }, { point: 'transport.tool.started', n: 1 }];
+  assert.deepEqual(notLanded(tools, log), [tools[1], tools[2]], 'one landed kill at that point is spent; the one that has not fired, and other points, are carried');
+  assert.deepEqual(notLanded(tools, join(dir, 'no-log')), tools, 'nothing landed when the child wrote no log');
+  // A control that cannot be removed (a directory made by mistake): a failed kill on the normal path, and the supervisor does not crash.
+  const { tmp, options } = await specWith(t, { name: 'reference' });
+  const control = join(tmp, 'control');
+  let asked = false;
+  const place = ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner, start: async (order) => { const runner = await inner.start(order); if (!asked) { asked = true; setTimeout(() => mkdirSync(control), 50); } return runner; } };
+  };
+  const bad = await demo({ ...options, argv: ['--json', '--operator-kill', control], place });
+  assert.equal(bad.failedKills.length, 1, 'the control that could not be removed is a failed kill');
+  assert.equal(bad.kills.length, 0, 'and no kill happened');
 });

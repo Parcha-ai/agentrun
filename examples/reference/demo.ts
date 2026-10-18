@@ -100,7 +100,7 @@ export type DemoResult = {
   unlanded: string[];
 };
 
-const FLAGS = { child: { type: 'boolean' }, live: { type: 'boolean' }, kill: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, 'local-chrome': { type: 'boolean' }, 'fetch-sources': { type: 'boolean' }, cache: { type: 'string' }, dir: { type: 'string' }, json: { type: 'boolean' }, provider: { type: 'string' }, model: { type: 'string' }, 'eyes-model': { type: 'string' }, 'see-also': { type: 'string', multiple: true } } as const;
+const FLAGS = { child: { type: 'boolean' }, live: { type: 'boolean' }, kill: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, 'local-chrome': { type: 'boolean' }, 'fetch-sources': { type: 'boolean' }, cache: { type: 'string' }, dir: { type: 'string' }, json: { type: 'boolean' }, provider: { type: 'string' }, model: { type: 'string' }, 'eyes-model': { type: 'string' }, 'see-also': { type: 'string', multiple: true }, 'operator-kill': { type: 'string' } } as const;
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
 /** Set while `pi-durable-disk run --app` imports a demo's module for its `options`: the module's own top-level `demo(options)` then does nothing, so it is safe to import. */
@@ -323,6 +323,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const browser = chooseBrowser({ live, env: process.env, localChrome: values['local-chrome'] === true });
   const plans = values.kill ? plansOf(killsOf(spec)) : [];
   const maxUsd = maxUsdOf(values['max-usd'], spec);
+  // The operator's control file: a path the caller names (`--operator-kill`), which must not exist yet (a stale one would kill the first process).
+  const operatorKill = values['operator-kill'] ? resolve(values['operator-kill']) : undefined;
+  if (operatorKill && existsSync(operatorKill)) throw new Error(`--operator-kill ${operatorKill} already exists: it is the operator's control, made only to ask for a kill`);
   // What a recording must not hold, read before anything starts: a sign-in file that cannot be read fails the record here, not after a paid run.
   const tracked = values.record ? trackSecrets(process.env, spec) : undefined;
   const redact = tracked?.redact;
@@ -405,7 +408,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     for (;;) {
       // Past the cap, no further process is started: the budget is checked before every restart.
       if (overBudget && processes.length > 0) break;
-      const plan = remaining.shift() ?? { tools: [] };
+      const queued = remaining.shift();
+      const plan = queued ?? { tools: [] };
       // A kill this attempt plans that the place cannot make is refused before the attempt starts: the run is not stopped first, and no machine loss is recorded.
       const planned = plan.run?.kind ?? 'process';
       if (!place.kills.includes(planned)) throw new Error(`the ${place.name} place cannot lose its ${planned}: this kill is not one it can make`);
@@ -436,11 +440,13 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
         supervisor.host('kill.failed', { gen, code, message: message.slice(0, 240), kind });
         giveUp();
       };
-      const decide = async (asked: { point: string; n: number } | undefined) => {
+      const decide = async (asked: { point: string; n: number } | 'operator' | undefined) => {
         if (decided) return;
         decided = true;
-        const kind = asked ? (plan.run?.kind ?? 'process') : 'process';
-        killed = asked
+        const kind = asked && asked !== 'operator' ? (plan.run?.kind ?? 'process') : 'process';
+        killed = asked === 'operator'
+          ? { point: null, n: null, label: 'operator', why: 'the operator asked', kind: 'process' }
+          : asked
           ? { point: asked.point, n: asked.n, label: plan.run && !('storm' in plan.run) ? plan.run.point : asked.point, why: plan.run?.why ?? 'a kill', kind }
           : { point: null, n: null, label: 'max-usd', why: `past --max-usd ${maxUsd}`, kind: 'process' };
         supervisor.host('kill', { gen, label: killed.label, crossing: killed.point === null ? null : { point: killed.point, n: killed.n }, side: 'child', kind: killed.kind });
@@ -458,9 +464,16 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
           await decide(next.value.crossing);
         }
       })();
-      // The budget's stop is kept: the attempt does not finish (nor the place release) until the kill, with its provider cleanup, is done.
+      // The operator's control, a file the supervisor watches (never the child's request file): the caller makes it, the supervisor removes it, kills through the place and resumes as usual. The budget's stop is kept:
+      // the attempt does not finish (nor the place release) until the kill, with its provider cleanup, is done.
       let deciding: Promise<void> = Promise.resolve();
-      const watch = setInterval(() => { if (!decided && overBudget) deciding = decide(undefined); }, 20);
+      const watch = setInterval(() => {
+        if (decided) return;
+        if (operatorKill && existsSync(operatorKill)) {
+          // A control that cannot be removed (a directory made by mistake, a parent that forbids it) is a failed kill, reported through the normal path: the supervisor does not crash with the child still running.
+          try { rmSync(operatorKill, { force: true }); deciding = decide('operator'); } catch (error) { decided = true; failed(String((error as { code?: unknown } | null)?.code ?? 'OPERATOR_KILL_UNUSABLE'), 'the operator\'s kill control could not be removed', 'process'); }
+        } else if (overBudget) deciding = decide(undefined);
+      }, 20);
       const tick = setInterval(() => { if (!inflight) void readStatus(); }, 2000);
       const exit = await Promise.race([runner.exited, gaveUp.then(() => undefined)]);
       const result: Exit = exit ?? { exit: null, signal: null, stderr: 'the place could not stop this process' };
@@ -472,7 +485,12 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       await deciding;
       processes.push(result);
       if (killFailed || (killed && killed.label === 'max-usd')) break;
-      if (killed) { previous = { runner, kind: killed.kind }; continue; }
+      if (killed) {
+        // An operator's kill is not the plan's: a kill still planned for the attempt the operator ended is planned for the next.
+        if (killed.label === 'operator' && queued) remaining.unshift({ ...queued, tools: notLanded(queued.tools, log) });
+        previous = { runner, kind: killed.kind };
+        continue;
+      }
       // A process that died by SIGKILL on its own (a crash, or a kill with no supervisor) is a kill at the last crossing it logged.
       if (result.signal === 'SIGKILL') {
         const at = rows<Crossing>(log).filter((crossing) => crossing.n > 0).at(-1);
@@ -484,9 +502,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       }
       // The process ended on its own with a kill still planned for it (and any that follow): none of them landed.
       // A tool kill of this attempt that fired is on the child's log: it landed, however the process then ended.
-      const landed = rows<Crossing>(log).filter((crossing) => crossing.landed).map((crossing) => crossing.point);
       for (const left of [plan, ...remaining]) {
-        const tools = left === plan ? left.tools.filter((entry) => { const at = 'point' in entry ? landed.indexOf(entry.point) : -1; if (at >= 0) landed.splice(at, 1); return at < 0; }) : left.tools;
+        const tools = left === plan ? notLanded(left.tools, log) : left.tools;
         for (const entry of [...(left.run ? [left.run] : []), ...tools]) if ('point' in entry) unlanded.push(entry.point); else unlanded.push(`storm (gap ${entry.gapMs} ms)`);
       }
       break;
@@ -532,6 +549,12 @@ export function plainText(value: unknown): string {
   const text = typeof value === 'string' ? value : JSON.stringify(value) ?? '';
   // A path runs from its `/` to the next `:`, `;`, `,`, quote or end of line, spaces and all: a directory named `Client Files` is not left half in the recording.
   return text.replace(/(?<![\w/:.-])\/[^\n:;,"'`]*/g, '<path>').slice(0, 240);
+}
+
+/** The tool kills of an attempt that did not fire: those the child's log (`landed` rows) does not show. A kill that landed is not carried to the next attempt, where it would take another box. */
+export function notLanded<T extends object>(tools: readonly T[], log: string): T[] {
+  const landed = rows<Crossing>(log).filter((crossing) => crossing.landed).map((crossing) => crossing.point);
+  return tools.filter((entry) => { const at = 'point' in entry ? landed.indexOf(String(entry.point)) : -1; if (at >= 0) landed.splice(at, 1); return at < 0; });
 }
 
 const readEventsOf = (dir: string) => rows<Record<string, unknown>>(join(dir, 'events.jsonl'));
