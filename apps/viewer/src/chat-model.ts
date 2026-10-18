@@ -17,6 +17,9 @@ export type ChatItem =
     title: string;
     /** Its one argument in full when that spans lines (a command, a script), shown where the card opens. */
     detail?: string;
+    /** With no thinking and no text of the agent's right before it, a step that made a look speaks for itself: what its
+     *  first look asked when that is words, else that look's line. */
+    voice?: string;
     /** The result's first line; empty when the result had no words. */
     takeaway: string;
     /** Images in the result, by SHA-256. */
@@ -36,7 +39,9 @@ export type ChatItem =
 /** A model call made inside a tool call (a vision look, a Jev decision, speech to text). `label` is its name, its
  *  scores and what it drew ("Jev judge · 0.87 · box drawn"), the same on its card and its span; `raw` is its output
  *  as recorded; `look` its key when it was a look, for its picture and regions. */
-export type ChatCall = { id: string; name: string; label: string; raw: string; look?: string; model?: string; judge?: true; t0?: number; t1?: number };
+export type ChatCall = { id: string; name: string; label: string; raw: string; look?: string; model?: string; judge?: true;
+  /** What a look asked, when it asked in words (not a typed request). */
+  ask?: string; t0?: number; t1?: number };
 
 /** One recorded conversation: an agent node's, named by its node; a run of one conversation has one thread. Its first
  *  user entry is the prompt the host composed from the node's input, so it is not an item. */

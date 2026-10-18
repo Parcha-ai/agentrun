@@ -353,7 +353,12 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     if (item && key) { if (!item.looks.includes(key)) item.looks.push(key); lookItem.set(key, item.id); }
     const name = chatCallName(tool, chatStr(chatObj(record?.args)?.via));
     const judge = chatIsJudge(tool) ? { judge: true as const } : {};
+    const asked = chatStr(d?.ask) ?? chatStr(chatObj(record?.args)?.ask);
+    let typed = false;
+    try { typed = !!asked && typeof JSON.parse(asked) === 'object'; } catch { /* words */ }
+    const ask = asked && !typed ? chatClip(chatFirstLine(asked), 160) : '';
     const call: ChatCall = { id: `call-${++counter}`, name, label: chatCallLabel(name, record?.body), raw: chatRaw(record?.body), ...(key ? { look: key } : {}), ...(model ? { model } : {}), ...judge,
+      ...(ask ? { ask } : {}),
       ...(started !== undefined ? { t0: started } : {}), t1: line.t };
     if (item) item.calls.push(call);
     spans.push({ id: `span-${spans.length + 1}`, actor: 'inner', lane: name, label: call.label, t0: started ?? line.t, ...(started !== undefined ? { t1: line.t } : {}),
@@ -417,6 +422,15 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     const only = item.looks.length === 1 ? sources[item.looks[0]!] : undefined;
     if (only?.takeaway) item.takeaway = only.takeaway;
   }
+
+  // A step that nothing the agent thought or wrote leads into, and that made a look, speaks for itself with what the
+  // look asked; its result is a log, never a voice.
+  for (const thread of ordered) thread.items.forEach((item, index) => {
+    const before = thread.items[index - 1];
+    if (item.kind !== 'tool' || before?.kind === 'thinking' || before?.kind === 'assistant') return;
+    const look = item.calls.find((call) => call.look);
+    if (look) item.voice = look.ask ?? look.label;
+  });
 
   // The run's answer: its cited result, each cite on the look (and the card) that made it; else the result record it
   // submitted, a field of evidence paths as its cites; else its final assistant text.

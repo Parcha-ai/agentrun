@@ -183,6 +183,26 @@ test('a command that opens a quote or a here-document on its first line is title
   assert.equal(chatCommandLine('echo "done"\nls'), 'echo "done"');
 });
 
+test('a step that nothing the agent thought or wrote leads into speaks with what its first look asked, never its result', async () => {
+  const m = await model(hearAndFind);
+  for (const thread of m.threads) thread.items.forEach((item, index) => {
+    if (item.kind !== 'tool') return;
+    const led = ['thinking', 'assistant'].includes(thread.items[index - 1]?.kind ?? '');
+    const look = item.calls.find((call) => call.look);
+    assert.equal(item.voice, led || !look ? undefined : look.ask ?? look.label, item.title);
+  });
+  const code = tools(m).find((item) => item.calls.length > 0)!;
+  assert.equal(code.calls[0]!.ask, undefined, 'a transcription asks nothing');
+  assert.equal(code.voice, code.calls[0]!.label, "so the step speaks with its look's line");
+  assert.equal(code.calls.find((call) => call.judge)!.ask, undefined, "a judge's typed request is no words");
+  assert.ok(code.calls.some((call) => call.ask && !call.ask.startsWith('{')), 'a look asked in words keeps its ask');
+  assert.ok(tools(m).filter((item) => !item.calls.some((call) => call.look)).every((item) => item.voice === undefined), 'a step with no look has no voice');
+  const thought = await model(hearAndFind, editFirst('pi.assistant', (data) => { (data.model[0]!.content as Json[]).unshift({ type: 'thinking', thinking: '**Planning**' }); }));
+  const first = thought.threads[0]!.items.findIndex((item) => item.kind === 'thinking');
+  const next = thought.threads[0]!.items[first + 1];
+  assert.ok(next?.kind !== 'tool' || next.voice === undefined, 'a step its thinking leads into has no voice of its own');
+});
+
 test("a cite's address keeps its file and fragment however the fragment is written", () => {
   assert.equal(chatCiteHref('#page=2', 'notes.pdf'), 'notes.pdf#page=2');
   assert.equal(chatCiteHref('page=2&xywh=percent:1,2,3,4', 'notes.pdf'), 'notes.pdf#page=2&xywh=percent:1,2,3,4');
