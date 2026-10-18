@@ -22,7 +22,7 @@ export const codeTool = (vision, { replay = "safe", taskMemos = false } = {}) =>
     parameters: { type: "object", properties: { code: { type: "string" } }, required: ["code"] },
     execute: async ({ code }, api, context) => {
       const call = await callContext(taskMemos ? withoutStore(api) : api, context);
-      const sandbox = new CodemodeSandbox({ globals: [vision.see(api.env, call), vision.judge(api.env, call)] });
+      const sandbox = new CodemodeSandbox({ globals: [vision.see(api.env, call), vision.judge(api.env, call), vision.transcribe(api.env, call)] });
       try {
         const run = await sandbox.execute(code, { signal: context.abortSignal });
         return toolResult([{ type: "text", text: JSON.stringify(run.ok ? { ok: true, value: run.value } : { ok: false, error: run.error.message }) }]);
