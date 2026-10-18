@@ -408,6 +408,49 @@ test('the follower looks at the text blobs a line names before it places the lin
   } }), /EISDIR|is a directory/i);
 });
 
+test('the scrub takes the run\'s user name (a whole token in a path segment or an ls column), its home directory and the paths under its directories out of lines and text blobs; ordinary words are left alone', async () => {
+  const { scrubOf } = await import('../packages/reference/dist/secrets.js');
+  const user = 'someuser';
+  const home = ['', 'home', user].join('/');
+  const run = ['', 'tmp', 'agentrun-demo-ab12cd'].join('/');
+  const scrub = scrubOf({ user, home, dirs: [run] });
+  // The user name in an ls -la row, as a tool result holds it, inside a JSON line (the newline is the two characters \\n).
+  const listing = `total 8\ndrwxr-xr-x  2 ${user} ${user} 4096 Oct 18 10:00 work\n-rw-r--r--  1 root root 12 Oct 18 10:00 notes.txt\n`;
+  const out = scrub(JSON.stringify({ data: { text: listing } }));
+  assert.ok(!out.includes(user), `the user name is gone from the ls columns: ${out}`);
+  assert.ok(out.includes('root root'), 'other owners stay');
+  assert.ok(scrub(listing).includes('[user] [user] 4096'), 'and the same in a plain text blob');
+  // The home directory, a path under it, a path under the run's directory.
+  assert.equal(scrub(`cd ${home}/projects && ls`), 'cd ~/projects && ls');
+  assert.equal(scrub(`wrote ${run}/work/out.json and ${run}`), 'wrote <run>/work/out.json and <run>');
+  // A group that only starts with the user's name is another group's name, whole: it is left as it is.
+  assert.equal(scrub(`drwxr-xr-x  2 root ${user}-admin 4096 Oct 18 10:00 etc`), `drwxr-xr-x  2 root ${user}-admin 4096 Oct 18 10:00 etc`);
+  assert.equal(scrub(`drwxr-xr-x  2 ${user}-ci ${user} 4096 Oct 18 10:00 etc`), `drwxr-xr-x  2 ${user}-ci [user] 4096 Oct 18 10:00 etc`);
+  // The coding tools' bash truncation notice names the full output's file under the run's directory.
+  assert.equal(scrub(`[info] Full output: ${run}/work/.tmp/tmp-x1y2/pi-output-0f3c9a52-77aa-4e0c-9d3e-1b6a5c2d8e41.log`), '[info] Full output: <run>/work/.tmp/tmp-x1y2/pi-output-0f3c9a52-77aa-4e0c-9d3e-1b6a5c2d8e41.log');
+  assert.equal(scrub(JSON.stringify({ text: `[Showing lines 1-200 of 900. Full output: ${run}/work/.tmp/tmp-x1y2/pi-output-0f3c.log]` })), JSON.stringify({ text: '[Showing lines 1-200 of 900. Full output: <run>/work/.tmp/tmp-x1y2/pi-output-0f3c.log]' }));
+  // A path segment that is the user name, outside the home.
+  assert.equal(scrub(`/srv/${user}/data`), '/srv/[user]/data');
+  // Ordinary words: the name as a word, a longer word that holds it, a version.
+  const plain = `Ubuntu 24.04 is what ${user}s like; the word ${user} in a sentence stays`;
+  assert.equal(scrub(plain), plain);
+  assert.equal(scrub('Ubuntu 24.04'), 'Ubuntu 24.04');
+  const ubuntu = scrubOf({ user: 'ubuntu', home: '/home/ubuntu', dirs: [] });
+  assert.equal(ubuntu('Ubuntu 24.04 LTS, ubuntu 24.04'), 'Ubuntu 24.04 LTS, ubuntu 24.04', 'a user named ubuntu does not mangle "Ubuntu 24.04"');
+  assert.equal(scrubOf({ dirs: [] }), undefined, 'nothing to take out: no scrub');
+});
+
+test('a tool result that carries the run\'s user name, home and run directory is recorded scrubbed, in the line and in a text blob', { timeout: 300_000 }, async (t) => {
+  const { userInfo, homedir } = await import('node:os');
+  const user = userInfo().username;
+  const text = `drwxr-xr-x  2 ${user} ${user} 4096 Oct 18 10:00 work\nhome ${homedir()}/projects`;
+  const { recording } = await run(t, {}, ['--json'], { DEMO_LEAK: JSON.stringify([text]), DEMO_RESULT: '1' });
+  const all = filesIn(recording).filter((file) => !file.endsWith('.png')).map((file) => readFileSync(file, 'utf8')).join('\n');
+  assert.ok(!all.includes(homedir()), 'the home directory is not in the recording');
+  assert.ok(!new RegExp(`\\s${user}\\s+${user}\\s`).test(all), 'nor the user name in an ls column');
+
+});
+
 test('a machine named like an ordinary word (gateway) is redacted only as a whole token in text: never inside a JSON key, a dotted event name, a longer word or a source value; and a name of the format\'s own words (node) is not taken', async () => {
   const { machineSecrets, redactorOf, scanRecording } = await import('../packages/reference/dist/secrets.js');
   assert.equal(machineSecrets('node').filter((secret) => secret.key.includes('host name')).length, 0, 'a name of the format\'s own words is not taken');
