@@ -142,6 +142,23 @@ test('formal model sources are archived and scanned as text; an unreviewed file 
   await assert.rejects(f.run(), /Unreviewed source-export file type: spec\/model\/Model\.toolbox/);
 });
 
+test('a PDF is archived only when one line of ASSETS.md names it with its SHA-256', async t => {
+  const f = await fixture(t);
+  const pdf = '%PDF-1.4\n% fixture\n%%EOF\n';
+  await f.write('examples/demo/sample.pdf', pdf);
+  await assert.rejects(f.run(), /Unreviewed PDF: examples\/demo\/sample\.pdf is not in ASSETS\.md with its SHA-256/);
+  await f.write('ASSETS.md', `| \`sample.pdf\` | a fixture | \`${'0'.repeat(64)}\` |\n`);
+  await assert.rejects(f.run(), /Unreviewed PDF/, 'its name with another hash is not its entry');
+  const other = '%PDF-1.4\n% another fixture\n%%EOF\n';
+  await f.write('ASSETS.md', `| \`sample.pdf\` | a fixture | \`${hash(other)}\` |\n| \`other.pdf\` | another | \`${hash(pdf)}\` |\n`);
+  await assert.rejects(f.run(), /Unreviewed PDF/, 'its name on one line and its hash on another line is not its entry');
+  await f.write('ASSETS.md', `| \`sample.pdf\` | a fixture | \`${hash(pdf)}\` |\n`);
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok((await f.listing()).includes('agentrun-dsl-source/examples/demo/sample.pdf\n'));
+  assert.equal(receipt.files.find(file => file.path === 'examples/demo/sample.pdf')?.kind, 'binary');
+});
+
 test('the code owners file is archived and scanned as text; another extensionless .github file still stops the export', async t => {
   const f = await fixture(t);
   await f.write('.github/CODEOWNERS', '* @example-owner\n');
