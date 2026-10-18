@@ -1882,3 +1882,27 @@ test('--operator-kill is refused by a place that cannot make a process kill, bef
   } }), /box-only place cannot lose its process: --operator-kill/);
   assert.deepEqual(calls, ['release'], 'nothing was started');
 });
+
+test('the placed-lines scan finds a token as a line stores it, JSON-escaped', async (t) => {
+  const { scanPlaced } = await import('./reference/secrets.ts');
+  const dir = await mkdtemp(join(tmpdir(), 'reference-placed-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const value = 'made-up-token-with-"quote"-and-\\back\nline-' + 'p'.repeat(20);
+  writeFileSync(join(dir, 'events.jsonl'), `${JSON.stringify({ data: { text: value } })}\n`);
+  assert.throws(() => scanPlaced(dir, [{ key: 'the key', value }]), /a secret was in events\.jsonl while the run was followed/);
+});
+
+test('a follower that cannot write ends the run through the normal path: the running child is stopped, the place is released, and the error is the follower\'s', { timeout: 120_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference' });
+  process.env.DEMO_LINGER_MS = '20000';
+  const recording = join(tmp, 'recording');
+  const calls = [];
+  const started = Date.now();
+  await assert.rejects(() => demo({ ...options, argv: ['--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    // Appending to events.jsonl fails from now on: it is a directory.
+    return { ...inner, start: async (order) => { rmSync(join(recording, 'events.jsonl'), { force: true }); mkdirSync(join(recording, 'events.jsonl')); return inner.start(order); }, release: async () => { calls.push('release'); return inner.release(); } };
+  } }), /EISDIR|is a directory/i);
+  assert.deepEqual(calls, ['release'], 'the place was released');
+  assert.ok(Date.now() - started < 60_000, 'the child was stopped, not waited for');
+});

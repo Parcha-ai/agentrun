@@ -362,7 +362,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const supervisor = openSupervisor({ dir: recordDir, ...(redact ? { redact } : {}) });
   // A live run and its replay are one file: events.jsonl is appended to as the run goes (whole lines, section 3's order), and finishRecording completes it. The job is a blob from the start, so a viewer can draw the workflow graph at once.
   const follower = followRecording(recordDir, { ...(redact ? { redact } : {}), ...(options.followHoldMs !== undefined ? { holdMs: options.followHoldMs } : {}) });
-  const following = setInterval(() => follower.poll(), 100);
+  // A failure of the follower (the disk full, say) is not thrown from the timer: it is kept, the running child is stopped, and the run ends through the normal path, which releases the place.
+  let followError: unknown;
+  const following = setInterval(() => { try { follower.poll(); } catch (error) { followError ??= error; clearInterval(following); } }, 100);
   const jobText = JSON.stringify({ workflow: job.workflow, input: input ?? (live ? undefined : options.fakes.input) ?? job.input, files: Object.keys(job.files ?? {}) });
   const jobBlob = keepBlob(recordDir, Buffer.from(redact ? redact(jobText) : jobText), 'json');
   // A label no other run shares, on every box this run makes: cleanup finds these and no others.
@@ -496,6 +498,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       // the attempt does not finish (nor the place release) until the kill, with its provider cleanup, is done.
       let deciding: Promise<void> = Promise.resolve();
       const watch = setInterval(() => {
+        if (followError && !decided) { decided = true; deciding = place.kill(runner!, 'process').catch(() => undefined); return; }
         if (decided) return;
         if (operatorKill && existsSync(operatorKill)) {
           // A control that cannot be removed (a directory made by mistake, a parent that forbids it) is a failed kill, reported through the normal path: the supervisor does not crash with the child still running.
@@ -511,6 +514,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       await iterator?.return?.();
       await pump;
       await deciding;
+      if (followError) break;
       processes.push(result);
       if (killFailed || signalsFailed || (killed && killed.label === 'max-usd')) break;
       // A tool kill of an attempt that ended in a process kill and did not fire never will (the plan is consumed): it is reported, not carried off with the attempt.
@@ -556,6 +560,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     const chosen = [...processes].reverse().find((entry) => entry.outcome?.models)?.outcome?.models;
     const extra = options.manifest ? options.manifest({ dir, record: delivered?.record ?? null, input, live, ...(chosen ? { models: chosen } : {}) }) : undefined;
     for (const name of Object.keys(extra ?? {})) if (RESERVED.has(name)) throw new Error(`manifest(): "${name}" is written by the entry; use another name`);
+    if (followError) throw followError;
     follower.close();
     // What a viewer following the run could already have fetched is not taken back: a secret in the file as it was placed refuses the recording, though the finished file is redacted.
     scanPlaced(recordDir, tracked?.final() ?? []);
