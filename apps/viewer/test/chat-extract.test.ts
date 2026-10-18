@@ -175,3 +175,15 @@ test('a line with its own start is a span under the call it names as parent, or 
   assert.equal(span.parentLane, `tool ${(start.data as { toolName: string }).toolName}`);
   assert.equal(span.label, 'see eyes-1');
 });
+
+test('every look of a write is a source, keyed by its own record, with the picture it was shown', async () => {
+  const { recording } = opened(referenceJob);
+  const shown = recording.lines.flatMap((line) => line.blobs ?? []).find((sha) => (recording.blobType(sha) ?? '').startsWith('image/'))!;
+  assert.ok(shown, 'the recording holds a picture');
+  const look = (key: string, path: string) => ({ receipt: `evidence/${key}.json`, record: { tool: 'see', args: { path }, body: 'a seal', facts: { key } }, images: [{ type: 'image', mimeType: 'image/png', blob: shown }] });
+  const write = JSON.stringify({ channel: 'durable', source: 'vision', kind: 'vision.looks', t: 1, data: { doc: 'vision.looks', key: 'k1', value: { looks: [look('k1', 'a.pdf#page=1'), look('k2', 'a.pdf#page=2')] }, version: 1 } });
+  const m = await model(referenceJob, (events) => `${events.trimEnd()}\n${write}\n`);
+  assert.equal(m.sources.k1?.href, 'a.pdf#page=1');
+  assert.equal(m.sources.k2?.href, 'a.pdf#page=2');
+  assert.deepEqual(m.sources.k2?.media, [shown]);
+});

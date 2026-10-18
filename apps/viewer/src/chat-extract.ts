@@ -279,13 +279,15 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     spans.push({ id: `span-${spans.length + 1}`, actor: 'inner', lane: name, parentLane: holder.span.lane, label: model ? `${name} ${model}` : name, t0: started, t1: line.t, ...(holder.span.item ? { item: holder.span.item } : {}) });
   }
 
-  // What each look read, by its key: its address, its answer, its images and the regions it boxed.
+  // What each look read, by its key: its address, its answer, its images and the regions it boxed. One write can hold
+  // several looks; each is keyed by its own record's key, the doc's key naming a write of one.
   const sources: Record<string, ChatSource> = {};
-  for (const line of lines) {
-    if (line.kind !== 'vision.looks' || line.channel !== 'durable') continue;
-    const key = chatStr(chatObj(line.data)?.key);
-    const look = chatObj(chatList(chatObj(chatObj(line.data)?.value)?.looks)[0]);
-    const record = chatObj(look?.record);
+  const written = lines.filter((line) => line.kind === 'vision.looks' && line.channel === 'durable').flatMap((line) => {
+    const looks = chatList(chatObj(chatObj(line.data)?.value)?.looks).map(chatObj).filter((look): look is Obj => !!look);
+    return looks.map((look) => ({ look, key: chatStr(chatObj(chatObj(look.record)?.facts)?.key) ?? (looks.length === 1 ? chatStr(chatObj(line.data)?.key) : undefined) }));
+  });
+  for (const { look, key } of written) {
+    const record = chatObj(look.record);
     const path = chatStr(chatObj(record?.args)?.path);
     if (!key || !path || sources[key]) continue;
     // An address with no fragment takes the one the look filed (a page, a time).
@@ -293,7 +295,7 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     const fragment = chatStr(facts?.fragment)?.replace(/^#/, '');
     const href = !path.includes('#') && fragment ? `${path}#${fragment}` : path;
     const { text, decisions, regions } = chatLookAnswer(record?.body);
-    const listed = chatList(look?.images).map((each) => chatStr(each) ?? chatStr(chatObj(each)?.blob)).filter((sha): sha is string => !!sha && !!recording.blobUrl(sha));
+    const listed = chatList(look.images).map((each) => chatStr(each) ?? chatStr(chatObj(each)?.blob)).filter((sha): sha is string => !!sha && !!recording.blobUrl(sha));
     const shown = chatStr(facts?.sha256);
     const media = listed.length ? listed : shown && recording.blobUrl(shown) ? [shown] : [];
     sources[key] = { href, takeaway: text, decisions, media, regions, ...(lookItem.has(key) ? { item: lookItem.get(key)! } : {}) };
