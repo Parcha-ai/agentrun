@@ -235,7 +235,7 @@ test("the skill's check refuses a page that reaches out, is missing a file, has 
   await refuses('page = page.replace(`data-look="${lookSite.key}"`, `data-look="' + "f".repeat(64) + '"`);', /is no look this run made/);
   await refuses('page = page.replace("href=\\"../contract.pdf#page=3\\"", "href=\\"../contract.pdf#page=0\\"");', /has a fragment that is not page=, t= or xywh=/);
   await refuses('page = page.replace("href=\\"../talk.mp4#t=21.5\\"", "href=\\"../talk.mp4#t=soon\\"");', /has a fragment that is not page=, t= or xywh=/);
-  await refuses('page = page.replace(\'href="../photo.jpg"\', \'href="/home/someone/photo.jpg"\');', /is not a relative cite/);
+  await refuses('page = page.replace(\'href="../photo.jpg"\', \'href="/photo.jpg"\');', /is not a relative cite/);
   await refuses('page = page.replace(\'class="cite" href="../photo.jpg" data-look=\', \'class="cite" href="../photo.jpg" data-x=\');', /a cite has no data-look/);
   await refuses('page = page.replace(\'id="answer"\', \'id="summary"\');', /the answer is not first/);
 });
