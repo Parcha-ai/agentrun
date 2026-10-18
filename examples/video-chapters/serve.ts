@@ -1,18 +1,16 @@
 // The demo's local server: a page to drop a film on (or take NASA's, or the committed clip), which starts a run of this demo with
-// the film as its input; each run's recording served as it grows, for the viewer to follow; a Kill button that kills the run's
-// process (the supervisor starts a fresh one, which reads back every look already answered); and the viewer's own files. It binds
+// the film as its input; each run's recording served as it grows, for the viewer to follow; and the viewer's own files. It binds
 // to this machine's loopback unless --host names another address. Every run has a spend cap.
 //
 //   GET  /                              the drop page
 //   POST /runs?source=nasa|clip         a run of NASA's film or of the clip; POST /runs?name=<file> with the file as the body
-//   GET  /runs/<id>/                    the run's page: its state, the Kill button, the viewer following it
-//   GET  /runs/<id>/status              { id, film, live, state, processes, kills, pid }
-//   POST /runs/<id>/kill                the operator's kill: the run's supervisor kills its process and starts a fresh one
+//   GET  /runs/<id>/                    the run's page: its state and the viewer following it
+//   GET  /runs/<id>/status              { id, film, live, state }, and its cost, title and result once finished
 //   GET  /runs/<id>/recording/<file>    events.jsonl (grows by whole lines; Range: bytes=N-), manifest.json (once finished), blobs/
 //   GET  /viewer/<file>                 the viewer (index.html?follow=/runs/<id>/recording/ follows a run)
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, closeSync, createReadStream, createWriteStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, createReadStream, createWriteStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { basename, extname, join, normalize, resolve, sep } from 'node:path';
@@ -26,22 +24,9 @@ const TYPES: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.j
 /** The largest film the drop page takes. */
 const MAX_UPLOAD = 2_000_000_000;
 
-/** `control`: the operator's kill file the run's supervisor watches (`--operator-kill`). */
-type Run = { id: string; film: string; live: boolean; dir: string; record: string; events: string; control: string; supervisor: ChildProcess; exited: boolean; offsets: Map<string, number> };
+type Run = { id: string; film: string; live: boolean; dir: string; record: string; events: string; supervisor: ChildProcess; exited: boolean; offsets: Map<string, number> };
 
 export type Served = { url: string; server: Server; runs: Map<string, Run>; close(): Promise<void> };
-
-/** The run's process now: the pid and generation of the last `process.started` line its supervisor wrote. */
-function currentPid(run: Run): { pid: number; gen: number } | undefined {
-  const spool = join(run.record, '.spool');
-  let found: { pid: number; gen: number } | undefined;
-  for (const name of existsSync(spool) ? readdirSync(spool).filter((file) => file.startsWith('supervisor-')).sort() : []) {
-    for (const line of readFileSync(join(spool, name), 'utf8').split('\n')) {
-      try { const row = JSON.parse(line); if (row.kind === 'process.started') found = { pid: row.data.pid, gen: row.data.gen }; } catch { /* a partial line */ }
-    }
-  }
-  return found;
-}
 
 /** The live `events.jsonl`: each spool's new whole lines appended in the order they are read. Once the manifest exists, the
  *  recorder's own `events.jsonl` is the recording, and it is served instead. */
@@ -109,13 +94,12 @@ export async function serve(options: DemoOptions, argv: string[]): Promise<Serve
   const start = (id: string, film: string, input: Record<string, unknown>, fetchSources: boolean): Run => {
     const dir = join(root, 'runs', id, 'run');
     const record = join(root, 'runs', id, 'recording');
-    const control = join(root, 'runs', id, 'operator-kill');
     mkdirSync(join(dir, 'work'), { recursive: true });
-    const args = ['--no-warnings=ExperimentalWarning', fileURLToPath(options.self), '--dir', dir, '--record', record, '--input', JSON.stringify(input), '--max-usd', maxUsd, '--cache', join(root, 'cache'), '--operator-kill', control, ...(live ? ['--live'] : fetchSources ? ['--fetch-sources'] : [])];
+    const args = ['--no-warnings=ExperimentalWarning', fileURLToPath(options.self), '--dir', dir, '--record', record, '--input', JSON.stringify(input), '--max-usd', maxUsd, '--cache', join(root, 'cache'), ...(live ? ['--live'] : fetchSources ? ['--fetch-sources'] : [])];
     const supervisor = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     const log = createWriteStream(join(root, 'runs', id, 'run.log'));
     supervisor.stdout?.pipe(log); supervisor.stderr?.pipe(log);
-    const run: Run = { id, film, live, dir, record, events: join(root, 'runs', id, 'live-events.jsonl'), control, supervisor, exited: false, offsets: new Map() };
+    const run: Run = { id, film, live, dir, record, events: join(root, 'runs', id, 'live-events.jsonl'), supervisor, exited: false, offsets: new Map() };
     supervisor.on('exit', () => { run.exited = true; });
     runs.set(id, run);
     return run;
@@ -149,22 +133,10 @@ export async function serve(options: DemoOptions, argv: string[]): Promise<Serve
     if (request.method === 'GET' && parts[2] === 'status') {
       const finished = existsSync(join(run.record, 'manifest.json'));
       const manifest = finished ? JSON.parse(readFileSync(join(run.record, 'manifest.json'), 'utf8')) : undefined;
-      const lines = readFileSync(eventsOf(run), 'utf8').split('\n').filter(Boolean).flatMap((line) => { try { return [JSON.parse(line)]; } catch { return []; } });
       json(response, 200, {
-        id: run.id, film: run.film, live: run.live, state: finished ? 'finished' : run.exited ? 'stopped' : 'running', pid: run.exited ? null : currentPid(run)?.pid ?? null,
-        processes: lines.filter((line) => line.source === 'host' && line.kind === 'process.started').length, kills: lines.filter((line) => line.source === 'host' && line.kind === 'kill').length,
+        id: run.id, film: run.film, live: run.live, state: finished ? 'finished' : run.exited ? 'stopped' : 'running',
         ...(manifest ? { cost: manifest.cost, title: manifest.title, result: manifest.result ?? null } : {}),
       });
-      return;
-    }
-    if (request.method === 'POST' && parts[2] === 'kill') {
-      const now = run.exited ? undefined : currentPid(run);
-      if (!now) { json(response, 409, { error: 'the run has no process to kill now' }); return; }
-      if (existsSync(run.control)) { json(response, 409, { error: 'a kill is already asked for' }); return; }
-      // The control file is written whole and renamed into place: the supervisor sees it complete, kills through its place and resumes.
-      writeFileSync(`${run.control}.${process.pid}.partial`, `${new Date().toISOString()}\n`);
-      renameSync(`${run.control}.${process.pid}.partial`, run.control);
-      json(response, 202, { asked: true, gen: now.gen });
       return;
     }
     if (parts[2] === 'recording' && (request.method === 'GET' || request.method === 'HEAD')) {

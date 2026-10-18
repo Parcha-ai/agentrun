@@ -85,7 +85,7 @@ export function scriptedEyes() {
       const [, from = '0', to = '?'] = /#t=([\d.]+),?([\d.]*)/.exec(fragment) ?? [];
       const start = Number(from);
       const text = `(scripted eyes: no model looked at ${fragment}, seconds ${from} to ${to}.)\nTOPIC: ${TOPICS[start] ?? `Minute ${Math.floor(start / 60) + 1}`}`;
-      // A test's knob: each answer takes this long, so a kill can land between two windows.
+      // A test's knob: each answer takes this long, so a test can follow the run while it goes on.
       const delayMs = Number(process.env.DEMO_EYES_DELAY_MS ?? 0);
       return delayMs ? { text, delayMs } : text;
     }],

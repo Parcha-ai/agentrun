@@ -1,8 +1,7 @@
-// A film, in chapters, at $0, on the reference entry. The template's three beats run what a run on fakes reads, the committed clip
-// of NASA's film, with no network: the scripted lead's own script (ffprobe, windows cut with ffmpeg, `vision.see` on each, keyframes)
-// runs in the code tool's sandbox, and the scripted eyes answer. Then the local server: a run started from the drop page's endpoint,
-// followed as its recording grows, killed by its Kill endpoint mid-film, and resumed. The film's programs are needed: without
-// ffmpeg every test here skips.
+// A film, in chapters, at $0, on the reference entry. The two beats run what a run on fakes reads, the committed clip of NASA's
+// film, with no network: the scripted lead's own script (ffprobe, windows cut with ffmpeg, `vision.see` on each, keyframes) runs in
+// the code tool's sandbox, and the scripted eyes answer. Then the local server: a run started from the drop page's endpoint,
+// followed as its recording grows, to its end. The film's programs are needed: without ffmpeg every test here skips.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -81,27 +80,7 @@ test('beat 1: on fakes, with no network, the agent\'s own script cuts the clip i
   assert.equal(pictures.size, kept.rows.length - 1, 'one keyframe a chapter, each its own');
 });
 
-test('beat 2: killed inside the evidence sink at vision.filing, a fresh process goes on with a new script; the windows answered before the kill are read back from the workspace, the fold reads repeated 0 and unknown 0, each window\'s look filed once', { timeout: 300_000, skip: FFMPEG }, async (t) => {
-  const tmp = await scratch(t);
-  const record = join(tmp, 'recording');
-  const [kill] = options.spec.kills;
-  assert.ok(kill.n + kill.hold - 1 <= WINDOWS, 'the spec\'s kill lands inside the clip\'s looks');
-  const run = await go(tmp, ['--kill', '--record', record]);
-  assert.equal(statusOf(run), 'complete', stderrOf(run));
-  assert.deepEqual(run.kills.map((each) => each.point), ['vision.filing']);
-  assert.deepEqual(run.unlanded, []);
-  assert.equal(run.processes.length, 2);
-  const folded = fold(readEvents(record));
-  assert.equal(folded.repeated, 0);
-  assert.equal(folded.repeatedNotMeasured, 0);
-  assert.equal(folded.unknown, 0);
-  assert.equal(folded.paid.vision, WINDOWS, 'each window paid once');
-  const looks = [...looksOf(record).values()];
-  assert.equal(looks.length, WINDOWS, 'a window cut again is the same bytes, so its look is the same key');
-  assert.deepEqual(looks.map((filings) => filings.length), looks.map(() => 1), 'the window filed before the kill is read back from the workspace, not asked again');
-});
-
-test('beat 3: every look has its receipt, the recording validates, says scripted, names the film it fetches, and its cost is a number it earned', { timeout: 240_000, skip: FFMPEG }, async (t) => {
+test('beat 2: every look has its receipt, the recording validates, says scripted, names the film it fetches, and its cost is a number it earned', { timeout: 240_000, skip: FFMPEG }, async (t) => {
   const tmp = await scratch(t);
   const record = join(tmp, 'recording');
   const run = await go(tmp, ['--record', record]);
@@ -115,6 +94,8 @@ test('beat 3: every look has its receipt, the recording validates, says scripted
   assert.equal(manifest.sources.items[0].sha256, JSON.parse(readFileSync(join(import.meta.dirname, 'video-chapters', 'sources.json'), 'utf8')).items[0].sha256);
   assert.equal(manifest.cost.usd, 0, 'the scripted parts are priced at 0, so the run cost 0');
   for (const filings of looksOf(record).values()) for (const filing of filings) assert.ok(filing.receipt && existsSync(join(tmp, 'run', filing.receipt)), 'each look\'s receipt is a file the run filed');
+  const folded = fold(readEvents(record));
+  assert.deepEqual([folded.paid.vision, folded.repeated, folded.unknown], [WINDOWS, 0, 0], 'each window paid for once');
 });
 
 test('the clip: the committed file is the size and SHA-256 clip.json fixes, cut from the checked film, under 1 MB, with its sound, and the job\'s own file', { skip: FFMPEG }, () => {
@@ -130,7 +111,7 @@ test('the clip: the committed file is the size and SHA-256 clip.json fixes, cut 
   assert.deepEqual(new Uint8Array(options.job.files[clip.file]), new Uint8Array(bytes));
 });
 
-test('the server: a run started from the drop endpoint is followed as it grows, killed mid-film by its Kill endpoint, and resumed; it serves nothing outside a recording', { timeout: 300_000, skip: FFMPEG }, async (t) => {
+test('the server: a run started from the drop endpoint is followed as it grows, to its end; it serves nothing outside a recording', { timeout: 300_000, skip: FFMPEG }, async (t) => {
   const tmp = await scratch(t);
   process.env.DEMO_EYES_DELAY_MS = '1200';
   t.after(() => { delete process.env.DEMO_EYES_DELAY_MS; });
@@ -158,9 +139,7 @@ test('the server: a run started from the drop endpoint is followed as it grows, 
     read.push(...text.split('\n').filter(Boolean).map((line) => JSON.parse(line)));
   }
   assert.equal((await at(`/runs/${made.id}/recording/manifest.json`)).status, 404, 'no manifest while the run goes on');
-  const asked = await at(`/runs/${made.id}/kill`, { method: 'POST' });
-  assert.equal(asked.status, 202);
-  assert.equal((await asked.json()).gen, 1);
+  assert.equal((await at(`/runs/${made.id}/kill`, { method: 'POST' })).status, 404, 'the page has no kill');
   let status;
   for (let tries = 0; ; tries += 1) {
     assert.ok(tries < 400, 'the run finishes');
@@ -169,18 +148,13 @@ test('the server: a run started from the drop endpoint is followed as it grows, 
     if (status.state !== 'running') break;
   }
   assert.equal(status.state, 'finished');
-  assert.equal(status.processes, 2);
-  assert.equal(status.kills, 1);
   const record = join(tmp, 'served', 'runs', made.id, 'recording');
   const folded = fold(readEvents(record));
   assert.equal(folded.repeated, 0);
   assert.equal(folded.paid.vision, WINDOWS);
-  const kill = linesOf(join(record, 'events.jsonl')).find((line) => line.source === 'host' && line.kind === 'kill');
-  assert.equal(kill.data.label, 'operator', 'the page\'s kill is the operator\'s, made by the run\'s supervisor');
-  assert.equal(kill.data.crossing, null);
+  assert.equal(linesOf(join(record, 'events.jsonl')).filter((line) => line.source === 'host' && line.kind === 'process.started').length, 1, 'one process, start to end');
   assert.equal((await at(`/runs/${made.id}/recording/manifest.json`)).status, 200);
   assert.equal((await at(`/runs/${made.id}/recording/..%2F..%2F..%2Frun.log`)).status, 404);
-  assert.equal((await at(`/runs/${made.id}/kill`, { method: 'POST' })).status, 409, 'a finished run has no process to kill');
 });
 
 test('live models: the default lead and eyes, Google\'s eyes take a video window and the others take frames, and the live parts name the models for the manifest', () => {

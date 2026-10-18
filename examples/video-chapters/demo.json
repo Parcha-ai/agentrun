@@ -4,7 +4,7 @@
   "targets": ["local"],
   "browser": false,
   "codeMode": { "timeoutMs": 2700000 },
-  "claim": "One agent watches NASA's 1969 Apollo 11 film a minute at a time, sound included, writes its chapters with a keyframe each, survives a kill mid-film, and pays for each minute once.",
+  "claim": "One agent watches NASA's 1969 Apollo 11 film a minute at a time, sound included, and writes its chapters, each with a keyframe and citing the minutes it rests on.",
   "models": {
     "lead": { "needs": ["text", "tools"], "default": "openai/gpt-6-luna" },
     "eyes": { "needs": ["video"], "default": "google/gemini-3.8-flash" }
@@ -30,9 +30,6 @@
   ],
   "expectedCalls": 55,
   "expectedCost": 0.4,
-  "kills": [
-    { "point": "vision.filing", "n": 2, "hold": 1, "why": "Inside the evidence sink, at the second window's filing: the eyes have answered it and the look is not yet filed. A fresh process goes on with a new script, which reads the first window's answer back from the workspace and asks only the rest." }
-  ],
   "panels": ["workflow-map", "vision"],
   "sources": "examples/video-chapters/sources.json",
   "tools": [

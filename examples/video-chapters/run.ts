@@ -1,4 +1,4 @@
-// npm run demo:video-chapters [-- --live] [-- --kill] [-- --record <dir>] [-- --input <path|json>] [-- --max-usd <n>] [-- --fetch-sources]
+// npm run demo:video-chapters [-- --live] [-- --record <dir>] [-- --input <path|json>] [-- --max-usd <n>] [-- --fetch-sources]
 // npm run demo:video-chapters -- --serve [--host <address>] [--port <n>] [--live] [--max-usd <n>]: the drop page and the live view.
 // A film, in chapters, on the reference entry: on fakes ($0, no key, no network) the committed clip; with --live NASA's film whole.
 import { demo, type DemoOptions } from '../reference/index.ts';
