@@ -390,7 +390,7 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     // Each model call the tool call made is its own card under it: its line, its look's place, its raw output behind a
     // click; three show, the decisive ones always, the rest behind "+ N more". With no picture kept, no picture.
     const hear = await value<Record<string, unknown>>(`(() => { const c = doc('hear').querySelector('.calls').closest('.step'); return {
-      title: c.querySelector('.t span').textContent.split(' ')[0], calls: [...c.querySelectorAll('.call')].map((n) => [n.querySelector('.call-label').textContent, n.querySelector('.call-at')?.textContent, n.hidden, n.classList.contains('decisive')]),
+      title: c.querySelector('.t span').textContent.split(' ')[0], calls: [...c.querySelectorAll('.call')].map((n) => [n.querySelector('.call-label').title, n.querySelector('.call-at')?.textContent, n.hidden, n.classList.contains('decisive')]),
       more: c.querySelector('.calls > .more').textContent, raw: [...c.querySelectorAll('.call details.raw')].map((n) => [n.open, n.querySelector('summary').textContent, n.querySelector('pre').textContent.charAt(0)]).slice(1, 2),
       pictures: c.querySelectorAll('img').length, bare: c.querySelector('.step-main').matches('.bare') && c.querySelector('.step-main').children.length === 1, inReport: !!c.querySelector('.inrep'), flat: flat('hear') }; })()`);
     assert.deepEqual(hear, { title: 'code', calls: [
@@ -399,6 +399,14 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       ['Jev judge · here 0.60 · where 0.20 · box drawn', 't 0:27', true, false], ['Jev judge · here 0.95 · where 0.90 · box drawn', 't 0:28', false, true],
       ['Jev judge · here 0.95 · where 0.90 · box drawn', 't 0:29', true, false]],
       more: '+ 5 more', raw: [[false, 'Raw output', '{']], pictures: 0, bare: true, inReport: true, flat: { page: 0, panes: 0 } });
+    // The judge in its accent: a judge call's card and its span, its lane's dot, a chip at the start of its line whose text
+    // stays ink; a call that is no judge carries none.
+    const PINK = 'rgb(229, 81, 186)';
+    assert.deepEqual(await value(`(() => { const d = doc('hear'); const css = (n, p) => getComputedStyle(n)[p]; const judge = d.querySelector('.call[data-call="call-4"]'); const other = d.querySelector('.call[data-call="call-3"]');
+      return { card: css(judge, 'borderLeftColor'), chip: [css(judge.querySelector('.judge-chip'), 'borderTopColor'), css(judge.querySelector('.judge-chip'), 'color'), judge.querySelector('.judge-chip').textContent],
+        span: css(d.querySelector('.tbar[data-goto="call-4"]'), 'backgroundColor'), lane: [...d.querySelectorAll('.tl .lane')].filter((n) => n.querySelector('.judge-dot')).map((n) => n.querySelector('.ln').textContent),
+        other: [css(other, 'borderLeftColor'), !!other.querySelector('.judge-chip'), css(d.querySelector('.tbar[data-goto="call-3"]'), 'backgroundColor')] }; })()`),
+      { card: PINK, chip: [PINK, 'rgb(242, 242, 242)', 'judge'], span: PINK, lane: ['Jev judge'], other: ['rgb(255, 135, 0)', false, 'rgb(90, 90, 98)'] });
     // A timeline click on a folded call opens its group, scrolls to it and flashes it.
     await page.evaluate(`doc('hear').querySelector('.tl-toggle').click(); doc('hear').querySelector('.tbar[data-goto="call-11"]').click()`);
     await until(`(() => { const d = doc('hear'); const c = d.querySelector('.call[data-call="call-11"]'); return !c.hidden && c.classList.contains('flash') && inView(c, d.querySelector('.thread')); })()`, 'the folded call scrolled into view and flashed');

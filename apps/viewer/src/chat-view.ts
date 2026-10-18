@@ -333,6 +333,9 @@ function threadThumb(recording: Recording, source: ChatSource): { sha: string; r
   return { sha: frames[0], regions: frames.length === 1 ? regions : [] };
 }
 
+/** The judge's mark at the start of a judge's label. */
+const threadJudge = () => reportEl('span', { class: 'judge-chip', text: 'judge' });
+
 /** A model call made inside a tool call, as its own card: its look's picture with that look's boxes, its line, its
  *  look's place, and its raw output behind a click. */
 function threadCall(recording: Recording, model: ChatModel, call: ChatCall): HTMLElement {
@@ -340,11 +343,11 @@ function threadCall(recording: Recording, model: ChatModel, call: ChatCall): HTM
   const thumb = found && threadThumb(recording, found);
   const addresses = found ? sourceAddresses(found) : [];
   const place = found ? threadPlace(addresses) : '';
-  return reportEl('div', { class: found?.decisive ? 'call decisive' : 'call', 'data-call': call.id, 'data-look': found ? call.look : undefined, role: found ? 'button' : undefined,
+  return reportEl('div', { class: `call${found?.decisive ? ' decisive' : ''}${call.judge ? ' judge' : ''}`, 'data-call': call.id, 'data-look': found ? call.look : undefined, role: found ? 'button' : undefined,
     tabindex: found ? 0 : undefined, title: addresses.join(', ') || undefined, 'aria-label': [call.label, place, addresses.join(', ')].filter(Boolean).join('; ') },
   thumb && sourceMedium(recording, thumb.sha, '', thumb.regions, 'thumb'),
   reportEl('div', { class: 'call-body' },
-    reportEl('span', { class: 'call-label' }, ...reportInline(call.label)),
+    reportEl('span', { class: 'call-label', title: call.label }, call.judge && threadJudge(), ...reportInline(call.label)),
     place !== '' && reportEl('span', { class: 'call-at', text: place }),
     call.raw !== '' && reportEl('details', { class: 'raw' }, reportEl('summary', { text: 'Raw output' }), reportEl('pre', { text: call.raw }))));
 }
@@ -375,9 +378,9 @@ function threadCard(recording: Recording, model: ChatModel, item: ToolItem, fold
     more.addEventListener('click', () => toggle());
     for (const node of rest) fold(node, () => toggle(true));
   }
-  return reportEl('div', { class: `step${item.failed ? ' failed' : ''}`, 'data-item': item.id },
+  return reportEl('div', { class: `step${item.failed ? ' failed' : ''}${item.judge ? ' judge' : ''}`, 'data-item': item.id },
     reportEl('button', { class: thumb ? 'step-main' : 'step-main bare', type: 'button', 'data-open': item.id },
-      reportEl('div', {}, reportEl('div', { class: 't' }, threadIcon(sourceKindOf(source?.href ?? '')), reportEl('span', { text: item.title }), item.failed && reportEl('small', { class: 'tag', text: 'failed' })),
+      reportEl('div', {}, reportEl('div', { class: 't' }, threadIcon(sourceKindOf(source?.href ?? '')), item.judge && threadJudge(), reportEl('span', { text: item.title }), item.failed && reportEl('small', { class: 'tag', text: 'failed' })),
         item.takeaway !== '' && reportEl('div', { class: 'k', text: item.takeaway })),
       thumb && reportEl('img', { src: recording.blobUrl(thumb), alt: '', loading: 'lazy' })),
     calls.length > 0 && reportEl('div', { class: 'calls' }, ...calls, more));
@@ -417,12 +420,13 @@ function timelineOf(model: ChatModel, go: (id: string) => void): HTMLElement | u
     const { rows, count } = rowsOf(lane.spans);
     const track = reportEl('div', { class: 'track' }, ...rows.map(({ span, row }) => {
       const x = Math.min(1, Math.max(0, span.t0 / end));
-      const bar = reportEl('button', { class: span.t1 === undefined ? 'tbar tick' : 'tbar', type: 'button', 'data-goto': span.item, title: span.label, 'aria-label': span.label, disabled: !span.item });
+      const bar = reportEl('button', { class: `tbar${span.t1 === undefined ? ' tick' : ''}${span.judge ? ' judge' : ''}`, type: 'button', 'data-goto': span.item, title: span.label, 'aria-label': span.label, disabled: !span.item });
       Object.assign(bar.style, { left: pct(x), top: `${row * 8 + 3}px`, ...(span.t1 === undefined ? {} : { width: pct(Math.min(Math.max(0, span.t1 - span.t0) / end, 1 - x)) }) });
       return bar;
     }));
     track.style.height = `${Math.max(14, count * 8 + 4)}px`;
-    return reportEl('div', { class: lane.parent ? 'lane inner' : 'lane' }, reportEl('div', { class: 'ln', text: lane.label, title: lane.label }), track);
+    return reportEl('div', { class: lane.parent ? 'lane inner' : 'lane' },
+      reportEl('div', { class: 'ln', title: lane.label }, lane.spans.some((span) => span.judge) && reportEl('i', { class: 'judge-dot', 'aria-hidden': 'true' }), lane.label), track);
   });
   if (model.answeredAt !== undefined) {
     const dot = reportEl('button', { class: 'dot', type: 'button', 'data-goto': 'answer', title: 'The answer', 'aria-label': 'The answer' });

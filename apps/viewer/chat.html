@@ -6,7 +6,7 @@
 <title>Agent run</title>
 <meta name="description" content="A recorded agent run as a conversation, beside the report it wrote.">
 <style>
-:root{--bg:#080809;--panel:#111113;--panel2:#17171a;--line:#2c2c30;--ink:#f2f2f2;--muted:#a4a4ad;--dim:#6f6f78;--acc:#ff8700;--purple:#b4a0ff;
+:root{--bg:#080809;--panel:#111113;--panel2:#17171a;--line:#2c2c30;--ink:#f2f2f2;--muted:#a4a4ad;--dim:#6f6f78;--acc:#ff8700;--purple:#b4a0ff;--judge:#E551BA;
  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--sans:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--top:56px;--chat:clamp(380px,38vw,540px);color-scheme:dark}
 *{box-sizing:border-box}
 [hidden]{display:none!important}
@@ -63,6 +63,7 @@ details.fold>.fold-body{color:var(--ink);font-size:15px;margin-top:12px}
 .ghead svg{color:var(--muted)}
 .steps{display:flex;flex-direction:column;gap:6px;min-width:0}
 .step{min-width:0;background:var(--panel);border:1px solid var(--line);border-left:2px solid var(--line)}
+.step.judge{border-left-color:var(--judge)}
 .step:hover{border-color:#3b3b41;border-left-color:#4a4a52;background:#141417}
 .step[aria-current="true"]{border-left-color:var(--acc);background:#16130f}
 .step-main{display:grid;grid-template-columns:minmax(0,1fr) 44px;gap:12px;align-items:center;text-align:left;width:100%;padding:9px 10px 9px 12px}
@@ -81,12 +82,17 @@ details.fold>.fold-body{color:var(--ink);font-size:15px;margin-top:12px}
 .call[data-look]{cursor:pointer}
 .call[data-look]:hover{border-color:#4a4a52}
 .call.decisive{border-left:2px solid var(--acc)}
+.call.judge{border-left:2px solid var(--judge)}
+.call.judge.decisive{outline:1px solid #ff870066;outline-offset:-1px}
+.judge-chip{display:inline-flex;align-items:center;gap:4px;flex:none;font:500 9.5px/1.5 var(--mono);letter-spacing:.4px;text-transform:uppercase;color:var(--ink);border:1px solid var(--judge);background:color-mix(in srgb,var(--judge) 10%,transparent);padding:0 5px;margin-right:6px;vertical-align:1px}
+.judge-chip::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--judge)}
+.judge-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--judge);margin-right:5px;vertical-align:1px}
 .call[aria-current="true"]{border-color:var(--acc)}
 .call .media.thumb{flex:none;width:72px;background:#000}
 .call .media.thumb img{width:72px;height:auto;max-height:96px;object-fit:contain;border:0}
 .thumb .jbox{border-width:1.5px}.thumb .jbox span{display:none}
 .call-body{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
-.call-label{font:500 11.5px var(--mono);color:var(--ink);overflow-wrap:anywhere}
+.call-label{font:500 11.5px var(--mono);color:var(--ink);overflow:hidden;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 .call-at{font:400 10.5px var(--mono);color:var(--muted);overflow:hidden;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 .call details.raw summary{font:400 10.5px var(--mono);color:var(--dim);cursor:pointer}
 .call details.raw pre{margin:4px 0 0;max-height:240px;overflow:auto;font:400 11px/1.45 var(--mono);color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere;background:#0b0b0d;border:1px solid var(--line);padding:6px 8px}
@@ -174,6 +180,7 @@ a.addr[href]{color:var(--acc);text-decoration:underline dotted}
 .track{position:relative;min-height:14px}
 .tbar{position:absolute;height:6px;min-width:6px;background:#5a5a62}
 .tbar.tick{width:2px;min-width:2px;height:8px;margin-top:-1px}
+.tbar.judge{background:var(--judge)}
 .tbar:disabled{cursor:default;opacity:.7}
 .tbar:not(:disabled):hover,.tbar:focus-visible{background:var(--ink)}
 .tbar.on{background:var(--acc)}
