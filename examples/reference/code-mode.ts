@@ -3,6 +3,7 @@
 //   tools.bash({ command })   a shell command through the call's own environment (`api.env.exec`), in the run's `work/`: the claim's confined environment, the same one the agent's own bash tool uses.
 //   vision.see(...)           the vision handle's global for this call, built from the composed handles, so a demo hands the agent `vision.see` without any wiring of its own.
 //   vision.judge(...)         Jev's typed answers about images, through the host's judge seam (capped, priced, with its crossings), built the same way; the agent never holds a key.
+//   vision.transcribe(...)    what a recording says, word by word with its second, through the speech-to-text model the host's vision options name; built the same way.
 // The sandbox has no network, no `fetch`, no `process`, no `require`, no timers and no file access of its own: whatever reaches the outside goes through `tools.bash` and the environment's confinement. A command `tools.bash`
 // runs can do what the environment lets a shell do, so turn code mode on only where the agent's own bash is allowed. The tool is `replay: 'unsafe'` (its default): a call a crash interrupted is not rerun, because the commands
 // it ran may have had effects.
@@ -18,7 +19,8 @@ export function codeModeExtension(vision: VisionHandle, options: CodeModeOptions
   // The model writes its script before the sandbox exists, so the declaration of `vision.see` (its signature and what it does) is in the tool's description, taken from the handle's own global.
   const see = vision.see(undefined as never, {} as never);
   const judge = vision.judge(undefined as never, {} as never);
-  const declared = `\`vision.see\` is declared as \`${see.signature}\`: ${see.description}; \`vision.judge\` is declared as \`${judge.signature}\`: ${judge.description}`;
+  const transcribe = vision.transcribe(undefined as never, {} as never);
+  const declared = `\`vision.see\` is declared as \`${see.signature}\`: ${see.description}; \`vision.judge\` is declared as \`${judge.signature}\`: ${judge.description}; \`vision.transcribe\` is declared as \`${transcribe.signature}\`: ${transcribe.description}`;
   return defineExtension({
     name: 'reference-code-mode',
     tools: [defineTool({
@@ -49,7 +51,7 @@ export function codeModeExtension(vision: VisionHandle, options: CodeModeOptions
           },
         };
         const call = await callContext(api, context);
-        const sandbox = new CodemodeSandbox({ tools: [bash], globals: [vision.see(api.env, call), vision.judge(api.env, call)], ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}) });
+        const sandbox = new CodemodeSandbox({ tools: [bash], globals: [vision.see(api.env, call), vision.judge(api.env, call), vision.transcribe(api.env, call)], ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}) });
         try {
           const run = await sandbox.execute(code, { signal: context.abortSignal });
           const content = [
