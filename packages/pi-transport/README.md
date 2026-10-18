@@ -38,6 +38,7 @@ ignoring it.
 | Docker | `@parcha/pi-transport/box/docker` | a container per box |
 | Daytona | `@parcha/pi-transport/box/daytona` | a container per box on the host kernel; a `linux-vm` snapshot is a VM |
 | Modal | `@parcha/pi-transport/box/modal` | a gVisor sandbox, or a VM (`isolation: "vm"`) |
+| Archil exec | `@parcha/pi-transport/box/archil-exec` | a directory of the agent's work disk; each `exec` is one serverless call in a fresh VM container |
 
 ### Daytona
 
@@ -78,6 +79,62 @@ await provider.create({ maxLifetimeMs: 10 * 60_000, isolation: "vm" }, BACKGROUN
   provider's own variable picks the ones that run). It names its Modal app and labels from `PI_TRANSPORT_LIVE_PREFIX`
   and `PI_TRANSPORT_LIVE_LABELS`, and `PI_TRANSPORT_LIVE_MODAL_KINDS` (`sandbox,vm,gpu`; default `sandbox,vm`) picks
   the kinds.
+
+### Archil exec
+
+`archilExecBoxes({ client, disk })` makes a box of a directory of an agent's Archil WORK disk (never the disk of its
+store), and runs each `exec` as one Archil serverless `exec`: a fresh container with the disk mounted, one request that
+answers when the command ends. It takes the host's own SDK, so this package depends on none: `client` is `new Archil({
+apiKey, region })` and `disk` is a disk of it, from the `disk` package (version 1.9.0 was measured; `npm install
+--no-save disk@1.9.0`).
+
+```ts
+import * as archil from "disk";
+import { archilExecBoxes } from "@parcha/pi-transport/box/archil-exec";
+
+const client = new archil.Archil({ apiKey, region: "aws-us-east-1" });
+const { disk } = await client.disks.create({ name: "agent-work" });
+const provider = archilExecBoxes({ client, disk });
+```
+
+The box is the directory `boxes/<id>/` of the disk. Its labels, env, facts and end time are the file
+`boxes.records/<id>.json`, outside every directory a command can hold, so `attach` and `list` find the box after a
+restart and a box can be ended while a command runs in it. These are the limits, each one in the facts or refused with
+a typed error:
+
+- **One request per command.** `facts().liveProcesses` is `false`: no program keeps running between calls, and a
+  command's output arrives after it ended. A box like this never serves as a home: the box place refuses it with
+  `MoveError` code `no_live_processes`. Use it for tools.
+- **A 300 s limit.** `facts().maxExecMs` is 300 000. A `timeoutMs` above it is refused with `invalid`; a command with
+  none still gets a deadline of 295 s of its own inside the container, so nothing runs past the point where the
+  platform cuts a call and loses its later writes. A command ended by its deadline is a `timeout` error.
+- **No stdin.** `stdin.write` rejects with `unsupported`. Output is text: bytes that are not UTF-8 come back as U+FFFD,
+  so move bytes with `upload` and `download`, which use the disk's object API and carry every byte value (8 MiB measured
+  in about 0.3 s each way).
+- **Aborting the context ends the wait at once.** The SDK has no signal to stop the command in the container, so the
+  command ends at its own deadline; the disk TL measured that a client abort stops a command at the platform.
+- **One command at a time per box, across processes.** Every `exec` checks out the box's directory with a queue
+  (`queueMs`, default 60 s), so a second process that attached the same box (a restore, another host) waits for the
+  first instead of being refused (a plain write without a checkout loses writes: 3 of 5 parallel appends were refused),
+  and this process also runs a box's execs in the order they were asked. Boxes do not wait for each other. A file
+  written through `upload` takes no checkout: it waits for this process's own commands and retries while another process
+  holds the directory, up to `queueMs`.
+- **`destroy` ends the box for every client at once**, whatever still runs in it, by deleting its record; the directory
+  is removed through its parent (`destroyWaitMs`, default 5 s) and a directory a running command held is removed by the
+  next `list`, which sweeps every directory with no record.
+- **A lifetime is checked, not enforced by a timer.** Archil has no timer that ends a directory: a box past its
+  `maxLifetimeMs` is ended, and its directory removed, by the first call that looks at it (`attach`, `list`, `exec`,
+  `status`, `upload`, `download`). A box nobody calls again stays on the disk until a `list` finds it.
+- Refused before any call: a GPU, a snapshot, a `workspace`, an isolation other than `vm`, more than 2 vCPU or 3938 MiB
+  (`unsupported`); a label in the providers' namespace, an env name that is not a shell name, a lifetime that is not
+  positive (`invalid`).
+- Spend: Archil bills each call (list price $0.00005). A box priced that way gets its receipt with `calls`
+  (see receipts below).
+
+The live suite spends cents and runs only when asked. It needs the key in `ARCHIL_API_KEY` and the SDK:
+`PI_TRANSPORT_LIVE_ARCHIL=1 npm run test:live -w @parcha/pi-transport` (`PI_TRANSPORT_LIVE_ARCHIL_SDK` names the SDK's
+entry file when `disk` here is another version). It makes its own new disk in `aws-us-east-1`, deletes it at the end and
+checks that none is left.
 
 `localBoxes` gives a program a fixed `PATH` (`/usr/local/bin:/usr/bin:/bin`, or the `path` option), a private `HOME`
 and `TMPDIR`, and the spec's `env`. A detached watchdog ends a box when its lifetime has passed. On Linux, `destroy`
@@ -632,7 +689,9 @@ It makes the box, and
 `boxReceipts({ prices, write })` keeps a ledger of the boxes its providers make: `ledger.wrap(provider)` is the same
 provider, and each box it makes gets one receipt when it ends, destroyed through it, found ended by `status`, or found
 gone by `attach` (a lifetime that ran out, or a sweep). The host writes each receipt as a live line, source
-`transport`, kind `box.receipt`: `{ box, provider, kind, from, to, seconds, usd_per_second, cost_usd, source, priced }`.
+`transport`, kind `box.receipt`: `{ box, provider, kind, from, to, seconds, usd_per_second, cost_usd, source, priced }`;
+a box its provider bills per call instead (`archil-exec`) carries `calls` and `usd_per_call` in place of `usd_per_second`,
+which is then absent, never 0 (RECORDING.md draft 40).
 `box` is a label, `box-1`, `box-2` as the boxes are made, never the provider's id. Hand the wrapped providers to
 everything that makes boxes: a box place, and the transport's hands pools (`TransportHost.providers`).
 
@@ -647,8 +706,10 @@ The prices are the host's (`prices: [{ provider, kind, usdPerSecond, source, pri
 was read from and `priced` the date it was read): this package holds no price table. A box's `kind` is found from its
 facts (`gpu:<gpu>` for a box with a GPU, else its isolation), or by the host's `kindOf`. A box with no price writes no
 receipt, so its cost stays unknown, never 0. `cost_usd` is an estimate at list price, `seconds` times the price per
-second: not the provider's invoice, which bills by its own rounding, minimums and discounts. A box another process or
-host made is its maker's to receipt.
+second: not the provider's invoice, which bills by its own rounding, minimums and discounts. A price with `usdPerCall`
+(and no `usdPerSecond`) is for a box billed per call: its receipt counts the `exec` calls the box started, one aborted or
+given up on included, and `cost_usd` is `calls` times `usd_per_call` rounded to 9 decimals; `seconds` stays its lifetime,
+for display only. A call refused before it is made is not counted. A box another process or host made is its maker's to receipt.
 
 ## Home: a program kept alive in a box
 
@@ -708,3 +769,7 @@ registerBoxConformance({ describe, expect, it }, "my boxes", (use) => use(myBoxe
 ```
 
 A box whose `exec` carries input and streams output can take `uploadByExec` and `downloadByExec` as its file calls.
+
+A provider whose boxes keep no program running between calls and take no input (`facts().liveProcesses` is false) passes
+`withoutLiveProcesses: "<why>"`: the suite then leaves out the cases that need a live program or stdin, and one case in
+their place requires the facts to say so and stdin to be refused with `unsupported`; the reason is in its name.
