@@ -163,16 +163,12 @@ const write = (name, bytes) => fs.writeFileSync(path.join(cwd, name), bytes);
 write("checklist.json", JSON.stringify(CHECKLIST));
 write("certificate.pdf", await pdf(certificate()));
 
-/** A bash tool as the reference host's code mode gives one (`{ exitCode, output }`, never a rejection), or as a plain
- *  host does (the output, or a rejection with it). */
-const run = (command) => new Promise((resolve) => execFile("bash", ["-c", command], { cwd, maxBuffer: 1 << 26 }, (error, stdout, stderr) => resolve({ exitCode: error ? (error.code ?? 1) : 0, output: `${stdout}${stderr}` })));
-const BASH = {
-  object: { name: "bash", execute: ({ command }) => run(command) },
-  string: { name: "bash", execute: async ({ command }) => { const ran = await run(command); if (ran.exitCode) throw new Error(ran.output); return ran.output; } },
-};
+/** A bash tool as a host's code mode gives one: the command's output, or a rejection whose message names the exit code
+ *  and holds the output. */
+const bash = { name: "bash", execute: ({ command }) => new Promise((resolve, reject) => execFile("bash", ["-c", command], { cwd, maxBuffer: 1 << 26 }, (error, stdout, stderr) => (error ? reject(new Error(`the command exited with code ${error.code ?? 1}:\n${stdout}${stderr}`)) : resolve(`${stdout}${stderr}`)))) };
 
 /** Runs the steps in order, each in a sandbox of its own over the same workspace and the same Jev. */
-async function steps(codes, { bash = BASH.object, jev = pixelJev(), fails = false } = {}) {
+async function steps(codes, { jev = pixelJev(), fails = false } = {}) {
   const filed = [];
   const vision = createVisionExtension({ jev: { judge: jev.judge }, evidence: { file: async (_label, record) => { filed.push(record); return { path: `receipts/${filed.length}.json` }; } }, scope: () => ({ label: "verify", deriveDir: ".vision" }) });
   const values = [];
@@ -273,7 +269,7 @@ test("a page with a crop box smaller than its media box: the box is in percent o
   assert.ok(Math.abs(seal[0] - percent(AT.seal)[0]) > 5, "and not where it sits on the media box");
 });
 
-test("another kind of document is another checklist file and another file name, with a host whose bash answers a string", async () => {
+test("another kind of document is another checklist file and another file name", async () => {
   write("ticket.json", JSON.stringify({
     document: "A drawn ticket",
     pages: { front: "A page with a teal band across its top." },
@@ -284,7 +280,7 @@ test("another kind of document is another checklist file and another file name, 
   }));
   write("my ticket.pdf", await pdf([svg(`${band("teal")}${MARKS.stamp(2)}`)]));
   const task = 'const task = { document: "my ticket.pdf", checklist: "ticket.json" };';
-  const { values: [kinds, verdict], jev } = await steps([withTask(pagesStep, task), withTask(marksStep, task)], { bash: BASH.string });
+  const { values: [kinds, verdict], jev } = await steps([withTask(pagesStep, task), withTask(marksStep, task)]);
   assert.deepEqual(kinds, [{ page: 1, kind: "front" }]);
   assert.deepEqual(verdict.rows.map((row) => [row.id, row.value, row.cites.map((c) => c.fragment.split("&")[0])]), [["stamp", "yes", ["my ticket.pdf#page=1"]], ["seal", "no", ["my ticket.pdf#page=1"]]]);
   assert.deepEqual(Object.keys(jev.requests[0].questions), ["kind", "stamp", "stamp_at", "seal", "seal_at"]);

@@ -48,16 +48,12 @@ Render the pages through their crop box (`-cropbox`): that is the page a PDF vie
 rendered image is the same box in percent of the page in PDF.js or any other viewer. Without it, `pdftoppm` draws the
 media box, which can be larger, and every box would be off on such a file. Then one Jev request a page: which kind of
 page it is, and every mark's question and box, at a small fraction of a cent a page. Name each image by its page
-(`file.pdf#page=N`), so each box comes back as `file.pdf#page=N&xywh=percent:x,y,w,h`.
+(`file.pdf#page=N`), so each box comes back as `file.pdf#page=N&xywh=percent:x,y,w,h`. `tools.bash` resolves a
+command's output, and rejects when the command exits non-zero, so a failed command stops the step.
 
 ```js
 const task = { document: "certificate.pdf", checklist: "checklist.json" };
-const sh = async (command) => {
-  const ran = await tools.bash({ command });
-  if (typeof ran === "string") return ran;
-  if (ran.exitCode) throw new Error(ran.output);
-  return ran.output;
-};
+const sh = (command) => tools.bash({ command });
 const q = (text) => `'${String(text).replaceAll("'", "'\\''")}'`;
 const dir = `.verify/${task.document.replace(/[^\w.-]+/g, "_")}`;
 const list = JSON.parse(await sh(`cat ${q(task.checklist)}`));
@@ -95,12 +91,7 @@ render, with a little room around each, and asks one question of the two.
 
 ```js
 const task = { document: "certificate.pdf", checklist: "checklist.json" };
-const sh = async (command) => {
-  const ran = await tools.bash({ command });
-  if (typeof ran === "string") return ran;
-  if (ran.exitCode) throw new Error(ran.output);
-  return ran.output;
-};
+const sh = (command) => tools.bash({ command });
 const q = (text) => `'${String(text).replaceAll("'", "'\\''")}'`;
 const dir = `.verify/${task.document.replace(/[^\w.-]+/g, "_")}`;
 const list = JSON.parse(await sh(`cat ${q(task.checklist)}`));
