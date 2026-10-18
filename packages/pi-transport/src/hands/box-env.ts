@@ -452,6 +452,10 @@ class BoxEnv implements ExecutionEnv {
 	readonly #box: Box;
 	readonly #opTimeoutMs: number;
 	readonly #maxExecMs: number | undefined;
+	/** The longest one call to the box runs, from its facts: our backstop never asks for more. */
+	readonly #boxMaxExecMs: number | undefined;
+	/** A box that keeps no program between calls takes no stdin: its files go through `upload` and `download`. */
+	readonly #noStdin: boolean;
 	readonly #statusTimeoutMs: number;
 	readonly #watchIntervalMs: number;
 	readonly #maxReaderBytes: number;
@@ -472,6 +476,8 @@ class BoxEnv implements ExecutionEnv {
 		this.#box = box;
 		this.#opTimeoutMs = options.opTimeoutMs ?? DEFAULT_OP_TIMEOUT_MS;
 		this.#maxExecMs = options.maxExecMs;
+		this.#boxMaxExecMs = facts.maxExecMs;
+		this.#noStdin = facts.liveProcesses === false;
 		this.#statusTimeoutMs = options.statusTimeoutMs ?? DEFAULT_STATUS_TIMEOUT_MS;
 		this.#watchIntervalMs = options.watchIntervalMs ?? DEFAULT_WATCH_INTERVAL_MS;
 		const maxReaderBytes = options.maxReaderBytes ?? DEFAULT_MAX_READER_BYTES;
@@ -497,6 +503,14 @@ class BoxEnv implements ExecutionEnv {
 	}
 
 	async readBinaryFile(path: string, context: Context): Promise<Result<Uint8Array, FileError>> {
+		if (this.#noStdin) {
+			// A box that answers with text only would replace the bytes of a binary file: its bytes come from `download`.
+			const resolved = await this.#resolve(path, context);
+			if (!resolved.ok) return resolved;
+			const got = await this.#box.download([resolved.value], context);
+			if (got.ok) return ok(got.value[0]?.bytes ?? new Uint8Array());
+			if (got.error.code !== "invalid") return err(this.#fileError(got.error, resolved.value));
+		}
 		return this.#file(path, READ_SCRIPT, [], undefined, context, ({ stdout }) => stdout);
 	}
 
@@ -692,12 +706,55 @@ class BoxEnv implements ExecutionEnv {
 
 	async writeFile(path: string, content: string | Uint8Array, context: Context): Promise<Result<void, FileError>> {
 		const bytes = typeof content === "string" ? encoder.encode(content) : content;
+		if (this.#noStdin) return this.#store(path, () => bytes, context);
 		return this.#file(path, WRITE_SCRIPT, [], bytes, context, () => undefined);
 	}
 
 	async appendFile(path: string, content: string | Uint8Array, context: Context): Promise<Result<void, FileError>> {
 		const bytes = typeof content === "string" ? encoder.encode(content) : content;
+		if (this.#noStdin) {
+			// Read then write: two appends from one environment run in order, two environments appending to one file can lose one.
+			return this.#store(
+				path,
+				(before) => {
+					const whole = new Uint8Array(before.length + bytes.length);
+					whole.set(before);
+					whole.set(bytes, before.length);
+					return whole;
+				},
+				context,
+			);
+		}
 		return this.#file(path, APPEND_SCRIPT, [], bytes, context, () => undefined);
+	}
+
+	/** A box with no stdin writes a file through `upload`: `next` makes the new bytes from the old (empty when there is no file). */
+	async #store(
+		path: string,
+		next: (before: Uint8Array) => Uint8Array,
+		context: Context,
+	): Promise<Result<void, FileError>> {
+		const resolved = await this.#resolve(path, context);
+		if (!resolved.ok) return resolved;
+		const target = resolved.value;
+		let before: Uint8Array = new Uint8Array();
+		const had = await this.#box.download([target], context);
+		if (had.ok) before = had.value[0]?.bytes ?? before;
+		else if (had.error.code !== "not_found") return err(this.#fileError(had.error, target));
+		const sent = await this.#box.upload([{ path: target, bytes: next(before) }], context);
+		return sent.ok ? ok(undefined) : err(this.#fileError(sent.error, target));
+	}
+
+	#fileError(error: BoxError, path: string): FileError {
+		const code =
+			error.code === "not_found"
+				? "not_found"
+				: error.code === "aborted"
+					? "aborted"
+					: error.code === "invalid"
+						? "invalid"
+						: "unknown";
+		return new FileError(code, `${error.message}: ${path}`, path, error);
 	}
 
 	async truncateFile(path: string, size: number, context: Context): Promise<Result<void, FileError>> {
@@ -964,7 +1021,15 @@ class BoxEnv implements ExecutionEnv {
 		const call = withCancel(context);
 		// A command with no deadline has none in the box either: the box's own lifetime bounds it.
 		const backstop =
-			timeoutMs === undefined ? undefined : { timeoutMs: Math.min(timeoutMs + COMMAND_BACKSTOP_MS, MAX_TIMEOUT_MS) };
+			timeoutMs === undefined
+				? undefined
+				: {
+						timeoutMs: Math.min(
+							timeoutMs + COMMAND_BACKSTOP_MS,
+							MAX_TIMEOUT_MS,
+							this.#boxMaxExecMs ?? MAX_TIMEOUT_MS,
+						),
+					};
 		const launch = this.#box.exec(full, backstop, call.context);
 		try {
 			// The start itself always has a deadline, so a box that stops answering is found out.

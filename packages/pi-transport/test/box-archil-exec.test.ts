@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { archilExecBoxes } from "../src/box/archil-exec.ts";
 import type { Box, BoxSpec } from "../src/box/box.ts";
 import { finish, readStream } from "../src/box/files.ts";
+import { boxEnv } from "../src/hands/box-env.ts";
 import { localVault } from "../src/home/checkpoint.ts";
 import { dirStore } from "../src/home/dir-store.ts";
 import { leaseIn } from "../src/home/ownership.ts";
@@ -325,6 +326,58 @@ describe("archil exec boxes", () => {
 			if (!result.ok) expect(result.error.code).toBe("gone");
 			await first;
 			expect(fake.calls.slice(before).filter((call) => call.command.includes("late.txt"))).toEqual([]);
+		} finally {
+			close();
+		}
+	});
+
+	it("serves the file tools of an environment through upload and download, so a write keeps its bytes and a binary read is exact", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const env = boxEnv(box);
+			const binary = new Uint8Array([0, 255, 254, 128, 10, 200]);
+			expect((await env.writeFile("data.bin", binary, context)).ok).toBe(true);
+			expect(new Uint8Array(readFileSync(join(fake.root, "boxes", box.id, "data.bin")))).toEqual(binary);
+			const read = await env.readBinaryFile("data.bin", context);
+			expect(read.ok && new Uint8Array(read.value)).toEqual(binary);
+			expect((await env.writeFile("note.txt", "one\n", context)).ok).toBe(true);
+			expect((await env.appendFile("note.txt", "two\n", context)).ok).toBe(true);
+			expect((await env.appendFile("fresh.txt", "x", context)).ok).toBe(true);
+			const text = await env.readTextFile("note.txt", context);
+			expect(text.ok && text.value).toBe("one\ntwo\n");
+			const fresh = await env.readTextFile("fresh.txt", context);
+			expect(fresh.ok && fresh.value).toBe("x");
+			const missing = await env.readBinaryFile("nope.bin", context);
+			expect(!missing.ok && missing.error.code).toBe("not_found");
+		} finally {
+			close();
+		}
+	});
+
+	it("refuses a command's stdin as unsupported instead of running it without its input", async () => {
+		const { provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const started = unwrap(await box.exec(["cat"], undefined, context));
+			const done = await finish(started, new Uint8Array([1, 2, 3]));
+			expect(done.ok).toBe(false);
+			if (!done.ok) expect(done.error.code).toBe("unsupported");
+		} finally {
+			close();
+		}
+	});
+
+	it("starts a command whose timeout the box supports, though the environment adds its backstop", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const env = boxEnv(box);
+			const before = fake.calls.length;
+			const ran = await env.exec("echo ok", { timeout: 280 }, context);
+			expect(ran.ok).toBe(true);
+			if (ran.ok) expect(ran.value.exitCode).toBe(0);
+			expect(fake.calls.length - before).toBeGreaterThan(0);
 		} finally {
 			close();
 		}
