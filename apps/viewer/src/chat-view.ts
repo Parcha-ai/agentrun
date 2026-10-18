@@ -123,7 +123,7 @@ function sourceMedium(recording: Recording, sha: string, alt: string, regions: S
   const url = recording.blobUrl(sha);
   if (!url) return undefined;
   if (sourceIsVideo(recording, sha)) return reportEl('div', { class: `media ${className}` }, reportEl('video', { src: url, controls: true, muted: true, playsinline: true, preload: 'metadata' }));
-  const picture = reportEl('img', { src: url, alt });
+  const picture = reportEl('img', { loading: 'lazy', decoding: 'async', src: url, alt });
   return reportEl('div', { class: `media ${className}` }, picture, ...regions.map((region) => sourceBox(region, picture)));
 }
 
@@ -228,7 +228,7 @@ function sourceViewOf(recording: Recording, model: ChatModel, shown: SourceShown
         for (const [n, button] of [...strip.children].entries()) button.setAttribute('aria-current', String(n === index));
       };
       frames.forEach((sha, index) => {
-        const button = reportEl('button', { type: 'button', 'aria-label': `Frame ${index + 1}` }, reportEl('img', { src: recording.blobUrl(sha), alt: '' }));
+        const button = reportEl('button', { type: 'button', 'aria-label': `Frame ${index + 1}` }, reportEl('img', { loading: 'lazy', src: recording.blobUrl(sha), alt: '' }));
         button.addEventListener('click', () => show(index));
         strip.append(button);
       });
@@ -416,7 +416,7 @@ function threadCard(recording: Recording, model: ChatModel, item: ToolItem, fold
     reportEl('button', { class: thumb ? 'step-main' : 'step-main bare', type: 'button', 'data-open': item.id },
       reportEl('div', {}, reportEl('div', { class: 't' }, threadIcon(sourceKindOf(source?.href ?? '')), item.judge && threadJudge(), reportEl('span', { text: item.title }), item.failed && reportEl('small', { class: 'tag', text: 'failed' })),
         item.takeaway !== '' && reportEl('div', { class: 'k', text: item.takeaway })),
-      thumb && reportEl('img', { src: recording.blobUrl(thumb), alt: '', loading: 'lazy' })),
+      thumb && reportEl('img', { loading: 'lazy', src: recording.blobUrl(thumb), alt: '' })),
     calls.length > 0 && reportEl('div', { class: 'calls' }, ...calls, more));
 }
 

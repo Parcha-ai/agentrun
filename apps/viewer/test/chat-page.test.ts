@@ -400,6 +400,8 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.equal(await value(`card('answer', 'read scans.pdf page=3').hidden`), false, 'the folded card of the call that made the cited look is opened');
     assert.deepEqual(await value(`[...doc('answer').querySelectorAll('.src .media')].map((m) => [m.querySelector('img').alt, [...m.querySelectorAll('.jbox')].map((b) => b.style.cssText)])`),
       [['scans.pdf#page=3', ['left: 10%; top: 20%; width: 30%; height: 10%;']], ['scans.pdf#page=1', []], ['scans.pdf#page=2', []]]);
+    // Every picture in the chat and the source loads when it comes into view: a folded card's pictures cost nothing.
+    assert.deepEqual(await value(`(() => { const all = [...doc('answer').querySelectorAll('.thread img, .src img')]; return [all.length > 0, all.filter((i) => i.loading !== 'lazy').map((i) => i.alt)]; })()`), [true, []]);
     await page.evaluate(`doc('answer').querySelector('.cite[data-look="${K.page2}"]').click()`);
     await until(`shown(doc('answer').querySelector('.src .jbox'))`, 'a chip opens its source with its region');
     assert.equal(await value(`doc('answer').querySelector('.src .jbox').style.cssText`), 'left: 6%; top: 8%; width: 80%; height: 6%;');
