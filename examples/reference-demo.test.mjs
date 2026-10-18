@@ -1927,3 +1927,26 @@ test('a follower that cannot write ends the run through the normal path: the run
   assert.deepEqual(calls, ['release'], 'the place was released');
   assert.ok(Date.now() - started < 60_000, 'the child was stopped, not waited for');
 });
+
+test('the follower does not publish a line that holds a credential shape: it stops the recording instead; and a recording that cannot be set up closes what it opened', { timeout: 120_000 }, async (t) => {
+  const { startedAt, followRecording } = await import('./reference/record.ts');
+  const dir = await mkdtemp(join(tmpdir(), 'reference-follow-cred-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, '.spool'), { recursive: true });
+  startedAt(dir);
+  const follower = followRecording(dir, { holdMs: 0 });
+  const secret = `sk-${'a1'.repeat(20)}`;
+  appendFileSync(join(dir, '.spool', 'live-1.jsonl'), `${JSON.stringify({ channel: 'live', source: 'workflow', kind: 'x', gen: 1, seq: 0, t: 1, data: { header: secret } })}\n`);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.throws(() => follower.poll(), /holds a provider secret.*not published/);
+  assert.ok(!readFileSync(join(dir, 'events.jsonl'), 'utf8').includes(secret), 'the line was never placed');
+  // A setup that fails (here the blobs directory is a file) rejects, and leaves no timer running.
+  const { options } = await specWith(t, { name: 'reference' });
+  const broken = await mkdtemp(join(tmpdir(), 'reference-setup-fails-'));
+  t.after(() => rm(broken, { recursive: true, force: true }));
+  writeFileSync(join(broken, 'blobs'), 'not a directory');
+  const timers = () => process.getActiveResourcesInfo().filter((name) => name === 'Timeout').length;
+  const before = timers();
+  await assert.rejects(() => demo({ ...options, argv: ['--json', '--record', broken] }));
+  assert.ok(timers() <= before, 'the follower\'s timer was stopped');
+});

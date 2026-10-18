@@ -359,14 +359,26 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const backend = new FakeBackend({ start: options.fakes.start, pages: options.fakes.pages });
   options.fakes.backend?.(backend);
   const served = await backend.serve();
-  const supervisor = openSupervisor({ dir: recordDir, ...(redact ? { redact } : {}) });
-  // A live run and its replay are one file: events.jsonl is appended to as the run goes (whole lines, section 3's order), and finishRecording completes it. The job is a blob from the start, so a viewer can draw the workflow graph at once.
-  const follower = followRecording(recordDir, { ...(redact ? { redact } : {}), ...(options.followHoldMs !== undefined ? { holdMs: options.followHoldMs } : {}) });
-  // A failure of the follower (the disk full, say) is not thrown from the timer: it is kept, the running child is stopped, and the run ends through the normal path, which releases the place.
+  // Setting the recording up writes to the disk: if it fails (the disk full, say) the backend, the timer and the scratch are closed before the error goes on.
+  let supervisor!: ReturnType<typeof openSupervisor>;
+  let follower!: ReturnType<typeof followRecording>;
+  let following: ReturnType<typeof setInterval> | undefined;
   let followError: unknown;
-  const following = setInterval(() => { try { follower.poll(); } catch (error) { followError ??= error; clearInterval(following); } }, 100);
-  const jobText = JSON.stringify({ workflow: job.workflow, input: input ?? (live ? undefined : options.fakes.input) ?? job.input, files: Object.keys(job.files ?? {}) });
-  const jobBlob = keepBlob(recordDir, Buffer.from(redact ? redact(jobText) : jobText), 'json');
+  let jobBlob!: string;
+  try {
+    supervisor = openSupervisor({ dir: recordDir, ...(redact ? { redact } : {}) });
+    // A live run and its replay are one file: events.jsonl is appended to as the run goes (whole lines, section 3's order), and finishRecording completes it. The job is a blob from the start, so a viewer can open it at once.
+    follower = followRecording(recordDir, { ...(redact ? { redact } : {}), ...(options.followHoldMs !== undefined ? { holdMs: options.followHoldMs } : {}) });
+    // A failure of the follower (the disk full, say) is not thrown from the timer: it is kept, the running child is stopped, and the run ends through the normal path, which releases the place.
+    following = setInterval(() => { try { follower.poll(); } catch (error) { followError ??= error; clearInterval(following); } }, 100);
+    const jobText = JSON.stringify({ workflow: job.workflow, input: input ?? (live ? undefined : options.fakes.input) ?? job.input, files: Object.keys(job.files ?? {}) });
+    jobBlob = keepBlob(recordDir, Buffer.from(redact ? redact(jobText) : jobText), 'json');
+  } catch (error) {
+    clearInterval(following);
+    await served.close();
+    if (!values.record && !values.dir) await rm(scratch, { recursive: true, force: true });
+    throw error;
+  }
   // A label no other run shares, on every box this run makes: cleanup finds these and no others.
   const runLabel = randomUUID();
   const base: Record<string, string> = { ...(values.record ? { AGENTRUN_HOME: dirname(signInFile(process.env)) } : {}), DEMO_ENTRY: options.self, DEMO_NAME: spec.name, RUN_LABEL: runLabel, HOME: scratch, TMPDIR: scratch, DIR: dir, RECORD_DIR: recordDir, BACKEND: served.url, BROWSER: browser, ...(live ? { LIVE: '1' } : {}), ...(Object.keys(models).length ? { MODELS: JSON.stringify(models) } : {}), ...(values['fetch-sources'] ? { FETCH_SOURCES: '1' } : {}), CACHE_DIR: values.cache ?? join(tmpdir(), 'agentrun-sources'), ...(input ? { INPUT: JSON.stringify(input) } : {}) };
