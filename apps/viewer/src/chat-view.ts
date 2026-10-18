@@ -2,7 +2,7 @@
 // recorded, the thinking its own model wrote and one card per tool call; the session timeline under the title; and on
 // the right the report (chat-report.ts) or the source a citation or a card points at, its region drawn from an address
 // alone. On a phone the right side is a bottom sheet.
-import type { ChatDecision, ChatItem, ChatModel, ChatSource, ChatSpan, ChatThread } from './chat-model.ts';
+import type { ChatCall, ChatDecision, ChatItem, ChatModel, ChatSource, ChatSpan, ChatThread } from './chat-model.ts';
 import type { Recording } from './format.ts';
 import { drawReport, reportCiteLabel, reportClock, reportEl, reportFragmentOf, reportHeldFile, reportHowHref, reportInline, reportParagraphs } from './chat-report.ts';
 
@@ -22,8 +22,8 @@ const SOURCE_SAID: Record<SourceKind, string> = { page: 'Read on the page', imag
 /** How many lines, or characters, of a long message show before "Show the whole message". */
 const THREAD_LINES = 8;
 const THREAD_CHARS = 600;
-/** How many looks a card's strip shows before "+ N more" (its decisive looks always show). */
-const THREAD_CELLS = 8;
+/** How many cards of one kind in a row show before "+ N more": calls of one tool, calls inside one call. */
+const THREAD_SHOWN = 3;
 
 const threadIcon = (name: string): Element => {
   const holder = document.createElement('template');
@@ -146,6 +146,15 @@ function sourceAddressList(model: ChatModel, recording: Recording, addresses: st
   }));
 }
 
+/** The picture a region is drawn on, among a look's pictures: the one whose address holds it; of several, the cited one
+ *  when it is among them, else the first of them; of none, the cited one. */
+export function sourcePictureFor<P extends { href: string }>(pictures: readonly P[], cited: P, region: string): P {
+  const holders = pictures.filter((picture) => sourceHolds(picture.href, region));
+  if (holders.length === 1) return holders[0]!;
+  if (holders.length > 1) return holders.includes(cited) ? cited : holders[0]!;
+  return cited;
+}
+
 const sourceRegionList = (regions: SourceRegion[]) => reportEl('ul', { class: 'regions' },
   ...regions.map((region) => reportEl('li', {}, reportEl('b', { text: region.label ?? 'cited here' }), reportEl('span', { text: region.href }))));
 
@@ -212,14 +221,13 @@ function sourceView(recording: Recording, model: ChatModel, shown: SourceShown, 
     } else if (shown.regions.length) pane.append(sourceRegionList(shown.regions));
     return pane;
   }
-  // A look over several addresses with a picture for each: the cited address's picture first, each with the regions
-  // its own address holds, a region of no listed address on the first.
+  // A look over several addresses with a picture for each: the cited address's picture first, each region on the
+  // picture sourcePictureFor gives it.
   const pictures = source?.pictures;
   const cited = pictures?.find((picture) => sourceHolds(picture.href, shown.href));
   if (pictures && cited) {
     const ordered = [cited, ...pictures.filter((picture) => picture !== cited)];
-    const named = (region: SourceRegion) => /(^|&)(page|t)=/.test(region.href.split('#')[1] ?? '') && pictures.some((each) => sourceHolds(each.href, region.href));
-    const placed = (picture: { href: string }) => shown.regions.filter((region) => (named(region) ? sourceHolds(picture.href, region.href) : picture === cited));
+    const placed = (picture: { href: string }) => shown.regions.filter((region) => sourcePictureFor(pictures, cited, region.href) === picture);
     const paper = kind === 'page' ? 'paper' : '';
     pane.append(sourceMedium(recording, cited.sha, cited.href, placed(cited), paper) ?? '');
     if (ordered.length > 1) pane.append(reportEl('div', { class: 'crops' }, ...ordered.slice(1).map((picture) => sourceMedium(recording, picture.sha, picture.href, placed(picture), paper))));
@@ -307,41 +315,72 @@ export function threadPlace(addresses: readonly string[]): string {
   return `${threadAt(addresses[0]!)} +${addresses.length - 1}`;
 }
 
-/** A decision in a strip cell: a yes-or-no as its score to two places and its word, a choice as its value; named when
- *  the look made more than one. The strip is the one place a score shows. */
+/** A decision as a few words: a yes-or-no as its score to two places and its word, a choice as its value; named when
+ *  the look made more than one. */
 const threadDecision = (decision: ChatDecision, named: boolean) => {
   const name = named ? `${decision.name.replace(/_/g, ' ')} ` : '';
   return decision.kind === 'noul' ? `${name}${decision.score.toFixed(2)} ${decision.score >= 0.5 ? 'yes' : 'no'}` : `${named ? `${name.trim()}: ` : ''}${decision.choice}`;
 };
 
-/** A tool call's card: what it did, what it found, its own first picture, and a strip of the looks it made (each its
- *  picture or its place, and its decisions), its decisive looks marked. */
-function threadCard(recording: Recording, model: ChatModel, item: ToolItem): HTMLElement {
+/** A look's picture for its call's card (the first of its own), and the regions that picture carries. */
+function threadThumb(recording: Recording, source: ChatSource): { sha: string; regions: SourceRegion[] } | undefined {
+  const regions = source.regions.flatMap((region) => sourceRegionOf(region.href, region.label) ?? []);
+  const first = source.pictures?.[0];
+  if (first) return { sha: first.sha, regions: regions.filter((region) => sourcePictureFor(source.pictures!, first, region.href) === first) };
+  const frames = source.media.filter((sha) => recording.blobUrl(sha) && !sourceIsVideo(recording, sha));
+  if (!frames[0]) return undefined;
+  if (sourceKindOf(source.href) === 'video') return { sha: frames[0], regions: regions.filter((region) => sourceFrameAt(source.href, frames.length, region.t) === 0) };
+  return { sha: frames[0], regions: frames.length === 1 ? regions : [] };
+}
+
+/** A model call made inside a tool call, as its own card: its look's picture with that look's boxes, its line, its
+ *  look's place, and its raw output behind a click. */
+function threadCall(recording: Recording, model: ChatModel, call: ChatCall): HTMLElement {
+  const found = call.look ? model.sources[call.look] : undefined;
+  const thumb = found && threadThumb(recording, found);
+  const addresses = found ? sourceAddresses(found) : [];
+  const place = found ? threadPlace(addresses) : '';
+  return reportEl('div', { class: found?.decisive ? 'call decisive' : 'call', 'data-call': call.id, 'data-look': found ? call.look : undefined, role: found ? 'button' : undefined,
+    tabindex: found ? 0 : undefined, title: addresses.join(', ') || undefined, 'aria-label': [call.label, place, addresses.join(', ')].filter(Boolean).join('; ') },
+  thumb && sourceMedium(recording, thumb.sha, '', thumb.regions, 'thumb'),
+  reportEl('div', { class: 'call-body' },
+    reportEl('span', { class: 'call-label' }, ...reportInline(call.label)),
+    place !== '' && reportEl('span', { class: 'call-at', text: place }),
+    call.raw !== '' && reportEl('details', { class: 'raw' }, reportEl('summary', { text: 'Raw output' }), reportEl('pre', { text: call.raw }))));
+}
+
+/** A tool call's card: what it did, what it found, its own first picture, and under it a card per model call it made
+ *  (a look it made with no call of its own reads as its place and decisions); three show, the decisive ones always,
+ *  the rest behind "+ N more". `fold` gets each folded call's card with the opener of its group. */
+function threadCard(recording: Recording, model: ChatModel, item: ToolItem, fold: (node: HTMLElement, open: () => void) => void, register: (id: string, node: HTMLElement) => void): HTMLElement {
   const look = threadLookOf(model, item);
   const source = look ? model.sources[look] : undefined;
-  const looks = item.looks.filter((each) => model.sources[each]);
   const thumb = threadPicture(recording, item.media);
-  const cells = looks.map((each) => {
+  const called = new Set(item.calls.map((call) => call.look));
+  const unread = item.looks.filter((each) => model.sources[each] && !called.has(each)).map((each, n): ChatCall => {
     const found = model.sources[each]!;
-    const picture = threadPicture(recording, found.media);
-    const addresses = sourceAddresses(found);
-    const at = threadPlace(addresses);
-    const said = found.decisions.map((decision) => threadDecision(decision, found.decisions.length > 1));
-    return reportEl('button', { class: found.decisive ? 'look decisive' : 'look', type: 'button', 'data-look': each, title: addresses.join(', '), 'aria-label': [at, ...said, addresses.join(', ')].join('; ') },
-      picture ? reportEl('img', { src: recording.blobUrl(picture), alt: '', loading: 'lazy' }) : undefined,
-      reportEl('span', { class: 'cell-at', text: at }), ...said.map((text) => reportEl('span', { class: 'cell-said', text })));
+    return { id: `${item.id}:look-${n}`, name: 'look', label: found.decisions.map((decision) => threadDecision(decision, found.decisions.length > 1)).join(' · ') || threadPlace(sourceAddresses(found)), raw: '', look: each };
   });
-  const shown = cells.filter((cell, index) => index < THREAD_CELLS || cell.classList.contains('decisive'));
-  const rest = cells.filter((cell) => !shown.includes(cell));
-  for (const cell of rest) cell.hidden = true;
-  const more = rest.length > 0 && reportEl('button', { class: 'more cells', type: 'button', text: `+ ${rest.length} more` });
-  if (more) more.addEventListener('click', () => { const open = rest[0]!.hidden; for (const cell of rest) cell.hidden = !open; more.textContent = open ? 'Show less' : `+ ${rest.length} more`; });
+  const calls = [...item.calls, ...unread].map((call) => {
+    const node = threadCall(recording, model, call);
+    register(call.id, node);
+    return node;
+  });
+  const shown = calls.filter((node, index) => index < THREAD_SHOWN || node.classList.contains('decisive'));
+  const rest = calls.filter((node) => !shown.includes(node));
+  const more = rest.length > 0 && reportEl('button', { class: 'more calls-more', type: 'button' });
+  if (more) {
+    const toggle = (open = rest[0]!.hidden) => { for (const node of rest) node.hidden = !open; more.textContent = open ? 'Show less' : `+ ${rest.length} more`; };
+    toggle(false);
+    more.addEventListener('click', () => toggle());
+    for (const node of rest) fold(node, () => toggle(true));
+  }
   return reportEl('div', { class: `step${item.failed ? ' failed' : ''}`, 'data-item': item.id },
     reportEl('button', { class: thumb ? 'step-main' : 'step-main bare', type: 'button', 'data-open': item.id },
       reportEl('div', {}, reportEl('div', { class: 't' }, threadIcon(sourceKindOf(source?.href ?? '')), reportEl('span', { text: item.title }), item.failed && reportEl('small', { class: 'tag', text: 'failed' })),
         item.takeaway !== '' && reportEl('div', { class: 'k', text: item.takeaway })),
       thumb && reportEl('img', { src: recording.blobUrl(thumb), alt: '', loading: 'lazy' })),
-    cells.length > 0 && reportEl('div', { class: 'step-looks' }, ...cells, more));
+    calls.length > 0 && reportEl('div', { class: 'calls' }, ...calls, more));
 }
 
 /** The session timeline, collapsed under the title: a lane per span lane, a call made inside a tool on a lane under its
@@ -429,11 +468,11 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     reportEl('div', { class: 'title', text: model.title }),
     reportEl('a', { class: 'how', href: reportHowHref(recording), text: 'How this ran' }));
 
-  // Each conversation as recorded: its messages, its thinking, its tool cards (calls of one tool in a row show the first,
-  // the rest behind "+ N more").
+  // Each conversation as recorded: its messages, its thinking, its tool cards (calls of one tool in a row show the first
+  // three, the rest behind "+ N more"). A folded card is opened by its group's opener.
   const cards = new Map<string, HTMLElement>();
   const nodes = new Map<string, HTMLElement>();
-  const runs = new Map<string, { more: HTMLButtonElement; extras: HTMLElement[] }>();
+  const openers = new Map<HTMLElement, () => void>();
   const toggleRun = (run: { more: HTMLButtonElement; extras: HTMLElement[] }, open = run.extras[0]?.hidden ?? false) => {
     for (const node of run.extras) node.hidden = !open;
     run.more.textContent = open ? 'Show less' : `+ ${run.extras.length} more`;
@@ -443,13 +482,13 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     const out: HTMLElement[] = [];
     let agent: HTMLElement | undefined;
     let steps: HTMLElement | undefined;
-    let run: { tool: string; cards: HTMLElement[]; ids: string[] } | undefined;
+    let run: { tool: string; cards: HTMLElement[] } | undefined;
     const closeRun = () => {
-      if (run && steps && run.cards.length > 1) {
-        const group = { more: reportEl('button', { class: 'more', type: 'button' }), extras: run.cards.slice(1) };
+      if (run && steps && run.cards.length > THREAD_SHOWN) {
+        const group = { more: reportEl('button', { class: 'more', type: 'button' }), extras: run.cards.slice(THREAD_SHOWN) };
         group.more.addEventListener('click', () => toggleRun(group));
         toggleRun(group, false);
-        for (const id of run.ids.slice(1)) runs.set(id, group);
+        for (const card of group.extras) openers.set(card, () => toggleRun(group, true));
         steps.append(group.more);
       }
       run = undefined;
@@ -468,13 +507,12 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
       if (item.kind === 'tool') {
         if (!steps) { steps = reportEl('div', { class: 'steps' }); agent.append(steps); }
         if (run && run.tool !== item.tool) closeRun();
-        const card = threadCard(recording, model, item);
+        const card = threadCard(recording, model, item, (node, open) => openers.set(node, open), (id, node) => nodes.set(id, node));
         cards.set(item.id, card);
         nodes.set(item.id, card);
         steps.append(card);
-        run ??= { tool: item.tool, cards: [], ids: [] };
+        run ??= { tool: item.tool, cards: [] };
         run.cards.push(card);
-        run.ids.push(item.id);
         continue;
       }
       closeRun();
@@ -521,9 +559,16 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
   const scrim = reportEl('div', { class: 'scrim' });
   root.replaceChildren(header, reportEl('div', { class: 'app' }, chat, art), scrim);
 
+  /** Opens every fold that hides a node: its conversation's, and each folded group it sits in. */
+  const reveal = (node: HTMLElement) => {
+    const fold = node.closest<HTMLDetailsElement>('details.fold');
+    if (fold) fold.open = true;
+    for (let at: HTMLElement | null = node; at; at = at.parentElement) if (at.hidden) openers.get(at)?.();
+  };
   let shown: SourceShown | undefined;
   const mark = () => {
     for (const [id, card] of cards) card.setAttribute('aria-current', String(!source.hidden && id === shown?.item?.id));
+    for (const call of thread.querySelectorAll<HTMLElement>('.call')) call.setAttribute('aria-current', String(!source.hidden && !!shown?.look && call.dataset.look === shown.look));
     doccard?.setAttribute('aria-current', String(source.hidden));
     history.replaceState(null, '', `${location.pathname}${location.search}${!source.hidden && shown?.look ? `#look=${encodeURIComponent(shown.look)}` : ''}`);
   };
@@ -533,6 +578,9 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
   const toolOf = (id: string | undefined) => { const found = id ? items.get(id)?.item : undefined; return found?.kind === 'tool' ? found : undefined; };
   const showSource = (next: SourceShown, sheet = true) => {
     shown = next;
+    // The card of the call that made the look shown is opened in the chat, wherever it was folded.
+    const made = next.look ? thread.querySelector<HTMLElement>(`.call[data-look="${CSS.escape(next.look)}"]`) : null;
+    if (made) reveal(made);
     source.replaceChildren(sourceView(recording, model, next, showReport, (look) => showLook(look, next.item)));
     source.hidden = false;
     source.scrollTop = 0;
@@ -560,10 +608,7 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
   const scrollToItem = (id: string) => {
     const target = id === 'answer' ? answerNode : nodes.get(id);
     if (!target) return;
-    const fold = target.closest<HTMLDetailsElement>('details.fold');
-    if (fold) fold.open = true;
-    const run = runs.get(id);
-    if (run && target.hidden) toggleRun(run, true);
+    reveal(target);
     target.scrollIntoView({ block: 'center', behavior: motion() });
     target.classList.remove('flash');
     void target.offsetWidth;
@@ -584,11 +629,16 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
 
   thread.addEventListener('click', (event) => {
     const target = event.target as Element;
-    const strip = target.closest<HTMLElement>('.step-looks [data-look]');
-    if (strip) { showLook(strip.dataset.look!, toolOf(strip.closest<HTMLElement>('.step')!.dataset.item)); return; }
+    if (target.closest('details.raw')) return;
+    const call = target.closest<HTMLElement>('.call[data-look]');
+    if (call) { showLook(call.dataset.look!, toolOf(call.closest<HTMLElement>('.step')!.dataset.item)); return; }
     const opener = target.closest<HTMLElement>('[data-open]');
     const item = opener ? toolOf(opener.dataset.open) : undefined;
     if (item) openCard(item);
+  });
+  thread.addEventListener('keydown', (event) => {
+    const call = (event.target as Element).closest<HTMLElement>('.call[data-look]');
+    if (call && event.target === call && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); call.click(); }
   });
   doccard?.addEventListener('click', () => { showReport(); openSheet(); });
   reportButton.addEventListener('click', () => { showReport(); openSheet(); });
