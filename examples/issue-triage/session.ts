@@ -78,13 +78,22 @@ const textOf = (content: unknown) => (typeof content === 'string' ? content : Ar
 
 type Message = { role: string; content: unknown; toolName?: string; toolCallId?: string; isError?: boolean };
 /** The graph is the workflow that RAN: the draft an `inspect` or a `load` answered with (what run and dry-run take next), not the workflow the model sent, which a refused inspect, a repaired draft or a draft loaded by name all make differ.
- *  Each result is paired with its call by id to know its action; the last good one wins. */
+ *  Each result is paired with its call by id to know its action. A `run` with no workflow argument executes the draft held at that moment, so the last good result BEFORE the last `run` call wins (one after it never ran); with no `run`, the last good one. */
 export function ranWorkflow(messages: readonly Message[]): { workflow: unknown; input: unknown } | undefined {
   const actions = new Map<string, string>();
-  for (const m of messages) if (m.role === 'assistant' && Array.isArray(m.content)) for (const part of m.content as Array<{ type: string; id?: string; name?: string; arguments?: { action?: string } }>) if (part.type === 'toolCall' && part.name === 'agentrun' && part.id && part.arguments?.action) actions.set(part.id, part.arguments.action);
+  let lastRun = messages.length;
+  messages.forEach((m, at) => {
+    if (m.role !== 'assistant' || !Array.isArray(m.content)) return;
+    for (const part of m.content as Array<{ type: string; id?: string; name?: string; arguments?: { action?: string } }>) {
+      if (part.type !== 'toolCall' || part.name !== 'agentrun' || !part.arguments?.action) continue;
+      if (part.id) actions.set(part.id, part.arguments.action);
+      if (part.arguments.action === 'run') lastRun = at;
+    }
+  });
+  const ran = [...actions.values()].includes('run');
   let found: { workflow: unknown; input: unknown } | undefined;
-  for (const m of messages) {
-    if (m.role !== 'toolResult' || m.toolName !== 'agentrun' || m.isError || !['inspect', 'load'].includes(actions.get(m.toolCallId ?? '') ?? '')) continue;
+  for (const [at, m] of messages.entries()) {
+    if ((ran && at > lastRun) || m.role !== 'toolResult' || m.toolName !== 'agentrun' || m.isError || !['inspect', 'load'].includes(actions.get(m.toolCallId ?? '') ?? '')) continue;
     try { const answered = JSON.parse(textOf(m.content)) as { workflow?: unknown; input?: unknown }; if (answered.workflow && typeof answered.workflow === 'object') found = { workflow: answered.workflow, input: answered.input ?? {} }; } catch { /* not JSON */ }
   }
   return found;

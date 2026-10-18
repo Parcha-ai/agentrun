@@ -46,5 +46,10 @@ test('the job blob\'s workflow is what an inspect or a load ANSWERED, paired by 
   const refused = [...first, call('2', 'inspect', { workflow: sent }), result('2', { message: 'no' }, true), call('3', 'run'), result('3', { outcome: { status: 'complete' }, workflow: sent })];
   assert.deepEqual(ranWorkflow(refused), { workflow: repaired, input: { n: 1 } });
   // A draft loaded by name has no workflow in its call at all, and its result is the graph.
-  assert.deepEqual(ranWorkflow([...refused, call('4', 'load', { name: 'saved' }), result('4', { preview: 'p', workflow: loaded, saved: { name: 'saved' } })]), { workflow: loaded, input: {} });
+  assert.deepEqual(ranWorkflow([...first, call('2', 'inspect', { workflow: sent }), result('2', { message: 'no' }, true), call('4', 'load', { name: 'saved' }), result('4', { preview: 'p', workflow: loaded, saved: { name: 'saved' } })]), { workflow: loaded, input: {} });
+  // A draft inspected or loaded AFTER the last run call never ran: the graph stays the one held when the run was called.
+  const after = [...refused, call('5', 'inspect', { workflow: sent }), result('5', { preview: 'p', workflow: loaded, input: { n: 2 } }), call('6', 'load', { name: 'other' }), result('6', { preview: 'p', workflow: loaded })];
+  assert.deepEqual(ranWorkflow(after), { workflow: repaired, input: { n: 1 } });
+  // With no run call at all, the last good one.
+  assert.deepEqual(ranWorkflow([...first, call('7', 'inspect'), result('7', { preview: 'p', workflow: loaded, input: {} })]), { workflow: loaded, input: {} });
 });
