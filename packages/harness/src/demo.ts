@@ -95,6 +95,8 @@ export type DemoResult = {
   recording?: string;
   /** The recording's cost: dollars, or null while any part is unknown (never 0). */
   usd: number | null;
+  /** Whether the run made a priced call (a model turn, a decision, a browser session, a look or a box); false means nothing was spent, and `usd` is null. */
+  priced: boolean;
   maxUsd: number | null;
   /** The run was stopped past `--max-usd`, or finished past it. */
   overBudget: boolean;
@@ -707,8 +709,10 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     });
     // The record-time scan: a recording that still holds a secret is refused (its manifest removed, so it is not a finished recording), naming the key and the file, never the value.
     try { scanRecording(recordDir, tracked?.final() ?? []); } catch (error) { rmSync(join(recordDir, 'manifest.json'), { force: true }); throw error; }
-    const usd = cost(readEventsOf(recordDir)).usd;
-    return { processes, kills, record: delivered?.record ?? null, dir, runId, ...(values.record ? { recording: values.record } : {}), usd, maxUsd, overBudget, failedKills, failedSignals, unlanded };
+    const spent = cost(readEventsOf(recordDir));
+    const usd = spent.usd;
+    const priced = Object.keys(spent.parts).length > 0;
+    return { processes, kills, record: delivered?.record ?? null, dir, runId, ...(values.record ? { recording: values.record } : {}), usd, priced, maxUsd, overBudget, failedKills, failedSignals, unlanded };
   } finally {
     clearInterval(following);
     if (meterTimer) clearInterval(meterTimer);
@@ -762,7 +766,9 @@ export function summarize(options: DemoOptions, result: DemoResult, counts = fal
   const last = result.processes.at(-1)?.outcome;
   if (last && last.status !== 'complete' && last.message) console.log(`  stopped: ${last.message}`);
   if (result.unlanded.length) console.log(`kills that never landed: ${result.unlanded.join(', ')}`);
-  console.log(`cost: ${result.usd === null ? 'unknown' : `$${result.usd}`}${result.maxUsd === null ? '' : ` (cap $${result.maxUsd})`}${result.overBudget ? ' — over the cap' : ''}`);
+  // A run that made no priced call has no cost line, unless it has a cap.
+  const none = result.usd === null && !result.priced;
+  if (!none || result.maxUsd !== null) console.log(`cost: ${none ? 'none' : result.usd === null ? 'unknown' : `$${result.usd}`}${result.maxUsd === null ? '' : ` (cap $${result.maxUsd})`}${result.overBudget ? ' — over the cap' : ''}`);
   if (result.recording) console.log(`recording: ${result.recording}`);
   if (options.keepRun) console.log(`run directory: ${result.dir}`);
 }

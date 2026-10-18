@@ -55,13 +55,13 @@ await demo({ self: import.meta.url, spec: { name: 'first-demo', kills: [{ point:
 node demo.mjs
 ```
 
-It prints:
+It prints one line:
 
 ```text
 first-demo: complete
-cost: unknown
 ```
 
+The fakes make no priced call, so there is no cost line. Node 22 also prints its SQLite `ExperimentalWarning` on stderr.
 The run's record, `{"id":"x","score":42}`, is in the whole result that `--json` prints. `node demo.mjs --kill` kills the
 process once the lookup's answer is kept, and the next resumes from its store without calling the tool again: it prints
 `first-demo: complete in 2 processes, 1 kill` and the kill.

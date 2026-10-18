@@ -353,6 +353,17 @@ test('a kill at a point that is often ineligible lands every time across 8 runs,
   };
   assert.equal(first(), 'x: complete');
   assert.equal(first(true), 'x: complete in 1 process, 0 kills');
+  // The cost line: none when nothing was priced (unless a cap is set), unknown only when a priced part has no price.
+  const costLine = (result) => {
+    const out = [];
+    console.log = (...args) => out.push(args.join(' '));
+    try { summarize({ spec: { name: 'x' } }, { processes: [{ outcome: { status: 'complete' } }], kills: [], failedKills: [], failedSignals: [], unlanded: [], maxUsd: null, overBudget: false, ...result }); } finally { console.log = log; }
+    return out.find((line) => line.startsWith('cost')) ?? null;
+  };
+  assert.equal(costLine({ usd: null, priced: false }), null);
+  assert.equal(costLine({ usd: null, priced: false, maxUsd: 1 }), 'cost: none (cap $1)');
+  assert.equal(costLine({ usd: null, priced: true }), 'cost: unknown');
+  assert.equal(costLine({ usd: 0.3, priced: true }), 'cost: $0.3');
 
 });
 test('a kill line carries the crossing\'s own number: a held kill the point\'s count (not the process\'s), and a storm the process\'s crossing counter (not zero)', async () => {
