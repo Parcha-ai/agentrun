@@ -19,7 +19,7 @@ import type { ChatSource } from '../src/chat-model.ts';
 import type { Line } from '../src/format.ts';
 import { reportFileOf, reportLinkOf } from '../src/chat-report.ts';
 import { sourceByHref, sourceFrameAt, sourceKindOf, sourcePageOf, sourceRegionOf } from '../src/chat-view.ts';
-import { CITED, K, lines, PAGES, deliverInstead, writeRecording } from './vision-hand.ts';
+import { CITED, K, lines, PAGES, SCANS, deliverInstead, writeRecording } from './vision-hand.ts';
 import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
 
 const UNIT = { timeout: 5_000 };
@@ -113,7 +113,7 @@ function writeFixtures(dir: string) {
   writeFileSync(join(page, 'blobs', `${entry}.html`), ENTRY);
   writeFileSync(join(page, 'blobs', `${sheet}.css`), SHEET);
   const manifest = JSON.parse(readFileSync(join(page, 'manifest.json'), 'utf8'));
-  manifest.artifact = { title: 'Three pages, read', entry: 'index.html', files: { 'index.html': entry, 'css/report.css': sheet, 'media/page-2.png': PAGES[1] } };
+  manifest.artifact = { title: 'Three pages, read', entry: 'index.html', files: { 'index.html': entry, 'css/report.css': sheet, 'media/page-2.png': PAGES[1], 'scans.pdf': SCANS } };
   writeFileSync(join(page, 'manifest.json'), JSON.stringify(manifest, null, 2));
   const answer = join(dir, 'hand-answer');
   writeRecording(answer, handRun(false));
@@ -258,6 +258,16 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     await until(`shown(doc('wide').querySelector('.src .media img'))`, 'the card\'s source view');
     assert.equal(await value(`doc('wide').querySelectorAll('.src .jbox').length`), 0, 'no region the address does not carry');
     assert.equal(await value(`doc('wide').defaultView.location.hash`), `#look=${K.page2}`);
+    await until(`shown(doc('wide').querySelector('.src a.open-file'))`, 'the look\'s document, held by the recording, opens at its page');
+    assert.deepEqual(await value(`(() => { const a = doc('wide').querySelector('.src a.open-file'); return [a.textContent, /^blob:.*#page=2$/.test(a.href), a.target, a.rel]; })()`), ['Open scans.pdf at page 2', true, '_blank', 'noopener']);
+    // A look that kept no picture: its card has no picture and no empty frame, its strip cell its place alone, and its
+    // source its address and answer, with no player and no frame.
+    const film = await value<Record<string, unknown>>(`(() => { const c = card('wide', 'read film.mp4 from_s=0 to_s=30'); c.querySelector('.step-main').click(); return {
+      main: [c.querySelector('.step-main').className, c.querySelector('.step-main').children.length], cells: [...c.querySelectorAll('.step-looks .look')].map((n) => [n.textContent, n.querySelectorAll('img').length]) }; })()`);
+    assert.deepEqual(film, { main: ['step-main bare', 1], cells: [['t 0:00', 0]] });
+    await until(`doc('wide').querySelector('.src .addr')?.textContent.startsWith('film.mp4')`, 'the video look\'s source');
+    assert.deepEqual(await value(`(() => { const d = doc('wide'); return [d.querySelectorAll('.src video, .src img, .src .media').length, shown(d.querySelector('.src a.open-file')), d.querySelector('.src .said p')?.textContent]; })()`),
+      [0, false, 'The ground slides past; at 20 s a shadow crosses the frame.']);
 
     // "In the report" on the card the page cites: the report again, scrolled to that spot, flashed. In-page links stay in it.
     assert.deepEqual(await value(`[...doc('wide').querySelectorAll('.step')].filter((c) => c.querySelector('.inrep')).map((c) => c.querySelector('.t span').textContent)`), ['read scans.pdf page=2'], 'only the cards the page cites');
@@ -299,16 +309,17 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       title: c.querySelector('.t span').textContent.split(' ')[0], cells: c.querySelectorAll('.look').length, hidden: c.querySelectorAll('.look[hidden]').length,
       more: c.querySelector('.step-looks .more').textContent, decisive: [...c.querySelectorAll('.look.decisive .cell-at')].map((n) => n.textContent),
       said: [...c.querySelectorAll('.cell-said')].map((n) => n.textContent), at: [...c.querySelectorAll('.cell-at')].map((n) => n.textContent),
-      pictures: c.querySelectorAll('img').length, inReport: !!c.querySelector('.inrep'), flat: flat('hear') }; })()`);
+      pictures: c.querySelectorAll('img').length, bare: c.querySelector('.step-main').matches('.bare') && c.querySelector('.step-main').children.length === 1, inReport: !!c.querySelector('.inrep'), flat: flat('hear') }; })()`);
     assert.deepEqual(hear, { title: 'code', cells: 9, hidden: 1, more: '+ 1 more', decisive: ['t 0:00', 't 0:28'],
       said: ['0.05 no', '0.05 no', '0.05 no', '0.95 yes', '0.60 yes', '0.95 yes', '0.95 yes'], at: ['t 0:00', 't 0:00', 't 0:10', 't 0:20', 't 0:30', 't 0:00', 't 0:27', 't 0:28', 't 0:29'],
-      pictures: 0, inReport: true, flat: { page: 0, panes: 0 } });
+      pictures: 0, bare: true, inReport: true, flat: { page: 0, panes: 0 } });
     await page.evaluate(`doc('hear').querySelector('.cite[data-look][title*="xywh"]').click()`);
     await until(`shown(doc('hear').querySelector('.src .regions'))`, 'the cited look\'s source, its region listed');
     assert.deepEqual(await value(`(() => { const d = doc('hear'); return { regions: [...d.querySelectorAll('.src .regions li')].map((n) => n.textContent), boxes: d.querySelectorAll('.src .jbox').length, pictures: d.querySelectorAll('.src img').length }; })()`),
       { regions: ['cited hereeagle-heard-and-seen.webm#t=28&xywh=percent:30.3,5.6,50.3,54.4'], boxes: 0, pictures: 0 });
     await page.evaluate(`doc('hear').querySelector('.step-looks .look.decisive').closest('.step').querySelector('.step-main').click()`);
     await until(`doc('hear').querySelector('.src .addr')?.textContent === 'eagle-heard-and-seen.webm#t=0,34.092'`, 'the card opens its first decisive look');
+    assert.equal(await value(`doc('hear').querySelectorAll('.src video, .src img, .src .media, .src a.open-file:not([hidden])').length`), 0, 'a video window that kept no frames shows no player and no frame');
 
     // A submitted record: the run's answer, a row per field, a field of evidence paths as its label and chips; the input's
     // fields as the person's message. Calls of different tools do not fold.

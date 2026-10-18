@@ -65,6 +65,7 @@ details.fold>.fold-body{color:var(--ink);font-size:15px;margin-top:12px}
 .step[aria-current="true"]{border-left-color:var(--acc);background:#16130f}
 .step-main{display:grid;grid-template-columns:minmax(0,1fr) 44px;gap:12px;align-items:center;text-align:left;width:100%;padding:9px 10px 9px 12px}
 .step-main>div{min-width:0}
+.step-main.bare{grid-template-columns:minmax(0,1fr)}
 .step .t{font:500 12px var(--mono);display:flex;align-items:center;gap:7px;min-width:0}
 .step .t span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .step .t svg{flex:none;color:var(--muted)}
@@ -82,6 +83,7 @@ details.fold>.fold-body{color:var(--ink);font-size:15px;margin-top:12px}
 .step-looks .look.decisive .cell-at{color:var(--acc)}
 .step-looks .look:hover{border-color:var(--ink)}
 .step-looks .more.cells{align-self:center;padding:0 4px}
+.open-file{display:inline-block;margin:0 0 16px;font:400 12px var(--mono);color:var(--acc)}
 .regions{list-style:none;margin:0 0 16px;padding:0;background:var(--panel);border:1px solid var(--line)}
 .regions li{display:grid;grid-template-columns:minmax(80px,auto) minmax(0,1fr);gap:12px;padding:8px 14px;border-top:1px solid #1f1f23;font-size:13px}
 .regions li:first-child{border-top:0}

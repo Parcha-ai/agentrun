@@ -4,7 +4,7 @@
 // alone. On a phone the right side is a bottom sheet.
 import type { ChatDecision, ChatItem, ChatModel, ChatSource, ChatSpan, ChatThread } from './chat-model.ts';
 import type { Recording } from './format.ts';
-import { drawReport, reportCiteLabel, reportClock, reportEl, reportFragmentOf, reportInline, reportParagraphs } from './chat-report.ts';
+import { drawReport, reportCiteLabel, reportClock, reportEl, reportFragmentOf, reportHeldFile, reportInline, reportParagraphs } from './chat-report.ts';
 
 type ToolItem = Extract<ChatItem, { kind: 'tool' }>;
 type SourceKind = 'page' | 'image' | 'video' | 'other';
@@ -159,6 +159,16 @@ function sourceView(recording: Recording, model: ChatModel, shown: SourceShown, 
       return button;
     })));
   }
+  // A look kept no picture: its document opens at its page when the recording holds that document; a video window that
+  // kept no frames shows none.
+  const file = (source?.href ?? shown.href).split('#')[0]!;
+  if (/\.pdf$/i.test(file)) {
+    const page = reportFragmentOf(shown.href).get('page') ?? reportFragmentOf(source?.href ?? '').get('page');
+    const name = file.split('/').at(-1) ?? file;
+    const link = reportEl('a', { class: 'open-file', target: '_blank', rel: 'noopener', hidden: true, text: page ? `Open ${name} at page ${page}` : `Open ${name}` });
+    pane.append(link);
+    void reportHeldFile(model, recording, file).then((url) => { if (url) { link.href = page ? `${url}#page=${encodeURIComponent(page)}` : url; link.hidden = false; } });
+  }
   const media = source?.media ?? shown.item?.media ?? [];
   if (source && kind === 'video') {
     const videos = media.filter((sha) => sourceIsVideo(recording, sha));
@@ -272,10 +282,10 @@ function threadCard(recording: Recording, model: ChatModel, item: ToolItem): HTM
   const more = rest.length > 0 && reportEl('button', { class: 'more cells', type: 'button', text: `+ ${rest.length} more` });
   if (more) more.addEventListener('click', () => { const open = rest[0]!.hidden; for (const cell of rest) cell.hidden = !open; more.textContent = open ? 'Show less' : `+ ${rest.length} more`; });
   return reportEl('div', { class: `step${item.failed ? ' failed' : ''}`, 'data-item': item.id },
-    reportEl('button', { class: 'step-main', type: 'button', 'data-open': item.id },
+    reportEl('button', { class: thumb ? 'step-main' : 'step-main bare', type: 'button', 'data-open': item.id },
       reportEl('div', {}, reportEl('div', { class: 't' }, threadIcon(sourceKindOf(source?.href ?? '')), reportEl('span', { text: item.title }), item.failed && reportEl('small', { class: 'tag', text: 'failed' })),
         item.takeaway !== '' && reportEl('div', { class: 'k', text: item.takeaway })),
-      thumb ? reportEl('img', { src: recording.blobUrl(thumb), alt: '', loading: 'lazy' }) : reportEl('span')),
+      thumb && reportEl('img', { src: recording.blobUrl(thumb), alt: '', loading: 'lazy' })),
     cells.length > 0 && reportEl('div', { class: 'step-looks' }, ...cells, more));
 }
 

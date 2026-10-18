@@ -74,6 +74,14 @@ function reportBlobUrl(recording: Recording, sha: string): Promise<string | unde
   return held;
 }
 
+/** A file the agent's page carries, by its path there, as a URL a tab of this page may open; undefined when it carries
+ *  none by that path. */
+export function reportHeldFile(model: ChatModel, recording: Recording, path: string): Promise<string | undefined> {
+  const files = model.artifact?.files ?? {};
+  const sha = files[path] ?? files[`./${path}`];
+  return sha ? reportBlobUrl(recording, sha) : Promise.resolve(undefined);
+}
+
 /** A reference in the artifact, relative to the file `from`, as the artifact file it names and its fragment; undefined
  *  for a reference that names no file it holds: another scheme or host, a path above its root, a name not in its files. */
 export function reportFileOf(files: Record<string, string>, from: string, ref: string): { path: string; fragment: string } | undefined {
