@@ -10,6 +10,7 @@ import { after, test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
+import type { Line } from '../src/format.ts';
 import type { Node } from '../src/panels.ts';
 import { reduceTo } from '../src/replay.ts';
 import { visionPanel } from '../src/vision.ts';
@@ -36,6 +37,10 @@ test('the vision panel marks what a kill and a resume did: the kill and resume b
 
 test('the workflow map marks its kills, and the strip that says there are none', () => {
   assert.deepEqual(marked(workflowMapPanel.view(workflowMapPanel.init(), { t: 0 })), ['No kill yet.']);
+  const killed: Line[] = [{ channel: 'live', source: 'host', kind: 'kill', t: 5, seq: 1, data: { gen: 1, label: 'storm 1', crossing: null } }];
+  const parts = marked(workflowMapPanel.view(reduceTo(workflowMapPanel, killed, killed.length), { t: 0 }));
+  assert.equal(parts.length, 1, parts.join(' | '));
+  assert.match(parts[0]!, /^1 kill ✕ 1: storm 1/, 'the strip that lists a kill is marked');
 });
 
 test('in Chrome: with &hide=durability the process lane, the durability counters and the kill chapters are not drawn; without it they are', { ...noChrome, timeout: 90_000 }, async (t) => {
