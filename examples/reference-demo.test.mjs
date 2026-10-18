@@ -571,4 +571,13 @@ test('a crossing a tool kill takes still counts for a run kill at the same point
   assert.deepEqual(kills, []);
   assert.equal(cross('transport.tool.started'), false);
   assert.deepEqual(kills, ['SIGKILL'], 'the run kill is the second matching crossing, not the third');
+  // Both due at the same crossing (n 1 each): the tool kill takes it, and the run kill is not lost, it lands at the next matching one.
+  kills.length = 0;
+  const both = crossings({ run: { point: 'transport.tool.started', kind: 'process', target: 'run', why: 'same', n: 1 }, tools: [{ point: 'transport.tool.started', kind: 'box', target: 'tool', why: 'same', n: 1 }] }, undefined);
+  assert.equal(both('transport.tool.started'), true);
+  assert.deepEqual(kills, []);
+  both('transport.tool.started');
+  assert.deepEqual(kills, ['SIGKILL'], 'the pending run kill lands at the next matching crossing');
+  both('transport.tool.started');
+  assert.deepEqual(kills, ['SIGKILL'], 'and only once');
 });
