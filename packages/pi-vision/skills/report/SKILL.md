@@ -275,7 +275,7 @@ Run after the data and before the page, and again whenever a text changes. Each 
 request to Jev with no image: `state` holds `claims` (each text it shows) and `evidence` (what the looks it cites read), and
 each text is one noul question, which Jev answers as the probability that the evidence states every name, time and number in
 it. A text whose answer is under `GROUNDED` stops the script, naming it. Fix the data (rewrite, re-cite or drop it) and run
-the pieces again; a judgment you already paid for in the call is read back, not paid twice. The usual failure is a finding that states what a look read but cites only another look: cite every look the text rests on (on a real report, 9 of the 12 texts that failed against their cited looks passed once the looks that read them were cited). A text with no cited look that
+the pieces again; a judgment you already paid for in the call is read back, not paid twice. The usual failure is a finding that states what a look read but cites only another look: cite every look the text rests on. A text with no cited look that
 read anything has no evidence and fails the same way.
 
 ```js
