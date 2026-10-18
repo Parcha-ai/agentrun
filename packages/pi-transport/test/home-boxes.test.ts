@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -345,6 +345,41 @@ describe("the host's box proxy", () => {
 			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 		}
 	});
+
+	it("moves a file larger than one link frame both ways, and one stdin write as large, and the link serves on", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-transport-boxes-"));
+		const made = served(root);
+		const within = <T>(promise: Promise<T>) =>
+			Promise.race([
+				promise,
+				new Promise<string>((resolve) => setTimeout(() => resolve("no answer in 20 s"), 20_000)),
+			]);
+		try {
+			const box = getOrThrow(await made.provider.create({ maxLifetimeMs: 60_000 }, context));
+			// More than a link's line once in base64 (64 Mi characters).
+			const big = new Uint8Array(50 * 1024 * 1024).map((_, n) => n % 251);
+			const path = join(box.facts().workspace, "big.bin");
+			const uploaded = await within(box.upload([{ path, bytes: big }], context));
+			expect(typeof uploaded === "string" ? uploaded : uploaded.ok).toBe(true);
+			const downloaded = await within(box.download([path], context));
+			if (typeof downloaded === "string" || !downloaded.ok)
+				throw new Error(`the download failed: ${JSON.stringify(downloaded)}`);
+			expect(Buffer.compare(Buffer.from(downloaded.value[0]?.bytes ?? []), Buffer.from(big))).toBe(0);
+			const program = getOrThrow(await box.exec(["sh", "-c", "cat > copy.bin"], undefined, context));
+			const read = Promise.all([readStream(program.stdout), readStream(program.stderr)]);
+			expect(await within(program.stdin.write(big).then(() => "written"))).toBe("written");
+			await program.stdin.close();
+			await read;
+			expect(getOrThrow(await program.wait())).toBe(0);
+			expect(Buffer.compare(readFileSync(join(box.facts().workspace, "copy.bin")), Buffer.from(big))).toBe(0);
+			// The same link still answers.
+			expect(getOrThrow(await box.status(context)).state).toBe("running");
+			getOrThrow(await box.destroy(context));
+		} finally {
+			made.link.close("done");
+			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+		}
+	}, 120_000);
 
 	it("applies a stdin write once when the runner sends it again, as it does after a resume whose ack was lost", async () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-transport-boxes-"));

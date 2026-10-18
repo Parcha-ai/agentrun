@@ -16,6 +16,7 @@ import {
 	type BoxSpec,
 	type BoxStatus,
 } from "../box/box.ts";
+import { downloadByExec, uploadByExec } from "../box/files.ts";
 import { type BoxReceipts, boxReceipts } from "../box/receipts.ts";
 import type { Frame } from "./link.ts";
 
@@ -60,6 +61,11 @@ const DEFAULT_KEEP_MS = 10 * 60_000;
 const DEFAULT_RESUME_WITHIN_MS = 60_000;
 /** A runner acknowledges a call's frames this often, so the host lets them go. */
 const ACK_EVERY = 16;
+/**
+ * The most bytes one box frame carries: a third more in base64, well under a link's line (`MAX_LINE_LENGTH`), so a large
+ * file or write never closes the link. More goes in several frames, or over an exec's streams.
+ */
+const BOX_FRAME_BYTES = 8 * 1024 * 1024;
 /**
  * The most of an exec's output, in bytes, the host reads ahead of the runner's acknowledgements, and the most the runner
  * holds unread before it stops acknowledging: past it the host stops reading the program's streams, so the program
@@ -262,6 +268,13 @@ export function serveBoxes(options: ServeBoxesOptions): BoxServer {
 		if (op === "download") {
 			const read = await box.download(((args.paths ?? []) as unknown[]).map(String), call.context);
 			if (!read.ok) return read;
+			// Too much for one frame: the runner reads the files over an exec's output instead.
+			const bytes = read.value.reduce((sum, file) => sum + file.bytes.byteLength, 0);
+			if (bytes > BOX_FRAME_BYTES) {
+				return err(
+					new BoxError("capacity", `${bytes} bytes are more than one box frame carries (${BOX_FRAME_BYTES})`),
+				);
+			}
 			return ok(
 				read.value.map((file) => ({
 					path: file.path,
@@ -308,11 +321,15 @@ export function serveBoxes(options: ServeBoxesOptions): BoxServer {
 		answer(call, ok(null));
 		const pump = async (stream: "stdout" | "stderr", from: AsyncIterable<Uint8Array>) => {
 			for await (const chunk of from) {
-				// Past the window the runner has not acknowledged (it reads slowly, or its link is down) the pump waits, and
-				// the program waits on its full pipe. A cancelled call's output is read on and dropped.
-				await roomIn(call);
-				if (call.context.abortSignal?.aborted === true) continue;
-				emit(call, { t: "box-stream", stream, bytes: toBase64(chunk) }, chunk.byteLength);
+				// A chunk larger than a frame goes as several.
+				for (let at = 0; at < chunk.byteLength; at += BOX_FRAME_BYTES) {
+					// Past the window the runner has not acknowledged (it reads slowly, or its link is down) the pump waits,
+					// and the program waits on its full pipe. A cancelled call's output is read on and dropped.
+					await roomIn(call);
+					if (call.context.abortSignal?.aborted === true) break;
+					const part = chunk.subarray(at, at + BOX_FRAME_BYTES);
+					emit(call, { t: "box-stream", stream, bytes: toBase64(part) }, part.byteLength);
+				}
 			}
 		};
 		await Promise.all([pump("stdout", process.stdout), pump("stderr", process.stderr)]).catch(() => {});
@@ -648,7 +665,16 @@ export function proxyBoxes(names: readonly string[], options?: { readonly resume
 						resolve(
 							ok({
 								stdin: {
-									write: (bytes: Uint8Array) => write({ bytes: toBase64(bytes) }),
+									// A write larger than a frame goes as several, applied in order.
+									write: async (bytes: Uint8Array) => {
+										const parts: Promise<void>[] = [];
+										let at = 0;
+										do {
+											parts.push(write({ bytes: toBase64(bytes.subarray(at, at + BOX_FRAME_BYTES)) }));
+											at += BOX_FRAME_BYTES;
+										} while (at < bytes.byteLength);
+										await Promise.all(parts);
+									},
 									close: () => write({ close: true }),
 								},
 								stdout: stdout.iterable,
@@ -697,34 +723,43 @@ export function proxyBoxes(names: readonly string[], options?: { readonly resume
 			id: label,
 			facts: () => facts,
 			exec: (command, execOptions, context) => execIn(provider, label, command, execOptions, context),
+			// Files too large for one frame go over an exec's stdin, in frames of their own.
 			upload: (files, context) =>
-				ask(
-					{
-						t: "box",
-						op: "upload",
-						provider,
-						box: label,
-						args: {
-							files: files.map((file) => ({
-								path: file.path,
-								bytes: toBase64(file.bytes),
-								...(file.mode === undefined ? {} : { mode: file.mode }),
-							})),
-						},
-					},
+				files.reduce((sum, file) => sum + file.bytes.byteLength, 0) > BOX_FRAME_BYTES
+					? uploadByExec(box, files, context)
+					: ask(
+							{
+								t: "box",
+								op: "upload",
+								provider,
+								box: label,
+								args: {
+									files: files.map((file) => ({
+										path: file.path,
+										bytes: toBase64(file.bytes),
+										...(file.mode === undefined ? {} : { mode: file.mode }),
+									})),
+								},
+							},
+							context,
+							() => undefined,
+						),
+			// Files too large for one frame (the host says `capacity`) come over an exec's output, without their modes.
+			download: async (paths, context) => {
+				const asked = await ask(
+					{ t: "box", op: "download", provider, box: label, args: { paths: [...paths] } },
 					context,
-					() => undefined,
-				),
-			download: (paths, context) =>
-				ask({ t: "box", op: "download", provider, box: label, args: { paths: [...paths] } }, context, (value) =>
-					((value ?? []) as { path: string; bytes: string; mode?: number }[]).map(
-						(file): BoxFile => ({
-							path: file.path,
-							bytes: fromBase64(file.bytes),
-							...(typeof file.mode === "number" ? { mode: file.mode } : {}),
-						}),
-					),
-				),
+					(value) =>
+						((value ?? []) as { path: string; bytes: string; mode?: number }[]).map(
+							(file): BoxFile => ({
+								path: file.path,
+								bytes: fromBase64(file.bytes),
+								...(typeof file.mode === "number" ? { mode: file.mode } : {}),
+							}),
+						),
+				);
+				return !asked.ok && asked.error.code === "capacity" ? downloadByExec(box, paths, context) : asked;
+			},
 			status: (context) =>
 				ask({ t: "box", op: "status", provider, box: label }, context, (value) => value as BoxStatus),
 			destroy: (context) => ask({ t: "box", op: "destroy", provider, box: label }, context, () => undefined),
