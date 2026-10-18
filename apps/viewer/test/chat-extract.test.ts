@@ -61,6 +61,11 @@ test("a run is its input as given, then its recorded conversation: the host's pr
   const nudged = await model(referenceJob, (events) => `${events.trimEnd()}\n${added}\n`);
   assert.deepEqual(items(nudged).filter((item) => item.kind === 'host' || item.kind === 'user').map((item) => [item.kind, 'text' in item && item.text]), [['host', 'Call submit.']],
     "a later user entry of a run with its input as given is the host's, not the person's");
+  const streaming = opened(referenceJob, (events) => `${events.trimEnd()}\n${added}\n`);
+  const unfinished = { ...streaming.recording, manifest: { ...streaming.recording.manifest, recorded: { started: streaming.recording.manifest.recorded.started } } } as Recording;
+  const live = await extractChat(unfinished, streaming.readJson);
+  assert.deepEqual(items(live).filter((item) => item.kind === 'host' || item.kind === 'user').map((item) => item.kind), ['user'],
+    'while the run is still being recorded a person can steer it: a later entry stays the person\'s');
 });
 
 test('a submitted result record is the answer: one row per field, its evidence paths as cites on the card that made them', async () => {

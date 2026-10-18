@@ -39,6 +39,9 @@ nothing but the touch each one adds:
 - A tool result that is a `{ "ok": true, "value": ... }` record reads as its value: words by their first line, a
   record's fields in plain form.
 - A recording with no times places each span at its line's position, and the timeline reads "in order".
+- In a finished recording of a run given its input, a user entry after a conversation's first is a message the host
+  added (a reminder to deliver), drawn as a host's note. A recording still being written keeps it the person's: a
+  person can steer a live run. The entry's own author field, once the format has one, replaces this rule.
 - A model call inside a tool is named by who answered (its record's `args.via`, else its tool's namespace) and its
   tool's verb: `vision.judge` via `jev` reads "Jev judge". A call whose tool's verb is `judge` carries the judge's
   accent on its card and its span.

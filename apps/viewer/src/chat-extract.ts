@@ -174,6 +174,7 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   const input: ChatModel['input'] = typeof inputValue === 'string' ? { text: inputValue }
     : chatObj(inputValue) ? { fields: Object.entries(chatObj(inputValue)!).map(([name, value]) => ({ name, value: chatPlain(value) })) } : undefined;
   const live = (kind: string) => lines.filter((line) => line.channel === 'live' && line.kind === kind);
+  const finished = typeof chatObj((manifest as { recorded?: Json }).recorded)?.ended === 'string';
 
   // Workflow nodes: each node's label and span, and the conversation each agent node ran.
   const nodeAt = new Map<string, { label: string; t0?: number; t1?: number }>();
@@ -231,11 +232,12 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
       const m = chatObj(message);
       if (!m) continue;
       if (line.kind === 'pi.user') {
-        // With the run's input shown, a conversation's first user entry is the prompt the host composed from it, and
-        // any later one is a message the host added.
+        // With the run's input shown, a conversation's first user entry is the prompt the host composed from it. In a
+        // finished recording any later one is a message the host added; while the run is still being recorded a person
+        // can steer it, so a later entry stays the person's.
         if (input && !prompted.has(conversation)) { prompted.add(conversation); continue; }
         const text = chatText(m.content);
-        if (text.trim()) thread.items.push({ kind: input ? 'host' : 'user', id: `item-${++counter}`, text, t: line.t });
+        if (text.trim()) thread.items.push({ kind: input && finished ? 'host' : 'user', id: `item-${++counter}`, text, t: line.t });
       } else if (line.kind === 'pi.assistant') {
         for (const part of chatList(m.content)) {
           const p = chatObj(part);
