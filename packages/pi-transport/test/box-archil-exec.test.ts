@@ -479,6 +479,104 @@ describe("archil exec boxes", () => {
 		}
 	});
 
+	it("does not run a file tool later that timed out or was cancelled while queued behind a command", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const env = boxEnv(box, { opTimeoutMs: 300 });
+			const first = run(box, ["sleep", "1"]);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const started = Date.now();
+			const written = await env.writeFile("late.txt", "late", context);
+			expect(written.ok).toBe(false);
+			expect(Date.now() - started).toBeLessThan(900);
+			const cancel = withCancel(context);
+			setTimeout(() => cancel.cancel(), 100);
+			const second = await env.writeFile("late2.txt", "late", cancel.context);
+			expect(second.ok).toBe(false);
+			await first;
+			await run(box, ["true"]);
+			expect(existsSync(join(fake.root, "boxes", box.id, "late.txt"))).toBe(false);
+			expect(existsSync(join(fake.root, "boxes", box.id, "late2.txt"))).toBe(false);
+		} finally {
+			close();
+		}
+	});
+
+	it("appends in one call to the box, so a command queued beside the append keeps its change", async () => {
+		const { provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			// The box's reads are slow: a command can start while an append is in the middle of its own read.
+			const slow = new Proxy(box, {
+				get(target, property) {
+					if (property === "download") {
+						return async (...args: Parameters<Box["download"]>) => {
+							const got = await target.download(...args);
+							await new Promise((resolve) => setTimeout(resolve, 300));
+							return got;
+						};
+					}
+					const value = Reflect.get(target, property, target);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+			const env = boxEnv(slow);
+			expect((await env.writeFile("log.txt", "base\n", context)).ok).toBe(true);
+			const appended = env.appendFile("log.txt", "from-append\n", context);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const command = env.exec("echo from-cmd >> log.txt", undefined, context);
+			expect((await appended).ok).toBe(true);
+			expect((await command).ok).toBe(true);
+			const log = await env.readTextFile("log.txt", context);
+			expect(log.ok && log.value.split("\n").filter(Boolean).sort()).toEqual(["base", "from-append", "from-cmd"]);
+			expect(
+				(await readStream(unwrap(await box.exec(["ls", "-A"], undefined, context)).stdout)).length,
+			).toBeGreaterThan(0);
+			const names = decoder.decode(
+				await readStream(unwrap(await box.exec(["ls", "-A"], undefined, context)).stdout),
+			);
+			expect(names).not.toMatch(/pi-transport-append/);
+		} finally {
+			close();
+		}
+	});
+
+	it("refuses a file over the reader limit before moving it, and the reader reports the file's own time", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			let downloads = 0;
+			const spy = new Proxy(box, {
+				get(target, property) {
+					if (property === "download") {
+						return (...args: Parameters<Box["download"]>) => {
+							downloads += 1;
+							return target.download(...args);
+						};
+					}
+					const value = Reflect.get(target, property, target);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+			const env = boxEnv(spy, { maxReaderBytes: 10 });
+			expect((await env.writeFile("big.bin", new Uint8Array(100), context)).ok).toBe(true);
+			const refused = await env.openBinaryReader("big.bin", undefined, context);
+			expect(!refused.ok && refused.error.code).toBe("not_supported");
+			expect(downloads).toBe(0);
+			expect((await env.writeFile("small.bin", new Uint8Array([1, 2, 3]), context)).ok).toBe(true);
+			const reader = await env.openBinaryReader("small.bin", undefined, context);
+			if (!reader.ok) throw reader.error;
+			const info = await reader.value.info(context);
+			const stat = await env.fileInfo("small.bin", context);
+			expect(info.ok && stat.ok && info.value.mtimeMs).toBe(stat.ok ? stat.value.mtimeMs : -1);
+			expect(info.ok && info.value.mtimeMs).toBeGreaterThan(0);
+			expect(existsSync(join(fake.root, "boxes", box.id, "small.bin"))).toBe(true);
+		} finally {
+			close();
+		}
+	});
+
 	it("is gone for an upload or a download from a handle whose box another client ended, queued or not", async () => {
 		const { fake, provider, close } = rig();
 		try {

@@ -429,7 +429,7 @@ class ArchilExecBox implements Box {
 		return ok(`${this.#key}/${segments.join("/")}`);
 	}
 
-	async upload(files: readonly BoxFile[], _context: Context): Promise<Result<void, BoxError>> {
+	async upload(files: readonly BoxFile[], context: Context): Promise<Result<void, BoxError>> {
 		if (!(await this.#alive())) return err(new BoxError("gone", `box ${this.id} has ended`));
 		const keyed: { key: string; file: BoxFile }[] = [];
 		for (const file of files) {
@@ -441,6 +441,9 @@ class ArchilExecBox implements Box {
 		const turn = this.#tail.then(async (): Promise<Result<void, BoxError>> => {
 			// Checked when its turn comes: another client may have ended the box while this waited, and a write would
 			// recreate the directory only for the next list to remove it.
+			// A caller that gave up while this waited behind a command is not served late: its write would change a file it already stopped waiting for.
+			if (context.abortSignal?.aborted)
+				return err(new BoxError("aborted", "the call was given up before it started"));
 			const recorded = await this.#recorded();
 			if (!recorded.ok) return recorded;
 			for (const { key, file } of keyed) {
@@ -462,7 +465,7 @@ class ArchilExecBox implements Box {
 		return turn;
 	}
 
-	async download(paths: readonly string[], _context: Context): Promise<Result<readonly BoxFile[], BoxError>> {
+	async download(paths: readonly string[], context: Context): Promise<Result<readonly BoxFile[], BoxError>> {
 		if (!(await this.#alive())) return err(new BoxError("gone", `box ${this.id} has ended`));
 		const keyed: { path: string; key: string }[] = [];
 		for (const path of paths) {
@@ -472,6 +475,8 @@ class ArchilExecBox implements Box {
 		}
 		// After the commands this process already asked for, as `upload`: what they wrote is what a read returns.
 		const turn = this.#tail.then(async (): Promise<Result<readonly BoxFile[], BoxError>> => {
+			if (context.abortSignal?.aborted)
+				return err(new BoxError("aborted", "the call was given up before it started"));
 			const recorded = await this.#recorded();
 			if (!recorded.ok) return recorded;
 			const files: BoxFile[] = [];

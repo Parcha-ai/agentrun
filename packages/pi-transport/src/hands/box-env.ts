@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { type FileHandle, open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
@@ -133,6 +133,8 @@ const PAGE_SCRIPT = `cd -- "$1" 2>/dev/null || { [ -d "$1" ] && exit 6; exit 0; 
 const WRITE_HEAD = 'd=$(dirname -- "$1"); mkdir -p -- "$d" 2>/dev/null || mkfail "$d"; [ -d "$1" ] && exit 4';
 const WRITE_TAIL = '{ loops "$1" && exit 9; exit 6; }';
 const WRITE_SCRIPT = `${WRITE_HEAD}; cat > "$1" || ${WRITE_TAIL}`;
+/** `$1` is the target, `$2` a file of the bytes to append: appended in this one command, and the file removed. */
+const APPEND_PART_SCRIPT = `${WRITE_HEAD}; cat -- "$2" >> "$1"; r=$?; rm -f -- "$2"; [ $r -eq 0 ] || ${WRITE_TAIL}`;
 const APPEND_SCRIPT = `${WRITE_HEAD}; cat >> "$1" || ${WRITE_TAIL}`;
 const TRUNCATE_SCRIPT = 'follow "$1"; [ -d "$1" ] && exit 4; [ -w "$1" ] || exit 6; truncate -s "$2" -- "$1" || exit 6';
 const FLUSH_SCRIPT = 'follow "$1"; [ -d "$1" ] && exit 4; [ -w "$1" ] || exit 6; sync -- "$1" 2>/dev/null || sync';
@@ -533,10 +535,26 @@ class BoxEnv implements ExecutionEnv {
 		if (isAborted(context)) return err(new FileError("aborted", "aborted", path));
 		const resolved = await this.#resolve(path, context);
 		if (!resolved.ok) return resolved;
-		const got = await this.#box.download([resolved.value], context);
+		const got = await this.#transfer((call) => this.#box.download([resolved.value], call), context);
 		if (got.ok) return ok(got.value[0]?.bytes ?? new Uint8Array());
 		if (got.error.code === "invalid") return ok(undefined);
 		return err(await this.#fileFailure(got.error, resolved.value, context));
+	}
+
+	/**
+	 * One `upload` or `download` of a box with no stdin, within the operation deadline and the context. A transfer that is still queued behind a
+	 * command when either passes is cancelled, so the box does not run it later.
+	 */
+	async #transfer<T>(
+		work: (call: Context) => Promise<Result<T, BoxError>>,
+		context: Context,
+	): Promise<Result<T, BoxError>> {
+		const call = withCancel(context);
+		try {
+			return await bounded(work(call.context), this.#opTimeoutMs, context);
+		} finally {
+			call.cancel();
+		}
 	}
 
 	async readTextFile(path: string, context: Context): Promise<Result<string, FileError>> {
@@ -614,6 +632,13 @@ class BoxEnv implements ExecutionEnv {
 	): Promise<Result<BinaryReader, FileError>> {
 		// The file as it is now, whole: a rename or a rewrite of the path does not change what the reader sees.
 		if (this.#noStdin) {
+			// The size is read in the box before a byte is moved, so a file over the limit is refused as it is on any box.
+			const info = await this.fileInfo(path, context);
+			if (!info.ok) return info;
+			if (info.value.kind === "directory") {
+				return err(new FileError("is_directory", `is directory: ${info.value.path}`, info.value.path));
+			}
+			if (info.value.size > this.#maxReaderBytes) return err(this.#grown(info.value.path));
 			const fetched = await this.#fetch(path, context);
 			if (!fetched.ok) return fetched;
 			if (fetched.value === undefined) {
@@ -625,10 +650,9 @@ class BoxEnv implements ExecutionEnv {
 					),
 				);
 			}
-			const resolved = await this.#resolve(path, context);
-			if (!resolved.ok) return resolved;
-			if (fetched.value.length > this.#maxReaderBytes) return err(this.#grown(resolved.value));
-			return this.#readerOf(fetched.value, resolved.value, 0);
+			// A file that grew since the size was read is found by its length.
+			if (fetched.value.length > this.#maxReaderBytes) return err(this.#grown(info.value.path));
+			return this.#readerOf(fetched.value, info.value.path, info.value.mtimeMs);
 		}
 		const opened = await this.#file(
 			path,
@@ -762,53 +786,35 @@ class BoxEnv implements ExecutionEnv {
 
 	async writeFile(path: string, content: string | Uint8Array, context: Context): Promise<Result<void, FileError>> {
 		const bytes = typeof content === "string" ? encoder.encode(content) : content;
-		if (this.#noStdin) return this.#store(path, null, bytes, context);
+		if (this.#noStdin) return this.#store(path, false, bytes, context);
 		return this.#file(path, WRITE_SCRIPT, [], bytes, context, () => undefined);
 	}
 
 	async appendFile(path: string, content: string | Uint8Array, context: Context): Promise<Result<void, FileError>> {
 		const bytes = typeof content === "string" ? encoder.encode(content) : content;
-		if (this.#noStdin) {
-			return this.#store(
-				path,
-				(before) => {
-					const whole = new Uint8Array(before.length + bytes.length);
-					whole.set(before);
-					whole.set(bytes, before.length);
-					return whole;
-				},
-				bytes,
-				context,
-			);
-		}
+		if (this.#noStdin) return this.#store(path, true, bytes, context);
 		return this.#file(path, APPEND_SCRIPT, [], bytes, context, () => undefined);
 	}
 
 	/**
-	 * A box with no stdin writes a file through `upload`. `next` makes the new bytes from the old (empty when there is no file); `null` is a plain
-	 * write, which reads nothing. This environment's writes go one at a time, and the box runs its own calls in order, so a read-modify-write sees what
-	 * the calls before it left.
+	 * A box with no stdin writes a file through `upload`. A plain write is one upload. An append is the bytes uploaded to a file of their own and
+	 * one command that appends that file to the target: the append happens inside one call to the box, so a command queued beside it cannot slip
+	 * between a read and a write. This environment's writes go one after another.
 	 */
-	#store(
-		path: string,
-		next: ((before: Uint8Array) => Uint8Array) | null,
-		bytes: Uint8Array,
-		context: Context,
-	): Promise<Result<void, FileError>> {
+	#store(path: string, append: boolean, bytes: Uint8Array, context: Context): Promise<Result<void, FileError>> {
 		const turn = this.#stores.then(async (): Promise<Result<void, FileError>> => {
 			if (isAborted(context)) return err(new FileError("aborted", "aborted", path));
 			const resolved = await this.#resolve(path, context);
 			if (!resolved.ok) return resolved;
 			const target = resolved.value;
-			let whole = bytes;
-			if (next !== null) {
-				const had = await this.#box.download([target], context);
-				if (!had.ok && had.error.code !== "not_found")
-					return err(await this.#fileFailure(had.error, target, context));
-				whole = next(had.ok ? (had.value[0]?.bytes ?? new Uint8Array()) : new Uint8Array());
+			if (!append) {
+				const sent = await this.#transfer((call) => this.#box.upload([{ path: target, bytes }], call), context);
+				return sent.ok ? ok(undefined) : err(await this.#fileFailure(sent.error, target, context));
 			}
-			const sent = await this.#box.upload([{ path: target, bytes: whole }], context);
-			return sent.ok ? ok(undefined) : err(await this.#fileFailure(sent.error, target, context));
+			const part = posix.join(this.cwd, `.pi-transport-append-${randomBytes(6).toString("hex")}`);
+			const sent = await this.#transfer((call) => this.#box.upload([{ path: part, bytes }], call), context);
+			if (!sent.ok) return err(await this.#fileFailure(sent.error, target, context));
+			return this.#script(target, APPEND_PART_SCRIPT, [target, part], undefined, context, () => undefined);
 		});
 		this.#stores = turn;
 		return turn;
