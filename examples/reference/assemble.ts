@@ -83,7 +83,9 @@ function runEnv(claim: Claim): RunEnv {
  *  extension is built, with a getter for the run's harness (undefined until the run is open). What differs per conversation is
  *  what the options themselves take: `limits`, `eyes` and `eyesModel` are given the conversation (`{ conversationId }`). */
 /** `layout`: the recovery driver's layout for the run, `v4` for the keyed one (the map items kept as `agentrun.items` documents); the driver's default when absent. It is the host's choice, not the job's. */
-export type RunOptions = { env?: (claim: Claim) => RunEnv; /** Code mode (examples/reference/code-mode.ts): installs the `code` tool, whose sandbox gets `tools.bash` and the vision handle's `vision.see`. Off by default. */ codeMode?: boolean | CodeModeOptions; /** The sites `use_website` offers: each task runs a child agent in a browser of its own, recorded under its request id. Absent: the tool is not listed. */ sites?: Record<string, LocalSite>; vision?: (context: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions>; layout?: 'v3' | 'v4' };
+export type RunOptions = {
+  /** Notes the image a code-mode look is shown (looks.ts `shown.note`), so the look is filed with its picture. */
+  codeImages?: (conversationId: string, tool: string, path: string | undefined, bytes: Buffer, mimeType: string) => void; env?: (claim: Claim) => RunEnv; /** Code mode (examples/reference/code-mode.ts): installs the `code` tool, whose sandbox gets `tools.bash` and the vision handle's `vision.see`. Off by default. */ codeMode?: boolean | CodeModeOptions; /** The sites `use_website` offers: each task runs a child agent in a browser of its own, recorded under its request id. Absent: the tool is not listed. */ sites?: Record<string, LocalSite>; vision?: (context: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions>; layout?: 'v3' | 'v4' };
 
 /** What a run is made of before its store is opened: the registry of extensions, the models, the hook that attaches the recorder, and the three steps that follow the open. `run()` opens the store
  *  itself on a local claim; `appOf()` hands the same pieces to `pi-durable-disk run --app`, which opens it on its own claim. */
@@ -185,7 +187,7 @@ export async function compose(place: RunPlace, host: Host, job: Job, options: Ru
   });
   const registry = createRegistry();
   // Code mode is built from the vision handle, so it is installed after it.
-  const codeMode = options.codeMode ? [codeModeExtension(vision, options.codeMode === true ? {} : options.codeMode)] : [];
+  const codeMode = options.codeMode ? [codeModeExtension(vision, options.codeMode === true ? {} : options.codeMode, options.codeImages ? { note: options.codeImages, workDir: place.work } : undefined)] : [];
   for (const extension of [ArchilCodingTools, ...host.tools.extensions, vision.extension, ...codeMode, browser.extension, nodes.extension, flow.extension]) registry.install(extension);
 
   // The job's files, in `work/`: each written beside its name and renamed into place, so one a killed process left
@@ -259,8 +261,8 @@ export async function appOf(place: RunPlace, host: Host, job: Job, options: RunO
       const storeSha256 = existsSync(storeFile) ? createHash('sha256').update(readFileSync(storeFile)).digest('hex') : undefined;
       // `report` prepares the outcome (what must be written while the run is open) and may return what announces it: that is called only after the final status and the release succeeded, so a failed finish is never reported as a success.
       const announce = await report({ result, storeSha256 });
-      // A box place has only run.json: the record and the store's hash are in the final status as well.
-      const detail = finalDetail(result, storeSha256, extra);
+      // A box place has only run.json: the record, the store's hash and, when the demo shapes one, its result (the announcement's `detail`) are in the final status as well.
+      const detail = finalDetail(result, storeSha256, { ...extra, ...((announce as { detail?: Record<string, unknown> } | undefined | void)?.detail ?? {}) });
       await finishRun(durable, result.status === 'complete' ? 'done' : 'failed', (redact ? JSON.parse(redact(JSON.stringify(detail))) : detail) as JsonValue, announce ?? undefined);
       process.exit(0);
     },
