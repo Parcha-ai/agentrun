@@ -36,6 +36,8 @@ nothing but the touch each one adds:
 - A look's answer whose rows start `<start>\t<end>\t` (a transcript's times) is read without those times.
 - A look over several addresses files them in its `path` joined by `, `; it opens at the first.
 - A call to `submit` (the node runner's delivery tool) shows no reply when it succeeds.
+- A tool result that is a `{ "ok": true, "value": ... }` record reads as its value: words by their first line, a
+  record's fields in plain form.
 - A recording with no times places each span at its line's position, and the timeline reads "in order".
 - A model call inside a tool is named by who answered (its record's `args.via`, else its tool's namespace) and its
   tool's verb: `vision.judge` via `jev` reads "Jev judge". A call whose tool's verb is `judge` carries the judge's

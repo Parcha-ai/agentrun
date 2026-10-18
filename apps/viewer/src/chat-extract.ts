@@ -55,6 +55,28 @@ function chatErrorLine(text: string): string {
   return chatFirstLine(raw);
 }
 
+/** A value as one line: words by their first line, a list of scalars joined, a record (two levels deep) as its fields
+ *  in plain form, anything deeper as compact JSON. */
+function chatValueLine(value: Json | undefined, depth = 0): string {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return chatFirstLine(value);
+  const record = chatObj(value);
+  if (record && depth < 2) return Object.entries(record).map(([key, each]) => `${key}: ${chatValueLine(each, depth + 1)}`).join(' · ');
+  return Array.isArray(value) && value.some((each) => typeof each === 'object' && each !== null) ? JSON.stringify(value) : chatPlain(value);
+}
+
+/** A result's line: a tool's `{ ok: true, value }` record reads as its value; anything else by its first line. */
+function chatResultLine(text: string): string {
+  const raw = text.trim();
+  if (raw.startsWith('{')) {
+    try {
+      const parsed = chatObj(JSON.parse(raw) as Json);
+      if (parsed?.ok === true && 'value' in parsed) return chatValueLine(parsed.value);
+    } catch { /* words */ }
+  }
+  return chatFirstLine(raw);
+}
+
 /** A tool call in plain form: its name, the file or URL it acted on, then its short arguments as key=value; free text
  *  (an ask, a prompt) stays out of the title. One string argument alone is shown by its first line. */
 export function chatToolTitle(name: string, args: Json | undefined): string {
@@ -237,7 +259,7 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
         const item = toolItems.get(chatStr(m.toolCallId) ?? '');
         if (!item) continue;
         if (m.isError === true) item.failed = true;
-        item.takeaway = item.failed ? chatClip(chatErrorLine(chatText(m.content)), 220) : item.tool === chatRunnerSubmit ? '' : chatClip(chatFirstLine(chatText(m.content)), 220);
+        item.takeaway = item.failed ? chatClip(chatErrorLine(chatText(m.content)), 220) : item.tool === chatRunnerSubmit ? '' : chatClip(chatResultLine(chatText(m.content)), 220);
         item.media = (line.blobs ?? []).filter((sha) => (recording.blobType(sha) ?? '').startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(recording.blobUrl(sha) ?? ''));
       }
     }

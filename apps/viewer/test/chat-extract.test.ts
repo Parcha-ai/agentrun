@@ -266,6 +266,9 @@ test("a cite with no look keeps its own picture and says what it is; a row keeps
 
 test("a takeaway is the result's first line with words, and an artifact's files are blobs the recording names", async () => {
   for (const card of tools(await model(referenceJob))) assert.match(card.takeaway || 'x', /[\p{L}\p{N}]/u, card.title);
+  const enveloped = { ok: true, value: { pages: ['p-1.png', 'p-2.png'], seen: { text: 'two seals\nand a stamp' }, deep: { a: { b: 1 } } } };
+  const m = await model(hearAndFind, editFirst('pi.tool-result', (data) => { data.model[0]!.content = [{ type: 'text', text: JSON.stringify(enveloped) }]; }));
+  assert.equal(tools(m)[0]!.takeaway, 'pages: p-1.png, p-2.png · seen: text: two seals · deep: a: {"b":1}', "a tool's { ok, value } record reads as its value");
   const { recording } = opened(artifact);
   const files = Object.values((recording.manifest as { artifact?: { files: Record<string, string> } }).artifact!.files);
   for (const sha of files) assert.ok(blobsNamed(recording.manifest, recording.lines).includes(sha));
