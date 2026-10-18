@@ -339,7 +339,14 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       // The budget's stop is kept: the attempt does not finish (nor the place release) until the kill, with its provider cleanup, is done.
       let deciding: Promise<void> = Promise.resolve();
       const watch = setInterval(() => { if (!decided && overBudget) deciding = decide(undefined); }, 20);
-      const exit = await Promise.race([runner.exited, gaveUp.then(() => undefined)]);
+      // A runner that cannot start, or a place that stops answering, rejects `exited`: the attempt's timer and its signals reader are closed before the error goes on (the finally of `supervise` releases the place).
+      let exit: Exit | undefined;
+      try { exit = await Promise.race([runner.exited, gaveUp.then(() => undefined)]); } catch (error) {
+        clearInterval(watch);
+        await iterator?.return?.().catch(() => undefined);
+        await pump.catch(() => undefined);
+        throw error;
+      }
       const result: Exit = exit ?? { exit: null, signal: null, stderr: 'the place could not stop this process' };
       clearInterval(watch);
       await iterator?.return?.();
