@@ -276,6 +276,43 @@ describe("the host's box proxy", () => {
 		}
 	});
 
+	it("acknowledges each call's last frames when it ends, so the host keeps no answer it already gave", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-transport-boxes-"));
+		const server = serveBoxes({ providers: { local: localBoxes({ root }) } });
+		const proxy = proxyBoxes(server.names);
+		// What the runner sends the host, as the host reads it.
+		const sent: Frame[] = [];
+		const [runner, host] = linkPair();
+		const toRunner = (frame: Frame) => host.send(frame);
+		runner.onFrame((frame) => proxy.receive(frame));
+		host.onFrame((frame) => {
+			sent.push(frame);
+			return server.receive(frame, toRunner);
+		});
+		proxy.up((frame) => runner.send(frame));
+		try {
+			const provider = proxy.providers.local as BoxProvider;
+			const box = getOrThrow(await provider.create({ maxLifetimeMs: 60_000 }, context));
+			const path = join(box.facts().workspace, "file.txt");
+			getOrThrow(await box.upload([{ path, bytes: new TextEncoder().encode("the file") }], context));
+			expect(
+				getOrThrow(await box.download([path], context)).map(({ bytes }) => new TextDecoder().decode(bytes)),
+			).toEqual(["the file"]);
+			const program = getOrThrow(await box.exec(["echo", "done"], undefined, context));
+			await Promise.all([readStream(program.stdout), readStream(program.stderr)]);
+			expect(getOrThrow(await program.wait())).toBe(0);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const asked = sent.filter(({ t }) => t === "box").map(({ id }) => id);
+			const acked = new Set(sent.filter(({ t }) => t === "box-ack").map(({ id }) => id));
+			expect(asked).toHaveLength(4);
+			expect(asked.filter((id) => !acked.has(id))).toEqual([]);
+			getOrThrow(await box.destroy(context));
+		} finally {
+			runner.close("done");
+			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+		}
+	});
+
 	it("applies a stdin write once when the runner sends it again, as it does after a resume whose ack was lost", async () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-transport-boxes-"));
 		const server = serveBoxes({ providers: { local: localBoxes({ root }) } });

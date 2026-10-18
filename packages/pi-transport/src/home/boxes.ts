@@ -516,6 +516,10 @@ export function proxyBoxes(names: readonly string[], options?: { readonly resume
 		return call;
 	};
 	const end = (call: OpenCall) => {
+		// The call is over: the host may let all it sent go now (an answer can be a whole download), not after its keep time.
+		if (call.seq > call.lastAcked && send?.({ t: "box-ack", id: call.id, seq: call.seq }) === true) {
+			call.lastAcked = call.seq;
+		}
 		open.delete(call.id);
 		clearTimeout(call.deadline);
 	};
