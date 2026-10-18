@@ -46,6 +46,8 @@ export type DemoSpec = {
   programs?: unknown[];
   /** The checked files the job reads: `sources.json` beside the demo (`true`), or another path relative to it. They are fetched into the run's `work/` on `--live` and with `--fetch-sources`. */
   sources?: boolean | string;
+  /** `false`: the demo opens no page, so the entry creates no browser, live or on fakes (a `--live` run then needs no Browserbase key and no Chrome), and a page tool call fails with `this demo has no browser`. Default: a browser. */
+  browser?: boolean;
   /** Code mode (same as `DemoOptions.codeMode`): a `code` tool with a sandbox that has `tools.bash` and `vision.see`. Off by default. */
   codeMode?: boolean | { timeoutMs?: number; outputChars?: number };
   /** The box the job's tools run in. */

@@ -266,6 +266,14 @@ A place that has `status()` reports its reading of the run (`{ record }`, a disk
 
 `--operator-kill <file>` names a control the supervisor owns (never the child's request file): when a process is running and the file appears, the supervisor removes it, writes a `kill` host line with `crossing: null` and `label: "operator"`, kills through the place, and resumes as usual. A kill still planned for the attempt it ended is planned for the next, so a planned kill is not lost. The path must not exist when the run starts (a stale file would kill the first process); a page's server makes it with any process of the same user, so the path belongs in a directory only the operator can write. The operator may kill anywhere, so a kill inside a tool's dispatch leaves that effect unknown, as any kill there does.
 
+### A demo with no browser
+
+`browser: false` in demo.json (`DemoSpec.browser`) means the entry creates no browser, live or on fakes: `--live` then needs no Browserbase key and no Chrome (`chooseBrowser` is not asked), the live parts' browser is ignored, and a page tool call fails with `this demo has no browser` rather than a missing key. The default (a browser) is unchanged.
+
+### Blobs appear whole
+
+Each blob is written to a temporary file in the recording's `.spool/` (`blob-<sha>.<ext>.tmp-<pid>`), synced, and renamed into `blobs/`, so a viewer following a live run finds it absent or whole, and a process killed mid-write leaves a temporary file in `.spool/` and never a torn blob; a blob already there is left alone. No validator or gate change is needed: `.spool/` is never published.
+
 ### Code mode (opt-in; it runs model-written code)
 
 Code mode needs one extra install: `@earendil-works/pi-codemode`, which the repository declares as a root devDependency (`npm ci` installs it). A box that installs the entry's devDependencies has it; one that installs only the packages does not.
