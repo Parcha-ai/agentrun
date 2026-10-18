@@ -1557,3 +1557,22 @@ test('a slow status read does not hold up supervision: the spend cap stops a run
   const stopped = host.find((line) => line.kind === 'kill').t;
   assert.ok(stopped - started < 4500, `the cap stopped the child ${stopped - started} ms after it started, not after the 6 s read`);
 });
+
+test('a machine named like an ordinary word (gateway) is redacted only as a whole token in text: never inside a JSON key, a dotted event name, a longer word or a source value; and a name of the format\'s own words (node) is not taken', async () => {
+  const { machineSecrets, redactorOf, scanRecording } = await import('./reference/secrets.ts');
+  assert.equal(machineSecrets('node').filter((secret) => secret.key.includes('host name')).length, 0, 'a name of the format\'s own words is not taken');
+  const word = machineSecrets('gateway').filter((secret) => secret.key.includes('host name'));
+  assert.equal(word.length, 1);
+  const line = '{"gateway":1,"source":"gateway","kind":"gateway.start","data":{"text":"connected to gateway on port 22; the gateway.example.org host; gateways"}}';
+  const out = redactorOf(word)(line);
+  assert.ok(out.includes('"gateway":1'), 'a JSON key is not rewritten');
+  assert.ok(out.includes('"kind":"gateway.start"') && out.includes('gateway.example.org') && out.includes('gateways'), 'a dotted name and a longer word are not rewritten');
+  assert.ok(out.includes('connected to [redacted] on port 22'), 'the name as a whole token in text is');
+  const dir = await mkdtemp(join(tmpdir(), 'reference-whole-'));
+  try {
+    writeFileSync(join(dir, 'events.jsonl'), '{"gateway":1,"kind":"gateway.start"}\n');
+    assert.doesNotThrow(() => scanRecording(dir, word), 'a key and a format word are not a mention');
+    writeFileSync(join(dir, 'events.jsonl'), 'connected to gateway\n');
+    assert.throws(() => scanRecording(dir, word), /host name/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
