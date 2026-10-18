@@ -110,3 +110,16 @@ test('a job that must run in a box is refused under the app, not run outside the
   const place = { id: 'reference', root: join(tmp, 'root'), work: join(tmp, 'root', 'work'), store: join(tmp, 'root', 'store') };
   await assert.rejects(() => prepareChild({ ...options, spec: { ...options.spec, boxes: { kind: 'local', runIn: true } } }, { BACKEND: 'http://127.0.0.1:1' }, place), /boxes\.runIn is not supported under pi-durable-disk run --app/);
 });
+
+test('the end of an app\'s run announces only after the final status and the release succeeded: a failed finish is never reported as a success', async () => {
+  const { finishRun } = await import('./reference/assemble.ts');
+  const order = [];
+  const durable = (failAt) => ({ setStatus: async () => { order.push('status'); if (failAt === 'status') throw new Error('the disk failed'); }, release: async () => { order.push('release'); if (failAt === 'release') throw new Error('the claim was lost'); } });
+  await finishRun(durable(), 'done', { status: 'complete' }, () => { order.push('announce'); });
+  assert.deepEqual(order, ['status', 'release', 'announce']);
+  for (const failAt of ['status', 'release']) {
+    order.length = 0;
+    await assert.rejects(() => finishRun(durable(failAt), 'done', { status: 'complete' }, () => { order.push('announce'); }), /failed|lost/);
+    assert.ok(!order.includes('announce'), `nothing was announced when the ${failAt} failed`);
+  }
+});

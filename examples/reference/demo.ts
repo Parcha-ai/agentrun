@@ -408,21 +408,22 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       await deciding;
       processes.push(result);
       if (killFailed || (killed && killed.label === 'max-usd')) break;
-      if (killed) { previous = { runner, kind: killed.kind }; continue; }
+      // A tool kill of an attempt that ended in a process kill and did not fire never will (the plan is consumed): it is reported, not carried off with the attempt.
+      const missed = () => { for (const entry of notLanded(plan.tools, log)) unlanded.push('point' in entry ? entry.point : `storm (gap ${entry.gapMs} ms)`); };
+      if (killed) { missed(); previous = { runner, kind: killed.kind }; continue; }
       // A process that died by SIGKILL on its own (a crash, or a kill with no supervisor) is a kill at the last crossing it logged.
       if (result.signal === 'SIGKILL') {
         const at = rows<Crossing>(log).filter((crossing) => crossing.n > 0).at(-1);
         const kind = plan.run?.kind ?? 'process';
         supervisor.host('kill', { gen, label: plan.run && !('storm' in plan.run) ? plan.run.point : at?.point ?? null, crossing: at ? { point: at.point, n: at.n } : null, side: 'child', kind });
         kills.push({ gen, point: at?.point ?? null, kind, why: plan.run?.why ?? 'a kill' });
+        missed();
         previous = { runner, kind };
         continue;
       }
       // The process ended on its own with a kill still planned for it (and any that follow): none of them landed.
-      // A tool kill of this attempt that fired is on the child's log: it landed, however the process then ended.
-      const landed = rows<Crossing>(log).filter((crossing) => crossing.landed).map((crossing) => crossing.point);
       for (const left of [plan, ...remaining]) {
-        const tools = left === plan ? left.tools.filter((entry) => { const at = 'point' in entry ? landed.indexOf(entry.point) : -1; if (at >= 0) landed.splice(at, 1); return at < 0; }) : left.tools;
+        const tools = left === plan ? notLanded(left.tools, log) : left.tools;
         for (const entry of [...(left.run ? [left.run] : []), ...tools]) if ('point' in entry) unlanded.push(entry.point); else unlanded.push(`storm (gap ${entry.gapMs} ms)`);
       }
       break;
@@ -456,6 +457,12 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       if (!values.record && !values.dir && !options.keepRun) await rm(scratch, { recursive: true, force: true });
     }
   }
+}
+
+/** The tool kills of an attempt that did not fire: those the child's log (`landed` rows) does not show. */
+export function notLanded<T extends object>(tools: readonly T[], log: string): T[] {
+  const landed = rows<Crossing>(log).filter((crossing) => crossing.landed).map((crossing) => crossing.point);
+  return tools.filter((entry) => { const at = 'point' in entry ? landed.indexOf(String(entry.point)) : -1; if (at >= 0) landed.splice(at, 1); return at < 0; });
 }
 
 const readEventsOf = (dir: string) => rows<Record<string, unknown>>(join(dir, 'events.jsonl'));
