@@ -48,6 +48,7 @@ export type KindResult =
       readonly document?: Readonly<Record<string, unknown>> }
   | { readonly miss: MissCode; readonly reason: string; readonly text?: string }
   | { readonly refusal: string };
+/** The reader of one kind: a request in, the content or the miss out. */
 export type KindReader = (request: KindRequest, context: KindContext) => Promise<KindResult>;
 
 /** The package's own kind wiring: the kind of a file's first bytes, an image header's pixels, and a reader per kind. */

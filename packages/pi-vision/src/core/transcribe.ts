@@ -33,8 +33,11 @@ export type Transcriber = {
   /** Throws a `ProviderMiss` only before it sends a request; anything else it throws may have been billed. */
   transcribe(audio: { readonly bytes: Uint8Array; readonly mimeType: string; readonly name: string }, options: { readonly language?: string }, signal?: AbortSignal): Promise<Transcript>;
 };
+/** What `vision.transcribe` is asked: the file, the part of it (a `#t=` fragment) and a language the speech is in, when known. */
 export type TranscribeRequest = { readonly path: string; readonly fragment?: string; readonly language?: string };
+/** What `vision.transcribe` gives back: the words with their seconds, the text, who answered and with which model, the price (null when unknown) and the receipts filed. */
 export type TranscribeAnswer = { readonly words: readonly TranscriptWord[]; readonly text: string; readonly provider: string; readonly model: string; readonly costUsd: number | null; readonly receipts: readonly string[]; readonly kept?: true };
+/** `vision.transcribe` as a code-mode global: the contract's words and `execute`, which has a speech-to-text model write what a recording says. */
 export type TranscribeGlobal = CodeGlobal<typeof VISION_TRANSCRIBE, TranscribeAnswer>;
 
 /** What is kept for a file: the words and text, who answered, and the price. */

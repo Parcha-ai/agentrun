@@ -13,6 +13,7 @@ import { SENTINELS } from "./sentinels.js";
 /** A leak of a value's head or tail is a leak; a shorter fragment would match by chance. */
 const FRAGMENT = 16;
 
+/** One sentinel found in what the package returned: which, in what form, in which source and where in it. */
 export type LeakFinding = { readonly sentinel: string; readonly form: string; readonly source: string; readonly where: string };
 
 /** Every form a value takes when it leaks: as it is, URL-encoded, JSON-escaped, hex, base64 and base64url at each of the
@@ -32,6 +33,7 @@ export function leakNeedles(value: string): { readonly form: string; readonly ne
   return [...found].map(([needle, form]) => ({ form, needle }));
 }
 
+/** Scans results, details, receipts, derived names and memos for the sentinels, in every form a value takes when it leaks. */
 export class LeakScan {
   readonly findings: LeakFinding[] = [];
   readonly #covered = new Map<string, { bytes: number; records: number }>();
