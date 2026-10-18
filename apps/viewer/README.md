@@ -48,7 +48,7 @@ names with `&parent=<origin>`, each checked.
   `aborted` entry), re-asks (from the store's `pi.live` asks, each ask a kill cut counted once: proven when it had
   committed a partial, possible when only its start, with the turns they fell on; only proven ones count; "not
   measured" when no ask start was committed or its version is unknown), processes, kills, cost (unknown when any part is unknown,
-  never $0; a scripted run, as its manifest's `providers` says, reads "scripted, $0" rather than $0.0000; "at least" when a look may have been paid that no durable line shows), the looks the eyes were paid for
+  never $0; a scripted run, as its manifest's `providers` says, reads "scripted, $0" rather than $0.0000; "at least" when a look may have been paid that no durable line shows; drawn only with `?debug=cost` or `?debug=durability`), the looks the eyes were paid for
   (per look key: a native look charges nothing, and a look read back after a kill is paid once), and the journal's
   opens. Counts come from durable lines and the supervisor's lines only. Repeated and
   asked twice are per call: an effect's outside calls the host reported as applied, in more than one process (repeated)

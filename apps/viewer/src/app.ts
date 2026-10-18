@@ -232,11 +232,12 @@ function drawCounters(counters: Counters, measured = counters.measured, provider
     : item(label, 'not measured', 'This recording has no durable lines: nothing from the store can be counted.', extra.includes('durability') ? ' durability' : ''));
   // What a kill and a resume did (processes, kills, a repeat, a call asked twice, the journal's opens) is marked
   // `durability`, drawn only with `?debug=durability`; the payments and the cost are `receipt`s, kept under one
-  // disclosure, Receipts, unless the page shows its debug view (PANELS.md, "What a public replay shows").
+  // disclosure, Receipts, unless the page shows its debug view, and the cost is also `cost`, drawn only with `?debug=cost`
+  // or `?debug=durability` (PANELS.md, "What a public replay shows").
   const counted = [
     stored('paid calls made', String(counters.paid.total), `Workflow effects completed: ${counters.paid.workflow}. Agent receipts: ${counters.paid.agent}. Vision looks paid: ${counters.paid.vision}.`),
     stored('looks paid', `${counters.paid.vision}${counters.vision.possible ? ` + ${counters.vision.possible} possible` : ''}`,
-      `Looks the eyes answered and billed, per look key${counters.vision.native ? `; ${counters.vision.native} the lead looked at itself, which charge nothing` : ''}.${counters.vision.possible ? ` ${counters.vision.possible} more possible: a look started in a process that ended before filing it, so no durable line shows whether it was paid, and the cost is a lower bound.` : ''}`, ' receipt'),
+      `Looks the eyes answered and billed, per look key${counters.vision.native ? `; ${counters.vision.native} the lead looked at itself, which charge nothing` : ''}.${counters.vision.possible ? ` ${counters.vision.possible} more possible: a look started in a process that ended before filing it, so no durable line shows whether it was paid.` : ''}`, ' receipt'),
     stored('repeated', `${repeatedLabel(counters)}${counters.pageActions.possible ? ` + ${counters.pageActions.possible} possible` : ''}`,
       `An applied call in a later process than an earlier applied one.${counters.repeatedNotMeasured > 0 ? ` ${counters.repeatedNotMeasured} effects report no calls: their repeats are not measured, never shown as 0.` : ''}${counters.pageActions.possible ? ` ${counters.pageActions.possible} more possible: a browser page action dispatched again after one that never showed reaching the page, so no durable line says whether it was applied twice.` : ''}${counters.pageActions.measured ? '' : ' The browser\'s page actions are not measured: its session records are an export\'s, which keeps only their latest revision.'}`,
       counters.repeated > 0 ? ' alarm durability' : ' durability'),
@@ -253,7 +254,7 @@ function drawCounters(counters: Counters, measured = counters.measured, provider
     item('processes', String(counters.processes), 'From the supervisor\'s process lines.', ' durability'),
     item('kills', String(counters.kills), 'From the supervisor\'s kill lines.', ' durability'),
     item('cost', costLabel(counters.cost, counters.costLowerBound, providers, counters.costParts), following ? 'A run followed while it goes: its cost is known once it finishes.' :
-      `Unknown until a line prices a part, and when any priced part is unknown: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}${providers === 'scripted' ? ' Scripted: at least one priced part was served by a fake, a cassette or a script, so this is not a provider\'s bill, though it may include real charges for the other parts.' : ''}${counters.costParts.boxes !== undefined ? ' Boxes: each box\'s time at its provider\'s published list price, an estimate, not the provider\'s invoice; unknown while a box has no receipt or its kind has no published price.' : ''}`, ' receipt'),
+      `Unknown until a line prices a part, and when any priced part is unknown: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}${providers === 'scripted' ? ' Scripted: at least one priced part was served by a fake, a cassette or a script, so this is not a provider\'s bill, though it may include real charges for the other parts.' : ''}${counters.costParts.boxes !== undefined ? ' Boxes: each box\'s time at its provider\'s published list price, an estimate, not the provider\'s invoice; unknown while a box has no receipt or its kind has no published price.' : ''}`, ' receipt cost'),
     stored('journal opens', String(counters.journalOpens), 'A fact of the store: agentrun.driver\'s generation. It counts journal opens, which can exceed processes.', ' fact durability'),
   ];
   if (receiptsInline) return el('div', { class: 'counters' }, ...counted);
@@ -605,6 +606,8 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   // under Receipts. `?debug=durability` shows all of it as it is: a view no public page sets.
   const debug = (params.get('debug') ?? '').split(',').map((each) => each.trim()).filter((each) => each !== '');
   const showDurability = debug.includes('durability');
+  // A dollar figure is drawn only in a debug view: `?debug=cost`, or `?debug=durability`, which draws every part.
+  const showCost = showDurability || debug.includes('cost');
 
   // The manifest's chapters when it names them; else each process start, each kill, and the end (while a run is followed,
   // its end so far). With durability hidden, the derived ones are the end alone.
@@ -674,6 +677,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const featuredBox = el('div', { class: 'featured' });
   if (embedded) document.documentElement.classList.add('embed');
   if (!showDurability) document.documentElement.classList.add('hide-durability');
+  if (!showCost) document.documentElement.classList.add('hide-cost');
   const layout = () => {
     const top = embedded ? (problemsNote ? [problemsNote] : []) : [header];
     if (featured) root.replaceChildren(...top, featuredBox, controls, counters, baselineRow, timeline, chapterList, focusBar, panels);

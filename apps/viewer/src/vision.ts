@@ -560,12 +560,12 @@ function visionAccuracyView(accuracy: NonNullable<VisionAccount['accuracy']>): N
 }
 
 function visionReceipt(look: VisionLook, chosen: boolean): Node {
-  const row = (name: string, value: string | undefined): Node | false => value !== undefined && value !== '' && h('div', { class: 'vz-row' }, h('span', { class: 'k' }, name), h('span', {}, value));
+  const row = (name: string, value: string | undefined, extra = ''): Node | false => value !== undefined && value !== '' && h('div', { class: `vz-row${extra}` }, h('span', { class: 'k' }, name), h('span', {}, value));
   return h('div', { class: `vz-receipt${look.status === 'failed' ? ' missed' : ''}` },
     h('h5', {}, `${chosen ? 'Receipt' : 'Latest look'} · ${look.item ?? look.source}${look.fragment ? ` #${look.fragment}` : ''}`),
     row('sha256', visionShort(look.sha256)), row('ask', look.ask), row(look.status === 'ok' ? 'answer' : 'missed', look.status === 'ok' ? look.body : look.miss ? `${look.miss.code}${look.miss.reason ? `: ${look.miss.reason}` : ''}` : look.body || 'code not recorded'),
     row('model', look.model), row('tokens', look.tokensIn !== undefined || look.tokensOut !== undefined ? `${look.tokensIn ?? '?'} in, ${look.tokensOut ?? '?'} out` : undefined),
-    row('price', look.native ? 'in the lead\'s usage' : look.kept ? `${visionMoney(look.cost)} paid once, before the kill; this filing paid $0` : visionMoney(look.cost)),
+    row('price', look.native ? 'in the lead\'s usage' : look.kept ? `${visionMoney(look.cost)} paid once, before the kill; this filing paid $0` : visionMoney(look.cost), ' cost'),
     row('kept', look.kept ? 'yes: read back from the memo after a kill' : undefined),
     row('filed', `${look.receipt ?? 'no receipt path'} · generation ${look.gen}${look.lost ? ' · lost branch' : ''}`));
 }
@@ -583,7 +583,7 @@ function visionMetersView(state: VisionState, meters: VisionMeters, following = 
     row('possible extra payments', `${meters.possible} (observed)`, 'From live lines: a look started in a process that ended without filing it. Its eyes may have answered and been paid; no durable line says.', meters.possible > 0 ? ' alarm durability' : ' durability'),
     stored('spend', measured ? `${meters.possible > 0 && meters.cost !== null ? 'at least ' : ''}${visionMoney(meters.cost)}` : 'unknown',
       following ? 'A run followed while it goes: its spend is known once it finishes.'
-        : `Once per payment, with each failed look's own price; unknown when any is unknown.${meters.possible > 0 ? ' A lower bound: a possible payment is not in it.' : ''}`),
+        : `Once per payment, with each failed look's own price; unknown when any is unknown.${meters.possible > 0 ? ' A lower bound: a possible payment is not in it.' : ''}`, ' cost'),
     stored('typed misses', meters.failed === 0 ? '0' : `${meters.failed}: ${meters.misses.map(([code, n]) => `${code} ${n}`).join(', ')}`, 'Failed LookRecords, by miss code.'));
 }
 

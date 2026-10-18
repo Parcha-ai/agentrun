@@ -288,6 +288,8 @@
      draws them (PANELS.md, "What a public replay shows"). */
   .hide-durability .durability { display: none !important; }
   .hide-durability .wm-glyph.cut { box-shadow: none; }
+  /* No dollar figure is drawn by default: a part marked cost shows only with ?debug=cost (or ?debug=durability). */
+  .hide-cost .cost { display: none !important; }
   /* The receipts and a look's picture, one click away. */
   .counters > details.receipts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; } .counters > details.receipts > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
   .counters > details.receipts[open] { flex-basis: 100%; }
