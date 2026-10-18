@@ -73,7 +73,24 @@ export async function fetchSources(sources: Sources, work: string, fetcher: type
     try {
       const response = await fetcher(item.url, { signal });
       if (!response.ok) throw new Error(`${name}: ${item.url} answered ${response.status}`);
-      bytes = new Uint8Array(await response.arrayBuffer());
+      // The size is the item's: a body larger than it is refused as it streams, never buffered whole (the deadline limits time, not bytes).
+      const declared = Number(response.headers?.get?.('content-length'));
+      if (Number.isFinite(declared) && declared > item.bytes) throw new Error(`${name}: ${item.url} is larger than the checked file (${declared} bytes, expected ${item.bytes})`);
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      const reader = response.body?.getReader();
+      if (reader) {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          size += value.length;
+          if (size > item.bytes) { await reader.cancel().catch(() => undefined); throw new Error(`${name}: ${item.url} is larger than the checked file (more than ${item.bytes} bytes)`); }
+          chunks.push(value);
+        }
+      } else { const whole = new Uint8Array(await response.arrayBuffer()); if (whole.length > item.bytes) throw new Error(`${name}: ${item.url} is larger than the checked file (${whole.length} bytes, expected ${item.bytes})`); chunks.push(whole); size = whole.length; }
+      bytes = new Uint8Array(size);
+      let at2 = 0;
+      for (const chunk of chunks) { bytes.set(chunk, at2); at2 += chunk.length; }
     } catch (error) {
       if (signal.aborted) throw new Error(`${name}: ${item.url} did not finish within ${timeoutMs} ms`, { cause: error });
       throw error;
