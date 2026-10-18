@@ -1,4 +1,4 @@
-// npm run demo:disk [-- --kill] [-- --record <dir>] [-- --live]: the disk demo on the reference entry. The job is data (job.ts), the fakes are fakes.ts, the spec is demo.json, and the
+// npm run demo:disk [-- --kill | --handoff] [-- --record <dir>] [-- --live]: the disk demo on the reference entry. The job is data (job.ts), the fakes are fakes.ts, the spec is demo.json, and the
 // standard flags are the entry's. The place is the disk package's `localPlace`: each process of the run is `pi-durable-disk run --app` on the reference package's child-app, which opens the run on
 // the package's own claim and runs the job on it. The entry reads `options` (it hands the runner DEMO_ENTRY, this file); the supervisor starts, kills and restarts through the place.
 import { readFileSync } from 'node:fs';
@@ -9,12 +9,8 @@ import { fakes } from './fakes.ts';
 import { job } from './job.ts';
 
 const raw = JSON.parse(readFileSync(new URL('./demo.json', import.meta.url), 'utf8'));
-// The spec's kill is the box going away, which a disk place can do (the sandbox is deleted). The local place has no box of its own: on fakes the same crossing ends the process.
-// The spec has the kill beat and the handoff beat at one crossing, which the entry refuses: a run takes the one its flag asks for (--handoff: the process releases the run cleanly and a second one opens it; no kill).
-const { handoffs, ...killing } = raw;
-const { kills, kill, ...handing } = raw;
-const spec = process.argv.includes('--handoff') ? handing : process.argv.includes('--live') ? killing : { ...killing, kills: killing.kills.map(({ kind, ...entry }: { kind?: string }) => entry) };
-// `--app` takes a file: the reference package's `./child-app` export, resolved.
+// The spec's kill is the box going away, which a disk place can do (the sandbox is deleted). The local place has no box of its own: on fakes the same crossing ends the process. `--handoff` runs the spec's handoffs instead (the entry's flag).
+const spec = process.argv.includes('--live') ? raw : { ...raw, kills: raw.kills.map(({ kind, ...kill }: { kind?: string }) => kill) };
 const childApp = fileURLToPath(import.meta.resolve('@parcha/agentrun-reference/child-app'));
 
 export const options: DemoOptions = { self: import.meta.url, spec, job, fakes, place: localPlace({ app: childApp }) };

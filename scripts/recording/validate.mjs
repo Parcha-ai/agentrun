@@ -42,6 +42,7 @@ export function manifestProblems(manifest) {
   need(typeof manifest.model === 'string' && manifest.model !== '', 'model is not a non-empty string');
   need(isInt(manifest.generations) && manifest.generations >= 1, 'generations is not an integer of at least 1');
   need(isInt(manifest.kills) && manifest.kills >= 0, 'kills is not a non-negative integer');
+  if (manifest.handoffs !== undefined) need(isInt(manifest.handoffs) && manifest.handoffs >= 0, 'handoffs is not a non-negative integer');
   need(isObject(manifest.cost) && nullableNumber(manifest.cost.usd) && isObject(manifest.cost.parts) && Object.values(manifest.cost.parts).every(nullableNumber), 'cost needs usd and parts, each a number or null');
   need(isObject(manifest.source) && typeof manifest.source.run === 'string' && SHA256.test(manifest.source.store_sha256 ?? ''), 'source needs run and a 64-hex store_sha256');
   if (manifest.providers !== undefined) need(manifest.providers === 'real' || manifest.providers === 'scripted', `providers is ${JSON.stringify(manifest.providers)}, expected real or scripted`);
@@ -249,6 +250,7 @@ export function validateRecording(dir) {
   let processes = 0;
   const lookKeys = new Set();
   const lookSources = new Map();
+  let handoffs = 0;
   const liveGenerations = new Set();
   lines.forEach((text, index) => {
     const line = index + 1;
@@ -261,6 +263,7 @@ export function validateRecording(dir) {
     for (const message of own) add('events.jsonl', message, line);
     if (own.length) return;
     if (event.source === 'host' && event.kind === 'process.started') { processes += 1; processIndex += 1; }
+    if (event.source === 'host' && event.kind === 'handoff') handoffs += 1;
     if (event.channel === 'durable' && (event.kind === 'transport.moves' || event.data?.doc === 'transport.moves')) {
       // A snapshot restates the records an earlier process wrote: only a process's own lines are its moves.
       if (!event.snapshot) for (const record of moveRecords(event.data?.value ?? event.data)) {
@@ -349,6 +352,7 @@ export function validateRecording(dir) {
   // Processes come from the supervisor, never from a durable line's gen: that counts journal opens, which can outnumber processes.
   if (manifest && isInt(manifest.generations)) {
     if (processes !== manifest.generations) add('manifest.json', `generations is ${manifest.generations}, but the recording has ${processes} host process.started lines`);
+    if (manifest.handoffs !== undefined && manifest.handoffs !== handoffs) add('manifest.json', `handoffs is ${manifest.handoffs}, but the recording has ${handoffs} host handoff lines`);
     const beyond = [...liveGenerations].filter(gen => gen > processes);
     if (beyond.length) add('events.jsonl', `a live line carries gen ${Math.max(...beyond)}, beyond the ${processes} processes that started`);
   }

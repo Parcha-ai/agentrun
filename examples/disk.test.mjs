@@ -5,8 +5,10 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
@@ -114,7 +116,11 @@ test('beat 4, a handoff: the run is released cleanly at the fifth paid call and 
   assert.equal(host.filter((line) => line.kind === 'process.started').length, 2);
   const handoffs = host.filter((line) => line.kind === 'handoff');
   assert.equal(handoffs.length, 1);
-  assert.deepEqual([handoffs[0].data.point, handoffs[0].data.n], ['effect.kept charge', 5]);
+  assert.deepEqual([handoffs[0].data.gen, handoffs[0].data.point, handoffs[0].data.n], [1, 'effect.kept charge', 5]);
+  assert.ok(handoffs[0].data.why.length > 0 && handoffs[0].data.why.length <= 240);
+  assert.equal(host.filter((line) => line.kind === 'handoff.failed').length, 0);
+  const manifest = JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8'));
+  assert.deepEqual([manifest.generations, manifest.kills, manifest.handoffs], [2, 0, 1], 'generations = 1 + landed kills + landed handoffs');
   assert.match(handoffs[0].data.from, /^host-\d+$/, 'the releasing holder is a label, never a machine');
   // The disk's own record: sealed sleeping by the first holder, then done by the second at generation 2.
   const statuses = host.filter((line) => line.kind === 'run.json').map((line) => line.data.status);
@@ -129,4 +135,65 @@ test('beat 4, a handoff: the run is released cleanly at the fifth paid call and 
   assert.equal(result.record.charged, 10);
   assert.deepEqual(result.record.receipts.map((receipt) => receipt.invoice), INVOICES);
   assert.equal(JSON.stringify(lines).includes('kill'), false, 'the word kill is nowhere in a handoff recording');
+});
+
+// A handoff that does not land is a `handoff.failed` line with its reason, never an unlanded kill. The entry is the disk demo's with a handoff planned and, for two of the reasons, a place that reports the run otherwise than it was
+// (a wrapper over the disk place: the supervisor decides from what the place says). It is written beside the example so that the packages resolve.
+const failing = async (t, { n = 5, wrap = '' } = {}) => {
+  const root = await scratch(t);
+  const entry = new URL(`./disk-handoff-${process.pid}-${Math.random().toString(36).slice(2, 8)}.ts`, import.meta.url);
+  t.after(() => rm(entry, { force: true }));
+  writeFileSync(entry, `import { readFileSync } from 'node:fs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { demo } from '@parcha/agentrun-reference';
+import { localPlace } from '@parcha/pi-durable-disk';
+import { fakes } from './disk/fakes.ts';
+import { job } from './disk/job.ts';
+const raw = JSON.parse(readFileSync(new URL('./disk/demo.json', import.meta.url), 'utf8'));
+const { kills, kill, ...spec } = raw;
+spec.handoffs = [{ ...raw.handoffs[0], n: ${n} }];
+const make = localPlace({ app: fileURLToPath(import.meta.resolve('@parcha/agentrun-reference/child-app')) });
+const wrap = ${JSON.stringify(wrap)};
+const place = (ctx) => {
+  const made = make(ctx);
+  if (wrap === 'exit') {
+    const end = async (runner) => ({ ...runner, exited: runner.exited.then((exit) => ({ ...exit, exit: 1 })) });
+    return { ...made, start: async (order) => end(await made.start(order)), recover: async (last, kind, order) => { const r = await made.recover(last, kind, order); return { ...r, runner: await end(r.runner) }; } };
+  }
+  if (wrap === 'status') return { ...made, status: async () => { const s = await made.status(); return { ...s, record: s.record && { ...s.record, status: 'running' } }; } };
+  return made;
+};
+export const options = { self: import.meta.url, spec, job, fakes, place };
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await demo(options);
+`);
+  const recording = join(root, 'recording');
+  const ran = spawnSync(process.execPath, ['--no-warnings=ExperimentalWarning', fileURLToPath(entry), '--handoff', '--json', '--record', recording, '--dir', join(root, 'run')], { encoding: 'utf8', timeout: 150_000, env: { PATH: process.env.PATH, HOME: process.env.HOME } });
+  return { ran, lines: readEvents(recording), recording, result: ran.stdout.trim() ? JSON.parse(ran.stdout) : null };
+};
+const failedOf = (lines) => lines.filter((line) => line.source === 'host' && line.kind === 'handoff.failed').map((line) => line.data);
+
+test('handoff.failed, "crossing not logged": the crossing is never taken, the job finishes, and no kill is reported as unlanded', { timeout: 200_000 }, async (t) => {
+  const { ran, lines, result, recording } = await failing(t, { n: 99 });
+  assert.notEqual(ran.status, 0, 'a handoff that did not land is a failed run');
+  assert.deepEqual(failedOf(lines), [{ gen: 1, point: 'effect.kept charge', n: 99, reason: 'crossing not logged' }]);
+  assert.equal(lines.filter((line) => line.kind === 'handoff').length, 0);
+  assert.deepEqual(result.unlanded, []);
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.equal(JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8')).handoffs, 0);
+});
+
+test('handoff.failed, "exit not 0": the crossing is logged but the process did not exit 0', { timeout: 200_000 }, async (t) => {
+  const { ran, lines, result } = await failing(t, { wrap: 'exit' });
+  assert.notEqual(ran.status, 0);
+  assert.deepEqual(failedOf(lines), [{ gen: 1, point: 'effect.kept charge', n: 5, reason: 'exit not 0' }]);
+  assert.equal(lines.filter((line) => line.kind === 'handoff').length, 0);
+  assert.equal(result.handoffs, 0);
+  assert.deepEqual(result.failedHandoffs, [{ gen: 1, point: 'effect.kept charge', reason: 'exit not 0' }]);
+});
+
+test('handoff.failed, "not released": the process exited 0 but the last run.json does not show the run released', { timeout: 200_000 }, async (t) => {
+  const { ran, lines } = await failing(t, { wrap: 'status' });
+  assert.notEqual(ran.status, 0);
+  assert.deepEqual(failedOf(lines), [{ gen: 1, point: 'effect.kept charge', n: 5, reason: 'not released' }]);
+  assert.equal(lines.filter((line) => line.kind === 'handoff').length, 0);
 });

@@ -217,7 +217,7 @@ export function openRecorder(options: { dir: string; /** The recording's clock, 
 
 export type Header = {
   /** The agent's report (draft 41): `takeArtifact`'s result, written to the manifest as `artifact`. */ artifact?: import('./artifact.ts').Artifact;
-  title: string; task: string; model: string; /** Default: the recording's own count of `process.started` lines. */ generations?: number; kills: number;
+  title: string; task: string; model: string; /** Default: the recording's own count of `process.started` lines. */ generations?: number; kills: number; /** The landed handoffs (0 when none). */ handoffs?: number;
   code: { repo: string; commit: string; packages: Record<string, string> };
   /** The cost, or a function of the merged lines (fold.ts's cost: `null` while any part is unknown, never 0). */
   cost: { usd: number | null; parts: Record<string, number | null> } | ((lines: Record<string, unknown>[]) => { usd: number | null; parts: Record<string, number | null> });
@@ -250,7 +250,7 @@ const readLines = (path: string): Record<string, unknown>[] => {
 /** One total order for lines that tie on `t` (a millisecond): the supervisor's kill of one process, then the next process's start, then the
  *  lines that process writes (durable, then live), and the payoff last. It agrees with the supervisor's own `seq` (a kill precedes the next
  *  start) and puts a process's snapshot after its start, so no tie can form a cycle. */
-const rank = (line: Record<string, unknown>) => (line.source === 'host' && line.channel === 'live' ? ({ kill: -2, 'process.started': -1, result: 2 } as Record<string, number>)[line.kind as string] ?? 1 : line.channel === 'durable' ? 0 : 1);
+const rank = (line: Record<string, unknown>) => (line.source === 'host' && line.channel === 'live' ? ({ kill: -2, handoff: -2, 'process.started': -1, result: 2 } as Record<string, number>)[line.kind as string] ?? 1 : line.channel === 'durable' ? 0 : 1);
 const orderOf = (line: Record<string, unknown>) => (line.order === null ? Infinity : (line.order as number) ?? 0);
 /** Section 3's order: by `t`, a tie by rank, then (commit, order), then seq. */
 export const compareLines = (a: Record<string, unknown>, b: Record<string, unknown>) => (a.t as number) - (b.t as number) || rank(a) - rank(b) || ((a.commit as number) ?? 0) - ((b.commit as number) ?? 0) || orderOf(a) - orderOf(b) || ((a.seq as number) ?? 0) - ((b.seq as number) ?? 0);

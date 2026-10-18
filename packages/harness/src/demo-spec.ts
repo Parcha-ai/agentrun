@@ -26,7 +26,7 @@ export type StormKill = { storm: { kills: number; gapMs: number }; kind?: 'proce
 export type KillSpec = CrossingKill | StormKill;
 
 /** A handoff the supervisor plans: at the crossing the run's process releases the run (the instance drains: sealed `sleeping`, claim released, exit 0) and the supervisor starts the next process through the
- *  place. Nothing is killed. The crossing rules are a kill's (`point`, the nth time with `n`, `where`), and it is taken only when a quiet crossing is reached: a handoff and a kill at one crossing are refused. */
+ *  place. Nothing is killed. The crossing rules are a kill's (`point`, the nth time with `n`, `where`), and it is taken only at a crossing where the process can be held (`effect.kept <tool>`). */
 export type HandoffSpec = { point: string; why: string; n?: number; where?: Record<string, string | number | boolean> };
 
 /** A box a job's tools run in: a directory of this machine (`local`), or a Docker container. Cloud boxes take their provider's package. */
@@ -89,19 +89,16 @@ export function killsOf(spec: DemoSpec): KillSpec[] {
   return list;
 }
 
-/** The handoffs a spec asks for, in order, checked at load. A handoff names a point and says why; `n` and `where` are a kill's; nothing else is accepted (a handoff has no kind, target, hold or storm). A kill and a handoff at the same crossing (the same point, nth and `where`) are refused. */
+/** The handoffs a spec asks for, in order, checked at load. A handoff names a point and says why; `n` and `where` are a kill's; nothing else is accepted (a handoff has no kind, target, hold or storm). A spec may hold both lists: the entry runs the one its flag names, and refuses both together. */
 export function handoffsOf(spec: DemoSpec): HandoffSpec[] {
   const list = spec.handoffs ?? [];
   if (!Array.isArray(list)) throw new Error('handoffs is a list');
-  const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
-  const kills = killsOf(spec);
   for (const handoff of list) {
     if (handoff === null || typeof handoff !== 'object' || typeof handoff.point !== 'string' || !handoff.point || typeof handoff.why !== 'string') throw new Error('a handoff names a point and says why');
     for (const name of Object.keys(handoff)) if (!['point', 'why', 'n', 'where'].includes(name)) throw new Error(`a handoff has no ${name}: it names a point, why, and optionally n and where`);
-    if (!handoff.point.startsWith('effect.kept ')) throw new Error(`a handoff is taken where the process can be held: an \`effect.kept <tool>\` crossing, not ${handoff.point}`);
+    if (!handoff.point.startsWith('effect.kept ')) throw new Error(`a handoff point starts with effect.kept : ${JSON.stringify(handoff.point)} does not`);
     if (handoff.n !== undefined && !(Number.isInteger(handoff.n) && handoff.n >= 1)) throw new Error('a handoff\'s n is a positive integer');
     if (handoff.where !== undefined && (handoff.where === null || typeof handoff.where !== 'object' || Array.isArray(handoff.where) || !Object.keys(handoff.where).length || !Object.values(handoff.where).every((value) => ['string', 'number', 'boolean'].includes(typeof value)))) throw new Error('a handoff\'s where is an object of fields (strings, numbers, booleans) the crossing\'s info must equal');
-    if (kills.some((kill) => !('storm' in kill) && kill.point === handoff.point && (kill.n ?? 1) === (handoff.n ?? 1) && same(kill.where, handoff.where))) throw new Error(`a kill and a handoff are both planned at ${handoff.point} (the ${handoff.n ?? 1}th crossing): a crossing ends the process one way`);
   }
   return list;
 }
