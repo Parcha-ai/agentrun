@@ -264,6 +264,12 @@ class ArchilExecBox implements Box {
 				entry.started();
 				return err(new BoxError("aborted", "the call was given up before it started"));
 			}
+			// A box destroyed while the command waited has its receipt closed: sending it now would bill a call no receipt counts.
+			if (this.#ended) {
+				entry.cancelled = true;
+				entry.started();
+				return err(new BoxError("gone", `box ${this.id} has ended`));
+			}
 			entry.started();
 			try {
 				const result = await this.#shared.client.exec({
@@ -347,7 +353,10 @@ class ArchilExecBox implements Box {
 			entry.cancelled = true;
 			return err(first);
 		}
-		if (entry.cancelled) return err(new BoxError("aborted", "the call was given up before it started"));
+		if (entry.cancelled) {
+			if (this.#ended) return err(new BoxError("gone", `box ${this.id} has ended`));
+			return err(new BoxError("aborted", "the call was given up before it started"));
+		}
 		return ok(this.#process(done, timeoutMs, context));
 	}
 

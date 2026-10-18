@@ -310,6 +310,26 @@ describe("archil exec boxes", () => {
 		}
 	});
 
+	it("does not send a command that was queued when its box was destroyed, so no billed call is left unreceipted", async () => {
+		const { fake, provider, close } = rig({ destroyWaitMs: 50 });
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const first = run(box, ["sleep", "1"]);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const before = fake.calls.length;
+			const queued = box.exec(["sh", "-c", "echo late > late.txt"], undefined, context);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			expect((await box.destroy(context)).ok).toBe(true);
+			const result = await queued;
+			expect(result.ok).toBe(false);
+			if (!result.ok) expect(result.error.code).toBe("gone");
+			await first;
+			expect(fake.calls.slice(before).filter((call) => call.command.includes("late.txt"))).toEqual([]);
+		} finally {
+			close();
+		}
+	});
+
 	it("is gone for an upload or a download from a handle whose box another client ended, queued or not", async () => {
 		const { fake, provider, close } = rig();
 		try {
