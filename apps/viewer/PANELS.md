@@ -18,7 +18,7 @@ const myPanel: Panel<MyState> = {
   reduce: (state, line) => nextState,             // one line in, the next state out
   view: (state, { t, focus, baseline }) => node,  // the screen for a state
   shows: (line) => line.kind === 'frame',          // optional: the lines a recording needs to draw this panel at all
-  showsResult: (result) => isMine(result),         // optional: a result that has this panel drawn even when no line does
+  showsResult: (result, { blobType }) => isMine(result), // optional: a result that has this panel drawn even when no line does
 };
 register(myPanel);                // when its module loads; extensions' panels show first, in this order
 ```
@@ -36,8 +36,10 @@ stop before its first line it is drawn with its state before any line. Give a pa
 lines that are not its story: the transport panel reduces the counters' lines for its own counters, but draws only for
 a recording with `transport` lines.
 
-A panel whose story is in the run's result rather than in its lines gives `showsResult(result)`: the parsed JSON a
-result names (the manifest's or a `result` line's). The shell asks it once, when it has read the results as the
+A panel whose story is in the run's result rather than in its lines gives `showsResult(result, { blobType })`: the
+parsed JSON a result names (the manifest's or a `result` line's). The second argument gives `blobType(sha)`, a blob's
+media type as the shell knows it (the same function views get), so a panel decides whether it shows a result by the
+same rule it draws by; a panel may ignore it. The shell asks it once, when it has read the results as the
 recording opens (and, for a run it follows, when the run delivers one), and never for a recording with no result or a
 result that is not JSON. It is pure and cheap and reads nothing of the stop: a result is the whole recording's, so a
 scrub never makes a panel appear or vanish. The document panel draws only for a result that cites a page, though every
