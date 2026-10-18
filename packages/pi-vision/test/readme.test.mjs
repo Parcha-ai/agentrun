@@ -4,8 +4,9 @@
 // workspace resolves. A code block the README gains is a failure here until it is named below, so no sample is left
 // unchecked.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -50,6 +51,7 @@ const SEE = "For a host: `vision.see` in code mode";
 const JUDGE = "For a host: `vision.judge`, Jev in code mode";
 const TRANSCRIBE = "For a host: `vision.transcribe`, speech to text in code mode";
 const PROGRAMS = "For a host: what a program is started with";
+const EYES = "For a host: eyes, with a provider key of your own";
 
 /** Programs: a file, the environment it runs in, and the text block that shows what it prints. */
 const RUN = [
@@ -70,6 +72,7 @@ const CODE = new Set(["js", "mjs", "ts", "mts", "javascript", "typescript"]);
 test("every code block in the README is a sample this test runs or type-checks", () => {
   const named = new Set([
     ...RUN.map((s) => `${s.heading}\u0000js\u00000`),
+    `${EYES}\u0000js\u00000`,
     ...TYPES.map((s) => `${s.heading}\u0000ts\u0000${s.index}`),
   ]);
   const unnamed = BLOCKS.filter((b) => CODE.has(b.language) && !named.has(`${b.heading}\u0000${b.language}\u0000${b.index}`));
@@ -130,6 +133,83 @@ test("the shell the code-mode excerpt gives the sandbox runs the commands a skil
   const { ok, failed } = JSON.parse(run.stdout);
   assert.match(ok, /^hello/, "the command's output comes back, run in the working directory");
   assert.match(failed, /oops/, "a failed command rejects with its stderr");
+});
+
+/** An Anthropic Messages endpoint on this machine: it records each request and answers with `answer`, streamed. */
+async function endpoint(answer, t) {
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    // Only the Messages call is answered and recorded: anything else that finds the port is refused and not counted.
+    if (req.method !== "POST" || !req.url.startsWith("/v1/messages")) { res.writeHead(404).end(); return; }
+    let body = "";
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      const sent = body ? JSON.parse(body) : {};
+      seen.push({ path: req.url.split("?")[0], key: req.headers["x-api-key"], model: sent.model, images: JSON.stringify(sent.messages).split('"type":"image"').length - 1 });
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      const send = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
+      send("message_start", { message: { id: "msg_1", type: "message", role: "assistant", model: sent.model, content: [], stop_reason: null, usage: { input_tokens: 1500, output_tokens: 1 } } });
+      send("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
+      send("content_block_delta", { index: 0, delta: { type: "text_delta", text: answer } });
+      send("content_block_stop", { index: 0 });
+      send("message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 12 } });
+      send("message_stop", {});
+      res.end();
+    });
+  });
+  await new Promise((ok) => server.listen(0, "127.0.0.1", ok));
+  t.after(() => new Promise((ok) => server.close(ok)));
+  return { url: `http://127.0.0.1:${server.address().port}`, seen };
+}
+
+/** `node <file>` in `dir` with `env`, without blocking this process (the endpoint above lives in it). */
+function node(dir, file, env) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [file], { cwd: dir, env, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = ""; let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    const timer = setTimeout(() => child.kill("SIGKILL"), 60_000);
+    child.on("close", (status) => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
+  });
+}
+
+/** What the README's `look.mjs` prints, with the price taken out: the catalog's rates are pi-ai's, the shape is ours. */
+const unpriced = (text) => text.replace(/\$\d+\.\d+/g, "$PRICE");
+
+test("look.mjs runs as the README writes it: the key reaches the endpoint with the picture, and nothing it prints or files carries the key", async (t) => {
+  const answer = "The square is solid red.";
+  const { url, seen } = await endpoint(answer, t);
+  assert.equal((await fetch(`${url}/`)).status, 404, "a stray request to the port (a service that probes new listeners) is refused and not counted");
+  const dir = project(t);
+  fs.writeFileSync(path.join(dir, "look.mjs"), block(EYES, "js").text);
+  const key = "readme-sample-key-not-a-secret";
+  const run = await node(dir, "look.mjs", { PATH: path.dirname(process.execPath), HOME: dir, ANTHROPIC_API_KEY: key, EYES_BASE_URL: url });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(unpriced(run.stdout), unpriced(block(EYES, "text").text), "the README's output, with the model's words and its price as the endpoint gave them");
+  assert.deepEqual(seen, [{ path: "/v1/messages", key, model: "claude-sonnet-5-5", images: 1 }], "one request, with the caller's key, the picture and the catalog's model");
+  const receipt = fs.readFileSync(path.join(dir, "looks", "1.json"), "utf8");
+  const record = JSON.parse(receipt);
+  assert.match(record.facts.sha256, /^[0-9a-f]{64}$/);
+  assert.equal(record.body, answer);
+  assert.equal(record.args.ask, "What colour is the square?");
+  assert.ok(![run.stdout, run.stderr, receipt].some((text) => text.includes(key)), "the key is in no output and no receipt");
+});
+
+test("eyes with no apiKey function read the provider's own variable, which is what the README says", async (t) => {
+  const { url, seen } = await endpoint("seen", t);
+  const dir = project(t);
+  const key = "readme-env-key-not-a-secret";
+  fs.writeFileSync(path.join(dir, "env-key.mjs"), `
+    import { getModel } from "@earendil-works/pi-ai/compat";
+    import { piAiEyes } from "@parcha/pi-vision/eyes/pi-ai";
+    const eyes = piAiEyes({ ...getModel("anthropic", "claude-sonnet-5-5"), baseUrl: process.env.EYES_BASE_URL });
+    console.log((await eyes.see({ parts: [], ask: "q" }, new AbortController().signal)).text);
+  `);
+  const run = await node(dir, "env-key.mjs", { PATH: path.dirname(process.execPath), HOME: dir, ANTHROPIC_API_KEY: key, EYES_BASE_URL: url });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.stdout.trim(), "seen");
+  assert.deepEqual(seen.map((request) => request.key), [key]);
 });
 
 test("the host excerpts type-check against the built package and the pi types this workspace resolves", (t) => {

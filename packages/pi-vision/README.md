@@ -29,7 +29,7 @@ name the second, Jev draws the box.
   needs no Harness for that.
 - **Nothing more for documents.** A PDF's text, an office document and a spreadsheet read with nothing installed. Images
   want Photon (`@silvia-odwyer/photon-node`), video wants ffmpeg, and a look at an image or a scan the lead cannot see
-  wants a model that sees and its key.
+  wants a model that sees and its key ([eyes, with a provider key of your own](#for-a-host-eyes-with-a-provider-key-of-your-own)).
 
 ## Status
 
@@ -163,6 +163,75 @@ host's copy) are optional peers, for the adapter and the pi-ai eyes, and Photon 
 sharp is never resolved by this package: a host that wants it passes its own module (`sharpImages(sharp)`), so its LGPL
 code stays with the host's install. This package's own tarball carries none of the third-party code above: `unpdf`, `@hyzyla/pdfium`,
 `fflate` and `@xmldom/xmldom` are its dependencies, each installed as a package of its own under its own license.
+
+## For a host: eyes, with a provider key of your own
+
+The eyes are the model that answers a look: a picture or a scan the lead cannot see, a question about a file. pi-vision
+names no model and holds no key. The host builds the eyes, and they hold the key the way a transcriber does: a function
+read at each request, never stored, taken out of an error's words, and in nothing the agent's code, an answer, a receipt
+or a miss carries. There are two ways to give them a model:
+
+- `piAiEyes(model, { apiKey })` from `@parcha/pi-vision/eyes/pi-ai`, passed as `eyes: () => eyes`. `model` is any entry of
+  pi-ai's catalog that takes images, and `apiKey` is a function. Leave `apiKey` out and pi-ai reads the provider's own
+  variable.
+- In a pi-durable host, `eyesModel: { provider, modelId }`. The look goes through the host's own pi-ai `Models`
+  (`api.models`, pi-durable 1.1 or later) with the host's credentials, and no key passes through pi-vision.
+
+| Provider | Key a stranger sets | Eyes | Model (an example) |
+| --- | --- | --- | --- |
+| Anthropic | `ANTHROPIC_API_KEY` | `piAiEyes(getModel("anthropic", "claude-sonnet-5-5"), { apiKey: () => process.env.ANTHROPIC_API_KEY })` | `claude-sonnet-5-5` |
+| OpenAI | `OPENAI_API_KEY` | `piAiEyes(getModel("openai", "gpt-5.1"), { apiKey: () => process.env.OPENAI_API_KEY })` | `gpt-5.1` |
+| Google | `GEMINI_API_KEY` | `piAiEyes(getModel("google", "gemini-2.5-flash"), { apiKey: () => process.env.GEMINI_API_KEY })` | `gemini-2.5-flash` |
+
+A look costs the model's own price, from the catalog entry: a model with no rates gives a look with no known price, never
+`$0`. A gateway that serves the model (LiteLLM, OpenRouter) replaces the entry's address: `{ ...model, baseUrl }`. In
+`look.mjs`, a lead that cannot see reads a red square the test kit draws, and the eyes answer for it (the program needs
+`@earendil-works/pi-ai` and `ANTHROPIC_API_KEY`, and one request of a fraction of a cent):
+
+```js
+import { mkdir, writeFile } from "node:fs/promises";
+import { getModel } from "@earendil-works/pi-ai/compat";
+import { createVisionExtension } from "@parcha/pi-vision/durable";
+import { piAiEyes } from "@parcha/pi-vision/eyes/pi-ai";
+import { nodeVisionEnv } from "@parcha/pi-vision/node";
+import { pngBytes } from "@parcha/pi-vision/testing";
+
+// The eyes: a model from pi-ai's catalog and your key, read at each request. EYES_BASE_URL names a gateway, if you use one.
+const model = getModel("anthropic", "claude-sonnet-5-5");
+const baseUrl = process.env.EYES_BASE_URL;
+const eyes = piAiEyes(baseUrl ? { ...model, baseUrl } : model, { apiKey: () => process.env.ANTHROPIC_API_KEY });
+
+let filed = 0;
+const vision = createVisionExtension({
+  eyes: () => eyes,
+  evidence: { file: async (label, record) => { // where a look's receipt goes
+    await mkdir("looks", { recursive: true });
+    const path = `looks/${++filed}.json`;
+    await writeFile(path, JSON.stringify(record, null, 2));
+    return { path };
+  } },
+  scope: () => ({ label: "first-look", deriveDir: "derived" }),
+  onLook: (look) => console.log(`look: ${look.model}, ${look.usage?.input} tokens in, ${look.usage?.output} out, $${look.costUsd?.toFixed(4)}`),
+});
+
+await writeFile("square.png", pngBytes(64, 64, [200, 30, 30]));
+const lead = { id: "text-only-lead", input: ["text"] }; // a lead that cannot see, so the eyes answer
+const call = { conversationId: "first-look", callId: "1", model: lead, signal: undefined };
+const read = await vision.read(nodeVisionEnv({ cwd: process.cwd() }), { path: "square.png", ask: "What colour is the square?" }, call);
+const told = await vision.fit(read, call); // the result as the lead gets it: no image, the eyes' answer in its place
+for (const block of told.content) if (block.type === "text") console.log(block.text);
+```
+
+`ANTHROPIC_API_KEY=... node look.mjs` prints something like this; the answer is the model's own words and the price is
+its catalog entry's, and `looks/1.json` holds the receipt, with the file's SHA-256, the question, the answer, the model
+and the price:
+
+```text
+look: claude-sonnet-5-5, 1500 tokens in, 12 out, $0.0031
+Image file square.png (image/png, 178 bytes, 64x64). Asked: What colour is the square?
+(image seen for you by claude-sonnet-5-5 — your question: What colour is the square?; the file is saved at square.png; look filed at looks/1.json:)
+The square is solid red.
+```
 
 ## For a host: `vision.see` in code mode
 
