@@ -123,7 +123,7 @@ const HARNESS = `<!doctype html><body style="margin:0">
 <script>
 const doc = (id) => document.getElementById(id).contentDocument;
 const art = (id) => doc(id)?.querySelector('.report-frame')?.contentDocument;
-const ready = (id) => !!doc(id)?.querySelector('main#chat > .app .thread');
+const ready = (id) => !!doc(id)?.querySelector('main#chat-root > .app .thread');
 const artReady = (id) => art(id)?.URL === 'about:srcdoc' && !!art(id).getElementById('alarm') && art(id).getElementById('page').naturalWidth > 0;
 const flat = (id) => { const d = doc(id); return { page: d.documentElement.scrollWidth - d.documentElement.clientWidth, panes: Math.max(...[...d.querySelectorAll('.thread, .src, .report')].map((n) => n.scrollWidth - n.clientWidth)) }; };
 const words = (id) => doc(id).body.textContent + ' ' + (art(id)?.body.textContent ?? '');

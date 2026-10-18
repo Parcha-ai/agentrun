@@ -15,7 +15,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:15px/1
 button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer}
 a{color:inherit}
 :focus-visible{outline:2px solid var(--acc);outline-offset:2px}
-.problems{margin:24px 20px;font:400 13px var(--mono);color:var(--muted)}
+.chat-error,.problems{margin:24px 20px;font:400 13px var(--mono);color:var(--muted)}
 .none{margin:0 0 18px;font:400 13px var(--mono);color:var(--muted)}
 .top{position:sticky;top:0;z-index:20;height:var(--top);display:flex;align-items:center;gap:14px;padding:0 20px;border-bottom:1px solid var(--line);background:var(--bg)}
 .brand{display:flex;align-items:center;gap:9px;font:500 15px var(--mono);white-space:nowrap}
@@ -191,7 +191,7 @@ details.fold>.fold-body{color:var(--ink);font-size:15px;margin-top:12px}
 </style>
 </head>
 <body>
-<main id="chat"><p class="problems">Loading the run.</p></main>
+<main id="chat-root"><p class="chat-error">Loading the run.</p></main>
 <script src="gallery.js"></script>
 <script src="chat.js"></script>
 </body>
