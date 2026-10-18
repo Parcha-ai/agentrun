@@ -74,6 +74,7 @@
 - The source export carries a PDF only when one line of `ASSETS.md` names the file, in backticks, together with its SHA-256. Any other PDF stops the export with "Unreviewed PDF: <path> is not in ASSETS.md with its SHA-256 <sha>", so every binary in the source archive is still one someone reviewed. `.pdf` joins the binary types the export knows; the other binary types are unchanged.
 - `docs/examples.md` lists the two examples that already use pi-vision, the reference host (`npm run demo:reference`) and the hero job (`npm run demo:hero`), and names the three examples that are to come (video chapters, hear and find, document verification), one line each. Each gets a row in the table when it lands.
 - The hero's README and `demo.json` claim say what the agent does (reads nine grid operators' charts with vision, each number cited to its screenshot). The kill-and-resume beat stays as a test, with a short "For developers" section in the README.
+- Three more questions for the vision agent, each a folder with no code: `examples/apollo-descent` (NASA's Apollo 11 transcript, photographs and film, minute by minute), `examples/boulder-chapters` (a 1930s government film in chapters) and `examples/fair-robot` (a robot first seen in a 1939 film). `docs/examples.md` lists all six vision examples; `ASSETS.md` records each film's source and licence.
 
 ## 0.1.0-beta.16 (2026-10-18)
 
