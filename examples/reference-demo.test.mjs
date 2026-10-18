@@ -1600,9 +1600,9 @@ test('an operator kill carries to the next attempt only the tool kills that did 
   t.after(() => rm(dir, { recursive: true, force: true }));
   const log = join(dir, 'crossings.jsonl');
   const row = (extra) => `${JSON.stringify({ point: 'transport.box.exec', n: 0, pid: 1, ...extra })}\n`;
-  writeFileSync(log, row({}) + row({ landed: true }) + row({ point: 'transport.tool.started' }));
+  writeFileSync(log, row({}) + row({ landed: true, tool: 0 }) + row({ point: 'transport.tool.started' }));
   const tools = [{ point: 'transport.box.exec', n: 1 }, { point: 'transport.box.exec', n: 2 }, { point: 'transport.tool.started', n: 1 }];
-  assert.deepEqual(notLanded(tools, log), [tools[1], tools[2]], 'one landed kill at that point is spent; the one that has not fired, and other points, are carried');
+  assert.deepEqual(notLanded(tools, log), [tools[1], tools[2]], 'the entry the log says fired (index 0) is spent; the one at the same point that has not fired, and other points, are carried');
   assert.deepEqual(notLanded(tools, join(dir, 'no-log')), tools, 'nothing landed when the child wrote no log');
   // A control that cannot be removed (a directory made by mistake): a failed kill on the normal path, and the supervisor does not crash.
   const { tmp, options } = await specWith(t, { name: 'reference' });
