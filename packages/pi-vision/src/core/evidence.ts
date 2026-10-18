@@ -12,7 +12,8 @@ import type { Fit } from "./plan.js";
 import type { CallContext, Json, Usage } from "./host.js";
 
 export type LookRecord = {
-  readonly tool: "look";
+  /** `look` for what was seen, `transcribe` for what was heard: the same shape, filed in the same document. */
+  readonly tool: "look" | "transcribe";
   /** The call as the receipt header's `args:` line shows it. `native` is true when the lead saw the media itself. */
   readonly args: {
     readonly path: string; readonly ask?: string; readonly page?: number; readonly pages?: string;

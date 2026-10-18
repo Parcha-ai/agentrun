@@ -711,7 +711,28 @@ describe("recovering a session whose box is gone", () => {
 				order: {
 					epoch: 2,
 					seal: checkpoint?.seal,
-					move: { id: "restore-2", notice: NOTICE, kind: "restore", head: checkpoint?.seal.head },
+					move: {
+						id: "restore-2",
+						notice: NOTICE,
+						kind: "restore",
+						head: checkpoint?.seal.head,
+						// The restore's durable record: from the lost place to the new one (a host with no labels names the boxes by
+						// id), the checkpoint it came from, and the store and the file it copied ("alpha").
+						record: {
+							from: {
+								environment: r.fx.place.environment,
+								provider: r.fx.place.provider,
+								box: r.fx.place.box.id,
+							},
+							to: { environment: r.target.environment, provider: r.target.provider, box: r.target.box.id },
+							drainMs: null,
+							shipMs: expect.any(Number),
+							takeMs: expect.any(Number),
+							bytes: (checkpoint?.seal.bytes ?? 0) + "alpha".length,
+							stopped: [],
+							checkpoint: { ...checkpoint?.seal, at: new Date(checkpoint?.at ?? 0).toISOString() },
+						},
+					},
 				},
 			},
 		]);
