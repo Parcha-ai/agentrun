@@ -107,7 +107,8 @@ a typed error:
   `MoveError` code `no_live_processes`. Use it for tools.
 - **A 300 s limit.** `facts().maxExecMs` is 300 000. A `timeoutMs` above it is refused with `invalid`; a command with
   none still gets a deadline of 295 s of its own inside the container, so nothing runs past the point where the
-  platform cuts a call and loses its later writes. A command ended by its deadline is a `timeout` error.
+  platform cuts a call and loses its later writes. A command ended by its deadline is a `timeout` error; an exit code
+  of 124, which is what ends a command at its deadline, is read that way too.
 - **No stdin.** `stdin.write` rejects with `unsupported`. Output is text: bytes that are not UTF-8 come back as U+FFFD,
   so move bytes with `upload` and `download`, which use the disk's object API and carry every byte value (8 MiB measured
   in about 0.3 s each way).

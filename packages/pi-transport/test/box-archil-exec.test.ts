@@ -265,6 +265,26 @@ describe("archil exec boxes", () => {
 		}
 	});
 
+	it("never reads a program name that starts with a dash as an option, and reads exit 124 as the command's deadline", async () => {
+		const { provider, close } = rig();
+		try {
+			const plain = unwrap(await provider.create(SPEC, context));
+			const withEnv = unwrap(await provider.create({ ...SPEC, env: { A: "1" } }, context));
+			for (const box of [plain, withEnv]) {
+				const result = await run(box, ["--help"]);
+				expect(result.exitCode, result.stdout).toBe(127);
+			}
+			const started = unwrap(await plain.exec(["sh", "-c", "exit 124"], undefined, context));
+			void readStream(started.stdout).catch(() => {});
+			void readStream(started.stderr).catch(() => {});
+			const exit = await started.wait();
+			expect(exit.ok).toBe(false);
+			if (!exit.ok) expect(exit.error.code).toBe("timeout");
+		} finally {
+			close();
+		}
+	});
+
 	it("refuses stdin with an unsupported error and carries output after the call", async () => {
 		const { provider, close } = rig();
 		try {

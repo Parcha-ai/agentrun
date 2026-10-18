@@ -287,7 +287,8 @@ class ArchilExecBox implements Box {
 		const line = [
 			// The box is gone when its record is, whatever is left of its directory.
 			`[ -f ${quote(`/mnt/archil/${this.#shared.mount}/${this.#recordKey}`)} ] && cd ${quote(this.#record.facts.workspace)} 2>/dev/null || { echo ${quote(GONE_MARK)} >&2; exit ${EXIT_GONE}; }`,
-			`exec timeout -k 1 ${seconds} ${env.length === 0 ? "" : `env ${env.join(" ")} `}${command.map(quote).join(" ")}`,
+			// `env --` first: a program whose name starts with a dash is a name, never an option of timeout or env.
+			`exec timeout -k 1 ${seconds} env -- ${env.length === 0 ? "" : `${env.join(" ")} `}${command.map(quote).join(" ")}`,
 		].join("; ");
 		return ok(this.#process(line, timeoutMs, context));
 	}
@@ -320,8 +321,9 @@ class ArchilExecBox implements Box {
 				this.#ended = true;
 				return err(new BoxError("gone", `box ${this.id} has ended`));
 			}
-			if (code === EXIT_TIMEOUT && timeoutMs !== undefined) {
-				return err(new BoxError("timeout", `the command did not end in ${timeoutMs} ms`));
+			// `timeout` exits 124 when it ended the command: the caller's deadline, or the 295 s every command has.
+			if (code === EXIT_TIMEOUT) {
+				return err(new BoxError("timeout", `the command did not end in ${timeoutMs ?? DEFAULT_EXEC_MS} ms`));
 			}
 			return result;
 		});
