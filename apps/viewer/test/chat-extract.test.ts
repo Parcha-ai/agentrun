@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseLines, type Json, type Recording } from '../src/format.ts';
 import { chatCiteHref, chatToolTitle, extractChat } from '../src/chat-extract.ts';
+import { blobsNamed } from '../src/load.ts';
 import type { ChatItem, ChatModel } from '../src/chat-model.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
@@ -194,4 +195,41 @@ test('a look over several addresses opens at its first and keeps the rest in ord
   const m = await model(referenceJob, (events) => `${events.trimEnd()}\n${write}\n`);
   assert.equal(m.sources.k3?.href, 'a.pdf#page=1');
   assert.deepEqual(m.sources.k3?.more, ['a.pdf#page=2', 'b.pdf#page=1']);
+});
+
+/** Each event line rewritten by `change`; a line it returns undefined for is dropped. */
+const eachLine = (change: (line: Record<string, Json>) => Record<string, Json> | undefined) => (events: string) =>
+  events.split('\n').filter((text) => text.trim()).flatMap((text) => { const line = change(JSON.parse(text) as Record<string, Json>); return line ? [JSON.stringify(line)] : []; }).join('\n');
+
+test("a recording with no times keeps its timeline, placed by the file's order", async () => {
+  const m = await model(referenceJob, eachLine(({ t: _t, t0: _t0, ...line }) => line));
+  assert.equal(m.inOrder, true);
+  assert.ok(m.spans.length > 0);
+  const tools = m.spans.filter((span) => span.actor === 'tool');
+  assert.deepEqual(tools.map((span) => span.t0), [...tools.map((span) => span.t0)].sort((a, b) => a - b), 'spans keep the order of their lines');
+  assert.equal((await model(referenceJob)).inOrder, undefined);
+});
+
+test("with no workflow input, the conversation's first user entry is the person's message as recorded", async () => {
+  const m = await model(referenceJob, eachLine((line) => (line.kind === 'agentrun.workflow' ? undefined : line)));
+  assert.equal(m.input, undefined);
+  assert.equal(items(m)[0]?.kind, 'user');
+});
+
+test("a cite with no look keeps its own picture and says what it is; a row keeps its note", async () => {
+  const m = await model(hearAndFind);
+  const cites = m.answer?.rows.flatMap((row) => row.cites) ?? [];
+  const kept = cites.find((cite) => cite.blob);
+  assert.ok(kept, 'the kept frame is cited by its blob');
+  assert.equal(kept.look, undefined);
+  assert.equal(kept.label, 'the frame, with the box Jev drew');
+  assert.ok(kept.href.startsWith('#t=28'), kept.href);
+  assert.ok(m.answer?.rows.every((row) => row.note), 'each row keeps its explanation');
+});
+
+test("a takeaway is the result's first line with words, and an artifact's files are blobs the recording names", async () => {
+  for (const card of tools(await model(referenceJob))) assert.match(card.takeaway || 'x', /[\p{L}\p{N}]/u, card.title);
+  const { recording } = opened(artifact);
+  const files = Object.values((recording.manifest as { artifact?: { files: Record<string, string> } }).artifact!.files);
+  for (const sha of files) assert.ok(blobsNamed(recording.manifest, recording.lines).includes(sha));
 });

@@ -39,9 +39,11 @@ export function fromGallery(entry: GalleryEntry): Recording {
     blobType: (sha) => /^data:([^;,]+)/.exec(entry.blobs[sha] ?? '')?.[1] };
 }
 
-/** Every blob a recording names: its lines', its images', its result's. */
+/** Every blob a recording names: its lines', its images', its result's, its artifact's files'. */
 export function blobsNamed(manifest: Manifest, lines: Line[]): string[] {
   const named = new Set<string>([manifest.result?.blob, manifest.job?.blob, manifest.store?.blob].filter((sha): sha is string => sha !== undefined));
+  const files = (manifest as { artifact?: { files?: Record<string, unknown> } }).artifact?.files;
+  for (const sha of Object.values(files ?? {})) if (typeof sha === 'string' && /^[0-9a-f]{64}$/.test(sha)) named.add(sha);
   for (const line of lines) {
     for (const sha of line.blobs ?? []) named.add(sha);
     for (const match of JSON.stringify(line.data).matchAll(/"blob":"([0-9a-f]{64})"/g)) named.add(match[1]!);

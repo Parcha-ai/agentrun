@@ -32,7 +32,7 @@ const chatRunnerSubmit = 'submit';
 const chatIsAddress = (value: string) => /^[\w./:%-]+\.[a-z0-9]{2,5}(#\S*)?$|^https?:\/\//i.test(value);
 
 const chatClip = (text: string, size: number) => (text.length > size ? `${text.slice(0, size - 1)}…` : text);
-const chatFirstLine = (text: string) => text.split('\n').map((line) => line.trim()).find((line) => line !== '' && !/^<\/?[\w-]+>$/.test(line)) ?? '';
+const chatFirstLine = (text: string) => text.split('\n').map((line) => line.trim()).find((line) => /[\p{L}\p{N}]/u.test(line) && !/^<\/?[\w-]+>$/.test(line)) ?? '';
 
 /** A value in plain form: a string as written, a yes-or-no in words, a list of scalars joined, a record as compact JSON. */
 function chatPlain(value: Json | undefined): string {
@@ -106,7 +106,14 @@ function chatLookAnswer(body: Json | undefined): { text: string; decisions: Chat
 
 /** The chat + report view's model of a recording. `readJson` reads a blob's JSON (the run's cited result). */
 export async function extractChat(recording: Recording, readJson: (sha: string) => Promise<Json | undefined>): Promise<ChatModel> {
-  const { manifest, lines } = recording;
+  const { manifest } = recording;
+  // A recording with no times keeps its file's order: each line placed at its position, the axis read as an order.
+  const clocked = recording.lines.some((line) => typeof line.t === 'number' && line.t > 0);
+  const lines = clocked ? recording.lines : recording.lines.map((line, index) => ({ ...line, t: index + 1, t0: undefined }));
+  const given = chatObj(lines.find((line) => line.channel === 'durable' && line.kind === 'agentrun.workflow')?.data)?.input;
+  const inputValue = chatObj(given)?.input;
+  const input: ChatModel['input'] = typeof inputValue === 'string' ? { text: inputValue }
+    : chatObj(inputValue) ? { fields: Object.entries(chatObj(inputValue)!).map(([name, value]) => ({ name, value: chatPlain(value) })) } : undefined;
   const live = (kind: string) => lines.filter((line) => line.channel === 'live' && line.kind === kind);
 
   // Workflow nodes: each node's label and span, and the conversation each agent node ran.
@@ -165,7 +172,8 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
       const m = chatObj(message);
       if (!m) continue;
       if (line.kind === 'pi.user') {
-        if (!prompted.has(conversation)) { prompted.add(conversation); continue; }
+        // With the run's input shown, a conversation's first user entry is the prompt the host composed from it.
+        if (input && !prompted.has(conversation)) { prompted.add(conversation); continue; }
         const text = chatText(m.content);
         if (text.trim()) thread.items.push({ kind: 'user', id: `item-${++counter}`, text, t: line.t });
       } else if (line.kind === 'pi.assistant') {
@@ -336,13 +344,16 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
       const rows: ChatRow[] = result.rows.map((row) => {
         const r = chatObj(row) ?? {};
         return {
-          label: chatStr(r.label) ?? '', text: chatStr(r.value) ?? '',
+          label: chatStr(r.label) ?? '', text: chatStr(r.value) ?? '', ...(chatStr(r.note)?.trim() ? { note: chatStr(r.note)!.trim() } : {}),
           cites: chatList(r.cites).map((cite) => {
             const c = chatObj(cite) ?? {};
             const look = chatStr(c.look);
             const source = look ? sources[look] : undefined;
-            const href = chatCiteHref(chatStr(c.fragment) ?? '', source ? chatAddress(source.href).file : chatStr(c.note) ?? '', source?.href);
-            return { href, ...(look ? { look } : {}), ...(source?.item ? { item: source.item } : {}) };
+            const note = chatStr(c.note);
+            const named = note && chatIsAddress(note) ? note : undefined;
+            const href = chatCiteHref(chatStr(c.fragment) ?? '', source ? chatAddress(source.href).file : named ?? '', source?.href);
+            const blob = chatStr(c.blob);
+            return { href, ...(look ? { look } : {}), ...(source?.item ? { item: source.item } : {}), ...(blob && recording.blobUrl(blob) ? { blob } : {}), ...(note && !named ? { label: note } : {}) };
           }),
         };
       });
@@ -367,16 +378,13 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   const times = lines.map((line) => line.t).filter((t) => typeof t === 'number' && t > 0);
   const resultLine = lines.findLast((line) => line.kind === 'result');
   const artifact = chatObj((manifest as { artifact?: Json }).artifact);
-  const given = chatObj(lines.find((line) => line.channel === 'durable' && line.kind === 'agentrun.workflow')?.data)?.input;
-  const inputValue = chatObj(given)?.input;
-  const input: ChatModel['input'] = typeof inputValue === 'string' ? { text: inputValue }
-    : chatObj(inputValue) ? { fields: Object.entries(chatObj(inputValue)!).map(([name, value]) => ({ name, value: chatPlain(value) })) } : undefined;
   const question = typeof inputValue === 'string' ? inputValue : chatStr(chatObj(inputValue)?.question);
   return {
     title: chatStr(artifact?.title) ?? (question?.trim() ? chatClip(chatFirstLine(question), 140) : manifest.title),
     ...(input ? { input } : {}),
     threads: ordered,
     spans: times.length ? spans : [],
+    ...(clocked ? {} : { inOrder: true as const }),
     sources,
     ...(answer ? { answer } : {}),
     ...(artifact && chatStr(artifact.entry) && chatObj(artifact.files) ? { artifact: { title: chatStr(artifact.title) ?? manifest.title, entry: chatStr(artifact.entry)!, files: chatObj(artifact.files) as Record<string, string> } } : {}),

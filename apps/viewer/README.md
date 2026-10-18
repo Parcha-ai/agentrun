@@ -26,6 +26,16 @@ Citations are the cited file's own address (`file.pdf#page=3&xywh=percent:...`, 
 or frame with its region boxed. "How this ran" opens the same recording in this replay viewer. `src/chat-extract.ts`
 makes the model, `src/chat-view.ts` and `src/chat-report.ts` draw it.
 
+A few conventions the view reads beyond the format; any skill or tool can follow them, and a run that does not loses
+nothing but the touch each one adds:
+- The page's title is the input's `question` field (its first line) when the input has one.
+- In a Jev answer, a box decision named `<name>_at` is the place of the yes-or-no decision `<name>`; a box whose
+  yes-or-no is no is not drawn.
+- A look's answer whose rows start `<start>\t<end>\t` (a transcript's times) is read without those times.
+- A look over several addresses files them in its `path` joined by `, `; it opens at the first.
+- A call to `submit` (the node runner's delivery tool) shows no reply when it succeeds.
+- A recording with no times places each span at its line's position, and the timeline reads "in order".
+
 ## Use it
 
 ```sh
