@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import { typeOfName } from '../src/blobs.ts';
 import { parseLines, validate, type Json, type Line } from '../src/format.ts';
 import type { Node, ViewContext } from '../src/panels.ts';
+import { citeStop } from '../src/cite.ts';
 import { reduceTo } from '../src/replay.ts';
 import { visionPanel } from '../src/vision.ts';
 
@@ -102,4 +103,19 @@ test('a transcription of a piece cut from a film reads its rows at the film\'s s
   assert.deepEqual(find(speech, cls('vz-line')).map((row) => cls('cited')(row)), [false, true], 'the film\'s second 606 is the piece\'s 6');
   assert.match(text(lane(at('#t=6'), /^Speech/)!), /#t=6 is in no row of this transcript/, 'a second of the piece alone is not the film\'s');
   assert.match(text(find(at('#t=606'), cls('vz-receipt'))[0]!), /answer 2 rows, 600 to 609\.5 s/);
+});
+
+test('?cite= of a look lands after the commit that filed it, never at the memo of its answer kept a commit before', () => {
+  // vision.kept (draft 36) keeps a look's answer under vision:look:<key> before the look is filed: a memo, not the look.
+  // A citation landed there showed the look as not filed yet.
+  const dir = new URL('./fixtures/hear-and-find/', import.meta.url);
+  const recorded = parseLines(readFileSync(new URL('events.jsonl', dir), 'utf8'));
+  const key = '4ca88ba105746003882f2005149bae2b10f7c64580065826933785b1faa42007';
+  const filedAt = recorded.findIndex((line) => line.kind === 'vision.looks' && JSON.stringify(line.data).includes(key));
+  const keptAt = recorded.findIndex((line) => line.kind === 'vision.kept' && JSON.stringify(line.data).includes(key));
+  assert.ok(keptAt >= 0 && keptAt < filedAt, 'the fixture keeps the answer before it files the look');
+  const stop = citeStop(recorded, key)!;
+  assert.ok(stop > filedAt, `lands after the filing (line ${filedAt + 1}), at ${stop}`);
+  const state = reduceTo(visionPanel, recorded, stop);
+  assert.ok(state.looks.some((look) => look.key === key), 'the look is filed at the stop');
 });
