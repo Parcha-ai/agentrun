@@ -1,0 +1,8 @@
+---
+packages: repo
+kind: feature
+---
+**`examples/issue-triage`: an agent writes the workflow that triages a repository's issues with Jev**
+- `session.ts` gives a lead model the `agentrun` tool and one sentence: it drafts a typed workflow, checks it (`inspect`), dry-runs it for free and runs it as one durable task, over a repository's newest labelled issues. For each issue a research agent with read-only tools reads the issue, the pull requests that mention it and the code it names; Jev gives it one of four types and judges good-first-issue and actionable in one request; the result is a table and how often Jev's type agrees with the maintainers' labels, which the classifier never sees. `--record` keeps the run as a recording whose graph the viewer replays.
+- The run needs no GitHub token: two API requests per issue, the rest from `github.com` and `raw.githubusercontent.com` at the one commit the run was picked at (`pick-issues.mjs` prints it with the issues). A rate limit stops the run with that reason and is not retried.
+- `npm run demo:issue-triage` runs the same workflow on scripted fakes ($0, no key, no network) over twenty fictional issues, through the reference entry (`--record`). `live.ts` takes the lead and Jev from your keys or from an OpenAI-compatible gateway (`/typesafe` for Jev). `workflow.json` is the reference workflow (it validates and dry-runs clean); `AUTHOR-PROMPT.md` is what a user says to the drafting agent; `SETUP-PROMPT.md` and `demo.json` are the setup prompt and its spec, held to each other by `scripts/check-setup-prompts.mjs`. Recovery from a killed process is tested (`--kill`, `analyze.mjs`), under "For developers" in the README.
