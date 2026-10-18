@@ -3,7 +3,7 @@
 // draws the box (TYPESAFE_API_KEY), and Scribe v2 on fal writes what is said (FAL_KEY, needed only when a question
 // needs speech). A run reaches the lead and the eyes with the user's own keys, or through an OpenAI-compatible gateway
 // (VIDEO_MODEL_BASE_URL and VIDEO_MODEL_API_KEY) that serves each model under its public id; such a gateway may also pass
-// fal's queue through at its root (`/fal-queue`), which takes its key as a bearer token.
+// fal's queue through at its root (`/fal-queue`), which takes its key as a bearer token, and TypeSafe (`/typesafe`).
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
 import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy';
 import { createModels, createProvider, type Models, type Provider } from '@earendil-works/pi-ai/models';
@@ -80,12 +80,22 @@ function catalogOf(env: NodeJS.ProcessEnv, models: readonly PublicModel[]): Mode
   return catalog;
 }
 
+/** The gateway's root: its base URL without the trailing /v1, where it passes other services through by name. */
+const gatewayRoot = (env: NodeJS.ProcessEnv) => env.VIDEO_MODEL_BASE_URL!.replace(/\/v1\/?$/, '');
+
 /** Scribe v2 on fal: fal's own queue with FAL_KEY, else the gateway's pass-through with its key as a bearer token; none
  *  without either, and a question that needs no speech runs without it. */
 export function transcriberOf(env: NodeJS.ProcessEnv) {
   if (env.FAL_KEY) return falTranscriber({ apiKey: () => env.FAL_KEY });
-  if (env.VIDEO_MODEL_BASE_URL && env.VIDEO_MODEL_API_KEY) return falTranscriber({ apiKey: () => env.VIDEO_MODEL_API_KEY, queueUrl: `${env.VIDEO_MODEL_BASE_URL.replace(/\/v1\/?$/, '')}/fal-queue`, auth: 'bearer' });
+  if (env.VIDEO_MODEL_BASE_URL && env.VIDEO_MODEL_API_KEY) return falTranscriber({ apiKey: () => env.VIDEO_MODEL_API_KEY, queueUrl: `${gatewayRoot(env)}/fal-queue`, auth: 'bearer' });
   return undefined;
+}
+
+/** Jev's runner options: through the gateway's TypeSafe pass-through (`/typesafe`) when a gateway is set, else
+ *  TYPESAFE_BASE_URL when set, else TypeSafe's own address. */
+export function jevOptionsOf(env: NodeJS.ProcessEnv) {
+  const baseURL = env.VIDEO_MODEL_BASE_URL ? `${gatewayRoot(env)}/typesafe` : env.TYPESAFE_BASE_URL || undefined;
+  return { apiKey: env.TYPESAFE_API_KEY, pricing: JEV_PRICE, ...(baseURL ? { baseURL } : {}) };
 }
 
 /** The reference entry's live parts: the lead and eyes the flags name or the keys allow, Jev as the host's judge (which
@@ -99,7 +109,7 @@ export function liveParts(context: { env: NodeJS.ProcessEnv; models: { provider?
   const eyes = modelsEyes(catalog as never, chosen.eyes, { thinking: 'low', accepts: { video: PROVIDERS[chosen.eyes.provider]!.video } });
   if (!eyes) throw new Error(`${publicName(chosen.eyes)} takes no images, so it cannot be the eyes`);
   const transcriber = transcriberOf(env);
-  const runJudge = createJevRunner({ apiKey: env.TYPESAFE_API_KEY, pricing: JEV_PRICE });
+  const runJudge = createJevRunner(jevOptionsOf(env));
   return {
     host: { models: { catalog, lead: { provider: chosen.lead.provider, modelId: chosen.lead.modelId } }, decisions: { runJudge: runJudge as never } },
     models: { lead: publicName(chosen.lead), eyes: publicName(chosen.eyes), jev: 'typesafe/jev-1.14.0', ...(transcriber ? { transcriber: `fal/${transcriber.model}` } : {}) },

@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { exampleAt, fileName, inputOf, INSTRUCTIONS, skills } from './vision-agent/agent.ts';
 import { argvFor, options } from './vision-agent/run.ts';
+import { jevOptionsOf } from './vision-agent/live.ts';
 import { demo } from '@parcha/agentrun-reference';
 
 const PROGRAMS = (() => { try { for (const cmd of ['ffmpeg', 'ffprobe', 'pdftoppm']) execFileSync(cmd, [cmd === 'pdftoppm' ? '-v' : '-version'], { stdio: 'ignore' }); return false; } catch { return 'ffmpeg, ffprobe and pdftoppm are needed'; } })();
@@ -55,6 +56,17 @@ test('the agent\'s instructions carry the question\'s place, the functions, the 
   const [node] = options.job.workflow.root.steps;
   assert.deepEqual([node.tools, node.thinking], [['code'], 'medium'], 'one code tool, and the node thinks at medium');
   assert.deepEqual(options.spec.tools, [], 'no tool of the example\'s own');
+});
+
+test('Jev goes through the gateway\'s /typesafe when a gateway is set, else TYPESAFE_BASE_URL, else TypeSafe\'s own address', () => {
+  const key = { TYPESAFE_API_KEY: 'placeholder' };
+  assert.equal(jevOptionsOf({ ...key, VIDEO_MODEL_BASE_URL: 'https://gateway.invalid/v1', VIDEO_MODEL_API_KEY: 'placeholder' }).baseURL, 'https://gateway.invalid/typesafe');
+  assert.equal(jevOptionsOf({ ...key, VIDEO_MODEL_BASE_URL: 'https://gateway.invalid/v1/' }).baseURL, 'https://gateway.invalid/typesafe');
+  assert.equal(jevOptionsOf({ ...key, VIDEO_MODEL_BASE_URL: 'https://gateway.invalid/v1', TYPESAFE_BASE_URL: 'https://proxy.invalid' }).baseURL, 'https://gateway.invalid/typesafe', 'the gateway wins');
+  assert.equal(jevOptionsOf({ ...key, TYPESAFE_BASE_URL: 'https://proxy.invalid' }).baseURL, 'https://proxy.invalid');
+  assert.equal('baseURL' in jevOptionsOf(key), false, 'no gateway and no base: the SDK\'s own address');
+  assert.equal(jevOptionsOf(key).apiKey, 'placeholder');
+  assert.ok(options.spec.keys.some((entry) => entry.env === 'TYPESAFE_BASE_URL'), 'declared, so a live child gets it');
 });
 
 test('an example folder becomes the run\'s input', () => {
