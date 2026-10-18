@@ -2476,8 +2476,12 @@ test('code mode: vision.judge answers through the host\'s judge seam (counted ag
 });
 
 test('code mode: vision.transcribe returns the words with times from the host\'s speech-to-text model, the look is filed priced as tool transcribe, and nothing key-shaped is in the sandbox', { timeout: 300_000 }, async (t) => {
+  // A 2 s mono 8 kHz WAV of silence, made here: the runner has no ffmpeg to make one.
+  const pcm = Buffer.alloc(16000, 128);
+  const head = Buffer.alloc(44); head.write('RIFF', 0); head.writeUInt32LE(36 + pcm.length, 4); head.write('WAVEfmt ', 8); head.writeUInt32LE(16, 16); head.writeUInt16LE(1, 20); head.writeUInt16LE(1, 22); head.writeUInt32LE(8000, 24); head.writeUInt32LE(8000, 28); head.writeUInt16LE(1, 32); head.writeUInt16LE(8, 34); head.write('data', 36); head.writeUInt32LE(pcm.length, 40);
+  const wav = Buffer.concat([head, pcm]).toString('base64');
   const script = [
-    'await tools.bash({ command: "ffmpeg -v error -y -f lavfi -i sine=frequency=440:duration=2 clip.wav" });',
+    `await tools.bash({ command: "printf %s ${wav} | base64 -d > clip.wav" });`,
     'const reach = [typeof fetch, typeof process, typeof require, typeof WebAssembly, typeof setTimeout, typeof vision.transcribe].join(",");',
     'const heard = await vision.transcribe({ path: "clip.wav" });',
     'await tools.bash({ command: "printf %s \'" + JSON.stringify({ reach, heard, globals: Object.keys(globalThis).join(",") }) + "\' > heard.json" });',
