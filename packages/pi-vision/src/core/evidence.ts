@@ -45,8 +45,9 @@ export type LookRecord = {
     /** When the model call this look made began, in epoch milliseconds. Absent for a look that made no request in this
      *  call (a native look, one read back from a memo) and for one whose caller sent none. */
     readonly startedAt?: number;
-    /** The tool call the look ran under (`CallContext.toolCallId`). Absent when the caller named none. */
-    readonly toolCallId?: string;
+    /** The tool call the look ran under: the call's own `toolCallId` (`CallContext.toolCallId`), which a timeline names as
+     *  the parent of this look. Absent when the caller named none. */
+    readonly parentToolCallId?: string;
   };
   /** The answer, "shown to the model natively", or the miss. */
   readonly body: string;
@@ -73,10 +74,10 @@ export type LookEvent = {
   readonly costUsd: number | null;
   readonly billedBy?: string;
   /** When the model call began, in epoch milliseconds (`record.facts.startedAt`), and the tool call it ran under
-   *  (`record.facts.toolCallId`): a timeline draws the call as a bar under that tool call. Each is absent when the record
-   *  has none. */
+   *  (`record.facts.parentToolCallId`): a timeline draws the call as a bar under that tool call. Each is absent when the
+   *  record has none. */
   readonly startedAt?: number;
-  readonly toolCallId?: string;
+  readonly parentToolCallId?: string;
   /** The host heard of this look in an earlier attempt of the call: do not charge it again. A look whose answer was read
    *  back but whose host was never told (`record.facts.kept` alone) is charged once, here. A call cut after this hook
    *  returns and before the guard keeps that it was told tells it again without `kept`: at least once. */
@@ -118,7 +119,7 @@ export function receiptFacts(record: LookRecord): Record<string, string | number
     ["sha256", f.sha256], ["kind", f.kind], ["fragment", f.fragment], ["fit", f.fit?.reduction], ["key", f.key],
     ["tokens_in", f.tokens_in], ["tokens_out", f.tokens_out], ["cost_usd", f.cost_usd === null ? "unknown" : f.cost_usd],
     ["provider", f.provider], ["derived", f.derived?.join(", ")], ["units_dropped", f.units_dropped], ["kept", f.kept ? "true" : undefined],
-    ["startedAt", f.startedAt], ["toolCallId", f.toolCallId],
+    ["startedAt", f.startedAt], ["parentToolCallId", f.parentToolCallId],
   ];
   return Object.fromEntries(lines.filter((line): line is [string, string | number] => line[1] !== undefined && line[1] !== ""));
 }
@@ -137,7 +138,7 @@ export async function fileLook(filing: Filing, tool: string, record: LookRecord,
       conversationId: filing.conversationId, tool, source: record.args.path, ...(record.args.ask ? { ask: record.args.ask } : {}),
       fragment: record.facts.fragment, model: record.args.model, usage: answer?.usage ?? null, costUsd: answer?.costUsd ?? null,
       ...(answer?.billedBy ? { billedBy: answer.billedBy } : {}), ...(answer?.kept ? { kept: true } : {}),
-      ...(record.facts.startedAt !== undefined ? { startedAt: record.facts.startedAt } : {}), ...(record.facts.toolCallId ? { toolCallId: record.facts.toolCallId } : {}), receipt, record,
+      ...(record.facts.startedAt !== undefined ? { startedAt: record.facts.startedAt } : {}), ...(record.facts.parentToolCallId ? { parentToolCallId: record.facts.parentToolCallId } : {}), receipt, record,
     });
   }
   return receipt;

@@ -1,7 +1,8 @@
-// A look says when its model call began (`startedAt`, epoch milliseconds) and the tool call it ran under (`toolCallId`),
+// A look says when its model call began (`startedAt`, epoch milliseconds) and the tool call it ran under (`parentToolCallId`,
+// the call's own `toolCallId`),
 // in the record the host files and in the event it is told, so a timeline draws the call as a bar under that tool call. A
 // look with neither files as it always did: a native look made no request, an answer read back from a memo began none now,
-// and a caller that names no tool call leaves `toolCallId` out.
+// and a caller that names no tool call leaves `parentToolCallId` out.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import sharp from "sharp";
@@ -52,11 +53,12 @@ test("a look the eyes made says when its request began and which tool call it ra
   assert.match(out.content[1].text, /seen for you by fake-eyes/);
   const [record] = h.filed;
   assert.ok(within(before, record.facts.startedAt, eyes.arrived[0], after), `startedAt ${record.facts.startedAt} is when the request began (${before}..${eyes.arrived[0]}..${after})`);
-  assert.equal(record.facts.toolCallId, "call-7");
+  assert.equal(record.facts.parentToolCallId, "call-7");
   const [look] = h.looks;
-  assert.deepEqual([look.startedAt, look.toolCallId], [record.facts.startedAt, "call-7"], "the event says what the record says");
+  assert.deepEqual([look.startedAt, look.parentToolCallId], [record.facts.startedAt, "call-7"], "the event says what the record says");
   assert.equal(look.record, record, "and carries that record");
-  assert.deepEqual([receiptFacts(record).startedAt, receiptFacts(record).toolCallId], [record.facts.startedAt, "call-7"], "the receipt's header lines");
+  assert.ok(!("toolCallId" in look) && !("toolCallId" in record.facts), "the look's field names its parent; a tool's own events keep `toolCallId` for their own call");
+  assert.deepEqual([receiptFacts(record).startedAt, receiptFacts(record).parentToolCallId], [record.facts.startedAt, "call-7"], "the receipt's header lines");
 });
 
 test("a look with neither files exactly as it did: a native look, an answer read back, and a caller that names no tool call", async () => {
@@ -64,8 +66,8 @@ test("a look with neither files exactly as it did: a native look, an answer read
   await guardResult(shot(), callOf(SEES), native.setup, imageSize);
   assert.equal(native.looks.length, 1);
   assert.equal(native.filed[0].args.native, true);
-  for (const where of [native.filed[0].facts, native.looks[0]]) assert.ok(!("startedAt" in where) && !("toolCallId" in where), "a native look made no request and no tool call was named");
-  assert.ok(!("startedAt" in receiptFacts(native.filed[0])) && !("toolCallId" in receiptFacts(native.filed[0])), "no timing line in its receipt");
+  for (const where of [native.filed[0].facts, native.looks[0]]) assert.ok(!("startedAt" in where) && !("parentToolCallId" in where), "a native look made no request and no tool call was named");
+  assert.ok(!("startedAt" in receiptFacts(native.filed[0])) && !("parentToolCallId" in receiptFacts(native.filed[0])), "no timing line in its receipt");
 
   const kept = new Map();
   const memo = async (key, compute) => (kept.has(key) ? kept.get(key) : (kept.set(key, await compute()), kept.get(key)));
@@ -75,15 +77,15 @@ test("a look with neither files exactly as it did: a native look, an answer read
   const eyes = fakeEyes();
   await guardResult(shot(), callOf(TEXT_ONLY, { toolCallId: "call-2", memo }), { ...again.setup, eyes }, imageSize);
   assert.equal(eyes.ledger.length, 0, "the answer was read back: no request");
-  assert.equal(first.filed[0].facts.toolCallId, "call-1");
+  assert.equal(first.filed[0].facts.parentToolCallId, "call-1");
   assert.ok(Number.isInteger(first.filed[0].facts.startedAt));
   assert.equal(again.filed[0].facts.kept, true);
   assert.ok(!("startedAt" in again.filed[0].facts) && !("startedAt" in again.looks[0]), "no request began in this call, so there is no start to draw");
-  assert.deepEqual([again.filed[0].facts.toolCallId, again.looks[0].toolCallId], ["call-2", "call-2"], "the tool call it was read back under");
+  assert.deepEqual([again.filed[0].facts.parentToolCallId, again.looks[0].parentToolCallId], ["call-2", "call-2"], "the tool call it was read back under");
 
   const bare = host();
   await guardResult(shot(), callOf(TEXT_ONLY), { ...bare.setup, eyes: fakeEyes() }, imageSize);
-  assert.ok(!("toolCallId" in bare.filed[0].facts) && !("toolCallId" in bare.looks[0]), "a caller that names no tool call leaves it out");
+  assert.ok(!("parentToolCallId" in bare.filed[0].facts) && !("parentToolCallId" in bare.looks[0]), "a caller that names no tool call leaves it out");
 });
 
 test("a failed look says when its request began when it made one: an answer with no words, a request that threw; not one that made none", async () => {
@@ -94,18 +96,18 @@ test("a failed look says when its request began when it made one: an answer with
   const after = Date.now();
   const [{ record: emptied }] = empty.misses;
   assert.ok(within(before, emptied.facts.startedAt, eyes.arrived[0], after));
-  assert.deepEqual([emptied.facts.toolCallId, emptied.status, emptied.facts.cost_usd > 0], ["call-3", "failed", true]);
+  assert.deepEqual([emptied.facts.parentToolCallId, emptied.status, emptied.facts.cost_usd > 0], ["call-3", "failed", true]);
   assert.equal(emptied, empty.filed[0]);
 
   const threw = host();
   await guardResult(shot(), callOf(TEXT_ONLY, { toolCallId: "call-4" }), { ...threw.setup, eyes: fakeEyes({ answers: [{ fail: "route down" }] }) }, imageSize);
   const [{ record: thrown }] = threw.misses;
-  assert.deepEqual([Number.isInteger(thrown.facts.startedAt), thrown.facts.toolCallId, "cost_usd" in thrown.facts], [true, "call-4", false], "timed, and still no price a nobody earned");
+  assert.deepEqual([Number.isInteger(thrown.facts.startedAt), thrown.facts.parentToolCallId, "cost_usd" in thrown.facts], [true, "call-4", false], "timed, and still no price a nobody earned");
 
   const none = host();
   await guardResult(shot(), callOf(TEXT_ONLY, { toolCallId: "call-5" }), none.setup, imageSize);
   const [{ record: unasked }] = none.misses;
-  assert.deepEqual([unasked.facts.toolCallId, "startedAt" in unasked.facts, unasked.facts.cost_usd], ["call-5", false, 0], "no request began");
+  assert.deepEqual([unasked.facts.parentToolCallId, "startedAt" in unasked.facts, unasked.facts.cost_usd], ["call-5", false, 0], "no request began");
 });
 
 test("vision.see, vision.judge and vision.transcribe each time their own request and name the tool call", async (t) => {
@@ -120,7 +122,7 @@ test("vision.see, vision.judge and vision.transcribe each time their own request
   let t0 = Date.now();
   await see({ ask: "What is it?", images: [png(40, 30)] }, undefined, call, { ...s.setup, eyes });
   assert.ok(within(t0, s.filed[0].facts.startedAt, eyes.arrived[0], Date.now()), "see");
-  assert.deepEqual([s.looks[0].startedAt, s.looks[0].toolCallId, s.filed[0].facts.toolCallId], [s.filed[0].facts.startedAt, "code-9", "code-9"]);
+  assert.deepEqual([s.looks[0].startedAt, s.looks[0].parentToolCallId, s.filed[0].facts.parentToolCallId], [s.filed[0].facts.startedAt, "code-9", "code-9"]);
 
   const j = host({ images: sharpImages(sharp) });
   const jev = fakeJev();
@@ -129,7 +131,7 @@ test("vision.see, vision.judge and vision.transcribe each time their own request
   t0 = Date.now();
   await judge({ images: [png(300, 300)], questions: { q: { type: "noul", instructions: "Is `images[0].image` blank?" } } }, undefined, call, { ...j.setup, jev: judged });
   assert.ok(within(t0, j.filed[0].facts.startedAt, arrivedJev, Date.now()), "judge");
-  assert.deepEqual([j.looks[0].startedAt, j.looks[0].toolCallId], [j.filed[0].facts.startedAt, "code-9"]);
+  assert.deepEqual([j.looks[0].startedAt, j.looks[0].parentToolCallId], [j.filed[0].facts.startedAt, "code-9"]);
 
   const x = host();
   let arrivedStt = 0;
@@ -137,14 +139,14 @@ test("vision.see, vision.judge and vision.transcribe each time their own request
   t0 = Date.now();
   await transcribe({ path: "landing.mp3" }, env, call, { ...x.setup, transcriber });
   assert.ok(within(t0, x.filed[0].facts.startedAt, arrivedStt, Date.now()), "transcribe");
-  assert.deepEqual([x.looks[0].startedAt, x.looks[0].toolCallId, x.filed[0].tool], [x.filed[0].facts.startedAt, "code-9", "transcribe"]);
+  assert.deepEqual([x.looks[0].startedAt, x.looks[0].parentToolCallId, x.filed[0].tool], [x.filed[0].facts.startedAt, "code-9", "transcribe"]);
 
   const failing = host({ images: sharpImages(sharp) });
   await assert.rejects(judge({ images: [png(300, 300)], questions: { q: { type: "noul", instructions: "Is `images[0].image` blank?" } } }, undefined, call, { ...failing.setup, jev: { judge: fakeJev({ fail: Object.assign(new Error("400 Bad Request"), { status: 400 }) }).judge } }), /Jev failed/);
-  assert.deepEqual([Number.isInteger(failing.misses[0].record.facts.startedAt), failing.misses[0].record.facts.toolCallId], [true, "code-9"], "a failed judgment is timed too");
+  assert.deepEqual([Number.isInteger(failing.misses[0].record.facts.startedAt), failing.misses[0].record.facts.parentToolCallId], [true, "code-9"], "a failed judgment is timed too");
   const notSent = host();
   await assert.rejects(transcribe({ path: "landing.mp3" }, env, call, { ...notSent.setup, transcriber: { provider: "stt", model: "stt-1", transcribe: async () => { const { ProviderMiss } = await import("@parcha/pi-vision"); throw new ProviderMiss("over_budget", "too long for one request"); } } }));
-  assert.deepEqual(["startedAt" in notSent.misses[0].record.facts, notSent.misses[0].record.facts.toolCallId], [false, "code-9"], "a request refused before it was sent began no call");
+  assert.deepEqual(["startedAt" in notSent.misses[0].record.facts, notSent.misses[0].record.facts.parentToolCallId], [false, "code-9"], "a request refused before it was sent began no call");
 });
 
 test("a recording read by handle is timed and named too", async (t) => {
@@ -155,7 +157,7 @@ test("a recording read by handle is timed and named too", async (t) => {
   const t0 = Date.now();
   await readMedia(nodeVisionEnv({ cwd: dir.path }), { path: "session:abc", ask: "What happened?" }, callOf(SEES, { toolCallId: "call-8" }), h.setup);
   assert.ok(within(t0, h.filed[0].facts.startedAt, arrived, Date.now()));
-  assert.deepEqual([h.looks[0].startedAt, h.looks[0].toolCallId], [h.filed[0].facts.startedAt, "call-8"]);
+  assert.deepEqual([h.looks[0].startedAt, h.looks[0].parentToolCallId], [h.filed[0].facts.startedAt, "call-8"]);
 });
 
 test("through a real Harness: the look a script's vision.see made is filed under the id of the tool call that ran the script", async () => {
@@ -174,9 +176,9 @@ test("through a real Harness: the look a script's vision.see made is filed under
     const toolCallId = result.model[0].toolCallId;
     assert.ok(typeof toolCallId === "string" && toolCallId.length > 0);
     assert.equal(h.filed.length, 1);
-    assert.equal(h.filed[0].facts.toolCallId, toolCallId, "the code tool's call, as pi names it");
+    assert.equal(h.filed[0].facts.parentToolCallId, toolCallId, "the code tool's call, as pi names it");
     assert.ok(within(before, h.filed[0].facts.startedAt, eyes.arrived[0], Date.now()));
-    assert.deepEqual([h.looks[0].toolCallId, h.looks[0].startedAt], [toolCallId, h.filed[0].facts.startedAt]);
+    assert.deepEqual([h.looks[0].parentToolCallId, h.looks[0].startedAt], [toolCallId, h.filed[0].facts.startedAt]);
     // The same through the context a host builds for a tool of its own.
     const api = { callId: "host-call-1", conversationId: "c1", agent: async () => ({ model: { provider: "faux", modelId: "lead-1" } }), memo: async () => undefined };
     assert.equal((await callContext(api, ctx)).toolCallId, "host-call-1");

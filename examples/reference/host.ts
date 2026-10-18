@@ -192,12 +192,12 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
     },
     evidence: {
       // Named by the record's hash: a read replayed after a crash files the same path again, never a second one. A vision
-      // look's `startedAt` and `toolCallId` say when and under which call it ran, differ between two runs of one job, and
+      // look's `startedAt` and `parentToolCallId` say when and under which call it ran, differ between two runs of one job, and
       // are in the file but not in its name.
       async file(label, record) {
         const body = typeof record.body === 'string' ? record.body : Buffer.from(record.body).toString('base64');
         const text = JSON.stringify({ ...record, body }, null, 2);
-        const { startedAt: _startedAt, toolCallId: _toolCallId, ...facts } = (record.facts ?? {}) as Record<string, unknown>;
+        const { startedAt: _startedAt, parentToolCallId: _parentToolCallId, ...facts } = (record.facts ?? {}) as Record<string, unknown>;
         const named = 'facts' in record ? JSON.stringify({ ...record, facts, body }, null, 2) : text;
         const path = join('evidence', label, `${record.tool}-${createHash('sha256').update(named).digest('hex').slice(0, 12)}.json`);
         await mkdir(join(place.root, 'evidence', label), { recursive: true });

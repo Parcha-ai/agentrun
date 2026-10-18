@@ -1,6 +1,6 @@
-// Type tests for a look's timing, checked by `npm run typecheck`: `startedAt` and `toolCallId` are optional additions to
-// the call, the event and the record's facts, so a host written before them compiles, and a host that draws a timeline
-// reads them with no conversion.
+// Type tests for a look's timing, checked by `npm run typecheck`: `CallContext.toolCallId` is an optional addition to the
+// call, and `startedAt` and `parentToolCallId` to the event and the record's facts, so a host written before them compiles,
+// and a host that draws a timeline reads them with no conversion.
 
 import type { CallContext, LookEvent, LookRecord } from "../../src/index.js";
 
@@ -12,8 +12,8 @@ const named: CallContext = { ...before, toolCallId: "call-7" };
 const old: (look: LookEvent) => void = ({ costUsd, receipt, source }) => void [costUsd, receipt, source];
 
 // A host that draws the look as a bar under its tool call.
-const bar = (look: LookEvent): { under: string; from: number } | undefined => (look.toolCallId !== undefined && look.startedAt !== undefined ? { under: look.toolCallId, from: look.startedAt } : undefined);
-const filed = (record: LookRecord): [number | undefined, string | undefined] => [record.facts.startedAt, record.facts.toolCallId];
+const bar = (look: LookEvent): { under: string; from: number } | undefined => (look.parentToolCallId !== undefined && look.startedAt !== undefined ? { under: look.parentToolCallId, from: look.startedAt } : undefined);
+const filed = (record: LookRecord): [number | undefined, string | undefined] => [record.facts.startedAt, record.facts.parentToolCallId];
 // @ts-expect-error the start is a number of milliseconds.
 const text: LookEvent["startedAt"] = "1760000000000";
 // @ts-expect-error the call's id is a string.
