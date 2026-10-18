@@ -11,8 +11,10 @@ import type { MissEvent } from "./misses.js";
 import type { Fit } from "./plan.js";
 import type { CallContext, Json, Usage } from "./host.js";
 
+/** One look as the host files it: the call, its status, the facts a receipt header carries, and the answer or the miss as the body. */
 export type LookRecord = {
-  readonly tool: "look";
+  /** `look` for what was seen, `transcribe` for what was heard: the same shape, filed in the same document. */
+  readonly tool: "look" | "transcribe";
   /** The call as the receipt header's `args:` line shows it. `native` is true when the lead saw the media itself. */
   readonly args: {
     readonly path: string; readonly ask?: string; readonly page?: number; readonly pages?: string;
@@ -45,6 +47,7 @@ export type LookRecord = {
   readonly body: string;
 };
 
+/** Where the host files a look's record. It has pi-browser's sink shape, so a host that files the browser's receipts files these the same way. */
 export type EvidenceSink = {
   /** File `record` under the conversation's `label`. `path` is what the model is told to cite. Null when the host files nothing. */
   file(label: string, record: LookRecord): Promise<{ readonly path: string } | null>;

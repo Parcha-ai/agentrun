@@ -286,6 +286,15 @@
   .wm-shot { max-width: 100%; border: 1px solid var(--rule); border-radius: 4px; } .wm-facts, .wm-notes { font-size: 13px; }
   .wm-ledger { grid-column: 1 / -1; } .wm-ledger table { border-collapse: collapse; } .wm-ledger th, .wm-ledger td { padding: 3px 14px 3px 0; text-align: left; font-size: 14px; }
   .wm-ledger tr.alarm td { color: var(--failed); font-weight: 600; } .wm-price { font-weight: 600; }
+  /* A public replay draws no part that tells a kill and a resume, nor a cell's mark of a kill that cut it; ?debug=durability
+     draws them (PANELS.md, "What a public replay shows"). */
+  .hide-durability .durability { display: none !important; }
+  .hide-durability .wm-glyph.cut { box-shadow: none; }
+  /* The receipts and a look's picture, one click away. */
+  .counters > details.receipts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; } .counters > details.receipts > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  .counters > details.receipts[open] { flex-basis: 100%; }
+  details.vz-receipts > summary, details.vz-picture > summary { cursor: pointer; color: var(--muted); font-size: 13px; margin: 6px 0; }
+  .vz-cited { margin: 4px 0; font-size: 13px; color: var(--muted); }
 </style>
 </head>
 <body>

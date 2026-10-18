@@ -5,7 +5,7 @@
 // spools into `events.jsonl`, scans the recording (scan.ts), and writes the manifest only when nothing was found.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AttachInput, CommitRecorder, DurableLine } from './record-store.ts';
 import { credentialInFile, scanRecording } from './scan.ts';
@@ -66,12 +66,19 @@ export function startedAt(dir: string): string {
   return readFileSync(startedFile(dir), 'utf8');
 }
 
-/** Keeps a file whole in `blobs/` under its SHA-256 and returns the hash. */
-function keepBlob(dir: string, buffer: Buffer, extension: string): string {
+/** Keeps a file whole in `blobs/` under its SHA-256 and returns the hash. The bytes go to a temporary file in the recording's `.spool/` (which the scan and the validator ignore), are fsynced, and are renamed into
+ *  `blobs/` (one filesystem, so the rename is atomic): a process killed while it writes leaves a temporary file in `.spool/` and never a torn blob under a name that says it is whole. */
+export function keepBlob(dir: string, buffer: Buffer, extension: string): string {
   mkdirSync(join(dir, 'blobs'), { recursive: true });
   const hash = createHash('sha256').update(buffer).digest('hex');
   const at = join(dir, 'blobs', `${hash}.${extension}`);
-  if (!existsSync(at)) writeFileSync(at, buffer);
+  if (existsSync(at)) return hash;
+  mkdirSync(spool(dir), { recursive: true });
+  const temporary = join(spool(dir), `blob-${hash}.${extension}.tmp-${process.pid}`);
+  const descriptor = openSync(temporary, 'w');
+  // `writeSync` may write fewer bytes than asked (a full disk, a signal): every byte is written before the sync and the rename, or the call throws.
+  try { for (let offset = 0; offset < buffer.length;) offset += writeSync(descriptor, buffer, offset); fsyncSync(descriptor); } finally { closeSync(descriptor); }
+  renameSync(temporary, at);
   return hash;
 }
 

@@ -93,3 +93,36 @@
   effect the host's log lacks (`admitsTool`, `admits`), seals only what the host holds (`not_shipped`), and keys each
   model request by its generation (`key`, `position`). `registerMoveConformance` takes `records: true`.
 - The box-env offline tests no longer leave a `sleep 3600` running after a run: a test that held a process group of its own ended the shell that started it, not the group. The file now marks its own process, so every child it starts carries the mark, and an after-all check fails the file, naming each process it left behind, if any survives it.
+- `./place`: `boxPlace(options)`, a session's place in a box for a supervisor that starts, kills and restarts it. It
+  starts pi-transport's runner in the box (`boxRunner`), kills a runner by its process (`killRunner`, KILL first) or by
+  its box, restarts it in the same box or, for a lost box, in a new one from the newest checkpoint, or before any checkpoint from the vault's log alone
+  (`recoverHome` with `restoreFromLog`),
+  takes checkpoints at rest (`pullCheckpoint`), reads a runner's kill request and the transport's crossings
+  (`signals`), ships every runner's commits into the vault's log (`recordSink`, the host's `recorder` takes the lines)
+  and asks one model server for all of them, names every box by its label (the host's `receipts` ledger's numbering)
+  in its status, its crossings and its own `transport` lines (`lines`: `box.created`, `box.killed`, `box.ended`, `lease`,
+  `restore`), keeps the host's placement decisions in the session's store (`recordPlacement`), reports the run's status, carries the files an order names back from the box (`carry`), and brings a
+  recording written in the box home when its supervisor asks (`recordHome`, `clockSkewMs`).
+  The app contract gains `AppContext.env` (the session's environment, from `ResumeOrder.env`, over the link), `root` and
+  `epoch`, and `onResumed`, called once the session has resumed and not awaited by the order; `recoverHome` and
+  `moveHome` take `env`, a home keeps the environment it last opened with for an order that brings none (a reopen),
+  `boxRunner` takes `onProcess`, and a home refuses an order whose `env` is not names to strings (`invalid`).
+- `boxReceipts({ prices, write })`: a ledger of the boxes its wrapped providers make, with one receipt per box when it
+  ends (destroyed, found ended, or gone): `{ box, provider, kind, from, to, seconds, usd_per_second, cost_usd, source,
+  priced }`, for the host to write as a live `transport` line of kind `box.receipt`. `box` is a label, never the
+  provider's id: a host's `label(made)` is called when the box is made, with its own request and facts, and `taken`
+  carries the labels a recording holds across a restart. The prices are the host's, and a box with no price writes no
+  receipt. A box found ended after it expired is counted up to its maximum lifetime, not to when it was found.
+  `cost_usd` is an estimate at list price, not the provider's invoice. `labelOf(provider, id)` says the label a
+  box was given, and wrapping a provider the ledger already wraps returns it. It comes from the package root;
+  `./box/receipts` is not an entry.
+- A move's durable record: the target writes the document `transport.moves`, keyed by the move id, once, in the first
+  commit it makes when it opens the moved store (`MoveRecord`, `MovesDoc`), from what the host sends in
+  `ResumeOrder.move.record` (`MoveFacts`). `moveHome` sends the places, its drain, ship and take times, its bytes and
+  its seal; its `head` is the seal's. A home `Place` takes a `label`, the name a recording gives its box
+  (`whereOf(place)`), and the box place passes its boxes' labels. An order with no record writes none.
+- A session whose box is gone can be restored from the host's log alone (`./home`): `recoverHome({ ..., restoreFromLog: true })`, when no
+  checkpoint checks out, replays every shipped commit from the first into an empty store, gives the new box an empty workspace and takes
+  the lease at the next epoch. A job that never rests takes no checkpoint, so before this its whole-box loss was `no_checkpoint`. It needs
+  a log whole from commit 1, is off by default, and the model is told that no checkpoint existed and no file came back.
+  `restoreNotice(undefined, ...)` makes that text.

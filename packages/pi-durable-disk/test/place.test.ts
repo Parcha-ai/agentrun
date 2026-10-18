@@ -127,6 +127,54 @@ describe("localPlace outcome", () => {
   });
 });
 
+describe("place outcome models", () => {
+  const MODELS = { lead: "claude-opus-5-5", eyes: "gpt-vision-2" };
+  /** A models value the app reported, and what the outcome should carry: a plain object of strings, else nothing. */
+  const cases: [string, unknown, Record<string, string> | undefined][] = [
+    ["a plain object of strings", MODELS, MODELS],
+    ["absent", undefined, undefined],
+    ["an array", ["claude-opus-5-5"], undefined],
+    ["a string", "claude-opus-5-5", undefined],
+    ["a non-string value", { lead: "claude-opus-5-5", eyes: 2 }, undefined],
+    ["null", null, undefined],
+  ];
+  const carries = (outcome: unknown, want: Record<string, string> | undefined, name: string) => {
+    if (want === undefined) assert.ok(outcome !== null && typeof outcome === "object" && !("models" in outcome), `${name}: no models field, never {}: ${JSON.stringify(outcome)}`);
+    else assert.deepEqual((outcome as { models?: unknown }).models, want, name);
+  };
+
+  it("localPlace: the outcome line's models only when they are a plain object of strings, and run.json's on a failed run that printed none", { timeout: 240_000 }, async () => {
+    for (const [name, models, want] of cases) {
+      const place = localPlace({ app: APP })({ paths: pathsAt(scratch()) });
+      const env: Record<string, string> = { PLACE_FINISH: "1", ...(models === undefined ? {} : { PLACE_MODELS: JSON.stringify(models) }) };
+      const ended = await (await place.start({ gen: 1, env })).exited;
+      assert.equal(ended.outcome?.status, "complete", `${name}: ${ended.stderr}`);
+      carries(ended.outcome, want, `the outcome line, ${name}`);
+    }
+    const place = localPlace({ app: APP })({ paths: pathsAt(scratch()) });
+    const failed = await (await place.start({ gen: 1, env: { PLACE_FINISH: "1", PLACE_SILENT: "1", PLACE_FAIL: "1", PLACE_MODELS: JSON.stringify(MODELS) } })).exited;
+    assert.equal(failed.outcome?.status, "failed", failed.stderr);
+    assert.deepEqual(failed.outcome?.models, MODELS, "a failed run used models too: run.json's detail carries them");
+  });
+
+  it("archilPlace: run.json's final detail.models on a complete or a failed outcome, only when they are a plain object of strings", async () => {
+    for (const status of ["done", "failed"] as const) {
+      for (const [name, models, want] of cases) {
+        const control = new FakeControl();
+        const { host, states } = fakeHost(control);
+        const at = makePlace({ ...REF, control, host });
+        const runner = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
+        control.runJson({ generation: 1, status, detail: { record: { n: 1 }, ...(models === undefined ? {} : { models }) } });
+        states.set("box-1", "stopped");
+        const outcome = (await runner.exited).outcome;
+        assert.equal(outcome?.status, status === "done" ? "complete" : "failed", name);
+        carries(outcome, want, `${status}, ${name}`);
+        await at.release();
+      }
+    }
+  });
+});
+
 describe("localPlace cleanup", () => {
   it("a box deletion that fails is tried again by the next kill or recover, and one that succeeded is not repeated", { timeout: 120_000 }, async () => {
     const root = scratch();
@@ -827,17 +875,31 @@ describe("archilPlace", () => {
     const at = makePlace({ ...REF, control, host, signalPollMs: 0 });
     const it = at.signals!(9)[Symbol.asyncIterator]();
     const pending = it.next();
+    // The heap after `polls` more polls, every collectable thing collected: a GC, a turn for what it freed to settle, and
+    // a GC again.
     const heapAfter = async (polls: number) => {
       const until = control.gets + polls;
       while (control.gets < until) await sleep(50);
-      gc();
+      for (let i = 0; i < 3; i++) {
+        gc();
+        await new Promise((resolve) => setImmediate(resolve));
+      }
       return process.memoryUsage().heapUsed;
     };
-    const before = await heapAfter(300);
-    const after = await heapAfter(3_000);
+    // What the test guards against (each wait raced against one promise that lives as long as the iterator) keeps about
+    // 1.2 KB a poll, so it grows every window by megabytes. One sample against an absolute bound could not tell that from
+    // a run's noise: a CI leg once read 1.01 MB over 3000 polls with nothing retained. So, after a warm-up (the JIT and the
+    // lazily compiled paths settle first), two windows, and the smaller one's growth must stay under 400 bytes a poll: a
+    // leak grows both, a one-off allocation lands in one.
+    const WINDOW = 2_500;
+    const BOUND = 400 * WINDOW;
+    const warm = await heapAfter(1_000);
+    const first = await heapAfter(WINDOW);
+    const second = await heapAfter(WINDOW);
     await it.return!();
     assert.deepEqual(await pending, { done: true, value: undefined });
-    assert.ok(after - before < 1_000_000, `the heap grew ${after - before} bytes over 3000 polls`);
+    const grew = [first - warm, second - first];
+    assert.ok(Math.min(...grew) < BOUND, `the heap grew ${grew.join(" and ")} bytes over two windows of ${WINDOW} polls (bound ${BOUND} each)`);
   });
 
   it("signals never reject: a lasting read failure is one signals-failed and then done; a short one is retried; a missing request is waited for", async () => {

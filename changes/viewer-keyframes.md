@@ -1,5 +1,0 @@
----
-packages: repo
-kind: feature
----
-The run viewer draws the pictures a cited result names (`apps/viewer`): a row of an `agentrun.cited/1` result that cites a file which is a picture in the recording's `blobs/` (PNG, JPEG, WebP or GIF) shows it as a small thumbnail, several side by side; any other file stays a link. A window of film the eyes saw as video, with no picture of its own, shows the keyframes the rows cite beside it, each captioned as that chapter's keyframe and noted as not what the eyes saw; a page keeps its own scan. Pictures come only from the recording: read from a server (`?src=`, `?follow=`), where `blobs/` cannot be listed, a blob no line names (a picture only the result cites) is looked for by its name the first time a view draws it, and reads loading until then. A result's JSON is read without fetching a `data:` or `blob:` URL (an embedded site decodes it in the page; a followed run keeps what it read), so a site served with `connect-src 'self'` still draws the result. A missed tile in the photographs lane is labelled by its miss code. A panel's view reads a blob's media type through `ViewContext.blobType`.

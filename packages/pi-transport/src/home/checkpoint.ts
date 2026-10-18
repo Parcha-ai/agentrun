@@ -676,15 +676,45 @@ export async function pullCheckpoint(
 }
 
 /**
+ * What a session is told once it was restored from the host's log alone: no checkpoint existed, the history is whole, no
+ * file of the lost machine came back, and the calls the host saw are named.
+ */
+function restoreFromLogNotice(
+	calls: readonly CallRecord[],
+	replayed?: { readonly from: number; readonly to: number; readonly count: number },
+): string {
+	const names = (list: readonly CallRecord[]) => [...new Set(list.map((call) => call.tool))].join(", ");
+	const again = calls.filter((call) => call.replay === "safe");
+	const maybe = calls.filter((call) => call.replay !== "safe");
+	const lines = [
+		"System notice: this session was restored after its machine was lost. No checkpoint existed: your history was rebuilt from the host's log, and no file of the lost machine came back (the workspace is empty). Effects outside the machine (a push, an API call, a message) may or may not have happened: check before you repeat one. Programs that were running did not come along.",
+	];
+	if (replayed !== undefined) {
+		lines.push(
+			`The log held ${replayed.count} commit${replayed.count === 1 ? "" : "s"} (${replayed.from} to ${replayed.to}), with the calls they admitted.`,
+		);
+	}
+	if (calls.length > 0) {
+		lines.push(
+			`The host saw ${calls.length} tool call${calls.length === 1 ? "" : "s"} begin.${
+				maybe.length > 0 ? ` These may have had an effect that is not repeated for you: ${names(maybe)}.` : ""
+			}${again.length > 0 ? ` These are safe to run again: ${names(again)}.` : ""}`,
+		);
+	}
+	return lines.join(" ");
+}
+
+/**
  * What a session is told once it was restored from a checkpoint after its machine was lost. It says when the
  * checkpoint was taken, and which tool calls the host saw begin after it: a call that may run again, and one that must
  * not be assumed not to have happened.
  */
 export function restoreNotice(
-	checkpoint: Pick<Checkpoint, "at" | "excluded">,
+	checkpoint: Pick<Checkpoint, "at" | "excluded"> | undefined,
 	calls: readonly CallRecord[],
 	replayed?: { readonly from: number; readonly to: number; readonly count: number },
 ): string {
+	if (checkpoint === undefined) return restoreFromLogNotice(calls, replayed);
 	const since = calls.filter((call) => call.startedAt >= checkpoint.at);
 	const when = new Date(checkpoint.at).toISOString();
 	const names = (list: readonly CallRecord[]) => [...new Set(list.map((call) => call.tool))].join(", ");
