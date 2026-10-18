@@ -52,6 +52,13 @@ export const VISION_JUDGE = Object.freeze({
   signature: "(request: { questions: { [name: string]: { type: \"choice\" | \"noul\" | \"score\" | \"box\"; instructions?: unknown; criteria?: unknown; image?: number } }; paths?: string[]; images?: { type: \"image\"; data: string; mimeType: string }[]; fragments?: string[]; examples?: { [reference: string]: string | { type: \"image\"; data: string; mimeType: string } }; state?: { [field: string]: unknown } }): Promise<{ answers: { [name: string]: { type: string; choice?: string; noul?: number; score?: number; confidence?: number | null; probabilities?: { [label: string]: number }; box?: { top: number; bottom: number; left: number; right: number }; fragment?: string } }; model: string; costUsd: number | null; receipts: string[]; kept?: true }>",
 } as const);
 
+/** `vision.transcribe`, a global of a host's code-mode sandbox beside `vision.see`: what is said in a recording. */
+export const VISION_TRANSCRIBE = Object.freeze({
+  name: "vision.transcribe",
+  description: "Have the host's speech-to-text model write what is said in one audio or video file, as words with their start and end in seconds of that file. The host picks the model and pays for it. A file over the model's limit throws an over_budget miss that names the limit: cut it into pieces with ffmpeg, transcribe each, and add each piece's start to its words. Returns the words, the whole text, the provider and model, the price in dollars (null when unknown) and the receipt to cite; `kept` is true when this file was already transcribed, which costs nothing. A transcription that cannot be made throws an Error whose message starts with its miss code.",
+  signature: "(request: { path: string; fragment?: string; language?: string }): Promise<{ words: { text: string; start: number; end: number }[]; text: string; provider: string; model: string; costUsd: number | null; receipts: string[]; kept?: true }>",
+} as const);
+
 /** The static section a host renders once in the system prompt. Nothing live enters it. */
 export const VISION_SECTION_HEADING = "LOOKING AT FILES";
 export const VISION_SECTION_TEXT = "read shows you a file: text for documents and spreadsheets, the image itself for pictures and scans, frames for video. For many pages, a long video or many images, render them with bash (pdftoppm, ffmpeg) and call vision.see from code mode: a vision model answers about them and you get its words and what it cost; vision.judge has Jev give typed answers (a label, a yes or no, a score, where a thing is) for a fraction of a cent. Every look is filed under evidence/ and is citable: cite the receipt, and the place as file#page=N or file#t=seconds.";

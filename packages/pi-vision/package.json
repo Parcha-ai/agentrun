@@ -33,6 +33,10 @@
       "types": "./dist/eyes/pi-ai.d.ts",
       "import": "./dist/eyes/pi-ai.js"
     },
+    "./transcribers": {
+      "types": "./dist/transcribers.d.ts",
+      "import": "./dist/transcribers.js"
+    },
     "./providers/unpdf": {
       "types": "./dist/providers/unpdf.d.ts",
       "import": "./dist/providers/unpdf.js"
