@@ -567,6 +567,11 @@ export function proxyBoxes(names: readonly string[], options?: { readonly resume
 		context: Context,
 	) =>
 		new Promise<Result<BoxProcess, BoxError>>((resolve) => {
+			// A call already aborted is not sent: the program must not start.
+			if (context.abortSignal?.aborted === true) {
+				resolve(err(new BoxError("aborted", "the call was aborted")));
+				return;
+			}
 			// What the app reads of either stream may let the runner acknowledge again.
 			const stdout = chunks(() => acknowledge(call));
 			const stderr = chunks(() => acknowledge(call));
@@ -577,8 +582,11 @@ export function proxyBoxes(names: readonly string[], options?: { readonly resume
 			let stdinN = 0;
 			const acks = new Map<number, () => void>();
 			let started = false;
+			// The program exited (or the call was lost): stdin calls after that settle here, as no acknowledgement comes.
+			let stopped = false;
 			const signal = context.abortSignal;
 			const stop = (result: Result<number, BoxError>) => {
+				stopped = true;
 				signal?.removeEventListener("abort", onAbort);
 				stdout.end();
 				stderr.end();
@@ -589,6 +597,10 @@ export function proxyBoxes(names: readonly string[], options?: { readonly resume
 			};
 			const write = (frame: Omit<Frame, "id" | "t" | "n">) =>
 				new Promise<void>((done) => {
+					if (stopped) {
+						done();
+						return;
+					}
 					stdinN += 1;
 					const n = stdinN;
 					const sent: Frame = { t: "box-stdin", id: call.id, n, ...frame };

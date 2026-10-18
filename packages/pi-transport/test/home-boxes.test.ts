@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { describe, expect, it } from "vitest";
@@ -231,6 +231,50 @@ describe("the host's box proxy", () => {
 			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 		}
 	}, 60_000);
+
+	it("sends no exec whose context is already aborted: the program never starts, and the call says aborted", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-transport-boxes-"));
+		const made = served(root);
+		try {
+			const box = getOrThrow(await made.provider.create({ maxLifetimeMs: 60_000 }, context));
+			const controller = new AbortController();
+			controller.abort();
+			const started = await box.exec(
+				["sh", "-c", "touch started"],
+				undefined,
+				withAbortSignal(controller.signal, context),
+			);
+			expect(started.ok ? "started" : started.error.code).toBe("aborted");
+			await new Promise((resolve) => setTimeout(resolve, 500));
+			expect(existsSync(join(box.facts().workspace, "started"))).toBe(false);
+			getOrThrow(await box.destroy(context));
+		} finally {
+			made.link.close("done");
+			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+		}
+	});
+
+	it("settles a stdin write or close made after the program exited", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-transport-boxes-"));
+		const made = served(root);
+		try {
+			const box = getOrThrow(await made.provider.create({ maxLifetimeMs: 60_000 }, context));
+			const program = getOrThrow(await box.exec(["true"], undefined, context));
+			await Promise.all([readStream(program.stdout), readStream(program.stderr)]);
+			expect(getOrThrow(await program.wait())).toBe(0);
+			const late = (call: Promise<void>) =>
+				Promise.race([
+					call.then(() => "settled"),
+					new Promise((resolve) => setTimeout(() => resolve("hung"), 2_000)),
+				]);
+			expect(await late(program.stdin.write(new TextEncoder().encode("too late")))).toBe("settled");
+			expect(await late(program.stdin.close())).toBe("settled");
+			getOrThrow(await box.destroy(context));
+		} finally {
+			made.link.close("done");
+			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+		}
+	});
 
 	it("applies a stdin write once when the runner sends it again, as it does after a resume whose ack was lost", async () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-transport-boxes-"));
