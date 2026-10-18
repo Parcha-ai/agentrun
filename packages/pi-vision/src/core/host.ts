@@ -25,6 +25,7 @@ export type Usage = {
 
 /** pi-ai's text and image content blocks. A video goes as an image block with a video MIME type. */
 export type TextContent = { readonly type: "text"; readonly text: string };
+/** An image block; a video is one with a video MIME type. */
 export type ImageContent = { readonly type: "image"; readonly data: string; readonly mimeType: string };
 
 /** A tool result as the core builds it; an adapter turns it into its host's shape. */
@@ -70,6 +71,7 @@ export type Eyes = {
   see(request: { readonly parts: readonly Part[]; readonly ask: string; readonly context?: string }, signal: AbortSignal): Promise<EyesAnswer>;
 };
 
+/** What the eyes answered to one request: the words, the model that gave them, the request's usage and its price. */
 export type EyesAnswer = {
   readonly text: string;
   readonly model: string;
@@ -89,6 +91,8 @@ export type SourceProvider = {
   open?(id: string, env: VisionEnv, signal: AbortSignal): Promise<{ readonly path: string } | { readonly notReady: string }>;
 };
 
+/** What a host gives `createVisionExtension` (the adapter's own type adds `env`): who looks, where looks are filed and the
+ *  conversation's scope are the host's own; the rest narrow or extend what the package does. Only `evidence` and `scope` are required. */
 export type VisionOptions = {
   /** Default "vision". */
   readonly name?: string;

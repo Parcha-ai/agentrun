@@ -38,6 +38,7 @@ const key = (options: Common, provider: string): string => {
   return value;
 };
 
+/** What `falTranscriber` takes: the key function and the options every transcriber has, the model, the queue's address and how the key is sent. */
 export type FalTranscriberOptions = Common & {
   /** Default `fal-ai/elevenlabs/speech-to-text/scribe-v2`. */
   readonly model?: string;
@@ -89,6 +90,7 @@ export function falTranscriber(options: FalTranscriberOptions): Transcriber {
   };
 }
 
+/** What `elevenLabsTranscriber` takes: the key function and the options every transcriber has, the model and the address. */
 export type ElevenLabsTranscriberOptions = Common & {
   /** Default `scribe_v2`. */
   readonly model?: string;
@@ -120,6 +122,7 @@ export function elevenLabsTranscriber(options: ElevenLabsTranscriberOptions): Tr
   };
 }
 
+/** What `openAiTranscriber` takes: the key function and the options every transcriber has, the model and the address. */
 export type OpenAiTranscriberOptions = Common & {
   /** Default `whisper-1`: OpenAI gives word times only from it (`verbose_json` with word granularity). At OpenAI's own
    *  address another model is an `unsupported` miss before any request; a compatible server at `baseUrl` is asked as

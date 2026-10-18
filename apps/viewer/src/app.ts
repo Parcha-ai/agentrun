@@ -225,19 +225,22 @@ function cachedReduce<S>(fold: Fold<S>, lines: Line[], p: number, cache: Map<num
 /** The strip. `measured`: the recording has durable lines; without them every count from the store is not measured
  *  and cost is unknown, never 0 (processes and kills still come from the supervisor's lines). */
 
-function drawCounters(counters: Counters, measured = counters.measured, providers?: 'real' | 'scripted', following = false): HTMLElement {
+function drawCounters(counters: Counters, measured = counters.measured, providers?: 'real' | 'scripted', following = false, receiptsInline = false): HTMLElement {
   const reasked = counters.modelTurns.reasked;
   const item = (label: string, value: string, title: string, extra = '') => el('div', { class: `counter${extra}`, title }, el('span', { class: 'value', text: value }), el('span', { class: 'label', text: label }));
   const stored = (label: string, value: string, title: string, extra = '') => (measured ? item(label, value, title, extra)
-    : item(label, 'not measured', 'This recording has no durable lines: nothing from the store can be counted.'));
-  return el('div', { class: 'counters' },
+    : item(label, 'not measured', 'This recording has no durable lines: nothing from the store can be counted.', extra.includes('durability') ? ' durability' : ''));
+  // What a kill and a resume did (processes, kills, a repeat, a call asked twice, the journal's opens) is marked
+  // `durability`, drawn only with `?debug=durability`; the payments and the cost are `receipt`s, kept under one
+  // disclosure, Receipts, unless the page shows its debug view (PANELS.md, "What a public replay shows").
+  const counted = [
     stored('paid calls made', String(counters.paid.total), `Workflow effects completed: ${counters.paid.workflow}. Agent receipts: ${counters.paid.agent}. Vision looks paid: ${counters.paid.vision}.`),
     stored('looks paid', `${counters.paid.vision}${counters.vision.possible ? ` + ${counters.vision.possible} possible` : ''}`,
-      `Looks the eyes answered and billed, per look key${counters.vision.native ? `; ${counters.vision.native} the lead looked at itself, which charge nothing` : ''}.${counters.vision.possible ? ` ${counters.vision.possible} more possible: a look started in a process that ended before filing it, so no durable line shows whether it was paid, and the cost is a lower bound.` : ''}`),
+      `Looks the eyes answered and billed, per look key${counters.vision.native ? `; ${counters.vision.native} the lead looked at itself, which charge nothing` : ''}.${counters.vision.possible ? ` ${counters.vision.possible} more possible: a look started in a process that ended before filing it, so no durable line shows whether it was paid, and the cost is a lower bound.` : ''}`, ' receipt'),
     stored('repeated', `${repeatedLabel(counters)}${counters.pageActions.possible ? ` + ${counters.pageActions.possible} possible` : ''}`,
       `An applied call in a later process than an earlier applied one.${counters.repeatedNotMeasured > 0 ? ` ${counters.repeatedNotMeasured} effects report no calls: their repeats are not measured, never shown as 0.` : ''}${counters.pageActions.possible ? ` ${counters.pageActions.possible} more possible: a browser page action dispatched again after one that never showed reaching the page, so no durable line says whether it was applied twice.` : ''}${counters.pageActions.measured ? '' : ' The browser\'s page actions are not measured: its session records are an export\'s, which keeps only their latest revision.'}`,
-      counters.repeated > 0 ? ' alarm' : ''),
-    stored('asked twice', askedTwiceLabel(counters), `A call dispatched twice in one process: the model asking again.${counters.pageActions.measured ? '' : ' The browser\'s page actions are not measured: its session records are an export\'s.'}`),
+      counters.repeated > 0 ? ' alarm durability' : ' durability'),
+    stored('asked twice', askedTwiceLabel(counters), `A call dispatched twice in one process: the model asking again.${counters.pageActions.measured ? '' : ' The browser\'s page actions are not measured: its session records are an export\'s.'}`, ' durability'),
     stored(counters.inFlight > 0 ? 'unknown (in flight)' : 'unknown', counters.inFlight > 0 ? `${counters.unknown} (${counters.inFlight})` : String(counters.unknown), 'Effects admitted and never completed.'),
     stored('judge asks', String(counters.judge.answered + counters.judge.failed), `Answered ${counters.judge.answered}, failed ${counters.judge.failed}, re-asked ${counters.judge.reasked}.`),
     stored('model turns', String(counters.modelTurns.committed), 'Committed assistant turns.'),
@@ -247,53 +250,59 @@ function drawCounters(counters: Counters, measured = counters.measured, provider
         ? 'No ask start was committed to this run\'s pi.live (or its version is not one this viewer knows), so a turn asked again cannot be shown.'
         : 'Extra asks after a kill cut an ask, each counted once: proven when the cut ask had committed a partial (the model was answering), possible when only its start (the process may have died before calling the model). Only proven ones count.',
       reasked?.proven.reasks ? ' alarm' : ''),
-    item('processes', String(counters.processes), 'From the supervisor\'s process lines.'),
-    item('kills', String(counters.kills), 'From the supervisor\'s kill lines.'),
+    item('processes', String(counters.processes), 'From the supervisor\'s process lines.', ' durability'),
+    item('kills', String(counters.kills), 'From the supervisor\'s kill lines.', ' durability'),
     item('cost', costLabel(counters.cost, counters.costLowerBound, providers, counters.costParts), following ? 'A run followed while it goes: its cost is known once it finishes.' :
-      `Unknown until a line prices a part, and when any priced part is unknown: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}${providers === 'scripted' ? ' Scripted: at least one priced part was served by a fake, a cassette or a script, so this is not a provider\'s bill, though it may include real charges for the other parts.' : ''}${counters.costParts.boxes !== undefined ? ' Boxes: each box\'s time at its provider\'s published list price, an estimate, not the provider\'s invoice; unknown while a box has no receipt or its kind has no published price.' : ''}`),
-    stored('journal opens', String(counters.journalOpens), 'A fact of the store: agentrun.driver\'s generation. It counts journal opens, which can exceed processes.', ' fact'),
-  );
+      `Unknown until a line prices a part, and when any priced part is unknown: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}${providers === 'scripted' ? ' Scripted: at least one priced part was served by a fake, a cassette or a script, so this is not a provider\'s bill, though it may include real charges for the other parts.' : ''}${counters.costParts.boxes !== undefined ? ' Boxes: each box\'s time at its provider\'s published list price, an estimate, not the provider\'s invoice; unknown while a box has no receipt or its kind has no published price.' : ''}`, ' receipt'),
+    stored('journal opens', String(counters.journalOpens), 'A fact of the store: agentrun.driver\'s generation. It counts journal opens, which can exceed processes.', ' fact durability'),
+  ];
+  if (receiptsInline) return el('div', { class: 'counters' }, ...counted);
+  const receipts = counted.filter((node) => node.classList.contains('receipt'));
+  return el('div', { class: 'counters' }, ...counted.filter((node) => !receipts.includes(node)), el('details', { class: 'receipts' }, el('summary', { text: 'Receipts' }), ...receipts));
 }
 
-function drawTimeline(player: Player, onScrub: (t: number) => void, onFocus: (path: string) => void): SVGSVGElement {
+function drawTimeline(player: Player, onScrub: (t: number) => void, onFocus: (path: string) => void, hideDurability = false): SVGSVGElement {
   const { lanes } = player;
   const width = 1000;
-  const rows = [{ name: 'process', y: 18 }, { name: 'calls', y: 70 }, { name: 'model turns', y: 120 }];
-  const svg = svgEl('svg', { viewBox: `0 0 ${width} 160`, class: 'timeline', role: 'img', 'aria-label': 'The run over time' }) as SVGSVGElement;
+  // The process lane (each process, its kill, a restore, the journal's opens) is marked `durability`; with
+  // `&hide=durability` it is hidden and the picture starts below it.
+  const rows = [{ name: 'process', y: 18, durability: true }, { name: 'calls', y: 70 }, { name: 'model turns', y: 120 }];
+  const svg = svgEl('svg', { viewBox: hideDurability ? `0 58 ${width} 102` : `0 0 ${width} 160`, class: 'timeline', role: 'img', 'aria-label': 'The run over time' }) as SVGSVGElement;
+  const marked = (name: string, durability = true) => (durability ? `${name} durability` : name);
   const x = (t: number) => 90 + (lanes.end > 0 ? (t / lanes.end) * (width - 100) : 0);
   for (const row of rows) {
-    const label = svgEl('text', { x: 4, y: row.y + 14, class: 'lane-label' });
+    const label = svgEl('text', { x: 4, y: row.y + 14, class: marked('lane-label', row.durability === true) });
     label.textContent = row.name;
-    svg.append(label, svgEl('line', { x1: 90, x2: width - 10, y1: row.y + 26, y2: row.y + 26, class: 'lane-rule' }));
+    svg.append(label, svgEl('line', { x1: 90, x2: width - 10, y1: row.y + 26, y2: row.y + 26, class: marked('lane-rule', row.durability === true) }));
   }
   for (const band of lanes.processes) {
-    const rect = svgEl('rect', { x: x(band.from), y: 18, width: Math.max(2, x(band.to) - x(band.from)), height: 22, rx: 4, class: `band band-${band.process % 4}` });
+    const rect = svgEl('rect', { x: x(band.from), y: 18, width: Math.max(2, x(band.to) - x(band.from)), height: 22, rx: 4, class: marked(`band band-${band.process % 4}`) });
     const title = svgEl('title', {}); title.textContent = `process ${band.process}`; rect.append(title);
     svg.append(rect);
-    const name = svgEl('text', { x: x(band.from) + 6, y: 33, class: 'band-label' }); name.textContent = `process ${band.process}`;
+    const name = svgEl('text', { x: x(band.from) + 6, y: 33, class: marked('band-label') }); name.textContent = `process ${band.process}`;
     svg.append(name);
     if (band.kill) {
       // The label in full where it fits before the next kill; else the kill's number, with the label on hover.
       const full = `killed: ${band.kill.label}`;
       const next = lanes.processes.find((other) => other.kill && other.kill.t > band.kill!.t)?.kill?.t;
       const fits = next === undefined ? x(band.kill.t) + full.length * 6.5 < width : x(next) - x(band.kill.t) > full.length * 6.5 + 10;
-      const mark = svgEl('rect', { x: x(band.kill.t), y: 14, width: 3, height: 30, class: 'kill' });
+      const mark = svgEl('rect', { x: x(band.kill.t), y: 14, width: 3, height: 30, class: marked('kill') });
       const hover = svgEl('title', {}); hover.textContent = `${full}${band.kill.crossing ? ` (crossing ${band.kill.crossing})` : ''}`; mark.append(hover);
       svg.append(mark);
-      const label = svgEl('text', { x: x(band.kill.t) + 6, y: 56, class: 'kill-label' });
+      const label = svgEl('text', { x: x(band.kill.t) + 6, y: 56, class: marked('kill-label') });
       label.textContent = fits ? full : `k${band.process}`;
       label.append(hover.cloneNode(true));
       svg.append(label);
     }
   }
   for (const restore of lanes.restores) {
-    svg.append(svgEl('line', { x1: x(restore.t), x2: x(restore.t), y1: 8, y2: 156, class: 'restore' }));
-    const label = svgEl('text', { x: x(restore.t) + 4, y: 66, class: 'restore-label' });
+    svg.append(svgEl('line', { x1: x(restore.t), x2: x(restore.t), y1: 8, y2: 156, class: marked('restore') }));
+    const label = svgEl('text', { x: x(restore.t) + 4, y: 66, class: marked('restore-label') });
     label.textContent = `restored to commit ${restore.to}: what came after it is a lost branch`;
     svg.append(label);
   }
   for (const open of lanes.opens) {
-    const tick = svgEl('rect', { x: x(open.t), y: 41, width: 1.5, height: 6, class: 'open-tick' });
+    const tick = svgEl('rect', { x: x(open.t), y: 41, width: 1.5, height: 6, class: marked('open-tick') });
     const title = svgEl('title', {}); title.textContent = `journal opened (generation ${open.generation})`; tick.append(title);
     svg.append(tick);
   }
@@ -482,11 +491,12 @@ export function baselineViewOf(label: string, other: Recording): BaselineView {
 /** What the shell hands a panel's view at a stop: the time, the run's own providers (`real` or `scripted`) when its manifest says, and
  *  the view inputs it holds: the focus, the baseline the manifest names, the selected citation, the result's JSON blobs read so far, and the
  *  playback clock (`now`, the time of the point at a stop). */
-export function viewContext(t: number, manifest: Manifest, inputs: { focus?: string; baseline?: BaselineView; cite?: string; json?: Map<string, Json>; now?: number; following?: boolean; blobType?: (sha: string) => string | undefined; delivered?: boolean } = {}): ViewContext {
-  const { focus, baseline, cite, json, now, following, blobType, delivered } = inputs;
+export function viewContext(t: number, manifest: Manifest, inputs: { focus?: string; baseline?: BaselineView; cite?: string; json?: Map<string, Json>; now?: number; following?: boolean; blobType?: (sha: string) => string | undefined; debug?: readonly string[]; delivered?: boolean } = {}): ViewContext {
+  const { focus, baseline, cite, json, now, following, blobType, debug, delivered } = inputs;
   return { t, now: now ?? t, ...(focus ? { focus } : {}), ...(baseline ? { baseline } : {}), ...(manifest.providers ? { providers: manifest.providers } : {}),
     ...(cite !== undefined ? { cite } : {}), ...(json ? { json: (sha: string) => json.get(sha) } : {}), ...(following ? { following: true as const } : {}),
-    ...(blobType ? { blobType } : {}), ...(delivered === false && manifest.result ? { manifestResult: manifest.result } : {}) };
+    ...(blobType ? { blobType } : {}), ...(debug && debug.length ? { debug } : {}),
+    ...(delivered === false && manifest.result ? { manifestResult: manifest.result } : {}) };
 }
 
 /** The chapter a point is in: the one with the greatest stop at or before it (a manifest's chapters keep the order it
@@ -590,14 +600,19 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   if (opened !== undefined) player.p = head.seekTime(opened);
   player.focus = params.get('focus') ?? undefined;
   player.cite = citeParam ?? undefined;
+  // A public replay (PANELS.md, "What a public replay shows") draws no part marked `durability` (the process lane, the
+  // kills, a repeat, the journal's opens), no chapter made of a process or a kill, and keeps the payments and the cost
+  // under Receipts. `?debug=durability` shows all of it as it is: a view no public page sets.
+  const debug = (params.get('debug') ?? '').split(',').map((each) => each.trim()).filter((each) => each !== '');
+  const showDurability = debug.includes('durability');
 
   // The manifest's chapters when it names them; else each process start, each kill, and the end (while a run is followed,
-  // its end so far).
+  // its end so far). With durability hidden, the derived ones are the end alone.
   const chaptersOf = (): { title: string; p: number; focus?: string }[] => (recording.manifest.chapters && !following
     ? recording.manifest.chapters.map((chapter) => ({ title: chapter.title, p: afterCommit(chapter.at.commit, chapter.at.gen), ...(chapter.focus ? { focus: chapter.focus } : {}) }))
     : [
-      ...lines.flatMap((line, index) => (line.source === 'host' && line.kind === 'process.started' ? [{ title: `process ${processOf(line)} starts`, p: index + 1 }] : [])),
-      ...lines.flatMap((line, index) => (line.source === 'host' && line.kind === 'kill' ? [{ title: `killed: ${(line.data as { label?: string }).label ?? ''}`, p: snap(player.stops, index) }] : [])),
+      ...lines.flatMap((line, index) => (showDurability && line.source === 'host' && line.kind === 'process.started' ? [{ title: `process ${processOf(line)} starts`, p: index + 1 }] : [])),
+      ...lines.flatMap((line, index) => (showDurability && line.source === 'host' && line.kind === 'kill' ? [{ title: `killed: ${(line.data as { label?: string }).label ?? ''}`, p: snap(player.stops, index) }] : [])),
       { title: following ? 'now' : 'the end', p: last },
     ].sort((a, b) => a.p - b.p));
   let chapters = chaptersOf();
@@ -658,6 +673,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   let featured = featuredPanel(shown, lines);
   const featuredBox = el('div', { class: 'featured' });
   if (embedded) document.documentElement.classList.add('embed');
+  if (!showDurability) document.documentElement.classList.add('hide-durability');
   const layout = () => {
     const top = embedded ? (problemsNote ? [problemsNote] : []) : [header];
     if (featured) root.replaceChildren(...top, featuredBox, controls, counters, baselineRow, timeline, chapterList, focusBar, panels);
@@ -696,8 +712,8 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     const counterState = cachedReduce(counterFold, lines, player.p, cacheOf(counterFold) as Map<number, never>);
     // A run that goes has no cost yet: what its lines have priced so far is short by every call still paying.
     const counted = countersOf(counterState, player.p === last && !following);
-    counters.replaceChildren(drawCounters(following ? { ...counted, cost: null, costLowerBound: false } : counted, measured, recording.manifest.providers, following));
-    timeline.replaceChildren(drawTimeline(player, (at) => scrubTo(stopAt(lines, player.stops, at)), setFocus));
+    counters.replaceChildren(drawCounters(following ? { ...counted, cost: null, costLowerBound: false } : counted, measured, recording.manifest.providers, following, showDurability));
+    timeline.replaceChildren(drawTimeline(player, (at) => scrubTo(stopAt(lines, player.stops, at)), setFocus, !showDurability));
     range.value = String(player.p);
     const line = lines[player.p - 1];
     position.textContent = player.p === 0 ? 'before the first line' : `${(t / 1000).toFixed(2)} s · ${line?.channel === 'durable' ? `after commit ${line.commit}${restored ? ` of generation ${line.gen}` : ''}` : `${line?.kind}`} · line ${player.p} of ${last}`;
@@ -738,7 +754,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     const drawn = (panel: Panel<unknown>) => {
       const state = cachedReduce(panel, lines, player.p, cacheOf(panel.id) as Map<number, never>);
       const section = el('section', { class: 'panel' }, el('h3', { text: panel.title }),
-        renderNode(panel.view(state, viewContext(t, recording.manifest, { focus: player.focus, baseline, cite: player.cite, json, now: head.clock, following, blobType: (sha) => recording.blobType(sha), delivered })), player, frames, t, setFocus, setCite));
+        renderNode(panel.view(state, viewContext(t, recording.manifest, { focus: player.focus, baseline, cite: player.cite, json, now: head.clock, following, blobType: (sha) => recording.blobType(sha), debug, delivered })), player, frames, t, setFocus, setCite));
       sections.set(panel.id, section);
       return section;
     };
@@ -812,7 +828,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     baselineOf(recording, base).then((loaded) => {
       baseline = loaded;
       baselineRow.replaceChildren(loaded
-        ? el('div', {}, el('p', { class: 'meta', text: `Beside it, ${loaded.label}, at its end:` }), drawCounters(loaded.counters, loaded.counters.measured, loaded.providers))
+        ? el('div', {}, el('p', { class: 'meta', text: `Beside it, ${loaded.label}, at its end:` }), drawCounters(loaded.counters, loaded.counters.measured, loaded.providers, false, showDurability))
         : el('p', { class: 'meta', text: `Baseline ${recording.manifest.baseline!.label}: not available here` }));
       draw();
     }).catch(() => baselineRow.replaceChildren(el('p', { class: 'meta', text: `Baseline ${recording.manifest.baseline!.label}: could not be opened` })));
