@@ -450,6 +450,7 @@ async function guarded<T>(call: ProviderCall, run: () => Promise<T>): Promise<T>
   }
 }
 
+/** Limits over the archive limits of `OFFICE_LIMITS`; a field left out keeps its default. */
 export type OfficeJsOptions = { readonly limits?: Partial<OfficeLimits> };
 
 /** The zero-install office reader: `text` for documents and presentations (a slide is a page) and for spreadsheets (a
