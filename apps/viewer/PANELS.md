@@ -109,6 +109,11 @@ labelled as that row's keyframe, never as what the eyes saw. A transcription (RE
 look's shape with tool `transcribe`, its body rows `start<TAB>end<TAB>words` in seconds) is drawn in a speech lane as
 those rows, a video's too, never as a picture or a window of film; a `#t=` cite of its look, or of the file it heard,
 marks the row its second falls in, and a cited second that falls in no row is said to.
+A look made on stills cut from a film (an image look its path names `film.mp4#t=S`, several joined by ", ") is the
+film's: it is drawn in the film lane at those seconds, never as a photograph, and a cite of it with a box
+(`#t=S&xywh=percent:x,y,w,h`) draws the box over the frame the row cites at that second.
+A transcription of a piece of a film (its path `film.mp4#t=600,660`) counts its words from the piece's start: its rows are
+drawn and cited at the film's seconds, the piece's start plus their own.
 
 A redraw keeps the reader's place: each scrolled element's offset and the element with the keyboard focus, found again
 by place alone (at each step its tag, its first class and its rank among such siblings), never by its text.
