@@ -125,10 +125,13 @@ const clip = async (video, from, to, name, { sound = false } = {}) => {
   throw new Error(`${name}: ${to - from} s do not fit ${BUDGET.clip} bytes; cut a shorter window`);
 };
 const keep = async (file) => {   // a document or photo the run was given, copied beside the page: cite the name it returns, never ../
-  const name = file.split("/").pop();
-  if ((await bytes(file)) > BUDGET.source) throw new Error(`${file} is over ${BUDGET.source} bytes: name it in outside and cite it by its name`);
-  await sh(`mkdir -p report && ${/\.(jpe?g|png|webp)$/i.test(name) ? `ffmpeg -v error -y -i ${q(file)} -map_metadata -1 -fflags +bitexact -q:v 2 report/${q(name)}` : `cp -- ${q(file)} report/${q(name)}`}`);
-  if ((await bytes(`report/${name}`)) > BUDGET.source) throw new Error(`${file} is over ${BUDGET.source} bytes: name it in outside and cite it by its name`);
+  const name = file.split("/").pop(), to = `report/${name}`, tmp = `report/.keep-${name}`;
+  const toobig = `${file} is over ${BUDGET.source} bytes: name it in outside and cite it by its name`;
+  if ((await bytes(file)) > BUDGET.source) throw new Error(toobig);
+  await sh(`mkdir -p report && ${/\.(jpe?g|png|webp)$/i.test(name) ? `ffmpeg -v error -y -i ${q(file)} -map_metadata -1 -fflags +bitexact -q:v 2 ${q(tmp)}` : `cp -- ${q(file)} ${q(tmp)}`}`);
+  const clash = (await sh(`test -e ${q(to)} && ! cmp -s ${q(tmp)} ${q(to)} && echo clash || true`)).trim();
+  if (clash || (await bytes(tmp)) > BUDGET.source) { await sh(`rm -f ${q(tmp)}`); throw new Error(clash ? `${file}: report/ already holds a different file named ${name}; rename one source before keeping both` : toobig); }
+  await sh(`mv -f ${q(tmp)} ${q(to)}`);
   return name;   // a photo is re-encoded without its metadata; a document is copied as it is
 };
 ```
@@ -145,9 +148,10 @@ const looks = new Set();
 const keyOf = async (receipt) => {
   if (!receipt) throw new Error("no receipt: this host files none, so there is no look to cite");
   const text = await sh(`cat ${q(receipt)}`).catch(() => sh(`cat ${q(`../${receipt}`)}`));   // a host may file receipts in the folder above the workspace
-  let key;
-  try { key = JSON.parse(text).facts.key; } catch { key = text.split("\n---")[0].split("\n").map((line) => line.split(": ")).find(([name]) => name === "key")?.[1]; }
+  let key, status;
+  try { ({ status, facts: { key } } = JSON.parse(text)); } catch { const header = text.split("\n---")[0].split("\n").map((line) => line.split(": ")); key = header.find(([name]) => name === "key")?.[1]; status = header.find(([name]) => name === "status")?.[1]; }
   if (!key) throw new Error(`${receipt} holds no look key`);
+  if (status === "failed") throw new Error(`${receipt} is a look that failed: it is no evidence for a finding`);
   looks.add(key);
   return key;
 };
@@ -210,8 +214,8 @@ const esc = (text) => String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const say = (text) => esc(String(text).replace(/\b(?:https?|ftp|file):(?:\/\/)?/gi, "").replace(/\bmailto:/gi, "").replace(/(^|[\s(])\/\/(?=[a-z0-9-]+\.)/gi, "$1"));
 const num = (n) => String(Number(n.toFixed(2)));
 const part = (c) => [c.page && `page=${c.page}`, c.t && `t=${c.t.map(num).join(",")}`, c.xywh && `xywh=${c.xywh}`].filter(Boolean).join("&");
-const label = (c) => c.page ? `p. ${c.page}` : c.t ? `${c.t.map(num).join(" to ")} s` : c.xywh ? "box" : "file";
-const cite = (c) => `<a class="cite" href="${encodeURI(c.file)}${part(c) ? `#${esc(part(c))}` : ""}" data-look="${esc(c.look)}">${esc(label(c))}</a>`;
+const label = (c) => c.page ? `p. ${c.page}` : c.t ? `${c.t.map(num).join(" to ")} s` : c.xywh ? `box ${c.xywh.replace(/^percent:/, "").replace(/^pixel:/, "px ")}` : "file";
+const cite = (c) => `<a class="cite" href="${encodeURIComponent(c.file)}${part(c) ? `#${esc(part(c))}` : ""}" data-look="${esc(c.look)}">${esc(label(c))}</a>`;
 const box = (b) => { const [x, y, w, h] = b.at.split(",");
   return `<div class="mark${Number(x) + Number(w) / 2 > 50 ? " right" : ""}" id="${esc(b.id)}" data-xywh="percent:${esc(b.at)}" data-look="${esc(b.look)}" style="left:${x}%;top:${y}%;width:${w}%;height:${h}%"><a class="tag" href="#f-${esc(b.finding)}">${say(b.label)}</a></div>`; };
 const sheet = (p) => `<div class="sheet"><img src="${esc(p.src)}" alt="${say(p.alt)}" loading="lazy">${(p.boxes ?? []).map(box).join("")}</div>`;
@@ -226,7 +230,7 @@ const finding = (f) => f.routine
   ? `<details class="finding routine" id="f-${f.id}"><summary>${say(f.title)}</summary>${body(f)}</details>`
   : `<article class="finding" id="f-${f.id}">${body(f)}</article>`;
 const rows = (list) => list.length ? `<ol class="rows">${list.map((r) => `<li class="row" id="r-${esc(r.id)}"><span class="when">${say(r.label)}</span><span class="what">${say(r.text)}</span><span class="cites">${r.cites.map(cite).join(" ")}</span></li>`).join("")}</ol>` : "";
-const docPage = (p) => `<figure class="docpage" id="page-${p.n}"><header><span class="n">p. ${p.n}</span><a class="cite" href="${encodeURI(report.document.file)}#page=${p.n}" data-look="${esc(report.findings.flatMap((f) => f.cites).find((c) => c.page === p.n)?.look ?? "")}">open at p. ${p.n}</a></header>${sheet(p)}</figure>`;
+const docPage = (p) => `<figure class="docpage" id="page-${p.n}"><header><span class="n">p. ${p.n}</span><a class="cite" href="${encodeURIComponent(report.document.file)}#page=${p.n}" data-look="${esc(report.findings.flatMap((f) => f.cites).find((c) => c.page === p.n)?.look ?? "")}">open at p. ${p.n}</a></header>${sheet({ ...p, alt: p.alt ?? `Page ${p.n} of ${report.document.file}` })}</figure>`;
 
 const css = `:root{color-scheme:light dark;--bg:#f7f6f2;--fg:#17181a;--mute:#5c6068;--card:#fff;--line:#e2e1db;--accent:#d96a00;--box:#6b4fd8}
 @media (prefers-color-scheme:dark){:root{--bg:#0d0d0f;--fg:#ecebe7;--mute:#a1a5ad;--card:#161618;--line:#2a2b30;--accent:#ff8700;--box:#b4a0ff}}
@@ -252,7 +256,7 @@ const page = `<!doctype html>
 <body><main>
 <header><h1>${say(report.title)}</h1><p class="question">${say(report.question)}</p></header>
 <section id="answer" aria-label="Answer"><p>${say(report.answer)}</p><ul class="points">${report.points.map((p) => `<li><small>${say(p.label)}</small><a href="#${esc(p.to)}">${say(p.value)}</a></li>`).join("")}</ul>${rows(report.rows ?? [])}</section>
-<section id="evidence"><h2>Evidence</h2>${keyFindings.map(finding).join("\n")}</section>
+${keyFindings.length ? `<section id="evidence"><h2>Evidence</h2>${keyFindings.map(finding).join("\n")}</section>` : ""}
 ${report.document ? `<section id="document"><h2>The document, with its marks</h2>${report.document.pages.map(docPage).join("\n")}</section>` : ""}
 ${routine.length ? `<section id="routine"><h2>Checked, as expected</h2>${routine.map(finding).join("\n")}</section>` : ""}
 <section id="not-checked"><h2>Not checked</h2><ul class="limits">${report.notChecked.map((line) => `<li>${say(line)}</li>`).join("")}</ul></section>
@@ -299,7 +303,7 @@ for (const href of attr("href").map((h) => h.replaceAll("&amp;", "&"))) {
   const [file, frag = ""] = href.split("#");
   if (!file) { if (!ids.includes(frag)) problems.push(`#${frag} names nothing on the page`); continue; }
   if (/[\/\\:]|^\./.test(file)) problems.push(`${href} is not a file of report/ or a bare file name`);
-  else if (!(await has(decodeURI(file))) && !report.outside.includes(decodeURI(file))) problems.push(`${href}: ${file} is neither in report/ nor named in outside`);
+  else if (!(await has(decodeURIComponent(file))) && !report.outside.includes(decodeURIComponent(file))) problems.push(`${href}: ${file} is neither in report/ nor named in outside`);
   if (frag && !fragment.test(frag)) problems.push(`${href} has a fragment that is not page=, t= or xywh=`);
 }
 for (const key of attr("data-look")) if (!looks.has(key)) problems.push(`data-look ${key} is no look this run made`);
@@ -310,8 +314,8 @@ for (const xywh of attr("data-xywh")) {
 }
 if ((page.match(/<figure class="pic">/g) ?? []).length !== (page.match(/<figcaption>\s*[^<\s][^<]*<\/figcaption>/g) ?? []).length) problems.push("a picture has no caption that says why it matters");
 if (report.points.length < 1 || report.points.length > 4) problems.push("the answer has one to four key points");
-const first = page.indexOf('id="answer"');
-if (first < 0 || first > page.indexOf('class="finding"')) problems.push("the answer is not first");
+const first = page.indexOf('id="answer"'), firstFinding = page.search(/class="finding[ "]/);   // a finding is open or `finding routine`
+if (first < 0 || (firstFinding >= 0 && first > firstFinding)) problems.push("the answer is not first");
 if (problems.length) throw new Error(problems.join("\n"));
 return { report: "report/index.html", findings: report.findings.length, looks: looks.size, bytes: await bytes("report/index.html") };
 ```

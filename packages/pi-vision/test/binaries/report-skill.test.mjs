@@ -470,3 +470,77 @@ test("a host that files no receipt gives no look to cite, and the script says so
     assert.match(result.error.message, /no receipt: this host files none, so there is no look to cite/);
   } finally { await sandbox.close(); }
 });
+
+test("a report whose findings are all routine passes: the answer is first and there is no evidence section to open", async () => {
+  const calm = data.replace('{ id: "chart", title:', '{ id: "chart", routine: true, title:').replace('{ id: "contract", title:', '{ id: "contract", routine: true, title:');
+  assert.notEqual(calm, data);
+  onDisk = "other";
+  const { result } = await run([helpers, assets, looking, calm, render, check]);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  const html = HTML();
+  assert.ok(!html.includes('id="evidence"') && html.includes('<details class="finding routine" id="f-chart">'));
+  assert.ok(html.indexOf('id="answer"') < html.indexOf("finding routine"));
+});
+
+test("two different sources with one name are refused, not silently replaced; the same source kept twice is one copy", async () => {
+  fs.mkdirSync(path.join(cwd, "before"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, "after"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "before", "memo.pdf"), textPdf(1));
+  fs.writeFileSync(path.join(cwd, "after", "memo.pdf"), textPdf(2));
+  fs.copyFileSync(path.join(cwd, "photo.jpg"), path.join(cwd, "before", "site.jpg"));
+  await sharp(path.join(cwd, "photo.jpg")).resize(300).jpeg().toFile(path.join(cwd, "after", "site.jpg"));
+  onDisk = "other";
+  const twice = await run([helpers, assets, 'return [await keep("before/memo.pdf"), await keep("before/memo.pdf"), await keep("before/site.jpg"), await keep("before/site.jpg")];']);
+  assert.ok(twice.result.ok, twice.result.ok ? "" : twice.result.error.message);
+  assert.deepEqual(twice.result.value, ["memo.pdf", "memo.pdf", "site.jpg", "site.jpg"]);
+  const clash = await run([helpers, assets, 'await keep("before/memo.pdf"); await keep("after/memo.pdf");']);
+  assert.ok(!clash.result.ok);
+  assert.match(clash.result.error.message, /after\/memo\.pdf: report\/ already holds a different file named memo\.pdf; rename one source before keeping both/);
+  assert.deepEqual(fs.readFileSync(path.join(cwd, "report", "memo.pdf")), fs.readFileSync(path.join(cwd, "before", "memo.pdf")), "the first is still there");
+  const photos = await run([helpers, assets, 'await keep("before/site.jpg"); await keep("after/site.jpg");']);
+  assert.ok(!photos.result.ok);
+  assert.match(photos.result.error.message, /already holds a different file named site\.jpg/);
+  assert.deepEqual(fs.readdirSync(path.join(cwd, "report")).filter((f) => f.startsWith(".")), [], "no half-copied file is left");
+});
+
+test("a look that failed is no evidence: its receipt is refused, JSON or text", async () => {
+  fs.mkdirSync(path.join(cwd, "earlier"), { recursive: true });   // a run clears evidence/, so these are an earlier run's receipts
+  const key = "a".repeat(64);
+  fs.writeFileSync(path.join(cwd, "earlier", "failed.json"), JSON.stringify({ status: "failed", facts: { key }, body: "not seen" }));
+  fs.writeFileSync(path.join(cwd, "earlier", "failed.md"), `tool: see\nstatus: failed\nkey: ${key}\n---\nnot seen\n`);
+  fs.writeFileSync(path.join(cwd, "earlier", "ok.md"), `tool: see\nstatus: ok\nkey: ${key}\n---\nseen\n`);
+  onDisk = "other";
+  for (const receipt of ["earlier/failed.json", "earlier/failed.md"]) {
+    const { result } = await run([helpers, looking, `await keyOf(${JSON.stringify(receipt)});`]);
+    assert.ok(!result.ok, receipt);
+    assert.match(result.error.message, /is a look that failed: it is no evidence for a finding/);
+  }
+  const fine = await run([helpers, looking, 'return await keyOf("earlier/ok.md");']);
+  assert.ok(fine.result.ok, fine.result.ok ? "" : fine.result.error.message);
+  assert.equal(fine.result.value, key);
+});
+
+test("a source named with # or ? is a file name in its link, and a document page has alt text of its own", async () => {
+  fs.copyFileSync(path.join(cwd, "contract.pdf"), path.join(cwd, "contract#2?draft.pdf"));
+  const odd = data.replaceAll('file: "contract.pdf"', 'file: "contract#2?draft.pdf"').replace('keep("contract.pdf")', 'keep("contract#2?draft.pdf")');
+  assert.notEqual(odd, data);
+  onDisk = "other";
+  const { result } = await run([helpers, assets, looking, odd, render, check]);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  const html = HTML();
+  assert.ok(html.includes('href="contract%232%3Fdraft.pdf#page=3"'), "the name is one path component");
+  assert.ok(fs.existsSync(path.join(cwd, "report", "contract#2?draft.pdf")));
+  assert.ok(!html.includes("undefined"), "nothing on the page is a missing value");
+  assert.match(html, /<img src="frames\/contract-p3\.jpg" alt="Page 3 of contract#2\?draft\.pdf"/);
+});
+
+test("a cite to a region alone says which region, so several on one picture are told apart", async () => {
+  const regions = data.replace('cites: [{ file: await keep("photo.jpg"), look: lookSite.key }]', 'cites: [{ file: await keep("photo.jpg"), xywh: "percent:10,20,30,15", look: lookSite.key }, { file: "photo.jpg", xywh: "pixel:5,6,70,80", look: lookSite.key }]');
+  assert.notEqual(regions, data);
+  onDisk = "other";
+  const { result } = await run([helpers, assets, looking, regions, render, check]);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  const html = HTML();
+  assert.match(html, /href="photo\.jpg#xywh=percent:10,20,30,15" data-look="[0-9a-f]{64}">box 10,20,30,15<\/a>/);
+  assert.match(html, /href="photo\.jpg#xywh=pixel:5,6,70,80" data-look="[0-9a-f]{64}">box px 5,6,70,80<\/a>/);
+});
