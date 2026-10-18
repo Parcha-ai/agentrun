@@ -67,7 +67,7 @@ const ENGINE = `
 const { Worker } = process.getBuiltinModule("node:worker_threads");
 process.once("disconnect", () => process.exit(1));
 process.once("message", ({ script, input }) => {
-  const worker = new Worker(script, { eval: true, workerData: input, env: {}, stdout: true, stderr: true, execArgv: [], transferList: Object.values(input).filter(ArrayBuffer.isView).map((view) => view.buffer) });
+  const worker = new Worker(script, { eval: true, workerData: input, env: {}, stdout: true, stderr: true, execArgv: [], transferList: [...new Set(Object.values(input).filter(ArrayBuffer.isView).map((view) => view.buffer))] });
   worker.stdout.resume();
   worker.stderr.resume();
   let replied = false;

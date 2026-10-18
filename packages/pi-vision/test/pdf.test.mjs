@@ -260,6 +260,13 @@ test("an engine that cannot be started is a needs miss, and a payload of tens of
   assert.deepEqual([miss.code, miss.name, miss.message.startsWith("the PDF engine could not be started (")], ["needs", "ProviderMiss", true]);
 });
 
+test("an input that holds one buffer twice, or two views of one buffer, reaches the engine whole", () => {
+  const lengths = "parentPort.postMessage({ value: [d.bytes.length, d.same.length, d.window.length, d.window[0], d.other.length] });";
+  const run = engine(lengths, `const bytes = new Uint8Array([1, 2, 3, 4, 5]); const input = { bytes, same: bytes, window: bytes.subarray(1, 3), other: new Uint8Array(2) }; ${outcome}`);
+  assert.deepEqual([run.status, run.signal], [0, null], run.stderr.slice(0, 200));
+  assert.deepEqual(JSON.parse(run.stdout), { value: [5, 5, 2, 2, 2] });
+});
+
 test("an engine does not outlive its host: killed with its host mid-run, it is gone", { skip: process.platform !== "linux" && "reads /proc" }, async () => {
   const marker = `${dir.path}/engine.pid`;
   const spin = `process.getBuiltinModule("node:fs").writeFileSync(${JSON.stringify(marker)}, String(process.pid)); for (;;) {}`;
@@ -267,14 +274,15 @@ test("an engine does not outlive its host: killed with its host mid-run, it is g
     import { runPdfWorker } from "@parcha/pi-vision";
     await runPdfWorker(${JSON.stringify(spin)}, {}, { timeoutMs: 60_000, memoryMb: 96 });`], { cwd: new URL("..", import.meta.url), stdio: "ignore" });
   const exists = (path) => stat(path).then(() => true, () => false);
+  const running = (pid) => readFile(`/proc/${pid}/stat`, "utf8").then((text) => !/^[ZX]/.test(text.slice(text.lastIndexOf(")") + 2)), () => false);
   const until = async (done) => { for (let waited = 0; !(await done()) && waited < 100; waited++) await new Promise((resolve) => setTimeout(resolve, 100)); };
   try {
     await until(() => exists(marker));
     const pid = Number(await readFile(marker, "utf8"));
     assert.ok(pid > 0 && pid !== host.pid, "the engine is a process of its own");
     host.kill("SIGKILL");
-    await until(async () => !(await exists(`/proc/${pid}`)));
-    assert.equal(await exists(`/proc/${pid}`), false, "the engine exited when its host did");
+    await until(async () => !(await running(pid)));
+    assert.equal(await running(pid), false, "the engine exited when its host did");
   } finally {
     host.kill("SIGKILL");
   }
