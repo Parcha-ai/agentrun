@@ -21,6 +21,8 @@ export type ChatItem =
     /** With no thinking and no text of the agent's right before it, a step that made a look speaks for itself: what its
      *  first look asked when that is words, else that look's line. */
     voice?: string;
+    /** The step only ran a command or a script: one string argument, no look made, no picture in its result. */
+    plumbing?: true;
     /** The result's first line; empty when the result had no words. */
     takeaway: string;
     /** Images in the result, by SHA-256. */
@@ -42,7 +44,10 @@ export type ChatItem =
  *  as recorded; `look` its key when it was a look, for its picture and regions. */
 export type ChatCall = { id: string; name: string; label: string; raw: string; look?: string; model?: string; judge?: true;
   /** What a look asked, when it asked in words (not a typed request). */
-  ask?: string; t0?: number; t1?: number };
+  ask?: string;
+  /** The first sentence of a look's answer in words that says something: a lead-in line ending in a colon, a heading
+   *  and a list marker left out. */
+  said?: string; t0?: number; t1?: number };
 
 /** One recorded conversation: an agent node's, named by its node; a run of one conversation has one thread. Its first
  *  user entry is the prompt the host composed from the node's input, so it is not an item. */
@@ -85,8 +90,9 @@ export type ChatRow = { label: string; text: string; note?: string; cites: { hre
 /** The agent's own artifact (manifest.artifact, draft 41): its entry and every file by its SHA-256. */
 export type ChatArtifact = { title: string; entry: string; files: Record<string, string> };
 
-/** The run's input as given: a string input as its text, a record as its fields in plain form. */
-export type ChatInput = { text?: string; fields?: { name: string; value: string }[] };
+/** The run's input as given: a string input as its text; a record as its `question` (the person's words), its
+ *  `files`, and its other fields in plain form. */
+export type ChatInput = { text?: string; question?: string; files?: string[]; fields?: { name: string; value: string }[] };
 
 export type ChatModel = {
   /** The artifact's title, else the first line of the input's question, else the recording's title. */

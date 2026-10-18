@@ -6,7 +6,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseLines, type Json, type Recording } from '../src/format.ts';
-import { chatCiteHref, chatCommandLine, chatToolTitle, extractChat } from '../src/chat-extract.ts';
+import { chatCiteHref, chatCommandLine, chatSaid, chatToolTitle, extractChat } from '../src/chat-extract.ts';
 import { blobsNamed } from '../src/load.ts';
 import type { ChatItem, ChatModel } from '../src/chat-model.ts';
 
@@ -210,6 +210,26 @@ test("a redacted thought keeps its mark and none of the provider's placeholder",
   const m = await model(hearAndFind, editFirst('pi.assistant', (data) => { (data.model[0]!.content as Json[]).unshift({ type: 'thinking', thinking: '[Reasoning redacted]', redacted: true }); }));
   const thought = items(m).find((item) => item.kind === 'thinking');
   assert.deepEqual(thought && { text: thought.text, redacted: 'redacted' in thought && thought.redacted }, { text: '', redacted: true });
+});
+
+test("a look's answer says its first sentence with words: no lead-in, heading, marker or typed answer", () => {
+  assert.equal(chatSaid('Based on page 1 of the document:\n\n* **The seal** sits at the bottom. It is round.'), '**The seal** sits at the bottom.');
+  assert.equal(chatSaid('### Description of Pages 3 and 4\n**Page 3:**\nThe certificate itself begins here. More.'), 'The certificate itself begins here.');
+  assert.equal(chatSaid('**Is there a FILED stamp?**\nYes, at the top right of page 3.'), 'Yes, at the top right of page 3.', 'a wholly bold line is a heading');
+  assert.equal(chatSaid('*Cut 3 (05:52)*\n> CUT 1 shows the orbit.'), 'CUT 1 shows the orbit.');
+  assert.equal(chatSaid('Signed by Jeffrey W. Bullock, Secretary of State. Dated 2022.'), 'Signed by Jeffrey W. Bullock, Secretary of State.', 'never cut at an initial');
+  assert.equal(chatSaid('1.00\t3.15\tWe copy you down.'), 'We copy you down.');
+  assert.equal(chatSaid('* **Is there a stamp?** **No**, there is none. The page is plain.'), '**Is there a stamp?** **No**, there is none.', 'a question it repeats stays with its answer');
+  assert.equal(chatSaid('{"here":{"type":"noul","noul":0.9}}'), undefined, 'a typed answer says nothing in words');
+  assert.equal(chatSaid(''), undefined);
+});
+
+test("a step that only ran a command or a script, with no look and no picture, is plumbing; the run's input splits its question and files", async () => {
+  const m = await model(hearAndFind);
+  for (const item of tools(m)) assert.equal(item.plumbing, item.calls.some((call) => call.look) || item.media.length > 0 || item.tool === 'submit' ? undefined : true, item.title);
+  const asked = await model(referenceJob, eachLine((line) => (line.kind === 'agentrun.workflow'
+    ? { ...line, data: { ...(line.data as Record<string, Json>), input: { input: { question: 'Which marks?', files: ['a.pdf', 'b.pdf'], example: 'x' } } } } : line)));
+  assert.deepEqual(asked.input, { question: 'Which marks?', files: ['a.pdf', 'b.pdf'], fields: [{ name: 'example', value: 'x' }] });
 });
 
 test("a cite's address keeps its file and fragment however the fragment is written", () => {
