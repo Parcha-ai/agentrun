@@ -1605,3 +1605,13 @@ test('a slow status read does not hold up supervision: the spend cap stops a run
   const stopped = host.find((line) => line.kind === 'kill').t;
   assert.ok(stopped - started < 4500, `the cap stopped the child ${stopped - started} ms after it started, not after the 6 s read`);
 });
+
+test('--operator-kill is refused by a place that cannot make a process kill, before anything starts', { timeout: 120_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference' });
+  const calls = [];
+  await assert.rejects(() => demo({ ...options, argv: ['--json', '--operator-kill', join(tmp, 'control')], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner, name: 'box-only', kills: ['box'], start: async (order) => { calls.push('start'); return inner.start(order); }, release: async () => { calls.push('release'); } };
+  } }), /box-only place cannot lose its process: --operator-kill/);
+  assert.deepEqual(calls, ['release'], 'nothing was started');
+});
