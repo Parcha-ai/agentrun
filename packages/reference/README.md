@@ -10,7 +10,7 @@ npm install @parcha/agentrun-reference
 ```
 
 npm installs the pi peers it needs (`@earendil-works/pi-ai`, `pi-durable`, `chord`, `pi-codemode` and `typebox`).
-`@parcha/pi-transport` is optional: only a demo that declares `boxes` needs it, and one that does says so in one line.
+`@parcha/pi-transport` is optional: only a demo that declares `boxes` needs it, and it is not on npm yet, so such a demo runs from a checkout of [the repository](https://github.com/Parcha-ai/agentrun) (from an install it says so in one line).
 
 Save this as `demo.mjs`:
 
