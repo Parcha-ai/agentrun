@@ -1476,3 +1476,17 @@ test('the slow status tick does not queue a read behind one still running: a pla
   // Boundary reads (start, exit, result) plus the ticks that found no read running; a tick queued behind every slow read would make six or more.
   assert.ok(reads <= 5, `the status was read ${reads} times in ${Date.now() - started} ms`);
 });
+
+test('a slow status read does not hold up supervision: the spend cap stops a running child while the place is still answering the first read', { timeout: 120_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference', expectedCost: 0.05 });
+  process.env.DEMO_JUDGE_COST = '0.3'; process.env.DEMO_LINGER_MS = '20000';
+  const recording = join(tmp, 'recording');
+  await demo({ ...options, argv: ['--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => ({
+    ...localPlace({ self, paths, destroyBoxes, requestFile }),
+    status: async () => { await new Promise((resolve) => setTimeout(resolve, 6000)); return { record: null }; },
+  }) });
+  const host = readEvents(recording).filter((line) => line.source === 'host');
+  const started = host.find((line) => line.kind === 'process.started').t;
+  const stopped = host.find((line) => line.kind === 'kill').t;
+  assert.ok(stopped - started < 4500, `the cap stopped the child ${stopped - started} ms after it started, not after the 6 s read`);
+});

@@ -371,6 +371,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   let reading: Promise<void> = Promise.resolve();
   // The slow tick does not queue a read behind one still running (a place's reads can take seconds): the boundary reads, which a result waits for, then wait behind at most one.
   let inflight = false;
+  // A read the supervisor waits for (after a kill, at a process's exit, at the end) is waited for a bounded time: an optional reading never holds supervision up for a place's whole timeout.
+  const settled = (read: Promise<void>, ms = 15_000): Promise<void> => Promise.race([read, new Promise<void>((resolve) => { setTimeout(resolve, ms).unref(); })]);
   const readStatus = (): Promise<void> => {
     if (!place.status) return Promise.resolve();
     reading = reading.then(async () => {
@@ -418,7 +420,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       if (previous && !place.kills.includes(previous.kind)) throw new Error(`the ${place.name} place cannot lose its ${previous.kind}: this kill is not one it can make`);
       runner = previous ? (await place.recover(previous.runner, previous.kind, order)).runner : await place.start(order);
       supervisor.host('process.started', { gen, pid: runner.pid });
-      await readStatus();
+      // The reading runs beside the supervision: the kill requests and the spend cap are watched from the start, however slow the place's read is.
+      void readStatus();
       // The supervisor decides when: a crossing asks to be killed (read through the place's signals), or the spend cap is passed. It writes the kill line, and only then does the place kill.
       // A kill the place cannot make is recorded and ends the attempt: it is never an unhandled rejection.
       let killed: { point: string | null; n: number | null; label: string | null; why: string; kind: 'process' | 'box' } | undefined;
@@ -443,7 +446,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
         supervisor.host('kill', { gen, label: killed.label, crossing: killed.point === null ? null : { point: killed.point, n: killed.n }, side: 'child', kind: killed.kind });
         kills.push({ gen, point: killed.point, kind: killed.kind, why: killed.why });
         try { await place.kill(runner!, killed.kind); } catch (error) { failed(String((error as { code?: unknown } | null)?.code ?? 'KILL_FAILED'), String((error as Error | null)?.message ?? error), killed.kind); }
-        await readStatus();
+        await settled(readStatus());
       };
       const iterator = place.signals?.(gen)[Symbol.asyncIterator]();
       const pump = (async () => {
@@ -463,7 +466,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       const result: Exit = exit ?? { exit: null, signal: null, stderr: 'the place could not stop this process' };
       clearInterval(watch);
       clearInterval(tick);
-      await readStatus();
+      await settled(readStatus());
       await iterator?.return?.();
       await pump;
       await deciding;
@@ -493,7 +496,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     const last = processes.at(-1)?.outcome;
     const delivered = last && last.status === 'complete' && 'record' in last ? { record: last.record } : null;
     if (maxUsd !== null && meterKnown(recordDir) > maxUsd) overBudget = true;
-    await readStatus();
+    await settled(readStatus());
     const processesStarted = processes.length;
     // The demo's result hook, reported by the process that delivered, shapes the result line and its blob; without one, the delivered record is the result.
     const made = processes.at(-1)?.outcome?.result;
