@@ -227,6 +227,9 @@ const reportCenter = (scroller: Window | HTMLElement, node: Element) => {
   else scroller.scrollTo({ top: box.top - scroller.getBoundingClientRect().top + scroller.scrollTop - scroller.clientHeight / 2 + box.height / 2 });
 };
 
+/** Past this many characters an answer's title is read, not displayed: it takes a reading size. */
+const REPORT_TITLE = 90;
+
 /** A cite that points somewhere: an address, a look of the run, or a picture the recording holds. */
 const reportCites = (cite: { href: string; look?: string; blob?: string }) => cite.href !== '' || cite.look !== undefined || cite.blob !== undefined;
 
@@ -253,7 +256,7 @@ function reportAnswer(pane: HTMLElement, model: ChatModel, recording: Recording,
     })))));
   scroller.append(reportEl('div', { class: 'pane' },
     reportEl('div', { class: 'kicker', text: answer.from === 'text' ? 'The run\'s final message' : 'The run\'s answer' }),
-    reportEl('h1', { class: 'atitle', text: answer.title }),
+    reportEl('h1', { class: answer.title.length > REPORT_TITLE ? 'atitle long' : 'atitle', text: answer.title }),
     reportEl('ol', { class: 'arows' }, ...rows)));
   pane.append(scroller);
   return { scroller, cited };

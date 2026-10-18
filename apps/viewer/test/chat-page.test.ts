@@ -104,6 +104,8 @@ const TASK = 'Read the three scanned pages and the photographs, and say what hap
 const THOUGHT = '**Page 2** holds the alarm; I will cite its `line`.';
 /** A look's address that is a long list of files with no space to break at, as a real run cites one. */
 const LONG = Array.from({ length: 40 }, (_, n) => `scan-${n}.pdf`).join(',');
+/** An answer's title of 200 characters. */
+const LONG_TITLE = 'The three scanned pages and the photographs, read in order: an alarm is called out on page two, the crew answers, and the run reaches contact on page three, with the photographs sorted.'.padEnd(200, '.');
 /** A look over three pages, filed as one path joined by ", " with a picture for each page, as a live run files one. */
 const THREE = ['scans.pdf#page=1', 'scans.pdf#page=2', 'scans.pdf#page=3'];
 /** The hand vision run: the input it was given, the host's prompt as each conversation's first user entry, and, when
@@ -171,7 +173,8 @@ function writeFixtures(dir: string) {
   for (const [id, said] of [['hand-said', true], ['hand-bare', false]] as const) {
     writeRecording(join(dir, id), handRun(said));
     const { result: _result, ...unanswered } = JSON.parse(readFileSync(join(dir, id, 'manifest.json'), 'utf8'));
-    writeFileSync(join(dir, id, 'manifest.json'), JSON.stringify(unanswered, null, 2));
+    // The run's last words are its answer, under the recording's title: here a whole paragraph of one.
+    writeFileSync(join(dir, id, 'manifest.json'), JSON.stringify(said ? { ...unanswered, title: LONG_TITLE } : unanswered, null, 2));
   }
   // The reference job with no times and no workflow input: its spans sit in file order, its first user entry is drawn.
   const plain = join(dir, 'reference-plain');
@@ -461,6 +464,8 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     const said = await value<Record<string, unknown>>(`(() => { const d = doc('said'); return { kicker: d.querySelector('.kicker').textContent, rows: [...d.querySelectorAll('.arow')].map((n) => [n.className, n.querySelector('.alabel'), n.textContent]),
       strong: d.querySelector('.arow strong')?.textContent, card: d.querySelector('.doccard small')?.textContent }; })()`);
     assert.deepEqual(said, { kicker: 'The run\'s final message', rows: [['arow wide', null, 'Done. The alarm is on page 2.']], strong: 'alarm', card: 'The run\'s final message.' });
+    assert.deepEqual(await value(`(() => { const h = doc('said').querySelector('.atitle'); return [h.textContent.length, parseFloat(getComputedStyle(h).fontSize) <= 20, h.classList.contains('long')]; })()`), [200, true, true],
+      'a long answer title takes a reading size, not the display size');
     const bare = await value<Record<string, unknown>>(`(() => { const d = doc('bare'); return { report: d.querySelector('.report').textContent, link: d.querySelector('.report a')?.getAttribute('href'), card: !!d.querySelector('.doccard') }; })()`);
     assert.deepEqual(bare, { report: 'This run has no report.How this ran: every call, look and file of the run.', link: './?r=hand-bare', card: false });
 
@@ -515,6 +520,8 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     await page.sleep(500);
     assert.ok(await value(`[...doc('wide').querySelectorAll('.call-at')].some((n) => n.textContent.startsWith('scan-0.pdf,scan-1.pdf'))`), 'the long list is drawn');
     assert.deepEqual(await value(`Object.fromEntries(PAGES.map((id) => [id, Math.max(0, wider(id))]))`), Object.fromEntries(ALL.map((id) => [id, 0])));
+    assert.deepEqual(await value(`(() => { const h = doc('said').querySelector('.atitle'); return [h.scrollWidth - h.clientWidth, h.getBoundingClientRect().height > parseFloat(getComputedStyle(h).lineHeight) * 2]; })()`), [0, true],
+      'at 390 the long answer title wraps over lines, no wider than its pane');
 
     // The public rules, over every word drawn on each page, its sources and the agent's page; a score only in a strip.
     for (const id of ALL) {
