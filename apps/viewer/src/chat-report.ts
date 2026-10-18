@@ -17,6 +17,29 @@ export const reportEl = <K extends keyof HTMLElementTagNameMap>(tag: K, props: R
   return node;
 };
 
+const REPORT_INLINE = /`([^`\n]+)`|\*\*(?=\S)([^*\n]*?\S)\*\*|__(?=\S)([^_\n]*?\S)__|(?<![\w*])\*(?=\S)([^*\n]*?\S)\*(?![\w*])|(?<![\w_])_(?=\S)([^_\n]*?\S)_(?![\w_])/g;
+
+/** Inline markdown as nodes (bold, italic, inline code); everything else stays text. */
+export function reportInline(text: string): (Node | string)[] {
+  const out: (Node | string)[] = [];
+  let at = 0;
+  for (const match of text.matchAll(REPORT_INLINE)) {
+    if (match.index > at) out.push(text.slice(at, match.index));
+    const code = match[1];
+    const strong = match[2] ?? match[3];
+    const em = match[4] ?? match[5];
+    if (code !== undefined) out.push(reportEl('code', { text: code }));
+    else if (strong !== undefined) out.push(reportEl('strong', {}, ...reportInline(strong)));
+    else out.push(reportEl('em', {}, ...reportInline(em ?? '')));
+    at = match.index + match[0].length;
+  }
+  if (at < text.length) out.push(text.slice(at));
+  return out;
+}
+
+/** Text in paragraphs (a blank line between), each with its inline markdown. */
+export const reportParagraphs = (text: string) => text.split(/\n\s*\n/).filter((part) => part.trim() !== '').map((part) => reportEl('p', {}, ...reportInline(part.trim())));
+
 /** A citation address's fragment as parameters: `page=3&xywh=percent:1,2,3,4`, `t=1260,1280`. A fragment written
  *  without its file or its '#' (`xywh=...`) reads the same. */
 export const reportFragmentOf = (href: string) => {
@@ -192,7 +215,8 @@ const reportCenter = (scroller: Window | HTMLElement, node: Element) => {
 /** A cite that points somewhere: an address, or a look of the run. */
 const reportCites = (cite: { href: string; look?: string }) => cite.href !== '' || cite.look !== undefined;
 
-/** The run's cited answer, drawn here: each row with its chips, each chip opening the source it cites. */
+/** The run's answer, drawn here (cited, its submitted record, or its final message): each row with its chips, each chip
+ *  opening the source it cites. */
 function reportAnswer(pane: HTMLElement, model: ChatModel, recording: Recording, open: (href: string, look?: string) => void, none = 'This run has no report.') {
   const scroller = reportEl('div', { class: 'report' });
   const answer = model.answer;
@@ -203,9 +227,9 @@ function reportAnswer(pane: HTMLElement, model: ChatModel, recording: Recording,
     return { scroller, cited: new Set<string>() };
   }
   const cited = new Set<string>();
-  const rows = answer.rows.map((row) => reportEl('li', { class: 'arow' },
-    reportEl('span', { class: 'alabel', text: row.label }),
-    reportEl('div', {}, reportEl('p', { text: row.text }), row.cites.some(reportCites) && reportEl('div', { class: 'cites' }, ...row.cites.filter(reportCites).map((cite) => {
+  const rows = answer.rows.map((row) => reportEl('li', { class: row.label === '' ? 'arow wide' : 'arow' },
+    row.label !== '' && reportEl('span', { class: 'alabel', text: row.label }),
+    reportEl('div', {}, ...reportParagraphs(row.text), row.cites.some(reportCites) && reportEl('div', { class: 'cites' }, ...row.cites.filter(reportCites).map((cite) => {
       if (cite.look) cited.add(cite.look);
       if (cite.item) cited.add(cite.item);
       const chip = reportEl('button', { class: 'cite', type: 'button', 'data-look': cite.look, 'data-item': cite.item, title: cite.href || undefined, text: reportCiteLabel(cite.href) || 'the look it cites' });
@@ -213,7 +237,7 @@ function reportAnswer(pane: HTMLElement, model: ChatModel, recording: Recording,
       return chip;
     })))));
   scroller.append(reportEl('div', { class: 'pane' },
-    reportEl('div', { class: 'kicker', text: 'The run\'s answer' }),
+    reportEl('div', { class: 'kicker', text: answer.from === 'text' ? 'The run\'s final message' : 'The run\'s answer' }),
     reportEl('h1', { class: 'atitle', text: answer.title }),
     reportEl('ol', { class: 'arows' }, ...rows)));
   pane.append(scroller);

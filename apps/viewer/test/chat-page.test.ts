@@ -64,16 +64,24 @@ test('a region comes from the citation\'s address alone, and lands on the page o
 
 const sha256 = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
 const TASK = 'Read the three scanned pages and the photographs, and say what happened.';
-const THOUGHT = 'Page 2 holds the alarm; I will cite its line.';
-/** The hand vision run with the task it was given and, when asked, the lead's own thinking and last words. Its look
- *  lines name their conversation, as a vision run's do. */
-function handRun(thinking: boolean): Line[] {
-  const run = lines.map((line) => (line.kind === 'LookEvent' ? { ...line, data: { ...(line.data as object), conversationId: String(line.conv) } } : line));
+const THOUGHT = '**Page 2** holds the alarm; I will cite its `line`.';
+/** A look's address that is a long list of files with no space to break at, as a real run cites one. */
+const LONG = Array.from({ length: 40 }, (_, n) => `scan-${n}.pdf`).join(',');
+/** The hand vision run: the input it was given, the host's prompt as each conversation's first user entry, and, when
+ *  asked, the lead's own thinking and last words. Its look lines name their conversation, as a vision run's do; the
+ *  weaker eyes' look read a long list of files. */
+function handRun(said: boolean): Line[] {
+  const run = lines.map((line): Line => {
+    const named = line.kind === 'LookEvent' ? { ...line, data: { ...(line.data as object), conversationId: String(line.conv) } } : line;
+    return (line.kind === 'LookEvent' || line.kind === 'vision.looks') && JSON.stringify(line).includes(K.weak1)
+      ? JSON.parse(JSON.stringify(named).replaceAll('"path":"scans.pdf"', `"path":"${LONG}"`).replaceAll('"fragment":"page=1"', '"fragment":""')) as Line : named;
+  });
   const result = run.findLastIndex((line) => line.kind === 'result');
   const first = run.findIndex((line) => line.channel === 'durable');
-  run.splice(first + 1, 0, { ...run[first]!, kind: 'pi.user', source: 'pi', conv: 1, order: 1, data: { kind: 'pi.user', model: [{ role: 'user', content: TASK }] } });
-  if (thinking) run.splice(result + 1, 0, { channel: 'durable', source: 'pi', kind: 'pi.assistant', gen: 2, t: run[result + 1]!.t - 1, commit: 28, order: 0, conv: 1,
-    data: { kind: 'pi.assistant', model: [{ role: 'assistant', content: [{ type: 'thinking', thinking: THOUGHT }, { type: 'text', text: 'Done. The alarm is on page 2.' }] }] } });
+  run.splice(first + 1, 0, { ...run[first]!, kind: 'pi.user', source: 'pi', conv: 1, order: 1, data: { kind: 'pi.user', model: [{ role: 'user', content: `The host's prompt. ${TASK}` }] } },
+    { ...run[first]!, kind: 'agentrun.workflow', order: 2, data: { doc: 'agentrun.workflow', input: { input: TASK } } });
+  if (said) run.splice(result + 2, 0, { channel: 'durable', source: 'pi', kind: 'pi.assistant', gen: 2, t: run[result + 2]!.t - 1, commit: 28, order: 0, conv: 1,
+    data: { kind: 'pi.assistant', model: [{ role: 'assistant', content: [{ type: 'thinking', thinking: THOUGHT }, { type: 'text', text: 'Done. The **alarm** is on page 2.' }] }] } });
   return run;
 }
 /** The agent's page, written to test the frame: a script, a handler, references outside its files, a sheet. */
@@ -91,8 +99,9 @@ const ENTRY = `<!doctype html><html><head><meta charset="utf-8"><title>Three pag
 </body></html>`;
 const SHEET = 'body{background:#101012;color:#eee}.sheet{background-image:url(../media/page-2.png)}';
 
-/** The recordings: the repository's chat fixtures and reference job, and the hand run as `hand-page` (an agent's page
- *  written to test the frame, thinking, two conversations) and `hand-answer` (the cited answer only, no thinking). */
+/** The recordings: the repository's chat fixtures and reference job (a submitted record), and the hand run as
+ *  `hand-page` (an agent's page written to test the frame, thinking, two conversations), `hand-answer` (the cited answer
+ *  only, no thinking), `hand-said` (no result: its last words are its answer) and `hand-bare` (no result, no words). */
 function writeFixtures(dir: string) {
   for (const id of ['chat-hear-and-find', 'chat-artifact']) cpSync(join(here, 'fixtures', id), join(dir, id), { recursive: true });
   cpSync(join(here, '..', 'recordings', 'reference-job'), join(dir, 'reference-job'), { recursive: true });
@@ -109,6 +118,11 @@ function writeFixtures(dir: string) {
   const answer = join(dir, 'hand-answer');
   writeRecording(answer, handRun(false));
   deliverInstead(answer, CITED as never);
+  for (const [id, said] of [['hand-said', true], ['hand-bare', false]] as const) {
+    writeRecording(join(dir, id), handRun(said));
+    const { result: _result, ...unanswered } = JSON.parse(readFileSync(join(dir, id, 'manifest.json'), 'utf8'));
+    writeFileSync(join(dir, id, 'manifest.json'), JSON.stringify(unanswered, null, 2));
+  }
 }
 
 /** Run in the harness page: each chat page in an iframe of its own width, side by side, all in view. */
@@ -120,6 +134,8 @@ const HARNESS = `<!doctype html><body style="margin:0">
 <iframe id="hear" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=chat-hear-and-find"></iframe>
 <iframe id="none" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=reference-job"></iframe>
 <iframe id="pageonly" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=chat-artifact"></iframe>
+<iframe id="said" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=hand-said"></iframe>
+<iframe id="bare" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=hand-bare"></iframe>
 <script>
 const doc = (id) => document.getElementById(id).contentDocument;
 const art = (id) => doc(id)?.querySelector('.report-frame')?.contentDocument;
@@ -131,6 +147,10 @@ const unstripped = (id) => { const body = doc(id).body.cloneNode(true); for (con
 const card = (id, title) => [...doc(id).querySelectorAll('.step')].find((each) => each.querySelector('.t span').textContent === title);
 const inView = (node, box) => { const a = node.getBoundingClientRect(); const b = box.getBoundingClientRect(); return a.top >= b.top - 1 && a.bottom <= b.bottom + 1; };
 const shown = (node) => !!node && node.checkVisibility();
+const PAGES = ['wide', 'phone', 'answer', 'files', 'hear', 'none', 'pageonly', 'said', 'bare'];
+const narrow = () => { for (const id of PAGES) { const f = document.getElementById(id); f.style.width = '390px'; f.style.height = '844px'; } };
+const unfold = (id) => { for (const more of doc(id).querySelectorAll('.more')) if (/^\\+ \\d+ more$|^Show the whole message$/.test(more.textContent)) more.click(); };
+const wider = (id) => doc(id).documentElement.scrollWidth - doc(id).defaultView.innerWidth;
 </script></body>`;
 
 test('in Chrome: the chat beside the agent\'s page, its timeline, its citations and the public rules, at 1440 and 390', IN_CHROME, async (t) => {
@@ -160,13 +180,18 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
   const value = async <T>(expression: string) => JSON.parse(String(await page.evaluate(`JSON.stringify(${expression})`))) as T;
   const until = (expression: string, what: string) => page.once(expression, 'true', 20_000, what);
   try {
-    await until(`['wide', 'phone', 'answer', 'files', 'hear', 'none', 'pageonly'].every(ready) && artReady('wide') && artReady('phone') && artReady('files') && !!doc('answer').querySelector('.arow')
-      && art('pageonly')?.URL === 'about:srcdoc' && art('pageonly').querySelector('#first img')?.naturalWidth > 0`, 'the seven chat pages drawn, their agent\'s pages loaded');
+    const loaded = `({ drawn: PAGES.filter((id) => !ready(id)), pages: ['wide', 'phone', 'files'].filter((id) => !artReady(id)), answer: !!doc('answer').querySelector('.arow'),
+      pageonly: art('pageonly')?.URL === 'about:srcdoc' && art('pageonly').querySelector('#first img')?.naturalWidth > 0 })`;
+    await until(`(() => { const now = ${loaded}; return !now.drawn.length && !now.pages.length && now.answer && now.pageonly; })()`, 'the nine chat pages drawn, their agent\'s pages loaded')
+      .catch(async (error: Error) => { throw new Error(`${error.message}: ${JSON.stringify(await value(loaded))}`); });
 
-    // 1440, the agent's page: the task, its conversations as recorded (the first open), thinking only the run's own,
-    // "How this ran" with ?r= alone.
+    // 1440, the agent's page: the input as the person's one message (the host's prompt is no message), its conversations
+    // as recorded (the first open), thinking only the run's own with its markdown drawn, "How this ran" with ?r= alone.
     const wide = await value<Record<string, unknown>>(`(() => { const d = doc('wide'); return {
-      task: d.querySelector('.msg.user .bubble')?.textContent,
+      task: [...d.querySelectorAll('.msg.user .bubble')].map((n) => n.textContent), first: d.querySelector('.thread').firstElementChild.matches('.msg.user'),
+      prompt: d.body.textContent.includes("The host's prompt"), marks: d.body.textContent.includes('**') || d.body.textContent.includes('\u0060'),
+      strong: [...d.querySelectorAll('details.think summary em strong, details.think > div strong, .said-text strong')].map((n) => n.textContent),
+      code: [...d.querySelectorAll('details.think summary em code, details.think > div code')].map((n) => n.textContent),
       cards: [...d.querySelectorAll('.thread > .msg .step')].map((c) => c.querySelector('.t span').textContent), hidden: d.querySelectorAll('.step[hidden]').length,
       more: [...d.querySelectorAll('.more')].map((n) => n.textContent),
       folds: [...d.querySelectorAll('details.fold')].map((n) => ({ open: n.open, label: n.querySelector('summary .lab').textContent, cards: n.querySelectorAll('.step').length })),
@@ -177,12 +202,17 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       said: [...d.querySelectorAll('.said-text')].map((n) => n.textContent),
       last: d.querySelector('.thread').lastElementChild.matches('.msg.answer') && d.querySelector('.thread').lastElementChild.textContent,
     }; })()`);
-    assert.equal(wide.task, TASK, 'the task as the run was given it');
+    assert.deepEqual(wide.task, [TASK], 'the input as given, once');
+    assert.equal(wide.first, true, 'at the top of the chat');
+    assert.equal(wide.prompt, false, 'the host\'s prompt is not drawn');
+    assert.equal(wide.marks, false, 'no markdown marks left as text');
+    assert.deepEqual(wide.strong, ['Page 2', 'Page 2', 'alarm'], 'bold in the thinking\'s title and body and in the last words');
+    assert.deepEqual(wide.code, ['line', 'line'], 'inline code in the thinking\'s title and body');
     assert.deepEqual(wide.cards, ['read film.mp4 from_s=0 to_s=30', 'read scans.pdf page=1', 'read scans.pdf page=2', 'read scans.pdf page=3', 'read scans.pdf page=1'], 'one card per tool call of the first conversation, in order');
     assert.deepEqual(wide.more, ['+ 4 more', '+ 2 more'], 'calls of one tool in a row: the first shown, the rest behind "+ N more", in each conversation');
     assert.equal(wide.hidden, 6);
     assert.deepEqual(wide.folds, [{ open: false, label: 'conversation 2', cards: 3 }], 'the second conversation, folded');
-    assert.deepEqual(wide.thinking, [{ open: false, text: THOUGHT }], 'the run\'s own thinking, folded');
+    assert.deepEqual(wide.thinking, [{ open: false, text: 'Page 2 holds the alarm; I will cite its line.' }], 'the run\'s own thinking, folded');
     assert.equal(wide.how, './?r=hand-page', 'the inspection viewer, with no other query parameter');
     assert.deepEqual(wide.timeline, { body: false, expanded: 'false', dot: true }, 'the timeline starts collapsed');
     assert.deepEqual(wide.flat, { page: 0, panes: 0 }, 'no horizontal scroll');
@@ -280,10 +310,23 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     await page.evaluate(`doc('hear').querySelector('.step-looks .look.decisive').closest('.step').querySelector('.step-main').click()`);
     await until(`doc('hear').querySelector('.src .addr')?.textContent === 'eagle-heard-and-seen.webm#t=0,34.092'`, 'the card opens its first decisive look');
 
-    // A run with no report: the right side says so and links the inspection view. Calls of different tools do not fold.
-    const none = await value<Record<string, unknown>>(`(() => { const d = doc('none'); return { cards: d.querySelectorAll('.step').length, more: d.querySelectorAll('.more:not(.cells)').length - d.querySelectorAll('.msg.user .more').length,
-      report: d.querySelector('.report').textContent, link: d.querySelector('.report a')?.getAttribute('href'), card: !!d.querySelector('.doccard'), flat: flat('none') }; })()`);
-    assert.deepEqual(none, { cards: 4, more: 0, report: 'This run has no report.How this ran: every call, look and file of the run.', link: './?r=reference-job', card: false, flat: { page: 0, panes: 0 } });
+    // A submitted record: the run's answer, a row per field, a field of evidence paths as its label and chips; the input's
+    // fields as the person's message. Calls of different tools do not fold.
+    const none = await value<Record<string, unknown>>(`(() => { const d = doc('none'); return { cards: d.querySelectorAll('.step').length, more: d.querySelectorAll('.steps > .more').length,
+      fields: [...d.querySelectorAll('.msg.user dl.fields > div')].map((n) => [n.querySelector('dt').textContent, n.querySelector('dd').textContent]),
+      kicker: d.querySelector('.kicker').textContent, rows: [...d.querySelectorAll('.arow')].map((n) => [n.querySelector('.alabel')?.textContent, n.querySelector('p')?.textContent ?? null, n.querySelectorAll('.cite').length]),
+      card: d.querySelector('.doccard small')?.textContent, flat: flat('none') }; })()`);
+    assert.deepEqual(none, { cards: 4, more: 0, fields: [['company', 'Acme Ltd']], kicker: 'The run\'s answer',
+      rows: [['company', 'Acme Ltd', 0], ['answer', 'Acme Ltd was incorporated on 2019-03-04.', 0], ['citations', null, 2], ['supported', 'yes', 0]],
+      card: 'The run\'s answer, with the sources it cites.', flat: { page: 0, panes: 0 } });
+
+    // No result: the run's last words are its answer, one row with no label. No result and no words: no report, and a
+    // link to the inspection view.
+    const said = await value<Record<string, unknown>>(`(() => { const d = doc('said'); return { kicker: d.querySelector('.kicker').textContent, rows: [...d.querySelectorAll('.arow')].map((n) => [n.className, n.querySelector('.alabel'), n.textContent]),
+      strong: d.querySelector('.arow strong')?.textContent, card: d.querySelector('.doccard small')?.textContent }; })()`);
+    assert.deepEqual(said, { kicker: 'The run\'s final message', rows: [['arow wide', null, 'Done. The alarm is on page 2.']], strong: 'alarm', card: 'The run\'s final message.' });
+    const bare = await value<Record<string, unknown>>(`(() => { const d = doc('bare'); return { report: d.querySelector('.report').textContent, link: d.querySelector('.report a')?.getAttribute('href'), card: !!d.querySelector('.doccard') }; })()`);
+    assert.deepEqual(bare, { report: 'This run has no report.How this ran: every call, look and file of the run.', link: './?r=hand-bare', card: false });
 
     // A run with the agent's page and no conversation: a plain line, the card that opens the page, and the page; its
     // picture outside its files is dropped, its in-page link stays inside, its citation lists the region it carries.
@@ -295,8 +338,15 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.deepEqual(await value(`[...doc('pageonly').querySelectorAll('.src .said p, .src .regions li')].map((n) => n.textContent)`),
       ['No look in this recording shows this address.', 'cited herecertificate.pdf#page=1&xywh=percent:10,10,20,20']);
 
+    // At 390, every page, every fold opened (a look that read a long list of files among them), is no wider than its
+    // screen.
+    await page.evaluate(`narrow(); for (const id of PAGES) unfold(id)`);
+    await page.sleep(500);
+    assert.ok(await value(`[...doc('wide').querySelectorAll('.cell-at')].some((n) => n.textContent.startsWith('scan-0.pdf,scan-1.pdf'))`), 'the long list is drawn');
+    assert.deepEqual(await value(`Object.fromEntries(PAGES.map((id) => [id, Math.max(0, wider(id))]))`), Object.fromEntries(['wide', 'phone', 'answer', 'files', 'hear', 'none', 'pageonly', 'said', 'bare'].map((id) => [id, 0])));
+
     // The public rules, over every word drawn on each page, its sources and the agent's page; a score only in a strip.
-    for (const id of ['wide', 'phone', 'answer', 'files', 'hear', 'none', 'pageonly']) {
+    for (const id of ['wide', 'phone', 'answer', 'files', 'hear', 'none', 'pageonly', 'said', 'bare']) {
       assert.doesNotMatch(await value<string>(`unstripped('${id}')`), /\d\.\d\d (yes|no)\b/, `${id}: no score outside a card's strip`);
       const drawn = await value<string>(`words('${id}')`);
       assert.doesNotMatch(drawn, /\b(kill|killed|resume|processes?)\b/i, `${id}: no process or kill mark`);

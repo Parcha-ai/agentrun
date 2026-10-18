@@ -4,7 +4,7 @@
 // alone. On a phone the right side is a bottom sheet.
 import type { ChatDecision, ChatItem, ChatModel, ChatSource, ChatSpan, ChatThread } from './chat-model.ts';
 import type { Recording } from './format.ts';
-import { drawReport, reportCiteLabel, reportClock, reportEl, reportFragmentOf } from './chat-report.ts';
+import { drawReport, reportCiteLabel, reportClock, reportEl, reportFragmentOf, reportInline, reportParagraphs } from './chat-report.ts';
 
 type ToolItem = Extract<ChatItem, { kind: 'tool' }>;
 type SourceKind = 'page' | 'image' | 'video' | 'other';
@@ -202,11 +202,33 @@ function sourceView(recording: Recording, model: ChatModel, shown: SourceShown, 
 function threadThinking(text: string): HTMLElement {
   const preview = text.split('\n').find((line) => line.trim() !== '')?.trim() ?? '';
   return reportEl('details', { class: 'think' },
-    reportEl('summary', {}, reportEl('span', { class: 'lab', text: 'Thinking' }), reportEl('em', { text: preview })),
-    reportEl('div', {}, ...threadParagraphs(text)));
+    reportEl('summary', {}, reportEl('span', { class: 'lab', text: 'Thinking' }), reportEl('em', {}, ...reportInline(preview))),
+    reportEl('div', {}, ...reportParagraphs(text)));
 }
 
-const threadParagraphs = (text: string) => text.split(/\n\s*\n/).filter((part) => part.trim() !== '').map((part) => reportEl('p', { text: part.trim() }));
+/** A message from the person: its body, and past a few lines a fold with "Show the whole message". */
+function threadYou(body: HTMLElement, long: boolean, id?: string): HTMLElement {
+  const node = reportEl('div', { class: 'msg user', 'data-item': id }, reportEl('div', { class: 'who', text: 'You' }), body);
+  if (long) {
+    body.classList.add('clamped');
+    const all = reportEl('button', { class: 'more', type: 'button', text: 'Show the whole message' });
+    all.addEventListener('click', () => { const clamped = body.classList.toggle('clamped'); all.textContent = clamped ? 'Show the whole message' : 'Show less'; });
+    node.append(all);
+  }
+  return node;
+}
+
+const threadLong = (text: string) => text.split('\n').length > THREAD_LINES || text.length > THREAD_CHARS;
+
+/** The run's input as given, as the person's message: its words, or its fields by name. */
+function threadInput(input: NonNullable<ChatModel['input']>): HTMLElement | undefined {
+  const fields = input.fields ?? [];
+  if (fields.length) {
+    const list = reportEl('dl', { class: 'bubble fields' }, ...fields.map((field) => reportEl('div', {}, reportEl('dt', { text: field.name }), reportEl('dd', { text: field.value }))));
+    return threadYou(list, fields.length > THREAD_LINES || fields.reduce((sum, field) => sum + field.name.length + field.value.length, 0) > THREAD_CHARS);
+  }
+  return input.text ? threadYou(reportEl('div', { class: 'bubble', text: input.text }), threadLong(input.text)) : undefined;
+}
 
 /** The look a card opens first: the decisive one, else its first look the recording describes. */
 const threadLookOf = (model: ChatModel, item: ToolItem) => item.looks.find((look) => model.sources[look]?.decisive) ?? item.looks.find((look) => model.sources[look]);
@@ -369,14 +391,7 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
         closeRun();
         agent = undefined;
         steps = undefined;
-        const bubble = reportEl('div', { class: 'bubble', text: item.text });
-        const node = reportEl('div', { class: 'msg user', 'data-item': item.id }, reportEl('div', { class: 'who', text: 'You' }), bubble);
-        if (item.text.split('\n').length > THREAD_LINES || item.text.length > THREAD_CHARS) {
-          bubble.classList.add('clamped');
-          const all = reportEl('button', { class: 'more', type: 'button', text: 'Show the whole message' });
-          all.addEventListener('click', () => { const clamped = bubble.classList.toggle('clamped'); all.textContent = clamped ? 'Show the whole message' : 'Show less'; });
-          node.append(all);
-        }
+        const node = threadYou(reportEl('div', { class: 'bubble', text: item.text }), threadLong(item.text), item.id);
         nodes.set(item.id, node);
         out.push(node);
         continue;
@@ -396,14 +411,15 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
       }
       closeRun();
       steps = undefined;
-      const node = item.kind === 'thinking' ? threadThinking(item.text) : reportEl('div', { class: 'said-text', 'data-item': item.id }, ...threadParagraphs(item.text));
+      const node = item.kind === 'thinking' ? threadThinking(item.text) : reportEl('div', { class: 'said-text', 'data-item': item.id }, ...reportParagraphs(item.text));
       nodes.set(item.id, node);
       agent.append(node);
     }
     closeRun();
     return out;
   };
-  const thread = reportEl('div', { class: 'thread' });
+  const input = model.input && threadInput(model.input);
+  const thread = reportEl('div', { class: 'thread' }, input);
   model.threads.forEach((each, index) => {
     if (index === 0) {
       const drawn = drawThread(each);
@@ -422,7 +438,8 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
   if (model.threads.length === 0) thread.append(reportEl('p', { class: 'none', text: 'This run recorded no conversation.' }));
   // The card that opens the report closes the chat, after every conversation.
   const doccard = reportTitle === undefined ? undefined : reportEl('button', { class: 'doccard', type: 'button' }, reportEl('span', { class: 'ic' }, threadIcon('doc')),
-    reportEl('span', {}, reportEl('b', { text: reportTitle }), reportEl('small', { text: model.artifact ? 'The page the agent wrote, with the sources it rests on.' : 'The run\'s answer, with the sources it cites.' })));
+    reportEl('span', {}, reportEl('b', { text: reportTitle }), reportEl('small', { text: model.artifact ? 'The page the agent wrote, with the sources it rests on.'
+      : model.answer?.from === 'text' ? 'The run\'s final message.' : 'The run\'s answer, with the sources it cites.' })));
   const answerNode = doccard && agentMessage('msg answer');
   if (answerNode && doccard) { answerNode.append(doccard); thread.append(answerNode); }
 
