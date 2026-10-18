@@ -34,23 +34,33 @@ This package is held: it is built and tested in this repository and not publishe
 ## Install
 
 ```sh
-npm install @parcha/pi-durable-agent@beta @earendil-works/pi-durable@~1.2.0 @earendil-works/chord@~1.2.0
+npm install @parcha/pi-durable-agent@beta @earendil-works/pi-durable@~1.2.0 @earendil-works/pi-ai@~1.2.0 @earendil-works/chord@~1.2.0
 ```
 
-Until it is published, use a checkout of this repository, as the quickstart below does.
-
 The package needs Node 22.19 or later, and `@earendil-works/pi-durable` and `@earendil-works/chord` as peers
-([Requirements](#requirements)). It does not need a browser, a key or a network.
+([Requirements](#requirements)); `@earendil-works/pi-ai` gives the host's Harness its models. The pi packages are pinned
+to 1.2, the line `@parcha/pi-durable-disk`'s install pins, so the two install side by side. It does not need a browser,
+a key or a network.
+
+Until it is published, pack it from a checkout and install the tarball it writes
+(`parcha-pi-durable-agent-<version>.tgz`) in place of `@parcha/pi-durable-agent@beta`:
+
+```sh
+git clone https://github.com/Parcha-ai/agentrun.git && cd agentrun && npm ci --ignore-scripts && npm run build
+npm pack -w @parcha/pi-durable-agent
+```
 
 ## Quickstart (no key, no network)
 
 Two runs of one agent on this machine. The first signs in, using a stand-in for the provider, and the second finds that
-sign-in already saved. The reference it prints, `ctx_1`, is a stand-in; a real one is secret. The quickstart also uses
-`@earendil-works/pi-ai` for the Harness's model registry, which a checkout has; from npm, add
-`@earendil-works/pi-ai@~1.2.0` to the install line above.
+sign-in already saved. The reference it prints, `ctx_1`, is a stand-in; a real one is secret.
 
-In a checkout of this repository, run `npm ci --ignore-scripts` and `npm run build -w @parcha/pi-durable-agent`, save
-this as `quickstart.mjs` at the repository root, and run `node quickstart.mjs`:
+In an empty directory, install the package and the pi packages it runs with, save this as `quickstart.mjs`, and run
+`node quickstart.mjs`:
+
+```sh
+npm install @parcha/pi-durable-agent@beta @earendil-works/pi-durable@~1.2.0 @earendil-works/pi-ai@~1.2.0 @earendil-works/chord@~1.2.0
+```
 
 ```js
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
