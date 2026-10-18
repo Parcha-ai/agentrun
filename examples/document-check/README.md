@@ -27,6 +27,8 @@ npm run demo:document-check -- --record <dir>        # keep the run as an agentr
    - Each row cites the look that saw the mark and its place: `page=1&xywh=percent:38.862,82.783,13.27,10.109`, in percent of the page's crop box, which is the page PDF.js shows.
    - A mark that is not there cites the page it was looked for on, with no box.
    - The PDF is kept in the recording, so the viewer opens the page a row cites and draws the box over it.
+   - Pages are named by their index in the file (`page=3`), the PDF's own addressing.
+   - Beside the rows, `document_check.pages` gives each page's kind, and `document_check.looks` gives each look the run made, in order: a short title ("Checked page 3, the filed page"), its takeaway in words ("There: the FILED stamp."), the PDF and the places it read. Every cite of a row names one of these looks.
 3. **The TEST COPY.** The same pages with the marks painted white come back with every mark no. A box Jev gives for a thing that is not there is never drawn.
 
 It checks whether each mark is there and where, not whether the document is genuine.

@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -89,6 +89,17 @@ test('on fakes, the filed pages: every mark yes, each boxed on its page, the PDF
   assert.deepEqual(rows.numbers_match.cites.map((cite) => cite.fragment), [rows.file_number.cites[0].fragment, rows.filed_stamp.cites[0].fragment]);
   assert.deepEqual(validateRecording(record), []);
   assert.ok(existsSync(join(record, 'blobs', `${blob}.pdf`)), 'the recording keeps the PDF');
+  const check = recorded(record).document_check;
+  assert.deepEqual(check.pages, [{ page: 1, kind: 'certification' }, { page: 2, kind: 'certification' }, { page: 3, kind: 'filed' }, { page: 4, kind: 'other' }], 'each page by its index in the file');
+  assert.deepEqual(check.looks.map((look) => look.title), [
+    'Checked page 1, the certification page', 'Checked page 2, the certification page', 'Checked page 3, the filed page', 'Checked page 4', 'Compared the two cut-outs: the file numbers agree?',
+  ]);
+  assert.equal(check.looks[2].takeaway, 'There: the FILED stamp.');
+  assert.deepEqual(check.looks.at(-1).fragments.map((fragment) => fragment.split('&')[0]), ['page=1', 'page=3'], 'the comparison read its two cut-outs');
+  assert.ok(check.looks.every((look) => look.blob === blob && look.fragments.length > 0 && look.takeaway), 'each look names its source, the places it read and its takeaway');
+  const filed = readdirSync(join(tmp, 'run', 'evidence'), { recursive: true }).filter((name) => name.endsWith('.json')).map((name) => JSON.parse(readFileSync(join(tmp, 'run', 'evidence', name), 'utf8'))).filter((look) => look.status === 'ok');
+  assert.deepEqual(new Set(check.looks.map((look) => look.look)), new Set(filed.map((look) => look.facts.key)), 'every look the run filed is a step');
+  assert.ok(recorded(record).rows.flatMap((row) => row.cites).every((cite) => check.looks.some((look) => look.look === cite.look)), 'every cite resolves to a step');
 });
 
 test('on fakes, the TEST COPY: every mark no, each row citing only the page it was looked for on', { timeout: 240_000, skip: PROGRAMS }, async (t) => {
@@ -103,6 +114,13 @@ test('on fakes, the TEST COPY: every mark no, each row citing only the page it w
   assert.equal(cited.rows.at(-1).note, 'file_number and filed_stamp not there');
   const blob = sha256(readFileSync(join(HERE, 'sample', sample.files.test_copy)));
   assert.ok(recorded(record).rows.flatMap((row) => row.cites).every((cite) => cite.blob === blob), 'the cites name the TEST COPY');
+  const check = recorded(record).document_check;
+  assert.deepEqual(check.looks.map((look) => [look.title, look.takeaway]).slice(0, 3), [
+    ['Checked page 1, the certification page', 'Not there: the Secretary of State\'s seal; the Secretary of State\'s signature; the file number and the SR number; and the authentication number and its date.'],
+    ['Checked page 2, the certification page', 'Not there: the Secretary of State\'s seal; the Secretary of State\'s signature; the file number and the SR number; and the authentication number and its date.'],
+    ['Checked page 3, the filed page', 'Not there: the FILED stamp.'],
+  ]);
+  assert.equal(check.looks.length, 4, 'the four pages: nothing to compare');
 });
 
 test('cite builds the rows step 2 wrote, in the checklist\'s order, whatever the lead submitted, and lists what it submitted otherwise', async (t) => {
