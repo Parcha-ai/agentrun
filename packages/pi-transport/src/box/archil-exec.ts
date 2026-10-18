@@ -26,10 +26,11 @@ const CALL_GRACE_MS = 15_000;
 const CPUS = 2;
 const MEMORY_MB = 3_938;
 const DEFAULT_QUEUE_MS = 60_000;
+const DEFAULT_DESTROY_WAIT_MS = 5_000;
 const DEFAULT_ROOT = "boxes";
 const DEFAULT_MOUNT = "work";
-const META_DIR = ".pi-transport";
-const META_FILE = "box.json";
+/** The records of a root `boxes` are files of `boxes.records/`: outside every directory a command can hold, so a box can be ended while one runs. */
+const RECORDS_SUFFIX = ".records";
 const META_FORMAT = "pi-transport.archil-exec/1";
 /** What `cd` into a box directory that is gone prints and exits with, so no program's own exit code reads as `gone`. */
 const GONE_MARK = "pi-transport: box directory is gone";
@@ -89,6 +90,12 @@ export type ArchilExecBoxesOptions = {
 	 * attached the same box waits this long and then fails, instead of being refused at once. Default 60 000.
 	 */
 	readonly queueMs?: number;
+	/**
+	 * How long a `destroy`, and a sweep of a directory without a record, wait for commands that hold boxes to end before
+	 * they give up on removing the directory, in ms. Removing a directory needs its parent checked out (a directory
+	 * cannot be removed while it is itself checked out), and a held box under it makes that wait. Default 5000.
+	 */
+	readonly destroyWaitMs?: number;
 };
 
 type BoxRecord = {
@@ -156,7 +163,24 @@ type Shared = {
 	readonly root: string;
 	readonly mount: string;
 	readonly queueMs: number;
+	readonly destroyWaitMs: number;
 };
+
+const recordsOf = (shared: Pick<Shared, "root">) => `${shared.root}${RECORDS_SUFFIX}`;
+const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** `call`, again while the service answers 409: another client holds a write delegation of the path, for the length of its command. */
+async function settle<T>(shared: Shared, call: () => Promise<T>): Promise<T> {
+	const deadline = Date.now() + shared.queueMs;
+	for (;;) {
+		try {
+			return await call();
+		} catch (cause) {
+			if (statusOf(cause) !== 409 || Date.now() >= deadline) throw cause;
+			await pause(200);
+		}
+	}
+}
 
 const encoder = new TextEncoder();
 
@@ -184,6 +208,10 @@ class ArchilExecBox implements Box {
 		return `${this.#shared.root}/${this.id}`;
 	}
 
+	get #recordKey(): string {
+		return `${recordsOf(this.#shared)}/${this.id}.json`;
+	}
+
 	facts(): BoxFacts {
 		return this.#record.facts;
 	}
@@ -197,6 +225,7 @@ class ArchilExecBox implements Box {
 		if (this.#ended) return false;
 		if (this.#expired()) {
 			this.#ended = true;
+			await settle(this.#shared, () => this.#shared.disk.deleteObject(this.#recordKey)).catch(() => {});
 			await this.#remove().catch(() => {});
 			return false;
 		}
@@ -256,7 +285,8 @@ class ArchilExecBox implements Box {
 		const seconds = (timeoutMs ?? DEFAULT_EXEC_MS) / 1000;
 		const env = Object.entries(this.#record.env).map(([name, value]) => `${name}=${quote(value)}`);
 		const line = [
-			`cd ${quote(this.#record.facts.workspace)} 2>/dev/null || { echo ${quote(GONE_MARK)} >&2; exit ${EXIT_GONE}; }`,
+			// The box is gone when its record is, whatever is left of its directory.
+			`[ -f ${quote(`/mnt/archil/${this.#shared.mount}/${this.#recordKey}`)} ] && cd ${quote(this.#record.facts.workspace)} 2>/dev/null || { echo ${quote(GONE_MARK)} >&2; exit ${EXIT_GONE}; }`,
 			`exec timeout -k 1 ${seconds} ${env.length === 0 ? "" : `env ${env.join(" ")} `}${command.map(quote).join(" ")}`,
 		].join("; ");
 		return ok(this.#process(line, timeoutMs, context));
@@ -324,13 +354,7 @@ class ArchilExecBox implements Box {
 				: undefined
 			: path;
 		const segments = relative?.split("/").filter((part) => part !== "" && part !== ".");
-		if (
-			relative === undefined ||
-			segments === undefined ||
-			segments.length === 0 ||
-			segments.includes("..") ||
-			segments[0] === META_DIR
-		) {
+		if (relative === undefined || segments === undefined || segments.length === 0 || segments.includes("..")) {
 			return err(new BoxError("invalid", `${path} is not a file inside the box's workspace`));
 		}
 		return ok(`${this.#key}/${segments.join("/")}`);
@@ -344,18 +368,25 @@ class ArchilExecBox implements Box {
 			if (!key.ok) return key;
 			keyed.push({ key: key.value, file });
 		}
-		for (const { key, file } of keyed) {
-			try {
-				await this.#shared.disk.putObject(
-					key,
-					file.bytes,
-					file.mode === undefined ? undefined : { mode: file.mode },
-				);
-			} catch (cause) {
-				return err(failure(`could not write ${file.path}`, cause));
+		// After the commands this process already asked for: a write to a directory a command holds is refused by the service.
+		const turn = this.#tail.then(async (): Promise<Result<void, BoxError>> => {
+			for (const { key, file } of keyed) {
+				try {
+					await settle(this.#shared, () =>
+						this.#shared.disk.putObject(
+							key,
+							file.bytes,
+							file.mode === undefined ? undefined : { mode: file.mode },
+						),
+					);
+				} catch (cause) {
+					return err(failure(`could not write ${file.path}`, cause));
+				}
 			}
-		}
-		return ok(undefined);
+			return ok(undefined);
+		});
+		this.#tail = turn;
+		return turn;
 	}
 
 	async download(paths: readonly string[], _context: Context): Promise<Result<readonly BoxFile[], BoxError>> {
@@ -377,7 +408,7 @@ class ArchilExecBox implements Box {
 	async status(): Promise<Result<BoxStatus, BoxError>> {
 		if (!(await this.#alive())) return ok({ state: "ended", exitCode: null });
 		try {
-			await this.#shared.disk.getObject(`${this.#key}/${META_DIR}/${META_FILE}`);
+			await this.#shared.disk.getObject(this.#recordKey);
 		} catch (cause) {
 			if (notFound(cause)) {
 				this.#ended = true;
@@ -388,10 +419,16 @@ class ArchilExecBox implements Box {
 		return ok({ state: "running" });
 	}
 
-	/** Remove the directory, asking for it checked out but never waiting for a command that still holds it. */
+	/** Remove the directory: through its parent, which is checked out for the call (the directory itself cannot be removed while it is). */
 	async #remove(): Promise<void> {
 		const result = await this.#shared.client.exec({
-			disks: { [this.#shared.mount]: { disk: this.#shared.disk.id, checkoutPaths: [this.#key] } },
+			disks: {
+				[this.#shared.mount]: {
+					disk: this.#shared.disk.id,
+					checkoutPaths: [this.#shared.root],
+					queueMs: this.#shared.destroyWaitMs,
+				},
+			},
 			command: `rm -rf -- ${quote(this.#record.facts.workspace)}`,
 		});
 		if (result.exitCode !== 0) throw new Error(`rm exited ${result.exitCode}: ${result.stderr.trim()}`);
@@ -405,7 +442,7 @@ class ArchilExecBox implements Box {
 	async destroy(): Promise<Result<void, BoxError>> {
 		if (this.#ended) return ok(undefined);
 		try {
-			await this.#shared.disk.deleteObject(`${this.#key}/${META_DIR}/${META_FILE}`);
+			await settle(this.#shared, () => this.#shared.disk.deleteObject(this.#recordKey));
 		} catch (cause) {
 			if (!notFound(cause)) return err(failure(`could not end box ${this.id}`, cause));
 		}
@@ -421,8 +458,9 @@ class ArchilExecBox implements Box {
  * own and keeps no program running between calls (`facts().liveProcesses` is false), so it fits tool calls and never a
  * home; the box place refuses it with `no_live_processes`.
  *
- * The box is `<root>/<id>/` on the disk, with its labels, env, facts and end time in `<root>/<id>/.pi-transport/box.json`,
- * so `attach` and `list` find it after a restart. Archil has no timer that ends a directory: a box past its
+ * The box is the directory `<root>/<id>/` of the disk. Its labels, env, facts and end time are the file
+ * `<root>.records/<id>.json`, outside every directory a command can hold, so `attach` and `list` find the box after a restart
+ * and a box can be ended while a command still runs in it. Archil has no timer that ends a directory: a box past its
  * `maxLifetimeMs` is ended, and its directory removed, by the first call that looks at it (`attach`, `list`, `exec`,
  * `status`, `upload`, `download`). Every `exec` checks out the box's directory with a queue, so two processes that
  * attached the same box run one command at a time and neither loses a write; this process also orders its own calls.
@@ -446,26 +484,30 @@ export function archilExecBoxes(options: ArchilExecBoxesOptions): BoxProvider {
 		root: options.root ?? DEFAULT_ROOT,
 		mount: options.mount ?? DEFAULT_MOUNT,
 		queueMs: options.queueMs ?? DEFAULT_QUEUE_MS,
+		destroyWaitMs: options.destroyWaitMs ?? DEFAULT_DESTROY_WAIT_MS,
 	};
 	const keyOf = (id: string) => `${shared.root}/${id}`;
+	const recordKeyOf = (id: string) => `${recordsOf(shared)}/${id}.json`;
 	const readRecord = async (id: string): Promise<Result<BoxRecord | undefined, BoxError>> => {
 		try {
-			const bytes = await shared.disk.getObject(`${keyOf(id)}/${META_DIR}/${META_FILE}`);
+			const bytes = await shared.disk.getObject(recordKeyOf(id));
 			return ok(parseRecord(new TextDecoder().decode(bytes)));
 		} catch (cause) {
 			if (notFound(cause)) return ok(undefined);
 			return err(failure(`could not look up box ${id}`, cause));
 		}
 	};
-	const sweepDirectory = async (directory: string, key: string): Promise<void> => {
+	const sweepDirectory = async (directory: string): Promise<void> => {
 		await shared.client
 			.exec({
-				disks: { [shared.mount]: { disk: shared.disk.id, checkoutPaths: [key] } },
+				disks: {
+					[shared.mount]: { disk: shared.disk.id, checkoutPaths: [shared.root], queueMs: shared.destroyWaitMs },
+				},
 				command: `rm -rf -- ${quote(directory)}`,
 			})
 			.catch(() => {});
 	};
-	const sweep = (record: BoxRecord): Promise<void> => sweepDirectory(record.facts.workspace, keyOf(record.id));
+	const sweep = (record: BoxRecord): Promise<void> => sweepDirectory(record.facts.workspace);
 
 	return {
 		name: "archil-exec",
@@ -518,8 +560,11 @@ export function archilExecBoxes(options: ArchilExecBoxesOptions): BoxProvider {
 				expiresAt: Date.now() + spec.maxLifetimeMs,
 			};
 			try {
-				await shared.disk.putObject(`${keyOf(id)}/${META_DIR}/${META_FILE}`, JSON.stringify(record));
+				await shared.disk.putObject(recordKeyOf(id), JSON.stringify(record));
+				// The directory is a marker object; the service refuses it for a moment while a removal holds the parent.
+				await settle(shared, () => shared.disk.putObject(`${keyOf(id)}/`, ""));
 			} catch (cause) {
+				await shared.disk.deleteObject(recordKeyOf(id)).catch(() => {});
 				return err(failure("could not make a box directory", cause));
 			}
 			return ok(new ArchilExecBox(shared, record));
@@ -538,11 +583,12 @@ export function archilExecBoxes(options: ArchilExecBoxesOptions): BoxProvider {
 
 		async list(labels, _context: Context): Promise<Result<readonly BoxRef[], BoxError>> {
 			const base = `/mnt/archil/${shared.mount}/${shared.root}`;
+			const records = `/mnt/archil/${shared.mount}/${recordsOf(shared)}`;
 			let listed: ArchilExecResult;
 			try {
 				listed = await shared.client.exec({
 					disks: { [shared.mount]: { disk: shared.disk.id, readOnly: true } },
-					command: `for d in ${base}/ax-*; do [ -d "$d" ] || continue; if [ -f "$d/${META_DIR}/${META_FILE}" ]; then cat "$d/${META_DIR}/${META_FILE}"; echo; else echo "${ORPHAN_MARK}$d"; fi; done; true`,
+					command: `for f in ${records}/ax-*.json; do [ -f "$f" ] && { cat "$f"; echo; }; done; for d in ${base}/ax-*; do [ -d "$d" ] && [ ! -f "${records}/$(basename "$d").json" ] && echo "${ORPHAN_MARK}$d"; done; true`,
 				});
 			} catch (cause) {
 				return err(failure("could not list boxes", cause));
@@ -551,8 +597,7 @@ export function archilExecBoxes(options: ArchilExecBoxesOptions): BoxProvider {
 			for (const text of listed.stdout.split("\n")) {
 				if (text.startsWith(ORPHAN_MARK)) {
 					const directory = text.slice(ORPHAN_MARK.length).trim();
-					if (directory.startsWith(`${base}/ax-`))
-						await sweepDirectory(directory, keyOf(directory.slice(base.length + 1)));
+					if (directory.startsWith(`${base}/ax-`)) await sweepDirectory(directory);
 					continue;
 				}
 				const record = text.trim() === "" ? undefined : parseRecord(text);

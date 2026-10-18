@@ -52,13 +52,19 @@ export class FakeArchil {
 				return new Uint8Array(readFileSync(path));
 			},
 			putObject: async (key, body, options) => {
+				this.#refuseWriteUnderHold(key);
 				const path = join(this.root, key);
+				if (key.endsWith("/")) {
+					mkdirSync(path, { recursive: true });
+					return;
+				}
 				mkdirSync(dirname(path), { recursive: true });
 				writeFileSync(path, typeof body === "string" ? body : body);
 				const mode = typeof options === "object" && options !== null ? options.mode : undefined;
 				if (mode !== undefined) chmodSync(path, mode);
 			},
 			deleteObject: async (key) => {
+				this.#refuseWriteUnderHold(key);
 				rmSync(join(this.root, key), { recursive: true, force: true });
 			},
 		};
@@ -82,11 +88,27 @@ export class FakeArchil {
 		};
 	}
 
+	/** The service refuses an object write to a path another client holds a write delegation of, as it does a command's. */
+	#refuseWriteUnderHold(key: string): void {
+		const path = key.replace(/\/$/, "");
+		for (const held of this.held.keys()) {
+			if (path === held || path.startsWith(`${held}/`) || held.startsWith(`${path}/`)) {
+				throw new FakeArchilError(
+					"ArchilS3Error",
+					`S3 PutObject failed: 409 OperationAborted: the path /${held} cannot be written because another client holds a write delegation`,
+					409,
+				);
+			}
+		}
+	}
+
 	async #checkout(paths: readonly string[], queueMs: number | undefined): Promise<() => void> {
 		const deadline = Date.now() + (queueMs ?? 0);
+		// Checkouts are hierarchical, as the service's are: a path conflicts with itself, its parents and its children.
+		const overlaps = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
 		for (const path of paths) {
 			for (;;) {
-				const holder = this.held.get(path);
+				const holder = [...this.held].find(([other]) => overlaps(other, path))?.[1];
 				if (holder === undefined) break;
 				if (queueMs === undefined || Date.now() >= deadline) {
 					throw new FakeArchilError(

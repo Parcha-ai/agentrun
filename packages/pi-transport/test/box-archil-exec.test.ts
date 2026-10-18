@@ -27,7 +27,7 @@ function unwrap<T>(result: { ok: true; value: T } | { ok: false; error: Error })
 }
 
 /** A fake disk and the provider over it; `close` kills what a test abandoned. */
-function rig(options: { queueMs?: number } = {}) {
+function rig(options: { queueMs?: number; destroyWaitMs?: number } = {}) {
 	const fake = new FakeArchil();
 	const provider = archilExecBoxes({ client: fake.client, disk: fake.disk, ...options });
 	return { fake, provider, close: () => fake.close() };
@@ -74,14 +74,14 @@ describe("archil exec boxes", () => {
 		}
 	});
 
-	it("never touches anything outside boxes/ on the disk, and never under runs/", async () => {
+	it("never touches anything outside boxes/ and boxes.records/ on the disk, and never under runs/", async () => {
 		const { fake, provider, close } = rig();
 		try {
 			const box = unwrap(await provider.create(SPEC, context));
 			await run(box, ["sh", "-c", "echo hi > a.txt"]);
 			unwrap(await box.upload([{ path: "deep/b.txt", bytes: new Uint8Array([1]) }], context));
 			unwrap(await box.destroy(context));
-			expect(readdirSync(fake.root)).toEqual(["boxes"]);
+			expect(readdirSync(fake.root).sort()).toEqual(["boxes", "boxes.records"]);
 		} finally {
 			close();
 		}
@@ -210,8 +210,22 @@ describe("archil exec boxes", () => {
 		}
 	});
 
+	it("removes a directory through its parent: a directory cannot be removed while it is itself checked out", async () => {
+		const { fake, provider, close } = rig({ destroyWaitMs: 1_234 });
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			unwrap(await box.destroy(context));
+			const call = fake.calls.at(-1);
+			expect(call?.command).toContain("rm -rf");
+			expect(call?.spec).toMatchObject({ checkoutPaths: ["boxes"], queueMs: 1_234 });
+			expect(existsSync(join(fake.root, "boxes", box.id))).toBe(false);
+		} finally {
+			close();
+		}
+	});
+
 	it("ends a box at once even while a command holds its directory, and the next list removes what was left", async () => {
-		const { fake, provider, close } = rig();
+		const { fake, provider, close } = rig({ destroyWaitMs: 100 });
 		try {
 			const box = unwrap(await provider.create(SPEC, context));
 			const held = run(box, ["sleep", "1"]);
@@ -366,7 +380,7 @@ describe("archil exec boxes", () => {
 			expect(fake.calls.every((call) => !call.command.includes("c.bin") || call.command.includes("stat"))).toBe(
 				true,
 			);
-			for (const path of ["../other/x", `${box.facts().workspace}/../x`, "/etc/passwd", ".pi-transport/box.json"]) {
+			for (const path of ["../other/x", `${box.facts().workspace}/../x`, "/etc/passwd"]) {
 				const refused = await box.download([path], context);
 				expect(refused.ok, path).toBe(false);
 				if (!refused.ok) expect(refused.error.code).toBe("invalid");
@@ -376,6 +390,22 @@ describe("archil exec boxes", () => {
 			const missing = await box.download(["nope.txt"], context);
 			expect(missing.ok).toBe(false);
 			if (!missing.ok) expect(missing.error.code).toBe("not_found");
+		} finally {
+			close();
+		}
+	});
+
+	it("waits for a command that holds the directory before it writes a file there, instead of failing", async () => {
+		const { fake, provider, close } = rig({ queueMs: 5_000 });
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const other = archilExecBoxes({ client: fake.client, disk: fake.disk, queueMs: 5_000 });
+			const there = unwrap(await other.attach(box.id, context)) as Box;
+			const held = run(there, ["sleep", "0.6"]);
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			unwrap(await box.upload([{ path: "late.txt", bytes: new Uint8Array([7]) }], context));
+			await held;
+			expect(readFileSync(join(fake.root, "boxes", box.id, "late.txt"))[0]).toBe(7);
 		} finally {
 			close();
 		}
