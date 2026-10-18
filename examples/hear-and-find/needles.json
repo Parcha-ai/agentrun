@@ -1,0 +1,15 @@
+{
+ "about": "What the agent is asked to find. Change the film, the phrase or the thing here; nothing else names them. best is the copy the frame with the box is cut from: the same film by default; eagle-has-landed-original.mp4 (sources.json, 489 MB) gives a sharper frame.",
+ "film": "eagle-has-landed.mp4",
+ "best": "eagle-has-landed.mp4",
+ "heard": {
+  "phrase": "Tranquility Base",
+  "question": "the landing call, during the descent"
+ },
+ "seen": {
+  "thing": "a United States flag standing planted on the ground",
+  "box": "the United States flag",
+  "words": "flag",
+  "question": "the planted flag, first seen"
+ }
+}

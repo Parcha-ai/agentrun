@@ -1,0 +1,5 @@
+---
+packages: repo
+kind: feature
+---
+`examples/hear-and-find` (`npm run demo:hear-and-find`), on the reference entry's `demo()` and code mode: one agent answers two questions about NASA's 1969 Apollo 11 film, each to the second, by writing its own code with `vision.transcribe`, `vision.judge` and `vision.see`, following pi-vision's transcribe and find skills. Heard: it transcribes the film once, finds every time "Tranquility Base" is said (twice word for word, with "The Eagle has landed"), and picks the landing call by what is said around each. Seen: it finds the second the planted flag is first seen, coarse to fine, and the box Jev draws on that frame; the result keeps the frame with its box. What is asked is data (`needles.json`). On fakes it reads a committed 34 s clip of three pieces of the film with no network (`clip/`, cut by `clip/cut.sh`, source in `ASSETS.md`); the scripted lead runs the skills' own programs and the scripted eyes, Jev and transcriber answer from `clip/clip.json`.
