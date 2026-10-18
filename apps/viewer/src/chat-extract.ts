@@ -314,7 +314,9 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     const listed = chatList(look.images).map((each) => chatStr(each) ?? chatStr(chatObj(each)?.blob)).filter((sha): sha is string => !!sha && !!recording.blobUrl(sha));
     const shown = chatStr(facts?.sha256);
     const media = listed.length ? listed : shown && recording.blobUrl(shown) ? [shown] : [];
-    sources[key] = { href, ...(addresses.length > 1 ? { more: addresses.slice(1) } : {}), takeaway: text, decisions, media, regions, ...(lookItem.has(key) ? { item: lookItem.get(key)! } : {}) };
+    // A look over several addresses files one picture for each, in their order.
+    const pictures = addresses.length > 1 && listed.length === addresses.length ? addresses.map((each, index) => ({ href: index === 0 ? href : each, sha: listed[index]! })) : undefined;
+    sources[key] = { href, ...(addresses.length > 1 ? { more: addresses.slice(1) } : {}), ...(pictures ? { pictures } : {}), takeaway: text, decisions, media, regions, ...(lookItem.has(key) ? { item: lookItem.get(key)! } : {}) };
   }
 
   // A call that made exactly one look says what that look found; its own first line is the tool's framing.

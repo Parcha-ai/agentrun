@@ -195,6 +195,12 @@ test('a look over several addresses opens at its first and keeps the rest in ord
   const m = await model(referenceJob, (events) => `${events.trimEnd()}\n${write}\n`);
   assert.equal(m.sources.k3?.href, 'a.pdf#page=1');
   assert.deepEqual(m.sources.k3?.more, ['a.pdf#page=2', 'b.pdf#page=1']);
+  assert.equal(m.sources.k3?.pictures, undefined, 'no pictures, no pairing');
+  const { recording } = opened(referenceJob);
+  const shown = recording.lines.flatMap((line) => line.blobs ?? []).find((sha) => (recording.blobType(sha) ?? '').startsWith('image/'))!;
+  const pictured = JSON.stringify({ channel: 'durable', source: 'vision', kind: 'vision.looks', t: 1, data: { doc: 'vision.looks', key: 'k4', value: { looks: [{ record: { tool: 'see', args: { path: 'a.pdf#page=1, a.pdf#page=2' }, body: 'two pages', facts: { key: 'k4' } }, images: [{ blob: shown }, { blob: shown }] }] }, version: 1 } });
+  const both = await model(referenceJob, (events) => `${events.trimEnd()}\n${pictured}\n`);
+  assert.deepEqual(both.sources.k4?.pictures, [{ href: 'a.pdf#page=1', sha: shown }, { href: 'a.pdf#page=2', sha: shown }]);
 });
 
 /** Each event line rewritten by `change`; a line it returns undefined for is dropped. */

@@ -52,7 +52,9 @@ export type ChatDecision = { name: string; kind: 'noul'; score: number } | { nam
 /** What a look read, by its key: the address it read, what it found, its decisions, its images and the regions it
  *  boxed. `decisive`: the look the run's answer cites (or, in a call none of whose looks is cited, the one scored
  *  highest), the one whose frame opens first. */
-export type ChatSource = { href: string; /** The other addresses a look over several read, in order. */ more?: string[]; takeaway: string; decisions: ChatDecision[]; media: string[]; regions: { label: string; href: string }[]; item?: string; decisive?: boolean };
+export type ChatSource = { href: string; /** The other addresses a look over several read, in order. */ more?: string[];
+  /** A look over several addresses: each address with the picture shown for it, when it filed one for each. */
+  pictures?: { href: string; sha: string }[]; takeaway: string; decisions: ChatDecision[]; media: string[]; regions: { label: string; href: string }[]; item?: string; decisive?: boolean };
 
 /** One row of the run's answer, each cite resolved to the look (and its card) that made it. A cite with no look can
  *  name its own blob (a kept picture), opened at its fragment, and say what it is (`label`). `note`: the row's own

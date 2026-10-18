@@ -6,7 +6,7 @@
 export const MIME: Record<string, string> = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', webm: 'video/webm',
   json: 'application/json', html: 'text/html', md: 'text/markdown', txt: 'text/plain', pdf: 'application/pdf',
-  sqlite: 'application/vnd.sqlite3',
+  sqlite: 'application/vnd.sqlite3', css: 'text/css',
 };
 export const typeOfName = (name: string): string | undefined => MIME[name.split('.').at(-1)?.toLowerCase() ?? ''];
 
