@@ -8,7 +8,8 @@ import type { Redact } from './record.ts';
 import { declaredEnv, type DemoSpec } from './demo-spec.ts';
 
 /** A secret value and the name it is reported by (an environment name, or `<file> credentials.<provider>.<field>`). */
-export type Secret = { key: string; value: string };
+/** `whole`: a value that is also an ordinary word (a machine named `node`): it is redacted only as a whole token in text, never inside a JSON key or a word of the recording's format. */
+export type Secret = { key: string; value: string; whole?: true };
 
 /** The shortest value that counts as a secret: a short string is a word, and redacting it would damage the lines around it. */
 const MIN = 12;
@@ -42,12 +43,12 @@ export function signInSecrets(file: string): Secret[] {
 
 /** Words the recording format itself is written in (its channels, sources, kinds and keys, and the values of its fixed fields): a host name that is one of them is not taken, because replacing it would rewrite the lines around it
  *  (a machine named `host` would turn every `"source":"host"` into `"source":"[redacted]"`). Such a name says nothing about the machine anyway. */
-const RECORDING_WORDS = new Set(['host', 'process', 'kill', 'result', 'live', 'durable', 'workflow', 'browser', 'vision', 'transport', 'data', 'source', 'kind', 'channel', 'child', 'supervisor', 'run', 'status', 'point', 'label', 'side', 'null', 'true', 'false', 'blob', 'title', 'cost', 'model', 'done', 'failed', 'error', 'complete', 'revoke', 'delegation', 'receipt', 'localhost']);
+const RECORDING_WORDS = new Set(['host', 'node', 'workflow', 'process', 'kill', 'result', 'live', 'durable', 'workflow', 'browser', 'vision', 'transport', 'data', 'source', 'kind', 'channel', 'child', 'supervisor', 'run', 'status', 'point', 'label', 'side', 'null', 'true', 'false', 'blob', 'title', 'cost', 'model', 'done', 'failed', 'error', 'complete', 'revoke', 'delegation', 'receipt', 'localhost']);
 
 /** This machine's own host name and boot id (where `/proc/sys/kernel/random/boot_id` exists): a recording shows labels for a holder's, never these. A short or generic name, or one of the recording's own words, is not taken (it would damage the lines around it). `name` is for a test. */
 export function machineSecrets(name: string = hostname()): Secret[] {
   const found: Secret[] = [];
-  if (name.length >= 4 && !RECORDING_WORDS.has(name.toLowerCase())) found.push({ key: 'this machine\'s host name', value: name });
+  if (name.length >= 4 && !RECORDING_WORDS.has(name.toLowerCase())) found.push({ key: 'this machine\'s host name', value: name, whole: true });
   try { const boot = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(); if (boot.length >= 16) found.push({ key: 'this machine\'s boot id', value: boot }); } catch { /* not a machine that has one */ }
   return found;
 }
@@ -62,9 +63,20 @@ export function secretsOf(env: NodeJS.ProcessEnv, spec: DemoSpec, authFile: stri
   return [...found, ...signInSecrets(authFile), ...machineSecrets()];
 }
 
-const formsOf = (secrets: Iterable<Secret>): string[] => [...new Set([...secrets].flatMap((secret) => [secret.value, JSON.stringify(secret.value).slice(1, -1)]))].sort((a, b) => b.length - a.length);
+const escapeToken = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** A value that is also a word: found only as a whole token (not inside a longer word, a dotted name or a path segment of the format) and not as a JSON key (`"node":`). */
+const tokenOf = (value: string) => new RegExp(`(?<![\\w.-])${escapeToken(value)}(?![\\w.-])(?!"\\s*:)`, 'g');
+type Form = string | RegExp;
+const formsOf = (secrets: Iterable<Secret>): Form[] => {
+  const list = [...secrets];
+  const exact = [...new Set(list.filter((secret) => !secret.whole).flatMap((secret) => [secret.value, JSON.stringify(secret.value).slice(1, -1)]))].sort((a, b) => b.length - a.length);
+  const whole = [...new Set(list.filter((secret) => secret.whole).map((secret) => secret.value))].map(tokenOf);
+  return [...exact, ...whole];
+};
+/** Whether a text holds a secret as the redaction would take it out. */
+const holds = (bytes: Buffer, secret: Secret): boolean => (secret.whole ? tokenOf(secret.value).test(bytes.toString('latin1')) : bytes.includes(secret.value) || bytes.includes(JSON.stringify(secret.value).slice(1, -1)));
 /** Replaces each form of each value (raw, and as written inside a JSON string) with `[redacted]`, the longest first, so one value that holds another goes whole. */
-const apply = (forms: readonly string[], text: string): string => forms.reduce((out, form) => (out.includes(form) ? out.split(form).join('[redacted]') : out), text);
+const apply = (forms: readonly Form[], text: string): string => forms.reduce<string>((out, form) => (typeof form === 'string' ? (out.includes(form) ? out.split(form).join('[redacted]') : out) : out.replace(form, '[redacted]')), text);
 
 /** Replaces each value with `[redacted]`. */
 export function redactorOf(secrets: readonly Secret[]): Redact | undefined {
@@ -108,7 +120,7 @@ export function scanRecording(dir: string, secrets: readonly Secret[]): void {
     const bytes = readFileSync(file);
     for (const secret of secrets) {
       // Raw, and as written inside a JSON string (a line holds a token with a quote, a backslash or a newline escaped): the redaction takes both forms out, so the scan looks for both.
-      if (bytes.includes(secret.value) || bytes.includes(JSON.stringify(secret.value).slice(1, -1))) throw new Error(`the recording holds a secret that the redaction should have removed: ${secret.key} is in ${relative(dir, file)}`);
+      if (holds(bytes, secret)) throw new Error(`the recording holds a secret that the redaction should have removed: ${secret.key} is in ${relative(dir, file)}`);
     }
   }
 }
