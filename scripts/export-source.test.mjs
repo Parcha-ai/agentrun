@@ -59,6 +59,17 @@ test('source archives exclude website files, build output, and private review st
   assert.equal(await f.listing(), firstListing);
 });
 
+test('a local config file (x.local.json, .local) stays out, and a module named local.ts is exported', async t => {
+  const f = await fixture(t);
+  const local = ['packages/pi-transport/examples/hands.local.json', 'packages/pi-transport/settings.local.json', 'packages/pi-transport/.local'];
+  for (const path of local) await f.write(path, 'PRIVATE_LOCAL_FIXTURE\n');
+  await f.write('packages/pi-transport/src/box/local.ts', 'export const local = 1;\n');
+  await f.run();
+  const listing = await f.listing();
+  assert.match(listing, /agentrun-dsl-source\/packages\/pi-transport\/src\/box\/local\.ts/);
+  for (const path of local) assert.ok(!listing.includes(`agentrun-dsl-source/${path}`), path);
+});
+
 test('an audit finding blocks the source archive without exposing its content', async t => {
   const f = await fixture(t);
   const fakeSecret = ['ghp_', 'z'.repeat(36)].join('');
