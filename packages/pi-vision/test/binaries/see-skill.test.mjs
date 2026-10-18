@@ -144,12 +144,19 @@ const run = (command) => new Promise((resolve, reject) => execFile("bash", ["-c"
 /** The frame at `at` seconds of a video, small and grey, decoded with or without the container's edit list. */
 const frameAt = (file, at, editList = true) => execFileSync("ffmpeg", ["-v", "error", ...(editList ? [] : ["-ignore_editlist", "1"]), "-ss", String(at), "-i", path.join(cwd, file), "-frames:v", "1", "-vf", "scale=32:24", "-f", "rawvideo", "-pix_fmt", "gray", "-"]);
 const distance = (a, b) => a.reduce((sum, v, i) => sum + Math.abs(v - b[i]), 0) / a.length;
+/** A 95-second talk.mp4 with a keyframe every 25 seconds (so the one before 60 is at 50), and the same as a WebM. */
+function longTalk() {
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=95:size=160x120:rate=5", "-g", "125", "-sc_threshold", "0", "-pix_fmt", "yuv420p", path.join(cwd, "talk.mp4")]);
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-i", path.join(cwd, "talk.mp4"), "-c:v", "libvpx", "-b:v", "100k", path.join(cwd, "talk.webm")]);
+}
+const seconds = (file) => Number(execFileSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path.join(cwd, file)], { encoding: "utf8" }));
 
 test("the skill's window cut is the same bytes when it is made again, from an MP4 or a WebM, so its look is found again", async () => {
-  execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=95:size=160x120:rate=5", "-c:v", "libvpx", "-b:v", "100k", path.join(cwd, "talk.webm")]);
+  longTalk();
   for (const source of ["talk.mp4", "talk.webm"]) {
     const sha = async () => {
       await run(CUT.replaceAll("talk.mp4", source));
+      assert.ok(Math.abs(seconds(".look/clips/60.mp4") - 30) < 0.5, `${source}: the window is the 30 seconds asked`);
       return createHash("sha256").update(fs.readFileSync(path.join(cwd, ".look", "clips", "60.mp4"))).digest("hex");
     };
     assert.equal(await sha(), await sha(), `${source} cut twice with the skill's flags: the same bytes`);
@@ -157,8 +164,7 @@ test("the skill's window cut is the same bytes when it is made again, from an MP
 });
 
 test("the skill's window starts at its second 0 for every decoder: a copy starts at the keyframe before it, which a decoder that ignores the edit list shows first", async () => {
-  // Keyframes every 25 s, so the one before 60 is at 50.
-  execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=95:size=160x120:rate=5", "-g", "125", "-sc_threshold", "0", "-pix_fmt", "yuv420p", path.join(cwd, "talk.mp4")]);
+  longTalk();
   const [at50, at60] = [frameAt("talk.mp4", 50), frameAt("talk.mp4", 60)];
   await run(CUT);
   for (const editList of [true, false]) assert.ok(distance(frameAt(".look/clips/60.mp4", 0, editList), at60) < 8, `second 0 is 60 with the edit list ${editList ? "read" : "ignored"}`);
