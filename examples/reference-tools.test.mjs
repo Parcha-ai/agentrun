@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { localHost, placeAt } from '@parcha/agentrun-reference';
 import { compose, nodeTools } from '../packages/reference/dist/assemble.js';
+import { childBrowser } from '../packages/reference/dist/demo.js';
 
 async function registryOf(t, options) {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-tools-'));
@@ -54,4 +55,11 @@ test('with the browser installed, a node that declares only code is offered code
   const input = (tools) => ({ conversationId: 'c', agent: { tools, extensions: [], sections: [], thinkingLevel: 'low' }, env: undefined, shown: {}, read });
   assert.equal(await section.render(input(declared), ctx), undefined, 'no browser text for a node offered no browser tool');
   assert.ok((await section.render(input(all), ctx))?.length > 0, 'the browser text for a node offered every tool');
+});
+
+test("a demo's browser: false wins over the environment, so a run started by pi-durable-disk run --app (no BROWSER) has no browser either", () => {
+  assert.equal(childBrowser({ browser: false }, {}), 'none', 'the --app path sets no BROWSER');
+  assert.equal(childBrowser({ browser: false }, { BROWSER: 'chrome' }), 'none');
+  assert.equal(childBrowser({}, {}), 'fake');
+  assert.equal(childBrowser({}, { BROWSER: 'browserbase' }), 'browserbase');
 });

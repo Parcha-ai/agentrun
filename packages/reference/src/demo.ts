@@ -150,6 +150,12 @@ function fakeBrowser(url: string): BrowserPlane {
   };
 }
 
+/** The browser a demo's run process drives: none when the demo says `browser: false`, whatever its environment says
+ *  (`pi-durable-disk run --app` starts it without the supervisor's `BROWSER`), else the supervisor's choice, else the fake. */
+export function childBrowser(spec: { browser?: boolean }, env: NodeJS.ProcessEnv): 'fake' | 'browserbase' | 'chrome' | 'none' {
+  return spec.browser === false ? 'none' : (env.BROWSER ?? 'fake') as 'fake' | 'browserbase' | 'chrome' | 'none';
+}
+
 /** The browser of a demo that has none (`browser: false`): any page call fails, saying so. */
 function noBrowser(): BrowserPlane {
   const refuse = (): never => { throw new Error('this demo has no browser'); };
@@ -231,7 +237,7 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   const lazy = env.RECORD_DIR ? lazyRecorder(() => openRecorder({ dir: env.RECORD_DIR!, commits: commits!, ...(env.RECORD_GEN ? { gen: Number(env.RECORD_GEN) } : {}), ...(env.RECORD_STARTED ? { started: env.RECORD_STARTED } : {}), ...(redact ? { redact } : {}) })) : undefined;
   const recorder: Recorder | undefined = lazy;
   const live = env.LIVE === '1';
-  const browserKind = (env.BROWSER ?? 'fake') as 'fake' | 'browserbase' | 'chrome' | 'none';
+  const browserKind = childBrowser(options.spec, env);
   let box: Awaited<ReturnType<typeof inBox>> | undefined;
   const parts = live ? await options.live!({ env, browser: browserKind, models: env.MODELS ? (JSON.parse(env.MODELS) as LiveModels) : {} }) : {};
   // Docker only with --live: a no-key run uses a local box, so it starts no container.
