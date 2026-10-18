@@ -12,7 +12,7 @@ const index = readFileSync(join(root, 'docs/examples.md'), 'utf8');
 const scripts = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).scripts;
 
 test('every npm script the examples index names exists', () => {
-  const named = [...index.matchAll(/`npm run ([a-z0-9:-]+)/g)].map(match => match[1]);
+  const named = [...index.matchAll(/`npm run ([^\s`]+)/g)].map(match => match[1]);
   assert.ok(named.length >= 6, 'the index names its examples\' commands');
   assert.deepEqual(named.filter(name => !(name in scripts)), []);
 });
