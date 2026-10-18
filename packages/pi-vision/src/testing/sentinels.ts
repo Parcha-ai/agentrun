@@ -6,6 +6,8 @@
 
 /** The fake eyes' credential. */
 export const SENTINEL_EYES_KEY = "pv-sentinel-eyes-key-6c1e0b7d93a24f58";
+/** A speech-to-text provider's credential, as a host's transcriber holds it. */
+export const SENTINEL_TRANSCRIBER_KEY = "pv-sentinel-stt-key-3f8a1d6c0e2b95b7";
 
 /** The secret parts of a signed link, each a sentinel of its own; their first 16 characters differ, so a finding says which. */
 export const SENTINEL_LINK_SIGNATURE = "pv-sentinel-sig-0d4b9e71a3c85f26e8b7c4a1593d60f2";
@@ -22,8 +24,9 @@ export const SENTINEL_SIGNED_LINK = signedLink();
 export const SENTINEL_LINK_QUERY = SENTINEL_SIGNED_LINK.slice(SENTINEL_SIGNED_LINK.indexOf("?") + 1);
 
 /** Every value the leak check looks for, by name. */
-export const SENTINELS: Readonly<Record<"eyesKey" | "linkSignature" | "linkToken", string>> = Object.freeze({
+export const SENTINELS: Readonly<Record<"eyesKey" | "transcriberKey" | "linkSignature" | "linkToken", string>> = Object.freeze({
   eyesKey: SENTINEL_EYES_KEY,
+  transcriberKey: SENTINEL_TRANSCRIBER_KEY,
   linkSignature: SENTINEL_LINK_SIGNATURE,
   linkToken: SENTINEL_LINK_TOKEN,
 });
