@@ -31,6 +31,8 @@ import { pathsAt, placeAt, run, type Job, type RunOptions } from './assemble.ts'
 import { RUN_LABEL, tapBox } from './boxes.ts';
 import { capJudge } from './judge.ts';
 import { askToBeKilled, crossings, tapFakes, tapHost, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
+import { keepLooks, shownShots } from './looks.ts';
+import type { LookRecord } from '@parcha/pi-vision';
 import { localPlace, type Exit, type Place, type Runner } from './place.ts';
 import { inputOf, declaredEnv, childPlansOf, chooseBrowser, effectiveBoxes, killsOf, maxUsdOf, plansOf, type ChildPlan, type DemoSpec } from './demo-spec.ts';
 import { cost } from './fold.ts';
@@ -60,6 +62,8 @@ export type DemoOptions = {
   result?: (record: unknown, context: { dir: string; keep(bytes: Uint8Array | string, extension: string): string }) => { json: unknown; title: string } | Promise<{ json: unknown; title: string }>;
   /** The source items an input needs (`{ id, url, bytes, sha256 }`): only these are fetched, on --live or --fetch-sources; without either, a run that lacks one of their files (not in `job.files`) is refused in one line. */
   sourcesFor?: (input: Record<string, unknown>) => Array<{ id: string; url: string; bytes: number; sha256: string }>;
+  /** The data set's item a look belongs to, from the record's path (Apollo 11: the page, photo or film window). Kept with the look. */
+  itemOf?: (path: string) => string | null;
   /** The arguments to read (default `process.argv.slice(2)`). */
   argv?: string[];
   /** The root of the repository, for the recording's `code` (default: two directories above the entry). */
@@ -83,6 +87,8 @@ export type DemoResult = {
   overBudget: boolean;
   /** Kills the place could not make: the attempt ended, and the run did not go on. Each has the place's error code. */
   failedKills: Array<{ gen: number; code: string }>;
+  /** The points of planned kills that never landed: the process finished without taking the crossing. A demo whose kill does not land is broken. */
+  unlanded: string[];
 };
 
 const FLAGS = { child: { type: 'boolean' }, live: { type: 'boolean' }, kill: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, 'local-chrome': { type: 'boolean' }, 'fetch-sources': { type: 'boolean' }, cache: { type: 'string' }, dir: { type: 'string' }, json: { type: 'boolean' }, provider: { type: 'string' }, model: { type: 'string' }, 'eyes-model': { type: 'string' }, 'see-also': { type: 'string', multiple: true } } as const;
@@ -95,7 +101,7 @@ export async function demo(options: DemoOptions): Promise<DemoResult | undefined
   if (values.json) console.log(JSON.stringify(result));
   else summarize(options, result);
   // A command line ends with a failing code when the run did not complete or went past its cap; a caller that passed its own arguments reads the result.
-  if (options.argv === undefined && (result.overBudget || result.failedKills.length || result.processes.at(-1)?.outcome?.status !== 'complete')) process.exitCode = 1;
+  if (options.argv === undefined && (result.overBudget || result.failedKills.length || result.unlanded.length || result.processes.at(-1)?.outcome?.status !== 'complete')) process.exitCode = 1;
   return result;
 }
 
@@ -193,8 +199,24 @@ async function child(options: DemoOptions) {
       }
     }
     if (boxes && boxSpec?.runIn) box = await inBox(boxes, boxSpec.kind, place, boxFiles ?? {});
-    // The vision lane: the demo's own on fakes (`fakes.vision`), and the live parts' on --live.
-    const vision: RunOptions['vision'] = (running) => ({ ...(live ? {} : options.fakes.vision?.(local.host, running) ?? {}), ...(parts.vision?.(local.host, running) ?? {}) });
+    // The vision option: every look is kept in a `vision.looks` document with the screenshot it was of, and the demo passes only its eyes.
+    const shown = shownShots({ ...(recorder ? { keep: (bytes: Buffer, extension: string) => recorder.blob(bytes, extension) } : {}), ...(recorder ? { onShown: (read) => recorder.live('vision', 'shown', read) } : {}) });
+    // Each record filed, by its receipt path: a look that failed is told only the receipt.
+    const filedRecords = new Map<string, LookRecord>();
+    const filing = local.host.evidence.file;
+    local.host.evidence = { file: async (label, record) => { const at = await filing(label, record); if (at && 'facts' in record) filedRecords.set(at.path, record as LookRecord); return at; } };
+    local.host.tools = { ...local.host.tools, extensions: [...local.host.tools.extensions, shown.extension] };
+    // The vision lane, one seam: the entry keeps every look it is told of (`keepLooks`: each with the screenshot it was of, its item and the filing crossing); the demo's own lane (`fakes.vision` on fakes, the live parts' on --live)
+    // adds to it, and may bring its own eyes and limits. A demo's `onLook` and `onMiss` run after the entry's and are never replaced by them.
+    const vision: RunOptions['vision'] = (running) => {
+      const own: Partial<VisionAdapterOptions> = (live ? parts.vision?.(local.host, running) : options.fakes.vision?.(local.host, running)) ?? {};
+      const kept = keepLooks(() => running.harness, { shown, cites: join(place.root, 'cites.jsonl'), filed: filedRecords, ...(options.itemOf ? { itemOf: options.itemOf } : {}) });
+      return {
+        ...own,
+        onLook: async (look) => { await kept.onLook?.(look); await own.onLook?.(look); },
+        onMiss: async (miss) => { await kept.onMiss?.(miss); await own.onMiss?.(miss); },
+      };
+    };
     const result = await run(place, local.host, { ...options.job, input }, { ...(box ? { env: box.env } : {}), vision, ...(options.layout ? { layout: options.layout } : {}) });
     // The demo's result hook: what the recording shows as the run's result, made where the run's own files are.
     const made = result.status === 'complete' && options.result ? await options.result(result.output, { dir: place.root, keep: (bytes, extension) => (recorder ? recorder.blob(bytes, extension) : createHash('sha256').update(bytes).digest('hex')) }) : undefined;
@@ -278,6 +300,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const processes: DemoResult['processes'] = [];
   const kills: DemoResult['kills'] = [];
   const failedKills: DemoResult['failedKills'] = [];
+  const unlanded: string[] = [];
   let overBudget = false;
   // Where the session lives, as paths in the place: computed, not made. The supervisor touches nothing under them; the place makes them.
   const paths = pathsAt(dir);
@@ -357,6 +380,13 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
         previous = { runner, kind };
         continue;
       }
+      // The process ended on its own with a kill still planned for it (and any that follow): none of them landed.
+      // A tool kill of this attempt that fired is on the child's log: it landed, however the process then ended.
+      const landed = rows<Crossing>(log).filter((crossing) => crossing.landed).map((crossing) => crossing.point);
+      for (const left of [plan, ...remaining]) {
+        const tools = left === plan ? left.tools.filter((entry) => { const at = 'point' in entry ? landed.indexOf(entry.point) : -1; if (at >= 0) landed.splice(at, 1); return at < 0; }) : left.tools;
+        for (const entry of [...(left.run ? [left.run] : []), ...tools]) if ('point' in entry) unlanded.push(entry.point); else unlanded.push(`storm (gap ${entry.gapMs} ms)`);
+      }
       break;
     }
     // What the run delivered and its store's hash come from the last runner's own report: nothing is read under the run's directory.
@@ -379,7 +409,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       code: codeOf(options.root ?? ROOT), cost, source: { run: runName, ...(last?.storeSha256 ? { store_sha256: last.storeSha256 } : {}) }, ...(seeAlso.length ? { see_also: seeAlso } : {}), ...(extra ? { extra } : {}), ...(resultBlob ? { result: resultBlob } : {}), ...(live ? { providers: 'real' as const } : {}),
     });
     const usd = cost(readEventsOf(recordDir)).usd;
-    return { processes, kills, record: delivered?.record ?? null, dir, ...(values.record ? { recording: values.record } : {}), usd, maxUsd, overBudget, failedKills };
+    return { processes, kills, record: delivered?.record ?? null, dir, ...(values.record ? { recording: values.record } : {}), usd, maxUsd, overBudget, failedKills, unlanded };
   } finally {
     if (meterTimer) clearInterval(meterTimer);
     // The backend and the scratch are closed whatever the place did: a place that failed to be made, or to be released, leaves neither open.
@@ -396,6 +426,7 @@ function summarize(options: DemoOptions, result: DemoResult) {
   console.log(`${options.spec.title ?? options.spec.name}: ${result.processes.at(-1)?.outcome?.status ?? 'no outcome'} in ${result.processes.length} process${result.processes.length === 1 ? '' : 'es'}, ${result.kills.length} kill${result.kills.length === 1 ? '' : 's'}`);
   for (const kill of result.kills) console.log(`  killed process ${kill.gen} (${kill.kind}) at ${kill.point ?? 'no named crossing'}: ${kill.why}`);
   if (result.failedKills.length) console.log(`kills the place could not make: ${result.failedKills.map((kill) => `process ${kill.gen} (${kill.code})`).join(', ')}`);
+  if (result.unlanded.length) console.log(`kills that never landed: ${result.unlanded.join(', ')}`);
   console.log(`cost: ${result.usd === null ? 'unknown' : `$${result.usd}`}${result.maxUsd === null ? '' : ` (cap $${result.maxUsd})`}${result.overBudget ? ' — over the cap' : ''}`);
   if (result.recording) console.log(`recording: ${result.recording}`);
 }

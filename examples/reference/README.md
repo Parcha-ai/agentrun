@@ -198,6 +198,7 @@ A crossing is a named point the child takes; `kills[].point` names one, and the 
 | `tool.dispatch <tool>` / `tool.returned <tool>` | a scripted tool is called and returns. Never a kill point: between the dispatch and the host keeping the answer nothing records what the tool did, and a kill there leaves the call unknown |
 | `effect.kept <tool>` | the host has kept the tool's answer and the driver has not yet committed it. A kill point only when no other call is in that window. The resumed process settles the call from the kept answer: it is not sent again |
 | `receipt.filing <tool>` / `receipt.filed <tool>` | an evidence receipt is about to be filed, and has been |
+| `vision.filing` / `vision.filed` | a look is about to be filed, and has been. The eyes have answered by then and the answer is kept: a kill at `vision.filing` makes the next process file the kept answer and not ask the eyes again (the first of the packages' own crossings) |
 | `event <source>.<type>` | each row of events the run reports (`event workflow.node.start`, `event browser.launched`, `event vision.look`) |
 | `deliver.writing` / `deliver.written` | the delivery |
 | `transport.box.create` / `transport.box.created` | a box is about to be made, and exists |
@@ -211,6 +212,18 @@ The transport box lines are live lines of source `transport`: `box.created` `{ b
 ### The judge seam
 
 Every demo's typed questions pass through one seam that carries Jev's limits and Jev's price, whoever answers: at most 50 requests and 40,000 tokens (in and out) over the run. The next request after a cap is reached is refused with `JEV_CAP_REACHED` and is never sent; a failed request counts, a refused one does not. The count is kept in the run's directory, so a resumed process continues it. An answer that reports usage and no price of its own is priced at Jev's public list price, $0.042 per million input tokens and nothing for output (`jev-1.12`; source: the TypeSafe cookbook, 2026-07); a price the answer reports is kept.
+
+### The vision option
+
+The entry files every look the vision guard or a read reports into the run's store: one `vision.looks` document per look key, each entry the whole `LookRecord` (`facts.key`, `kept`, `cost_usd`, `status`, `model`), the evidence path of the screenshot it was of as its receipt, and the image the eyes were shown as a blob in the recording. The recording's counters then read `paid.vision` and the eyes' cost. An entry also carries the data set's `item` it belongs to (`DemoOptions.itemOf(path)`), the `miss` { code, reason } when the look failed, and each image's frame second `at`; every read leaves one live `vision`/`shown` line (its arguments, the media facts and the captions with the images). A demo passes only its eyes: `fakes.vision(host, running)` returns `{ eyes }` on fakes (with a lead that takes only text, every image a read or a screenshot makes goes to them), and the live parts' `vision(host, running)` returns the real eyes. Both are `Partial<VisionAdapterOptions>`, one seam; the entry's own filing is always on, and it calls a demo's own `onLook` and `onMiss` after its own and never replaces them.
+
+### Holding the kill at `vision.filing`
+
+A kill entry may carry `hold` (and `waitMs`, default 3000): the filing that is the nth, and those that reach `vision.filing` after it, are parked, never completed, until `hold` of them are parked or `waitMs` has passed, and then the process is killed. Several answers are by then kept in the journal and none is filed, so the resume files each kept answer: "6 kept, nothing paid twice". Without `hold` the kill is at the first crossing.
+
+### Kills that never land
+
+A planned kill whose crossing the process never takes (a typo, or a demo that does not reach it) is not hidden: the result's `unlanded` lists it, the summary says so, and the command exits 1.
 
 ### What a demo hands the entry, besides its job
 

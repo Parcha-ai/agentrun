@@ -15,7 +15,7 @@ import type { RecoveryEffectParams } from '@parcha/agentrun-dsl/recovery';
 import type { BrowserConfig, Decisions as BrowserDecisions, BrowserProvider, EvidenceRecord, PriceTable, ReconcileReport, SessionChange, SessionRow } from '@parcha/pi-browser';
 import type { DriverFactory, PageDriver } from '@parcha/pi-browser/durable';
 import { FakeBackend, fakeDriver, type FixturePage } from '@parcha/pi-browser/testing';
-import type { LookEvent, LookRecord, MissEvent } from '@parcha/pi-vision';
+import type { Eyes, LookEvent, LookRecord, MissEvent } from '@parcha/pi-vision';
 import type { VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import type { ChildEnv } from '@parcha/pi-vision/node';
 import type { BoxProvider } from '@parcha/pi-transport';
