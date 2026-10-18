@@ -1756,7 +1756,7 @@ test('code mode: a command\'s output is clipped while it streams (head kept, the
   assert.ok(!existsSync(join(cut.result.dir, 'work', 'late.txt')), 'the command stopped with its script');
   // The declaration the model reads is in the tool\'s description.
   const { codeModeExtension } = await import('./reference/code-mode.ts');
-  const tool = codeModeExtension({ see: () => ({ signature: '(request: { ask: string }): Promise<{ text: string }>', description: 'Ask the eyes about images.' }), judge: () => ({ signature: '(request: J): Promise<K>', description: 'Ask Jev.' }) }, {}).tools[0];
+  const tool = codeModeExtension({ see: () => ({ signature: '(request: { ask: string }): Promise<{ text: string }>', description: 'Ask the eyes about images.' }), judge: () => ({ signature: '(request: J): Promise<K>', description: 'Ask Jev.' }), transcribe: () => ({ signature: '(request: T): Promise<W>', description: 'Write what is said.' }) }, {}).tools[0];
   assert.match(tool.description, /vision\.see` is declared as `\(request: \{ ask: string \}\): Promise<\{ text: string \}>`: Ask the eyes about images\./);
 });
 
@@ -2379,6 +2379,36 @@ test('code mode: vision.judge answers through the host\'s judge seam (counted ag
   assert.equal(spent, 2, 'two judge requests were counted against the cap');
   // The description the model reads declares it.
   const { codeModeExtension } = await import('./reference/code-mode.ts');
-  const tool = codeModeExtension({ see: () => ({ signature: '(request: S): Promise<A>', description: 'Ask the eyes.' }), judge: () => ({ signature: '(request: J): Promise<K>', description: 'Ask Jev.' }) }, {}).tools[0];
+  const tool = codeModeExtension({ see: () => ({ signature: '(request: S): Promise<A>', description: 'Ask the eyes.' }), judge: () => ({ signature: '(request: J): Promise<K>', description: 'Ask Jev.' }), transcribe: () => ({ signature: '(request: T): Promise<W>', description: 'Write what is said.' }) }, {}).tools[0];
   assert.match(tool.description, /vision\.judge` is declared as `\(request: J\): Promise<K>`: Ask Jev\./);
+});
+
+test('code mode: vision.transcribe returns the words with times from the host\'s speech-to-text model, the look is filed priced as tool transcribe, and nothing key-shaped is in the sandbox', { timeout: 300_000 }, async (t) => {
+  const script = [
+    'await tools.bash({ command: "ffmpeg -v error -y -f lavfi -i sine=frequency=440:duration=2 clip.wav" });',
+    'const reach = [typeof fetch, typeof process, typeof require, typeof WebAssembly, typeof setTimeout, typeof vision.transcribe].join(",");',
+    'const heard = await vision.transcribe({ path: "clip.wav" });',
+    'await tools.bash({ command: "printf %s \'" + JSON.stringify({ reach, heard, globals: Object.keys(globalThis).join(",") }) + "\' > heard.json" });',
+    'return heard.text;',
+  ].join('\n');
+  const { result, recording } = await run(t, { codeMode: true }, ['--json'], { DEMO_CODE: script, DEMO_CODE_ON: '', DEMO_TRANSCRIBE: '1' });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
+  const seen = JSON.parse(readFileSync(join(result.dir, 'work', 'heard.json'), 'utf8'));
+  assert.equal(seen.reach, 'undefined,undefined,undefined,undefined,undefined,function');
+  assert.deepEqual(seen.heard.words.map((word) => word.text), ['hello', 'world']);
+  assert.equal(typeof seen.heard.costUsd, 'number', 'priced');
+  assert.ok(!JSON.stringify(seen).includes('made-up-stt-key'), 'the key is not in the sandbox');
+  const looks = readEvents(recording).filter((line) => line.data?.doc === 'vision.looks').flatMap((line) => line.data.value.looks);
+  assert.ok(looks.some((look) => look.record.tool === 'transcribe'), `a transcribe record is filed in vision.looks: ${JSON.stringify(looks.map((look) => look.record.tool))}`);
+  assert.ok(!readFileSync(join(recording, 'events.jsonl'), 'utf8').includes('made-up-stt-key'), 'nor in the recording');
+});
+
+test('the host chooses the speech-to-text model from the keys its demo declares: a pass-through first, then fal, ElevenLabs, OpenAI; none set is no transcriber', async () => {
+  const { transcriberFromEnv } = await import('./reference/transcriber.ts');
+  const pick = (env) => { const found = transcriberFromEnv(env); return found && `${found.provider}`; };
+  assert.equal(pick({}), undefined);
+  assert.match(pick({ FAL_KEY: 'k' }), /fal/);
+  assert.match(pick({ ELEVENLABS_API_KEY: 'k' }), /eleven/i);
+  assert.match(pick({ OPENAI_API_KEY: 'k' }), /openai/i);
+  assert.match(pick({ TRANSCRIBE_BASE_URL: 'http://127.0.0.1:1', TRANSCRIBE_API_KEY: 'k', FAL_KEY: 'other' }), /fal/);
 });

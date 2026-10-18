@@ -3,7 +3,8 @@ import type { Message } from '@earendil-works/pi-ai';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fakeEyes } from '@parcha/pi-vision/testing';
+import { fakeEyes, fakeTranscriptionFetch } from '@parcha/pi-vision/testing';
+import { falTranscriber } from '@parcha/pi-vision/transcribers';
 import { demo } from './demo.ts';
 import type { ToolContext } from './host.ts';
 import { fakes, job, lead } from './job.ts';
@@ -104,5 +105,10 @@ const ownLane = () => ({
     onMiss: async () => { appendFileSync(join(process.env.DIR!, 'own-hooks.txt'), 'miss\n'); },
   } : {}),
 });
-export const options = { ...(process.env.DEMO_FOLLOW_HOLD_MS ? { followHoldMs: Number(process.env.DEMO_FOLLOW_HOLD_MS) } : {}), ...(process.env.DEMO_CODE_ON ? { codeMode: true } : {}), ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withBox ?? withFan ?? withLeak ?? withSites ?? lingering?.job ?? job, fakes: { ...scripted, ...(process.env.DEMO_FAKES_INPUT ? { input: { company: 'Beta Ltd' } } : {}), ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}) };
+// And a scripted speech-to-text model for `vision.transcribe` (DEMO_TRANSCRIBE): fal's queue answered by a fake `fetch`, priced per minute, with a made-up key that only this adapter holds.
+const transcribing = process.env.DEMO_TRANSCRIBE ? (() => {
+  const answer = fakeTranscriptionFetch('fal', { words: [{ text: 'hello', start: 0.1, end: 0.5 }, { text: 'world', start: 0.6, end: 1 }] });
+  return () => ({ transcriber: falTranscriber({ apiKey: () => `made-up-stt-key-${'k'.repeat(24)}`, fetch: answer.fetch, pollMs: 1, usdPerMinute: 0.6 }) });
+})() : undefined;
+export const options = { ...(process.env.DEMO_FOLLOW_HOLD_MS ? { followHoldMs: Number(process.env.DEMO_FOLLOW_HOLD_MS) } : {}), ...(process.env.DEMO_CODE_ON ? { codeMode: true } : {}), ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withBox ?? withFan ?? withLeak ?? withSites ?? lingering?.job ?? job, fakes: { ...scripted, ...(process.env.DEMO_FAKES_INPUT ? { input: { company: 'Beta Ltd' } } : {}), ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : transcribing ? { vision: transcribing } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}) };
 if (process.argv.includes('--child')) await demo(options);

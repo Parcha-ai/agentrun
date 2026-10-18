@@ -34,6 +34,7 @@ import type { Recorder, Redact } from './record.ts';
 import { capJudge, JEV_CAPS } from './judge.ts';
 import { askToBeKilled, crossings, tapFakes, tapHost, tapLive, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
 import { keepLooks, shownShots } from './looks.ts';
+import { transcriberFromEnv } from './transcriber.ts';
 import type { LookRecord } from '@parcha/pi-vision';
 import { localPlace, type Exit, type Place, type Runner } from './place.ts';
 import { checkModelKeys, judgeCapsOf, inputOf, declaredEnv, childPlansOf, chooseBrowser, effectiveBoxes, killsOf, maxUsdOf, plansOf, type ChildPlan, type DemoSpec } from './demo-spec.ts';
@@ -265,6 +266,8 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
     const own: Partial<VisionAdapterOptions> = (live ? parts.vision?.(local.host, running, { input, place: { root: place.root, work: place.work } }) : options.fakes.vision?.(local.host, running, { input, place: { root: place.root, work: place.work } })) ?? {};
     const kept = keepLooks(() => running.harness, { shown, cites: join(place.root, 'cites.jsonl'), filed: filedRecords, ...(options.itemOf ? { itemOf: options.itemOf } : {}) });
     return {
+      // The host's speech-to-text model for `vision.transcribe`: the demo's own (a scripted one on fakes), else the one its declared keys name; the key stays in the adapter.
+      ...(own.transcriber || !live ? {} : (() => { const transcriber = transcriberFromEnv(env); return transcriber ? { transcriber } : {}; })()),
       ...own,
       onLook: async (look) => { await kept.onLook?.(look); await own.onLook?.(look); },
       onMiss: async (miss) => { await kept.onMiss?.(miss); await own.onMiss?.(miss); },
