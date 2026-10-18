@@ -49,6 +49,7 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
   const eligible = new Map<unknown, number>();
   const done = new Set<number>();
   let parkedCount = 0;
+  let fired = false;
   let killAsked = false;
   const cross = ((point: string, options: { cut?: boolean; info?: Info } = {}) => {
     // A crossing taken while any tool call is between its dispatch and its kept answer is never a run kill point, whichever seam it is at: a kill there would leave that call unknown.
@@ -57,9 +58,10 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
     const count = (map: Map<unknown, number>, kill: unknown, hit: boolean) => { const value = (map.get(kill) ?? 0) + (hit ? 1 : 0); map.set(kill, value); return value; };
     const info = options.info;
     if (log) appendFileSync(log, `${JSON.stringify({ point, n: cut ? n : 0, pid: process.pid, ...(info ? { info } : {}) } satisfies Crossing)}\n`);
-    // A run kill's `n` counts the matching crossings that could have been kill points: one suppressed by an open tool call is not the nth time, it is not a time at all. A crossing a tool kill takes still counts, so it is counted before that kill returns.
     const run = plan?.run;
-    const timesEligible = cut && run && !('storm' in run) ? count(eligible, run, run.point === point && matches(run.where, info)) : 0;
+    // A run kill's `n` counts EVERY crossing of its point (and `where`), eligible or not, so a demo's kill always lands when the run reaches the point n times or more; it lands at the first ELIGIBLE crossing at or after the nth (eligible: not while a tool call is
+    // between its dispatch and its kept answer). `ordinal` is the crossing's own number, which the kill line keeps. A crossing a tool kill takes still counts, so it is counted before that kill returns.
+    const ordinal = run && !('storm' in run) && run.point === point && matches(run.where, info) ? count(eligible, run, true) : 0;
     // A tool box destroyed at its crossing: once, at the nth matching time (a crossing that is not a kill point can be one: the box is the caller's to end).
     let tool = -1;
     plan?.tools.forEach((entry, index) => {
@@ -73,9 +75,10 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
     // A kill with `hold` is taken by `park`, not here: the crossing parks the nth filing and the ones after it.
     if (!('storm' in run) && run.hold !== undefined) return false;
     // A named point is taken as named; a storm waits for the first node to have begun.
-    const due = 'storm' in run ? begun && point !== 'event workflow.node.start' && Date.now() - started >= run.gapMs : run.point === point && matches(run.where, info) && timesEligible === run.n;
+    const due = 'storm' in run ? begun && point !== 'event workflow.node.start' && Date.now() - started >= run.gapMs : ordinal > 0 && ordinal >= run.n && !fired;
     if (point === 'event workflow.node.start') begun = true;
-    if (due) kill({ point, n, pid: process.pid });
+    // The crossing's own number for a named kill; a storm has none (its kill is at whichever crossing comes), so it keeps the process's crossing counter.
+    if (due) { fired = true; kill({ point, n: 'storm' in run ? n : ordinal, pid: process.pid }); }
     return false;
   }) as Cross;
   (cross as { park: NonNullable<Cross['park']> }).park = (point, info) => {
@@ -85,7 +88,7 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
     if ((eligible.get(run) ?? 0) < run.n) return undefined;
     parkedCount += 1;
     // The kill waits for every tool call to return its kept answer: a parallel branch may have started one while the filing was parked, and a kill then would leave that call unknown.
-    const ask = () => { if (killAsked) return; if (window.open > 0) { setTimeout(ask, 20).unref(); return; } killAsked = true; kill({ point, n, pid: process.pid }); };
+    const ask = () => { if (killAsked) return; if (window.open > 0) { setTimeout(ask, 20).unref(); return; } killAsked = true; kill({ point, n: eligible.get(run) ?? 0, pid: process.pid }); };
     if (parkedCount === 1) setTimeout(ask, run.waitMs ?? 3000).unref();
     if (parkedCount >= run.hold) ask();
     return new Promise<never>(() => {});

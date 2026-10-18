@@ -86,7 +86,7 @@ export type DemoResult = {
   processes: Exit[];
   /** The run id this invocation used, minted once: `<demo name>-<8 hex>`. */
   runId: string;
-  kills: Array<{ gen: number; point: string | null; kind: 'process' | 'box'; why: string }>;
+  kills: Array<{ gen: number; point: string | null; kind: 'process' | 'box'; why: string; /** For a kill at a crossing: the ordinal of that crossing it landed on, and the `n` the demo planned. The kill lands at the first eligible crossing at or after the nth, so they can differ. */ n?: number; planned?: number }>;
   /** The record the job delivered, or null. */
   record: unknown;
   dir: string;
@@ -550,7 +550,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
           ? { point: asked.point, n: asked.n, label: plan.run && !('storm' in plan.run) ? plan.run.point : asked.point, why: plan.run?.why ?? 'a kill', kind }
           : { point: null, n: null, label: 'max-usd', why: `past --max-usd ${maxUsd}`, kind: 'process' };
         supervisor.host('kill', { gen, label: killed.label, crossing: killed.point === null ? null : { point: killed.point, n: killed.n }, side: 'child', kind: killed.kind });
-        kills.push({ gen, point: killed.point, kind: killed.kind, why: killed.why });
+        kills.push({ gen, point: killed.point, kind: killed.kind, why: killed.why, ...(typeof asked === 'object' && plan.run && !('storm' in plan.run) ? { n: asked.n, planned: plan.run.n } : {}) });
         try { await place.kill(runner!, killed.kind); } catch (error) { failed(String((error as { code?: unknown } | null)?.code ?? 'KILL_FAILED'), messageOf(error, paths.root), killed.kind); }
         await readStatus();
       };
@@ -685,9 +685,9 @@ export function notLanded<T extends object>(tools: readonly T[], log: string): T
 
 const readEventsOf = (dir: string) => rows<Record<string, unknown>>(join(dir, 'events.jsonl'));
 
-function summarize(options: DemoOptions, result: DemoResult) {
+export function summarize(options: DemoOptions, result: DemoResult) {
   console.log(`${options.spec.title ?? options.spec.name}: ${result.processes.at(-1)?.outcome?.status ?? 'no outcome'} in ${result.processes.length} process${result.processes.length === 1 ? '' : 'es'}, ${result.kills.length} kill${result.kills.length === 1 ? '' : 's'}`);
-  for (const kill of result.kills) console.log(`  killed process ${kill.gen} (${kill.kind}) at ${kill.point ?? 'no named crossing'}: ${kill.why}`);
+  for (const kill of result.kills) console.log(`  killed process ${kill.gen} (${kill.kind}) at ${kill.point ?? 'no named crossing'}${kill.planned !== undefined && kill.n !== kill.planned ? ` (planned n=${kill.planned}, landed at n=${kill.n})` : ''}: ${kill.why}`);
   if (result.failedSignals.length) console.log(`the place's signals failed: ${result.failedSignals.map((entry) => `process ${entry.gen} (${entry.code})`).join(', ')}`);
   if (result.failedKills.length) console.log(`kills the place could not make: ${result.failedKills.map((kill) => `process ${kill.gen} (${kill.code})`).join(', ')}`);
   const last = result.processes.at(-1)?.outcome;

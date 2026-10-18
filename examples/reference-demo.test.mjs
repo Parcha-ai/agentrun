@@ -2158,6 +2158,45 @@ test('a box.receipt line is written for each box place.status() reports once its
   assert.equal(lines(plain, 'box.receipt').length, 0);
 });
 
+// ---- a kill's n counts every crossing, and it lands at the first eligible one at or after the nth ------------------------------------------------------------
+
+test('a kill\'s n counts EVERY crossing of its point, eligible or not, and lands at the first ELIGIBLE one at or after the nth (the kill line keeps the ordinal it landed on); it is unlanded only when the run ends before any eligible crossing at or after n', () => {
+  const withWindow = (n, eligibility) => {
+    const kills = [];
+    const window = { open: 0 };
+    const cross = crossings({ run: { point: 'p', kind: 'process', target: 'run', why: 'x', n }, tools: [] }, undefined, Date.now(), (crossing) => kills.push(crossing), window);
+    for (const eligible of eligibility) { window.open = eligible ? 0 : 1; cross('p'); }
+    return kills.map((kill) => [kill.point, kill.n]);
+  };
+  assert.deepEqual(withWindow(3, [true, true, true, true]), [['p', 3]], 'all eligible: the nth');
+  assert.deepEqual(withWindow(3, [true, false, false, true, true]), [['p', 4]], 'the 3rd and the 2nd are inside a call: it lands at the 4th, and says so');
+  assert.deepEqual(withWindow(3, [false, true, true, false, true]), [['p', 3]], 'the 3rd is eligible even though the first was not (the old count would have waited for a 5th)');
+  assert.deepEqual(withWindow(3, [true, true, false, false]), [], 'the run ends before any eligible crossing at or after n: unlanded');
+  assert.deepEqual(withWindow(1, [false, false, true]), [['p', 3]], 'n 1 with the first ones ineligible');
+  assert.equal(withWindow(2, [true, true, true, true]).length, 1, 'once');
+});
+
+test('a kill at a point that is often ineligible lands every time across 8 runs, and the result and the summary say planned n and landed n when they differ', { timeout: 600_000 }, async (t) => {
+  for (let index = 0; index < 8; index += 1) {
+    const { result, recording } = await run(t, { kills: [{ point: 'event workflow.node.start', why: 'a node starts, often while another branch\'s call is in flight', n: 4 }] }, ['--kill', '--json'], { DEMO_FANOUT: '1' });
+    assert.deepEqual(result.processes.map((process) => [process.signal, process.outcome?.status ?? null]), [['SIGKILL', null], [null, 'complete']], `run ${index}: ${JSON.stringify(result.processes.map((process) => process.signal))}`);
+    assert.deepEqual(result.unlanded, [], `run ${index}`);
+    const [kill] = result.kills;
+    assert.equal(kill.planned, 4);
+    assert.ok(kill.n >= 4, `landed at n=${kill.n}, at or after the planned 4`);
+    const line = readEvents(recording).find((entry) => entry.source === 'host' && entry.kind === 'kill');
+    assert.equal(line.data.crossing.n, kill.n, 'the kill line keeps the ordinal it landed on');
+  }
+  const lines = [];
+  const log = console.log;
+  // The summary says it when they differ.
+  const { summarize } = await import('./reference/demo.ts');
+  console.log = (...args) => lines.push(args.join(' '));
+  try { summarize({ spec: { name: 'x' } }, { processes: [{ outcome: { status: 'complete' } }], kills: [{ gen: 1, point: 'p', kind: 'process', why: 'w', n: 12, planned: 10 }, { gen: 2, point: 'q', kind: 'process', why: 'w', n: 3, planned: 3 }], failedKills: [], failedSignals: [], unlanded: [], usd: 0, maxUsd: null, overBudget: false }); } finally { console.log = log; }
+  assert.ok(lines.some((line) => line.includes('at p (planned n=10, landed at n=12): w')) && lines.some((line) => line.includes('at q: w') && !line.includes('planned')), lines.join('\n'));
+
+});
+
 test('boxes of one provider, kind and start are two boxes, labelled box-N when they first appear (not when they end), and the cap counts the priced boxes beside an unpriced one', { timeout: 300_000 }, async (t) => {
   const { tmp, options } = await specWith(t, { name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] });
   const recording = join(tmp, 'recording');
@@ -2195,4 +2234,17 @@ test('the slow tick does not queue a carry behind one still running: a place who
   }) });
   // The ticks that found no carry running, plus the final one; a tick queued behind every slow carry would make six or more.
   assert.ok(carries <= 4, `carried ${carries} times in ${Date.now() - started} ms`);
+});
+
+test('a kill line carries the crossing\'s own number: a held kill the point\'s count (not the process\'s), and a storm the process\'s crossing counter (not zero)', async () => {
+  const fired = [];
+  const held = crossings({ run: { point: 'vision.filing', kind: 'process', target: 'run', why: 'held', n: 1, hold: 1 }, tools: [] }, undefined, Date.now(), (crossing) => fired.push(crossing.n));
+  for (const other of ['judge.asked a', 'judge.answered a', 'model.request turn 0']) held(other);
+  held('vision.filing');
+  assert.ok(held.park('vision.filing') instanceof Promise);
+  assert.deepEqual(fired, [1], 'the first filing is the first crossing of its point, whatever came before');
+  const storm = crossings({ run: { storm: true, kills: 1, gapMs: 0 }, tools: [] }, undefined, Date.now() - 10_000, (crossing) => fired.push(crossing.n));
+  storm('event workflow.node.start');
+  storm('judge.asked a');
+  assert.ok(fired.at(-1) > 0, `a storm kill has the process's crossing number, not 0: ${fired.at(-1)}`);
 });
