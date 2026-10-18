@@ -2,7 +2,7 @@
 // in `auth.json` (`$AGENTRUN_HOME/auth.json`, else `~/.config/agentrun/auth.json`; one credential per provider, each `{ type: 'oauth', access, refresh, ... }` or `{ type: 'api_key', key }`). Every recorded line, text blob and the manifest has none of them, and
 // a recording that still holds one is refused. A value is never printed: a finding names the key and the file only.
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import type { Redact } from './record.ts';
 import { declaredEnv, type DemoSpec } from './demo-spec.ts';
@@ -40,14 +40,26 @@ export function signInSecrets(file: string): Secret[] {
   return found;
 }
 
-/** Everything a recording of `spec` must not hold: the values of the environment names it declares, and the sign-in's tokens. */
+/** Words the recording format itself is written in (its channels, sources, kinds and keys, and the values of its fixed fields): a host name that is one of them is not taken, because replacing it would rewrite the lines around it
+ *  (a machine named `host` would turn every `"source":"host"` into `"source":"[redacted]"`). Such a name says nothing about the machine anyway. */
+const RECORDING_WORDS = new Set(['host', 'process', 'kill', 'result', 'live', 'durable', 'workflow', 'browser', 'vision', 'transport', 'data', 'source', 'kind', 'channel', 'child', 'supervisor', 'run', 'status', 'point', 'label', 'side', 'null', 'true', 'false', 'blob', 'title', 'cost', 'model', 'done', 'failed', 'error', 'complete', 'revoke', 'delegation', 'receipt', 'localhost']);
+
+/** This machine's own host name and boot id (where `/proc/sys/kernel/random/boot_id` exists): a recording shows labels for a holder's, never these. A short or generic name, or one of the recording's own words, is not taken (it would damage the lines around it). `name` is for a test. */
+export function machineSecrets(name: string = hostname()): Secret[] {
+  const found: Secret[] = [];
+  if (name.length >= 4 && !RECORDING_WORDS.has(name.toLowerCase())) found.push({ key: 'this machine\'s host name', value: name });
+  try { const boot = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(); if (boot.length >= 16) found.push({ key: 'this machine\'s boot id', value: boot }); } catch { /* not a machine that has one */ }
+  return found;
+}
+
+/** Everything a recording of `spec` must not hold: the values of the environment names it declares, the sign-in's tokens, and this machine's own host name and boot id. */
 export function secretsOf(env: NodeJS.ProcessEnv, spec: DemoSpec, authFile: string = signInFile(env)): Secret[] {
   const found: Secret[] = [];
   for (const name of declaredEnv(spec)) {
     const value = env[name];
     if (typeof value === 'string' && value.length >= MIN) found.push({ key: name, value });
   }
-  return [...found, ...signInSecrets(authFile)];
+  return [...found, ...signInSecrets(authFile), ...machineSecrets()];
 }
 
 const formsOf = (secrets: Iterable<Secret>): string[] => [...new Set([...secrets].flatMap((secret) => [secret.value, JSON.stringify(secret.value).slice(1, -1)]))].sort((a, b) => b.length - a.length);
