@@ -13,6 +13,12 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
 
 - **The answer first**, in a sentence or two, then three or four key points, each a link to the finding or the mark it
   stands on. Someone who reads only that much has the answer.
+- **The answer is in the shape the question asks.** When the question names a shape (minute by minute, page by page, mark by
+  mark, a table), the answer section is that shape: one row for each unit, every row cited. Group or fold only the detail
+  under a row, never the rows. A question that names no shape gets the sentence and the key points.
+- **Never state what the run did not read.** Every name, place, time and number on the page comes from a look's answer or from
+  the file's own text, and carries its cite. A caption says what the look saw, not what you remember about the subject.
+  What the run did not read is left out, or goes under what you did not check.
 - **Fold the routine.** What was checked and found as expected goes in a folded section (`<details>`), one line each. What
   surprised, failed or decided the answer is a finding of its own, open, and first.
 - **Media only where it helps.** A picture is kept when it shows what the claim is about; a frame or a page that proves
@@ -28,9 +34,13 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
 ## What the page is
 
 - **One folder.** `report/index.html`, and beside it every file it shows, at relative paths: `report/frames/` for pictures,
-  `report/clips/` for clips, and any source document you cite, copied in (`keep()`) when it is under 3 MB. A film, or any
-  source too large to copy, stays out: its cite names it, and the page lists it in `outside`. The host collects the folder as
-  it stands, so what the page shows must be in it.
+  `report/clips/` for clips. The host collects the folder as it stands and never reaches outside it, so:
+  - every document or photo the page cites, under about 3 MB, is copied into `report/` (`keep()`) and cited by its name there;
+  - never write `../` in a `src`, `poster` or `href`: a path that leaves `report/` is dead;
+  - a film (or any source too large to copy) stays outside: its cite keeps the file's own name and fragment, `talk.mp4#t=18,26`,
+    carries `data-look`, and the file is listed in `outside`; the viewer finds it through the look;
+  - everything the page loads (`src`, `poster`) is inside `report/`; only a link may name a file outside it, and only a film
+    listed in `outside`. Any other relative link is dead.
 - **No script, nothing from the network.** Inline CSS. No `<script>`, no `on...` attributes, no `data:` URLs (a picture is a
   file), no `<iframe>`, `<object>`, `<embed>`, `<form>`, `<base>`, `<link>` or `<meta http-equiv>`, no `url()`, no `@import`,
   no remote font or image. A link out is allowed but loads nothing; a URL in text is written without its scheme
@@ -48,6 +58,7 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
   box on a film `talk.mp4#t=21.5&xywh=percent:61,40,12,9`, a box on a photo `photo.jpg#xywh=percent:10,20,30,15`
   (`pixel:` for pixel boxes). Every cite carries `data-look`, the key of the look it rests on, so the viewer can open that
   look at that fragment. A claim with no look behind it is not a finding: look first, or put it under what you did not check.
+  A cite names a file of `report/` or a film in `outside`, as `keep()` and the page spell it, never with `../`.
 - **Boxes are the look's percentages**, placed on the picture with CSS `left`, `top`, `width` and `height` in `%`. Do no
   arithmetic; show the picture the look saw (or the same whole picture at another size: a crop moves the percentages). A
   look that gave pixels is divided once by the picture's width and height.
@@ -83,7 +94,7 @@ const slug = (name) => { if (!/^[a-z0-9-]+$/.test(name)) throw new Error(`${name
 ### 2. The files the page shows
 
 A film frame, a page of a PDF and a photo each become a JPEG under `report/frames/`; a window of a film becomes a silent MP4
-under `report/clips/` with its poster, re-encoded down a ladder until it fits; a source document is copied beside the page.
+under `report/clips/` with its poster, re-encoded down a ladder until it fits; a document or photo the page cites is copied beside it.
 Each helper returns a path relative to `report/`, which is what the page uses.
 
 ```js
@@ -113,10 +124,12 @@ const clip = async (video, from, to, name, { sound = false } = {}) => {
   }
   throw new Error(`${name}: ${to - from} s do not fit ${BUDGET.clip} bytes; cut a shorter window`);
 };
-const keep = async (file) => {   // a document the run was given, beside the page so its cites resolve
-  if (/[\/\\]/.test(file) || (await bytes(file)) > BUDGET.source) throw new Error(`${file}: keep a file of this folder under ${BUDGET.source} bytes, and name a larger one in outside`);
-  await sh(`mkdir -p report && cp -- ${q(file)} report/${q(file)}`);
-  return file;
+const keep = async (file) => {   // a document or photo the run was given, copied beside the page: cite the name it returns, never ../
+  const name = file.split("/").pop();
+  if ((await bytes(file)) > BUDGET.source) throw new Error(`${file} is over ${BUDGET.source} bytes: name it in outside and cite it by its name`);
+  await sh(`mkdir -p report && ${/\.(jpe?g|png|webp)$/i.test(name) ? `ffmpeg -v error -y -i ${q(file)} -map_metadata -1 -fflags +bitexact -q:v 2 report/${q(name)}` : `cp -- ${q(file)} report/${q(name)}`}`);
+  if ((await bytes(`report/${name}`)) > BUDGET.source) throw new Error(`${file} is over ${BUDGET.source} bytes: name it in outside and cite it by its name`);
+  return name;   // a photo is re-encoded without its metadata; a document is copied as it is
 };
 ```
 
@@ -131,7 +144,7 @@ receipt's path.
 const looks = new Set();
 const keyOf = async (receipt) => {
   if (!receipt) throw new Error("no receipt: this host files none, so there is no look to cite");
-  const text = await sh(`cat ${q(receipt)}`);
+  const text = await sh(`cat ${q(receipt)}`).catch(() => sh(`cat ${q(`../${receipt}`)}`));   // a host may file receipts in the folder above the workspace
   let key;
   try { key = JSON.parse(text).facts.key; } catch { key = text.split("\n---")[0].split("\n").map((line) => line.split(": ")).find(([name]) => name === "key")?.[1]; }
   if (!key) throw new Error(`${receipt} holds no look key`);
@@ -149,7 +162,8 @@ const look = async (path, fragment, ask) => {
 Everything the page says is data here first. The file names are the run's own; the times, pages and percentages come from the
 looks you made (a `vision.judge` box answer carries its `fragment`; `find` and `look` say where a thing is). A finding is a
 key one (open) or `routine` (folded). A box belongs to a finding and links back to it; `points` are the three or four key
-points of the answer.
+points of the answer. When the question names a shape, add `rows` to the report, one for each unit it names:
+`rows: [{ id: "m1", label: "0:00 to 1:00", text: "what the look read there", cites: [{ file: "talk.mp4", t: [0, 60], look: lookTalk.key }] }]`.
 
 ```js
 const talk = await frame("talk.mp4", 21.5, "talk-chart");
@@ -178,10 +192,10 @@ const report = {
       cites: [{ file: "contract.pdf", page: 3, xywh: "percent:7,6,70,4", look: lookPage.key }] },
     { id: "site", routine: true, title: "The site", why: lookSite.text,
       pics: [{ src: site, alt: "A photo of the site", caption: "Nothing in the photo bears on the answer; it is kept as the record of the visit." }],
-      cites: [{ file: "photo.jpg", look: lookSite.key }] },
+      cites: [{ file: await keep("photo.jpg"), look: lookSite.key }] },
   ],
   document: { file: await keep("contract.pdf"), pages: [{ n: 3, src: page3, boxes: [{ id: "mark-rule", finding: "contract", at: "7,6,70,4", label: "the rule", look: lookPage.key }] }] },
-  outside: ["talk.mp4", "photo.jpg"],   // cited here, too large or not part of the record to copy into the folder
+  outside: ["talk.mp4"],   // a film is cited by its own name and not copied; every other cited file was kept above
   notChecked: ["The talk's figures were read from the chart, not from a table."],
 };
 ```
@@ -211,6 +225,7 @@ const body = (f) => `<h3>${say(f.title)}</h3><p>${say(f.why)}</p>
 const finding = (f) => f.routine
   ? `<details class="finding routine" id="f-${f.id}"><summary>${say(f.title)}</summary>${body(f)}</details>`
   : `<article class="finding" id="f-${f.id}">${body(f)}</article>`;
+const rows = (list) => list.length ? `<ol class="rows">${list.map((r) => `<li class="row" id="r-${esc(r.id)}"><span class="when">${say(r.label)}</span><span class="what">${say(r.text)}</span><span class="cites">${r.cites.map(cite).join(" ")}</span></li>`).join("")}</ol>` : "";
 const docPage = (p) => `<figure class="docpage" id="page-${p.n}"><header><span class="n">p. ${p.n}</span><a class="cite" href="${encodeURI(report.document.file)}#page=${p.n}" data-look="${esc(report.findings.flatMap((f) => f.cites).find((c) => c.page === p.n)?.look ?? "")}">open at p. ${p.n}</a></header>${sheet(p)}</figure>`;
 
 const css = `:root{color-scheme:light dark;--bg:#f7f6f2;--fg:#17181a;--mute:#5c6068;--card:#fff;--line:#e2e1db;--accent:#d96a00;--box:#6b4fd8}
@@ -227,6 +242,7 @@ h2{font-size:.78rem;letter-spacing:.1em;text-transform:uppercase;color:var(--mut
 .mark{position:absolute;border:3px solid var(--box);border-radius:.25rem;scroll-margin-top:6rem}.mark:target{outline:3px solid var(--accent)}
 .tag{position:absolute;left:-3px;bottom:100%;white-space:nowrap;background:var(--box);color:#fff;font:600 .7rem/1.5 system-ui,sans-serif;padding:0 .4rem;border-radius:.25rem .25rem .25rem 0;text-decoration:none}.right .tag{left:auto;right:-3px;border-radius:.25rem .25rem 0}
 .cites{margin:.2rem 0 0;display:flex;flex-wrap:wrap;gap:.4rem;align-items:center}.cite{font:.8rem/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--accent);border:1px solid var(--line);border-radius:999px;padding:.2rem .6rem;text-decoration:none}.jump{font-size:.85rem;color:var(--mute)}
+.rows{list-style:none;margin:1rem 0 0;padding:0}.row{display:flex;flex-wrap:wrap;gap:.3rem .8rem;align-items:baseline;border-top:1px solid var(--line);padding:.5rem 0}.when{font:700 .85rem ui-monospace,monospace;min-width:6rem}.what{flex:1 1 14rem}.row .cites{margin:0 0 0 auto}
 .docpage{margin:0 0 1.2rem;scroll-margin-top:1rem}.docpage>header{display:flex;justify-content:space-between;align-items:center}.n{font:700 .85rem ui-monospace,monospace}ul.limits{color:var(--mute);padding-left:1.2rem}`;
 
 const keyFindings = report.findings.filter((f) => !f.routine), routine = report.findings.filter((f) => f.routine);
@@ -235,7 +251,7 @@ const page = `<!doctype html>
 <title>${say(report.title)}</title><style>${css}</style></head>
 <body><main>
 <header><h1>${say(report.title)}</h1><p class="question">${say(report.question)}</p></header>
-<section id="answer" aria-label="Answer"><p>${say(report.answer)}</p><ul class="points">${report.points.map((p) => `<li><small>${say(p.label)}</small><a href="#${esc(p.to)}">${say(p.value)}</a></li>`).join("")}</ul></section>
+<section id="answer" aria-label="Answer"><p>${say(report.answer)}</p><ul class="points">${report.points.map((p) => `<li><small>${say(p.label)}</small><a href="#${esc(p.to)}">${say(p.value)}</a></li>`).join("")}</ul>${rows(report.rows ?? [])}</section>
 <section id="evidence"><h2>Evidence</h2>${keyFindings.map(finding).join("\n")}</section>
 ${report.document ? `<section id="document"><h2>The document, with its marks</h2>${report.document.pages.map(docPage).join("\n")}</section>` : ""}
 ${routine.length ? `<section id="routine"><h2>Checked, as expected</h2>${routine.map(finding).join("\n")}</section>` : ""}
@@ -259,6 +275,9 @@ const style = (page.match(/<style>[\s\S]*?<\/style>/) ?? [""])[0];
 const banned = tags.some((tag) => /^<(?:script|link|iframe|object|embed|form|base)\b/i.test(tag) || /^<meta\b[^>]*http-equiv/i.test(tag) || /\son[a-z]+\s*=/i.test(tag));
 if (banned || /url\(|@import/i.test(style) || /https?:|\/\/[a-z0-9-]+\./i.test(page)) problems.push("the page runs code or loads from outside report/");
 if ([...attr("src"), ...attr("href"), ...attr("poster")].some((v) => /^\s*data:/i.test(v))) problems.push("the page uses a data: URL: a picture is a file");
+if ([...attr("src"), ...attr("href"), ...attr("poster")].some((v) => /(^|[\/\\])\.\.([\/\\]|$)/.test(v))) problems.push("a path with ../ leaves report/: copy the file in with keep(), or name a film in outside; never write ../");
+if (report.outside.some((name) => /[\/\\:]|^\./.test(name))) problems.push("outside names bare file names, never a path");
+if ([...(report.rows ?? []), ...report.findings].some((x) => !x.cites?.length)) problems.push("a row or a finding has no cite: leave out what no look read, or put it under what you did not check");
 for (const ref of [...attr("src"), ...attr("poster")]) {
   if (/^([a-z][a-z0-9+.-]*:|\/|\.\.)/i.test(ref)) problems.push(`${ref} is not a file in report/`);
   else if (!(await has(ref))) problems.push(`${ref} is missing or empty`);
@@ -280,7 +299,7 @@ for (const href of attr("href").map((h) => h.replaceAll("&amp;", "&"))) {
   const [file, frag = ""] = href.split("#");
   if (!file) { if (!ids.includes(frag)) problems.push(`#${frag} names nothing on the page`); continue; }
   if (/[\/\\:]|^\./.test(file)) problems.push(`${href} is not a file of report/ or a bare file name`);
-  else if (!(await has(file)) && !report.outside.includes(decodeURI(file))) problems.push(`${href}: ${file} is neither in report/ nor named in outside`);
+  else if (!(await has(decodeURI(file))) && !report.outside.includes(decodeURI(file))) problems.push(`${href}: ${file} is neither in report/ nor named in outside`);
   if (frag && !fragment.test(frag)) problems.push(`${href} has a fragment that is not page=, t= or xywh=`);
 }
 for (const key of attr("data-look")) if (!looks.has(key)) problems.push(`data-look ${key} is no look this run made`);

@@ -30,7 +30,9 @@ const cwd = dir.path;
 execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=5:duration=40", "-f", "lavfi", "-i", "sine=frequency=440:duration=40",
   "-pix_fmt", "yuv420p", "-c:v", "libx264", "-c:a", "aac", "-shortest", path.join(cwd, "talk.mp4")]);
 fs.writeFileSync(path.join(cwd, "contract.pdf"), textPdf(4));
-fs.writeFileSync(path.join(cwd, "photo.jpg"), await photoJpeg(sharp));
+// The photo carries a camera's metadata, as a real one does, so what a kept photo sheds can be told.
+fs.writeFileSync(path.join(cwd, "photo.jpg"), await sharp(await photoJpeg(sharp)).withMetadata({ exif: { IFD0: { Copyright: "origin-marker-9f3a" } } }).jpeg().toBuffer());
+assert.ok(fs.readFileSync(path.join(cwd, "photo.jpg")).includes("origin-marker-9f3a"), "the test photo carries its marker");
 
 /** A bash tool as a host's code mode gives one: the command's output, or a rejection that carries what it printed. */
 const bash = { name: "bash", execute: ({ command }) => new Promise((resolve, reject) => execFile("bash", ["-c", command], { cwd, maxBuffer: 1 << 26 }, (error, stdout, stderr) => (error ? reject(new Error(`${stderr}${error.message}`)) : resolve(stdout)))) };
@@ -127,6 +129,7 @@ test("the page is script-free and self-contained: no code, no data: URL, no fram
   assert.match(html, /color-scheme:light dark/);
   assert.match(html, /@media \(prefers-color-scheme:dark\)/, "and in the dark");
   assert.match(html, /<html lang="en">/);
+  assert.ok(!html.includes("../"), "no ../ anywhere in the page: a path that leaves report/ is dead");
 });
 
 test("every file the page shows is in report/, is not empty and is within budget; the folder holds nothing the page does not need", async () => {
@@ -141,9 +144,13 @@ test("every file the page shows is in report/, is not empty and is within budget
   for (const ref of refs.filter((r) => r.startsWith("frames/"))) assert.ok(sizeOf(ref) <= 700_000, `${ref}: ${sizeOf(ref)} bytes`);
   assert.ok(sizeOf("clips/talk-chart.mp4") <= 1_500_000, "a clip is at most 1.5 MB");
   assert.ok(all(path.join(cwd, "report")).reduce((n, f) => n + fs.statSync(f).size, 0) <= 8_000_000, "the folder is at most 8 MB");
-  assert.deepEqual(all(path.join(cwd, "report")).map((f) => path.relative(path.join(cwd, "report"), f)).sort(), ["clips/talk-chart.mp4", "contract.pdf", "frames/contract-p3.jpg", "frames/site-photo.jpg", "frames/talk-chart-poster.jpg", "frames/talk-chart.jpg", "frames/talk-later.jpg", "index.html"]);
+  assert.deepEqual(all(path.join(cwd, "report")).map((f) => path.relative(path.join(cwd, "report"), f)).sort(), ["clips/talk-chart.mp4", "contract.pdf", "frames/contract-p3.jpg", "frames/site-photo.jpg", "frames/talk-chart-poster.jpg", "frames/talk-chart.jpg", "frames/talk-later.jpg", "index.html", "photo.jpg"]);
   assert.deepEqual(fs.readFileSync(path.join(cwd, "report", "contract.pdf")), fs.readFileSync(path.join(cwd, "contract.pdf")), "a source document is copied as it is");
-  assert.ok(!fs.existsSync(path.join(cwd, "report", "talk.mp4")) && !fs.existsSync(path.join(cwd, "report", "photo.jpg")), "a film and a source named in outside are not copied");
+  assert.ok(!fs.existsSync(path.join(cwd, "report", "talk.mp4")), "a film named in outside is not copied");
+  const photo = fs.readFileSync(path.join(cwd, "report", "photo.jpg"));
+  assert.ok(!photo.includes("origin-marker-9f3a"), "a kept photo is re-encoded without its metadata");
+  const upright = (await sharp(path.join(cwd, "photo.jpg")).rotate().toBuffer({ resolveWithObject: true })).info;   // what a viewer shows
+  assert.deepEqual([(await sharp(photo).metadata()).width, (await sharp(photo).metadata()).height], [upright.width, upright.height], "at its own size, upright, so a look's percentages fit");
   // The files are what they say they are: a page at 1600 px with the letter page's proportions, a film frame at most 960 px,
   // a short silent H.264 clip of 8 seconds at most 480 px wide.
   const size = async (file) => { const m = await sharp(path.join(cwd, "report", file)).metadata(); return [m.width, m.height]; };
@@ -358,9 +365,97 @@ test("a clip that cannot fit its budget stops the script with the window to shor
   const refused = await run([helpers, assets, looking, named, render, check]);
   assert.ok(!refused.result.ok);
   assert.match(refused.result.error.message, /Talk Chart: a file name here is lowercase letters, digits and dashes/);
-  const nested = await run([helpers, assets, 'await keep("sub/contract.pdf");']);
-  assert.ok(!nested.result.ok);
-  assert.match(nested.result.error.message, /sub\/contract\.pdf: keep a file of this folder under 3000000 bytes, and name a larger one in outside/);
+  fs.writeFileSync(path.join(cwd, "big.pdf"), Buffer.alloc(3_200_000, 0x20));
+  const big = await run([helpers, assets, 'await keep("big.pdf");']);
+  assert.ok(!big.result.ok);
+  assert.match(big.result.error.message, /big\.pdf is over 3000000 bytes: name it in outside and cite it by its name/);
+});
+
+test("keep copies a document from wherever it is into report/ and gives the name to cite, so a page never needs ../", async () => {
+  fs.mkdirSync(path.join(cwd, "sub", "deeper"), { recursive: true });
+  fs.copyFileSync(path.join(cwd, "contract.pdf"), path.join(cwd, "sub", "deeper", "my contract.pdf"));
+  onDisk = "other";
+  const { result } = await run([helpers, assets, 'return [await keep("sub/deeper/my contract.pdf"), await keep("sub/../photo.jpg")];']);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  assert.deepEqual(result.value, ["my contract.pdf", "photo.jpg"]);
+  assert.deepEqual(fs.readFileSync(path.join(cwd, "report", "my contract.pdf")), fs.readFileSync(path.join(cwd, "contract.pdf")));
+  assert.ok(!fs.readFileSync(path.join(cwd, "report", "photo.jpg")).includes("origin-marker-9f3a"), "a photo is kept without its metadata");
+});
+
+test("the skill's check refuses any ../ in a src, a poster or an href, and an outside that names a path: copy the file in or name a film", async () => {
+  await refuses(swap('href="contract.pdf#page=3"', 'href="../contract.pdf#page=3"'), /never write \.\.\//);
+  await refuses(swap('href="photo.jpg"', 'href="sub/../photo.jpg"'), /never write \.\.\//);
+  await refuses(swap('src="frames/site-photo.jpg"', 'src="../frames/site-photo.jpg"'), /never write \.\.\//);
+  await refuses(swap('poster="frames/talk-chart-poster.jpg"', 'poster="../talk-chart-poster.jpg"'), /never write \.\.\//);
+  await refuses(swap('href="talk.mp4#t=18,26"', 'href="../talk.mp4#t=18,26"'), /never write \.\.\//);
+  const outside = data.replace('outside: ["talk.mp4"]', 'outside: ["../talk.mp4"]');
+  assert.notEqual(outside, data);
+  onDisk = "other";
+  const { result } = await run([helpers, assets, looking, outside, render, check]);
+  assert.ok(!result.ok);
+  assert.match(result.error.message, /outside names bare file names, never a path/);
+});
+
+test("a relative link names a file of report/ or a film left in outside, and nothing else", async () => {
+  await refuses(swap('href="talk.mp4#t=18,26"', 'href="film.mp4#t=18,26"'), /film\.mp4#t=18,26: film\.mp4 is neither in report\/ nor named in outside/);
+  await refuses(swap('href="photo.jpg"', 'href="other/photo.jpg"'), /is not a file of report\/ or a bare file name/);
+});
+
+test("when the question names a shape, the answer section is that shape: one cited row for each unit, before any finding", async () => {
+  const shaped = data.replace("  notChecked:", `  rows: [
+    { id: "m1", label: "0:00 to 0:20", text: "The chart is on the screen.", cites: [{ file: "talk.mp4", t: [0, 20], look: lookTalk.key }] },
+    { id: "m2", label: "0:20 to 0:40", text: "The speaker names the rule.", cites: [{ file: "contract.pdf", page: 3, look: lookPage.key }] },
+  ],
+  notChecked:`);
+  assert.notEqual(shaped, data);
+  onDisk = "other";
+  const { result } = await run([helpers, assets, looking, shaped, render, check]);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  const html = HTML();
+  const answer = html.slice(html.indexOf('id="answer"'), html.indexOf('id="evidence"'));
+  assert.equal((answer.match(/<li class="row" id="r-m\d">/g) ?? []).length, 2, "the rows are in the answer");
+  assert.equal((answer.match(/class="cite" href="[^"]*" data-look="[0-9a-f]{64}"/g) ?? []).length, 2, "each row is cited, with its look");
+  assert.match(answer, /<span class="when">0:00 to 0:20<\/span><span class="what">The chart is on the screen\.<\/span>/);
+  const nocite = shaped.replace('cites: [{ file: "contract.pdf", page: 3, look: lookPage.key }] },\n  ]', "cites: [] },\n  ]");
+  assert.notEqual(nocite, shaped);
+  const refused = await run([helpers, assets, looking, nocite, render, check]);
+  assert.ok(!refused.result.ok);
+  assert.match(refused.result.error.message, /a row or a finding has no cite/);
+});
+
+test("a finding with no cite is refused: a claim with no look behind it is left out or put under what was not checked", async () => {
+  const bare = data.replace('cites: [{ file: await keep("photo.jpg"), look: lookSite.key }] }', "cites: [] }");
+  assert.notEqual(bare, data);
+  onDisk = "other";
+  const { result } = await run([helpers, assets, looking, bare, render, check]);
+  assert.ok(!result.ok);
+  assert.match(result.error.message, /a row or a finding has no cite/);
+});
+
+test("a receipt a host files relative to the folder above the workspace is still read for its key", async () => {
+  const work = path.join(cwd, "work");
+  fs.mkdirSync(work, { recursive: true });
+  fs.copyFileSync(path.join(cwd, "photo.jpg"), path.join(work, "photo.jpg"));
+  const keys = [];
+  const vision = createVisionExtension({
+    eyes: fakeEyes({ answers: ["A photo of a site."] }),
+    scope: () => ({ label: "report", deriveDir: ".vision" }),
+    evidence: { file: async (label, record) => {
+      keys.push(record.facts.key);
+      const file = `evidence/${label}/look-1.json`;
+      fs.mkdirSync(path.dirname(path.join(cwd, file)), { recursive: true });
+      fs.writeFileSync(path.join(cwd, file), JSON.stringify(record));
+      return { path: file };   // relative to cwd, one level above the workspace the shell runs in
+    } },
+  });
+  const inWork = { name: "bash", execute: ({ command }) => new Promise((resolve, reject) => execFile("bash", ["-c", command], { cwd: work, maxBuffer: 1 << 26 }, (error, stdout, stderr) => (error ? reject(new Error(`${stderr}${error.message}`)) : resolve(stdout)))) };
+  const call = { conversationId: "report", callId: "1", model: undefined, signal: undefined };
+  const sandbox = new CodemodeSandbox({ tools: [inWork], globals: [vision.see(nodeVisionEnv({ cwd: work }), call)] });
+  try {
+    const result = await sandbox.execute([helpers, looking, 'return (await look("photo.jpg", "photo.jpg", "What is in the photo?")).key;'].join("\n"));
+    assert.ok(result.ok, result.ok ? "" : result.error.message);
+    assert.equal(result.value, keys[0]);
+  } finally { await sandbox.close(); }
 });
 
 test("a host that files no receipt gives no look to cite, and the script says so", async () => {
