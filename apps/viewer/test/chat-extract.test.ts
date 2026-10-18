@@ -193,6 +193,11 @@ test("each model call inside a tool is its own entry under the tool's card: its 
     assert.equal(m.spans.find((span) => span.item === call.id)?.label, call.label, 'its span reads the same');
   }
   assert.match(code.calls.find((call) => call.label.includes('box drawn'))!.raw, /^\{\n {2}"/, 'a JSON output is indented');
+  for (const call of code.calls) {
+    const judge = call.name.endsWith(' judge');
+    assert.equal(call.judge, judge ? true : undefined, `${call.label}: a judge's call, and only one, carries the judge's accent`);
+    assert.equal(m.spans.find((span) => span.item === call.id)?.judge, call.judge, 'its span too');
+  }
   // Jev's answer shapes, each one look under the first tool call.
   const { recording } = opened(referenceJob);
   const start = recording.lines.find((line) => line.kind === 'tool_execution_start')!;

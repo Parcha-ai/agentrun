@@ -104,6 +104,9 @@ function chatLookAnswer(body: Json | undefined): { text: string; decisions: Chat
   return { text: chatClip(chatFirstLine(raw.replace(/^[\d.]+\t[\d.]+\t/gm, '')), 220), decisions: [], regions: [] };
 }
 
+/** A judge's call: its tool's verb is "judge" ("judge", "vision.judge"). */
+const chatIsJudge = (tool: string) => tool.split('.').at(-1) === 'judge';
+
 /** A model call's name: who answered (its `via`, else the tool's namespace) and the tool's verb, "Jev judge". */
 function chatCallName(tool: string, via: string | undefined): string {
   const [space, ...verb] = tool.split('.');
@@ -223,7 +226,7 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
             const callId = chatStr(p.id)!;
             const name = chatStr(p.name) ?? 'tool';
             const times = toolTimes.get(callId);
-            const item: Extract<ChatItem, { kind: 'tool' }> = { kind: 'tool', id: `item-${++counter}`, tool: name, title: chatToolTitle(name, p.arguments), takeaway: '', media: [], looks: [], calls: [],
+            const item: Extract<ChatItem, { kind: 'tool' }> = { kind: 'tool', id: `item-${++counter}`, tool: name, title: chatToolTitle(name, p.arguments), takeaway: '', media: [], looks: [], calls: [], ...(chatIsJudge(name) ? { judge: true as const } : {}),
               ...(times?.t0 !== undefined ? { t0: times.t0 } : {}), ...(times?.t1 !== undefined ? { t1: times.t1 } : {}) };
             thread.items.push(item);
             toolItems.set(callId, item);
@@ -274,7 +277,8 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     if (!callId) continue;
     const item = toolItems.get(callId);
     const t1 = toolTimes.get(callId)?.t1;
-    const span: ChatSpan = { id: `span-${spans.length + 1}`, actor: 'tool', lane: `tool ${name}`, label: item?.title ?? `tool ${name}`, t0: line.t, ...(t1 !== undefined ? { t1 } : {}), ...(item ? { item: item.id } : {}) };
+    const span: ChatSpan = { id: `span-${spans.length + 1}`, actor: 'tool', lane: `tool ${name}`, label: item?.title ?? `tool ${name}`, t0: line.t, ...(t1 !== undefined ? { t1 } : {}), ...(item ? { item: item.id } : {}),
+      ...(chatIsJudge(name) ? { judge: true as const } : {}) };
     spans.push(span);
     toolSpans.push({ span, conversation: chatId(line.conv), callId });
   }
@@ -306,11 +310,12 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     const item = holder ? toolItems.get(holder.callId) : undefined;
     if (item && key) { if (!item.looks.includes(key)) item.looks.push(key); lookItem.set(key, item.id); }
     const name = chatCallName(tool, chatStr(chatObj(record?.args)?.via));
-    const call: ChatCall = { id: `call-${++counter}`, name, label: chatCallLabel(name, record?.body), raw: chatRaw(record?.body), ...(key ? { look: key } : {}), ...(model ? { model } : {}),
+    const judge = chatIsJudge(tool) ? { judge: true as const } : {};
+    const call: ChatCall = { id: `call-${++counter}`, name, label: chatCallLabel(name, record?.body), raw: chatRaw(record?.body), ...(key ? { look: key } : {}), ...(model ? { model } : {}), ...judge,
       ...(started !== undefined ? { t0: started } : {}), t1: line.t };
     if (item) item.calls.push(call);
     spans.push({ id: `span-${spans.length + 1}`, actor: 'inner', lane: name, label: call.label, t0: started ?? line.t, ...(started !== undefined ? { t1: line.t } : {}),
-      ...(holder ? { parentLane: holder.span.lane } : {}), ...(item ? { item: call.id } : {}) });
+      ...(holder ? { parentLane: holder.span.lane } : {}), ...(item ? { item: call.id } : {}), ...judge });
   }
 
   // Any other line with its own start (t0 on the recording's clock) is a model call made inside a tool: a span under
@@ -328,12 +333,14 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     if (!holder) continue;
     const model = chatStr(d?.model);
     const record = chatObj(d?.record);
-    const name = chatCallName(chatStr(d?.tool) ?? chatStr(d?.name) ?? line.kind, chatStr(chatObj(record?.args)?.via));
+    const tool = chatStr(d?.tool) ?? chatStr(d?.name) ?? line.kind;
+    const name = chatCallName(tool, chatStr(chatObj(record?.args)?.via));
     const body = record?.body ?? d?.output;
-    const call: ChatCall = { id: `call-${++counter}`, name, label: chatCallLabel(name, body), raw: chatRaw(body), ...(model ? { model } : {}), t0: started, t1: line.t };
+    const judge = chatIsJudge(tool) ? { judge: true as const } : {};
+    const call: ChatCall = { id: `call-${++counter}`, name, label: chatCallLabel(name, body), raw: chatRaw(body), ...(model ? { model } : {}), ...judge, t0: started, t1: line.t };
     const item = toolItems.get(holder.callId);
     if (item) item.calls.push(call);
-    spans.push({ id: `span-${spans.length + 1}`, actor: 'inner', lane: name, parentLane: holder.span.lane, label: call.label, t0: started, t1: line.t, ...(item ? { item: call.id } : {}) });
+    spans.push({ id: `span-${spans.length + 1}`, actor: 'inner', lane: name, parentLane: holder.span.lane, label: call.label, t0: started, t1: line.t, ...(item ? { item: call.id } : {}), ...judge });
   }
 
   // What each look read, by its key: its address, its answer, its images and the regions it boxed. One write can hold

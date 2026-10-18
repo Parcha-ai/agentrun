@@ -19,6 +19,8 @@ export type ChatItem =
     media: string[];
     /** The result said it failed. */
     failed?: boolean;
+    /** The tool is a judge (its verb is "judge"): drawn with the judge's accent. */
+    judge?: true;
     /** The looks made inside this call (their keys), so a cite of one finds its card. */
     looks: string[];
     /** The model calls made inside this call, in the order they ended: each its own card under this one. */
@@ -30,7 +32,7 @@ export type ChatItem =
 /** A model call made inside a tool call (a vision look, a Jev decision, speech to text). `label` is its name, its
  *  scores and what it drew ("Jev judge · 0.87 · box drawn"), the same on its card and its span; `raw` is its output
  *  as recorded; `look` its key when it was a look, for its picture and regions. */
-export type ChatCall = { id: string; name: string; label: string; raw: string; look?: string; model?: string; t0?: number; t1?: number };
+export type ChatCall = { id: string; name: string; label: string; raw: string; look?: string; model?: string; judge?: true; t0?: number; t1?: number };
 
 /** One recorded conversation: an agent node's, named by its node; a run of one conversation has one thread. Its first
  *  user entry is the prompt the host composed from the node's input, so it is not an item. */
@@ -51,6 +53,8 @@ export type ChatSpan = {
   t1?: number;
   /** The chat entry or thread the span belongs to, to scroll to. */
   item?: string;
+  /** A judge's call (its tool's verb is "judge"), drawn with the judge's accent. */
+  judge?: true;
 };
 
 /** One typed decision a look's answer carries (a Jev call): a yes-or-no with its score, or a choice. */
