@@ -9,7 +9,7 @@ Use this to report what a site shows, for example the pages behind a sign-in.
    - One file, with nothing beside it in `report/`.
    - No script and nothing from the network: no `<script>`, no `on...` attribute, no `<iframe>`, `<object>`, `<embed>`, `<form>`, `<base>`, `<link>` or `<meta http-equiv>`, no `data:` URL, no `url()` or `@import`, no remote font, image or style.
    - Inline CSS only: `color-scheme: light dark`, system fonts, one column that reads at phone width.
-   - A link to a page you visited is fine: it loads nothing. Any other address goes in the text without its scheme (`example.com/terms`).
+   - A link to a page you visited is fine: it loads nothing. Any other address goes in the text without its scheme: its host and path only.
 5. In all three files, state only what the run read: what your tool results show. Make no claim about errors, speed or the absence of something unless a tool result shows it, and leave out a line or a section that would only say nothing went wrong. Name each element as the page and your read of it name it.
 6. Never write a password, a code or a token into any of these files.
 7. Answer with a two-line summary and the names of the files you wrote.

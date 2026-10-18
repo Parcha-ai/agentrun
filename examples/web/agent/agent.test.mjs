@@ -65,6 +65,16 @@ test('the home is made from agent.json and the skills: the definition names no m
   assert.throws(() => promptOf({ definition: { ...state.definition, skills: ['missing'] }, skills: {} }), /no missing\/SKILL\.md/);
 });
 
+test('the skills and the definition name no site: no address, domain or path of one, so no example in them reads as a step the run took', async () => {
+  const skills = (await readdir(join(import.meta.dirname, 'skills'))).map((name) => `skills/${name}/SKILL.md`);
+  for (const file of ['agent.json', ...skills]) {
+    const text = await readFile(join(import.meta.dirname, file), 'utf8');
+    for (const [what, pattern] of [['an address', /[a-z]+:\/\//i], ['a domain', /\b[a-z0-9-]+\.(?:com|org|net|io|dev|app|ai|co|edu|gov)\b/i], ['a site path', /(?<![\w./])\/[a-z][\w-]*/i]]) {
+      assert.doesNotMatch(text, pattern, `${file} names ${what}`);
+    }
+  }
+});
+
 test('run 1 makes the browser profile once, the root conversation carries it, and carryBack gives it to run 2, which makes none', async (t) => {
   const { home } = await agentHome(t);
   let made = 0;
