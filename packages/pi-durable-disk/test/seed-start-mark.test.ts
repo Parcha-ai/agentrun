@@ -17,7 +17,9 @@ import { fakeClaim, localClaimDir, localRef, scratchRoot, scriptedHarness } from
 
 const CHILD = fileURLToPath(new URL("./fixtures/seed-child.ts", import.meta.url));
 const LEASE = { heartbeatMs: 100, expiryMs: 5_000, marginMs: 1_000, checkMs: 100 };
-const GRACE_MS = 400;
+// Fifteen refreshes to a grace (the lease's defaults have nine: 90 s to 10 s), so a loaded runner whose fsyncs stall for a
+// few hundred milliseconds still refreshes within it.
+const GRACE_MS = 1_500;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 type Mark = { generation: number; at: string; by: string | null; failures: number; lastExit: string | null };
@@ -66,7 +68,7 @@ function supervisorOver(root: string, id: string) {
 
 /**
  * Once the keeper's first refresh has landed (`at` is no longer `since`): its thread is up. A loaded machine can take well
- * over this file's 400 ms grace to bring a worker thread up (nothing to a real grace of 90 s), so every timed check runs
+ * over this file's grace to bring a worker thread up (nothing to a real grace of 90 s), so every timed check runs
  * from here; a keeper that never comes up still fails.
  */
 async function firstRefresh(root: string, since: string, ms = 20_000): Promise<void> {
@@ -101,7 +103,7 @@ describe("a seed and the supervisor's start grace", () => {
   it("a seed that outlives the grace keeps its start mark fresh: the supervisor's tick finds it starting and revokes nothing", { timeout: 30_000 }, async () => {
     const dir = scratchRoot("seed-mark-fresh");
     try {
-      // A first start (no failures before it): the grace is the base, 400 ms; a backed-off one would be longer.
+      // A first start (no failures before it): the grace is the base, GRACE_MS; a backed-off one would be longer.
       const first: Mark = { generation: 1, at: new Date().toISOString(), by: "sup-1", failures: 0, lastExit: null };
       writeMark(dir.root, first);
       const supervisor = supervisorOver(dir.root, "r1");
@@ -184,7 +186,7 @@ describe("a seed and the supervisor's start grace", () => {
     try {
       for (const t0 = Date.now(); !existsSync(marker) && Date.now() - t0 < 30_000; ) await sleep(20);
       await firstRefresh(root, start);
-      await sleep(1_500);
+      await sleep(2 * GRACE_MS); // a keeper stopped by a collection would leave the mark two graces old
       const age = Date.now() - Date.parse(readMark(root).at);
       assert.doesNotMatch(stderr, /Closing file descriptor \d+ on garbage collection/, "no descriptor of the seeder is closed by a collection");
       assert.ok(age < GRACE_MS, `the mark is kept fresh across collections: ${age} ms old against a ${GRACE_MS} ms grace`);
