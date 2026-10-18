@@ -10,14 +10,14 @@ import { h, register, type Box, type Node, type Panel } from './panels.ts';
 import { visionCitedOf, visionPage, visionRegion, type VisionCitedResult, type VisionCitedRow } from './vision.ts';
 
 type DocState = { result?: { blob: string; title: string } };
-/** One row's cite on a page: the row, the cite, and its box when the fragment names one. */
-type DocMark = { row: VisionCitedRow; cite: VisionCitedRow['cites'][number]; box?: Box };
-type DocPage = { blob: string; page: number; marks: DocMark[] };
+/** A row as a page shows it: the row, the looks it cites there, and every region it names there. */
+type DocRow = { row: VisionCitedRow; looks: string[]; boxes: Box[] };
+type DocPage = { blob: string; page: number; rows: DocRow[] };
 
 const isResult = (line: Line) => line.channel === 'live' && line.source === 'host' && line.kind === 'result';
 
-/** The pages a cited result names, in the order first cited, each with the rows that cite it. A cite whose file the
- *  shell knows to be a picture is not a page. */
+/** The pages a cited result names, in the order first cited, each with the rows that cite it, in their order, once each
+ *  however many regions they name there. A cite whose file the shell knows to be a picture is not a page. */
 export function docPagesOf(cited: VisionCitedResult, blobType: (sha: string) => string | undefined = () => undefined): DocPage[] {
   const pages = new Map<string, DocPage>();
   for (const row of cited.rows) {
@@ -25,9 +25,11 @@ export function docPagesOf(cited: VisionCitedResult, blobType: (sha: string) => 
       const page = cite.blob !== undefined ? visionPage(cite.fragment) : undefined;
       if (cite.blob === undefined || page === undefined || blobType(cite.blob)?.startsWith('image/')) continue;
       const key = `${cite.blob}#${page}`;
-      const held = pages.get(key) ?? pages.set(key, { blob: cite.blob, page, marks: [] }).get(key)!;
+      const held = pages.get(key) ?? pages.set(key, { blob: cite.blob, page, rows: [] }).get(key)!;
+      const shown = held.rows.find((each) => each.row === row) ?? held.rows[held.rows.push({ row, looks: [], boxes: [] }) - 1]!;
       const box = visionRegion(cite.fragment);
-      held.marks.push({ row, cite, ...(box ? { box } : {}) });
+      if (box) shown.boxes.push(box);
+      if (cite.look !== undefined && !shown.looks.includes(cite.look)) shown.looks.push(cite.look);
     }
   }
   return [...pages.values()];
@@ -35,28 +37,30 @@ export function docPagesOf(cited: VisionCitedResult, blobType: (sha: string) => 
 
 const docPercent = (box: Box) => `${[box.x, box.y, box.w, box.h].map((value) => Math.round(value * 100) / 100).join(', ')} %`;
 
-/** A page with its boxes and its rows. Each row is numbered on its page, and its box carries the number, with the row's
- *  words beside it where there is room: rows that cite the same region share one box. */
+/** A page with its boxes and its rows. Each row is numbered on its page, and each of its boxes carries that number,
+ *  with the row's words beside it where there is room: rows that cite the same region share one box. */
 function docPageView(page: DocPage, cite: string | undefined): Node {
-  const hot = (mark: DocMark) => cite !== undefined && mark.cite.look === cite;
-  const regions = new Map<string, { box: Box; marks: { mark: DocMark; n: number }[] }>();
-  page.marks.forEach((mark, at) => {
-    if (!mark.box) return;
-    const key = [mark.box.x, mark.box.y, mark.box.w, mark.box.h].join(',');
-    (regions.get(key) ?? regions.set(key, { box: mark.box, marks: [] }).get(key)!).marks.push({ mark, n: at + 1 });
+  const hot = (shown: DocRow) => cite !== undefined && shown.looks.includes(cite);
+  const regions = new Map<string, { box: Box; rows: { shown: DocRow; n: number }[] }>();
+  page.rows.forEach((shown, at) => {
+    for (const box of shown.boxes) {
+      const key = [box.x, box.y, box.w, box.h].join(',');
+      const region = regions.get(key) ?? regions.set(key, { box, rows: [] }).get(key)!;
+      if (!region.rows.some((each) => each.shown === shown)) region.rows.push({ shown, n: at + 1 });
+    }
   });
-  const boxes = [...regions.values()].map(({ box, marks }): Node => {
-    const look = marks.find(({ mark }) => mark.cite.look !== undefined)?.mark.cite.look;
-    return h('div', { class: `doc-box${marks.some(({ mark }) => hot(mark)) ? ' hot' : ''}`, box, title: marks.map(({ mark }) => `${mark.row.label}: ${mark.row.value}`).join('\n'), ...(look ? { cite: look } : {}) },
-      h('span', { class: 'doc-box-label' }, h('b', {}, marks.map(({ n }) => n).join(', ')), h('span', { class: 'doc-box-words' }, ` ${marks.map(({ mark }) => mark.row.label).join(' · ')}`)));
+  const boxes = [...regions.values()].map(({ box, rows }): Node => {
+    const look = rows.find(({ shown }) => shown.looks.length > 0)?.shown.looks[0];
+    return h('div', { class: `doc-box${rows.some(({ shown }) => hot(shown)) ? ' hot' : ''}`, box, title: rows.map(({ shown }) => `${shown.row.label}: ${shown.row.value}`).join('\n'), ...(look ? { cite: look } : {}) },
+      h('span', { class: 'doc-box-label' }, h('b', {}, rows.map(({ n }) => n).join(', ')), h('span', { class: 'doc-box-words' }, ` ${rows.map(({ shown }) => shown.row.label).join(' · ')}`)));
   });
   return h('figure', { class: 'doc-page' },
     { tag: 'pdf-page', blob: page.blob, page: page.page, alt: `page ${page.page}`, class: 'doc-sheet', children: boxes },
     h('figcaption', {}, `Page ${page.page}`, ' · ', { tag: 'a', blob: page.blob, text: 'the file', class: 'doc-file', fragment: `page=${page.page}` }),
-    h('ol', { class: 'doc-marks' }, ...page.marks.map((mark) => h('li', { class: `doc-mark${hot(mark) ? ' hot' : ''}`, ...(mark.cite.look ? { cite: mark.cite.look } : {}) },
-      h('span', { class: 'doc-mark-name' }, mark.row.label), ' ', h('b', {}, mark.row.value),
-      h('span', { class: 'doc-note' }, mark.box ? ` · box at ${docPercent(mark.box)}` : ' · no box'),
-      mark.row.note !== undefined && h('span', { class: 'doc-note' }, ` · ${mark.row.note}`)))));
+    h('ol', { class: 'doc-marks' }, ...page.rows.map((shown) => h('li', { class: `doc-mark${hot(shown) ? ' hot' : ''}`, ...(shown.looks[0] !== undefined ? { cite: shown.looks[0] } : {}) },
+      h('span', { class: 'doc-mark-name' }, shown.row.label), ' ', h('b', {}, shown.row.value),
+      h('span', { class: 'doc-note' }, shown.boxes.length ? ` · ${shown.boxes.length === 1 ? 'box' : 'boxes'} at ${shown.boxes.map(docPercent).join('; ')}` : ' · no box'),
+      shown.row.note !== undefined && h('span', { class: 'doc-note' }, ` · ${shown.row.note}`)))));
 }
 
 export const documentPanel: Panel<DocState> = {
@@ -66,7 +70,7 @@ export const documentPanel: Panel<DocState> = {
   accepts: isResult,
   // A result line is every run's; only a result that cites a page draws this panel.
   shows: () => false,
-  showsResult: (result: Json) => { const cited = visionCitedOf(result); return cited !== undefined && docPagesOf(cited).length > 0; },
+  showsResult: (result: Json, { blobType }) => { const cited = visionCitedOf(result); return cited !== undefined && docPagesOf(cited, blobType).length > 0; },
   reduce(state, line) {
     const data = line.data as { blob?: unknown; title?: unknown } | null;
     return typeof data?.blob === 'string' ? { result: { blob: data.blob, title: typeof data.title === 'string' ? data.title : 'The result' } } : state;

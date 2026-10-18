@@ -72,7 +72,9 @@ const STAMP = { x: 55, y: 5, w: 35, h: 12 };
 /** Where the scan's black block is on its page: columns 100 to 300 and rows 200 to 300 of 400 by 500. */
 const BLOCK = { x: 25, y: 40, w: 50, h: 20 };
 const PDF_BYTES = pdfOf([{ media: [612, 792], crop: [36, 36, 576, 756], marks: [SEAL, SIGNATURE] }, { media: [612, 792], crop: [0, 0, 612, 792], marks: [STAMP] },
-  { media: [612, 792], crop: [0, 0, 612, 792], marks: [], scan: g4Scan() }]);
+  { media: [612, 792], crop: [0, 0, 612, 792], marks: [], scan: g4Scan() },
+  // A page ten times as tall as it is wide: drawn smaller, so that it holds no more pixels than a page may.
+  { media: [612, 6120], crop: [0, 0, 612, 6120], marks: [] }]);
 const PDF = createHash('sha256').update(PDF_BYTES).digest('hex');
 const at = (box: Box) => `xywh=percent:${box.x},${box.y},${box.w},${box.h}`;
 
@@ -88,6 +90,7 @@ const CHECK = {
     { id: 'filed_stamp', label: 'filed stamp', value: 'yes', cites: [{ blob: PDF, fragment: `#page=2&${at(STAMP)}` }] },
     { id: 'scan', label: 'scanned block', value: 'yes', cites: [{ blob: PDF, fragment: `page=3&${at(BLOCK)}` }] },
     { id: 'eyes', label: 'page 1 as the eyes saw it', value: 'kept', cites: [{ blob: PAGES[0]!, fragment: 'page=1' }] },
+    { id: 'tall', label: 'a tall page', value: 'yes', cites: [{ blob: PDF, fragment: 'page=4' }] },
     { id: 'summary', label: 'summary', value: '4 of 5 marks', cites: [] },
   ],
 };
@@ -109,28 +112,30 @@ const view = (p: number, context: Partial<ViewContext> = {}) => documentPanel.vi
 
 test('the cited pages, in the order first cited, each with its rows: a box where the fragment names a region, none where it does not, and no picture', () => {
   const pages = docPagesOf(visionCitedOf(CHECK as unknown as Json)!, (sha) => types[sha]);
-  assert.deepEqual(pages.map((page) => [page.blob, page.page, page.marks.map((mark) => [mark.row.label, mark.box ?? null])]), [
-    [PDF, 1, [['seal', SEAL], ['signature', SIGNATURE], ['file number', null]]],
-    [PDF, 2, [['filed stamp', STAMP]]],
-    [PDF, 3, [['scanned block', BLOCK]]],
+  assert.deepEqual(pages.map((page) => [page.blob, page.page, page.rows.map((shown) => [shown.row.label, shown.boxes])]), [
+    [PDF, 1, [['seal', [SEAL]], ['signature', [SIGNATURE]], ['file number', []]]],
+    [PDF, 2, [['filed stamp', [STAMP]]]],
+    [PDF, 3, [['scanned block', [BLOCK]]]],
+    [PDF, 4, [['a tall page', []]]],
   ]);
-  assert.deepEqual(docPagesOf(visionCitedOf(CHECK as unknown as Json)!).map((page) => [page.blob, page.page]), [[PDF, 1], [PDF, 2], [PDF, 3], [PAGES[0], 1]], 'a file of a type not known yet is taken for a page; the shell says when it is not');
+  assert.deepEqual(docPagesOf(visionCitedOf(CHECK as unknown as Json)!).map((page) => [page.blob, page.page]), [[PDF, 1], [PDF, 2], [PDF, 3], [PAGES[0], 1], [PDF, 4]], 'a file of a type not known yet is taken for a page; the shell says when it is not');
 });
 
 test('each page a pdf-page node with its boxes over it, a caption that links the file at the page, and its rows listed, a box or not', () => {
   const node = view(delivered.length);
   const sheets = find(node, (each) => each.tag === 'pdf-page');
-  assert.deepEqual(sheets.map((sheet) => 'page' in sheet && [sheet.blob, sheet.page, sheet.alt]), [[PDF, 1, 'page 1'], [PDF, 2, 'page 2'], [PDF, 3, 'page 3']]);
+  assert.deepEqual(sheets.map((sheet) => 'page' in sheet && [sheet.blob, sheet.page, sheet.alt]), [[PDF, 1, 'page 1'], [PDF, 2, 'page 2'], [PDF, 3, 'page 3'], [PDF, 4, 'page 4']]);
   const boxes = sheets.map((sheet) => find(sheet, cls('doc-box')).map((box) => ['box' in box && box.box, words(box), 'cite' in box ? box.cite : undefined]));
-  assert.deepEqual(boxes, [[[SEAL, '1 seal', K.page1], [SIGNATURE, '2 signature', K.page2]], [[STAMP, '1 filed stamp', undefined]], [[BLOCK, '1 scanned block', undefined]]], 'each box carries its row\'s number on its page and its words');
+  assert.deepEqual(boxes, [[[SEAL, '1 seal', K.page1], [SIGNATURE, '2 signature', K.page2]], [[STAMP, '1 filed stamp', undefined]], [[BLOCK, '1 scanned block', undefined]], []], 'each box carries its row\'s number on its page and its words');
   assert.deepEqual(find(node, cls('doc-mark')).map(words), [
     'seal yes · box at 40, 70, 20, 15 % · noul 0.95',
     'signature yes · box at 65, 87, 25, 8 %',
     'file number no · no box',
     'filed stamp yes · box at 55, 5, 35, 12 %',
     'scanned block yes · box at 25, 40, 50, 20 %',
+    'a tall page yes · no box',
   ]);
-  assert.deepEqual(find(node, (each) => each.tag === 'a').map((link) => 'fragment' in link && [link.blob, link.fragment]), [[PDF, 'page=1'], [PDF, 'page=2'], [PDF, 'page=3']]);
+  assert.deepEqual(find(node, (each) => each.tag === 'a').map((link) => 'fragment' in link && [link.blob, link.fragment]), [[PDF, 'page=1'], [PDF, 'page=2'], [PDF, 'page=3'], [PDF, 'page=4']]);
   assert.equal(words(find(node, cls('doc-title'))[0]!), CHECK.title);
 });
 
@@ -138,6 +143,14 @@ test('a selected citation lights its box and its row; a click on either selects 
   const node = view(delivered.length, { cite: K.page2 });
   assert.deepEqual(find(node, cls('hot')).map((each) => [each.class, words(each)]), [['doc-box hot', '2 signature'], ['doc-mark hot', 'signature yes · box at 65, 87, 25, 8 %']]);
   assert.deepEqual(find(node, (each) => 'cite' in each && each.cite !== undefined).map((each) => 'cite' in each && each.cite), [K.page1, K.page2, K.page1, K.page2, K.page3]);
+});
+
+test('a row that cites two regions of a page is one numbered row there, and both its boxes carry its number', () => {
+  const twice = { ...CHECK, rows: [CHECK.rows[0]!, { ...CHECK.rows[1]!, cites: [...CHECK.rows[1]!.cites, { blob: PDF, look: K.page2, fragment: `page=1&${at(STAMP)}` }] }] };
+  const node = view(delivered.length, { json: () => twice as unknown as Json });
+  const sheet = find(node, (each) => each.tag === 'pdf-page')[0]!;
+  assert.deepEqual(find(sheet, cls('doc-box')).map((box) => ['box' in box && box.box, words(box)]), [[SEAL, '1 seal'], [SIGNATURE, '2 signature'], [STAMP, '2 signature']]);
+  assert.deepEqual(find(node, cls('doc-mark')).map(words), ['seal yes · box at 40, 70, 20, 15 % · noul 0.95', 'signature yes · boxes at 65, 87, 25, 8 %; 55, 5, 35, 12 %']);
 });
 
 test('rows that cite the same region share one box, with both numbers and both rows\' words', () => {
@@ -157,11 +170,14 @@ test('before the result, while it is read, and for a result that cites no page, 
   assert.match(words(view(delivered.length, { json: () => ACCOUNT as unknown as Json })), /cites no page of a file/);
 });
 
-test('a recording draws the panel when its result cites a page, never for its lines alone', () => {
-  const drawn = (results: Json[]) => panelsFor(delivered, results).some((panel) => panel.id === 'document');
+test('a recording draws the panel when its result cites a page, never for its lines alone, nor for a result that cites only pictures', () => {
+  const drawn = (results: Json[]) => panelsFor(delivered, results, (sha) => types[sha]).some((panel) => panel.id === 'document');
   assert.equal(drawn([]), false, 'a result line alone is every run\'s');
   assert.equal(drawn([CHECK as unknown as Json]), true);
   assert.equal(drawn([CHAPTERS as unknown as Json, ACCOUNT as unknown as Json]), false, 'a film\'s chapters and an account cite no page');
+  const pictures = { ...CHECK, rows: CHECK.rows.filter((row) => row.cites.every((each) => each.blob === PAGES[0])) };
+  assert.equal(pictures.rows.length, 2);
+  assert.equal(drawn([pictures as unknown as Json]), false, 'a result whose pages are pictures in the recording');
 });
 
 test('a scrub to any point equals a fresh reduce to it', () => {
@@ -258,11 +274,14 @@ test('in Chrome under a strict static host\'s policy, each cited page is drawn w
     // The viewer writes where it is into its address as it draws, so the new document is told by a mark the old one has.
     await page.evaluate(`window.before = true; location.assign(${JSON.stringify(`${origin}/${opened}`)})`);
     await page.once(`window.before === undefined && document.readyState === 'complete'`, 'true', 30_000, `${opened} opening`);
-    const ready = `[...document.querySelectorAll('.doc-sheet img.pdf-picture')].filter((img) => img.complete && img.naturalWidth > 0).length === 3 || document.body.innerText.includes('could not be drawn')`;
-    await page.once(ready, 'true', 30_000, `${opened}: the three cited pages drawn`);
+    const ready = `[...document.querySelectorAll('.doc-sheet img.pdf-picture')].filter((img) => img.complete && img.naturalWidth > 0).length === 4 || document.body.innerText.includes('could not be drawn')`;
+    await page.once(ready, 'true', 30_000, `${opened}: the four cited pages drawn`);
     assert.doesNotMatch(String(await page.evaluate('document.body.innerText')), /could not be drawn|breaks the format/, opened);
     const sheets = await page.evaluate(MEASURE) as { place: number[]; inside: number[]; outside: number; corner: number }[][];
-    assert.deepEqual(sheets.map((boxes) => boxes.map((box) => box.place)), [[SEAL, SIGNATURE].map((box) => [box.x, box.y, box.w, box.h]), [[STAMP.x, STAMP.y, STAMP.w, STAMP.h]], [[BLOCK.x, BLOCK.y, BLOCK.w, BLOCK.h]]], `${opened}: each box at its cite's percent of its page`);
+    assert.deepEqual(sheets.map((boxes) => boxes.map((box) => box.place)), [[SEAL, SIGNATURE].map((box) => [box.x, box.y, box.w, box.h]), [[STAMP.x, STAMP.y, STAMP.w, STAMP.h]], [[BLOCK.x, BLOCK.y, BLOCK.w, BLOCK.h]], []], `${opened}: each box at its cite's percent of its page`);
+    const drawnSizes = await page.evaluate(`[...document.querySelectorAll('.doc-sheet img.pdf-picture')].map((img) => [img.naturalWidth, img.naturalHeight])`) as number[][];
+    assert.deepEqual(drawnSizes.slice(0, 3).map(([w]) => w), [1600, 1600, 1600], `${opened}: a page is drawn 1600 pixels wide`);
+    assert.ok(drawnSizes[3]![0]! < 1600 && drawnSizes[3]![0]! * drawnSizes[3]![1]! <= 4_000_000, `${opened}: the tall page is drawn smaller, within its pixels (${drawnSizes[3]})`);
     for (const box of sheets.flat()) {
       assert.ok(box.inside.every((shade) => shade < 60), `${opened}: the page is black inside the box at ${box.place} (${box.inside})`);
       assert.ok(box.outside > 200 && box.corner > 200, `${opened}: and white just outside it and at the corner (${box.outside}, ${box.corner})`);
@@ -290,7 +309,7 @@ test('from a file, where PDF.js cannot load, the page says so and links the file
   const text = String(await page.evaluate('document.body.innerText'));
   assert.match(text, /page 1 could not be drawn: PDF\.js cannot load in a page opened from a file/);
   assert.match(text, /seal yes · box at 40, 70, 20, 15 %/);
-  assert.equal(await page.evaluate(`[...document.querySelectorAll('.doc-sheet a')].map((a) => a.href.split('#')[1]).join(' ')`), 'page=1 page=2 page=3');
+  assert.equal(await page.evaluate(`[...document.querySelectorAll('.doc-sheet a')].map((a) => a.href.split('#')[1]).join(' ')`), 'page=1 page=2 page=3 page=4');
 });
 
 const recorded = process.env.DOCUMENT_RECORDING;
@@ -301,14 +320,14 @@ test('a document recording (DOCUMENT_RECORDING): the format holds, every page an
   assert.deepEqual(validate(manifest, run, new Set(names.map((name) => name.split('.')[0]!))), []);
   const typeOf = (sha: string) => { const name = names.find((each) => each.startsWith(`${sha}.`)); return name ? typeOfName(name) : undefined; };
   const result = JSON.parse(readFileSync(join(recorded!, 'blobs', names.find((name) => name.startsWith(manifest.result.blob))!), 'utf8')) as Json;
-  assert.equal(documentPanel.showsResult!(result), true);
+  assert.equal(documentPanel.showsResult!(result, { blobType: typeOf }), true);
   const cited = docPagesOf(visionCitedOf(result)!, typeOf);
   assert.ok(cited.length > 0 && cited.every((page) => typeOf(page.blob) === 'application/pdf'), 'each cited page is a page of a PDF in the recording');
   const node = documentPanel.view(reduceTo(documentPanel, run, run.length), { t: 0, json: (sha) => (sha === manifest.result.blob ? result : undefined), blobType: typeOf });
   assert.deepEqual(find(node, (each) => each.tag === 'pdf-page').map((sheet) => 'page' in sheet && sheet.page), cited.map((page) => page.page));
   // Rows that cite one region share its box.
-  const regions = (marks: typeof cited[number]['marks']) => [...new Map(marks.flatMap((mark) => (mark.box ? [[JSON.stringify(mark.box), mark.box] as const] : []))).values()];
-  assert.deepEqual(find(node, cls('doc-box')).map((box) => 'box' in box && box.box), cited.flatMap((page) => regions(page.marks)));
+  const regions = (rows: typeof cited[number]['rows']) => [...new Map(rows.flatMap((shown) => shown.boxes.map((box) => [JSON.stringify(box), box] as const))).values()];
+  assert.deepEqual(find(node, cls('doc-box')).map((box) => 'box' in box && box.box), cited.flatMap((page) => regions(page.rows)));
   if (!existsSync(chrome)) return;
   const out = mkdtempSync(join(tmpdir(), 'viewer-document-recorded-'));
   cpSync(recorded!, join(out, 'recordings', 'recorded'), { recursive: true });
@@ -328,6 +347,6 @@ test('a document recording (DOCUMENT_RECORDING): the format holds, every page an
   assert.doesNotMatch(String(await page.evaluate('document.body.innerText')), /could not be drawn|breaks the format/);
   const placed = await page.evaluate(MEASURE) as { place: number[] }[][];
   const near = (a: number[], b: Box) => [b.x, b.y, b.w, b.h].every((value, at) => Math.abs(value - a[at]!) <= 0.15);
-  cited.forEach((each, at) => assert.ok(placed[at]!.length === regions(each.marks).length && regions(each.marks).every((box, n) => near(placed[at]![n]!.place, box)), `page ${each.page}: each box at its percent (${JSON.stringify(placed[at])})`));
+  cited.forEach((each, at) => assert.ok(placed[at]!.length === regions(each.rows).length && regions(each.rows).every((box, n) => near(placed[at]![n]!.place, box)), `page ${each.page}: each box at its percent (${JSON.stringify(placed[at])})`));
   assert.deepEqual(await page.evaluate('window.refused'), [], 'the policy refused nothing');
 });

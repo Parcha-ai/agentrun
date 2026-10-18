@@ -652,7 +652,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   let json: Map<string, Json> | undefined;
   /** The results read so far: a panel may be drawn for its recording's result (`showsResult`). */
   const results = () => [...(json?.values() ?? [])];
-  let shown = panelsFor(lines, results());
+  let shown = panelsFor(lines, results(), (sha) => recording.blobType(sha));
   let featured = featuredPanel(shown, lines);
   const featuredBox = el('div', { class: 'featured' });
   if (embedded) document.documentElement.classList.add('embed');
@@ -795,7 +795,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   draw();
   /** The panels for the recording, worked out again when what decides them changes: its lines, or a result read. */
   const choosePanels = () => {
-    const now = panelsFor(lines, results());
+    const now = panelsFor(lines, results(), (sha) => recording.blobType(sha));
     const nowFeatured = featuredPanel(now, lines);
     const moved = nowFeatured !== featured;
     shown = now;

@@ -14,8 +14,10 @@ type PdfPageProxy = { getViewport(options: { scale: number }): { width: number; 
 type PdfDocument = { numPages: number; getPage(page: number): Promise<PdfPageProxy> };
 type PdfLibrary = { GlobalWorkerOptions: { workerSrc: string }; getDocument(options: { data: Uint8Array; enableXfa: boolean; useWasm: boolean; wasmUrl: string }): { promise: Promise<PdfDocument> } };
 
-/** How wide a page is drawn, in pixels: sharp across a wide panel on a dense screen. */
+/** How wide a page is drawn, in pixels: sharp across a wide panel on a dense screen. A very tall page is drawn smaller,
+ *  so no page takes more than PDF_PIXELS. */
 const PDF_WIDTH = 1600;
+const PDF_PIXELS = 4_000_000;
 
 let pdfLibrary: Promise<PdfLibrary> | undefined;
 const pdfAt = () => new URL('pdfjs/', document.baseURI).href;
@@ -38,10 +40,13 @@ export async function blobBytes(recording: Recording, sha: string): Promise<Uint
   return new Uint8Array(await response.arrayBuffer());
 }
 
-/** Draws pages of the recording's PDFs, each once, and calls `drawn` when one is ready or has failed. */
+/** Draws pages of the recording's PDFs, each once and one at a time, in the order they are first asked for (the order
+ *  they stand on screen), and calls `drawn` when one is ready or has failed. One page's canvas is held at a time: a drawn
+ *  page is kept as an encoded picture. */
 export function pdfDrawer(recording: Recording, drawn: () => void): (sha: string, page: number) => PdfDrawn {
   const documents = new Map<string, Promise<PdfDocument>>();
   const pages = new Map<string, PdfDrawn>();
+  let queue: Promise<unknown> = Promise.resolve();
   const documentOf = (sha: string) => documents.get(sha) ?? documents.set(sha, (async () => {
     const library = await loadPdfLibrary().catch((error: unknown) => {
       throw new Error(location.protocol === 'file:' ? 'PDF.js cannot load in a page opened from a file; open the viewer from a web server' : `PDF.js did not load (${error instanceof Error ? error.message : String(error)})`);
@@ -53,18 +58,21 @@ export function pdfDrawer(recording: Recording, drawn: () => void): (sha: string
     const held = pages.get(key);
     if (held) return held;
     pages.set(key, { kind: 'drawing' });
-    void (async (): Promise<PdfDrawn> => {
+    queue = queue.then(() => (async (): Promise<PdfDrawn> => {
       const pdf = await documentOf(sha);
       if (page > pdf.numPages) return { kind: 'failed', reason: `the PDF has ${pdf.numPages} page${pdf.numPages === 1 ? '' : 's'}, not ${page}` };
       const proxy = await pdf.getPage(page);
-      const viewport = proxy.getViewport({ scale: PDF_WIDTH / proxy.getViewport({ scale: 1 }).width });
+      const whole = proxy.getViewport({ scale: 1 });
+      const viewport = proxy.getViewport({ scale: Math.min(PDF_WIDTH / whole.width, Math.sqrt(PDF_PIXELS / (whole.width * whole.height))) });
       const canvas = Object.assign(document.createElement('canvas'), { width: Math.round(viewport.width), height: Math.round(viewport.height) });
       await proxy.render({ canvas, viewport }).promise;
       const picture = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+      const [w, h] = [canvas.width, canvas.height];
+      canvas.width = 0;
       if (!picture) return { kind: 'failed', reason: 'the page could not be turned into a picture' };
-      return { kind: 'drawn', url: URL.createObjectURL(picture), w: canvas.width, h: canvas.height };
+      return { kind: 'drawn', url: URL.createObjectURL(picture), w, h };
     })().catch((error: unknown): PdfDrawn => ({ kind: 'failed', reason: error instanceof Error ? error.message : String(error) }))
-      .then((done) => { pages.set(key, done); drawn(); });
+      .then((done) => { pages.set(key, done); drawn(); }));
     return pages.get(key)!;
   };
 }

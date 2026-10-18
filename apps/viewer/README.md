@@ -136,4 +136,7 @@ The page loads PDF.js only when it draws a PDF page, as a module script beside i
 origin, and hands it the PDF's bytes: it never gives PDF.js an address to fetch, and asks for no font or character map
 from anywhere, so it draws under a host policy that loads scripts, workers and data from the page's own origin only.
 A page opened from `file://` cannot load a module script: there the panel says so, links the PDF at its page and lists
-each cite on it as text. `vendor/pdfjs/README.md` says how to move to another release.
+each cite on it as text. Pages are drawn one at a time, top first, each at most 1600 pixels wide and 4 million pixels in
+all. PDF.js is given no predefined character maps: text set in one (a CJK encoding such as `UniJIS-UTF16-H`) does not
+draw, while `Identity-H`, the usual encoding of an embedded font, needs none; add `cmaps/` the way the decoders are
+added if a document needs them. `vendor/pdfjs/README.md` says how to move to another release.

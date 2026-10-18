@@ -58,8 +58,9 @@ export type Panel<S> = Fold<S> & {
   /** Which lines a recording must hold for this panel to be drawn at all; without it, `accepts` says. A panel with no such
    *  line in the whole recording is not drawn, its title included. */
   shows?(line: Line): boolean;
-  /** A result (the parsed JSON a result names) that makes the recording draw this panel even when no line does. */
-  showsResult?(result: Json): boolean;
+  /** A result (the parsed JSON a result names) that makes the recording draw this panel even when no line does, with each
+   *  blob's media type as the shell knows it when it asks (undefined for one it has not found). */
+  showsResult?(result: Json, context: { blobType(sha: string): string | undefined }): boolean;
 };
 
 /** The panel the shell shows first for this recording: the first registered one whose `featured` says yes. */
@@ -142,5 +143,5 @@ export const panelsShown = (): Panel<any>[] => [...registry, linesPanel, turnsPa
 /** The panels a recording draws: each with a line it is for (`shows`, else `accepts`) anywhere in the whole recording, or
  *  a result it is for (`showsResult`). Judged over every line and every result, never up to the stop, so a panel never
  *  appears mid-scrub. */
-export const panelsFor = (lines: readonly Line[], results: readonly Json[] = []): Panel<any>[] => panelsShown().filter((panel) =>
-  lines.some((line) => (panel.shows ? panel.shows(line) : panel.accepts(line))) || (panel.showsResult !== undefined && results.some((result) => panel.showsResult!(result))));
+export const panelsFor = (lines: readonly Line[], results: readonly Json[] = [], blobType: (sha: string) => string | undefined = () => undefined): Panel<any>[] => panelsShown().filter((panel) =>
+  lines.some((line) => (panel.shows ? panel.shows(line) : panel.accepts(line))) || (panel.showsResult !== undefined && results.some((result) => panel.showsResult!(result, { blobType }))));
