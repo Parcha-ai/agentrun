@@ -111,6 +111,26 @@ test('the browser spec accepts exactly the output its README shows under the com
   assert.deepEqual([ran({ stdout: `${shown}more\n` }), ran({ stdout: shown.slice(1) }), ran({ stdout: shown.replace('forty-two', 'forty-three') }), ran({ stderr: 'a warning\n' })], [1, 1, 1, 1]);
 });
 
+test('the git-remote spec accepts exactly the output its README shows under the quickstart, and nothing more or less', async () => {
+  const gitRemote = await loadSpec('pi-git-remote');
+  const [file] = gitRemote.files;
+  const shown = extractSnippet(await readFile(new URL(`../${file.readme}`, import.meta.url), 'utf8'), { heading: file.heading, fence: '' });
+  const ran = over => judge(gitRemote, { exitCode: 0, stdout: shown, stderr: '', timedOut: false, ...over }).length;
+  assert.equal(ran({}), 0);
+  assert.deepEqual([ran({ stdout: `${shown}more\n` }), ran({ stdout: shown.slice(1) }), ran({ stdout: shown.replace('again: false', 'again: true') }), ran({ stderr: 'a warning\n' })], [1, 1, 1, 1]);
+});
+
+test('the learn spec accepts the output its README shows under the quickstart with a real sha for <sha>, and nothing more or less', async () => {
+  const learn = await loadSpec('pi-agent-learn');
+  const [file] = learn.files;
+  const shown = extractSnippet(await readFile(new URL(`../${file.readme}`, import.meta.url), 'utf8'), { heading: file.heading, fence: '' });
+  assert.ok(shown.includes('your repo at <sha>)'), 'the README shows the seeded commit as <sha>');
+  const printed = shown.replace('your repo at <sha>)', 'your repo at 6c2011ad512a)');
+  const ran = over => judge(learn, { exitCode: 0, stdout: printed, stderr: '', timedOut: false, ...over }).length;
+  assert.equal(ran({}), 0);
+  assert.deepEqual([ran({ stdout: shown }), ran({ stdout: printed.replace('6c2011ad512a', '6c2011a') }), ran({ stdout: `${printed}more\n` }), ran({ stdout: printed.slice(1) }), ran({ stdout: printed.replace('(used 3)', '(used 4)') }), ran({ stderr: 'a warning\n' })], [1, 1, 1, 1, 1, 1]);
+});
+
 // ---- the examples' Since cells ----
 
 const index = [
