@@ -20,6 +20,7 @@ import { readFileSync } from 'node:fs';
 type JsonValue = Parameters<DurableRun['setStatus']>[1] & {};
 import { DEFAULT_BROWSER_POLICY, localSites, type LocalSite } from '@parcha/pi-browser';
 import { createBrowserExtension } from '@parcha/pi-browser/durable';
+import { codeModeExtension, type CodeModeOptions } from './code-mode.ts';
 import { createVisionExtension, type VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import type { Host, RunPlace, StatusEvent } from './host.ts';
 
@@ -75,7 +76,7 @@ function runEnv(claim: Claim): RunEnv {
  *  extension is built, with a getter for the run's harness (undefined until the run is open). What differs per conversation is
  *  what the options themselves take: `limits`, `eyes` and `eyesModel` are given the conversation (`{ conversationId }`). */
 /** `layout`: the recovery driver's layout for the run, `v4` for the keyed one (the map items kept as `agentrun.items` documents); the driver's default when absent. It is the host's choice, not the job's. */
-export type RunOptions = { env?: (claim: Claim) => RunEnv; /** The sites `use_website` offers: each task runs a child agent in a browser of its own, recorded under its request id. Absent: the tool is not listed. */ sites?: Record<string, LocalSite>; vision?: (context: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions>; layout?: 'v3' | 'v4' };
+export type RunOptions = { env?: (claim: Claim) => RunEnv; /** Code mode (examples/reference/code-mode.ts): installs the `code` tool, whose sandbox gets `tools.bash` and the vision handle's `vision.see`. Off by default. */ codeMode?: boolean | CodeModeOptions; /** The sites `use_website` offers: each task runs a child agent in a browser of its own, recorded under its request id. Absent: the tool is not listed. */ sites?: Record<string, LocalSite>; vision?: (context: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions>; layout?: 'v3' | 'v4' };
 
 /** What a run is made of before its store is opened: the registry of extensions, the models, the hook that attaches the recorder, and the three steps that follow the open. `run()` opens the store
  *  itself on a local claim; `appOf()` hands the same pieces to `pi-durable-disk run --app`, which opens it on its own claim. */
@@ -174,7 +175,9 @@ export async function compose(place: RunPlace, host: Host, job: Job, options: Ru
     },
   });
   const registry = createRegistry();
-  for (const extension of [ArchilCodingTools, ...host.tools.extensions, vision.extension, browser.extension, nodes.extension, flow.extension]) registry.install(extension);
+  // Code mode is built from the vision handle, so it is installed after it.
+  const codeMode = options.codeMode ? [codeModeExtension(vision, options.codeMode === true ? {} : options.codeMode)] : [];
+  for (const extension of [ArchilCodingTools, ...host.tools.extensions, vision.extension, ...codeMode, browser.extension, nodes.extension, flow.extension]) registry.install(extension);
 
   // The job's files, in `work/`: each written beside its name and renamed into place, so one a killed process left
   // under its name is whole, and is kept.

@@ -36,6 +36,7 @@
     "test:support": "node --test examples/support-answer.test.mjs examples/support-answer-runner.test.mjs"
   },
   "devDependencies": {
+    "@earendil-works/pi-codemode": "1.1.0",
     "@types/node": "^22.0.0",
     "ajv": "^8.18.0",
     "typescript": "5.9.3",
