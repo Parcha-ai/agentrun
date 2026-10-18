@@ -1,6 +1,6 @@
 ---
 name: look
-description: Look at many PDF pages, a long video, many images or one region of a picture, by writing code that renders them with bash and has a vision model answer about them with vision.see. Use when reading the pages or frames one by one would be slow or too much for your context, and cite each answer as file#page=N or file#t=seconds.
+description: Look at many PDF pages, a long video, many images or one region of a picture, by writing code that renders them with bash and has a vision model answer about them (vision.see) or Jev judge them with typed answers, classify them and find things in them (vision.judge). Use when reading the pages or frames one by one would be slow or too much for your context, and cite each answer as file#page=N, file#t=seconds or file#xywh=percent:x,y,w,h.
 ---
 
 # Look at many pages, a long video or many images
@@ -62,8 +62,9 @@ return `${seen.text}\n(receipts: ${seen.receipts.join(", ")}; $${seen.costUsd})`
 ```
 
 Look again more closely where the answer points: frames every second over that minute. When the vision model takes
-video, cut windows instead (`mkdir -p .look/clips && ffmpeg -y -ss 60 -t 30 -i talk.mp4 -c copy .look/clips/60.mp4`), pass the clips as paths and name
-them `talk.mp4#t=60,90`.
+video, cut windows instead (`mkdir -p .look/clips && ffmpeg -y -ss 60 -t 30 -i talk.mp4 -c copy -fflags +bitexact .look/clips/60.mp4`), pass the
+clips as paths and name them `talk.mp4#t=60,90`. `-fflags +bitexact` makes a window you cut again the same bytes (a WebM
+copy otherwise gets a new id each time), so an answer already paid for is found again.
 
 ## Many images
 
@@ -91,6 +92,122 @@ return seen.text;
 ```
 
 For a PDF page, render only the region at a higher resolution: `mkdir -p .look && pdftoppm -f 3 -l 3 -r 300 -x 1275 -y 0 -W 1275 -H 825 -png report.pdf .look/crop`.
+
+## Jev: typed answers about every image, cheap enough to ask many times
+
+`vision.judge({ questions, paths, images, fragments, examples, state })` has Jev answer typed questions about images in
+one request: `choice` (one of your labels, with a probability each), `noul` (yes or no, as the probability of yes),
+`score` (a level of your rubric) and `box` (where a thing is). It costs a small fraction of a cent, so ask about every
+page or frame, and keep `vision.see` for what needs words. The images are `images[0].image`, `images[1].image` and so
+on in the questions. It returns `{ answers, model, costUsd, receipts, kept }`.
+
+- A box is always given, even when the thing is absent: ask a noul whether it is there. Its `fragment` is the region
+  as `file#xywh=percent:x,y,w,h` of the image its `image` index names (default 0), so you can cite it, crop it, or show it.
+- `examples` are images by the key you write for them in a question (`"<roof>"`): classification by example.
+- Name a crop by the region it was cut from (`fragments: ["scan.png#xywh=percent:50,0,50,50"]`) and a box found in it
+  comes back as a region of the whole.
+
+### Classify every page or frame
+
+```js
+await tools.bash({ command: "rm -rf .look/pages && mkdir -p .look/pages && pdftoppm -r 100 -png report.pdf .look/pages/p" });
+const pages = (await tools.bash({ command: "ls .look/pages" })).split("\n").filter((name) => name.endsWith(".png")).sort();
+const found = [];
+for (const name of pages) {
+  const page = parseInt(name.slice(2), 10);
+  const { answers } = await vision.judge({
+    paths: [`.look/pages/${name}`],
+    fragments: [`report.pdf#page=${page}`],
+    questions: {
+      kind: { type: "choice", instructions: "What is on `images[0].image`?", criteria: { table: "A table of figures.", chart: "A chart or graph.", text: "Running text.", blank: "Blank or nearly blank." } },
+      signed: { type: "noul", instructions: "Does `images[0].image` carry a handwritten signature?" },
+    },
+  });
+  found.push({ page, kind: answers.kind.choice, signed: answers.signed.noul > 0.5 });
+}
+return found;
+```
+
+### Jev before and after the eyes
+
+Skip what is not worth a look (blank, unreadable, off topic), then check what the eyes said.
+
+```js
+await tools.bash({ command: "rm -rf .look/pages && mkdir -p .look/pages && pdftoppm -r 100 -png report.pdf .look/pages/p" });
+const pages = (await tools.bash({ command: "ls .look/pages" })).split("\n").filter((name) => name.endsWith(".png")).sort();
+const worth = [];
+for (const name of pages) {
+  const { answers } = await vision.judge({ paths: [`.look/pages/${name}`], questions: { invoice: { type: "noul", instructions: "Is `images[0].image` a readable page of an invoice?" } } });
+  if (answers.invoice.noul > 0.5) worth.push(name);
+}
+if (!worth.length) return { pages: [], number: null, confirmed: false };
+const seen = await vision.see({ ask: "What is the invoice number on this page? Answer with the number only.", paths: [`.look/pages/${worth[0]}`] });
+const check = await vision.judge({ paths: [`.look/pages/${worth[0]}`], questions: { same: { type: "noul", instructions: `Does \`images[0].image\` show the invoice number ${seen.text.trim()}?` } } });
+return { pages: worth, number: seen.text.trim(), confirmed: check.answers.same.noul > 0.5 };
+```
+
+### Classify by example
+
+Say each label in words as well as by example: the two together classify better than an example alone.
+
+```js
+const photos = (await tools.bash({ command: "ls photos" })).split("\n").filter((name) => /\.(png|jpe?g)$/i.test(name));
+const sorted = {};
+for (const name of photos) {
+  const { answers } = await vision.judge({
+    paths: [`photos/${name}`],
+    examples: { "<roof>": "examples/roof.png", "<hall>": "examples/hall.png" },
+    questions: { room: { type: "choice", instructions: "Which picture is `images[0].image` most like?", criteria: { roof: "A roof seen from outside, like <roof>", hall: "A hallway indoors, like <hall>", neither: "Neither of these." } } },
+  });
+  sorted[name] = answers.room.choice;
+}
+return sorted;
+```
+
+### Is it there, and where
+
+```js
+const { answers } = await vision.judge({
+  paths: ["scan.png"],
+  questions: {
+    present: { type: "noul", instructions: "Is there a signature in `images[0].image`?" },
+    where: { type: "box", instructions: "the signature in `images[0].image`" },
+  },
+});
+return answers.present.noul > 0.5 ? `signature at ${answers.where.fragment}` : "no signature";
+```
+
+### A small thing in a large image: tiles, then a box
+
+```js
+const tiles = { top_left: "0,0,50,50", top_right: "50,0,50,50", bottom_left: "0,50,50,50", bottom_right: "50,50,50,50" };
+await tools.bash({ command: "rm -rf .look/tiles && mkdir -p .look/tiles" });
+for (const [t, region] of Object.entries(tiles)) {
+  const [x, y] = region.split(",").map(Number);
+  await tools.bash({ command: `ffmpeg -v error -y -i scan.png -vf crop=iw/2:ih/2:iw*${x / 100}:ih*${y / 100} .look/tiles/${t}.png` });
+}
+const pick = await vision.judge({
+  paths: ["scan.png"],
+  examples: Object.fromEntries(Object.keys(tiles).map((t) => [`<tile ${t}>`, `.look/tiles/${t}.png`])),
+  questions: { tile: { type: "choice", instructions: "Which tile of `images[0].image` holds the round stamp?", criteria: Object.fromEntries(Object.keys(tiles).map((t) => [t, `<tile ${t}>`])) } },
+});
+const t = pick.answers.tile.choice;
+const found = await vision.judge({ paths: [`.look/tiles/${t}.png`], fragments: [`scan.png#xywh=percent:${tiles[t]}`], questions: { stamp: { type: "box", instructions: "the round stamp in `images[0].image`" } } });
+return found.answers.stamp.fragment;
+```
+
+### Check a box's edges
+
+Crop to the box and ask whether the thing goes on past each edge; move out the edges that say yes.
+
+```js
+const { answers } = await vision.judge({ paths: ["scan.png"], questions: { table: { type: "box", instructions: "the table in `images[0].image`" } } });
+const [x, y, w, h] = answers.table.fragment.split("percent:")[1].split(",").map(Number);
+await tools.bash({ command: `mkdir -p .look && ffmpeg -v error -y -i scan.png -vf crop=iw*${w / 100}:ih*${h / 100}:iw*${x / 100}:ih*${y / 100} .look/table.png` });
+const edge = (side) => ({ type: "noul", instructions: `Does the table in \`images[0].image\` go on past the ${side} edge of the image?` });
+const check = await vision.judge({ paths: [".look/table.png"], fragments: [answers.table.fragment], questions: { left: edge("left"), right: edge("right"), top: edge("top"), bottom: edge("bottom") } });
+return Object.entries(check.answers).filter(([, a]) => a.noul > 0.5).map(([side]) => side);
+```
 
 ## When pdftoppm or ffmpeg is missing
 
