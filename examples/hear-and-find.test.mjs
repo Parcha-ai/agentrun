@@ -9,7 +9,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { validateRecording } from '../scripts/recording/validate.mjs';
 import { scriptFor } from './hear-and-find/fakes.ts';
 import { clipInput, FIND, TRANSCRIBE } from './hear-and-find/job.ts';
@@ -23,15 +23,21 @@ const CLIP = JSON.parse(readFileSync(join(HERE, 'clip', 'clip.json'), 'utf8'));
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const scratch = async (t) => { const tmp = await mkdtemp(join(tmpdir(), 'hear-and-find-')); t.after(() => rm(tmp, { recursive: true, force: true })); return tmp; };
 async function go(tmp, args = []) { return demo({ ...options, argv: ['--dir', join(tmp, 'run'), ...args] }); }
+/** One recorded run on fakes, made once and read by the two beats; its directory goes when the file's tests end. */
+let recorded;
+let shared;
+after(() => (shared ? rm(shared, { recursive: true, force: true }) : undefined));
+const recordedRun = () => (recorded ??= (async () => {
+  shared = await mkdtemp(join(tmpdir(), 'hear-and-find-'));
+  return { tmp: shared, record: join(shared, 'recording'), run: await go(shared, ['--record', join(shared, 'recording')]) };
+})());
 const statusOf = (run) => run.processes.at(-1)?.outcome?.status;
 const stderrOf = (run) => run.processes.map((process) => `${process.outcome?.message ?? ''}\n${process.stderr}`).join('\n');
 const evidence = (tmp) => readdirSync(join(tmp, 'run', 'evidence'), { recursive: true }).filter((name) => name.endsWith('.json')).map((name) => JSON.parse(readFileSync(join(tmp, 'run', 'evidence', name), 'utf8')));
 const blocks = (text, lang) => [...text.matchAll(new RegExp('```' + lang + '\\n([\\s\\S]*?)```', 'g'))].map((match) => match[1]);
 
-test('beat 1: on fakes, the agent hears the phrase both times and picks one, then finds the flag\'s second and box; the result cites the transcript, the Jev look and the frame', { timeout: 300_000, skip: FFMPEG }, async (t) => {
-  const tmp = await scratch(t);
-  const record = join(tmp, 'recording');
-  const run = await go(tmp, ['--record', record]);
+test('beat 1: on fakes, the agent hears the phrase both times and picks one, then finds the flag\'s second and box; the result cites the transcript, the Jev look and the frame', { timeout: 300_000, skip: FFMPEG }, async () => {
+  const { tmp, record, run } = await recordedRun();
   assert.equal(statusOf(run), 'complete', stderrOf(run));
   const { rows, hear_and_find: found } = run.record;
   assert.deepEqual(found.heard.hits.map((hit) => hit.at), [4.7, 15.06], 'the phrase, both times it is said');
@@ -58,10 +64,8 @@ test('beat 1: on fakes, the agent hears the phrase both times and picks one, the
   assert.match(picture.fragment, /^#t=28&xywh=percent:/);
 });
 
-test('beat 2: the recording validates, says scripted, names the films it fetches, costs 0, and each transcript and judgment is filed once', { timeout: 300_000, skip: FFMPEG }, async (t) => {
-  const tmp = await scratch(t);
-  const record = join(tmp, 'recording');
-  const run = await go(tmp, ['--record', record]);
+test('beat 2: the recording validates, says scripted, names the films it fetches, costs 0, and each transcript and judgment is filed once', { timeout: 300_000, skip: FFMPEG }, async () => {
+  const { tmp, record, run } = await recordedRun();
   assert.equal(statusOf(run), 'complete', stderrOf(run));
   assert.deepEqual(validateRecording(record), []);
   const walk = (at) => (statSync(at).isDirectory() ? readdirSync(at).flatMap((name) => walk(join(at, name))) : [at]);
