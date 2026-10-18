@@ -25,8 +25,40 @@ export const FORBIDDEN: readonly (readonly [string, RegExp])[] = [
 
 const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 
+/** Query parameters that carry a credential whatever their value, compared in lower case. */
+const TOKEN_PARAMETERS: ReadonlySet<string> = new Set(['token', 'access_token', 'apikey', 'api_key', 'key', 'signature', 'sig', 'x-amz-signature', 'x-goog-signature']);
+/** A URL as it sits in a text: from its scheme to the first character that ends one in JSON, HTML, Markdown or prose. */
+const URL_IN_TEXT = /\b(?:https?|wss?):\/\/[^\s"'`<>\\)\]}]+/gi;
+/** A live view's, debugger's or connect endpoint's URL: Browserbase's connect host and its debug and devtools paths, and any
+ *  DevTools or inspector page. Such a URL carries its session's access in its query, so none is published with one. */
+const liveViewUrl = (host: string, path: string): boolean => host === 'connect.browserbase.com'
+  || (/(?:^|\.)browserbase\.com$/.test(host) && /^\/(?:debug|devtools|devtools-fullscreen)(?:\/|$)/.test(path))
+  || /(?:^|\/)(?:devtools|devtools-fullscreen)\/|\/inspector\.html$/.test(path);
+/** A parameter's name as the message may print it: its own characters only, never anything of a value. */
+const nameOf = (raw: string): string => { let name = raw; try { name = decodeURIComponent(raw); } catch { /* kept as written */ } return /^[A-Za-z0-9._-]{1,40}$/.test(name) ? name : 'unnamed'; };
+
+/** The shape of a URL that carries a credential in its query, by name, or undefined. A URL is refused when its query holds a
+ *  token-bearing parameter (`token`, `access_token`, `apiKey`, `api_key`, `key`, `signature`, `sig`, `X-Amz-Signature`,
+ *  `X-Goog-Signature`) with any value; when it is a ws:// or wss:// URL with a query; or when it is a live-view, debugger or
+ *  connect URL with any query. The name says the parameter and never its value, so a message that repeats it leaks nothing. */
+export function urlCredentialIn(text: string): string | undefined {
+  for (const [candidate] of text.matchAll(URL_IN_TEXT)) {
+    const bare = candidate.split('#', 1)[0];
+    const mark = bare.indexOf('?');
+    if (mark === -1 || mark === bare.length - 1) continue;
+    const names = bare.slice(mark + 1).split('&').filter((part) => part !== '').map((part) => part.split('=', 1)[0]);
+    if (names.length === 0) continue;
+    const token = names.find((name) => { try { return TOKEN_PARAMETERS.has(decodeURIComponent(name).toLowerCase()); } catch { return TOKEN_PARAMETERS.has(name.toLowerCase()); } });
+    if (token !== undefined) return `url with a token-bearing query parameter (${nameOf(token)})`;
+    const where = /^[a-z]+:\/\/([^/?]*)(\/[^?]*)?/i.exec(bare.slice(0, mark));
+    if (/^wss?:/i.test(bare)) return `websocket url with a query (${nameOf(names[0])})`;
+    if (where && liveViewUrl(where[1].toLowerCase(), where[2] ?? '')) return `live-view, debugger or connect url with a query (${nameOf(names[0])})`;
+  }
+  return undefined;
+}
+
 /** The first credential shape in a text, by name. */
-export const credentialIn = (text: string): string | undefined => FORBIDDEN.find(([, pattern]) => pattern.test(text))?.[0];
+export const credentialIn = (text: string): string | undefined => FORBIDDEN.find(([, pattern]) => pattern.test(text))?.[0] ?? urlCredentialIn(text);
 
 /** The credential shape in any string or key of a decoded JSON value: the raw text can hide one behind an escape (`sk-`). */
 export function credentialInValue(value: unknown): string | undefined {
