@@ -130,7 +130,7 @@ function handRun(said: boolean): Line[] {
   const result = run.findLastIndex((line) => line.kind === 'result');
   const first = run.findIndex((line) => line.channel === 'durable');
   run.splice(first + 1, 0, { ...run[first]!, kind: 'pi.user', source: 'pi', conv: 1, order: 1, data: { kind: 'pi.user', model: [{ role: 'user', content: `The host's prompt. ${TASK}` }] } },
-    { ...run[first]!, kind: 'agentrun.workflow', order: 2, data: { doc: 'agentrun.workflow', input: { input: TASK } } },
+    { ...run[first]!, kind: 'agentrun.workflow', order: 2, data: { doc: 'agentrun.workflow', input: { input: { question: TASK, files: ['scans.pdf', 'photos/photo-001.png'], pages: 3 } } } },
     // Each conversation is a workflow node's, so the runner speaks in it: its first user entry is the composed prompt.
     ...[1, 2].map((conv, n): Line => ({ ...run[first]!, kind: 'agentrun.nodes', order: 3 + n, path: conv === 1 ? '/root/lead' : '/root/steps/1/items/0',
       data: { doc: 'agentrun.nodes', key: `hand:node:${conv}`, value: { conversation: conv, closed: false }, version: 1 } })));
@@ -214,8 +214,9 @@ function writeNarrated(dir: string) {
       pi(3 + n, 'pi.tool-result', { role: 'toolResult', toolCallId: `r${n}`, toolName: 'read', content: [{ type: 'text', text: `Page ${n} says the same.` }], isError: false })]),
     pi(12, 'pi.user', { role: 'user', content: 'You stopped without submitting. Call submit.' }),
     pi(13, 'pi.assistant', { role: 'assistant', content: [{ type: 'thinking', thinking: '[Reasoning redacted]', redacted: true }, { type: 'thinking', thinking: '**Settling the answer**' }, { type: 'thinking', thinking: 'Checking that the four agree\nthey do, line for line.' }, { type: 'text', text: 'All four pages agree.' },
-      { type: 'toolCall', id: 'b1', name: 'bash', arguments: { command: COMMAND } }] }),
+      { type: 'toolCall', id: 'b1', name: 'bash', arguments: { command: COMMAND } }, { type: 'toolCall', id: 'b2', name: 'bash', arguments: { command: 'ls missing-dir' } }] }),
     pi(14, 'pi.tool-result', { role: 'toolResult', toolCallId: 'b1', toolName: 'bash', content: [{ type: 'text', text: '{"pages": 4}' }], isError: false }),
+    pi(15, 'pi.tool-result', { role: 'toolResult', toolCallId: 'b2', toolName: 'bash', content: [{ type: 'text', text: 'ls: cannot access missing-dir' }], isError: true }),
   ];
   mkdirSync(join(dir, 'blobs'), { recursive: true });
   const { result: _result, ...rest } = handManifest;
@@ -246,7 +247,10 @@ const artReady = (id) => art(id)?.URL === 'about:srcdoc' && !!art(id).getElement
 const flat = (id) => { const d = doc(id); return { page: d.documentElement.scrollWidth - d.documentElement.clientWidth, panes: Math.max(...[...d.querySelectorAll('.thread, .src, .report')].map((n) => n.scrollWidth - n.clientWidth)) }; };
 const words = (id) => doc(id).body.textContent + ' ' + (art(id)?.body.textContent ?? '');
 const unstripped = (id) => { const body = doc(id).body.cloneNode(true); for (const calls of body.querySelectorAll('.calls')) calls.remove(); return body.textContent + ' ' + (art(id)?.body.textContent ?? ''); };
-const card = (id, title) => [...doc(id).querySelectorAll('.step')].find((each) => each.querySelector('.t span').textContent === title);
+const titleOf = (c) => c.querySelector('.t span')?.textContent ?? c.querySelector('.made')?.title;
+const card = (id, title) => [...doc(id).querySelectorAll('.step')].find((each) => titleOf(each) === title);
+const opener = (c) => c.querySelector('.step-main, .made');
+const callTitle = (n) => { const t = n.querySelector('.call-title'); return t.textContent.slice(t.querySelector('.judge-chip')?.textContent.length ?? 0); };
 const inView = (node, box) => { const a = node.getBoundingClientRect(); const b = box.getBoundingClientRect(); return a.top >= b.top - 1 && a.bottom <= b.bottom + 1; };
 const shown = (node) => !!node && node.checkVisibility();
 const PAGES = ['wide', 'phone', 'answer', 'files', 'hear', 'none', 'pageonly', 'said', 'bare', 'plain', 'srcpage', 'srcsheet', 'narrated'];
@@ -290,11 +294,14 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     // 1440, the agent's page: the input as the person's one message (the host's prompt is no message), its conversations
     // as recorded (the first open), thinking only the run's own with its markdown drawn, "How this ran" with ?r= alone.
     const wide = await value<Record<string, unknown>>(`(() => { const d = doc('wide'); return {
-      task: [...d.querySelectorAll('.msg.user .bubble')].map((n) => n.textContent), first: d.querySelector('.thread').firstElementChild.matches('.msg.user'),
+      task: [...d.querySelectorAll('.msg.user > .bubble')].map((n) => n.textContent), first: d.querySelector('.thread').firstElementChild.matches('.msg.user'),
+      person: (() => { const m = d.querySelector('.msg.user'); const b = m.querySelector('.bubble.prose'); return [getComputedStyle(b).fontFamily.startsWith('Inter'), [...m.querySelectorAll('.files .file')].map((n) => n.textContent),
+        m.querySelector('details.input-fields').open, m.querySelector('details.input-fields summary').textContent, [...m.querySelectorAll('details.input-fields dt, details.input-fields dd')].map((n) => n.textContent)]; })(),
+      eager: (() => { const near = [...d.querySelectorAll('img')].filter((n) => n.checkVisibility() && n.getBoundingClientRect().top < d.defaultView.innerHeight * 1.5); return [near.length > 0, near.every((n) => n.loading === 'eager')]; })(),
       prompt: d.body.textContent.includes("The host's prompt"), marks: d.body.textContent.includes('**') || d.body.textContent.includes('\u0060'),
       strong: [...d.querySelectorAll('.thought strong, .said-text strong')].map((n) => n.textContent),
       code: [...d.querySelectorAll('.thought code')].map((n) => n.textContent),
-      cards: [...d.querySelectorAll('.thread > .msg .step')].map((c) => c.querySelector('.t span').textContent), hidden: d.querySelectorAll('.step[hidden]').length,
+      cards: [...d.querySelectorAll('.thread > .msg .step')].map(titleOf), hidden: d.querySelectorAll('.step[hidden]').length,
       more: [...d.querySelectorAll('.more')].map((n) => n.textContent),
       folds: [...d.querySelectorAll('details.fold')].map((n) => ({ open: n.open, label: n.querySelector('summary .lab').textContent, cards: n.querySelectorAll('.step').length })),
       thinking: [...d.querySelectorAll('.thought')].map((n) => ({ fold: n.tagName === 'DETAILS', title: n.querySelector('.thought-title').textContent, tag: n.querySelector('.thought-tag')?.textContent,
@@ -306,6 +313,9 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       last: d.querySelector('.thread').lastElementChild.matches('.msg.answer') && d.querySelector('.thread').lastElementChild.textContent,
     }; })()`);
     assert.deepEqual(wide.task, [TASK], 'the input as given, once');
+    assert.deepEqual(wide.person, [true, ['scans.pdf', 'photo-001.png'], false, 'details', ['pages', '3']],
+      'its question a plain bubble in the body font, its files as chips by name, its other fields behind a closed toggle');
+    assert.deepEqual(wide.eager, [true, true], 'every picture within a screen and a half of the top loads at once');
     assert.equal(wide.first, true, 'at the top of the chat');
     assert.equal(wide.prompt, false, 'the host\'s prompt is not drawn');
     assert.equal(wide.marks, false, 'no markdown marks left as text');
@@ -325,7 +335,7 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     // A step nothing the agent thought or wrote leads into speaks with what its look asked: a quiet line above its
     // title, inside its card, muted, with no bubble.
     assert.deepEqual(await value(`(() => { const c = card('wide', 'read film.mp4 from_s=0 to_s=30'); const v = c.querySelector('.voice'); return [v.textContent, c.firstElementChild === v,
-      v.getBoundingClientRect().bottom <= c.querySelector('.t').getBoundingClientRect().top + 1, getComputedStyle(v).color, getComputedStyle(v).backgroundColor]; })()`),
+      v.getBoundingClientRect().bottom <= c.querySelector('.calls').getBoundingClientRect().top + 1, getComputedStyle(v).color, getComputedStyle(v).backgroundColor]; })()`),
       ['What changes in this window?', true, true, 'rgb(164, 164, 173)', 'rgba(0, 0, 0, 0)']);
 
     // The agent's page runs nothing, keeps only its own files, and is held to the recording's blobs by its policy.
@@ -361,9 +371,9 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     await page.evaluate(`art('wide').querySelector('a.cite').click()`);
     await until(`shown(doc('wide').querySelector('.src .jbox'))`, 'the source view with the cited region');
     const cited = await value<Record<string, unknown>>(`(() => { const d = doc('wide'); return { title: d.querySelector('.src .ptitle').textContent, addr: d.querySelector('.src .addr').textContent,
-      box: d.querySelector('.src .jbox').style.cssText, boxes: d.querySelectorAll('.src .jbox').length, frame: art('wide').URL, current: d.querySelector('.step[aria-current="true"] .t span')?.textContent }; })()`);
+      box: d.querySelector('.src .jbox').style.cssText, boxes: d.querySelectorAll('.src .jbox').length, frame: art('wide').URL, current: titleOf(d.querySelector('.step[aria-current="true"]')) }; })()`);
     assert.deepEqual(cited, { title: 'read scans.pdf page=2', addr: 'scans.pdf#page=2&xywh=percent:6,8,80,6', box: 'left: 6%; top: 8%; width: 80%; height: 6%;', boxes: 1, frame: 'about:srcdoc', current: 'read scans.pdf page=2' });
-    await page.evaluate(`doc('wide').querySelector('.src .back').click(); card('wide', 'read scans.pdf page=2').querySelector('.step-main').click()`);
+    await page.evaluate(`doc('wide').querySelector('.src .back').click(); opener(card('wide', 'read scans.pdf page=2')).click()`);
     await until(`shown(doc('wide').querySelector('.src .media img'))`, 'the card\'s source view');
     assert.equal(await value(`doc('wide').querySelectorAll('.src .jbox').length`), 0, 'no region the address does not carry');
     assert.equal(await value(`doc('wide').defaultView.location.hash`), `#look=${K.page2}`);
@@ -379,15 +389,15 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       THREE.map((address) => [address, `#${address.split('#')[1]}`]));
     // A look that kept no picture: its card has no picture and no empty frame, its call's card its line and place with no
     // picture, and its source its address and answer, with no player and no frame.
-    const film = await value<Record<string, unknown>>(`(() => { const c = card('wide', 'read film.mp4 from_s=0 to_s=30'); c.querySelector('.step-main').click(); return {
-      main: [c.querySelector('.step-main').className, c.querySelector('.step-main').children.length], calls: [...c.querySelectorAll('.calls .call')].map((n) => [n.querySelector('.call-at')?.textContent, n.querySelectorAll('img, .media').length]) }; })()`);
-    assert.deepEqual(film, { main: ['step-main bare', 1], calls: [['t 0:00', 0]] });
+    const film = await value<Record<string, unknown>>(`(() => { const c = card('wide', 'read film.mp4 from_s=0 to_s=30'); opener(c).click(); return {
+      made: c.querySelector('.made').textContent, pictures: c.querySelectorAll('.made img, .made .media').length, calls: [...c.querySelectorAll('.calls .call')].map((n) => [n.querySelector('.call-at')?.textContent, n.querySelectorAll('img, .media').length]) }; })()`);
+    assert.deepEqual(film, { made: 'made in read ·film.mp4 from_s=0 to_s=30', pictures: 0, calls: [['t 0:00', 0]] });
     await until(`doc('wide').querySelector('.src .addr')?.textContent.startsWith('film.mp4')`, 'the video look\'s source');
     assert.deepEqual(await value(`(() => { const d = doc('wide'); return [d.querySelectorAll('.src video, .src img, .src .media').length, d.querySelectorAll('.src a.addr[href]').length, d.querySelector('.src .said p')?.textContent]; })()`),
       [0, 0, 'The ground slides past; at 20 s a shadow crosses the frame.']);
 
     // "In the report" on the card the page cites: the report again, scrolled to that spot, flashed. In-page links stay in it.
-    assert.deepEqual(await value(`[...doc('wide').querySelectorAll('.step')].filter((c) => c.querySelector('.inrep')).map((c) => c.querySelector('.t span').textContent)`), ['read scans.pdf page=2'], 'only the cards the page cites');
+    assert.deepEqual(await value(`[...doc('wide').querySelectorAll('.step')].filter((c) => c.querySelector('.inrep')).map(titleOf)`), ['read scans.pdf page=2'], 'only the cards the page cites');
     await page.evaluate(`card('wide', 'read scans.pdf page=2').querySelector('.inrep').click()`);
     await until(`!shown(doc('wide').querySelector('.src')) && art('wide').querySelector('[data-look="${K.page2}"]').hasAttribute('data-chat-flash')`, 'the cited spot flashed in the page');
     await page.evaluate(`art('wide').defaultView.scrollTo(0, 1500); art('wide').getElementById('jump').click()`);
@@ -405,7 +415,7 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       { text: 'Three pages, read', shown: true, below: true, oneLine: true, timeline: true });
     await page.evaluate(`doc('phone').querySelector('.report-btn').click()`);
     await until(`doc('phone').querySelector('.art').classList.contains('open') && Math.abs(doc('phone').querySelector('.art').getBoundingClientRect().bottom - 844) < 2`, 'the sheet opened by the bottom bar');
-    await page.evaluate(`doc('phone').querySelector('.shut').click(); card('phone', 'read scans.pdf page=1').querySelector('.step-main').click()`);
+    await page.evaluate(`doc('phone').querySelector('.shut').click(); opener(card('phone', 'read scans.pdf page=1')).click()`);
     await until(`doc('phone').querySelector('.art').classList.contains('open') && shown(doc('phone').querySelector('.src .media img'))`, 'a card opens its source in the sheet');
     await page.evaluate(`doc('phone').querySelector('.shut').click(); card('phone', 'read scans.pdf page=2').querySelector('.inrep').click()`);
     await until(`doc('phone').querySelector('.art').classList.contains('open') && !shown(doc('phone').querySelector('.src')) && art('phone').querySelector('[data-look="${K.page2}"]').hasAttribute('data-chat-flash')`, '"In the report" opens the sheet at that spot');
@@ -413,7 +423,7 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     // No page from the agent: the run's answer, labelled as the run's, its chips opening their sources; no thinking fold.
     const answer = await value<Record<string, unknown>>(`(() => { const d = doc('answer'); return { kicker: d.querySelector('.kicker').textContent, title: d.querySelector('.atitle').textContent,
       rows: d.querySelectorAll('.arow').length, frames: d.querySelectorAll('iframe').length, thinking: d.querySelectorAll('.thought').length,
-      inReport: [...d.querySelectorAll('.step')].filter((c) => c.querySelector('.inrep')).map((c) => c.querySelector('.t span').textContent), flat: flat('answer') }; })()`);
+      inReport: [...d.querySelectorAll('.step')].filter((c) => c.querySelector('.inrep')).map(titleOf), flat: flat('answer') }; })()`);
     assert.deepEqual(answer, { kicker: 'The run\'s answer', title: CITED.title, rows: CITED_PAGES.rows.length, frames: 0, thinking: 0,
       inReport: ['read scans.pdf page=2', 'read scans.pdf page=3', 'read photos/photo-001.png'], flat: { page: 0, panes: 0 } });
     // A cite to the third page of a look over three: that page's picture first with the box, the others below, unboxed.
@@ -422,8 +432,10 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.equal(await value(`card('answer', 'read scans.pdf page=3').hidden`), false, 'the folded card of the call that made the cited look is opened');
     assert.deepEqual(await value(`[...doc('answer').querySelectorAll('.src .media')].map((m) => [m.querySelector('img').alt, [...m.querySelectorAll('.jbox')].map((b) => b.style.cssText)])`),
       [['scans.pdf#page=3', ['left: 10%; top: 20%; width: 30%; height: 10%;']], ['scans.pdf#page=1', []], ['scans.pdf#page=2', []]]);
-    // Every picture in the chat and the source loads when it comes into view: a folded card's pictures cost nothing.
-    assert.deepEqual(await value(`(() => { const all = [...doc('answer').querySelectorAll('.thread img, .src img')]; return [all.length > 0, all.filter((i) => i.loading !== 'lazy').map((i) => i.alt)]; })()`), [true, []]);
+    // A picture out of view loads when it comes into view: a folded card's pictures, and the source's, cost nothing until
+    // then; only those in the first screen and a half load at once.
+    assert.deepEqual(await value(`(() => { const lazy = (i) => i.loading === 'lazy'; const folded = [...doc('answer').querySelectorAll('.thread img')].filter((i) => !i.checkVisibility());
+      const source = [...doc('answer').querySelectorAll('.src img')]; return [folded.length > 0 && folded.every(lazy), source.length > 0 && source.every(lazy)]; })()`), [true, true]);
     await page.evaluate(`doc('answer').querySelector('.cite[data-look="${K.page2}"]').click()`);
     await until(`shown(doc('answer').querySelector('.src .jbox'))`, 'a chip opens its source with its region');
     assert.equal(await value(`doc('answer').querySelector('.src .jbox').style.cssText`), 'left: 6%; top: 8%; width: 80%; height: 6%;');
@@ -431,18 +443,22 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     // Shipped as files, the page's blobs are the server's: its policy names that origin.
     assert.match(await value<string>(`art('files').head.firstElementChild.content`), new RegExp(`img-src blob: ${origin.replace(/[.]/g, '\\.')};`));
 
-    // Each model call the tool call made is its own card under it: its line, its look's place, its raw output behind a
-    // click; three show, the decisive ones always, the rest behind "+ N more". With no picture kept, no picture.
+    // A step that made looks shows them first, each its own card: what it asked (a typed ask reads as the call's name),
+    // what it said (else its scores), its look's place, its raw output behind a click; three show, the decisive ones
+    // always, the rest behind "+ N more". The step is a quiet line under them. With no picture kept, no picture.
     const hear = await value<Record<string, unknown>>(`(() => { const c = doc('hear').querySelector('.calls').closest('.step'); return {
-      title: c.querySelector('.t span').textContent.split(' ')[0], calls: [...c.querySelectorAll('.call')].map((n) => [n.querySelector('.call-label').title, n.querySelector('.call-at')?.textContent, n.hidden, n.classList.contains('decisive')]),
+      looking: c.matches('.looking'), made: [c.querySelector(':scope > .calls').nextElementSibling.matches('.made'), c.querySelector('.made-in').textContent, c.querySelector('.made-title').textContent.slice(0, 10)],
+      calls: [...c.querySelectorAll('.call')].map((n) => [callTitle(n), n.querySelector('.call-said')?.textContent ?? null, n.querySelector('.call-at')?.textContent, n.hidden, n.classList.contains('decisive')]),
+      label: c.querySelector('.call[data-call="call-10"] .call-title').title,
       more: c.querySelector('.calls > .more').textContent, raw: [...c.querySelectorAll('.call details.raw')].map((n) => [n.open, n.querySelector('summary').textContent, n.querySelector('pre').textContent.charAt(0)]).slice(1, 2),
-      pictures: c.querySelectorAll('img').length, bare: c.querySelector('.step-main').matches('.bare') && c.querySelector('.step-main').children.length === 1, inReport: !!c.querySelector('.inrep'), flat: flat('hear') }; })()`);
-    assert.deepEqual(hear, { title: 'code', calls: [
-      ['Scripted transcribe · We copy you down, Eagle. Houston, uh,', 't 0:00', false, true], ['Jev judge · 0.05', 't 0:00', false, false], ['Jev judge · 0.05', 't 0:10', false, false],
-      ['Jev judge · 0.05', 't 0:20', true, false], ['Jev judge · 0.95', 't 0:30', true, false], ['Vision see · SECOND=28', 't 0:00', true, false],
-      ['Jev judge · here 0.60 · where 0.20 · box drawn', 't 0:27', true, false], ['Jev judge · here 0.95 · where 0.90 · box drawn', 't 0:28', false, true],
-      ['Jev judge · here 0.95 · where 0.90 · box drawn', 't 0:29', true, false]],
-      more: '+ 5 more', raw: [[false, 'Raw output', '{']], pictures: 0, bare: true, inReport: true, flat: { page: 0, panes: 0 } });
+      pictures: c.querySelectorAll('img').length, inReport: !!c.querySelector('.inrep'), flat: flat('hear') }; })()`);
+    assert.deepEqual(hear, { looking: true, made: [true, 'made in code ·', 'const film'], calls: [
+      ['Scripted transcribe', 'We copy you down, Eagle.', 't 0:00', false, true], ['Jev judge', '0.05', 't 0:00', false, false], ['Jev judge', '0.05', 't 0:10', false, false],
+      ['Jev judge', '0.05', 't 0:20', true, false], ['Jev judge', '0.95', 't 0:30', true, false],
+      ['At which second is a United States flag standing planted on the ground first seen? First line: SECOND=<whole seconds from the start of this clip>', 'SECOND=28', 't 0:00', true, false],
+      ['Jev judge', 'here 0.60 · where 0.20 · box drawn', 't 0:27', true, false], ['Jev judge', 'here 0.95 · where 0.90 · box drawn', 't 0:28', false, true],
+      ['Jev judge', 'here 0.95 · where 0.90 · box drawn', 't 0:29', true, false]],
+      label: 'Jev judge · here 0.95 · where 0.90 · box drawn', more: '+ 5 more', raw: [[false, 'Raw output', '{']], pictures: 0, inReport: true, flat: { page: 0, panes: 0 } });
     // The judge in its accent: a judge call's card and its span, its lane's dot, a chip at the start of its line whose text
     // stays ink; a call that is no judge carries none.
     const PINK = 'rgb(229, 81, 186)';
@@ -458,14 +474,14 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     // A call's card opens its look on the right; a click on its raw output only opens the output.
     await page.evaluate(`doc('hear').querySelector('.call[data-call="call-4"] details.raw summary').click()`);
     assert.deepEqual(await value(`[doc('hear').querySelector('.call[data-call="call-4"] details.raw').open, shown(doc('hear').querySelector('.src'))]`), [true, false]);
-    await page.evaluate(`doc('hear').querySelector('.call[data-call="call-10"] .call-label').click()`);
+    await page.evaluate(`doc('hear').querySelector('.call[data-call="call-10"] .call-title').click()`);
     await until(`doc('hear').querySelector('.src .addr')?.textContent === 'eagle-heard-and-seen.webm#t=28'`, 'the call\'s look on the right');
     assert.equal(await value(`doc('hear').querySelector('.call[aria-current="true"]')?.dataset.call`), 'call-10');
     await page.evaluate(`doc('hear').querySelector('.cite[data-look][title*="xywh"]').click()`);
     await until(`shown(doc('hear').querySelector('.src .regions'))`, 'the cited look\'s source, its region listed');
     assert.deepEqual(await value(`(() => { const d = doc('hear'); return { regions: [...d.querySelectorAll('.src .regions li')].map((n) => n.textContent), boxes: d.querySelectorAll('.src .jbox').length, pictures: d.querySelectorAll('.src img').length }; })()`),
       { regions: ['cited hereeagle-heard-and-seen.webm#t=28&xywh=percent:30.3,5.6,50.3,54.4'], boxes: 0, pictures: 0 });
-    await page.evaluate(`doc('hear').querySelector('.calls').closest('.step').querySelector('.step-main').click()`);
+    await page.evaluate(`opener(doc('hear').querySelector('.calls').closest('.step')).click()`);
     await until(`doc('hear').querySelector('.src .addr')?.textContent === 'eagle-heard-and-seen.webm#t=0,34.092'`, 'the card opens its first decisive look');
     assert.equal(await value(`doc('hear').querySelectorAll('.src video, .src img, .src .media, .src a.addr[href]').length`), 0, 'a video window that kept no frames shows no player and no frame');
     // A row's note, muted under its value; a cite of a picture the recording holds (no look) opens that picture, its
@@ -512,26 +528,33 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     // of its own and shows with its line, and the run after it folds again after three. A card led by a thought or the
     // agent's words has no voice line.
     assert.deepEqual(narrated, { order: ['who', 'thought', 'said-text', 'steps', 'host-note', 'thought redacted', 'thought', 'thought', 'said-text', 'steps'], said: [['I will read each page in turn.', 0, false], ['All four pages agree.', 0, false]],
-      cards: [false, false, false, true, false, false, false, true, false], more: ['+ 1 more', '+ 1 more'],
-      voices: [null, null, null, null, 'What is on page 5?', null, null, null, null], host: ['Host', 'You stopped without submitting. Call submit.', false], users: ['YouRead the four pages of notes.pdf.'],
+      cards: [false, false, false, true, false, false, false, true], more: ['+ 1 more', '+ 1 more'],
+      voices: [null, null, null, null, 'What is on page 5?', null, null, null], host: ['Host', 'You stopped without submitting. Call submit.', false], users: ['YouRead the four pages of notes.pdf.'],
       redacted: [[['thinking · redacted', 'DIV']], false],
       thoughts: [['Analyzing transcript data', true, 'DETAILS', false, 'I am reading page 2 before the others.', 'thinking', 'inline-block'],
         ['Settling the answer', true, 'DIV', false, null, 'thinking', 'none'], ['Checking that the four agree', true, 'DETAILS', false, 'they do, line for line.', 'thinking', 'inline-block']] });
 
     // A card of a command of several lines opens with the whole command under what it found; a card with a look keeps
     // the look first and its command folded under it.
-    await page.evaluate(`[...doc('narrated').querySelectorAll('.step')].at(-1).querySelector('.step-main').click()`);
+    // Steps that only ran a command fold into one quiet line, its count and its failures; a click lays them out.
+    assert.deepEqual(await value(`(() => { const p = doc('narrated').querySelector('.plumbing'); return [p.querySelector('.plumb-line').textContent, p.querySelector('.plumb-line').getAttribute('aria-expanded'),
+      shown(p.querySelector('.plumb-steps')), p.querySelectorAll('.plumb-steps > .step').length, doc('none').querySelector('.plumb-line').textContent]; })()`),
+      ['ran 2 commands, 1 failed', 'false', false, 2, 'ran 2 commands']);
+    await page.evaluate(`doc('narrated').querySelector('.plumb-line').click()`);
+    assert.deepEqual(await value(`(() => { const p = doc('narrated').querySelector('.plumbing'); return [p.querySelector('.plumb-line').getAttribute('aria-expanded'), [...p.querySelectorAll('.plumb-steps > .step')].map((n) => shown(n))]; })()`),
+      ['true', [true, true]]);
+    await page.evaluate(`doc('narrated').querySelector('.plumb-steps > .step .step-main').click()`);
     await until(`!!doc('narrated').querySelector('.src .command pre')`, 'the command in the card\'s pane');
     assert.deepEqual(await value(`(() => { const c = doc('narrated').querySelector('.src .command'); return [c.tagName, c.querySelector('.kind').textContent, c.querySelector('pre').textContent, shown(c.querySelector('pre'))]; })()`),
       ['DIV', 'Command', COMMAND, true]);
-    await page.evaluate(`doc('hear').querySelector('.calls').closest('.step').querySelector('.step-main').click()`);
+    await page.evaluate(`opener(doc('hear').querySelector('.calls').closest('.step')).click()`);
     await until(`!!doc('hear').querySelector('.src details.command')`, 'the look\'s command, folded');
     assert.deepEqual(await value(`(() => { const c = doc('hear').querySelector('.src details.command'); return [c.open, c.querySelector('summary').textContent, c.querySelector('pre').textContent.startsWith('const film = '), c.previousElementSibling !== null]; })()`),
       [false, 'Command', true, true]);
 
     // A judge's look over two photographs that boxed a mark on the second: opened at the first, the box is on the second,
     // in the judge's accent.
-    await page.evaluate(`card('answer', 'read photos/photo-001.png').querySelector('.step-main').click()`);
+    await page.evaluate(`opener(card('answer', 'read photos/photo-001.png')).click()`);
     await until(`doc('answer').querySelectorAll('.src .media img').length === 2`, 'the look\'s two pictures');
     assert.deepEqual(await value(`[...doc('answer').querySelectorAll('.src .media')].map((m) => [m.querySelector('img').alt, [...m.querySelectorAll('.jbox')].map((b) => [b.textContent, b.style.cssText])])`),
       [['photos/photo-001.png', []], ['photos/photo-002.png', [['flag', 'left: 5%; top: 5%; width: 20%; height: 20%;']]]]);
