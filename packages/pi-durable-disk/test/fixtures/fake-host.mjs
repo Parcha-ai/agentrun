@@ -33,12 +33,19 @@ const writeProc = () => {
     writeFileSync(join(state.proc, pid, "cmdline"), argv.join("\0") + "\0");
   }
 };
+// Whole or not at all: a temp file of this process's, renamed over the file. The test process reads the state and the mount
+// table while a tool runs (a fake control API lists delegations from it), and an in-place write can be read half done.
+const replace = (path, text) => {
+  const temp = `${path}.${process.pid}.tmp`;
+  writeFileSync(temp, text);
+  renameSync(temp, path);
+};
 const save = () => {
   writeProc();
   const lines = [...(state.extraMounts ?? [])];
   for (const [mp, m] of Object.entries(state.mounts)) lines.push(`${m.source} ${mp} fuse.archil rw,relatime,user_id=0,group_id=0,allow_other 0 0`);
-  writeFileSync(state.procMounts, lines.join("\n") + "\n");
-  writeFileSync(statePath, JSON.stringify(state, null, 2));
+  replace(state.procMounts, lines.join("\n") + "\n");
+  replace(statePath, JSON.stringify(state, null, 2));
 };
 const exit = (code, stderr = "", stdout = "") => {
   save();
