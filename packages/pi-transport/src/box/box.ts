@@ -78,6 +78,14 @@ export type BoxFacts = {
 	 * through `upload` and `download`. Absent means files.
 	 */
 	readonly bulk?: "stream" | "files";
+	/** The longest one `exec` may run, in ms, when the provider ends a call at a fixed length. Absent means no such limit. */
+	readonly maxExecMs?: number;
+	/**
+	 * Whether a program started by `exec` keeps running between calls and takes input: `false` for a box whose every
+	 * `exec` is one request that answers when the command ends (its stdin is refused with `unsupported`, its output
+	 * arrives after the call). Absent means true. A box that cannot keep a program running can never be a home.
+	 */
+	readonly liveProcesses?: boolean;
 };
 
 /** Whether a box still runs. */

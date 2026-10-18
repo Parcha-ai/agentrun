@@ -25,6 +25,13 @@ export interface BoxConformanceOptions {
 	/** Names set in the host process's environment that no program in a box may see. */
 	readonly absentEnv?: readonly string[];
 	/**
+	 * Set, with the reason, for a provider whose boxes keep no program running between calls and take no input
+	 * (`facts().liveProcesses` is false): every `exec` is one request that answers when the command ends. The cases that
+	 * need a live program or stdin are left out, and one case takes their place: it requires the box's facts to say so
+	 * and its stdin to be refused with `unsupported`, and carries the reason in its name so a report shows why.
+	 */
+	readonly withoutLiveProcesses?: string;
+	/**
 	 * When set, the suite creates one box with this lifetime, starts a long program in it, makes no further call to
 	 * the provider, and requires `ended` to say the box is gone within `graceMs` after the lifetime. This is the bound
 	 * on leaked boxes, so `ended` must look at the machine itself (a process table, a container list, the vendor's
@@ -284,6 +291,34 @@ export function createBoxConformance(options: BoxConformanceOptions): BoxConform
 				}),
 		},
 	];
+	if (options.withoutLiveProcesses !== undefined) {
+		const needLiveProcess = new Set([
+			"exec streams output before the program exits and carries input to it",
+			"input and output carry every byte value",
+		]);
+		for (let index = cases.length - 1; index >= 0; index -= 1) {
+			if (needLiveProcess.has(cases[index]?.name ?? "")) cases.splice(index, 1);
+		}
+		cases.push({
+			name: `the box keeps no live program and takes no stdin (cases skipped: ${options.withoutLiveProcesses})`,
+			run: () =>
+				withBox(async (box) => {
+					assertions.strictEqual(box.facts().liveProcesses, false);
+					const process = await start(box, ["true"]);
+					let refused: unknown;
+					try {
+						await process.stdin.write(encoder.encode("x"));
+					} catch (cause) {
+						refused = cause;
+					}
+					assertions.ok(
+						refused instanceof Error && (refused as { code?: string }).code === "unsupported",
+						"stdin is refused with an unsupported error",
+					);
+					await finishExit(process);
+				}),
+		});
+	}
 	cases.push({
 		name: "a label in the providers' own namespace is refused before a box exists",
 		run: () =>
