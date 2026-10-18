@@ -242,6 +242,29 @@ describe("archil exec boxes", () => {
 		}
 	});
 
+	it("is gone for a second process that runs after the box was ended, though a command kept its directory", async () => {
+		const { fake, provider, close } = rig({ destroyWaitMs: 50 });
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const other = archilExecBoxes({ client: fake.client, disk: fake.disk, destroyWaitMs: 50 });
+			const there = unwrap(await other.attach(box.id, context)) as Box;
+			const held = run(box, ["sleep", "0.6"]);
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			unwrap(await box.destroy(context));
+			expect(existsSync(join(fake.root, "boxes", box.id))).toBe(true);
+			const started = unwrap(await there.exec(["sh", "-c", "echo ran > ran.txt"], undefined, context));
+			void readStream(started.stdout).catch(() => {});
+			void readStream(started.stderr).catch(() => {});
+			const exit = await started.wait();
+			expect(exit.ok).toBe(false);
+			if (!exit.ok) expect(exit.error.code).toBe("gone");
+			await held;
+			expect(existsSync(join(fake.root, "boxes", box.id, "ran.txt"))).toBe(false);
+		} finally {
+			close();
+		}
+	});
+
 	it("refuses stdin with an unsupported error and carries output after the call", async () => {
 		const { provider, close } = rig();
 		try {
