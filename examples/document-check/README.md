@@ -6,3 +6,5 @@ The question in [question.md](question.md), asked of two PDFs ([inputs.json](inp
 npm run demo:vision -- examples/document-check            # on fakes, $0, the committed PDFs
 npm run demo:vision -- examples/document-check --live
 ```
+
+The agent (gemini-3.8-flash, thinking at medium; thinking is shown when the model returns it) runs shell commands with your user's rights on your machine: run it in a container or a VM.

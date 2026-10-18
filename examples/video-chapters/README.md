@@ -5,3 +5,5 @@ The question in [question.md](question.md), asked of NASA's 1969 Apollo 11 film 
 ```sh
 npm run demo:vision -- examples/video-chapters --live   # about $0.25 to $0.50 for the whole film
 ```
+
+The agent (gemini-3.8-flash, thinking at medium; thinking is shown when the model returns it) runs shell commands with your user's rights on your machine: run it in a container or a VM.
