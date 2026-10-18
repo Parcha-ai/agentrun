@@ -1881,6 +1881,48 @@ test('a kill at "judge.asked <label>" or "model.request turn <n>" lands on a liv
   }
 });
 
+// ---- the demo's own Jev caps, and a model whose key the demo does not declare ----------------------------------------------------------------------
+
+test('models.judge.caps sets the demo\'s own Jev caps (positive integers at most 4 times the default), the default is unchanged, a value past the ceiling is refused at load, and the run still refuses past the caps', { timeout: 300_000 }, async (t) => {
+  const { judgeCapsOf } = await import('./reference/demo-spec.ts');
+  const { composeHost } = await import('./reference/demo.ts');
+  const { localHost, placeAt, crossings } = await import('./reference/index.ts');
+  assert.deepEqual(judgeCapsOf({ name: 'x' }), { requests: 50, tokens: 40_000 }, 'the default is unchanged');
+  assert.deepEqual(judgeCapsOf({ name: 'x', models: { judge: { jev: true } } }), { requests: 50, tokens: 40_000 });
+  assert.deepEqual(judgeCapsOf({ name: 'x', models: { judge: { jev: true, caps: { requests: 2, tokens: 100 } } } }), { requests: 2, tokens: 100 });
+  assert.deepEqual(judgeCapsOf({ name: 'x', models: { judge: { caps: { requests: 200 } } } }), { requests: 200, tokens: 40_000 }, 'one given, the other default');
+  assert.deepEqual(judgeCapsOf({ name: 'x', models: { judge: { caps: { requests: 200, tokens: 160_000 } } } }), { requests: 200, tokens: 160_000 }, 'the ceiling itself is allowed');
+  for (const [name, value] of [['requests', 201], ['tokens', 160_001], ['requests', 0], ['requests', -1], ['tokens', 1.5], ['requests', '3'], ['tokens', null]]) {
+    assert.throws(() => judgeCapsOf({ name: 'x', models: { judge: { caps: { [name]: value } } } }), new RegExp(`models\\.judge\\.caps\\.${name} is a positive integer at most`), `${name} ${value}`);
+  }
+  // Refused at load, before any process starts.
+  await assert.rejects(() => run(t, { models: { judge: { jev: true, caps: { requests: 201 } } }, keys: [{ oneOf: [{ env: 'TYPESAFE_API_KEY', required: true, where: 'w', why: 'y' }], why: 'a Jev key' }] }, ['--json']), /models\.judge\.caps\.requests is a positive integer at most 200/);
+  // The caps are the judge seam\'s: the third question of a demo that set 2 is refused and never sent.
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-caps-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const { fakes } = await import('./reference/job.ts');
+  const place = await placeAt(join(tmp, 'run'));
+  const asked = [];
+  const local = localHost(place, { ...fakes, judge: async (request) => { asked.push(request.label); return { answers: {}, usage: { input_tokens: 1, output_tokens: 1 } }; } });
+  composeHost(local.host, undefined, crossings(undefined, undefined), { open: 0 }, join(place.root, 'judge-spent.jsonl'), false, judgeCapsOf({ name: 'x', models: { judge: { jev: true, caps: { requests: 2, tokens: 100 } } } }));
+  const ask = () => local.host.decisions.runJudge({ label: 'q', questions: {} });
+  await ask(); await ask();
+  await assert.rejects(ask, (error) => error.code === 'JEV_CAP_REACHED' && /2 of 2 requests/.test(error.message));
+  assert.equal(asked.length, 2, 'the refused one was never sent');
+});
+
+test('a demo that names models.judge (Jev) without a Jev key group is refused at load, naming the group to add; a TYPESAFE_API_KEY or an OPENROUTER_API_KEY group is enough, and no key is implied', { timeout: 300_000 }, async (t) => {
+  await assert.rejects(() => run(t, { models: { judge: { jev: true } } }, ['--json']), /models\.judge \(Jev\) but declares no key for it: add a keys group .*TYPESAFE_API_KEY.*OPENROUTER_API_KEY/s);
+  await assert.rejects(() => run(t, { models: { judge: { jev: true } }, keys: [{ env: 'GEMINI_API_KEY', required: true, where: 'w', why: 'y' }] }, ['--json']), /declares no key for it/);
+  for (const env of ['TYPESAFE_API_KEY', 'OPENROUTER_API_KEY']) {
+    const ok = await run(t, { models: { judge: { jev: true } }, keys: [{ oneOf: [{ env, required: true, where: 'w', why: 'y' }], why: 'a Jev key', for: 'live' }] }, ['--json']);
+    assert.equal(ok.result.processes.at(-1).outcome.status, 'complete', env);
+  }
+  // A demo that names no Jev judge is not asked for the key.
+  assert.equal((await run(t, { models: { lead: { needs: ['text'] } } }, ['--json'])).result.processes.at(-1).outcome.status, 'complete');
+
+});
+
 test('a live host whose fallback judge is the fakes\' (already tapped) has each crossing counted once; a judge the live parts supply is tapped here', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-tap-once-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
@@ -1893,13 +1935,13 @@ test('a live host whose fallback judge is the fakes\' (already tapped) has each 
   // The entry taps the fakes when the live parts supply tools; the live parts here supply tools only.
   const { tapFakes } = await import('./reference/crossings.ts');
   const host = localHost(place, tapFakes(fakes, cross)).host;
-  composeHost(host, { tools: { runEffect: async () => 'live' } }, cross, { open: 0 }, join(tmp, 'spent.jsonl'), true, true);
+  composeHost(host, { tools: { runEffect: async () => 'live' } }, cross, { open: 0 }, join(tmp, 'spent.jsonl'), true, undefined, true);
   await host.decisions.runJudge({ label: 'verdict' });
   assert.deepEqual(crossed.filter((point) => point.startsWith('judge.')), ['judge.asked verdict', 'judge.answered verdict'], 'once, not twice');
   // A judge the live parts supply has no crossings of its own: it is tapped.
   crossed.length = 0;
   const other = localHost(place, tapFakes(fakes, cross)).host;
-  composeHost(other, { decisions: { runJudge: async () => ({ answers: {}, usage: { input_tokens: 1, output_tokens: 0 } }) } }, cross, { open: 0 }, join(tmp, 'spent2.jsonl'), true, true);
+  composeHost(other, { decisions: { runJudge: async () => ({ answers: {}, usage: { input_tokens: 1, output_tokens: 0 } }) } }, cross, { open: 0 }, join(tmp, 'spent2.jsonl'), true, undefined, true);
   await other.decisions.runJudge({ label: 'verdict' });
   assert.deepEqual(crossed.filter((point) => point.startsWith('judge.')), ['judge.asked verdict', 'judge.answered verdict']);
 });
