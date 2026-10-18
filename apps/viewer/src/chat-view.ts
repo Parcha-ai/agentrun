@@ -740,14 +740,19 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     void target.offsetWidth;
     target.classList.add('flash');
     // Pictures above the card still to load would move it as they come in: they load now, and once they have, or after
-    // 1.5 s, the card is centred again, once, unless another jump came since.
+    // 1.5 s, the card is centred again; on a slow page, once more when the rest come in (up to 6 s); never after a newer
+    // jump.
     const waiting = [...thread.querySelectorAll<HTMLImageElement>('img')].filter((img) => !img.complete && img.getClientRects().length > 0
       && (target.contains(img) || (img.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0));
     if (waiting.length === 0) return;
     const loaded = waiting.map((img) => new Promise((done) => { img.addEventListener('load', done, { once: true }); img.addEventListener('error', done, { once: true }); }));
     for (const img of waiting) img.loading = 'eager';
-    void Promise.race([Promise.all(loaded), new Promise((done) => setTimeout(done, 1_500))]).then(() => {
-      if (jump === jumps) target.scrollIntoView({ block: 'center', behavior: motion() });
+    const all = Promise.all(loaded).then(() => true);
+    const after = (ms: number) => new Promise<false>((done) => setTimeout(() => done(false), ms));
+    const center = () => { if (jump === jumps) target.scrollIntoView({ block: 'center', behavior: motion() }); };
+    void Promise.race([all, after(1_500)]).then((done) => {
+      center();
+      if (!done) void Promise.race([all, after(6_000)]).then((late) => { if (late) center(); });
     });
   };
 

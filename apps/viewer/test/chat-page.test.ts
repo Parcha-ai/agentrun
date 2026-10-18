@@ -703,7 +703,7 @@ test('in Chrome: a timeline click to the last card of a long run lands on it, th
       const target = await value<string>(`last('${id}').dataset.item`);
       await page.evaluate(`doc('${id}').querySelector('.tl-toggle').click(); doc('${id}').querySelector('.tbar[data-goto="${target}"]').click()`);
       // The jump loads the pictures above the card and centres it again once they are in: it ends on the card and stays.
-      await page.once(`above('${id}').every((img) => img.complete) && seen('${id}').inView`, 'true', 6_000, `${id}: the pictures above loaded and the last card in view`)
+      await page.once(`above('${id}').every((img) => img.complete) && seen('${id}').inView`, 'true', 12_000, `${id}: the pictures above loaded and the last card in view`)
         .catch(async (error: Error) => { throw new Error(`${error.message}: ${JSON.stringify(await value(`seen('${id}')`))}`); });
       await page.sleep(800);
       const after = await value<{ top: number; bottom: number; inView: boolean }>(`seen('${id}')`);
