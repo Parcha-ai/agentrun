@@ -825,7 +825,11 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 					host,
 					env,
 					...(next === undefined
-						? {}
+						? finishing === undefined
+							? {}
+							: // A restore finished in the box that took the session: with the vault, the session is told it was
+								// restored (from the checkpoint its lease's seal came from), not that it started again in place.
+								{ vault: options.vault, restoreFromLog: true }
 						: {
 								vault: options.vault,
 								// Before any checkpoint, the session is rebuilt from the vault's log alone: a box kill needs no rest.

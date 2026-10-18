@@ -975,6 +975,16 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 					const exit = await recovered.runner.exited;
 					expect(exit.outcome?.record).toMatchObject({ done: 3, resumedFrom: 2 });
 					expect((await place.status()).record).toMatchObject({ generation: 2, holder: { host: "box-2" } });
+					// The restored session is told its machine was lost and it was restored, not that it started again in place.
+					// Read from the lease's seal, the head the restored home opened at: the checkpoint let the commits before it go.
+					const lease = getOrThrow(await leaseIn(dirStore(join(made.host, "lease"))).current("run-1", context));
+					const vault = localVault(join(made.host, "vault"));
+					const logged = JSON.stringify(
+						getOrThrow(await vault.readLog("run-1", lease?.seal?.head ?? 1, context)).entries,
+					);
+					expect(logged).toContain("System notice");
+					expect(logged).toContain("after its machine was lost");
+					expect(logged).not.toContain("has started again in the same place");
 					// No third box: the restore finished where the session was taken, its hop said once, from box-1 to box-2.
 					expect(made.lines.filter(({ kind }) => kind === "box.created").map(({ data }) => data.box)).toEqual([
 						"box-1",
