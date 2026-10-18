@@ -114,7 +114,7 @@ test("the global answers with the words, files and tells one receipt, reads the 
   assert.equal(fake.requests.length, 1, "one request for the file");
   const [r] = h.filed;
   assert.deepEqual([r.tool, r.args, r.facts.kind, r.facts.cost_usd, r.facts.provider], ["transcribe", { path: "film.mp4#t=780,840", model: "whisper-1", native: false, via: "openai" }, "audio", 0.003, "openai"]);
-  assert.deepEqual(Object.keys(receiptFacts(r)), ["sha256", "kind", "key", "cost_usd", "provider"], "the receipt's facts: the look's, with no fragment");
+  assert.deepEqual(Object.keys(receiptFacts(r)), ["sha256", "kind", "key", "cost_usd", "provider", "startedAt", "parentToolCallId"], "the receipt's facts: the look's, with no fragment, when its request began and the tool call it ran under");
   assert.equal(r.body, "3.06\t4.30\tTranquility Base here.\n5.50\t5.90\tThe Eagle", "the receipt is the transcript in rows, a row at each pause");
   assert.deepEqual(h.looks.map((l) => l.kept ?? false), [false, true], "told once as paid, then as kept");
   const everything = JSON.stringify({ seen, filed: h.filed, looks: h.looks, misses: h.misses, requests: fake.requests.map((x) => x.fields) });

@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { credentialInFile } from '../../examples/reference/scan.ts';
+import { credentialInFile } from '../../packages/reference/src/scan.ts';
 import { validateRecording } from './validate.mjs';
 
 const BLOB = /^([0-9a-f]{64})\.[a-z0-9]+$/;

@@ -1,0 +1,131 @@
+{
+ "about": "The files the question is about, fetched once on --live (or with --fetch-sources) and checked by size and SHA-256 before they are used.",
+ "items": [
+  {
+   "id": "transcript-tec",
+   "title": "Apollo 11 Technical Air-to-Ground Voice Transcription (GOSS NET 1), July 1969: the scanned typewritten pages, 626 in all",
+   "url": "https://www.nasa.gov/wp-content/uploads/2026/01/as11-tec.pdf",
+   "source": "https://www.nasa.gov/history/mission-transcripts-mercury-gemini-and-apollo/",
+   "license": "NASA public domain",
+   "bytes": 16388404,
+   "sha256": "d519ee18dfa0c318f39d36a6b6c492f1de286134988e23b594d63f3a18703870"
+  },
+  {
+   "id": "film-descent",
+   "title": "Apollo 11 25th anniversary B-roll (NASA Kennedy Space Center, preview rendition): the mission film in seven cuts, among them the lunar module's separation and descent seen through Eagle's window",
+   "url": "https://images-assets.nasa.gov/video/KSC-19690716-MH-NAS01-0001-Apollo_11_Historical_Footage_and_Broll-DVC_1560/KSC-19690716-MH-NAS01-0001-Apollo_11_Historical_Footage_and_Broll-DVC_1560~preview.mp4",
+   "source": "https://images-api.nasa.gov/search?nasa_id=KSC-19690716-MH-NAS01-0001-Apollo_11_Historical_Footage_and_Broll-DVC_1560",
+   "license": "NASA public domain",
+   "bytes": 191719322,
+   "sha256": "72fb13f25ffddddcc197b40b0bc67127e14cdf4055322a56af3c4ee538c24d15"
+  },
+  {
+   "id": "photo-AS11-36-5299",
+   "title": "NASA photograph AS11-36-5299: View of Earth showing clouds over water taken by Apollo 11 crewmembers",
+   "url": "https://images-assets.nasa.gov/image/as11-36-5299/as11-36-5299~medium.jpg",
+   "source": "https://images-api.nasa.gov/search?nasa_id=as11-36-5299",
+   "license": "NASA public domain",
+   "bytes": 179090,
+   "sha256": "4064367b752420622569757088fa5e14aa9e6f495f554b298a62b0f3155136e4"
+  },
+  {
+   "id": "photo-AS11-36-5337",
+   "title": "NASA photograph AS11-36-5337: View of Earth taken by Apollo 11 crewmembers",
+   "url": "https://images-assets.nasa.gov/image/as11-36-5337/as11-36-5337~medium.jpg",
+   "source": "https://images-api.nasa.gov/search?nasa_id=as11-36-5337",
+   "license": "NASA public domain",
+   "bytes": 127467,
+   "sha256": "570f2d0c3bd22a3dcff1acfea0df0f62f258acabe14a07b4a4e10d9579d1603c"
+  },
+  {
+   "id": "photo-AS11-37-5437",
+   "title": "NASA photograph AS11-37-5437: View of approach to Apollo Landing Site 2 in southwestern Sea of Tranquility",
+   "url": "https://images-assets.nasa.gov/image/as11-37-5437/as11-37-5437~medium.jpg",
+   "source": "https://images-api.nasa.gov/search?nasa_id=as11-37-5437",
+   "license": "NASA public domain",
+   "bytes": 166563,
+   "sha256": "9075fce0180ad0de05ca623a7089b6d343e920f2f5c7e9039d398fe99e4d2a02"
+  },
+  {
+   "id": "photo-AS11-37-5448",
+   "title": "NASA photograph AS11-37-5448: Apollo 11 Mission image - CSM over the Sea of Tranquility",
+   "url": "https://images-assets.nasa.gov/image/as11-37-5448/as11-37-5448~medium.jpg",
+   "source": "https://images-api.nasa.gov/search?nasa_id=as11-37-5448",
+   "license": "NASA public domain",
+   "bytes": 355662,
+   "sha256": "490890aa158857b991eeeb75c8de0c7d302a9b40092440bd4dcfadb104fd8c17"
+  },
+  {
+   "id": "photo-AS11-37-5545",
+   "title": "NASA photograph AS11-37-5545: Flag of the U.S. deployed on surface of the Moon",
+   "url": "https://images-assets.nasa.gov/image/as11-37-5545/as11-37-5545~medium.jpg",
+   "source": "https://images-api.nasa.gov/search?nasa_id=as11-37-5545",
+   "license": "NASA public domain",
+   "bytes": 184300,
+   "sha256": "4d5fbb351b3e2b906ebe6d651345021b6c2d3bcaba32afd80ca7f3dce653260a"
+  },
+  {
+   "id": "photo-AS11-40-5875",
+   "title": "NASA photograph AS11-40-5875: Astronaut Edwin Aldrin poses for photograph beside deployed U.S. flag",
+   "url": "https://images-assets.nasa.gov/image/as11-40-5875/as11-40-5875~medium.jpg",
+   "source": "https://images-api.nasa.gov/search?nasa_id=as11-40-5875",
+   "license": "NASA public domain",
+   "bytes": 238465,
+   "sha256": "7dd5e5efabf515286e5cf6a98fd47f95dc4eab31a31781fe89e9b9dc5621a640"
+  },
+  {
+   "id": "photo-AS11-40-5880",
+   "title": "NASA photograph AS11-40-5880: Close-up view of astronauts foot and footprint in lunar soil",
+   "url": "https://images-assets.nasa.gov/image/as11-40-5880/as11-40-5880~medium.jpg",
+   "source": "https://images-api.nasa.gov/search?nasa_id=as11-40-5880",
+   "license": "NASA public domain",
+   "bytes": 220355,
+   "sha256": "aacdf869c2a79a1f445d30b478a5048191c8bdc2c492e1eda0b93beaa78b0dbb"
+  },
+  {
+   "id": "photo-AS11-40-5899",
+   "title": "NASA photograph AS11-40-5899: View of plaque Apollo 11 astronauts left on moon",
+   "url": "https://images-assets.nasa.gov/image/as11-40-5899/as11-40-5899~medium.jpg",
+   "source": "https://images-api.nasa.gov/search?nasa_id=as11-40-5899",
+   "license": "NASA public domain",
+   "bytes": 168573,
+   "sha256": "6328acdb714086194b6a90ec58fb48ace0e33030a1319fe18078ce2e916df2a4"
+  },
+  {
+   "id": "photo-AS11-40-5902",
+   "title": "NASA photograph AS11-40-5902: Astronaut Edwin Aldrin walks on lunar surface near leg of Lunar Module",
+   "url": "https://images-assets.nasa.gov/image/as11-40-5902/as11-40-5902~medium.jpg",
+   "source": "https://images-api.nasa.gov/search?nasa_id=as11-40-5902",
+   "license": "NASA public domain",
+   "bytes": 314780,
+   "sha256": "0670143af2f38f2823e0dac72a49179039267223eb0fb3aac53ac362ecce64c2"
+  },
+  {
+   "id": "photo-AS11-40-5903",
+   "title": "NASA photograph AS11-40-5903: Astronaut Edwin Aldrin walks on lunar surface near leg of Lunar Module",
+   "url": "https://images-assets.nasa.gov/image/as11-40-5903/as11-40-5903~medium.jpg",
+   "source": "https://images-api.nasa.gov/search?nasa_id=as11-40-5903",
+   "license": "NASA public domain",
+   "bytes": 262221,
+   "sha256": "24bf4ce093822101801f5ba3cad3f84525a5c6a42927b0a29579581c13c691ce"
+  },
+  {
+   "id": "photo-AS11-42-6237",
+   "title": "NASA photograph AS11-42-6237: Oblique view of crater Theophilus at northwest edge of Sea of Nectar",
+   "url": "https://images-assets.nasa.gov/image/as11-42-6237/as11-42-6237~medium.jpg",
+   "source": "https://images-api.nasa.gov/search?nasa_id=as11-42-6237",
+   "license": "NASA public domain",
+   "bytes": 242829,
+   "sha256": "9cec320a86269194bf05294e1bb4572b227ee7af86917628b5fabd4bf03792ca"
+  },
+  {
+   "id": "photo-AS11-45-6704",
+   "title": "NASA photograph AS11-45-6704: Apollo 11 stereo view showing lump of surface powder with glassy material",
+   "url": "https://images-assets.nasa.gov/image/as11-45-6704/as11-45-6704~medium.jpg",
+   "source": "https://images-api.nasa.gov/search?nasa_id=as11-45-6704",
+   "license": "NASA public domain",
+   "bytes": 91211,
+   "sha256": "58c374f314f572739657b927117c29151ca62ad94fa090326b9aedbb3b2cc92e"
+  }
+ ]
+}

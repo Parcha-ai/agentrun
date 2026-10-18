@@ -119,7 +119,7 @@ const piCalls = new WeakMap<CallContext, { readonly id: ConversationId; readonly
 
 function contextOf(api: Pick<HookApi, "conversationId" | "memo">, callId: string, ref: ModelRef | undefined, context: Context, tool?: string, store?: Pick<ToolExecutionApi, "commit" | "snapshot">): CallContext {
   const models = modelsOf(api);
-  const call: CallContext = { conversationId: String(api.conversationId), callId, ...(tool ? { tool } : {}), model: modelFrom(ref, models), signal: context.abortSignal, memo: memoOf(api, context, store) };
+  const call: CallContext = { conversationId: String(api.conversationId), callId, toolCallId: callId, ...(tool ? { tool } : {}), model: modelFrom(ref, models), signal: context.abortSignal, memo: memoOf(api, context, store) };
   piCalls.set(call, { id: api.conversationId, models });
   return call;
 }

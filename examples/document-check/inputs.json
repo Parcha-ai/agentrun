@@ -1,0 +1,23 @@
+{
+ "about": "The files the question is about, committed beside the example (sample/), each checked by size and SHA-256; ASSETS.md names their source.",
+ "items": [
+  {
+   "id": "aveo-ex3-1-pages-1-4",
+   "title": "Pages 1 to 4 of exhibit 3.1 to AVEO Pharmaceuticals, Inc.'s 10-K for 2021 on SEC EDGAR: a Delaware certified copy of its restated certificate of incorporation, as filed",
+   "path": "sample/aveo-ex3-1-pages-1-4.pdf",
+   "source": "https://www.sec.gov/Archives/edgar/data/1325879/000162828022006093/0001628280-22-006093-index.html",
+   "license": "public filing, included for testing and illustration as fair use",
+   "bytes": 710932,
+   "sha256": "cd4990d97f267a0f8849a39f6f224af078236134126c76d0a5fb9672e606e808"
+  },
+  {
+   "id": "aveo-ex3-1-pages-1-4-TEST-COPY-marks-removed",
+   "title": "The same four pages altered for testing: every mark the question names painted white, every page footered as a test copy; not the filed document",
+   "path": "sample/aveo-ex3-1-pages-1-4-TEST-COPY-marks-removed.pdf",
+   "source": "made from the same page images (ASSETS.md)",
+   "license": "public filing, altered for testing, included as fair use",
+   "bytes": 840793,
+   "sha256": "0f39e3f0011932320ac920f929be5f33cbc1641d5950d584f46d605255308cbe"
+  }
+ ]
+}
