@@ -8,7 +8,6 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AssistantMessage, Message, ToolCall, ToolResultMessage } from '@earendil-works/pi-ai';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
-import type { JevPort } from '@parcha/pi-vision';
 import type { Fakes } from '../reference/index.ts';
 import sample from './sample/sample.json' with { type: 'json' };
 import { tools } from './tools.ts';
@@ -61,30 +60,28 @@ function markAt(page: number, id: string): Box | undefined {
 const pageOf = (source: string) => Number(/#page=(\d+)/.exec(source)?.[1] ?? 0);
 const filed = (source: string) => source.startsWith(`${sample.files.filed}#`);
 
-/** The scripted Jev: each page's kind from the sample's layout; each mark there with its box on the filed pages and gone
- *  from the TEST COPY, with the whole page as the box Jev always gives; two file numbers the same on the filed pages. */
-export function scriptedJev(): JevPort {
-  return {
-    model: 'scripted-jev',
-    judge: async ({ state, questions }) => {
-      const sources = (state as { images: { source: string }[] }).images.map((image) => image.source);
-      const [first] = sources;
-      const answers = Object.fromEntries(Object.entries(questions as Record<string, { type: string }>).map(([name, question]) => {
-        if (question.type === 'choice') return [name, { type: 'choice', choice: KINDS[pageOf(first!)] ?? 'other', confidence: 0.9 }];
-        if (sources.length === 2) return [name, { type: 'noul', noul: sources.every(filed) ? 0.95 : 0.05 }];
-        const box = filed(first!) ? markAt(pageOf(first!), name.replace(/_at$/, '')) : undefined;
-        if (question.type === 'noul') return [name, { type: 'noul', noul: box ? 0.97 : 0.03 }];
-        return [name, { type: 'box', box: box ?? { top: 0, bottom: 1, left: 0, right: 1 }, confidence: box ? 0.9 : 0.1 }];
-      }));
-      return { answers, model: 'scripted-jev', usage: { input_tokens: 0, output_tokens: 0 }, cost_usd: 0 };
-    },
-  };
-}
+/** The scripted Jev, as the host's judge seam (`vision.judge` goes through it): each page's kind from the sample's
+ *  layout; each mark there with its box on the filed pages and gone from the TEST COPY, with the whole page as the box
+ *  Jev always gives; two file numbers the same on the filed pages. */
+export const scriptedJudge: Fakes['judge'] = async ({ state, questions }) => {
+  const sources = (state as { images: { source: string }[] }).images.map((image) => image.source);
+  const [first] = sources;
+  const answers = Object.fromEntries(Object.entries(questions).map(([name, question]) => {
+    if (question.type === 'choice') {
+      const kind = KINDS[pageOf(first!)] ?? 'other';
+      return [name, { type: 'choice' as const, choice: kind, confidence: 0.9, probabilities: Object.fromEntries(Object.keys(question.criteria).map((label) => [label, label === kind ? 0.9 : 0.1 / (Object.keys(question.criteria).length - 1)])) }];
+    }
+    if (sources.length === 2) return [name, { type: 'noul' as const, noul: sources.every(filed) ? 0.95 : 0.05 }];
+    const box = filed(first!) ? markAt(pageOf(first!), name.replace(/_at$/, '')) : undefined;
+    if (question.type === 'noul') return [name, { type: 'noul' as const, noul: box ? 0.97 : 0.03 }];
+    return [name, { type: 'box' as const, box: box ?? { top: 0, bottom: 1, left: 0, right: 1 }, confidence: box ? 0.9 : 0.1 }];
+  }));
+  return { answers, model: 'scripted-jev', usage: { input_tokens: 0, output_tokens: 0 }, cost_usd: 0 };
+};
 
-/** The fakes the reference entry runs the job on: the scripted lead, the job's tool, and the scripted Jev for
- *  `vision.judge`; no eyes, since the job asks none. */
+/** The fakes the reference entry runs the job on: the scripted lead, the job's tool, and the scripted Jev as the judge
+ *  `vision.judge` reaches; no eyes, since the job asks none. */
 export const fakes: Fakes = {
   model: scriptedLead, tools, pages: {}, start: 'about:blank', responses: 2_000, tokensPerSecond: 400, lead: { input: ['text'] },
-  judge: async () => { throw new Error('this job asks no judge node; vision.judge goes through the vision lane'); },
-  vision: () => ({ jev: scriptedJev() }),
+  judge: scriptedJudge,
 };

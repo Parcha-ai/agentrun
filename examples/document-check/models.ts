@@ -59,10 +59,9 @@ export function liveParts(context: { env: NodeJS.ProcessEnv; models: { provider?
     if (!env[PROVIDERS[lead.provider]!.key]) throw new Error(`--live with ${lead.provider}/${lead.modelId} needs ${PROVIDERS[lead.provider]!.key} in the environment.`);
     catalog.setProvider(original as never);
   }
-  const judge = createJevRunner({ provider: jevProviderFromEnv(env), pricing: JEV_PRICE });
+  // Jev is the host's judge seam: `vision.judge` reaches it there, held to the demo's caps and priced.
   return {
-    host: { models: { catalog, lead: { provider: lead.provider, modelId: lead.modelId } } },
+    host: { models: { catalog, lead: { provider: lead.provider, modelId: lead.modelId } }, decisions: { runJudge: createJevRunner({ provider: jevProviderFromEnv(env), pricing: JEV_PRICE }) } },
     models: { lead: `${lead.provider}/${lead.modelId}`, judge: 'jev-1.14.0' },
-    vision: () => ({ jev: { judge } }),
   };
 }

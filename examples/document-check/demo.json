@@ -6,7 +6,8 @@
   "codeMode": { "timeoutMs": 600000 },
   "claim": "One agent checks a Delaware certified copy against a checklist of the marks Delaware law gives it: the Secretary of State's seal and signature, the file and SR numbers, the authentication number, the FILED stamp, and the file numbers agreeing. Each mark is yes or no, and the ones there are boxed on their page.",
   "models": {
-    "lead": { "needs": ["text", "tools"], "default": "openai/gpt-6-luna" }
+    "lead": { "needs": ["text", "tools"], "default": "openai/gpt-6-luna" },
+    "judge": { "jev": true, "caps": { "requests": 20, "tokens": 80000 } }
   },
   "keys": [
     {

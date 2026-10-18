@@ -50,6 +50,17 @@ To check another kind of document, write another checklist, put the PDF and the 
 | one of `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, or `DEMO_MODEL_BASE_URL` with `DEMO_MODEL_API_KEY` | `--live`: the lead (`openai/gpt-6-luna` by default), which writes the code | your provider's console, or your gateway |
 | `pdftoppm` (poppler-utils), `ffmpeg` and `ffprobe` | the agent's code renders the pages and cuts the file numbers out | your system's package manager |
 
+## What it runs on
+
+It runs from this repository: every file imports the reference entry only through `examples/reference/index.ts`, so a run from an npm install changes one import path a file once the entry is a package. Its own runtime dependencies, until that package carries them:
+
+| Package | For |
+|---|---|
+| `@parcha/pi-vision` | the verify skill and `vision.judge` |
+| `@parcha/agentrun-jev` | Jev on `--live` |
+| `@earendil-works/pi-ai` | the live lead, and the scripted lead on fakes |
+| `@parcha/agentrun-dsl` | the workflow's types |
+
 ## The sample
 
 [sample/](sample) holds pages 1 to 4 of a public SEC EDGAR exhibit: AVEO Pharmaceuticals, Inc.'s 10-K for 2021, exhibit 3.1, accession 0001628280-22-006093. The pages are:
@@ -67,10 +78,10 @@ To check another kind of document, write another checklist, put the PDF and the 
   - one `agent` with the `code` tool, whose instructions are the task and pi-vision's verify skill;
   - then a `call` to `cite`;
   - the default input (the filed pages) and the files the workspace starts with.
-- `codeMode` in `demo.json`: the reference entry's `code` tool. Its sandbox has `tools.bash` (the run's workspace), `vision.see` and `vision.judge`.
+- `codeMode` in `demo.json`: the reference entry's `code` tool. Its sandbox has `tools.bash` (the run's workspace), `vision.see`, and `vision.judge`, which reaches Jev through the host's judge seam (`models.judge` in `demo.json` sets its caps).
 - `tools.ts`: `cite`, which resolves each row's receipts to the looks the run filed and builds the cited result. `result.ts` keeps the PDF as a blob of the recording and names it in every cite.
 - `fakes.ts`:
   - the scripted lead, which runs the skill's two steps as written;
-  - the scripted Jev, which answers from `sample/sample.json` and never looks at a pixel.
-- `models.ts`: the live lead and Jev.
+  - the scripted Jev (the host's judge on fakes), which answers from `sample/sample.json` and never looks at a pixel.
+- `models.ts`: the live lead, and Jev as the host's judge.
 - Everything else is the reference entry (`demo()`).
