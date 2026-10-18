@@ -125,7 +125,7 @@ export function scrubOf(options: { user?: string | undefined; home?: string | un
   if (home) parts.push({ pattern: under(home), to: '~' });
   const segment = user ? new RegExp(`(?<=/)${escapeRe(user)}(?=[/\\s"'\`:;,)\\]}]|$|\\\\)`, 'g') : undefined;
   // An `ls -l` row: permissions, links, owner, group (each may be the user); a row starts a line (a real newline, or the two characters a JSON string holds).
-  const row = user ? new RegExp(`((?:^|\\n|\\\\n|")[-dlcbps][-rwxsStT]{9}[.+@]?\\s+\\d+\\s+)(${escapeRe(user)}|\\S+)(\\s+)(${escapeRe(user)}|\\S+)`, 'g') : undefined;
+  const row = user ? new RegExp(`((?:^|\\n|\\\\n|")[-dlcbps][-rwxsStT]{9}[.+@]?\\s+\\d+\\s+)(\\S+)(\\s+)(\\S+)`, 'g') : undefined;
   return (text) => {
     let out = text;
     for (const part of parts) out = out.replace(part.pattern, part.to);

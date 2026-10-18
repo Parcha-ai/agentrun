@@ -423,6 +423,9 @@ test('the scrub takes the run\'s user name (a whole token in a path segment or a
   // The home directory, a path under it, a path under the run's directory.
   assert.equal(scrub(`cd ${home}/projects && ls`), 'cd ~/projects && ls');
   assert.equal(scrub(`wrote ${run}/work/out.json and ${run}`), 'wrote <run>/work/out.json and <run>');
+  // A group that only starts with the user's name is another group's name, whole: it is left as it is.
+  assert.equal(scrub(`drwxr-xr-x  2 root ${user}-admin 4096 Oct 18 10:00 etc`), `drwxr-xr-x  2 root ${user}-admin 4096 Oct 18 10:00 etc`);
+  assert.equal(scrub(`drwxr-xr-x  2 ${user}-ci ${user} 4096 Oct 18 10:00 etc`), `drwxr-xr-x  2 ${user}-ci [user] 4096 Oct 18 10:00 etc`);
   // The coding tools' bash truncation notice names the full output's file under the run's directory.
   assert.equal(scrub(`[info] Full output: ${run}/work/.tmp/tmp-x1y2/pi-output-0f3c9a52-77aa-4e0c-9d3e-1b6a5c2d8e41.log`), '[info] Full output: <run>/work/.tmp/tmp-x1y2/pi-output-0f3c9a52-77aa-4e0c-9d3e-1b6a5c2d8e41.log');
   assert.equal(scrub(JSON.stringify({ text: `[Showing lines 1-200 of 900. Full output: ${run}/work/.tmp/tmp-x1y2/pi-output-0f3c.log]` })), JSON.stringify({ text: '[Showing lines 1-200 of 900. Full output: <run>/work/.tmp/tmp-x1y2/pi-output-0f3c.log]' }));
