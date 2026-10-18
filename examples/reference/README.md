@@ -237,3 +237,7 @@ On `--live` the child is given exactly the environment names `demo.json` declare
 ### `manifest(context)` and `source.run`
 
 A demo may pass `manifest({ dir, record, input, live })`: it returns fields the entry adds to the manifest (a demo's own sources, slice or models). A name the entry writes itself (`format`, `source`, `result`, `providers`, `see_also`, `job`, `store`, ...) is refused. `source.run` is the demo's name, plus the input file's name when `--input` named a file (`apollo-apollo-11`); a demo's `run.ts` reads `demo()`'s result for its own summary lines.
+
+### The child as an app module
+
+`child-app.ts` is the child as a `pi-durable-disk run --app` module, so a run has one open path (the claim, the fence, the stdin mount token, run.json's holder, the seal and restarts are the disk package's): `DEMO_ENTRY=<file URL of the demo's run.ts, which exports its \`options\`> pi-durable-disk run --dir <dir> --app examples/reference/child-app.ts --id <id>`. It builds the host exactly as the entry's own child does (the same environment, which every order carries from the supervisor, `DEMO_ENTRY` and `DEMO_NAME` included, so a place needs no wrapper: `PLAN`, `KILL_REQUEST`, `RECORD_DIR`, `INPUT`), drives the job in `onOpen`, prints its outcome line, writes the run's final status `done` with the record and the store's hash (a box place has only run.json), releases the run and exits 0. A kill -9 and the same command again resumes the run.

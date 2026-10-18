@@ -899,6 +899,43 @@ test('a kill\'s where: only a crossing whose info has those values counts, and n
   assert.equal(box('transport.box.exec', { info: { tool: 'install' } }), true);
   for (const where of [{}, [], 'install', { tool: {} }, { tool: null }]) assert.throws(() => killsOf({ name: 'x', kills: [{ point: 'p', why: 'w', where }] }), /where is an object/);
   assert.throws(() => killsOf({ name: 'x', kills: [{ storm: { kills: 1, gapMs: 0 }, where: { tool: 'x' } }] }), /storm has no where/);
+
+});
+
+test('a run is keyed by its demo\'s name (the place\'s paths.id), so two demos never share a run', { timeout: 300_000 }, async (t) => {
+  const { readJournal } = await import('@parcha/agentrun-pi/durable');
+  const { RUN_KEY } = await import('./reference/index.ts');
+  const parent = await mkdtemp(join(tmpdir(), 'reference-keyed-'));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  for (const name of ['alpha-demo', 'beta-demo']) {
+    const dir = join(parent, name);
+    const { result } = await run(t, { name }, ['--json', '--dir', dir]);
+    assert.equal(result.processes.at(-1).outcome.status, 'complete');
+    const file = join(dir, 'store', 'run.sqlite');
+    assert.ok(readJournal(file, name)?.binding, `${name}'s journal is under its own name`);
+    assert.equal(readJournal(file, RUN_KEY), undefined, `nothing is kept under the fixed key ${RUN_KEY}`);
+  }
+});
+
+test('every order a place is handed carries the demo\'s entry module and name in its env (start and recover alike), so a demo\'s run.ts needs no wrapper', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-order-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'demo.json');
+  writeFileSync(file, JSON.stringify({ name: 'order-demo', kills: [{ point: 'judge.asked verdict', why: 'to make a recover' }] }));
+  Object.assign(process.env, { DEMO_SPEC: file });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const orders = [];
+  const result = await demo({ ...options, argv: ['--kill', '--json', '--record', join(tmp, 'recording')], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner, start: (order) => { orders.push(['start', order.env]); return inner.start(order); }, recover: (last, kind, order) => { orders.push(['recover', order.env]); return inner.recover(last, kind, order); } };
+  } });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.deepEqual(orders.map(([how]) => how), ['start', 'recover']);
+  for (const [how, env] of orders) {
+    assert.equal(env.DEMO_ENTRY, options.self, `${how}: the demo's entry module`);
+    assert.equal(env.DEMO_NAME, 'order-demo', `${how}: the demo's name`);
+  }
 });
 
 test('a crossing a tool kill takes still counts for a run kill at the same point: the run kill at n 2 fires on the second matching crossing', async (t) => {
@@ -944,4 +981,17 @@ test('a look is kept with the images of its own read: a read that produced no im
   // A screenshot is found as the newest of its tool.
   await afterTool({ id: '4', name: 'screenshot', arguments: {} }, { output: [png('S')], details: { evidence: 'evidence/shot.json' } }, { conversationId: 7 });
   assert.equal(shown.of('7', record('a screenshot result'), 'screenshot').images.length, 1);
+});
+
+test('a directory a run already used keeps its identity: a demo whose name differs from the saved run\'s resumes it under the saved name', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-identity-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'run');
+  const first = await run(t, {}, ['--json', '--dir', dir]);
+  assert.equal(first.result.processes.at(-1).outcome.status, 'complete');
+  assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).run, 'reference');
+  // The same directory again, by a demo of another name (a directory saved before the run was named for its demo): it is not refused, and stays what it was.
+  const again = await run(t, { name: 'another-demo' }, ['--json', '--dir', dir]);
+  assert.equal(again.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(again.result.processes.at(-1)));
+  assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).run, 'reference');
 });
