@@ -268,7 +268,7 @@ test("the answer comes first with its key points, the key findings are open, the
 });
 
 test("text a look gives is escaped, not trusted as markup", async () => {
-  const hostile = data.replace("why: lookTalk.text,", 'why: `<script>alert(1)</script><img src=x onerror=alert(1)> "quoted" & more`,');
+  const hostile = data.replace(/why: "On screen[^"]*",/, 'why: `<script>alert(1)</script><img src=x onerror=alert(1)> "quoted" & more`,');
   assert.notEqual(hostile, data);
   onDisk = "other";
   const { result } = await run([helpers, assets, looking, hostile, render, check]);
@@ -279,7 +279,7 @@ test("text a look gives is escaped, not trusted as markup", async () => {
 });
 
 test("a URL in a look's words is written without its scheme, so the page still reaches nowhere", async () => {
-  const quoting = data.replace("why: lookTalk.text,", "why: `The slide says https://example.com/terms?a=1&b=2, and links //cdn.example/x.js, and mailto:a@example.com.`,");
+  const quoting = data.replace(/why: "On screen[^"]*",/, "why: `The slide says https://example.com/terms?a=1&b=2, and links //cdn.example/x.js, and mailto:a@example.com.`,");
   assert.notEqual(quoting, data);
   onDisk = "other";
   const { result } = await run([helpers, assets, looking, quoting, render, check]);
@@ -675,4 +675,23 @@ test("the skill's check refuses a finding with no picture or clip, a row with no
 
 test("when the folder is over budget the check names the largest files", async () => {
   await refuses('await sh("head -c 8500000 /dev/zero > report/clips/huge.bin");', /report\/ is over 8000000 bytes; the largest files:\n8500000 report\/clips\/huge\.bin/);
+});
+
+test("the skill's check refuses markdown in any visible text of the page, names the element, and lets code and pre hold it", async () => {
+  await refuses(swap("</main>", "<p>**official seal** is present</p></main>"), /<p> carries markdown \("\*\*"\): write your own plain sentence/);
+  await refuses(swap("The tallest bar", "**The tallest bar**"), /<figcaption> carries markdown \("\*\*"\)/);
+  await refuses(swap("</main>", "<p>### Description of the seal</p></main>"), /<p> carries markdown \("##"\)/);
+  await refuses(swap("</main>", "<p>Shown:\n* **Text:** a seal</p></main>"), /<p> carries markdown/);
+  await refuses(swap("</main>", "<p>the `seal` is round</p></main>"), /<p> carries markdown \("`"\)/);
+  await refuses(swap("</main>", "<p>Seen:\n# Heading</p></main>"), /<p> carries markdown/);
+  await refuses(swap("<h3>The chart shows", "<h3>**The chart** shows"), /<h3> carries markdown \("\*\*"\)/);
+  const evidence = data.replace(/why: "Page 3 sets[^"]*",/, 'why: "**Seal of the Secretary of State** and\\n* **Outer Text/Banners:** none",');
+  assert.notEqual(evidence, data);
+  onDisk = "other";
+  const pasted = await run([helpers, assets, looking, evidence, render, check]);
+  assert.ok(!pasted.result.ok);
+  assert.match(pasted.result.error.message, /<p> carries markdown \("\*\*"\)/, "an evidence paragraph pasted from an answer is refused");
+  // Code and pre are exempt, a lone * or # inside a sentence is not markdown, and CSS (which holds * selectors) is not text.
+  const fine = await doctored(swap("</main>", "<pre>**bold** and `tick`</pre><p>Use <code>## heading</code> in markdown; 5 * 3 is 15 and item #2 is next.</p></main>"));
+  assert.ok(fine.result.ok, fine.result.ok ? "" : fine.result.error.message);
 });

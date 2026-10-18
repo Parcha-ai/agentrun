@@ -17,6 +17,10 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
 - **Never state what the run did not read.** Every name, place, time and number on the page comes from a look's answer or from
   the file's own text, and carries its cite. A caption says what the look saw, not what you remember about the subject.
   What the run did not read is left out, or goes under what you did not check.
+- **The text is yours, in plain sentences.** Every sentence on the page (a caption, an evidence paragraph, a row) is one plain
+  sentence in your own words, drawn from the look's answer: never the answer pasted. The page is HTML, so markdown shows as raw
+  symbols (`**`, `##`, a `* ` list mark, backticks); the check refuses them in any text outside `<code>` and `<pre>` and names
+  the element.
 - **The answer first**, in a sentence or two, then three or four key points, each a link to the finding or the mark it
   stands on. Someone who reads only that much has the answer.
 - **Every finding shows its evidence; every row has a thumbnail.** A page that only says is a page nobody checks. Show:
@@ -217,7 +221,7 @@ const report = {
   answer: "Yes. The chart shows the second quarter highest, and page 3 of the contract sets the record-keeping rule the talk gave.",
   points: [{ label: "Chart peak", value: "second quarter", to: "f-chart" }, { label: "Contract rule", value: "page 3", to: "f-contract" }],
   findings: [
-    { id: "chart", title: "The chart shows the second quarter highest", why: lookTalk.text,
+    { id: "chart", title: "The chart shows the second quarter highest", why: "On screen, the chart's second bar is the tallest, so the second quarter is the peak.",   // your sentence, drawn from lookTalk.text, never that text pasted
       pics: [
         { src: talk, alt: "A bar chart with the second bar tallest", caption: "The tallest bar is the second quarter's, the figure the answer rests on.",
           boxes: [{ id: "mark-peak", finding: "chart", at: "61.2,40,12,9", label: "second quarter", look: lookTalk.key }] },
@@ -225,11 +229,11 @@ const report = {
       ],
       clip: { ...(await clip("talk.mp4", 18, 26, "talk-chart")), caption: "The eight seconds around the chart." },
       cites: [{ file: "talk.mp4", t: [21.5], xywh: "percent:61.2,40,12,9", look: lookTalk.key }, { file: "talk.mp4", t: [18, 26], look: lookTalk.key }] },
-    { id: "contract", title: "The contract sets the rule on page 3", why: lookPage.text,
+    { id: "contract", title: "The contract sets the rule on page 3", why: "Page 3 sets the record-keeping rule in its first clause.",
       pics: [{ src: rule.src, alt: "The rule, cropped from page 3", caption: "The rule as the page prints it, the clause the answer rests on.", mark: "mark-rule",
                boxes: [{ id: "crop-rule", finding: "contract", at: rule.box, label: "the rule", look: lookPage.key }] }],
       cites: [{ file: "contract.pdf", page: 3, xywh: "percent:7,6,70,4", look: lookPage.key }] },
-    { id: "site", routine: true, title: "The site", why: lookSite.text,
+    { id: "site", routine: true, title: "The site", why: "The photo shows the site as it was visited; nothing in it bears on the answer.",
       pics: [{ src: site, alt: "A photo of the site", caption: "The site as photographed; nothing in it bears on the answer, so it is kept as the record of the visit." }],
       cites: [{ file: await keep("photo.jpg"), look: lookSite.key }] },
   ],
@@ -359,6 +363,13 @@ if (new Set(shown).size !== shown.length) problems.push("a picture is shown twic
 if (report.points.length < 1 || report.points.length > 4) problems.push("the answer has one to four key points");
 const first = page.indexOf('id="answer"'), firstFinding = page.search(/class="finding[ "]/);   // a finding is open or `finding routine`
 if (first < 0 || (firstFinding >= 0 && first > firstFinding)) problems.push("the answer is not first");
+let owner = "";
+const named = (tag) => `<${/^<([a-z0-9]+)/i.exec(tag)?.[1] ?? "page"}${/ id="([^"]*)"/.exec(tag)?.[0] ?? ""}>`;
+for (const part of page.replace(/<(style|code|pre)\b[\s\S]*?<\/\1>/gi, "").split(/(<[^>]*>)/)) {   // the visible text, outside code and pre, and the element it sits in
+  if (part.startsWith("<")) { if (!part.startsWith("</")) owner = part; continue; }
+  const marker = /\*\*|##|`|(?:^|\n)\s*\* |(?:^|\n)\s*#{1,6}\s/.exec(part);
+  if (marker) problems.push(`${named(owner)} carries markdown (${JSON.stringify(marker[0].trim() || marker[0])}): write your own plain sentence from the look's answer, never the answer pasted`);
+}
 if (problems.length) throw new Error(problems.join("\n"));
 return { report: "report/index.html", findings: report.findings.length, looks: looks.size, bytes: await bytes("report/index.html") };
 ```
