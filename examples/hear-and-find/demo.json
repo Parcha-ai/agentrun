@@ -25,7 +25,14 @@
       "why": "A model provider's key for --live (the run names every model by provider and public id).",
       "for": "live"
     },
-    { "env": "TYPESAFE_API_KEY", "why": "Jev (jev-1.14.0), which scores frames and draws the box.", "where": "typesafe.ai", "required": true, "for": "live" },
+    {
+      "oneOf": [
+        { "env": "TYPESAFE_API_KEY", "why": "Jev at TypeSafe: jev-1.14.0, the first Jev that draws boxes, scores the frames and draws the box.", "where": "typesafe.ai", "required": true },
+        { "env": "OPENROUTER_API_KEY", "why": "Jev through OpenRouter, when it serves jev-1.14.0 (the box needs that model).", "where": "openrouter.ai, Keys", "required": true }
+      ],
+      "why": "A Jev key: the judge that scores frames and draws the box.",
+      "for": "live"
+    },
     { "env": "FAL_KEY", "why": "Scribe v2 on fal, which writes what is said with each word's second; not needed when the gateway passes fal's queue through at its root (/fal-queue).", "where": "fal.ai, API keys", "required": false, "for": "live" }
   ],
   "programs": [

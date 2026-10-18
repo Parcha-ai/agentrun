@@ -119,7 +119,7 @@ test('live models: the defaults, the transcriber through fal\'s own queue or a g
   assert.equal(transcriberOf({ FAL_KEY: 'k' }).model, 'fal-ai/elevenlabs/speech-to-text/scribe-v2');
   assert.equal(transcriberOf(gateway).provider, 'fal');
   assert.throws(() => transcriberOf({}), /FAL_KEY/);
-  assert.throws(() => liveParts({ env: gateway, models: {} }), /TYPESAFE_API_KEY/);
+  assert.throws(() => liveParts({ env: gateway, models: {} }), /TYPESAFE_API_KEY.*OPENROUTER_API_KEY/);
   const parts = liveParts({ env: { ...gateway, TYPESAFE_API_KEY: 'k' }, models: {} });
   assert.deepEqual(Object.keys(parts.vision()).sort(), ['eyes', 'transcriber']);
   assert.equal(typeof parts.host.decisions.runJudge, 'function', 'Jev is the host\'s judge: vision.judge goes through the judge seam');

@@ -30,7 +30,7 @@ What it looks for is data: `needles.json` names the film, the phrase and its que
 | Name | For | Where |
 |---|---|---|
 | one of `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or `VIDEO_MODEL_BASE_URL` with `VIDEO_MODEL_API_KEY` | `--live`: the lead (`openai/gpt-6-luna` by default) and the eyes (`google/gemini-3.8-flash`, which watch a window as video with its sound) | your provider's console, or your gateway |
-| `TYPESAFE_API_KEY` | `--live`: Jev, which scores frames and draws the box | typesafe.ai |
+| `TYPESAFE_API_KEY`, or `OPENROUTER_API_KEY` when OpenRouter serves jev-1.14.0 | `--live`: Jev, which scores frames and draws the box (jev-1.14.0 is the first Jev that draws boxes) | typesafe.ai, openrouter.ai |
 | `FAL_KEY` | `--live`: Scribe v2 on fal, which writes each word with its second (not needed when your gateway passes fal's queue through) | fal.ai |
 | `ffmpeg`, `ffprobe`, `node` | the agent's code cuts the audio, frames and windows | your system's package manager |
 
