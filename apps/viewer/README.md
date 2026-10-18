@@ -14,11 +14,13 @@ The hosted gallery is at https://parcha-ai.github.io/agentrun/. It is this repla
 `chat.html?r=<id>` (or `?src=<url>`) opens a recording as a conversation and a report, the gallery's default view. It
 is made from the recording's own events, with nothing per recording: the run's input as given (the workflow's input
 record, its fields in plain form) as the user's message; each recorded conversation as a thread (its messages as
-recorded, without the prompt the host composed to open it, the assistant's text, the run's own thinking folded, one
-card per tool call titled by the tool and its arguments, a failed call by its error's first line, consecutive calls
-of one tool folded into "+ N more"); a session timeline under the title, collapsed,
-of workflow nodes, LLM calls (by model), tool calls (by name) and the model calls a tool makes, nested under it (a span
-when the line names its call and start, else a point at its time); and on the right the agent's artifact
+recorded, without the prompt the host composed to open it; the assistant's text as bubbles between the cards; the
+run's own thinking folded; one card per tool call titled by the tool and its arguments, a failed call by its error's
+first line, consecutive calls of one tool showing the first three, the rest behind "+ N more"; under a tool's card,
+each model call it made as a card of its own, with its name, its scores, the boxes it drew and its raw output); a
+session timeline under the title, collapsed, of workflow nodes, LLM calls (by model), tool calls (by name) and the
+model calls a tool makes, nested under it and labelled as their cards (a span when the line names its call and start,
+else a point at its time); and on the right the agent's artifact
 (`manifest.artifact`: its entry and files as blobs), in a frame that runs no script; else the run's cited answer; else
 the result record it submitted, its evidence paths as cites; else its final assistant text. The title is the
 artifact's, else the first line of the input's question, else the recording's title.
@@ -35,6 +37,9 @@ nothing but the touch each one adds:
 - A look over several addresses files them in its `path` joined by `, `; it opens at the first.
 - A call to `submit` (the node runner's delivery tool) shows no reply when it succeeds.
 - A recording with no times places each span at its line's position, and the timeline reads "in order".
+- A model call inside a tool is named by who answered (its record's `args.via`, else its tool's namespace) and its
+  tool's verb: `vision.judge` via `jev` reads "Jev judge". A call whose tool's verb is `judge` carries the judge's
+  accent on its card and its span.
 
 ## Use it
 
