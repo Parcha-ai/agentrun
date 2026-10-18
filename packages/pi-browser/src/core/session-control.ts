@@ -85,3 +85,9 @@ export const PROVIDER_KEY_ENV: readonly string[] = Object.freeze(["BROWSERBASE_A
 
 export const providerKeyValues = (env: NodeJS.ProcessEnv, host?: () => readonly string[]): string[] =>
   [...PROVIDER_KEY_ENV.map((name) => env[name] ?? "").filter(Boolean), ...(host?.() ?? [])];
+
+/** Runs one at a time, in arrival order: each starts once the one before it has settled, however that one ended. */
+export function oneAtATime(): <T>(run: () => Promise<T>) => Promise<T> {
+  let turn: Promise<unknown> = Promise.resolve();
+  return (run) => { const mine = turn.then(run, run); turn = mine.catch(() => undefined); return mine; };
+}

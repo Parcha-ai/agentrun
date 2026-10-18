@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
 import { localSites } from "../dist/index.js";
 import { FakeBackend, fakeDriver } from "../dist/testing/index.js";
 import { startAgent } from "./coding-agent/rig.mjs";
@@ -136,17 +137,16 @@ for (const [what, calls] of [
   });
 }
 
-test("on one existing browser (--browser-endpoint) the coding agent's children take turns: two calls in one turn never run their children at once", async (t) => {
+/** How many of the children of two use_website calls in one turn ran at once, and what each call answered. Forced race: a
+ *  child's first turn waits until the other child has started too, or two seconds pass. The timer keeps the process alive,
+ *  since with the turn queue the wait always runs to it. */
+async function childrenAtOnce(t, extension) {
   const agentDir = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), "use-website-agent-"));
   const before = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = agentDir;
   t.after(() => { if (before === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = before; fs.rmSync(agentDir, { recursive: true, force: true }); });
-  const backend = new FakeBackend({ start: START, pages: { [START]: PAGE, [NEWS]: { url: NEWS, title: "News", text: "Headlines", html: "<html><body><h1>News</h1></body></html>" } } });
-  const env = { ...process.env, PI_BROWSER_ENDPOINT: "ws://127.0.0.1:9/devtools/browser/shared" };
-  const agent = await startAgent(t, { extension: { provider: backend.provider, driver: fakeDriver(backend), sites: localSites(SITES), env } });
+  const agent = await startAgent(t, { extension: { sites: localSites(SITES), ...extension } });
   const calls = [{ site: "shop", requestId: randomUUID() }, { site: "news", requestId: randomUUID() }];
-  // Forced race: a child's first turn waits until the other child has started too, or two seconds pass. The timer keeps
-  // the process alive, since with the turn queue the wait always runs to it.
   let started = 0;
   let open;
   const both = new Promise((resolve) => { open = resolve; });
@@ -168,8 +168,50 @@ test("on one existing browser (--browser-endpoint) the coding agent's children t
       : fauxAssistantMessage(calls.map((call, i) => fauxToolCall("use_website", { site: call.site, request_id: call.requestId, instructions: "Read the start page." }, { id: `call-${i}-${randomUUID().slice(0, 8)}` })), { stopReason: "toolUse" });
   }));
   await agent.session.prompt("Read them at once.");
-
-  assert.equal(most, 1, "one child at a time on one browser");
   const answers = agent.seen.filter((row) => row.tool === "use_website").map((row) => JSON.parse(row.text)).map(({ site, report }) => `${site}: ${report}`).sort();
+  return { most, answers };
+}
+const twoSites = () => new FakeBackend({ start: START, pages: { [START]: PAGE, [NEWS]: { url: NEWS, title: "News", text: "Headlines", html: "<html><body><h1>News</h1></body></html>" } } });
+
+test("the provider in use decides whether children take turns: a host's own provider that gives each session its own browser keeps them at once, even with PI_BROWSER_ENDPOINT set (#1078)", async (t) => {
+  // The flag names a provider only when the host passes none; here the host's provider is the one the children use.
+  const backend = twoSites();
+  const env = { ...process.env, PI_BROWSER_ENDPOINT: "ws://127.0.0.1:9/devtools/browser/shared" };
+  const { most, answers } = await childrenAtOnce(t, { provider: backend.provider, driver: fakeDriver(backend), env });
+  assert.equal(most, 2, "each child in its own browser, at once");
   assert.deepEqual(answers, [`news: Read ${NEWS}`, `shop: Read ${START}`]);
+});
+
+test("a host's own provider whose sessions share one browser, with no endpoint flag, has the coding agent's children take turns too (#1078)", async (t) => {
+  const backend = new FakeBackend({ start: START, pages: { [START]: PAGE, [NEWS]: { url: NEWS, title: "News", text: "Headlines", html: "<html><body><h1>News</h1></body></html>" } }, caps: { sharedBrowser: true } });
+  const env = { ...process.env };
+  delete env.PI_BROWSER_ENDPOINT;
+  const { most, answers } = await childrenAtOnce(t, { provider: backend.provider, driver: fakeDriver(backend), env });
+  assert.equal(most, 1, "one child at a time on one browser");
+  assert.deepEqual(answers, [`news: Read ${NEWS}`, `shop: Read ${START}`]);
+});
+
+test("the coding agent's use_website child is offered neither browser_upload nor browser_downloads, though its parent is", async (t) => {
+  const agentDir = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), "use-website-agent-"));
+  const before = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  t.after(() => { if (before === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = before; fs.rmSync(agentDir, { recursive: true, force: true }); });
+  const backend = new FakeBackend({ start: START, pages: { [START]: PAGE } });
+  const sites = localSites({ shop: { title: "The shop", description: "Prices of the store's products.", startUrl: START } });
+  const agent = await startAgent(t, { extension: { provider: backend.provider, driver: fakeDriver(backend), sites } });
+  const offered = { parent: null, child: null };
+  agent.core.setResponses(Array.from({ length: 10 }, () => (context) => {
+    const names = getCurrentTools(context.messages).map((tool) => tool.name);
+    if (textOf(context.messages.find((message) => message.role === "user")).includes(`Start at ${START}`)) {
+      offered.child ??= names;
+      return context.messages.at(-1).role === "toolResult" ? fauxAssistantMessage("The 8 GB board costs $80.") : toolUse("snapshot", {});
+    }
+    offered.parent ??= names;
+    return context.messages.some((message) => message.role === "toolResult") ? fauxAssistantMessage("done") : toolUse("use_website", { site: "shop", request_id: randomUUID(), instructions: "Find the price of the 8 GB board." });
+  }));
+  await agent.session.prompt("What does the shop charge for the 8 GB board?");
+
+  assert.ok(offered.parent?.includes("browser_upload") && offered.parent.includes("browser_downloads"), String(offered.parent));
+  assert.ok(offered.child?.includes("snapshot"), String(offered.child));
+  assert.deepEqual(offered.child.filter((name) => name === "browser_upload" || name === "browser_downloads"), [], "only the child's report crosses back: no files in, none out");
 });

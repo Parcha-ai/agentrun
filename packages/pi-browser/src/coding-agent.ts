@@ -6,16 +6,20 @@ import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { BROWSER_TOOLS, WEB_TOOLS, browserSection, type ToolContract } from "./core/contract.js";
 import {
-  BrowserFailureError, closeDriver, custodyTools, newSessionRecord, notices, profileRefusal, sessionSpec,
-  type AttachedSession, type CustodyPort, type DriverFactory, type Overrides, type ToolOutput,
+  BrowserFailureError, closeDriver, custodyTools, FIXED_SESSION_RELAUNCH, fenced, HANDED_BACK, loadedNoPage, moveRecord, newSessionRecord, notices, NOTHING_TO_HOLD, profileRefusal, sessionSpec, waitingForHuman,
+  type AttachedSession, type CustodyPort, type DriverFactory, type FenceMark, type Overrides, type ToolOutput,
 } from "./core/custody.js";
 import { browserFailure, classifyBrowserError, type BrowserFailure } from "./core/failures.js";
-import type { BrowserConfig, BrowserPolicy, BrowserProvider, ReleaseReason, SessionRecord, SiteInfo, SiteRunPort } from "./core/host.js";
+import { workspaceFiles } from "./core/files.js";
+import type { BrowserConfig, BrowserPolicy, BrowserProvider, ReleaseReason, SessionRecord, SiteInfo, SiteRunPort, WorkspaceFiles } from "./core/host.js";
 import { leaseTag, type LeaseRef } from "./core/lease.js";
 import { createRedactor, redactDeep, scrubPageUrl, type Redact } from "./core/redact.js";
 import { useWebsite, useWebsiteContract } from "./core/sites.js";
+import { drivingGuarded } from "./core/driving-guard.js";
+import { drivingGates, personOn, rearmWhenLeft } from "./core/driving.js";
+import type { DrivingGates } from "./live-view/protocol.js";
 import { pageTools, type PageDriver, type ToolCall, type ToolImpl } from "./core/tools.js";
-import { CREATE_DEADLINE_MS, DEFAULT_BROWSER_POLICY, idleTracker, keyedSerializer, providerKeyValues, type IdleTracker } from "./core/session-control.js";
+import { CREATE_DEADLINE_MS, DEFAULT_BROWSER_POLICY, idleTracker, keyedSerializer, oneAtATime, providerKeyValues, type IdleTracker } from "./core/session-control.js";
 import { createWebTools, type WebBackup, type WebTools } from "./core/web.js";
 import { fileEvidenceSink, findChrome, httpBackup } from "./coding-agent-local.js";
 
@@ -30,12 +34,19 @@ export type CodingAgentOptions = {
   /** Default: the Stagehand driver. */
   driver?: DriverFactory<PageDriver>;
   policy?: Partial<BrowserPolicy>;
+  /** The person/model mutex shared with the live view (`createLiveView`'s `gates`); the default, the package's process-wide `drivingGates`, is the one the live view
+   *  defaults to as well. Pass it here only together with the same registry there. */
+  gates?: DrivingGates;
   /** Fetchers tried when the provider cannot fetch a page. Default: a plain HTTP read of public hosts. */
   backups?: ReadonlyArray<WebBackup>;
   env?: NodeJS.ProcessEnv;
   /** `use_website`'s sites; absent, the tool is not listed. Each child is a pi session with this extension and no
    *  use_website, started through pi's SDK and disposed, so its browser released, when it reports. */
   sites?: SiteRunPort;
+  /** Resolves `browser_upload` paths. Default: files under the session's working directory. */
+  files?: WorkspaceFiles;
+  /** Lists `browser_upload` and `browser_downloads`. Default true; a use_website child gets neither. */
+  fileTools?: boolean;
 };
 
 const BROWSER_FLAGS = ["browser-provider", "browser-endpoint", "browser-chrome", "browser-headed", "browser-no-sandbox"] as const;
@@ -43,9 +54,11 @@ const BROWSER_FLAGS = ["browser-provider", "browser-endpoint", "browser-chrome",
 const refused = (message: string, code: BrowserFailure["code"] = "browser_unavailable"): BrowserFailureError =>
   new BrowserFailureError(browserFailure(code, message));
 
-type Live = { record: SessionRecord; ref: LeaseRef; driver: PageDriver | null };
+type Live = { record: SessionRecord; ref: LeaseRef; driver: PageDriver | null; mark?: FenceMark };
 type Deps = {
   config: BrowserConfig;
+  /** The live view's driving gates (default: the package's process-wide ones). */
+  gates?: DrivingGates;
   provider: () => Promise<BrowserProvider>;
   driver: DriverFactory<PageDriver>;
   keep: (customType: string, data: unknown) => void;
@@ -65,12 +78,32 @@ export class LocalCustody implements CustodyPort<PageDriver> {
   private lastReleased: SessionRecord | null = null;
   private seq = 0;
   private notice: string | null = null;
+  /** The session an idle release ended, told with its notice and named while its replacement has loaded no page; any
+   *  other release ends it, and a failed launch never touches it. */
+  private replacedBy: AttachedSession<PageDriver>["replaced"] = null;
   private readonly queue = keyedSerializer();
   private readonly idle: IdleTracker;
+  /** The poll of a session the idle timer kept for a person (#1098): stopped when the session is released or closed. */
+  private leaving: (() => void) | null = null;
 
   constructor(private readonly d: Deps) {
     this.idle = idleTracker({ idleMs: d.config.policy.idleReleaseS * 1000, onIdle: (key, fired) => void this.serial(async () => {
-      if (this.idle.isCurrent(key, fired) && this.live) await this.finish(this.live, "idle").catch(() => undefined);
+      const live = this.live;
+      if (!this.idle.isCurrent(key, fired) || !live || live.record.state === "held") return;
+      // A person driving or watching the session through the live view keeps it (#1098); it is released one idle window
+      // after they leave.
+      const gate = personOn(d.gates ?? drivingGates, live.record.tag);
+      if (gate) {
+        this.leaving?.();
+        this.leaving = rearmWhenLeft(gate, () => this.live === live, () => { this.leaving = null; this.idle.activity(key, 0); }, d.config.policy.idleReleaseS * 1000);
+        return;
+      }
+      await this.finish(live, "idle").catch(() => undefined);
+      // Whatever the release answered, a session that is over is told to the next call, which opens a fresh browser.
+      if (this.live !== live) {
+        this.notice = notices.released("idle", live.record.lastUrl, d.config.policy.idleReleaseS);
+        this.replacedBy = { reason: "idle", at: live.record.endedAt, lastUrl: live.record.lastUrl };
+      }
     }) });
   }
 
@@ -110,7 +143,9 @@ export class LocalCustody implements CustodyPort<PageDriver> {
     } catch (error) { throw this.failure(error, signal); }
     const notice = this.notice;
     this.notice = null;
-    return { driver: live.driver, tag: live.record.tag, sessionId: live.ref.id, record: live.record, notice, interrupted: null, recorded: !!provider.recordings, effects: null };
+    const fence = live.record.fence ?? 0;
+    const replaced = this.replacedBy && loadedNoPage(live.record) ? this.replacedBy : null;
+    return { driver: fenced(live.driver, fence, () => live.mark), tag: live.record.tag, sessionId: live.ref.id, record: live.record, notice, interrupted: null, recorded: !!provider.recordings, effects: null, fence, downloads: provider.downloads ?? null, replaced };
   }
 
   private async launch(overrides: Overrides): Promise<AttachedSession<PageDriver>> {
@@ -132,6 +167,11 @@ export class LocalCustody implements CustodyPort<PageDriver> {
       this.live = live;
       return attached;
     } catch (error) {
+      // A session the host assigned is the task's only one: an attach that failed keeps it live, and the next call attaches it again.
+      if (live && provider.caps.fixedSession) {
+        this.live = live;
+        throw this.failure(error, signal);
+      }
       // A create that threw may still have made a browser: with no ref, look it up by its tag. The record ends released
       // only when every release is confirmed; otherwise it stays open for the next start to retry.
       const refs = live ? [live.ref] : await provider.findByTag(tag).catch(() => null);
@@ -151,6 +191,10 @@ export class LocalCustody implements CustodyPort<PageDriver> {
    *  one again), its record stays open for the directory, which is released again by the next release, the shutdown or the next start; the
    *  caller is still told what is left. */
   private async finish(live: Live, reason: ReleaseReason): Promise<void> {
+    // A released session's poll (#1098) ends with it, whatever released it.
+    this.leaving?.();
+    this.leaving = null;
+    if (reason !== "idle") this.replacedBy = null;
     await this.sweepLeftovers();
     // A close that never comes back (Stagehand after a reconnect) never holds up the provider's release.
     if (live.driver) await closeDriver(live.driver);
@@ -168,6 +212,10 @@ export class LocalCustody implements CustodyPort<PageDriver> {
     Object.assign(live.record, { state: "released", releaseReason: reason, endedAt: now() });
     this.lastReleased = live.record;
     this.save(live.record);
+  }
+
+  private async refuseHeld(): Promise<void> {
+    if (this.live?.record.state === "held" && !(await this.retireEnded())) throw new BrowserFailureError(waitingForHuman(this.live.record.handoff!));
   }
 
   /** Releases again each browser that is gone and whose directory was left; one that still cannot be removed stays for the next time, and the
@@ -193,13 +241,19 @@ export class LocalCustody implements CustodyPort<PageDriver> {
 
   session(): Promise<AttachedSession<PageDriver>> {
     return this.serial(async () => {
+      await this.refuseHeld();
       await this.retireEnded();
       return this.live ? this.attached(this.live) : this.launch({});
     });
   }
 
+  async current(): Promise<string | null> { return this.live?.record.tag ?? null; }
+
   relaunch(overrides: Overrides): Promise<AttachedSession<PageDriver>> {
     return this.serial(async () => {
+      await this.refuseHeld();
+      // A session the host assigned is the only one: refused before anything is released.
+      if ((await this.d.provider()).caps.fixedSession) throw new BrowserFailureError(FIXED_SESSION_RELAUNCH);
       // A browser that is gone with only its directory left is over: the new one opens, and the directory is retried later.
       if (this.live) await this.finish(this.live, "relaunch").catch((error) => { if (this.live) throw error; });
       return this.launch(overrides);
@@ -224,8 +278,38 @@ export class LocalCustody implements CustodyPort<PageDriver> {
   close(reason: ReleaseReason): Promise<void> {
     return this.serial(async () => {
       this.idle.cancel(this.d.config.label);
+      this.leaving?.();
+      this.leaving = null;
       if (this.live) await this.finish(this.live, reason).catch(() => undefined);
       await this.sweepLeftovers();
+    });
+  }
+
+  hold(requestId: string): Promise<{ tag: string; sessionId: string }> {
+    return this.serial(async () => {
+      const live = this.live;
+      if (live?.record.state === "held" && live.record.handoff !== requestId) throw new BrowserFailureError(waitingForHuman(live.record.handoff!));
+      if (!live) throw new BrowserFailureError(NOTHING_TO_HOLD);
+      if (live.record.state === "live") {
+        moveRecord(live.record, { state: "held", handoff: requestId, at: now() });
+        live.mark = { fence: live.record.fence!, failure: waitingForHuman(requestId) };
+        this.save(live.record);
+        const driver = live.driver;
+        live.driver = null;
+        if (driver) await closeDriver(driver);
+      }
+      return { tag: live.record.tag, sessionId: live.ref.id };
+    });
+  }
+
+  resume(notice: string | null): Promise<void> {
+    return this.serial(async () => {
+      const live = this.live;
+      if (live?.record.state !== "held") return;
+      moveRecord(live.record, { state: "live", at: now() });
+      live.mark = { fence: live.record.fence!, failure: HANDED_BACK };
+      this.save(live.record);
+      if (notice) this.notice = [this.notice, notice].filter(Boolean).join(" ");
     });
   }
 
@@ -259,6 +343,8 @@ type Runtime = {
   redact: Redact;
   web: WebTools;
   searches: boolean;
+  /** The chosen provider's sessions all attach to one browser. */
+  sharedBrowser: boolean;
   sites: SiteInfo[];
   call(tool: string, args: unknown, callId: string, signal: AbortSignal | undefined): Promise<ToolOutput>;
   close(): Promise<void>;
@@ -310,7 +396,7 @@ async function openRuntime(pi: ExtensionAPI, settings: Settings, ctx: ExtensionC
   const sessionId = ctx.sessionManager.getSessionId?.() ?? randomUUID();
   const config: BrowserConfig = { label: "browser", run: sessionId, policy };
   const driver: DriverFactory<PageDriver> = options.driver ?? (async (target, signal, driverOptions) => (await import("./driver/stagehand.js")).stagehandDriver()(target, signal, driverOptions));
-  const custody = new LocalCustody({ config, provider, driver, redact, signal: closing.signal, keep: (type, data) => pi.appendEntry(type, data) });
+  const custody = new LocalCustody({ config, gates: options.gates, provider, driver, redact, signal: closing.signal, keep: (type, data) => pi.appendEntry(type, data) });
   // A fork's branch holds its parent's entries: the parent released its own browser when it ended.
   if (reason !== "fork") await custody.releaseOrphans(ctx.sessionManager.getBranch() as never).catch(() => undefined);
   // With no provider (no Chrome) the web tools still run on the host's fetchers.
@@ -325,13 +411,18 @@ async function openRuntime(pi: ExtensionAPI, settings: Settings, ctx: ExtensionC
   const sites = options.sites && listSites ? await options.sites.list(closing.signal).catch(() => []) : [];
   let closed: Promise<void> | null = null;
   return {
-    redact, web, searches: !!chosenProvider?.search, sites,
+    redact, web, searches: !!chosenProvider?.search, sharedBrowser: chosenProvider?.caps.sharedBrowser === true, sites,
     async call(tool, args, callId, signal) {
       const impl = impls[tool]!;
       custody.activity(1);
       try {
-        const call: ToolCall = { callId, conversationId: CONVERSATION, signal, label: config.label, redact, evidence };
+        const call: ToolCall = { callId, conversationId: CONVERSATION, signal, label: config.label, redact, evidence, workspace: ctx.cwd, files: options.files ?? workspaceFiles(ctx.cwd) };
         return await impl(args, custody, call);
+      } catch (error) {
+        // A typed failure thrown before the tool's own handling (the driving guard refuses a release or relaunch for a person who is driving before the tool runs) comes
+        // back as the envelope the durable adapter gives, so the model reads its code and `retryable`; other errors keep their path.
+        if (error instanceof BrowserFailureError) return { content: [{ type: "text", text: JSON.stringify(error.failure) }], isError: true };
+        throw error;
       } finally { custody.activity(-1); }
     },
     close: () => (closed ??= (async () => {
@@ -367,16 +458,17 @@ export function createBrowserExtension(options: CodingAgentOptions = {}): (pi: E
   const env = options.env ?? process.env;
   const policy: BrowserPolicy = { ...DEFAULT_BROWSER_POLICY, ...(env.PI_BROWSER_PROXIES === "1" ? { proxies: true } : {}), ...options.policy };
   // pi checks a call's arguments against the tool's schema before execute, so each implementation receives its own shape.
-  const impls = { ...custodyTools, ...pageTools() } as Partial<Record<string, ToolImpl<PageDriver>>>;
+  // Every browser tool is a model call on its session's driving gate (see durable.ts).
+  const impls = drivingGuarded({ ...custodyTools, ...pageTools() } as Partial<Record<string, ToolImpl<PageDriver>>>, options.gates);
 
   return function piBrowser(pi: ExtensionAPI): void {
     let runtime: Runtime | null = null;
     let opening: Promise<Runtime> | null = null;
     let webSearchRegistered = false;
     let sitesRegistered = false;
-    // Children on one existing browser (--browser-endpoint) would drive the same pages, so there they take turns.
-    let turn: Promise<unknown> = Promise.resolve();
-    const inTurn = <T>(run: () => Promise<T>): Promise<T> => { const mine = turn.then(run, run); turn = mine.catch(() => undefined); return mine; };
+    // Children on a provider whose sessions share one browser (an endpoint, named by the flag or in the host's own provider)
+    // would drive the same pages, so there they take turns.
+    const inTurn = oneAtATime();
 
     pi.registerFlag("browser-provider", { type: "string", description: "Browser provider: cdp (a local Chrome, the default), browserbase (needs BROWSERBASE_API_KEY) or kernel (needs KERNEL_API_KEY)" });
     pi.registerFlag("browser-endpoint", { type: "string", description: "Attach to a Chrome DevTools endpoint (http://host:port or ws://...) instead of starting Chrome" });
@@ -398,7 +490,8 @@ export function createBrowserExtension(options: CodingAgentOptions = {}): (pi: E
     pi.on("session_start", async (event, ctx) => { await end(); await runtimeOf(ctx, event.reason); });
     pi.on("session_shutdown", end);
 
-    pi.on("before_agent_start", (event) => { event.systemPromptOptions.sections.browser = browserSection(policy); });
+    const fileTools = options.fileTools !== false;
+    pi.on("before_agent_start", (event) => { event.systemPromptOptions.sections.browser = browserSection(policy, { downloads: fileTools, upload: fileTools }); });
 
     async function childSession(ctx: ExtensionContext, prompt: string, signal: AbortSignal): Promise<string> {
       const sdk = await import("@earendil-works/pi-coding-agent");
@@ -412,7 +505,7 @@ export function createBrowserExtension(options: CodingAgentOptions = {}): (pi: E
       if (registered) modelRuntime.registerProvider(model.provider, registered);
       const flags = new Map<string, string | boolean>();
       for (const flag of BROWSER_FLAGS) { const value = pi.getFlag(flag); if (typeof value === "string" || typeof value === "boolean") flags.set(flag, value); }
-      const extension = createBrowserExtension({ ...options, sites: undefined });
+      const extension = createBrowserExtension({ ...options, sites: undefined, fileTools: false });
       const runtime = await sdk.createAgentSessionRuntime(async ({ cwd, sessionManager, sessionStartEvent }) => {
         const services = await sdk.createAgentSessionServices({
           cwd, agentDir, modelRuntime, extensionFlagValues: flags,
@@ -457,14 +550,14 @@ export function createBrowserExtension(options: CodingAgentOptions = {}): (pi: E
           const rt = await runtimeOf(ctx);
           const out = await useWebsite(params as Record<string, unknown>, port, listing, { signal: signal ?? new AbortController().signal, runChild: (task, childSignal) => {
             const run = () => childSession(ctx, task.prompt, childSignal);
-            return flagOf(pi, "browser-endpoint", env.PI_BROWSER_ENDPOINT) ? inTurn(run) : run();
+            return rt.sharedBrowser ? inTurn(run) : run();
           } });
           return { content: out.content.map((item) => item.type === "text" ? { ...item, text: rt.redact(item.text) } : item), details: undefined, ...(out.isError ? { isError: true } : {}) };
         },
       });
     }
 
-    for (const contract of BROWSER_TOOLS) if (contract.listedWhen === "always") registerTool(pi, contract, runtimeOf);
+    for (const contract of BROWSER_TOOLS) if (contract.listedWhen === "always" || (fileTools && ["downloads", "upload"].includes(contract.listedWhen))) registerTool(pi, contract, runtimeOf);
     registerTool(pi, WEB_TOOLS.find((tool) => tool.name === "web_fetch")!, runtimeOf);
   };
 }

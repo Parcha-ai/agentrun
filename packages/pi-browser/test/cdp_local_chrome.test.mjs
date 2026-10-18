@@ -6,7 +6,7 @@ import test from "node:test";
 import { setDownloadBehavior } from "../dist/providers/browserbase.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
 import { CHROME, commandLine, isRunning, LOCAL_TELEMETRY, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
-import { CHROME_SINGLETON, scratch } from "./fixtures/scratch.mjs";
+import { CHROME_SINGLETON, scratch, scratchShort } from "./fixtures/scratch.mjs";
 
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const pidOf = (ref) => Number(/^local:(\d+):/.exec(ref.id)[1]);
@@ -260,8 +260,7 @@ test("a real Chrome starts with sandbox: false", { skip: NO_CHROME, timeout: 60_
 
 test("Chrome's singleton socket directory, and everything else it writes to its TMPDIR, is in a private directory of the lease's, which release removes: the host's TMPDIR is as it was", { skip: NO_CHROME, timeout: 60_000 }, async (t) => {
   const root = await scratch(t, "cdp-singleton-");
-  const tmp = path.join(root, "tmp");
-  await mkdir(tmp);
+  const tmp = await scratchShort(t, "single-tmp-");
   const outer = process.env.TMPDIR;
   process.env.TMPDIR = tmp;
   t.after(() => { process.env.TMPDIR = outer; }, { timeout: 30_000 });

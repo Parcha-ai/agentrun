@@ -4,19 +4,23 @@ import { configure, defineDoc, defineExtension, defineTool, ToolResultEntry, typ
 import type { JsonValue } from "@earendil-works/chord";
 import type { TSchema, Usage } from "@earendil-works/pi-ai";
 import { BROWSER_TOOL_NAMES, BROWSER_TOOLS, browserSection, WEB_TOOL_NAMES } from "./core/contract.js";
-import { BrowserFailureError, closeDriver, currentRecord, custodyTools, newSessionRecord, notices, NAVIGATION_CAP, profileRefusal, relaunchRefusal, SESSION_REPLACED, sessionSpec, type AttachedSession, type CustodyPort, type DriverFactory, type Overrides, type ToolOutput } from "./core/custody.js";
+import { BrowserFailureError, closeDriver, currentRecord, loadedNoPage, custodyTools, FIXED_SESSION_RELAUNCH, fenced, HANDED_BACK, newSessionRecord, notices, NAVIGATION_CAP, NOTHING_TO_HOLD, profileRefusal, relaunchRefusal, SESSION_REPLACED, sessionSpec, waitingForHuman, type AttachedSession, type CustodyPort, type DriverFactory, type FenceMark, type Overrides, type ToolOutput } from "./core/custody.js";
 import { forModel } from "./durable-result.js";
 import type { Decisions } from "./core/decisions.js";
 import type { EvidenceSink } from "./core/evidence.js";
 import { EffectObserver, effectDecider, observerFailure } from "./core/effects.js";
 import { browserFailure, classifyBrowserError } from "./core/failures.js";
+import { workspaceFiles } from "./core/files.js";
 import type { RepeatGuard } from "./core/guard.js";
+import { drivingGuarded } from "./core/driving-guard.js";
+import { drivingGates, personOn, rearmWhenLeft, type DrivingGate } from "./core/driving.js";
+import type { DrivingGates } from "./live-view/protocol.js";
 import { pageTools, type BrowserToolImpls, type PageDriver, type ToolImpl } from "./core/tools.js";
-import type { BrowserConfig, BrowserProvider, ChildRunner, InventoryRow, ObserverRow, PendingEffect, PriceState, PriceTable, ReconcileReport, ReleaseReason, SessionChange, SessionRecord, SessionRow, SessionsState, SiteInfo, SiteRunPort, ToolUsage } from "./core/host.js";
+import type { BrowserConfig, BrowserProvider, ChildRunner, InventoryRow, ObserverRow, PendingEffect, PriceState, PriceTable, ReconcileReport, ReleaseReason, SessionChange, SessionRecord, SessionRow, SessionsState, SiteInfo, SiteRunPort, ToolUsage, WorkspaceFiles } from "./core/host.js";
 import { useWebsite, useWebsiteContract } from "./core/sites.js";
 import { leaseTag, type LeaseRef } from "./core/lease.js";
 import { createRedactor, redactDeep, scrubPageUrl, type Redact } from "./core/redact.js";
-import { CREATE_DEADLINE_MS, DEFAULT_BROWSER_POLICY, idleTracker, keyedSerializer, providerKeyValues, type IdleTracker, type KeyedSerializer } from "./core/session-control.js";
+import { CREATE_DEADLINE_MS, DEFAULT_BROWSER_POLICY, idleTracker, keyedSerializer, oneAtATime, providerKeyValues, type IdleTracker, type KeyedSerializer } from "./core/session-control.js";
 import { custodyStore, now } from "./store.js";
 import { resolvePrices, sessionCharge } from "./core/usage.js";
 
@@ -33,13 +37,18 @@ export type BrowserExtensionOptions<D extends PageDriver = PageDriver> = {
   /** Implementations by contract name, over the package's own; a contract tool with no implementation is not listed. */
   tools?: Partial<BrowserToolImpls<D>>;
   evidence: EvidenceSink;
-  /** Where `browser_downloads` writes files; absent, the tool is not listed. */
+  /** Where `browser_downloads` writes files and, without `files`, where `browser_upload` reads them; absent, neither is listed. */
   workspace?: (conversationId: ConversationId) => string;
+  /** Resolves `browser_upload` paths; defaults to files under `workspace`. */
+  files?: WorkspaceFiles;
   /** `use_website`'s sites; absent, the tool is not listed. `listing` is the port's `list()`, read once at host setup:
    *  the tool's description renders from it. Each local child runs in a conversation this call owns. */
   sites?: { port: SiteRunPort; listing: readonly SiteInfo[] };
   /** Live view and session status; a throw here never fails a call. */
   onSession?: (row: SessionRow, change: SessionChange) => void | Promise<void>;
+  /** The person/model mutex shared with the live view (`createLiveView`'s `gates`); the default, the package's process-wide `drivingGates`, is the one the live view
+   *  defaults to as well. Pass it here only together with the same registry there. */
+  gates?: DrivingGates;
   /** A session runs without the effect observer its policy asked for; a throw here never fails a call. */
   onObserver?: (row: ObserverRow) => void | Promise<void>;
   prices?: Partial<PriceTable>;
@@ -105,8 +114,11 @@ async function drainReleases(name: string, harness: Harness, context: Context, s
   }
 }
 const open = (record: SessionRecord | null | undefined) => record?.state === "live" || record?.state === "creating";
-// A child gets the browser and web tools only, never use_website, so it cannot start children of its own.
-const CHILD_TOOLS = new Set<string>([...BROWSER_TOOL_NAMES, ...WEB_TOOL_NAMES]);
+const releasable = (record: SessionRecord | null | undefined, reason: ReleaseReason) => open(record) || (record?.state === "held" && reason !== "idle");
+const waiting = (record: SessionRecord) => new BrowserFailureError(waitingForHuman(record.handoff!));
+// A child gets the browser and web tools only: never use_website, so it cannot start children of its own, and never
+// browser_upload or browser_downloads, since its report is all that crosses back (invariant 10) and a site run has no files.
+const CHILD_TOOLS = new Set<string>([...BROWSER_TOOL_NAMES, ...WEB_TOOL_NAMES].filter((name) => name !== "browser_upload" && name !== "browser_downloads"));
 
 type Scope = { cid: ConversationId; plane: string; context: Context; read: DocumentReader; signal: AbortSignal; commit<T>(change: (tx: Tx) => Promise<T>): Promise<T>; keep(slot: string, value: string): Promise<string> };
 type Readers<D extends PageDriver> = { options: BrowserExtensionOptions<D>; redact: Redact; Config: ConversationDocToken<BrowserConfig> };
@@ -117,8 +129,13 @@ type Custody<D extends PageDriver> = Readers<D> & {
   store: ReturnType<typeof custodyStore>;
   meter(spent: SessionRecord["spent"], at: string, final?: boolean): { spent: SessionRecord["spent"]; usage: ToolUsage };
   held: Attachments<D>;
+  fences: Map<string, FenceMark>;
   serial: KeyedSerializer;
+  /** Children whose provider shares one browser run one at a time. */
+  childTurns: <T>(run: () => Promise<T>) => Promise<T>;
   idle: IdleTracker<ConversationId>;
+  /** The poll of each session an idle release kept for a person (#1098), by tag: stopped when the session is released. */
+  leaving: Map<string, () => void>;
   guards: Map<number, RepeatGuard>;
   opened: { harness: Harness; context: Context } | null;
   /** This process's custody: a journal entry written by another one belongs to a resumed run. */
@@ -253,6 +270,10 @@ async function markEnded<D extends PageDriver>(c: Custody<D>, scope: Scope, reco
   return true;
 }
 
+async function refuseHeld<D extends PageDriver>(c: Custody<D>, scope: Scope, record: SessionRecord | null | undefined): Promise<void> {
+  if (record?.state === "held" && !(await markEnded(c, scope, record, await providerOf(c, scope.read, scope.cid, scope.plane, scope.context)))) throw waiting(record);
+}
+
 async function settleCreating<D extends PageDriver>(c: Custody<D>, scope: Scope, record: SessionRecord): Promise<void> {
   const provider = await providerOf(c, scope.read, scope.cid, scope.plane, scope.context);
   try { await c.store.bindByTag(provider, rowOf(scope.cid, record), scope.commit, scope.signal); } catch (error) { throw failure(error, scope); }
@@ -289,7 +310,10 @@ async function acquire<D extends PageDriver>(c: Custody<D>, scope: Scope): Promi
   let note: string | null = null;
   for (let turn = 0; turn < 4; turn += 1) {
     const record = currentRecord(await stateOf(c, scope), scope.plane);
-    if (record?.state === "live") {
+    if (record?.state === "held") {
+      await refuseHeld(c, scope, record);
+      note = notices.ended(record.lastUrl);
+    } else if (record?.state === "live") {
       const driver = await attachLive(c, scope, record);
       if (driver) return { record, driver, note };
       note = notices.ended(record.lastUrl);
@@ -309,8 +333,20 @@ async function attached<D extends PageDriver>(c: Custody<D>, scope: Scope, recor
   if (state.notice !== null) await scope.commit(async (tx) => { (await tx.doc(c.Sessions, scope.cid)).notice = null; });
   const fresh = state.sessions.find((r) => r.tag === record.tag) ?? record;
   const interrupted = await cutOf(c, scope, journalOf(state, scope.plane));
-  const recorded = Boolean((await providerOf(c, scope.read, scope.cid, scope.plane, scope.context)).recordings);
-  return { driver, tag: record.tag, sessionId: fresh.resourceId!, record: fresh, notice: notice || null, interrupted, recorded, effects: c.held.observer(record.tag) ?? null };
+  const provider = await providerOf(c, scope.read, scope.cid, scope.plane, scope.context);
+  const fence = fresh.fence ?? 0;
+  return { driver: fenced(driver, fence, () => c.fences.get(record.tag)), tag: record.tag, sessionId: fresh.resourceId!, record: fresh, notice: notice || null, interrupted, recorded: Boolean(provider.recordings), effects: c.held.observer(record.tag) ?? null, fence, downloads: provider.downloads ?? null, replaced: replacedOf(state, scope.plane, fresh) };
+}
+
+/** The session the current one replaced after a release the model did not ask for, while the current one has loaded no
+ *  page: the plane's last record before it that went live (a launch that failed in between never replaces it), released
+ *  (or being released) for idle or close. */
+function replacedOf(state: SessionsState, plane: string, current: SessionRecord): AttachedSession<PageDriver>["replaced"] {
+  if (!loadedNoPage(current)) return null;
+  const on = state.sessions.filter((r) => r.plane === plane);
+  const before = on.slice(0, on.findIndex((r) => r.tag === current.tag)).reverse().find((r) => r.releaseReason !== "create_failed");
+  if (!before || (before.state !== "releasing" && before.state !== "released")) return null;
+  return before.releaseReason === "idle" || before.releaseReason === "close" ? { reason: before.releaseReason, at: before.endedAt, lastUrl: before.lastUrl } : null;
 }
 
 async function releaseRecord<D extends PageDriver>(c: Custody<D>, scope: Scope, record: SessionRecord, reason: ReleaseReason): Promise<void> {
@@ -360,6 +396,9 @@ async function relaunchOn<D extends PageDriver>(c: Custody<D>, scope: Scope, api
   const config = await configOf(c, scope.read, scope.cid, scope.context);
   const refusal = relaunchRefusal(config.policy, overrides);
   if (refusal) throw new BrowserFailureError(refusal);
+  await refuseHeld(c, scope, currentRecord(await stateOf(c, scope), scope.plane));
+  // A session the host assigned is the only one: refused before anything is released.
+  if ((await providerOf(c, scope.read, scope.cid, scope.plane, scope.context)).caps.fixedSession) throw new BrowserFailureError(FIXED_SESSION_RELAUNCH);
   // The relaunch's session is chosen in a memo before its create commits: a rerun runs on it or says
   // session_replaced, never a second launch; a memo with no record yet is an uncommitted create and goes ahead.
   const find = async (tag: string | undefined) => (await stateOf(c, scope)).sessions.find((r) => r.tag === tag);
@@ -393,6 +432,7 @@ function portFor<D extends PageDriver>(c: Custody<D>, api: ToolExecutionApi, con
       const ran = await api.memo<string>(memo("ran"), context);
       if (ran !== undefined) {
         const record = (await stateOf(c, scope)).sessions.find((r) => r.tag === ran);
+        await refuseHeld(c, scope, record);
         const driver = record?.state === "live" ? await attachLive(c, scope, record) : null;
         if (!record || !driver) throw new BrowserFailureError(SESSION_REPLACED);
         return attached(c, scope, record, driver, null);
@@ -402,9 +442,11 @@ function portFor<D extends PageDriver>(c: Custody<D>, api: ToolExecutionApi, con
       return attached(c, scope, record, driver, note);
     }),
     relaunch: (overrides) => c.serial.run(key, () => relaunchOn(c, scope, api, memo("relaunch"), overrides)),
+    // A held session is still the attached one (a person's): the live view's gate checks a release against it.
+    current: async () => { const record = currentRecord(await stateOf(c, scope), scope.plane); return record && (open(record) || record.state === "held") ? record.tag : null; },
     release: () => c.serial.run(key, async () => {
       const record = currentRecord(await stateOf(c, scope), scope.plane);
-      if (!record || !open(record)) {
+      if (!record || !releasable(record, "tool")) {
         // Only a release under way or done says so: a lost record is custody giving up, and its browser may still run.
         const ended = (record?.state === "releasing" || record?.state === "released") && record.releaseReason ? { ended: { reason: record.releaseReason, at: record.endedAt } } : {};
         return { released: record?.state === "releasing", sessionId: record?.resourceId ?? null, ...ended };
@@ -462,9 +504,29 @@ function portFor<D extends PageDriver>(c: Custody<D>, api: ToolExecutionApi, con
       const record = currentRecord(await stateOf(c, scope), scope.plane);
       if (record) await c.held.detachDriver(record.tag);
     }),
+    hold: (requestId) => c.serial.run(key, async () => {
+      const record = currentRecord(await stateOf(c, scope), scope.plane);
+      if (record?.state === "held" && record.handoff !== requestId) throw waiting(record);
+      if (record?.state !== "live" && record?.state !== "held") throw new BrowserFailureError(NOTHING_TO_HOLD);
+      if (record.state === "live") {
+        await scope.commit((tx) => c.store.move(tx, rowOf(scope.cid, record), { state: "held", handoff: requestId, at: now() }));
+        c.fences.set(record.tag, { fence: (record.fence ?? 0) + 1, failure: waitingForHuman(requestId) });
+        await c.held.detach(record.tag);
+      }
+      return { tag: record.tag, sessionId: record.resourceId! };
+    }),
+    resume: (notice) => c.serial.run(key, async () => {
+      const record = currentRecord(await stateOf(c, scope), scope.plane);
+      if (record?.state !== "held") return;
+      await scope.commit(async (tx) => {
+        await c.store.move(tx, rowOf(scope.cid, record), { state: "live", at: now() });
+        if (notice) c.store.addNotice(await tx.doc(c.Sessions, scope.cid), notice);
+      });
+      c.fences.set(record.tag, { fence: (record.fence ?? 0) + 1, failure: HANDED_BACK });
+    }),
     ended: async () => {
       const record = currentRecord(await stateOf(c, scope), scope.plane);
-      if (record?.state !== "live") return false;
+      if (record?.state !== "live" && record?.state !== "held") return false;
       return markEnded(c, scope, record, await providerOf(c, scope.read, scope.cid, scope.plane, scope.context));
     },
   };
@@ -484,11 +546,17 @@ async function releaseIdle<D extends PageDriver>(c: Custody<D>, cid: Conversatio
  *  session tells it, even when the call that opened the replacement failed or died. */
 async function releasePlane<D extends PageDriver>(c: Custody<D>, conversation: Pick<Conversation, "id" | "commit">, reason: ReleaseReason, context: Context, still: () => boolean = () => true, idleS = 0): Promise<void> {
   const key = `${conversation.id}:${PLANE}`;
+  const kept: { gate: DrivingGate | null; tag: string } = { gate: null, tag: "" };
   const released = await c.serial.run(key, async () => {
     const tags = await conversation.commit(async (tx) => {
       const state = await tx.doc(c.Sessions, conversation.id);
       const record = still() ? currentRecord(state, PLANE) : null;
-      if (!record || !open(record)) return [];
+      if (!record || !releasable(record, reason)) return [];
+      // A person driving or watching the session through the live view keeps it from an idle release (#1098); it is
+      // released one idle window after they leave.
+      kept.gate = reason === "idle" ? personOn(c.options.gates ?? drivingGates, record.tag) : null;
+      kept.tag = record.tag;
+      if (kept.gate) return [];
       await c.store.requestRelease(tx, rowOf(conversation.id, record), reason, now());
       if (reason === "idle" || reason === "close") c.store.addNotice(state, notices.released(reason, record.lastUrl, idleS));
       return [record.tag];
@@ -500,6 +568,11 @@ async function releasePlane<D extends PageDriver>(c: Custody<D>, conversation: P
     c.idle.forget(conversation.id);
     c.guards.delete(conversation.id);
   } else if (released) c.idle.cancel(conversation.id);
+  else if (kept.gate) {
+    const tag = kept.tag;
+    c.leaving.get(tag)?.();
+    c.leaving.set(tag, rearmWhenLeft(kept.gate, () => c.idle.keys().includes(conversation.id), () => { c.leaving.delete(tag); c.idle.activity(conversation.id, 0); }, idleS * 1000));
+  }
 }
 
 async function chargeCall<D extends PageDriver>(c: Custody<D>, api: ToolExecutionApi, context: Context): Promise<ToolUsage | null> {
@@ -521,7 +594,7 @@ const withSessionTime = (own: ToolOutput["usage"], charged: ToolUsage | null): T
 
 function toolsFor<D extends PageDriver>(c: Custody<D>, impls: Partial<Record<string, ToolImpl<D>>>): ToolRegistration[] {
   return BROWSER_TOOLS
-    .filter((contract) => impls[contract.name] && (contract.listedWhen !== "downloads" || c.options.workspace))
+    .filter((contract) => impls[contract.name] && (contract.listedWhen !== "downloads" || c.options.workspace) && (contract.listedWhen !== "upload" || c.options.files || c.options.workspace))
     .map((contract) => defineTool({
       name: contract.name,
       description: contract.description,
@@ -532,7 +605,9 @@ function toolsFor<D extends PageDriver>(c: Custody<D>, impls: Partial<Record<str
         const config = await api.snapshot(c.Config, api.conversationId, context);
         c.idle.activity(api.conversationId, +1, (config?.policy.idleReleaseS ?? 0) * 1000);
         try {
-          const call = { callId: api.callId, conversationId: api.conversationId, signal: context.abortSignal, label: config?.label ?? "", redact: c.redact, evidence: c.options.evidence, classifyPage: c.options.decisions?.classifyPage };
+          const workspace = c.options.workspace?.(api.conversationId);
+          const files = c.options.files ?? (workspace === undefined ? undefined : workspaceFiles(workspace));
+          const call = { callId: api.callId, conversationId: api.conversationId, signal: context.abortSignal, label: config?.label ?? "", redact: c.redact, evidence: c.options.evidence, classifyPage: c.options.decisions?.classifyPage, workspace, files };
           // Inside an async function, so a host tool that throws before it returns a promise is caught too.
           const out = await (async () => impls[contract.name]!(args, portFor(c, api, context), call))().catch((error): ToolOutput => {
             // A throw would reach pi's diagnostic unscrubbed: every failure comes back as the typed envelope, redacted.
@@ -560,7 +635,8 @@ function sectionFor<D extends PageDriver>(c: Custody<D>, names: ReadonlySet<stri
     async render(input, context) {
       if (!input.agent.tools.some((tool) => names.has(tool.name))) return undefined;
       const config = await input.read.snapshot(c.Config, input.conversationId, context);
-      return [browserSection({ idleReleaseS: config?.policy.idleReleaseS ?? UNCONFIGURED.policy.idleReleaseS }), c.options.section?.addendum].filter(Boolean).join("\n\n");
+      const offered = (tool: string) => input.agent.tools.some((t) => t.name === tool && names.has(tool));
+      return [browserSection({ idleReleaseS: config?.policy.idleReleaseS ?? UNCONFIGURED.policy.idleReleaseS }, { downloads: offered("browser_downloads"), upload: offered("browser_upload") }), c.options.section?.addendum].filter(Boolean).join("\n\n");
     },
   };
 }
@@ -584,23 +660,30 @@ function childConversation<D extends PageDriver>(c: Custody<D>, api: ToolExecuti
     }, context);
     const child = await api.conversation(id, context);
     if (!child) throw new Error("the child conversation is gone");
-    try {
-      const settled = await (await child.submit({ type: "input", content: task.prompt, requestId: task.requestId }, context)).wait(context);
-      const report = await api.commit(async (tx) => {
-        for (const entry of (await tx.scanEntries({ conversationId: id, order: "descending" }, 50)).items) {
-          for (const message of [...(entry.model ?? [])].reverse()) {
-            if (message.role !== "assistant") continue;
-            const text = message.content.filter((part) => part.type === "text").map((part) => part.text).join("").trim();
-            if (text) return text;
+    // Children on a provider whose sessions share one browser would drive the same pages, so there they take turns. One
+    // whose provider cannot be looked up waits its turn too: its own browser calls ask the factory again.
+    const shared = await providerOf(c, api, id, PLANE, context).then((provider) => provider.caps.sharedBrowser === true, () => true);
+    // The turn covers the report and the release too: on a shared browser the next child attaches only once this one has let go.
+    const run = async (): Promise<string> => {
+      try {
+        const settled = await (await child.submit({ type: "input", content: task.prompt, requestId: task.requestId }, context)).wait(context);
+        const report = await api.commit(async (tx) => {
+          for (const entry of (await tx.scanEntries({ conversationId: id, order: "descending" }, 50)).items) {
+            for (const message of [...(entry.model ?? [])].reverse()) {
+              if (message.role !== "assistant") continue;
+              const text = message.content.filter((part) => part.type === "text").map((part) => part.text).join("").trim();
+              if (text) return text;
+            }
           }
-        }
-        return "";
-      }, context);
-      if (settled.status !== "done" || !report) throw new Error("the child finished without a report");
-      return report;
-    } finally {
-      await releasePlane(c, { id, commit: (change, ctx) => api.commit(change, ctx) }, "close", context).catch(() => undefined);
-    }
+          return "";
+        }, context);
+        if (settled.status !== "done" || !report) throw new Error("the child finished without a report");
+        return report;
+      } finally {
+        await releasePlane(c, { id, commit: (change, ctx) => api.commit(change, ctx) }, "close", context).catch(() => undefined);
+      }
+    };
+    return await (shared ? c.childTurns(run) : run());
   };
 }
 
@@ -636,17 +719,24 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     const charged = sessionCharge(spent, at, prices, priceState, final);
     return { spent: { ...charged.spent, state: charged.usage.state }, usage: charged.usage };
   };
+  const leaving = new Map<string, () => void>();
   const store = custodyStore({
     name, Config, Sessions, meter, scrubbed, createDeadlineMs: options.createDeadlineMs ?? CREATE_DEADLINE_MS,
     providerOf: (read, cid, plane, context) => providerOf(readers, read, cid, plane, context),
-    emit: (cid, label, record, change) => emit(readers, cid, label, record, change),
+    emit: (cid, label, record, change) => {
+      // A released session's poll ends with it, whatever released it.
+      if (change === "released") { leaving.get(record.tag)?.(); leaving.delete(record.tag); }
+      return emit(readers, cid, label, record, change);
+    },
   });
 
   const c: Custody<D> = {
-    ...readers, name, Sessions, Children, store, meter, held: new Attachments<D>(), serial: keyedSerializer(), guards: new Map(), opened: null, incarnation: randomUUID(),
+    ...readers, name, Sessions, Children, store, meter, held: new Attachments<D>(), fences: new Map(), leaving, serial: keyedSerializer(), childTurns: oneAtATime(), guards: new Map(), opened: null, incarnation: randomUUID(),
     idle: idleTracker<ConversationId>({ idleMs: DEFAULT_BROWSER_POLICY.idleReleaseS * 1000, onIdle: (cid, fired, idleMs) => void releaseIdle(c, cid, fired, idleMs).catch(() => undefined) }),
   };
-  const own: Partial<BrowserToolImpls<D>> = { ...custodyTools, ...pageTools({ guards: c.guards }), ...options.tools };
+  // Every browser tool is a model call on its session's driving gate: refused while a person drives the live view, and the viewer's input is held while it runs. The host's own
+  // implementations (`options.tools`) are merged in first, so they are guarded too: one that calls `port.session()` could otherwise act while a person drives.
+  const own = drivingGuarded({ ...custodyTools, ...pageTools({ guards: c.guards }), ...options.tools } as Partial<Record<string, ToolImpl<D>>>, options.gates) as Partial<BrowserToolImpls<D>>;
   // pi checks a call's arguments against the tool's schema before execute, so each implementation receives its own shape.
   const tools = toolsFor(c, own as Partial<Record<string, ToolImpl<D>>>);
   const names = new Set(tools.map((tool) => tool.name));
@@ -664,6 +754,9 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     drain: (harness, context, signal) => drainReleases(name, harness, context, signal),
     async close() {
       c.idle.clear();
+      c.fences.clear();
+      for (const stop of c.leaving.values()) stop();
+      c.leaving.clear();
       // A session whose driver was let go and not yet replaced still has its observer attached: close both kinds.
       await Promise.all(c.held.tags().map((tag) => c.held.detach(tag)));
     },

@@ -59,6 +59,9 @@ export type Next = { action: "drive_page" | "other_source"; note: string };
 export type WebFailure = BrowserFailure & { wall?: WallClass; next?: Next };
 export type WebOutcome = { text: string; isError: boolean; details: Record<string, unknown>; usd: number };
 
+/** What a call the run cancelled answers, wherever it was cancelled. */
+const ABORTED: WebFailure = { ok: false, code: "aborted", retryable: false, effect: "none", message: "The call was cancelled by the run." };
+
 export const WALLS: Record<WallClass, { code: "blocked" | "not_content"; what: string; next: Next }> = {
   captcha_or_bot_check: { code: "blocked", what: "a CAPTCHA or bot check", next: { action: "drive_page", note: "Relaunch the browser Verified with browser_relaunch({verified:true}), then drive the page with run and snapshot." } },
   region_or_geo_block: { code: "blocked", what: "a region block", next: { action: "drive_page", note: "Relaunch the browser from the page's own country with browser_relaunch({geolocation}), then drive the page with run and snapshot." } },
@@ -107,7 +110,7 @@ export function createWebTools(options: WebToolsOptions): WebTools {
   const failureOf = (error: unknown, tool: string, signal?: AbortSignal): WebFailure => {
     const base = classifyBrowserError(error, false, { aborted: signal?.aborted === true });
     const status = transportFactOf(error).status;
-    if (base.code === "aborted") return { ...base, message: "The call was cancelled by the run." };
+    if (base.code === "aborted") return { ...base, message: ABORTED.message };
     if (status === 429) return { ...base, code: "rate_limited", retryable: true, message: `The ${tool} provider is rate limiting this run. Wait a moment and try again, or use another source.` };
     if (status === 401 || status === 403) return { ...base, code: "auth", retryable: false, message: `The ${tool} provider refused the credential (HTTP ${status}). Web reads are unavailable for this run; use another tool.` };
     if (status === 400) return { ...base, code: "command_failed", retryable: false, message: `The ${tool} provider could not convert this page (HTTP 400). Try another source.` };
@@ -248,7 +251,7 @@ export function createWebTools(options: WebToolsOptions): WebTools {
       if (failure.code === "aborted") break;
     }
 
-    if (signal?.aborted || primary?.code === "aborted") return { ...fail({ ok: false, code: "aborted", retryable: false, effect: "none", message: "The call was cancelled by the run." }), usd };
+    if (signal?.aborted || primary?.code === "aborted") return { ...fail(ABORTED), usd };
     const base: WebFailure = primary ?? { ok: false, code: "refused", retryable: false, effect: "none", message: "No source can fetch pages in this run." };
     const others = tried.filter((name) => name !== primaryVia);
     const final: WebFailure = { ...base, message: `${base.message}${others.length ? ` Also tried: ${others.join(", ")}.` : ""}${base.next ? "" : " Drive the page with run and snapshot in a live session, or try a different URL."}` };
@@ -280,7 +283,7 @@ export function createWebTools(options: WebToolsOptions): WebTools {
   // Identical calls in flight share one provider call, so parallel copies of a failing fetch cannot all pass the repeat
   // guard. A cancelled follower answers aborted alone; a cancelled leader leaves its followers to call themselves.
   const inflight = new Map<string, Promise<WebOutcome>>();
-  const cancelled: WebOutcome = { text: JSON.stringify({ ok: false, code: "aborted", retryable: false, effect: "none", message: "The call was cancelled by the run." }), isError: true, details: { code: "aborted" }, usd: 0 };
+  const cancelled = fail(ABORTED);
   const coalesce = (key: string, signal: AbortSignal | undefined, run: () => Promise<WebOutcome>): Promise<WebOutcome> => {
     const running = inflight.get(key);
     if (!running) {

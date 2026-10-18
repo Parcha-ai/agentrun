@@ -110,6 +110,8 @@ Four runnable demos live in `examples/` in the repository. They are not in the n
 - `/providers/browserbase`, `/providers/kernel`, `/providers/cdp`: where browsers come from. Browserbase through its SDK,
   with the credential-proxy dial and the connect-URL rewrite. Kernel through its REST API on the package's own HTTP agent.
   Any CDP endpoint, or a local Chrome the provider starts and kills by exact pid.
+- `/live-view`: a person sees and drives the local Chrome (the cdp provider) from your page, with nothing leaving the machine but the model. See
+  [A live view of your own Chrome](#a-live-view-of-your-own-chrome).
 - `/testing`: the shared test fake. A provider backend with a ledger of every call, a credential broker, an HTTP face so the
   ledger outlives a killed child process, a driver over in-memory pages, and sentinel credentials. A host's composition
   test and this package's crash matrix use the same one.
@@ -119,7 +121,7 @@ Four runnable demos live in `examples/` in the repository. They are not in the n
 | Tool | Does | Replay after a crash |
 |---|---|---|
 | `snapshot` | The page's accessibility tree with bracketed ids: a working view for the next `run`. Never filed, so it is not citable evidence. | Reruns. |
-| `screenshot`, `browser_read` | Read the page. Each read is filed as evidence with its URL, SHA-256 and the offset into the session's recording. A screenshot is held to 2,000 px on its long edge. | Reruns. A read whose session was lost answers `session_replaced`. |
+| `screenshot`, `browser_read` | Read the page. Each read is filed as evidence with its URL, SHA-256 and the offset into the session's recording. A screenshot is held to 2,000 px on its long edge. A `screenshot` can take a `clip` (CSS pixels from the viewport's top-left corner), an `id` from the latest snapshot or a CSS `selector` (scrolled into view first) to capture one region (a blank `id` or `selector`, or a clip of zero width and height, counts as not given); an empty or off-screen region, or an element that matches nothing or more than one, is refused with the typed envelope before any capture. Its `details.media` gives the image's path, type, size and the region. | Reruns. A read whose session was lost answers `session_replaced`. |
 | `browser_downloads` | Copy what the session downloaded into the host's workspace, with a manifest of SHA-256 sums. Listed only when the host gives a `workspace` and the provider can list downloads. | Reruns; files already there are skipped. |
 | `run` | Act: code, or a batch of ref actions. | Never reruns. The model is told the call may have taken effect and where the page was, and the identical code is refused once (`effect_unknown`). |
 | `browser_release`, `browser_relaunch` | End the session; end it and open another. | Idempotent. A create carries a tag, so a rerun finds its session. |
@@ -295,6 +297,9 @@ A session is captured from the moment it is created or reattached (so after a ki
   is not recorded. The pause lasts until the page navigates and the check is clean; the gap says why in `data.detail` (`field`, `typed`,
   `too_deep`, `unreadable_frame` or `host`). What no script in the page can see (a closed shadow root, a value set by script with no event) is the
   host's to pause with `frames.pause(session)` (lifted with `frames.resume(session)`).
+  A host that lets a person drive a session (the live view) passes `hold: (ref) => boolean`: while it answers `true` for a session no frame is stored and one gap
+  (`credential_on_page`, detail `host`) marks the span, not one per skipped frame; when it answers `false` frames resume. A hold that throws counts as `true`.
+  The screencast sends a frame only when the page repaints, and a person's login has often already left the page, so when a hold lifts the recorder captures one frame of the page as it is then (a one-off screenshot of the followed session, judged like any other: a field still holding a credential makes it the credential gap, not a frame); a capture that fails costs that frame only. No new option. A withheld frame never counts as the last frame kept, so a `session_released` gap inside a hold starts at the last frame stored before it.
 - A live-view URL is never recorded or asked for: the recorder reads only the session's DevTools socket and never writes its address.
 - Lines reach the sink one at a time, in order. A sink that throws, rejects or does not answer within `sinkTimeoutMs` (5 s) cannot fail a browser
   call: that line is dropped and counted in `frames.stats()`, and a frame that was not saved never becomes the point a later gap starts from.
@@ -318,6 +323,43 @@ A session is captured from the moment it is created or reattached (so after a ki
   The step starts `ffmpeg` (`ffmpeg` option: a path; default the one on the PATH) in a private temporary directory with `PATH`, `LANG`, `LC_ALL` and `HOME`
   only, with fixed arguments and no URL, a timeout (`timeoutMs`, 120 s) and an `AbortSignal`; a failure is a `TrackExportError` (`ffmpeg_missing`,
   `ffmpeg_failed`, `ffmpeg_timeout`, `aborted`) and writes nothing.
+
+### A live view of your own Chrome
+
+Browserbase and Kernel give a host a live-view URL for their browsers. `@parcha/pi-browser/live-view` gives the same for the cdp provider's own Chrome: a canvas
+showing the session's active page, and the person's mouse, keys, paste, address bar, back and reload sent to it.
+
+```ts
+import { createLiveView, liveViewProvider } from "@parcha/pi-browser/live-view";
+import { cdpProvider } from "@parcha/pi-browser/providers/cdp";
+
+const liveView = createLiveView({
+  hostOrigin: "https://app.example",              // the one origin that may frame the viewer (null: none)
+  baseUrl: "https://app.example/live/run-123",    // where you mount it; omit it and the live view serves itself on 127.0.0.1
+});
+server.on("request", (req, res) => { if (!liveView.handle(req, res)) next(req, res); });
+server.on("upgrade", (req, socket, head) => { if (!liveView.upgrade(req, socket, head)) socket.destroy(); });
+
+const provider = liveViewProvider(cdpProvider({ chrome }), liveView);   // wrap it as the recorder's `watch` wraps a provider
+createBrowserExtension({ provider: () => provider, onSession: (row) => { /* row.liveView.fullscreen is the viewer's URL */ }, ... });
+```
+
+The URL is a full-control credential and goes to `onSession` only (never a result, a record or the model): `https://.../live/run-123/v/<id>#t=<token>`. The
+token is 256 random bits in the fragment, so it reaches no server log, proxy or Referer; the viewer's script sends it as the WebSocket's first message and
+nothing is accepted before it. The upgrade's `Origin` must be the viewer's own origin (behind a proxy, pass the upgrade through with `Origin` intact).
+There is one authenticated viewer per session (a second is refused `viewer_in_use`); the token, the stream and the viewer's socket end at the session's release.
+The page is served with `Referrer-Policy: no-referrer`, `default-src 'self'` and `frame-ancestors` set to `hostOrigin`. The viewer may send a page only to
+http(s) addresses. Frames are held one at a time and acknowledged after they were sent; none is written anywhere.
+
+A person and the model never act on the browser together. Every browser tool is a model call on its session's gate (`drivingGates`, shared by default between the
+live view and the toolset, so you pass nothing): while a person has driven within the last 3 s the call is refused before it does anything (`refused`,
+`person_driving: ...`, retryable), and while a call runs the viewer's input is discarded with a notice, not queued. To use your own registry, pass the same one to both
+sides: `const gates = createDrivingGates({ idleMs: 5_000 }); createLiveView({ hostOrigin, gates }); createBrowserExtension({ ..., gates });`.
+
+`drivingGates(tag).viewing()` is true for as long as an authenticated viewer is connected to that session, even when the person sits still longer than the 3 s driving window (a person mid-sign-in): the host's own custody reads it before it releases a session on its own. A custom registry's gates implement `viewing()` and `setViewing(on)`; the live view sets it on a viewer's hello and clears it when that viewer leaves or the session is released.
+
+v1 limits: JS dialogs show with accept and dismiss; a file chooser and downloads are not supported; use it on practice sites until the credential guards
+of #1000 land (a person's real password typed into a page the model's own code can read).
 
 ## How it compares
 

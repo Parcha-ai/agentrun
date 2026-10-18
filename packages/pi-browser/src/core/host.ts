@@ -50,7 +50,12 @@ export type SessionSpec = {
 
 /** The driver may be handed one URL while the process dials another (a credential proxy, a broker relay). Held in
  *  memory only. */
-export type AttachTarget = { sdkCdpUrl: string; dial?: { url: string; headers?: Record<string, string> }; extensionId?: string };
+export type AttachTarget = {
+  sdkCdpUrl: string;
+  /** `expiresAt` (epoch ms): the dial's credential ends then, so a socket opened on it is closed at that moment. */
+  dial?: { url: string; headers?: Record<string, string>; expiresAt?: number };
+  extensionId?: string;
+};
 
 export type ProviderCaps = {
   timeoutModel: "wall-clock" | "inactivity";
@@ -59,8 +64,12 @@ export type ProviderCaps = {
   releaseIsAsync: boolean;
   profiles: boolean;
   extension: "uploaded-per-launch" | "preinstalled" | "loaded-locally";
+  /** Every session attaches to the same browser (an endpoint the host named), so two at once would drive the same pages. */
+  sharedBrowser?: boolean;
   /** The session settings this provider applies; a setting left out is applied. */
   settings?: Partial<SessionSettingsSupport>;
+  /** The host assigned the run this one session: there is no other to relaunch onto. */
+  fixedSession?: boolean;
 };
 
 export type SessionSettingsSupport = { proxies: boolean; verified: boolean; geolocation: boolean; region: boolean; context: boolean };
@@ -94,6 +103,11 @@ export interface BrowserProvider {
   search?(request: SearchRequest, signal?: AbortSignal): Promise<SearchResult>;
 }
 
+/** The host owns the file boundary for `browser_upload`: a path the model names is resolved here or refused. */
+export interface WorkspaceFiles {
+  resolve(rel: string): Promise<{ bytes: Uint8Array; name: string; mime: string } | { refused: string }>;
+}
+
 /** A site use_website can open: configuration, never model input. */
 export type SiteInfo = { site: string; title: string; description: string };
 /** Runs one child agent that has the browser tools and no use_website, and answers its final text. The adapter supplies
@@ -122,6 +136,10 @@ export type SessionRecord = {
   navigation: Array<{ at: string; url: string }>;
   lastUrl: string | null;
   pendingEffect: PendingEffect | null;
+  /** Moves on each hand-over to a person and back; a driver attached under an older fence cannot act. Absent: 0. */
+  fence?: number;
+  /** While held: the request id of the handoff holding it. */
+  handoff?: string;
   spent: { seconds: number; usd: number; chargedThrough: string; /** Set by the release's charge: nothing is charged after it. */ final?: true;
     /** An unpriced or invalid price records seconds and no dollars, shown as unknown, never $0. */
     state?: PriceState;
@@ -138,7 +156,7 @@ export type SentEffect = { requestId: string; method: string; origin: string; pa
  *  `after`: the conversation's newest entry when it was journaled, where a resumed run's look for its answer starts.
  *  `finished`: the action returned. `told` and `refused`: how far a cut has been answered. */
 export type PendingEffect = {
-  callId: string; codeSha: string; url: string | null; at: string; observed?: boolean; sent?: SentEffect[];
+  callId: string; tool?: "run" | "browser_upload"; codeSha: string; url: string | null; at: string; observed?: boolean; sent?: SentEffect[];
   watched?: boolean; incarnation?: string; after?: number; finished?: boolean; told?: boolean; refused?: boolean;
 };
 /** A cut action's facts, beside the notice in the call's `details.pendingEffect`. `sent` is null when no observer ran, so

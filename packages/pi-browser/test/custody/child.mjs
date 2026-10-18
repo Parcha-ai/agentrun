@@ -62,6 +62,11 @@ const rows = [];
 const observerRows = [];
 
 const tools = {
+  snapshot: async (_args, port) => {
+    const held = await port.hold("handoff-crash");
+    await cut("held");
+    return { content: [{ type: "text", text: JSON.stringify({ ok: true, session: held.sessionId }) }] };
+  },
   browser_read: async (_args, port) => {
     const session = await port.session();
     const page = await session.driver.page();
