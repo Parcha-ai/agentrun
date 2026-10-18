@@ -2,7 +2,7 @@
 // still replay, and a carry back that a busy home put off.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -123,8 +123,14 @@ async function adoptedStandIn(t) {
   const standIn = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
   t.after(() => standIn.kill("SIGKILL"));
   const holder = { ...released.holder, pid: standIn.pid, serve: "http://127.0.0.1:9" };
-  await writeFile(file, JSON.stringify({ ...released, status: "running", heartbeatAt: new Date().toISOString(), holder }));
-  return { data, runId, standIn, release: () => writeFile(file, JSON.stringify({ ...released, holder })) };
+  // Whole, through a temporary file and a rename, as a run writes it: the server reads run.json every 500 ms, and a
+  // half-written record would read as no record at all.
+  const write = async (record) => {
+    await writeFile(`${file}.tmp`, JSON.stringify(record));
+    await rename(`${file}.tmp`, file);
+  };
+  await write({ ...released, status: "running", heartbeatAt: new Date().toISOString(), holder });
+  return { data, runId, standIn, release: () => write({ ...released, holder }) };
 }
 
 /** The next server, once it has adopted the run: a read of the run answers only after the server has taken it up. */
