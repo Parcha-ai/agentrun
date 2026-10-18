@@ -120,6 +120,7 @@ export function scanPlaced(dir: string, secrets: readonly Secret[]): void {
   for (const file of files) {
     if (!existsSync(file)) continue;
     const bytes = readFileSync(file);
-    for (const secret of secrets) if (bytes.includes(secret.value)) throw new Error(`a secret was in ${relative(dir, file)} while the run was followed, and the recording is refused: ${secret.key}`);
+    // Raw, and as a JSON string holds it (escaped), the two forms the redaction takes out.
+    for (const secret of secrets) if (bytes.includes(secret.value) || bytes.includes(JSON.stringify(secret.value).slice(1, -1))) throw new Error(`a secret was in ${relative(dir, file)} while the run was followed, and the recording is refused: ${secret.key}`);
   }
 }

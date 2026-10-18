@@ -48,8 +48,9 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
   const seen = new Map<unknown, number>();
   const eligible = new Map<unknown, number>();
   const done = new Set<number>();
-  let parkedCount = 0;
+  // A run kill is taken once, at the first eligible matching crossing at or after its nth: one a tool kill took at the same crossing is not lost, it lands at the next.
   let fired = false;
+  let parkedCount = 0;
   let killAsked = false;
   const cross = ((point: string, options: { cut?: boolean; info?: Info } = {}) => {
     // A crossing taken while any tool call is between its dispatch and its kept answer is never a run kill point, whichever seam it is at: a kill there would leave that call unknown.
