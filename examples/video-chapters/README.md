@@ -33,6 +33,20 @@ npm run demo:video-chapters -- --serve         # a page to drop a film on, the r
 
 A `--live` run of the whole film (47 minutes, 47 windows) costs about $0.40 at the providers' list prices. `SETUP-PROMPT.md` sets all of this up for you.
 
+## Runtime dependencies
+
+Until the reference host is published as a package that carries them, the example needs these beside it:
+
+| Package | For |
+|---|---|
+| the reference host (`examples/reference`, to be `@parcha/agentrun-reference`) | `demo()`, the run's place, code mode |
+| `@parcha/pi-vision` | `vision.see`, the look skill, the eyes on pi-ai's catalog, the scripted eyes |
+| `@earendil-works/pi-ai` | the live lead and eyes, and the scripted lead's messages |
+| `@earendil-works/pi-durable` | the model reference type the live parts name |
+| `@earendil-works/pi-codemode` | the `code` tool's sandbox (through the reference host) |
+| `@parcha/agentrun-dsl` | the workflow's types |
+| the viewer (`apps/viewer`) | `--serve` builds it from the checkout for the page it serves |
+
 ## How it is built
 
 - `job.ts`: the workflow as data: one `agent` with the `code` tool, whose instructions are the task and pi-vision's look skill, then a `call` to `cite`; its default input (NASA's film whole, what `--live` reads) and the clip a run on fakes reads.
