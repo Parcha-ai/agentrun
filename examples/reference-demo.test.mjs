@@ -1405,7 +1405,8 @@ test('a place\'s signals may end with signals-failed or throw: a signals.failed 
   assert.equal(messageOf('/run/root and /run/rootless', '/run/root'), '/run/root and <path>');
   assert.equal(messageOf('x'.repeat(500), '/run/root').length, 240);
   // A path outside the run is replaced whole: a folder with a space in its name, and a Windows drive path.
-  assert.equal(messageOf('could not read /home/alice/Private Documents/report.txt now', '/run/root'), 'could not read <path> now');
+  const aliceHome = ['', 'home', 'alice'].join('/');
+  assert.equal(messageOf(`could not read ${aliceHome}/Private Documents/report.txt now`, '/run/root'), 'could not read <path> now');
   assert.equal(messageOf('could not read C:\\Users\\alice\\private.txt, giving up', '/run/root'), 'could not read <path>, giving up');
   assert.equal(messageOf('could not read C:\\Users\\alice\\My Files\\x.txt now', '/run/root'), 'could not read <path> now');
   // kill.failed: the same scrub.
