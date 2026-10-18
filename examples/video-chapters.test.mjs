@@ -74,6 +74,12 @@ test('beat 1: on fakes, with no network, the agent\'s own script cuts the clip i
     assert.ok(keyframe && existsSync(join(record, 'blobs', `${keyframe.blob}.jpg`)), `${row.label} cites its keyframe, kept as a blob`);
     const chapter = kept.video_chapters.chapters[at];
     assert.equal(keyframe.fragment, `#t=${chapter.at_s}`);
+    assert.ok(row.cites.some((cite) => cite !== keyframe && cite.look === keyframe.look), 'the keyframe cites the look whose window holds it');
+    for (const cite of row.cites.filter((each) => each !== keyframe)) {
+      assert.ok(cite.blob && existsSync(join(record, 'blobs', `${cite.blob}.jpg`)), 'each window\'s look carries a frame from its middle, a blob of the recording');
+      assert.equal(cite.note, cite.fragment.replace('#t=', '').replace(',', ' to ') + ' s', 'labelled with the window\'s own numbers');
+      assert.equal(cite.file, undefined, 'no workspace path in the recording');
+    }
     assert.ok(chapter.at_s >= chapter.start_s && chapter.at_s < chapter.end_s, 'the keyframe is taken inside its chapter');
     pictures.add(keyframe.blob);
   }

@@ -1,5 +1,7 @@
 // The job's `cite` tool: every chapter's receipts resolved to the looks that back them, each chapter's keyframe taken at the
-// second the agent chose for it (inside the chapter, one picture a chapter), and the cited result built from them. It reads only
+// second the agent chose for it (inside the chapter, one picture a chapter), a frame from the middle of each window a look
+// watched, and the cited result built from them. Each cite names its look by key, the window's own fragment (`#t=S,E`) and
+// those numbers as its label; its frame is a file in the workspace (`file`), which the result keeps as a blob. It reads only
 // what the run filed under its directory; a receipt that is not an ok look there is dropped, and a chapter left with none is
 // dropped too, each with the reason.
 import { execFileSync } from 'node:child_process';
@@ -15,7 +17,8 @@ export type VideoChapters = {
   chapters: (Omit<Chapter, 'receipts'> & { keyframe: string; looks: string[] })[];
   dropped: { chapter: string; why: string }[];
 };
-export type Cite = { look?: string; blob?: string; fragment?: string; note?: string };
+/** `file`: a frame in the workspace the result keeps as a blob, then names as `blob`. */
+export type Cite = { look?: string; blob?: string; file?: string; fragment?: string; note?: string };
 export type Cited = { format: 'agentrun.cited/1'; title: string; rows: { label: string; value: string; note?: string; cites: Cite[] }[]; video_chapters: VideoChapters };
 
 /** A receipt the run filed, read back: the record, when the path is a file under the run's `evidence/` that parses as a look. */
@@ -35,8 +38,20 @@ export const clock = (seconds: number) => {
   return h ? `${h}:${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}` : `${m}:${String(r).padStart(2, '0')}`;
 };
 
-/** The window a look saw, as its fragment names it (`film#t=S,E`): `#t=S,E`. */
-const windowOf = (record: LookRecord) => /#t=[\d.]+(?:,[\d.]+)?/.exec(String(record.args.path))?.[0];
+/** The window a look saw, as its fragment names it (`film#t=S,E`): its seconds, or undefined. */
+const windowOf = (record: LookRecord): [number, number] | undefined => {
+  const match = /#t=([\d.]+),([\d.]+)/.exec(String(record.args.path));
+  return match ? [Number(match[1]), Number(match[2])] : undefined;
+};
+
+/** One frame of the film from the middle of a window, as a JPEG in the workspace, or '' when ffmpeg could take none. */
+export function windowFrame(work: string, film: string, from: number, to: number): string {
+  const at = Math.round(((from + to) / 2) * 10) / 10;
+  const path = `.look/windows-frames/${from}-${to}.jpg`;
+  mkdirSync(join(work, '.look', 'windows-frames'), { recursive: true });
+  try { execFileSync('ffmpeg', ['-v', 'error', '-y', '-ss', String(at), '-i', basename(film), '-frames:v', '1', '-q:v', '4', path], { cwd: work, stdio: 'ignore' }); } catch { return ''; }
+  return existsSync(join(work, path)) ? path : '';
+}
 
 /** A frame's mean brightness (0 to 255), or undefined when ffmpeg could not read it. */
 function brightnessAt(work: string, film: string, second: number): number | undefined {
@@ -82,7 +97,11 @@ export function citedOf(root: string, args: { film: string; summary: string; cha
     chapters.push({ ...kept, at_s: at, keyframe, looks: looks.map((record) => record.facts.key) });
     rows.push({
       label: chapter.title, value: `${clock(chapter.start_s)} to ${clock(chapter.end_s)}`, note: chapter.note,
-      cites: looks.map((record) => ({ look: record.facts.key, fragment: windowOf(record) ?? `#t=${chapter.start_s},${chapter.end_s}`, note: args.film })),
+      cites: looks.map((record) => {
+        const [from, to] = windowOf(record) ?? [chapter.start_s, chapter.end_s];
+        const frame = windowFrame(join(root, 'work'), args.film, from, to);
+        return { look: record.facts.key, fragment: `#t=${from},${to}`, note: `${from} to ${to} s`, ...(frame ? { file: frame } : {}) };
+      }),
     });
   }
   return {

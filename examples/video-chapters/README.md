@@ -11,7 +11,7 @@ npm run demo:video-chapters -- --serve         # a page to drop a film on, the r
 
 ## What you will see
 
-1. The chapters: an `agentrun.cited/1` result, a summary, then one row a chapter (its title, its start and end, a one-line note), citing the looks it rests on (`#t=` of the film) and its keyframe. The viewer shows each chapter with its keyframe.
+1. The chapters: an `agentrun.cited/1` result, a summary, then one row a chapter (its title, its start and end, a one-line note), citing the looks it rests on (`#t=` of the film, with a frame from each window) and its keyframe. The viewer shows each chapter with its keyframe.
 2. How the agent got there: it writes its own code (a `code` tool with `bash` and `vision.see`, following pi-vision's look skill). It probes the film, cuts it into windows of about a minute with their sound, asks the eyes about each, groups the windows into chapters and takes a keyframe for each.
 3. Receipts with cost: every look is filed with the window's SHA-256, the question, the answer, the model and its price; the recording's cost is a number, or unknown where a failed request may have been billed, never an unearned 0. Each minute is paid for once: an answer the run already has is read back, not asked again.
 
@@ -51,7 +51,7 @@ Until the reference host is published as a package that carries them, the exampl
 
 - `job.ts`: the workflow as data: one `agent` with the `code` tool, whose instructions are the task and pi-vision's look skill, then a `call` to `cite`; its default input (NASA's film whole, what `--live` reads) and the clip a run on fakes reads.
 - `codeMode` in `demo.json`: the reference entry's `code` tool, pi-codemode's sandbox with `tools.bash` (the run's workspace) and `vision.see` (the run's vision, bound to the call).
-- `tools.ts`: `cite`, which resolves each chapter's receipts to the looks the run filed and builds the cited result. `result.ts` keeps each keyframe as a blob of the recording.
+- `tools.ts`: `cite`, which resolves each chapter's receipts to the looks the run filed, takes a frame from the middle of each window a look watched, and builds the cited result: every cite names its look by key and the window's own `#t=S,E`, labelled with those numbers. `result.ts` keeps each chapter's keyframe and each window's frame as blobs of the recording, on their cites.
 - `fakes.ts`: the scripted lead (it runs the script a model would write) and the scripted eyes. `models.ts`: the live lead and eyes.
 - `sources.json`: NASA's film by URL, size and SHA-256. `clip/`: 24 s of it, cut by `clip/cut.sh`, what a run on fakes reads (`ASSETS.md` names the source).
 - `serve.ts`: the local server. Everything else is the reference entry (`demo()`).
