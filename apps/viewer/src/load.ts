@@ -68,6 +68,7 @@ export function blobsAt(root: string, whole = false) {
   const urls: Record<string, string> = {};
   const types: Record<string, string | undefined> = {};
   const texts: Record<string, string> = {};
+  const held: Record<string, Uint8Array> = {};
   const missing = new Map<string, { tries: number; at: number }>();
   let round = 0;
   const found = async (sha: string, url: string): Promise<boolean> => {
@@ -83,14 +84,16 @@ export function blobsAt(root: string, whole = false) {
     const type = typeOfName(url) ?? 'application/octet-stream';
     urls[sha] = URL.createObjectURL(new Blob([bytes], { type: opensInPage(type) || type.startsWith('image/') ? type : 'application/octet-stream' }));
     types[sha] = type;
-    // Its JSON is kept as read: a page served with `connect-src 'self'` may not fetch the blob: URL.
+    // Its JSON and its PDF are kept as read: a page served with `connect-src 'self'` may not fetch the blob: URL.
     if (type.split(';')[0] === 'application/json') texts[sha] = new TextDecoder().decode(bytes);
+    if (type.split(';')[0] === 'application/pdf') held[sha] = bytes;
     return true;
   };
   return {
     url: (sha: string) => urls[sha],
     type: (sha: string) => (types[sha] ?? (urls[sha] ? typeOfName(urls[sha]!) : undefined)),
     text: (sha: string): string | undefined => texts[sha],
+    bytes: (sha: string): Promise<Uint8Array> | undefined => (held[sha] ? Promise.resolve(held[sha]!.slice()) : undefined),
     /** Looks for the blobs not found yet, and those due again; says how many it found. */
     async find(shas: readonly string[]): Promise<number> {
       round += 1;
@@ -115,7 +118,7 @@ export async function fromUrl(base: string): Promise<Recording> {
   const lines = parseLines(await (await fetch(`${root}events.jsonl`)).text());
   const blobs = blobsAt(root);
   await blobs.find(blobsNamed(manifest, lines));
-  return { id: root, manifest, lines, blobUrl: blobs.url, blobType: blobs.type, find: blobs.find };
+  return { id: root, manifest, lines, blobUrl: blobs.url, blobType: blobs.type, find: blobs.find, heldBytes: blobs.bytes };
 }
 
 export async function fromFiles(files: File[]): Promise<Recording> {
@@ -126,13 +129,17 @@ export async function fromFiles(files: File[]): Promise<Recording> {
   if (!manifestFile || !eventsFile) throw new Error('The folder needs manifest.json and events.jsonl.');
   const urls: Record<string, string> = {};
   const types: Record<string, string> = {};
+  const dropped: Record<string, File> = {};
   for (const [path, file] of byPath) {
     const name = path.split('/').at(-1)!;
     if (!path.startsWith('blobs/')) continue;
     const sha = name.split('.')[0]!;
+    dropped[sha] = file;
     types[sha] = typeOfName(name) ?? (file.type || 'application/octet-stream');
     // A blob URL has the viewer's origin: a page in one must never render, so an active type becomes opaque bytes.
     urls[sha] = URL.createObjectURL(opensInPage(types[sha]) || types[sha]!.startsWith('image/') ? file : new Blob([file], { type: 'application/octet-stream' }));
   }
-  return { id: 'dropped', manifest: JSON.parse(await manifestFile.text()) as Manifest, lines: parseLines(await eventsFile.text()), blobUrl: (sha) => urls[sha], blobType: (sha) => types[sha] };
+  return { id: 'dropped', manifest: JSON.parse(await manifestFile.text()) as Manifest, lines: parseLines(await eventsFile.text()), blobUrl: (sha) => urls[sha], blobType: (sha) => types[sha],
+    // A dropped file is read as a file: a host whose policy fetches only from its own origin refuses its blob: URL.
+    heldBytes: (sha) => (dropped[sha] ? dropped[sha]!.arrayBuffer().then((bytes) => new Uint8Array(bytes)) : undefined) };
 }

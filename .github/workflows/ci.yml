@@ -11,7 +11,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 25 # p90 is about 12 min; a runner at half speed takes about 23
+    timeout-minutes: 40 # a run on main takes 17 to 24 min today (npm test 11 to 14, the examples 2 to 3); a runner at half speed takes more, and a job cut at the limit fails the check
     strategy:
       fail-fast: false
       matrix:

@@ -62,7 +62,18 @@ for (const consumer of roots) {
 }
 const rows = [...inventory.values()].sort((a, b) => `${a.name}@${a.version}`.localeCompare(`${b.name}@${b.version}`)).map(row => ({ ...row, consumers: [...row.consumers].sort(), locations: [...row.locations].sort() }));
 const permissive = new Set(['MIT', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC', '0BSD', 'BlueOak-1.0.0', 'CC0-1.0', 'Unlicense']);
-const flagged = rows.filter(row => !permissive.has(row.license)).map(row => ({ name: row.name, version: row.version, license: row.license, reason: row.license === 'UNKNOWN' ? 'Missing license metadata' : /GPL|AGPL|LGPL|SSPL|BUSL|BSL|UNLICENSED/i.test(row.license) ? 'Restrictive or reciprocal metadata needs release-owner review' : 'License expression needs release-owner review' }));
+// Release files an app keeps in the repository rather than installing (`apps/<app>/vendor/<name>/vendored.json` lists
+// them): not in the lockfile, so listed apart, each with where it came from, its licenses and its size.
+const vendored = [];
+for (const app of (await readdir(join(root, 'apps'), { withFileTypes: true }).catch(() => [])).filter(entry => entry.isDirectory()).map(entry => entry.name).sort()) {
+  for (const name of (await readdir(join(root, 'apps', app, 'vendor'), { withFileTypes: true }).catch(() => [])).filter(entry => entry.isDirectory()).map(entry => entry.name).sort()) {
+    let manifest;
+    try { manifest = JSON.parse(await readFile(join(root, 'apps', app, 'vendor', name, 'vendored.json'), 'utf8')); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    const licenses = [...new Set(manifest.files.flatMap(file => String(file.license ?? 'UNKNOWN').split(' AND ')))].sort();
+    vendored.push({ name: manifest.name, version: manifest.version, source: manifest.source, where: `apps/${app}/vendor/${name}`, licenses, bytes: manifest.files.reduce((sum, file) => sum + file.bytes, 0) });
+  }
+}
+const flagged = [...rows, ...vendored.flatMap(row => row.licenses.map(license => ({ ...row, license })))].filter(row => !permissive.has(row.license)).map(row => ({ name: row.name, version: row.version, license: row.license, reason: row.license === 'UNKNOWN' ? 'Missing license metadata' : /GPL|AGPL|LGPL|SSPL|BUSL|BSL|UNLICENSED/i.test(row.license) ? 'Restrictive or reciprocal metadata needs release-owner review' : 'License expression needs release-owner review' }));
 const missingOptional = [...new Map(unresolved.map(item => [`${item.from}:${item.dependency}`, item])).values()];
 const licenses = [...new Set(rows.map(row => row.license))].sort();
 const cell = value => String(value).replace(/\|/g, '\\|').replace(/\n/g, ' ');
@@ -86,7 +97,15 @@ ${missingOptional.length ? `Optional peer/dependency names absent from this lock
 | Package | Version | Declared license | Used by | Optional | Lock locations |
 | --- | --- | --- | --- | --- | --- |
 ${rows.map(row => `| ${cell(row.name)} | ${cell(row.version)} | ${cell(row.license)} | ${row.consumers.join(', ')} | ${row.optional ? 'yes' : 'no'} | ${row.locations.length} |`).join('\n')}
-`;
+${vendored.length ? `
+## Vendored code
+
+Release files kept in the repository rather than installed, so not in \`package-lock.json\`. Each folder's \`vendored.json\` lists every file with the path it has in its package, its license, its size and its SHA-256.
+
+| Package | Version | Licenses | Where | Source | Bytes |
+| --- | --- | --- | --- | --- | --- |
+${vendored.map(row => `| ${cell(row.name)} | ${cell(row.version)} | ${row.licenses.map(cell).join(', ')} | ${cell(row.where)} | ${cell(row.source)} | ${row.bytes} |`).join('\n')}
+` : ''}`;
 await writeFile(join(root, 'docs/dependencies.md'), dependencyDoc);
 if (arguments_.includes('--inventory-only')) {
   console.log(`Dependency inventory updated: ${rows.length} locked runtime package/version pairs.`);
@@ -97,11 +116,13 @@ const allowedRootFiles = new Set(['README.md', 'AGENTS.md', 'CLAUDE.md', 'CHANGE
 const allowedDirectories = new Set(['apps', 'changes', 'docs', 'examples', 'packages', 'scripts', 'spec', '.github']);
 const excludedComponents = new Set(['.pi', 'site', 'dist', 'node_modules', '.git', '.release', '.openai', '.sites-runtime', '.cascade', '.desloppify', '.impeccable', '.review', '.reviews', '.codex', '.agents', '.cache', 'coverage', 'candidates', 'scorecard.png', '.lake']);
 const textExtensions = new Set(['.md', '.json', '.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.html', '.jsonl', '.css', '.svg', '.txt', '.yml', '.yaml', '.toml', '.sh', '.lean', '.tla', '.cfg']);
-const binaryExtensions = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico', '.woff', '.woff2', '.webm']);
+const binaryExtensions = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico', '.woff', '.woff2', '.webm', '.pdf']);
+/** A PDF is exported only when one line of ASSETS.md names it with its SHA-256: each one is a document someone reviewed, not a type. */
+const assetsLines = (await readFile(join(root, 'ASSETS.md'), 'utf8').catch(() => '')).split('\n');
 function extension(path) { const leaf = path.split('/').at(-1); return leaf.includes('.') ? leaf.slice(leaf.lastIndexOf('.')).toLowerCase() : ''; }
 function excluded(path) {
   const parts = path.split('/');
-  return parts.some(part => part === 'pi.config.mjs' || excludedComponents.has(part) || /(?:^|\.)review(?:\.|$)/.test(part) || /^\.env(?:\.|$)/.test(part) || /(?:^|\.)local(?:\.|$)/.test(part)) ||
+  return parts.some(part => part === 'pi.config.mjs' || excludedComponents.has(part) || /(?:^|\.)review(?:\.|$)/.test(part) || /^\.env(?:\.|$)/.test(part) || /\.local(?:\.|$)/.test(part)) ||
     /\.(?:tgz|tar|gz|pem|key|p12|pfx|map|log)$/.test(path);
 }
 const forbidden = [
@@ -147,6 +168,7 @@ async function collect(relative = '') {
     const isText = entry.name === '.gitignore' || textExtensions.has(ext) || allowedRootFiles.has(path) || /^packages\/(?:dsl|jev|pi|pi-durable-disk|pi-browser|pi-vision|pi-transport|pi-durable-agent|serve|pi-git-remote|pi-agent-learn)\/(?:LICENSE|NOTICE)$/.test(path) || path === 'packages/pi-durable-disk/bin/archil-scoped' || path === 'packages/pi-durable-disk/docker/Dockerfile' || path === 'packages/pi-durable-disk/.dockerignore' || path === 'spec/lean/lean-toolchain' || path === '.github/CODEOWNERS';
     if (!isText && !binaryExtensions.has(ext)) throw new Error(`Unreviewed source-export file type: ${path}`);
     const bytes = await readFile(join(root, path));
+    if (ext === '.pdf' && !assetsLines.some(line => line.includes(`\`${path.split('/').at(-1)}\``) && line.includes(sha256(bytes)))) throw new Error(`Unreviewed PDF: ${path} is not in ASSETS.md with its SHA-256 ${sha256(bytes)} on its line`);
     if (isText) {
       const content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
       assert.ok(!content.includes('\0'), `NUL byte in expected text file: ${path}`);

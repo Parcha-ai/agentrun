@@ -87,7 +87,8 @@ names with `&parent=<origin>`, each checked.
   shows them not measured.
   When the manifest names a baseline (another real recording), its counters at its end show beside these.
 - **Panels.** The lines at the current point, by source, and the model's turns. Extensions add their own
-  (`PANELS.md`). Click anything with a workflow path to focus that branch: every panel still holds the whole run and
+  (`PANELS.md`). A result that cites pages of a PDF (`page=N`, with a box as `xywh=percent:`) has them drawn whole in
+  the document panel, each box over its page. Click anything with a workflow path to focus that branch: every panel still holds the whole run and
   shows the branch its own way (the two built in dim the rest).
 - **Chapters.** The manifest's chapters when it has them; else each process's start, each kill, and the end.
 - **Links.** `?at=<commit>` opens at the point after that commit, and `?at=<gen>:<commit>` after that commit of that
@@ -132,5 +133,37 @@ fetch.
 npm run test:viewer    # typecheck, the core tests, the build, and the page from file:// in a local Chrome if there is one
 ```
 
-The source is erasable TypeScript in `src/`, joined by `build.mjs` into one classic script with no dependency (a page
-opened from `file://` cannot load module scripts or fetch). Durable lines are read in one file, `src/durable.ts`.
+The source is erasable TypeScript in `src/`, joined by `build.mjs` into one classic script that imports no package (a
+page opened from `file://` cannot load module scripts or fetch). Durable lines are read in one file, `src/durable.ts`.
+
+## Dependencies
+
+One, shipped with the page rather than installed, so `node build.mjs` needs no install anywhere (the hosted gallery and
+both deploy buttons build that way): PDF.js, `pdfjs-dist` 6.4.299 (Mozilla Foundation, Apache-2.0), with its JavaScript
+decoders for a scan's images (PDFium's for CCITT and JBIG2, BSD-3-Clause; OpenJPEG's for JPEG 2000, BSD-2-Clause). The
+files are the package's own, unchanged, from https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-6.4.299.tgz
+(registry integrity `sha512-AVl138zALtfaAPvADulE0PZThbYzCBS79nL4pOSL/6Sm/4AH5A21BD9VHt97OlCuzJuCpmeZtAtkinisF4Vb1g==`),
+in `vendor/pdfjs/` with their licenses; the build copies them to `dist/pdfjs/`. 2,348,024 bytes in all:
+
+| File in `vendor/pdfjs/` | In the package | License | Bytes | SHA-256 |
+| --- | --- | --- | --- | --- |
+| `pdf.min.mjs` | `build/pdf.min.mjs` | Apache-2.0 | 458,904 | `57456c8e0c81e46be31174b499ef77f2b9f5ee46d04412ba627320a36755d4c2` |
+| `pdf.worker.min.mjs` | `build/pdf.worker.min.mjs` | Apache-2.0 | 1,264,342 | `9536359f1b8367850d485731ca1d5e45c159a7b7a0912325e539937aa21ceb18` |
+| `LICENSE.txt` | `LICENSE` | Apache-2.0 | 10,174 | `0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594` |
+| `wasm/jbig2_nowasm_fallback.js` | `wasm/jbig2_nowasm_fallback.js` | BSD-3-Clause AND Apache-2.0 | 152,009 | `68686ced624a48c42f84cdaa482ec44b72b0de4dc84a0df903af1fb7b45b5d9a` |
+| `wasm/LICENSE_JBIG2.txt` | `wasm/LICENSE_JBIG2` | BSD-3-Clause | 12,862 | `9e66b7f1b934a28b37f3bc4dac97915de1674271e79a0a88182a18ed9731b4d1` |
+| `wasm/LICENSE_PDFJS_JBIG2.txt` | `wasm/LICENSE_PDFJS_JBIG2` | Apache-2.0 | 555 | `aad3cce09842e00e9e11ad5e8fef8cc02fbc3a3768fe2f007443b9cee37aaee5` |
+| `wasm/openjpeg_nowasm_fallback.js` | `wasm/openjpeg_nowasm_fallback.js` | BSD-2-Clause | 445,781 | `9047b34b6bc142d85e4b0aa1b08b0b9baad4c6f8b7ac87641b9e8f90eb6fd23e` |
+| `wasm/LICENSE_OPENJPEG.txt` | `wasm/LICENSE_OPENJPEG` | BSD-2-Clause | 2,112 | `a6af136f3e15038a666b61f376612a07d9a4e48cb7c01adbf3e33b3f14ab49b6` |
+| `wasm/LICENSE_PDFJS_OPENJPEG.txt` | `wasm/LICENSE_PDFJS_OPENJPEG` | BSD-2-Clause | 1,285 | `717fc62da03292dbb4dd0c8280bd4ce7bb8550dcf31d772bc93455fb50313425` |
+
+`vendor/pdfjs/vendored.json` holds the same list, and `test/document.test.ts` checks every file against it.
+
+The page loads PDF.js only when it draws a PDF page, as a module script beside it, with its worker a file of the same
+origin, and hands it the PDF's bytes: it never gives PDF.js an address to fetch, and asks for no font or character map
+from anywhere, so it draws under a host policy that loads scripts, workers and data from the page's own origin only.
+A page opened from `file://` cannot load a module script: there the panel says so, links the PDF at its page and lists
+each cite on it as text. Pages are drawn one at a time, top first, each at most 1600 pixels wide and 4 million pixels in
+all. PDF.js is given no predefined character maps: text set in one (a CJK encoding such as `UniJIS-UTF16-H`) does not
+draw, while `Identity-H`, the usual encoding of an embedded font, needs none; add `cmaps/` the way the decoders are
+added if a document needs them. `vendor/pdfjs/README.md` says how to move to another release.
