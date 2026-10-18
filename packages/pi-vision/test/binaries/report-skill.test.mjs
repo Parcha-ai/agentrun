@@ -50,7 +50,8 @@ const groundedBy = (question, { state }) => {
 };
 
 /** A bash tool as a host's code mode gives one: the command's output, or a rejection that carries what it printed. */
-const bash = { name: "bash", execute: ({ command }) => new Promise((resolve, reject) => execFile("bash", ["-c", command], { cwd, maxBuffer: 1 << 26 }, (error, stdout, stderr) => (error ? reject(new Error(`${stderr}${error.message}`)) : resolve(stdout)))) };
+let bashEnv = process.env;   // a test may give the shell a TMPDIR of its own
+const bash = { name: "bash", execute: ({ command }) => new Promise((resolve, reject) => execFile("bash", ["-c", command], { cwd, env: bashEnv, maxBuffer: 1 << 26 }, (error, stdout, stderr) => (error ? reject(new Error(`${stderr}${error.message}`)) : resolve(stdout)))) };
 
 /** Runs the pieces as one script and gives what it returned and the keys of the looks the host filed. */
 async function run(codes) {
@@ -945,12 +946,13 @@ test("a cite changed after the judgment is judged again: its address is part of 
 test("the check renders the page again in a directory of its own and removes only that: a .check directory the workspace already holds is left alone", async () => {
   fs.mkdirSync(path.join(cwd, ".check"), { recursive: true });
   fs.writeFileSync(path.join(cwd, ".check", "index.html"), "the workspace's own file");
+  const own = fs.mkdtempSync(path.join(process.env.TMPDIR ?? "/tmp", "render-parent-"));   // the shell's TMPDIR: only what this run makes is looked at
+  bashEnv = { ...process.env, TMPDIR: own };
   onDisk = "other";
   try {
     const { result } = await run(pieces);
     assert.ok(result.ok, result.ok ? "" : result.error.message);
     assert.equal(fs.readFileSync(path.join(cwd, ".check", "index.html"), "utf8"), "the workspace's own file");
-    const stray = fs.readdirSync(process.env.TMPDIR ?? "/tmp").filter((name) => /^tmp\./.test(name) && fs.existsSync(path.join(process.env.TMPDIR ?? "/tmp", name, "index.html")));
-    assert.deepEqual(stray, [], "no render directory is left behind");
-  } finally { fs.rmSync(path.join(cwd, ".check"), { recursive: true, force: true }); }
+    assert.deepEqual(fs.readdirSync(own), [], "no render directory is left behind");
+  } finally { bashEnv = process.env; fs.rmSync(own, { recursive: true, force: true }); fs.rmSync(path.join(cwd, ".check"), { recursive: true, force: true }); }
 });
