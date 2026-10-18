@@ -31,26 +31,28 @@ import type { CodeModeOptions } from './code-mode.ts';
 import { pathsAt, placeAt, run, type Job, type RunOptions } from './assemble.ts';
 import { RUN_LABEL, tapBox } from './boxes.ts';
 import type { Recorder, Redact } from './record.ts';
-import { capJudge } from './judge.ts';
-import { askToBeKilled, crossings, tapFakes, tapHost, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
+import { capJudge, JEV_CAPS } from './judge.ts';
+import { askToBeKilled, crossings, tapFakes, tapHost, tapLive, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
 import { keepLooks, shownShots } from './looks.ts';
 import type { LookRecord } from '@parcha/pi-vision';
 import { localPlace, type Exit, type Place, type Runner } from './place.ts';
-import { inputOf, declaredEnv, childPlansOf, chooseBrowser, effectiveBoxes, killsOf, maxUsdOf, plansOf, type ChildPlan, type DemoSpec } from './demo-spec.ts';
+import { checkModelKeys, judgeCapsOf, inputOf, declaredEnv, childPlansOf, chooseBrowser, effectiveBoxes, killsOf, maxUsdOf, plansOf, type ChildPlan, type DemoSpec } from './demo-spec.ts';
 import { cost } from './fold.ts';
 import { checkItems, fetchSources, missingCommitted, readSources, withSources } from './sources.ts';
 import { localHost, type BrowserPlane, type Fakes, type Host, type RunPlace } from './host.ts';
-import { codeOf, finishRecording, lazyRecorder, openRecorder, openSupervisor } from './record.ts';
+import { codeOf, finishRecording, followRecording, keepBlob, lazyRecorder, openRecorder, openSupervisor } from './record.ts';
 import { packageCommitRecorder } from './record-store.ts';
-import { scanRecording, signInFile, trackSecrets } from './secrets.ts';
+import { scanPlaced, scanRecording, signInFile, trackSecrets } from './secrets.ts';
 
 /** What `--live` swaps for the scripted parts: host members (models, tools, decisions, the browser plane) and vision options. The demo supplies them from its
  *  own keys; a demo that supplies none refuses `--live`. */
-export type LiveParts = { host?: Partial<Host>; /** Which models the live parts chose (flags, defaults, the sign-in's plan): reported with the run's outcome, and handed to `manifest` as `models`. */ models?: Record<string, string>; /** The live vision options, built from the host and the running run exactly as `fakes.vision` is: one seam for both. */ vision?: (host: Host, running: { readonly harness: Harness | undefined }, context: { input: Record<string, unknown>; place: { root: string; work: string } }) => Partial<VisionAdapterOptions> };
+export type LiveParts = { host?: Partial<Host>; /** The live tools, the same name -> function map as `Fakes.tools`: on `--live` the effect door (evidence, receipts, kill crossings) dispatches to these. A tool missing here runs from `fakes.tools` only when demo.json's `tools` entry for it says `local: "fakes"`, else the call fails `no live source for <tool>`. Without `tools`, every tool runs from `fakes.tools` as before. */ tools?: Fakes['tools']; /** Which models the live parts chose (flags, defaults, the sign-in's plan): reported with the run's outcome, and handed to `manifest` as `models`. */ models?: Record<string, string>; /** The live vision options, built from the host and the running run exactly as `fakes.vision` is: one seam for both. */ vision?: (host: Host, running: { readonly harness: Harness | undefined }, context: { input: Record<string, unknown>; place: { root: string; work: string } }) => Partial<VisionAdapterOptions> };
 /** The model choices on the command line, handed to the demo's `live` part. */
 export type LiveModels = { provider?: string; model?: string; eyesModel?: string };
 const RESERVED = new Set(['format', 'title', 'task', 'model', 'generations', 'kills', 'code', 'cost', 'recorded', 'source', 'result', 'providers', 'see_also', 'job', 'store', 'baseline']);
 export type DemoOptions = {
+  /** How long the live recorder holds a line before placing it in `events.jsonl` (default 1000 ms, the time every writer has to get it to a spool). A test knob; a place whose clock is far from the host's wants it longer. */
+  followHoldMs?: number;
   /** Code mode, opt-in (off by default; `codeMode` in demo.json is the same switch): the agent gets a `code` tool whose sandbox has `tools.bash` (in `work/`) and the vision handle's `vision.see`. See code-mode.ts for what it can and cannot reach. */
   codeMode?: boolean | CodeModeOptions;
   /** `import.meta.url` of the demo's `run.ts`: the file the supervisor starts, with `--child`, as each process of the run. */
@@ -84,7 +86,7 @@ export type DemoResult = {
   processes: Exit[];
   /** The run id this invocation used, minted once: `<demo name>-<8 hex>`. */
   runId: string;
-  kills: Array<{ gen: number; point: string | null; kind: 'process' | 'box'; why: string }>;
+  kills: Array<{ gen: number; point: string | null; kind: 'process' | 'box'; why: string; /** For a kill at a crossing: the ordinal of that crossing it landed on, and the `n` the demo planned. The kill lands at the first eligible crossing at or after the nth, so they can differ. */ n?: number; planned?: number }>;
   /** The record the job delivered, or null. */
   record: unknown;
   dir: string;
@@ -145,10 +147,13 @@ function noBrowser(): BrowserPlane {
 }
 
 /** The host a run uses, in the order that keeps every platform check on the final host: the live parts merged in, then the crossings put at its seams, then the judge seam's caps. */
-export function composeHost(host: Host, parts: Partial<Host> | undefined, cross: Cross, window: EffectWindow, spentFile: string): void {
+export function composeHost(host: Host, parts: Partial<Host> | undefined, cross: Cross, window: EffectWindow, spentFile: string, live = false, caps: { requests: number; tokens: number } = JEV_CAPS, fakesTapped = false): void {
   mergeParts(host, parts);
+  // The fakes' judge and model have their crossings from `tapFakes`; a live host's get them here, so a kill at `judge.asked <label>` lands before a paid question. When the host's fallback judge and model are the fakes' and
+  // are already tapped (`fakesTapped`), only the ones the live parts replaced are tapped here, so no crossing is counted twice.
+  if (live) tapLive(host, cross, { judge: !fakesTapped || Boolean(parts?.decisions?.runJudge), model: !fakesTapped || Boolean(parts?.models) });
   tapHost(host, cross, window);
-  host.decisions = { ...host.decisions, runJudge: capJudge(host.decisions.runJudge, spentFile) };
+  host.decisions = { ...host.decisions, runJudge: capJudge(host.decisions.runJudge, spentFile, caps) };
 }
 
 /** The live parts merged into the host member by member: a part's `tools` or `decisions` adds to the host's, never replaces it wholesale (its extensions, `answered`, `rerun` and browser
@@ -199,9 +204,9 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   const cross = crossings(plan, env.CROSS_LOG, Date.now(), env.KILL_REQUEST ? askToBeKilled(env.KILL_REQUEST, killNonce) : undefined, window);
   // A recording holds none of the secret values (the declared environment's, the sign-in's tokens, a refreshed token too): the supervisor hands this process the sign-in's home (`AGENTRUN_HOME`, the one name added beside
   // the declared ones, so a child that signs in uses the file the recorder reads), and this process reads the values itself.
-  const redact = env.RECORD_DIR && env.AGENTRUN_HOME ? trackSecrets(env, options.spec).redact : undefined;
+  const redact = env.RECORD_DIR ? trackSecrets(env, options.spec).redact : undefined;
   const commits = env.RECORD_DIR ? await packageCommitRecorder() : undefined;
-  const lazy = env.RECORD_DIR ? lazyRecorder(() => openRecorder({ dir: env.RECORD_DIR!, commits: commits!, ...(redact ? { redact } : {}) })) : undefined;
+  const lazy = env.RECORD_DIR ? lazyRecorder(() => openRecorder({ dir: env.RECORD_DIR!, commits: commits!, ...(env.RECORD_GEN ? { gen: Number(env.RECORD_GEN) } : {}), ...(env.RECORD_STARTED ? { started: env.RECORD_STARTED } : {}), ...(redact ? { redact } : {}) })) : undefined;
   const recorder: Recorder | undefined = lazy;
   const live = env.LIVE === '1';
   const browserKind = (env.BROWSER ?? 'fake') as 'fake' | 'browserbase' | 'chrome' | 'none';
@@ -213,10 +218,15 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   if (at && boxSpec?.runIn) throw new Error('boxes.runIn is not supported under pi-durable-disk run --app: the app opens its tools on the claim\'s own environment, not in a box. Run the demo through its own command, or drop runIn.');
   const provider = await boxProvider(boxSpec, place);
   const boxes = provider ? tapBox(provider, { cross, window, ...(env.RUN_LABEL ? { runLabel: env.RUN_LABEL } : {}), ...(recorder ? { recorder } : {}) }) : undefined;
-  const local = localHost(place, live ? options.fakes : tapFakes(options.fakes, cross), { browser: browserKind === 'none' ? noBrowser() : fakeBrowser(env.BACKEND!), live, deferLogs: true, ...(recorder ? { recorder } : {}), ...(boxes ? { boxes } : {}) });
+  // Live tools get the same crossings the fakes' do (a kill before or after a dispatch); the ones a demo declares `local: "fakes"` fall back to the fakes' own, tapped the same way.
+  const tapped = live && parts.tools ? tapFakes({ ...options.fakes, tools: parts.tools }, cross) : undefined;
+  const fakesTapped = live && parts.tools ? tapFakes(options.fakes, cross) : undefined;
+  const declaredFakes = new Set((options.spec.tools ?? []).filter((entry) => entry.local === 'fakes').map((entry) => entry.name));
+  const local = localHost(place, live ? (fakesTapped ?? options.fakes) : tapFakes(options.fakes, cross), {
+    ...(tapped ? { liveTools: tapped.tools, fakesDeclared: declaredFakes } : {}), browser: browserKind === 'none' ? noBrowser() : fakeBrowser(env.BACKEND!), live, deferLogs: true, ...(recorder ? { recorder } : {}), ...(boxes ? { boxes } : {}) });
   // The live parts are merged into the host member by member FIRST, then the platform wraps the final host: the crossings (so a live `status` or `tools` still has them) and the judge seam's
   // caps (Jev's), which a live judge is held to too.
-  composeHost(local.host, parts.host, cross, window, join(place.root, 'judge-spent.jsonl'));
+  composeHost(local.host, parts.host, cross, window, join(place.root, 'judge-spent.jsonl'), live, judgeCapsOf(options.spec), fakesTapped !== undefined);
   // A demo with `browser: false` has none, whatever the live parts supplied.
   if (browserKind === 'none') local.host.tools = { ...local.host.tools, browser: noBrowser() };
   // The checked files the job reads, fetched into work/ and verified: on --live and with --fetch-sources (a no-key run uses the files the demo commits). `sourcesFor(input)` names only the items this input needs;
@@ -308,7 +318,9 @@ export function meter(recordDir: string): number | null {
 
 /** What is known to have been spent so far: the priced parts summed, whether or not another part is unknown. The spend cap compares this, so an unknown price never switches it off. */
 export function meterKnown(recordDir: string): number {
-  return Object.values(cost(spoolLines(recordDir)).parts).reduce<number>((sum, part) => sum + (part ?? 0), 0);
+  const folded = cost(spoolLines(recordDir));
+  // A box part with an unpriced box is null, but the boxes that are priced were spent all the same.
+  return Object.values(folded.parts).reduce<number>((sum, part) => sum + (part ?? 0), 0) + (folded.parts.box === null ? folded.boxKnown : 0);
 }
 
 /** A run's boxes taken away with its machine: every box that carries the run's label, tool-made ones too, destroyed through the provider. A box that will not be destroyed is an error. */
@@ -332,6 +344,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   if (live && !options.live) throw new Error(`--live: ${spec.name} supplies no live parts (no real models or services), so it runs on fakes only.`);
   // `browser: false` in demo.json: no browser is created, so no key or Chrome is asked for.
   const browser = spec.browser === false ? 'none' as const : chooseBrowser({ live, env: process.env, localChrome: values['local-chrome'] === true });
+  // Refused at load, before any child starts: a model whose provider needs a key the demo does not declare, and a cap beyond its ceiling.
+  checkModelKeys(spec);
+  judgeCapsOf(spec);
   const plans = values.kill ? plansOf(killsOf(spec)) : [];
   const maxUsd = maxUsdOf(values['max-usd'], spec);
   // The operator's control file: a path the caller names (`--operator-kill`), which must not exist yet (a stale one would kill the first process).
@@ -358,6 +373,16 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   options.fakes.backend?.(backend);
   const served = await backend.serve();
   const supervisor = openSupervisor({ dir: recordDir, ...(redact ? { redact } : {}) });
+  // A live run and its replay are one file: events.jsonl is appended to as the run goes (whole lines, section 3's order), and finishRecording completes it. The job is a blob from the start, so a viewer can draw the workflow graph at once.
+  let placeRef: Place | undefined;
+  // The recording's clock as a value, in every order's env: a box's child writes it into its own spool directory when it has none, so a place never writes into the run's disk.
+  const startedText = readFileSync(join(recordDir, '.spool', 'started'), 'utf8');
+  const follower = followRecording(recordDir, { ...(redact ? { redact } : {}), holdMs: () => Math.max(options.followHoldMs ?? 1000, 2 * (placeRef?.clockSkewMs ?? 0)) });
+  // A failure of the follower (the disk full, say) is not thrown from the timer: it is kept, the running child is stopped, and the run ends through the normal path, which releases the place.
+  let followError: unknown;
+  const following = setInterval(() => { try { follower.poll(); } catch (error) { followError ??= error; clearInterval(following); } }, 100);
+  const jobText = JSON.stringify({ workflow: job.workflow, input: input ?? (live ? undefined : options.fakes.input) ?? job.input, files: Object.keys(job.files ?? {}) });
+  const jobBlob = keepBlob(recordDir, Buffer.from(redact ? redact(jobText) : jobText), 'json');
   // A label no other run shares, on every box this run makes: cleanup finds these and no others.
   const runLabel = randomUUID();
   const base: Record<string, string> = { ...(values.record ? { AGENTRUN_HOME: dirname(signInFile(process.env)) } : {}), DEMO_ENTRY: options.self, DEMO_NAME: spec.name, RUN_LABEL: runLabel, HOME: scratch, TMPDIR: scratch, DIR: dir, RECORD_DIR: recordDir, BACKEND: served.url, BROWSER: browser, ...(live ? { LIVE: '1' } : {}), ...(Object.keys(models).length ? { MODELS: JSON.stringify(models) } : {}), ...(values['fetch-sources'] ? { FETCH_SOURCES: '1' } : {}), CACHE_DIR: values.cache ?? join(tmpdir(), 'agentrun-sources'), ...(input ? { INPUT: JSON.stringify(input) } : {}) };
@@ -383,34 +408,94 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   // The place's own reading of the run (`place.status()`), written as a `run.json` host line: `gen` is the record's generation and the rest is the record verbatim, only when its status, generation, holder or sealedSeq changes
   // (RECORDING.md's host row). Read at the boundaries (a runner's start and exit, a kill, a result) and on a slow tick while a runner runs; a place without `status()` writes none, and a reading never fails the run.
   let lastRunRecord = '';
+  let lastGeneration: number | undefined;
+  let currentGen = 0;
+  const delegationSeen = new Map<string, string>();
   const hostLabels = new Map<string, string>();
   const bootLabels = new Map<string, string>();
+  const clientLabels = new Map<string, string>();
+  const inodeLabels = new Map<string, string>();
+  // A delegation's client and inode ids name a machine's mount and a file in the place's own store: the recording shows `client-N` and `inode-N` by first appearance, the same value the same label (in a revoke line too).
+  const safeDelegation = <T extends { clientId: string; inodeId: string | number }>(delegation: T): T => ({ ...delegation, clientId: labelOf(clientLabels, 'client', delegation.clientId), inodeId: labelOf(inodeLabels, 'inode', String(delegation.inodeId)) });
   const labelOf = (labels: Map<string, string>, prefix: string, value: string) => { let label = labels.get(value); if (!label) { label = `${prefix}-${labels.size + 1}`; labels.set(value, label); } return label; };
   let reading: Promise<void> = Promise.resolve();
+  const boxLabels = new Map<string, string>();
+  const boxReceipted = new Set<string>();
   // The slow tick does not queue a read behind one still running (a place's reads can take seconds): the boundary reads, which a result waits for, then wait behind at most one.
   let inflight = false;
   // A read the supervisor waits for (after a kill, at a process's exit, at the end) is waited for a bounded time: an optional reading never holds supervision up for a place's whole timeout.
   const settled = (read: Promise<void>, ms = 15_000): Promise<void> => Promise.race([read, new Promise<void>((resolve) => { setTimeout(resolve, ms).unref(); })]);
-  const readStatus = (): Promise<void> => {
+  const readStatus = (final = false): Promise<void> => {
     if (!place.status) return Promise.resolve();
     reading = reading.then(async () => {
       inflight = true;
       try {
-        const record = ((await place.status!()) as { record?: Record<string, unknown> | null } | undefined)?.record;
-        if (!record || typeof record.run !== 'string' || !Number.isInteger(record.generation)) return;
-        const key = JSON.stringify([record.status, record.generation, record.holder, record.sealedSeq]);
-        if (key === lastRunRecord) return;
-        lastRunRecord = key;
-        // The line is an allowlist (RECORDING.md's host row): run, status, generation, sealedSeq, wakeAt, holder { driver, host, bootId, pid, since }, heartbeatAt, updatedAt, and a detail as text. Every other field is dropped (a sandbox id, a name, a mountpoint:
-        // what a place knows of its machine is not the recording's). A holder's host and boot id are labels (`host-1`, `boot-1`, ... in order of first appearance, the same label for the same value), so a takeover by a new box still shows a new holder.
-        const holder = record.holder && typeof record.holder === 'object' ? (record.holder as Record<string, unknown>) : undefined;
-        const kept = (source: Record<string, unknown>, names: readonly string[]) => Object.fromEntries(names.filter((name) => source[name] !== undefined).map((name) => [name, source[name]]));
-        const safeHolder = holder ? { ...kept(holder, ['driver', 'pid', 'since']), ...(typeof holder.host === 'string' ? { host: labelOf(hostLabels, 'host', holder.host) } : {}), ...(typeof holder.bootId === 'string' ? { bootId: labelOf(bootLabels, 'boot', holder.bootId) } : {}) } : undefined;
-        const detail = record.detail === undefined || record.detail === null ? undefined : plainText(record.detail);
-        supervisor.host('run.json', { gen: record.generation, ...kept(record, ['run', 'status', 'generation', 'sealedSeq', 'wakeAt', 'heartbeatAt', 'updatedAt']), ...(safeHolder ? { holder: safeHolder } : {}), ...(detail ? { detail } : {}) });
+        const status = (await place.status!()) as { record?: Record<string, unknown> | null; delegations?: unknown; boxes?: unknown } | undefined;
+        const record = status?.record;
+        if (record && typeof record.run === 'string' && Number.isInteger(record.generation)) {
+          lastGeneration = record.generation as number;
+          const key = JSON.stringify([record.status, record.generation, record.holder, record.sealedSeq]);
+          if (key !== lastRunRecord) {
+            lastRunRecord = key;
+            // The line is an allowlist (RECORDING.md's host row): run, status, generation, sealedSeq, wakeAt, holder { driver, host, bootId, pid, since }, heartbeatAt, updatedAt, and a detail as text of at most 240 with every absolute path as `<path>`; every other field is dropped (a sandbox id, a name, a
+            // mountpoint: what a place knows of its machine is not the recording's). A holder's host and boot id are labels (`host-1`, `boot-1`, ... in order of first appearance, the same label for the same value), so a takeover by a new box still shows a new holder.
+            const holder = record.holder && typeof record.holder === 'object' ? (record.holder as Record<string, unknown>) : undefined;
+            const kept = (source: Record<string, unknown>, names: readonly string[]) => Object.fromEntries(names.filter((name) => source[name] !== undefined).map((name) => [name, source[name]]));
+            const safeHolder = holder ? { ...kept(holder, ['driver', 'pid', 'since']), ...(typeof holder.host === 'string' ? { host: labelOf(hostLabels, 'host', holder.host) } : {}), ...(typeof holder.bootId === 'string' ? { bootId: labelOf(bootLabels, 'boot', holder.bootId) } : {}) } : undefined;
+            const detail = record.detail === undefined || record.detail === null ? undefined : plainText(record.detail);
+            supervisor.host('run.json', { gen: record.generation, ...kept(record, ['run', 'status', 'generation', 'sealedSeq', 'wakeAt', 'heartbeatAt', 'updatedAt']), ...(safeHolder ? { holder: safeHolder } : {}), ...(detail ? { detail } : {}) });
+          }
+        }
+        // The place's delegations of the run's own path (an Archil place), one `delegation` line each time one appears or its orphaned or pending state changes: the first line with `isOrphaned` marks the first reading that SAW the orphan.
+        for (const entry of Array.isArray(status?.delegations) ? status!.delegations as unknown[] : []) {
+          const delegation = delegationOf(entry);
+          if (!delegation) continue;
+          const id = `${delegation.clientId}:${delegation.inodeId}`;
+          const state = JSON.stringify([delegation.isOrphaned, delegation.isPending, delegation.path]);
+          if (delegationSeen.get(id) === state) continue;
+          delegationSeen.set(id, state);
+          supervisor.host('delegation', { gen: lastGeneration ?? currentGen, ...safeDelegation(delegation) });
+        }
+        // The boxes the place made (a `HostBox` each, ended ones too): one `box.receipt` line per box when its `to` appears, or at the final read for one still open (`to`, `seconds` and `cost_usd` null). A box is its place in the
+        // place's list (the place lists the boxes it started, in the order it started them, so equal provider, kind and start never make two boxes one), and it is `box-N` by first appearance, labelled when it first shows, before its
+        // receipt; never the provider's id. `cost_usd` is seconds times the published per-second price, null when the box has none (the run's cost then reads unknown).
+        (Array.isArray(status?.boxes) ? status!.boxes as unknown[] : []).forEach((entry, index) => {
+          const label = labelOf(boxLabels, 'box', String(index));
+          const box = entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : undefined;
+          if (!box || typeof box.provider !== 'string' || typeof box.kind !== 'string') return;
+          const at = (value: unknown) => (typeof value === 'number' ? value : typeof value === 'string' ? Date.parse(value) : Number.NaN);
+          const from = at(box.from);
+          const to = at(box.to);
+          const ended = Number.isFinite(to);
+          if (!Number.isFinite(from) || (!ended && !final) || boxReceipted.has(label)) return;
+          boxReceipted.add(label);
+          const seconds = ended ? Math.max(0, (to - from) / 1000) : null;
+          const price = typeof box.usdPerSecond === 'number' && Number.isFinite(box.usdPerSecond) ? box.usdPerSecond : null;
+          supervisor.host('box.receipt', { box: label, provider: box.provider, kind: box.kind, from: box.from, to: ended ? box.to : null, seconds, usd_per_second: price, cost_usd: price !== null && seconds !== null ? seconds * price : null, source: typeof box.source === 'string' ? box.source.slice(0, 240) : null, priced: box.priced ?? null });
+        });
       } catch { /* a reading never fails the run */ } finally { inflight = false; }
     });
     return reading;
+  };
+  placeRef = place;
+  // A place whose child writes its recording inside the place brings it home through `recordHome.bringHome`: every status tick while a runner runs, and once more, final, after the runner has exited (before the follower closes, the manifest and the release). A tick that fails is
+  // retried at the next one; a final failure refuses the recording unless the attempt's box was lost (then the attempt's lines after its last carried tick are a gap, like a kill losing its in-flight commit).
+  let carrying: Promise<void> = Promise.resolve();
+  // The slow tick does not queue a carry behind one still running (a transfer can take seconds): the final carry, which the result waits for, then waits behind at most one.
+  let carryBusy = false;
+  let carryRefusal: { gen: number; code: string } | undefined;
+  const carry = (gen: number, final: boolean, lost: () => boolean): Promise<void> => {
+    if (!place.recordHome) return Promise.resolve();
+    carrying = carrying.then(async () => {
+      carryBusy = true;
+      try { await place.recordHome!.bringHome(recordDir, { final }); } catch (error) {
+        const code = String((error as { code?: unknown } | null)?.code ?? 'CARRY_FAILED');
+        const gone = lost() || code === 'BOX_GONE';
+        supervisor.host('recording.carry.failed', { gen, code, message: plainText((error as Error | null)?.message ?? error), ...(final && gone ? { lost: true } : {}) });
+        if (final && !gone) carryRefusal ??= { gen, code };
+      } finally { carryBusy = false; }
+    });
+    return carrying;
   };
   // Metering: the recording's lines as they stand, folded; past the cap the supervisor stops the run.
   const meterTimer = maxUsd === null ? undefined : setInterval(() => { if (meterKnown(recordDir) > maxUsd) overBudget = true; }, 250);
@@ -437,12 +522,17 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       const token = place.token ? await place.token(gen) : undefined;
       // The supervisor's own nonce for this attempt: the process puts it in its kill request, and the supervisor honors only a request that carries it. The place knows nothing about it.
       const nonce = randomBytes(16).toString('hex');
-      const order = { gen, env: { ...base, CROSS_LOG: log, KILL_REQUEST: request, KILL_NONCE: nonce, PLAN: JSON.stringify(plan) }, ...(token !== undefined ? { stdin: token } : {}) };
+      const order = { gen, env: { ...base, CROSS_LOG: log, KILL_REQUEST: request, KILL_NONCE: nonce, RECORD_GEN: String(gen), RECORD_STARTED: startedText, PLAN: JSON.stringify(plan) }, ...(token !== undefined ? { stdin: token } : {}) };
       if (previous && !place.kills.includes(previous.kind)) throw new Error(`the ${place.name} place cannot lose its ${previous.kind}: this kill is not one it can make`);
-      runner = previous ? (await place.recover(previous.runner, previous.kind, order)).runner : await place.start(order);
+      currentGen = gen;
+      const recovered = previous ? await place.recover(previous.runner, previous.kind, order) : undefined;
+      runner = recovered ? recovered.runner : await place.start(order);
       supervisor.host('process.started', { gen, pid: runner.pid });
       // The reading runs beside the supervision: the kill requests and the spend cap are watched from the start, however slow the place's read is.
       void readStatus();
+      // A takeover that revoked the old holder's delegations (an Archil place): what was revoked, and how long the whole takeover took.
+      const revoked = (Array.isArray(recovered?.revoked) ? recovered!.revoked : []).map(delegationOf).filter((entry) => entry !== undefined).map(({ clientId, inodeId, path, isOrphaned }) => safeDelegation({ clientId, inodeId, path, isOrphaned }));
+      if (revoked.length) supervisor.host('revoke', { gen, revoked, ...(Number.isFinite(recovered?.ms) ? { ms: recovered!.ms } : {}) });
       // The supervisor decides when: a crossing asks to be killed (read through the place's signals), or the spend cap is passed. It writes the kill line, and only then does the place kill.
       // A kill the place cannot make is recorded and ends the attempt: it is never an unhandled rejection.
       let killed: { point: string | null; n: number | null; label: string | null; why: string; kind: 'process' | 'box' } | undefined;
@@ -467,7 +557,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
           ? { point: asked.point, n: asked.n, label: plan.run && !('storm' in plan.run) ? plan.run.point : asked.point, why: plan.run?.why ?? 'a kill', kind }
           : { point: null, n: null, label: 'max-usd', why: `past --max-usd ${maxUsd}`, kind: 'process' };
         supervisor.host('kill', { gen, label: killed.label, crossing: killed.point === null ? null : { point: killed.point, n: killed.n }, side: 'child', kind: killed.kind });
-        kills.push({ gen, point: killed.point, kind: killed.kind, why: killed.why });
+        kills.push({ gen, point: killed.point, kind: killed.kind, why: killed.why, ...(typeof asked === 'object' && plan.run && !('storm' in plan.run) ? { n: asked.n, planned: plan.run.n } : {}) });
         try { await place.kill(runner!, killed.kind); } catch (error) { failed(String((error as { code?: unknown } | null)?.code ?? 'KILL_FAILED'), messageOf(error, paths.root), killed.kind); }
         await settled(readStatus());
       };
@@ -489,21 +579,24 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       // the attempt does not finish (nor the place release) until the kill, with its provider cleanup, is done.
       let deciding: Promise<void> = Promise.resolve();
       const watch = setInterval(() => {
+        if (followError && !decided) { decided = true; deciding = place.kill(runner!, 'process').catch(() => undefined); return; }
         if (decided) return;
         if (operatorKill && existsSync(operatorKill)) {
           // A control that cannot be removed (a directory made by mistake, a parent that forbids it) is a failed kill, reported through the normal path: the supervisor does not crash with the child still running.
           try { rmSync(operatorKill, { force: true }); deciding = decide('operator'); } catch (error) { decided = true; failed(String((error as { code?: unknown } | null)?.code ?? 'OPERATOR_KILL_UNUSABLE'), 'the operator\'s kill control could not be removed', 'process'); }
         } else if (overBudget) deciding = decide(undefined);
       }, 20);
-      const tick = setInterval(() => { if (!inflight) void readStatus(); }, 2000);
+      const tick = setInterval(() => { if (!inflight) void readStatus(); if (!carryBusy) void carry(gen, false, () => false); }, 2000);
       const exit = await Promise.race([runner.exited, gaveUp.then(() => undefined)]);
       const result: Exit = exit ?? { exit: null, signal: null, stderr: 'the place could not stop this process' };
       clearInterval(watch);
       clearInterval(tick);
       await settled(readStatus());
+      await carry(gen, true, () => killed?.kind === 'box');
       await iterator?.return?.();
       await pump;
       await deciding;
+      if (followError) break;
       processes.push(result);
       if (killFailed || signalsFailed || (killed && killed.label === 'max-usd')) break;
       // A tool kill of an attempt that ended in a process kill and did not fire never will (the plan is consumed): it is reported, not carried off with the attempt.
@@ -535,8 +628,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     // What the run delivered and its store's hash come from the last runner's own report: nothing is read under the run's directory.
     const last = processes.at(-1)?.outcome;
     const delivered = last && last.status === 'complete' && 'record' in last ? { record: last.record } : null;
+    // The last read can add a box's priced receipt: the cap is checked after it.
+    await settled(readStatus(true));
     if (maxUsd !== null && meterKnown(recordDir) > maxUsd) overBudget = true;
-    await settled(readStatus());
     const processesStarted = processes.length;
     // The demo's result hook, reported by the process that delivered, shapes the result line and its blob; without one, the delivered record is the result.
     const made = processes.at(-1)?.outcome?.result;
@@ -549,8 +643,13 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     const chosen = [...processes].reverse().find((entry) => entry.outcome?.models)?.outcome?.models;
     const extra = options.manifest ? options.manifest({ dir, record: delivered?.record ?? null, input, live, ...(chosen ? { models: chosen } : {}) }) : undefined;
     for (const name of Object.keys(extra ?? {})) if (RESERVED.has(name)) throw new Error(`manifest(): "${name}" is written by the entry; use another name`);
+    if (followError) throw followError;
+    follower.close();
+    if (carryRefusal) throw new Error(`the recording is refused: the place could not bring home process ${carryRefusal.gen}'s recording (${carryRefusal.code}), and that process ended on its own`);
+    // What a viewer following the run could already have fetched is not taken back: a secret in the file as it was placed refuses the recording, though the finished file is redacted.
+    scanPlaced(recordDir, tracked?.final() ?? []);
     finishRecording(recordDir, {
-      ...(redact ? { redact } : {}),
+      ...(redact ? { redact } : {}), job: { blob: jobBlob, sha256: jobBlob },
       title: spec.title ?? spec.name, task: job.workflow.name ?? spec.name, model: live ? 'live' : 'faux/faux-1', generations: processesStarted, kills: kills.length,
       code: codeOf(options.root ?? ROOT), cost, source: { run: runName, ...(last?.storeSha256 ? { store_sha256: last.storeSha256 } : {}) }, ...(seeAlso.length ? { see_also: seeAlso } : {}), ...(extra ? { extra } : {}), ...(resultBlob ? { result: resultBlob } : {}), ...(live ? { providers: 'real' as const } : {}),
     });
@@ -559,6 +658,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     const usd = cost(readEventsOf(recordDir)).usd;
     return { processes, kills, record: delivered?.record ?? null, dir, runId, ...(values.record ? { recording: values.record } : {}), usd, maxUsd, overBudget, failedKills, failedSignals, unlanded };
   } finally {
+    clearInterval(following);
     if (meterTimer) clearInterval(meterTimer);
     // The backend and the scratch are closed whatever the place did: a place that failed to be made, or to be released, leaves neither open.
     try { await place?.release(); } finally {
@@ -576,6 +676,14 @@ export function messageOf(error: unknown, root: string): string {
   return text.replace(/(?<![\w/:.-])\/(?:[\w.@%+~-]+(?: [\w.@%+~-]+)*\/)*[\w.@%+~-]+\/?|\b[A-Za-z]:\\(?:[^\\\n;,"'`]+\\)*[^\s\\;,"'`]+/g, (path) => (path === own || path.startsWith(`${own}/`) ? path : '<path>')).slice(0, 240);
 }
 
+/** One delegation as the recording holds it: the allowlisted fields, with the path clipped; anything that is not a delegation is not one. */
+function delegationOf(value: unknown): { clientId: string; inodeId: string | number; isOrphaned: boolean; isPending: boolean; path: string } | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const entry = value as Record<string, unknown>;
+  if (typeof entry.clientId !== 'string' || (typeof entry.inodeId !== 'string' && typeof entry.inodeId !== 'number') || typeof entry.path !== 'string') return undefined;
+  return { clientId: entry.clientId, inodeId: entry.inodeId, isOrphaned: entry.isOrphaned === true, isPending: entry.isPending === true, path: entry.path.slice(0, 240) };
+}
+
 /** A place's detail as the recording holds it: text of at most 240 characters, every absolute path replaced by `<path>`. */
 export function plainText(value: unknown): string {
   const text = typeof value === 'string' ? value : JSON.stringify(value) ?? '';
@@ -591,9 +699,9 @@ export function notLanded<T extends object>(tools: readonly T[], log: string): T
 
 const readEventsOf = (dir: string) => rows<Record<string, unknown>>(join(dir, 'events.jsonl'));
 
-function summarize(options: DemoOptions, result: DemoResult) {
+export function summarize(options: DemoOptions, result: DemoResult) {
   console.log(`${options.spec.title ?? options.spec.name}: ${result.processes.at(-1)?.outcome?.status ?? 'no outcome'} in ${result.processes.length} process${result.processes.length === 1 ? '' : 'es'}, ${result.kills.length} kill${result.kills.length === 1 ? '' : 's'}`);
-  for (const kill of result.kills) console.log(`  killed process ${kill.gen} (${kill.kind}) at ${kill.point ?? 'no named crossing'}: ${kill.why}`);
+  for (const kill of result.kills) console.log(`  killed process ${kill.gen} (${kill.kind}) at ${kill.point ?? 'no named crossing'}${kill.planned !== undefined && kill.n !== kill.planned ? ` (planned n=${kill.planned}, landed at n=${kill.n})` : ''}: ${kill.why}`);
   if (result.failedSignals.length) console.log(`the place's signals failed: ${result.failedSignals.map((entry) => `process ${entry.gen} (${entry.code})`).join(', ')}`);
   if (result.failedKills.length) console.log(`kills the place could not make: ${result.failedKills.map((kill) => `process ${kill.gen} (${kill.code})`).join(', ')}`);
   const last = result.processes.at(-1)?.outcome;

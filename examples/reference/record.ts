@@ -5,7 +5,7 @@
 // spools into `events.jsonl`, scans the recording (scan.ts), and writes the manifest only when nothing was found.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AttachInput, CommitRecorder, DurableLine } from './record-store.ts';
 import { credentialInFile, scanRecording } from './scan.ts';
@@ -80,9 +80,10 @@ const spool = (dir: string) => join(dir, '.spool');
 const startedFile = (dir: string) => join(spool(dir), 'started');
 
 /** The recording's clock: ISO text of the moment the first recorder opened it. */
-export function startedAt(dir: string): string {
+export function startedAt(dir: string, given?: string): string {
   mkdirSync(spool(dir), { recursive: true });
-  try { writeFileSync(startedFile(dir), new Date().toISOString(), { flag: 'wx' }); } catch { /* another process opened it first */ }
+  // `given` is the recording's clock as a value (a box's child is handed it in `RECORD_STARTED`: the supervisor's own `.spool/started`); a directory that already has one is left alone.
+  try { writeFileSync(startedFile(dir), given ?? new Date().toISOString(), { flag: 'wx' }); } catch { /* another process opened it first */ }
   return readFileSync(startedFile(dir), 'utf8');
 }
 
@@ -135,27 +136,44 @@ const piWatch: WatchEvents = async (session, conv) => {
   return watchEvents(session as never, conv as never, BACKGROUND_CONTEXT) as never;
 };
 
-export function openRecorder(options: { dir: string; redact?: Redact; commits?: CommitRecorder; supervisor?: Supervisor; watch?: WatchEvents }): Recorder {
+export function openRecorder(options: { dir: string; /** The recording's clock, when this directory has none yet (a box's child). */ started?: string; /** A spool segment is closed past this many bytes and the next one opened (default 1 MB), so a grown spool stays small and a closed segment is never read again. */ segmentBytes?: number; /** This process's number in the recording, when the recording directory is its own (a box's): the supervisor knows it, a directory of one process cannot count it. */ gen?: number; redact?: Redact; commits?: CommitRecorder; supervisor?: Supervisor; watch?: WatchEvents }): Recorder {
   const { dir } = options;
-  const started = Date.parse(startedAt(dir));
+  const started = Date.parse(startedAt(dir, options.started));
   mkdirSync(join(dir, 'blobs'), { recursive: true });
-  const file = join(spool(dir), `live-${process.pid}-${Date.now()}.jsonl`);
+  const liveStream = join(spool(dir), `live-${process.pid}-${Date.now()}`);
+  const file = liveStream;
   const redact = options.redact ?? ((text: string) => text);
   // A process's number in THIS recording: how many processes have opened it, this one included. The run's own lease generation is not it (a
   // directory resumed into a fresh recording is already at 2), and the manifest, the live lines and process.started all count the recording's.
-  appendFileSync(file, '');
-  let gen = readdirSync(spool(dir)).filter((name) => name.startsWith('live-')).length;
+  appendFileSync(`${liveStream}.0.jsonl`, '');
+  let gen = options.gen ?? new Set(readdirSync(spool(dir)).filter((name) => name.startsWith('live-')).map((name) => name.replace(/\.\d+\.jsonl$/, ''))).size;
   let seq = 0;
   let latest = 0;
   let stop: (() => Promise<void>) | undefined;
   const watching = new Map<number, Promise<Awaited<ReturnType<WatchEvents>> | undefined>>();
-  const durableFile = join(spool(dir), `durable-${process.pid}-${Date.now()}.jsonl`);
+  const durableFile = join(spool(dir), `durable-${process.pid}-${Date.now()}`);
   const keep = (bytes: Buffer, extension: string) => keepBlob(dir, bytes, extension);
+  // The spool is synced after each batch of lines (every 200 ms while lines come, and when the recorder detaches), so a lost box loses less: what was synced is what a place can bring home.
+  const dirty = new Set<string>();
+  const syncAll = () => { for (const target of dirty) { try { const descriptor = openSync(target, 'r+'); try { fsyncSync(descriptor); } finally { closeSync(descriptor); } } catch { /* gone with its place */ } } dirty.clear(); };
+  const syncing = setInterval(syncAll, 200);
+  syncing.unref();
+  // A stream is a run of segments, `<stream>.<n>.jsonl`: a new one is opened past `segmentBytes`, so a grown spool is small files and a closed segment is never fetched again.
+  const segments = new Map<string, { n: number; size: number }>();
+  const append = (stream: string, text: string) => {
+    let segment = segments.get(stream) ?? { n: 0, size: 0 };
+    if (segment.size > 0 && segment.size >= (options.segmentBytes ?? 1_000_000)) segment = { n: segment.n + 1, size: 0 };
+    const target = `${stream}.${segment.n}.jsonl`;
+    appendFileSync(target, text);
+    segment.size += Buffer.byteLength(text);
+    segments.set(stream, segment);
+    dirty.add(target);
+  };
   const write = (source: string, kind: string, data: unknown, meta: Meta = {}) => {
     const moved = moveImages(data === undefined ? null : data, keep);
     const blobs = [...new Set([...(meta.blobs ?? []), ...moved.blobs])];
     const line = { channel: 'live', source, kind, gen, t: Math.max(0, Date.now() - started), seq: seq++, ...(meta.path !== undefined ? { path: meta.path } : {}), ...(meta.conv !== undefined ? { conv: meta.conv } : {}), data: moved.data, ...(blobs.length ? { blobs } : {}) };
-    appendFileSync(file, `${redact(JSON.stringify(line))}\n`);
+    append(file, `${redact(JSON.stringify(line))}\n`);
   };
   return {
     generation() { options.supervisor?.host('process.started', { gen, pid: process.pid }); },
@@ -180,14 +198,15 @@ export function openRecorder(options: { dir: string; redact?: Redact; commits?: 
         const moved = moveImages(line.data, keep);
         const blobs = [...new Set([...(line.blobs ?? []), ...moved.blobs])];
         latest = Math.max(latest, line.commit);
-        appendFileSync(durableFile, `${redact(JSON.stringify({ ...line, data: moved.data, ...(blobs.length ? { blobs } : {}), t: line.t ?? clock() }))}\n`);
+        append(durableFile, `${redact(JSON.stringify({ ...line, data: moved.data, ...(blobs.length ? { blobs } : {}), t: line.t ?? clock() }))}\n`);
       });
     },
-    async detach() { const end = stop; stop = undefined; await end?.(); for (const setup of [...watching.values()]) await (await setup)?.stop(); watching.clear(); },
+    // Every watcher is stopped first (one still being set up finishes and may write), and only then is the last sync made: no line is written after it.
+    async detach() { const end = stop; stop = undefined; await end?.(); for (const setup of [...watching.values()]) await (await setup)?.stop(); watching.clear(); clearInterval(syncing); syncAll(); },
     memo(key, value, meta = {}) {
       const moved = moveImages({ memo: key, value }, keep);
       const line = { channel: 'durable', source: 'pi', kind: 'pi.memo', gen, t: Math.max(0, Date.now() - started), commit: latest, order: null, ...(meta.path !== undefined ? { path: meta.path } : {}), ...(meta.conv !== undefined ? { conv: meta.conv } : {}), data: moved.data, ...(moved.blobs.length ? { blobs: moved.blobs } : {}) };
-      appendFileSync(file, `${redact(JSON.stringify(line))}\n`);
+      append(file, `${redact(JSON.stringify(line))}\n`);
     },
     live: (source, kind, data, meta) => write(source, kind, data, meta),
     // The payoff (`result`) is the supervisor's line: a process with no supervisor writes none. The supervisor's lines have no event-level gen, so the process they are about goes in the data (a `result`: `{ gen, blob, title }`).
@@ -208,6 +227,8 @@ export type Header = {
   providers?: 'real' | 'scripted';
   /** Other recorded runs of this demo, linked only. */
   see_also?: { recording: string; label: string }[];
+  /** The job that ran, `{ workflow, input, files: [names] }` as a JSON blob, so the viewer can draw its workflow graph beside any replay. */
+  job?: { blob: string; sha256: string };
   /** Manifest fields the demo adds (never one the entry writes itself). */
   extra?: Record<string, unknown>;
   /** The manifest goes through it, as every line does. */
@@ -225,6 +246,19 @@ const readLines = (path: string): Record<string, unknown>[] => {
   return out;
 };
 
+/** One total order for lines that tie on `t` (a millisecond): the supervisor's kill of one process, then the next process's start, then the
+ *  lines that process writes (durable, then live), and the payoff last. It agrees with the supervisor's own `seq` (a kill precedes the next
+ *  start) and puts a process's snapshot after its start, so no tie can form a cycle. */
+const rank = (line: Record<string, unknown>) => (line.source === 'host' && line.channel === 'live' ? ({ kill: -2, 'process.started': -1, result: 2 } as Record<string, number>)[line.kind as string] ?? 1 : line.channel === 'durable' ? 0 : 1);
+const orderOf = (line: Record<string, unknown>) => (line.order === null ? Infinity : (line.order as number) ?? 0);
+/** Section 3's order: by `t`, a tie by rank, then (commit, order), then seq. */
+export const compareLines = (a: Record<string, unknown>, b: Record<string, unknown>) => (a.t as number) - (b.t as number) || rank(a) - rank(b) || ((a.commit as number) ?? 0) - ((b.commit as number) ?? 0) || orderOf(a) - orderOf(b) || ((a.seq as number) ?? 0) - ((b.seq as number) ?? 0);
+/** A memo has no place inside its commit of its own: it follows the lines the store gave that commit. `next` carries the count across calls. */
+export function assignMemoOrders(lines: Record<string, unknown>[], next: Map<number, number> = new Map()): void {
+  for (const line of lines) if (line.channel === 'durable' && line.order !== null) next.set(line.commit as number, Math.max(next.get(line.commit as number) ?? 0, (line.order as number) + 1));
+  for (const line of lines) if (line.channel === 'durable' && line.order === null) { line.order = next.get(line.commit as number) ?? 0; next.set(line.commit as number, (line.order as number) + 1); }
+}
+
 /** Merges the spools into `events.jsonl` (by `t`, a tie by (commit, order), then seq), writes `manifest.json`, and removes
  *  the spool. Before the manifest it scans the recording (its lines, its blobs and the manifest's own text): a credential's
  *  shape or a machine path anywhere throws, and no manifest is written, so the directory is never a finished recording.
@@ -234,17 +268,16 @@ export function finishRecording(dir: string, header: Header): { lines: number } 
   if (existsSync(join(dir, 'manifest.json'))) throw new Error(`${dir} already holds a finished recording; record into an empty directory.`);
   const files = existsSync(spool(dir)) ? readdirSync(spool(dir)).filter((name) => name.endsWith('.jsonl')) : [];
   const all = files.flatMap((name) => readLines(join(spool(dir), name)));
-  // One total order for lines that tie on `t` (a millisecond): the supervisor's kill of one process, then the next process's start, then the
-  // lines that process writes (durable, then live), and the payoff last. It agrees with the supervisor's own `seq` (a kill precedes the next
-  // start) and puts a process's snapshot after its start, so no tie can form a cycle.
-  const rank = (line: Record<string, unknown>) => (line.source === 'host' && line.channel === 'live' ? ({ kill: -2, 'process.started': -1, result: 2 } as Record<string, number>)[line.kind as string] ?? 1 : line.channel === 'durable' ? 0 : 1);
-  const orderOf = (line: Record<string, unknown>) => (line.order === null ? Infinity : (line.order as number) ?? 0);
-  all.sort((a, b) => (a.t as number) - (b.t as number) || rank(a) - rank(b) || ((a.commit as number) ?? 0) - ((b.commit as number) ?? 0) || orderOf(a) - orderOf(b) || ((a.seq as number) ?? 0) - ((b.seq as number) ?? 0));
-  // A memo has no place inside its commit of its own: it follows the lines the store gave that commit.
-  const next = new Map<number, number>();
-  for (const line of all) if (line.channel === 'durable' && line.order !== null) next.set(line.commit as number, Math.max(next.get(line.commit as number) ?? 0, (line.order as number) + 1));
-  for (const line of all) if (line.channel === 'durable' && line.order === null) { line.order = next.get(line.commit as number) ?? 0; next.set(line.commit as number, (line.order as number) + 1); }
-  writeFileSync(join(dir, 'events.jsonl'), all.map((line) => JSON.stringify(line)).join('\n') + (all.length ? '\n' : ''));
+  all.sort(compareLines);
+  assignMemoOrders(all);
+  // The file a follower has been reading is a prefix of the final one when the lines arrived in order: the rest is appended. When one arrived late (after a line that sorts after it) the file is replaced whole, by a rename.
+  const redactLine = header.redact ?? ((text: string) => text);
+  const finalText = all.map((line) => redactLine(JSON.stringify(line))).join('\n') + (all.length ? '\n' : '');
+  const eventsFile = join(dir, 'events.jsonl');
+  const live = existsSync(eventsFile) ? readFileSync(eventsFile, 'utf8') : '';
+  if (live && finalText.startsWith(live)) appendFileSync(eventsFile, finalText.slice(live.length));
+  else if (live !== finalText) { const temporary = `${eventsFile}.tmp-${process.pid}`; writeFileSync(temporary, finalText); renameSync(temporary, eventsFile); }
+  else if (!live) writeFileSync(eventsFile, finalText);
   const store = header.source.store_sha256 ?? (header.source.store && existsSync(header.source.store) ? createHash('sha256').update(readFileSync(header.source.store)).digest('hex') : '0'.repeat(64));
   const started = readFileSync(startedFile(dir), 'utf8');
   const { source, cost, generations, extra, redact: redactManifest, ...rest } = header;
@@ -258,6 +291,67 @@ export function finishRecording(dir: string, header: Header): { lines: number } 
   writeFileSync(join(dir, 'manifest.json'), manifest);
   rmSync(spool(dir), { recursive: true, force: true });
   return { lines: all.length };
+}
+
+/** Follows the spools of the recording in `dir` while a run is going and appends each line to `events.jsonl` as it becomes safe to place, whole lines in one append, in section 3's order, so a viewer polling the file sees a live run and its replay as one file.
+ *  A line is placed once its `t` is `holdMs` behind the recording's clock (the time every writer has to get it to a spool), and a memo once a later commit has appeared (the lines of its own commit are all in); the lines of one batch are sorted
+ *  by `compareLines`. `finishRecording` completes the file: what was not placed is appended, and a line that arrived later than the hold is placed by replacing the file whole. */
+export function followRecording(dir: string, options: { holdMs?: number | (() => number); /** Every line it places goes through this too: a line a process wrote without the secret values (a box's child, which has no sign-in file) is cleaned on its way into the file. */ redact?: Redact } = {}): { poll(): void; close(): void } {
+  const holdOf = () => (typeof options.holdMs === 'function' ? options.holdMs() : options.holdMs ?? 1000);
+  const started = Date.parse(startedAt(dir));
+  const events = join(dir, 'events.jsonl');
+  if (!existsSync(events)) writeFileSync(events, '');
+  const offsets = new Map<string, number>();
+  // The unfinished tail of each spool, as bytes: a multibyte character cut by a read is decoded with the rest of its line.
+  const partial = new Map<string, Buffer>();
+  const pending: Record<string, unknown>[] = [];
+  const next = new Map<number, number>();
+  let latestCommit = -Infinity;
+  const ingest = () => {
+    const names = existsSync(spool(dir)) ? readdirSync(spool(dir)).filter((name) => name.endsWith('.jsonl')) : [];
+    for (const name of names) {
+      const path = join(spool(dir), name);
+      const from = offsets.get(name) ?? 0;
+      // Only the bytes after the saved offset are read: a spool that has not grown costs one stat, however long the recording is.
+      let chunk: Buffer;
+      try {
+        const size = statSync(path).size;
+        if (size <= from) continue;
+        const descriptor = openSync(path, 'r');
+        try { chunk = Buffer.alloc(size - from); const got = readSync(descriptor, chunk, 0, chunk.length, from); chunk = chunk.subarray(0, got); } finally { closeSync(descriptor); }
+      } catch { continue; }
+      offsets.set(name, from + chunk.length);
+      const bytes = Buffer.concat([partial.get(name) ?? Buffer.alloc(0), chunk]);
+      const cut = bytes.lastIndexOf(10);
+      if (cut < 0) { partial.set(name, bytes); continue; }
+      partial.set(name, bytes.subarray(cut + 1));
+      for (const part of bytes.subarray(0, cut).toString('utf8').split('\n')) {
+        if (!part) continue;
+        try {
+          const line = JSON.parse(part) as Record<string, unknown>;
+          pending.push(line);
+          if (line.channel === 'durable' && typeof line.commit === 'number') latestCommit = Math.max(latestCommit, line.commit);
+          if (line.channel === 'durable' && line.order !== null) next.set(line.commit as number, Math.max(next.get(line.commit as number) ?? 0, (line.order as number) + 1));
+        } catch { /* a torn line is not a line */ }
+      }
+    }
+  };
+  return {
+    poll() {
+      ingest();
+      const watermark = Date.now() - started - holdOf();
+      // A memo waits for a later commit (the lines of its own are then all in), and nothing that sorts after it is placed before it: a later live line appended first would put the memo after it.
+      const waiting = pending.filter((line) => line.channel === 'durable' && line.order === null && (line.commit as number) >= latestCommit).sort(compareLines);
+      const first = waiting[0];
+      const ready = pending.filter((line) => (line.t as number) < watermark && !waiting.includes(line) && (first === undefined || compareLines(line, first) < 0));
+      if (!ready.length) return;
+      ready.sort(compareLines);
+      for (const line of ready) pending.splice(pending.indexOf(line), 1);
+      for (const line of ready) if (line.channel === 'durable' && line.order === null) { line.order = next.get(line.commit as number) ?? 0; next.set(line.commit as number, (line.order as number) + 1); }
+      appendFileSync(events, ready.map((line) => (options.redact ?? ((text: string) => text))(JSON.stringify(line))).join('\n') + '\n');
+    },
+    close() { ingest(); },
+  };
 }
 
 export type { DurableLine };

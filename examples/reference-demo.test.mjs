@@ -1,7 +1,8 @@
 // The reference entry as a demo's platform (item A of the entry brief): the spec's kills list through the supervisor (a named crossing, a storm, a box kind),
 // --input, --max-usd, the browser choice, and the box the job's tools run in. The demo here is the reference job itself, started through demo-fixture.ts.
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1078,12 +1079,17 @@ test('the child uses the sign-in file the recorder reads (AGENTRUN_HOME is hande
   assert.equal(mid.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(mid.result.processes.at(-1)));
   assert.ok(!holds(mid.recording, refreshed), 'the refreshed token, unknown at the start, is not in the recording');
   assert.ok((readFileSync(join(mid.recording, 'events.jsonl'), 'utf8').match(/\[redacted\]/g) ?? []).length >= 1);
-  // (e) An event carries the new token BEFORE the file shows it; the final read of auth.json catches it, and the recording is refused: no manifest, the key and the file named, the value never.
+  // (e) An event carries the new token BEFORE the file shows it. The follower redacts every line it places with the latest union a second behind, so by default the line is placed clean and the finished recording never holds the token.
   const late = `made-up-late-access-token-${'l'.repeat(30)}`;
   const { home: lateHome } = await signInHome(t);
+  const clean = await run(t, {}, ['--json'], { AGENTRUN_HOME: lateHome, DEMO_LEAK: JSON.stringify([late]), DEMO_LEAK_STEPS: 'leak,rotate', DEMO_ROTATE_TOKEN: late });
+  assert.equal(clean.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(clean.result.processes.at(-1)));
+  assert.ok(!holds(clean.recording, late), 'the token is not in the finished recording: the line was redacted as it was placed');
+  // But a line already placed (a hold of 0) before the file changed was already fetchable: the recording is refused (no manifest, the key and the file named, the value never).
+  const { home: placedHome } = await signInHome(t);
   const recording = join(await mkdtemp(join(tmpdir(), 'reference-late-')), 'recording');
   t.after(() => rm(join(recording, '..'), { recursive: true, force: true }));
-  await assert.rejects(() => run(t, {}, ['--json', '--record', recording], { AGENTRUN_HOME: lateHome, DEMO_LEAK: JSON.stringify([late]), DEMO_LEAK_STEPS: 'leak,rotate', DEMO_ROTATE_TOKEN: late }), (error) => /credentials\.openai\.access is in /.test(error.message) && !error.message.includes(late));
+  await assert.rejects(() => run(t, {}, ['--json', '--record', recording], { AGENTRUN_HOME: placedHome, DEMO_FOLLOW_HOLD_MS: '0', DEMO_ROTATE_DELAY_MS: '800', DEMO_LEAK: JSON.stringify([late]), DEMO_LEAK_STEPS: 'leak,rotate', DEMO_ROTATE_TOKEN: late }), (error) => /credentials\.openai\.access/.test(error.message) && /while the run was followed/.test(error.message) && !error.message.includes(late));
   assert.ok(!existsSync(join(recording, 'manifest.json')), 'the refused recording is not a finished one');
 });
 
@@ -1577,8 +1583,8 @@ test('code mode is off by default; on, the agent\'s `code` tool runs a script wh
     'const ran = await tools.bash({ command: "echo hello > proof.txt; pwd > where.txt; echo $?" });',
     'const reach = [typeof fetch, typeof process, typeof require, typeof WebAssembly, typeof setTimeout, typeof vision.see].join(",");',
     'await tools.bash({ command: "printf %s " + JSON.stringify(reach) + " > reach.txt" });',
-    'text("ran " + ran.exitCode);',
-    'return ran.exitCode;',
+    'text("ran " + JSON.stringify(ran.trim()));',
+    'return ran;',
   ].join('\n');
   const on = await run(t, {}, ['--json'], { DEMO_CODE: script, DEMO_CODE_ON: '1' });
   assert.equal(on.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(on.result.processes.at(-1)));
@@ -1594,9 +1600,152 @@ test('code mode is off by default; on, the agent\'s `code` tool runs a script wh
   assert.equal(readFileSync(join(spec.result.dir, 'work', 'proof.txt'), 'utf8').trim(), 'hello');
 });
 
+// ---- live mode, the recorder half ---------------------------------------------------------------------------------------------------------------
+
+test('the follower appends whole lines to events.jsonl in section 3\'s order as the spools fill; finishRecording completes the file, and the finished file equals a fresh export (a late line is placed by replacing the file whole)', async (t) => {
+  const { startedAt, followRecording, finishRecording, compareLines, assignMemoOrders } = await import('./reference/record.ts');
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-follow-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'rec');
+  mkdirSync(join(dir, '.spool'), { recursive: true });
+  startedAt(dir);
+  const spool = (name) => join(dir, '.spool', name);
+  const line = (over) => JSON.stringify({ channel: 'live', source: 'workflow', kind: 'x', gen: 1, seq: 0, data: {}, ...over });
+  const follower = followRecording(dir, { holdMs: 30 });
+  const snapshots = [];
+  const look = () => { const text = readFileSync(join(dir, 'events.jsonl'), 'utf8'); snapshots.push(text.slice(0, text.lastIndexOf('\n') + 1)); };
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  // A supervisor line and a process\'s lines, one of them torn mid-write.
+  appendFileSync(spool('supervisor-1.jsonl'), `${line({ source: 'host', kind: 'process.started', t: 1, seq: 0, gen: undefined, data: { gen: 1 } })}\n`);
+  appendFileSync(spool('live-1.jsonl'), `${line({ t: 5, seq: 0 })}\n${line({ t: 9, seq: 1 }).slice(0, 20)}`);
+  await wait(80); follower.poll(); look();
+  appendFileSync(spool('live-1.jsonl'), `${line({ t: 9, seq: 1 }).slice(20)}\n`);
+  // Durable lines: commit 1 with its lines and a memo (order null), then commit 2, which closes commit 1 for the memo.
+  appendFileSync(spool('durable-1.jsonl'), [{ t: 10, commit: 1, order: 0, seq: 0 }, { t: 10, commit: 1, order: 1, seq: 1 }, { t: 11, commit: 1, order: null, seq: 2 }, { t: 14, commit: 2, order: 0, seq: 3 }].map((over) => `${line({ channel: 'durable', source: 'workflow', ...over })}\n`).join(''));
+  await wait(80); follower.poll(); look();
+  // A line that arrives later than the hold, from before what was placed: the file cannot stay a prefix of the final order.
+  appendFileSync(spool('live-2.jsonl'), `${line({ t: 3, seq: 0, source: 'pi' })}\n`);
+  await wait(80); follower.poll(); look();
+  follower.close();
+  // Every snapshot a reader took holds whole lines only, in section 3\'s order, and each is a prefix of the next until the late line: append only.
+  for (const text of snapshots.slice(0, 2)) {
+    const lines = text.split('\n').filter(Boolean).map((entry) => JSON.parse(entry));
+    for (let index = 1; index < lines.length; index += 1) assert.ok(compareLines(lines[index - 1], lines[index]) <= 0, 'in order');
+  }
+  assert.ok(snapshots[1].startsWith(snapshots[0]) && snapshots[2].startsWith(snapshots[1]), 'appended to, never rewritten, while the run is going');
+  assert.ok(snapshots[2].trimEnd().endsWith(line({ source: 'pi', t: 3, seq: 0 })), 'a line later than the hold is appended where it arrived, and the final file puts it in its place');
+  assert.ok(snapshots[0].length > 0 && !snapshots[0].includes('"seq":1'), 'the torn line was not placed');
+  assert.ok(snapshots[1].includes('"seq":1'), 'and it is placed once whole');
+  // The fresh export: every spool line, sorted, memo orders assigned.
+  const fresh = [];
+  for (const name of readdirSync(join(dir, '.spool')).filter((entry) => entry.endsWith('.jsonl'))) for (const entry of readFileSync(spool(name), 'utf8').split('\n').filter(Boolean)) fresh.push(JSON.parse(entry));
+  fresh.sort(compareLines);
+  assignMemoOrders(fresh);
+  const expected = fresh.map((entry) => JSON.stringify(entry)).join('\n') + '\n';
+  finishRecording(dir, { title: 't', task: 't', model: 'faux/faux-1', kills: 0, code: { repo: 'r', commit: 'c', packages: {} }, cost: { usd: 0, parts: {} }, source: { run: 'x', store_sha256: '0'.repeat(64) } });
+  assert.equal(readFileSync(join(dir, 'events.jsonl'), 'utf8'), expected, 'the finished file is the fresh export');
+  assert.ok(existsSync(join(dir, 'manifest.json')) && !existsSync(spool('')), 'the manifest is last, and the spool is gone');
+});
+
+test('the follower holds later lines behind a memo that waits, decodes a character a read cut in two whole, and reads only new bytes', async (t) => {
+  const { startedAt, followRecording } = await import('./reference/record.ts');
+  const { syncBuiltinESMExports } = await import('node:module');
+  const fs = (await import('node:fs')).default;
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-follow-order-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'rec');
+  mkdirSync(join(dir, '.spool'), { recursive: true });
+  startedAt(dir);
+  const spool = (name) => join(dir, '.spool', name);
+  const line = (over) => JSON.stringify({ channel: 'live', source: 'workflow', kind: 'x', gen: 1, seq: 0, data: {}, ...over });
+  const durable = (over) => JSON.stringify({ channel: 'durable', source: 'workflow', kind: 'agentrun.driver', gen: 1, data: {}, ...over });
+  const events = () => readFileSync(join(dir, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((entry) => JSON.parse(entry));
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const follower = followRecording(dir, { holdMs: 0 });
+  // A memo (t 10, commit 1) waits for a later commit; a live line at t 20 must not be placed before it.
+  appendFileSync(spool('durable-1.jsonl'), `${durable({ t: 8, commit: 1, order: 0, seq: 0 })}\n${durable({ t: 10, commit: 1, order: null, seq: 1 })}\n`);
+  appendFileSync(spool('live-1.jsonl'), `${line({ t: 20, seq: 2 })}\n`);
+  await wait(40); follower.poll();
+  assert.deepEqual(events().map((entry) => entry.t), [8], 'the memo waits, and the later live line waits behind it');
+  appendFileSync(spool('durable-1.jsonl'), `${durable({ t: 15, commit: 2, order: 0, seq: 3 })}\n`);
+  await wait(40); follower.poll();
+  assert.deepEqual(events().map((entry) => entry.t), [8, 10, 15, 20], 'the next poll places the memo, then what follows it, in order');
+  // A multibyte character cut by a read: both halves are decoded together.
+  const whole = Buffer.from(`${line({ t: 30, seq: 4, data: { text: 'caf\u00e9 \u2014 \u{1f680}' } })}\n`);
+  const cut = whole.indexOf(Buffer.from('\u00e9')) + 1;
+  appendFileSync(spool('live-2.jsonl'), whole.subarray(0, cut));
+  await wait(40); follower.poll();
+  appendFileSync(spool('live-2.jsonl'), whole.subarray(cut));
+  await wait(40); follower.poll();
+  assert.equal(events().at(-1).data.text, 'caf\u00e9 \u2014 \u{1f680}', 'no replacement characters');
+  // Reading: the spools are read from the saved offset, not whole again: no readFileSync of a spool file once the follower is made.
+  const real = fs.readFileSync;
+  const reads = [];
+  fs.readFileSync = (path, ...rest) => { if (String(path).includes('.spool')) reads.push(String(path)); return real(path, ...rest); };
+  syncBuiltinESMExports();
+  t.after(() => { fs.readFileSync = real; syncBuiltinESMExports(); });
+  appendFileSync(spool('live-1.jsonl'), `${line({ t: 40, seq: 5 })}\n`);
+  await wait(40); follower.poll(); follower.poll();
+  assert.deepEqual(reads, [], 'the spools are not read whole on a poll');
+  assert.equal(events().at(-1).t, 40);
+});
+
+test('--record: a reader polling events.jsonl mid-run sees only whole lines in order and append-only, the finished file validates, and the manifest names the job blob (always, when the entry knows the job)', { timeout: 300_000 }, async (t) => {
+  const { compareLines } = await import('./reference/record.ts');
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-live-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'spec.json');
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] }));
+  Object.assign(process.env, { DEMO_SPEC: file });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const recording = join(tmp, 'recording');
+  const seen = [];
+  const reader = setInterval(() => { try { const text = readFileSync(join(recording, 'events.jsonl'), 'utf8'); seen.push(text.slice(0, text.lastIndexOf('\n') + 1)); } catch { /* not there yet */ } }, 5);
+  const result = await demo({ ...options, argv: ['--kill', '--json', '--record', recording] });
+  clearInterval(reader);
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.ok(seen.some((text) => text.length > 0), 'the reader saw lines while the run was going');
+  let previous = '';
+  for (const text of seen) {
+    const lines = text.split('\n').filter(Boolean).map((entry) => JSON.parse(entry));
+    for (let index = 1; index < lines.length; index += 1) assert.ok(compareLines(lines[index - 1], lines[index]) <= 0, 'in order');
+    if (text.length >= previous.length) assert.ok(text.startsWith(previous), 'append only');
+    previous = text.length >= previous.length ? text : previous;
+  }
+  assert.deepEqual(validateRecording(recording), []);
+  const manifest = JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8'));
+  assert.match(manifest.job.blob, /^[0-9a-f]{64}$/);
+  assert.equal(manifest.job.sha256, manifest.job.blob);
+  const job = JSON.parse(readFileSync(join(recording, 'blobs', `${manifest.job.blob}.json`), 'utf8'));
+  assert.deepEqual([job.workflow.name, job.input.company, Array.isArray(job.files)], ['reference-company-check', 'Acme Ltd', true]);
+});
+
+test('the follower redacts every line it places (a line a box\'s child wrote without the secret values is cleaned on its way in), live and in the finished file', async (t) => {
+  const { startedAt, followRecording, finishRecording } = await import('./reference/record.ts');
+  const { redactorOf } = await import('./reference/secrets.ts');
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-follow-redact-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'rec');
+  mkdirSync(join(dir, '.spool'), { recursive: true });
+  startedAt(dir);
+  const secret = `made-up-box-token-${'b'.repeat(24)}`;
+  const redact = redactorOf([{ key: 'K', value: secret }]);
+  appendFileSync(join(dir, '.spool', 'live-9.jsonl'), `${JSON.stringify({ channel: 'live', source: 'workflow', kind: 'x', gen: 1, seq: 0, t: 1, data: { text: `a box wrote ${secret}` } })}\n`);
+  const follower = followRecording(dir, { holdMs: 10, redact });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  follower.poll();
+  const live = readFileSync(join(dir, 'events.jsonl'), 'utf8');
+  assert.ok(live.includes('a box wrote [redacted]') && !live.includes(secret), 'cleaned as it is placed');
+  follower.close();
+  finishRecording(dir, { title: 't', task: 't', model: 'faux/faux-1', kills: 0, code: { repo: 'r', commit: 'c', packages: {} }, cost: { usd: 0, parts: {} }, source: { run: 'x', store_sha256: '0'.repeat(64) }, redact });
+  assert.ok(!readFileSync(join(dir, 'events.jsonl'), 'utf8').includes(secret) && !readFileSync(join(dir, 'manifest.json'), 'utf8').includes(secret));
+
+});
+
 test('code mode: a command\'s output is clipped while it streams (head kept, the rest counted), a command stops with its script, and the tool\'s description carries the declaration of vision.see', { timeout: 300_000 }, async (t) => {
   // Output: 100000 characters from one command; the script is given the first 100 and a count of the rest.
-  const loud = ['const ran = await tools.bash({ command: "head -c 100000 /dev/zero | tr \'\\\\0\' x" });', 'await tools.bash({ command: "printf %s " + JSON.stringify(ran.output) + " > out.txt" });', 'return ran.output.length;'].join('\n');
+  const loud = ['const ran = await tools.bash({ command: "head -c 100000 /dev/zero | tr \'\\\\0\' x" });', 'await tools.bash({ command: "printf %s " + JSON.stringify(ran) + " > out.txt" });', 'return ran.length;'].join('\n');
   const clipped = await run(t, { codeMode: { outputChars: 100 } }, ['--json'], { DEMO_CODE: loud, DEMO_CODE_ON: '' });
   const out = readFileSync(join(clipped.result.dir, 'work', 'out.txt'), 'utf8');
   assert.ok(out.startsWith('x'.repeat(100)) && out.includes('[99900 more characters not shown]') && out.length < 200, `the script got the head and a count: ${out.slice(0, 160)}`);
@@ -1607,7 +1756,7 @@ test('code mode: a command\'s output is clipped while it streams (head kept, the
   assert.ok(!existsSync(join(cut.result.dir, 'work', 'late.txt')), 'the command stopped with its script');
   // The declaration the model reads is in the tool\'s description.
   const { codeModeExtension } = await import('./reference/code-mode.ts');
-  const tool = codeModeExtension({ see: () => ({ signature: '(request: { ask: string }): Promise<{ text: string }>', description: 'Ask the eyes about images.' }) }, {}).tools[0];
+  const tool = codeModeExtension({ see: () => ({ signature: '(request: { ask: string }): Promise<{ text: string }>', description: 'Ask the eyes about images.' }), judge: () => ({ signature: '(request: J): Promise<K>', description: 'Ask Jev.' }) }, {}).tools[0];
   assert.match(tool.description, /vision\.see` is declared as `\(request: \{ ask: string \}\): Promise<\{ text: string \}>`: Ask the eyes about images\./);
 });
 
@@ -1733,4 +1882,503 @@ test('--operator-kill is refused by a place that cannot make a process kill, bef
     return { ...inner, name: 'box-only', kills: ['box'], start: async (order) => { calls.push('start'); return inner.start(order); }, release: async () => { calls.push('release'); } };
   } }), /box-only place cannot lose its process: --operator-kill/);
   assert.deepEqual(calls, ['release'], 'nothing was started');
+});
+
+test('the placed-lines scan finds a token as a line stores it, JSON-escaped', async (t) => {
+  const { scanPlaced } = await import('./reference/secrets.ts');
+  const dir = await mkdtemp(join(tmpdir(), 'reference-placed-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const value = 'made-up-token-with-"quote"-and-\\back\nline-' + 'p'.repeat(20);
+  writeFileSync(join(dir, 'events.jsonl'), `${JSON.stringify({ data: { text: value } })}\n`);
+  assert.throws(() => scanPlaced(dir, [{ key: 'the key', value }]), /a secret was in events\.jsonl while the run was followed/);
+});
+
+test('a follower that cannot write ends the run through the normal path: the running child is stopped, the place is released, and the error is the follower\'s', { timeout: 120_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference' });
+  process.env.DEMO_LINGER_MS = '20000';
+  const recording = join(tmp, 'recording');
+  const calls = [];
+  const started = Date.now();
+  await assert.rejects(() => demo({ ...options, argv: ['--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    // Appending to events.jsonl fails from now on: it is a directory.
+    return { ...inner, start: async (order) => { rmSync(join(recording, 'events.jsonl'), { force: true }); mkdirSync(join(recording, 'events.jsonl')); return inner.start(order); }, release: async () => { calls.push('release'); return inner.release(); } };
+  } }), /EISDIR|is a directory/i);
+  assert.deepEqual(calls, ['release'], 'the place was released');
+  assert.ok(Date.now() - started < 60_000, 'the child was stopped, not waited for');
+});
+
+// ---- LiveParts.tools ---------------------------------------------------------------------------------------------------------------------------
+
+test('on --live the effect door dispatches to LiveParts.tools (with its receipt); a tool missing there runs from the fakes only when demo.json says local: "fakes", else the call fails "no live source"; on fakes nothing changes', { timeout: 300_000 }, async (t) => {
+  const programs = [{ name: 'fixture spec', env: 'DEMO_SPEC' }, { name: 'fixture probe', env: 'DEMO_LIVE_PROBE' }, { name: 'fixture tools', env: 'DEMO_LIVE_TOOLS' }];
+  const keys = [[{ env: 'BROWSERBASE_API_KEY' }, { env: 'BROWSERBASE_PROJECT_ID' }]];
+  const browser = Object.fromEntries(['BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID'].map((name) => [name, `value-for-${name.toLowerCase()}`]));
+  const answers = (dir) => readdirSync(join(dir, 'answers')).map((name) => JSON.parse(readFileSync(join(dir, 'answers', name), 'utf8')));
+  const fromLive = (dir) => answers(dir).some((answer) => answer.value?.from === 'live');
+  // A live tool: dispatched through the door, its answer kept as the receipt (the same wrapper as a fakes tool).
+  const live = await run(t, { keys, programs }, ['--json', '--live'], { DEMO_LIVE_PROBE: '1', DEMO_LIVE_TOOLS: 'search', ...browser });
+  assert.equal(live.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(live.result.processes.at(-1)));
+  assert.ok(fromLive(live.result.dir), 'the live tool ran, and its receipt is the kept answer');
+  // A tool missing from the live tools, declared local: "fakes": the fakes\' own runs.
+  const declared = await run(t, { keys, programs, tools: [{ name: 'search', local: 'fakes', hosted: null }] }, ['--json', '--live'], { DEMO_LIVE_PROBE: '1', DEMO_LIVE_TOOLS: 'other', ...browser });
+  assert.equal(declared.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(declared.result.processes.at(-1)));
+  assert.ok(!fromLive(declared.result.dir) && answers(declared.result.dir).length > 0, 'the fakes\' search ran');
+  // Not declared: the call fails clearly.
+  const missing = await run(t, { keys, programs }, ['--json', '--live'], { DEMO_LIVE_PROBE: '1', DEMO_LIVE_TOOLS: 'other', ...browser });
+  assert.notEqual(missing.result.processes.at(-1).outcome.status, 'complete');
+  assert.ok(JSON.stringify(missing.result.processes.at(-1)).includes('no live source for search') || readFileSync(join(missing.recording, 'events.jsonl'), 'utf8').includes('no live source for search'), 'it says why');
+  // On fakes, live tools are never looked at.
+  const fakes = await run(t, {}, ['--json'], { DEMO_LIVE_PROBE: '1', DEMO_LIVE_TOOLS: 'search' });
+  assert.equal(fakes.result.processes.at(-1).outcome.status, 'complete');
+  assert.ok(!fromLive(fakes.result.dir), 'fakes.tools never see LIVE');
+  assert.ok(!existsSync(join(fakes.result.dir, 'models-seen.json')), 'the live hook is supplied and is never called on fakes');
+});
+
+// ---- the live host's crossings ------------------------------------------------------------------------------------------------------------------
+
+test('a kill at "judge.asked <label>" or "model.request turn <n>" lands on a live-shaped host (no tapFakes: the judge and model are the live host\'s), the resume pays the judge once, and repeated is 0', { timeout: 300_000 }, async (t) => {
+  const programs = [{ name: 'fixture spec', env: 'DEMO_SPEC' }, { name: 'fixture probe', env: 'DEMO_LIVE_PROBE' }];
+  const keys = [[{ env: 'BROWSERBASE_API_KEY' }, { env: 'BROWSERBASE_PROJECT_ID' }]];
+  const browser = Object.fromEntries(['BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID'].map((name) => [name, `value-for-${name.toLowerCase()}`]));
+  const judged = (dir) => readFileSync(join(dir, 'ledger.jsonl'), 'utf8').split('\n').filter(Boolean).map((row) => JSON.parse(row)).filter((row) => row.kind === 'judge');
+  for (const point of ['judge.asked verdict', 'model.request turn 1']) {
+    const { result, recording } = await run(t, { keys, programs, kills: [{ point, why: `a kill at ${point} on a live host` }] }, ['--live', '--kill', '--json'], { DEMO_LIVE_PROBE: '1', ...browser });
+    assert.deepEqual(result.processes.map((process) => [process.signal, process.outcome?.status ?? null]), [['SIGKILL', null], [null, 'complete']], `${point}: ${JSON.stringify(result.processes)}`);
+    assert.deepEqual(result.kills.map((kill) => kill.point), [point]);
+    assert.deepEqual(result.unlanded, []);
+    assert.equal(judged(result.dir).length, 1, `${point}: the judge was paid for once across the kill and the resume`);
+    const counted = fold(readEvents(recording));
+    assert.deepEqual([counted.processes, counted.kills, counted.repeated], [2, 1, 0], point);
+  }
+});
+
+// ---- the demo's own Jev caps, and a model whose key the demo does not declare ----------------------------------------------------------------------
+
+test('models.judge.caps sets the demo\'s own Jev caps (positive integers at most 4 times the default), the default is unchanged, a value past the ceiling is refused at load, and the run still refuses past the caps', { timeout: 300_000 }, async (t) => {
+  const { judgeCapsOf } = await import('./reference/demo-spec.ts');
+  const { composeHost } = await import('./reference/demo.ts');
+  const { localHost, placeAt, crossings } = await import('./reference/index.ts');
+  assert.deepEqual(judgeCapsOf({ name: 'x' }), { requests: 50, tokens: 40_000 }, 'the default is unchanged');
+  assert.deepEqual(judgeCapsOf({ name: 'x', models: { judge: { jev: true } } }), { requests: 50, tokens: 40_000 });
+  assert.deepEqual(judgeCapsOf({ name: 'x', models: { judge: { jev: true, caps: { requests: 2, tokens: 100 } } } }), { requests: 2, tokens: 100 });
+  assert.deepEqual(judgeCapsOf({ name: 'x', models: { judge: { caps: { requests: 200 } } } }), { requests: 200, tokens: 40_000 }, 'one given, the other default');
+  assert.deepEqual(judgeCapsOf({ name: 'x', models: { judge: { caps: { requests: 200, tokens: 160_000 } } } }), { requests: 200, tokens: 160_000 }, 'the ceiling itself is allowed');
+  for (const [name, value] of [['requests', 201], ['tokens', 160_001], ['requests', 0], ['requests', -1], ['tokens', 1.5], ['requests', '3'], ['tokens', null]]) {
+    assert.throws(() => judgeCapsOf({ name: 'x', models: { judge: { caps: { [name]: value } } } }), new RegExp(`models\\.judge\\.caps\\.${name} is a positive integer at most`), `${name} ${value}`);
+  }
+  // Refused at load, before any process starts.
+  await assert.rejects(() => run(t, { models: { judge: { jev: true, caps: { requests: 201 } } }, keys: [{ oneOf: [{ env: 'TYPESAFE_API_KEY', required: true, where: 'w', why: 'y' }], why: 'a Jev key' }] }, ['--json']), /models\.judge\.caps\.requests is a positive integer at most 200/);
+  // The caps are the judge seam\'s: the third question of a demo that set 2 is refused and never sent.
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-caps-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const { fakes } = await import('./reference/job.ts');
+  const place = await placeAt(join(tmp, 'run'));
+  const asked = [];
+  const local = localHost(place, { ...fakes, judge: async (request) => { asked.push(request.label); return { answers: {}, usage: { input_tokens: 1, output_tokens: 1 } }; } });
+  composeHost(local.host, undefined, crossings(undefined, undefined), { open: 0 }, join(place.root, 'judge-spent.jsonl'), false, judgeCapsOf({ name: 'x', models: { judge: { jev: true, caps: { requests: 2, tokens: 100 } } } }));
+  const ask = () => local.host.decisions.runJudge({ label: 'q', questions: {} });
+  await ask(); await ask();
+  await assert.rejects(ask, (error) => error.code === 'JEV_CAP_REACHED' && /2 of 2 requests/.test(error.message));
+  assert.equal(asked.length, 2, 'the refused one was never sent');
+});
+
+test('a demo that names models.judge (Jev) without a Jev key group is refused at load, naming the group to add; a TYPESAFE_API_KEY or an OPENROUTER_API_KEY group is enough, and no key is implied', { timeout: 300_000 }, async (t) => {
+  await assert.rejects(() => run(t, { models: { judge: { jev: true } } }, ['--json']), /models\.judge \(Jev\) but declares no key for it: add a keys group .*TYPESAFE_API_KEY.*OPENROUTER_API_KEY/s);
+  await assert.rejects(() => run(t, { models: { judge: { jev: true } }, keys: [{ env: 'GEMINI_API_KEY', required: true, where: 'w', why: 'y' }] }, ['--json']), /declares no key for it/);
+  for (const env of ['TYPESAFE_API_KEY', 'OPENROUTER_API_KEY']) {
+    const ok = await run(t, { models: { judge: { jev: true } }, keys: [{ oneOf: [{ env, required: true, where: 'w', why: 'y' }], why: 'a Jev key', for: 'live' }] }, ['--json']);
+    assert.equal(ok.result.processes.at(-1).outcome.status, 'complete', env);
+  }
+  // A demo that names no Jev judge is not asked for the key.
+  assert.equal((await run(t, { models: { lead: { needs: ['text'] } } }, ['--json'])).result.processes.at(-1).outcome.status, 'complete');
+
+});
+
+test('a live host whose fallback judge is the fakes\' (already tapped) has each crossing counted once; a judge the live parts supply is tapped here', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-tap-once-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const { localHost, placeAt } = await import('./reference/index.ts');
+  const { composeHost } = await import('./reference/demo.ts');
+  const place = await placeAt(join(tmp, 'run'));
+  const crossed = [];
+  const cross = (point) => { crossed.push(point); return false; };
+  const fakes = { model: () => { throw new Error('unused'); }, tools: {}, judge: async () => ({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }), pages: {}, start: 'about:blank' };
+  // The entry taps the fakes when the live parts supply tools; the live parts here supply tools only.
+  const { tapFakes } = await import('./reference/crossings.ts');
+  const host = localHost(place, tapFakes(fakes, cross)).host;
+  composeHost(host, { tools: { runEffect: async () => 'live' } }, cross, { open: 0 }, join(tmp, 'spent.jsonl'), true, undefined, true);
+  await host.decisions.runJudge({ label: 'verdict' });
+  assert.deepEqual(crossed.filter((point) => point.startsWith('judge.')), ['judge.asked verdict', 'judge.answered verdict'], 'once, not twice');
+  // A judge the live parts supply has no crossings of its own: it is tapped.
+  crossed.length = 0;
+  const other = localHost(place, tapFakes(fakes, cross)).host;
+  composeHost(other, { decisions: { runJudge: async () => ({ answers: {}, usage: { input_tokens: 1, output_tokens: 0 } }) } }, cross, { open: 0 }, join(tmp, 'spent2.jsonl'), true, undefined, true);
+  await other.decisions.runJudge({ label: 'verdict' });
+  assert.deepEqual(crossed.filter((point) => point.startsWith('judge.')), ['judge.asked verdict', 'judge.answered verdict']);
+});
+
+// ---- delegation and revoke lines ---------------------------------------------------------------------------------------------------------------
+
+test('delegation lines are written from place.status() when a delegation appears or its orphaned state changes (none for a stable one), a revoke line from recover()\'s { revoked, ms }, and a place without them writes none; the recording validates', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-delegations-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'spec.json');
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] }));
+  Object.assign(process.env, { DEMO_SPEC: file });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const lines = (recording, kind) => readEvents(recording).filter((line) => line.source === 'host' && line.kind === kind);
+  const recording = join(tmp, 'recording');
+  const first = { clientId: 'c-9a41', inodeId: 7001, path: '/runs/the-run', isOrphaned: false, isPending: false };
+  await demo({ ...options, argv: ['--kill', '--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    let generation = 0;
+    let delegations = [];
+    const record = () => ({ run: paths.id, status: 'running', generation, sealedSeq: 0, holder: { driver: 'fake', host: 'h', bootId: 'b', pid: generation, since: 's' } });
+    return {
+      ...inner,
+      status: async () => ({ record: generation ? record() : null, delegations }),
+      start: async (order) => { generation = 1; delegations = [first]; return inner.start(order); },
+      // The old holder\'s delegation is orphaned the moment its box is gone; the takeover revokes it and a new holder has its own.
+      kill: async (runner, kind) => { delegations = [{ ...first, isOrphaned: true }]; await inner.kill(runner, kind); },
+      recover: async (last, kind, order) => { const next = await inner.recover(last, kind, order); generation = 2; delegations = [{ clientId: 'c-b2e7', inodeId: 'f-7002', path: '/runs/the-run', isOrphaned: false, isPending: true }]; return { ...next, revoked: [{ ...first, isOrphaned: true }], ms: 1234 }; },
+    };
+  } });
+  assert.deepEqual(lines(recording, 'delegation').map((line) => [line.data.gen, line.data.clientId, line.data.isOrphaned, line.data.isPending]), [[1, 'client-1', false, false], [1, 'client-1', true, false], [2, 'client-2', false, true]], 'one line when each appears, one more when the first became orphaned, none for a stable one');
+  assert.deepEqual(Object.keys(lines(recording, 'delegation')[0].data).sort(), ['clientId', 'gen', 'inodeId', 'isOrphaned', 'isPending', 'path']);
+  assert.deepEqual(lines(recording, 'revoke').map((line) => [line.data.gen, line.data.revoked, line.data.ms]), [[2, [{ clientId: 'client-1', inodeId: 'inode-1', path: '/runs/the-run', isOrphaned: true }], 1234]]);
+  assert.deepEqual(lines(recording, 'delegation').map((line) => line.data.inodeId), ['inode-1', 'inode-1', 'inode-2'], 'the same value the same label, a new one the next');
+  const text = readFileSync(join(recording, 'events.jsonl'), 'utf8');
+  for (const raw of ['c-9a41', 'c-b2e7', '7001', 'f-7002']) assert.ok(!text.includes(raw), `${raw} is not in the recording`);
+  assert.deepEqual(validateRecording(recording), []);
+  // A place without delegations or a revoke writes none.
+  const plain = join(tmp, 'plain');
+  await demo({ ...options, argv: ['--kill', '--json', '--record', plain] });
+  assert.equal(lines(plain, 'delegation').length + lines(plain, 'revoke').length, 0);
+});
+
+// ---- a box place's recording, brought home ------------------------------------------------------------------------------------------------------
+
+/** A place whose child writes its recording in a directory of its own (a box's, here a folder; the child writes the recording's clock there itself, from RECORD_STARTED), and that brings it home the way the seam says: blobs first (hash-checked, temp name, rename), then the new bytes of each spool file up to its last whole line. */
+const boxed = (tmp, { failOn, calls = [], kind = 'process' } = {}) => ({ paths, self, destroyBoxes, requestFile }) => {
+  const inner = localPlace({ self, paths, ...(kind === 'box' ? { destroyBoxes: async () => undefined } : {}), requestFile });
+  const dirs = new Map();
+  const offsets = new Map();
+  let into;
+  const dir = (attempt) => join(tmp, 'box', `record-${attempt}`);
+  const home = {
+    dir,
+    bringHome: async (target, { final = false } = {}) => {
+      calls.push({ final, manifest: existsSync(join(target, 'manifest.json')), attempts: [...dirs.keys()] });
+      const failure = failOn?.({ final, calls: calls.length });
+      if (failure) throw Object.assign(new Error(`the box could not be read at ${tmp}/box: ${failure}`), { code: failure });
+      for (const [attempt, from] of dirs) {
+        const blobs = join(from, 'blobs');
+        for (const name of existsSync(blobs) ? readdirSync(blobs).filter((entry) => !entry.startsWith('.')) : []) {
+          const bytes = readFileSync(join(blobs, name));
+          if (createHash('sha256').update(bytes).digest('hex') !== name.split('.')[0]) throw Object.assign(new Error('a blob does not hash to its name'), { code: 'BLOB_MISMATCH' });
+          mkdirSync(join(target, 'blobs'), { recursive: true });
+          if (!existsSync(join(target, 'blobs', name))) { const temporary = join(target, 'blobs', `.${name}.tmp-${process.pid}`); writeFileSync(temporary, bytes); renameSync(temporary, join(target, 'blobs', name)); }
+        }
+        const spool = join(from, '.spool');
+        for (const name of existsSync(spool) ? readdirSync(spool).filter((entry) => entry.endsWith('.jsonl')) : []) {
+          const text = readFileSync(join(spool, name), 'utf8');
+          const done = offsets.get(`${attempt}/${name}`) ?? 0;
+          const whole = text.slice(0, text.lastIndexOf('\n') + 1);
+          if (whole.length > done) { appendFileSync(join(target, '.spool', name), whole.slice(done)); offsets.set(`${attempt}/${name}`, whole.length); }
+        }
+      }
+    },
+  };
+  const start = async (order) => { into = order.env.RECORD_DIR; const own = dir(order.gen); mkdirSync(own, { recursive: true }); dirs.set(order.gen, own); return { order: { ...order, env: { ...order.env, RECORD_DIR: own } } }; };
+  return {
+    ...inner, recordHome: home,
+    start: async (order) => { const { order: next } = await start(order); return inner.start(next); },
+    recover: async (last, kindOf, order) => { const { order: next } = await start(order); return inner.recover(last, kindOf, next); },
+  };
+};
+
+test('a place with recordHome: the child writes its recording inside the place, the supervisor brings it home each tick and once final before the manifest, blobs first, and the recording validates', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-recordhome-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'spec.json');
+  writeFileSync(file, JSON.stringify({ name: 'reference' }));
+  Object.assign(process.env, { DEMO_SPEC: file, DEMO_RESULT: '1' });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const calls = [];
+  const recording = join(tmp, 'recording');
+  const result = await demo({ ...options, argv: ['--json', '--record', recording], place: boxed(tmp, { calls }) });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.ok(calls.length >= 1 && calls.at(-1).final === true, 'the last call is the final one');
+  assert.ok(calls.every((call) => call.manifest === false), 'every call, the final one too, is before the manifest');
+  assert.deepEqual(calls.at(-1).attempts, [1]);
+  assert.equal(readFileSync(join(tmp, 'box', 'record-1', '.spool', 'started'), 'utf8'), readFileSync(join(recording, 'manifest.json'), 'utf8') && JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8')).recorded.started, 'the child wrote the recording\'s clock into its own directory from RECORD_STARTED');
+  const lines = readEvents(recording);
+  assert.ok(lines.some((line) => line.source === 'workflow'), 'the child\'s own lines came home');
+  assert.ok(existsSync(join(recording, 'blobs')) && readdirSync(join(recording, 'blobs')).every((name) => !name.startsWith('.')), 'its blobs came home, none left half written');
+  assert.deepEqual(validateRecording(recording), []);
+});
+
+test('recording.carry.failed: a tick that fails is retried, a final failure refuses the recording when the attempt ended on its own, and does not when its box was lost (lost: true, the recording stands)', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-carry-failed-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'spec.json');
+  Object.assign(process.env, { DEMO_SPEC: file });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  writeFileSync(file, JSON.stringify({ name: 'reference' }));
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const failed = (recording) => readEvents(recording).filter((line) => line.source === 'host' && line.kind === 'recording.carry.failed');
+  // A tick that fails once: a line, no refusal, and the final call brings everything home.
+  const tick = join(tmp, 'tick');
+  const retried = await demo({ ...options, argv: ['--json', '--record', tick], place: boxed(join(tmp, 'b1'), { failOn: ({ final, calls }) => (!final && calls === 1 ? 'CARRY_FAILED' : undefined) }) });
+  assert.equal(retried.processes.at(-1).outcome.status, 'complete');
+  assert.deepEqual(failed(tick).map((line) => [line.data.gen, line.data.code, 'lost' in line.data]), [[1, 'CARRY_FAILED', false]]);
+  assert.ok(!failed(tick)[0].data.message.includes(tmp) && failed(tick)[0].data.message.includes('<path>'), 'paths in the message are <path>');
+  assert.ok(readEvents(tick).some((line) => line.source === 'workflow'), 'and the child\'s lines are home');
+  // A final failure after a runner that ended on its own: refused, no manifest.
+  const refused = join(tmp, 'refused');
+  await assert.rejects(() => demo({ ...options, argv: ['--json', '--record', refused], place: boxed(join(tmp, 'b2'), { failOn: ({ final }) => (final ? 'CARRY_FAILED' : undefined) }) }), /the recording is refused: the place could not bring home process 1's recording \(CARRY_FAILED\)/);
+  assert.ok(!existsSync(join(refused, 'manifest.json')));
+  // The same failure for an attempt whose box was lost: the recording stands, with lost: true.
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'the box is taken away', kind: 'box' }] }));
+  const { options: boxKill } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const lost = join(tmp, 'lost');
+  let firstFinal = true;
+  const stood = await demo({ ...boxKill, argv: ['--kill', '--json', '--record', lost], place: boxed(join(tmp, 'b3'), { kind: 'box', failOn: ({ final }) => { if (!final || !firstFinal) return undefined; firstFinal = false; return 'BOX_GONE'; } }) });
+  assert.equal(stood.processes.at(-1).outcome.status, 'complete');
+  assert.deepEqual(failed(lost).map((line) => [line.data.gen, line.data.code, line.data.lost]), [[1, 'BOX_GONE', true]]);
+  assert.ok(existsSync(join(lost, 'manifest.json')), 'the recording stands');
+  assert.deepEqual(validateRecording(lost), []);
+});
+
+test('the box child\'s own recorder redacts the box\'s host name and boot id even where no sign-in file is handed down (no AGENTRUN_HOME): a box-side line holding them is clean', async () => {
+  const { trackSecrets } = await import('./reference/secrets.ts');
+  const { hostname } = await import('node:os');
+  const boot = existsSync('/proc/sys/kernel/random/boot_id') ? readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() : undefined;
+  const { redact } = trackSecrets({}, { name: 'x' }, join(tmpdir(), 'no-such-sign-in', 'auth.json'));
+  const line = JSON.stringify({ data: { text: `the box ${hostname()} booted as ${boot ?? 'no-boot-id'} and says hello` } });
+  const cleaned = redact(line);
+  if (hostname().length >= 4 && hostname() !== 'localhost') assert.ok(!cleaned.includes(hostname()), 'the box\'s host name is gone');
+  if (boot) assert.ok(!cleaned.includes(boot), 'and its boot id');
+  assert.ok(cleaned.includes('says hello'));
+});
+
+test('RECORD_STARTED gives a fresh recording directory its clock (an existing one is left alone), and a spool rolls into segments past segmentBytes that a second process still counts as one', async (t) => {
+  const { openRecorder, startedAt } = await import('./reference/record.ts');
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-segments-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const clock = '2026-10-16T09:00:00.000Z';
+  const fresh = join(tmp, 'fresh');
+  assert.equal(startedAt(fresh, clock), clock, 'a fresh directory takes the value it is given');
+  assert.equal(startedAt(fresh, '2030-01-01T00:00:00.000Z'), clock, 'an existing one is left alone');
+  // Segments: a tiny segment size rolls the stream; the lines are all there, in segments `<stream>.<n>.jsonl`.
+  const dir = join(tmp, 'rec');
+  const first = openRecorder({ dir, started: clock, segmentBytes: 300 });
+  for (let index = 0; index < 8; index += 1) first.live('workflow', 'x', { text: 'x'.repeat(100), index });
+  await first.detach();
+  const names = readdirSync(join(dir, '.spool')).filter((name) => name.endsWith('.jsonl')).sort();
+  assert.ok(names.length >= 3 && names.every((name) => /^live-\d+-\d+\.\d+\.jsonl$/.test(name)), names.join(','));
+  const lines = names.flatMap((name) => readFileSync(join(dir, '.spool', name), 'utf8').split('\n').filter(Boolean)).map((entry) => JSON.parse(entry));
+  assert.deepEqual(lines.map((line) => line.data.index).sort(), [0, 1, 2, 3, 4, 5, 6, 7]);
+  assert.ok(names.every((name) => statSync(join(dir, '.spool', name)).size <= 600), 'each segment is small');
+  // A second process counts the first as one process, not one per segment.
+  const second = openRecorder({ dir, segmentBytes: 300 });
+  second.live('workflow', 'x', { index: 'second' });
+  await second.detach();
+  const all = readdirSync(join(dir, '.spool')).filter((name) => name.endsWith('.jsonl')).flatMap((name) => readFileSync(join(dir, '.spool', name), 'utf8').split('\n').filter(Boolean)).map((entry) => JSON.parse(entry));
+  assert.equal(all.find((line) => line.data.index === 'second').gen, 2, 'the second process is process 2');
+  assert.equal(all.find((line) => line.data.index === 0).gen, 1);
+
+
+});
+
+test('a box.receipt line is written for each box place.status() reports once its `to` appears: box-N by first appearance, seconds, the price and the cost (null with no price), never the provider\'s id; a place that reports none writes none', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-box-receipts-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'spec.json');
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] }));
+  Object.assign(process.env, { DEMO_SPEC: file });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const lines = (recording, kind) => readEvents(recording).filter((line) => line.source === 'host' && line.kind === kind);
+  const recording = join(tmp, 'recording');
+  const priced = { provider: 'prov', kind: 'sandbox', id: 'sbx-9f31c0', from: '2026-10-16T10:00:00.000Z', usdPerSecond: 0.0001, source: 'https://prices.example/page 2026-10-01', priced: true };
+  const unpriced = { provider: 'prov', kind: 'sandbox', id: 'sbx-77ab12', from: '2026-10-16T10:01:00.000Z', source: 'none published', priced: false };
+  const result = await demo({ ...options, argv: ['--kill', '--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    let boxes = [];
+    return {
+      ...inner,
+      status: async () => ({ record: null, boxes }),
+      start: async (order) => { boxes = [priced, unpriced]; return inner.start(order); },
+      // The first box ends when the process is killed; the second ends with the takeover.
+      kill: async (runner, kind) => { boxes = [{ ...priced, to: '2026-10-16T10:00:30.000Z' }, unpriced]; await inner.kill(runner, kind); },
+      recover: async (last, kind, order) => { const next = await inner.recover(last, kind, order); boxes = [{ ...priced, to: '2026-10-16T10:00:30.000Z' }, { ...unpriced, to: '2026-10-16T10:03:00.000Z' }]; return next; },
+    };
+  } });
+  const receipts = lines(recording, 'box.receipt').map((line) => line.data);
+  assert.deepEqual(receipts.map((row) => [row.box, row.seconds, row.usd_per_second, row.cost_usd, row.priced]), [['box-1', 30, 0.0001, 0.003, true], ['box-2', 120, null, null, false]], 'one per box, in order of first appearance; the unpriced box has no cost');
+  assert.deepEqual(Object.keys(receipts[0]).sort(), ['box', 'cost_usd', 'from', 'kind', 'priced', 'provider', 'seconds', 'source', 'to', 'usd_per_second']);
+  assert.ok(!readFileSync(join(recording, 'events.jsonl'), 'utf8').match(/sbx-9f31c0|sbx-77ab12/), 'the provider\'s id is not in the recording');
+  assert.equal(result.usd, null, 'one box has no price: the run\'s cost reads unknown, never the priced box alone');
+  assert.deepEqual(validateRecording(recording), []);
+  const plain = join(tmp, 'plain');
+  await demo({ ...options, argv: ['--kill', '--json', '--record', plain] });
+  assert.equal(lines(plain, 'box.receipt').length, 0);
+});
+
+// ---- a kill's n counts every crossing, and it lands at the first eligible one at or after the nth ------------------------------------------------------------
+
+test('a kill\'s n counts EVERY crossing of its point, eligible or not, and lands at the first ELIGIBLE one at or after the nth (the kill line keeps the ordinal it landed on); it is unlanded only when the run ends before any eligible crossing at or after n', () => {
+  const withWindow = (n, eligibility) => {
+    const kills = [];
+    const window = { open: 0 };
+    const cross = crossings({ run: { point: 'p', kind: 'process', target: 'run', why: 'x', n }, tools: [] }, undefined, Date.now(), (crossing) => kills.push(crossing), window);
+    for (const eligible of eligibility) { window.open = eligible ? 0 : 1; cross('p'); }
+    return kills.map((kill) => [kill.point, kill.n]);
+  };
+  assert.deepEqual(withWindow(3, [true, true, true, true]), [['p', 3]], 'all eligible: the nth');
+  assert.deepEqual(withWindow(3, [true, false, false, true, true]), [['p', 4]], 'the 3rd and the 2nd are inside a call: it lands at the 4th, and says so');
+  assert.deepEqual(withWindow(3, [false, true, true, false, true]), [['p', 3]], 'the 3rd is eligible even though the first was not (the old count would have waited for a 5th)');
+  assert.deepEqual(withWindow(3, [true, true, false, false]), [], 'the run ends before any eligible crossing at or after n: unlanded');
+  assert.deepEqual(withWindow(1, [false, false, true]), [['p', 3]], 'n 1 with the first ones ineligible');
+  assert.equal(withWindow(2, [true, true, true, true]).length, 1, 'once');
+});
+
+test('a kill at a point that is often ineligible lands every time across 8 runs, and the result and the summary say planned n and landed n when they differ', { timeout: 600_000 }, async (t) => {
+  for (let index = 0; index < 8; index += 1) {
+    const { result, recording } = await run(t, { kills: [{ point: 'event workflow.node.start', why: 'a node starts, often while another branch\'s call is in flight', n: 4 }] }, ['--kill', '--json'], { DEMO_FANOUT: '1' });
+    assert.deepEqual(result.processes.map((process) => [process.signal, process.outcome?.status ?? null]), [['SIGKILL', null], [null, 'complete']], `run ${index}: ${JSON.stringify(result.processes.map((process) => process.signal))}`);
+    assert.deepEqual(result.unlanded, [], `run ${index}`);
+    const [kill] = result.kills;
+    assert.equal(kill.planned, 4);
+    assert.ok(kill.n >= 4, `landed at n=${kill.n}, at or after the planned 4`);
+    const line = readEvents(recording).find((entry) => entry.source === 'host' && entry.kind === 'kill');
+    assert.equal(line.data.crossing.n, kill.n, 'the kill line keeps the ordinal it landed on');
+  }
+  const lines = [];
+  const log = console.log;
+  // The summary says it when they differ.
+  const { summarize } = await import('./reference/demo.ts');
+  console.log = (...args) => lines.push(args.join(' '));
+  try { summarize({ spec: { name: 'x' } }, { processes: [{ outcome: { status: 'complete' } }], kills: [{ gen: 1, point: 'p', kind: 'process', why: 'w', n: 12, planned: 10 }, { gen: 2, point: 'q', kind: 'process', why: 'w', n: 3, planned: 3 }], failedKills: [], failedSignals: [], unlanded: [], usd: 0, maxUsd: null, overBudget: false }); } finally { console.log = log; }
+  assert.ok(lines.some((line) => line.includes('at p (planned n=10, landed at n=12): w')) && lines.some((line) => line.includes('at q: w') && !line.includes('planned')), lines.join('\n'));
+
+});
+
+test('boxes of one provider, kind and start are two boxes, labelled box-N when they first appear (not when they end), and the cap counts the priced boxes beside an unpriced one', { timeout: 300_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] });
+  const recording = join(tmp, 'recording');
+  const same = { provider: 'prov', kind: 'sandbox', from: '2026-10-16T10:00:00.000Z', usdPerSecond: 1, source: 'list', priced: true };
+  await demo({ ...options, argv: ['--kill', '--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    let boxes = [];
+    return {
+      ...inner,
+      status: async () => ({ record: null, boxes }),
+      start: async (order) => { boxes = [same, same]; return inner.start(order); },
+      // The second box ends first, then the first: the labels follow the order the boxes appeared in.
+      kill: async (runner, kind) => { boxes = [same, { ...same, to: '2026-10-16T10:00:20.000Z' }]; await inner.kill(runner, kind); },
+      recover: async (last, kind, order) => { const next = await inner.recover(last, kind, order); boxes = [{ ...same, to: '2026-10-16T10:00:10.000Z' }, { ...same, to: '2026-10-16T10:00:20.000Z' }]; return next; },
+    };
+  } });
+  const receipts = readEvents(recording).filter((line) => line.source === 'host' && line.kind === 'box.receipt').map((line) => [line.data.box, line.data.seconds]);
+  assert.deepEqual(receipts, [['box-2', 20], ['box-1', 10]], 'two boxes with equal fields are two; box-1 is the one that appeared first, though it ended last');
+  // The cap: a $1 box and an unpriced one: the cost is unknown, and the spend so far counts the $1.
+  const dir = join(tmp, 'meter');
+  mkdirSync(join(dir, '.spool'), { recursive: true });
+  const receipt = (box, cost_usd) => JSON.stringify({ channel: 'live', source: 'host', kind: 'box.receipt', t: 1, seq: 0, data: { box, cost_usd } });
+  writeFileSync(join(dir, '.spool', 'supervisor-1.jsonl'), `${receipt('box-1', 1)}\n${receipt('box-2', null)}\n`);
+  assert.equal(meterKnown(dir), 1, 'the priced box counts against the cap, though the other has no price');
+});
+
+test('the slow tick does not queue a carry behind one still running: a place whose transfers take seconds is carried a bounded number of times', { timeout: 120_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference' });
+  process.env.DEMO_LINGER_MS = '7000';
+  let carries = 0;
+  const started = Date.now();
+  await demo({ ...options, argv: ['--json', '--record', join(tmp, 'recording')], place: ({ paths, self, destroyBoxes, requestFile }) => ({
+    ...localPlace({ self, paths, destroyBoxes, requestFile }),
+    recordHome: { dir: (attempt) => join(tmp, 'box', `record-${attempt}`), bringHome: async () => { carries += 1; await new Promise((resolve) => setTimeout(resolve, 2500)); } },
+  }) });
+  // The ticks that found no carry running, plus the final one; a tick queued behind every slow carry would make six or more.
+  assert.ok(carries <= 4, `carried ${carries} times in ${Date.now() - started} ms`);
+
+});
+
+test('a box charge that first appears in the last status read counts against the cap: the run is over budget', { timeout: 300_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference', expectedCost: 0.05 });
+  const recording = join(tmp, 'recording');
+  let reads = 0;
+  const result = await demo({ ...options, argv: ['--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    const box = { provider: 'prov', kind: 'sandbox', from: '2026-10-16T10:00:00.000Z', usdPerSecond: 1, source: 'list', priced: true };
+    // The box's end is first reported by the third read, the last one the supervisor makes (start, exit, end): $60 against a cap of $0.10.
+    return { ...inner, status: async () => { reads += 1; return { record: null, boxes: [reads >= 3 ? { ...box, to: '2026-10-16T10:01:00.000Z' } : box] }; } };
+  } });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.equal(result.overBudget, true, 'the charge that arrived with the last read is over the cap');
+});
+
+test('a kill line carries the crossing\'s own number: a held kill the point\'s count (not the process\'s), and a storm the process\'s crossing counter (not zero)', async () => {
+  const fired = [];
+  const held = crossings({ run: { point: 'vision.filing', kind: 'process', target: 'run', why: 'held', n: 1, hold: 1 }, tools: [] }, undefined, Date.now(), (crossing) => fired.push(crossing.n));
+  for (const other of ['judge.asked a', 'judge.answered a', 'model.request turn 0']) held(other);
+  held('vision.filing');
+  assert.ok(held.park('vision.filing') instanceof Promise);
+  assert.deepEqual(fired, [1], 'the first filing is the first crossing of its point, whatever came before');
+  const storm = crossings({ run: { storm: true, kills: 1, gapMs: 0 }, tools: [] }, undefined, Date.now() - 10_000, (crossing) => fired.push(crossing.n));
+  storm('event workflow.node.start');
+  storm('judge.asked a');
+  assert.ok(fired.at(-1) > 0, `a storm kill has the process's crossing number, not 0: ${fired.at(-1)}`);
+});
+
+test('code mode\'s tools.bash resolves the output string for a zero exit, and rejects for a non-zero exit with an Error that names the exit code and holds the output', { timeout: 300_000 }, async (t) => {
+  const script = [
+    'const ok = await tools.bash({ command: "echo fine" });',
+    'let failed;',
+    'try { await tools.bash({ command: "echo partial; echo oops 1>&2; exit 3" }); } catch (error) { failed = { message: String(error.message) }; }',
+    'await tools.bash({ command: "printf %s \'" + JSON.stringify({ ok, failed }) + "\' > contract.json" });',
+    'return typeof ok;',
+  ].join('\n');
+  const { result } = await run(t, { codeMode: true }, ['--json'], { DEMO_CODE: script, DEMO_CODE_ON: '' });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
+  const { ok, failed } = JSON.parse(readFileSync(join(result.dir, 'work', 'contract.json'), 'utf8'));
+  assert.equal(ok, 'fine\n', 'a zero exit resolves the output as a string');
+  assert.match(failed.message, /^the command exited with code 3:\n/, 'a non-zero exit rejects, and the message names its exit code');
+  assert.ok(failed.message.includes('partial') && failed.message.includes('oops'), `and holds its output, stdout and stderr: ${JSON.stringify(failed)}`);
+});
+
+test('code mode: vision.judge answers through the host\'s judge seam (counted against its cap, priced, with a receipt), the declaration is in the tool\'s description, and the sandbox still has no fetch, process, require, WebAssembly or timers', { timeout: 300_000 }, async (t) => {
+  const { deflateSync } = await import('node:zlib');
+  // A solid 320 x 320 PNG, made here (Jev's images are at least 280 px a side).
+  const crc = (bytes) => { let c = ~0; for (const byte of bytes) { c ^= byte; for (let bit = 0; bit < 8; bit += 1) c = (c >>> 1) ^ (0xedb88320 & -(c & 1)); } return ~c >>> 0; };
+  const chunk = (type, data) => { const body = Buffer.concat([Buffer.from(type), data]); const out = Buffer.alloc(8 + data.length + 4); out.writeUInt32BE(data.length, 0); body.copy(out, 4); out.writeUInt32BE(crc(body), 8 + data.length); return out; };
+  const header = Buffer.alloc(13); header.writeUInt32BE(320, 0); header.writeUInt32BE(320, 4); header[8] = 8; header[9] = 2;
+  const row = Buffer.concat([Buffer.from([0]), Buffer.alloc(320 * 3, 200)]);
+  const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', header), chunk('IDAT', deflateSync(Buffer.concat(Array.from({ length: 320 }, () => row)))), chunk('IEND', Buffer.alloc(0))]).toString('base64');
+  const script = [
+    `await tools.bash({ command: "printf %s ${png} | base64 -d > a.png" });`,
+    'const reach = [typeof fetch, typeof process, typeof require, typeof WebAssembly, typeof setTimeout, typeof vision.see, typeof vision.judge].join(",");',
+    'await tools.bash({ command: "printf %s " + JSON.stringify(reach) + " > reach.txt" });',
+    'const judged = await vision.judge({ paths: ["a.png"], questions: { q: { type: "noul", instructions: "Is the image plain?" } } });',
+    "await tools.bash({ command: \"printf %s '\" + JSON.stringify(judged) + \"' > judged.json\" });",
+    'return judged.costUsd;',
+  ].join('\n');
+  const { result } = await run(t, { codeMode: true }, ['--json'], { DEMO_CODE: script, DEMO_CODE_ON: '' });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
+  const work = join(result.dir, 'work');
+  assert.equal(readFileSync(join(work, 'reach.txt'), 'utf8'), 'undefined,undefined,undefined,undefined,undefined,function,function', 'the sandbox has no fetch, process, require, WebAssembly or timers; vision.see and vision.judge are there');
+  const judged = JSON.parse(readFileSync(join(work, 'judged.json'), 'utf8'));
+  assert.equal(judged.answers.q.noul, 0.92, 'the host\'s judge answered');
+  assert.ok(judged.receipts.length >= 1 && typeof judged.costUsd === 'number', 'a receipt, and a price that is a number');
+  // It went through the capped seam: the run\'s judge count has the workflow\'s own question and this one.
+  const spent = readFileSync(join(result.dir, 'judge-spent.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)).reduce((sum, entry) => sum + entry.requests, 0);
+  assert.equal(spent, 2, 'two judge requests were counted against the cap');
+  // The description the model reads declares it.
+  const { codeModeExtension } = await import('./reference/code-mode.ts');
+  const tool = codeModeExtension({ see: () => ({ signature: '(request: S): Promise<A>', description: 'Ask the eyes.' }), judge: () => ({ signature: '(request: J): Promise<K>', description: 'Ask Jev.' }) }, {}).tools[0];
+  assert.match(tool.description, /vision\.judge` is declared as `\(request: J\): Promise<K>`: Ask Jev\./);
 });

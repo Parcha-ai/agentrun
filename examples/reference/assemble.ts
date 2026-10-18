@@ -132,6 +132,8 @@ export async function compose(place: RunPlace, host: Host, job: Job, options: Ru
     evidence: host.evidence,
     scope: async (conversationId, id) => ({ label: await labelOf(id), deriveDir: `.derived/${conversationId}` }),
     ...(host.credentials.childEnv ? { env: host.credentials.childEnv } : {}),
+    // Jev's typed answers about images (`vision.judge`) go through the host's judge seam: the crossings, the caps and the price it already has, never a key of the agent's.
+    jev: { judge: (params) => host.decisions.runJudge(params as never) as never },
     onLook: (look) => status({ source: 'vision', look }),
     onMiss: (miss) => status({ source: 'vision', miss }),
   };
