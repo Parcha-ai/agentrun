@@ -228,7 +228,7 @@ A planned kill whose crossing the process never takes (a typo, or a demo that do
 
 ### What a demo hands the entry, besides its job
 
-`fakes.extensions` (pi extensions a no-key run installs beside the host's own) and `fakes.vision(host, running)` (the demo's vision lane on fakes: an eyes object, limits, an evidence sink; `running.harness` is undefined until the run is open). `DemoOptions.result(record, { dir, keep })` returns `{ json, title }`: the entry writes the run's result line and its blob from it (`agentrun.cited/1` for a payoff that cites what it read) instead of the raw delivered record; `keep` stores a file in the recording's blobs and returns its SHA-256.
+`fakes.extensions` (pi extensions a no-key run installs beside the host's own) and `fakes.vision(host, running, { input, place })` (the demo's vision lane on fakes, handed the input the run was given and the run's `place` (`{ root, work }`, as a tool's context has it), as `LiveParts.vision` is: an eyes object, limits, an evidence sink; `running.harness` is undefined until the run is open). `DemoOptions.result(record, { dir, keep })` returns `{ json, title }`: the entry writes the run's result line and its blob from it (`agentrun.cited/1` for a payoff that cites what it read) instead of the raw delivered record; `keep` stores a file in the recording's blobs and returns its SHA-256.
 
 ### What a live child's environment holds
 
@@ -236,8 +236,12 @@ On `--live` the child is given exactly the environment names `demo.json` declare
 
 ### `manifest(context)` and `source.run`
 
-A demo may pass `manifest({ dir, record, input, live })`: it returns fields the entry adds to the manifest (a demo's own sources, slice or models). A name the entry writes itself (`format`, `source`, `result`, `providers`, `see_also`, `job`, `store`, ...) is refused. `source.run` is the demo's name, plus the input file's name when `--input` named a file (`apollo-apollo-11`); a demo's `run.ts` reads `demo()`'s result for its own summary lines.
+A demo may pass `manifest({ dir, record, input, live, models })` (`models` is what the live parts reported choosing, `LiveParts.models`; absent on fakes): it returns fields the entry adds to the manifest (a demo's own sources, slice or models). A name the entry writes itself (`format`, `source`, `result`, `providers`, `see_also`, `job`, `store`, ...) is refused. `source.run` is the demo's name, plus the input file's name when `--input` named a file (`apollo-apollo-11`); a demo's `run.ts` reads `demo()`'s result for its own summary lines.
 
 ### The child as an app module
 
 `child-app.ts` is the child as a `pi-durable-disk run --app` module, so a run has one open path (the claim, the fence, the stdin mount token, run.json's holder, the seal and restarts are the disk package's): `DEMO_ENTRY=<file URL of the demo's run.ts, which exports its \`options\`> pi-durable-disk run --dir <dir> --app examples/reference/child-app.ts --id <id>`. It builds the host exactly as the entry's own child does (the same environment, which every order carries from the supervisor, `DEMO_ENTRY` and `DEMO_NAME` included, so a place needs no wrapper: `PLAN`, `KILL_REQUEST`, `RECORD_DIR`, `INPUT`), drives the job in `onOpen`, prints its outcome line, writes the run's final status `done` with the record and the store's hash (a box place has only run.json), releases the run and exits 0. A kill -9 and the same command again resumes the run.
+
+### The default input per mode, and why a run stopped
+
+`Fakes.input` is the input a no-key run takes when `--input` names none (a smaller slice than the job's own, which stays the live default); `--input` always wins. When the last process did not complete, the summary prints `  stopped: <its reason>` (a missing source file, a refused workflow).

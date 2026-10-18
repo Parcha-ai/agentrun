@@ -222,9 +222,14 @@ export async function compose(place: RunPlace, host: Host, job: Job, options: Ru
   };
 }
 
+/** What the run's final status carries in `run.json` (the one thing a box place reads): how it ended, the record, the store's hash, and what the host adds (`extra`: the models the live parts chose, so a remote recording's manifest() sees them too). */
+export function finalDetail(result: RunResult, storeSha256: string | undefined, extra: Record<string, unknown> = {}) {
+  return { status: result.status, ...(result.status === 'complete' ? { record: result.output } : {}), ...(storeSha256 ? { storeSha256 } : {}), ...extra };
+}
+
 /** The same run as options for `pi-durable-disk run --app`: the instance claims the run, fences it, opens the store and resumes it; `onOpen` drives the job on it and, when it has delivered, writes the run's final
  *  status, `done` with the record and the hash of the store, releases the run and ends the process. `report` is told how the run ended before the process does (the child prints its outcome line there). */
-export async function appOf(place: RunPlace, host: Host, job: Job, options: RunOptions, report: (outcome: { result: RunResult; storeSha256: string | undefined }) => void | Promise<void>): Promise<AppOptions> {
+export async function appOf(place: RunPlace, host: Host, job: Job, options: RunOptions, report: (outcome: { result: RunResult; storeSha256: string | undefined }) => void | Promise<void>, extra: Record<string, unknown> = {}): Promise<AppOptions> {
   const composed = await compose(place, host, job, options);
   return {
     registry: composed.registry, models: composed.models, ...(composed.beforeResume ? { beforeResume: composed.beforeResume } : {}),
@@ -235,7 +240,7 @@ export async function appOf(place: RunPlace, host: Host, job: Job, options: RunO
       const storeSha256 = existsSync(storeFile) ? createHash('sha256').update(readFileSync(storeFile)).digest('hex') : undefined;
       await report({ result, storeSha256 });
       // A box place has only run.json: the record and the store's hash are in the final status as well.
-      await durable.setStatus(result.status === 'complete' ? 'done' : 'failed', { status: result.status, ...(result.status === 'complete' ? { record: result.output as JsonValue } : {}), ...(storeSha256 ? { storeSha256 } : {}) } as JsonValue);
+      await durable.setStatus(result.status === 'complete' ? 'done' : 'failed', finalDetail(result, storeSha256, extra) as JsonValue);
       await durable.release();
       process.exit(0);
     },

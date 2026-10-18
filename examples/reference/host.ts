@@ -89,11 +89,13 @@ export type Fakes = {
   lead?: { input: ('text' | 'image')[] };
   /** Pi extensions a no-key run installs beside the host's own (a demo's scripted tools that are extensions, its vision lane). */
   extensions?: readonly Extension[];
-  /** Vision options for a no-key run, built from the host and the running run (its harness is undefined until the run is open): the demo's own lane (an eyes object, limits, an evidence sink). */
-  vision?: (host: Host, running: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions>;
+  /** Vision options for a no-key run, built from the host and the running run (its harness is undefined until the run is open): the demo's own lane (an eyes object, limits, an evidence sink). `context.input` is the input the run was given (`--input`, else the mode's default) and `context.place` the run's `{ root, work }` as a tool's context has it; `LiveParts.vision` is handed the same. */
+  vision?: (host: Host, running: { readonly harness: Harness | undefined }, context: { input: Record<string, unknown>; place: { root: string; work: string } }) => Partial<VisionAdapterOptions>;
   /** The fake browser's pages, and the one a new session opens on. */
   pages: Record<string, FixturePage>;
   start: string;
+  /** The input a no-key run takes when `--input` names none (a smaller slice than the job's own, which is the live default). */
+  input?: Record<string, unknown>;
   /** Called once with the backend the supervisor serves the pages from, before it serves: a demo shapes what its fake browser answers (a screenshot's size, a page's behavior). */
   backend?: (backend: FakeBackend) => void;
   /** How fast the faux model streams its answer, in tokens a second; default 50, 0 answers at once. */

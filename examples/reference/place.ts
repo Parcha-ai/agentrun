@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import type { RunPlace } from './host.ts';
 
 /** How a runner ended. `outcome` is what the child reported on its way out: how the run ended, the record it delivered and the hash of its store (the supervisor reads nothing under the run's directory). */
-export type Exit = { exit: number | string | null; signal: string | null; outcome?: { status: string; generation: number | null; code?: string | null; message?: string; record?: unknown; result?: { json: unknown; title: string }; storeSha256?: string }; stderr: string };
+export type Exit = { exit: number | string | null; signal: string | null; outcome?: { status: string; generation: number | null; code?: string | null; message?: string; record?: unknown; result?: { json: unknown; title: string }; models?: Record<string, string>; storeSha256?: string }; stderr: string };
 /** One process of the session in a place. `epoch` is the place's lease epoch (1 for a place with no lease; a box restore raises it). */
 export type Runner = { epoch: number; pid?: number; exited: Promise<Exit> };
 /** What a runner is handed: its number in the run, its environment (the run's directory, the kill plan, the mode), and, for a place whose runner opens a claim, the per-attempt
