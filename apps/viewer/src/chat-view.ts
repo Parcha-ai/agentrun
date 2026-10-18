@@ -22,7 +22,7 @@ const SOURCE_SAID: Record<SourceKind, string> = { page: 'Read on the page', imag
 /** How many lines, or characters, of a long message show before "Show the whole message". */
 const THREAD_LINES = 8;
 const THREAD_CHARS = 600;
-/** How many of a step's looks show before "+ N more" (its decisive ones always show). */
+/** How many of a step's looks, or of one tool's calls in a row, show before "+ N more" (decisive looks always show). */
 const THREAD_SHOWN = 3;
 
 const threadIcon = (name: string): Element => {
@@ -538,11 +538,16 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     reportEl('div', { class: 'title', text: model.title }),
     reportEl('a', { class: 'how', href: reportHowHref(recording), text: 'How this ran' }));
 
-  // Each conversation as recorded: its messages, its thinking, its tool cards, every one shown but the steps that only ran
-  // a command, which fold into one line. A folded card is opened by its group's opener.
+  // Each conversation as recorded: its messages, its thinking, its tool cards. Steps that only ran a command fold into one
+  // line; a step that made looks always shows; calls of one other tool in a row show the first three, the rest behind
+  // "+ N more". A folded card is opened by its group's opener.
   const cards = new Map<string, HTMLElement>();
   const nodes = new Map<string, HTMLElement>();
   const openers = new Map<HTMLElement, () => void>();
+  const toggleRun = (run: { more: HTMLButtonElement; extras: HTMLElement[] }, open = run.extras[0]?.hidden ?? false) => {
+    for (const node of run.extras) node.hidden = !open;
+    run.more.textContent = open ? 'Show less' : `+ ${run.extras.length} more`;
+  };
   const agentMessage = (className = 'msg') => reportEl('div', { class: className }, reportEl('div', { class: 'who' }, threadIcon('brand'), 'Agent'));
   const drawThread = (thread: ChatThread): HTMLElement[] => {
     const out: HTMLElement[] = [];
@@ -560,7 +565,19 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
       into.append(reportEl('div', { class: 'plumbing' }, line, body));
       return (plumbing = { line, body, count: 0, failed: 0 });
     };
-    const endPlumbing = () => { plumbing = undefined; };
+    let run: { tool: string; cards: HTMLElement[] } | undefined;
+    // Ends the run of one tool's calls (folding past three) and the line of commands.
+    const endPlumbing = () => {
+      if (run && steps && run.cards.length > THREAD_SHOWN) {
+        const group = { more: reportEl('button', { class: 'more', type: 'button' }), extras: run.cards.slice(THREAD_SHOWN) };
+        group.more.addEventListener('click', () => toggleRun(group));
+        toggleRun(group, false);
+        for (const card of group.extras) openers.set(card, () => toggleRun(group, true));
+        steps.append(group.more);
+      }
+      run = undefined;
+      plumbing = undefined;
+    };
     for (const item of thread.items) {
       if (item.kind === 'user') {
         endPlumbing();
@@ -587,6 +604,7 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
         cards.set(item.id, card);
         nodes.set(item.id, card);
         if (item.plumbing) {
+          if (run) endPlumbing();
           const group = plumbingOf(steps);
           group.body.append(card);
           group.count += 1;
@@ -594,8 +612,12 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
           group.line.textContent = `ran ${group.count === 1 ? 'a command' : `${group.count} commands`}${group.failed ? `, ${group.failed} failed` : ''}`;
           continue;
         }
-        endPlumbing();
+        if (plumbing || item.looks.length > 0 || (run && run.tool !== item.tool)) endPlumbing();
         steps.append(card);
+        if (item.looks.length === 0) {
+          run ??= { tool: item.tool, cards: [] };
+          run.cards.push(card);
+        }
         continue;
       }
       endPlumbing();

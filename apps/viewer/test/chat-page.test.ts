@@ -192,10 +192,12 @@ function writeFixtures(dir: string) {
 
 /** A command of several lines, as an agent runs one. */
 const COMMAND = 'python3 -c "\nimport json\nprint(json.dumps({\'pages\': 4}))\n"';
-/** The reads of the narrated run: eight calls of one tool in a row, the fifth making a look nothing leads into. */
+/** The reads of the narrated run: eight calls of one tool in a row, each making a look. */
 const READS = [1, 2, 3, 4, 5, 6, 7, 8];
-/** A run whose agent speaks between its calls: its words, eight calls of one tool (the fifth speaks with its look's ask),
- *  a message the host adds, its words again, a command. */
+/** Then four searches in a row, none making a look and none only a command. */
+const SEARCHES = [1, 2, 3, 4];
+/** A run whose agent speaks between its calls: its words, eight look steps of one tool, four searches, a message the
+ *  host adds, its words again, two commands. */
 function writeNarrated(dir: string) {
   let t = 0;
   let seq = 1;
@@ -208,10 +210,12 @@ function writeNarrated(dir: string) {
     pi(2, 'pi.user', { role: 'user', content: 'The host\'s prompt.' }),
     pi(3, 'pi.assistant', { role: 'assistant', content: [{ type: 'thinking', thinking: '**Analyzing transcript data**\n\nI am reading page 2 before the others.' }, { type: 'text', text: 'I will read each page in turn.' }, ...READS.map((n) => ({ type: 'toolCall', id: `r${n}`, name: 'read', arguments: { path: 'notes.pdf', page: n } }))] }),
     ...READS.flatMap((n) => [live('tool_execution_start', { type: 'tool_execution_start', toolCallId: `r${n}`, toolName: 'read', args: { path: 'notes.pdf', page: n } }),
-      ...(n === 5 ? [live('LookEvent', { tool: 'see', parentToolCallId: 'r5', conversationId: '1', receipt: 'evidence/read/look-5.json',
-        record: { tool: 'look', args: { path: 'notes.pdf', page: 5, ask: 'What is on page 5?' }, facts: { key: 'look-page-5', fragment: 'page=5' }, body: 'A table of figures.' } }, 'vision')] : []),
+      live('LookEvent', { tool: 'see', parentToolCallId: `r${n}`, conversationId: '1', receipt: `evidence/read/look-${n}.json`,
+        record: { tool: 'look', args: { path: 'notes.pdf', page: n, ask: `What is on page ${n}?` }, facts: { key: `look-page-${n}`, fragment: `page=${n}` }, body: 'A table of figures.' } }, 'vision'),
       live('tool_execution_end', { type: 'tool_execution_end', toolCallId: `r${n}`, toolName: 'read' }),
       pi(3 + n, 'pi.tool-result', { role: 'toolResult', toolCallId: `r${n}`, toolName: 'read', content: [{ type: 'text', text: `Page ${n} says the same.` }], isError: false })]),
+    pi(12, 'pi.assistant', { role: 'assistant', content: SEARCHES.map((n) => ({ type: 'toolCall', id: `s${n}`, name: 'search', arguments: { query: `figures on page ${n}`, limit: 5 } })) }),
+    ...SEARCHES.map((n) => pi(12, 'pi.tool-result', { role: 'toolResult', toolCallId: `s${n}`, toolName: 'search', content: [{ type: 'text', text: `${n} hits.` }], isError: false })),
     pi(12, 'pi.user', { role: 'user', content: 'You stopped without submitting. Call submit.' }),
     pi(13, 'pi.assistant', { role: 'assistant', content: [{ type: 'thinking', thinking: '[Reasoning redacted]', redacted: true }, { type: 'thinking', thinking: '**Settling the answer**' }, { type: 'thinking', thinking: 'Checking that the four agree\nthey do, line for line.' }, { type: 'text', text: 'All four pages agree.' },
       { type: 'toolCall', id: 'b1', name: 'bash', arguments: { command: COMMAND } }, { type: 'toolCall', id: 'b2', name: 'bash', arguments: { command: 'ls missing-dir' } }] }),
@@ -526,11 +530,11 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       redacted: [[...m.querySelectorAll('.thought.redacted')].map((n) => [n.textContent, n.tagName]), doc('narrated').body.textContent.includes('[Reasoning redacted]')],
       thoughts: [...m.querySelectorAll('.thought:not(.redacted)')].map((n) => [n.querySelector('.thought-title').textContent, shown(n.querySelector('.thought-title')), n.tagName,
         shown(n.querySelector('.thought-body')), n.querySelector('.thought-body')?.textContent ?? null, n.querySelector('.thought-tag').textContent, getComputedStyle(n.querySelector('.thought-tag'), '::after').display]) }; })()`);
-    // Eight reads in a row, the fifth a look step: every one shows. Only steps that only ran a command fold. No step
-    // draws a voice line.
+    // Eight look steps of one tool in a row all show; the four searches after them, of one tool and no look, show three,
+    // the fourth behind "+ 1 more". No step draws a voice line.
     assert.deepEqual(narrated, { order: ['who', 'thought', 'said-text', 'steps', 'host-note', 'thought redacted', 'thought', 'thought', 'said-text', 'steps'], said: [['I will read each page in turn.', 0, false], ['All four pages agree.', 0, false]],
-      cards: [false, false, false, false, false, false, false, false], more: [],
-      voices: [null, null, null, null, null, null, null, null], host: ['Host', 'You stopped without submitting. Call submit.', false], users: ['YouRead the four pages of notes.pdf.'],
+      cards: [false, false, false, false, false, false, false, false, false, false, false, true], more: ['+ 1 more'],
+      voices: [null, null, null, null, null, null, null, null, null, null, null, null], host: ['Host', 'You stopped without submitting. Call submit.', false], users: ['YouRead the four pages of notes.pdf.'],
       redacted: [[['thinking · redacted', 'DIV']], false],
       thoughts: [['Analyzing transcript data', true, 'DETAILS', false, 'I am reading page 2 before the others.', 'thinking', 'inline-block'],
         ['Settling the answer', true, 'DIV', false, null, 'thinking', 'none'], ['Checking that the four agree', true, 'DETAILS', false, 'they do, line for line.', 'thinking', 'inline-block']] });
