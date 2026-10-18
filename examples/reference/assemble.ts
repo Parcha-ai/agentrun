@@ -227,9 +227,16 @@ export function finalDetail(result: RunResult, storeSha256: string | undefined, 
   return { status: result.status, ...(result.status === 'complete' ? { record: result.output } : {}), ...(storeSha256 ? { storeSha256 } : {}), ...extra };
 }
 
+/** The end of an app's run: the final status, the release, and only then the announcement of how it ended. A status or a release that fails rejects before anything is announced. */
+export async function finishRun(durable: Pick<DurableRun, 'setStatus' | 'release'>, status: 'done' | 'failed', detail: JsonValue, announce?: () => void | Promise<void>): Promise<void> {
+  await durable.setStatus(status, detail);
+  await durable.release();
+  await announce?.();
+}
+
 /** The same run as options for `pi-durable-disk run --app`: the instance claims the run, fences it, opens the store and resumes it; `onOpen` drives the job on it and, when it has delivered, writes the run's final
  *  status, `done` with the record and the hash of the store, releases the run and ends the process. `report` is told how the run ended before the process does (the child prints its outcome line there). */
-export async function appOf(place: RunPlace, host: Host, job: Job, options: RunOptions, report: (outcome: { result: RunResult; storeSha256: string | undefined }) => void | Promise<void>, extra: Record<string, unknown> = {}, redact?: (text: string) => string): Promise<AppOptions> {
+export async function appOf(place: RunPlace, host: Host, job: Job, options: RunOptions, report: (outcome: { result: RunResult; storeSha256: string | undefined }) => void | (() => void | Promise<void>) | Promise<void | (() => void | Promise<void>)>, extra: Record<string, unknown> = {}, redact?: (text: string) => string): Promise<AppOptions> {
   const composed = await compose(place, host, job, options);
   return {
     registry: composed.registry, models: composed.models, ...(composed.beforeResume ? { beforeResume: composed.beforeResume } : {}),
@@ -238,10 +245,11 @@ export async function appOf(place: RunPlace, host: Host, job: Job, options: RunO
       const result = await composed.drive(durable).finally(() => composed.cleanup(durable.harness));
       const storeFile = join(place.store, 'run.sqlite');
       const storeSha256 = existsSync(storeFile) ? createHash('sha256').update(readFileSync(storeFile)).digest('hex') : undefined;
-      await report({ result, storeSha256 });
+      // `report` prepares the outcome (what must be written while the run is open) and may return what announces it: that is called only after the final status and the release succeeded, so a failed finish is never reported as a success.
+      const announce = await report({ result, storeSha256 });
       // A box place has only run.json: the record and the store's hash are in the final status as well.
-      await durable.setStatus(result.status === 'complete' ? 'done' : 'failed', (redact ? JSON.parse(redact(JSON.stringify(finalDetail(result, storeSha256, extra)))) : finalDetail(result, storeSha256, extra)) as JsonValue);
-      await durable.release();
+      const detail = finalDetail(result, storeSha256, extra);
+      await finishRun(durable, result.status === 'complete' ? 'done' : 'failed', (redact ? JSON.parse(redact(JSON.stringify(detail))) : detail) as JsonValue, announce ?? undefined);
       process.exit(0);
     },
   };
