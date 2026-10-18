@@ -186,20 +186,22 @@ test('a command that opens a quote or a here-document on its first line is title
   assert.equal(chatCommandLine('echo "done"\nls'), 'echo "done"');
 });
 
-test('a step that nothing the agent thought or wrote leads into speaks with what its first look asked, never its result', async () => {
+test('a step that nothing the agent thought or wrote leads into speaks with what a look of it asked in words, never a line or a result', async () => {
   const m = await model(hearAndFind);
   for (const thread of m.threads) thread.items.forEach((item, index) => {
     if (item.kind !== 'tool') return;
     const led = ['thinking', 'assistant'].includes(thread.items[index - 1]?.kind ?? '');
-    const look = item.calls.find((call) => call.look);
-    assert.equal(item.voice, led || !look ? undefined : look.ask ?? look.label, item.title);
+    const asked = item.calls.find((call) => call.look && call.ask)?.ask;
+    assert.equal(item.voice, led ? undefined : asked, item.title);
   });
   const code = tools(m).find((item) => item.calls.length > 0)!;
   assert.equal(code.calls[0]!.ask, undefined, 'a transcription asks nothing');
-  assert.equal(code.voice, code.calls[0]!.label, "so the step speaks with its look's line");
   assert.equal(code.calls.find((call) => call.judge)!.ask, undefined, "a judge's typed request is no words");
-  assert.ok(code.calls.some((call) => call.ask && !call.ask.startsWith('{')), 'a look asked in words keeps its ask');
-  assert.ok(tools(m).filter((item) => !item.calls.some((call) => call.look)).every((item) => item.voice === undefined), 'a step with no look has no voice');
+  const asked = code.calls.find((call) => call.ask);
+  assert.ok(asked && !asked.ask!.startsWith('{'), 'a look asked in words keeps its ask');
+  assert.equal(code.voice, asked.ask, 'the step speaks with that ask, not with the first look\'s line');
+  for (const item of tools(m)) if (item.voice) assert.ok(!item.calls.some((call) => call.label === item.voice), `${item.title}: a look's line is never a voice`);
+  assert.ok(tools(m).filter((item) => !item.calls.some((call) => call.look && call.ask)).every((item) => item.voice === undefined), 'a step whose looks asked nothing in words has no voice');
   const thought = await model(hearAndFind, editFirst('pi.assistant', (data) => { (data.model[0]!.content as Json[]).unshift({ type: 'thinking', thinking: '**Planning**' }); }));
   const first = thought.threads[0]!.items.findIndex((item) => item.kind === 'thinking');
   const next = thought.threads[0]!.items[first + 1];
@@ -343,4 +345,10 @@ test("a takeaway is the result's first line with words, and an artifact's files 
   const { recording } = opened(artifact);
   const files = Object.values((recording.manifest as { artifact?: { files: Record<string, string> } }).artifact!.files);
   for (const sha of files) assert.ok(blobsNamed(recording.manifest, recording.lines).includes(sha));
+});
+
+test('an .mp4 blob is a video, and opens in place like a .webm', async () => {
+  const { typeOfName, opensInPage } = await import('../src/blobs.ts');
+  assert.equal(typeOfName('film-descent.mp4'), 'video/mp4');
+  assert.ok(opensInPage(typeOfName('film-descent.mp4')));
 });

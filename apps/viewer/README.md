@@ -42,7 +42,8 @@ nothing but the touch each one adds:
 - A conversation a workflow node holds (its `agentrun.nodes` document) is the runner's: its first user entry is the
   prompt composed from the node's input, and a later one is a message the runner added (a reminder to deliver), drawn
   as a host's note. In a conversation no node holds a person may speak, so every user entry there is the person's, and
-  the run's input is shown only when nodes hold every conversation. The entry's own author field, once the format has
+  the run's input is shown only when nodes hold every conversation. A person's message in a conversation a node holds
+  reads as the runner's too, until the entry carries its author; the entry's own author field, once the format has
   one, replaces this rule.
 - A model call inside a tool is named by who answered (its record's `args.via`, else its tool's namespace) and its
   tool's verb: `vision.judge` via `jev` reads "Jev judge". A call whose tool's verb is `judge` carries the judge's

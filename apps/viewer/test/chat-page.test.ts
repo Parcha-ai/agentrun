@@ -19,7 +19,7 @@ import type { ChatSource } from '../src/chat-model.ts';
 import type { Line } from '../src/format.ts';
 import { reportFileOf, reportLinkOf } from '../src/chat-report.ts';
 import { sourceByHref, sourceFrameAt, sourceKindOf, sourcePageOf, sourcePictureFor, sourceRegionOf, threadPlace, threadThought } from '../src/chat-view.ts';
-import { CITED, K, lines, manifest as handManifest, PAGES, PHOTOS, SCANS, deliverInstead, writeRecording } from './vision-hand.ts';
+import { CITED, K, lines, manifest as handManifest, PAGES, PHOTOS, SCANS, deliverInstead, png, writeRecording } from './vision-hand.ts';
 import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
 
 const UNIT = { timeout: 5_000 };
@@ -615,6 +615,102 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       assert.doesNotMatch(drawn, /\$\s?\d/, `${id}: no cost`);
       assert.doesNotMatch(drawn, /sample from another/i, `${id}: no borrowed thinking`);
       assert.doesNotMatch(drawn, /\b(paid calls|model turns|repeated|asked twice|journal opens|looks paid)\b/i, `${id}: no counter`);
+    }
+  } finally {
+    await page.close();
+  }
+});
+
+/** A long run: fifty reads in a row, each a look at a page of its own picture, the pictures loading only as they come
+ *  near the screen. */
+const MANY = 50;
+function writeMany(dir: string) {
+  let t = 0;
+  let seq = 1;
+  const pi = (commit: number, kind: string, content: unknown): Line => ({ channel: 'durable', source: 'pi', kind, gen: 1, t: (t += 10), commit, order: 0, conv: 1, data: { kind, model: [content] } as never });
+  const live = (kind: string, data: unknown, source: Line['source'] = 'pi'): Line => ({ channel: 'live', source, kind, gen: 1, t: (t += 10), seq: (seq += 1), conv: 1, data: data as never });
+  mkdirSync(join(dir, 'blobs'), { recursive: true });
+  const reads = Array.from({ length: MANY }, (_, n): Line[] => {
+    const page = n + 1;
+    const bytes = png(60, 84, (x, y) => [230 - n * 2, 220 - (x % 9) * 6, 200 - (y % 13) * 7]);
+    const sha = sha256(bytes);
+    writeFileSync(join(dir, 'blobs', `${sha}.png`), bytes);
+    const record = { tool: 'look', args: { path: 'pages.pdf', ask: `What is on page ${page}?` }, facts: { key: `look-${page}`, fragment: `page=${page}` }, body: `Page ${page} holds a table.` };
+    const args = { path: 'pages.pdf', page };
+    return [
+      pi(2 + n * 3, 'pi.assistant', { role: 'assistant', content: [{ type: 'toolCall', id: `r${page}`, name: 'read', arguments: args }] }),
+      live('tool_execution_start', { type: 'tool_execution_start', toolCallId: `r${page}`, toolName: 'read', args }),
+      { channel: 'durable', source: 'vision', kind: 'vision.looks', gen: 1, t: (t += 10), commit: 3 + n * 3, order: 0, conv: 1, data: { doc: 'vision.looks', key: `look-${page}`, value: { looks: [{ record, images: [sha] }] } } as never, blobs: [sha] },
+      live('LookEvent', { tool: 'read', parentToolCallId: `r${page}`, conversationId: '1', receipt: `evidence/read/look-${page}.json`, record }, 'vision'),
+      live('tool_execution_end', { type: 'tool_execution_end', toolCallId: `r${page}`, toolName: 'read' }),
+      pi(4 + n * 3, 'pi.tool-result', { role: 'toolResult', toolCallId: `r${page}`, toolName: 'read', content: [{ type: 'text', text: `Page ${page} holds a table.` }], isError: false }),
+    ];
+  });
+  const run: Line[] = [
+    { channel: 'live', source: 'host', kind: 'process.started', t: (t += 10), seq: 1, data: { gen: 1 } },
+    { channel: 'durable', source: 'workflow', kind: 'agentrun.workflow', gen: 1, t: (t += 10), commit: 1, order: 0, data: { doc: 'agentrun.workflow', input: { input: 'Read the fifty pages of pages.pdf.' } } },
+    { channel: 'durable', source: 'workflow', kind: 'agentrun.nodes', gen: 1, t: (t += 10), commit: 1, order: 1, path: '/root/reader', data: { doc: 'agentrun.nodes', key: 'many:reader', value: { conversation: 1, closed: false }, version: 1 } },
+    pi(1, 'pi.user', { role: 'user', content: 'The host\'s prompt.' }),
+    ...reads.flat(),
+    pi(2 + MANY * 3, 'pi.assistant', { role: 'assistant', content: [{ type: 'text', text: 'Every page holds a table.' }] }),
+  ];
+  const { result: _result, ...rest } = handManifest;
+  writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ ...rest, title: 'Fifty pages, read', generations: 1, kills: 0, cost: { usd: 0, parts: {} } }, null, 2));
+  writeFileSync(join(dir, 'events.jsonl'), `${run.map((line) => JSON.stringify(line)).join('\n')}\n`);
+}
+
+const JUMP = `<!doctype html><body style="margin:0">
+<iframe id="wide" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=many"></iframe>
+<iframe id="phone" style="position:absolute;top:0;left:0;width:390px;height:844px;border:0" src="chat.html?r=many"></iframe>
+<script>
+const doc = (id) => document.getElementById(id).contentDocument;
+const ready = (id) => doc(id)?.querySelectorAll('.step').length === ${MANY};
+const last = (id) => [...doc(id).querySelectorAll('.step')].at(-1);
+const above = (id) => [...doc(id).querySelectorAll('.thread img')].filter((img) => img.getClientRects().length && (img.compareDocumentPosition(last(id)) & Node.DOCUMENT_POSITION_FOLLOWING));
+const seen = (id) => { const c = last(id).getBoundingClientRect(); const b = doc(id).querySelector('.thread').getBoundingClientRect(); return { top: Math.round(c.top), bottom: Math.round(c.bottom), inView: c.top >= Math.max(0, b.top) - 1 && c.bottom <= Math.min(doc(id).defaultView.innerHeight, b.bottom) + 1 }; };
+</script></body>`;
+
+test('in Chrome: a timeline click to the last card of a long run lands on it, though the pictures above it load lazily, at 390 and 1440', IN_CHROME, async (t) => {
+  const out = mkdtempSync(join(tmpdir(), 'viewer-jump-'));
+  const held: { page?: Awaited<ReturnType<typeof drivenPage>>; server?: ReturnType<typeof createServer> } = {};
+  t.after(() => closeAll(held.page ? [held.page] : [], () => {
+    held.server?.closeAllConnections();
+    held.server?.close();
+    rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }), { timeout: 20_000 });
+  writeMany(join(out, 'recordings', 'many'));
+  build(join(out, 'dist'), join(out, 'recordings'), { files: true });
+  writeFileSync(join(out, 'dist', 'harness.html'), JUMP);
+  const TYPES: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png', '.css': 'text/css' };
+  const server = createServer((request, response) => {
+    const file = join(out, 'dist', decodeURIComponent(new URL(request.url!, 'http://localhost').pathname));
+    if (!file.startsWith(join(out, 'dist')) || !existsSync(file) || !extname(file)) { response.writeHead(404).end(); return; }
+    response.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream' }).end(readFileSync(file));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  held.server = server;
+  const page = await drivenPage(`http://127.0.0.1:${(server.address() as AddressInfo).port}/harness.html`, join(out, 'profile'), { signal: t.signal });
+  held.page = page;
+  const value = async <T>(expression: string) => JSON.parse(String(await page.evaluate(`JSON.stringify(${expression})`))) as T;
+  try {
+    await page.once(`ready('wide') && ready('phone')`, 'true', 20_000, 'both pages drawn');
+    for (const id of ['phone', 'wide']) {
+      // A picture not yet loaded holds its box already.
+      const before = await value<{ waiting: number; heights: number[] }>(`(() => { const waiting = above('${id}').filter((img) => !img.complete);
+        return { waiting: waiting.length, heights: [...new Set(waiting.map((img) => Math.round(img.getBoundingClientRect().height)))] }; })()`);
+      assert.ok(before.waiting > 20, `${id}: most pictures above the last card are still to load (${before.waiting})`);
+      assert.ok(before.heights.length === 1 && before.heights[0]! > 0, `${id}: a picture still to load holds a box of its own (${before.heights})`);
+      const target = await value<string>(`last('${id}').dataset.item`);
+      await page.evaluate(`doc('${id}').querySelector('.tl-toggle').click(); doc('${id}').querySelector('.tbar[data-goto="${target}"]').click()`);
+      // The jump loads the pictures above the card and centres it again once they are in: it ends on the card and stays.
+      await page.once(`above('${id}').every((img) => img.complete) && seen('${id}').inView`, 'true', 6_000, `${id}: the pictures above loaded and the last card in view`)
+        .catch(async (error: Error) => { throw new Error(`${error.message}: ${JSON.stringify(await value(`seen('${id}')`))}`); });
+      await page.sleep(800);
+      const after = await value<{ top: number; bottom: number; inView: boolean }>(`seen('${id}')`);
+      assert.equal(after.inView, true, `${id}: the last card stays in view after the jump (${JSON.stringify(after)})`);
+      // Once loaded, a picture's frame is the picture: its boxes stay on it.
+      const filled = await value<[number, number][]>(`above('${id}').slice(0, 3).map((img) => [Math.round(img.getBoundingClientRect().height), img.parentElement.clientHeight])`);
+      assert.ok(filled.length === 3 && filled.every(([picture, frame]) => picture > 0 && picture === frame), `${id}: a loaded picture fills its frame (${JSON.stringify(filled)})`);
     }
   } finally {
     await page.close();
