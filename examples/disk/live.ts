@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { archilControl, archilPlace, daytonaHost } from '@parcha/pi-durable-disk';
 import { revokeBestEffort } from '../../packages/pi-durable-disk/src/claim.ts';
 import { scratchDisk, scratchDiskId, REGION } from '../../packages/pi-durable-disk/test/live/_archil.ts';
-import { ARCHIL_WRAPPER, confirmGone, deletePrefix, FLEET, guardedClient, ledger, MOUNT_ROOT, NAME_PREFIX, NODE, PACKAGE_DIR, PDA_ID, installDemoPacks, prepareBox, prepareOnSnapshot, sh } from '../../packages/pi-durable-disk/test/live/_p9.ts';
+import { ARCHIL_WRAPPER, confirmGone, deletePrefix, demoClosure, FLEET, guardedClient, ledger, MOUNT_ROOT, NAME_PREFIX, NODE, PACKAGE_DIR, PDA_ID, installDemoPacks, prepareBox, prepareOnSnapshot, sh } from '../../packages/pi-durable-disk/test/live/_p9.ts';
 import { demo } from '@parcha/agentrun-reference';
 import { fakes } from './fakes.ts';
 import { job } from './job.ts';
@@ -44,6 +44,26 @@ for (const dir of ['dsl', 'pi', 'pi-browser', 'pi-vision', 'pi-transport', 'refe
 }
 const demoTar = spawnSync('tar', ['-czf', '-', '--exclude=live.ts', '-C', join(root, 'examples'), 'disk'], { maxBuffer: 64 << 20 });
 if (demoTar.status !== 0) throw new Error('tar of the demo failed');
+
+// Whether the runtime snapshot's dependency closure is the one these packs need. The snapshot's name carries the commit it was built at; the closure there (the packs' third-party dependencies and
+// each pack's own dependency fields, versions of the packs themselves aside) is compared with the closure at this checkout's HEAD. Offline only when they are equal: a pack that needs something
+// the snapshot lacks (a newer disk package, a pack the snapshot was not built for) installs online instead. No snapshot, or one this cannot read, is online.
+function snapshotCovers(name: string | undefined): { offline: boolean; why: string } {
+  if (!name) return { offline: false, why: 'no snapshot' };
+  const prefix = /^pda-p9-runtime-demo-([0-9a-f]{7,40})-/.exec(name)?.[1];
+  if (!prefix) return { offline: false, why: `${name} is not a demo runtime snapshot by name` };
+  const git = (...args: string[]) => spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+  const built = git('rev-parse', '--verify', '--quiet', `${prefix}^{commit}`);
+  if (built.status !== 0) return { offline: false, why: `the snapshot's commit ${prefix} is not in this checkout` };
+  const bare = ({ stubs, pins }: ReturnType<typeof demoClosure>) => JSON.stringify({ stubs: Object.fromEntries(Object.entries(stubs).map(([dir, stub]) => [dir, { ...stub, version: undefined }])), pins });
+  try {
+    const then = bare(demoClosure(built.stdout.trim()));
+    const now = bare(demoClosure(git('rev-parse', 'HEAD').stdout.trim()));
+    return then === now ? { offline: true, why: `the closure at ${prefix} is the one at HEAD` } : { offline: false, why: `the closure at ${prefix} differs from HEAD's` };
+  } catch (error) { return { offline: false, why: `the closure at ${prefix} cannot be read: ${String((error as Error).message).slice(0, 100)}` }; }
+}
+const covered = snapshotCovers(process.env.PDA_LIVE_SNAPSHOT);
+console.log(`snapshot: ${process.env.PDA_LIVE_SNAPSHOT ?? 'none'}; packs install ${covered.offline ? 'offline' : 'online'} (${covered.why})`);
 
 const client = guardedClient();
 const disk = await scratchDisk();
@@ -76,7 +96,7 @@ sudo -n chmod -R a+rX,go-w ${PACKAGE_DIR}/demo
 rm -f /tmp/d4-demo.tgz`, 120);
     lap('demo extracted and owned');
     // The workspace packs and pi-codemode, installed offline over the snapshot's third-party closure (installDemoPacks).
-    const installed = await installDemoPacks(client, box, readdirSync(packs).map((file) => join(packs, file)), { offline: process.env.PDA_LIVE_SNAPSHOT ? true : false });
+    const installed = await installDemoPacks(client, box, readdirSync(packs).map((file) => join(packs, file)), { offline: covered.offline });
     lap(`packs installed ${JSON.stringify(installed.steps)}`);
     console.log(`prepared ${box.name}: ${JSON.stringify(steps)}`);
   },

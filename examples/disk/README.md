@@ -26,7 +26,10 @@ supervisor deletes the sandbox, a new one takes the run over, and the ledger and
 the agent as interrupted and is not sent again. It refuses without its keys, stops itself after 25 minutes, and ends by deleting every sandbox it made and the run's directory on the disk.
 
 A new sandbox is ready in seconds when it starts from a runtime snapshot of the package's dependencies (`PDA_LIVE_SNAPSHOT=<name>`, built by `test/live/daytona-snapshot.ts build <commit> --demo`),
-and takes tens of seconds installing them at boot without one. The runner prints a `TIMING` line at each step of a takeover.
+and takes tens of seconds installing them at boot without one. The runner installs the workspace packages offline over the snapshot only when the snapshot's dependency closure (read at the
+commit its name carries) equals the checkout's; otherwise it installs online, and says which in its first lines. It prints a `TIMING` line at each step of a takeover. Untested on a box: the
+reference package is installed with the others, but the install's ownership step (`chown`, `chmod`) names only the packages the snapshot helper lists, so the reference's files keep the owner `sudo npm`
+gave them (root, readable by the run user).
 
 ## Keys and programs
 
