@@ -30,7 +30,7 @@ const recordingWith = (t, { artifact, kept, looks = [], extra = {} }) => {
   writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ ...manifest, ...(artifact ? { artifact } : {}), ...extra }));
   for (const [hash, { bytes, extension }] of kept) write(dir, `blobs/${hash}.${extension}`, bytes);
   if (looks.length) {
-    const lines = looks.map((key, index) => JSON.stringify({ channel: 'live', source: 'vision', kind: 'LookEvent', gen: 2, t: 6200 + index, seq: 100_000 + index, data: { record: { facts: { key } } } }));
+    const lines = looks.map((key, index) => JSON.stringify({ channel: 'live', source: 'vision', kind: 'LookEvent', gen: 2, t: 6200 + index, seq: 100_000 + index, data: { record: { args: { path: 'transcript-tec.pdf#page=379' }, facts: { key } } } }));
     writeFileSync(join(dir, 'events.jsonl'), readFileSync(join(dir, 'events.jsonl'), 'utf8') + lines.join('\n') + '\n');
   }
   return dir;
@@ -149,7 +149,7 @@ test('the validator checks the artifact\'s shape: entry, paths, hashes, blobs, e
     'two paths that differ only in case': [{ ...good, files: { 'index.html': hash, 'A.png': hash, 'a.png': hash } }, /one path ignoring case/],
     'a hash that is not a SHA-256': [{ ...good, files: { 'index.html': 'abc' } }, /no 64-hex SHA-256/],
     'a blob that is not there': [{ ...good, files: { 'index.html': hash, 'gone.png': 'f'.repeat(64) } }, /not in blobs\//],
-    'a blob with another extension than its path': [{ ...good, files: { 'index.html': hash, 'pic.png': hash } }, /does not carry the extension .png/],
+    'a blob with another extension than its path': [{ ...good, files: { 'index.html': hash, 'pic.png': hash } }, /needs blob [0-9a-f]+\.png, which is not in blobs\//],
   };
   for (const [what, [artifact, message]] of Object.entries(shape)) {
     const found = problems(recordingWith(t, { artifact, kept }));
@@ -169,4 +169,44 @@ test('the gate repeats the machine-path scan on a binary blob of the report', (t
   const dir = recordingWith(t, { artifact: { title: 'A page', entry: 'index.html', files }, kept });
   assert.deepEqual(problems(dir), [], 'the validator reads text; the bytes of a picture are the gate\'s to scan');
   assert.ok(gateProblemsOf(t, dir).some((each) => /blobs\/[0-9a-f]+\.png: contains a machine path/.test(each)), 'the gate refuses it');
+});
+
+test('what a browser reads is read here: an embedded tab in a scheme, escaped CSS, and every attribute that loads', (t) => {
+  const refused = {
+    'a javascript: link with an embedded tab': [PAGE('<a href="java&#x09;script:alert(1)">go</a>'), /javascript: URL/],
+    'a javascript: link with a newline and a leading space': [PAGE('<a href=" \njava\nscript:alert(1)">go</a>'), /javascript: URL/],
+    'an escaped url( in a style attribute': [PAGE('<p style="background:u\\72l(https://elsewhere.example/p.png)">x</p>'), /loads https:\/\/elsewhere.example\/p.png/],
+    'an escaped url( in a style block': [PAGE('', '<style>p { background: \\75rl(https://elsewhere.example/p.png) }</style>'), /loads https:\/\/elsewhere.example\/p.png/],
+    'a comment inside url': [PAGE('', '<style>p { background: url(https:/**/\n//elsewhere.example/p.png) }</style>'), /loads/],
+    'an image-set from a site': [PAGE('<p style="background-image:image-set(\'https://elsewhere.example/p.png\' 1x)">x</p>'), /loads https:\/\/elsewhere.example\/p.png/],
+    'a body background': [PAGE('', '').replace('<body>', '<body background="https://elsewhere.example/p.png">'), /body background loads https:\/\/elsewhere.example\/p.png/],
+    'an imagesrcset on a preload': [PAGE('', '<link rel="preload" as="image" imagesrcset="https://elsewhere.example/p.png 1x">'), /imagesrcset loads https:\/\/elsewhere.example\/p.png/],
+    'a ping': [PAGE('<a href="#x" ping="https://elsewhere.example/p">x</a>'), /a ping loads https:\/\/elsewhere.example\/p/],
+  };
+  for (const [what, [html, message]] of Object.entries(refused)) assert.throws(() => take(report(t, { 'index.html': html })), message, what);
+  // A local file named through an escaped url() is followed, not missed.
+  const { artifact } = take(report(t, { 'index.html': PAGE('<p style="background:u\\72l(img/a.png)">x</p>'), 'img/a.png': PNG }));
+  assert.deepEqual(Object.keys(artifact.files).sort(), ['img/a.png', 'index.html']);
+});
+
+test('a link to a document beside the report is kept as written only when it cites the look that read it; any other link outside the report is refused by the validator', (t) => {
+  const cited = (look, href) => Buffer.from(PAGE(`<a href="${href}" data-look="${look}">the document</a>`));
+  const key = 'a'.repeat(64);
+  const record = (page) => { const hash = sha(page); return recordingWith(t, { artifact: { title: 'A page', entry: 'index.html', files: { 'index.html': hash } }, kept: new Map([[hash, { bytes: page, extension: 'html' }]]), looks: [key] }); };
+  // The recorder takes the page and leaves the link alone, whether or not it cites a look; the validator is the one that decides.
+  assert.ok(take(report(t, { 'index.html': cited(key, '../film.mp4#t=5') })).artifact);
+  assert.deepEqual(problems(record(cited(key, 'transcript-tec.pdf#page=379'))), [], 'the look read transcript-tec.pdf');
+  assert.ok(problems(record(cited(key, 'another.pdf#page=1'))).some((each) => /another.pdf, which is not in files and is not the file of a look it cites/.test(each)));
+  assert.ok(problems(record(Buffer.from(PAGE('<a href="transcript-tec.pdf">no look</a>')))).some((each) => /transcript-tec.pdf, which is not in files/.test(each)));
+  assert.deepEqual(problems(record(Buffer.from(PAGE('<a href="https://example.org/out">out</a><a href="#top">top</a>')))), [], 'a link to a site loads nothing');
+});
+
+test('two paths with one content and two extensions are two blobs, and both validate', (t) => {
+  const a = Buffer.from('one picture');
+  const page = Buffer.from(PAGE('<img src="a.jpg"><img src="b.jpeg">'));
+  const files = { 'index.html': sha(page), 'a.jpg': sha(a), 'b.jpeg': sha(a) };
+  const kept = new Map([[sha(page), { bytes: page, extension: 'html' }], [`${sha(a)}`, { bytes: a, extension: 'jpg' }]]);
+  const dir = recordingWith(t, { artifact: { title: 'A page', entry: 'index.html', files }, kept });
+  writeFileSync(join(dir, 'blobs', `${sha(a)}.jpeg`), a);
+  assert.deepEqual(problems(dir), []);
 });

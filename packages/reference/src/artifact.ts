@@ -12,8 +12,10 @@ export type Artifact = { title: string; entry: string; files: Record<string, str
 export type Reading = {
   /** Files the page loads (src, srcset, poster, stylesheet href, CSS url()), as paths of the artifact. */
   loads: string[];
-  /** Relative pages and files the page links to (`<a href>`), as paths of the artifact: a link may go out to a site, and then loads nothing. */
+  /** Relative pages and files the page links to (`<a href>`) that lie inside the artifact, as its paths: a link may go out to a site, and then loads nothing. */
   links: string[];
+  /** Every relative `<a href>`/`<area href>` to a file: `target` is the path as written (no query or fragment), `inside` its path in the artifact when it has one, `look` the link's `data-look`. A link whose file the report does not hold is a document link: it is kept as written when it cites the look that read the file. */
+  documents: { target: string; inside?: string; look?: string }[];
   /** The `data-look` and `data-node` values. */
   looks: string[];
   nodes: string[];
@@ -27,6 +29,8 @@ const SHEET = /\.css$/i;
 export const readsAs = (path: string): 'page' | 'sheet' | undefined => (PAGE.test(path) ? 'page' : SHEET.test(path) ? 'sheet' : undefined);
 
 const FORBIDDEN_TAGS = new Set(['script', 'iframe', 'frame', 'frameset', 'object', 'embed', 'applet', 'form', 'base']);
+/** The attributes whose value a browser fetches: each goes through the one check, whatever the element. */
+const LOADING = new Set(['src', 'poster', 'background', 'dynsrc', 'lowsrc', 'manifest', 'icon', 'codebase', 'archive', 'longdesc', 'action', 'formaction']);
 const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 
 /** Why a path of the artifact is not allowed, or undefined: relative POSIX, nothing leading `/`, no `..`, no `\`, no scheme, no empty or `.` part. */
@@ -41,8 +45,11 @@ export function pathProblem(path: string): string | undefined {
 }
 
 /** A reference from `from` to a path of the artifact. `external` is a site or another scheme, `undefined` a reference that is the page's own (a fragment), `problem` one that cannot be a file of the artifact. */
+/** A URL as a browser reads it before it looks at the scheme: leading and trailing control characters and spaces go, tabs and newlines inside go (`java&#9;script:` is `javascript:`), and a backslash is a slash. */
+const normalized = (reference: string): string => reference.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, '').replace(/[\t\n\r]/g, '').replace(/\\/g, '/');
+
 function resolve(from: string, reference: string): { path: string } | { external: string } | { problem: string } | undefined {
-  const text = reference.trim();
+  const text = normalized(reference);
   if (text === '' || text.startsWith('#')) return undefined;
   if (/^(?:javascript|vbscript):/i.test(text)) return { problem: `a ${text.slice(0, text.indexOf(':'))}: URL` };
   if (/^data:/i.test(text)) return { problem: 'a data: URL' };
@@ -55,12 +62,22 @@ function resolve(from: string, reference: string): { path: string } | { external
   return { path: joined };
 }
 
-/** The url() and @import targets of a stylesheet's text (comments out). */
+/** CSS text with its comments out and its escapes read (`u\72l(` is `url(`, a backslash before a newline joins the lines), as a stylesheet's parser reads it. */
+const cssText = (css: string): string => css.replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/\\(?:\r\n|[\n\r\f])/g, '')
+  .replace(/\\([0-9a-fA-F]{1,6})(?:\r\n|[ \t\n\r\f])?|\\([\s\S])/g, (_match, hex: string | undefined, character: string | undefined) => {
+    if (character !== undefined) return character;
+    const code = Number.parseInt(hex!, 16);
+    return code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff) ? '\ufffd' : String.fromCodePoint(code);
+  });
+
+/** The url(), @import and image-set() targets of a stylesheet's text, after its comments and escapes are read. */
 const cssTargets = (css: string): string[] => {
-  const text = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const text = cssText(css);
   const out: string[] = [];
   for (const match of text.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)'"\s][^)]*?))\s*\)/gi)) out.push(match[1] ?? match[2] ?? match[3] ?? '');
   for (const match of text.matchAll(/@import\s+(?:"([^"]*)"|'([^']*)')/gi)) out.push(match[1] ?? match[2] ?? '');
+  for (const match of text.matchAll(/image-set\(([^)]*)\)/gi)) for (const inner of match[1]!.matchAll(/"([^"]*)"|'([^']*)'/g)) out.push(inner[1] ?? inner[2] ?? '');
   return out;
 };
 
@@ -68,7 +85,7 @@ const srcsetTargets = (value: string): string[] => value.split(',').map((candida
 
 /** Reads one file of the artifact for what it reaches and what it may not do. A stylesheet is read for url() and @import; a page (HTML or SVG) with an HTML parser. */
 export function readFile(path: string, text: string): Reading {
-  const reading: Reading = { loads: [], links: [], looks: [], nodes: [], problems: [] };
+  const reading: Reading = { loads: [], links: [], documents: [], looks: [], nodes: [], problems: [] };
   const problem = (message: string) => { if (!reading.problems.includes(message)) reading.problems.push(message); };
   const load = (reference: string, what: string) => {
     const found = resolve(path, reference);
@@ -77,11 +94,16 @@ export function readFile(path: string, text: string): Reading {
     else if ('external' in found) problem(`${what} loads ${found.external.slice(0, 80)} from outside the artifact`);
     else if (!reading.loads.includes(found.path)) reading.loads.push(found.path);
   };
-  const link = (reference: string) => {
+  const link = (reference: string, look: string | undefined) => {
+    const text = normalized(reference);
     const found = resolve(path, reference);
     if (!found || 'external' in found) return;
-    if ('problem' in found) problem(`a link is ${found.problem}`);
-    else if (!reading.links.includes(found.path)) reading.links.push(found.path);
+    if ('problem' in found && !/leaves the artifact/.test(found.problem)) { problem(`a link is ${found.problem}`); return; }
+    let target = text.replace(/[?#].*$/s, '');
+    try { target = decodeURIComponent(target); } catch { /* kept as written */ }
+    const inside = 'path' in found ? found.path : undefined;
+    reading.documents.push({ target, ...(inside ? { inside } : {}), ...(look !== undefined ? { look } : {}) });
+    if (inside && !reading.links.includes(inside)) reading.links.push(inside);
   };
   const sheet = (css: string, what: string) => { for (const target of cssTargets(css)) load(target, what); };
   if (readsAs(path) === 'sheet') { sheet(text, `${path}: a url()`); return reading; }
@@ -97,12 +119,13 @@ export function readFile(path: string, text: string): Reading {
         else if (attribute === 'data-look') reading.looks.push(value);
         else if (attribute === 'data-node') reading.nodes.push(value);
         else if (attribute === 'style') sheet(value, `a style attribute`);
-        else if (attribute === 'srcset') for (const target of srcsetTargets(value)) load(target, 'a srcset');
-        else if (attribute === 'src' || attribute === 'poster' || attribute === 'formaction' || attribute === 'action') load(value, `${name} ${attribute}`);
+        else if (attribute === 'srcset' || attribute === 'imagesrcset') for (const target of srcsetTargets(value)) load(target, `a ${attribute}`);
+        else if (attribute === 'ping') for (const target of value.split(/\s+/).filter(Boolean)) load(target, 'a ping');
+        else if (LOADING.has(attribute)) load(value, `${name} ${attribute}`);
         else if (attribute === 'href' || attribute === 'xlink:href') {
-          if (name === 'a' || name === 'area') link(value);
+          if (name === 'a' || name === 'area') link(value, attribs['data-look']);
           else load(value, `${name} ${attribute}`);
-        }
+        } else if (/^(?:javascript|vbscript|data):/i.test(normalized(value))) problem(`has a ${normalized(value).slice(0, normalized(value).indexOf(':'))}: value in ${attribute}`);
       }
     },
     ontext(data) { if (titled) title += data; },
