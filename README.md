@@ -4,7 +4,7 @@
 
 AgentRun is a workflow language for the agents you already run. Define repeatable steps, use [Jev](https://docs.typesafe.ai/) for focused decisions, and call an agent when the work needs investigation. Your application keeps its tools, model access, permissions, and budgets.
 
-[Quickstart](#quickstart) · [Packages](#use-one-piece-or-all-of-it) · [Documentation](docs/guide.md) · [Examples](docs/examples.md) · [Pi extension](#use-it-in-pi) · [Agent instructions](docs/agent-instructions.md)
+[Quickstart](#quickstart) · [Packages](#use-one-piece-or-all-of-it) · [Documentation](docs/guide.md) · [Examples](docs/examples.md) · [Gallery of recorded runs](https://parcha-ai.github.io/agentrun/) · [Pi extension](#use-it-in-pi) · [Agent instructions](docs/agent-instructions.md)
 
 ![Support workflow: search for an answer, check it with Jev, and return it or ask an agent to investigate. Check the investigation before returning it or escalating for review.](docs/assets/support-workflow.gif)
 
