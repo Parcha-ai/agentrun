@@ -15,6 +15,8 @@ export type ChatItem =
     tool: string;
     /** The tool and its arguments in plain form: "read notes.pdf#page=2". */
     title: string;
+    /** Its one argument in full when that spans lines (a command, a script), shown where the card opens. */
+    detail?: string;
     /** The result's first line; empty when the result had no words. */
     takeaway: string;
     /** Images in the result, by SHA-256. */

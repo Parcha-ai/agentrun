@@ -6,7 +6,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseLines, type Json, type Recording } from '../src/format.ts';
-import { chatCiteHref, chatToolTitle, extractChat } from '../src/chat-extract.ts';
+import { chatCiteHref, chatCommandLine, chatToolTitle, extractChat } from '../src/chat-extract.ts';
 import { blobsNamed } from '../src/load.ts';
 import type { ChatItem, ChatModel } from '../src/chat-model.ts';
 
@@ -54,6 +54,8 @@ test("a run is its input as given, then its recorded conversation: the host's pr
   const called = recording.lines.filter((line) => line.kind === 'tool_execution_start').map((line) => (line.data as { toolName: string }).toolName);
   assert.deepEqual(tools(m).map((card) => card.tool), called);
   for (const card of tools(m)) assert.ok(card.title.startsWith(`${card.tool}`), card.title);
+  const script = tools(await model(hearAndFind)).find((card) => card.tool === 'code')!;
+  assert.ok(script.detail?.includes('\n') && script.title.length < script.detail.length, 'a call whose one argument spans lines keeps it in full');
   assert.equal(tools(m).find((card) => card.tool === 'submit')?.takeaway, '', "the runner's reply to a delivery is not the run's");
   assert.equal(m.title, recording.manifest.title, 'an input with no question titles nothing; the recording does');
   const first = recording.lines.find((line) => line.kind === 'pi.user')!;
@@ -169,6 +171,16 @@ test('a tool call reads as its name, the file or URL it acted on, then its short
   assert.equal(chatToolTitle('read', { path: 'clip.webm', from_s: 30, to_s: 50, ask: 'What happens in these frames, and what changes across them?' }), 'read clip.webm from_s=30 to_s=50');
   assert.equal(chatToolTitle('code', { code: 'const a = 1;\nreturn a;' }), 'code const a = 1;');
   assert.equal(chatToolTitle('submit', undefined), 'submit');
+});
+
+test('a command that opens a quote or a here-document on its first line is titled with the lines of its body', () => {
+  const script = 'python3 -c "\nimport fitz\n# open it\n\ndoc = fitz.open(\'a.pdf\')\nprint(doc.page_count)\n"';
+  assert.equal(chatCommandLine(script), 'python3 -c " import fitz; doc = fitz.open(\'a.pdf\'); print(doc.page_count)');
+  const long = `python3 -c "\nimport subprocess\nfor p in range(310, 325):\n    subprocess.run(['pdftoppm', '-f', str(p), '-l', str(p), 'transcript.pdf', 'out'])\n"`;
+  assert.equal(chatToolTitle('bash', { command: long }), `bash ${chatCommandLine(long).slice(0, 89)}…`, 'truncated');
+  assert.equal(chatCommandLine("cat <<'EOF' > notes.md\n# Notes\nfirst line\nEOF"), "cat <<'EOF' > notes.md first line");
+  assert.equal(chatCommandLine('du -sh report/\ndu -h report/*'), 'du -sh report/', 'a closed first line is the title alone');
+  assert.equal(chatCommandLine('echo "done"\nls'), 'echo "done"');
 });
 
 test("a cite's address keeps its file and fragment however the fragment is written", () => {

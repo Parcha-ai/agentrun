@@ -77,6 +77,21 @@ function chatResultLine(text: string): string {
   return chatFirstLine(raw);
 }
 
+const chatHeredoc = /<<-?\s*['"]?(\w+)['"]?/;
+
+/** A command's line: its first line, and when that line leaves a quote or a here-document open, the lines of the body
+ *  after it (lines with no word, comment-only lines and the here-document's closing tag left out), joined. */
+export function chatCommandLine(text: string): string {
+  const first = chatFirstLine(text);
+  const bare = first.replace(/\\["']/g, '');
+  const open = chatHeredoc.test(first) || (bare.match(/"/g) ?? []).length % 2 === 1 || (bare.match(/'/g) ?? []).length % 2 === 1;
+  if (!open) return first;
+  const lines = text.split('\n').map((line) => line.trim());
+  const tag = chatHeredoc.exec(first)?.[1];
+  const body = lines.slice(lines.indexOf(first) + 1).filter((line) => /[\p{L}\p{N}]/u.test(line) && !/^(#|\/\/)/.test(line) && line !== tag);
+  return body.reduce((joined, line) => `${joined}${/["'([{:,;]$/.test(joined) || joined === first ? ' ' : '; '}${line}`, first);
+}
+
 /** A tool call in plain form: its name, the file or URL it acted on, then its short arguments as key=value; free text
  *  (an ask, a prompt) stays out of the title. One string argument alone is shown by its first line. */
 export function chatToolTitle(name: string, args: Json | undefined): string {
@@ -84,7 +99,7 @@ export function chatToolTitle(name: string, args: Json | undefined): string {
   if (!a) return name;
   const entries = Object.entries(a);
   const only = entries.length === 1 ? entries[0] : undefined;
-  if (only && typeof only[1] === 'string' && only[1].trim()) return `${name} ${chatClip(chatFirstLine(only[1]), 90)}`;
+  if (only && typeof only[1] === 'string' && only[1].trim()) return `${name} ${chatClip(chatCommandLine(only[1]), 90)}`;
   const addressed = entries.find(([, value]) => typeof value === 'string' && chatIsAddress(value));
   const short = entries.filter(([key, value]) => key !== addressed?.[0] && (typeof value === 'number' || typeof value === 'boolean' || (typeof value === 'string' && value.length <= 24 && !value.includes('\n'))));
   const parts = [...(addressed ? [String(addressed[1])] : []), ...short.map(([key, value]) => `${key}=${value}`)];
@@ -251,7 +266,9 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
             const callId = chatStr(p.id)!;
             const name = chatStr(p.name) ?? 'tool';
             const times = toolTimes.get(callId);
-            const item: Extract<ChatItem, { kind: 'tool' }> = { kind: 'tool', id: `item-${++counter}`, tool: name, title: chatToolTitle(name, p.arguments), takeaway: '', media: [], looks: [], calls: [], ...(chatIsJudge(name) ? { judge: true as const } : {}),
+            const said = Object.values(chatObj(p.arguments) ?? {});
+            const detail = said.length === 1 && typeof said[0] === 'string' && said[0].trim().includes('\n') ? said[0] : undefined;
+            const item: Extract<ChatItem, { kind: 'tool' }> = { kind: 'tool', id: `item-${++counter}`, tool: name, title: chatToolTitle(name, p.arguments), ...(detail ? { detail } : {}), takeaway: '', media: [], looks: [], calls: [], ...(chatIsJudge(name) ? { judge: true as const } : {}),
               ...(times?.t0 !== undefined ? { t0: times.t0 } : {}), ...(times?.t1 !== undefined ? { t1: times.t1 } : {}) };
             thread.items.push(item);
             toolItems.set(callId, item);
