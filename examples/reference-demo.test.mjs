@@ -1835,3 +1835,30 @@ test('an operator kill carries to the next attempt only the tool kills that did 
   assert.equal(bad.failedKills.length, 1, 'the control that could not be removed is a failed kill');
   assert.equal(bad.kills.length, 0, 'and no kill happened');
 });
+
+// ---- LiveParts.tools ---------------------------------------------------------------------------------------------------------------------------
+
+test('on --live the effect door dispatches to LiveParts.tools (with its receipt); a tool missing there runs from the fakes only when demo.json says local: "fakes", else the call fails "no live source"; on fakes nothing changes', { timeout: 300_000 }, async (t) => {
+  const programs = [{ name: 'fixture spec', env: 'DEMO_SPEC' }, { name: 'fixture probe', env: 'DEMO_LIVE_PROBE' }, { name: 'fixture tools', env: 'DEMO_LIVE_TOOLS' }];
+  const keys = [[{ env: 'BROWSERBASE_API_KEY' }, { env: 'BROWSERBASE_PROJECT_ID' }]];
+  const browser = Object.fromEntries(['BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID'].map((name) => [name, `value-for-${name.toLowerCase()}`]));
+  const answers = (dir) => readdirSync(join(dir, 'answers')).map((name) => JSON.parse(readFileSync(join(dir, 'answers', name), 'utf8')));
+  const fromLive = (dir) => answers(dir).some((answer) => answer.value?.from === 'live');
+  // A live tool: dispatched through the door, its answer kept as the receipt (the same wrapper as a fakes tool).
+  const live = await run(t, { keys, programs }, ['--json', '--live'], { DEMO_LIVE_PROBE: '1', DEMO_LIVE_TOOLS: 'search', ...browser });
+  assert.equal(live.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(live.result.processes.at(-1)));
+  assert.ok(fromLive(live.result.dir), 'the live tool ran, and its receipt is the kept answer');
+  // A tool missing from the live tools, declared local: "fakes": the fakes\' own runs.
+  const declared = await run(t, { keys, programs, tools: [{ name: 'search', local: 'fakes', hosted: null }] }, ['--json', '--live'], { DEMO_LIVE_PROBE: '1', DEMO_LIVE_TOOLS: 'other', ...browser });
+  assert.equal(declared.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(declared.result.processes.at(-1)));
+  assert.ok(!fromLive(declared.result.dir) && answers(declared.result.dir).length > 0, 'the fakes\' search ran');
+  // Not declared: the call fails clearly.
+  const missing = await run(t, { keys, programs }, ['--json', '--live'], { DEMO_LIVE_PROBE: '1', DEMO_LIVE_TOOLS: 'other', ...browser });
+  assert.notEqual(missing.result.processes.at(-1).outcome.status, 'complete');
+  assert.ok(JSON.stringify(missing.result.processes.at(-1)).includes('no live source for search') || readFileSync(join(missing.recording, 'events.jsonl'), 'utf8').includes('no live source for search'), 'it says why');
+  // On fakes, live tools are never looked at.
+  const fakes = await run(t, {}, ['--json'], { DEMO_LIVE_PROBE: '1', DEMO_LIVE_TOOLS: 'search' });
+  assert.equal(fakes.result.processes.at(-1).outcome.status, 'complete');
+  assert.ok(!fromLive(fakes.result.dir), 'fakes.tools never see LIVE');
+  assert.ok(!existsSync(join(fakes.result.dir, 'models-seen.json')), 'the live hook is supplied and is never called on fakes');
+});
