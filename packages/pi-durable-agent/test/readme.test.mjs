@@ -1,6 +1,7 @@
 // The README, held to what it says. Its quickstart runs in an empty project laid out like an install and prints what the
 // README shows. Every other code block is named here, and a block the README gains fails until it is. Every name each entry
-// point exports, and every error code, is in the README. Its links work on npm: absolute, or inside the page.
+// point exports is in that entry point's Library section, and every error code is in the Errors table. Its links work on
+// npm: absolute, or inside the page.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -94,25 +95,57 @@ test("the quickstart runs as the README writes it, with the package and its peer
   assert.equal(run.stdout, block(QUICKSTART, "text").text);
 });
 
-/** The names an entry point of the built package exports, types included, read from its declaration file. */
+/** The names an entry point of the built package exports, read from its declaration file, and whether each is a value (a
+ *  function, a constant or a class) or only a type. */
 function exportsOf(declaration) {
   const file = path.join(PACKAGE, "dist", declaration);
   const program = ts.createProgram([file], { module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext, target: ts.ScriptTarget.ES2023, types: ["node"], skipLibCheck: true, noEmit: true });
   const checker = program.getTypeChecker();
   const source = program.getSourceFile(file);
   assert.ok(source, `${declaration} is built`);
-  return checker.getExportsOfModule(checker.getSymbolAtLocation(source)).map((symbol) => symbol.getName()).sort();
+  return checker.getExportsOfModule(checker.getSymbolAtLocation(source)).map((symbol) => {
+    const real = symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
+    return { name: symbol.getName(), value: Boolean(real.flags & ts.SymbolFlags.Value) };
+  }).sort((a, b) => (a.name < b.name ? -1 : 1));
 }
 
-test("every name each entry point exports is in the README, in code", () => {
-  const entries = { "@parcha/pi-durable-agent": "index.d.ts", "@parcha/pi-durable-agent/export": "export.d.ts", "@parcha/pi-durable-agent/timeline": "timeline/index.d.ts" };
+/** The text of one `###` heading of the Library section, up to the next heading. */
+function librarySection(title) {
+  const lines = README.split("\n");
+  const start = lines.indexOf(`### ${title}`);
+  assert.notEqual(start, -1, `the README has no "### ${title}" under Library`);
+  const end = lines.findIndex((line, at) => at > start && /^#{2,3}\s/.test(line));
+  return lines.slice(start + 1, end === -1 ? undefined : end).join("\n");
+}
+/** The names a section documents: the first cell of each table row (a function, a constant), and the code spans of the
+ *  paragraph or list that names its types. A name elsewhere in the README does not count. */
+function documentedIn(section) {
+  const rows = section.split("\n").filter((line) => line.startsWith("| `"));
+  const firstCells = rows.map((row) => row.split("|")[1] ?? "").flatMap((cell) => [...cell.matchAll(/`([A-Za-z_]\w*)/g)].map((m) => m[1]));
+  const typeText = section.split("\n").filter((line) => !line.startsWith("|")).join("\n");
+  const types = [...typeText.matchAll(/`([A-Za-z_]\w*)[`(]/g)].map((m) => m[1]);
+  return { values: new Set(firstCells), types: new Set([...firstCells, ...types]) };
+}
+
+test("every name each entry point exports is documented in that entry point's Library section: a value in a table row, a type in its types list", () => {
+  const entries = [
+    { title: "`@parcha/pi-durable-agent`", declaration: "index.d.ts" },
+    { title: "`@parcha/pi-durable-agent/export`", declaration: "export.d.ts" },
+    { title: "`@parcha/pi-durable-agent/timeline`", declaration: "timeline/index.d.ts" },
+  ];
   const missing = [];
-  for (const [entry, declaration] of Object.entries(entries)) {
+  for (const { title, declaration } of entries) {
     const names = exportsOf(declaration);
-    assert.ok(names.length > 0, `${entry} exports something`);
-    for (const name of names) if (!new RegExp(`\`[^\`]*\\b${name}\\b[^\`]*\``).test(README)) missing.push(`${entry}: ${name}`);
+    assert.ok(names.length > 0, `${title} exports something`);
+    const section = documentedIn(librarySection(title));
+    // `./export` is three names in its first sentence, not a table.
+    const spans = new Set([...librarySection(title).trim().split(/\.\s/)[0].matchAll(/`([A-Za-z_]\w*)`/g)].map((m) => m[1]));
+    for (const { name, value } of names) {
+      const found = title.endsWith("/export`") ? spans.has(name) : value ? section.values.has(name) : section.types.has(name);
+      if (!found) missing.push(`${title}: ${name} (${value ? "a value: a table row" : "a type: the types list"})`);
+    }
   }
-  assert.deepEqual(missing, [], "document each in the README's Library section");
+  assert.deepEqual(missing, [], "document each in its entry point's Library section, not elsewhere in the README");
 });
 
 test("every AgentHomeError code is in the README's Errors table", () => {
