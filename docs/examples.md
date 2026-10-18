@@ -11,6 +11,7 @@ After `npm ci --ignore-scripts` and `npm run build`:
 | [Rank a list](../examples/rank-candidates.mjs) | `npm run demo:rank` | Score candidates against your brief, drop duplicates, cap each bucket, keep the top k; call it from another workflow. |
 | [Standalone TypeScript app](../examples/starter/README.md) | Follow the app's install steps, then `npm test` and `npm start` | Build outside this checkout with public package imports. |
 | [The reference host](reference-host.md) | `npm run demo:reference` | One durable pi run with the recovery driver, a browser and vision: replace the scripted model, tools, browser and eyes with yours. |
+| [An agent that learns](../examples/agent-learn/README.md) | `npm run demo:learn` | An issue-triage agent learns a maintainer's correction in its own git repository and applies it in the next run, and a workflow it saved is promoted on clean uses: copy `host.mjs` and give it your model, judge and remote. |
 | [The hero job](../examples/hero/README.md) | `npm run demo:hero` | One agent reads nine grid operators' dashboard charts with vision, each in a browser session of its own, and, where the operator also publishes the mix as data, checks each reading against it. |
 | [The vision agent](../examples/vision-agent/README.md) | `npm run demo:vision -- examples/document-check` (free; needs `ffmpeg`, `ffprobe`, `pdftoppm` and `pdftotext`), and add `--live` with your keys | Ask a question about your own files: write a folder with the question and the files' addresses; one agent answers it and ends with its own report. |
 
