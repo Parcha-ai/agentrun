@@ -123,3 +123,12 @@ test('the end of an app\'s run announces only after the final status and the rel
     assert.ok(!order.includes('announce'), `nothing was announced when the ${failAt} failed`);
   }
 });
+
+test('a large outcome reaches the supervisor whole: the app waits for its stdout write before it exits', { timeout: 180_000 }, async (t) => {
+  const big = 'x'.repeat(100_000);
+  const { start } = await instance(t, { DEMO_RESULT: '1', DEMO_RESULT_PAD: big });
+  const result = await start();
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.outcome.status, 'complete');
+  assert.ok(JSON.stringify(result.outcome.result).includes(big), 'the whole result line, not a cut one');
+});
