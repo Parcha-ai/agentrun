@@ -2,10 +2,11 @@
 // host file `serve.json` ({created_at}) beside its `agent.sqlite`.
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { AGENT_STORE_FILE, AgentHomeError, createAgentHome, readAgentHome, type AgentHome, type AgentHomeState, type AgentDefinitionInput } from "@parcha/pi-durable-agent";
 import { ApiError } from "./errors.js";
+import { readJson, writeWhole } from "./files.js";
 import { ID, type Json } from "./validate.js";
 
 export const HOST_FILE = "serve.json";
@@ -22,7 +23,6 @@ export function uuidv7(now = Date.now()): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-const readJson = (path: string) => readFile(path, "utf8").then((text) => JSON.parse(text) as Json, () => null);
 
 /** A home error as the request's answer: a busy writer lock is retryable. */
 export function homeError(error: unknown): never {
@@ -45,7 +45,7 @@ export class Agents {
     });
     try {
       const home = await createAgentHome(dir, { definition: { ...definition, id } as AgentDefinitionInput, skills }).catch(homeError);
-      await writeFile(join(dir, HOST_FILE), `${JSON.stringify({ created_at: new Date().toISOString() })}\n`, { mode: 0o600 });
+      await writeWhole(join(dir, HOST_FILE), `${JSON.stringify({ created_at: new Date().toISOString() })}\n`);
       return (await this.get(home.identity.id))!;
     } catch (error) {
       await rm(dir, { recursive: true, force: true });

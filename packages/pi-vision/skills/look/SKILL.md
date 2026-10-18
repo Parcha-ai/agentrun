@@ -29,7 +29,7 @@ model's limits and sends as few requests as fit, so you never resize or count. I
 Render the pages, then ask in batches and join the answers.
 
 ```js
-await tools.bash({ command: "rm -rf .look/pages && mkdir -p .look/pages && pdftoppm -r 150 -png report.pdf .look/pages/p" });
+await tools.bash({ command: "rm -rf .look/pages && mkdir -p .look/pages && pdftoppm -cropbox -r 150 -png report.pdf .look/pages/p" });
 const pages = (await tools.bash({ command: "ls .look/pages" })).split("\n").filter((name) => name.endsWith(".png")).sort();
 const answers = [];
 for (let i = 0; i < pages.length; i += 10) {
@@ -45,6 +45,8 @@ return answers.join("\n\n");
 ```
 
 `pdftoppm -f 3 -l 9` renders pages 3 to 9 only. Name the files by page so each fragment is the right page.
+`-cropbox` renders the page as a reader shows it (its crop box, not the whole sheet), the area a citation's
+`#xywh=percent:` is of.
 
 ## A long video
 
@@ -62,9 +64,11 @@ return `${seen.text}\n(receipts: ${seen.receipts.join(", ")}; $${seen.costUsd})`
 ```
 
 Look again more closely where the answer points: frames every second over that minute. When the vision model takes
-video, cut windows instead (`mkdir -p .look/clips && ffmpeg -y -ss 60 -t 30 -i talk.mp4 -c copy -fflags +bitexact .look/clips/60.mp4`), pass the
-clips as paths and name them `talk.mp4#t=60,90`. `-fflags +bitexact` makes a window you cut again the same bytes (a WebM
-copy otherwise gets a new id each time), so an answer already paid for is found again.
+video, cut windows instead (`mkdir -p .look/clips && ffmpeg -y -ss 60 -i talk.mp4 -t 30 -c:v libx264 -bf 0 -crf 28 -preset veryfast -c:a aac -b:a 64k -fflags +bitexact -flags +bitexact .look/clips/60.mp4`),
+pass the clips as paths and name them `talk.mp4#t=60,90`. Encode the window rather than copy it: a copy starts at the
+keyframe before 60 and only its edit list says the window begins at 60, so a decoder that ignores the edit list counts
+its seconds from the keyframe; encoded without B-frames, second 0 is 60 for every decoder. The bitexact flags make a
+window you cut again the same bytes, so an answer already paid for is found again.
 
 ## Many images
 
@@ -91,7 +95,7 @@ const seen = await vision.see({
 return seen.text;
 ```
 
-For a PDF page, render only the region at a higher resolution: `mkdir -p .look && pdftoppm -f 3 -l 3 -r 300 -x 1275 -y 0 -W 1275 -H 825 -png report.pdf .look/crop`.
+For a PDF page, render only the region at a higher resolution: `mkdir -p .look && pdftoppm -cropbox -f 3 -l 3 -r 300 -x 1275 -y 0 -W 1275 -H 825 -png report.pdf .look/crop`.
 
 ## Jev: typed answers about every image, cheap enough to ask many times
 
@@ -110,7 +114,7 @@ on in the questions. It returns `{ answers, model, costUsd, receipts, kept }`.
 ### Classify every page or frame
 
 ```js
-await tools.bash({ command: "rm -rf .look/pages && mkdir -p .look/pages && pdftoppm -r 100 -png report.pdf .look/pages/p" });
+await tools.bash({ command: "rm -rf .look/pages && mkdir -p .look/pages && pdftoppm -cropbox -r 100 -png report.pdf .look/pages/p" });
 const pages = (await tools.bash({ command: "ls .look/pages" })).split("\n").filter((name) => name.endsWith(".png")).sort();
 const found = [];
 for (const name of pages) {
@@ -133,7 +137,7 @@ return found;
 Skip what is not worth a look (blank, unreadable, off topic), then check what the eyes said.
 
 ```js
-await tools.bash({ command: "rm -rf .look/pages && mkdir -p .look/pages && pdftoppm -r 100 -png report.pdf .look/pages/p" });
+await tools.bash({ command: "rm -rf .look/pages && mkdir -p .look/pages && pdftoppm -cropbox -r 100 -png report.pdf .look/pages/p" });
 const pages = (await tools.bash({ command: "ls .look/pages" })).split("\n").filter((name) => name.endsWith(".png")).sort();
 const worth = [];
 for (const name of pages) {
