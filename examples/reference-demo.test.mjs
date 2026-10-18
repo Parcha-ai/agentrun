@@ -2060,6 +2060,35 @@ test('a live host whose fallback judge is the fakes\' (already tapped) has each 
   composeHost(other, { decisions: { runJudge: async () => ({ answers: {}, usage: { input_tokens: 1, output_tokens: 0 } }) } }, cross, { open: 0 }, join(tmp, 'spent2.jsonl'), true, undefined, true);
   await other.decisions.runJudge({ label: 'verdict' });
   assert.deepEqual(crossed.filter((point) => point.startsWith('judge.')), ['judge.asked verdict', 'judge.answered verdict']);
+
+
+});
+
+test('the follower looks at the text blobs a line names before it places the line; and a failing kill after a follower error ends the attempt with the follower\'s error', { timeout: 120_000 }, async (t) => {
+  const { startedAt, followRecording } = await import('./reference/record.ts');
+  const dir = await mkdtemp(join(tmpdir(), 'reference-follow-blob-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, '.spool'), { recursive: true });
+  mkdirSync(join(dir, 'blobs'));
+  startedAt(dir);
+  const secret = `sk-${'b2'.repeat(20)}`;
+  const hash = 'c'.repeat(64);
+  writeFileSync(join(dir, 'blobs', `${hash}.json`), JSON.stringify({ body: secret }));
+  const follower = followRecording(dir, { holdMs: 0 });
+  appendFileSync(join(dir, '.spool', 'live-1.jsonl'), `${JSON.stringify({ channel: 'live', source: 'workflow', kind: 'x', gen: 1, seq: 0, t: 1, blobs: [hash], data: { evidence: 'a receipt' } })}\n`);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.throws(() => follower.poll(), /a blob the run kept holds a provider secret/);
+  assert.ok(!readFileSync(join(dir, 'events.jsonl'), 'utf8').includes(hash), 'the line was not placed');
+  // Follower error and a kill that fails too: the attempt ends and the call rejects with the follower\'s error.
+  const { tmp, options } = await specWith(t, { name: 'reference' });
+  process.env.DEMO_LINGER_MS = '20000';
+  const recording = join(tmp, 'recording');
+  await assert.rejects(() => demo({ ...options, argv: ['--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner,
+      start: async (order) => { rmSync(join(recording, 'events.jsonl'), { force: true }); mkdirSync(join(recording, 'events.jsonl')); const runner = await inner.start(order); return { ...runner, exited: new Promise(() => {}) }; },
+      kill: async () => { throw Object.assign(new Error('the provider refused'), { code: 'KILL_REFUSED' }); } };
+  } }), /EISDIR|is a directory/i);
 });
 
 // ---- delegation and revoke lines ---------------------------------------------------------------------------------------------------------------
@@ -2326,4 +2355,20 @@ test('a box charge that first appears in the last status read counts against the
   } });
   assert.equal(result.processes.at(-1).outcome.status, 'complete');
   assert.equal(result.overBudget, true, 'the charge that arrived with the last read is over the cap');
+});
+
+test('a delegation without a path (the package finds it by its inode) is kept: a delegation line and a revoke entry are written without one', { timeout: 300_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] });
+  const recording = join(tmp, 'recording');
+  const bare = { clientId: 'client-x', inodeId: 4242, isOrphaned: true, isPending: false };
+  await demo({ ...options, argv: ['--kill', '--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner, status: async () => ({ record: null, delegations: [bare] }), recover: async (last, kind, order) => ({ ...(await inner.recover(last, kind, order)), revoked: [bare], ms: 5 }) };
+  } });
+  const lines = readEvents(recording).filter((line) => line.source === 'host');
+  const delegation = lines.find((line) => line.kind === 'delegation');
+  assert.ok(delegation, 'the delegation line is written');
+  assert.equal('path' in delegation.data, false);
+  const revoke = lines.find((line) => line.kind === 'revoke');
+  assert.equal(revoke.data.revoked.length, 1, 'and the revoke names it');
 });
