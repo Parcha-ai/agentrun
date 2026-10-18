@@ -39,7 +39,8 @@ there and where, not whether the document is genuine: a copy, a specimen or a fo
   `question` asks whether it is there, `box` names it for the box, and `present` says what it looks like when it is
   there (the row's note).
 - A mark with `same: [a, b]` instead of `page` asks whether two marks show the same thing, such as one number on two
-  pages: both are cut out of their pages, larger, and asked about side by side. It is a no when either is not there.
+  pages: both are cut out of their pages, larger, and asked about side by side. It is a no when either is not there or
+  has no box.
 - Write each question about `images[0].image`, and a `same` mark's about `images[0].image` and `images[1].image`.
 
 ## 1. Every page: its kind, and each mark's yes or no and box
@@ -72,7 +73,7 @@ for (const name of files) {
     questions[`${mark.id}_at`] = { type: "box", instructions: mark.box };
   }
   const { answers, receipts } = await vision.judge({ paths: [`${dir}/pages/${name}`], fragments: [`${task.document}#page=${page}`], questions });
-  const marks = Object.fromEntries(onPage.map((mark) => [mark.id, { p: answers[mark.id].noul, at: answers[`${mark.id}_at`].fragment }]));
+  const marks = Object.fromEntries(onPage.map((mark) => [mark.id, { p: answers[mark.id].noul, at: answers[`${mark.id}_at`].fragment ?? null }]));
   pages.push({ page, kind: answers.kind.choice, marks, receipts });
 }
 await sh(`printf %s ${q(JSON.stringify({ document: task.document, pages }))} > ${q(dir)}/pages.json`);
@@ -86,7 +87,7 @@ not rendered is a page not looked at.
 
 A mark is looked for on the pages of its kind and kept from the one where Jev is surest. It is there when the noul is
 0.5 or more. Jev gives a box even for a thing that is not there, so a box is kept only for a mark that is there; a mark
-that is not there cites the page it was looked for on, with no box. A `same` mark cuts both boxes out of a 300 dpi
+that is not there, or one whose box falls off the page, cites the page it was looked for on, with no box. A `same` mark cuts both boxes out of a 300 dpi
 render, with a little room around each, and asks one question of the two.
 
 ```js
@@ -98,18 +99,20 @@ const list = JSON.parse(await sh(`cat ${q(task.checklist)}`));
 const { pages } = JSON.parse(await sh(`cat ${q(dir)}/pages.json`));
 const r = (v) => Math.round(v * 1000) / 1000;
 const found = {};
-const pageOnly = (fragment) => fragment.replace(/&xywh=[^&]*/, "");
 for (const mark of list.marks.filter((m) => m.page)) {
   const best = pages.filter((p) => p.kind === mark.page).sort((a, b) => b.marks[mark.id].p - a.marks[mark.id].p)[0];
-  if (!best) { found[mark.id] = { p: 0, there: false, cites: [], why: `no ${mark.page} page was found` }; continue; }
+  if (!best) { found[mark.id] = { p: 0, there: false, page: null, at: null, receipts: [], cites: [], why: `no ${mark.page} page was found` }; continue; }
   const { p, at } = best.marks[mark.id];
-  found[mark.id] = { p, there: p >= 0.5, page: best.page, at, cites: [{ fragment: p >= 0.5 ? at : `${task.document}#page=${best.page}`, receipts: best.receipts }] };
+  const there = p >= 0.5;
+  found[mark.id] = { p, there, page: best.page, at: there ? at : null, receipts: best.receipts, cites: [{ fragment: there && at ? at : `${task.document}#page=${best.page}`, receipts: best.receipts }] };
 }
 for (const mark of list.marks.filter((m) => m.same)) {
   const parts = mark.same.map((id) => found[id]);
-  const missing = mark.same.filter((id, i) => !parts[i].there);
-  if (missing.length) {
-    found[mark.id] = { p: 0, there: false, cites: parts.flatMap((part) => part.cites.map((cite) => ({ fragment: pageOnly(cite.fragment), receipts: cite.receipts }))), why: `${missing.join(" and ")} not there` };
+  const absent = mark.same.filter((id, i) => !parts[i].there);
+  const unboxed = mark.same.filter((id, i) => parts[i].there && !parts[i].at);
+  if (absent.length || unboxed.length) {
+    const why = [absent.length && `${absent.join(" and ")} not there`, unboxed.length && `${unboxed.join(" and ")} without a box`].filter(Boolean).join("; ");
+    found[mark.id] = { p: 0, there: false, cites: parts.filter((part) => part.page).map((part) => ({ fragment: `${task.document}#page=${part.page}`, receipts: part.receipts })), why };
     continue;
   }
   const crops = [];
