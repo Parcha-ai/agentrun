@@ -210,7 +210,7 @@ Each is marked in the code with the package that owns it.
 A demo's `run.ts` is about twenty lines: its spec, its job, its fakes and one call. The entry reads the standard flags and runs the job on the no-key host.
 
 ```ts
-import { demo } from '../reference/index.ts';
+import { demo } from '@parcha/agentrun-reference';
 import spec from './demo.json' with { type: 'json' };
 import { fakes } from './fakes.ts';
 import job from './job.ts';
@@ -297,7 +297,7 @@ A demo may pass `manifest({ dir, record, input, live, models })` (`models` is wh
 
 ### The child as an app module
 
-`child-app.ts` is the child as a `pi-durable-disk run --app` module, so a run has one open path (the claim, the fence, the stdin mount token, run.json's holder, the seal and restarts are the disk package's): `DEMO_ENTRY=<file URL of the demo's run.ts, which exports its \`options\`> pi-durable-disk run --dir <dir> --app examples/reference/child-app.ts --id <id>`. It builds the host exactly as the entry's own child does (the same environment, which every order carries from the supervisor, `DEMO_ENTRY` and `DEMO_NAME` included, so a place needs no wrapper: `PLAN`, `KILL_REQUEST`, `RECORD_DIR`, `INPUT`), drives the job in `onOpen`, prints its outcome line, writes the run's final status `done` with the record and the store's hash (a box place has only run.json), releases the run and exits 0. A kill -9 and the same command again resumes the run.
+`child-app.ts` is the child as a `pi-durable-disk run --app` module, so a run has one open path (the claim, the fence, the stdin mount token, run.json's holder, the seal and restarts are the disk package's): `DEMO_ENTRY=<file URL of the demo's run.ts, which exports its \`options\`> pi-durable-disk run --dir <dir> --app "$(node -p "require.resolve('@parcha/agentrun-reference/child-app')")" --id <id>`. It builds the host exactly as the entry's own child does (the same environment, which every order carries from the supervisor, `DEMO_ENTRY` and `DEMO_NAME` included, so a place needs no wrapper: `PLAN`, `KILL_REQUEST`, `RECORD_DIR`, `INPUT`), drives the job in `onOpen`, prints its outcome line, writes the run's final status `done` with the record and the store's hash (a box place has only run.json), releases the run and exits 0. A kill -9 and the same command again resumes the run.
 
 ### The default input per mode, and why a run stopped
 
