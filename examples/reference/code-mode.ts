@@ -19,8 +19,9 @@ export function codeModeExtension(vision: VisionHandle, options: CodeModeOptions
   // The model writes its script before the sandbox exists, so the declaration of `vision.see` (its signature and what it does) is in the tool's description, taken from the handle's own global.
   const see = vision.see(undefined as never, {} as never);
   const judge = vision.judge(undefined as never, {} as never);
-  const transcribe = vision.transcribe(undefined as never, {} as never);
-  const declared = `\`vision.see\` is declared as \`${see.signature}\`: ${see.description}; \`vision.judge\` is declared as \`${judge.signature}\`: ${judge.description}; \`vision.transcribe\` is declared as \`${transcribe.signature}\`: ${transcribe.description}`;
+  // A handle from a pi-vision without `vision.transcribe` gives the sandbox see and judge only.
+  const transcribe = typeof vision.transcribe === 'function' ? vision.transcribe(undefined as never, {} as never) : undefined;
+  const declared = `\`vision.see\` is declared as \`${see.signature}\`: ${see.description}; \`vision.judge\` is declared as \`${judge.signature}\`: ${judge.description}${transcribe ? `; \`vision.transcribe\` is declared as \`${transcribe.signature}\`: ${transcribe.description}` : ''}`;
   return defineExtension({
     name: 'reference-code-mode',
     tools: [defineTool({
@@ -51,7 +52,7 @@ export function codeModeExtension(vision: VisionHandle, options: CodeModeOptions
           },
         };
         const call = await callContext(api, context);
-        const sandbox = new CodemodeSandbox({ tools: [bash], globals: [vision.see(api.env, call), vision.judge(api.env, call), vision.transcribe(api.env, call)], ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}) });
+        const sandbox = new CodemodeSandbox({ tools: [bash], globals: [vision.see(api.env, call), vision.judge(api.env, call), ...(transcribe ? [vision.transcribe(api.env, call)] : [])], ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}) });
         try {
           const run = await sandbox.execute(code, { signal: context.abortSignal });
           const content = [
