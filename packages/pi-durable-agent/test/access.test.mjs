@@ -81,6 +81,17 @@ test("a home on a disk: prepareRun, seedRun into the disk's runs/<id>, carryBack
   assert.deepEqual(await carryBack(disk.home, { runId: "r1" }, { outcome: "completed", access: disk.access }), { changed: false, profiles: [], released: [] }, "once per run");
 });
 
+test("a claimed directory that holds no agent store is missing, for every read through the access, homeRevision included", async () => {
+  const disk = await diskHome();
+  const empty = path.join(disk.root, "empty");
+  mkdirSync(empty);
+  const access = { ...disk.access, claim: async (fn) => fn(empty) };
+  await assert.rejects(readAgentHome(disk.home, { access }), refused("missing", /holds no agent\.sqlite/));
+  await assert.rejects(homeRevision(disk.home, { access }), refused("missing", /holds no agent\.sqlite/));
+  assert.deepEqual(readdirSync(empty), [], "nothing is created in the directory it was handed");
+  assert.equal(typeof (await homeRevision(disk.home, { access: disk.access })), "number", "a claim of the real agent/ still reads its head");
+});
+
 test("the run store a carry back is given is only read: its bytes, its time and its directory stay as they were", async () => {
   const disk = await diskHome();
   await signedInRun(disk, "r1");
