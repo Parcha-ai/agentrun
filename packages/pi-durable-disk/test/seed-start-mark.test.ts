@@ -63,6 +63,16 @@ function supervisorOver(root: string, id: string) {
   return { tick, revoked };
 }
 
+/**
+ * Once the keeper's first refresh has landed (`at` is no longer `since`): its thread is up. A loaded machine can take well
+ * over this file's 400 ms grace to bring a worker thread up (nothing to a real grace of 90 s), so every timed check runs
+ * from here; a keeper that never comes up still fails.
+ */
+async function firstRefresh(root: string, since: string, ms = 20_000): Promise<void> {
+  for (const t0 = Date.now(); Date.now() - t0 < ms; await sleep(20)) if (readMark(root).at !== since) return;
+  assert.fail(`the keeper did not refresh the mark within ${ms} ms`);
+}
+
 /** A seed that takes `ms`, and calls `during` halfway through. */
 const slowSeed = (ms: number, during: () => Promise<void>): RunSeed => async () => {
   await sleep(ms / 2);
@@ -95,8 +105,13 @@ describe("a seed and the supervisor's start grace", () => {
       writeMark(dir.root, first);
       const supervisor = supervisorOver(dir.root, "r1");
       let seen: Awaited<ReturnType<typeof supervisor.tick>> | undefined;
-      const run = await opener(dir.root, slowSeed(1_500, async () => void (seen = await supervisor.tick())))();
-      assert.equal(seen?.action, "starting", `a tick ${750} ms into the seed, past the ${GRACE_MS} ms grace: ${JSON.stringify(seen)}`);
+      const seed: RunSeed = async () => {
+        await firstRefresh(dir.root, first.at);
+        await sleep(GRACE_MS + 350);
+        seen = await supervisor.tick();
+      };
+      const run = await opener(dir.root, seed)();
+      assert.equal(seen?.action, "starting", `a tick ${GRACE_MS + 350} ms after the keeper came up, past the ${GRACE_MS} ms grace: ${JSON.stringify(seen)}`);
       assert.deepEqual(supervisor.revoked, [], "the seeder was not revoked");
       const mark = readMark(dir.root);
       assert.equal(existsSync(join(dir.root, "start.json.tmp")), false, "no refresh is mid-write once the seed step is done");
@@ -132,12 +147,15 @@ describe("a seed and the supervisor's start grace", () => {
     const root = join(dir.root, "run");
     const marker = join(dir.root, "seeding");
     mkdirSync(root, { recursive: true });
-    writeMark(root, { generation: 1, at: new Date().toISOString(), by: "sup-1", failures: 0, lastExit: null });
-    const BLOCK_MS = 4_000;
+    const start = new Date().toISOString();
+    writeMark(root, { generation: 1, at: start, by: "sup-1", failures: 0, lastExit: null });
+    // Longer than the keeper may take to come up plus the checks; the child is killed once they are done.
+    const BLOCK_MS = 30_000;
     const child = spawn(process.execPath, [CHILD, root, marker, String(LEASE.heartbeatMs), String(BLOCK_MS)], { stdio: ["ignore", "ignore", "inherit"] });
     try {
       for (const t0 = Date.now(); !existsSync(marker) && Date.now() - t0 < 30_000; ) await sleep(20);
       const blocked = Date.now();
+      await firstRefresh(root, start);
       await sleep(GRACE_MS + 400);
       const seen = await supervisorOver(root, "seeded").tick();
       assert.ok(Date.now() - blocked < BLOCK_MS, "the tick ran while the seed still held its thread");
@@ -160,9 +178,7 @@ describe("a seed and the supervisor's start grace", () => {
     const child = spawn(process.execPath, [CHILD, root, marker, String(LEASE.heartbeatMs)], { stdio: ["ignore", "ignore", "inherit"] });
     try {
       for (const t0 = Date.now(); !existsSync(marker) && Date.now() - t0 < 30_000; ) await sleep(20);
-      const before = readMark(root).at;
-      await sleep(500);
-      assert.notEqual(readMark(root).at, before, "the live seeder refreshes the mark");
+      await firstRefresh(root, readMark(root).at); // the live seeder refreshes the mark
       child.kill("SIGKILL");
       await new Promise((resolve) => child.once("close", resolve));
       const last = readMark(root).at;
