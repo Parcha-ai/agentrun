@@ -1,6 +1,6 @@
 ---
 name: report
-description: End a run with your own report, one self-contained, script-free HTML page, report/index.html, that answers in the shape the question asks, states only what the run read, and shows the evidence for every finding and a thumbnail for every row (the document page with its mark boxed and a close crop, the film moment's frame and a short clip, the photo with what it shows boxed and captioned). Cite every claim as a link to the file's own address (file#page=N, file#t=a,b, file#xywh=percent:x,y,w,h). Use at the end of a run that looked at documents, images or video, so the person sees what you saw and not only your words.
+description: End a run with your own report, one self-contained, script-free HTML page, report/index.html, that answers in the shape the question asks, states only what the run read (every text is judged against what its cited looks read before the page is written), and shows the evidence for every finding and a thumbnail for every row (the document page with its mark boxed and a close crop, the film moment's frame and a short clip, the photo with what it shows boxed and captioned). Cite every claim as a link to the file's own address (file#page=N, file#t=a,b, file#xywh=percent:x,y,w,h). Use at the end of a run that looked at documents, images or video, so the person sees what you saw and not only your words.
 ---
 
 # End the run with a report
@@ -17,6 +17,12 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
 - **Never state what the run did not read.** Every name, place, time and number on the page comes from a look's answer or from
   the file's own text, and carries its cite. A caption says what the look saw, not what you remember about the subject.
   What the run did not read is left out; a place it did not look at goes under what you did not check.
+- **Ground the page before you write it.** Before the page is written, every text it shows (a finding's words, a caption, a box
+  label, a row's text, the answer and its key points) is put to Jev as a text judgment: `vision.judge`, the text as `claims`
+  and the answers of the looks it cites as `evidence`, one noul question for each text: does the evidence state every name,
+  time and number in it? A text it does not is not kept as it is: rewrite it from what the looks read, cite the look that
+  states it, or drop it. What was heard is cited to the transcribe look (`hear()`): a name, a time or a number that was said
+  is evidence only in that look's text, not in a picture of the speaker. The check refuses a text that was not judged as written.
 - **The text is yours, in plain sentences.** Every sentence on the page (a caption, an evidence paragraph, a row) is one plain
   sentence in your own words, drawn from the look's answer: never the answer pasted. The page is HTML, so markdown shows as raw
   symbols (`**`, `##`, a `* ` list mark, backticks); the check refuses them in any text outside `<code>` and `<pre>` and names
@@ -178,18 +184,19 @@ const keep = async (file) => {   // a document or photo the run was given, copie
 Look at the pictures you will show, if the run has not already, and take each look's key from its receipt. `vision.see`
 returns the receipts' paths, one for each request. A receipt is a JSON record (its key is `facts.key`) or a text file whose
 header has a `key:` line before the first `---`. A look the run made earlier is cited the same way: give `keyOf` its
-receipt's path, and say what it covered with `cover("file#page=2")` (`look()` does that for its own looks), since the list of what you did not check is what no look covered.
+receipt's path, and say what it covered with `cover("file#page=2")` (`look()` and `hear()` do that for their own looks), since the list of what you did not check is what no look covered. `said` holds what each look read, by key, for the grounding step: a look you read yourself is put there by `look()` and `hear()`, and one you read from a receipt by `keyOf`.
 
 ```js
-const looks = new Set(), covered = [];   // covered: what the run looked at, as { file, pages?: [from, to], t?: [from, to] }
+const looks = new Set(), said = new Map(), covered = [];   // said: look key -> what the look read; covered: what the run looked at, as { file, pages?: [from, to], t?: [from, to] }
 const keyOf = async (receipt) => {
   if (!receipt) throw new Error("no receipt: this host files none, so there is no look to cite");
   const text = await sh(`cat ${q(receipt)}`).catch(() => sh(`cat ${q(`../${receipt}`)}`));   // a host may file receipts in the folder above the workspace
-  let key, status;
-  try { ({ status, facts: { key } } = JSON.parse(text)); } catch { const header = text.split("\n---")[0].split("\n").map((line) => line.split(": ")); key = header.find(([name]) => name === "key")?.[1]; status = header.find(([name]) => name === "status")?.[1]; }
+  let key, status, body = "";
+  try { ({ status, body = "", facts: { key } } = JSON.parse(text)); } catch { const header = text.split("\n---")[0].split("\n").map((line) => line.split(": ")); key = header.find(([name]) => name === "key")?.[1]; status = header.find(([name]) => name === "status")?.[1]; body = text.split("\n---\n").slice(1).join("\n---\n"); }
   if (!key) throw new Error(`${receipt} holds no look key`);
   if (status === "failed") throw new Error(`${receipt} is a look that failed: it is no evidence for a finding`);
   looks.add(key);
+  if (typeof body === "string" && body.trim() && !said.has(key)) said.set(key, body.trim());
   return key;
 };
 const cover = (fragment) => {   // "file#page=3", "file#page=1-4", "file#t=18,26", "file#t=21.5&xywh=...", or a bare file: put a look made earlier here too
@@ -200,7 +207,16 @@ const cover = (fragment) => {   // "file#page=3", "file#page=1-4", "file#t=18,26
 const look = async (path, fragment, ask) => {
   const seen = await vision.see({ ask, paths: [path], fragments: [fragment] });
   cover(fragment);
-  return { key: await keyOf(seen.receipts[0]), text: seen.text.trim() };
+  const key = await keyOf(seen.receipts[0]);
+  said.set(key, seen.text.trim());
+  return { key, text: seen.text.trim() };
+};
+const hear = async (path, fragment) => {   // what was said in a recording: cite this look for any name, time or number that was heard
+  const heard = await vision.transcribe({ path, ...(fragment ? { fragment } : {}) });
+  cover(fragment ? `${path}#${fragment.replace(/^.*#/, "")}` : path);
+  const key = await keyOf(heard.receipts[0]);
+  said.set(key, heard.text.trim());
+  return { key, text: heard.text.trim() };
 };
 ```
 
@@ -211,6 +227,7 @@ looks you made (a `vision.judge` box answer carries its `fragment`; `find` and `
 key one (open) or `routine` (folded). A box belongs to a finding and links back to it; `points` are the three or four key
 points of the answer. When the question names a shape, add `rows` to the report, one for each unit it names:
 `rows: [{ id: "m1", label: "0:00 to 1:00", text: "what the look read there", thumb: await thumb("talk.mp4", "m1-thumb", { t: 30 }), cites: [{ file: "talk.mp4", t: [0, 60], look: lookTalk.key }] }]`.
+A claim about what was said cites the look of `hear()`, made in piece 3's way: `const said1 = await hear("talk.mp4")`, then `look: said1.key`.
 A mark on a document page gets `crop()` for its finding and its box on the embedded page; a film moment gets `frame()` and the window's `clip()`; a photo gets `photo()`.
 An embedded page takes its look from a cite of that page of that document, in a finding or a row, or from a `look` of its own.
 
@@ -252,7 +269,47 @@ const report = {
 };
 ```
 
-### 5. The page
+### 5. Ground the claims
+
+Run after the data and before the page, and again whenever a text changes. Each finding, each row and the answer is one
+request to Jev with no image: `state` holds `claims` (each text it shows) and `evidence` (what the looks it cites read), and
+each text is one noul question, which Jev answers as the probability that the evidence states every name, time and number in
+it. A text whose answer is under `GROUNDED` stops the script, naming it. Fix the data (rewrite, re-cite or drop it) and run
+the pieces again; a judgment you already paid for in the call is read back, not paid twice. The usual failure is a finding that states what a look read but cites only another look: cite every look the text rests on (on a real report, 9 of the 12 texts that failed against their cited looks passed once the looks that read them were cited). A text with no cited look that
+read anything has no evidence and fails the same way.
+
+```js
+const GROUNDED = 0.5;   // noul is the probability of yes: 0.66 to 0.98 when the evidence gave the fact, 0.01 to 0.03 when it did not
+const verdicts = new Map();
+const claimsOf = (r) => {   // the texts the page states, in units that each cite their own looks
+  const cited = (x) => (x.cites ?? []).map((c) => c.look);
+  const labels = (r.documents ?? []).flatMap((d) => d.pages.flatMap((p) => p.boxes ?? []));
+  return [
+    ...r.findings.map((f) => ({ id: `finding ${f.id}`, keys: cited(f), texts: [f.title, f.why, ...(f.pics ?? []).flatMap((p) => [p.caption, ...(p.boxes ?? []).map((b) => b.label)]), f.clip?.caption, ...labels.filter((b) => b.finding === f.id).map((b) => b.label)].filter(Boolean) })),
+    ...(r.rows ?? []).map((x) => ({ id: `row ${x.id}`, keys: cited(x), texts: [x.text].filter(Boolean) })),
+    { id: "the answer", keys: [...r.findings, ...(r.rows ?? [])].flatMap(cited), texts: [r.answer, ...r.points.map((p) => `${p.label}: ${p.value}`)] },
+  ];
+};
+const verdictKey = (unit, text) => `${[...new Set(unit.keys)].sort().join(",")}\n${text}`;
+const ground = async () => {
+  const failed = [];
+  for (const unit of claimsOf(report)) {
+    if (!unit.keys.length) continue;   // no look cited: the check refuses it as uncited
+    const evidence = [...new Set(unit.keys)].map((key) => said.get(key)).filter(Boolean);
+    const ask = (i) => ({ type: "noul", instructions: `Does \`evidence\` state every name, time and number in \`claims.t${i}\`? Say yes only when each name, place, date, time, quantity and title in it is given by \`evidence\`, or is a plain restatement of something it gives; a name, date, number or title that \`evidence\` does not give is a no, even when it is true or well known.` });
+    const { answers } = evidence.length ? await vision.judge({ state: { claims: Object.fromEntries(unit.texts.map((text, i) => [`t${i}`, text])), evidence }, questions: Object.fromEntries(unit.texts.map((_, i) => [`t${i}`, ask(i)])) }) : { answers: {} };
+    unit.texts.forEach((text, i) => {
+      const yes = answers[`t${i}`]?.noul ?? 0;
+      verdicts.set(verdictKey(unit, text), yes);
+      if (yes < GROUNDED) failed.push(`${unit.id}: "${text.slice(0, 80)}" is not stated by what its cited looks read (${yes.toFixed(2)})`);
+    });
+  }
+  if (failed.length) throw new Error(`${failed.join("\n")}\nRewrite each from what the looks read, cite the look that states it, or drop it; then run the pieces again.`);
+};
+await ground();
+```
+
+### 6. The page
 
 One function for each part, so a finding with a clip and boxes, or with neither, is the same code. The page is written once, at
 the end.
@@ -316,7 +373,7 @@ ${report.notChecked.length ? `<section id="not-checked"><h2>Not checked</h2><ul 
 await write("report/index.html", page);
 ```
 
-### 6. The check before you stop
+### 7. The check before you stop
 
 Run it after the page is written. It returns what is wrong, and the script stops if anything is: fix the data and write the page
 again.
@@ -394,6 +451,7 @@ for (const part of page.replace(/<(style|code|pre)\b[\s\S]*?<\/\1>/gi, "").split
   const marker = /\*\*|##|`|(?:^|\n)\s*\* |(?:^|\n)\s*#{1,6}\s/.exec(part);
   if (marker) problems.push(`${named(owner)} carries markdown (${JSON.stringify(marker[0].trim() || marker[0])}): write your own plain sentence from the look's answer, never the answer pasted`);
 }
+for (const unit of claimsOf(report)) for (const text of unit.texts) if (!(verdicts.get(verdictKey(unit, text)) >= GROUNDED)) problems.push(`${unit.id}: "${text.slice(0, 60)}" was not judged as written against what its looks read: run the grounding step again`);
 if (problems.length) throw new Error(problems.join("\n"));
 return { report: "report/index.html", findings: report.findings.length, looks: looks.size, bytes: await bytes("report/index.html") };
 ```
