@@ -253,3 +253,23 @@ test('a restore keeps what the lost branch charged: a browser session\'s running
   const noRestore = run(1.5).slice(0, 3);
   assert.equal(countersOf(reduceTo(counterFold, noRestore, noRestore.length), true).cost, 3, 'with no restore, the latest running total');
 });
+
+test('a restore whose pi committed once at open (draft 37): the snapshot at the head, the first new commit head + 1; above that still fails', () => {
+  // pi-transport's restore mid-turn: process 1 reached commit 12; the store reopens at the checkpoint's head 9 and pi
+  // commits once at open, so process 2's snapshot is at commit 9 and its first new commit, the moves record's, is 10.
+  const midTurn = ({ snapshotAt = 9, first = 10, head = 9 } = {}): Line[] => [
+    supervisor('process.started', 1, { gen: 1 }),
+    ...Array.from({ length: 12 }, (_, n) => doc(1, n + 1, 0, 'agentrun.driver', undefined, { generation: 1 })),
+    supervisor('kill', 2, { gen: 1, label: 'the box died', crossing: null }),
+    supervisor('process.started', 3, { gen: 2 }),
+    doc(1, snapshotAt, 0, 'agentrun.driver', undefined, { generation: 1 }, true),
+    doc(2, first, 0, 'transport.moves', 'm1', { kind: 'restore', head, checkpoint: { head, sha256: 'x', bytes: 1 } }),
+    doc(2, first, 1, 'agentrun.driver', undefined, { generation: 2 }),
+    doc(2, first + 1, 0, 'agentrun.driver', undefined, { generation: 2 }),
+  ];
+  assert.deepEqual(validate(unpriced, midTurn()), [], 'snapshot at head 9, the moves record at commit 10');
+  assert.deepEqual(validate(unpriced, midTurn({ snapshotAt: 8, first: 9 })), [], 'no commit at open: snapshot at 8, first new commit 9, as before');
+  assert.match(validate(unpriced, midTurn({ first: 11 })).join('\n'), /the restore's head 9 is not process 2's first new commit 11/, 'head + 2: more than pi\'s one commit at open');
+  assert.match(validate(unpriced, midTurn({ snapshotAt: 8, first: 10 })).join('\n'), /the restore's head 9 is not process 2's first new commit 10/, 'head + 1 only with the snapshot at the head');
+  assert.match(validate(unpriced, midTurn({ snapshotAt: 9, first: 11, head: 10 })).join('\n'), /the commits go back to 9 with no restore record of head 10 after it|the restore's head 10/, 'a head above the snapshot plus one');
+});

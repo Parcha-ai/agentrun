@@ -80,3 +80,23 @@ test('served over http: the gallery lists from the index, a run and its bundled 
   assert.match(lost, /The gallery could not be read/);
   assert.match(lost, /Drop a recording folder/);
 });
+
+test('a blob still being written (.<sha>.<ext>.tmp-<pid>) is neither listed nor shipped, and the gate passes the build', async (t) => {
+  const out = mkdtempSync(join(tmpdir(), 'viewer-tmp-blob-'));
+  t.after(() => rmSync(out, { recursive: true, force: true }));
+  // A copy of a recording taken while a blob was being written: the temp name sits in blobs/ beside the finished ones.
+  const recordings = join(out, 'recordings');
+  cpSync(new URL('../recordings/reference-job/', import.meta.url).pathname, join(recordings, 'reference-job'), { recursive: true });
+  const unfinished = `.${'a'.repeat(64)}.png.tmp-4242`;
+  writeFileSync(join(recordings, 'reference-job', 'blobs', unfinished), 'half a picture');
+  // @ts-expect-error: the gate is plain JavaScript
+  const { gateProblems } = await import('../../../scripts/recording/gate.mjs');
+  for (const files of [true, false]) {
+    const dist = join(out, files ? 'files' : 'embedded');
+    build(dist, recordings, { files });
+    assert.ok(!existsSync(join(dist, 'recordings', 'reference-job', 'blobs', unfinished)), `files ${files}: not shipped`);
+    const text = readFileSync(join(dist, files ? 'recordings/index.json' : 'gallery.js'), 'utf8');
+    assert.ok(!text.includes('tmp-4242') && !text.includes(`.${'a'.repeat(64)}`), `files ${files}: not listed`);
+    assert.deepEqual(gateProblems(dist), [], `files ${files}: the gate passes the build`);
+  }
+});

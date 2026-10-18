@@ -13,9 +13,10 @@ page code can still read what the person types into the page, so a real password
 | --- | --- |
 | `agent.json` | The agent definition: `id`, `version`, `name`, `description`, `instructions`, `skills`, `tools`, `input_schema`, `output_schema`, `max_cost_usd`. It names no model: the host picks it. Its tools are `read`, `write` and `edit` in the workspace, the browser's `snapshot`, `run`, `browser_read` and `browser_release`, and `request_sign_in`. A tool name can also be a whole extension (`browser`). |
 | `skills/<name>/SKILL.md` | The skills `agent.json` names, added to the prompt in that order. |
+| `frames.ts` | `frameStore(runDir, clock)`: the sink for pi-browser's frame recorder, which keeps what the browser showed in `<run>/frames/` (owner-only, outside `work/`) for the page's replay player, and drops every frame while the person signs in. |
 | `chrome.ts` | The run's own Chrome for `AGENT_BROWSER=chrome`: its profile directory in the home and the save lease that decides who opens it, its arguments, and its start and stop by pid. |
 | `home.mjs` | `ensureAgentHome(dir)`: the agent home of [`@parcha/pi-durable-agent`](../../../packages/pi-durable-agent/README.md), made from `agent.json` and the skills the first time (owner-only), opened after that. |
-| `app.ts` | The app `pi-durable-disk run --app` loads: the definition and skills from the home, the model from the environment, the file tools, the browser on the agent's saved sign-in, and `request_sign_in`. |
+| `app.ts` | The app `pi-durable-disk run --app` loads: the definition and skills from the home, the model from the environment, the file tools, the browser on the agent's saved sign-in and its frame recorder (2 frames a second), and `request_sign_in`. |
 | `start-run.mjs` | Runs one started run, with its door on loopback. |
 | `agent.test.mjs` | Offline tests: no network, no key, no model call. |
 
@@ -71,6 +72,26 @@ lets go of the run (`run.json` says `sleeping`) and exits 0. Starting the same d
 `carryBack(home, { runId }, { outcome })` returns the run's sign-in to the home; the server does this once a run has
 answered.
 
+## The sign-in's site, and what the browser showed
+
+`request_sign_in` records the site it asked for on the run's profile (`browser.profiles`, key `default`): its origin goes
+into `allowedOrigins` and the sign-in page into `startUrl`, read from the page the browser is on, or from the address
+the agent named. The agent's first page on that origin after the person answers sets `verifiedAt`. `carryBack` takes all
+three to the home, where the runs page lists them. A name that is no address ("the practice site") with no page open
+records nothing, and the page says the sign-in's sites were not recorded. No tool reads a profile.
+
+The app records the browser for the page's replay player with pi-browser's frame recorder, at 2 frames a second, into
+`<run>/frames/` (`frames.ts`): owner-only, beside the run, outside `work/`. While the person signs in nothing is kept.
+`request_sign_in` holds the frames as the call starts, before its first await, so before its result exists and the run
+can say it waits; every other tool lifts the hold before it runs, and since `request_sign_in` ends the turn, that is the
+agent's first step after the person's next message. While held, the sink refuses every frame, so the recorder counts
+it dropped and no later gap starts from it, and one `frame.gap` (`credential_on_page`, detail `host`) marks where the
+frames stopped. The recorder's own check for a password or a code on the page stays on. The recorder sends a frame only
+when the page changes, so a page that did not change after the sign-in (the person's own sign-in already opened it)
+leaves no frame after the gap until it does. A process started again while the person signs in starts without the hold,
+and records nothing either: the recorder captures a session only from its next attach, which only a browser call makes.
+When pi-browser's `FrameRecorderOptions.hold` reaches this repo, this hold moves to it.
+
 ## A local Chrome
 
 Browserbase is the default. A local Chrome is for a run that must keep everything on this machine but the model, and a
@@ -118,3 +139,5 @@ yet: live.json then says `live view not available for local Chrome yet`, and the
   Run them one after the other.
 - A sign-in lasts as long as the site keeps it. When a site has ended it by the next run, the agent finds the sign-in
   page and asks the person again.
+- Frames after a sign-in come only when the page repaints, until the recorder can capture on demand: a page that does
+  not change after the person signs in leaves no frame after the gap, and the player shows the sign-in to the end.

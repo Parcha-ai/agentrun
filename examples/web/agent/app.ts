@@ -5,11 +5,13 @@
 // ends the agent's turn while the person signs in.
 //
 // The sign-in is the run store's `browser.profiles` entry, which `startRun` seeded from the home and `carryBack` returns
-// to it: the Browserbase context id, resolved before the run serves anything. The serve door creates the root
-// conversation on the first request, with the definition's prompt and tools and the browser's configuration in the
-// commit that creates it. `live.json` beside the run, outside `work/` (the only place the model's file tools reach),
-// holds the browser's live view for the person's page. Neither the context id nor the live view enters a model-visible
-// string.
+// to it: the Browserbase context id, resolved before the run serves anything, and the sites it is for. `request_sign_in`
+// adds the site it asked for (`allowedOrigins`, `startUrl`), and the agent's next page there after the person answers
+// sets `verifiedAt`. The serve door creates the root conversation on the first request, with the definition's prompt and
+// tools and the browser's configuration in the commit that creates it. Beside the run, outside `work/` (the only place
+// the model's file tools reach), `live.json` holds the browser's live view for the person's page and `frames/` what the
+// browser showed (frames.ts), with nothing kept while the person drives it. Neither the context id nor the live view
+// enters a model-visible string.
 import { createHash } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -21,15 +23,17 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import type { ModelThinkingLevel, TSchema } from "@earendil-works/pi-ai";
-import { createRegistry, defineExtension, defineTool, type ConversationId, type Harness, type ToolRegistration } from "@earendil-works/pi-durable";
+import { createRegistry, defineDocFamily, defineExtension, defineTool, wrapTool, type ConversationId, type Harness, type JsonObject, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import { DEFAULT_BROWSER_POLICY, type BrowserPolicy, type BrowserProvider, type EvidenceRecord, type SessionChange, type SessionRow } from "@parcha/pi-browser";
 import { createBrowserExtension } from "@parcha/pi-browser/durable";
 import { stagehandDriver } from "@parcha/pi-browser/driver/stagehand";
 import { browserbaseProvider } from "@parcha/pi-browser/providers/browserbase";
 import { cdpProvider } from "@parcha/pi-browser/providers/cdp";
+import { frameRecorder } from "@parcha/pi-browser/recorder";
 import { durableProfileStore, openAgentHome, readAgentHome, type AgentDefinition, type AgentHomeState } from "@parcha/pi-durable-agent";
 import { ArchilCodingTools, type AppContext, type AppOptions } from "@parcha/pi-durable-disk";
 import { browserOf, CHROME_PROFILE, type BrowserKind } from "./chrome.ts";
+import { frameStore } from "./frames.ts";
 
 const THINKING: readonly ModelThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
 /** Long enough for a person to sign in in the live view while the agent's turn has ended. */
@@ -37,6 +41,12 @@ const IDLE_RELEASE_S = 900;
 const MODEL_PROVIDER = "agent-model";
 /** The agent's one browser profile: a Browserbase context holds the sign-ins of every site. */
 export const PROFILE = "default";
+/** The live frames' pace: enough to follow the agent, little to store. */
+const FRAMES_PER_SECOND = 2;
+
+/** pi-durable-agent's `browser.profiles`, by its kind: the run's copy of the agent's saved sign-ins, which `carryBack`
+ *  returns to the home. Only the host writes it, and no tool reads it. */
+const Profiles = defineDocFamily<JsonObject, null>({ kind: "browser.profiles", version: 1, scope: "session", family: true, initial: () => ({}) });
 
 /** The definition's instructions, then each skill it names (`<name>/SKILL.md` in the home), in order. */
 export function promptOf(state: Pick<AgentHomeState, "definition" | "skills">): string {
@@ -64,11 +74,26 @@ export function toolsOf(definition: Pick<AgentDefinition, "tools">, available: R
 /** What the person's page shows while the agent waits: the result of `request_sign_in`, the last item of an idle run. */
 export const signInAsked = (site: string) => `Asked the person to sign in to ${site.slice(0, 200)} in the live view; waiting for them to reply done.`;
 
+/** The site a sign-in is for: the page the browser is on, or what the agent named when that is an address. */
+export function signInSite(site: string, pageUrl: string | null): { origin: string; startUrl?: string } | null {
+  const page = pageUrl ? URL.parse(pageUrl) : null;
+  if (page && (page.protocol === "https:" || page.protocol === "http:")) return { origin: page.origin, startUrl: `${page.origin}${page.pathname}` };
+  const named = site.trim();
+  if (/\s/.test(named)) return null;
+  const address = /^https?:\/\//i.test(named);
+  const url = URL.parse(address ? named : `https://${named}`);
+  if (!url || !(url.protocol === "https:" || url.protocol === "http:") || !url.hostname.includes(".")) return null;
+  return address ? { origin: url.origin, startUrl: `${url.origin}${url.pathname}` } : { origin: url.origin };
+}
+
+type Asked = (site: string, api: ToolExecutionApi, context: Context) => Promise<void>;
+
 /**
  * The agent asks for a sign-in and its turn ends: the result terminates the run, so no tool (and no browser call) runs
- * while the person signs in, until their next message.
+ * while the person signs in, until their next message. `asked` runs first, before the result exists: whatever it does
+ * before its first await happens before the run can show it waits.
  */
-export const requestSignIn = defineTool({
+export const signInTool = (asked: Asked = async () => {}) => defineTool({
   name: "request_sign_in",
   description: "Ask the person to sign in to a site themselves, in the live view of your browser. Call it alone, once the site's sign-in page is open in your browser. It ends your turn; the person replies when they are done.",
   parameters: {
@@ -81,13 +106,15 @@ export const requestSignIn = defineTool({
     required: ["site", "reason"],
   } as unknown as TSchema,
   replay: "safe",
-  execute: async (args) => {
+  execute: async (args, api, context) => {
     const { site, reason } = args as { site: string; reason: string };
+    await asked(site, api, context);
     return { content: [{ type: "text", text: signInAsked(site) }], details: { site, reason }, control: { terminate: true } };
   },
 });
 
-const SignInHandover = defineExtension({ name: "sign-in", tools: [requestSignIn] });
+export const requestSignIn = signInTool();
+const SIGN_IN = "sign-in";
 
 // ---- the browser profile -----------------------------------------------------------------------------------------------
 
@@ -230,14 +257,59 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
   let liveWrites = Promise.resolve();
   const base = chosen.kind === "chrome" ? cdpProvider(chosen.options) : browserbaseProvider(chosen.options);
   const provider = viewer ? viewer.wrap(base) : base;
+  // `t` of every frame line is ms since the run started, so a resumed run's frames go on where they stopped.
+  const startedAt = Date.parse(state.runs[where.ref.id]?.startedAt ?? "") || Date.now();
+  const frames = frameStore(where.root, () => Date.now() - startedAt);
+  const recorder = frameRecorder({ sink: frames.sink, clock: () => Date.now() - startedAt, maxFps: FRAMES_PER_SECOND });
+
+  // ---- the sign-in's site, on the run's profile ------------------------------------------------------------------------
+  // The profile the run signs in with: the Browserbase context, or a shared local Chrome profile; a Chrome profile of the
+  // run's own is thrown away, so it records nothing.
+  const profileKey = chosen.kind === "browserbase" ? PROFILE : env.AGENT_CHROME_PROFILE === "shared" ? CHROME_PROFILE : null;
+  const pages = new Map<number, string | null>();
+  let pending: { origin: string; answered: boolean } | null = null;
+  let opened: Harness | undefined;
+  let profileWrites = Promise.resolve();
+  /** A change to the run's profile, only when the run holds it ready (another run's lease leaves it without a ref). */
+  async function editProfile(target: Pick<Harness, "snapshot" | "commit">, context: Context, change: (profile: JsonObject) => void): Promise<void> {
+    if (!profileKey || (await target.snapshot(Profiles, profileKey, context))?.state !== "ready") return;
+    await target.commit(async (tx) => change(await tx.doc(Profiles, profileKey, null)), context);
+  }
+  const asked: Asked = async (site, api, context) => {
+    // First, before any await: nothing the browser shows from here on is kept, until the agent's next step.
+    frames.hold();
+    const at = signInSite(site, pages.get(api.conversationId) ?? null);
+    pending = at ? { origin: at.origin, answered: false } : null;
+    if (!at) return;
+    await editProfile(api, context, (profile) => {
+      const origins = Array.isArray(profile.allowedOrigins) ? profile.allowedOrigins.filter((o): o is string => typeof o === "string") : [];
+      profile.allowedOrigins = origins.includes(at.origin) ? origins : [...origins, at.origin];
+      if (at.startUrl) profile.startUrl = at.startUrl;
+    });
+  };
+  /** The person has answered (the agent took its next step): frames are kept again. */
+  const answered = () => {
+    if (!frames.held) return;
+    frames.lift();
+    if (pending) pending.answered = true;
+  };
+  /** A page the agent's browser loaded: the first on the sign-in's site after the answer verifies the sign-in. */
+  function seen(url: string | null): Promise<void> {
+    const origin = url ? URL.parse(url)?.origin : undefined;
+    if (!pending?.answered || origin !== pending.origin || !opened) return profileWrites;
+    pending = null;
+    const harness = opened;
+    return (profileWrites = profileWrites.then(() => editProfile(harness, BACKGROUND_CONTEXT, (profile) => void (profile.verifiedAt = new Date().toISOString()))).catch(() => undefined));
+  }
 
   const browser = createBrowserExtension({
-    provider: () => provider,
+    provider: ({ conversationId }) => recorder.watch(provider, conversationId),
     driver: stagehandDriver(),
     // Each read the model cites is filed in the workspace, named by its hash, so a read replayed after a crash files the
     // same path again.
     evidence: {
       async file(label: string, record: EvidenceRecord) {
+        if (record.status === "ok") void seen(record.facts.final_url ?? null);
         const body = typeof record.body === "string" ? record.body : Buffer.from(record.body).toString("base64");
         const text = JSON.stringify({ ...record, body }, null, 2);
         const path = join("evidence", label, `${record.tool}-${createHash("sha256").update(text).digest("hex").slice(0, 12)}.json`);
@@ -248,11 +320,20 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
     },
     redact: { values: () => (contextId ? [contextId] : []) },
     // In the order the changes came: a release written before a late launch would show a dead view.
-    onSession: (row, change) => void (liveWrites = liveWrites.then(() => writePrivate(live, { ...liveOf(row, change), ...page })).catch(() => undefined)),
+    onSession: (row, change) => {
+      pages.set(row.conversationId, row.session.lastUrl);
+      if (change === "updated") void seen(row.session.lastUrl);
+      liveWrites = liveWrites.then(() => writePrivate(live, { ...liveOf(row, change), ...page })).catch(() => undefined);
+    },
   });
+  const signIn = signInTool(asked);
+  const tools = toolsOf(definition, { [ArchilCodingTools.name]: ArchilCodingTools.tools ?? [], browser: browser.tools, [SIGN_IN]: [signIn] });
+  // request_sign_in ends the turn, so the agent's next tool call comes after the person's next message: each of its
+  // other tools ends the hold first.
+  const afterAnswer = (tool: ToolRegistration): ToolRegistration => ({ ...tool, execute: (args, api, context) => (answered(), tool.execute(args, api, context)) });
+  const handover = defineExtension({ name: SIGN_IN, tools: [signIn], wraps: tools.filter((tool) => tool.name !== signIn.name).map((tool) => wrapTool(tool, afterAnswer)) });
   const registry = createRegistry();
-  for (const extension of [ArchilCodingTools, browser.extension, SignInHandover]) registry.install(extension);
-  const tools = toolsOf(definition, { [ArchilCodingTools.name]: ArchilCodingTools.tools ?? [], browser: browser.tools, [SignInHandover.name]: [requestSignIn] });
+  for (const extension of [ArchilCodingTools, browser.extension, handover]) registry.install(extension);
 
   /** Every session the run still holds is released (Browserbase saves the context then), and the releases finish. */
   async function releaseBrowsers(harness: Harness, context: Context): Promise<void> {
@@ -264,6 +345,8 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
     await browser.drain(harness, context, AbortSignal.timeout(25_000));
     await browser.close();
     await viewer?.close();
+    await recorder.close();
+    await Promise.all([frames.flush(), profileWrites]);
   }
 
   const options: AppOptions = {
@@ -275,6 +358,7 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
     // A local Chrome's profile is a directory of the home: the run that opened it records it, so `carryBack` gives the
     // home the profile and its save lease decides the next run that may open it.
     beforeResume: async ({ harness, context }) => {
+      opened = harness;
       if (chosen.kind === "browserbase") contextId = await durableProfileStore(harness).resolve(PROFILE, makeContext);
       else if (env.AGENT_CHROME_PROFILE === "shared") await durableProfileStore(harness, { provider: "chrome" }).resolve(CHROME_PROFILE, async () => `chrome/${CHROME_PROFILE}`);
       resolved = true;
@@ -295,7 +379,7 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
       await run.setStatus("sleeping", { reason: at === null ? "idle" : "waiting" }, { wakeAt: at === null ? null : new Date(at).toISOString() });
     },
   };
-  return { options, browser };
+  return { options, browser, frames, signIn: { seen } };
 }
 
 export default async function app(where: AppContext): Promise<AppOptions> {
