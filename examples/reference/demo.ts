@@ -357,8 +357,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       if (overBudget && processes.length > 0) break;
       const plan = remaining.shift() ?? { tools: [] };
       // A kill this attempt plans that the place cannot make is refused before the attempt starts: the run is not stopped first, and no machine loss is recorded.
-      const planned = plan.run?.kind ?? 'process';
-      if (!place.kills.includes(planned)) throw new Error(`the ${place.name} place cannot lose its ${planned}: this kill is not one it can make`);
+      const planned = plan.run?.kind;
+      if (planned && !place.kills.includes(planned)) throw new Error(`the ${place.name} place cannot lose its ${planned}: this kill is not one it can make`);
       const gen = processes.length + 1;
       const log = join(scratch, `crossings-${gen}.jsonl`);
       const request = join(scratch, `kill-${gen}.json`);
