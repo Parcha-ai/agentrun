@@ -9,8 +9,11 @@ The host keeps what is its own: which model looks and its price, where receipts 
 `read` keeps its name and its arguments (`path, offset, limit, char_offset, ask, from_s, to_s, page`), so hosts and
 their stored instructions do not change. No tool is added. For many pages, a long video or many images the agent
 writes code: the `look` skill (`skills/look/SKILL.md`) shows it how to render pages and cut frames with bash and ask
-about them with `vision.see`, or have Jev judge them with typed answers (`vision.judge`): the two functions this
-package puts in a host's code mode. Only the answers, where they looked and the price enter the caller's context.
+about them with `vision.see`, have Jev judge them with typed answers (`vision.judge`), or have a speech-to-text model
+write what a recording says, word by word with its second (`vision.transcribe`): the functions this package puts in a
+host's code mode. Only the answers, where they looked or listened and the price enter the caller's context. For a long
+recording, the `transcribe` skill (`skills/transcribe/SKILL.md`) shows it how to cut the audio into pieces, transcribe
+each with `vision.transcribe`, write one timestamped transcript and search it with `rg` to the second.
 
 ## Status
 
