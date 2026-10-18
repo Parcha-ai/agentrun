@@ -22,7 +22,7 @@ export type PlaceSignal = { kind: 'crossing' | 'kill-request'; crossing: { point
   kind: 'signals-failed'; code: string; message: string };
 
 /** A delegation of the run's own path (an Archil place): who holds it and whether it is orphaned or still pending. */
-export type PlaceDelegation = { clientId: string; inodeId: string | number; path: string; isOrphaned: boolean; isPending?: boolean };
+export type PlaceDelegation = { clientId: string; inodeId: string | number; path?: string; isOrphaned: boolean; isPending?: boolean };
 
 export type Place = {
   /** For the recording's lines and the README: `local`, `box:docker`, `archil`. */

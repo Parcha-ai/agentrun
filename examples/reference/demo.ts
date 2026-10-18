@@ -520,7 +520,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       // The reading runs beside the supervision: the kill requests and the spend cap are watched from the start, however slow the place's read is.
       void readStatus();
       // A takeover that revoked the old holder's delegations (an Archil place): what was revoked, and how long the whole takeover took.
-      const revoked = (Array.isArray(recovered?.revoked) ? recovered!.revoked : []).map(delegationOf).filter((entry) => entry !== undefined).map(({ clientId, inodeId, path, isOrphaned }) => safeDelegation({ clientId, inodeId, path, isOrphaned }));
+      const revoked = (Array.isArray(recovered?.revoked) ? recovered!.revoked : []).map(delegationOf).filter((entry) => entry !== undefined).map(({ clientId, inodeId, path, isOrphaned }) => safeDelegation({ clientId, inodeId, ...(path !== undefined ? { path } : {}), isOrphaned }));
       if (revoked.length) supervisor.host('revoke', { gen, revoked, ...(Number.isFinite(recovered?.ms) ? { ms: recovered!.ms } : {}) });
       // The supervisor decides when: a crossing asks to be killed (read through the place's signals), or the spend cap is passed. It writes the kill line, and only then does the place kill.
       // A kill the place cannot make is recorded and ends the attempt: it is never an unhandled rejection.
@@ -664,11 +664,12 @@ export function messageOf(error: unknown, root: string): string {
 }
 
 /** One delegation as the recording holds it: the allowlisted fields, with the path clipped; anything that is not a delegation is not one. */
-function delegationOf(value: unknown): { clientId: string; inodeId: string | number; isOrphaned: boolean; isPending: boolean; path: string } | undefined {
+function delegationOf(value: unknown): { clientId: string; inodeId: string | number; isOrphaned: boolean; isPending: boolean; path?: string } | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const entry = value as Record<string, unknown>;
-  if (typeof entry.clientId !== 'string' || (typeof entry.inodeId !== 'string' && typeof entry.inodeId !== 'number') || typeof entry.path !== 'string') return undefined;
-  return { clientId: entry.clientId, inodeId: entry.inodeId, isOrphaned: entry.isOrphaned === true, isPending: entry.isPending === true, path: entry.path.slice(0, 240) };
+  if (typeof entry.clientId !== 'string' || (typeof entry.inodeId !== 'string' && typeof entry.inodeId !== 'number')) return undefined;
+  // A delegation the package found by matching its inode to the run's has no path: it is kept, without one.
+  return { clientId: entry.clientId, inodeId: entry.inodeId, isOrphaned: entry.isOrphaned === true, isPending: entry.isPending === true, ...(typeof entry.path === 'string' ? { path: entry.path.slice(0, 240) } : {}) };
 }
 
 /** A place's detail as the recording holds it: text of at most 240 characters, every absolute path replaced by `<path>`. */

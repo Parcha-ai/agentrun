@@ -2205,3 +2205,19 @@ test('a box charge that first appears in the last status read counts against the
   assert.equal(result.processes.at(-1).outcome.status, 'complete');
   assert.equal(result.overBudget, true, 'the charge that arrived with the last read is over the cap');
 });
+
+test('a delegation without a path (the package finds it by its inode) is kept: a delegation line and a revoke entry are written without one', { timeout: 300_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] });
+  const recording = join(tmp, 'recording');
+  const bare = { clientId: 'client-x', inodeId: 4242, isOrphaned: true, isPending: false };
+  await demo({ ...options, argv: ['--kill', '--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner, status: async () => ({ record: null, delegations: [bare] }), recover: async (last, kind, order) => ({ ...(await inner.recover(last, kind, order)), revoked: [bare], ms: 5 }) };
+  } });
+  const lines = readEvents(recording).filter((line) => line.source === 'host');
+  const delegation = lines.find((line) => line.kind === 'delegation');
+  assert.ok(delegation, 'the delegation line is written');
+  assert.equal('path' in delegation.data, false);
+  const revoke = lines.find((line) => line.kind === 'revoke');
+  assert.equal(revoke.data.revoked.length, 1, 'and the revoke names it');
+});
