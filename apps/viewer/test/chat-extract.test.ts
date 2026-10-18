@@ -56,6 +56,11 @@ test("a run is its input as given, then its recorded conversation: the host's pr
   for (const card of tools(m)) assert.ok(card.title.startsWith(`${card.tool}`), card.title);
   assert.equal(tools(m).find((card) => card.tool === 'submit')?.takeaway, '', "the runner's reply to a delivery is not the run's");
   assert.equal(m.title, recording.manifest.title, 'an input with no question titles nothing; the recording does');
+  const first = recording.lines.find((line) => line.kind === 'pi.user')!;
+  const added = JSON.stringify({ ...first, t: first.t + 1, data: { ...(first.data as object), id: 9999, model: [{ role: 'user', content: 'Call submit.' }] } });
+  const nudged = await model(referenceJob, (events) => `${events.trimEnd()}\n${added}\n`);
+  assert.deepEqual(items(nudged).filter((item) => item.kind === 'host' || item.kind === 'user').map((item) => [item.kind, 'text' in item && item.text]), [['host', 'Call submit.']],
+    "a later user entry of a run with its input as given is the host's, not the person's");
 });
 
 test('a submitted result record is the answer: one row per field, its evidence paths as cites on the card that made them', async () => {

@@ -4,6 +4,8 @@
 /** One entry of a recorded conversation: a message as recorded, the run's own thinking, or one tool call. */
 export type ChatItem =
   | { kind: 'user'; id: string; text: string; t?: number }
+  /** A message the host added to the conversation: with the run's input as given, the person speaks only through it. */
+  | { kind: 'host'; id: string; text: string; t?: number }
   | { kind: 'assistant'; id: string; text: string; t?: number }
   | { kind: 'thinking'; id: string; text: string; t?: number }
   | {

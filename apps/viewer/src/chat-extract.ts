@@ -231,10 +231,11 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
       const m = chatObj(message);
       if (!m) continue;
       if (line.kind === 'pi.user') {
-        // With the run's input shown, a conversation's first user entry is the prompt the host composed from it.
+        // With the run's input shown, a conversation's first user entry is the prompt the host composed from it, and
+        // any later one is a message the host added.
         if (input && !prompted.has(conversation)) { prompted.add(conversation); continue; }
         const text = chatText(m.content);
-        if (text.trim()) thread.items.push({ kind: 'user', id: `item-${++counter}`, text, t: line.t });
+        if (text.trim()) thread.items.push({ kind: input ? 'host' : 'user', id: `item-${++counter}`, text, t: line.t });
       } else if (line.kind === 'pi.assistant') {
         for (const part of chatList(m.content)) {
           const p = chatObj(part);
