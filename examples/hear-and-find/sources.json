@@ -1,0 +1,25 @@
+{
+ "about": "The films a live run reads, fetched once and checked by size and SHA-256 before they are used: NASA's mobile rendition to listen to, scan and watch, and its original for the frame that gets the box.",
+ "items": [
+  {
+   "id": "eagle-has-landed",
+   "title": "The Flight of Apollo 11: The Eagle Has Landed (NASA film, 1969, the mobile rendition, 320x180)",
+   "url": "https://images-assets.nasa.gov/video/KSC-19690716-MH-NAS01-0001-The_Flight_of_Apollo_11_The_Eagle_Has_Landed_HS_from_Film_JSC-DVC_1928/KSC-19690716-MH-NAS01-0001-The_Flight_of_Apollo_11_The_Eagle_Has_Landed_HS_from_Film_JSC-DVC_1928~mobile.mp4",
+   "source": "https://images-api.nasa.gov/search?nasa_id=KSC-19690716-MH-NAS01-0001-The_Flight_of_Apollo_11_The_Eagle_Has_Landed_HS_from_Film_JSC-DVC_1928",
+   "license": "NASA public domain",
+   "bytes": 120051387,
+   "sha256": "c3ccbdfc11398b9e7c714722939aaac04ba008919721faa7a0ad421631df7dc8",
+   "duration_s": 2819.9
+  },
+  {
+   "id": "eagle-has-landed-original",
+   "title": "The same film, NASA's original rendition (720x486, shown 16:9)",
+   "url": "https://images-assets.nasa.gov/video/KSC-19690716-MH-NAS01-0001-The_Flight_of_Apollo_11_The_Eagle_Has_Landed_HS_from_Film_JSC-DVC_1928/KSC-19690716-MH-NAS01-0001-The_Flight_of_Apollo_11_The_Eagle_Has_Landed_HS_from_Film_JSC-DVC_1928~orig.mp4",
+   "source": "https://images-api.nasa.gov/search?nasa_id=KSC-19690716-MH-NAS01-0001-The_Flight_of_Apollo_11_The_Eagle_Has_Landed_HS_from_Film_JSC-DVC_1928",
+   "license": "NASA public domain",
+   "bytes": 489052870,
+   "sha256": "076bc85108feac9535a4b600c91431564e1ea9b0e8daae47682a155a7073f7d9",
+   "duration_s": 2819.85
+  }
+ ]
+}

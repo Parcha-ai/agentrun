@@ -1,0 +1,54 @@
+{
+  "name": "hear-and-find",
+  "title": "Hear and Find",
+  "targets": ["local"],
+  "browser": false,
+  "codeMode": { "timeoutMs": 2700000 },
+  "claim": "One agent listens to NASA's 1969 Apollo 11 film and finds the second the landing call is made, out of every time it is said, then the second the planted flag is first seen and its box, for cents.",
+  "models": {
+    "lead": { "needs": ["text", "tools"], "default": "openai/gpt-6-luna" },
+    "eyes": { "needs": ["video"], "default": "google/gemini-3.8-flash" },
+    "judge": { "jev": true, "caps": { "requests": 200, "tokens": 160000 } },
+    "transcriber": { "needs": ["word times"], "default": "fal/fal-ai/elevenlabs/speech-to-text/scribe-v2" }
+  },
+  "keys": [
+    {
+      "oneOf": [
+        { "env": "OPENAI_API_KEY", "why": "The lead (openai/gpt-6-luna), and the eyes too when it is the only key (openai/gpt-6-sol, which takes frames, not video).", "where": "platform.openai.com, API keys", "required": true, "for": "live" },
+        { "env": "GEMINI_API_KEY", "why": "The eyes (google/gemini-3.8-flash, which take a window as video with its sound), and the lead too when it is the only key.", "where": "aistudio.google.com, Get API key", "required": true, "for": "live" },
+        { "env": "ANTHROPIC_API_KEY", "why": "The lead and the eyes (anthropic/claude-haiku-5-5, which takes frames) when it is the only key.", "where": "console.anthropic.com, API keys", "required": true, "for": "live" },
+        [
+          { "env": "VIDEO_MODEL_BASE_URL", "why": "An OpenAI-compatible gateway that serves the models under their public ids, instead of provider keys.", "where": "your gateway's base URL, ending in /v1", "required": true },
+          { "env": "VIDEO_MODEL_API_KEY", "why": "The gateway's credential.", "where": "your gateway", "required": true }
+        ]
+      ],
+      "why": "A model provider's key for --live (the run names every model by provider and public id).",
+      "for": "live"
+    },
+    {
+      "oneOf": [
+        { "env": "TYPESAFE_API_KEY", "why": "Jev at TypeSafe: jev-1.14.0, the first Jev that draws boxes, scores the frames and draws the box.", "where": "typesafe.ai", "required": true },
+        { "env": "OPENROUTER_API_KEY", "why": "Jev through OpenRouter, when it serves jev-1.14.0 (the box needs that model).", "where": "openrouter.ai, Keys", "required": true }
+      ],
+      "why": "A Jev key: the judge that scores frames and draws the box.",
+      "for": "live"
+    },
+    { "env": "FAL_KEY", "why": "Scribe v2 on fal, which writes what is said with each word's second; not needed when the gateway passes fal's queue through at its root (/fal-queue).", "where": "fal.ai, API keys", "required": false, "for": "live" }
+  ],
+  "programs": [
+    { "cmd": "ffmpeg", "why": "The agent's code cuts the audio, the frames and the windows with it.", "required": true },
+    { "cmd": "ffprobe", "why": "The agent's code reads the film's length with it.", "required": true },
+    { "cmd": "node", "why": "The transcribe skill's first step names the film's folder with it.", "required": true }
+  ],
+  "expectedCalls": 140,
+  "expectedCost": 0.5,
+  "panels": ["workflow-map", "vision"],
+  "sources": "examples/hear-and-find/sources.json",
+  "tools": [
+    { "name": "answer", "local": "examples/hear-and-find/tools.ts", "hosted": null }
+  ],
+  "input": {
+    "shape": "examples/hear-and-find/job.ts, Input: the film and its best copy (files in the workspace), and what needles.json asks: the phrase and its question, the thing, the name of its box, the words that may name it, and the find steps' budget",
+    "default": "NASA's film whole and its original (what --live reads); a run on fakes reads the committed clip (clip/clip.json), three pieces of the film, with no network"
+  }
+}

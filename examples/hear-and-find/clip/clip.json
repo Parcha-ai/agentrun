@@ -1,0 +1,24 @@
+{
+ "about": "What a run on fakes reads with no network: three pieces of the film, one after the other, cut by cut.sh from the checked film, fixed by size and SHA-256. The scripted parts answer from what is written here, never from a model.",
+ "file": "eagle-heard-and-seen.webm",
+ "from": "eagle-has-landed",
+ "pieces": [
+  { "film_s": [118, 128], "clip_s": [0, 10], "what": "the opening: the landing call replayed over the title cards" },
+  { "film_s": [798, 808], "clip_s": [10, 20], "what": "the landing" },
+  { "film_s": [1016, 1030], "clip_s": [20, 34], "what": "the flag planted" }
+ ],
+ "said": [
+  { "start": 1.0, "words": "We copy you down, Eagle." },
+  { "start": 2.6, "words": "Houston, uh," },
+  { "start": 4.7, "words": "Tranquility Base here. The Eagle has landed." },
+  { "start": 10.4, "words": "Contact light. Okay, engine stop." },
+  { "start": 12.6, "words": "We copy you down, Eagle." },
+  { "start": 15.06, "words": "Tranquility Base here. The Eagle has landed." },
+  { "start": 26.0, "words": "An American flag is left behind on the Moon." }
+ ],
+ "seen": { "from_s": 28, "lookalike_s": [23, 27], "box": [30.3, 5.6, 50.3, 54.4] },
+ "cut": "VP9 and Opus in WebM, a keyframe each second",
+ "bytes": 446400,
+ "sha256": "2c24b66826c855db3cd6e2f0fc5f4e29d82b0b0a46adead27210a1cefdf05f45",
+ "duration_s": 34
+}
