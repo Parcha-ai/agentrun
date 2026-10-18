@@ -704,7 +704,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     scanPlaced(recordDir, tracked?.final() ?? []);
     finishRecording(recordDir, {
       ...(redact ? { redact } : {}), job: { blob: jobBlob, sha256: jobBlob },
-      title: spec.title ?? spec.name, task: job.workflow.name ?? spec.name, model: live ? 'live' : 'faux/faux-1', generations: processesStarted, kills: kills.length,
+      title: spec.title ?? spec.name, task: job.workflow.name ?? spec.name, model: live ? chosen?.lead ?? 'live' : 'faux/faux-1', generations: processesStarted, kills: kills.length,
       code: codeOf(rootOf(options)), cost, source: { run: runName, ...(last?.storeSha256 ? { store_sha256: last.storeSha256 } : {}) }, ...(seeAlso.length ? { see_also: seeAlso } : {}), ...(extra ? { extra } : {}), ...(resultBlob ? { result: resultBlob } : {}), ...(artifact ? { artifact } : {}), ...(live ? { providers: 'real' as const } : {}),
     });
     // The record-time scan: a recording that still holds a secret is refused (its manifest removed, so it is not a finished recording), naming the key and the file, never the value.
