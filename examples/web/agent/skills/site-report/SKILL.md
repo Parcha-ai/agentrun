@@ -10,5 +10,6 @@ Use this to report what a site shows, for example the pages behind a sign-in.
    - No script and nothing from the network: no `<script>`, no `on...` attribute, no `<iframe>`, `<object>`, `<embed>`, `<form>`, `<base>`, `<link>` or `<meta http-equiv>`, no `data:` URL, no `url()` or `@import`, no remote font, image or style.
    - Inline CSS only: `color-scheme: light dark`, system fonts, one column that reads at phone width.
    - A link to a page you visited is fine: it loads nothing. Any other address goes in the text without its scheme (`example.com/terms`).
-5. Never write a password, a code or a token into any of these files.
-6. Answer with a two-line summary and the names of the files you wrote.
+5. In all three files, report only what your tool results show. Name things as the page names them, and do not state anything you did not check (for example errors or network requests).
+6. Never write a password, a code or a token into any of these files.
+7. Answer with a two-line summary and the names of the files you wrote.
