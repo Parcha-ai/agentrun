@@ -184,12 +184,7 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   // A recording with no times keeps its file's order: each line placed at its position, the axis read as an order.
   const clocked = recording.lines.some((line) => typeof line.t === 'number' && line.t > 0);
   const lines = clocked ? recording.lines : recording.lines.map((line, index) => ({ ...line, t: index + 1, t0: undefined }));
-  const given = chatObj(lines.find((line) => line.channel === 'durable' && line.kind === 'agentrun.workflow')?.data)?.input;
-  const inputValue = chatObj(given)?.input;
-  const input: ChatModel['input'] = typeof inputValue === 'string' ? { text: inputValue }
-    : chatObj(inputValue) ? { fields: Object.entries(chatObj(inputValue)!).map(([name, value]) => ({ name, value: chatPlain(value) })) } : undefined;
   const live = (kind: string) => lines.filter((line) => line.channel === 'live' && line.kind === kind);
-  const finished = typeof chatObj((manifest as { recorded?: Json }).recorded)?.ended === 'string';
 
   // Workflow nodes: each node's label and span, and the conversation each agent node ran.
   const nodeAt = new Map<string, { label: string; t0?: number; t1?: number }>();
@@ -201,6 +196,18 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     const conversation = chatId(chatObj(chatObj(line.data)?.value)?.conversation);
     if (conversation && line.path) pathOfConversation.set(conversation, line.path);
   }
+
+  // The run's input as given, when the workflow's nodes hold every recorded conversation: the runner drives each one,
+  // so no person speaks in it. A conversation no node holds is one a person may speak in, and a workflow it ran is a
+  // call of that conversation, its input that call's.
+  const entries = ['pi.user', 'pi.assistant', 'pi.tool-result'];
+  const conversations = new Set(lines.filter((line) => line.channel === 'durable' && entries.includes(line.kind))
+    .map((line) => chatId(chatObj(line.data)?.conversationId) ?? chatId(line.conv)).filter((each): each is string => !!each));
+  const driven = conversations.size > 0 && [...conversations].every((conversation) => pathOfConversation.has(conversation));
+  const given = chatObj(lines.find((line) => line.channel === 'durable' && line.kind === 'agentrun.workflow')?.data)?.input;
+  const inputValue = driven ? chatObj(given)?.input : undefined;
+  const input: ChatModel['input'] = typeof inputValue === 'string' ? { text: inputValue }
+    : chatObj(inputValue) ? { fields: Object.entries(chatObj(inputValue)!).map(([name, value]) => ({ name, value: chatPlain(value) })) } : undefined;
 
   // Tool calls' times, by call id, from the live start and end lines.
   const toolTimes = new Map<string, { t0?: number; t1?: number }>();
@@ -247,17 +254,19 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
       const m = chatObj(message);
       if (!m) continue;
       if (line.kind === 'pi.user') {
-        // With the run's input shown, a conversation's first user entry is the prompt the host composed from it. In a
-        // finished recording any later one is a message the host added; while the run is still being recorded a person
-        // can steer it, so a later entry stays the person's.
-        if (input && !prompted.has(conversation)) { prompted.add(conversation); continue; }
+        // In a conversation a workflow node holds, the runner speaks: its first user entry is the prompt composed from
+        // the node's input, and any later one is a message the runner added.
+        const byRunner = pathOfConversation.has(conversation);
+        if (byRunner && !prompted.has(conversation)) { prompted.add(conversation); continue; }
         const text = chatText(m.content);
-        if (text.trim()) thread.items.push({ kind: input && finished ? 'host' : 'user', id: `item-${++counter}`, text, t: line.t });
+        if (text.trim()) thread.items.push({ kind: byRunner ? 'host' : 'user', id: `item-${++counter}`, text, t: line.t });
       } else if (line.kind === 'pi.assistant') {
         for (const part of chatList(m.content)) {
           const p = chatObj(part);
           if (!p) continue;
-          if (p.type === 'thinking' && chatStr(p.thinking)?.trim()) thread.items.push({ kind: 'thinking', id: `item-${++counter}`, text: chatStr(p.thinking)!.trim(), t: line.t });
+          // A redacted thought keeps only its mark: the provider's placeholder is not the run's words.
+          if (p.type === 'thinking' && p.redacted === true) thread.items.push({ kind: 'thinking', id: `item-${++counter}`, text: '', redacted: true, t: line.t });
+          else if (p.type === 'thinking' && chatStr(p.thinking)?.trim()) thread.items.push({ kind: 'thinking', id: `item-${++counter}`, text: chatStr(p.thinking)!.trim(), t: line.t });
           else if (p.type === 'text' && chatStr(p.text)?.trim()) {
             const item = { kind: 'assistant' as const, id: `item-${++counter}`, text: chatStr(p.text)!.trim(), t: line.t };
             thread.items.push(item);

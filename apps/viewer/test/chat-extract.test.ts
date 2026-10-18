@@ -61,13 +61,16 @@ test("a run is its input as given, then its recorded conversation: the host's pr
   const first = recording.lines.find((line) => line.kind === 'pi.user')!;
   const added = JSON.stringify({ ...first, t: first.t + 1, data: { ...(first.data as object), id: 9999, model: [{ role: 'user', content: 'Call submit.' }] } });
   const nudged = await model(referenceJob, (events) => `${events.trimEnd()}\n${added}\n`);
-  assert.deepEqual(items(nudged).filter((item) => item.kind === 'host' || item.kind === 'user').map((item) => [item.kind, 'text' in item && item.text]), [['host', 'Call submit.']],
-    "a later user entry of a run with its input as given is the host's, not the person's");
+  const said = (m: ChatModel) => items(m).filter((item) => item.kind === 'host' || item.kind === 'user').map((item) => [item.kind, 'text' in item && item.text]);
+  assert.deepEqual(said(nudged), [['host', 'Call submit.']], "a later user entry in a conversation a workflow node holds is the runner's");
   const streaming = opened(referenceJob, (events) => `${events.trimEnd()}\n${added}\n`);
   const unfinished = { ...streaming.recording, manifest: { ...streaming.recording.manifest, recorded: { started: streaming.recording.manifest.recorded.started } } } as Recording;
-  const live = await extractChat(unfinished, streaming.readJson);
-  assert.deepEqual(items(live).filter((item) => item.kind === 'host' || item.kind === 'user').map((item) => item.kind), ['user'],
-    'while the run is still being recorded a person can steer it: a later entry stays the person\'s');
+  assert.deepEqual(said(await extractChat(unfinished, streaming.readJson)), [['host', 'Call submit.']], 'whether or not the recording has ended');
+  // A person's own conversation, which no node holds: every entry the person's, and the workflow it ran no run input.
+  const person = (id: number, text: string, at: number) => JSON.stringify({ ...first, conv: 77, path: undefined, t: first.t + at, data: { ...(first.data as object), conversationId: 77, id, model: [{ role: 'user', content: text }] } });
+  const chatted = await model(referenceJob, (events) => `${events.trimEnd()}\n${person(9001, 'Quote A-1 for me.', 1)}\n${person(9002, 'Thanks. Do B-2 next.', 2)}\n`);
+  assert.equal(chatted.input, undefined, "a workflow a person's conversation ran gives no run input");
+  assert.deepEqual(said(chatted), [['user', 'Quote A-1 for me.'], ['user', 'Thanks. Do B-2 next.']], "in a conversation no node holds, every entry is the person's");
 });
 
 test('a submitted result record is the answer: one row per field, its evidence paths as cites on the card that made them', async () => {
@@ -203,6 +206,12 @@ test('a step that nothing the agent thought or wrote leads into speaks with what
   assert.ok(next?.kind !== 'tool' || next.voice === undefined, 'a step its thinking leads into has no voice of its own');
 });
 
+test("a redacted thought keeps its mark and none of the provider's placeholder", async () => {
+  const m = await model(hearAndFind, editFirst('pi.assistant', (data) => { (data.model[0]!.content as Json[]).unshift({ type: 'thinking', thinking: '[Reasoning redacted]', redacted: true }); }));
+  const thought = items(m).find((item) => item.kind === 'thinking');
+  assert.deepEqual(thought && { text: thought.text, redacted: 'redacted' in thought && thought.redacted }, { text: '', redacted: true });
+});
+
 test("a cite's address keeps its file and fragment however the fragment is written", () => {
   assert.equal(chatCiteHref('#page=2', 'notes.pdf'), 'notes.pdf#page=2');
   assert.equal(chatCiteHref('page=2&xywh=percent:1,2,3,4', 'notes.pdf'), 'notes.pdf#page=2&xywh=percent:1,2,3,4');
@@ -289,8 +298,8 @@ test("a recording with no times keeps its timeline, placed by the file's order",
   assert.equal((await model(referenceJob)).inOrder, undefined);
 });
 
-test("with no workflow input, the conversation's first user entry is the person's message as recorded", async () => {
-  const m = await model(referenceJob, eachLine((line) => (line.kind === 'agentrun.workflow' ? undefined : line)));
+test("in a conversation no workflow node holds, the first user entry is the person's message as recorded", async () => {
+  const m = await model(referenceJob, eachLine((line) => (line.kind === 'agentrun.nodes' ? undefined : line)));
   assert.equal(m.input, undefined);
   assert.equal(items(m)[0]?.kind, 'user');
 });
