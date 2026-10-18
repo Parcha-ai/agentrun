@@ -49,14 +49,24 @@ export type ImageBlock = PixelSize & { readonly data: string; readonly mimeType:
 
 /** The limits one fit is held to: pi-durable's `ImageLimits`, the JPEG quality to start at and how many tiles one call
  *  may carry. A route's `Limits.image` and `Limits.imagesPerCall`, side by side. */
-export type FitLimits = ImageLimits & { readonly jpegQuality?: number; readonly imagesPerCall?: number };
+export type FitLimits = ImageLimits & {
+  readonly jpegQuality?: number; readonly imagesPerCall?: number;
+  /** Each side of every block at least this many pixels: a smaller image is scaled up as far as the edge limits allow,
+   *  then padded with white at its right and bottom, its own pixels at the top left (`content` in the fit); a tile under
+   *  it is padded the same way, so a point read off a tile is still the tile's start plus its coordinate. */
+  readonly minEdge?: number;
+  /** The MIME types a block may keep as they are (default: PNG, JPEG, GIF and WebP); any other is re-encoded. */
+  readonly formats?: readonly string[];
+  /** A progressive JPEG is re-encoded, so every JPEG sent is baseline. */
+  readonly baseline?: boolean;
+};
 
 /** An image as the model receives it: its own bytes, one re-encoded block, or tiles in reading order; or why it cannot
  *  be shown, as a miss code, the limit it broke and the reason, in the words of the text that stands in for it. `original`
  *  is the size upright, after the EXIF orientation. */
 export type ImageFit =
   | { readonly fit: "as_is"; readonly original: PixelSize; readonly blocks: readonly [ImageBlock] }
-  | { readonly fit: "resized"; readonly original: PixelSize; readonly blocks: readonly [ImageBlock]; readonly turned: boolean; readonly convertedFrom?: string }
+  | { readonly fit: "resized"; readonly original: PixelSize; readonly blocks: readonly [ImageBlock]; readonly turned: boolean; readonly convertedFrom?: string; readonly content?: PixelSize }
   | { readonly fit: "tiled"; readonly original: PixelSize; readonly blocks: readonly ImageBlock[]; readonly scaled: PixelSize; readonly tile: PixelSize; readonly starts: readonly number[]; readonly vertical: boolean; readonly turned: boolean }
   | { readonly fit: "refused"; readonly code: MissCode; readonly limit: string; readonly why: string };
 
@@ -125,6 +135,14 @@ export function imageLayout(original: PixelSize, limits: FitLimits, tiles = true
   };
 }
 
+/** The raster on a white canvas at least `edge` pixels a side, at its top left. */
+function pad(raster: Raster, edge: number): Raster {
+  const width = Math.max(raster.width, edge), height = Math.max(raster.height, edge), row = raster.width * raster.channels;
+  const data = new Uint8Array(width * height * raster.channels).fill(255);
+  for (let y = 0; y < raster.height; y++) data.set(raster.data.subarray(y * row, (y + 1) * row), y * width * raster.channels);
+  return { width, height, channels: raster.channels, data };
+}
+
 function crop(raster: Raster, rect: PixelRect): Raster {
   const row = rect.width * raster.channels;
   const data = new Uint8Array(row * rect.height);
@@ -166,11 +184,18 @@ export async function fitImage(processor: ImageProcessor, bytes: Uint8Array, mim
   const stored = header ?? (processor.probe ? await processor.probe(bytes).catch(() => undefined) : undefined);
   const original = stored && upright(stored);
   if (original && exceedsDecodeGuard(original)) return refuse("over_budget", original, `its ${grouped(original.width * original.height)} pixels are over the ${grouped(DECODE_GUARD_PIXELS)} this package decodes`);
-  if (stored && original && stored.orientation === 1 && INLINE_TYPES.has(mime) && withinEdges(original, limits) && chars <= limits.maxBytes) {
+  const small = (size: PixelSize) => Math.min(size.width, size.height) < (limits.minEdge ?? 0);
+  const keeps = (limits.formats ? limits.formats.includes(mime) : INLINE_TYPES.has(mime)) && !(limits.baseline && header?.progressive);
+  if (stored && original && stored.orientation === 1 && keeps && withinEdges(original, limits) && !small(original) && chars <= limits.maxBytes) {
     return { fit: "as_is", original, blocks: [{ data: base64(bytes), mimeType: mime, ...original }] };
   }
   const { raster, encode } = processor;
-  if (!raster || !encode) return prepared(processor, bytes, mime, limits, original, refuse);
+  if (!raster || !encode) {
+    const fit = await prepared(processor, bytes, mime, limits, original, refuse);
+    const [block] = fit.fit === "refused" ? [] : fit.blocks;
+    const unmet = block && (small(block) || !(limits.formats ?? [...INLINE_TYPES]).includes(block.mimeType) || (limits.baseline && imageHeader(Buffer.from(block.data.slice(0, Math.ceil(SNIFF_BYTES / 3) * 4), "base64"))?.progressive));
+    return unmet ? refuse("needs", original ?? null, "this image processor only fits images to their largest size; growing one, re-encoding its format or making a JPEG baseline needs Photon or sharp") : fit;
+  }
   if (processor.decodes && !processor.decodes.includes(mime)) return refuse("needs", original ?? null, `this image processor does not decode ${mime}${READERS[mime] ? `; ${READERS[mime]}` : ""}`);
   if (!stored || !original) return refuse("unreadable", null, "its size is not in its header and this processor cannot read it without decoding");
   const layout = imageLayout(original, limits, options.tiles);
@@ -179,25 +204,28 @@ export async function fitImage(processor: ImageProcessor, bytes: Uint8Array, mim
   if (shrunk && Math.max(shown.width, shown.height) < FLOOR_EDGE) {
     return refuse("over_budget", original, `fitting it inside ${edgeText(limits)} leaves ${layout.tiles.length ? "tiles of " : ""}${shown.width}x${shown.height}, under the ${grouped(FLOOR_EDGE)} px below which it cannot be read`);
   }
+  const up = small(layout.scaled) && !layout.tiles.length ? Math.min(limits.minEdge! / Math.min(layout.scaled.width, layout.scaled.height), limits.maxWidth / layout.scaled.width, limits.maxHeight / layout.scaled.height) : 1;
+  const size = up > 1 ? { width: Math.round(layout.scaled.width * up), height: Math.round(layout.scaled.height * up) } : layout.scaled;
   let pixels: Raster;
   try {
-    pixels = await raster(bytes, { size: layout.scaled, orientation: stored.orientation, maxPixels: DECODE_GUARD_PIXELS });
+    pixels = await raster(bytes, { size, orientation: stored.orientation, maxPixels: DECODE_GUARD_PIXELS });
   } catch (error) {
     // A processor that cannot run here says so with `code: "needs"`; any other failure is the image's.
     return (error as { code?: unknown } | null)?.code === "needs" ? refuse("needs", original, firstLine(error)) : refuse("unreadable", original, `the image could not be decoded (${firstLine(error)})`);
   }
-  if (pixels.width !== layout.scaled.width || pixels.height !== layout.scaled.height) return refuse("unreadable", original, "it decoded to a size its header does not state");
+  if (pixels.width !== size.width || pixels.height !== size.height) return refuse("unreadable", original, "it decoded to a size its header does not state");
   const turned = stored.orientation !== 1;
   const convertedFrom = INLINE_TYPES.has(mime) ? undefined : mime;
   try {
     const rects = layout.tiles.length ? layout.tiles : [{ left: 0, top: 0, ...layout.scaled }];
     const blocks: ImageBlock[] = [];
     for (const [index, rect] of rects.entries()) {
-      const block = await encodeWithin(encode, layout.tiles.length ? crop(pixels, rect) : pixels, limits);
+      const cut = layout.tiles.length ? crop(pixels, rect) : pixels;
+      const block = await encodeWithin(encode, small(cut) ? pad(cut, limits.minEdge!) : cut, limits);
       if (!block) return refuse("over_budget", original, `no encoding of ${layout.tiles.length ? `tile ${index + 1} of ${rects.length}` : "it"} fits in ${grouped(limits.maxBytes)} base64 characters`);
       blocks.push(block);
     }
-    if (!layout.tiles.length) return { fit: "resized", original, blocks: [blocks[0]!], turned, ...(convertedFrom ? { convertedFrom } : {}) };
+    if (!layout.tiles.length) return { fit: "resized", original, blocks: [blocks[0]!], turned, ...(convertedFrom ? { convertedFrom } : {}), ...(small(pixels) ? { content: size } : {}) };
     const vertical = original.height >= original.width;
     return { fit: "tiled", original, blocks, scaled: layout.scaled, tile: { width: rects[0]!.width, height: rects[0]!.height }, starts: rects.map((rect) => (vertical ? rect.top : rect.left)), vertical, turned };
   } catch (error) {

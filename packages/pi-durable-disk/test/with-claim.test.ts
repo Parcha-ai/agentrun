@@ -3,7 +3,7 @@
 // host's holders. No Archil, no network.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,10 +27,15 @@ function rig(init: { behave?: Record<string, unknown> } = {}) {
   const procMounts = join(dir, "mounts");
   const proc = join(dir, "proc");
   const mountRoot = join(dir, "mnt");
+  // Whole or not at all, as the fake host writes them: a tool started meanwhile reads both files.
+  const replace = (path: string, text: string) => {
+    writeFileSync(`${path}.${process.pid}.tmp`, text);
+    renameSync(`${path}.${process.pid}.tmp`, path);
+  };
   const write = (s: Record<string, unknown>) => {
-    writeFileSync(statePath, JSON.stringify(s));
+    replace(statePath, JSON.stringify(s));
     const mounts = s.mounts as Record<string, { source: string }>;
-    writeFileSync(procMounts, Object.entries(mounts).map(([mp, m]) => `${m.source} ${mp} fuse.archil rw,allow_other 0 0`).join("\n") + "\n");
+    replace(procMounts, Object.entries(mounts).map(([mp, m]) => `${m.source} ${mp} fuse.archil rw,allow_other 0 0`).join("\n") + "\n");
   };
   write({ procMounts, proc, daemons: {}, token: TOKEN, mounts: {}, holders: {}, extraMounts: [], behave: init.behave ?? {}, calls: [] });
   const wrap = (tool: string) => {
