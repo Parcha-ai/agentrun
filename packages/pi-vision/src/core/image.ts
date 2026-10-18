@@ -21,7 +21,9 @@ export type PreparedImage = {
   readonly convertedFrom?: string;
 };
 
+/** A width and a height in pixels. */
 export type PixelSize = { readonly width: number; readonly height: number };
+/** A rectangle in pixels: a size at an offset from the top left. */
 export type PixelRect = PixelSize & { readonly left: number; readonly top: number };
 /** Decoded pixels: 8 bits a channel, rows from the top with no padding, opaque (3 channels) or with alpha (4). */
 export type Raster = PixelSize & { readonly channels: 3 | 4; readonly data: Uint8Array };
