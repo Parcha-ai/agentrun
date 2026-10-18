@@ -1,0 +1,65 @@
+{
+ "document": "A Delaware certified copy: the Secretary of State's certification page or pages, then the filed certificate, whose first page carries the Division of Corporations' FILED stamp.",
+ "pages": {
+  "certification": "The Secretary of State's certification page: 'Delaware' and 'The First State' at the top, a page number at the top right, and 'I, ..., SECRETARY OF STATE OF THE STATE OF DELAWARE, DO HEREBY CERTIFY' in italic capitals.",
+  "filed": "The first page of the filed certificate: a title such as RESTATED CERTIFICATE OF INCORPORATION near the top, the company's name under it, and its first numbered articles (FIRST, SECOND, ...) below."
+ },
+ "marks": [
+  {
+   "id": "seal",
+   "page": "certification",
+   "mark": "The Secretary of State's seal",
+   "present": "A round seal reading SECRETARY'S OFFICE and DELAWARE, at the foot of the page in the middle.",
+   "question": "Is there a round official seal in `images[0].image`?",
+   "box": "the round seal at the foot of `images[0].image`",
+   "source": "29 Del. C. § 2305(a) (the Secretary's seal of office authenticates copies) and § 2309 (certified under the Secretary's signature and seal)"
+  },
+  {
+   "id": "signature",
+   "page": "certification",
+   "mark": "The Secretary of State's signature",
+   "present": "A signature over a line naming the Secretary of State, at the bottom right. A printed facsimile counts.",
+   "question": "Is there a signature over a line naming the Secretary of State in `images[0].image`?",
+   "box": "the signature and the line naming the Secretary of State in `images[0].image`",
+   "source": "29 Del. C. § 2309 (the signature may be a printed facsimile)"
+  },
+  {
+   "id": "file_number",
+   "page": "certification",
+   "mark": "The file number and the SR number",
+   "present": "At the bottom left: the entity's file number with a code beside it, and 'SR#' with a request number under it.",
+   "question": "Is there a file number with an 'SR#' number under it at the bottom left of `images[0].image`?",
+   "box": "the two lines at the bottom left of `images[0].image`: the file number with its code, and the SR# number",
+   "source": "The Division of Corporations validates a certificate by its file number and authentication number (corp.delaware.gov/authver)"
+  },
+  {
+   "id": "authentication",
+   "page": "certification",
+   "mark": "The authentication number and its date",
+   "present": "At the bottom right: 'Authentication:' with a number, and 'Date:' with a date under it.",
+   "question": "Is there an 'Authentication:' number with a 'Date:' under it at the bottom right of `images[0].image`?",
+   "box": "the two lines at the bottom right of `images[0].image`: 'Authentication:' with its number, and 'Date:' with its date",
+   "source": "The Division of Corporations validates a certificate by its file number and authentication number (corp.delaware.gov/authver)"
+  },
+  {
+   "id": "filed_stamp",
+   "page": "filed",
+   "mark": "The FILED stamp",
+   "present": "A block at the top right: State of Delaware, Secretary of State, Division of Corporations, then Delivered and FILED, each with a time and a date, and the file number.",
+   "question": "Is there a Division of Corporations stamp reading FILED with a time, a date and a file number in `images[0].image`?",
+   "box": "the whole stamp block at the top right of `images[0].image`, from 'State of Delaware' down to the line with the file number",
+   "source": "8 Del. C. § 103(c)(3) (the Secretary endorses 'Filed' and the date and time of filing on the instrument)"
+  },
+  {
+   "id": "numbers_match",
+   "same": [
+    "file_number",
+    "filed_stamp"
+   ],
+   "mark": "The file numbers agree",
+   "present": "The file number on the certification page is the file number at the end of the FILED stamp.",
+   "question": "Is the first number in `images[0].image` (the file number, before its code) the same as the number just before the word FILE in `images[1].image`?",
+   "source": "The certification page and the stamp name the same filing"
+  }
+ ]
+}

@@ -1,0 +1,117 @@
+{
+ "about": "Pages 1 to 4 of a public SEC EDGAR exhibit: a Delaware certified copy of a restated certificate of incorporation, filed by its company as exhibit 3.1 of an annual report. build.mjs fetches the four page images, checks each by SHA-256, and writes the PDF of the pages as filed and the altered TEST COPY with the marks removed.",
+ "filing": {
+  "filer": "AVEO Pharmaceuticals, Inc.",
+  "cik": "0001325879",
+  "form": "10-K",
+  "period": "2021-12-31",
+  "filed": "2022-03-14",
+  "accession": "0001628280-22-006093",
+  "exhibit": "EX-3.1",
+  "index": "https://www.sec.gov/Archives/edgar/data/1325879/000162828022006093/0001628280-22-006093-index.html",
+  "exhibit_url": "https://www.sec.gov/Archives/edgar/data/1325879/000162828022006093/aveo20211231ex31.htm"
+ },
+ "retrieved": "2026-10-18",
+ "user_agent": "agentrun https://agentrun.ai",
+ "pages": [
+  {
+   "page": 1,
+   "url": "https://www.sec.gov/Archives/edgar/data/1325879/000162828022006093/aveo20211231ex31001.jpg",
+   "bytes": 117603,
+   "sha256": "7d49f53484a40c62ef502951c576178b175211aff86ba287f6db9d8953b9f493"
+  },
+  {
+   "page": 2,
+   "url": "https://www.sec.gov/Archives/edgar/data/1325879/000162828022006093/aveo20211231ex31002.jpg",
+   "bytes": 52797,
+   "sha256": "426d87d505be17fda74dc54074a828bbfb616409097c532bffdedb16cdb1cc2b"
+  },
+  {
+   "page": 3,
+   "url": "https://www.sec.gov/Archives/edgar/data/1325879/000162828022006093/aveo20211231ex31003.jpg",
+   "bytes": 252968,
+   "sha256": "781ac0f213eca575daa363a9e99fac1aa40b73e8bd8c11844e23f097231bf597"
+  },
+  {
+   "page": 4,
+   "url": "https://www.sec.gov/Archives/edgar/data/1325879/000162828022006093/aveo20211231ex31004.jpg",
+   "bytes": 285526,
+   "sha256": "196dff1ac6f7bec92d03ebdf6adac1cca971d19136b0aa28c69b259810678971"
+  }
+ ],
+ "size": {
+  "width": 1055,
+  "height": 1365
+ },
+ "marks": {
+  "1": {
+   "seal": [
+    410,
+    1130,
+    550,
+    1268
+   ],
+   "signature": [
+    660,
+    1083,
+    940,
+    1197
+   ],
+   "file_number": [
+    158,
+    1225,
+    295,
+    1265
+   ],
+   "authentication": [
+    735,
+    1225,
+    938,
+    1265
+   ]
+  },
+  "2": {
+   "seal": [
+    388,
+    1115,
+    537,
+    1262
+   ],
+   "signature": [
+    612,
+    1066,
+    951,
+    1186
+   ],
+   "file_number": [
+    121,
+    1216,
+    265,
+    1258
+   ],
+   "authentication": [
+    734,
+    1216,
+    950,
+    1258
+   ]
+  },
+  "3": {
+   "filed_stamp": [
+    712,
+    55,
+    986,
+    143
+   ]
+  }
+ },
+ "files": {
+  "filed": "aveo-ex3-1-pages-1-4.pdf",
+  "test_copy": "aveo-ex3-1-pages-1-4-TEST-COPY-marks-removed.pdf"
+ },
+ "footer": "TEST COPY: marks removed by agentrun for testing; not the filed document",
+ "sha256": {
+  "filed": "cd4990d97f267a0f8849a39f6f224af078236134126c76d0a5fb9672e606e808",
+  "test_copy": "0f39e3f0011932320ac920f929be5f33cbc1641d5950d584f46d605255308cbe"
+ }
+}

@@ -37,6 +37,7 @@ read below). Parts not built yet throw `NotBuiltError`, never a half answer.
 | The pi-durable adapter, the Node environment and eyes on pi's `Models` | built |
 | `vision.see` for a host's code mode, and the `look` skill | built |
 | `vision.judge` (Jev's choice, noul, score and box answers) and Jev's image limits in the fit | built |
+| The `verify` skill (`skills/verify/SKILL.md`): whether a PDF has each mark a checklist file names (a seal, a signature, a stamp, two numbers that agree), yes or no, with its box on its page (`file.pdf#page=N&xywh=percent:...`); another kind of document is another checklist | built |
 
 ## A first read, with no key
 
