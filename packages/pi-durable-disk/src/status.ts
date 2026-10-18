@@ -2,7 +2,7 @@
 // claim with write-to-temp, fsync, rename, and read by the supervisor (over the S3 API or a local mount). It is a hint
 // for the supervisor, never the source of truth: the store is. Any error writing it is a fence. The instance writes it
 // through its claim directory (`ClaimDir`), never by path, so a write cannot land under a mountpoint whose mount is gone.
-import { constants, statSync } from "node:fs";
+import { constants } from "node:fs";
 import { open, readFile, rename, rm, stat, type FileHandle } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
@@ -216,14 +216,16 @@ export function parseStartMark(text: string): StartMark | null {
 // The keeper's code is plain CommonJS in a string, started with `eval: true` and no inherited Node flags, as the lease
 // watchdog's is (src/watchdog.ts says why). One refresh at a time, all synchronous: a stop (the message) is handled only
 // between two refreshes, so none is still writing once the thread has exited. It writes only while `dir` is still the
-// directory it started on (`dev` and `ino`): a path that names another (a descriptor number reused) or none is never
-// written, and the keeper stops. Its first failure goes to the main thread, once.
+// directory it first saw (its device and inode, read on this thread, so a stalled mount never holds the caller's): a path
+// that names another (a descriptor number reused) or none is never written, and the keeper stops. Its first failure goes
+// to the main thread, once.
 const KEEPER_SOURCE = `"use strict";
 const fs = require("node:fs");
 const path = require("node:path");
 const { parentPort, workerData } = require("node:worker_threads");
-const { dir, name, everyMs, dev, ino } = workerData;
+const { dir, name, everyMs } = workerData;
 const file = path.join(dir, name);
+let first;
 let stopped = false;
 let reported = false;
 const report = (message) => {
@@ -240,15 +242,23 @@ function refresh() {
     stopped = true;
     return report("its directory cannot be reached (" + (error.code || error.message) + "), so it is no longer the directory the keeper started on");
   }
-  if (now.dev !== dev || now.ino !== ino) {
+  first ??= { dev: now.dev, ino: now.ino };
+  if (now.dev !== first.dev || now.ino !== first.ino) {
     stopped = true;
     return report("its directory is no longer the directory the keeper started on");
   }
+  let text;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return; // no mark: nothing to keep
+    return report("reading it failed (" + (error.code || error.message) + ")");
+  }
   let mark;
   try {
-    mark = JSON.parse(fs.readFileSync(file, "utf8"));
+    mark = JSON.parse(text);
   } catch {
-    return; // no mark, or not one: nothing to keep
+    return; // not a mark: nothing to keep
   }
   if (mark === null || typeof mark !== "object" || mark.generation !== 1 || typeof mark.at !== "string" || !Number.isFinite(Date.parse(mark.at))) return;
   try {
@@ -283,21 +293,14 @@ parentPort.once("message", () => {
  * Keeps a supervisor's start mark for generation 1 in `dir` fresh: its `at` rewritten every `everyMs` (temp file, fsync,
  * rename, fsync the directory), the rest of it as the supervisor wrote it; nothing is made when there is none. On a thread of
  * its own, so a caller whose thread is blocked (a synchronous import) is kept fresh too. Only while `dir` is the directory
- * it was when the keeper started. Best effort: a failure leaves the mark as it was, and the first one is a process warning
+ * the keeper first saw there. Best effort: a failure leaves the mark as it was, and the first one is a process warning
  * (`PDA_START_MARK`) naming `label`; the grace then runs out as for any start. Returns the stop, which resolves once the
  * thread has exited, so no write outlives it.
  */
 export function keepStartMark(dir: string, everyMs: number, label = dir): () => Promise<void> {
   const warn = (why: string) =>
     process.emitWarning(`the start mark of ${label} is no longer kept fresh: ${why}; a supervisor's start grace runs out as for any start`, { code: "PDA_START_MARK" });
-  let started: { dev: bigint; ino: bigint };
-  try {
-    started = statSync(dir, { bigint: true });
-  } catch (error) {
-    warn(`its directory cannot be reached (${(error as NodeJS.ErrnoException).code ?? (error as Error).message})`);
-    return async () => undefined;
-  }
-  const worker = new Worker(KEEPER_SOURCE, { eval: true, workerData: { dir, name: START_MARK, everyMs, dev: started.dev, ino: started.ino }, execArgv: [] });
+  const worker = new Worker(KEEPER_SOURCE, { eval: true, workerData: { dir, name: START_MARK, everyMs }, execArgv: [] });
   worker.on("message", (why: string) => warn(why));
   worker.on("error", (error) => warn(`its thread failed (${error.message})`));
   worker.unref();

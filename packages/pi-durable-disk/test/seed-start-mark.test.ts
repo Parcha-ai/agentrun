@@ -248,4 +248,34 @@ describe("the start mark's keeper", () => {
       dir.remove();
     }
   });
+
+  it("reports a mark it cannot read, once, and stays quiet about one that is absent or not a supervisor's generation 1", { timeout: 30_000 }, async () => {
+    const dir = scratchRoot("keeper-unreadable");
+    const warnings: Error[] = [];
+    const onWarning = (warning: Error) => void ((warning as { code?: string }).code === "PDA_START_MARK" && warnings.push(warning));
+    process.on("warning", onWarning);
+    try {
+      // Quiet: no mark at all, and a mark for generation 3.
+      for (const [name, mark] of [["none", undefined], ["other", { generation: 3, at: "2026-10-18T00:00:00.000Z", by: "sup-1", failures: 0, lastExit: null }]] as const) {
+        const root = join(dir.root, name);
+        mkdirSync(root, { recursive: true });
+        if (mark) writeMark(root, mark);
+        const stop = keepStartMark(root, 50);
+        await sleep(300);
+        await stop();
+      }
+      assert.deepEqual(warnings.map((w) => w.message), [], "an absent mark and another generation's are not failures");
+      // Unreadable: start.json is a directory, so reading it fails (EISDIR) for any user.
+      const root = join(dir.root, "unreadable");
+      mkdirSync(join(root, "start.json"), { recursive: true });
+      const stop = keepStartMark(root, 50);
+      await sleep(400);
+      await stop();
+      assert.equal(warnings.length, 1, `one warning: ${warnings.map((w) => w.message).join(" | ")}`);
+      assert.match(warnings[0]!.message, /reading it failed \(EISDIR\)/);
+    } finally {
+      process.off("warning", onWarning);
+      dir.remove();
+    }
+  });
 });
