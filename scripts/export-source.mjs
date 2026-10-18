@@ -97,7 +97,9 @@ const allowedRootFiles = new Set(['README.md', 'AGENTS.md', 'CLAUDE.md', 'CHANGE
 const allowedDirectories = new Set(['apps', 'changes', 'docs', 'examples', 'packages', 'scripts', 'spec', '.github']);
 const excludedComponents = new Set(['.pi', 'site', 'dist', 'node_modules', '.git', '.release', '.openai', '.sites-runtime', '.cascade', '.desloppify', '.impeccable', '.review', '.reviews', '.codex', '.agents', '.cache', 'coverage', 'candidates', 'scorecard.png', '.lake']);
 const textExtensions = new Set(['.md', '.json', '.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.html', '.jsonl', '.css', '.svg', '.txt', '.yml', '.yaml', '.toml', '.sh', '.lean', '.tla', '.cfg']);
-const binaryExtensions = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico', '.woff', '.woff2', '.webm']);
+const binaryExtensions = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico', '.woff', '.woff2', '.webm', '.pdf']);
+/** A PDF is exported only when one line of ASSETS.md names it with its SHA-256: each one is a document someone reviewed, not a type. */
+const assetsLines = (await readFile(join(root, 'ASSETS.md'), 'utf8').catch(() => '')).split('\n');
 function extension(path) { const leaf = path.split('/').at(-1); return leaf.includes('.') ? leaf.slice(leaf.lastIndexOf('.')).toLowerCase() : ''; }
 function excluded(path) {
   const parts = path.split('/');
@@ -147,6 +149,7 @@ async function collect(relative = '') {
     const isText = entry.name === '.gitignore' || textExtensions.has(ext) || allowedRootFiles.has(path) || /^packages\/(?:dsl|jev|pi|pi-durable-disk|pi-browser|pi-vision|pi-transport|pi-durable-agent|serve|pi-git-remote|pi-agent-learn|reference)\/(?:LICENSE|NOTICE)$/.test(path) || path === 'packages/pi-durable-disk/bin/archil-scoped' || path === 'packages/pi-durable-disk/docker/Dockerfile' || path === 'packages/pi-durable-disk/.dockerignore' || path === 'spec/lean/lean-toolchain' || path === '.github/CODEOWNERS';
     if (!isText && !binaryExtensions.has(ext)) throw new Error(`Unreviewed source-export file type: ${path}`);
     const bytes = await readFile(join(root, path));
+    if (ext === '.pdf' && !assetsLines.some(line => line.includes(`\`${path.split('/').at(-1)}\``) && line.includes(sha256(bytes)))) throw new Error(`Unreviewed PDF: ${path} is not in ASSETS.md with its SHA-256 ${sha256(bytes)} on its line`);
     if (isText) {
       const content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
       assert.ok(!content.includes('\0'), `NUL byte in expected text file: ${path}`);
