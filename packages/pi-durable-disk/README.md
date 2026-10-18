@@ -950,6 +950,11 @@ when the run is `done` and that detail carries a record, `failed` for anything e
 run its instance left `running`, `paused` or `sleeping`). So an app that runs on a box and wants its supervisor to have
 its record puts the record there, in its final `setStatus("done", { record })`.
 
+Either way the outcome may carry `models`, the role-to-model ids the run's live parts chose (`lead`, `eyes`, ...), on any
+status, a failed run's too: from the outcome line's `models`, or from the final detail's (`setStatus("done", { record,
+models })`). Both places keep it only when it is a plain object whose values are all strings; a missing or malformed one
+is left out, never replaced by `{}`.
+
 ## Tests
 
 ```sh
