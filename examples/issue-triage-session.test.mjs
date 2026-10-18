@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { githubTools } from './issue-triage/github.ts';
-import { sentenceFor, TOOLS } from './issue-triage/session.ts';
+import { ranWorkflow, sentenceFor, TOOLS } from './issue-triage/session.ts';
 
 const workflow = JSON.parse(readFileSync(new URL('./issue-triage/workflow.json', import.meta.url), 'utf8'));
 const callTools = (node, found = new Set()) => {
@@ -32,4 +32,19 @@ test('the research node reads and nothing else: its declared tools are the read 
   (function walk(node) { if (Array.isArray(node)) node.forEach(walk); else if (node && typeof node === 'object') { if (node.node === 'agent') agents.push(node); Object.values(node).forEach(walk); } })(workflow);
   assert.ok(agents.length >= 1);
   for (const agent of agents) assert.deepEqual(agent.tools, ['read']);
+});
+
+test('the job blob\'s workflow is what an inspect or a load ANSWERED, paired by call id: a refused inspect and a run are ignored, a repaired draft and a loaded one are used', () => {
+  const call = (id, action, args = {}) => ({ role: 'assistant', content: [{ type: 'toolCall', id, name: 'agentrun', arguments: { action, ...args } }] });
+  const result = (id, body, isError = false) => ({ role: 'toolResult', toolName: 'agentrun', toolCallId: id, isError, content: [{ type: 'text', text: JSON.stringify(body) }] });
+  const sent = { name: 'sent' }, repaired = { name: 'repaired' }, loaded = { name: 'loaded' };
+  assert.equal(ranWorkflow([]), undefined);
+  // The model sent `sent`; the tool answered with the repaired draft: the repaired one is the graph.
+  const first = [call('1', 'inspect', { workflow: sent }), result('1', { preview: 'p', workflow: repaired, input: { n: 1 } })];
+  assert.deepEqual(ranWorkflow(first), { workflow: repaired, input: { n: 1 } });
+  // A refused inspect (an error result) changes nothing, and a run result is not a draft.
+  const refused = [...first, call('2', 'inspect', { workflow: sent }), result('2', { message: 'no' }, true), call('3', 'run'), result('3', { outcome: { status: 'complete' }, workflow: sent })];
+  assert.deepEqual(ranWorkflow(refused), { workflow: repaired, input: { n: 1 } });
+  // A draft loaded by name has no workflow in its call at all, and its result is the graph.
+  assert.deepEqual(ranWorkflow([...refused, call('4', 'load', { name: 'saved' }), result('4', { preview: 'p', workflow: loaded, saved: { name: 'saved' } })]), { workflow: loaded, input: {} });
 });

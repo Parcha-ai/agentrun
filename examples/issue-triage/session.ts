@@ -76,6 +76,20 @@ function runEnv(claim: Claim): RunEnv {
 const COLORS: Record<string, string> = { you: '1;37', agent: '36', tool: '90', progress: '32', error: '1;31', info: '0' };
 const textOf = (content: unknown) => (typeof content === 'string' ? content : Array.isArray(content) ? content.map((part) => (part as { text?: string }).text ?? '').join('') : '');
 
+type Message = { role: string; content: unknown; toolName?: string; toolCallId?: string; isError?: boolean };
+/** The graph is the workflow that RAN: the draft an `inspect` or a `load` answered with (what run and dry-run take next), not the workflow the model sent, which a refused inspect, a repaired draft or a draft loaded by name all make differ.
+ *  Each result is paired with its call by id to know its action; the last good one wins. */
+export function ranWorkflow(messages: readonly Message[]): { workflow: unknown; input: unknown } | undefined {
+  const actions = new Map<string, string>();
+  for (const m of messages) if (m.role === 'assistant' && Array.isArray(m.content)) for (const part of m.content as Array<{ type: string; id?: string; name?: string; arguments?: { action?: string } }>) if (part.type === 'toolCall' && part.name === 'agentrun' && part.id && part.arguments?.action) actions.set(part.id, part.arguments.action);
+  let found: { workflow: unknown; input: unknown } | undefined;
+  for (const m of messages) {
+    if (m.role !== 'toolResult' || m.toolName !== 'agentrun' || m.isError || !['inspect', 'load'].includes(actions.get(m.toolCallId ?? '') ?? '')) continue;
+    try { const answered = JSON.parse(textOf(m.content)) as { workflow?: unknown; input?: unknown }; if (answered.workflow && typeof answered.workflow === 'object') found = { workflow: answered.workflow, input: answered.input ?? {} }; } catch { /* not JSON */ }
+  }
+  return found;
+}
+
 async function session(options: { dir: string; input: Input; record?: string; plain: boolean; transcript?: string }) {
   const say = (text: string, cls = 'info') => {
     console.log(options.plain ? text : `\x1b[${COLORS[cls] ?? '0'}m${text}\x1b[0m`);
@@ -165,11 +179,7 @@ async function session(options: { dir: string; input: Input; record?: string; pl
     const { messages } = await root.context(ctx) as unknown as { messages: Array<{ role: string; content: unknown; toolName?: string }> };
     const runs = messages.filter((m) => m.role === 'toolResult' && m.toolName === 'agentrun').map((m) => textOf(m.content)).flatMap((t) => { try { const j = JSON.parse(t); return j.outcome ? [j] : []; } catch { return []; } });
     const last = runs.at(-1);
-    // The workflow the agent drafted is the last one it inspected (a run and a dry run take the saved draft, with no workflow argument): the viewer draws its graph from the job blob.
-    const inspected = messages.flatMap((m) => (m.role === 'assistant' && Array.isArray(m.content) ? m.content as Array<{ type: string; name?: string; arguments?: { action?: string; workflow?: unknown; input?: unknown } }> : []))
-      .filter((part) => part.type === 'toolCall' && part.name === 'agentrun' && part.arguments?.action === 'inspect' && part.arguments.workflow !== undefined);
-    const drafted = inspected.at(-1)?.arguments;
-    if (drafted) job = { workflow: drafted.workflow, input: drafted.input ?? null };
+    job = ranWorkflow(messages as Parameters<typeof ranWorkflow>[0]);
     const answer = textOf(messages.findLast((m) => m.role === 'assistant')?.content).trim();
     if (last?.outcome?.status === 'complete') await host.deliver({ record: last.outcome.output });
     await recorder?.detach();
