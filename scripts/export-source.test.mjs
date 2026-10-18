@@ -59,6 +59,23 @@ test('source archives exclude website files, build output, and private review st
   assert.equal(await f.listing(), firstListing);
 });
 
+test('a *.local.* file is excluded and a source file named local.ts is archived', async t => {
+  const f = await fixture(t);
+  // pi-transport's `./box/*` export resolves `./box/local` to src/box/local.ts, and @parcha/agentrun-reference imports it: a source
+  // archive without it does not build. Only a name with `.local` after something (`*.local.*`, `*.local`) is a machine's own file: a
+  // directory named `local` and a name that merely starts with `.localhost` are source too.
+  const archived = ['packages/pi-transport/src/box/local.ts', 'packages/dsl/src/local.mjs', 'packages/dsl/src/local/index.mjs', 'examples/foo.localhost.ts'];
+  const excluded = ['packages/pi-transport/examples/hands.local.json', 'docs/settings.local.md', 'examples/notes.local', 'examples/.env.local', 'packages/dsl/.env.local.json'];
+  for (const path of archived) await f.write(path, 'export const box = 1;\n');
+  for (const path of excluded) await f.write(path, 'MACHINE_LOCAL_FIXTURE\n');
+  await f.run();
+  const listing = await f.listing();
+  for (const path of archived) assert.ok(listing.includes(`agentrun-dsl-source/${path}`), `${path} is archived`);
+  for (const path of excluded) assert.ok(!listing.includes(`agentrun-dsl-source/${path}`), `${path} is excluded`);
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok(receipt.exclusions.includes('*.local.*'));
+});
+
 test('an audit finding blocks the source archive without exposing its content', async t => {
   const f = await fixture(t);
   const fakeSecret = ['ghp_', 'z'.repeat(36)].join('');

@@ -393,12 +393,15 @@ export function codeOf(root: string): Header['code'] {
   const origin = spawnSync('git', ['-C', root, 'remote', 'get-url', 'origin'], { encoding: 'utf8' });
   const repo = (origin.status === 0 && githubRepoOf(origin.stdout.trim())) || 'unknown';
   const packages: Record<string, string> = {};
-  // The workspace's packages in the repository; in a project that installed this package, the @parcha packages it loaded.
-  const workspace = join(root, 'packages');
-  const installed = join(root, 'node_modules', '@parcha');
-  const from = existsSync(workspace) ? workspace : existsSync(installed) ? installed : undefined;
-  for (const entry of from ? readdirSync(from) : []) {
-    try { const manifest = JSON.parse(readFileSync(join(from!, entry, 'package.json'), 'utf8')); packages[manifest.name] = manifest.version; } catch { /* not a package */ }
+  // The @parcha packages the run loaded: those installed (this repository's workspace links them there too), then any
+  // @parcha workspace package not linked. A project's own packages/ is never read as ours.
+  for (const from of [join(root, 'node_modules', '@parcha'), join(root, 'packages')]) {
+    for (const entry of existsSync(from) ? readdirSync(from) : []) {
+      try {
+        const manifest = JSON.parse(readFileSync(join(from, entry, 'package.json'), 'utf8'));
+        if (typeof manifest.name === 'string' && manifest.name.startsWith('@parcha/') && !(manifest.name in packages)) packages[manifest.name] = manifest.version;
+      } catch { /* not a package */ }
+    }
   }
   // The pi packages the run loaded: what a recording's pi lines are the lines of (section 2 lists them beside ours).
   for (const name of ['pi-durable', 'chord', 'pi-ai', 'pi-agent-core', 'pi-coding-agent', 'pi-tui']) {

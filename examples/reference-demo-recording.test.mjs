@@ -332,7 +332,7 @@ test('a path in a detail is replaced whole, spaces and all; and a machine named 
   const aliceHome = ['', 'home', 'alice'].join('/');
   assert.equal(plainText(`wrote ${aliceHome}/Private Documents/report.txt, then stopped`), 'wrote <path>, then stopped');
   assert.equal(machineSecrets('host').some((secret) => secret.key.includes('host name')), false, 'a machine named host: its name is a word of the recording');
-  assert.equal(machineSecrets('greppy-mrb').some((secret) => secret.value === 'greppy-mrb'), true, 'an ordinary name is taken');
+  assert.equal(machineSecrets('build-box-7').some((secret) => secret.value === 'build-box-7'), true, 'an ordinary name is taken');
   const line = '{"channel":"live","source":"host","kind":"run.json","data":{"holder":{"host":"host-1"}}}';
   const redact = redactorOf(machineSecrets('host').filter((secret) => secret.key.includes('host name')));
   assert.equal(redact ? redact(line) : line, line, 'the lines of the format are unchanged');
@@ -423,6 +423,9 @@ test('the scrub takes the run\'s user name (a whole token in a path segment or a
   // The home directory, a path under it, a path under the run's directory.
   assert.equal(scrub(`cd ${home}/projects && ls`), 'cd ~/projects && ls');
   assert.equal(scrub(`wrote ${run}/work/out.json and ${run}`), 'wrote <run>/work/out.json and <run>');
+  // The coding tools' bash truncation notice names the full output's file under the run's directory.
+  assert.equal(scrub(`[info] Full output: ${run}/work/.tmp/tmp-x1y2/pi-output-0f3c9a52-77aa-4e0c-9d3e-1b6a5c2d8e41.log`), '[info] Full output: <run>/work/.tmp/tmp-x1y2/pi-output-0f3c9a52-77aa-4e0c-9d3e-1b6a5c2d8e41.log');
+  assert.equal(scrub(JSON.stringify({ text: `[Showing lines 1-200 of 900. Full output: ${run}/work/.tmp/tmp-x1y2/pi-output-0f3c.log]` })), JSON.stringify({ text: '[Showing lines 1-200 of 900. Full output: <run>/work/.tmp/tmp-x1y2/pi-output-0f3c.log]' }));
   // A path segment that is the user name, outside the home.
   assert.equal(scrub(`/srv/${user}/data`), '/srv/[user]/data');
   // Ordinary words: the name as a word, a longer word that holds it, a version.
@@ -442,4 +445,24 @@ test('a tool result that carries the run\'s user name, home and run directory is
   const all = filesIn(recording).filter((file) => !file.endsWith('.png')).map((file) => readFileSync(file, 'utf8')).join('\n');
   assert.ok(!all.includes(homedir()), 'the home directory is not in the recording');
   assert.ok(!new RegExp(`\\s${user}\\s+${user}\\s`).test(all), 'nor the user name in an ls column');
+
+});
+
+test('a machine named like an ordinary word (gateway) is redacted only as a whole token in text: never inside a JSON key, a dotted event name, a longer word or a source value; and a name of the format\'s own words (node) is not taken', async () => {
+  const { machineSecrets, redactorOf, scanRecording } = await import('../packages/reference/dist/secrets.js');
+  assert.equal(machineSecrets('node').filter((secret) => secret.key.includes('host name')).length, 0, 'a name of the format\'s own words is not taken');
+  const word = machineSecrets('gateway').filter((secret) => secret.key.includes('host name'));
+  assert.equal(word.length, 1);
+  const line = '{"gateway":1,"source":"gateway","kind":"gateway.start","data":{"text":"connected to gateway on port 22; the gateway.example.org host; gateways"}}';
+  const out = redactorOf(word)(line);
+  assert.ok(out.includes('"gateway":1'), 'a JSON key is not rewritten');
+  assert.ok(out.includes('"kind":"gateway.start"') && out.includes('gateway.example.org') && out.includes('gateways'), 'a dotted name and a longer word are not rewritten');
+  assert.ok(out.includes('connected to [redacted] on port 22'), 'the name as a whole token in text is');
+  const dir = await mkdtemp(join(tmpdir(), 'reference-whole-'));
+  try {
+    writeFileSync(join(dir, 'events.jsonl'), '{"gateway":1,"kind":"gateway.start"}\n');
+    assert.doesNotThrow(() => scanRecording(dir, word), 'a key and a format word are not a mention');
+    writeFileSync(join(dir, 'events.jsonl'), 'connected to gateway\n');
+    assert.throws(() => scanRecording(dir, word), /host name/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

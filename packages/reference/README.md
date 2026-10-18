@@ -3,6 +3,10 @@
 The agentrun reference host as a package: one pi-durable host that runs an agentrun job on this machine, with the
 supervisor that kills and restarts its process anywhere, the recorder, and fakes, so an example runs from an npm install.
 
+## What the agent can do
+
+The agent runs commands with **your user's rights**: a live demo can read and write whatever your account can. Run live demos in a container or a VM, not on a machine that holds anything you would not hand the agent. A command jail is a post-launch item.
+
 ## Run a demo from an install, with no key
 
 ```sh
