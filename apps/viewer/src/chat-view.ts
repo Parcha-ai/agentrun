@@ -24,6 +24,8 @@ const THREAD_LINES = 8;
 const THREAD_CHARS = 600;
 /** How many of a step's looks, or of one tool's calls in a row, show before "+ N more" (decisive looks always show). */
 const THREAD_SHOWN = 3;
+/** How many of the person's files show as chips before "+ N files". */
+const THREAD_FILES = 4;
 
 const threadIcon = (name: string): Element => {
   const holder = document.createElement('template');
@@ -319,7 +321,17 @@ function threadInput(input: NonNullable<ChatModel['input']>): HTMLElement | unde
     return fields.length ? threadYou(threadFields(fields), fields.length > THREAD_LINES || fields.reduce((sum, field) => sum + field.name.length + field.value.length, 0) > THREAD_CHARS) : undefined;
   }
   const node = threadYou(reportEl('div', { class: input.question !== undefined ? 'bubble prose' : 'bubble', text: words ?? '' }), threadLong(words ?? ''));
-  if (files.length) node.append(reportEl('div', { class: 'files' }, ...files.map((file) => reportEl('span', { class: 'file', title: file, text: file.split('/').at(-1) || file }))));
+  if (files.length) {
+    const chips = files.map((file) => reportEl('span', { class: 'file', title: file, text: file.split('/').at(-1) || file }));
+    const rest = chips.slice(THREAD_FILES);
+    const more = rest.length > 0 && reportEl('button', { class: 'file more-files', type: 'button' });
+    if (more) {
+      const toggle = (open = rest[0]!.hidden) => { for (const chip of rest) chip.hidden = !open; more.textContent = open ? 'Show less' : `+ ${rest.length} files`; };
+      toggle(false);
+      more.addEventListener('click', () => toggle());
+    }
+    node.append(reportEl('div', { class: 'files' }, ...chips, more));
+  }
   if (fields.length) node.append(reportEl('details', { class: 'input-fields' }, reportEl('summary', { text: 'details' }), threadFields(fields)));
   return node;
 }

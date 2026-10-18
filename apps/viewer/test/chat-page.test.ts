@@ -106,6 +106,8 @@ const TASK = 'Read the three scanned pages and the photographs, and say what hap
 const THOUGHT = '**Page 2** holds the alarm; I will cite its `line`.';
 /** A look's address that is a long list of files with no space to break at, as a real run cites one. */
 const LONG = Array.from({ length: 40 }, (_, n) => `scan-${n}.pdf`).join(',');
+/** The six files the person hands the bare run. */
+const SIX_FILES = ['scans.pdf', 'photos/photo-001.png', 'photos/photo-002.png', 'photos/photo-003.png', 'film.mp4', 'notes.txt'];
 /** An answer's title of 200 characters. */
 const LONG_TITLE = 'The three scanned pages and the photographs, read in order: an alarm is called out on page two, the crew answers, and the run reaches contact on page three, with the photographs sorted.'.padEnd(200, '.');
 /** A look over three pages, filed as one path joined by ", " with a picture for each page, as a live run files one. */
@@ -113,7 +115,7 @@ const THREE = ['scans.pdf#page=1', 'scans.pdf#page=2', 'scans.pdf#page=3'];
 /** The hand vision run: the input it was given, the host's prompt as each conversation's first user entry, and, when
  *  asked, the lead's own thinking and last words. Its look lines name their conversation, as a vision run's do; the
  *  weaker eyes' look read a long list of files. */
-function handRun(said: boolean): Line[] {
+function handRun(said: boolean, files = ['scans.pdf', 'photos/photo-001.png']): Line[] {
   const run = lines.map((line): Line => {
     const named = line.kind === 'LookEvent' ? { ...line, data: { ...(line.data as object), conversationId: String(line.conv) } } : line;
     const json = JSON.stringify(named);
@@ -130,7 +132,7 @@ function handRun(said: boolean): Line[] {
   const result = run.findLastIndex((line) => line.kind === 'result');
   const first = run.findIndex((line) => line.channel === 'durable');
   run.splice(first + 1, 0, { ...run[first]!, kind: 'pi.user', source: 'pi', conv: 1, order: 1, data: { kind: 'pi.user', model: [{ role: 'user', content: `The host's prompt. ${TASK}` }] } },
-    { ...run[first]!, kind: 'agentrun.workflow', order: 2, data: { doc: 'agentrun.workflow', input: { input: { question: TASK, files: ['scans.pdf', 'photos/photo-001.png'], pages: 3 } } } },
+    { ...run[first]!, kind: 'agentrun.workflow', order: 2, data: { doc: 'agentrun.workflow', input: { input: { question: TASK, files, pages: 3 } } } },
     // Each conversation is a workflow node's, so the runner speaks in it: its first user entry is the composed prompt.
     ...[1, 2].map((conv, n): Line => ({ ...run[first]!, kind: 'agentrun.nodes', order: 3 + n, path: conv === 1 ? '/root/lead' : '/root/steps/1/items/0',
       data: { doc: 'agentrun.nodes', key: `hand:node:${conv}`, value: { conversation: conv, closed: false }, version: 1 } })));
@@ -176,7 +178,7 @@ function writeFixtures(dir: string) {
   deliverInstead(answer, CITED_PAGES as never);
   writeNarrated(join(dir, 'hand-narrated'));
   for (const [id, said] of [['hand-said', true], ['hand-bare', false]] as const) {
-    writeRecording(join(dir, id), handRun(said));
+    writeRecording(join(dir, id), said ? handRun(said) : handRun(said, SIX_FILES));
     const { result: _result, ...unanswered } = JSON.parse(readFileSync(join(dir, id, 'manifest.json'), 'utf8'));
     // The run's last words are its answer, under the recording's title: here a whole paragraph of one.
     writeFileSync(join(dir, id, 'manifest.json'), JSON.stringify(said ? { ...unanswered, title: LONG_TITLE } : unanswered, null, 2));
@@ -516,6 +518,12 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.deepEqual(said, { kicker: 'The run\'s final message', rows: [['arow wide', null, 'Done. The alarm is on page 2.']], strong: 'alarm', card: 'The run\'s final message.' });
     assert.deepEqual(await value(`(() => { const h = doc('said').querySelector('.atitle'); return [h.textContent.length, parseFloat(getComputedStyle(h).fontSize) <= 20, h.classList.contains('long')]; })()`), [200, true, true],
       'a long answer title takes a reading size, not the display size');
+    // Past four files, the rest sit behind a "+ N files" chip that lays them all out.
+    assert.deepEqual(await value(`(() => { const f = doc('bare').querySelector('.msg.user .files'); return [[...f.querySelectorAll('.file:not(.more-files)')].filter((n) => shown(n)).length, f.querySelector('.more-files').textContent]; })()`),
+      [4, '+ 2 files']);
+    await page.evaluate(`doc('bare').querySelector('.more-files').click()`);
+    assert.deepEqual(await value(`(() => { const f = doc('bare').querySelector('.msg.user .files'); return [[...f.querySelectorAll('.file:not(.more-files)')].filter((n) => shown(n)).map((n) => n.textContent), f.querySelector('.more-files').textContent]; })()`),
+      [['scans.pdf', 'photo-001.png', 'photo-002.png', 'photo-003.png', 'film.mp4', 'notes.txt'], 'Show less']);
     const bare = await value<Record<string, unknown>>(`(() => { const d = doc('bare'); return { report: d.querySelector('.report').textContent, link: d.querySelector('.report a')?.getAttribute('href'), card: !!d.querySelector('.doccard') }; })()`);
     assert.deepEqual(bare, { report: 'This run has no report.How this ran: every call, look and file of the run.', link: './?r=hand-bare', card: false });
 
