@@ -9,8 +9,9 @@ import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
 import { effectiveBoxes } from './reference/demo-spec.ts';
-import { BOX_CROSSINGS, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from './reference/index.ts';
+import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from './reference/index.ts';
 
+const ORIGINAL = { ...process.env };
 const FIXTURE = new URL('./reference/demo-fixture.ts', import.meta.url).href;
 
 const BASELINE = new WeakMap();
@@ -304,7 +305,7 @@ test('a crossing taken while any tool call is between its dispatch and its kept 
   process.kill = (pid, signal) => { kills.push(signal); return true; };
   t.after(() => { process.kill = real; });
   const window = { open: 1 };
-  const cross = crossings({ run: { point: 'judge.asked verdict', kind: 'process', target: 'run', why: 'named', n: 1 }, tools: [] }, undefined, Date.now(), window);
+  const cross = crossings({ run: { point: 'judge.asked verdict', kind: 'process', target: 'run', why: 'named', n: 1 }, tools: [] }, undefined, Date.now(), undefined, window);
   cross('judge.asked verdict');
   assert.deepEqual(kills, [], 'a parallel branch\'s tool is open: no kill');
   window.open = 0;
@@ -313,7 +314,7 @@ test('a crossing taken while any tool call is between its dispatch and its kept 
 });
 
 const lines = () => { const kept = []; return { kept, recorder: { live: (source, kind, data) => kept.push([source, kind, data.crossing ?? data.killed ?? null]) } }; };
-const planFor = (point) => crossings({ run: undefined, tools: [{ point, kind: 'box', why: 'x', target: 'tool', n: 1 }] }, undefined, Date.now(), { open: 0 });
+const planFor = (point) => crossings({ run: undefined, tools: [{ point, kind: 'box', why: 'x', target: 'tool', n: 1 }] }, undefined, Date.now(), undefined, { open: 0 });
 
 test('a tool-box kill is honored at each advertised crossing, and recorded as a loss at each', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-crossing-'));
@@ -368,15 +369,174 @@ test('--max-usd compares what is known: an unknown price elsewhere does not swit
   assert.equal(meterKnown(tmp), 0.5, 'the priced decision counts, though the model\'s cost is unknown');
 });
 
-test('a child started with the spend cap already passed is ended at once, and no process is started past the cap', { timeout: 60_000 }, async () => {
-  const { spawnChild } = await import('./reference/demo.ts');
-  const stop = new AbortController();
-  stop.abort();
-  // The abort came before the spawn: the child would run its whole job and spend; it is killed instead.
+// A place that wraps the local one and records what the supervisor does through it, with the recording's kill lines it could see at each call.
+function recordingPlace(calls, recordDir, options = {}) {
+  return ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    const killLinesNow = () => {
+      try {
+        return readdirSync(join(recordDir, '.spool')).filter((name) => name.startsWith('supervisor-')).flatMap((name) => readFileSync(join(recordDir, '.spool', name), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))).filter((line) => line.kind === 'kill').length;
+      } catch { return 0; }
+    };
+    return {
+      ...inner, name: 'fake', kills: options.kills ?? ['process', 'box'], ...(options.token ? { token: (attempt) => `mount-token-${attempt}` } : {}),
+      start: async (order) => { calls.push({ call: 'start', gen: order.gen, stdin: order.stdin, secretInEnv: Object.values(order.env).includes(order.stdin) }); return inner.start(order); },
+      kill: async (runner, kind) => {
+        calls.push({ call: 'kill', kind, killLines: killLinesNow() });
+        await inner.kill(runner, kind);
+        if (options.killThrows) throw Object.assign(new Error('the provider would not confirm'), { code: 'KILL_FAILED' });
+      },
+      recover: async (last, kind, order) => { calls.push({ call: 'recover', kind, gen: order.gen, stdin: order.stdin }); return inner.recover(last, kind, order); },
+      release: async () => { calls.push({ call: 'release' }); },
+    };
+  };
+}
+
+test('the place seam: the supervisor starts, kills and recovers through the place, writes the kill line BEFORE the place kills, and passes the token the place mints for each attempt on stdin', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-place-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'demo.json');
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'process' }, { point: 'judge.asked verdict', why: 'box', kind: 'box' }] }));
+  Object.assign(process.env, { DEMO_SPEC: file });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const calls = [];
+  const recording = join(tmp, 'recording');
+  const result = await demo({ ...options, argv: ['--kill', '--json', '--record', recording], place: recordingPlace(calls, recording, { token: true }) });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.deepEqual(calls.map((call) => [call.call, call.kind ?? call.gen]), [['start', 1], ['kill', 'process'], ['recover', 'process'], ['kill', 'box'], ['recover', 'box'], ['release', undefined]].map(([call, x]) => (call === 'start' ? [call, 1] : call === 'recover' ? [call, x === 'process' ? 'process' : 'box'] : [call, x])).map((row) => row), 'start, then kill and recover for each kill, then release');
+  const kills = calls.filter((call) => call.call === 'kill');
+  assert.ok(kills.every((call) => call.killLines >= 1), 'the kill line was on the recording when the place was asked to kill');
+  assert.deepEqual(kills.map((call) => call.killLines), [1, 2], 'one more kill line before each kill');
+  const starts = calls.filter((call) => call.call === 'start' || call.call === 'recover');
+  assert.deepEqual(starts.map((call) => call.stdin), ['mount-token-1', 'mount-token-2', 'mount-token-3'], 'the place mints each attempt\'s token and the supervisor passes it on stdin as it is');
+  assert.ok(!calls.some((call) => call.secretInEnv), 'the token is never in the environment');
+  assert.deepEqual(validateRecording(recording), []);
+  assert.deepEqual(readEvents(recording).filter((line) => line.source === 'host' && line.kind === 'kill').map((line) => line.data.kind), ['process', 'box']);
+  // The supervisor read nothing under the run's directory: the result blob is the record the last runner reported, and the store's hash came from its report too.
+  const manifest = JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8'));
+  assert.equal(JSON.parse(readFileSync(join(recording, 'blobs', `${manifest.result.blob}.json`), 'utf8')).record.company, 'Acme Ltd');
+  assert.match(manifest.source.store_sha256, /^[0-9a-f]{64}$/);
+  assert.notEqual(manifest.source.store_sha256, '0'.repeat(64));
+  assert.equal(localPlace({ self: FIXTURE, paths: { id: 'r', root: '/x', work: '/x/work', store: '/x/store' } }).token, undefined, 'the local place mints no token');
+});
+
+test('a place that cannot lose its machine refuses a box kill, and says which place', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-place-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'demo.json');
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'box', kind: 'box' }] }));
+  Object.assign(process.env, { DEMO_SPEC: file });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const calls = [];
+  await assert.rejects(() => demo({ ...options, argv: ['--kill', '--json', '--record', join(tmp, 'recording')], place: recordingPlace(calls, join(tmp, 'recording'), { kills: ['process'] }) }), /the fake place cannot lose its box/);
+  assert.deepEqual(calls.map((call) => call.call), ['release'], 'refused before anything started or was killed: the run was not stopped first, and no box loss was recorded');
+});
+
+test('a kill the place cannot make is recorded as a host line with its code and ends the attempt cleanly: no unhandled rejection, no further attempt', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-place-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'demo.json');
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'the place will fail to kill' }] }));
+  Object.assign(process.env, { DEMO_SPEC: file });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const unhandled = [];
+  const listener = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', listener);
+  t.after(() => process.off('unhandledRejection', listener));
+  const calls = [];
+  const recording = join(tmp, 'recording');
+  const result = await demo({ ...options, argv: ['--kill', '--json', '--record', recording], place: recordingPlace(calls, recording, { killThrows: true }) });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.deepEqual(unhandled, [], 'nothing was left unhandled');
+  assert.deepEqual(result.failedKills, [{ gen: 1, code: 'KILL_FAILED' }]);
+  assert.equal(result.processes.length, 1, 'the run did not go on after a kill the place could not make');
+  assert.equal(calls.filter((call) => call.call === 'recover').length, 0);
+  const lines = readEvents(recording).filter((line) => line.source === 'host');
+  const failed = lines.find((line) => line.kind === 'kill.failed');
+  assert.deepEqual([failed.data.gen, failed.data.code], [1, 'KILL_FAILED']);
+  assert.ok(lines.findIndex((line) => line.kind === 'kill') < lines.findIndex((line) => line.kind === 'kill.failed'), 'the kill line first, then the failure');
+});
+
+const specWith = async (t, spec) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-place-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'demo.json');
+  writeFileSync(file, JSON.stringify(spec));
+  Object.assign(process.env, { DEMO_SPEC: file });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  return { tmp, options };
+};
+
+test('a place that rejects a kill without stopping the process does not hang the supervisor: it records the failure and ends, whether the kill was planned or the budget\'s', { timeout: 120_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference', expectedCost: 0.05, kills: [{ point: 'judge.asked verdict', why: 'the place will fail to kill' }] });
+  const pids = [];
+  t.after(() => { for (const pid of pids) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } } });
+  // The kill rejects and the process is left running: its exit never comes (the child parks for a minute at the crossing).
+  const place = ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner, start: async (order) => { const runner = await inner.start(order); pids.push(runner.pid); return { ...runner, exited: new Promise(() => {}) }; }, kill: async () => { throw Object.assign(new Error('the provider refused'), { code: 'KILL_REFUSED' }); } };
+  };
   const started = Date.now();
-  const result = await spawnChild(new URL('./reference/demo-fixture.ts', import.meta.url).href, { DIR: '/tmp/never', BACKEND: 'http://127.0.0.1:1', DEMO_SPEC: '/no/such/spec.json' }, () => {}, stop);
-  assert.equal(result.signal, 'SIGKILL');
-  assert.ok(Date.now() - started < 10_000);
+  const planned = await demo({ ...options, argv: ['--kill', '--json', '--record', join(tmp, 'planned')], place });
+  assert.ok(Date.now() - started < 30_000, 'it did not wait for the exit of a process that was never stopped');
+  assert.deepEqual(planned.failedKills, [{ gen: 1, code: 'KILL_REFUSED' }]);
+  assert.equal(planned.processes.length, 1);
+  // The budget's stop fails the same way.
+  process.env.DEMO_JUDGE_COST = '0.3'; process.env.DEMO_LINGER_MS = '20000';
+  const budget = await demo({ ...options, argv: ['--json', '--record', join(tmp, 'budget')], place });
+  assert.deepEqual(budget.failedKills, [{ gen: 1, code: 'KILL_REFUSED' }]);
+});
+
+test('the budget\'s stop is awaited: the place has finished killing (its provider cleanup too) before the supervisor finishes the attempt and releases the place', { timeout: 120_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference', expectedCost: 0.05 });
+  process.env.DEMO_JUDGE_COST = '0.3'; process.env.DEMO_LINGER_MS = '20000';
+  const order = [];
+  const place = ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner, kill: async (runner, kind) => { await inner.kill(runner, kind); await new Promise((resolve) => setTimeout(resolve, 500)); order.push('kill done'); }, release: async () => { order.push('release'); } };
+  };
+  const result = await demo({ ...options, argv: ['--json', '--record', join(tmp, 'recording')], place });
+  assert.equal(result.overBudget, true);
+  assert.deepEqual(order, ['kill done', 'release'], 'the kill, with its slow cleanup, ended before the place was released');
+});
+
+test('a place that cannot be made, or released, leaves nothing open: the scratch is removed and the error is the one the place raised', { timeout: 120_000 }, async (t) => {
+  const { options } = await specWith(t, { name: 'reference' });
+  let scratch;
+  await assert.rejects(() => demo({ ...options, argv: ['--json'], place: async ({ paths }) => { scratch = paths.root; throw new Error('the provider is down'); } }), /the provider is down/);
+  assert.equal(existsSync(scratch), false, 'a place that failed to be made left no scratch behind');
+  let root;
+  await assert.rejects(() => demo({ ...options, argv: ['--json'], place: ({ paths, self, destroyBoxes, requestFile }) => { root = paths.root; return { ...localPlace({ self, paths, destroyBoxes, requestFile }), release: async () => { throw new Error('release failed'); } }; } }), /release failed/);
+  assert.equal(existsSync(root), false, 'a place that failed to release still had its scratch removed');
+});
+
+test('a box kill is carried out once: the recovery that follows does not stop the old runner (nor ask the providers to destroy its boxes) again', { timeout: 300_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'the machine is lost', kind: 'box' }] });
+  let destroyed = 0;
+  const result = await demo({ ...options, argv: ['--kill', '--json', '--record', join(tmp, 'recording')], place: ({ paths, self, requestFile }) => localPlace({ self, paths, requestFile, destroyBoxes: () => { destroyed += 1; } }) });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.equal(destroyed, 1, 'the boxes were destroyed once for one box kill');
+});
+
+test('the place\'s signals carry the kill request: a place with its own signals() is the one the supervisor reads, not the files', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-place-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'demo.json');
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] }));
+  Object.assign(process.env, { DEMO_SPEC: file });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const asked = [];
+  const result = await demo({ ...options, argv: ['--kill', '--json', '--record', join(tmp, 'recording')], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner, signals: (attempt) => ({ [Symbol.asyncIterator]() { const it = inner.signals(attempt)[Symbol.asyncIterator](); return { async next() { const next = await it.next(); if (!next.done) asked.push([attempt, next.value.kind, next.value.crossing.point]); return next; }, return: () => it.return() }; } }) };
+  } });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.deepEqual(asked, [[1, 'kill-request', 'judge.asked verdict']]);
 });
 
 test('--fetch-sources: the entry fetches the demo\'s sources.json into the run\'s work/ before the job runs, and a no-key run without the flag does not', { timeout: 300_000 }, async (t) => {
@@ -600,7 +760,7 @@ test('a kill\'s where: only a crossing whose info has those values counts, and n
   // A matching crossing inside an open tool call is not a time at all, as for any run kill.
   kills.length = 0;
   const window = { open: 1 };
-  const guarded = crossings({ run: plan, tools: [] }, undefined, Date.now(), window);
+  const guarded = crossings({ run: plan, tools: [] }, undefined, Date.now(), undefined, window);
   guarded('transport.tool.started', { info: { tool: 'install' } });
   assert.deepEqual(kills, []);
   window.open = 0;
