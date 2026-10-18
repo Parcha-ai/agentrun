@@ -1,6 +1,8 @@
 // The recorder: the reference job run in this process with a recorder, a store read of the test's own standing in for the
 // package's export, and the recording it leaves checked by the validator. The spools of a killed process are torn at the end.
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -179,6 +181,46 @@ test('a process start sorts before the lines it writes at the same millisecond, 
   writeFileSync(join(circle, '.spool', 'live-2.jsonl'), JSON.stringify({ channel: 'live', source: 'workflow', kind: 'node.start', gen: 2, t: 4, seq: 0, data: {} }) + '\n');
   finishRecording(circle, { title: 't', task: 't', model: 'm', kills: 0, code: { repo: 'r', commit: 'c', packages: {} }, cost: { usd: 0, parts: {} }, source: { run: 'r', store: join(tmp, 'none.sqlite') } });
   assert.deepEqual(lines(circle).map((line) => line.kind), ['process.started', 'kill', 'process.started', 'pi.assistant', 'node.start']);
+});
+
+test('a process killed while it writes a blob never leaves a torn file in blobs/: the bytes go to a temporary file in .spool/ and are renamed whole', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-blob-kill-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const bytes = 'x'.repeat(200_000);
+  const record = new URL('./reference/record.ts', import.meta.url).href;
+  // A child that keeps one blob and is SIGKILLed at a point of the write: part-way through the bytes, or after them and before the rename.
+  const script = `
+    import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+    const die = () => process.kill(process.pid, 'SIGKILL');
+    const writeSync = fs.writeSync;
+    if (process.env.KILL_AT === 'write') fs.writeSync = (fd, data, ...rest) => { writeSync(fd, data.subarray(0, data.length / 2)); die(); };
+    if (process.env.KILL_AT === 'rename') fs.renameSync = die;
+    if (process.env.SHORT === '1') fs.writeSync = (fd, data, offset = 0) => writeSync(fd, data, offset, Math.min(1000, data.length - offset));
+    syncBuiltinESMExports();
+    const { keepBlob } = await import(${JSON.stringify(record)});
+    keepBlob(process.argv[1], Buffer.from('x'.repeat(200_000)), 'txt');`;
+  for (const at of ['write', 'rename']) {
+    const dir = join(tmp, at);
+    const child = spawnSync(process.execPath, ['--no-warnings=ExperimentalWarning', '--input-type=module', '-e', script, dir], { env: { ...process.env, KILL_AT: at } });
+    assert.equal(child.signal, 'SIGKILL', `the child was killed at ${at}: ${child.error ?? String(child.stderr).slice(0, 300)}`);
+    assert.deepEqual(readdirSync(join(dir, 'blobs')), [], `no file, torn or whole, in blobs/ after a kill at ${at}`);
+    assert.equal(readdirSync(join(dir, '.spool')).filter((name) => name.startsWith('blob-')).length, 1, 'the half-written bytes are a temporary file in .spool/');
+  }
+  // A write that returns fewer bytes than asked (a full disk, a signal) is finished, not renamed short: the blob is whole.
+  const short = join(tmp, 'short');
+  const shorted = spawnSync(process.execPath, ['--no-warnings=ExperimentalWarning', '--input-type=module', '-e', script, short], { env: { ...process.env, SHORT: '1' } });
+  assert.equal(shorted.status, 0, String(shorted.stderr));
+  const shortHash = createHash('sha256').update(bytes).digest('hex');
+  assert.equal(readFileSync(join(short, 'blobs', `${shortHash}.txt`), 'utf8'), bytes, 'every byte is there when each write took 1000');
+  // Without a kill the blob is whole under the hash of its bytes, and no temporary file is left.
+  const whole = join(tmp, 'whole');
+  const done = spawnSync(process.execPath, ['--no-warnings=ExperimentalWarning', '--input-type=module', '-e', script, whole], { env: { ...process.env } });
+  assert.equal(done.status, 0, String(done.stderr));
+  const hash = createHash('sha256').update(bytes).digest('hex');
+  assert.deepEqual(readdirSync(join(whole, 'blobs')), [`${hash}.txt`]);
+  assert.equal(readFileSync(join(whole, 'blobs', `${hash}.txt`), 'utf8'), bytes);
+  assert.deepEqual(readdirSync(join(whole, '.spool')).filter((name) => name.startsWith('blob-')), []);
+
 });
 
 test('the recorder scans before it finishes: a credential or a machine path in a line, a blob or the manifest writes no manifest', async (t) => {
