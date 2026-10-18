@@ -12,7 +12,7 @@ export type Cross = ((point: string, options?: { cut?: boolean; /** Facts about 
   park?(point: string, info?: Info): Promise<never> | undefined;
 };
 export type Info = Record<string, string | number | boolean>;
-export type Crossing = { point: string; n: number; pid: number; info?: Info; /** A tool kill that fired at this crossing. */ landed?: true };
+export type Crossing = { point: string; n: number; pid: number; info?: Info; /** A tool kill that fired at this crossing: its place in the attempt's plan (`plan.tools`), so a landed kill is credited to the entry that fired, never to another at the same point. */ landed?: true; tool?: number };
 
 /** A kill's `where` holds when every field it names equals the crossing's info field. */
 const matches = (where: Info | undefined, info: Info | undefined) => !where || Object.entries(where).every(([field, value]) => info?.[field] === value);
@@ -70,7 +70,7 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
       if (tool < 0 && !done.has(index) && times === entry.n) tool = index;
     });
     // A tool kill that fired is written to the log beside the crossings (n 0: it is no kill point), so the supervisor can tell a tool kill that landed from one that never did.
-    if (tool >= 0) { done.add(tool); if (log) appendFileSync(log, `${JSON.stringify({ point, n: 0, pid: process.pid, landed: true, ...(info ? { info } : {}) } satisfies Crossing)}\n`); return true; }
+    if (tool >= 0) { done.add(tool); if (log) appendFileSync(log, `${JSON.stringify({ point, n: 0, pid: process.pid, landed: true, tool, ...(info ? { info } : {}) } satisfies Crossing)}\n`); return true; }
     if (!cut || !run) { if (point === 'event workflow.node.start') begun = true; return false; }
     // A kill with `hold` is taken by `park`, not here: the crossing parks the nth filing and the ones after it.
     if (!('storm' in run) && run.hold !== undefined) return false;
