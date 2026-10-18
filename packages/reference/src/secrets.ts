@@ -135,11 +135,11 @@ export function scrubOf(options: { user?: string | undefined; home?: string | un
   };
 }
 
-/** The scrub for a run: this process's user name and home, and the run's directories (the environment names them: `DIR`, `TMPDIR`, `RECORD_DIR`, `HOME` when it is not the real home). */
+/** The scrub for a run: this process's user name and home, and the run's directories (the environment names them: `DIR`, `RECORD_DIR`, `HOME` when it is not the real home; never `TMPDIR`, which is the machine's own /tmp). */
 export function runScrub(env: NodeJS.ProcessEnv): Redact | undefined {
   let user: string | undefined;
   try { user = userInfo().username; } catch { user = env.USER; }
-  return scrubOf({ user, home: homedir(), dirs: [env.DIR, env.TMPDIR, env.RECORD_DIR, env.HOME !== homedir() ? env.HOME : undefined] });
+  return scrubOf({ user, home: homedir(), dirs: [env.DIR, env.RECORD_DIR, env.HOME !== homedir() ? env.HOME : undefined] });
 }
 
 const filesUnder = (dir: string): string[] => readdirSync(dir).flatMap((name) => {
