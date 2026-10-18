@@ -3,7 +3,7 @@
 // the build made. The gate's step runs for real here, as written.
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -58,6 +58,9 @@ const gate = (t, recordings) => {
   // Both import the one scanner, which lives in the reference example.
   mkdirSync(join(dir, 'examples/reference'), { recursive: true });
   cpSync(join(root, 'packages/reference/src/scan.ts'), join(dir, 'packages/reference/src/scan.ts'));
+  // The report page is read with an HTML parser, from node_modules (the workflow installs it before the gate).
+  cpSync(join(root, 'packages/reference/src/artifact.ts'), join(dir, 'packages/reference/src/artifact.ts'));
+  symlinkSync(join(root, 'node_modules'), join(dir, 'node_modules'));
   build(join(dir, 'apps/viewer/dist'), recordings);
   return new Promise((resolve) => execFile('bash', ['-c', GATE], { cwd: dir }, (error, stdout, stderr) => resolve({ code: error ? error.code : 0, stdout, stderr })));
 };
