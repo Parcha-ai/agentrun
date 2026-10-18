@@ -73,7 +73,7 @@ test('a thought reads as its first line, a wholly bold line without its markers,
   assert.deepEqual(threadThought('Plain first line\nand more'), { title: 'Plain first line', body: 'and more' });
   const long = threadThought('x'.repeat(200));
   assert.deepEqual([long.title.length, long.body], [120, 'x'.repeat(200)], 'a long first line is clipped as its title, and its fold holds the whole of it');
-  assert.deepEqual(threadThought(`${'y'.repeat(130)}\nmore`), { title: `${'y'.repeat(119)}…`, body: `${'y'.repeat(130)}\nmore` });
+  assert.deepEqual(threadThought(`${'y'.repeat(150)}\nthen more`), { title: `${'y'.repeat(119)}…`, body: `${'y'.repeat(150)}\nthen more` }, 'a clipped first line and the lines after it, all in the fold');
 });
 
 test('a region is drawn on the picture whose address holds it; of several, the cited one; of none, the cited one', UNIT, () => {
@@ -297,7 +297,8 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       cards: [...d.querySelectorAll('.thread > .msg .step')].map((c) => c.querySelector('.t span').textContent), hidden: d.querySelectorAll('.step[hidden]').length,
       more: [...d.querySelectorAll('.more')].map((n) => n.textContent),
       folds: [...d.querySelectorAll('details.fold')].map((n) => ({ open: n.open, label: n.querySelector('summary .lab').textContent, cards: n.querySelectorAll('.step').length })),
-      thinking: [...d.querySelectorAll('.thought')].map((n) => ({ fold: n.tagName === 'DETAILS', title: n.querySelector('.thought-title').textContent, tag: n.querySelector('.thought-tag')?.textContent })),
+      thinking: [...d.querySelectorAll('.thought')].map((n) => ({ fold: n.tagName === 'DETAILS', title: n.querySelector('.thought-title').textContent, tag: n.querySelector('.thought-tag')?.textContent,
+        chevron: getComputedStyle(n.querySelector('.thought-tag'), '::after').display })),
       how: d.querySelector('a.how').getAttribute('href'),
       timeline: { body: shown(d.querySelector('.tl-body')), expanded: d.querySelector('.tl-toggle').getAttribute('aria-expanded'), dot: !!d.querySelector('.tl .dot') },
       flat: flat('wide'), split: d.querySelector('.chat').getBoundingClientRect().width < d.querySelector('.art').getBoundingClientRect().width,
@@ -314,7 +315,7 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.deepEqual(wide.more, [], 'each read here made a look nothing leads into, so each speaks and none folds');
     assert.equal(wide.hidden, 0);
     assert.deepEqual(wide.folds, [{ open: false, label: 'conversation 2', cards: 3 }], 'the second conversation, folded');
-    assert.deepEqual(wide.thinking, [{ fold: false, title: 'Page 2 holds the alarm; I will cite its line.', tag: 'thinking' }], 'the run\'s own thought of one line: a line with its tag and no fold');
+    assert.deepEqual(wide.thinking, [{ fold: false, title: 'Page 2 holds the alarm; I will cite its line.', tag: 'thinking', chevron: 'none' }], 'the run\'s own thought of one line: a line with its tag, no fold and no chevron');
     assert.equal(wide.how, './?r=hand-page', 'the inspection viewer, with no other query parameter');
     assert.deepEqual(wide.timeline, { body: false, expanded: 'false', dot: true }, 'the timeline starts collapsed');
     assert.deepEqual(wide.flat, { page: 0, panes: 0 }, 'no horizontal scroll');
