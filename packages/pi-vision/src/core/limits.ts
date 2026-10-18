@@ -57,6 +57,15 @@ export const LOOK_FRAME_SPACING_S = 1;
 export const LOOK_TOKENS_PER_PART = 3000;
 /** One request to the eyes is cut after this long (2026-10-09). */
 export const SEE_TIMEOUT_MS = 120_000;
+/** Jev's images (docs.typesafe.ai/images, read 2026-10-16): PNG or JPEG stills, each side 280 to 1,568 px, 16 MiB a
+ *  file and 32 MiB of images a request after the API re-encodes them, so a quarter is kept free; out of range is
+ *  rejected, never resized; the EXIF orientation is not applied. */
+export const JEV_MIN_EDGE = 280;
+export const JEV_MAX_EDGE = 1568;
+export const JEV_IMAGE_BYTES = 16 * MiB;
+export const JEV_REQUEST_BYTES = 24 * MiB;
+/** The model `vision.judge` asks unless the host names one: Jev 1.14, the first that answers box questions (read 2026-10-16). */
+export const JEV_MODEL = "jev-1.14.0";
 /** Source bytes read into this process; a larger file needs a provider that works on it in its environment: pdf.js held 455 MB for a 200 page file (measured 2026-10-09). */
 export const SOURCE_BYTES_IN_PROCESS = 64 * MiB;
 
