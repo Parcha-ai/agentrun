@@ -244,7 +244,7 @@ test('the host chooses the speech-to-text model from the keys its demo declares:
 });
 
 test('every node thinks: its own level, else low, never off', { timeout: 120_000 }, async (t) => {
-  const { nodeAgent } = await import('./reference/assemble.ts');
+  const { nodeAgent } = await import('../packages/reference/dist/assemble.js');
   const model = { id: 'lead' };
   assert.equal(nodeAgent(model, {}).thinkingLevel, 'low', 'a node with no thinking runs at low');
   assert.equal(nodeAgent(model, { thinking: 'high' }).thinkingLevel, 'high', 'a node\'s own level wins');
