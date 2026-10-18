@@ -1,0 +1,5 @@
+---
+packages: @parcha/pi-vision
+kind: feature
+---
+A look says when its model call began and which tool call it ran under, so a timeline can draw the call as a bar under that tool call. `LookEvent` and the record's `facts` gain `startedAt` (epoch milliseconds, taken when the request to the eyes, to Jev, to the speech model or to a recording's source began) and `toolCallId` (`CallContext.toolCallId`, new and optional; the pi-durable adapter sets it from pi's id for the tool call, so a look a script makes through `vision.see`, `vision.judge` or `vision.transcribe` is under the tool call that ran the script, and a look the guard makes is under the tool whose result held the image). A failed look carries them too in `MissEvent.record`, a request that threw included. A look that made no request (a native look, an answer read back from a memo) has no `startedAt`; a caller that names no tool call leaves `toolCallId` out; such a look files exactly as before. A receipt's header gains `startedAt` and `toolCallId` lines when a record has them.
