@@ -1,34 +1,240 @@
 # @parcha/pi-durable-disk
 
-A durable pi host on a network disk. It runs [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) agents with each
-run's state on a disk that outlives the machine. Each run is one directory on the disk that holds pi's SQLite store and the
-agent's workspace. One process at a time holds that directory (a second claim is refused), every commit is on the disk before
-anything is shown, a host that is lost or hung is fenced by revoking its claim, and a stateless supervisor restarts the run on
-another host, where pi-durable resumes from the last commit and never repeats a tool call whose intent it had already committed.
+An agent's home and its runs live on a disk, not on a machine. Any host that mounts the disk can open a run where the last
+one released it: the conversation, the agent's files and what it was waiting for are all in the run's directory, so a
+process is somewhere a run visits, not where it lives.
+
+It runs [pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) agents. This is a beta (`0.1.0-beta.N`): a
+change that breaks a caller is listed in [CHANGELOG.md](CHANGELOG.md) when it ships.
+
+## What it is
+
+- **A run is one directory.** It holds pi's SQLite store (`store/run.sqlite`: the conversation and every task), the agent's
+  workspace (`work/`) and `run.json` (its status, generation and holder). [Layout on the disk](#layout-on-the-disk).
+- **One process at a time holds it.** A second claim is refused. The process that opens a run keeps a lease on it, and a
+  holder that lost the claim cannot write any more.
+- **Release and open.** `release()` seals the run. The next process to open the directory is the next generation: it reopens
+  the store, and pi-durable resumes the conversation and its tasks from the last commit.
+- **Two places a run can live.** On a plain directory of this machine (`localRun`: no disk, no key, one machine), or on an
+  [Archil](https://archil.com) disk that a Linux host or a container can mount (your own disk: [below](#bring-your-own-disk)).
+  The app code is the same.
+
+## When to use it
+
+Use it when a run should not be tied to the machine it started on:
+
+- **Your compute is disposable or changes.** Containers, sandboxes, VMs, deploys: whichever host opens the run next carries
+  on, with no state to copy first. Hosts: systemd units on this machine, Docker containers, Daytona sandboxes (a driver for
+  another compute is [three calls](#host-drivers-and-the-supervisor)).
+- **The agent waits.** A run that only sleeps in a retry or a long poll is released, holds no process, and is started again
+  at its deadline or by a request ([serve and parking](#serve-parking-and-fork)).
+- **You move or branch a run.** Hand it to another host at a step boundary, or fork a sealed run into many, each continuing
+  on its own.
+- **You want to look at a run from outside.** Its record is a file: `readLocalRunStatus(dir)` on a directory,
+  `readRunStatus(control, id)` on a disk.
+
+It is not for a one-shot script with no state to keep (pi-durable's in-memory storage does that), and a disk other than
+Archil is not supported: the package needs the disk to give an exclusive claim and a fence, and Archil is the one that does.
+
+## Try it: no disk, no key
+
+On Linux with Node 22.19 or later (or on macOS [for development](#on-macos)). In an empty directory:
+
+```sh
+npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable @earendil-works/pi-ai @earendil-works/chord
+```
+
+Save this as `pick-up.mts` (Node 22.19 or later runs the types away; `.mts` makes it an ES module whatever your
+`package.json` says). It is [examples/pick-up-a-run/main.ts](examples/pick-up-a-run/main.ts). It starts three processes, one after another, on
+one directory. Each opens the run, answers one question of the same chat, and releases it. pi-ai's faux model answers, so it
+needs no key:
+
+```ts
+// Pick up a run: a run is a directory, and whatever process opens it carries on where the last one released it. No disk, no
+// key (pi-ai's faux model answers). Three processes, one after another, each open the same run, answer one question of the
+// same chat and release it; the last still knows the first question, because the chat is in the directory, not in a process.
+// One machine: the directory is the claim.
+import { spawn } from "node:child_process";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
+import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
+import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { createModels, fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
+import { createRegistry } from "@earendil-works/pi-durable";
+import type { EntryRecord } from "@earendil-works/pi-durable";
+import { localRun, openDurableRun, readLocalRunStatus } from "@parcha/pi-durable-disk";
+
+const QUESTIONS = ["Where does your transcript live?", "Who had this run before you?", "Do you remember my first question?"];
+const root = join(process.cwd(), "pick-up-a-run-run");
+const text = (message: { content: unknown }): string =>
+  typeof message.content === "string" ? message.content : (message.content as { text?: string }[]).map((part) => part.text ?? "").join("");
+
+if (process.argv[2] === "instance") {
+  let generation = 0;
+  const faux = fauxProvider();
+  faux.setResponses(Array.from({ length: 100 }, () => (context) => {
+    const asked = context.messages.filter((message) => message.role === "user");
+    return fauxAssistantMessage(`Answer ${asked.length}, by generation ${generation}. You first asked: "${text(asked[0]!)}"`);
+  }));
+  const models = createModels();
+  models.setProvider(faux.provider);
+  const run = await openDurableRun({ disk: "local", region: "local", id: "chat" }, { ...localRun(root), harness: { models, registry: createRegistry() } });
+  generation = run.generation;
+  const model = faux.getModel();
+  const chat = await run.harness.root(ctx, { agent: { model: { provider: model.provider, modelId: model.id } } });
+  const answers = async (): Promise<EntryRecord[]> => [...(await chat.entries({}, 100, undefined, ctx)).items].reverse().filter((entry) => entry.kind === "pi.assistant");
+  const n = (await answers()).length + 1; // the next question: this process answers one and lets go
+  console.log(`generation ${generation} opened the run (${n - 1} answered before)`);
+  await (await chat.submit({ type: "input", content: QUESTIONS[n - 1], requestId: `question-${n}` }, ctx)).wait(ctx);
+  console.log(`  ${QUESTIONS[n - 1]}\n  ${text((await answers()).at(-1)!.model![0]!)}`);
+  await run.setStatus(n === QUESTIONS.length ? "done" : "paused");
+  await run.release();
+  process.exit(0);
+}
+
+// The supervisor: one process per question, one after another, on the same directory. It reads whole lines, and waits for
+// `close` (the process gone and all its output read), not `exit`.
+rmSync(root, { recursive: true, force: true });
+console.log(`the run is ${root}`);
+const output: string[] = [];
+for (const [i] of QUESTIONS.entries()) {
+  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "instance"], { stdio: ["ignore", "pipe", "inherit"] });
+  createInterface({ input: child.stdout }).on("line", (line) => {
+    console.log(line);
+    output.push(line);
+  });
+  const code = await new Promise<number | null>((resolve) => child.on("close", resolve));
+  if (code !== 0) {
+    console.error(`not ok: the process for question ${i + 1} exited ${code}`);
+    process.exit(1);
+  }
+}
+const opened = output.flatMap((line) => /^generation (\d+) opened the run \((\d+) answered before\)$/.exec(line)?.slice(1).map(Number) ?? []);
+const status = await readLocalRunStatus(root); // the run's record, read from outside, with no process running
+const remembered = output.at(-1)?.includes(`You first asked: "${QUESTIONS[0]}"`);
+if (opened.join() !== "1,0,2,1,3,2" || !remembered || status?.status !== "done" || status.generation !== 3) {
+  console.error(`not ok: opened ${JSON.stringify(opened)}, remembered ${remembered}, status ${JSON.stringify(status && [status.status, status.generation])}`);
+  process.exit(1);
+}
+console.log(`ok: three processes, one run: each picked up where the last released it, the last still knew the first question, and the run reads done at generation 3 (${root})`);
+```
+
+Run it (about two seconds; it writes the run under `./pick-up-a-run-run/`):
+
+```sh
+node pick-up.mts
+```
+
+It ends with:
+
+```
+generation 3 opened the run (2 answered before)
+  Do you remember my first question?
+  Answer 3, by generation 3. You first asked: "Where does your transcript live?"
+ok: three processes, one run: each picked up where the last released it, the last still knew the first question, and the run reads done at generation 3 (<this directory>/pick-up-a-run-run)
+```
+
+Nothing but the directory carried the conversation from one process to the next, so the third process knew the first
+question. The directory is the claim here, which guards one machine only; the next section puts the run on a disk that hosts
+can mount.
+
+## Bring your own disk
+
+The run's directory moves to an Archil disk, and the same app module runs on it (`run --disk` where `run --dir` was). You need an Archil account (the free plan is
+enough), a disk in the region nearest your hosts, and an API key from the Archil console. The key stays with the supervisor:
+hosts and instances never hold it. The supervisor is a function you call (`ensureRunning`) or `pi-durable-disk supervise`, which starts an
+instance where a run has none and hands each instance a mount token for its own start. On a Linux host set up as in
+[Requirements](#requirements) (add `--host docker --image IMAGE` to start each instance in a container instead):
+
+```sh
+export ARCHIL_API_KEY=...            # Archil console, API keys; only the supervisor reads it
+npx pi-durable-disk supervise --disk dsk-0123456789abcdef --region aws-us-east-1 --id my-run --create --app ./my-app.ts --every 30s
+```
+
+`./my-app.ts` is [an app module](#the-app): a function that returns pi's Harness options. Start from one of these, by what
+you have:
+
+- **Docker, any operating system, and an Archil account:** [Quickstart with Docker](#quickstart-with-docker). No root, no
+  FUSE, no archil client on your machine: each instance is a container.
+- **A Linux host with FUSE and the archil client:** [Quickstart on a Linux host](#quickstart-on-a-linux-host-two-hosts-one-run),
+  then [Setting up a host for production](#setting-up-a-host-for-production).
+- **Requirements, in full:** [Requirements](#requirements).
 
 **The disk.** The package needs two things from the disk: an exclusive claim on a run's directory, so that a second mount is
-refused, and a fence, so that revoking the claim makes the old holder's writes fail. [Archil](https://archil.com) gives both, which
-makes it the supported disk and the only one in this release. A disk without both cannot carry the package's guarantees. This
-release names no other backend and promises none.
+refused, and a fence, so that revoking the claim makes the old holder's writes fail. [Archil](https://archil.com) gives both,
+which makes it the supported disk and the only one in this release. A disk without both cannot carry the package's
+guarantees. This release names no other backend and promises none.
 
-pi-durable assumes two things it does not provide: exactly one live process per store, and a store that outlives the
-machine. A Cloudflare Durable Object gives it both. This package gives it both on an Archil disk you mount on any Linux host.
+## What you can do with it
+
+- **Hand a run to another host** at a step boundary: the old host records where the run is going and releases it, the new
+  one opens the next generation and tells the agent ([planned-move](examples/planned-move/)).
+- **Park a run while it waits**, and wake it at its deadline or on a request ([serve-and-park](examples/serve-and-park/)).
+- **Serve a run over HTTP**: `POST /submit` with a `requestId` that is deduplicated in the run's store, so a retry that reaches
+  another host gets the same submission ([Serve, parking and fork](#serve-parking-and-fork)).
+- **Fork a sealed run into many**, each fork a run of its own ([fork-into-many](examples/fork-into-many/)).
+- **Seed a new run** with a store and files before anything sees it ([Seeding a new run](#seeding-a-new-run)).
+- **Run it supervised** on systemd units, Docker containers or Daytona sandboxes ([Host drivers and the
+  supervisor](#host-drivers-and-the-supervisor)).
+- **Keep what was committed.** Every commit is on the disk before anything is shown, and an effect whose intent was
+  committed is never started twice: after a process dies, the next open tells the model the call was `interrupted`
+  ([kill-9](examples/kill-9/), [no-double-charge](examples/no-double-charge/)).
+
+[examples/](examples/README.md) lists every example, one property each, with what each needs and the first version that has
+what it imports.
+
+## Install
+
+```sh
+npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable @earendil-works/pi-ai @earendil-works/chord
+```
+
+`@earendil-works/pi-durable` and `@earendil-works/chord` are peer dependencies, `>=1.0.4 <1.4.0`. Node 22.19 or later;
+Linux, or macOS for development.
+
+From a checkout (this package is `packages/pi-durable-disk` of the repository; the root build compiles `dist/`):
+
+```sh
+git clone https://github.com/Parcha-ai/agentrun.git && cd agentrun && npm ci --ignore-scripts && npm run build
+cd packages/pi-durable-disk
+```
+
+## The low-level API
+
+What the package exports for a host of your own. `src/index.ts` lists every export, and the `.d.ts` files in `dist/` are the
+reference. [Library](#library) describes each in full.
+
+| Name | What it is | Example |
+|---|---|---|
+| `openDurableRun(ref, options)` | Open a run: take the claim and the owner lock, open the store and the Harness, resume, keep the lease. `run.release()` seals it | [pick-up-a-run](examples/pick-up-a-run/main.ts) |
+| `localRun(root)` | The `acquire` and `claimDir` that put a run on a plain directory of this machine, with no disk and no key | [pick-up-a-run](examples/pick-up-a-run/main.ts) |
+| `archilPlace({ disk, region, control, host })` and `localPlace({ app })` | Where one run lives and how its instance starts, ends and comes back, for a supervisor of your own ([Places](#places-a-run-a-supervisor-can-kill-and-bring-back)) | [`test/place.test.ts`](test/place.test.ts), and the [reference demo](https://github.com/Parcha-ai/agentrun/blob/main/packages/reference/README.md) that drives them |
+| `withClaim(where, fn)` and `readReleased(where, file)` | Hold one path of a disk exclusively for a moment, outside any run; read what it released over S3, with no mount ([A short claim](#a-short-claim-on-any-path-and-a-read-of-what-it-released)) | [`test/with-claim.test.ts`](test/with-claim.test.ts), and [pi-durable-agent](https://github.com/Parcha-ai/agentrun/blob/main/packages/pi-durable-agent/README.md#an-agent-home-on-a-disk), which carries an agent's home this way (not published yet) |
+| `seed` (an option of `openDurableRun`) | Write what a new run starts with, its store file and workspace files, before anything sees the run ([Seeding a new run](#seeding-a-new-run)) | [`test/seed-start-mark.test.ts`](test/seed-start-mark.test.ts), and pi-durable-agent's `seedRun` |
+| `recordHome` (a field of a `Place`) | The directory an attempt's runner records into, and `bringHome(into, { final })`, which reads it back over the control with no claim ([Places](#places-a-run-a-supervisor-can-kill-and-bring-back)) | [`test/place.test.ts`](test/place.test.ts), [`test/live/record-home.live.test.ts`](test/live/record-home.live.test.ts) |
+| `PlaceOutcome` | How a runner ended: the run's `status` (`complete` or `failed`), its `generation`, and the app's `record` and `models` ([Places](#places-a-run-a-supervisor-can-kill-and-bring-back)) | [`test/place.test.ts`](test/place.test.ts) |
+
+Also exported: `ensureRunning` and the host drivers (`localHost`, `dockerHost`, `daytonaHost`), `serveRun` and `requestRun`,
+parking, `fork` and `forkLocal`, `readLocalRunStatus` and `readRunStatus`, `archilControl`, and the typed errors.
+`@parcha/pi-durable-disk/lease` is the narrow entry for a host that owns its Harness; `@parcha/pi-durable-disk/internals` has
+no compatibility promise.
 
 ## Choose your path
 
 | You have | Start with | What you see |
 |---|---|---|
-| Linux and Node 22.19 or later, nothing else | [Quickstart on one machine](#quickstart-on-one-machine-no-disk-no-key) | A durable chat on a directory of this machine, killed with `SIGKILL` and finished by a second process. One machine and no fence: the directory is the claim |
-| Linux and Node 22.19 or later, and an app module | `pi-durable-disk run --dir PATH --app MODULE` ([The CLI](#the-cli)) | Your app, or example 01's (`examples/01-durable-chat/app.ts`), as an instance on a directory of this machine: `kill -9` it and run the same command again, and it resumes. One machine and no fence |
-| macOS and Node 22.19 or later, for development | The same [quickstart](#quickstart-on-one-machine-no-disk-no-key) and `run --dir` | The same runs, development grade: commands keep your rights, and the file tools' confinement holds against the agent's paths but not a command racing it ([On macOS](#on-macos)). Use Linux or Docker when the agent is not trusted |
-| Docker (macOS or Linux) and an Archil account | [Quickstart with Docker](#quickstart-with-docker) | A host killed in the middle of a paid charge, and the run resumed on another, every instance in a container |
-| A Linux host with FUSE and an Archil account | [Quickstart on a Linux host](#quickstart-on-a-linux-host-kill-a-host-watch-the-run-resume-on-another), then [Setting up a host for production](#setting-up-a-host-for-production) | The production shape: systemd units, the supervisor, and a lost host's run back in about a second |
+| Linux and Node 22.19 or later, nothing else | [Try it: no disk, no key](#try-it-no-disk-no-key) | Three processes, one after another, each pick up one chat on a directory of this machine and release it. One machine and no fence: the directory is the claim |
+| Linux and Node 22.19 or later, and an app module | `pi-durable-disk run --dir PATH --app MODULE` ([The CLI](#the-cli)) | Your app, or example 01's (`examples/01-durable-chat/app.ts`), as an instance on a directory of this machine: run the same command again and it picks the run up where it was. One machine and no fence |
+| macOS and Node 22.19 or later, for development | The same [try it](#try-it-no-disk-no-key) and `run --dir` | The same runs, development grade: commands keep your rights, and the file tools' confinement holds against the agent's paths but not a command racing it ([On macOS](#on-macos)). Use Linux or Docker when the agent is not trusted |
+| Docker (macOS or Linux) and an Archil account | [Quickstart with Docker](#quickstart-with-docker) | Two hosts take turns on one run, every instance in a container; the paid API sees each charge once |
+| A Linux host with FUSE and an Archil account | [Quickstart on a Linux host](#quickstart-on-a-linux-host-two-hosts-one-run), then [Setting up a host for production](#setting-up-a-host-for-production) | The production shape: systemd units, the supervisor, and a lost host's run back in about a second |
 | An app or a host of your own | [The app](#the-app) and [Library](#library) | `openDurableRun`, `localRun`, the supervisor and host drivers, `serve`, parking and `fork` from your code |
 
-[examples/](examples/README.md) lists the examples, one property each, with what each needs: several run with no disk
-and no key.
-
 ## How it maps to a Durable Object
+
+pi-durable assumes two things it does not provide: exactly one live process per store, and a store that outlives the
+machine. A Cloudflare Durable Object gives it both. This package gives it both on an Archil disk you mount on any Linux host.
 
 | Durable Object | This package | Supplied by |
 |---|---|---|
@@ -68,130 +274,6 @@ Not covered yet: a Kubernetes host driver (the `HostDriver` interface is below) 
 where FUSE is unavailable. Without Archil, a run can live on a plain directory of one machine
 ([A run on a local directory](#a-run-on-a-local-directory)).
 
-
-## Install
-
-```sh
-npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable@~1.2.0 @earendil-works/pi-ai@~1.2.0 @earendil-works/chord@~1.2.0
-```
-
-The pi packages are pinned to 1.2: pi 1.3.0 pins its own packages to exact versions, and this release's ranges stop below 1.3 until the next one.
-
-From a checkout (this package is `packages/pi-durable-disk` of the repository; the root build compiles `dist/`):
-
-```sh
-git clone https://github.com/Parcha-ai/agentrun.git && cd agentrun && npm ci --ignore-scripts && npm run build
-cd packages/pi-durable-disk
-```
-
-## Quickstart on one machine: no disk, no key
-
-The fastest look, on Linux with Node 22.19 or later (or on macOS, [for development](#on-macos)): a durable chat on a
-directory of this machine, with [`localRun`](#a-run-on-a-local-directory) instead of a disk and pi-ai's faux model
-instead of a key. One process answers the first messages and is killed (`SIGKILL`) after its third answer; a second
-opens the same run and answers the rest, and the transcript, read back from the store, has every message answered once.
-The directory is the claim, so this guards one machine only; the quickstarts below put the run on a disk that outlives
-the machine.
-
-In an empty directory, install the package and its peers, save this as `chat.mjs`
-(it is [examples/01-durable-chat/on-a-directory.mjs](examples/01-durable-chat/on-a-directory.mjs)):
-
-```sh
-npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable@~1.2.0 @earendil-works/pi-ai@~1.2.0 @earendil-works/chord@~1.2.0
-```
-
-```js
-// A durable chat on a directory of this machine: no disk, no key (pi-ai's faux model answers). One process answers the
-// first messages and is killed (SIGKILL) after its third answer; a second opens the same run and answers the rest, and
-// the transcript, read back from the store, has every message answered once. One machine: the directory is the claim.
-import { spawn } from "node:child_process";
-import { rmSync } from "node:fs";
-import { join } from "node:path";
-import { createInterface } from "node:readline";
-import { fileURLToPath } from "node:url";
-import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { createModels, fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
-import { createRegistry } from "@earendil-works/pi-durable";
-import { localRun, openDurableRun } from "@parcha/pi-durable-disk";
-
-const MESSAGES = ["Where does your transcript live?", "What happens if this process is killed now?", "Who answers after that?", "What was my first question?", "Are you the same process?", "Say goodbye."];
-const root = join(process.cwd(), "chat-run");
-const text = (message) => (typeof message.content === "string" ? message.content : message.content.map((part) => part.text ?? "").join(""));
-
-if (process.argv[2] === "instance") {
-  let generation = 0;
-  const faux = fauxProvider();
-  faux.setResponses(Array.from({ length: 100 }, () => (context) => {
-    const asked = context.messages.filter((message) => message.role === "user");
-    return fauxAssistantMessage(`Answer ${asked.length}, by generation ${generation}: "${text(asked.at(-1))}"`);
-  }));
-  const models = createModels();
-  models.setProvider(faux.provider);
-  const run = await openDurableRun({ disk: "local", region: "local", id: "chat" }, { ...localRun(root), harness: { models, registry: createRegistry() } });
-  generation = run.generation;
-  const model = faux.getModel();
-  const chat = await run.harness.root(ctx, { agent: { model: { provider: model.provider, modelId: model.id } } });
-  const answers = async () => (await chat.entries({}, 100, undefined, ctx)).items.reverse().filter((entry) => entry.kind === "pi.assistant");
-  const before = (await answers()).length;
-  console.log(`generation ${generation} opened the run in ${root} (${before} answered before)`);
-  for (const [i, content] of MESSAGES.entries()) {
-    // The request id makes a message a no-op once it was admitted: a new generation walks the list from the top.
-    await (await chat.submit({ type: "input", content, requestId: `message-${i + 1}` }, ctx)).wait(ctx);
-    if (i >= before) console.log(`generation ${generation} answered message ${i + 1}`);
-    await new Promise((resolve) => setTimeout(resolve, 200));
-  }
-  for (const answer of await answers()) console.log(`  ${text(answer.model[0])}`);
-  await run.setStatus("done");
-  await run.release();
-  process.exit(0);
-}
-
-// The supervisor: an instance, killed after its third answer, then another on the same directory (a fresh one each time).
-// It reads whole lines, and waits for `close` (the process gone and all its output read), not `exit`.
-rmSync(root, { recursive: true, force: true });
-const start = () => spawn(process.execPath, [fileURLToPath(import.meta.url), "instance"], { stdio: ["ignore", "pipe", "inherit"] });
-const eachLine = (child, onLine) =>
-  createInterface({ input: child.stdout }).on("line", (line) => {
-    console.log(line);
-    onLine(line);
-  });
-const first = start();
-eachLine(first, (line) => {
-  if (/answered message 3\b/.test(line)) first.kill("SIGKILL");
-});
-await new Promise((resolve) => first.on("close", resolve));
-console.log("the first process was killed (SIGKILL); a second opens the same run");
-const output = [];
-const second = start();
-eachLine(second, (line) => output.push(line));
-const code = await new Promise((resolve) => second.on("close", resolve));
-const answered = output.flatMap((line) => {
-  const match = /^ {2}Answer (\d+), by generation (\d+)/.exec(line);
-  return match ? [{ n: Number(match[1]), generation: Number(match[2]) }] : [];
-});
-const once = MESSAGES.every((_, i) => answered.filter((a) => a.n === i + 1).length === 1) && answered.length === MESSAGES.length;
-const generations = [...new Set(answered.map((a) => a.generation))].sort();
-if (code !== 0 || !once || generations.length < 2) {
-  console.error(`not ok: exit ${code}, answers ${JSON.stringify(answered)}`);
-  process.exit(1);
-}
-console.log(`ok: ${MESSAGES.length} messages answered once each, by generations ${generations.join(" and ")}, from the store in ${root}`);
-```
-
-Then run it (about five seconds; it writes the run under `./chat-run/`):
-
-```sh
-node chat.mjs
-```
-
-It ends with:
-
-```
-  Answer 1, by generation 1: "Where does your transcript live?"
-  ...
-  Answer 6, by generation 2: "Say goodbye."
-ok: 6 messages answered once each, by generations 1 and 2, from the store in <this directory>/chat-run
-```
 
 ## Quickstart with Docker
 
@@ -237,7 +319,7 @@ Your app's directory (or `--app-root DIR`) is mounted read-only into each contai
 `node_modules` in that directory is hidden. If your app needs other packages, build an image `FROM` this one that
 installs them under `/opt/pda`.
 
-## Quickstart on a Linux host: kill a host, watch the run resume on another
+## Quickstart on a Linux host: two hosts, one run
 
 This runs example 02, from `packages/pi-durable-disk` of a checkout, on one machine that plays two hosts: "host A" and "host B" are two mount roots, each
 with its own FUSE client, which to Archil are two machines. It needs the requirements above, a user with passwordless `sudo`,
@@ -848,7 +930,7 @@ await withClaim({ control, disk: "dsk-...", region: "aws-us-east-1", path: "agen
   db.exec("INSERT INTO runs (id) VALUES ('job-1'); PRAGMA wal_checkpoint(TRUNCATE)");
   db.close();
 });
-const store = await readReleased({ control, path: "agent" }, "agent.sqlite", { sqlite: true }); // null: none yet
+const released = await readReleased({ control, path: "agent" }, "agent.sqlite", { sqlite: true }); // { bytes, etag }, or null: none yet
 ```
 
 A claim is one exclusive mount, about 0.4 to 1 s with its release, so it is for a run's end, never a turn.
@@ -871,7 +953,7 @@ A claim is one exclusive mount, about 0.4 to 1 s with its release, so it is for 
 - **`CLAIM_HELD` is retryable.** The path is not released yet: retry within `waitMs`, and never fall back to an older
   release.
 
-`readReleased` returns the bytes only when the read is of a released file. Nothing holds the path (or an ancestor or a
+`readReleased` returns `{ bytes, etag }` only when the read is of a released file. Nothing holds the path (or an ancestor or a
 descendant) before or after the read, and the object is unchanged across it (its etag, else its size and time). For
 SQLite (`sqlite: true`), its `-wal` must also be absent or empty, so its writer checkpointed with `TRUNCATE` and closed. A
 held path is `CLAIM_HELD`, retryable as above, and a WAL with content is `NOT_RELEASED`. A file that changed during every

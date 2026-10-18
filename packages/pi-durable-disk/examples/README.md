@@ -7,6 +7,7 @@ change, and each one ends with a single `ok: ...` line naming what it showed.
 | Example | What it shows | Needs | Since | CI |
 |---|---|---|---|---|
 | [01-durable-chat](01-durable-chat/) | A chat survives its host being powered off: another host revokes the dead claim and goes on from the last committed message, nothing answered twice | Linux, the archil client, an Archil disk and API key | checkout | no |
+| [pick-up-a-run](pick-up-a-run/) | A run is a directory: three processes, one after another, open the same run, answer one question of one chat and release it, and the last still knows the first question; the run's record is read from outside | Linux, Node 22.19 or later | 0.1.0-beta.15 | yes |
 | [01-durable-chat/on-a-directory.mjs](01-durable-chat/on-a-directory.mjs) | The no-key quickstart: the same chat on a directory of this machine, killed after its third answer and finished by a second process | Linux or macOS, Node 22.19 or later | 0.1.0-beta.13 | yes |
 | [02-paid-effect](02-paid-effect/) | A paid charge cut mid-flight by a lost host is never sent twice: the new host records it `interrupted` and tells the model | Linux, the archil client, an Archil disk and API key | checkout | no |
 | [no-double-charge](no-double-charge/) | A paid call cut by `kill -9` is never sent twice: the next process gets it back `interrupted`, and the payment server has one charge per invoice | Linux or macOS, Node 22.19 or later | 0.1.0-beta.13 | yes |
