@@ -257,6 +257,12 @@ test('a kill that never lands is reported, not hidden: the process finished with
   assert.deepEqual(result.kills, []);
 });
 
+test('a tool kill that never fires is reported though its attempt ended in a process kill: it is not carried off with the attempt', { timeout: 300_000 }, async (t) => {
+  const { result } = await run(t, { kills: [{ point: 'judge.asked verdict', why: 'the run kill that does land' }, { point: 'no.such.point', why: 'a tool kill at a point never taken', target: 'tool' }] }, ['--kill', '--json']);
+  assert.equal(result.kills.length, 1, 'the run kill landed');
+  assert.deepEqual(result.unlanded, ['no.such.point'], 'and the tool kill that did not is reported');
+});
+
 test('a scripted tool is handed the run\'s place, so it can read the run\'s evidence files and the job\'s files', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-place-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
