@@ -7,6 +7,7 @@ import { visionContext } from "../core/env.js";
 import { PDF_RENDER_MAX_PIXELS, PDF_TEXT_TIMEOUT_MS, PdfProviderError, type PdfInfo, type PdfProvider } from "../core/pdf.js";
 import type { ProviderCall } from "../core/provider.js";
 
+/** The programs' timeout in seconds and the cap on a page's pixels; the defaults hold when they are left out. */
 export type PopplerOptions = { readonly timeoutS?: number; readonly maxPixels?: number };
 
 /** Runs the program in "$@" with its output in the two files named first. */
@@ -44,6 +45,7 @@ function parseInfo(out: string, first: number, last: number): PdfInfo {
   return { pages: last, pageSizes, ...(field("Producer") ? { producer: field("Producer")! } : {}), ...(field("Creator") ? { creator: field("Creator")! } : {}) };
 }
 
+/** PDF text and pages through poppler's `pdftotext`, `pdftoppm` and `pdfinfo` in the environment, when they are installed there. */
 export function popplerProvider(options: PopplerOptions = {}): PdfProvider {
   const timeoutS = options.timeoutS ?? PDF_TEXT_TIMEOUT_MS / 1000;
   const maxPixels = options.maxPixels ?? PDF_RENDER_MAX_PIXELS;

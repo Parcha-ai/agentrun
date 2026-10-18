@@ -51,8 +51,10 @@ const chunk = (type, body) => {
 })().catch((e) => (refused ? fail("OverBudget", "the PDF engine needed more than " + d.memoryMb + " MB") : fail(e && e.name, String((e && e.message) || e))));
 `;
 
+/** The worker's time and heap caps and the cap on a page's pixels; the defaults hold when they are left out. */
 export type PdfiumOptions = { readonly timeoutMs?: number; readonly memoryMb?: number; readonly maxPixels?: number };
 
+/** PDF pages as PNG with nothing installed: PDFium compiled to WASM, in a worker thread with a time and heap cap, at the size poppler would give. */
 export function pdfiumProvider(options: PdfiumOptions = {}): Provider {
   const maxPixels = options.maxPixels ?? PDF_RENDER_MAX_PIXELS;
   return {
