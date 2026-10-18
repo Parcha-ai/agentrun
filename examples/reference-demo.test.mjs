@@ -2095,7 +2095,8 @@ test('delegation lines are written from place.status() when a delegation appears
   assert.deepEqual(lines(recording, 'revoke').map((line) => [line.data.gen, line.data.revoked, line.data.ms]), [[2, [{ clientId: 'client-1', inodeId: 'inode-1', path: '/runs/the-run', isOrphaned: true }], 1234]]);
   assert.deepEqual(lines(recording, 'delegation').map((line) => line.data.inodeId), ['inode-1', 'inode-1', 'inode-2'], 'the same value the same label, a new one the next');
   const text = readFileSync(join(recording, 'events.jsonl'), 'utf8');
-  for (const raw of ['c-9a41', 'c-b2e7', '7001', 'f-7002']) assert.ok(!text.includes(raw), `${raw} is not in the recording`);
+  // The ids as the place wrote them: the strings as text, and the number as the field's value (a bare 7001 can occur in a timestamp).
+  for (const raw of ['c-9a41', 'c-b2e7', '"inodeId":7001', 'f-7002']) assert.ok(!text.includes(raw), `${raw} is not in the recording`);
   assert.deepEqual(validateRecording(recording), []);
   // A place without delegations or a revoke writes none.
   const plain = join(tmp, 'plain');
