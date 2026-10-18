@@ -4,13 +4,15 @@
 // a released run's own `store/run.sqlite`) through `readRunEntries` and the timeline module, and the files from a
 // recording's manifest or from what it is given. The runs server reads a released run's store with the same function.
 // A replay acts on nothing and shows no live browser: every summary and run is written with `live: false` and no live
-// view, whose address is a full-control token.
+// view, whose address is a full-control token. It carries nothing a sign-in left: no saved sign-in a run started with,
+// and none of a run's browser frames (`frames/`, beside the run), which after a sign-in show the person's own pages.
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { SECRET_KINDS } from "@parcha/pi-durable-agent/export";
 import { timelineOf } from "@parcha/pi-durable-agent/timeline";
-import { RUN_ID, safePath } from "./page/source.js";
+import { FRAMES_PATH, RUN_ID, safePath } from "./page/source.js";
 
 /** Open a store read-only, run `read` on it, close it. node:sqlite loads on first use. */
 async function readOnly(storePath, read) {
@@ -71,8 +73,12 @@ export async function recordingFiles(manifestPath) {
   return { manifest, files };
 }
 
-/** A directory's files as path -> bytes: no dotfile, no symlink, nothing outside it. */
+/** A directory's files as path -> bytes: no dotfile, no symlink, nothing outside it. A run's own directory is refused:
+ *  its store holds the sign-in and its frames what the browser showed; a replay takes the run's `work/`. */
 async function filesOf(dir, base = dir, out = {}) {
+  if (dir === base && ["store/run.sqlite", "frames/frames.jsonl"].some((path) => existsSync(join(dir, ...path.split("/"))))) {
+    throw new Error(`${dir} is a run's directory, with its store and its browser frames: give a replay the run's work/`);
+  }
   for (const entry of await readdir(dir, { withFileTypes: true })) {
     if (entry.name.startsWith(".") || entry.isSymbolicLink()) continue;
     const at = join(dir, entry.name);
@@ -102,9 +108,10 @@ function countOnly(row) {
   return { ...row, summary: `${requests} model request${requests === 1 ? "" : "s"}`, usage: { ...row.usage, usd: null } };
 }
 
-/** What a replay never carries: a live run's view and its state of the moment. */
+/** What a replay never carries: a live run's view and its state of the moment, the sign-ins it started with and
+ *  whether its browser left frames. */
 function released(summary) {
-  const { liveView: _view, liveNote: _note, busy: _busy, wakeAt: _wake, error: _error, ...kept } = summary;
+  const { liveView: _view, liveNote: _note, busy: _busy, wakeAt: _wake, error: _error, signedIn: _signedIn, frames: _frames, ...kept } = summary;
   return { ...kept, live: false, liveView: null };
 }
 
@@ -127,6 +134,7 @@ async function readRun(input) {
   const files = recording ? recording.files : typeof input.files === "string" ? await filesOf(input.files) : (input.files ?? {});
   for (const path of Object.keys(files)) {
     if (!safePath(path)) throw new Error(`the run ${id} has a file path a replay cannot hold: ${JSON.stringify(path)}`);
+    if (FRAMES_PATH.test(path)) throw new Error(`the run ${id} has ${JSON.stringify(path)}, a browser frame of the run: no replay carries them`);
   }
   const paths = Object.keys(files);
   const clash = paths.find((path) => paths.some((other) => other.startsWith(`${path}/`)));
@@ -151,7 +159,8 @@ async function readRun(input) {
  * Write `runs` as a replay under `outDir`, replacing what a replay there held (its `runs.json` and `runs/`). Every run
  * is read and checked, and every path of the replay laid out, before anything on disk is touched, and nothing is
  * written when one is refused: a run id a run page could not ask for, a summary or run record for another id, a store
- * that is not exported (it holds a sign-in, a lease, a binding or an alias), a file path that is absolute, leaves the
+ * that is not exported (it holds a sign-in, a lease, a binding or an alias), a run's own directory as its files, a
+ * browser frame of the run, a file path that is absolute, leaves the
  * run's files (`..`), is a dotfile or names a directory twice, and two runs whose paths collide (ids `a` and `a.json`:
  * `runs/a.json` as a file and a directory). The replay is written beside `outDir` and swapped in, so a failure leaves
  * the replay that was there whole.
