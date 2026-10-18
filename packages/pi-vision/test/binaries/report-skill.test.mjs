@@ -544,3 +544,18 @@ test("a cite to a region alone says which region, so several on one picture are 
   assert.match(html, /href="photo\.jpg#xywh=percent:10,20,30,15" data-look="[0-9a-f]{64}">box 10,20,30,15<\/a>/);
   assert.match(html, /href="photo\.jpg#xywh=pixel:5,6,70,80" data-look="[0-9a-f]{64}">box px 5,6,70,80<\/a>/);
 });
+
+test("a document page takes its look from a row's cite as well as a finding's, or from its own data", async () => {
+  const byRow = data
+    .replace('cites: [{ file: "contract.pdf", page: 3, xywh: "percent:7,6,70,4", look: lookPage.key }] }', 'cites: [{ file: "contract.pdf", look: lookPage.key }] }')
+    .replace("  notChecked:", '  rows: [{ id: "p3", label: "Page 3", text: "The rule is set here.", cites: [{ file: "contract.pdf", page: 3, look: lookPage.key }] }],\n  notChecked:');
+  assert.notEqual(byRow, data);
+  onDisk = "other";
+  const { result, keys } = await run([helpers, assets, looking, byRow, render, check]);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  assert.match(HTML(), new RegExp(`<a class="cite" href="contract\\.pdf#page=3" data-look="${keys[1]}">open at p\\. 3</a>`));
+  const own = byRow.replace('{ n: 3, src: page3,', `{ n: 3, look: lookPage.key, src: page3,`).replace('cites: [{ file: "contract.pdf", page: 3, look: lookPage.key }] }],', 'cites: [{ file: "contract.pdf", look: lookPage.key }] }],');
+  assert.notEqual(own, byRow);
+  const alone = await run([helpers, assets, looking, own, render, check]);
+  assert.ok(alone.result.ok, alone.result.ok ? "" : alone.result.error.message);
+});
