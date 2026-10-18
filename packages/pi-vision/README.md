@@ -28,7 +28,8 @@ The agent runs shell commands with your user's rights on your machine: use a con
 - `GEMINI_API_KEY` ([aistudio.google.com](https://aistudio.google.com)), for the model that runs the agent and the model
   that looks;
 - `TYPESAFE_API_KEY` ([console.typesafe.ai/keys](https://console.typesafe.ai/keys)), for Jev, the judge that answers
-  yes-or-no, choice, count and box questions; every `--live` run needs it;
+  yes-or-no, choice, count and box questions; needed unless a gateway that passes TypeSafe through is set
+  (`VIDEO_MODEL_BASE_URL` with `VIDEO_MODEL_API_KEY`, which is then Jev's key);
 - `FAL_KEY`, only for a question about speech (`hear-and-find`);
 - the programs `ffmpeg`, `ffprobe`, `pdftoppm` and `pdftotext` on your path.
 
