@@ -37,10 +37,11 @@ lines that are not its story: the transport panel reduces the counters' lines fo
 a recording with `transport` lines.
 
 A panel whose story is in the run's result rather than in its lines gives `showsResult(result)`: the parsed JSON a
-result names (the manifest's or a `result` line's). The shell asks it once it has read the results, which it does as
-the recording opens, so the panel is drawn for that recording from then on: a result is the whole recording's, never
-a stop's, and a scrub still never makes a panel appear or vanish. The document panel draws only for a result that cites
-a page, though every run's result line is one it reduces.
+result names (the manifest's or a `result` line's). The shell asks it once, when it has read the results as the
+recording opens (and, for a run it follows, when the run delivers one), and never for a recording with no result or a
+result that is not JSON. It is pure and cheap and reads nothing of the stop: a result is the whole recording's, so a
+scrub never makes a panel appear or vanish. The document panel draws only for a result that cites a page, though every
+run's result line is one it reduces.
 
 ## What `view` returns
 
@@ -238,9 +239,10 @@ it goes is about that picture. The image is drawn at the panel's width with its 
 The pages of a PDF a run's result cites, each drawn whole, with every box a row cites over its page. It reads the generic
 cited result (`agentrun.cited/1`): a cite that names a blob and a page (`page=N`) is that page of that file, and a cite
 whose fragment also names a region (`page=N&xywh=percent:x,y,w,h`, pi-vision's form) is a box on it. Each page is drawn
-once (in the order the result first cites it) as a `pdf-page` node, its boxes labelled with their rows; under it, every
-row that cites the page, with its value and its box, or "no box" for a row that cites the page without a region (a mark
-checked and found absent). A box and a row that cite a look select it when clicked, as a citation chip does, and the
+once (in the order the result first cites it) as a `pdf-page` node; under it, every row that cites the page, numbered,
+with its value and its box, or "no box" for a row that cites the page without a region (a mark checked and found
+absent). Each box carries its row's number, with the row's words beside it where the page is wide enough, and rows
+that cite the same region share one box. A box and a row that cite a look select it when clicked, as a citation chip does, and the
 selected one is lit. A cite whose file the shell knows to be a picture is not a page. A recording whose result cites no
 page draws no document panel (`showsResult`). PDF.js is the viewer's one dependency, shipped as its release files
 (`vendor/pdfjs/README.md`). Its test is `test/document.test.ts`, which also draws a hand-made PDF in Chrome under a

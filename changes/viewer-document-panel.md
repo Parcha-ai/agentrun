@@ -5,7 +5,8 @@ kind: feature
 **`apps/viewer`: the document panel draws the PDF pages a result cites, each box over its page**
 - A cited result (`agentrun.cited/1`) whose cites name a blob and a page (`page=N`) has those pages drawn whole with
   PDF.js, each once, and every box a row cites (`page=N&xywh=percent:x,y,w,h`, percent of the page's crop box) placed
-  over its page with the row's label; the rows that cite a page are listed under it, "no box" for one without a region.
+  over its page with its row's number (and the row's words where the page is wide enough; rows citing one region share
+  a box); the rows that cite a page are listed under it, numbered, "no box" for one without a region.
   A box and a row that cite a look select it, as a citation chip does. A recording whose result cites no page draws no
   document panel.
 - The panel contract gains a `pdf-page` node (the shell draws that page of a PDF blob, its children placed over it in

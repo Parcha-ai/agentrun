@@ -7,7 +7,7 @@
 // refused.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -18,7 +18,7 @@ import { pathToFileURL } from 'node:url';
 import { build } from '../build.mjs';
 import { typeOfName } from '../src/blobs.ts';
 import { docPagesOf, documentPanel } from '../src/document.ts';
-import type { Json, Line } from '../src/format.ts';
+import { parseLines, validate, type Json, type Line } from '../src/format.ts';
 import { panelsFor, type Box, type Node, type ViewContext } from '../src/panels.ts';
 import { reduceTo } from '../src/replay.ts';
 import { visionCitedOf } from '../src/vision.ts';
@@ -76,17 +76,19 @@ const PDF_BYTES = pdfOf([{ media: [612, 792], crop: [36, 36, 576, 756], marks: [
 const PDF = createHash('sha256').update(PDF_BYTES).digest('hex');
 const at = (box: Box) => `xywh=percent:${box.x},${box.y},${box.w},${box.h}`;
 
-/** A made-up certificate check, as example 3 delivers it: a row a mark, a box where it is present, none where it is not. */
+/** A made-up certificate check, as example 3 delivers it: a row a mark (its key and its words), a box where it is there,
+ *  none where it is not. */
 const CHECK = {
   format: 'agentrun.cited/1', title: 'A made-up certificate, checked',
   rows: [
-    { label: 'seal', value: 'present', note: 'noul 0.95', cites: [{ blob: PDF, look: K.page1, fragment: `page=1&${at(SEAL)}` }] },
-    { label: 'signature', value: 'present', cites: [{ blob: PDF, look: K.page2, fragment: `page=1&${at(SIGNATURE)}` }] },
-    { label: 'file number', value: 'absent', cites: [{ blob: PDF, look: K.page3, fragment: 'page=1' }] },
-    { label: 'filed stamp', value: 'present', cites: [{ blob: PDF, fragment: `#page=2&${at(STAMP)}` }] },
-    { label: 'scanned block', value: 'present', cites: [{ blob: PDF, fragment: `page=3&${at(BLOCK)}` }] },
-    { label: 'page 1 as the eyes saw it', value: 'kept', cites: [{ blob: PAGES[0]!, fragment: 'page=1' }] },
-    { label: 'summary', value: '3 of 4 marks', cites: [] },
+    { id: 'seal', label: 'seal', value: 'yes', note: 'noul 0.95', cites: [{ blob: PDF, look: K.page1, fragment: `page=1&${at(SEAL)}` }] },
+    { id: 'signature', label: 'signature', value: 'yes', cites: [{ blob: PDF, look: K.page2, fragment: `page=1&${at(SIGNATURE)}` }] },
+    { id: 'file_number', label: 'file number', value: 'no', cites: [{ blob: PDF, look: K.page3, fragment: 'page=1' }] },
+    // A leading '#' is taken as well.
+    { id: 'filed_stamp', label: 'filed stamp', value: 'yes', cites: [{ blob: PDF, fragment: `#page=2&${at(STAMP)}` }] },
+    { id: 'scan', label: 'scanned block', value: 'yes', cites: [{ blob: PDF, fragment: `page=3&${at(BLOCK)}` }] },
+    { id: 'eyes', label: 'page 1 as the eyes saw it', value: 'kept', cites: [{ blob: PAGES[0]!, fragment: 'page=1' }] },
+    { id: 'summary', label: 'summary', value: '4 of 5 marks', cites: [] },
   ],
 };
 const CHECK_SHA = createHash('sha256').update(JSON.stringify(CHECK)).digest('hex');
@@ -120,13 +122,13 @@ test('each page a pdf-page node with its boxes over it, a caption that links the
   const sheets = find(node, (each) => each.tag === 'pdf-page');
   assert.deepEqual(sheets.map((sheet) => 'page' in sheet && [sheet.blob, sheet.page, sheet.alt]), [[PDF, 1, 'page 1'], [PDF, 2, 'page 2'], [PDF, 3, 'page 3']]);
   const boxes = sheets.map((sheet) => find(sheet, cls('doc-box')).map((box) => ['box' in box && box.box, words(box), 'cite' in box ? box.cite : undefined]));
-  assert.deepEqual(boxes, [[[SEAL, 'seal', K.page1], [SIGNATURE, 'signature', K.page2]], [[STAMP, 'filed stamp', undefined]], [[BLOCK, 'scanned block', undefined]]]);
+  assert.deepEqual(boxes, [[[SEAL, '1 seal', K.page1], [SIGNATURE, '2 signature', K.page2]], [[STAMP, '1 filed stamp', undefined]], [[BLOCK, '1 scanned block', undefined]]], 'each box carries its row\'s number on its page and its words');
   assert.deepEqual(find(node, cls('doc-mark')).map(words), [
-    'seal present · box at 40, 70, 20, 15 % · noul 0.95',
-    'signature present · box at 65, 87, 25, 8 %',
-    'file number absent · no box',
-    'filed stamp present · box at 55, 5, 35, 12 %',
-    'scanned block present · box at 25, 40, 50, 20 %',
+    'seal yes · box at 40, 70, 20, 15 % · noul 0.95',
+    'signature yes · box at 65, 87, 25, 8 %',
+    'file number no · no box',
+    'filed stamp yes · box at 55, 5, 35, 12 %',
+    'scanned block yes · box at 25, 40, 50, 20 %',
   ]);
   assert.deepEqual(find(node, (each) => each.tag === 'a').map((link) => 'fragment' in link && [link.blob, link.fragment]), [[PDF, 'page=1'], [PDF, 'page=2'], [PDF, 'page=3']]);
   assert.equal(words(find(node, cls('doc-title'))[0]!), CHECK.title);
@@ -134,8 +136,17 @@ test('each page a pdf-page node with its boxes over it, a caption that links the
 
 test('a selected citation lights its box and its row; a click on either selects it', () => {
   const node = view(delivered.length, { cite: K.page2 });
-  assert.deepEqual(find(node, cls('hot')).map((each) => [each.class, words(each).split(' ')[0]]), [['doc-box hot', 'signature'], ['doc-mark hot', 'signature']]);
+  assert.deepEqual(find(node, cls('hot')).map((each) => [each.class, words(each)]), [['doc-box hot', '2 signature'], ['doc-mark hot', 'signature yes · box at 65, 87, 25, 8 %']]);
   assert.deepEqual(find(node, (each) => 'cite' in each && each.cite !== undefined).map((each) => 'cite' in each && each.cite), [K.page1, K.page2, K.page1, K.page2, K.page3]);
+});
+
+test('rows that cite the same region share one box, with both numbers and both rows\' words', () => {
+  const agree = { id: 'numbers_match', label: 'the numbers agree', value: 'yes', cites: [{ blob: PDF, look: K.page3, fragment: `page=1&${at(SEAL)}` }] };
+  const both = { ...CHECK, rows: [...CHECK.rows.slice(0, 3), agree] };
+  const node = view(delivered.length, { json: () => both as unknown as Json, cite: K.page3 });
+  const boxes = find(find(node, (each) => each.tag === 'pdf-page')[0]!, cls('doc-box'));
+  assert.deepEqual(boxes.map((box) => ['box' in box && box.box, words(box), 'cite' in box && box.cite, box.class]), [[SEAL, '1, 4 seal · the numbers agree', K.page1, 'doc-box hot'], [SIGNATURE, '2 signature', K.page2, 'doc-box']]);
+  assert.deepEqual(find(node, cls('doc-mark')).map((mark) => words(mark).split(' · ')[0]), ['seal yes', 'signature yes', 'file number no', 'the numbers agree yes']);
 });
 
 test('before the result, while it is read, and for a result that cites no page, the panel says so', () => {
@@ -161,17 +172,27 @@ test('a scrub to any point equals a fresh reduce to it', () => {
   }
 });
 
-test('PDF.js and its JavaScript image decoders are their release files, unchanged, and the build ships them beside the page as scripts with their licenses', () => {
+test('PDF.js and its JavaScript image decoders are their release files, unchanged, listed with their licenses, run no eval, and ship beside the page', () => {
   const vendor = new URL('../vendor/pdfjs/', import.meta.url);
-  const table = [...readFileSync(new URL('README.md', vendor), 'utf8').matchAll(/^\| `([^`]+)` \| `[^`]+` \| `([0-9a-f]{64})` \|$/gm)].map((row) => [row[1], row[2]]);
-  assert.deepEqual(table.map(([name]) => name), ['pdf.min.mjs', 'pdf.worker.min.mjs', 'LICENSE.txt', 'wasm/jbig2_nowasm_fallback.js', 'wasm/openjpeg_nowasm_fallback.js',
-    'wasm/LICENSE_JBIG2.txt', 'wasm/LICENSE_PDFJS_JBIG2.txt', 'wasm/LICENSE_OPENJPEG.txt', 'wasm/LICENSE_PDFJS_OPENJPEG.txt']);
-  for (const [name, sha] of table) assert.equal(createHash('sha256').update(readFileSync(new URL(name!, vendor))).digest('hex'), sha, `${name} is the released file`);
+  const listed = JSON.parse(readFileSync(new URL('vendored.json', vendor), 'utf8')) as { version: string; source: string; files: { path: string; from: string; license: string; bytes: number; sha256: string }[] };
+  const walk = (dir: string): string[] => readdirSync(new URL(dir, vendor), { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? walk(`${dir}${entry.name}/`) : [`${dir}${entry.name}`]));
+  assert.deepEqual(walk('').filter((name) => name !== 'vendored.json' && name !== 'README.md').sort(), listed.files.map((file) => file.path).sort(), 'every file here is listed, and every one listed is here');
+  for (const file of listed.files) {
+    const bytes = readFileSync(new URL(file.path, vendor));
+    assert.deepEqual([bytes.length, createHash('sha256').update(bytes).digest('hex')], [file.bytes, file.sha256], `${file.path} is the released file`);
+  }
+  // The viewer README's list is this one: a release moved in one place and not the other fails here.
+  const readme = [...readFileSync(new URL('../README.md', import.meta.url), 'utf8').matchAll(/^\| `([^`]+)` \| `([^`]+)` \| ([^|]+) \| ([\d,]+) \| `([0-9a-f]{64})` \|$/gm)];
+  assert.deepEqual(readme.map((row) => ({ path: row[1], from: row[2], license: row[3], bytes: Number(row[4]!.replaceAll(',', '')), sha256: row[5] })), listed.files);
+  assert.ok(readFileSync(new URL('../README.md', import.meta.url), 'utf8').includes(listed.source), 'the README names where the files came from');
+  // Untrusted PDFs: the scripts build no code from strings.
+  for (const file of listed.files.filter((each) => /\.m?js$/.test(each.path))) assert.doesNotMatch(readFileSync(new URL(file.path, vendor), 'utf8'), /\beval\(|new Function\(/, `${file.path} runs no eval`);
   const out = mkdtempSync(join(tmpdir(), 'viewer-pdfjs-build-'));
   try {
     mkdirSync(join(out, 'none'));
     build(join(out, 'dist'), join(out, 'none'));
-    for (const [from, to] of [['pdf.min.mjs', 'pdf.min.js'], ['pdf.worker.min.mjs', 'pdf.worker.min.js'], ...table.slice(2).map(([name]) => [name!, name!])]) assert.ok(readFileSync(join(out, 'dist', 'pdfjs', to!)).equals(readFileSync(new URL(from!, vendor))), `dist/pdfjs/${to}`);
+    const shipped = (path: string) => path.replace(/^(pdf(?:\.worker)?\.min)\.mjs$/, '$1.js');
+    for (const file of listed.files) assert.ok(readFileSync(join(out, 'dist', 'pdfjs', shipped(file.path))).equals(readFileSync(new URL(file.path, vendor))), `dist/pdfjs/${shipped(file.path)}`);
   } finally { rmSync(out, { recursive: true, force: true }); }
 });
 
@@ -206,12 +227,16 @@ test('in Chrome under a strict static host\'s policy, each cited page is drawn w
   writeFileSync(join(dir, 'blobs', `${PDF}.pdf`), PDF_BYTES);
   assert.equal(deliverInstead(dir, CHECK as unknown as Json), CHECK_SHA);
   assert.ok(!readFileSync(join(dir, 'events.jsonl'), 'utf8').includes(RESULT));
+  // The same run delivering an account, which cites no page: it draws no document and loads no PDF.js.
+  writeRecording(join(out, 'recordings', 'account'));
   mkdirSync(join(out, 'none'));
   build(join(out, 'dist'), join(out, 'none'));
-  // A published site: the recording embedded, the PDF a data: URL the page must read without fetching it.
+  // A published site: the recordings embedded, the PDF a data: URL the page must read without fetching it.
   build(join(out, 'site'), join(out, 'recordings'));
+  const asked: string[] = [];
   const server = createServer((request, response) => {
     const path = new URL(request.url!, 'http://localhost').pathname;
+    asked.push(path);
     const file = path.startsWith('/viewer/') ? join(out, 'dist', path.slice(8)) : path.startsWith('/site/') ? join(out, 'site', path.slice(6)) : path.startsWith('/rec/') ? join(dir, path.slice(5)) : '';
     if (!file || !existsSync(file) || statSync(file).isDirectory()) { response.writeHead(404).end(); return; }
     const type = typeOfName(file) ?? (file.endsWith('.html') ? 'text/html' : file.endsWith('.js') ? 'text/javascript' : 'application/octet-stream');
@@ -223,14 +248,16 @@ test('in Chrome under a strict static host\'s policy, each cited page is drawn w
   t.after(() => closeAll(pages, () => { server.close(); rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); }));
   // One browser, each way opened in turn in its page: a new document each time, the policy's listener first in it.
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  const page = await drivenPage(`${origin}/site/index.html?r=certificate`, join(out, 'profile'), { signal: t.signal });
+  const page = await drivenPage(`${origin}/site/index.html?r=account`, join(out, 'profile'), { signal: t.signal });
   pages.push(page);
-  for (const [at, opened] of ['site/index.html?r=certificate', 'viewer/index.html?src=/rec/', 'viewer/index.html?follow=/rec/'].entries()) {
-    if (at > 0) {
-      // The viewer writes where it is into its address as it draws, so the new document is told by a mark the old one has.
-      await page.evaluate(`window.before = true; location.assign(${JSON.stringify(`${origin}/${opened}`)})`);
-      await page.once(`window.before === undefined && document.readyState === 'complete'`, 'true', 30_000, `${opened} opening`);
-    }
+  await page.once(`document.querySelector('.vz') !== null`, 'true', 30_000, 'the account drawn');
+  await page.sleep(1000);
+  assert.equal(await page.evaluate(`document.querySelector('.doc-panel') === null`), true, 'a result that cites no page draws no document panel');
+  assert.deepEqual(asked.filter((path) => path.includes('/pdfjs/')), [], 'and PDF.js is not loaded');
+  for (const opened of ['site/index.html?r=certificate', 'viewer/index.html?src=/rec/', 'viewer/index.html?follow=/rec/']) {
+    // The viewer writes where it is into its address as it draws, so the new document is told by a mark the old one has.
+    await page.evaluate(`window.before = true; location.assign(${JSON.stringify(`${origin}/${opened}`)})`);
+    await page.once(`window.before === undefined && document.readyState === 'complete'`, 'true', 30_000, `${opened} opening`);
     const ready = `[...document.querySelectorAll('.doc-sheet img.pdf-picture')].filter((img) => img.complete && img.naturalWidth > 0).length === 3 || document.body.innerText.includes('could not be drawn')`;
     await page.once(ready, 'true', 30_000, `${opened}: the three cited pages drawn`);
     assert.doesNotMatch(String(await page.evaluate('document.body.innerText')), /could not be drawn|breaks the format/, opened);
@@ -242,6 +269,10 @@ test('in Chrome under a strict static host\'s policy, each cited page is drawn w
     }
     assert.deepEqual(await page.evaluate('window.refused'), [], `${opened}: the policy refused nothing`);
   }
+  // PDF.js asked its own origin for its worker and the CCITT decoder the scan needs, and for nothing else: no font, no
+  // character map, no WebAssembly.
+  assert.deepEqual([...new Set(asked.filter((path) => path.includes('/pdfjs/')).map((path) => path.replace(/^\/(site|viewer)\//, '')))].sort(),
+    ['pdfjs/pdf.min.js', 'pdfjs/pdf.worker.min.js', 'pdfjs/wasm/jbig2_nowasm_fallback.js']);
 });
 
 test('from a file, where PDF.js cannot load, the page says so and links the file at the page; the rows stay', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` }, async (t) => {
@@ -258,6 +289,45 @@ test('from a file, where PDF.js cannot load, the page says so and links the file
   await page.once(`document.body.innerText.includes('could not be drawn')`, 'true', 30_000, 'the page saying it cannot draw');
   const text = String(await page.evaluate('document.body.innerText'));
   assert.match(text, /page 1 could not be drawn: PDF\.js cannot load in a page opened from a file/);
-  assert.match(text, /seal present · box at 40, 70, 20, 15 %/);
+  assert.match(text, /seal yes · box at 40, 70, 20, 15 %/);
   assert.equal(await page.evaluate(`[...document.querySelectorAll('.doc-sheet a')].map((a) => a.href.split('#')[1]).join(' ')`), 'page=1 page=2 page=3');
+});
+
+const recorded = process.env.DOCUMENT_RECORDING;
+test('a document recording (DOCUMENT_RECORDING): the format holds, every page and box its result cites is drawn, and in Chrome each box lands at its percent under the strict policy', { skip: recorded && existsSync(recorded) ? false : 'DOCUMENT_RECORDING names no recording' }, async (t) => {
+  const run = parseLines(readFileSync(join(recorded!, 'events.jsonl'), 'utf8'));
+  const manifest = JSON.parse(readFileSync(join(recorded!, 'manifest.json'), 'utf8'));
+  const names = readdirSync(join(recorded!, 'blobs'));
+  assert.deepEqual(validate(manifest, run, new Set(names.map((name) => name.split('.')[0]!))), []);
+  const typeOf = (sha: string) => { const name = names.find((each) => each.startsWith(`${sha}.`)); return name ? typeOfName(name) : undefined; };
+  const result = JSON.parse(readFileSync(join(recorded!, 'blobs', names.find((name) => name.startsWith(manifest.result.blob))!), 'utf8')) as Json;
+  assert.equal(documentPanel.showsResult!(result), true);
+  const cited = docPagesOf(visionCitedOf(result)!, typeOf);
+  assert.ok(cited.length > 0 && cited.every((page) => typeOf(page.blob) === 'application/pdf'), 'each cited page is a page of a PDF in the recording');
+  const node = documentPanel.view(reduceTo(documentPanel, run, run.length), { t: 0, json: (sha) => (sha === manifest.result.blob ? result : undefined), blobType: typeOf });
+  assert.deepEqual(find(node, (each) => each.tag === 'pdf-page').map((sheet) => 'page' in sheet && sheet.page), cited.map((page) => page.page));
+  // Rows that cite one region share its box.
+  const regions = (marks: typeof cited[number]['marks']) => [...new Map(marks.flatMap((mark) => (mark.box ? [[JSON.stringify(mark.box), mark.box] as const] : []))).values()];
+  assert.deepEqual(find(node, cls('doc-box')).map((box) => 'box' in box && box.box), cited.flatMap((page) => regions(page.marks)));
+  if (!existsSync(chrome)) return;
+  const out = mkdtempSync(join(tmpdir(), 'viewer-document-recorded-'));
+  cpSync(recorded!, join(out, 'recordings', 'recorded'), { recursive: true });
+  build(join(out, 'site'), join(out, 'recordings'));
+  const server = createServer((request, response) => {
+    const file = join(out, 'site', new URL(request.url!, 'http://localhost').pathname.slice(1));
+    if (!existsSync(file) || statSync(file).isDirectory()) { response.writeHead(404).end(); return; }
+    const body = file.endsWith('index.html') ? Buffer.from(readFileSync(file, 'utf8').replace('<head>', `<head>${LISTEN}`)) : readFileSync(file);
+    response.writeHead(200, { 'content-type': typeOfName(file) ?? (file.endsWith('.html') ? 'text/html' : 'text/javascript'), 'content-security-policy': POLICY, 'x-content-type-options': 'nosniff' }).end(body);
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const pages: Awaited<ReturnType<typeof drivenPage>>[] = [];
+  t.after(() => closeAll(pages, () => { server.close(); rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); }));
+  const page = await drivenPage(`http://127.0.0.1:${(server.address() as AddressInfo).port}/index.html?r=recorded`, join(out, 'profile'), { signal: t.signal });
+  pages.push(page);
+  await page.once(`[...document.querySelectorAll('.doc-sheet img.pdf-picture')].filter((img) => img.complete && img.naturalWidth > 0).length === ${cited.length} || document.body.innerText.includes('could not be drawn')`, 'true', 60_000, 'every cited page drawn');
+  assert.doesNotMatch(String(await page.evaluate('document.body.innerText')), /could not be drawn|breaks the format/);
+  const placed = await page.evaluate(MEASURE) as { place: number[] }[][];
+  const near = (a: number[], b: Box) => [b.x, b.y, b.w, b.h].every((value, at) => Math.abs(value - a[at]!) <= 0.15);
+  cited.forEach((each, at) => assert.ok(placed[at]!.length === regions(each.marks).length && regions(each.marks).every((box, n) => near(placed[at]![n]!.place, box)), `page ${each.page}: each box at its percent (${JSON.stringify(placed[at])})`));
+  assert.deepEqual(await page.evaluate('window.refused'), [], 'the policy refused nothing');
 });

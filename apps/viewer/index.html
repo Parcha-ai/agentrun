@@ -295,9 +295,12 @@
   .doc-box { border: 2px solid var(--focus); background: rgba(47, 95, 208, 0.08); }
   .doc-box.hot { border-color: var(--token); background: var(--glow); }
   .doc-box-label { position: absolute; left: -2px; bottom: 100%; padding: 0 4px; font-size: 11px; line-height: 1.4; white-space: nowrap; color: #fff; background: var(--focus); border-radius: 3px 3px 0 0; }
+  /* On a narrow page a box keeps only its row's number; the rows under the page say the rest. */
+  @media (max-width: 700px) { .doc-box-words { display: none; } }
   .doc-box.hot .doc-box-label { color: var(--token-ink); background: var(--token); }
   .doc-page figcaption { margin: 6px 0 4px; font-size: 13px; color: var(--muted); }
-  .doc-marks { margin: 0; padding-left: 18px; font-size: 14px; }
+  .doc-marks { margin: 0; padding-left: 22px; font-size: 14px; }
+  .doc-marks li::marker { font-weight: 700; color: var(--focus); }
   .doc-mark.hot { background: var(--glow); }
   .doc-note { color: var(--muted); }
 </style>

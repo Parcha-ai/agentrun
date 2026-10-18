@@ -35,14 +35,25 @@ export function docPagesOf(cited: VisionCitedResult, blobType: (sha: string) => 
 
 const docPercent = (box: Box) => `${[box.x, box.y, box.w, box.h].map((value) => Math.round(value * 100) / 100).join(', ')} %`;
 
+/** A page with its boxes and its rows. Each row is numbered on its page, and its box carries the number, with the row's
+ *  words beside it where there is room: rows that cite the same region share one box. */
 function docPageView(page: DocPage, cite: string | undefined): Node {
   const hot = (mark: DocMark) => cite !== undefined && mark.cite.look === cite;
-  const boxes = page.marks.flatMap((mark): Node[] => (mark.box ? [h('div', { class: `doc-box${hot(mark) ? ' hot' : ''}`, box: mark.box, title: `${mark.row.label}: ${mark.row.value}`, ...(mark.cite.look ? { cite: mark.cite.look } : {}) },
-    h('span', { class: 'doc-box-label' }, mark.row.label))] : []));
+  const regions = new Map<string, { box: Box; marks: { mark: DocMark; n: number }[] }>();
+  page.marks.forEach((mark, at) => {
+    if (!mark.box) return;
+    const key = [mark.box.x, mark.box.y, mark.box.w, mark.box.h].join(',');
+    (regions.get(key) ?? regions.set(key, { box: mark.box, marks: [] }).get(key)!).marks.push({ mark, n: at + 1 });
+  });
+  const boxes = [...regions.values()].map(({ box, marks }): Node => {
+    const look = marks.find(({ mark }) => mark.cite.look !== undefined)?.mark.cite.look;
+    return h('div', { class: `doc-box${marks.some(({ mark }) => hot(mark)) ? ' hot' : ''}`, box, title: marks.map(({ mark }) => `${mark.row.label}: ${mark.row.value}`).join('\n'), ...(look ? { cite: look } : {}) },
+      h('span', { class: 'doc-box-label' }, h('b', {}, marks.map(({ n }) => n).join(', ')), h('span', { class: 'doc-box-words' }, ` ${marks.map(({ mark }) => mark.row.label).join(' · ')}`)));
+  });
   return h('figure', { class: 'doc-page' },
     { tag: 'pdf-page', blob: page.blob, page: page.page, alt: `page ${page.page}`, class: 'doc-sheet', children: boxes },
     h('figcaption', {}, `Page ${page.page}`, ' · ', { tag: 'a', blob: page.blob, text: 'the file', class: 'doc-file', fragment: `page=${page.page}` }),
-    h('ul', { class: 'doc-marks' }, ...page.marks.map((mark) => h('li', { class: `doc-mark${hot(mark) ? ' hot' : ''}`, ...(mark.cite.look ? { cite: mark.cite.look } : {}) },
+    h('ol', { class: 'doc-marks' }, ...page.marks.map((mark) => h('li', { class: `doc-mark${hot(mark) ? ' hot' : ''}`, ...(mark.cite.look ? { cite: mark.cite.look } : {}) },
       h('span', { class: 'doc-mark-name' }, mark.row.label), ' ', h('b', {}, mark.row.value),
       h('span', { class: 'doc-note' }, mark.box ? ` · box at ${docPercent(mark.box)}` : ' · no box'),
       mark.row.note !== undefined && h('span', { class: 'doc-note' }, ` · ${mark.row.note}`)))));
