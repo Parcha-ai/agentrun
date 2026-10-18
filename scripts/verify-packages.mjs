@@ -237,6 +237,8 @@ syncBuiltinESMExports();
   const transportRoot = join(consumer, 'node_modules/@parcha/pi-transport');
   const transportExports = (await json(join(transportRoot, 'package.json'))).exports;
   const boxProviders = (await readdir(join(transportRoot, 'dist/box'))).filter(file => file.endsWith('.js')).map(file => file.slice(0, -3)).filter(name => transportExports[`./box/${name}`] !== null).sort();
+  // A file name like archil-exec exports archilExecBoxes.
+  const boxFactory = name => `${name.replace(/-(\w)/g, (_, letter) => letter.toUpperCase())}Boxes`;
   assert.ok(['docker', 'local'].every(name => boxProviders.includes(name)), `pi-transport exports the providers ${boxProviders.join(', ')}`);
   await writeFile(join(consumer, 'smoke.mjs'), `import assert from 'node:assert/strict';
 import { runWorkflow, validateWorkflow, defineWorkflow, runTypedWorkflow, inspectWorkflow, formatWorkflowTree, authorWorkflow, authorContract, loadAuthorReference } from '@parcha/agentrun-dsl';
@@ -304,7 +306,7 @@ assert.ok(browser.BROWSER_TOOLS.length>0); assert.equal(typeof browserAgent.crea
 assert.deepEqual(Object.keys(vision.READ_MEDIA_PARAMETERS),['ask','from_s','to_s','page','char_offset']); assert.equal(vision.resolveLimits(undefined).image.maxWidth,2000); assert.equal(vision.citation('a.pdf',{page:{from:3,to:3}}),'a.pdf#page=3'); assert.equal(typeof visionDurable.createVisionExtension,'function');
 assert.equal((await visionTesting.fakeEyes().see({parts:[],ask:'q'},new AbortController().signal)).text,'fake answer');
 assert.equal(typeof transport.parseTransportConfig,'function'); assert.equal(typeof transportHome.moveWorkspace,'function'); assert.equal(typeof transportHome.sealStore,'function'); assert.equal(typeof transportTesting.createBoxConformance,'function');
-for (const name of ${JSON.stringify(boxProviders)}) assert.equal(typeof (await import('@parcha/pi-transport/box/'+name))[name+'Boxes'],'function',name);
+for (const name of ${JSON.stringify(boxProviders)}) assert.equal(typeof (await import('@parcha/pi-transport/box/'+name))[${JSON.stringify(Object.fromEntries(boxProviders.map(name => [name, boxFactory(name)])))}[name]],'function',name);
 assert.equal(typeof transportHands.boxEnv,'function');
 assert.equal(typeof transportHands.transport,'function'); assert.equal(typeof transport.TransportError,'function');
 assert.equal(piDurable.DECISION_RECEIPTS_DOC,'agentrun.decisions'); assert.equal(piDurable.DECISION_ROW_VERSION,1); { let opened=0; const writer=piDurable.createDecisionWriter({open:async()=>{opened++;throw new Error('never opened');}}); await writer.flush(); assert.equal(opened,0); }
@@ -442,10 +444,10 @@ void [limits, vision, unfiled];
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'vision-consumer.ts'], consumer);
   await writeFile(join(consumer, 'transport-consumer.ts'), `import type { ExecutionEnv } from '@earendil-works/pi-durable/env';
 import { parseTransportConfig, type Box, type BoxProvider, type Transport, type TransportConfig, type TransportHost } from '@parcha/pi-transport';
-${boxProviders.map(name => `import { ${name}Boxes } from '@parcha/pi-transport/box/${name}';`).join('\n')}
+${boxProviders.map(name => `import { ${boxFactory(name)} } from '@parcha/pi-transport/box/${name}';`).join('\n')}
 import { moveWorkspace, sealStore, type Seal } from '@parcha/pi-transport/home';
 import { boxEnv, transport as openTransport } from '@parcha/pi-transport/hands';
-const providers: [${boxProviders.map(name => `(...options: Parameters<typeof ${name}Boxes>) => BoxProvider`).join(', ')}] = [${boxProviders.map(name => `${name}Boxes`).join(', ')}];
+const providers: [${boxProviders.map(name => `(...options: Parameters<typeof ${boxFactory(name)}>) => BoxProvider`).join(', ')}] = [${boxProviders.map(boxFactory).join(', ')}];
 const transport: [typeof parseTransportConfig, Box | undefined, typeof moveWorkspace, typeof sealStore, Seal | undefined] = [parseTransportConfig, undefined, moveWorkspace, sealStore, undefined];
 // What a host hands to pi's Harness as a conversation's environment.
 const hands = (box: Box): ExecutionEnv => boxEnv(box);
