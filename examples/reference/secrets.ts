@@ -1,7 +1,7 @@
 // The exact secret values a recording must not hold. A shape cannot catch a token (a refresh token is opaque), so the recorder is told the values: the values of the environment names a demo declares, and the sign-in's tokens
 // in `auth.json` (`$AGENTRUN_HOME/auth.json`, else `~/.config/agentrun/auth.json`; one credential per provider, each `{ type: 'oauth', access, refresh, ... }` or `{ type: 'api_key', key }`). Every recorded line, text blob and the manifest has none of them, and
 // a recording that still holds one is refused. A value is never printed: a finding names the key and the file only.
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import type { Redact } from './record.ts';
@@ -110,5 +110,16 @@ export function scanRecording(dir: string, secrets: readonly Secret[]): void {
       // Raw, and as written inside a JSON string (a line holds a token with a quote, a backslash or a newline escaped): the redaction takes both forms out, so the scan looks for both.
       if (bytes.includes(secret.value) || bytes.includes(JSON.stringify(secret.value).slice(1, -1))) throw new Error(`the recording holds a secret that the redaction should have removed: ${secret.key} is in ${relative(dir, file)}`);
     }
+  }
+}
+
+/** What a viewer following the run could already have fetched: `events.jsonl` as it was placed, and every blob. A secret there has been exposed, whatever the finished file will say, so the recording is refused (the spool is not scanned: it is what the finished file is rebuilt from, redacted). */
+export function scanPlaced(dir: string, secrets: readonly Secret[]): void {
+  if (!secrets.length) return;
+  const files = [join(dir, 'events.jsonl'), ...(existsSync(join(dir, 'blobs')) ? filesUnder(join(dir, 'blobs')) : [])];
+  for (const file of files) {
+    if (!existsSync(file)) continue;
+    const bytes = readFileSync(file);
+    for (const secret of secrets) if (bytes.includes(secret.value)) throw new Error(`a secret was in ${relative(dir, file)} while the run was followed, and the recording is refused: ${secret.key}`);
   }
 }

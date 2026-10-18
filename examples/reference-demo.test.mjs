@@ -1,7 +1,7 @@
 // The reference entry as a demo's platform (item A of the entry brief): the spec's kills list through the supervisor (a named crossing, a storm, a box kind),
 // --input, --max-usd, the browser choice, and the box the job's tools run in. The demo here is the reference job itself, started through demo-fixture.ts.
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1065,12 +1065,17 @@ test('the child uses the sign-in file the recorder reads (AGENTRUN_HOME is hande
   assert.equal(mid.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(mid.result.processes.at(-1)));
   assert.ok(!holds(mid.recording, refreshed), 'the refreshed token, unknown at the start, is not in the recording');
   assert.ok((readFileSync(join(mid.recording, 'events.jsonl'), 'utf8').match(/\[redacted\]/g) ?? []).length >= 1);
-  // (e) An event carries the new token BEFORE the file shows it; the final read of auth.json catches it, and the recording is refused: no manifest, the key and the file named, the value never.
+  // (e) An event carries the new token BEFORE the file shows it. The follower redacts every line it places with the latest union a second behind, so by default the line is placed clean and the finished recording never holds the token.
   const late = `made-up-late-access-token-${'l'.repeat(30)}`;
   const { home: lateHome } = await signInHome(t);
+  const clean = await run(t, {}, ['--json'], { AGENTRUN_HOME: lateHome, DEMO_LEAK: JSON.stringify([late]), DEMO_LEAK_STEPS: 'leak,rotate', DEMO_ROTATE_TOKEN: late });
+  assert.equal(clean.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(clean.result.processes.at(-1)));
+  assert.ok(!holds(clean.recording, late), 'the token is not in the finished recording: the line was redacted as it was placed');
+  // But a line already placed (a hold of 0) before the file changed was already fetchable: the recording is refused (no manifest, the key and the file named, the value never).
+  const { home: placedHome } = await signInHome(t);
   const recording = join(await mkdtemp(join(tmpdir(), 'reference-late-')), 'recording');
   t.after(() => rm(join(recording, '..'), { recursive: true, force: true }));
-  await assert.rejects(() => run(t, {}, ['--json', '--record', recording], { AGENTRUN_HOME: lateHome, DEMO_LEAK: JSON.stringify([late]), DEMO_LEAK_STEPS: 'leak,rotate', DEMO_ROTATE_TOKEN: late }), (error) => /credentials\.openai\.access is in /.test(error.message) && !error.message.includes(late));
+  await assert.rejects(() => run(t, {}, ['--json', '--record', recording], { AGENTRUN_HOME: placedHome, DEMO_FOLLOW_HOLD_MS: '0', DEMO_ROTATE_DELAY_MS: '800', DEMO_LEAK: JSON.stringify([late]), DEMO_LEAK_STEPS: 'leak,rotate', DEMO_ROTATE_TOKEN: late }), (error) => /credentials\.openai\.access/.test(error.message) && /while the run was followed/.test(error.message) && !error.message.includes(late));
   assert.ok(!existsSync(join(recording, 'manifest.json')), 'the refused recording is not a finished one');
 });
 
@@ -1570,6 +1575,149 @@ test('code mode is off by default; on, the agent\'s `code` tool runs a script wh
   // demo.json\'s codeMode is the same switch.
   const spec = await run(t, { codeMode: true }, ['--json'], { DEMO_CODE: script, DEMO_CODE_ON: '' });
   assert.equal(readFileSync(join(spec.result.dir, 'work', 'proof.txt'), 'utf8').trim(), 'hello');
+});
+
+// ---- live mode, the recorder half ---------------------------------------------------------------------------------------------------------------
+
+test('the follower appends whole lines to events.jsonl in section 3\'s order as the spools fill; finishRecording completes the file, and the finished file equals a fresh export (a late line is placed by replacing the file whole)', async (t) => {
+  const { startedAt, followRecording, finishRecording, compareLines, assignMemoOrders } = await import('./reference/record.ts');
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-follow-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'rec');
+  mkdirSync(join(dir, '.spool'), { recursive: true });
+  startedAt(dir);
+  const spool = (name) => join(dir, '.spool', name);
+  const line = (over) => JSON.stringify({ channel: 'live', source: 'workflow', kind: 'x', gen: 1, seq: 0, data: {}, ...over });
+  const follower = followRecording(dir, { holdMs: 30 });
+  const snapshots = [];
+  const look = () => { const text = readFileSync(join(dir, 'events.jsonl'), 'utf8'); snapshots.push(text.slice(0, text.lastIndexOf('\n') + 1)); };
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  // A supervisor line and a process\'s lines, one of them torn mid-write.
+  appendFileSync(spool('supervisor-1.jsonl'), `${line({ source: 'host', kind: 'process.started', t: 1, seq: 0, gen: undefined, data: { gen: 1 } })}\n`);
+  appendFileSync(spool('live-1.jsonl'), `${line({ t: 5, seq: 0 })}\n${line({ t: 9, seq: 1 }).slice(0, 20)}`);
+  await wait(80); follower.poll(); look();
+  appendFileSync(spool('live-1.jsonl'), `${line({ t: 9, seq: 1 }).slice(20)}\n`);
+  // Durable lines: commit 1 with its lines and a memo (order null), then commit 2, which closes commit 1 for the memo.
+  appendFileSync(spool('durable-1.jsonl'), [{ t: 10, commit: 1, order: 0, seq: 0 }, { t: 10, commit: 1, order: 1, seq: 1 }, { t: 11, commit: 1, order: null, seq: 2 }, { t: 14, commit: 2, order: 0, seq: 3 }].map((over) => `${line({ channel: 'durable', source: 'workflow', ...over })}\n`).join(''));
+  await wait(80); follower.poll(); look();
+  // A line that arrives later than the hold, from before what was placed: the file cannot stay a prefix of the final order.
+  appendFileSync(spool('live-2.jsonl'), `${line({ t: 3, seq: 0, source: 'pi' })}\n`);
+  await wait(80); follower.poll(); look();
+  follower.close();
+  // Every snapshot a reader took holds whole lines only, in section 3\'s order, and each is a prefix of the next until the late line: append only.
+  for (const text of snapshots.slice(0, 2)) {
+    const lines = text.split('\n').filter(Boolean).map((entry) => JSON.parse(entry));
+    for (let index = 1; index < lines.length; index += 1) assert.ok(compareLines(lines[index - 1], lines[index]) <= 0, 'in order');
+  }
+  assert.ok(snapshots[1].startsWith(snapshots[0]) && snapshots[2].startsWith(snapshots[1]), 'appended to, never rewritten, while the run is going');
+  assert.ok(snapshots[2].trimEnd().endsWith(line({ source: 'pi', t: 3, seq: 0 })), 'a line later than the hold is appended where it arrived, and the final file puts it in its place');
+  assert.ok(snapshots[0].length > 0 && !snapshots[0].includes('"seq":1'), 'the torn line was not placed');
+  assert.ok(snapshots[1].includes('"seq":1'), 'and it is placed once whole');
+  // The fresh export: every spool line, sorted, memo orders assigned.
+  const fresh = [];
+  for (const name of readdirSync(join(dir, '.spool')).filter((entry) => entry.endsWith('.jsonl'))) for (const entry of readFileSync(spool(name), 'utf8').split('\n').filter(Boolean)) fresh.push(JSON.parse(entry));
+  fresh.sort(compareLines);
+  assignMemoOrders(fresh);
+  const expected = fresh.map((entry) => JSON.stringify(entry)).join('\n') + '\n';
+  finishRecording(dir, { title: 't', task: 't', model: 'faux/faux-1', kills: 0, code: { repo: 'r', commit: 'c', packages: {} }, cost: { usd: 0, parts: {} }, source: { run: 'x', store_sha256: '0'.repeat(64) } });
+  assert.equal(readFileSync(join(dir, 'events.jsonl'), 'utf8'), expected, 'the finished file is the fresh export');
+  assert.ok(existsSync(join(dir, 'manifest.json')) && !existsSync(spool('')), 'the manifest is last, and the spool is gone');
+});
+
+test('the follower holds later lines behind a memo that waits, decodes a character a read cut in two whole, and reads only new bytes', async (t) => {
+  const { startedAt, followRecording } = await import('./reference/record.ts');
+  const { syncBuiltinESMExports } = await import('node:module');
+  const fs = (await import('node:fs')).default;
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-follow-order-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'rec');
+  mkdirSync(join(dir, '.spool'), { recursive: true });
+  startedAt(dir);
+  const spool = (name) => join(dir, '.spool', name);
+  const line = (over) => JSON.stringify({ channel: 'live', source: 'workflow', kind: 'x', gen: 1, seq: 0, data: {}, ...over });
+  const durable = (over) => JSON.stringify({ channel: 'durable', source: 'workflow', kind: 'agentrun.driver', gen: 1, data: {}, ...over });
+  const events = () => readFileSync(join(dir, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((entry) => JSON.parse(entry));
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const follower = followRecording(dir, { holdMs: 0 });
+  // A memo (t 10, commit 1) waits for a later commit; a live line at t 20 must not be placed before it.
+  appendFileSync(spool('durable-1.jsonl'), `${durable({ t: 8, commit: 1, order: 0, seq: 0 })}\n${durable({ t: 10, commit: 1, order: null, seq: 1 })}\n`);
+  appendFileSync(spool('live-1.jsonl'), `${line({ t: 20, seq: 2 })}\n`);
+  await wait(40); follower.poll();
+  assert.deepEqual(events().map((entry) => entry.t), [8], 'the memo waits, and the later live line waits behind it');
+  appendFileSync(spool('durable-1.jsonl'), `${durable({ t: 15, commit: 2, order: 0, seq: 3 })}\n`);
+  await wait(40); follower.poll();
+  assert.deepEqual(events().map((entry) => entry.t), [8, 10, 15, 20], 'the next poll places the memo, then what follows it, in order');
+  // A multibyte character cut by a read: both halves are decoded together.
+  const whole = Buffer.from(`${line({ t: 30, seq: 4, data: { text: 'caf\u00e9 \u2014 \u{1f680}' } })}\n`);
+  const cut = whole.indexOf(Buffer.from('\u00e9')) + 1;
+  appendFileSync(spool('live-2.jsonl'), whole.subarray(0, cut));
+  await wait(40); follower.poll();
+  appendFileSync(spool('live-2.jsonl'), whole.subarray(cut));
+  await wait(40); follower.poll();
+  assert.equal(events().at(-1).data.text, 'caf\u00e9 \u2014 \u{1f680}', 'no replacement characters');
+  // Reading: the spools are read from the saved offset, not whole again: no readFileSync of a spool file once the follower is made.
+  const real = fs.readFileSync;
+  const reads = [];
+  fs.readFileSync = (path, ...rest) => { if (String(path).includes('.spool')) reads.push(String(path)); return real(path, ...rest); };
+  syncBuiltinESMExports();
+  t.after(() => { fs.readFileSync = real; syncBuiltinESMExports(); });
+  appendFileSync(spool('live-1.jsonl'), `${line({ t: 40, seq: 5 })}\n`);
+  await wait(40); follower.poll(); follower.poll();
+  assert.deepEqual(reads, [], 'the spools are not read whole on a poll');
+  assert.equal(events().at(-1).t, 40);
+});
+
+test('--record: a reader polling events.jsonl mid-run sees only whole lines in order and append-only, the finished file validates, and the manifest names the job blob (always, when the entry knows the job)', { timeout: 300_000 }, async (t) => {
+  const { compareLines } = await import('./reference/record.ts');
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-live-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'spec.json');
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] }));
+  Object.assign(process.env, { DEMO_SPEC: file });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const recording = join(tmp, 'recording');
+  const seen = [];
+  const reader = setInterval(() => { try { const text = readFileSync(join(recording, 'events.jsonl'), 'utf8'); seen.push(text.slice(0, text.lastIndexOf('\n') + 1)); } catch { /* not there yet */ } }, 5);
+  const result = await demo({ ...options, argv: ['--kill', '--json', '--record', recording] });
+  clearInterval(reader);
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.ok(seen.some((text) => text.length > 0), 'the reader saw lines while the run was going');
+  let previous = '';
+  for (const text of seen) {
+    const lines = text.split('\n').filter(Boolean).map((entry) => JSON.parse(entry));
+    for (let index = 1; index < lines.length; index += 1) assert.ok(compareLines(lines[index - 1], lines[index]) <= 0, 'in order');
+    if (text.length >= previous.length) assert.ok(text.startsWith(previous), 'append only');
+    previous = text.length >= previous.length ? text : previous;
+  }
+  assert.deepEqual(validateRecording(recording), []);
+  const manifest = JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8'));
+  assert.match(manifest.job.blob, /^[0-9a-f]{64}$/);
+  assert.equal(manifest.job.sha256, manifest.job.blob);
+  const job = JSON.parse(readFileSync(join(recording, 'blobs', `${manifest.job.blob}.json`), 'utf8'));
+  assert.deepEqual([job.workflow.name, job.input.company, Array.isArray(job.files)], ['reference-company-check', 'Acme Ltd', true]);
+});
+
+test('the follower redacts every line it places (a line a box\'s child wrote without the secret values is cleaned on its way in), live and in the finished file', async (t) => {
+  const { startedAt, followRecording, finishRecording } = await import('./reference/record.ts');
+  const { redactorOf } = await import('./reference/secrets.ts');
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-follow-redact-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'rec');
+  mkdirSync(join(dir, '.spool'), { recursive: true });
+  startedAt(dir);
+  const secret = `made-up-box-token-${'b'.repeat(24)}`;
+  const redact = redactorOf([{ key: 'K', value: secret }]);
+  appendFileSync(join(dir, '.spool', 'live-9.jsonl'), `${JSON.stringify({ channel: 'live', source: 'workflow', kind: 'x', gen: 1, seq: 0, t: 1, data: { text: `a box wrote ${secret}` } })}\n`);
+  const follower = followRecording(dir, { holdMs: 10, redact });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  follower.poll();
+  const live = readFileSync(join(dir, 'events.jsonl'), 'utf8');
+  assert.ok(live.includes('a box wrote [redacted]') && !live.includes(secret), 'cleaned as it is placed');
+  follower.close();
+  finishRecording(dir, { title: 't', task: 't', model: 'faux/faux-1', kills: 0, code: { repo: 'r', commit: 'c', packages: {} }, cost: { usd: 0, parts: {} }, source: { run: 'x', store_sha256: '0'.repeat(64) }, redact });
+  assert.ok(!readFileSync(join(dir, 'events.jsonl'), 'utf8').includes(secret) && !readFileSync(join(dir, 'manifest.json'), 'utf8').includes(secret));
+
 });
 
 test('code mode: a command\'s output is clipped while it streams (head kept, the rest counted), a command stops with its script, and the tool\'s description carries the declaration of vision.see', { timeout: 300_000 }, async (t) => {
