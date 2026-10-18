@@ -135,7 +135,7 @@ function bars({ seen, data, info }) {
 const named = (text) => Object.keys(PALETTE).find((name) => new RegExp(`\\b${name}\\b`).test(text));
 
 /** A Jev port that answers from the pixels it is sent. */
-function pixelJev() {
+function pixelJev({ tweak = (_key, _q, answer) => answer } = {}) {
   const requests = [];
   const judge = async (params) => {
     const images = await Promise.all(params.state.images.map((image) => colours(params.assets[image.image].bytes)));
@@ -151,6 +151,7 @@ function pixelJev() {
       if (q.type === "noul") return [key, { type: "noul", noul: found ? 0.95 : 0.04 }];
       return [key, { type: "box", box: found?.box ?? { top: 0, bottom: 1, left: 0, right: 1 }, confidence: found ? 0.9 : 0.1 }];
     }));
+    for (const [key, q] of Object.entries(params.questions)) answers[key] = tweak(key, q, answers[key]);
     return { answers, model: params.model, usage: { input_tokens: 1000, output_tokens: 0 }, cost_usd: (1000 * USD_PER_MTOK) / 1e6 };
   };
   return { judge, requests };
@@ -245,6 +246,20 @@ test("the same document with its marks taken out: every mark no, no box drawn, e
   assert.match(rows.seal.note, /^not there: /);
   assert.equal(jev.requests.length, 3, "nothing to compare: no request for the numbers");
   assert.match(verdict.table, /\| The seal \| no \| certificate\.pdf#page=1 \|/);
+});
+
+test("a mark that is there with a box Jev could not place on the page: yes, citing its page; a comparison that needs it is a no, citing each part's page and look", async () => {
+  write("certificate.pdf", await pdf(certificate({ marks: false }).map((page, i) => (i ? page : svg(`${band("navy")}${MARKS.file_number(3)}`)))));
+  // A box of no size names no region: vision.judge gives its answer with no fragment.
+  const jev = pixelJev({ tweak: (key, _q, answer) => (key === "file_number_at" ? { ...answer, box: { top: 0.5, bottom: 0.5, left: 0.5, right: 0.5 } } : answer) });
+  const { values: [, verdict] } = await steps([pagesStep, marksStep], { jev });
+  const rows = byId(verdict.rows);
+  assert.equal(rows.file_number.value, "yes");
+  assert.deepEqual(rows.file_number.cites, [{ fragment: "certificate.pdf#page=1", receipts: ["receipts/1.json"] }]);
+  assert.equal(rows.numbers_match.value, "no");
+  assert.equal(rows.numbers_match.note, "stamp not there; file_number without a box");
+  assert.deepEqual(rows.numbers_match.cites, [{ fragment: "certificate.pdf#page=1", receipts: ["receipts/1.json"] }, { fragment: "certificate.pdf#page=2", receipts: ["receipts/2.json"] }]);
+  assert.equal(jev.requests.length, 3, "nothing to compare");
 });
 
 test("file numbers that differ: every mark yes but the numbers' row, which cites the two pages and no box", async () => {
