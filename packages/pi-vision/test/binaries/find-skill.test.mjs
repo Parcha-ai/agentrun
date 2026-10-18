@@ -24,10 +24,10 @@ const [heard, narrow, scan, halve, name, check, ...more] = [...SKILL.matchAll(/`
 const FIRST = 187;
 const JEV_USD = (1000 * USD_PER_MTOK) / 1e6;
 /** A 300-second video at 5 frames a second with sound and a keyframe every 30 seconds, never at a scene change; at
- *  160x120 unless `scale` grows it. */
-function video(file, { red = true, orange = true, scale = 1 } = {}) {
+ *  160x120 unless `scale` grows it. The red box shows over each span of `red` (seconds, both ends in). */
+function video(file, { red = [[FIRST, 240]], orange = true, scale = 1 } = {}) {
   const box = (color, x, y, w, h, from, to) => `drawbox=x=${x * scale}:y=${y * scale}:w=${w * scale}:h=${h * scale}:color=${color}@1:t=fill:enable='between(t,${from},${to})'`;
-  const boxes = [orange && box("orange", 16, 60, 40, 40, 100, 130), red && box("red", 96, 24, 40, 48, FIRST, 240)].filter(Boolean);
+  const boxes = [orange && box("orange", 16, 60, 40, 40, 100, 130), ...red.map(([from, to]) => box("red", 96, 24, 40, 48, from, to))].filter(Boolean);
   execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", `color=c=0x707070:s=${160 * scale}x${120 * scale}:r=5:d=300`, "-f", "lavfi", "-i", "sine=frequency=440:duration=300",
     ...(boxes.length ? ["-vf", boxes.join(",")] : []), "-g", "150", "-sc_threshold", "0", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-c:a", "aac", "-shortest", file]);
 }
@@ -37,15 +37,18 @@ after(() => dir.remove());
 const cwd = dir.path;
 video(path.join(cwd, "film.mp4"));
 video(path.join(cwd, "film-best.mp4"), { scale: 4 });
-video(path.join(cwd, "glimpse.mp4"), { red: false });
-video(path.join(cwd, "plain.mp4"), { red: false, orange: false });
+video(path.join(cwd, "glimpse.mp4"), { red: [] });
+video(path.join(cwd, "plain.mp4"), { red: [], orange: false });
+video(path.join(cwd, "early.mp4"), { red: [[60, 80], [FIRST, 240]] });
+video(path.join(cwd, "late.mp4"), { red: [[240, 280]] });
+fs.copyFileSync(path.join(cwd, "film.mp4"), path.join(cwd, "my film.mp4"));
 const ONCE = ["12.00\t14.40\tGood morning, it looks like rain.", "190.50\t193.20\tSomeone left an umbrella by the door.", "260.10\t262.00\tThat is all for today."];
-/** The transcribe skill's transcript of film.mp4, as it leaves it: one row a phrase, start and end in seconds. */
-function transcript(rows = ONCE) {
+/** The transcribe skill's transcript of a video, as it leaves it: one row a phrase, start and end in seconds. */
+function transcript(rows = ONCE, name = "film.mp4") {
   fs.rmSync(path.join(cwd, ".hear"), { recursive: true, force: true });
   if (!rows) return;
   fs.mkdirSync(path.join(cwd, ".hear", "0123456789abcdef"), { recursive: true });
-  fs.writeFileSync(path.join(cwd, ".hear", "0123456789abcdef", "video"), "film.mp4\n");
+  fs.writeFileSync(path.join(cwd, ".hear", "0123456789abcdef", "video"), `${name}\n`);
   fs.writeFileSync(path.join(cwd, ".hear", "0123456789abcdef", "transcript.tsv"), `${rows.join("\n")}\n`);
 }
 
@@ -140,15 +143,18 @@ test("the skill holds the heard search and the five steps this test runs, and no
 
 test("heard: every time the phrase is said, with the rows around it; a phrase cut by a row's end is found across the two rows", async () => {
   transcript(["12.00\t14.40\tGood morning, it looks like rain.", "40.00\t41.50\tRemember the umbrella", "41.70\t43.40\tby the door, she said.",
-    "120.00\t121.00\tLeave the umbrella by the doorway.", "190.50\t193.20\tSomeone left an umbrella by the door.", "193.90\t195.10\tAn umbrella by the door again?", "260.10\t262.00\tThat is all for today."]);
+    "120.00\t121.00\tLeave the umbrella by the doorway.", "190.50\t193.20\tSomeone left an umbrella by the door.", "193.90\t195.10\tAn umbrella by the door again?", "260.10\t262.00\tThat is all for today.",
+    "300.00\t301.00\tTake the umbrella", "301.20\t303.00\tby the door; umbrella by the door."]);
   const { values: [found], jev, eyes } = await steps([heard]);
   assert.equal(found.transcript, ".hear/0123456789abcdef/transcript.tsv");
   assert.deepEqual(found.hits.map((h) => [h.at, h.cite, h.said]), [
     [40, "film.mp4#t=40.00", "Remember the umbrella by the door, she said."],
     [190.5, "film.mp4#t=190.50", "Someone left an umbrella by the door."],
     [193.9, "film.mp4#t=193.90", "An umbrella by the door again?"],
-  ], "split across two rows, then twice in a row; never 'by the doorway'");
-  assert.deepEqual([found.hits[0].before, found.hits[0].after], ["Good morning, it looks like rain.", "by the door, she said. Leave the umbrella by the doorway."]);
+    [300, "film.mp4#t=300.00", "Take the umbrella by the door; umbrella by the door."],
+    [301.2, "film.mp4#t=301.20", "by the door; umbrella by the door."],
+  ], "across two rows, in rows one after another, across a row end with another in the next row; never 'by the doorway'");
+  assert.deepEqual([found.hits[0].before, found.hits[0].after], ["Good morning, it looks like rain.", "Leave the umbrella by the doorway. Someone left an umbrella by the door."]);
   assert.deepEqual([found.hits[1].before, found.hits[1].after], ["by the door, she said. Leave the umbrella by the doorway.", "An umbrella by the door again? That is all for today."]);
   assert.deepEqual([jev.requests.length, eyes.ledger.length], [0, 0], "the transcript answers alone");
   transcript(null);
@@ -160,17 +166,18 @@ test("the loop: the transcript's hit narrows the search, Jev scans the window, t
   const { values: [words, scanned, halved, named, checked], eyes, jev, task } = await steps([narrow, scan, halve, name, check]);
   assert.deepEqual(words.windows, [[130, 254]], "a minute either side of the one row that says umbrella");
   assert.deepEqual(words.hits, ["190.50\t193.20\tSomeone left an umbrella by the door."]);
-  assert.deepEqual([scanned.step, scanned.frames, scanned.likely], [10, 13, [190, 200, 210, 220, 230, 240]]);
+  assert.deepEqual([scanned.step, scanned.frames, scanned.likely], [10, 26, [190, 200, 210, 220, 230, 240]], "13 in the window, then 13 before it (0 to 120)");
   assert.deepEqual(halved.window, [155, 215], "a minute around the span from the last low frame to the first likely one");
   assert.deepEqual(eyes.ledger.map((r) => r.parts.filter((p) => p.type !== "text").map((p) => `${p.type} ${p.fragment}`)), [["video film.mp4#t=155,215"]]);
   assert.equal(named.at, FIRST, "the eyes' second, counted from the window's start");
-  assert.deepEqual(jev.requests.slice(13).map((r) => r.source), [186, 187, 188].map((t) => `film.mp4#t=${t}`));
-  assert.deepEqual(jev.requests[13].questions.where, { type: "box", instructions: "the umbrella in `images[0].image`" }, "the box asked by its short name");
+  assert.deepEqual(jev.requests.slice(0, 26).map((r) => r.source), [...Array.from({ length: 13 }, (_, i) => 130 + 10 * i), ...Array.from({ length: 13 }, (_, i) => 10 * i)].map((t) => `film.mp4#t=${t}`));
+  assert.deepEqual(jev.requests.slice(26).map((r) => r.source), [186, 187, 188].map((t) => `film.mp4#t=${t}`));
+  assert.deepEqual(jev.requests[26].questions.where, { type: "box", instructions: "the umbrella in `images[0].image`" }, "the box asked by its short name");
   assert.deepEqual([checked.found, checked.t], [true, FIRST], "the first of the three frames that passes");
   assert.match(checked.cite, /^film\.mp4#t=187&xywh=percent:/);
   near(xywh(checked.cite), [60, 20, 25, 40], 2, "the box");
-  assert.equal(jev.requests.length, 16, "13 frames scanned, 3 checked");
-  assert.ok(Math.abs(scanned.spentUsd - 13 * JEV_USD) < 1e-12, "the scan's thirteen answers, priced");
+  assert.equal(jev.requests.length, 29, "26 frames scanned, 3 checked");
+  assert.ok(Math.abs(scanned.spentUsd - 26 * JEV_USD) < 1e-12, "the scan's answers, priced");
   assert.ok(named.spentUsd > halved.spentUsd, "the eyes' price added");
   assert.ok(Math.abs(checked.spentUsd - named.spentUsd - 3 * JEV_USD) < 1e-12 && task.spentUsd === checked.spentUsd, "the checks' price added and kept");
 });
@@ -224,8 +231,8 @@ test("eyes that take no video get a frame a second of the minute, each named by 
 test("the frames checked come from the best copy, and the box is cited on the video the question named", async () => {
   transcript();
   const { values: [, , , , checked], jev } = await steps([narrowWith('best: "film.mp4"', 'best: "film-best.mp4"'), scan, halve, name, check]);
-  assert.deepEqual(jev.requests.slice(0, 13).map((r) => `${r.size.width}x${r.size.height}`), Array(13).fill("373x280"), "the scan's 160x120 frames, grown to Jev's smallest edge");
-  assert.deepEqual(jev.requests.slice(13).map((r) => `${r.size.width}x${r.size.height}`), Array(3).fill("640x480"), "the checked frames are the best copy's");
+  assert.deepEqual(jev.requests.slice(0, 26).map((r) => `${r.size.width}x${r.size.height}`), Array(26).fill("373x280"), "the scan's 160x120 frames, grown to Jev's smallest edge");
+  assert.deepEqual(jev.requests.slice(26).map((r) => `${r.size.width}x${r.size.height}`), Array(3).fill("640x480"), "the checked frames are the best copy's");
   assert.match(checked.cite, /^film\.mp4#t=187&xywh=percent:/);
   near(xywh(checked.cite), [60, 20, 25, 40], 1, "the box on the best copy");
 });
@@ -234,7 +241,47 @@ test("a budget: the scan stops once it is spent, and says what it spent", async 
   transcript();
   const { values: [, scanned] } = await steps([narrowWith("budgetUsd: 0.1", "budgetUsd: 0.0001"), scan]);
   assert.equal(scanned.frames, 3, "three frames at $0.000042 pass $0.0001");
+  assert.equal(scanned.stopped, "budget");
   assert.ok(scanned.spentUsd >= 0.0001 && scanned.spentUsd < 0.0002);
+});
+
+test("a budget the scan spends to the end: the eyes and the checks ask nothing", async () => {
+  transcript();
+  const { values: [, scanned, , named, checked], eyes, jev } = await steps([narrowWith("budgetUsd: 0.1", `budgetUsd: ${25.5 * JEV_USD}`), scan, halve, name, check]);
+  assert.deepEqual([scanned.frames, scanned.stopped], [26, "budget"]);
+  assert.deepEqual([named.at, named.stopped], [null, "budget"]);
+  assert.deepEqual([eyes.ledger.length, jev.requests.length], [0, 26]);
+  assert.deepEqual([checked.found, checked.stopped], [false, "budget"]);
+});
+
+test("a step run again asks nothing it has, and counts nothing twice", async () => {
+  transcript();
+  const { values: [, once, again], jev } = await steps([narrow, scan, scan]);
+  assert.equal(jev.requests.length, 26, "the second scan asked nothing");
+  assert.deepEqual([again.frames, again.likely, again.spentUsd], [once.frames, once.likely, once.spentUsd]);
+});
+
+test("words say where to look first: a sighting before the window they name is found", async () => {
+  transcript(ONCE, "early.mp4");
+  const { values: [words, scanned, halved, named, checked] } = await steps([narrowWith('video: "film.mp4", best: "film.mp4"', 'video: "early.mp4", best: "early.mp4"'), scan, halve, name, check]);
+  assert.deepEqual(words.windows, [[130, 254]]);
+  assert.deepEqual(scanned.likely, [60, 70, 80, 190, 200, 210, 220, 230, 240], "the scan before the window found the red box at 60");
+  assert.deepEqual([halved.window, named.at, checked.t], [[25, 85], 60, 60]);
+});
+
+test("a thing first seen right at a scanned frame is inside the minute the eyes watch", async () => {
+  transcript(null);
+  const { values: [, scanned, halved, named, checked] } = await steps([narrowWith('video: "film.mp4", best: "film.mp4", thing: "a red umbrella", box: "the umbrella", words: "umbrella|parasol", chapters: null, scanFrames: 300', 'video: "late.mp4", best: "late.mp4", thing: "a red umbrella", box: "the umbrella", words: "umbrella|parasol", chapters: null, scanFrames: 5'), scan, halve, name, check]);
+  assert.deepEqual([scanned.step, scanned.likely], [60, [240]]);
+  assert.deepEqual([halved.span, halved.window], [[210, 240], [195, 255]], "halved below 40 seconds, the minute holds 240");
+  assert.deepEqual([named.at, checked.t], [240, 240]);
+});
+
+test("a name with a space is quoted for the shell everywhere", async () => {
+  transcript(null);
+  const { values: [, , , named, checked] } = await steps([narrowWith('video: "film.mp4", best: "film.mp4"', 'video: "my film.mp4", best: "my film.mp4"'), scan, halve, name, check]);
+  assert.deepEqual([named.at, checked.t], [FIRST, FIRST]);
+  assert.match(checked.cite, /^my film\.mp4#t=187&xywh=percent:/);
 });
 
 test("not found: no frame scores even 0.5, so the eyes are never asked and the two best frames are given", async () => {
