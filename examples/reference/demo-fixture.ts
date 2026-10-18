@@ -131,7 +131,13 @@ const transcribing = process.env.DEMO_TRANSCRIBE ? (() => {
   return () => ({ transcriber: openAiTranscriber({ apiKey: () => `made-up-stt-key-${'k'.repeat(24)}`, fetch: answer.fetch, usdPerMinute: 0.6 }) });
 })() : undefined;
 // A test knob: DEMO_REPORT is a directory the run finds as `report/` in its work directory (the agent's report folder, draft 41), however the run goes: the files are the job's, written before it starts.
-const reportFiles = (dir: string, base = ''): Record<string, Uint8Array> => Object.fromEntries(readdirSync(join(dir, base), { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? Object.entries(reportFiles(dir, `${base}${entry.name}/`)) : [[`report/${base}${entry.name}`, readFileSync(join(dir, base, entry.name))] as const])));
+const reportFiles = (dir: string, base = '', out: Record<string, Uint8Array> = {}): Record<string, Uint8Array> => {
+  for (const entry of readdirSync(join(dir, base), { withFileTypes: true })) {
+    if (entry.isDirectory()) reportFiles(dir, `${base}${entry.name}/`, out);
+    else out[`report/${base}${entry.name}`] = readFileSync(join(dir, base, entry.name));
+  }
+  return out;
+};
 const withReport = (chosen: typeof job): typeof job => (process.env.DEMO_REPORT ? { ...chosen, files: { ...chosen.files, ...reportFiles(process.env.DEMO_REPORT) } } : chosen);
 export const options = { ...(process.env.DEMO_FOLLOW_HOLD_MS ? { followHoldMs: Number(process.env.DEMO_FOLLOW_HOLD_MS) } : {}), ...(process.env.DEMO_CODE_ON ? { codeMode: true } : {}), ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withReport(withBox ?? withFan ?? withLeak ?? withSites ?? lingering?.job ?? job), fakes: { ...scriptedHeld, ...(process.env.DEMO_FAKES_INPUT ? { input: { company: 'Beta Ltd' } } : {}), ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : transcribing ? { vision: transcribing } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}) };
 if (process.argv.includes('--child')) await demo(options);
