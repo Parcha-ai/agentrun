@@ -30,9 +30,17 @@ On fakes a scripted lead runs one script whatever is asked (one look at the firs
 | Name | For |
 |---|---|
 | `GEMINI_API_KEY` (or `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or a gateway's `VIDEO_MODEL_BASE_URL` and `VIDEO_MODEL_API_KEY`) | the lead and the eyes; the defaults are one value each in `demo.json` |
-| `TYPESAFE_API_KEY` | Jev, which judges frames and pages and draws boxes |
+| `TYPESAFE_API_KEY` | Jev, which judges frames and pages and draws boxes (see below) |
 | `FAL_KEY` | Scribe v2 on fal, only for a question about speech (not needed when the gateway passes fal's queue through) |
 | `ffmpeg`, `ffprobe`, `pdftoppm`, `pdftotext`, `node` | the agent's code cuts frames, clips and audio, renders pages and reads a PDF's text layer |
+
+Jev reads still images and answers box questions as TypeSafe early features: their format, answers and limits can change
+between releases. TypeSafe keeps them off unless a request carries the header `TypeSafe-Danger-Zone-Images: true`, and the
+runner sends it on exactly the requests that carry an image or a box question. A TypeSafe key is needed: through OpenRouter
+(`provider: "openrouter"`) Jev takes images and box questions only on OpenRouter's Decisions API, not on the path this runner
+uses, so the runner refuses an image or a box question there before any request is sent. We have run them against
+TypeSafe's own API with a standard key; TypeSafe's documentation names no further access step and we have not tested a newly
+issued key, so if a request is refused, check with TypeSafe that your key's account has them turned on.
 
 ## Runtime dependencies
 

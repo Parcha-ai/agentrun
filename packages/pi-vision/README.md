@@ -16,7 +16,20 @@ recording, the `transcribe` skill (`skills/transcribe/SKILL.md`) shows it how to
 each with `vision.transcribe`, write one timestamped transcript and search it with `rg` to the second. The
 `find` skill (`skills/find/SKILL.md`) finds every time a phrase is said in a long video, from its transcript, and the
 second a thing is first seen and its box, coarse to fine: the words narrow the search, Jev scores frames, the eyes
-name the second, Jev draws the box.
+name the second, Jev draws the box. The `verify` skill (`skills/verify/SKILL.md`) says whether a PDF has each mark a
+checklist file names, yes or no, with its box on its page. The `report` skill (`skills/report/SKILL.md`) ends a run with
+the agent's own report: one script-free HTML page, `report/index.html`, that leads with the answer and shows the evidence
+for every finding (the document page with the mark boxed and a close crop of it, the film moment's frame and a short clip
+of its window, the photo), and cites every claim to the file's own page, second or region (`file.pdf#page=3`,
+`film.mp4#t=18,26`, `#xywh=percent:x,y,w,h`) with the look it rests on.
+
+To see them work together, start at [`examples/vision-agent`](https://github.com/Parcha-ai/agentrun/tree/main/examples/vision-agent):
+one agent, given any question about a set of files, that follows every skill here and ends with that report. Its examples
+are questions and files: [`video-chapters`](https://github.com/Parcha-ai/agentrun/tree/main/examples/video-chapters) (a
+film cut into chapters), [`hear-and-find`](https://github.com/Parcha-ai/agentrun/tree/main/examples/hear-and-find) (when
+a line is said and when a thing is first seen) and [`document-check`](https://github.com/Parcha-ai/agentrun/tree/main/examples/document-check)
+(which marks a certified copy carries, and where). `document-check` runs on fakes with no key
+(`npm run demo:vision -- examples/document-check`); the others are asked of real models with `--live`.
 
 ## What it needs
 
@@ -56,6 +69,8 @@ Published on npm under the `beta` tag, at the workspace version with this reposi
 | `vision.see` for a host's code mode, and the `look` skill | built |
 | `vision.judge` (Jev's choice, noul, score and box answers) and Jev's image limits in the fit | built |
 | The `verify` skill (`skills/verify/SKILL.md`): whether a PDF has each mark a checklist file names (a seal, a signature, a stamp, two numbers that agree), yes or no, with its box on its page (`file.pdf#page=N&xywh=percent:...`); another kind of document is another checklist | built |
+| The `report` skill (`skills/report/SKILL.md`): ends a run with the agent's own script-free HTML report, `report/index.html`: the answer first, the evidence for every finding and a thumbnail for every row (the document page with its mark boxed and a close crop, the film moment's frame and a short clip, the photo), every claim cited to the file's own page, second or region (`file.pdf#page=3`, `film.mp4#t=18,26`, `#xywh=percent:...`) with the look it rests on | built |
+| The report's check, which the agent runs before it stops, and its $0 test (`test/binaries/report-skill.test.mjs`): no script and no network, every file present, within budget and without metadata, every cite well formed and resolving to a look, every cited document page embedded with its marks and a close crop of each, no markdown pasted into the text | built |
 
 ## A first read, with no key
 
