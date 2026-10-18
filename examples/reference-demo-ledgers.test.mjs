@@ -344,6 +344,15 @@ test('a kill at a point that is often ineligible lands every time across 8 runs,
   console.log = (...args) => lines.push(args.join(' '));
   try { summarize({ spec: { name: 'x' } }, { processes: [{ outcome: { status: 'complete' } }], kills: [{ gen: 1, point: 'p', kind: 'process', why: 'w', n: 12, planned: 10 }, { gen: 2, point: 'q', kind: 'process', why: 'w', n: 3, planned: 3 }], failedKills: [], failedSignals: [], unlanded: [], usd: 0, maxUsd: null, overBudget: false }); } finally { console.log = log; }
   assert.ok(lines.some((line) => line.includes('at p (planned n=10, landed at n=12): w')) && lines.some((line) => line.includes('at q: w') && !line.includes('planned')), lines.join('\n'));
+  // The default line names how the run ended and no counts; `--kill` and `--debug` add them.
+  const first = (counts) => {
+    const out = [];
+    console.log = (...args) => out.push(args.join(' '));
+    try { summarize({ spec: { name: 'x' } }, { processes: [{ outcome: { status: 'complete' } }], kills: [], failedKills: [], failedSignals: [], unlanded: [], usd: 0, maxUsd: null, overBudget: false }, counts); } finally { console.log = log; }
+    return out[0];
+  };
+  assert.equal(first(), 'x: complete');
+  assert.equal(first(true), 'x: complete in 1 process, 0 kills');
 
 });
 test('a kill line carries the crossing\'s own number: a held kill the point\'s count (not the process\'s), and a storm the process\'s crossing counter (not zero)', async () => {

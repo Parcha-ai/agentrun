@@ -38,7 +38,7 @@
   ],
   "expect": {
     "exitCode": 0,
-    "pattern": "first-demo: complete in 1 process, 0 kills"
+    "pattern": "^first-demo: complete$"
   },
   "timeoutMs": 180000
 }

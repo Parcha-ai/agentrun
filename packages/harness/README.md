@@ -55,9 +55,16 @@ await demo({ self: import.meta.url, spec: { name: 'first-demo', kills: [{ point:
 node demo.mjs
 ```
 
-It prints `first-demo: complete in 1 process, 0 kills` and finishes with `{ id: 'x', score: 42 }`; `--json` prints the
-whole result. `node demo.mjs --kill` kills the process once the lookup's answer is kept, and the next resumes from its
-store without calling the tool again.
+It prints:
+
+```text
+first-demo: complete
+cost: unknown
+```
+
+The run's record, `{"id":"x","score":42}`, is in the whole result that `--json` prints. `node demo.mjs --kill` kills the
+process once the lookup's answer is kept, and the next resumes from its store without calling the tool again: it prints
+`first-demo: complete in 2 processes, 1 kill` and the kill.
 
 `pi-durable-disk run --app` takes this package's child app as a file: `import.meta.resolve('@parcha/agentrun-harness/child-app')`.
 
@@ -229,6 +236,7 @@ await demo({ self: import.meta.url, spec, job, fakes });
 | (none) | the job on fakes: $0, no key |
 | `--live` | real models and services; refused unless the demo supplies them (`live`) |
 | `--kill` | the spec's `kills`, in order, each ending one process; a fresh process resumes on the same directory |
+| `--debug` | the summary line also counts the processes and the kills (`--kill` always does) |
 | `--record <dir>` | an `agentrun.recording/1` directory, through the reference recorder |
 | `--input <path\|json>` | the job's input; the job's own is the default |
 | `--max-usd <n>` | stops the run past n dollars, metered on the recording's lines (default twice `expectedCost`); a run that finishes past it says so and exits 1 |

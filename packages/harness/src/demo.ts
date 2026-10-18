@@ -5,6 +5,7 @@
 //   (none)              fakes, $0, no key: the default, and what CI runs
 //   --live              real models and services; refused unless the demo supplies them (`live`) and the keys they need are set
 //   --kill              the spec's `kills`, in order, each ending one process; a fresh process resumes
+//   --debug             the summary also counts the processes and the kills (`--kill` always does)
 //   --record <dir>      an agentrun.recording/1 directory, through the reference recorder
 //   --input <path|json> the job's input (the job's own is the default)
 //   --max-usd <n>       stops the run past n dollars, metered on the recording's lines; default twice the spec's `expectedCost`
@@ -105,7 +106,7 @@ export type DemoResult = {
   unlanded: string[];
 };
 
-const FLAGS = { child: { type: 'boolean' }, live: { type: 'boolean' }, kill: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, 'local-chrome': { type: 'boolean' }, 'fetch-sources': { type: 'boolean' }, cache: { type: 'string' }, dir: { type: 'string' }, json: { type: 'boolean' }, provider: { type: 'string' }, model: { type: 'string' }, 'eyes-model': { type: 'string' }, 'see-also': { type: 'string', multiple: true }, 'operator-kill': { type: 'string' } } as const;
+const FLAGS = { child: { type: 'boolean' }, live: { type: 'boolean' }, kill: { type: 'boolean' }, debug: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, 'local-chrome': { type: 'boolean' }, 'fetch-sources': { type: 'boolean' }, cache: { type: 'string' }, dir: { type: 'string' }, json: { type: 'boolean' }, provider: { type: 'string' }, model: { type: 'string' }, 'eyes-model': { type: 'string' }, 'see-also': { type: 'string', multiple: true }, 'operator-kill': { type: 'string' } } as const;
 /** The repository a demo lives in: `options.root`, else the nearest folder above the demo's own file that holds a
  *  `package.json` or a `.git`. Never this package's own location, which is inside `node_modules` once installed. */
 function rootOf(options: { root?: string; self: string }): string {
@@ -126,7 +127,7 @@ export async function demo(options: DemoOptions): Promise<DemoResult | undefined
   if (values.child) { await child(options); return undefined; }
   const result = await supervise(options, values);
   if (values.json) console.log(JSON.stringify(result));
-  else summarize(options, result);
+  else summarize(options, result, Boolean(values.kill || values.debug));
   // A command line ends with a failing code when the run did not complete or went past its cap; a caller that passed its own arguments reads the result.
   if (options.argv === undefined && (result.overBudget || result.failedKills.length || result.failedSignals.length || result.unlanded.length || result.processes.at(-1)?.outcome?.status !== 'complete')) process.exitCode = 1;
   return result;
@@ -751,8 +752,10 @@ export function notLanded<T extends object>(tools: readonly T[], log: string): T
 
 const readEventsOf = (dir: string) => rows<Record<string, unknown>>(join(dir, 'events.jsonl'));
 
-export function summarize(options: DemoOptions, result: DemoResult) {
-  console.log(`${options.spec.title ?? options.spec.name}: ${result.processes.at(-1)?.outcome?.status ?? 'no outcome'} in ${result.processes.length} process${result.processes.length === 1 ? '' : 'es'}, ${result.kills.length} kill${result.kills.length === 1 ? '' : 's'}`);
+/** `counts` (with `--kill` or `--debug`) adds how many processes the run took and how many were killed; the default line names only how the run ended. */
+export function summarize(options: DemoOptions, result: DemoResult, counts = false) {
+  const status = result.processes.at(-1)?.outcome?.status ?? 'no outcome';
+  console.log(`${options.spec.title ?? options.spec.name}: ${status}${counts ? ` in ${result.processes.length} process${result.processes.length === 1 ? '' : 'es'}, ${result.kills.length} kill${result.kills.length === 1 ? '' : 's'}` : ''}`);
   for (const kill of result.kills) console.log(`  killed process ${kill.gen} (${kill.kind}) at ${kill.point ?? 'no named crossing'}${kill.planned !== undefined && kill.n !== kill.planned ? ` (planned n=${kill.planned}, landed at n=${kill.n})` : ''}: ${kill.why}`);
   if (result.failedSignals.length) console.log(`the place's signals failed: ${result.failedSignals.map((entry) => `process ${entry.gen} (${entry.code})`).join(', ')}`);
   if (result.failedKills.length) console.log(`kills the place could not make: ${result.failedKills.map((kill) => `process ${kill.gen} (${kill.code})`).join(', ')}`);
