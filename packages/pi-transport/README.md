@@ -260,9 +260,13 @@ const seal = drained.ok ? await home.value.seal(BACKGROUND_CONTEXT) : undefined;
 ```
 
 - **The app.** `app` is `(ctx) => options`: pi's Harness options without `env` and without `models`, plus `root` (how
-  the root conversation is made) and `onOpen`. The home adds the store, the models it was given and the environment,
-  the same way wherever it runs, so one module serves every place. `ctx.workspace` is the only absolute path an app
-  may build on. `loadApp(path)` takes the default export of a module file.
+  the root conversation is made), `onOpen` and `onResumed`. The home adds the store, the models it was given and the
+  environment, the same way wherever it runs, so one module serves every place. `ctx.workspace` is the only absolute
+  path an app may build on; `ctx.root` is its parent, `ctx.epoch` the lease's epoch the home opened at, and `ctx.env`
+  the session's environment from the host's resume order (`ResumeOrder.env`: over the link, never in argv; a box
+  inherits none of the host's). `onOpen` runs before the session resumes, and the order that opened it waits for it;
+  `onResumed` runs once it has resumed, and the order does not wait: work the app drives for the session (a job) runs
+  there. `loadApp(path)` takes the default export of a module file.
 - **The gate.** A drain holds new work at three hooks of the home's own extension (installed as `transport`): a tool
   call before its intent is written, a model request before it is sent, a compaction before it selects. A held task
   has written nothing, so the close leaves no outcome for it and the next home runs it from the start. Work of a
@@ -390,6 +394,16 @@ line names this store), and a call that runner had in flight is cut, at most onc
 `<store>.pid` when it starts, unless the file names another live runner of the store, and again whenever it takes the
 store into its hold, so a runner refused with `busy` never hides the one that holds it. A host whose runners a
 launcher keeps passes the launcher's stop as `stop`.
+
+Each move leaves a durable record in the session's store, so a recording proves the hop from durable lines: the
+document `transport.moves`, keyed by the move id, written once by the target in the first commit it makes when it
+opens the moved store (`MoveRecord`: `kind`, `epoch`, `head`, `from` and `to` as `{ environment, provider, box }`,
+`drainMs`, `shipMs`, `takeMs`, `bytes`, `stopped`, and a move's `seal`, a restore's `checkpoint` or `replayed`).
+`head` is the store's next commit at open: a move's `seal.head`, a restore's `replayed.to + 1` or its checkpoint's
+head. The record's commit is `head`, or `head + 1` when pi committed once as it opened the store (a generation was
+running, and pi recovers it first). The host sends what only it knows in `ResumeOrder.move.record` (`MoveFacts`); `moveHome` does. A place names
+its box by its `label` (the host's `box-1`), never the provider's id; a place with no label is named by the id. An
+order that carries no record writes none, and an open after the first finds the record and writes nothing.
 
 `registerMoveConformance(runner, name, withPair)` (`./testing`) runs the handoff on two places of a provider: a move
 with nothing cut, a move given up at the drain and at the ship, a move there and back, a take whose answer was lost,
@@ -567,6 +581,74 @@ const taken = await lease.take("session-1", { environment: "gpu", provider: "mod
   writes, 50 takers of one version with one winner in each of 20 epochs, no read of half a value while takers write,
   every byte value, any text as a key, and, when the store gives a writer that dies, a kill between writing and
   making the value current.
+
+## A session's place in a box (`./place`)
+
+`boxPlace({ session, provider, spec, environment, ownership, program, models, vault, ... })` is where one session
+lives in a box, for a supervisor that starts, kills and restarts it: the place a reference entry's `demo()` drives.
+It makes the box, and
+
+- `start(order)` takes the lease at epoch 1, starts the runner in the box (`boxRunner`) and resumes it with the order's
+  environment (`ResumeOrder.env`). `exited` resolves with the exit as the box saw it and the outcome the runner printed
+  as one line `{"outcome":{...}}`; that line ends the runner in order (the link closes, the home closes, exit 0).
+- `kill(runner, "process")` kills the runner as a crash would (`killRunner`: KILL first, the store as the last commit
+  left it); `kill(runner, "box")` destroys the box. `recover(last, "process", order)` starts the next runner in the
+  same box where the store left off (`recoverHome`, same epoch); `recover(last, "box", order)` makes a new box, restores
+  the newest checkpoint into it and replays the shipped commits (`recoverHome` with `vault` and `replace`), at the next
+  epoch, and says what it restored. Before any checkpoint it rebuilds the store from the vault's log alone
+  (`restoreFromLog`), in an empty workspace: `restored` is undefined and `replayed` starts at commit 1. A box kill
+  needs no checkpoint at rest; a checkpoint brings the workspace's files along. `checkpoint()` takes one at rest (`pullCheckpoint`, tried again while the session
+  is busy) and announces `transport.checkpoint.taken`; a call while one is being taken gets that one, so the session
+  is held once. The hold admits no new tool call or model request and waits for the ones in flight up to
+  `checkpoint.drain.timeoutMs` (10 s by default): a session whose effects run longer than that is skipped as busy.
+- Every runner of the session ships its commits into `vault`'s log (`recordSink`) and asks one model server: the log a
+  lost box is restored from is always the one the runners wrote, and a runner that comes back is answered what was
+  paid for, not charged again. The host passes only where the recorder's lines go (`recorder`).
+- `recordPlacement(record)` keeps a placement decision the host made (`jevPlacer`, on the host where Jev's key is) in
+  the session's store, through the runner that runs it now (`HomeHandle.recordPlacement`): the app reads it there
+  (`PlacementsDoc`, keyed by the record's id), and it reaches the vault's log with the session's commits.
+- A box is named by its label everywhere the place names one, never by its provider's id: the status record's
+  `holder.host`, a crossing's `info.box`, and the place's own live lines, source `transport`, that it hands the host's
+  `lines`: `box.created`, `box.killed` before a box kill, `box.ended`, `lease` at each epoch, and `restore` from the lost
+  box to the new one (with its `checkpoint` or `replayed`), so a panel draws the home's lane and its hop. With the
+  host's receipts ledger (`receipts`), the place makes its boxes through it: each has its receipt and its label in the
+  ledger's numbering, the same as the pool's boxes. Without one, the place labels its boxes `box-1`, `box-2` itself.
+- `signals(attempt)` reads the runner's kill request from `requestFile(attempt)` in the box, with the nonce it wrote,
+  and passes on the transport's crossings; its iterator's `return()` ends a pending `next()`. `status()` is the run's
+  record: `run`, the epoch as `generation`, the box in `holder.host`, the home's state, and `sealedSeq` when sealed.
+- `carry` names host files an order's environment holds that the runner writes (a crossings log): each is given a path
+  in the box, and the file comes back whole when the runner exits.
+- `recording` names the order's recording directory. The runner writes the recording in `recordHome.dir(attempt)` in
+  the box, and the supervisor brings it home with `recordHome.bringHome(into, { final })`: the blobs not yet home
+  (hash-checked against their names, written to a temporary name, synced, renamed), then the new bytes of every
+  `.spool/*.jsonl` up to its last whole line. It throws an error with a `code`: `BOX_GONE` (the box the runner ran in is
+  gone), `CARRY_FAILED` (a read failed in a box that is still there), `BLOB_MISMATCH` (a blob whose bytes are not its
+  name: the rest comes home first). `clockSkewMs` is how far the box's clock may be from the host's, measured when the
+  box is made.
+- `release()` closes the link and destroys every box the place made.
+
+## What a box cost: receipts
+
+`boxReceipts({ prices, write })` keeps a ledger of the boxes its providers make: `ledger.wrap(provider)` is the same
+provider, and each box it makes gets one receipt when it ends, destroyed through it, found ended by `status`, or found
+gone by `attach` (a lifetime that ran out, or a sweep). The host writes each receipt as a live line, source
+`transport`, kind `box.receipt`: `{ box, provider, kind, from, to, seconds, usd_per_second, cost_usd, source, priced }`.
+`box` is a label, `box-1`, `box-2` as the boxes are made, never the provider's id. Hand the wrapped providers to
+everything that makes boxes: a box place, and the transport's hands pools (`TransportHost.providers`).
+
+A host that labels boxes of its own passes `label(made)`: it is called once when a provider has made a box, with that
+box's own request and facts (`{ provider, kind, spec, facts }`, its id left out), so a host reads its label from the
+request it made (`spec.labels`), never from the order it asked in: boxes asked for together, from providers that answer
+at different speeds, are made in any order. After a restart, `taken` passes the labels the recording already holds (its
+`box.receipt` lines), and the default labeler numbers on past them. A box the killed process made or was making is not
+the new ledger's: no receipt is written for it, so its cost stays unknown.
+
+The prices are the host's (`prices: [{ provider, kind, usdPerSecond, source, priced }]`, with `source` the page a price
+was read from and `priced` the date it was read): this package holds no price table. A box's `kind` is found from its
+facts (`gpu:<gpu>` for a box with a GPU, else its isolation), or by the host's `kindOf`. A box with no price writes no
+receipt, so its cost stays unknown, never 0. `cost_usd` is an estimate at list price, `seconds` times the price per
+second: not the provider's invoice, which bills by its own rounding, minimums and discounts. A box another process or
+host made is its maker's to receipt.
 
 ## Home: a program kept alive in a box
 
