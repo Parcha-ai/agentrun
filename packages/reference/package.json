@@ -56,10 +56,10 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@earendil-works/chord": ">=1.0.4 <1.4.0",
+    "@earendil-works/chord": ">=1.1.0 <1.4.0",
     "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-codemode": ">=1.0.4 <1.4.0",
-    "@earendil-works/pi-durable": ">=1.0.4 <1.4.0",
+    "@earendil-works/pi-codemode": ">=1.1.0 <1.4.0",
+    "@earendil-works/pi-durable": ">=1.1.0 <1.4.0",
     "@parcha/pi-transport": "0.1.0-beta.16",
     "typebox": "*"
   },
