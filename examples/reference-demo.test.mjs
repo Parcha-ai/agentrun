@@ -257,6 +257,12 @@ test('a kill that never lands is reported, not hidden: the process finished with
   assert.deepEqual(result.kills, []);
 });
 
+test('a tool kill that never fires is reported though its attempt ended in a process kill: it is not carried off with the attempt', { timeout: 300_000 }, async (t) => {
+  const { result } = await run(t, { kills: [{ point: 'judge.asked verdict', why: 'the run kill that does land' }, { point: 'no.such.point', why: 'a tool kill at a point never taken', target: 'tool' }] }, ['--kill', '--json']);
+  assert.equal(result.kills.length, 1, 'the run kill landed');
+  assert.deepEqual(result.unlanded, ['no.such.point'], 'and the tool kill that did not is reported');
+});
+
 test('a scripted tool is handed the run\'s place, so it can read the run\'s evidence files and the job\'s files', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-place-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
@@ -473,6 +479,13 @@ test('a place that cannot lose its machine refuses a box kill, and says which pl
   const calls = [];
   await assert.rejects(() => demo({ ...options, argv: ['--kill', '--json', '--record', join(tmp, 'recording')], place: recordingPlace(calls, join(tmp, 'recording'), { kills: ['process'] }) }), /the fake place cannot lose its box/);
   assert.deepEqual(calls.map((call) => call.call), ['release'], 'refused before anything started or was killed: the run was not stopped first, and no box loss was recorded');
+});
+
+test('a place that can only lose its box is not refused for a run with no kill planned: the refusal is for a kill it cannot make', { timeout: 300_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference' });
+  const calls = [];
+  const result = await demo({ ...options, argv: ['--json', '--record', join(tmp, 'recording')], place: recordingPlace(calls, join(tmp, 'recording'), { kills: ['box'] }) });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
 });
 
 test('a kill the place cannot make is recorded as a host line with its code and ends the attempt cleanly: no unhandled rejection, no further attempt', { timeout: 300_000 }, async (t) => {
@@ -1132,6 +1145,15 @@ test('a crossing a tool kill takes still counts for a run kill at the same point
   assert.deepEqual(kills, []);
   assert.equal(cross('transport.tool.started'), false);
   assert.deepEqual(kills, ['SIGKILL'], 'the run kill is the second matching crossing, not the third');
+  // Both due at the same crossing (n 1 each): the tool kill takes it, and the run kill is not lost, it lands at the next matching one.
+  kills.length = 0;
+  const both = crossings({ run: { point: 'transport.tool.started', kind: 'process', target: 'run', why: 'same', n: 1 }, tools: [{ point: 'transport.tool.started', kind: 'box', target: 'tool', why: 'same', n: 1 }] }, undefined);
+  assert.equal(both('transport.tool.started'), true);
+  assert.deepEqual(kills, []);
+  both('transport.tool.started');
+  assert.deepEqual(kills, ['SIGKILL'], 'the pending run kill lands at the next matching crossing');
+  both('transport.tool.started');
+  assert.deepEqual(kills, ['SIGKILL'], 'and only once');
 });
 
 test('a held kill waits for every tool call to return before it asks: a tool a parallel branch started while the filing was parked is never cut', async () => {
@@ -1686,4 +1708,29 @@ test('an operator kill carries to the next attempt only the tool kills that did 
   const bad = await demo({ ...options, argv: ['--json', '--operator-kill', control], place });
   assert.equal(bad.failedKills.length, 1, 'the control that could not be removed is a failed kill');
   assert.equal(bad.kills.length, 0, 'and no kill happened');
+
+});
+
+test('a slow status read does not hold up supervision: the spend cap stops a running child while the place is still answering the first read', { timeout: 120_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference', expectedCost: 0.05 });
+  process.env.DEMO_JUDGE_COST = '0.3'; process.env.DEMO_LINGER_MS = '20000';
+  const recording = join(tmp, 'recording');
+  await demo({ ...options, argv: ['--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => ({
+    ...localPlace({ self, paths, destroyBoxes, requestFile }),
+    status: async () => { await new Promise((resolve) => setTimeout(resolve, 6000)); return { record: null }; },
+  }) });
+  const host = readEvents(recording).filter((line) => line.source === 'host');
+  const started = host.find((line) => line.kind === 'process.started').t;
+  const stopped = host.find((line) => line.kind === 'kill').t;
+  assert.ok(stopped - started < 4500, `the cap stopped the child ${stopped - started} ms after it started, not after the 6 s read`);
+});
+
+test('--operator-kill is refused by a place that cannot make a process kill, before anything starts', { timeout: 120_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference' });
+  const calls = [];
+  await assert.rejects(() => demo({ ...options, argv: ['--json', '--operator-kill', join(tmp, 'control')], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner, name: 'box-only', kills: ['box'], start: async (order) => { calls.push('start'); return inner.start(order); }, release: async () => { calls.push('release'); } };
+  } }), /box-only place cannot lose its process: --operator-kill/);
+  assert.deepEqual(calls, ['release'], 'nothing was started');
 });
