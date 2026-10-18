@@ -184,9 +184,18 @@ or a miss carries. There are two ways to give them a model:
 | Google | `GEMINI_API_KEY` | `piAiEyes(getModel("google", "gemini-2.5-flash"), { apiKey: () => process.env.GEMINI_API_KEY })` | `gemini-2.5-flash` |
 
 A look costs the model's own price, from the catalog entry: a model with no rates gives a look with no known price, never
-`$0`. A gateway that serves the model (LiteLLM, OpenRouter) replaces the entry's address: `{ ...model, baseUrl }`. In
-`look.mjs`, a lead that cannot see reads a red square the test kit draws, and the eyes answer for it (the program needs
-`@earendil-works/pi-ai` and `ANTHROPIC_API_KEY`, and one request of a fraction of a cent):
+`$0`. A gateway that serves the model (LiteLLM, OpenRouter) replaces the entry's address: `{ ...model, baseUrl }`.
+
+Every image is fitted to the model's limits before the eyes see it, even a small one, and the default image processor is
+Photon, an optional peer that npm does not install for you. Without it (or sharp, passed in by the host) the read is a
+`needs` miss that says so and the eyes are not asked. In an empty directory with `@parcha/pi-vision` installed:
+
+```sh
+npm install @earendil-works/pi-ai @silvia-odwyer/photon-node
+```
+
+In `look.mjs`, a lead that cannot see reads a red square the test kit draws, and the eyes answer for it (it needs
+`ANTHROPIC_API_KEY`, and makes one request of a fraction of a cent):
 
 ```js
 import { mkdir, writeFile } from "node:fs/promises";

@@ -212,6 +212,21 @@ test("eyes with no apiKey function read the provider's own variable, which is wh
   assert.deepEqual(seen.map((request) => request.key), [key]);
 });
 
+test("the install line before look.mjs names everything the program needs, Photon included", () => {
+  // The test project links the workspace package, which resolves Photon from the workspace's own development
+  // dependencies, so running look.mjs cannot show that a reader's install is complete: the README's line is checked
+  // against the program's imports and against the package's optional peers instead.
+  const line = block(EYES, "sh").text.trim();
+  assert.match(line, /^npm install( [@a-z][^ ]*)+$/, "one npm install line");
+  const installed = line.split(" ").slice(2);
+  const program = block(EYES, "js").text;
+  const imported = [...program.matchAll(/from "((?:@[a-z0-9-]+\/)?[a-z0-9-]+)(?:\/[^"]*)?"/g)].map((m) => m[1]).filter((name) => name !== "@parcha/pi-vision" && !name.startsWith("node:"));
+  assert.deepEqual(imported.filter((name) => !installed.includes(name)), [], "every package the program imports is in the install line");
+  assert.ok(installed.includes("@silvia-odwyer/photon-node"), "the image processor the read needs is in the install line");
+  const peers = JSON.parse(fs.readFileSync(path.join(PACKAGE, "package.json"), "utf8")).peerDependenciesMeta;
+  assert.equal(peers["@silvia-odwyer/photon-node"]?.optional, true, "the README says Photon is optional and not installed for you: it is an optional peer");
+});
+
 test("the host excerpts type-check against the built package and the pi types this workspace resolves", (t) => {
   const dir = project(t);
   for (const sample of TYPES) fs.writeFileSync(path.join(dir, sample.name), block(sample.heading, "ts", sample.index).text);
