@@ -2,6 +2,8 @@
 // through a RunSource (source.js): the runs server's routes, or a replay from static files. It shows the ways to act
 // (a new run, the message box, stop, the live browser) only when the source has them, and builds no absolute URL, so it
 // works under any path. Run text is only ever put in the page as text nodes, or through md(), which escapes first.
+// The live browser is a panel over the page, opened large while the run waits for the person; once a run is not live,
+// its Browser tab plays back what the browser showed, with the sign-in left out.
 import { failedCall, foldCalls, foldLabel, groupTimeline } from "./timeline/index.js";
 
 const TEXT = new Set(["txt", "md", "markdown", "csv", "tsv", "json", "jsonl", "log", "yml", "yaml", "xml", "js", "mjs", "ts", "py", "sh", "toml", "ini", "css", "sql"]);
@@ -11,6 +13,12 @@ const LIVE_THINKING = /:live:thinking$/;
 const TEXT_CAP = 512 * 1024;
 const RELEASED = new Set(["sleeping", "paused", "done", "failed"]);
 export const REPLAY_NOTICE = "This is a replay: the run is recorded, nothing here acts on it, and its live browser is not part of it.";
+export const SIGNED_IN_GAP = "You signed in here (not recorded)";
+const GAPS = { process_killed: "Not recorded: the run's process stopped here", credential_on_page: "Not recorded: a password or a code was on the page" };
+const PROVIDERS = { browserbase: "Browserbase", chrome: "Chrome" };
+/** How long the player shows a gap's note before it goes on, and the longest it waits between two frames. */
+const GAP_MS = 1500;
+const STEP_MS = 1000;
 
 const esc = (s) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const enc = encodeURIComponent;
@@ -21,6 +29,67 @@ const ago = (iso) => {
   return s < 60 ? "just now" : s < 3600 ? `${Math.floor(s / 60)}m ago` : s < 86400 ? `${Math.floor(s / 3600)}h ago` : `${Math.floor(s / 86400)}d ago`;
 };
 const finished = (info) => ["done", "failed"].includes(info.status);
+const providerName = (provider) => PROVIDERS[provider] ?? (provider ? cap(provider) : "Browser");
+const siteName = (origin) => {
+  try {
+    return new URL(origin).host;
+  } catch {
+    return origin;
+  }
+};
+const clockTime = (iso) => {
+  const at = new Date(iso);
+  return Number.isNaN(at.getTime()) ? "" : `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+};
+const span = (ms) => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+};
+
+/** A saved sign-in in parts: what it is for (its sites), who keeps it and when it was last seen to work, and the run
+ *  that holds it now. */
+export function signInParts(signIn) {
+  const by = providerName(signIn.provider);
+  const held = signIn.heldBy ? `in use by ${signIn.heldBy}` : null;
+  if (!signIn.sites?.length) return { what: `Saved sign-in (${by}), sites not recorded`, about: null, held };
+  return { what: signIn.sites.map(siteName).join(", "), about: [by, signIn.verifiedAt ? `saved ${clockTime(signIn.verifiedAt)}` : null].filter(Boolean).join(" · "), held };
+}
+
+/** A saved sign-in as one line: `the-internet.herokuapp.com · Browserbase · saved 05:58`. */
+export const signInLine = (signIn) => Object.values(signInParts(signIn)).filter(Boolean).join(" · ");
+
+/** What a run started signed in to, or "" when it started signed out. */
+export function startedLine(signedIn) {
+  if (!signedIn?.length) return "";
+  const sites = [...new Set(signedIn.flatMap((s) => s.sites ?? []).map(siteName))];
+  return sites.length ? `Started signed in to ${sites.join(", ")}` : `Started signed in (${providerName(signedIn[0].provider)} sign-in, sites not recorded)`;
+}
+
+/**
+ * A run's frames as the player plays them: the frames in time order, and each gap from where the frames stopped to the
+ * next frame after it, or to the end of the recording when none came after (a page that did not change after a sign-in
+ * sends none). Such a gap is `open`: it holds the track's end too, so the end shows its note, not the last frame before
+ * it. A gap that starts inside another is part of it, named by the first. The session's release is the end of the
+ * track, not a gap: the page showed its last frame until then. `start` and `end` bound the scrubber.
+ * @param {import("./source.js").FrameLine[]} lines
+ */
+export function frameTrack(lines) {
+  const frames = lines.filter((l) => l.kind === "frame").sort((a, b) => a.t - b.t || (a.seq ?? 0) - (b.seq ?? 0));
+  const times = lines.map((l) => l.t);
+  const end = times.length ? Math.max(...times) : 0;
+  const gaps = [];
+  for (const g of lines.filter((l) => l.kind === "frame.gap" && l.data?.reason !== "session_released").sort((a, b) => a.t - b.t)) {
+    const from = Number.isFinite(g.data?.from) ? g.data.from : g.t;
+    const to = frames.find((f) => f.t > g.t)?.t ?? end;
+    const signIn = g.data?.reason === "credential_on_page" && g.data?.detail === "host";
+    const before = gaps.at(-1);
+    if (before && from < before.to) before.to = Math.max(before.to, to);
+    else if (to > from) gaps.push({ from, to, label: signIn ? SIGNED_IN_GAP : (GAPS[g.data?.reason] ?? "Not recorded") });
+  }
+  for (const g of gaps) g.open = !frames.some((f) => f.t >= g.to);
+  const start = times.length ? Math.min(...frames.map((f) => f.t), ...gaps.map((g) => g.from), end) : 0;
+  return { frames, gaps, start, end };
+}
 
 /** Markdown, escaped first: headings, lists, fences, code, bold, italic and http(s) links. */
 export function md(text) {
@@ -121,7 +190,7 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
   if (!THEMES.includes(theme)) throw new Error(`the run page's theme is one of ${THEMES.join(", ")}, not ${JSON.stringify(theme)}`);
   const doc = root.ownerDocument;
   const win = doc.defaultView;
-  const can = { start: typeof source.start === "function", submit: typeof source.submit === "function", stop: typeof source.stop === "function", live: typeof source.live === "function" };
+  const can = { start: typeof source.start === "function", submit: typeof source.submit === "function", stop: typeof source.stop === "function", live: typeof source.live === "function", agent: typeof source.agent === "function", frames: typeof source.frames === "function" && typeof source.frameSrc === "function" };
   const replay = !can.start && !can.submit && !can.stop && !can.live;
 
   const el = (tag, attrs = {}, ...kids) => {
@@ -142,6 +211,8 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
     q: el("input", { id: "q", type: "search", placeholder: replay ? "Search runs" : "Search runs and files", autocomplete: "off", "aria-label": "Search runs" }),
     new: can.start ? btn({ id: "new", class: "btn primary" }, "New run") : null,
     runs: el("ul", { id: "runs" }),
+    signIns: can.agent ? el("div", { id: "signins", class: "signins", hidden: true }) : null,
+    started: el("div", { id: "started", class: "started", hidden: true }),
     view: el("section", { id: "view", class: "view" }),
     title: el("h1", { id: "title" }),
     pill: el("span", { id: "pill" }),
@@ -156,7 +227,15 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
     err: el("div", { id: "err", class: "err" }),
     text: can.submit ? el("textarea", { id: "text", rows: 2 }) : null,
     send: can.submit ? btn({ id: "send", class: "btn primary" }, "Send") : null,
+    // The live browser, over the page: one frame for the run's live view, which a tab change never reloads.
+    floatBody: can.live ? el("div", { id: "float-body", class: "float-body" }) : null,
+    floatSize: can.live ? btn({ id: "float-size", class: "btn" }, "Enlarge") : null,
+    floatMin: can.live ? btn({ id: "float-min", class: "btn" }, "Minimize") : null,
+    floatClose: can.live ? btn({ id: "float-close", class: "btn", "aria-label": "Close the live browser" }, "Close") : null,
+    chip: can.live ? btn({ id: "show-browser", class: "chip", hidden: true }, "Show browser") : null,
   };
+  p.floatNote = can.live ? el("span", { id: "float-note", class: "float-note" }) : null;
+  p.float = can.live ? el("div", { id: "float", class: "float", hidden: true, "data-size": "small", role: "dialog", "aria-label": "Live browser" }, el("div", { class: "float-bar" }, el("b", {}, "Live browser"), p.floatNote, p.floatSize, p.floatMin, p.floatClose), p.floatBody) : null;
   p.banner = el("div", { id: "banner", class: "banner", hidden: true }, el("b", {}, "Waiting for you"), p.bannerText, p.bannerBtn);
   const tab = (name, label) => btn({ "data-tab": name }, label);
   p.tabs = el("nav", { class: "tabs" }, tab("timeline", "Timeline"), tab("files", "Files"), can.live ? tab("browser", "Browser") : null);
@@ -164,6 +243,7 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
     "section",
     { id: "run", class: "run", hidden: true },
     el("div", { class: "top-row" }, p.title, p.pill, p.cost, p.stop),
+    p.started,
     p.notice,
     p.banner,
     p.tabs,
@@ -177,14 +257,15 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
   root.setAttribute("class", `runs-app${replay ? " replay" : ""}`);
   root.replaceChildren(
     el("header", { class: "top" }, el("a", { class: "brand", href: "#/" }, "agentrun ", el("span", {}, replay ? "replay" : "runs")), p.q),
-    el("main", {}, el("aside", { id: "hist", class: "hist", "aria-label": "Job history" }, el("div", { class: "head" }, el("b", {}, "Job history"), p.new), p.runs), p.view, p.run),
+    el("main", {}, el("aside", { id: "hist", class: "hist", "aria-label": "Job history" }, el("div", { class: "head" }, el("b", {}, "Job history"), p.new), p.signIns, p.runs), p.view, p.run),
     p.bar,
+    ...[p.float, p.chip].filter(Boolean),
   );
   root.dataset.pane = "run";
   root.dataset.tab = "timeline";
   root.setAttribute("data-theme", theme);
 
-  const ui = { id: null, info: null, rows: [], state: "idle", cost: null, open: new Set(), follow: null, timer: null, sig: "", file: null, files: new Set(), filesSig: "", browserKey: "", shown: false, secs: new Map(), liveSince: new Map(), blobs: [] };
+  const ui = { id: null, info: null, rows: [], state: "idle", cost: null, open: new Set(), follow: null, timer: null, sig: "", file: null, files: new Set(), filesSig: "", browserKey: "", frameKey: "", panel: "small", waited: false, secs: new Map(), liveSince: new Map(), blobs: [], player: null };
   const timers = new Set();
   const later = (fn, ms) => {
     const t = win.setTimeout(() => (timers.delete(t), fn()), ms);
@@ -316,13 +397,12 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
     if (p.stop) p.stop.hidden = !(info.live && ui.state === "working");
     const waiting = ui.state === "waiting" && !finished(info) && !replay;
     const view = can.live ? source.live(ui.id, info) : null;
-    if (waiting && view && !ui.shown) {
-      ui.shown = true;
-      root.dataset.tab = "browser";
-    }
-    if (!waiting) ui.shown = false;
+    paintPanel(view);
+    const started = startedLine(info.signedIn);
+    p.started.hidden = !started;
+    p.started.textContent = started;
     p.banner.hidden = !waiting;
-    p.bannerText.textContent = (ui.rows.findLast((r) => r.kind === "waiting")?.summary ?? "").replace(/^Waiting for you:?\s*/, "");
+    p.bannerText.textContent = waitText();
     if (p.bannerBtn) p.bannerBtn.hidden = !view;
     if (p.text) {
       // A finished run takes no more messages; the agent's next run starts from its home, signed in.
@@ -339,15 +419,18 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
     ui.follow?.abort();
     ui.follow = null;
     win.clearTimeout(ui.timer);
+    stopPlayer();
+    closePanel();
     dropBlobs();
   }
 
   function openRun() {
     closeRun();
-    Object.assign(ui, { info: null, rows: [], state: "idle", cost: null, sig: "", file: null, files: new Set(), filesSig: "", browserKey: "", shown: false, secs: new Map(), liveSince: new Map() });
+    Object.assign(ui, { info: null, rows: [], state: "idle", cost: null, sig: "", file: null, files: new Set(), filesSig: "", browserKey: "", secs: new Map(), liveSince: new Map() });
     p.view.hidden = true;
     p.run.hidden = false;
-    for (const node of [p.steps, p.files, p.browser, p.title, p.pill, p.cost, p.err]) node.replaceChildren();
+    for (const node of [p.steps, p.files, p.browser, p.title, p.pill, p.cost, p.err, p.started]) node.replaceChildren();
+    p.started.hidden = true;
     if (p.text) p.text.value = "";
     root.dataset.tab = "timeline";
     tick(ui.id);
@@ -423,7 +506,61 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
   }
 
   // ---- browser and files -------------------------------------------------------------------------------------------------
-  /** One frame per run, reloaded only when the live view's address changes (its key), never on a rewrite of live.json. */
+  /**
+   * The live browser's panel: shown while the run has a live view and is not finished, with one frame per run, reloaded
+   * only when the view's address changes (its key). It opens large when the run starts waiting for the person and goes
+   * back to small once they answer; minimize keeps only its bar, close leaves a "Show browser" chip.
+   */
+  /** The panel and its chip hidden, and its frame removed, so the live view's connection closes with it. */
+  function closePanel() {
+    if (!p.float) return;
+    p.float.hidden = true;
+    p.chip.hidden = true;
+    p.floatBody.replaceChildren();
+    ui.frameKey = "";
+    ui.panel = "small";
+    ui.waited = false;
+  }
+
+  function paintPanel(view) {
+    if (!p.float) return;
+    if (!(view && ui.info && !finished(ui.info))) return closePanel();
+    const local = ui.info.browser === "chrome";
+    const key = `${ui.id}:${view.key}:${local}`;
+    if (key !== ui.frameKey) {
+      ui.frameKey = key;
+      const frame = el("iframe", { src: view.src, sandbox: "allow-scripts allow-same-origin allow-forms allow-popups", referrerpolicy: "no-referrer", allow: "clipboard-read; clipboard-write", title: "The agent's browser" });
+      // On a local Chrome, input that arrives while the agent's browser call runs is dropped, not queued: the viewer says so.
+      const caption = local && el("div", { class: "note" }, "This is the agent's own Chrome. While the agent is using it, what you click or type is dropped, not queued, and the viewer says so: try again when it is done.");
+      p.floatBody.replaceChildren(...[caption, frame].filter(Boolean));
+    }
+    const waiting = ui.state === "waiting" && !replay;
+    if (waiting && !ui.waited) ui.panel = "large";
+    else if (!waiting && ui.waited && ui.panel === "large") ui.panel = "small";
+    ui.waited = waiting;
+    // The panel covers the banner when large: it says what the agent asked for itself.
+    p.floatNote.textContent = waiting ? `Waiting for you: ${waitText() || "the agent asked you to act"}. Reply "done" below when you are.` : "";
+    p.float.setAttribute("data-waiting", waiting ? "1" : "0");
+    sizePanel();
+  }
+
+  const waitText = () => (ui.rows.findLast((r) => r.kind === "waiting")?.summary ?? "").replace(/^Waiting for you:?\s*/, "").replace(/\.$/, "");
+
+  function sizePanel() {
+    if (!p.float || !ui.frameKey) return;
+    p.float.hidden = ui.panel === "closed";
+    p.float.setAttribute("data-size", ui.panel);
+    p.chip.hidden = ui.panel !== "closed";
+    p.floatSize.textContent = ui.panel === "large" ? "Shrink" : "Enlarge";
+    p.floatMin.textContent = ui.panel === "min" ? "Restore" : "Minimize";
+  }
+
+  const setPanel = (size) => {
+    ui.panel = size;
+    sizePanel();
+  };
+
+  /** The Browser tab: where the live browser is, or, for a run that is not live, the player of what its browser showed. */
   function paintBrowser() {
     if (!can.live) {
       if (ui.browserKey !== "none") p.browser.replaceChildren(el("div", { class: "note" }, replay ? "The live browser is not part of a replay." : "This page shows no live browser."));
@@ -431,15 +568,105 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
       return;
     }
     const view = ui.info ? source.live(ui.id, ui.info) : null;
+    paintPanel(view);
     const note = ui.info?.liveNote;
-    const local = ui.info?.browser === "chrome";
-    const key = view ? `${ui.id}:${view.key}:${local}` : `none:${note ?? ""}`;
+    const playable = !view && can.frames && ui.info?.frames && !ui.info.live;
+    const key = view ? `live:${ui.id}` : playable ? `frames:${ui.id}:${ui.info.status}:${ui.info.generation}:${ui.info.endedAt}` : `none:${note ?? ""}`;
     if (key === ui.browserKey) return;
     ui.browserKey = key;
-    const frame = view && el("iframe", { src: view.src, sandbox: "allow-scripts allow-same-origin allow-forms allow-popups", referrerpolicy: "no-referrer", allow: "clipboard-read; clipboard-write" });
-    // On a local Chrome, input that arrives while the agent's browser call runs is dropped, not queued: the viewer says so.
-    const caption = local && el("div", { class: "note" }, "This is the agent's own Chrome. While the agent is using it, what you click or type is dropped, not queued, and the viewer says so: try again when it is done.");
-    p.browser.replaceChildren(...(view ? [caption, frame].filter(Boolean) : [el("div", { class: "note" }, note ? `This run's browser: ${note}.` : "This run has no live browser right now.")]));
+    stopPlayer();
+    if (view) p.browser.replaceChildren(el("div", { class: "note" }, "The live browser is in its own panel, over this page.", " ", btn({ class: "btn", onclick: () => setPanel("large") }, "Show it large")));
+    else if (playable) void loadPlayer(ui.id);
+    else p.browser.replaceChildren(el("div", { class: "note" }, note ? `This run's browser: ${note}.` : "This run has no live browser right now."));
+  }
+
+  /** The player: the frame at the scrubber's time, play and pause, and each gap drawn on the scrubber and named. */
+  async function loadPlayer(id) {
+    // The tab this load is for: a run that turned live, or a run left, while the frames loaded draws something else there.
+    const key = ui.browserKey;
+    const lines = await source.frames(id).catch(() => null);
+    if (id !== ui.id || key !== ui.browserKey) return;
+    const track = frameTrack(lines ?? []);
+    if (!track.frames.length) return void p.browser.replaceChildren(el("div", { class: "note" }, "This run's browser left no frames to play back."));
+    const img = el("img", { id: "frame-img", alt: "What the agent's browser showed" });
+    const gapNote = el("div", { id: "gap-note", class: "gap-note", hidden: true });
+    const play = btn({ id: "play", class: "btn" }, "Play");
+    const scrub = el("input", { id: "scrub", type: "range", min: String(track.start), max: String(track.end), step: "1", "aria-label": "Time in the run" });
+    const time = el("span", { id: "play-time", class: "mono" });
+    // The gaps on the scrubber: one rect each on a 1000-wide track, from numbers and the page's own labels only.
+    const length = Math.max(1, track.end - track.start);
+    const marks = Object.assign(el("div", { class: "marks" }), {
+      innerHTML: `<svg viewBox="0 0 1000 10" preserveAspectRatio="none" aria-hidden="true">${track.gaps.map((g) => `<rect x="${(((g.from - track.start) / length) * 1000).toFixed(1)}" y="0" width="${Math.max(5, ((g.to - g.from) / length) * 1000).toFixed(1)}" height="10"><title>${esc(g.label)}</title></rect>`).join("")}</svg>`,
+    });
+    const legend = track.gaps.map((g) => el("li", {}, el("span", { class: "mono" }, `${span(g.from - track.start)} to ${span(g.to - track.start)}`), " ", g.label));
+    const player = { track, pos: track.frames[0].t, playing: false, timer: null, img, gapNote, play, scrub, time };
+    ui.player = player;
+    const caption = el("div", { class: "caption" }, "What the agent's browser showed. Nothing is recorded while you sign in.");
+    p.browser.replaceChildren(el("div", { class: "player" }, caption, el("div", { class: "screen" }, img, gapNote), el("div", { class: "controls" }, play, el("div", { class: "scrub" }, marks, scrub), time), legend.length ? el("ul", { class: "gaps" }, legend) : null));
+    play.addEventListener("click", () => (player.playing ? pause() : resume()));
+    scrub.addEventListener("input", () => {
+      pause();
+      showAt(Number(scrub.value));
+    });
+    showAt(player.pos);
+  }
+
+  function showAt(pos) {
+    const player = ui.player;
+    if (!player) return;
+    const { track } = player;
+    player.pos = pos;
+    const gap = track.gaps.find((g) => pos >= g.from && (pos < g.to || (g.open && pos === g.to)));
+    const frame = track.frames.findLast((f) => f.t <= pos) ?? track.frames[0];
+    const src = source.frameSrc(ui.id, frame.blobs[0]);
+    if (player.img.getAttribute("src") !== src) player.img.setAttribute("src", src);
+    player.gapNote.hidden = !gap;
+    player.gapNote.textContent = gap?.label ?? "";
+    player.scrub.value = String(pos);
+    player.time.textContent = `${span(pos - track.start)} / ${span(track.end - track.start)}`;
+  }
+
+  /** The next stop: the end of the gap it is in, else the next frame, the start of the next gap, or the track's end (the
+   *  release can come after the last frame). Null at the end. */
+  function nextStop(player) {
+    const { track, pos } = player;
+    const gap = track.gaps.find((g) => pos >= g.from && pos < g.to);
+    if (gap) return { at: gap.to, wait: GAP_MS };
+    if (pos >= track.end) return null;
+    const at = Math.min(track.frames.find((f) => f.t > pos)?.t ?? track.end, track.gaps.find((g) => g.from > pos)?.from ?? track.end);
+    return { at, wait: Math.min(STEP_MS, at - pos) };
+  }
+
+  function resume() {
+    const player = ui.player;
+    if (!player) return;
+    if (player.pos >= player.track.end) showAt(player.track.start);
+    player.playing = true;
+    player.play.textContent = "Pause";
+    const step = () => {
+      if (ui.player !== player || !player.playing) return;
+      const next = nextStop(player);
+      if (!next) return pause();
+      player.timer = later(() => {
+        showAt(next.at);
+        step();
+      }, next.wait);
+    };
+    step();
+  }
+
+  function pause() {
+    const player = ui.player;
+    if (!player) return;
+    player.playing = false;
+    player.play.textContent = "Play";
+    win.clearTimeout(player.timer);
+    timers.delete(player.timer);
+  }
+
+  function stopPlayer() {
+    pause();
+    ui.player = null;
   }
 
   async function loadFiles() {
@@ -516,7 +743,21 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
   }
 
   // ---- history, new run, search, routes ----------------------------------------------------------------------------------
+  async function loadSignIns() {
+    if (!p.signIns) return;
+    const info = await source.agent().catch(() => null);
+    if (!info) return;
+    const signIns = info.signIns ?? [];
+    p.signIns.hidden = !signIns.length;
+    p.signIns.replaceChildren(el("b", {}, signIns.length > 1 ? "Saved sign-ins" : "Saved sign-in"), ...signIns.map((s) => {
+      const { what, about, held } = signInParts(s);
+      const rest = [about, held && el("span", { class: "held" }, held)].filter(Boolean).flatMap((part, i) => (i ? [" · ", part] : [part]));
+      return el("div", { class: "saved", title: signInLine(s) }, el("div", { class: "what" }, what), rest.length ? el("div", { class: "about" }, rest) : null);
+    }));
+  }
+
   async function loadRuns() {
+    void loadSignIns();
     const runs = await source.list().catch(() => null);
     if (!runs) return;
     p.runs.replaceChildren(...runs.map((r) => {
@@ -584,7 +825,6 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
         ui.id = id;
         openRun();
       }
-      if (file) ui.shown = true;
       if (file !== ui.file) {
         ui.file = file;
         ui.filesSig = "";
@@ -624,7 +864,13 @@ export function mountRunPage(root, source, { theme = "auto" } = {}) {
     });
   }
   if (p.stop) on(p.stop, "click", () => source.stop(ui.id).catch((e) => (p.err.textContent = e.message)));
-  if (p.bannerBtn) on(p.bannerBtn, "click", () => show("run", "browser"));
+  if (p.bannerBtn) on(p.bannerBtn, "click", () => setPanel("large"));
+  if (p.float) {
+    on(p.floatSize, "click", () => setPanel(ui.panel === "large" ? "small" : "large"));
+    on(p.floatMin, "click", () => setPanel(ui.panel === "min" ? "small" : "min"));
+    on(p.floatClose, "click", () => setPanel("closed"));
+    on(p.chip, "click", () => setPanel("small"));
+  }
   on(
     p.steps,
     "toggle",

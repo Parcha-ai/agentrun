@@ -22,7 +22,23 @@
  * @property {{ key: string } | null} [liveView] a live run's view, by a key that changes with its address; never in a replay
  * @property {string | null} [browser]
  * @property {string | null} [liveNote]
+ * @property {SignedIn[]} [signedIn] the saved sign-ins the run started with; never in a replay
+ * @property {boolean} [frames] whether the run's browser frames can be played back; never in a replay
  * @property {string | null} [error]
+ */
+
+/** @typedef {{ key: string, provider: string | null, sites: string[] }} SignedIn */
+
+/**
+ * A saved sign-in of the agent, never its ref: the sites (origins) it is for, when it was last seen to work, and the run
+ * that holds it now.
+ * @typedef {{ key: string, provider: string | null, state: string | null, sites: string[], verifiedAt: string | null, heldBy: string | null }} SignIn
+ */
+
+/**
+ * What a run's browser showed: agentrun.recording/1's `frame` lines (`blobs[0]`, the JPEG's sha256) and `frame.gap`
+ * lines (`data.from`, where the frames stopped; `data.reason` and `data.detail`, why), in order.
+ * @typedef {{ kind: "frame" | "frame.gap", t: number, seq?: number, data: object, blobs?: string[] }} FrameLine
  */
 
 /** @typedef {RunSummary} Run */
@@ -51,6 +67,9 @@
  * @property {(id: string, text: string) => Promise<unknown>} [submit] a message to a run (live only)
  * @property {(id: string) => Promise<unknown>} [stop] abort a run's turn (live only)
  * @property {(id: string, run: Run) => { key: string, src: string } | null} [live] the run's live view frame (live only)
+ * @property {() => Promise<{ name: string, signIns: SignIn[] }>} [agent] the agent and its saved sign-ins (live only)
+ * @property {(id: string) => Promise<FrameLine[]>} [frames] a run's browser frames (live only)
+ * @property {(id: string, sha256: string) => string} [frameSrc] the address of one frame's JPEG (live only)
  */
 
 /** A run id: what pi-durable-agent's `startRun` accepts, and never a dot first. */
@@ -62,6 +81,10 @@ export function safePath(path) {
   if (typeof path !== "string" || path === "" || path.includes("\0") || path.includes("\\")) return false;
   return path.split("/").every((part) => part !== "" && !part.startsWith("."));
 }
+
+/** A path of a run's frames layout (`frames/frames.jsonl`, `frames/blobs/<sha256>.jpg`): what its browser showed, which
+ *  no replay holds. */
+export const FRAMES_PATH = /(^|\/)frames\/(frames\.jsonl|blobs\/[0-9a-f]{64}\.jpg)$/;
 
 const QUIET = /:run:(start|end)$/;
 /** The newest row that says what the run is doing: not cost, not the run's start or end, not a phase. */
@@ -123,10 +146,22 @@ async function* events(body) {
   }
 }
 
+/** A frames file's lines: one JSON object each; a line still being written, or any line that does not parse, is left out. */
+export function frameLines(text) {
+  const lines = [];
+  for (const line of text.split("\n")) {
+    try {
+      const value = JSON.parse(line);
+      if ((value?.kind === "frame" && /^[0-9a-f]{64}$/.test(value.blobs?.[0] ?? "")) || value?.kind === "frame.gap") if (Number.isFinite(value.t)) lines.push(value);
+    } catch {}
+  }
+  return lines;
+}
+
 /**
  * The runs server's routes under `base` (an absolute URL ending in `/`, where the page is served): GET runs, runs/{id},
- * runs/{id}/timeline (server-sent events while live), runs/{id}/files[/{path}], search; POST runs, runs/{id}/messages,
- * runs/{id}/stop; a live view at runs/{id}/live.
+ * runs/{id}/timeline (server-sent events while live), runs/{id}/files[/{path}], search, agent, runs/{id}/frames[/{sha256}.jpg];
+ * POST runs, runs/{id}/messages, runs/{id}/stop; a live view at runs/{id}/live.
  * @param {string} base
  * @returns {RunSource}
  */
@@ -160,6 +195,13 @@ export function httpSource(base) {
     submit: (id, text) => post(`runs/${encodeURIComponent(id)}/messages`, { content: text }),
     stop: (id) => post(`runs/${encodeURIComponent(id)}/stop`, {}),
     live: (id, run) => (run?.liveView ? { key: run.liveView.key, src: at(`runs/${encodeURIComponent(id)}/live?v=${encodeURIComponent(run.liveView.key)}`) } : null),
+    agent: () => json(at("agent")),
+    frames: async (id) => {
+      const res = await fetch(at(`runs/${encodeURIComponent(id)}/frames`));
+      if (!res.ok) throw new Error(`the run's frames answered ${res.status}`);
+      return frameLines(await res.text());
+    },
+    frameSrc: (id, sha) => at(`runs/${encodeURIComponent(id)}/frames/${encodeURIComponent(sha)}.jpg`),
   };
 }
 
@@ -170,8 +212,8 @@ export function httpSource(base) {
  *   runs/<id>/timeline.json        the rows, in order
  *   runs/<id>/files.json           FileEntry[]
  *   runs/<id>/files/<path>         each file
- * It has no start, submit, stop or live: a replay never acts, and never carries a live view. Search looks at the runs'
- * titles, here in the page.
+ * It has no start, submit, stop, live, agent or frames: a replay never acts, and never carries a live view, a saved
+ * sign-in or what the browser showed. Search looks at the runs' titles, here in the page.
  * @param {string} base
  * @returns {RunSource}
  */
@@ -191,7 +233,7 @@ export function staticSource(base) {
       return { rows, state: stateOf(rows, false), costUsd: costOf(rows) };
     },
     files: async (id) => json(at(`${runOf(id)}/files.json`)),
-    file: async (id, path) => (safePath(path) ? fetch(at(`${runOf(id)}/files/${pathUrl(path)}`)) : new Response("", { status: 404 })),
+    file: async (id, path) => (safePath(path) && !FRAMES_PATH.test(path) ? fetch(at(`${runOf(id)}/files/${pathUrl(path)}`)) : new Response("", { status: 404 })),
     search: async (q) => {
       const needle = q.toLowerCase();
       return (await list()).filter((r) => `${r.title}\n${r.agent ?? ""}`.toLowerCase().includes(needle)).map((r) => ({ runId: r.id, title: r.title, kind: "run", snippet: r.title }));
