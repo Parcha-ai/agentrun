@@ -14,8 +14,10 @@ import { sha256Paused } from './receipt-key.ts';
 import { finishedManifest, placeLines, tailOf } from './follow.ts';
 import { diskPanel } from './disk.ts';
 import { picturePanel } from './picture.ts';
+import { pdfDrawer, type PdfDrawn } from './pdf.ts';
 import { transportPanel } from './transport.ts';
 import { visionPanel } from './vision.ts';
+import { documentPanel } from './document.ts';
 
 /** A bundled recording: embedded in gallery.js (its lines, and each blob as a data: URL), or, in a build that ships
  *  recordings as files, listed in `recordings/index.json` (each blob as its path in the recording's directory). */
@@ -108,6 +110,7 @@ function blobsAt(root: string, whole = false) {
   const urls: Record<string, string> = {};
   const types: Record<string, string | undefined> = {};
   const texts: Record<string, string> = {};
+  const held: Record<string, Uint8Array> = {};
   const missing = new Map<string, { tries: number; at: number }>();
   let round = 0;
   const found = async (sha: string, url: string): Promise<boolean> => {
@@ -123,14 +126,16 @@ function blobsAt(root: string, whole = false) {
     const type = typeOfName(url) ?? 'application/octet-stream';
     urls[sha] = URL.createObjectURL(new Blob([bytes], { type: opensInPage(type) || type.startsWith('image/') ? type : 'application/octet-stream' }));
     types[sha] = type;
-    // Its JSON is kept as read: a page served with `connect-src 'self'` may not fetch the blob: URL.
+    // Its JSON and its PDF are kept as read: a page served with `connect-src 'self'` may not fetch the blob: URL.
     if (type.split(';')[0] === 'application/json') texts[sha] = new TextDecoder().decode(bytes);
+    if (type.split(';')[0] === 'application/pdf') held[sha] = bytes;
     return true;
   };
   return {
     url: (sha: string) => urls[sha],
     type: (sha: string) => (types[sha] ?? (urls[sha] ? typeOfName(urls[sha]!) : undefined)),
     text: (sha: string): string | undefined => texts[sha],
+    bytes: (sha: string): Promise<Uint8Array> | undefined => (held[sha] ? Promise.resolve(held[sha]!.slice()) : undefined),
     /** Looks for the blobs not found yet, and those due again; says how many it found. */
     async find(shas: readonly string[]): Promise<number> {
       round += 1;
@@ -155,7 +160,7 @@ async function fromUrl(base: string): Promise<Recording> {
   const lines = parseLines(await (await fetch(`${root}events.jsonl`)).text());
   const blobs = blobsAt(root);
   await blobs.find(blobsNamed(manifest, lines));
-  return { id: root, manifest, lines, blobUrl: blobs.url, blobType: blobs.type, find: blobs.find };
+  return { id: root, manifest, lines, blobUrl: blobs.url, blobType: blobs.type, find: blobs.find, heldBytes: blobs.bytes };
 }
 
 async function fromFiles(files: File[]): Promise<Recording> {
@@ -166,15 +171,19 @@ async function fromFiles(files: File[]): Promise<Recording> {
   if (!manifestFile || !eventsFile) throw new Error('The folder needs manifest.json and events.jsonl.');
   const urls: Record<string, string> = {};
   const types: Record<string, string> = {};
+  const dropped: Record<string, File> = {};
   for (const [path, file] of byPath) {
     const name = path.split('/').at(-1)!;
     if (!path.startsWith('blobs/')) continue;
     const sha = name.split('.')[0]!;
+    dropped[sha] = file;
     types[sha] = typeOfName(name) ?? (file.type || 'application/octet-stream');
     // A blob URL has the viewer's origin: a page in one must never render, so an active type becomes opaque bytes.
     urls[sha] = URL.createObjectURL(opensInPage(types[sha]) || types[sha]!.startsWith('image/') ? file : new Blob([file], { type: 'application/octet-stream' }));
   }
-  return { id: 'dropped', manifest: JSON.parse(await manifestFile.text()) as Manifest, lines: parseLines(await eventsFile.text()), blobUrl: (sha) => urls[sha], blobType: (sha) => types[sha] };
+  return { id: 'dropped', manifest: JSON.parse(await manifestFile.text()) as Manifest, lines: parseLines(await eventsFile.text()), blobUrl: (sha) => urls[sha], blobType: (sha) => types[sha],
+    // A dropped file is read as a file: a host whose policy fetches only from its own origin refuses its blob: URL.
+    heldBytes: (sha) => (dropped[sha] ? dropped[sha]!.arrayBuffer().then((bytes) => new Uint8Array(bytes)) : undefined) };
 }
 
 // ---- the player state ------------------------------------------------------------------------------------------
@@ -185,6 +194,8 @@ type Player = {
   following?: boolean;
   /** A blob a view draws that the shell has not found: asks for it, and says whether it is still being looked for. */
   want?: (sha: string) => boolean;
+  /** A page of a PDF in the recording, as drawn so far (pdf.ts). */
+  pdf?: (sha: string, page: number) => PdfDrawn;
   stops: boolean[];
   lanes: Lanes;
   p: number;
@@ -324,6 +335,23 @@ function renderNode(node: Node, player: Player, frames: FrameState, t: number, o
   }
   if (node.tag === 'a' && 'blob' in node && 'text' in node) {
     return blobLink(player.recording, node.blob, node.text, node.class ?? 'blob', 'fragment' in node ? node.fragment : undefined) ?? el('span', { class: 'missing', text: `[${node.text}: ${player.want?.(node.blob) || player.following ? 'loading' : 'not in this recording'}]` });
+  }
+  if (node.tag === 'pdf-page' && 'page' in node) {
+    // The page is placed as drawn, at its own proportions, so a child's box in percent lands where it names on it.
+    const holder = el('div', { class: node.class ?? 'pdf-page' });
+    const drawn = player.recording.blobUrl(node.blob) ? player.pdf?.(node.blob, node.page) : undefined;
+    if (drawn?.kind === 'drawn') {
+      holder.style.aspectRatio = `${drawn.w} / ${drawn.h}`;
+      holder.append(Object.assign(el('img', { class: 'pdf-picture' }), { src: drawn.url, alt: node.alt }));
+      for (const child of node.children ?? []) holder.append(renderNode(child, player, frames, t, onFocus, onCite));
+      return holder;
+    }
+    holder.classList.add('pdf-wait');
+    const missing = !player.recording.blobUrl(node.blob);
+    holder.append(el('span', { text: missing ? `[${node.alt}: ${player.want?.(node.blob) || player.following ? 'loading' : 'not in this recording'}]`
+      : drawn?.kind === 'failed' ? `${node.alt} could not be drawn: ${drawn.reason}` : `drawing ${node.alt}` }));
+    if (drawn?.kind === 'failed') { const link = blobLink(player.recording, node.blob, `open ${node.alt}`, 'blob', `page=${node.page}`); if (link) holder.append(' ', link); }
+    return holder;
   }
   if (node.tag === 'frame' && 'session' in node) {
     const picture = pictureAt(frames, node.session, t);
@@ -529,6 +557,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const looked = new Map<string, boolean>();
   const wanted = new Set<string>();
   if (recording.find) player.want = (sha) => { if (!looked.has(sha)) wanted.add(sha); return looked.get(sha) !== true; };
+  player.pdf = pdfDrawer(recording, () => draw());
   const findWanted = () => {
     const due = [...wanted];
     wanted.clear();
@@ -561,7 +590,6 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   if (opened !== undefined) player.p = head.seekTime(opened);
   player.focus = params.get('focus') ?? undefined;
   player.cite = citeParam ?? undefined;
-  let json: Map<string, Json> | undefined;
 
   // The manifest's chapters when it names them; else each process start, each kill, and the end (while a run is followed,
   // its end so far).
@@ -621,7 +649,10 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const controls = el('div', { class: 'controls' }, el('button', { text: 'previous commit' }), playButton, el('button', { text: 'next commit' }), speed, range, position);
   // The first registered panel that calls itself featured for this recording is shown first, with the controls right under it; the rest follow as before.
   // The panels this recording draws, judged once over all its lines: a panel with nothing here never shows, not even its title.
-  let shown = panelsFor(lines);
+  let json: Map<string, Json> | undefined;
+  /** The results read so far: a panel may be drawn for its recording's result (`showsResult`). */
+  const results = () => [...(json?.values() ?? [])];
+  let shown = panelsFor(lines, results());
   let featured = featuredPanel(shown, lines);
   const featuredBox = el('div', { class: 'featured' });
   if (embedded) document.documentElement.classList.add('embed');
@@ -762,7 +793,16 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     }
   }
   draw();
-  const readResults = () => void resultJson(recording).then((read) => { if (read.size) { json = read; draw(); } });
+  /** The panels for the recording, worked out again when what decides them changes: its lines, or a result read. */
+  const choosePanels = () => {
+    const now = panelsFor(lines, results());
+    const nowFeatured = featuredPanel(now, lines);
+    const moved = nowFeatured !== featured;
+    shown = now;
+    featured = nowFeatured;
+    if (moved) layout();
+  };
+  const readResults = () => void resultJson(recording).then((read) => { if (read.size) { json = read; choosePanels(); draw(); } });
   readResults();
   const readBaseline = () => {
     if (!recording.manifest.baseline) return;
@@ -798,12 +838,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     restored = player.lanes.restores.length > 0;
     measured = lines.some((line) => line.channel === 'durable');
     range.max = String(last);
-    const now = panelsFor(lines);
-    const nowFeatured = featuredPanel(now, lines);
-    const moved = nowFeatured !== featured;
-    shown = now;
-    featured = nowFeatured;
-    if (moved) layout();
+    choosePanels();
   };
   return {
     grow(fresh, found = false) {
@@ -892,7 +927,7 @@ async function followRun(target: string, root: HTMLElement, params: URLSearchPar
   const base = url.href;
   const tail = tailOf(`${base}events.jsonl`);
   const blobs = blobsAt(base, true);
-  const recording: Recording = { id: base, lines: [], blobUrl: blobs.url, blobType: blobs.type, heldText: blobs.text, find: blobs.find, manifest: {
+  const recording: Recording = { id: base, lines: [], blobUrl: blobs.url, blobType: blobs.type, heldText: blobs.text, heldBytes: blobs.bytes, find: blobs.find, manifest: {
     format: FORMAT, title: 'A run, followed live', task: '', recorded: { started: '', ended: '' }, code: { repo: '', commit: '', packages: {} },
     model: '', generations: 0, kills: 0, cost: { usd: null, parts: {} }, source: { run: '', store_sha256: '' },
   } };

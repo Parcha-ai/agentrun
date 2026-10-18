@@ -284,6 +284,22 @@
   .wm-shot { max-width: 100%; border: 1px solid var(--rule); border-radius: 4px; } .wm-facts, .wm-notes { font-size: 13px; }
   .wm-ledger { grid-column: 1 / -1; } .wm-ledger table { border-collapse: collapse; } .wm-ledger th, .wm-ledger td { padding: 3px 14px 3px 0; text-align: left; font-size: 14px; }
   .wm-ledger tr.alarm td { color: var(--failed); font-weight: 600; } .wm-price { font-weight: 600; }
+  /* The document panel: each cited page drawn whole at the panel's width, its boxes placed over it in percent. */
+  .panel:has(.doc-panel) { grid-column: 1 / -1; max-height: none; overflow: visible; }
+  .doc-title { margin: 0 0 10px; }
+  .doc-page { margin: 0 0 18px; }
+  /* An outline, not a border: a box in percent is placed on the page itself, edge to edge. */
+  .doc-sheet { position: relative; width: 100%; max-width: 820px; background: #fff; outline: 1px solid var(--rule); }
+  .doc-sheet .pdf-picture { display: block; width: 100%; height: 100%; }
+  .doc-sheet.pdf-wait { aspect-ratio: 8.5 / 11; display: grid; place-items: center; padding: 16px; text-align: center; color: var(--muted); background: var(--panel); outline-style: dashed; }
+  .doc-box { border: 2px solid var(--focus); background: rgba(47, 95, 208, 0.08); }
+  .doc-box.hot { border-color: var(--token); background: var(--glow); }
+  .doc-box-label { position: absolute; left: -2px; bottom: 100%; padding: 0 4px; font-size: 11px; line-height: 1.4; white-space: nowrap; color: #fff; background: var(--focus); border-radius: 3px 3px 0 0; }
+  .doc-box.hot .doc-box-label { color: var(--token-ink); background: var(--token); }
+  .doc-page figcaption { margin: 6px 0 4px; font-size: 13px; color: var(--muted); }
+  .doc-marks { margin: 0; padding-left: 18px; font-size: 14px; }
+  .doc-mark.hot { background: var(--glow); }
+  .doc-note { color: var(--muted); }
 </style>
 </head>
 <body>

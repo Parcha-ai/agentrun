@@ -96,7 +96,7 @@ const visionWindow = (fragment: string): { from?: number; to?: number } => {
   const [from, to] = (t?.slice(2) ?? '').split(',').map((value) => (value === '' ? undefined : Number(value)));
   return { ...(from !== undefined && Number.isFinite(from) ? { from } : {}), ...(to !== undefined && Number.isFinite(to) ? { to } : {}) };
 };
-const visionPage = (fragment: string): number | undefined => {
+export const visionPage = (fragment: string): number | undefined => {
   const page = fragment.replace(/^#/, '').split('&').find((part) => part.startsWith('page='));
   const value = page ? Number(page.slice(5).split('-')[0]) : NaN;
   return Number.isInteger(value) && value >= 1 ? value : undefined;

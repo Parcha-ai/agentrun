@@ -18,6 +18,7 @@ const myPanel: Panel<MyState> = {
   reduce: (state, line) => nextState,             // one line in, the next state out
   view: (state, { t, focus, baseline }) => node,  // the screen for a state
   shows: (line) => line.kind === 'frame',          // optional: the lines a recording needs to draw this panel at all
+  showsResult: (result) => isMine(result),         // optional: a result that has this panel drawn even when no line does
 };
 register(myPanel);                // when its module loads; extensions' panels show first, in this order
 ```
@@ -35,6 +36,12 @@ stop before its first line it is drawn with its state before any line. Give a pa
 lines that are not its story: the transport panel reduces the counters' lines for its own counters, but draws only for
 a recording with `transport` lines.
 
+A panel whose story is in the run's result rather than in its lines gives `showsResult(result)`: the parsed JSON a
+result names (the manifest's or a `result` line's). The shell asks it once it has read the results, which it does as
+the recording opens, so the panel is drawn for that recording from then on: a result is the whole recording's, never
+a stop's, and a scrub still never makes a panel appear or vanish. The document panel draws only for a result that cites
+a page, though every run's result line is one it reduces.
+
 ## What `view` returns
 
 Plain nodes, not DOM. The viewer draws them.
@@ -51,6 +58,13 @@ Plain nodes, not DOM. The viewer draws them.
   A view never reads a blob's bytes: the shell resolves the hash to a URL when it draws. The one exception is the
   result's JSON, which the shell reads and hands every view (`json`, below).
 - `{ tag: 'frame', session }`: a browser session's picture at the current point (below).
+- `{ tag: 'pdf-page', blob, page, alt, children }`: page `page` of a PDF in `blobs/`, drawn by the shell with PDF.js
+  at the width of its place and its own proportions, with `children` placed over it: give each a `box`, in percent of
+  the page as PDF.js draws it (its crop box, which is also the page pi-vision renders and cites, so a cite's
+  `xywh=percent:` is a box as it is). Until the page is drawn the shell shows that it is drawing, and when it cannot
+  draw it (a page opened from `file://` cannot load PDF.js, a file that is not a PDF, a page past the last) it says
+  why and links the file at that page; the children are drawn only over a drawn page, so a view says in its own text
+  what they mark.
 
 Any node with a `path` is clickable: a click focuses that execution path in every panel, and the viewer shows the
 focus and a way to clear it. Give a node the `path` of the workflow position it shows.
@@ -218,3 +232,16 @@ last one after the run ends, a kill included. It is any job's picture, read from
 `picture` line draws no picture panel; one with pictures shows it first (`featured`), since a run that draws its result as
 it goes is about that picture. The image is drawn at the panel's width with its pixels kept sharp. Its test is
 `test/picture.test.ts`.
+
+## The document panel (`src/document.ts`)
+
+The pages of a PDF a run's result cites, each drawn whole, with every box a row cites over its page. It reads the generic
+cited result (`agentrun.cited/1`): a cite that names a blob and a page (`page=N`) is that page of that file, and a cite
+whose fragment also names a region (`page=N&xywh=percent:x,y,w,h`, pi-vision's form) is a box on it. Each page is drawn
+once (in the order the result first cites it) as a `pdf-page` node, its boxes labelled with their rows; under it, every
+row that cites the page, with its value and its box, or "no box" for a row that cites the page without a region (a mark
+checked and found absent). A box and a row that cite a look select it when clicked, as a citation chip does, and the
+selected one is lit. A cite whose file the shell knows to be a picture is not a page. A recording whose result cites no
+page draws no document panel (`showsResult`). PDF.js is the viewer's one dependency, shipped as its release files
+(`vendor/pdfjs/README.md`). Its test is `test/document.test.ts`, which also draws a hand-made PDF in Chrome under a
+static host's policy that loads scripts, workers and data from its own origin only.

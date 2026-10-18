@@ -60,7 +60,8 @@ names with `&parent=<origin>`, each checked.
   shows them not measured.
   When the manifest names a baseline (another real recording), its counters at its end show beside these.
 - **Panels.** The lines at the current point, by source, and the model's turns. Extensions add their own
-  (`PANELS.md`). Click anything with a workflow path to focus that branch: every panel still holds the whole run and
+  (`PANELS.md`). A result that cites pages of a PDF (`page=N`, with a box as `xywh=percent:`) has them drawn whole in
+  the document panel, each box over its page. Click anything with a workflow path to focus that branch: every panel still holds the whole run and
   shows the branch its own way (the two built in dim the rest).
 - **Chapters.** The manifest's chapters when it has them; else each process's start, each kill, and the end.
 - **Links.** `?at=<commit>` opens at the point after that commit, and `?at=<gen>:<commit>` after that commit of that
@@ -105,5 +106,20 @@ fetch.
 npm run test:viewer    # typecheck, the core tests, the build, and the page from file:// in a local Chrome if there is one
 ```
 
-The source is erasable TypeScript in `src/`, joined by `build.mjs` into one classic script with no dependency (a page
-opened from `file://` cannot load module scripts or fetch). Durable lines are read in one file, `src/durable.ts`.
+The source is erasable TypeScript in `src/`, joined by `build.mjs` into one classic script that imports no package (a
+page opened from `file://` cannot load module scripts or fetch). Durable lines are read in one file, `src/durable.ts`.
+
+## Dependencies
+
+One, shipped with the page rather than installed, so `node build.mjs` needs no install anywhere (the hosted gallery and
+both deploy buttons build that way):
+
+| What | Version | License | Where | Used for |
+| --- | --- | --- | --- | --- |
+| PDF.js (`pdfjs-dist`, Mozilla Foundation) | 6.4.299 | Apache-2.0 | `vendor/pdfjs/`, copied to `dist/pdfjs/` | drawing a page of a PDF the result cites (the document panel) |
+
+The page loads PDF.js only when it draws a PDF page, as a module script beside it, with its worker a file of the same
+origin, and hands it the PDF's bytes (never a `data:` or `blob:` address to fetch), so it draws under a host policy that
+loads scripts, workers and data from the page's own origin only. A page opened from `file://` cannot load a module
+script: there the panel says so and links the PDF at its page. `vendor/pdfjs/README.md` lists each file's SHA-256 and
+how to move to another release.
