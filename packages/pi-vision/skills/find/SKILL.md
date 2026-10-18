@@ -75,9 +75,11 @@ From the receipts of one run on a 47-minute film, a 320x180 copy to scan and wat
 
 ## When to stop
 
-- **Found**: a frame within a second of the eyes' second has a noul of at least 0.8 and a box confidence of at least
-  0.6. Answer with its citation, its noul, and the price. Name the box by a short noun (`box`, "the umbrella"): a long
-  description in the box question lowers its confidence even when the box is right.
+- **Found**: a frame within a second of the eyes' second has a noul of at least 0.8. Answer with its citation, its noul,
+  and the price. The box comes with Jev's confidence in it: under 0.6, say the box is loose, but the thing is still found.
+  The confidence never decides that: asked about the same frame for the same thing, Jev drew the same box each time with
+  a confidence anywhere from 0.31 to 0.83. Name the box by a short noun (`box`, "the umbrella"): a long description in
+  the box question lowers its confidence even when the box is right.
 - **Likely, not just possible**: a frame is high at a noul of 0.7 or more. A lookalike scores in between (0.6, where
   the thing itself scored 0.86): starting from it puts the eyes' minute in the wrong place. With no frame at 0.7, start
   from the best frame at 0.5 or more and say so.
@@ -230,7 +232,8 @@ When `at` is null the eyes did not say a second in the form asked: read `said`, 
 ## 5. Jev checks the frame and draws the box
 
 The frames at the eyes' second and the seconds either side, from `best`, each named by its time in the video the
-question was about, so the box comes back as that video's fragment. The first that passes is the answer.
+question was about, so the box comes back as that video's fragment. The first whose noul passes is the answer; its
+box is `loose` when Jev's confidence in it is under 0.6.
 
 ```js
 const dir = ".find/umbrella";
@@ -249,10 +252,12 @@ for (const t of [task.at - 1, task.at, task.at + 1].filter((t) => t >= 0 && t < 
   checks.push({ t, noul: answer.answers.here.noul, confidence: answer.answers.where.confidence, cite: answer.answers.where.fragment });
   spent += paid(answer);
 }
-const found = checks.find((c) => c.noul >= 0.8 && c.confidence >= 0.6) ?? null;
+const passed = checks.find((c) => c.noul >= 0.8);
+const found = passed ? { ...passed, loose: passed.confidence < 0.6 } : null;
 await tools.bash({ command: `cat > ${dir}/task.json <<'EOF'\n${JSON.stringify({ ...task, checks, found, spentUsd: spent })}\nEOF` });
 return { found: Boolean(found), ...(found ?? { checks }), spentUsd: spent, ...(spent >= task.budgetUsd && checks.length < 3 ? { stopped: "budget" } : {}) };
 ```
 
 Answer with the citation, the noul and the price: "first seen at `film.mp4#t=1024&xywh=percent:31,6,49,52` (Jev 0.88
-sure; $0.008 for the search)". To show it, crop the box from that frame (the `look` skill's region).
+sure; $0.008 for the search)", and say "the box is loose" when `loose` is true. To show it, crop the box from that frame
+(the `look` skill's region).

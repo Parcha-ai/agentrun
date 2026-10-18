@@ -68,7 +68,7 @@ async function look(bytes) {
 }
 
 /** A Jev port that answers from the pixels of the one image it is sent: red is the thing, orange looks like it. */
-function pixelJev() {
+function pixelJev({ confidence = 0.9 } = {}) {
   const requests = [];
   const judge = async (params) => {
     const { bytes } = params.assets[params.state.images[0].image];
@@ -76,7 +76,7 @@ function pixelJev() {
     requests.push({ source: params.state.images[0].source, size: imageHeader(bytes), questions: params.questions });
     const answers = Object.fromEntries(Object.entries(params.questions).map(([key, q]) => [key, q.type === "noul"
       ? { type: "noul", noul: red ? 0.95 : orange ? 0.6 : 0.05 }
-      : { type: "box", box: red ?? { top: 0, bottom: 1, left: 0, right: 1 }, confidence: red ? 0.9 : 0.2 }]));
+      : { type: "box", box: red ?? { top: 0, bottom: 1, left: 0, right: 1 }, confidence: red ? confidence : 0.2 }]));
     return { answers, model: params.model, usage: { input_tokens: 1000, output_tokens: 0 }, cost_usd: JEV_USD };
   };
   return { judge, requests };
@@ -313,4 +313,14 @@ test("a search named by more than one word is refused before anything is asked: 
   assert.equal(jev.requests.length, 0);
   await steps([narrowWith('const dir = ".find/umbrella";', 'const dir = ".find/red-umbrella_2";')]);
   assert.ok(fs.existsSync(path.join(cwd, ".find", "red-umbrella_2", "task.json")), "one word with digits, dashes and underscores is a name");
+});
+
+test("a box Jev is not sure of is still the answer: the thing is found by its noul, and the box is called loose", async () => {
+  transcript();
+  const { values: [, , , , checked] } = await steps([narrow, scan, halve, name, check], { jev: pixelJev({ confidence: 0.31 }) });
+  assert.deepEqual([checked.found, checked.t, checked.loose], [true, FIRST, true], "found at its second, its box loose");
+  assert.match(checked.cite, /^film\.mp4#t=187&xywh=percent:/);
+  near(xywh(checked.cite), [60, 20, 25, 40], 2, "the box, as Jev drew it");
+  const sure = await steps([narrow, scan, halve, name, check]);
+  assert.deepEqual([sure.values[4].found, sure.values[4].loose], [true, false], "a box at confidence 0.9 is not loose");
 });
