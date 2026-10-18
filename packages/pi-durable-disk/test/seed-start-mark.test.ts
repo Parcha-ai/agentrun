@@ -6,11 +6,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Delegation } from "disk";
 import { openDurableRun, type RunSeed } from "../src/run.ts";
+import { keepStartMark } from "../src/status.ts";
 import { ensureRunning, type HostDriver, type HostHandle, type SupervisorControl } from "../src/supervise.ts";
 import { fakeClaim, localClaimDir, localRef, scratchRoot, scriptedHarness } from "./_run-support.ts";
 
@@ -169,6 +170,31 @@ describe("a seed and the supervisor's start grace", () => {
     }
   });
 
+  it("collections while the seed waits on a promise nothing else holds close nothing: the claim directory stays open and the mark fresh (GRE-3853)", { timeout: 60_000 }, async () => {
+    const dir = scratchRoot("seed-mark-gc");
+    const root = join(dir.root, "run");
+    const marker = join(dir.root, "seeding");
+    mkdirSync(root, { recursive: true });
+    const start = new Date().toISOString();
+    writeMark(root, { generation: 1, at: start, by: "sup-1", failures: 0, lastExit: null });
+    // A full collection every 100 ms in the seeder, as a process that allocates more reaches one sooner.
+    const child = spawn(process.execPath, ["--expose-gc", CHILD, root, marker, String(LEASE.heartbeatMs), "0", "100"], { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => (stderr += chunk));
+    try {
+      for (const t0 = Date.now(); !existsSync(marker) && Date.now() - t0 < 30_000; ) await sleep(20);
+      await firstRefresh(root, start);
+      await sleep(1_500);
+      const age = Date.now() - Date.parse(readMark(root).at);
+      assert.doesNotMatch(stderr, /Closing file descriptor \d+ on garbage collection/, "no descriptor of the seeder is closed by a collection");
+      assert.ok(age < GRACE_MS, `the mark is kept fresh across collections: ${age} ms old against a ${GRACE_MS} ms grace`);
+    } finally {
+      child.kill("SIGKILL");
+      await new Promise((resolve) => (child.exitCode === null && child.signalCode === null ? child.once("close", resolve) : resolve(undefined)));
+      dir.remove();
+    }
+  });
+
   it("a seeder that dies stops refreshing, and the grace runs out as before", { timeout: 60_000 }, async () => {
     const dir = scratchRoot("seed-mark-dies");
     const root = join(dir.root, "run");
@@ -188,6 +214,37 @@ describe("a seed and the supervisor's start grace", () => {
       assert.notEqual((await supervisor.tick()).action, "starting", "past the grace the start has failed, as before");
     } finally {
       child.kill("SIGKILL");
+      dir.remove();
+    }
+  });
+});
+
+describe("the start mark's keeper", () => {
+  it("writes only while its directory is the one it started on: once the path names another, it touches nothing there and warns once", { timeout: 30_000 }, async () => {
+    const dir = scratchRoot("keeper-moved");
+    const root = join(dir.root, "run");
+    mkdirSync(root, { recursive: true });
+    const start = new Date().toISOString();
+    writeMark(root, { generation: 1, at: start, by: "sup-1", failures: 0, lastExit: null });
+    const warnings: Error[] = [];
+    const onWarning = (warning: Error) => void ((warning as { code?: string }).code === "PDA_START_MARK" && warnings.push(warning));
+    process.on("warning", onWarning);
+    const stop = keepStartMark(root, 50);
+    try {
+      await firstRefresh(root, start);
+      // The path now names another directory, with a mark of its own: what a reused descriptor number would name.
+      renameSync(root, `${root}.old`);
+      mkdirSync(root);
+      const other: Mark = { generation: 1, at: "2026-10-18T00:00:00.000Z", by: "sup-2", failures: 0, lastExit: null };
+      writeMark(root, other);
+      await sleep(500);
+      assert.deepEqual(readMark(root), other, "the directory the path names now is not written");
+      assert.equal(existsSync(join(root, "start.json.tmp")), false, "nor a temp file in it");
+      assert.equal(warnings.length, 1, `one warning: ${warnings.map((w) => w.message).join(" | ")}`);
+      assert.match(warnings[0]!.message, /is no longer the directory/);
+    } finally {
+      await stop();
+      process.off("warning", onWarning);
       dir.remove();
     }
   });
