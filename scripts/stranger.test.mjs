@@ -102,6 +102,17 @@ test('the vision spec accepts exactly the output its README shows under the comm
   assert.deepEqual([ran({ stdout: `${shown}more\n` }), ran({ stdout: shown.slice(1) }), ran({ stdout: shown.replace('B2=1250.5', 'B2=1250') }), ran({ stderr: 'a warning\n' })], [1, 1, 1, 1]);
 });
 
+test("the agent-home spec accepts exactly the output its README shows under the command, followed by nothing but Node's warning lines", async () => {
+  const agent = await loadSpec('pi-durable-agent');
+  const [file] = agent.files;
+  const shown = extractSnippet(await readFile(new URL(`../${file.readme}`, import.meta.url), 'utf8'), { heading: file.heading, fence: 'text' });
+  const ran = over => judge(agent, { exitCode: 0, stdout: shown, stderr: '', timedOut: false, ...over }).length;
+  // node:sqlite is experimental on Node 22, and Node says so on stderr.
+  const warning = '(node:42) ExperimentalWarning: SQLite is an experimental feature and might change at any time\n(Use `node --trace-warnings ...` to show where the warning was created)\n';
+  assert.deepEqual([ran({}), ran({ stderr: warning })], [0, 0]);
+  assert.deepEqual([ran({ stdout: `${shown}more\n` }), ran({ stdout: shown.slice(1) }), ran({ stdout: shown.replace('save lease: true', 'save lease: false') }), ran({ stderr: 'a warning\n' }), ran({ stderr: `${warning}an error\n` })], [1, 1, 1, 1, 1]);
+});
+
 test('the browser spec accepts exactly the output its README shows under the command, and nothing more or less', async () => {
   const browser = await loadSpec('pi-browser');
   const [file] = browser.files;

@@ -1,0 +1,36 @@
+{
+  "package": "@parcha/pi-durable-agent",
+  "install": [
+    "pi-durable-agent"
+  ],
+  "companions": [],
+  "peers": [
+    "@earendil-works/chord",
+    "@earendil-works/pi-durable",
+    "@earendil-works/pi-ai"
+  ],
+  "files": [
+    {
+      "name": "quickstart.mjs",
+      "readme": "packages/pi-durable-agent/README.md",
+      "heading": "Quickstart (no key, no network)",
+      "fence": "js",
+      "index": 0
+    }
+  ],
+  "readmeInstall": {
+    "readme": "packages/pi-durable-agent/README.md",
+    "heading": "Quickstart (no key, no network)",
+    "fence": "sh",
+    "index": 0
+  },
+  "command": [
+    "node",
+    "quickstart.mjs"
+  ],
+  "expect": {
+    "exitCode": 0,
+    "pattern": "(?<![\\s\\S])run-1: signing in\nrun-1: profile ctx_1, save lease: false\nrun-1: carried back acme\\.example\nrun-2: profile ctx_1, save lease: true\nrun-2: carried back acme\\.example\n\\{\n  'acme\\.example': \\{ provider: 'browserbase', ref: 'ctx_1', state: 'ready' \\}\n\\}\n(?:\\(node:\\d+\\) [A-Za-z]*Warning: [^\\n]*\\n|\\(Use `node --trace-warnings [^\\n]*\\n)*(?![\\s\\S])"
+  },
+  "timeoutMs": 120000
+}

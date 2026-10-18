@@ -13,17 +13,28 @@ level, the tools, and where each tool runs. The definition names tools; the host
 ## Install
 
 ```sh
-npm install @parcha/pi-durable-agent@beta
+npm install @parcha/pi-durable-agent@beta @earendil-works/pi-durable@~1.2.0 @earendil-works/pi-ai@~1.2.0 @earendil-works/chord@~1.2.0
 ```
 
-A release publishes it on npm under the `beta` tag, at the workspace version with this repository's other packages; its
-peers are under [Requirements](#requirements). Until one has, build it from a checkout, as the quickstart does.
+`@earendil-works/pi-durable` and `@earendil-works/chord` are its peers (see [Requirements](#requirements)), and
+`@earendil-works/pi-ai` gives the host's Harness its models. The pi packages are pinned to 1.2, the line
+`@parcha/pi-durable-disk`'s install pins, so the two install side by side. A release publishes the package on npm under
+the `beta` tag, at the workspace version with this repository's other packages. Until one has, pack it from a checkout
+and install the tarball it writes (`parcha-pi-durable-agent-<version>.tgz`) in place of `@parcha/pi-durable-agent@beta`:
+
+```sh
+git clone https://github.com/Parcha-ai/agentrun.git && cd agentrun && npm ci --ignore-scripts && npm run build
+npm pack -w @parcha/pi-durable-agent
+```
 
 ## Quickstart (no key, no network)
 
-Node 22.19 or later. In a checkout of this repository, run `npm ci --ignore-scripts` and
-`npm run build -w @parcha/pi-durable-agent`, save this as `quickstart.mjs` at the repository root, and run
-`node quickstart.mjs`:
+Node 22.19 or later. In an empty directory, install the package and the pi packages it runs with, save this as
+`quickstart.mjs`, and run `node quickstart.mjs`:
+
+```sh
+npm install @parcha/pi-durable-agent@beta @earendil-works/pi-durable@~1.2.0 @earendil-works/pi-ai@~1.2.0 @earendil-works/chord@~1.2.0
+```
 
 ```js
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -59,7 +70,7 @@ await oneRun("run-2");
 console.log((await readAgentHome(home)).profiles);
 ```
 
-```
+```text
 run-1: signing in
 run-1: profile ctx_1, save lease: false
 run-1: carried back acme.example

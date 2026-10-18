@@ -370,7 +370,10 @@ test('the transport package is held: listed, private, at the workspace version, 
   const { private: _, ...lifted } = JSON.parse(await readFile(path, 'utf8'));
   await putJson(path, lifted);
   await recordPackages(root);
-  assert.deepEqual((await preflight(root)).packages.slice(-3).map(pkg => pkg.name), ['@parcha/pi-transport', '@parcha/pi-durable-agent', '@parcha/agentrun-reference'], 'a tree that lifts the hold publishes it in its place in the map, before pi-durable-agent and the reference host that peers on it');
+  const plan = (await preflight(root)).packages.map(pkg => pkg.name);
+  const [vision, transport, reference] = ['@parcha/pi-vision', '@parcha/pi-transport', '@parcha/agentrun-reference'].map(name => plan.indexOf(name));
+  assert.ok(vision >= 0 && vision < transport && transport < reference, 'a tree that lifts the hold publishes it after pi-vision and before the reference host that peers on it');
+  assert.ok(!plan.includes('@parcha/agentrun-serve'), 'a package still held stays out of the plan');
 }));
 
 test('a release is refused while fragments remain or the changelog lacks the version', () => fixture(async root => {

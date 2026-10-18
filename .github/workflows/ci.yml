@@ -284,7 +284,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        spec: [agentrun-dsl, agentrun-jev, agentrun-pi, pi-durable-disk, pi-browser, pi-vision, pi-transport, pi-transport-docker, agentrun-reference]
+        spec: [agentrun-dsl, agentrun-jev, agentrun-pi, pi-durable-disk, pi-browser, pi-vision, pi-durable-agent, pi-transport, pi-transport-docker, agentrun-reference]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
