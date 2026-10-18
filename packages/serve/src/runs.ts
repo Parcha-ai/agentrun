@@ -334,11 +334,11 @@ export class Runs {
     let unreadable = 0;
     const timer = setInterval(() => {
       void this.record(run).then((now) => {
+        if (now !== null) unreadable = 0;
         if (run.orphan !== pid || (this.doorOf(now) && alive(pid))) return;
         // A record that cannot be read while the process lives is read again at the next tick, a few times at most.
         if (now === null && alive(pid) && ++unreadable < UNREADABLE_TICKS) return;
         if (now === null && alive(pid)) warn(run.id, `its run.json could not be read ${UNREADABLE_TICKS} times in a row; settling it`);
-        if (now !== null) unreadable = 0;
         if (RELEASED.has(String(now?.status)) && alive(pid)) {
           releasedAt ??= Date.now();
           if (Date.now() - releasedAt < EXIT_AFTER_RELEASE_MS) return;
