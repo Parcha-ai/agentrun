@@ -1477,13 +1477,13 @@ test('an operator kill (a control file the supervisor watches, never the child\'
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const file = join(tmp, 'spec.json');
   writeFileSync(file, JSON.stringify({ name: 'reference' }));
-  Object.assign(process.env, { DEMO_SPEC: file });
+  Object.assign(process.env, { DEMO_SPEC: file, DEMO_OPERATOR_HOLD: join(tmp, 'control', 'kill-now') });
   t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
   const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
   const control = join(tmp, 'control', 'kill-now');
   mkdirSync(join(tmp, 'control'));
   const recording = join(tmp, 'recording');
-  // The operator\'s page, here a test: once the judge has answered in the first process, it makes the control file.
+  // The operator\'s page, here a test: once the first process has asked its first model request (where the fixture holds it until the control file is consumed, so the run cannot finish first), it makes the control file.
   const killed = [];
   const placeOn = (trigger) => ({ paths, self, destroyBoxes, requestFile }) => {
     const inner = localPlace({ self, paths, destroyBoxes, requestFile });
@@ -1494,7 +1494,7 @@ test('an operator kill (a control file the supervisor watches, never the child\'
       return runner;
     } };
   };
-  const place = placeOn('judge.answered verdict');
+  const place = placeOn('model.request turn 0');
   const result = await demo({ ...options, argv: ['--json', '--record', recording, '--operator-kill', control], place });
   assert.deepEqual(result.processes.map((process) => [process.signal, process.outcome?.status ?? null]), [['SIGKILL', null], [null, 'complete']], JSON.stringify(result.processes));
   assert.equal(result.record.company, 'Acme Ltd');
@@ -1509,6 +1509,7 @@ test('an operator kill (a control file the supervisor watches, never the child\'
   // The plan\'s own kill is not lost: an operator kill that ends an attempt first leaves its planned kill for the next one.
   killed.length = 0;
   writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'planned' }] }));
+  rmSync(join(tmp, 'control', 'kill-now.held'), { force: true });
   const { options: planned } = await import(`${FIXTURE}?options=${Date.now()}`);
   const both = await demo({ ...planned, argv: ['--kill', '--json', '--operator-kill', control], place: placeOn('model.request turn 0') });
   assert.deepEqual(both.kills.map((kill) => [kill.gen, kill.point ?? 'operator']), [[1, 'operator'], [2, 'judge.asked verdict']]);
