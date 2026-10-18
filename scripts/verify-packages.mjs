@@ -77,6 +77,11 @@ const allowedEndpoints = {
     // The live view starts its own server on loopback when the host mounts none (never 0.0.0.0), and tells the host the viewer's address.
     ['dist/live-view/server.js', 'http://127.0.0.1:${s.address().port}'],
   ],
+  harness: [
+    // A local Chrome's demo with LIVE_VIEW_DIR serves the live view on a loopback port of the run's own process (never 0.0.0.0); the viewer's
+    // address goes to one owner-only file (src/live-view.ts).
+    ['dist/live-view.js', 'http://127.0.0.1:${server.address().port}'],
+  ],
   serve: [
     // The address agentrun-serve binds by default, which its quick start points a client at.
     ['README.md', 'http://127.0.0.1:7340'],

@@ -43,6 +43,7 @@ import { cost } from './fold.ts';
 import { checkItems, fetchSources, missingCommitted, readSources, withSources } from './sources.ts';
 import { localHost, type BrowserPlane, type Fakes, type Host, type RunPlace } from './host.ts';
 import { takeArtifact } from './artifact.ts';
+import { mountLiveView } from './live-view.ts';
 import { codeOf, finishRecording, followRecording, keepBlob, lazyRecorder, openRecorder, openSupervisor } from './record.ts';
 import { packageCommitRecorder } from './record-store.ts';
 import { scanPlaced, scanRecording, signInFile, trackSecrets } from './secrets.ts';
@@ -261,6 +262,10 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   composeHost(local.host, parts.host, cross, window, live, fakesTapped !== undefined);
   // A demo with `browser: false` has none, whatever the live parts supplied.
   if (browserKind === 'none') local.host.tools = { ...local.host.tools, browser: noBrowser() };
+  // A run's own Chrome can be handed to a person: with LIVE_VIEW_DIR (a name the demo declares), the live view is served on a loopback port of this process
+  // and the agent gets `browser_request_handoff`, whose requests, viewer URL and outcomes are files in that directory (live-view.ts).
+  const viewer = browserKind === 'chrome' && env.LIVE_VIEW_DIR ? await mountLiveView({ dir: env.LIVE_VIEW_DIR }) : undefined;
+  if (viewer) local.host.tools = { ...local.host.tools, browser: viewer.plane(local.host.tools.browser) };
   // The checked files the job reads, fetched into work/ and verified: on --live and with --fetch-sources (a no-key run uses the files the demo commits). `sourcesFor(input)` names only the items this input needs;
   // else the demo's sources.json lists them all. A fetched file is cached by its hash (`--cache`), so a re-run does not fetch it again.
   // The input: `--input`'s, else the demo's for this mode (`fakes.input` on fakes, which may be a smaller slice), else the job's own.
@@ -306,7 +311,7 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   };
   const runOptions: RunOptions = { codeImages: shown.note, ...(browserKind === 'none' ? { browser: false } : {}), ...(boxes && boxSpec?.runIn ? { env: () => box!.env() } : {}), ...(options.spec.sites ? { sites: options.spec.sites } : {}), ...(options.codeMode ?? options.spec.codeMode ? { codeMode: options.codeMode ?? (options.spec.codeMode as CodeModeOptions | boolean) } : {}), vision, ...(options.layout ? { layout: options.layout } : {}) };
   const made = async (result: Awaited<ReturnType<typeof run>>) => (result.status === 'complete' && options.result ? options.result(result.output, { dir: place.root, keep: (bytes, extension) => (recorder ? recorder.blob(bytes, extension) : createHash('sha256').update(bytes).digest('hex')) }) : undefined);
-  return { models: parts.models, place, host: local.host, job: { ...options.job, input }, runOptions, recorder, redact, open, made, done: async () => { await box?.destroy(); } };
+  return { models: parts.models, place, host: local.host, job: { ...options.job, input }, runOptions, recorder, redact, open, made, done: async () => { await viewer?.close(); await box?.destroy(); } };
 }
 
 const storeShaOf = (place: RunPlace) => {

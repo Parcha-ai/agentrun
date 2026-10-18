@@ -289,6 +289,18 @@ A place that has `status()` reports its reading of the run (`{ record }`, a disk
 
 `browser: false` in demo.json (`DemoSpec.browser`) means the entry creates no browser, live or on fakes: `--live` then needs no Browserbase key and no Chrome (`chooseBrowser` is not asked), the live parts' browser is ignored, and a page tool call fails with `this demo has no browser` rather than a missing key. The default (a browser) is unchanged.
 
+### A person in the live view of a local Chrome (`LIVE_VIEW_DIR`)
+
+With `--local-chrome` and `LIVE_VIEW_DIR` (a directory; declare the name in demo.json so the live child gets it), the entry mounts pi-browser's live view on a loopback port of the run's process (127.0.0.1, never 0.0.0.0) and gives the browser a handoff port, so the agent gets `browser_request_handoff`: it hands the browser to a person for a step that is theirs, and the call waits until they finish. Without `LIVE_VIEW_DIR`, or with any other browser, nothing changes and the tool is not listed. The port keeps its files in `<LIVE_VIEW_DIR>/handoff/` (owner-only), one set per request, named by the agent's request id:
+
+| File | Written by | What |
+| --- | --- | --- |
+| `<id>.json` | the run | the instruction, the completion condition, when it was asked and when it expires (15 minutes later); a request asked again keeps it |
+| `<id>.viewer` | the run | the viewer's URL, mode 0600. It carries the viewer's token, which is full control of the browser: it goes to this file only, never to the model, a log, a status row or the recording. Open it in a browser on the same machine |
+| `<id>.outcome` | the person's side | `done` or `cancelled`; until it exists the call waits, and past the deadline it ends `expired` |
+
+The live view and the browser share pi-browser's driving gates, so the agent's browser calls wait while the person drives. Delete the directory when the run is over: a viewer file outlives its token, but it is still the address of the browser.
+
 ### Blobs appear whole
 
 Each blob is written to a temporary file in the recording's `.spool/` (`blob-<sha>.<ext>.tmp-<pid>`), synced, and renamed into `blobs/`, so a viewer following a live run finds it absent or whole, and a process that stops mid-write leaves a temporary file in `.spool/` and never a torn blob; a blob already there is left alone. No validator or gate change is needed: `.spool/` is never published.

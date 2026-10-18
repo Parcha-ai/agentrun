@@ -12,7 +12,7 @@ import { fauxProvider } from '@earendil-works/pi-ai/providers/faux';
 import type { ConversationId, Extension, Harness, ModelRef } from '@earendil-works/pi-durable';
 import type { WorkflowDeps, WorkflowEvent } from '@parcha/agentrun-dsl';
 import type { RecoveryEffectParams } from '@parcha/agentrun-dsl/recovery';
-import type { BrowserConfig, Decisions as BrowserDecisions, BrowserProvider, EvidenceRecord, PriceTable, ReconcileReport, SessionChange, SessionRow } from '@parcha/pi-browser';
+import type { BrowserConfig, Decisions as BrowserDecisions, BrowserProvider, EvidenceRecord, HandoffPort, PriceTable, ReconcileReport, SessionChange, SessionRow } from '@parcha/pi-browser';
 import type { DriverFactory, PageDriver } from '@parcha/pi-browser/durable';
 import { FakeBackend, fakeDriver, type FixturePage } from '@parcha/pi-browser/testing';
 import type { Eyes, LookEvent, LookRecord, MissEvent } from '@parcha/pi-vision';
@@ -35,6 +35,8 @@ export type BrowserPlane = {
   /** How long a session create whose answer was lost may still land before its release goes ahead; the browser's
    *  default (60 s) is for a provider across a network. */
   createDeadlineMs?: number;
+  /** Reaches a person for `browser_request_handoff` (live-view.ts); absent, the tool is not listed. */
+  handoff?: HandoffPort;
 };
 /** The packages' own rows, tagged by who reported them. */
 export type StatusEvent =
