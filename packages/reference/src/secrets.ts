@@ -2,7 +2,7 @@
 // in `auth.json` (`$AGENTRUN_HOME/auth.json`, else `~/.config/agentrun/auth.json`; one credential per provider, each `{ type: 'oauth', access, refresh, ... }` or `{ type: 'api_key', key }`). Every recorded line, text blob and the manifest has none of them, and
 // a recording that still holds one is refused. A value is never printed: a finding names the key and the file only.
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { homedir, hostname } from 'node:os';
+import { homedir, hostname, userInfo } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import type { Redact } from './record.ts';
 import { declaredEnv, type DemoSpec } from './demo-spec.ts';
@@ -78,6 +78,7 @@ const stampOf = (file: string): string => { try { const stat = statSync(file); r
  *  stamp (mtime and size) is checked, and when it changed its values are read again and added. The redaction uses the union of every value seen. `final()` reads the file once more, for the scan at the end: an event
  *  can be written before the recorder sees the file change. A file that cannot be read when the tracker is made, or at the end, fails; one that cannot be read in between (a writer mid-rename) is read again at the next write. */
 export function trackSecrets(env: NodeJS.ProcessEnv, spec: DemoSpec, authFile: string = signInFile(env)): { redact: Redact; final(): Secret[] } {
+  const scrub = runScrub(env);
   const seen = new Map<string, Secret>();
   const add = (list: readonly Secret[]) => { for (const secret of list) if (!seen.has(secret.value)) seen.set(secret.value, secret); };
   add(secretsOf(env, spec, authFile));
@@ -91,9 +92,42 @@ export function trackSecrets(env: NodeJS.ProcessEnv, spec: DemoSpec, authFile: s
     if (seen.size !== count) { count = seen.size; forms = formsOf(seen.values()); }
   };
   return {
-    redact: (text) => { refresh(); return forms.length ? apply(forms, text) : text; },
+    redact: (text) => { refresh(); const hidden = forms.length ? apply(forms, text) : text; return scrub ? scrub(hidden) : hidden; },
     final: () => { add(signInSecrets(authFile)); return [...seen.values()]; },
   };
+}
+
+const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** What identifies the machine the run is on, taken out of every line and text blob beside the exact secret values: the run's own user name, its home directory, and the absolute paths under the run's directories.
+ *  A path under a run directory becomes `<run>/...`, the home directory `~`. The user name is taken only as a whole token where it names a person on the machine: a path segment (`/ubuntu/`) and the owner and group columns of an `ls -l`
+ *  row; the word elsewhere ("Ubuntu 24.04", a sentence) is left alone. No user, home or dirs given: nothing is taken out (`undefined`). */
+export function scrubOf(options: { user?: string | undefined; home?: string | undefined; dirs?: readonly (string | undefined)[] }): Redact | undefined {
+  const dirs = [...new Set((options.dirs ?? []).filter((dir): dir is string => typeof dir === 'string' && dir.length > 3 && dir.startsWith('/')).map((dir) => dir.replace(/\/+$/, '')))].sort((a, b) => b.length - a.length);
+  const home = options.home && options.home.length > 3 && options.home.startsWith('/') && options.home !== '/root' ? options.home.replace(/\/+$/, '') : undefined;
+  const user = options.user && options.user.length >= 3 ? options.user : undefined;
+  if (!dirs.length && !home && !user) return undefined;
+  // A path is taken by its prefix, up to the next character a path does not hold.
+  const under = (prefix: string) => new RegExp(`${escapeRe(prefix)}(?=[/\\s"'\`:;,)\\]}]|$|\\\\)`, 'g');
+  const parts = dirs.map((dir) => ({ pattern: under(dir), to: '<run>' }));
+  if (home) parts.push({ pattern: under(home), to: '~' });
+  const segment = user ? new RegExp(`(?<=/)${escapeRe(user)}(?=[/\\s"'\`:;,)\\]}]|$|\\\\)`, 'g') : undefined;
+  // An `ls -l` row: permissions, links, owner, group (each may be the user); a row starts a line (a real newline, or the two characters a JSON string holds).
+  const row = user ? new RegExp(`((?:^|\\n|\\\\n|")[-dlcbps][-rwxsStT]{9}[.+@]?\\s+\\d+\\s+)(${escapeRe(user)}|\\S+)(\\s+)(${escapeRe(user)}|\\S+)`, 'g') : undefined;
+  return (text) => {
+    let out = text;
+    for (const part of parts) out = out.replace(part.pattern, part.to);
+    if (segment) out = out.replace(segment, '[user]');
+    if (row && user) out = out.replace(row, (_all, lead: string, owner: string, gap: string, group: string) => `${lead}${owner === user ? '[user]' : owner}${gap}${group === user ? '[user]' : group}`);
+    return out;
+  };
+}
+
+/** The scrub for a run: this process's user name and home, and the run's directories (the environment names them: `DIR`, `TMPDIR`, `RECORD_DIR`, `HOME` when it is not the real home). */
+export function runScrub(env: NodeJS.ProcessEnv): Redact | undefined {
+  let user: string | undefined;
+  try { user = userInfo().username; } catch { user = env.USER; }
+  return scrubOf({ user, home: homedir(), dirs: [env.DIR, env.TMPDIR, env.RECORD_DIR, env.HOME !== homedir() ? env.HOME : undefined] });
 }
 
 const filesUnder = (dir: string): string[] => readdirSync(dir).flatMap((name) => {

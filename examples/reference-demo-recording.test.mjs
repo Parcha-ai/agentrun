@@ -407,3 +407,39 @@ test('the follower looks at the text blobs a line names before it places the lin
       kill: async () => { throw Object.assign(new Error('the provider refused'), { code: 'KILL_REFUSED' }); } };
   } }), /EISDIR|is a directory/i);
 });
+
+test('the scrub takes the run\'s user name (a whole token in a path segment or an ls column), its home directory and the paths under its directories out of lines and text blobs; ordinary words are left alone', async () => {
+  const { scrubOf } = await import('../packages/reference/dist/secrets.js');
+  const user = 'someuser';
+  const home = ['', 'home', user].join('/');
+  const run = ['', 'tmp', 'agentrun-demo-ab12cd'].join('/');
+  const scrub = scrubOf({ user, home, dirs: [run] });
+  // The user name in an ls -la row, as a tool result holds it, inside a JSON line (the newline is the two characters \\n).
+  const listing = `total 8\ndrwxr-xr-x  2 ${user} ${user} 4096 Oct 18 10:00 work\n-rw-r--r--  1 root root 12 Oct 18 10:00 notes.txt\n`;
+  const out = scrub(JSON.stringify({ data: { text: listing } }));
+  assert.ok(!out.includes(user), `the user name is gone from the ls columns: ${out}`);
+  assert.ok(out.includes('root root'), 'other owners stay');
+  assert.ok(scrub(listing).includes('[user] [user] 4096'), 'and the same in a plain text blob');
+  // The home directory, a path under it, a path under the run's directory.
+  assert.equal(scrub(`cd ${home}/projects && ls`), 'cd ~/projects && ls');
+  assert.equal(scrub(`wrote ${run}/work/out.json and ${run}`), 'wrote <run>/work/out.json and <run>');
+  // A path segment that is the user name, outside the home.
+  assert.equal(scrub(`/srv/${user}/data`), '/srv/[user]/data');
+  // Ordinary words: the name as a word, a longer word that holds it, a version.
+  const plain = `Ubuntu 24.04 is what ${user}s like; the word ${user} in a sentence stays`;
+  assert.equal(scrub(plain), plain);
+  assert.equal(scrub('Ubuntu 24.04'), 'Ubuntu 24.04');
+  const ubuntu = scrubOf({ user: 'ubuntu', home: '/home/ubuntu', dirs: [] });
+  assert.equal(ubuntu('Ubuntu 24.04 LTS, ubuntu 24.04'), 'Ubuntu 24.04 LTS, ubuntu 24.04', 'a user named ubuntu does not mangle "Ubuntu 24.04"');
+  assert.equal(scrubOf({ dirs: [] }), undefined, 'nothing to take out: no scrub');
+});
+
+test('a tool result that carries the run\'s user name, home and run directory is recorded scrubbed, in the line and in a text blob', { timeout: 300_000 }, async (t) => {
+  const { userInfo, homedir } = await import('node:os');
+  const user = userInfo().username;
+  const text = `drwxr-xr-x  2 ${user} ${user} 4096 Oct 18 10:00 work\nhome ${homedir()}/projects`;
+  const { recording } = await run(t, {}, ['--json'], { DEMO_LEAK: JSON.stringify([text]), DEMO_RESULT: '1' });
+  const all = filesIn(recording).filter((file) => !file.endsWith('.png')).map((file) => readFileSync(file, 'utf8')).join('\n');
+  assert.ok(!all.includes(homedir()), 'the home directory is not in the recording');
+  assert.ok(!new RegExp(`\\s${user}\\s+${user}\\s`).test(all), 'nor the user name in an ls column');
+});
