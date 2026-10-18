@@ -81,7 +81,7 @@ export function recordingPlace(calls, recordDir, options = {}) {
 
 export const specWith = async (t, spec) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-place-'));
-  t.after(() => rm(tmp, { recursive: true, force: true }));
+  t.after(() => rm(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const file = join(tmp, 'demo.json');
   writeFileSync(file, JSON.stringify(spec));
   Object.assign(process.env, { DEMO_SPEC: file });
