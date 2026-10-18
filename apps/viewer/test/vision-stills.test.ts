@@ -119,3 +119,19 @@ test('?cite= of a look lands after the commit that filed it, never at the memo o
   const state = reduceTo(visionPanel, recorded, stop);
   assert.ok(state.looks.some((look) => look.key === key), 'the look is filed at the stop');
 });
+
+test('a look on a page rendered from a PDF is the pages lane\'s, at its page: never a photograph', () => {
+  // Code that renders a page of a PDF and has Jev look at it names it `deed.pdf#page=N` in the look's path (its kind
+  // `image`, its own fragment empty), as it names a still `film.mp4#t=S`.
+  const KEY = { one: sha256('page 1'), three: sha256('page 3') };
+  const pages: Line[] = [lines[0]!, lines[1]!,
+    filed(KEY.one, { tool: 'look', args: { path: 'deed.pdf#page=1', ask: '{"seal":"Is the seal there?"}', model: 'jev', native: false, via: 'jev' }, status: 'ok', body: '{"seal":{"answer":true}}', facts: { sha256: sha256('page 1 png'), kind: 'image', fragment: '', key: KEY.one, cost_usd: 0.0001 } } as unknown as Json),
+    filed(KEY.three, { tool: 'look', args: { path: 'deed.pdf#page=3&xywh=percent:67,3,28,11', ask: '{"stamp":"Is the stamp there?"}', model: 'jev', native: false, via: 'jev' }, status: 'ok', body: '{"stamp":{"answer":false}}', facts: { sha256: sha256('page 3 png'), kind: 'image', fragment: '', key: KEY.three, cost_usd: 0.0001 } } as unknown as Json),
+    lines.at(-1)!];
+  const drawn = visionPanel.view(reduceTo(visionPanel, pages, pages.length), { t: 0, json: () => undefined });
+  assert.match(text(lane(drawn, /^Photographs/)!), /^Photographs · 1 looked at/, 'only the photograph itself');
+  assert.match(text(find(lane(drawn, /^Pages/)!, (each) => each.tag === 'h5')[0]!), /^Pages · deed\.pdf · 2 pages read$/);
+  const chosen = visionPanel.view(reduceTo(visionPanel, pages, pages.length), { t: 0, json: () => undefined, cite: KEY.three });
+  assert.match(text(find(chosen, cls('vz-receipt'))[0]!), /^Receipt · deed\.pdf #page=3&xywh=percent:67,3,28,11/);
+  assert.match(text(lane(chosen, /^Pages/)!), /p\.3/, 'the page it is at');
+});

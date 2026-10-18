@@ -397,9 +397,11 @@ const VISION_CELLS = 60;
 const visionMoney = (usd: number | null) => (usd === null ? 'unknown' : `$${usd.toFixed(4)}`);
 const visionShort = (sha: string) => (sha.length > 12 ? `${sha.slice(0, 6)}…${sha.slice(-4)}` : sha);
 /** The lane a look is drawn in. A transcription is speech whatever the file was: a video transcribed is heard, not read in
- *  windows. A look on stills cut from a film is the film's, at their seconds, never a photograph. */
+ *  windows. A look on stills cut from a film is the film's, at their seconds, and one on a page rendered from a PDF (its
+ *  path `deed.pdf#page=N`) is the pages', at its page: neither is a photograph. */
 const visionLane = (look: VisionLook): 'speech' | 'film' | 'pages' | 'photos' | undefined =>
-  (look.tool === 'transcribe' || look.kind === 'audio' ? 'speech' : look.kind === 'video' || look.stills !== undefined ? 'film' : look.kind === 'pdf' ? 'pages' : look.kind === 'image' ? 'photos' : undefined);
+  (look.tool === 'transcribe' || look.kind === 'audio' ? 'speech' : look.kind === 'video' || look.stills !== undefined ? 'film'
+    : look.kind === 'pdf' || (look.kind === 'image' && look.page !== undefined) ? 'pages' : look.kind === 'image' ? 'photos' : undefined);
 /** A transcript's rows, from a body of lines `start<TAB>end<TAB>words` in seconds (blank lines skipped), or undefined when
  *  the body is not one. */
 export const visionTranscript = (body: string): { start: number; end: number; words: string }[] | undefined => {
