@@ -313,16 +313,21 @@ export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext
     const request: KindRequest = { source, ...(data ? { data } : {}), name, mimeType: sniffed.mimeType ?? "application/octet-stream", ...(pixels ? { width: pixels.width, height: pixels.height } : {}), ...(ask ? { ask } : {}), ...(page !== undefined ? { page } : {}), ...(fromS !== undefined ? { fromS: Math.max(0, fromS) } : {}), ...(toS !== undefined ? { toS } : {}) };
     // The media a reader makes are fitted for the model that will see them: the lead, or the eyes when the lead takes no
     // images. A video the lead cannot take as video is planned as eyes that take video take it, the file or a window of
-    // it as one clip with its sound, whatever images the lead takes; frames are for eyes that take none. A source read
-    // where it is keeps no derivation.
+    // it as one clip with its sound, whatever images the lead takes; frames are for eyes that take none. A lead that
+    // takes images is given its own frames when no such clip can be made, a file or window over the eyes' inline budget
+    // among them; a lead that takes no images is given the miss. A source read where it is keeps no derivation.
     const eyes = setup.eyes;
     const clipForEyes = eyes?.accepts.video === true && !setup.limits.video.native;
     const eyesVideo = clipForEyes ? { video: { ...eyes.limits.video, native: true }, requestBytes: eyes.limits.requestBytes } : {};
+    const clipOrFrames = kind === "video" && clipForEyes && setup.limits.image.native;
     const limits = !setup.limits.image.native && eyes?.accepts.image
       ? { ...setup.limits, image: { ...eyes.limits.image, native: false }, ...eyesVideo }
-      : kind === "video" && clipForEyes ? { ...setup.limits, ...eyesVideo } : setup.limits;
+      : clipOrFrames ? { ...setup.limits, ...eyesVideo } : setup.limits;
+    const readerEnv = data ? holding(env, source.path, data, probe.mtimeMs) : env;
+    const readWith = (budget: Limits) => reader(request, { env: readerEnv, signal: call.signal, limits: budget, ...(data ? { deriveDir: setup.scope.deriveDir } : {}), tempDir: temp.value, images: setup.images, providers: setup.providers });
     try {
-      result = await reader(request, { env: data ? holding(env, source.path, data, probe.mtimeMs) : env, signal: call.signal, limits, ...(data ? { deriveDir: setup.scope.deriveDir } : {}), tempDir: temp.value, images: setup.images, providers: setup.providers });
+      result = await readWith(limits);
+      if (clipOrFrames && "miss" in result) result = await readWith(setup.limits);
     } catch (error) {
       // A reader that throws on a file it cannot parse gives the model the cause, never a lost call.
       if (call.signal?.aborted) throw error;

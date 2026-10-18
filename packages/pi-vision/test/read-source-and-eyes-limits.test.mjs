@@ -3,7 +3,8 @@
 //    opens the path again, and what is kept is named by the first hash.
 // 2. A lead that takes no images: its own image limits do not matter, the eyes' do.
 // 3. A video, for a lead that takes no video and eyes that do, is planned with the eyes' video limits whatever images
-//    the lead takes; the lead's other reads keep its own limits.
+//    the lead takes; the lead's other reads keep its own limits; a clip that cannot be made leaves a lead that takes
+//    images its own frames, and a lead that takes no images the miss.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -131,4 +132,32 @@ test("a video read by a lead that takes no video is planned with the eyes' video
 
   const watching = lead(["text", "image"], true);
   assert.deepEqual(await read("clip.mp4", watching, videoEyes), watching.limits, "a lead that takes video is given the video itself");
+});
+
+test("a clip the eyes cannot be handed leaves a lead that takes images its own frames, and a lead that takes no images the miss", async (t) => {
+  const dir = await fixtureDir("pi-vision-video-fallback-");
+  t.after(() => dir.remove());
+  await dir.file("clip.mp4", mp4Head());
+  const env = new NodeExecutionEnv({ cwd: dir.path });
+  const calls = [];
+  // A reader that cannot fit the clip in the eyes' budget, and shows frames when planned for a lead's own images.
+  const video = async (_request, context) => {
+    calls.push(context.limits.video.native ? "clip" : "frames");
+    return context.limits.video.native ? { miss: "over_budget", reason: "the window does not fit the bytes a request carries inline" } : { content: [{ type: "text", text: "8 frames" }] };
+  };
+  const kinds = { ...PACKAGE_KINDS, readers: { ...PACKAGE_KINDS.readers, video } };
+  const eyes = fakeEyes({ accepts: { video: true } });
+  const read = async (input) => {
+    calls.length = 0;
+    const model = { id: "lead", input };
+    const setup = { limits: resolveLimits(model), eyes, sources: {}, scope: { label: "n", deriveDir: `${dir.path}/evidence/n/media` }, evidence: { file: async () => null } };
+    return readMedia(env, { path: "clip.mp4" }, { conversationId: "c1", callId: "t1", model, signal: undefined }, setup, kinds);
+  };
+  const images = await read(["text", "image"]);
+  assert.deepEqual(calls, ["clip", "frames"], "the clip is tried, then the lead's own frames");
+  assert.match(text(images), /8 frames/);
+  assert.equal(images.details.miss, undefined);
+  const blind = await read(["text"]);
+  assert.deepEqual(calls, ["clip"], "a lead that takes no images is not given frames of its own");
+  assert.equal(blind.details.miss.code, "over_budget");
 });

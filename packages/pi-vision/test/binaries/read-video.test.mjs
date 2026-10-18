@@ -76,6 +76,7 @@ test("a read of a video window that misses is filed with the video, its kind, it
 
 /** A read and its guard on one call, as the durable extension composes them: a lead of `input` and these eyes. Looks
  *  are filed in `filed` and the call keeps its memos in `memos`, as a host's evidence and pi-durable's memos do. */
+const tinyBudget = () => resolveLimits(undefined, { video: { native: true, inlineBytes: 2000 } });
 async function rigWithEyes({ input, eyes, leadVideo = false }) {
   const dir = await fixtureDir("pi-vision-read-video-eyes-");
   execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=10:duration=12", "-c:v", "libx264", "-pix_fmt", "yuv420p", `${dir.path}/clip.mp4`]);
@@ -160,4 +161,23 @@ test("an image-taking lead's clip look is filed and kept in the same shape as a 
   const again = await images.read(args);
   assert.equal(imageEyes.ledger.length, 1, "the same call reads the same window again from its kept answer, unpaid");
   assert.match(text(again), /A moving bar\./);
+});
+
+test("over the eyes' inline budget, a lead that takes images sees its own 8 frames, as with eyes that take no video; a lead that takes no images gets the miss", { skip }, async (t) => {
+  const tight = fakeEyes({ accepts: { video: true }, limits: tinyBudget() });
+  const blindEyes = fakeEyes({ accepts: { video: true }, limits: tinyBudget() });
+  const images = await rigWithEyes({ input: ["text", "image"], eyes: tight });
+  const blind = await rigWithEyes({ input: ["text"], eyes: blindEyes });
+  t.after(() => Promise.all([images.dir.remove(), blind.dir.remove()]));
+  const whole = await images.read({ path: "clip.mp4", ask: "What moves?" });
+  assert.equal(blocks(whole).length, VIDEO_FRAMES_PER_READ, "the whole file: the lead's frames");
+  assert.ok(blocks(whole).every((b) => b.mimeType.startsWith("image/")));
+  assert.match(whole.content[0].text, /Shown: 8 frames found by seek at [\d., ]+ s; read a from_s\.\.to_s window for a closer look\. Asked: What moves\?$/);
+  const window = await images.read({ path: "clip.mp4", from_s: 2, to_s: 5, ask: "What moves?" });
+  assert.equal(blocks(window).length, VIDEO_FRAMES_PER_READ, "a window: the lead's frames of it");
+  assert.match(text(window), /found by seek at [\d., ]+ s within 2s to 5s/);
+  assert.equal(tight.ledger.length, 0, "the eyes are not asked; the lead sees the frames itself");
+  const missed = await blind.read({ path: "clip.mp4", from_s: 2, to_s: 5, ask: "What moves?" });
+  assert.equal(missed.details.miss.code, "over_budget");
+  assert.equal(blindEyes.ledger.length, 0);
 });
