@@ -15,11 +15,14 @@ export type Box = { x: number; y: number; w: number; h: number };
 /** `vars` are numbers a stylesheet reads as custom properties (`--name`): a view's way to say where something is without a style string. */
 export type Props = { class?: string; path?: string; title?: string; cite?: string; box?: Box; vars?: Record<string, number> };
 
-/** A node a view returns. `frame` asks the shell to draw a browser session's picture at the stop (frames.ts). */
+/** A node a view returns. `frame` asks the shell to draw a browser session's picture at the stop (frames.ts). `pdf-page`
+ *  asks it to draw one page of a PDF in `blobs/` (pdf.ts), with `children` placed over the page (`box`, in percent of
+ *  the page as PDF.js draws it: its crop box). */
 export type Node =
   | string
   | ({ tag: string; children?: Node[] } & Props)
   | { tag: 'img'; blob: string; alt: string; class?: string }
+  | { tag: 'pdf-page'; blob: string; page: number; alt: string; class?: string; children?: Node[] }
   | { tag: 'a'; blob: string; text: string; class?: string; fragment?: string }
   | { tag: 'a'; href: string; text: string; class?: string }
   | { tag: 'frame'; session: string; class?: string };
@@ -42,7 +45,10 @@ export type ViewContext = { t: number; /** The playback clock in ms: the time of
   debug?: readonly string[];
   /** A blob's media type, from its name in `blobs/` (undefined until the shell has found it): a view tells a picture it may
    *  draw from a file it links. */
-  blobType?: (sha: string) => string | undefined };
+  blobType?: (sha: string) => string | undefined;
+  /** The result the manifest names, for a recording in which no line delivers one: a view that shows a result from its
+   *  `result` line shows this one at every stop. */
+  manifestResult?: { blob: string; title: string } };
 
 /** A node's class under a focus: a line with a path outside the focused branch is dimmed; one with no path stays. */
 const dimmed = (path: string | undefined, focus: string | undefined) => (focus !== undefined && path !== undefined && !under(path, focus) ? ' dim' : '');
@@ -58,6 +64,9 @@ export type Panel<S> = Fold<S> & {
   /** Which lines a recording must hold for this panel to be drawn at all; without it, `accepts` says. A panel with no such
    *  line in the whole recording is not drawn, its title included. */
   shows?(line: Line): boolean;
+  /** A result (the parsed JSON a result names) that makes the recording draw this panel even when no line does, with each
+   *  blob's media type as the shell knows it when it asks (undefined for one it has not found). */
+  showsResult?(result: Json, context: { blobType(sha: string): string | undefined }): boolean;
 };
 
 /** The panel the shell shows first for this recording: the first registered one whose `featured` says yes. */
@@ -137,6 +146,8 @@ export const turnsPanel: Panel<{ turns: Turn[]; streaming: Record<string, boolea
 /** The panels the shell shows, in order: the extensions' first, then its own two, the run's lines and the model's turns. */
 export const panelsShown = (): Panel<any>[] => [...registry, linesPanel, turnsPanel];
 
-/** The panels a recording draws: each with a line it is for (`shows`, else `accepts`) anywhere in the whole recording.
- *  Judged over every line, never up to the stop, so a panel never appears mid-scrub. */
-export const panelsFor = (lines: readonly Line[]): Panel<any>[] => panelsShown().filter((panel) => lines.some((line) => (panel.shows ? panel.shows(line) : panel.accepts(line))));
+/** The panels a recording draws: each with a line it is for (`shows`, else `accepts`) anywhere in the whole recording, or
+ *  a result it is for (`showsResult`). Judged over every line and every result, never up to the stop, so a panel never
+ *  appears mid-scrub. */
+export const panelsFor = (lines: readonly Line[], results: readonly Json[] = [], blobType: (sha: string) => string | undefined = () => undefined): Panel<any>[] => panelsShown().filter((panel) =>
+  lines.some((line) => (panel.shows ? panel.shows(line) : panel.accepts(line))) || (panel.showsResult !== undefined && results.some((result) => panel.showsResult!(result, { blobType }))));

@@ -68,7 +68,7 @@ async function look(bytes) {
 }
 
 /** A Jev port that answers from the pixels of the one image it is sent: red is the thing, orange looks like it. */
-function pixelJev() {
+function pixelJev({ confidence = 0.9, flat = false } = {}) {
   const requests = [];
   const judge = async (params) => {
     const { bytes } = params.assets[params.state.images[0].image];
@@ -76,7 +76,7 @@ function pixelJev() {
     requests.push({ source: params.state.images[0].source, size: imageHeader(bytes), questions: params.questions });
     const answers = Object.fromEntries(Object.entries(params.questions).map(([key, q]) => [key, q.type === "noul"
       ? { type: "noul", noul: red ? 0.95 : orange ? 0.6 : 0.05 }
-      : { type: "box", box: red ?? { top: 0, bottom: 1, left: 0, right: 1 }, confidence: red ? 0.9 : 0.2 }]));
+      : { type: "box", box: red && flat ? { top: red.top, bottom: red.top, left: red.left, right: red.left } : red ?? { top: 0, bottom: 1, left: 0, right: 1 }, confidence: red ? confidence : 0.2 }]));
     return { answers, model: params.model, usage: { input_tokens: 1000, output_tokens: 0 }, cost_usd: JEV_USD };
   };
   return { judge, requests };
@@ -159,6 +159,21 @@ test("heard: every time the phrase is said, with the rows around it; a phrase cu
   assert.deepEqual([jev.requests.length, eyes.ledger.length], [0, 0], "the transcript answers alone");
   transcript(null);
   assert.deepEqual((await steps([heard])).values[0], { transcript: null, hits: [] });
+});
+
+test("heard twice, word for word: each hit comes with what follows it and its place, and the skill says to pick by them, in general words", async () => {
+  transcript(["5.00\t7.00\tPreviously, on the show.", "8.00\t10.00\tThe doors are open.", "10.50\t12.00\tComing up after the titles.",
+    "60.00\t63.00\tThe crowd waits outside the hall.", "64.00\t66.00\tThe doors are open.", "66.50\t69.00\tThe crowd walks in and fills the seats.", "120.00\t124.00\tThat is the end."]);
+  const twice = heard.replace('phrase: "umbrella by the door"', 'phrase: "the doors are open"');
+  assert.notEqual(twice, heard);
+  const { values: [found] } = await steps([twice]);
+  assert.deepEqual(found.hits.map((h) => [h.at, h.said, h.after, h.place]), [
+    [8, "The doors are open.", "Coming up after the titles. The crowd waits outside the hall.", 6],
+    [64, "The doors are open.", "The crowd walks in and fills the seats. That is the end.", 52],
+  ], "the same words twice; what follows and where each sits tell them apart");
+  const rule = SKILL.slice(SKILL.indexOf("When there is more than one hit"), SKILL.indexOf("```js"));
+  for (const words of ["the rows before it and the rows after it", "not a recap, a title, a preview or a replay", "what comes after each hit", "`place`", "Look at each candidate's window with the eyes", "Say which you picked and why"]) assert.ok(rule.includes(words), words);
+  assert.doesNotMatch(SKILL, /apollo|eagle|tranquility|houston|moon/i, "the skill names no film");
 });
 
 test("the loop: the transcript's hit narrows the search, Jev scans the window, the eyes name the second, Jev checks it and boxes it", async () => {
@@ -313,4 +328,20 @@ test("a search named by more than one word is refused before anything is asked: 
   assert.equal(jev.requests.length, 0);
   await steps([narrowWith('const dir = ".find/umbrella";', 'const dir = ".find/red-umbrella_2";')]);
   assert.ok(fs.existsSync(path.join(cwd, ".find", "red-umbrella_2", "task.json")), "one word with digits, dashes and underscores is a name");
+});
+
+test("a box Jev is not sure of is still the answer: the thing is found by its noul, and the box is called loose", async () => {
+  transcript();
+  const { values: [, , , , checked] } = await steps([narrow, scan, halve, name, check], { jev: pixelJev({ confidence: 0.31 }) });
+  assert.deepEqual([checked.found, checked.t, checked.loose], [true, FIRST, true], "found at its second, its box loose");
+  assert.match(checked.cite, /^film\.mp4#t=187&xywh=percent:/);
+  near(xywh(checked.cite), [60, 20, 25, 40], 2, "the box, as Jev drew it");
+  const sure = await steps([narrow, scan, halve, name, check]);
+  assert.deepEqual([sure.values[4].found, sure.values[4].loose], [true, false], "a box at confidence 0.9 is not loose");
+});
+
+test("a box of no size has no fragment: the thing is still found by its noul, cited at its second, with no box", async () => {
+  transcript();
+  const { values: [, , , , checked] } = await steps([narrow, scan, halve, name, check], { jev: pixelJev({ confidence: 0.31, flat: true }) });
+  assert.deepEqual([checked.found, checked.t, checked.cite, checked.noBox], [true, FIRST, `film.mp4#t=${FIRST}`, true]);
 });
