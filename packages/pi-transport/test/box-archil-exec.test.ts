@@ -174,6 +174,60 @@ describe("archil exec boxes", () => {
 		}
 	});
 
+	it("orders its own execs itself when the service ignores the checkout", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			fake.enforceCheckout = false;
+			const box = unwrap(await provider.create(SPEC, context));
+			await Promise.all([0, 1, 2, 3].map((n) => run(box, ["sh", "-c", `sleep 0.1; echo ${n} >> order.txt`])));
+			expect(fake.maxOverlap).toBe(1);
+			expect(
+				readFileSync(join(fake.root, "boxes", box.id, "order.txt"), "utf8")
+					.trim()
+					.split("\n"),
+			).toEqual(["0", "1", "2", "3"]);
+		} finally {
+			close();
+		}
+	});
+
+	it("is gone for a process whose box another process destroyed", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const other = archilExecBoxes({ client: fake.client, disk: fake.disk });
+			const there = unwrap(await other.attach(box.id, context)) as Box;
+			unwrap(await there.destroy(context));
+			const started = unwrap(await box.exec(["true"], undefined, context));
+			void readStream(started.stdout).catch(() => {});
+			void readStream(started.stderr).catch(() => {});
+			const exit = await started.wait();
+			expect(exit.ok).toBe(false);
+			if (!exit.ok) expect(exit.error.code).toBe("gone");
+			expect(unwrap(await box.status(context)).state).toBe("ended");
+		} finally {
+			close();
+		}
+	});
+
+	it("ends a box at once even while a command holds its directory, and the next list removes what was left", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const held = run(box, ["sleep", "1"]);
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			unwrap(await box.destroy(context));
+			expect(unwrap(await provider.attach(box.id, context))).toBeUndefined();
+			expect(unwrap(await provider.list({}, context))).toEqual([]);
+			await held;
+			expect(existsSync(join(fake.root, "boxes", box.id))).toBe(true);
+			expect(unwrap(await provider.list({}, context))).toEqual([]);
+			expect(existsSync(join(fake.root, "boxes", box.id))).toBe(false);
+		} finally {
+			close();
+		}
+	});
+
 	it("refuses stdin with an unsupported error and carries output after the call", async () => {
 		const { provider, close } = rig();
 		try {
@@ -312,7 +366,7 @@ describe("archil exec boxes", () => {
 			expect(fake.calls.every((call) => !call.command.includes("c.bin") || call.command.includes("stat"))).toBe(
 				true,
 			);
-			for (const path of ["../other/x", `${box.facts().workspace}/../x`, "/etc/passwd"]) {
+			for (const path of ["../other/x", `${box.facts().workspace}/../x`, "/etc/passwd", ".pi-transport/box.json"]) {
 				const refused = await box.download([path], context);
 				expect(refused.ok, path).toBe(false);
 				if (!refused.ok) expect(refused.error.code).toBe("invalid");

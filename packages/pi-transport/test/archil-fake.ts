@@ -38,6 +38,9 @@ export class FakeArchil {
 	readonly #children = new Set<number>();
 	#running = 0;
 
+	/** False: the service ignores `checkoutPaths`, as one that did not honour the request would. */
+	enforceCheckout = true;
+
 	constructor(id = "dsk-fake") {
 		this.disk = {
 			id,
@@ -68,7 +71,7 @@ export class FakeArchil {
 					this.failNext = undefined;
 					throw error;
 				}
-				const paths = spec.checkoutPaths ?? [];
+				const paths = this.enforceCheckout ? (spec.checkoutPaths ?? []) : [];
 				const release = await this.#checkout(paths, spec.queueMs);
 				try {
 					return await this.#run(mount, command);
@@ -125,8 +128,8 @@ export class FakeArchil {
 				this.#running -= 1;
 				if (child.pid !== undefined) this.#children.delete(child.pid);
 				resolve({
-					stdout: Buffer.concat(out).toString("utf8"),
-					stderr: Buffer.concat(errors).toString("utf8"),
+					stdout: Buffer.concat(out).toString("utf8").split(this.root).join(`/mnt/archil/${mount}`),
+					stderr: Buffer.concat(errors).toString("utf8").split(this.root).join(`/mnt/archil/${mount}`),
 					exitCode: code ?? (signal === null ? 1 : 128 + (signal === "SIGKILL" ? 9 : 15)),
 				});
 			});
