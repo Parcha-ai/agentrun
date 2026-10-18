@@ -3,7 +3,7 @@
 // nodes, LLM calls, tool calls, the model calls made inside a tool), what each look read, the run's cited answer and
 // the agent's artifact. The same code for every run; pure but for reading a blob's JSON, which the caller passes.
 import type { Json, Recording } from './format.ts';
-import type { ChatDecision, ChatItem, ChatModel, ChatRow, ChatSource, ChatSpan, ChatThread } from './chat-model.ts';
+import type { ChatCall, ChatDecision, ChatItem, ChatModel, ChatRow, ChatSource, ChatSpan, ChatThread } from './chat-model.ts';
 
 type Obj = { [key: string]: Json };
 const chatObj = (value: Json | undefined): Obj | undefined => (value && typeof value === 'object' && !Array.isArray(value) ? value : undefined);
@@ -104,6 +104,40 @@ function chatLookAnswer(body: Json | undefined): { text: string; decisions: Chat
   return { text: chatClip(chatFirstLine(raw.replace(/^[\d.]+\t[\d.]+\t/gm, '')), 220), decisions: [], regions: [] };
 }
 
+/** A model call's name: who answered (its `via`, else the tool's namespace) and the tool's verb, "Jev judge". */
+function chatCallName(tool: string, via: string | undefined): string {
+  const [space, ...verb] = tool.split('.');
+  const name = verb.length ? `${via ?? space} ${verb.join(' ')}` : tool;
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+/** A model call's line: its name, each score it gave (a yes-or-no's score, a choice, the confidence of a box no
+ *  yes-or-no pairs), the boxes it drew; with none of those, its answer's first line. */
+function chatCallLabel(name: string, body: Json | undefined): string {
+  const written = typeof body === 'string' ? body : chatObj(body) ? JSON.stringify(body) : '';
+  const { text, regions } = chatLookAnswer(written);
+  let parsed: Obj | undefined;
+  try { parsed = chatObj(JSON.parse(written) as Json); } catch { /* words */ }
+  const scored: [string, string][] = [];
+  for (const [key, decision] of Object.entries(parsed ?? {})) {
+    const d = chatObj(decision);
+    if (d?.type === 'noul' && typeof d.noul === 'number') scored.push([key, d.noul.toFixed(2)]);
+    else if (d?.type === 'choice' && typeof d.choice === 'string') scored.push([key, d.choice]);
+    else if (d?.type === 'box' && typeof d.confidence === 'number' && !(key.endsWith('_at') && chatObj(parsed?.[key.slice(0, -3)]))) scored.push([key, d.confidence.toFixed(2)]);
+  }
+  const parts = scored.map(([key, value]) => (scored.length > 1 ? `${key.replace(/_/g, ' ')} ${value}` : value));
+  if (regions.length) parts.push(regions.length === 1 ? 'box drawn' : `${regions.length} boxes drawn`);
+  if (!parts.length && text) parts.push(text);
+  return chatClip([name, ...parts].join(' · '), 160);
+}
+
+/** A model call's output as recorded, a JSON one indented. */
+function chatRaw(body: Json | undefined): string {
+  const raw = typeof body === 'string' ? body : body === undefined || body === null ? '' : JSON.stringify(body);
+  if (/^\s*[[{]/.test(raw)) { try { return JSON.stringify(JSON.parse(raw), null, 2); } catch { /* as written */ } }
+  return raw;
+}
+
 /** The chat + report view's model of a recording. `readJson` reads a blob's JSON (the run's cited result). */
 export async function extractChat(recording: Recording, readJson: (sha: string) => Promise<Json | undefined>): Promise<ChatModel> {
   const { manifest } = recording;
@@ -189,7 +223,7 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
             const callId = chatStr(p.id)!;
             const name = chatStr(p.name) ?? 'tool';
             const times = toolTimes.get(callId);
-            const item: Extract<ChatItem, { kind: 'tool' }> = { kind: 'tool', id: `item-${++counter}`, tool: name, title: chatToolTitle(name, p.arguments), takeaway: '', media: [], looks: [],
+            const item: Extract<ChatItem, { kind: 'tool' }> = { kind: 'tool', id: `item-${++counter}`, tool: name, title: chatToolTitle(name, p.arguments), takeaway: '', media: [], looks: [], calls: [],
               ...(times?.t0 !== undefined ? { t0: times.t0 } : {}), ...(times?.t1 !== undefined ? { t1: times.t1 } : {}) };
             thread.items.push(item);
             toolItems.set(callId, item);
@@ -267,11 +301,16 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     const holder = (parentId ? toolSpans.find((each) => each.callId === parentId) : undefined)
       ?? toolSpans.filter((each) => each.conversation === conversation && each.span.t0 <= line.t && (each.span.t1 ?? Infinity) >= line.t)
         .sort((a, b) => b.span.t0 - a.span.t0)[0];
-    const key = chatStr(chatObj(chatObj(d?.record)?.facts)?.key);
+    const record = chatObj(d?.record);
+    const key = chatStr(chatObj(record?.facts)?.key);
     const item = holder ? toolItems.get(holder.callId) : undefined;
     if (item && key) { if (!item.looks.includes(key)) item.looks.push(key); lookItem.set(key, item.id); }
-    spans.push({ id: `span-${spans.length + 1}`, actor: 'inner', lane: tool, label: model ? `${tool} ${model}` : tool, t0: started ?? line.t, ...(started !== undefined ? { t1: line.t } : {}),
-      ...(holder ? { parentLane: holder.span.lane } : {}), ...(item ? { item: item.id } : {}) });
+    const name = chatCallName(tool, chatStr(chatObj(record?.args)?.via));
+    const call: ChatCall = { id: `call-${++counter}`, name, label: chatCallLabel(name, record?.body), raw: chatRaw(record?.body), ...(key ? { look: key } : {}), ...(model ? { model } : {}),
+      ...(started !== undefined ? { t0: started } : {}), t1: line.t };
+    if (item) item.calls.push(call);
+    spans.push({ id: `span-${spans.length + 1}`, actor: 'inner', lane: name, label: call.label, t0: started ?? line.t, ...(started !== undefined ? { t1: line.t } : {}),
+      ...(holder ? { parentLane: holder.span.lane } : {}), ...(item ? { item: call.id } : {}) });
   }
 
   // Any other line with its own start (t0 on the recording's clock) is a model call made inside a tool: a span under
@@ -287,9 +326,14 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
       ?? toolSpans.filter((each) => each.conversation === conversation && each.span.t0 <= started && (each.span.t1 ?? Infinity) >= started)
         .sort((a, b) => b.span.t0 - a.span.t0)[0];
     if (!holder) continue;
-    const name = chatStr(d?.tool) ?? chatStr(d?.name) ?? line.kind;
     const model = chatStr(d?.model);
-    spans.push({ id: `span-${spans.length + 1}`, actor: 'inner', lane: name, parentLane: holder.span.lane, label: model ? `${name} ${model}` : name, t0: started, t1: line.t, ...(holder.span.item ? { item: holder.span.item } : {}) });
+    const record = chatObj(d?.record);
+    const name = chatCallName(chatStr(d?.tool) ?? chatStr(d?.name) ?? line.kind, chatStr(chatObj(record?.args)?.via));
+    const body = record?.body ?? d?.output;
+    const call: ChatCall = { id: `call-${++counter}`, name, label: chatCallLabel(name, body), raw: chatRaw(body), ...(model ? { model } : {}), t0: started, t1: line.t };
+    const item = toolItems.get(holder.callId);
+    if (item) item.calls.push(call);
+    spans.push({ id: `span-${spans.length + 1}`, actor: 'inner', lane: name, parentLane: holder.span.lane, label: call.label, t0: started, t1: line.t, ...(item ? { item: call.id } : {}) });
   }
 
   // What each look read, by its key: its address, its answer, its images and the regions it boxed. One write can hold

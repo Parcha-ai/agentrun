@@ -102,7 +102,8 @@ test('the timeline is spans from the events: LLM calls by model, tool calls by n
   assert.ok(inner.length > 0);
   for (const span of inner) assert.equal(span.parentLane, 'tool code', `${span.label} nests under the call that made it`);
   for (const span of m.spans) if (span.t1 !== undefined) assert.ok(span.t1 >= span.t0, span.label);
-  assert.ok(m.spans.every((span) => span.item === undefined || items(m).some((item) => item.id === span.item) || m.threads.some((thread) => thread.id === span.item)));
+  const calls = tools(m).flatMap((item) => item.calls.map((call) => call.id));
+  assert.ok(m.spans.every((span) => span.item === undefined || items(m).some((item) => item.id === span.item) || m.threads.some((thread) => thread.id === span.item) || calls.includes(span.item)));
 });
 
 test('every label comes from an event field: two different runs, the same kinds of labels, no constant titles', async () => {
@@ -113,7 +114,10 @@ test('every label comes from an event field: two different runs, the same kinds 
     for (const span of m.spans) {
       if (span.actor === 'llm') assert.ok(text.includes(JSON.stringify(span.lane.slice('LLM '.length))), `${span.lane} is a model the recording names`);
       if (span.actor === 'tool') assert.ok(text.includes(`"toolName":${JSON.stringify(span.lane.slice('tool '.length))}`), `${span.lane} is a tool the recording calls`);
-      if (span.actor === 'inner') assert.ok(text.includes(`"tool":${JSON.stringify(span.lane)}`), `${span.lane} is an inner call the recording files`);
+      if (span.actor === 'inner') {
+        for (const word of span.lane.toLowerCase().split(' ')) assert.ok(text.includes(`"${word}`) || text.includes(`.${word}"`), `${span.lane} is an inner call the recording files`);
+        assert.ok(span.label.startsWith(span.lane), `${span.label} is named by its lane`);
+      }
       if (span.actor === 'node') assert.match(span.label, /^node /);
     }
   }
@@ -170,12 +174,34 @@ test('a line with its own start is a span under the call it names as parent, or 
   const callId = (start.data as { toolCallId: string }).toolCallId;
   const inner = JSON.stringify({ channel: 'live', source: 'vision', kind: 'model.call', t0: start.t + 1, t: start.t + 2, conv: start.conv, data: { parentToolCallId: callId, tool: 'see', model: 'eyes-1' } });
   const m = await model(referenceJob, (events) => `${events.trimEnd()}\n${inner}\n`);
-  const span = m.spans.find((each) => each.actor === 'inner' && each.lane === 'see');
+  const span = m.spans.find((each) => each.actor === 'inner' && each.lane === 'See');
   assert.ok(span, 'the inner call is drawn');
   assert.equal(span.t0, start.t + 1);
   assert.equal(span.t1, start.t + 2);
   assert.equal(span.parentLane, `tool ${(start.data as { toolName: string }).toolName}`);
-  assert.equal(span.label, 'see eyes-1');
+  const call = tools(m).flatMap((item) => item.calls).find((each) => each.id === span.item);
+  assert.ok(call, 'the span scrolls to its call');
+  assert.deepEqual([call.name, call.label, call.model], ['See', 'See', 'eyes-1']);
+});
+
+test("each model call inside a tool is its own entry under the tool's card: its name, its scores, the boxes it drew, its raw output", async () => {
+  const m = await model(hearAndFind);
+  const code = tools(m).find((item) => item.calls.length > 0)!;
+  assert.deepEqual(code.calls.map((call) => call.label).slice(0, 2), ['Scripted transcribe · We copy you down, Eagle. Houston, uh,', 'Jev judge · 0.05']);
+  for (const call of code.calls) {
+    assert.ok(call.look && m.sources[call.look], `${call.label} names its look`);
+    assert.equal(m.spans.find((span) => span.item === call.id)?.label, call.label, 'its span reads the same');
+  }
+  assert.match(code.calls.find((call) => call.label.includes('box drawn'))!.raw, /^\{\n {2}"/, 'a JSON output is indented');
+  // Jev's answer shapes, each one look under the first tool call.
+  const { recording } = opened(referenceJob);
+  const start = recording.lines.find((line) => line.kind === 'tool_execution_start')!;
+  const look = (key: string, body: Record<string, Json>) => JSON.stringify({ channel: 'live', source: 'vision', kind: 'LookEvent', t: start.t + 1, conv: start.conv,
+    data: { tool: 'vision.judge', model: 'jev-1', parentToolCallId: (start.data as { toolCallId: string }).toolCallId, record: { args: { path: 'a.png', via: 'jev' }, body: JSON.stringify(body), facts: { key } } } });
+  const box = (confidence: number) => ({ type: 'box', confidence, fragment: 'a.png#xywh=percent:1,2,3,4' });
+  const lines = [look('j1', { seal: { type: 'noul', noul: 0.87 }, seal_at: box(0.4) }), look('j2', { contact: box(0.46), fuel: box(0.4) }), look('j3', { seal: { type: 'noul', noul: 0.2 }, seal_at: box(0.4) })];
+  const judged = await model(referenceJob, (events) => `${events.trimEnd()}\n${lines.join('\n')}\n`);
+  assert.deepEqual(tools(judged).flatMap((item) => item.calls).filter((call) => /^j\d$/.test(call.look ?? '')).map((call) => call.label), ['Jev judge · 0.87 · box drawn', 'Jev judge · contact 0.46 · fuel 0.40 · 2 boxes drawn', 'Jev judge · 0.20']);
 });
 
 test('every look of a write is a source, keyed by its own record, with the picture it was shown', async () => {

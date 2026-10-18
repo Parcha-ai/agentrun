@@ -21,9 +21,16 @@ export type ChatItem =
     failed?: boolean;
     /** The looks made inside this call (their keys), so a cite of one finds its card. */
     looks: string[];
+    /** The model calls made inside this call, in the order they ended: each its own card under this one. */
+    calls: ChatCall[];
     t0?: number;
     t1?: number;
   };
+
+/** A model call made inside a tool call (a vision look, a Jev decision, speech to text). `label` is its name, its
+ *  scores and what it drew ("Jev judge · 0.87 · box drawn"), the same on its card and its span; `raw` is its output
+ *  as recorded; `look` its key when it was a look, for its picture and regions. */
+export type ChatCall = { id: string; name: string; label: string; raw: string; look?: string; model?: string; t0?: number; t1?: number };
 
 /** One recorded conversation: an agent node's, named by its node; a run of one conversation has one thread. Its first
  *  user entry is the prompt the host composed from the node's input, so it is not an item. */
