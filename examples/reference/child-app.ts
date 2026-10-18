@@ -29,8 +29,9 @@ export default async function app(ctx: AppContext): Promise<AppOptions> {
     try {
       const made = await prepared.made(result);
       await prepared.recorder?.detach();
+      // Printed once the final status is written and the run released (the supervisor reads this line as how the run ended).
       const line = JSON.stringify({ outcome: outcomeOf(result, storeSha256, made, prepared.models) });
-      console.log(prepared.redact ? prepared.redact(line) : line);
+      return () => console.log(prepared.redact ? prepared.redact(line) : line);
     } finally { await prepared.done(); }
   }, prepared.models ? { models: prepared.models } : {}, prepared.redact);
   // Nothing under the run's directory is written before the claim is open: the recorder, the fetched files and the box start here, once the store is open and before it resumes (a write earlier would land on the bare

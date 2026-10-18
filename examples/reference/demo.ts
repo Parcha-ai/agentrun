@@ -378,7 +378,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   // The recording's clock as a value, in every order's env: a box's child writes it into its own spool directory when it has none, so a place never writes into the run's disk.
   const startedText = readFileSync(join(recordDir, '.spool', 'started'), 'utf8');
   const follower = followRecording(recordDir, { ...(redact ? { redact } : {}), holdMs: () => Math.max(options.followHoldMs ?? 1000, 2 * (placeRef?.clockSkewMs ?? 0)) });
-  const following = setInterval(() => follower.poll(), 100);
+  // A failure of the follower (the disk full, say) is not thrown from the timer: it is kept, the running child is stopped, and the run ends through the normal path, which releases the place.
+  let followError: unknown;
+  const following = setInterval(() => { try { follower.poll(); } catch (error) { followError ??= error; clearInterval(following); } }, 100);
   const jobText = JSON.stringify({ workflow: job.workflow, input: input ?? (live ? undefined : options.fakes.input) ?? job.input, files: Object.keys(job.files ?? {}) });
   const jobBlob = keepBlob(recordDir, Buffer.from(redact ? redact(jobText) : jobText), 'json');
   // A label no other run shares, on every box this run makes: cleanup finds these and no others.
@@ -421,6 +423,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const boxReceipted = new Set<string>();
   // The slow tick does not queue a read behind one still running (a place's reads can take seconds): the boundary reads, which a result waits for, then wait behind at most one.
   let inflight = false;
+  // A read the supervisor waits for (after a kill, at a process's exit, at the end) is waited for a bounded time: an optional reading never holds supervision up for a place's whole timeout.
+  const settled = (read: Promise<void>, ms = 15_000): Promise<void> => Promise.race([read, new Promise<void>((resolve) => { setTimeout(resolve, ms).unref(); })]);
   const readStatus = (final = false): Promise<void> => {
     if (!place.status) return Promise.resolve();
     reading = reading.then(async () => {
@@ -506,8 +510,10 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       const queued = remaining.shift();
       const plan = queued ?? { tools: [] };
       // A kill this attempt plans that the place cannot make is refused before the attempt starts: the run is not stopped first, and no machine loss is recorded.
-      const planned = plan.run?.kind ?? 'process';
-      if (!place.kills.includes(planned)) throw new Error(`the ${place.name} place cannot lose its ${planned}: this kill is not one it can make`);
+      const planned = plan.run?.kind;
+      if (planned && !place.kills.includes(planned)) throw new Error(`the ${place.name} place cannot lose its ${planned}: this kill is not one it can make`);
+      // The operator's kill is a process kill: a place that cannot make one (a box-only place) refuses `--operator-kill` before anything starts, as it refuses a planned kill it cannot make.
+      if (operatorKill && !place.kills.includes('process')) throw new Error(`the ${place.name} place cannot lose its process: --operator-kill is not a kill it can make`);
       const gen = processes.length + 1;
       const log = join(scratch, `crossings-${gen}.jsonl`);
       // Where this attempt's runner writes its kill request: the place answers it (the child never derives it); the scratch default is for a place that does not.
@@ -522,10 +528,11 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       const recovered = previous ? await place.recover(previous.runner, previous.kind, order) : undefined;
       runner = recovered ? recovered.runner : await place.start(order);
       supervisor.host('process.started', { gen, pid: runner.pid });
-      await readStatus();
+      // The reading runs beside the supervision: the kill requests and the spend cap are watched from the start, however slow the place's read is.
+      void readStatus();
       // A takeover that revoked the old holder's delegations (an Archil place): what was revoked, and how long the whole takeover took.
       const revoked = (Array.isArray(recovered?.revoked) ? recovered!.revoked : []).map(delegationOf).filter((entry) => entry !== undefined).map(({ clientId, inodeId, path, isOrphaned }) => safeDelegation({ clientId, inodeId, path, isOrphaned }));
-      if (revoked.length) supervisor.host('revoke', { gen: lastGeneration ?? gen, revoked, ...(Number.isFinite(recovered?.ms) ? { ms: recovered!.ms } : {}) });
+      if (revoked.length) supervisor.host('revoke', { gen, revoked, ...(Number.isFinite(recovered?.ms) ? { ms: recovered!.ms } : {}) });
       // The supervisor decides when: a crossing asks to be killed (read through the place's signals), or the spend cap is passed. It writes the kill line, and only then does the place kill.
       // A kill the place cannot make is recorded and ends the attempt: it is never an unhandled rejection.
       let killed: { point: string | null; n: number | null; label: string | null; why: string; kind: 'process' | 'box' } | undefined;
@@ -552,7 +559,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
         supervisor.host('kill', { gen, label: killed.label, crossing: killed.point === null ? null : { point: killed.point, n: killed.n }, side: 'child', kind: killed.kind });
         kills.push({ gen, point: killed.point, kind: killed.kind, why: killed.why });
         try { await place.kill(runner!, killed.kind); } catch (error) { failed(String((error as { code?: unknown } | null)?.code ?? 'KILL_FAILED'), messageOf(error, paths.root), killed.kind); }
-        await readStatus();
+        await settled(readStatus());
       };
       const iterator = place.signals?.(gen)[Symbol.asyncIterator]();
       let signalsFailed = false;
@@ -572,6 +579,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       // the attempt does not finish (nor the place release) until the kill, with its provider cleanup, is done.
       let deciding: Promise<void> = Promise.resolve();
       const watch = setInterval(() => {
+        if (followError && !decided) { decided = true; deciding = place.kill(runner!, 'process').catch(() => undefined); return; }
         if (decided) return;
         if (operatorKill && existsSync(operatorKill)) {
           // A control that cannot be removed (a directory made by mistake, a parent that forbids it) is a failed kill, reported through the normal path: the supervisor does not crash with the child still running.
@@ -583,16 +591,20 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       const result: Exit = exit ?? { exit: null, signal: null, stderr: 'the place could not stop this process' };
       clearInterval(watch);
       clearInterval(tick);
-      await readStatus();
+      await settled(readStatus());
       await carry(gen, true, () => killed?.kind === 'box');
       await iterator?.return?.();
       await pump;
       await deciding;
+      if (followError) break;
       processes.push(result);
       if (killFailed || signalsFailed || (killed && killed.label === 'max-usd')) break;
+      // A tool kill of an attempt that ended in a process kill and did not fire never will (the plan is consumed): it is reported, not carried off with the attempt.
+      const missed = () => { for (const entry of notLanded(plan.tools, log)) unlanded.push('point' in entry ? entry.point : `storm (gap ${entry.gapMs} ms)`); };
       if (killed) {
-        // An operator's kill is not the plan's: a kill still planned for the attempt the operator ended is planned for the next.
+        // An operator's kill is not the plan's: a kill still planned for the attempt the operator ended is planned for the next, minus the tool kills that landed. Any other kill consumes its attempt's plan: the tool kills it did not fire are reported.
         if (killed.label === 'operator' && queued) remaining.unshift({ ...queued, tools: notLanded(queued.tools, log) });
+        else missed();
         previous = { runner, kind: killed.kind };
         continue;
       }
@@ -602,11 +614,11 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
         const kind = plan.run?.kind ?? 'process';
         supervisor.host('kill', { gen, label: plan.run && !('storm' in plan.run) ? plan.run.point : at?.point ?? null, crossing: at ? { point: at.point, n: at.n } : null, side: 'child', kind });
         kills.push({ gen, point: at?.point ?? null, kind, why: plan.run?.why ?? 'a kill' });
+        missed();
         previous = { runner, kind };
         continue;
       }
       // The process ended on its own with a kill still planned for it (and any that follow): none of them landed.
-      // A tool kill of this attempt that fired is on the child's log: it landed, however the process then ended.
       for (const left of [plan, ...remaining]) {
         const tools = left === plan ? notLanded(left.tools, log) : left.tools;
         for (const entry of [...(left.run ? [left.run] : []), ...tools]) if ('point' in entry) unlanded.push(entry.point); else unlanded.push(`storm (gap ${entry.gapMs} ms)`);
@@ -616,8 +628,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     // What the run delivered and its store's hash come from the last runner's own report: nothing is read under the run's directory.
     const last = processes.at(-1)?.outcome;
     const delivered = last && last.status === 'complete' && 'record' in last ? { record: last.record } : null;
+    // The last read can add a box's priced receipt: the cap is checked after it.
+    await settled(readStatus(true));
     if (maxUsd !== null && meterKnown(recordDir) > maxUsd) overBudget = true;
-    await readStatus(true);
     const processesStarted = processes.length;
     // The demo's result hook, reported by the process that delivered, shapes the result line and its blob; without one, the delivered record is the result.
     const made = processes.at(-1)?.outcome?.result;
@@ -630,6 +643,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     const chosen = [...processes].reverse().find((entry) => entry.outcome?.models)?.outcome?.models;
     const extra = options.manifest ? options.manifest({ dir, record: delivered?.record ?? null, input, live, ...(chosen ? { models: chosen } : {}) }) : undefined;
     for (const name of Object.keys(extra ?? {})) if (RESERVED.has(name)) throw new Error(`manifest(): "${name}" is written by the entry; use another name`);
+    if (followError) throw followError;
     follower.close();
     if (carryRefusal) throw new Error(`the recording is refused: the place could not bring home process ${carryRefusal.gen}'s recording (${carryRefusal.code}), and that process ended on its own`);
     // What a viewer following the run could already have fetched is not taken back: a secret in the file as it was placed refuses the recording, though the finished file is redacted.
