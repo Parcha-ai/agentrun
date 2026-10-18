@@ -17,7 +17,7 @@ import { receiptFacts } from "@parcha/pi-vision";
 import { createVisionExtension } from "@parcha/pi-vision/durable";
 import { nodeVisionEnv } from "@parcha/pi-vision/node";
 import { fakeEyes, fixtureDir, photoJpeg, textPdf } from "@parcha/pi-vision/testing";
-import { fakeJev } from "../support/jev.mjs";
+import { ANSWERS, fakeJev } from "../support/jev.mjs";
 
 const SKILL = fs.readFileSync(new URL("../../skills/report/SKILL.md", import.meta.url), "utf8");
 const pieces = [...SKILL.matchAll(/```js\n([\s\S]*?)```/g)].map((match) => match[1]);
@@ -43,8 +43,12 @@ let speech = { provider: "fake", model: "fake-stt", usdPerMinute: 0.008, async t
 let jev = null;
 let jevFails;
 const tokens = (text) => [...String(text).matchAll(/(?<![.!?]\s)(?<!^)\b[A-Z][a-z]+|\d+/g)].map((m) => m[0].toLowerCase());
+const ABSENT = /\b(absent|missing|removed|blank|no seal|no stamp)\b/i;
 const groundedBy = (question, { state }) => {
+  if (!state.claims) return question.type === "noul" ? { type: "noul", noul: 0.02 } : ANSWERS[question.type](question);   // a picture put to Jev (decide()): the thing is not there
   const text = state.claims[/claims\.(t\d+)/.exec(question.instructions)[1]];
+  // An absence is stated by a no of Jev's, as words in the evidence; any other text by its names and numbers being in the evidence.
+  if (ABSENT.test(text)) return { type: "noul", noul: state.evidence.some((e) => /^Jev, asked ".*": no \(/m.test(e)) ? 0.95 : 0.03 };
   const evidence = state.evidence.join(" ").toLowerCase();
   return { type: "noul", noul: tokens(text).every((token) => evidence.includes(token)) ? 0.95 : 0.03 };
 };
@@ -955,4 +959,38 @@ test("the check renders the page again in a directory of its own and removes onl
     assert.equal(fs.readFileSync(path.join(cwd, ".check", "index.html"), "utf8"), "the workspace's own file");
     assert.deepEqual(fs.readdirSync(own), [], "no render directory is left behind");
   } finally { bashEnv = process.env; fs.rmSync(own, { recursive: true, force: true }); fs.rmSync(path.join(cwd, ".check"), { recursive: true, force: true }); }
+});
+
+test("Jev's typed answers in a cited look reach the evidence as words: a noul as yes or no with its probability, a choice, a score and a box, each with its question and the picture it was asked about", async () => {
+  onDisk = "other";
+  const asked = `const looked = await decide("report/" + page3, "contract.pdf#page=3", {
+    seal: { type: "noul", instructions: "Is there a seal on images[0].image?" },
+    kind: { type: "choice", instructions: "What is images[0].image?", criteria: { rules: "Rules.", other: "Anything else." } },
+    legible: { type: "score", instructions: "How legible is images[0].image?", criteria: ["unreadable", "readable"] },
+    where: { type: "box", instructions: "the title of images[0].image" } });
+  return [said.get(looked.key), looked.answers.seal.noul];`;
+  const { result } = await run([helpers, assets, looking, `const page3 = await pdfPage("contract.pdf", 3, "contract-p3");\n${asked}`]);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  const [words, noul] = result.value;
+  assert.equal(noul, 0.02);
+  assert.deepEqual(words.split("\n"), [
+    'Jev, asked "Is there a seal on contract.pdf#page=3?": no (0.02)',
+    'Jev, asked "What is contract.pdf#page=3?": rules (0.9)',
+    'Jev, asked "How legible is contract.pdf#page=3?": score 1 (readable)',
+    'Jev, asked "the title of contract.pdf#page=3": located at contract.pdf#page=3&xywh=percent:50,25,50,50 (confidence 0.9)',
+  ], "a no, a choice, a score and a place, as words with the source in place of images[0].image");
+});
+
+test("an absence claim is grounded by a cited Jev no-answer and refused when no such look is cited: the test copy's marks removed is stated, not dropped", async () => {
+  const absence = (cite) => data
+    .replace("\nconst report = {", '\nconst sealLook = await decide("report/" + page3, "contract.pdf#page=3", { seal: { type: "noul", instructions: "Is there a seal on `images[0].image`?" } });\nconst report = {')
+    .replace("  notChecked:", `  rows: [{ id: "gone", label: "Page 3", text: "The seal is absent on page 3.", thumb: await thumb("frames/contract-p3.jpg", "gone-thumb"), cites: [{ file: "contract.pdf", page: 3, look: ${cite} }] }],\n  notChecked:`);
+  onDisk = "other";
+  const stated = await run([helpers, assets, looking, absence("sealLook.key"), ground, render, check]);
+  assert.ok(stated.result.ok, stated.result.ok ? "" : stated.result.error.message);
+  const judgedAbsence = jev.requests.map((r) => r.params.state).find((st) => st.claims && Object.values(st.claims).includes("The seal is absent on page 3."));
+  assert.ok(judgedAbsence.evidence.includes('Jev, asked "Is there a seal on contract.pdf#page=3?": no (0.02)'), "Jev's no reaches the judge as words");
+  const unsupported = await run([helpers, assets, looking, absence("lookPage.key"), ground, render, check]);
+  assert.ok(!unsupported.result.ok);
+  assert.match(unsupported.result.error.message, /^row gone: "The seal is absent on page 3\." is not stated by what its cited looks read \(0\.03\)/, "cited only to a look that read the page, nothing states the absence");
 });

@@ -22,7 +22,7 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
   and the answers of the looks it cites as `evidence`, one noul question for each text: does the evidence state every name,
   time and number in it? A text it does not is not kept as it is: rewrite it from what the looks read, cite the look that
   states it, or drop it. What was heard is cited to the transcribe look (`hear()`): a name, a time or a number that was said
-  is evidence only in that look's text, not in a picture of the speaker. The check refuses a text that was not judged as written.
+  is evidence only in that look's text, not in a picture of the speaker. A presence or an absence ("the seal is on page 1", "the test copy has no stamp") is stated by a typed answer: ask Jev with `decide()` (a noul, "Is there a seal on this page?") and cite that look; Jev's answers reach the evidence as words (`Jev, asked "Is there a seal on contract.pdf#page=3?": no (0.02)`), so an absence is grounded by a cited no. The check refuses a text that was not judged as written.
 - **The text is yours, in plain sentences.** Every sentence on the page (a caption, an evidence paragraph, a row) is one plain
   sentence in your own words, drawn from the look's answer: never the answer pasted. The page is HTML, so markdown shows as raw
   symbols (`**`, `##`, a `* ` list mark, backticks); the check refuses them in any text outside `<code>` and `<pre>` and names
@@ -184,19 +184,36 @@ const keep = async (file) => {   // a document or photo the run was given, copie
 Look at the pictures you will show, if the run has not already, and take each look's key from its receipt. `vision.see`
 returns the receipts' paths, one for each request. A receipt is a JSON record (its key is `facts.key`) or a text file whose
 header has a `key:` line before the first `---`. A look the run made earlier is cited the same way: give `keyOf` its
-receipt's path, and say what it covered with `cover("file#page=2")` (`look()` and `hear()` do that for their own looks), since the list of what you did not check is what no look covered. `said` holds what each look read, by key, for the grounding step: a look you read yourself is put there by `look()` and `hear()`, and one you read from a receipt by `keyOf`.
+receipt's path, and say what it covered with `cover("file#page=2")` (`look()`, `decide()` and `hear()` do that for their own looks), since the list of what you did not check is what no look covered. `said` holds what each look read, by key, for the grounding step: a look you read yourself is put there by `look()` and `hear()`, and one you read from a receipt by `keyOf`.
 
 ```js
 const looks = new Set(), said = new Map(), covered = [];   // said: look key -> what the look read; covered: what the run looked at, as { file, pages?: [from, to], t?: [from, to] }
+const jevWords = (args, body) => {   // Jev's typed answers as words: a yes, a no, a choice, a score or a place is evidence of presence or absence
+  let asked, answers;
+  try { asked = JSON.parse(args.ask); answers = JSON.parse(body); } catch { return body; }
+  const sources = String(args.path ?? "").split(", ");
+  const about = (text) => String(text ?? "").replace(/`?images\[(\d+)\]\.image`?/g, (_, i) => sources[Number(i)] ?? "the picture");
+  return Object.entries(answers).map(([name, a]) => {
+    const said = a.type === "noul" ? `${a.noul >= 0.5 ? "yes" : "no"} (${a.noul})`
+      : a.type === "choice" ? `${a.choice}${a.confidence != null ? ` (${a.confidence})` : ""}`
+      : a.type === "score" ? `score ${a.score}${a.legend?.[a.score] ? ` (${a.legend[a.score]})` : ""}`
+      : a.type === "box" ? `located at ${a.fragment ?? "a region of the picture"}${a.confidence != null ? ` (confidence ${a.confidence})` : ""}` : JSON.stringify(a);
+    return `Jev, asked "${about(asked[name]?.instructions ?? name)}": ${said}`;
+  }).join("\n");
+};
 const keyOf = async (receipt) => {
   if (!receipt) throw new Error("no receipt: this host files none, so there is no look to cite");
   const text = await sh(`cat ${q(receipt)}`).catch(() => sh(`cat ${q(`../${receipt}`)}`));   // a host may file receipts in the folder above the workspace
-  let key, status, body = "";
-  try { ({ status, body = "", facts: { key } } = JSON.parse(text)); } catch { const header = text.split("\n---")[0].split("\n").map((line) => line.split(": ")); key = header.find(([name]) => name === "key")?.[1]; status = header.find(([name]) => name === "status")?.[1]; body = text.split("\n---\n").slice(1).join("\n---\n"); }
+  let key, status, args, body = "";
+  try { ({ status, args, body = "", facts: { key } } = JSON.parse(text)); } catch {
+    const header = text.split("\n---")[0].split("\n"), field = (name) => header.find((line) => line.startsWith(`${name}: `))?.slice(name.length + 2);
+    key = field("key"); status = field("status"); body = text.split("\n---\n").slice(1).join("\n---\n");
+    try { args = JSON.parse(field("args")); } catch { args = undefined; }
+  }
   if (!key) throw new Error(`${receipt} holds no look key`);
   if (status === "failed") throw new Error(`${receipt} is a look that failed: it is no evidence for a finding`);
   looks.add(key);
-  if (typeof body === "string" && body.trim() && !said.has(key)) said.set(key, body.trim());
+  if (typeof body === "string" && body.trim() && !said.has(key)) said.set(key, args?.via === "jev" ? jevWords(args, body.trim()) : body.trim());
   return key;
 };
 const cover = (fragment) => {   // "file#page=3", "file#page=1-4", "file#t=18,26", "file#t=21.5&xywh=...", or a bare file: put a look made earlier here too
@@ -210,6 +227,11 @@ const look = async (path, fragment, ask) => {
   const key = await keyOf(seen.receipts[0]);
   said.set(key, seen.text.trim());
   return { key, text: seen.text.trim() };
+};
+const decide = async (path, fragment, questions) => {   // Jev's typed answers about a picture: cite this look for any presence or absence you state
+  const decided = await vision.judge({ paths: [path], fragments: [fragment], questions });
+  cover(fragment);
+  return { key: await keyOf(decided.receipts[0]), answers: decided.answers };
 };
 const hear = async (path, fragment) => {   // what was said in a recording: cite this look for any name, time or number that was heard
   // The whole file at `path` is transcribed. For audio cut from a longer recording, `fragment` is the source address of the cut ("talk.mp4#t=30,36"), which is what was heard.
