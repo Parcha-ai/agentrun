@@ -15,7 +15,7 @@ import {
   createWorkflowExtension, decisionRecovery, nodeRunner, taskScope, type WorkflowOutcome,
 } from '@parcha/agentrun-pi/durable';
 import { ArchilCodingTools, archilEnv, openClaimDir, openDurableRun, type Claim, type RunEnv, type RunRef } from '@parcha/pi-durable-disk';
-import { DEFAULT_BROWSER_POLICY } from '@parcha/pi-browser';
+import { DEFAULT_BROWSER_POLICY, localSites, type LocalSite } from '@parcha/pi-browser';
 import { createBrowserExtension } from '@parcha/pi-browser/durable';
 import { createVisionExtension, type VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import type { Host, RunPlace, StatusEvent } from './host.ts';
@@ -72,7 +72,7 @@ function runEnv(claim: Claim): RunEnv {
  *  extension is built, with a getter for the run's harness (undefined until the run is open). What differs per conversation is
  *  what the options themselves take: `limits`, `eyes` and `eyesModel` are given the conversation (`{ conversationId }`). */
 /** `layout`: the recovery driver's layout for the run, `v4` for the keyed one (the map items kept as `agentrun.items` documents); the driver's default when absent. It is the host's choice, not the job's. */
-export type RunOptions = { env?: (claim: Claim) => RunEnv; vision?: (context: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions>; layout?: 'v3' | 'v4' };
+export type RunOptions = { env?: (claim: Claim) => RunEnv; /** The sites `use_website` offers: each task runs a child agent in a browser of its own, recorded under its request id. Absent: the tool is not listed. */ sites?: Record<string, LocalSite>; vision?: (context: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions>; layout?: 'v3' | 'v4' };
 
 /** `env`: where the run's tools act. Default: the claim's `work/`, through the disk package's confined environment. */
 export async function run(place: RunPlace, host: Host, job: Job, options: RunOptions = {}): Promise<RunResult> {
@@ -86,7 +86,11 @@ export async function run(place: RunPlace, host: Host, job: Job, options: RunOpt
   let opened: Harness | undefined;
   const labelOf = async (id: ConversationId | undefined) => (opened && id !== undefined && (await opened.snapshot(Label, id, ctx))?.label) || 'run';
 
+  // `use_website`: the sites' listing is read once, here, as the browser extension asks.
+  const sitePort = options.sites ? localSites(options.sites) : undefined;
+  const sites = sitePort ? { port: sitePort, listing: await sitePort.list(new AbortController().signal) } : undefined;
   const browser = createBrowserExtension({
+    ...(sites ? { sites } : {}),
     provider: (target) => host.tools.browser.provider(target), driver: host.tools.browser.driver, evidence: host.evidence,
     ...(host.tools.browser.prices ? { prices: host.tools.browser.prices } : {}),
     ...(host.credentials.redact ? { redact: { values: host.credentials.redact } } : {}),

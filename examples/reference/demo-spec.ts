@@ -48,6 +48,8 @@ export type DemoSpec = {
   sources?: boolean | string;
   /** The box the job's tools run in. */
   boxes?: BoxSpec;
+  /** The sites the agent can hand a task to (`use_website`): each runs a child agent in a browser of its own, starting at `startUrl`, and answers a short report. */
+  sites?: Record<string, { title: string; description: string; startUrl: string }>;
   [other: string]: unknown;
 };
 

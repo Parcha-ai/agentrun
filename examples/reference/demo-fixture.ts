@@ -1,4 +1,5 @@
 // A demo's `run.ts` as the reference entry's own test uses it: the reference job and its fakes, the spec from `DEMO_SPEC` (a JSON file), the standard flags.
+import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fakeEyes } from '@parcha/pi-vision/testing';
@@ -34,9 +35,27 @@ const boxTool = process.env.DEMO_BOX_TOOL ? {
   },
 } : undefined;
 const withBox = boxTool ? { ...job, workflow: { ...job.workflow, schemas: { ...job.workflow.schemas, Installed: { type: 'object' } }, root: { ...job.workflow.root, steps: [(job.workflow.root as { steps: unknown[] }).steps[0], { node: 'call', label: 'install', via: 'tool', tool: 'install', args: {}, out: 'Installed', as: 'installed', deadline_s: 60 }, ...(job.workflow.root as { steps: unknown[] }).steps.slice(1)] } } } as unknown as typeof job : undefined;
+// And `use_website`: the parent hands the registry check to a site, whose child agent opens the page, reads it and reports with the receipt's path; the parent cites it.
+const siteText = (message: { content: unknown }) => (typeof message.content === 'string' ? message.content : (message.content as Array<{ type: string; text?: string }>).map((block) => (block.type === 'text' ? block.text ?? '' : '')).join(''));
+const sitesLead = (messages: readonly { role: string; content: unknown }[]) => {
+  const first = siteText(messages.find((message) => message.role === 'user')!);
+  const results = messages.filter((message) => message.role === 'toolResult');
+  const call = (name: string, args: Record<string, unknown>) => fauxAssistantMessage([fauxToolCall(name, args as never)], { stopReason: 'toolUse' });
+  const start = /Start at (https?:\/\/\S+?)\.?\s/.exec(first);
+  if (start) {
+    if (results.length === 0) return call('run', { code: `await page.goto(${JSON.stringify(start[1])})` });
+    if (results.length === 1) return call('browser_read', { what: 'markdown' });
+    const path = /evidence\/[\w./-]+\.json/.exec(siteText(results[1]!))?.[0] ?? 'no receipt';
+    return fauxAssistantMessage(`Acme Ltd was incorporated on 2019-03-04. Receipt: ${path}`);
+  }
+  if (results.length === 0) return call('use_website', { site: 'registry', request_id: '3f2b8a1c-7d4e-4b9a-8c1d-5e6f7a8b9c0d', instructions: 'When was Acme Ltd incorporated? Quote the receipt path of the page you read.' });
+  const path = /evidence\/[\w./-]+\.json/.exec(siteText(results.at(-1)!))?.[0] ?? '';
+  return call('submit', { answer: 'Acme Ltd was incorporated on 2019-03-04.', citations: path ? [path] : [] });
+};
+const withSites = process.env.DEMO_SITES ? { ...job, workflow: { ...job.workflow, root: { ...job.workflow.root, steps: [...(job.workflow.root as { steps: unknown[] }).steps.slice(0, 1), { ...((job.workflow.root as { steps: unknown[] }).steps[1] as object), instructions: 'Hand the registry check to the registry site with use_website, then cite its receipt.' }, ...(job.workflow.root as { steps: unknown[] }).steps.slice(2)] } } } as unknown as typeof job : undefined;
 // And scripted eyes for the lead's images: with them the lead takes text only, so the read of the filing scan goes to the eyes (a paid look).
 const eyes = process.env.DEMO_EYES ? fakeEyes({ model: 'scripted-eyes', price: { input: 1, output: 4 }, ...(process.env.DIR ? { ledgerPath: join(process.env.DIR, 'eyes.jsonl') } : {}), answers: [process.env.DEMO_EYES_FAIL ? { fail: 'the eyes are unavailable' } : 'A scanned certificate of incorporation. Incorporated on 2019-03-04.'] }) : undefined;
-const scripted = { ...fakes, ...(lingering ? { tools: { ...fakes.tools, ...lingering.tools } } : {}), ...(boxTool ? { tools: { ...fakes.tools, ...(lingering?.tools ?? {}), ...boxTool } } : {}), ...(judgeCost ? { judge: async (request: Parameters<typeof fakes.judge>[0]) => ({ ...(await fakes.judge(request)), cost_usd: judgeCost }) } : {}) };
+const scripted = { ...fakes, ...(process.env.DEMO_SITES ? { model: sitesLead as typeof fakes.model } : {}), ...(lingering ? { tools: { ...fakes.tools, ...lingering.tools } } : {}), ...(boxTool ? { tools: { ...fakes.tools, ...(lingering?.tools ?? {}), ...boxTool } } : {}), ...(judgeCost ? { judge: async (request: Parameters<typeof fakes.judge>[0]) => ({ ...(await fakes.judge(request)), cost_usd: judgeCost }) } : {}) };
 // And `sourcesFor`: the items an input needs, from a JSON list whose ids start `a-` for the default company and `o-` for another.
 const sourcesFor = process.env.DEMO_SOURCES_ITEMS ? (input: Record<string, unknown>) => (JSON.parse(readFileSync(process.env.DEMO_SOURCES_ITEMS!, 'utf8')) as Array<{ id: string; url: string; bytes: number; sha256: string }>).filter((item) => item.id.startsWith(input.company === 'Beta Ltd' ? 'o-' : 'a-')) : undefined;
 // And a vision lane the entry must honor (`fakes.vision`) and a result hook (`result`): tests read the probe file and the recording's result.
@@ -58,5 +77,5 @@ const ownLane = () => ({
     onMiss: async () => { appendFileSync(join(process.env.DIR!, 'own-hooks.txt'), 'miss\n'); },
   } : {}),
 });
-export const options = { ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withBox ?? lingering?.job ?? job, fakes: { ...scripted, ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}) };
+export const options = { ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withBox ?? withSites ?? lingering?.job ?? job, fakes: { ...scripted, ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}) };
 if (process.argv.includes('--child')) await demo(options);

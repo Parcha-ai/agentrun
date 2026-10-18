@@ -217,7 +217,7 @@ async function child(options: DemoOptions) {
         onMiss: async (miss) => { await kept.onMiss?.(miss); await own.onMiss?.(miss); },
       };
     };
-    const result = await run(place, local.host, { ...options.job, input }, { ...(box ? { env: box.env } : {}), vision, ...(options.layout ? { layout: options.layout } : {}) });
+    const result = await run(place, local.host, { ...options.job, input }, { ...(box ? { env: box.env } : {}), ...(options.spec.sites ? { sites: options.spec.sites } : {}), vision, ...(options.layout ? { layout: options.layout } : {}) });
     // The demo's result hook: what the recording shows as the run's result, made where the run's own files are.
     const made = result.status === 'complete' && options.result ? await options.result(result.output, { dir: place.root, keep: (bytes, extension) => (recorder ? recorder.blob(bytes, extension) : createHash('sha256').update(bytes).digest('hex')) }) : undefined;
     await recorder?.detach();

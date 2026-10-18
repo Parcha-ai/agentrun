@@ -579,6 +579,30 @@ test('the place\'s signals carry the kill request: a place with its own signals(
   assert.deepEqual(asked, [[1, 'kill-request', 'judge.asked verdict']]);
 });
 
+const SITES = { registry: { title: 'The company registry', description: 'Company records: number, incorporation date, status.', startUrl: 'http://registry.example/companies/01234567' } };
+
+test('sites: use_website hands the registry check to a child agent in a browser of its own, its report comes back, and the parent cites its receipt', { timeout: 300_000 }, async (t) => {
+  const { result, recording } = await run(t, { sites: SITES }, ['--json'], { DEMO_SITES: '1' });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
+  assert.equal(result.record.answer, 'Acme Ltd was incorporated on 2019-03-04.');
+  assert.match(result.record.citations[0], /^evidence\/.+browser_read-\w+\.json$/, 'the parent cites the receipt the child filed');
+  assert.deepEqual(validateRecording(recording), []);
+  const lines = readEvents(recording);
+  const sessions = new Set(lines.filter((line) => line.source === 'browser' && line.kind === 'launched').map((line) => line.data.tag ?? line.data.sessionId ?? JSON.stringify(line.data)));
+  assert.equal(sessions.size, 1, 'the parent opened no browser: the one session is the child\'s own');
+});
+
+test('a kill while the child works: the resumed run finds the site task by its request id and does not start a second child', { timeout: 300_000 }, async (t) => {
+  const { result, recording } = await run(t, { sites: SITES, kills: [{ point: 'model.request turn 1', why: 'the child is asked for its report', n: 1 }] }, ['--kill', '--json'], { DEMO_SITES: '1' });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
+  assert.deepEqual(result.unlanded ?? [], []);
+  assert.equal(result.record.answer, 'Acme Ltd was incorporated on 2019-03-04.');
+  assert.deepEqual(validateRecording(recording), []);
+  const children = new Map();
+  for (const line of readEvents(recording).filter((line) => line.channel === 'durable' && line.data?.doc?.endsWith('.children'))) for (const [key, value] of Object.entries(line.data.value.byRequest ?? {})) children.set(key, [...(children.get(key) ?? []), JSON.stringify(value)]);
+  assert.deepEqual([...children.keys()], ['registry:3f2b8a1c-7d4e-4b9a-8c1d-5e6f7a8b9c0d'], 'one child, kept under its site and request id');
+  assert.equal(new Set(children.get('registry:3f2b8a1c-7d4e-4b9a-8c1d-5e6f7a8b9c0d')).size, 1, 'under that key, every revision names the same child conversation: a resume that started another would replace the id under one key');
+});
 test('hold: the nth filing and those after it are parked until `hold` are parked or waitMs has passed, then the kill; without a hold the kill is at the crossing', (t) => {
   const kills = [];
   const make = (plan) => crossings({ run: plan, tools: [] }, undefined, Date.now(), (crossing) => kills.push(crossing.point));
