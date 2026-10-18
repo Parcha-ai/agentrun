@@ -2,6 +2,92 @@
 
 ## Unreleased
 
+## 0.1.0-beta.16 (2026-10-18)
+
+- The live server's page also lists the agent's saved sign-ins by site (`GET /agent`, never a ref) and says when a run started signed in; the live browser floats over the page, opening large while the run waits for the person; and once a run is not live its Browser tab plays back what its browser showed, recorded owner-only beside the run with nothing kept while the person signs in, and never part of a replay.
+- **Reference example: one scanner, and `--record` scans before it finishes**
+  - `examples/reference/scan.ts` is the one scan for what a published recording must never hold: a credential's shape
+    or a machine path. A copied example keeps it.
+  - The recorder's `finishRecording` scans the recording's lines, its text blobs and the manifest's own text before it
+    writes the manifest. A finding throws, naming the shape and the file, and no manifest is written, so the directory
+    is never a finished recording.
+  - `scripts/recording/validate.mjs` imports the same scanner instead of its own copy, and re-exports it, so the
+    validator and the hosted gallery's gate refuse exactly what the recorder refuses.
+  - The scanner refuses a JSON Web Token (`jwt`: a base64url JSON header and payload and a signature, the shape of a
+    ChatGPT sign-in's access and id tokens) and a Browserbase API key (`bb_live_`, the prefix Browserbase's docs show), in
+    a line, a blob or the manifest, and behind a JSON escape too. The source export keeps its own list
+    (`scripts/export-source.mjs`), unchanged.
+  - The hosted gallery's gate scans every published text file as the recorder does, raw and decoded when it is JSON, so
+    an escaped credential in a blob no line names is found too.
+- **`apps/viewer`: box time in the run's cost, and a scripted run's real parts on the strip (RECORDING.md drafts 33, 35, 36)**
+  - The cost sums each `box.receipt` host line's `cost_usd`, once per box by its label, and labels it at list price:
+    `$0.0147 (boxes $0.0047 at list price)`. A restore keeps it: a box's time was spent whatever the store went back to.
+  - The cost is unknown while a box pi-transport's own lines show started (`box.created`) has no receipt of its own
+    (source `transport`), when a receipt's `cost_usd` is null (a kind with no published price), and, as before, when the
+    recording has no durable line. Started boxes named by label (`box-N`, as a receipt names its box) are matched to their
+    own receipts; ones named by the provider's id, which no receipt carries, are counted against the transport receipts.
+  - A scripted run whose boxes cost something reads `scripted lead, boxes $0.0047 at list price`, its other parts named
+    scripted with their sum when they priced anything, never `scripted, $0`. A scripted run with no box, or whose boxes
+    cost nothing, reads as before.
+  - The counters carry `costParts`, the cost by part (`lead`, `judge`, `eyes`, `browser`, `boxes`), and `costLabel` moves
+    to `./counters.ts`. The transport panel's cost row uses it, so it reads as the strip.
+- The run viewer draws the pictures a cited result names (`apps/viewer`): a row of an `agentrun.cited/1` result that cites a file which is a picture in the recording's `blobs/` (PNG, JPEG, WebP or GIF) shows it as a small thumbnail, several side by side; any other file stays a link. A window of film the eyes saw as video, with no picture of its own, shows the keyframes the rows cite beside it, each captioned as that chapter's keyframe and noted as not what the eyes saw; a page keeps its own scan. Pictures come only from the recording: read from a server (`?src=`, `?follow=`), where `blobs/` cannot be listed, a blob no line names (a picture only the result cites) is looked for by its name the first time a view draws it, and reads loading until then. A result's JSON is read without fetching a `data:` or `blob:` URL (an embedded site decodes it in the page; a followed run keeps what it read), so a site served with `connect-src 'self'` still draws the result. A missed tile in the photographs lane is labelled by its miss code. A panel's view reads a blob's media type through `ViewContext.blobType`.
+- **`apps/viewer`: the run's picture (RECORDING.md draft 31)**
+  - The picture panel draws the latest `picture` host line's image at or before the stop, a gap before the first, and the
+    last one after the run ends. A recording with no `picture` line draws no picture panel; one with pictures shows it
+    first.
+  - The viewer's format check takes a `picture` line, which names no process (no `data.gen`), and checks its `blob` (a
+    SHA-256 in `blobs/`), `label` (a string) and `commit` (a whole number).
+  - `apps/viewer/RECORDING.md` follows the format's draft 31: the host row gains the supervisor's failure lines and the
+    `picture` line.
+- **`apps/viewer`: a message's text parts are kept apart, and a prompt's footer folds**
+  - `textOf` joined a message's text blocks with nothing, so a second text part (a footer a job adds after its prompt) ran
+    into the first. Text parts are now joined with a blank line (`textPartsOf` gives them in order).
+  - The model turns panel shows the prompts (user messages) too: a prompt shows the start of its first text part, and
+    everything else, the rest of that part and every later part (a footer after the prompt), folds whole under one
+    "more"; a short prompt of one part is shown as it is.
+- `examples/web`: a run in an imported home reads its timeline from its store. A pack carries no `run.json`, so the runs server answered 409 ("the run is live") for every run of a home made by `importPack`; a run whose entry in the home's index has an `endedAt` was carried back at its source, so the server now treats it as released with or without `run.json` and gives its timeline, state and cost from its store. A run with no `endedAt` and no `run.json` is still not read from its store.
+- examples/web: a message that comes after a run answered, between its instance's exit and its carry back, waits for the carry back and gets `409 RUN_FINISHED`. Before, it started the run again, and once the carry back landed that instance was never stopped, so it stayed up with its browser. An instance still up for a run that is already carried back (by another writer of the home) is now sent SIGTERM.
+- `changes.mjs --fold` writes the same held-package changelog when a release folds in two commits as when it folds once. A held package's Unreleased section keeps what it had; the bullets of this release's fragments follow it in the fold's order (kind, then file name). When a release folds, merges main and folds a late fragment again, the earlier fold's run is rebuilt from the merge base's text with the late fragments in that order, so `--check` accepts it. `--base <ref>` (default `origin/main`) names what the merge base is taken against; a section that is not an earlier fold's exact output is left as it was and the new bullets are appended after it.
+- **`scripts/recording/validate.mjs` and `apps/viewer`: two recordings that follow the format are no longer refused**
+  - An inline image is found by its structure, never by the length of a string. An image block that holds its `data`,
+    and a `data:image/` URL, are still refused: an image belongs in `blobs/`. A run of 4000 or more base64 characters
+    anywhere else (a store's chunk, a checkpoint) is data and is accepted, so a writer no longer cuts it up to pass.
+  - A restore whose pi committed once at open is accepted (RECORDING.md draft 37). Its process may start at `head + 1`
+    when its own snapshot is at commit `head`, since pi commits once at open when a generation was running and that
+    commit's state is in the snapshot. Both the viewer's check ("the restore's head is not the process's first new
+    commit") and the validator's continuity check refused it. A first new commit above `head + 1`, `head + 1` without
+    the snapshot at `head`, and every move fail as before.
+- The reference recorder writes each blob to a temporary file in the recording's `.spool/`, fsyncs it and renames it into `blobs/` whole, so a process killed while it writes (the budget stop, a planned kill) leaves a temporary file in `.spool/` and never a torn blob under a name that says it is whole. The validator and the gallery gate are unchanged: `.spool/` is never published.
+- **`apps/viewer`: a build skips a blob still being written**
+  - A recorder writes a blob as `.<sha>.<ext>.tmp-<pid>` and renames it once whole, so a copy of a recording taken while it
+    goes may hold such a name in `blobs/`. `build.mjs` neither lists it in the gallery (embedded or `--files`) nor copies
+    it, so the build of such a copy passes the hosted gallery's gate.
+- Two notes for host authors. The `pi-agent-learn` README says how a judge on a general model, rather than Jev, answers
+  curate's questions: ask for `{ answer, confidence }` and derive the yes-probability, since a model asked for a bare
+  probability reads it as its confidence. The host integration guide says to give each tool a workflow calls through
+  `createWorkflowTool` a `resultSchema`: without one, `describe` reports pi's result envelope and the result reaches the
+  next node untyped.
+- The `examples/agent-learn/` demo now shows a workflow earning its place. After run 2's workflow is admitted as a trial,
+  runs 5 to 7 are offered it, load it by name and run it with the DSL's `agentrun` tool; `finishRun` proposes their uses from the
+  records the tool left in each run's own store, and curation promotes the trial to active on the third clean run (a run counts once, however many cases it ran). Run 8 saves a
+  second revision that hands an issue with no body to a person; runs 9 and 10 escalate at its gate, so curation demotes it and
+  the first revision is active again, and a run that saves the demoted document again proposes nothing. The README has a new
+  section, "A workflow earns its place", with the rules: three clean uses promote, two failed or escalated uses in a row demote
+  and roll back, and a demoted revision never returns. The tests read each use from the tool's own records.
+- New example `examples/agent-learn/`: an issue-triage agent that learns in its own git repository, end to end in one command
+  with a scripted model and judge (`npm run demo:learn`, no key, no network). The agent's `AGENTS.md` says
+  to call `learn` with type correction when a maintainer corrects it. In run 1 a maintainer gives a project rule no model can
+  guess; the host proposes the note on `runs/run-1`, and curation merges it to `main`. Run 2's first model request carries it
+  in `<learned>`; run 2 applies it, marks it used, and saves a workflow with the DSL's `agentrun` tool, which curation admits
+  as a trial skill. `retireLearning` then takes the rule out (a `git revert` would conflict once the rule was used), so run 3
+  labels without it and is offered the trial, and a run that tries to keep a host secret proposes nothing.
+  `host.mjs` is the reference host loop over `@parcha/pi-git-remote`, `@parcha/pi-agent-learn` and
+  `@parcha/pi-durable-agent`: `prepareRun` (fetch main, refresh the agent home at its sha with a compare-and-swap, start the
+  run there, seed its section and its trials), `finishRun` (carry back, then propose notes, saved workflows and uses) and
+  `curateNow` (the judge is the DSL's `runJudge` port). `--live` runs the triage runs on a model at an OpenAI Responses
+  endpoint.
+
 ## 0.1.0-beta.15 (2026-10-16)
 
 - The `agentrun` tool dry-runs the inspected workflow: its `dry-run` action (with an optional `input`), the `/agentrun dry-run` command and the inspector's Dry-run action run it on synthetic values, with no model, Jev or tool call, no run journal, and the last run's receipt left as it was. The result's `status` is `passed`, `not_run` (a check could not run and `skipped` says why; it proves nothing) or `failed` (`problems` say why). A workflow with code nodes is `not_run` until the user issues `/agentrun dry-run --trusted`, and a code node that throws is reported by its label, without what it threw. The tool's parameters gain the `dry-run` action, and the packaged skill tells the agent to dry-run a workflow before it runs it.

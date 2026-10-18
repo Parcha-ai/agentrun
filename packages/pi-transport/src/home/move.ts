@@ -12,6 +12,7 @@ import { replayCommits } from "./commit-log.ts";
 import type { DrainOptions } from "./gate.ts";
 import type { CallRecord, HomeHandle } from "./host.ts";
 import type { Holder, LeaseRecord, Ownership } from "./ownership.ts";
+import type { MoveFacts, MoveWhere } from "./run.ts";
 import { type StopRunner, stopRunner } from "./stop.ts";
 import { type Seal, sealStore, verifyStore } from "./store.ts";
 import { manifestOf, moveFile, moveWorkspace, type WorkspaceOptions } from "./workspace.ts";
@@ -24,7 +25,17 @@ export type Place = {
 	/** The store's file in the box. Outside the workspace: the workspace moves on its own. */
 	readonly store: string;
 	readonly workspace: string;
+	/**
+	 * How a recording names the box: a label the host gives (`box-1`), never the provider's id. A move's durable record
+	 * names its places by it. Default: the box's id, for a host that records nothing.
+	 */
+	readonly label?: string;
 };
+
+/** A place as a move's record names it. */
+export function whereOf(place: Place): MoveWhere {
+	return { environment: place.environment, provider: place.provider, box: place.label ?? place.box.id };
+}
 
 /** How a host starts the runner at a place and holds it, at the given epoch. */
 export type StartRunner = (place: Place, epoch: number, context: Context) => Promise<Result<HomeHandle, MoveError>>;
@@ -102,6 +113,11 @@ export type MoveOptions = {
 	readonly drain?: DrainOptions;
 	readonly workspace?: WorkspaceOptions & { readonly maxBytes?: number };
 	readonly id?: string;
+	/**
+	 * The session's environment for the target's app, in its resume order (`ResumeOrder.env`): a box inherits none of
+	 * the host's, so a move without it opens the session with an empty one.
+	 */
+	readonly env?: Readonly<Record<string, string>>;
 	/** Called before each step. A test stops a move here. */
 	readonly onStep?: (step: MoveStep) => void | Promise<void>;
 };
@@ -145,7 +161,7 @@ export async function moveHome(options: MoveOptions, context: Context): Promise<
 		if (status.value.state === "open") return "the source runs on";
 		const back =
 			status.value.state === "closed"
-				? await from.home.resume({ epoch }, cleanup)
+				? await from.home.resume({ epoch, ...(options.env === undefined ? {} : { env: options.env }) }, cleanup)
 				: await from.home.reopen(epoch, cleanup);
 		return back.ok
 			? "the source runs again"
@@ -228,6 +244,7 @@ export async function moveHome(options: MoveOptions, context: Context): Promise<
 	const shipMs = Math.round(performance.now() - shipStarted);
 
 	await step("take");
+	const takeStarted = performance.now();
 	// The point of no return: only with a target that still answers.
 	const alive = await target.status(context);
 	if (!alive.ok) {
@@ -269,11 +286,28 @@ export async function moveHome(options: MoveOptions, context: Context): Promise<
 		}
 	}
 	const next = epoch + 1;
+	const takeMs = Math.round(performance.now() - takeStarted);
+	const bytes = seal.bytes + (shipped.ok ? shipped.value.bytes : 0);
 
 	await step("resume");
 	target.setEpoch(next);
+	const record: MoveFacts = {
+		from: whereOf(from.place),
+		to: whereOf(to),
+		drainMs,
+		shipMs,
+		takeMs,
+		bytes,
+		stopped: [],
+		seal,
+	};
 	const resumed = await target.resume(
-		{ epoch: next, seal, move: { id, notice: options.notice, kind: "move", head: seal.head } },
+		{
+			epoch: next,
+			seal,
+			move: { id, notice: options.notice, kind: "move", head: seal.head, record },
+			...(options.env === undefined ? {} : { env: options.env }),
+		},
 		context,
 	);
 	if (!resumed.ok) {
@@ -290,7 +324,7 @@ export async function moveHome(options: MoveOptions, context: Context): Promise<
 		drainMs,
 		shipMs,
 		totalMs: Math.round(performance.now() - started),
-		bytes: seal.bytes + (shipped.ok ? shipped.value.bytes : 0),
+		bytes,
 		retired: retired.ok,
 		home: target,
 	});
@@ -443,6 +477,8 @@ export type RecoverOptions = {
 	) => string;
 	/** The files of a restore are copied with these limits. */
 	readonly workspace?: WorkspaceOptions & { readonly maxBytes?: number };
+	/** The session's environment for the runner it starts, in its resume order (`ResumeOrder.env`). */
+	readonly env?: Readonly<Record<string, string>>;
 };
 
 /** Whether a box is gone for good: its provider says it ended, or does not know it. An error that is not that is not an answer. */
@@ -546,7 +582,7 @@ async function restoreHome(
 		try {
 			const made = await options.replace(gone, context);
 			if (!made.ok) return made;
-			return await restoreInto(options, record, undefined, whole, made.value, context);
+			return await restoreInto(options, record, undefined, whole, made.value, gone, context);
 		} finally {
 			rmSync(dirname(whole.file), { recursive: true, force: true });
 		}
@@ -557,7 +593,7 @@ async function restoreHome(
 	try {
 		const made = await options.replace(gone, context);
 		if (!made.ok) return made;
-		return await restoreInto(options, record, checkpoint, replay, made.value, context);
+		return await restoreInto(options, record, checkpoint, replay, made.value, gone, context);
 	} finally {
 		if (replay !== undefined) rmSync(replay.file, { force: true });
 	}
@@ -611,6 +647,7 @@ async function restoreInto(
 	checkpoint: Checkpoint | undefined,
 	replay: Replayed | undefined,
 	place: Place,
+	gone: Place,
 	context: Context,
 ): Promise<
 	Result<
@@ -634,6 +671,8 @@ async function restoreInto(
 	if (!dropped.ok) return err(new MoveError("ship", `the host's log could not be rewound: ${dropped.error.message}`));
 	const storeFile = replay?.file ?? checkpoint?.storeFile;
 	if (storeFile === undefined) return err(new MoveError("no_checkpoint", "there is no store to restore"));
+	const shipStarted = performance.now();
+	let treeBytes = 0;
 	const file = await moveFile(vault.box, storeFile, place.box, place.store, seal, undefined, context);
 	if (!file.ok)
 		return err(new MoveError("ship", `the restored store did not reach the new box: ${file.error.message}`));
@@ -646,6 +685,7 @@ async function restoreInto(
 		);
 		if (!tree.ok)
 			return err(new MoveError("ship", `the checkpoint's files did not reach the new box: ${tree.error.message}`));
+		treeBytes = tree.value.bytes;
 	} else {
 		// From the log alone no file comes back: the workspace is an empty directory.
 		// The directory is made if it is not there, and must hold nothing: the notice says no file came back.
@@ -667,13 +707,16 @@ async function restoreInto(
 			);
 		}
 	}
+	const shipMs = Math.round(performance.now() - shipStarted);
 	const host = options.host ?? "host";
 	const holder = { environment: place.environment, provider: place.provider, box: place.box.id, host };
+	const takeStarted = performance.now();
 	const taken = await ownership.take(session, holder, record.epoch, { move: id, seal }, context);
 	if (!taken.ok) {
 		const code = taken.error.code === "lost" ? "lost" : "take";
 		return err(new MoveError(code, `the lease was not taken: ${taken.error.message}`));
 	}
+	const takeMs = Math.round(performance.now() - takeStarted);
 	const epoch = taken.value.epoch;
 	const started = await options.start(place, epoch, context);
 	if (!started.ok) return started;
@@ -691,7 +734,21 @@ async function restoreInto(
 				kind: "restore",
 				head: seal.head,
 				...(replay === undefined ? {} : { replayed: { from: replay.from, to: replay.to } }),
+				// The restore's durable record: from the lost place to this one, and the checkpoint it came from, if any.
+				record: {
+					from: whereOf(gone),
+					to: whereOf(place),
+					drainMs: null,
+					shipMs,
+					takeMs,
+					bytes: seal.bytes + treeBytes,
+					stopped: [],
+					...(checkpoint === undefined
+						? {}
+						: { checkpoint: { ...checkpoint.seal, at: new Date(checkpoint.at).toISOString() } }),
+				},
 			},
+			...(options.env === undefined ? {} : { env: options.env }),
 		},
 		context,
 	);
@@ -821,8 +878,20 @@ export async function recoverHome(
 							notice,
 							kind: lease.move.startsWith("restore-") ? "restore" : "move",
 							...(lease.seal === undefined ? {} : { head: lease.seal.head }),
+							// A target that took the session and never opened writes the record from here: the host knows only
+							// where the lease puts it. A target that wrote it keeps its own.
+							record: {
+								from: null,
+								to: whereOf(place),
+								drainMs: null,
+								shipMs: null,
+								takeMs: null,
+								bytes: null,
+								stopped: [],
+							},
 						},
 					}),
+			...(options.env === undefined ? {} : { env: options.env }),
 		},
 		context,
 	);
