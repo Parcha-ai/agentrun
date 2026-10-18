@@ -425,8 +425,8 @@ test("a relative link names a file of report/ or a film left in outside, and not
 
 test("when the question names a shape, the answer section is that shape: one cited row for each unit, before any finding", async () => {
   const shaped = data.replace("  notChecked:", `  rows: [
-    { id: "m1", label: "0:00 to 0:20", text: "The chart is on the screen.", thumb: await thumb("talk.mp4", "m1-thumb", { t: 10 }), cites: [{ file: "talk.mp4", t: [0, 20], look: lookTalk.key }] },
-    { id: "m2", label: "0:20 to 0:40", text: "The speaker names the rule.", thumb: await thumb("talk.mp4", "m2-thumb", { t: 30 }), cites: [{ file: "contract.pdf", page: 3, look: lookPage.key }] },
+    { id: "m1", label: "Seconds 0 to 20", text: "The chart is on the screen.", thumb: await thumb("talk.mp4", "m1-thumb", { t: 10 }), cites: [{ file: "talk.mp4", t: [0, 20], look: lookTalk.key }] },
+    { id: "m2", label: "Page 3", text: "The speaker names the rule.", thumb: await thumb("talk.mp4", "m2-thumb", { t: 30 }), cites: [{ file: "contract.pdf", page: 3, look: lookPage.key }] },
   ],
   notChecked:`);
   assert.notEqual(shaped, data);
@@ -437,7 +437,7 @@ test("when the question names a shape, the answer section is that shape: one cit
   const answer = html.slice(html.indexOf('id="answer"'), html.indexOf('id="evidence"'));
   assert.equal((answer.match(/<li class="row" id="r-m\d">/g) ?? []).length, 2, "the rows are in the answer");
   assert.equal((answer.match(/class="cite" href="[^"]*" data-look="[0-9a-f]{64}"/g) ?? []).length, 2, "each row is cited, with its look");
-  assert.match(answer, /<span class="when">0:00 to 0:20<\/span><span class="what">The chart is on the screen\.<\/span>/);
+  assert.match(answer, /<span class="when">Seconds 0 to 20<\/span><span class="what">The chart is on the screen\.<\/span>/);
   const nocite = shaped.replace('cites: [{ file: "contract.pdf", page: 3, look: lookPage.key }] },\n  ]', "cites: [] },\n  ]");
   assert.notEqual(nocite, shaped);
   const refused = await run([helpers, assets, looking, nocite, ground, render, check]);
@@ -681,7 +681,7 @@ test("the skill's check refuses a finding with no picture or clip, a row with no
   const none = await run([helpers, assets, looking, bare, ground, render, check]);
   assert.ok(!none.result.ok);
   assert.match(none.result.error.message, /finding site shows no picture or clip: show its evidence/);
-  const rows = data.replace("  notChecked:", '  rows: [{ id: "m1", label: "0:00", text: "The chart is on the screen.", cites: [{ file: "talk.mp4", t: [0, 20], look: lookTalk.key }] }],\n  notChecked:');
+  const rows = data.replace("  notChecked:", '  rows: [{ id: "m1", label: "Seconds 0 to 20", text: "The chart is on the screen.", cites: [{ file: "talk.mp4", t: [0, 20], look: lookTalk.key }] }],\n  notChecked:');
   assert.notEqual(rows, data);
   const nothumb = await run([helpers, assets, looking, rows, ground, render, check]);
   assert.ok(!nothumb.result.ok);
@@ -714,7 +714,7 @@ test("the skill's check refuses markdown in any visible text of the page, names 
   assert.match(pasted.result.error.message, /<p> carries markdown \("\*\*"\)/, "an evidence paragraph pasted from an answer is refused");
   // Code and pre are exempt, a lone * or # inside a sentence is not markdown, and CSS (which holds * selectors) is not text.
   const fine = await doctored(swap("</main>", "<pre>**bold** and `tick`</pre><p>Use <code>## heading</code> in markdown; 5 * 3 is 15 and item #2 is next.</p></main>"));
-  assert.ok(fine.result.ok, fine.result.ok ? "" : fine.result.error.message);
+  assert.ok(!fine.result.ok && !/carries markdown/.test(fine.result.error.message), "markdown in code and pre, and a lone * or #, is not flagged; the only problem is the page not being what the data renders");
 });
 
 test("what was not checked lists only what no look covered, each item a file, its pages or seconds and a reason; the section is left out when nothing is", async () => {
@@ -809,17 +809,17 @@ test("the grounding step asks Jev one text judgment for each finding, row and th
     assert.ok(Object.values(params.questions).every((q) => q.type === "noul" && /^Does `evidence` state every name, time and number in `claims\.t\d+`\?/.test(q.instructions)));
   }
   const [chart, contract, site, answer] = jev.requests.map((r) => r.params.state);
-  assert.deepEqual(Object.values(chart.claims), ["The chart shows the second quarter highest", "On screen, the chart's second bar is the tallest, so the second quarter is the peak.", "The tallest bar is the second quarter's, the figure the answer rests on.", "second quarter", "A moment later the chart has not changed, so the reading holds.", "The eight seconds around the chart."], "the title, the words, each caption and each box label of the finding");
-  assert.deepEqual(chart.evidence, ["The picture at talk.mp4#t=21.5 is shown."], "the one look its two cites rest on");
-  assert.deepEqual(contract.evidence, ["The picture at contract.pdf#page=3 is shown."]);
-  assert.ok(Object.values(contract.claims).includes("the rule"), "a mark's label on an embedded page is a claim of its finding");
-  assert.deepEqual(site.evidence, ["The picture at photo.jpg is shown."]);
-  assert.equal(answer.evidence.length, 3, "the answer is judged against every look the report cites");
-  assert.deepEqual(Object.values(answer.claims).slice(1), ["Chart peak: second quarter", "Contract rule: page 3"], "and so are its key points");
+  assert.deepEqual(Object.values(chart.claims), ["The chart shows the second quarter highest", "On screen, the chart's second bar is the tallest, so the second quarter is the peak.", "The tallest bar is the second quarter's, the figure the answer rests on.", "A bar chart with the second bar tallest", "second quarter", "A moment later the chart has not changed, so the reading holds.", "The same chart a moment later", "The eight seconds around the chart."], "the title, the words, each caption and alt text, each box label and the clip's caption of the finding");
+  assert.deepEqual(chart.evidence, ["The picture at talk.mp4#t=21.5 is shown.", "Cited: talk.mp4, seconds 21.5, region percent:61.2,40,12,9", "Cited: talk.mp4, seconds 18 to 26"], "what its look read, then where each cite points");
+  assert.deepEqual(contract.evidence, ["The picture at contract.pdf#page=3 is shown.", "Cited: contract.pdf, page 3, region percent:7,6,70,4"]);
+  assert.ok(Object.values(contract.claims).includes("the rule") && Object.values(contract.claims).includes("The rule, cropped from page 3"), "a mark's label and a picture's alt text are claims of its finding");
+  assert.deepEqual(site.evidence, ["The picture at photo.jpg is shown.", "Cited: photo.jpg"]);
+  assert.equal(answer.evidence.filter((e) => !e.startsWith("Cited: ")).length, 3, "the answer is judged against every look the report cites");
+  assert.deepEqual(Object.values(answer.claims), ["The talk, the contract and the site", "Does the chart agree with the contract, and what does the site look like?", "Yes. The chart shows the second quarter highest, and page 3 of the contract sets the record-keeping rule the talk gave.", "Chart peak: second quarter", "Contract rule: page 3"], "the title, the question, the answer and its key points");
 });
 
 test("a row naming someone the cited looks never read is refused and the page is not written; the same row passes once a look it cites gives the name", async () => {
-  const withRow = (text) => data.replace("  notChecked:", `  rows: [{ id: "m1", label: "0:00 to 0:20", text: ${JSON.stringify(text)}, thumb: await thumb("talk.mp4", "m1-thumb", { t: 10 }), cites: [{ file: "talk.mp4", t: [0, 20], look: lookTalk.key }] }],\n  notChecked:`);
+  const withRow = (text) => data.replace("  notChecked:", `  rows: [{ id: "m1", label: "Seconds 0 to 20", text: ${JSON.stringify(text)}, thumb: await thumb("talk.mp4", "m1-thumb", { t: 10 }), cites: [{ file: "talk.mp4", t: [0, 20], look: lookTalk.key }] }],\n  notChecked:`);
   onDisk = "other";
   const unread = await run([helpers, assets, looking, withRow("Steve Bales gave the go."), ground, render, check]);
   assert.ok(!unread.result.ok);
@@ -850,12 +850,12 @@ test("an unread name in a caption or the answer is refused too: every text the p
 });
 
 test("what was heard is evidence only in the transcribe look: a said name passes when its row cites that look, and fails when it cites only a picture", async () => {
-  const heard = (look) => data.replace(/  notChecked: \[[^\n]*\n/, "  notChecked: [],\n").replace("\nconst report = {", '\nconst said1 = await hear("talk.mp4");   // the whole recording was heard, so none of it is left unchecked\nconst report = {').replace("  notChecked:", `  rows: [{ id: "h1", label: "0:00", text: "Steve Bales gave the go.", thumb: await thumb("talk.mp4", "h1-thumb", { t: 3 }), cites: [{ file: "talk.mp4", t: [0, 9], look: ${look} }] }],\n  notChecked:`);
+  const heard = (look) => data.replace(/  notChecked: \[[^\n]*\n/, "  notChecked: [],\n").replace("\nconst report = {", '\nconst said1 = await hear("talk.mp4");   // the whole recording was heard, so none of it is left unchecked\nconst report = {').replace("  notChecked:", `  rows: [{ id: "h1", label: "Seconds 0 to 9", text: "Steve Bales gave the go.", thumb: await thumb("talk.mp4", "h1-thumb", { t: 3 }), cites: [{ file: "talk.mp4", t: [0, 9], look: ${look} }] }],\n  notChecked:`);
   onDisk = "other";
   const cited = await run([helpers, assets, looking, heard("said1.key"), ground, render, check]);
   assert.ok(cited.result.ok, cited.result.ok ? "" : cited.result.error.message);
   const judgedHeard = jev.requests.map((r) => r.params.state).find((s) => Object.values(s.claims).includes("Steve Bales gave the go."));
-  assert.deepEqual(judgedHeard.evidence, ["Steve Bales gave the go at nine minutes"], "the transcript is its evidence");
+  assert.deepEqual(judgedHeard.evidence, ["Steve Bales gave the go at nine minutes", "Cited: talk.mp4, seconds 0 to 9"], "the transcript is its evidence, and the address its cite names");
   const picture = await run([helpers, assets, looking, heard("lookTalk.key"), ground, render, check]);
   assert.ok(!picture.result.ok);
   assert.match(picture.result.error.message, /^row h1: "Steve Bales gave the go\." is not stated by what its cited looks read/);
@@ -889,9 +889,50 @@ test("a recording the run heard is covered: it cannot be listed as not checked, 
   const whole = await run([helpers, assets, looking, withHear('await hear("talk.mp4");', [{ file: "talk.mp4", t: [30, 40], why: "not looked at" }]), ground, render, check]);
   assert.ok(!whole.result.ok);
   assert.match(whole.result.error.message, /talk\.mp4, 30 to 40 s: listed as not checked, but a look of this run covers it/);
-  const window = await run([helpers, assets, looking, withHear('await hear("talk.mp4", "t=30,36");', [{ file: "talk.mp4", t: [33, 35], why: "not looked at" }]), ground, render, check]);
+  const window = await run([helpers, assets, looking, withHear('await hear("talk.mp4", "talk.mp4#t=30,36");', [{ file: "talk.mp4", t: [33, 35], why: "not looked at" }]), ground, render, check]);
   assert.ok(!window.result.ok);
   assert.match(window.result.error.message, /talk\.mp4, 33 to 35 s: listed as not checked/);
-  const beyond = await run([helpers, assets, looking, withHear('await hear("talk.mp4", "t=30,36");', [{ file: "talk.mp4", t: [37, 40], why: "not looked at" }]), ground, render, check]);
+  const beyond = await run([helpers, assets, looking, withHear('await hear("talk.mp4", "talk.mp4#t=30,36");', [{ file: "talk.mp4", t: [37, 40], why: "not looked at" }]), ground, render, check]);
   assert.ok(beyond.result.ok, beyond.result.ok ? "" : beyond.result.error.message);
+});
+
+test("hear() takes the source address of audio already cut as its fragment and preserves its file name, and refuses a bare window: cut first", async () => {
+  onDisk = "other";
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-ss", "30", "-i", path.join(cwd, "talk.mp4"), "-t", "6", path.join(cwd, "chunk.wav")]);
+  const cut = await run([helpers, assets, looking, 'await hear("chunk.wav", "talk.mp4#t=30,36"); return covered;']);
+  assert.ok(cut.result.ok, cut.result.ok ? "" : cut.result.error.message);
+  assert.deepEqual(cut.result.value, [{ file: "talk.mp4", t: [30, 36] }], "what was heard is talk.mp4's 30 to 36 s, not chunk.wav");
+  const bare = await run([helpers, assets, looking, 'await hear("talk.mp4", "t=30,36");']);
+  assert.ok(!bare.result.ok);
+  assert.match(bare.result.error.message, /t=30,36 is not the source address of talk\.mp4: cut the audio first, then pass its source as file#t=from,to/);
+});
+
+test("every text the page shows is judged, not only the findings' words: a name in the title, the question, a row's label or a picture's alt text is refused", async () => {
+  onDisk = "other";
+  const named = (change) => run([helpers, assets, looking, change, ground, render, check]);
+  const row = data.replace("  notChecked:", '  rows: [{ id: "m1", label: "Steve Bales", text: "The chart is on the screen.", thumb: await thumb("talk.mp4", "m1-thumb", { t: 10 }), cites: [{ file: "talk.mp4", t: [0, 20], look: lookTalk.key }] }],\n  notChecked:');
+  const label = await named(row);
+  assert.ok(!label.result.ok);
+  assert.match(label.result.error.message, /^row m1: "Steve Bales" is not stated by what its cited looks read/, "the label is judged though the row's text is grounded");
+  for (const [from, to, unit, shown] of [
+    ['title: "The talk, the contract and the site"', 'title: "The talk of Margaret Hamilton"', "the answer", "The talk of Margaret Hamilton"],
+    ['question: "Does the chart agree', 'question: "Did Margaret Hamilton agree', "the answer", "Did Margaret Hamilton agree"],
+    ['alt: "A bar chart with the second bar tallest"', 'alt: "A bar chart at the Westinghouse Pavilion"', "finding chart", "A bar chart at the Westinghouse Pavilion"],
+  ]) {
+    const variant = data.replace(from, to);
+    assert.notEqual(variant, data, from);
+    const { result } = await named(variant);
+    assert.ok(!result.ok, from);
+    assert.ok(result.error.message.includes(`${unit}: "${shown}`), result.error.message.split("\n")[0]);
+  }
+});
+
+test("the page is what the data renders: a text added to the page or the file by hand after the judgment is refused, whatever it says", async () => {
+  await refuses(swap("The tallest bar", "The tallest bar at the Westinghouse Pavilion"), /report\/index\.html is not what the data renders: change the data \(the texts are judged\) and write the page again, never the page/);
+  onDisk = "other";
+  const byHand = await run([helpers, assets, looking, data, ground, render, 'await sh("printf %s \\"<p>Steve Bales was there.</p>\\" >> report/index.html");', check]);
+  assert.ok(!byHand.result.ok);
+  assert.match(byHand.result.error.message, /report\/index\.html is not what the data renders/);
+  const same = await run([helpers, assets, looking, data, ground, render, check]);
+  assert.ok(same.result.ok, same.result.ok ? "" : same.result.error.message);
 });

@@ -212,8 +212,10 @@ const look = async (path, fragment, ask) => {
   return { key, text: seen.text.trim() };
 };
 const hear = async (path, fragment) => {   // what was said in a recording: cite this look for any name, time or number that was heard
+  // The whole file at `path` is transcribed. For audio cut from a longer recording, `fragment` is the source address of the cut ("talk.mp4#t=30,36"), which is what was heard.
+  if (fragment !== undefined && !/^.+#(?:page|t|xywh)=/.test(fragment)) throw new Error(`${fragment} is not the source address of ${path}: cut the audio first, then pass its source as file#t=from,to`);
   const heard = await vision.transcribe({ path, ...(fragment ? { fragment } : {}) });
-  cover(fragment ? `${path}#${fragment.replace(/^.*#/, "")}` : path);
+  cover(fragment ?? path);
   const key = await keyOf(heard.receipts[0]);
   said.set(key, heard.text.trim());
   return { key, text: heard.text.trim() };
@@ -281,23 +283,27 @@ read anything has no evidence and fails the same way.
 ```js
 const GROUNDED = 0.5;   // noul is the probability of yes: 0.66 to 0.98 when the evidence gave the fact, 0.01 to 0.03 when it did not
 const verdicts = new Map();
-const claimsOf = (r) => {   // the texts the page states, in units that each cite their own looks
+const claimsOf = (r) => {   // every text the page states, in units that each cite their own looks
   const cited = (x) => (x.cites ?? []).map((c) => c.look);
-  const labels = (r.documents ?? []).flatMap((d) => d.pages.flatMap((p) => p.boxes ?? []));
+  const labelsOf = (id) => (r.documents ?? []).flatMap((d) => d.pages.flatMap((p) => { const mine = (p.boxes ?? []).filter((b) => b.finding === id); return mine.length ? [p.alt, ...mine.map((b) => b.label)] : []; }));   // a page's own alt text goes with the finding its marks belong to
+  const picTexts = (p) => [p.caption, p.alt, ...(p.boxes ?? []).map((b) => b.label)];
+  const all = [...r.findings, ...(r.rows ?? [])];
   return [
-    ...r.findings.map((f) => ({ id: `finding ${f.id}`, keys: cited(f), texts: [f.title, f.why, ...(f.pics ?? []).flatMap((p) => [p.caption, ...(p.boxes ?? []).map((b) => b.label)]), f.clip?.caption, ...labels.filter((b) => b.finding === f.id).map((b) => b.label)].filter(Boolean) })),
-    ...(r.rows ?? []).map((x) => ({ id: `row ${x.id}`, keys: cited(x), texts: [x.text].filter(Boolean) })),
-    { id: "the answer", keys: [...r.findings, ...(r.rows ?? [])].flatMap(cited), texts: [r.answer, ...r.points.map((p) => `${p.label}: ${p.value}`)] },
+    ...r.findings.map((f) => ({ id: `finding ${f.id}`, keys: cited(f), cites: f.cites ?? [], texts: [f.title, f.why, ...(f.pics ?? []).flatMap(picTexts), f.clip?.caption, ...labelsOf(f.id)].filter(Boolean) })),
+    ...(r.rows ?? []).map((x) => ({ id: `row ${x.id}`, keys: cited(x), cites: x.cites ?? [], texts: [x.label, x.text].filter(Boolean) })),
+    { id: "the answer", keys: all.flatMap(cited), cites: all.flatMap((x) => x.cites ?? []), texts: [r.title, r.question, r.answer, ...r.points.map((p) => `${p.label}: ${p.value}`)].filter(Boolean) },
   ];
 };
+const addressOf = (c) => [c.file, c.page && `page ${c.page}`, c.t && `seconds ${c.t.join(" to ")}`, c.xywh && `region ${c.xywh}`].filter(Boolean).join(", ");   // where the cite points: a fact of the run, not a claim
 const verdictKey = (unit, text) => `${[...new Set(unit.keys)].sort().join(",")}\n${text}`;
-const ground = async () => {
+const ground = async () => {   // evidence: what each cited look read, and the address each cite names ("Cited: contract.pdf, page 3")
   const failed = [];
   for (const unit of claimsOf(report)) {
     if (!unit.keys.length) continue;   // no look cited: the check refuses it as uncited
-    const evidence = [...new Set(unit.keys)].map((key) => said.get(key)).filter(Boolean);
+    const read = [...new Set(unit.keys)].map((key) => said.get(key)).filter(Boolean);
+    const evidence = [...read, ...[...new Set(unit.cites.map(addressOf))].map((address) => `Cited: ${address}`)];
     const ask = (i) => ({ type: "noul", instructions: `Does \`evidence\` state every name, time and number in \`claims.t${i}\`? Say yes only when each name, place, date, time, quantity and title in it is given by \`evidence\`, or is a plain restatement of something it gives; a name, date, number or title that \`evidence\` does not give is a no, even when it is true or well known.` });
-    const { answers } = evidence.length ? await vision.judge({ state: { claims: Object.fromEntries(unit.texts.map((text, i) => [`t${i}`, text])), evidence }, questions: Object.fromEntries(unit.texts.map((_, i) => [`t${i}`, ask(i)])) }) : { answers: {} };
+    const { answers } = read.length ? await vision.judge({ state: { claims: Object.fromEntries(unit.texts.map((text, i) => [`t${i}`, text])), evidence }, questions: Object.fromEntries(unit.texts.map((_, i) => [`t${i}`, ask(i)])) }) : { answers: {} };
     unit.texts.forEach((text, i) => {
       const yes = answers[`t${i}`]?.noul ?? 0;
       verdicts.set(verdictKey(unit, text), yes);
@@ -357,8 +363,9 @@ h2{font-size:.78rem;letter-spacing:.1em;text-transform:uppercase;color:var(--mut
 .rows{list-style:none;margin:1rem 0 0;padding:0}.row{display:flex;flex-wrap:wrap;gap:.3rem .8rem;align-items:baseline;border-top:1px solid var(--line);padding:.5rem 0}.thumb{width:6rem;height:auto;border:1px solid var(--line);border-radius:.3rem;flex:none}.when{font:700 .85rem ui-monospace,monospace;min-width:6rem}.what{flex:1 1 14rem}.row .cites{margin:0 0 0 auto}
 .docpage{margin:0 0 1.2rem;scroll-margin-top:1rem}.docpage>header{display:flex;justify-content:space-between;align-items:center}.n{font:700 .85rem ui-monospace,monospace}ul.limits{color:var(--mute);padding-left:1.2rem}`;
 
+const renderPage = () => {   // the page is a pure function of `report`: the check renders it again and compares
 const keyFindings = report.findings.filter((f) => !f.routine), routine = report.findings.filter((f) => f.routine);
-const page = `<!doctype html>
+return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${say(report.title)}</title><style>${css}</style></head>
 <body><main>
@@ -370,6 +377,8 @@ ${routine.length ? `<section id="routine"><h2>Checked, as expected</h2>${routine
 ${report.notChecked.length ? `<section id="not-checked"><h2>Not checked</h2><ul class="limits">${report.notChecked.map(limit).join("")}</ul></section>` : ""}
 </main></body></html>
 `;
+};
+const page = renderPage();
 await write("report/index.html", page);
 ```
 
@@ -380,6 +389,8 @@ again.
 
 ```js
 const problems = [];
+await write(".check/index.html", renderPage());   // the page is what the data renders, nothing more: a text put into the file by hand was never judged
+if ((await sh("cmp -s report/index.html .check/index.html && echo same || echo changed; rm -rf .check")).trim() !== "same") problems.push("report/index.html is not what the data renders: change the data (the texts are judged) and write the page again, never the page");
 const attr = (name) => [...page.matchAll(new RegExp(`\\s${name}="([^"]*)"`, "g"))].map((m) => m[1]);
 const has = async (file) => (await bytes(`report/${file}`).catch(() => 0)) > 0;
 const tags = page.match(/<[a-z!][^>]*>/gi) ?? [];   // text is escaped, so a `<` in the page starts a tag
