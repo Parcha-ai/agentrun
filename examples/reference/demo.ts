@@ -410,7 +410,14 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       // The budget's stop is kept: the attempt does not finish (nor the place release) until the kill, with its provider cleanup, is done.
       let deciding: Promise<void> = Promise.resolve();
       const watch = setInterval(() => { if (!decided && overBudget) deciding = decide(undefined); }, 20);
-      const exit = await Promise.race([runner.exited, gaveUp.then(() => undefined)]);
+      // A runner that cannot start, or a place that stops answering, rejects `exited`: the attempt's timer and its signals reader are closed before the error goes on (the finally of `supervise` releases the place).
+      let exit: Exit | undefined;
+      try { exit = await Promise.race([runner.exited, gaveUp.then(() => undefined)]); } catch (error) {
+        clearInterval(watch);
+        await iterator?.return?.().catch(() => undefined);
+        await pump.catch(() => undefined);
+        throw error;
+      }
       const result: Exit = exit ?? { exit: null, signal: null, stderr: 'the place could not stop this process' };
       clearInterval(watch);
       await iterator?.return?.();
@@ -473,10 +480,10 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   }
 }
 
-/** The tool kills of an attempt that did not fire: those the child's log (`landed` rows) does not show. */
+/** The tool kills of an attempt that did not fire: those whose place in the plan the child's log (`landed` rows, each naming the entry that fired) does not show. Two kills at one point (or with different `where`) are told apart by that place. */
 export function notLanded<T extends object>(tools: readonly T[], log: string): T[] {
-  const landed = rows<Crossing>(log).filter((crossing) => crossing.landed).map((crossing) => crossing.point);
-  return tools.filter((entry) => { const at = 'point' in entry ? landed.indexOf(String(entry.point)) : -1; if (at >= 0) landed.splice(at, 1); return at < 0; });
+  const fired = new Set(rows<Crossing>(log).filter((crossing) => crossing.landed && typeof crossing.tool === 'number').map((crossing) => crossing.tool));
+  return tools.filter((_entry, index) => !fired.has(index));
 }
 
 const readEventsOf = (dir: string) => rows<Record<string, unknown>>(join(dir, 'events.jsonl'));

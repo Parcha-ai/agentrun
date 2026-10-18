@@ -126,3 +126,22 @@ test('the download cache: a fetched file is kept by its hash, a re-run is served
   assert.deepEqual([third.fetched, third.cached], [['big.bin'], []], 'a copy that no longer has the checked bytes is fetched again');
   assert.equal(served.length, 2);
 });
+
+test('a body larger than the checked file is refused as it streams: the download stops at the item\'s size and nothing is buffered whole or written', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-oversize-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  let sent = 0;
+  const server = createServer((request, response) => {
+    // No content-length: a chunked body that never ends (until the client leaves).
+    response.writeHead(200, { 'content-type': 'application/octet-stream' });
+    const timer = setInterval(() => { sent += 65_536; response.write(Buffer.alloc(65_536, 1)); }, 1);
+    request.on('close', () => clearInterval(timer));
+    response.on('close', () => clearInterval(timer));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const item = { id: 'big', url: `http://127.0.0.1:${server.address().port}/big.bin`, bytes: 100_000, sha256: 'a'.repeat(64) };
+  await assert.rejects(() => fetchSources({ items: [item] }, join(tmp, 'work')), /larger than the checked file/);
+  assert.ok(sent < 5_000_000, `the stream was stopped soon after the item's size (${sent} bytes sent)`);
+  assert.ok(!existsSync(join(tmp, 'work', fileOf(item))), 'nothing was written');
+});
