@@ -314,10 +314,12 @@ test('a JWT (a sign-in token) or a Browserbase key in a tool result, a blob or t
   for (const text of [jwt.split('.')[0], 'BROWSERBASE_API_KEY=bb_live_...']) assert.equal(scan.credentialIn(text), undefined, text);
 });
 
-test('one scanner: the validator and the gallery\'s gate use the recorder\'s own', () => {
-  assert.equal(validator.credentialIn, scan.credentialIn);
-  assert.equal(validator.credentialInValue, scan.credentialInValue);
-  // The gate imports the scanner itself, by the same module, and scans each file as the recorder does.
+test('one scanner: the validator and the gallery\'s gate use the recorder\'s own', async () => {
+  // The validator and the gate read the scanner's source (the Pages job has no install); the recorder runs its build.
+  const source = await import('../packages/reference/src/scan.ts');
+  assert.equal(validator.credentialIn, source.credentialIn);
+  assert.equal(validator.credentialInValue, source.credentialInValue);
+  assert.match(readFileSync(new URL('../packages/reference/dist/record.js', import.meta.url), 'utf8'), /^import \{[^}]*\bcredentialInFile\b[^}]*\} from "\.\/scan\.js";$/m);
   const gate = readFileSync(new URL('../scripts/recording/gate.mjs', import.meta.url), 'utf8');
-  assert.match(gate, /^import \{[^}]*\bcredentialInFile\b[^}]*\} from '\.\.\/\.\.\/examples\/reference\/scan\.ts';$/m);
+  assert.match(gate, /^import \{[^}]*\bcredentialInFile\b[^}]*\} from '\.\.\/\.\.\/packages\/reference\/src\/scan\.ts';$/m);
 });
