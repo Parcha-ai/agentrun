@@ -10,7 +10,8 @@ import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { credentialIn, validateRecording } from './validate.mjs';
+import { credentialInFile } from '../../examples/reference/scan.ts';
+import { validateRecording } from './validate.mjs';
 
 const BLOB = /^([0-9a-f]{64})\.[a-z0-9]+$/;
 const TEXT = /\.(?:html|js|css|json|jsonl|txt|md|csv|svg|xml|yaml|yml|log)$/i;
@@ -47,10 +48,11 @@ export function gateProblems(dist) {
       }
     }
   }
-  // Every text file that goes out is scanned: the page, the script, the gallery and every recording's files.
+  // Every text file that goes out is scanned: the page, the script, the gallery and every recording's files, a blob no line
+  // names included. Raw, and decoded when it is JSON (or JSON lines), so an escape hides nothing (`\u0065yJ`).
   const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? walk(join(dir, entry.name)) : [join(dir, entry.name)]));
   for (const file of existsSync(dist) ? walk(dist) : []) {
-    const found = TEXT.test(file) ? credentialIn(readFileSync(file, 'utf8')) : undefined;
+    const found = TEXT.test(file) ? credentialInFile(file, readFileSync(file, 'utf8')) : undefined;
     if (found) add(relative(dist, file), `contains a ${found}`);
   }
   // The gallery holds the recordings beside the page, and no other, each entry exactly what its files give: the page
