@@ -490,7 +490,6 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     });
     return reading;
   };
-  placeRef = place;
   // A place whose child writes its recording inside the place brings it home through `recordHome.bringHome`: every status tick while a runner runs, and once more, final, after the runner has exited (before the follower closes, the manifest and the release). A tick that fails is
   // retried at the next one; a final failure refuses the recording unless the attempt's box was lost (then the attempt's lines after its last carried tick are a gap, like a kill losing its in-flight commit).
   let carrying: Promise<void> = Promise.resolve();
@@ -514,6 +513,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const meterTimer = maxUsd === null ? undefined : setInterval(() => { if (meterKnown(recordDir) > maxUsd) overBudget = true; }, 250);
   try {
     place = options.place ? await options.place({ paths, self: options.self, destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live), requestFile }) : localPlace({ self: options.self, paths, requestFile, ...(spec.boxes ? { destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live) } : {}) });
+    // The follower's hold reads the place's clock allowance from here on (it was assigned before the place existed, so it was never seen).
+    placeRef = place;
     const remaining = childPlansOf(plans);
     let runner: Runner | undefined;
     let previous: { runner: Runner; kind: 'process' | 'box' } | undefined;
