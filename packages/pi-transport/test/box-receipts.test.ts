@@ -178,6 +178,22 @@ describe("box receipts", () => {
 		}
 	});
 
+	it("ends a box found ended after its lifetime at that lifetime, not when it was found: the estimate counts no time it did not run", async () => {
+		const made = ledgerOf();
+		try {
+			const box = getOrThrow(await made.provider.create({ maxLifetimeMs: 60_000 }, context));
+			// The provider ends it at a minute; the host looks an hour later.
+			getOrThrow(await found(made.raw, box.id).then((there) => there.destroy(context)));
+			made.tick(3_600_000);
+			expect(getOrThrow(await box.status(context)).state).toBe("ended");
+			expect(made.written.map(({ box, seconds, cost_usd }) => ({ box, seconds, cost_usd }))).toEqual([
+				{ box: "box-1", seconds: 60, cost_usd: 60 * 0.0001 },
+			]);
+		} finally {
+			made.remove();
+		}
+	});
+
 	it("names each box it made by its label, keeps a provider wrapped twice on the ledger once, and names no other box", async () => {
 		const made = ledgerOf();
 		try {

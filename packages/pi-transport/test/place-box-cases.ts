@@ -9,7 +9,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { err, getOrThrow, ok } from "@earendil-works/pi-durable/env";
 import { describe, expect, it } from "vitest";
-import { type Box, BoxError, type BoxProvider, type BoxSpec } from "../src/box/box.ts";
+import { type Box, BoxError, type BoxProcess, type BoxProvider, type BoxSpec } from "../src/box/box.ts";
 import { finish } from "../src/box/files.ts";
 import { type BoxReceipt, type BoxReceipts, boxReceipts } from "../src/box/receipts.ts";
 import { localVault } from "../src/home/checkpoint.ts";
@@ -100,6 +100,25 @@ function withExec(
 			if (key === "exec")
 				return (argv: readonly string[], options: Parameters<Box["exec"]>[1], at: Parameters<Box["exec"]>[2]) =>
 					exec(argv, () => target.exec(argv, options, at));
+			const value = Reflect.get(target, key, target);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+}
+
+/** `started` with each chunk of its standard output, the link, held back `ms`: the host reads its answers late. */
+function slowLink(started: BoxProcess, ms: number): BoxProcess {
+	const stdout: AsyncIterable<Uint8Array> = {
+		async *[Symbol.asyncIterator]() {
+			for await (const chunk of started.stdout) {
+				await sleep(ms);
+				yield chunk;
+			}
+		},
+	};
+	return new Proxy(started, {
+		get(target, key) {
+			if (key === "stdout") return stdout;
 			const value = Reflect.get(target, key, target);
 			return typeof value === "function" ? value.bind(target) : value;
 		},
@@ -718,6 +737,38 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 			},
 			(setup.timeoutMs ?? 60_000) * 1.5,
 		);
+		it(
+			"starts a runner whose outcome is read before its resume is answered: the job is done, not lost",
+			async () => {
+				const made = world(setup);
+				try {
+					// The runner's link answers come late, so its outcome line (a job of no steps) is read first.
+					const provider = rigged(made.provider, (box) =>
+						withExec(box, async (argv, run) => {
+							const started = await run();
+							return started.ok && argv.includes("--session") ? ok(slowLink(started.value, 300)) : started;
+						}),
+					);
+					const place = await placeIn(made, { provider });
+					const runner = await place.start(orderOf(made, place, 1, { STEPS: "0" }));
+					const exit = await runner.exited;
+					expect({
+						exit: exit.exit,
+						status: exit.outcome?.status,
+						done: (exit.outcome?.record as { done?: number }).done,
+					}).toEqual({
+						exit: 0,
+						status: "complete",
+						done: 0,
+					});
+					await place.release();
+				} finally {
+					made.remove();
+				}
+			},
+			setup.timeoutMs ?? 60_000,
+		);
+
 		it(
 			"brings a recording home once when two calls overlap: each line once, each blob whole",
 			async () => {
