@@ -29,6 +29,7 @@ export type JudgeRequest = MediaRequest & {
 /** Jev's answers as it gives them (a box answer with `fragment` too), its model, the price (null when the port does not
  *  know it), the receipt filed, and `kept` when this request asked nothing. */
 export type JudgeAnswer = { readonly answers: Readonly<Record<string, Json>>; readonly model: string; readonly costUsd: number | null; readonly receipts: readonly string[]; readonly kept?: true };
+/** `vision.judge` as a code-mode global: the contract's words and `execute`, which asks Jev typed questions about images. */
 export type JudgeGlobal = CodeGlobal<typeof VISION_JUDGE, JudgeAnswer>;
 
 /** One image a request carries: PNG or JPEG file bytes and their type. */
