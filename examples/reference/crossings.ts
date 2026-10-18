@@ -97,6 +97,17 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
   return cross;
 }
 
+/** The filing of a look the evidence sink does not take: a screenshot's look has no file to put a receipt beside, so the vision guard files it nowhere and tells the entry (`onLook`), which keeps it in `vision.looks`. That keeping is
+ *  its filing, so `vision.filing` and `vision.filed` (and a hold that parks the filing) are taken around it; a look whose receipt the sink filed has had them already. */
+export async function aroundOwnFiling(cross: Cross, look: { receipt: string | null }, keep: () => Promise<void>): Promise<void> {
+  if (look.receipt !== null) return keep();
+  cross('vision.filing');
+  const parked = cross.park?.('vision.filing');
+  if (parked) await parked;
+  await keep();
+  cross('vision.filed');
+}
+
 /** The fakes with a crossing before and after each scripted answer: the model's request, a tool's dispatch and return, the judge's question. */
 export function tapFakes(fakes: Fakes, cross: Cross): Fakes {
   return {
