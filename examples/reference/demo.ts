@@ -32,7 +32,7 @@ import { pathsAt, placeAt, run, type Job, type RunOptions } from './assemble.ts'
 import { RUN_LABEL, tapBox } from './boxes.ts';
 import type { Recorder, Redact } from './record.ts';
 import { capJudge } from './judge.ts';
-import { askToBeKilled, crossings, tapFakes, tapHost, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
+import { askToBeKilled, aroundOwnFiling, crossings, tapFakes, tapHost, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
 import { keepLooks, shownShots } from './looks.ts';
 import type { LookRecord } from '@parcha/pi-vision';
 import { localPlace, type Exit, type Place, type Runner } from './place.ts';
@@ -254,7 +254,7 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
     const kept = keepLooks(() => running.harness, { shown, cites: join(place.root, 'cites.jsonl'), filed: filedRecords, ...(options.itemOf ? { itemOf: options.itemOf } : {}) });
     return {
       ...own,
-      onLook: async (look) => { await kept.onLook?.(look); await own.onLook?.(look); },
+      onLook: (look) => aroundOwnFiling(cross, look, async () => { await kept.onLook?.(look); await own.onLook?.(look); }),
       onMiss: async (miss) => { await kept.onMiss?.(miss); await own.onMiss?.(miss); },
     };
   };
