@@ -277,6 +277,9 @@ export function threadThought(text: string): { title: string; body: string } {
   return { title, body: lines.slice(at + 1).join('\n').trim() };
 }
 
+/** A thought the provider withheld: its mark, and no words. */
+const threadWithheld = () => reportEl('div', { class: 'thought withheld' }, reportEl('span', { class: 'thought-tag', text: 'thinking, withheld by the provider' }));
+
 /** Thinking the run's own model wrote, in the agent's voice: its title as a line in the chat, its body folded behind it
  *  (a thought of one line has no fold). */
 function threadThinking(text: string): HTMLElement {
@@ -555,7 +558,8 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
       if (!agent) { agent = agentMessage(); out.push(agent); }
       if (item.kind === 'tool') {
         if (!steps) { steps = reportEl('div', { class: 'steps' }); agent.append(steps); }
-        if (run && run.tool !== item.tool) closeRun();
+        // A step that speaks (its voice) starts a run of its own, so its line is never folded away.
+        if (run && (run.tool !== item.tool || item.voice)) closeRun();
         const card = threadCard(recording, model, item, (node, open) => openers.set(node, open), (id, node) => nodes.set(id, node));
         cards.set(item.id, card);
         nodes.set(item.id, card);
@@ -566,7 +570,7 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
       }
       closeRun();
       steps = undefined;
-      const node = item.kind === 'thinking' ? threadThinking(item.text) : reportEl('div', { class: 'said-text', 'data-item': item.id }, ...reportParagraphs(item.text));
+      const node = item.kind === 'thinking' ? (item.redacted ? threadWithheld() : threadThinking(item.text)) : reportEl('div', { class: 'said-text', 'data-item': item.id }, ...reportParagraphs(item.text));
       nodes.set(item.id, node);
       agent.append(node);
     }

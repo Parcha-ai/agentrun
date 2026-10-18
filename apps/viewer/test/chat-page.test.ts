@@ -128,7 +128,9 @@ function handRun(said: boolean): Line[] {
   const result = run.findLastIndex((line) => line.kind === 'result');
   const first = run.findIndex((line) => line.channel === 'durable');
   run.splice(first + 1, 0, { ...run[first]!, kind: 'pi.user', source: 'pi', conv: 1, order: 1, data: { kind: 'pi.user', model: [{ role: 'user', content: `The host's prompt. ${TASK}` }] } },
-    { ...run[first]!, kind: 'agentrun.workflow', order: 2, data: { doc: 'agentrun.workflow', input: { input: TASK } } });
+    { ...run[first]!, kind: 'agentrun.workflow', order: 2, data: { doc: 'agentrun.workflow', input: { input: TASK } } },
+    // Each conversation is a workflow node's, so the runner speaks in it: its first user entry is the composed prompt.
+    ...[1, 2].map((conv, n): Line => ({ ...run[first]!, kind: 'agentrun.nodes', order: 3 + n, path: conv === 1 ? '/root/lead' : '/root/steps/1/items/0', data: { doc: 'agentrun.nodes', value: { conversation: conv } } })));
   if (said) run.splice(result + 2, 0, { channel: 'durable', source: 'pi', kind: 'pi.assistant', gen: 2, t: run[result + 2]!.t - 1, commit: 28, order: 0, conv: 1,
     data: { kind: 'pi.assistant', model: [{ role: 'assistant', content: [{ type: 'thinking', thinking: THOUGHT }, { type: 'text', text: 'Done. The **alarm** is on page 2.' }] }] } });
   return run;
@@ -176,31 +178,41 @@ function writeFixtures(dir: string) {
     // The run's last words are its answer, under the recording's title: here a whole paragraph of one.
     writeFileSync(join(dir, id, 'manifest.json'), JSON.stringify(said ? { ...unanswered, title: LONG_TITLE } : unanswered, null, 2));
   }
-  // The reference job with no times and no workflow input: its spans sit in file order, its first user entry is drawn.
+  // The reference job with no times, no workflow input and no node holding its conversation: its spans sit in file
+  // order, and its first user entry is a person's, drawn.
   const plain = join(dir, 'reference-plain');
   cpSync(join(here, '..', 'recordings', 'reference-job'), plain, { recursive: true });
   const untimed = readFileSync(join(plain, 'events.jsonl'), 'utf8').split('\n').filter((line) => line.trim() !== '').map((line) => JSON.parse(line) as Record<string, unknown>)
-    .filter((line) => line.kind !== 'agentrun.workflow').map(({ t: _t, t0: _t0, ...line }) => JSON.stringify(line));
+    .filter((line) => line.kind !== 'agentrun.workflow' && line.kind !== 'agentrun.nodes').map(({ t: _t, t0: _t0, ...line }) => JSON.stringify(line));
   writeFileSync(join(plain, 'events.jsonl'), `${untimed.join('\n')}\n`);
 }
 
 /** A command of several lines, as an agent runs one. */
 const COMMAND = 'python3 -c "\nimport json\nprint(json.dumps({\'pages\': 4}))\n"';
-/** A run whose agent speaks between its calls: its words, four calls of one tool, a message the host adds, its words
- *  again. */
+/** The reads of the narrated run: eight calls of one tool in a row, the fifth making a look nothing leads into. */
+const READS = [1, 2, 3, 4, 5, 6, 7, 8];
+/** A run whose agent speaks between its calls: its words, eight calls of one tool (the fifth speaks with its look's ask),
+ *  a message the host adds, its words again, a command. */
 function writeNarrated(dir: string) {
   let t = 0;
+  let seq = 1;
   const pi = (commit: number, kind: string, content: unknown): Line => ({ channel: 'durable', source: 'pi', kind, gen: 1, t: (t += 10), commit, order: 0, conv: 1, data: { kind, model: [content] } as never });
+  const live = (kind: string, data: unknown, source: Line['source'] = 'pi'): Line => ({ channel: 'live', source, kind, gen: 1, t: (t += 10), seq: (seq += 1), conv: 1, data: data as never });
   const run: Line[] = [
     { channel: 'live', source: 'host', kind: 'process.started', t: (t += 10), seq: 1, data: { gen: 1 } },
     { channel: 'durable', source: 'workflow', kind: 'agentrun.workflow', gen: 1, t: (t += 10), commit: 1, order: 0, data: { doc: 'agentrun.workflow', input: { input: 'Read the four pages of notes.pdf.' } } },
+    { channel: 'durable', source: 'workflow', kind: 'agentrun.nodes', gen: 1, t: (t += 10), commit: 1, order: 1, path: '/root/reader', data: { doc: 'agentrun.nodes', value: { conversation: 1 } } },
     pi(2, 'pi.user', { role: 'user', content: 'The host\'s prompt.' }),
-    pi(3, 'pi.assistant', { role: 'assistant', content: [{ type: 'thinking', thinking: '**Analyzing transcript data**\n\nI am reading page 2 before the others.' }, { type: 'text', text: 'I will read each page in turn.' }, ...[1, 2, 3, 4].map((n) => ({ type: 'toolCall', id: `r${n}`, name: 'read', arguments: { path: 'notes.pdf', page: n } }))] }),
-    ...[1, 2, 3, 4].map((n) => pi(3 + n, 'pi.tool-result', { role: 'toolResult', toolCallId: `r${n}`, toolName: 'read', content: [{ type: 'text', text: `Page ${n} says the same.` }], isError: false })),
-    pi(8, 'pi.user', { role: 'user', content: 'You stopped without submitting. Call submit.' }),
-    pi(9, 'pi.assistant', { role: 'assistant', content: [{ type: 'thinking', thinking: 'Checking that the four agree\nthey do, line for line.' }, { type: 'text', text: 'All four pages agree.' },
+    pi(3, 'pi.assistant', { role: 'assistant', content: [{ type: 'thinking', thinking: '**Analyzing transcript data**\n\nI am reading page 2 before the others.' }, { type: 'text', text: 'I will read each page in turn.' }, ...READS.map((n) => ({ type: 'toolCall', id: `r${n}`, name: 'read', arguments: { path: 'notes.pdf', page: n } }))] }),
+    ...READS.flatMap((n) => [live('tool_execution_start', { type: 'tool_execution_start', toolCallId: `r${n}`, toolName: 'read', args: { path: 'notes.pdf', page: n } }),
+      ...(n === 5 ? [live('LookEvent', { tool: 'see', parentToolCallId: 'r5', conversationId: '1', receipt: 'evidence/read/look-5.json',
+        record: { tool: 'look', args: { path: 'notes.pdf', page: 5, ask: 'What is on page 5?' }, facts: { key: 'look-page-5', fragment: 'page=5' }, body: 'A table of figures.' } }, 'vision')] : []),
+      live('tool_execution_end', { type: 'tool_execution_end', toolCallId: `r${n}`, toolName: 'read' }),
+      pi(3 + n, 'pi.tool-result', { role: 'toolResult', toolCallId: `r${n}`, toolName: 'read', content: [{ type: 'text', text: `Page ${n} says the same.` }], isError: false })]),
+    pi(12, 'pi.user', { role: 'user', content: 'You stopped without submitting. Call submit.' }),
+    pi(13, 'pi.assistant', { role: 'assistant', content: [{ type: 'thinking', thinking: 'a provider placeholder', redacted: true }, { type: 'thinking', thinking: 'Checking that the four agree\nthey do, line for line.' }, { type: 'text', text: 'All four pages agree.' },
       { type: 'toolCall', id: 'b1', name: 'bash', arguments: { command: COMMAND } }] }),
-    pi(10, 'pi.tool-result', { role: 'toolResult', toolCallId: 'b1', toolName: 'bash', content: [{ type: 'text', text: '{"pages": 4}' }], isError: false }),
+    pi(14, 'pi.tool-result', { role: 'toolResult', toolCallId: 'b1', toolName: 'bash', content: [{ type: 'text', text: '{"pages": 4}' }], isError: false }),
   ];
   mkdirSync(join(dir, 'blobs'), { recursive: true });
   const { result: _result, ...rest } = handManifest;
@@ -296,8 +308,8 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.deepEqual(wide.strong, ['Page 2', 'alarm'], 'bold in the thought\'s line and in the last words');
     assert.deepEqual(wide.code, ['line'], 'inline code in the thought\'s line');
     assert.deepEqual(wide.cards, ['read film.mp4 from_s=0 to_s=30', 'read scans.pdf page=1', 'read scans.pdf page=2', 'read scans.pdf page=3', 'read scans.pdf page=1'], 'one card per tool call of the first conversation, in order');
-    assert.deepEqual(wide.more, ['+ 2 more'], 'calls of one tool in a row: the first three shown, the rest behind "+ N more"; three in a row do not fold');
-    assert.equal(wide.hidden, 2);
+    assert.deepEqual(wide.more, [], 'each read here made a look nothing leads into, so each speaks and none folds');
+    assert.equal(wide.hidden, 0);
     assert.deepEqual(wide.folds, [{ open: false, label: 'conversation 2', cards: 3 }], 'the second conversation, folded');
     assert.deepEqual(wide.thinking, [{ fold: false, title: 'Page 2 holds the alarm; I will cite its line.' }], 'the run\'s own thought of one line, a line with no fold');
     assert.equal(wide.how, './?r=hand-page', 'the inspection viewer, with no other query parameter');
@@ -334,10 +346,11 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.match(String(frame.styles), /\.sheet\{background-image:url\("blob:/, 'its sheet, inlined, with its own reference resolved from its own path');
 
     // The timeline: a click on a hidden card's bar opens its run, scrolls the chat to the card and flashes it.
-    const target = await value<string>(`doc('wide').querySelector('.step[hidden]').dataset.item`);
-    await page.evaluate(`doc('wide').querySelector('.tl-toggle').click(); doc('wide').querySelector('.tbar[data-goto="${target}"]').click()`);
-    await until(`(() => { const d = doc('wide'); const c = d.querySelector('.step[data-item="${target}"]'); return shown(d.querySelector('.tl-body')) && !c.hidden && c.classList.contains('flash') && inView(c, d.querySelector('.thread')); })()`, 'the card scrolled into view and flashed');
-    assert.equal(await value(`doc('wide').querySelector('.more').textContent`), 'Show less');
+    const target = await value<string>(`doc('narrated').querySelector('.step[hidden]').dataset.item`);
+    await page.evaluate(`doc('narrated').querySelector('.tl-toggle').click(); doc('narrated').querySelector('.tbar[data-goto="${target}"]').click()`);
+    await until(`(() => { const d = doc('narrated'); const c = d.querySelector('.step[data-item="${target}"]'); return shown(d.querySelector('.tl-body')) && !c.hidden && c.classList.contains('flash') && inView(c, d.querySelector('.thread')); })()`, 'the card scrolled into view and flashed');
+    assert.equal(await value(`doc('narrated').querySelector('.steps > .more').textContent`), 'Show less');
+    await page.evaluate(`doc('narrated').querySelector('.steps > .more').click(); doc('narrated').querySelector('.tl-toggle').click()`);
 
     // A citation in the agent's page opens its look with the region its address carries; the card opens the same look
     // at its own address, which carries none, so none is drawn.
@@ -484,13 +497,19 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     // tool (three shown, "+ 1 more"), then the host's added message as a note of the host's inside the same turn, words.
     const narrated = await value<Record<string, unknown>>(`(() => { const m = doc('narrated').querySelector('.thread > .msg:not(.user):not(.answer)'); return {
       order: [...m.children].map((n) => n.className), said: [...m.querySelectorAll('.said-text')].map((n) => [n.textContent, n.querySelectorAll('.more').length, n.classList.contains('clamped')]),
-      cards: [...m.querySelectorAll('.steps > .step')].map((n) => n.hidden), more: m.querySelector('.steps > .more')?.textContent,
+      cards: [...m.querySelectorAll('.steps > .step')].map((n) => n.hidden), more: [...m.querySelectorAll('.steps > .more')].map((n) => n.textContent),
+      voices: [...m.querySelectorAll('.steps > .step')].map((n) => n.querySelector('.voice')?.textContent ?? null),
       host: [m.querySelector('.host-note .host-who').textContent, m.querySelector('.host-note .host-text').textContent, !!m.querySelector('.host-note').closest('.msg.user')],
       users: [...doc('narrated').querySelectorAll('.msg.user')].map((n) => n.textContent),
-      thoughts: [...m.querySelectorAll('.thought')].map((n) => [n.querySelector('.thought-title').textContent, shown(n.querySelector('.thought-title')), n.open, shown(n.querySelector('.thought-body')), n.querySelector('.thought-body').textContent, n.querySelector('.thought-tag').textContent]) }; })()`);
-    assert.equal(await value(`doc('narrated').querySelectorAll('.step .voice').length`), 0, 'a card led by a thought or the agent\'s words has no voice line');
-    assert.deepEqual(narrated, { order: ['who', 'thought', 'said-text', 'steps', 'host-note', 'thought', 'said-text', 'steps'], said: [['I will read each page in turn.', 0, false], ['All four pages agree.', 0, false]],
-      cards: [false, false, false, true, false], more: '+ 1 more', host: ['Host', 'You stopped without submitting. Call submit.', false], users: ['YouRead the four pages of notes.pdf.'],
+      withheld: [[...m.querySelectorAll('.thought.withheld')].map((n) => n.textContent), doc('narrated').body.textContent.includes('a provider placeholder')],
+      thoughts: [...m.querySelectorAll('.thought:not(.withheld)')].map((n) => [n.querySelector('.thought-title').textContent, shown(n.querySelector('.thought-title')), n.open, shown(n.querySelector('.thought-body')), n.querySelector('.thought-body').textContent, n.querySelector('.thought-tag').textContent]) }; })()`);
+    // Eight reads in a row: the first three show, the fourth folds; the fifth speaks (its look's ask), so it starts a run
+    // of its own and shows with its line, and the run after it folds again after three. A card led by a thought or the
+    // agent's words has no voice line.
+    assert.deepEqual(narrated, { order: ['who', 'thought', 'said-text', 'steps', 'host-note', 'thought withheld', 'thought', 'said-text', 'steps'], said: [['I will read each page in turn.', 0, false], ['All four pages agree.', 0, false]],
+      cards: [false, false, false, true, false, false, false, true, false], more: ['+ 1 more', '+ 1 more'],
+      voices: [null, null, null, null, 'What is on page 5?', null, null, null, null], host: ['Host', 'You stopped without submitting. Call submit.', false], users: ['YouRead the four pages of notes.pdf.'],
+      withheld: [['thinking, withheld by the provider'], false],
       thoughts: [['Analyzing transcript data', true, false, false, 'I am reading page 2 before the others.', 'thinking'], ['Checking that the four agree', true, false, false, 'they do, line for line.', 'thinking']] });
 
     // A card of a command of several lines opens with the whole command under what it found; a card with a look keeps
