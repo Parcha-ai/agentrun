@@ -13,9 +13,19 @@ The second never looks at every frame.
 The transcript answers alone, for $0: the `transcribe` skill's transcript of the video, found by its name (no
 transcript: write one with that skill first). A phrase may be said more than once, word for word (a line replayed in
 an opening before the story, a name called twice), so find every time it is said, each with the rows before and after
-it. Then pick the one the question means by what is said around it, and name the others in the answer: "said at
-`talk.mp4#t=803.06`, after the question is asked; also at 122.70, in the opening". The phrase is matched word by word,
-case and punctuation aside, across the ends of rows; each time it is said is one hit, cited at the row where it starts.
+it and its place in the recording. The phrase is matched word by word, case and punctuation aside, across the ends of
+rows; each time it is said is one hit, cited at the row where it starts.
+
+When there is more than one hit, pick the one the question means:
+
+- **Compare each hit's surroundings with what the question describes**: the rows before it and the rows after it.
+- **Prefer the hit that is the event itself**, not a recap, a title, a preview or a replay of it. A replay often repeats
+  the lines just before the phrase too, so weigh what comes after each hit (the event going on, or a cut to something
+  else) and where it sits (`place`, percent of the way through: a preview comes early, a recap late).
+- **When the words cannot decide, watch.** Look at each candidate's window with the eyes (the `look` skill, with its
+  sound) before answering.
+- **Say which you picked and why, and name the others**: "said at `talk.mp4#t=803.06`, where the event goes on after
+  it; also at 122.70, in the opening, which cuts away after it".
 
 ```js
 const task = { video: "film.mp4", phrase: "umbrella by the door" };
@@ -26,12 +36,14 @@ const rows = (await tools.bash({ command: `cat ${heard}/transcript.tsv` })).spli
 const plain = (text) => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim().split(" ").filter(Boolean);
 const words = rows.flatMap(([, , text], i) => plain(text).map((word) => ({ word, i })));
 const want = plain(task.phrase);
+const end = Number(rows.at(-1)[1]);
 const hits = [];
 for (let k = 0; k + want.length <= words.length; k++) {
   if (!want.every((word, j) => words[k + j].word === word)) continue;
   const [first, last] = [words[k].i, words[k + want.length - 1].i];
   hits.push({ at: Number(rows[first][0]), cite: `${task.video}#t=${rows[first][0]}`, said: rows.slice(first, last + 1).map((r) => r[2]).join(" "),
-    before: rows.slice(Math.max(0, first - 2), first).map((r) => r[2]).join(" "), after: rows.slice(last + 1, last + 3).map((r) => r[2]).join(" ") });
+    before: rows.slice(Math.max(0, first - 2), first).map((r) => r[2]).join(" "), after: rows.slice(last + 1, last + 3).map((r) => r[2]).join(" "),
+    place: Math.round((100 * Number(rows[first][0])) / end) });
 }
 return { transcript: `${heard}/transcript.tsv`, hits };
 ```
@@ -233,7 +245,8 @@ When `at` is null the eyes did not say a second in the form asked: read `said`, 
 
 The frames at the eyes' second and the seconds either side, from `best`, each named by its time in the video the
 question was about, so the box comes back as that video's fragment. The first whose noul passes is the answer; its
-box is `loose` when Jev's confidence in it is under 0.6.
+box is `loose` when Jev's confidence in it is under 0.6. A box of no size has no fragment: the answer is then cited at
+its second alone, with `noBox`.
 
 ```js
 const dir = ".find/umbrella";
@@ -253,11 +266,12 @@ for (const t of [task.at - 1, task.at, task.at + 1].filter((t) => t >= 0 && t < 
   spent += paid(answer);
 }
 const passed = checks.find((c) => c.noul >= 0.8);
-const found = passed ? { ...passed, loose: passed.confidence < 0.6 } : null;
+const found = passed ? { ...passed, cite: passed.cite ?? `${task.video}#t=${passed.t}`, loose: passed.confidence < 0.6, ...(passed.cite ? {} : { noBox: true }) } : null;
 await tools.bash({ command: `cat > ${dir}/task.json <<'EOF'\n${JSON.stringify({ ...task, checks, found, spentUsd: spent })}\nEOF` });
 return { found: Boolean(found), ...(found ?? { checks }), spentUsd: spent, ...(spent >= task.budgetUsd && checks.length < 3 ? { stopped: "budget" } : {}) };
 ```
 
 Answer with the citation, the noul and the price: "first seen at `film.mp4#t=1024&xywh=percent:31,6,49,52` (Jev 0.88
-sure; $0.008 for the search)", and say "the box is loose" when `loose` is true. To show it, crop the box from that frame
+sure; $0.008 for the search)", and say "the box is loose" when `loose` is true, or "Jev drew no usable box" when `noBox`
+is. To show it, crop the box from that frame
 (the `look` skill's region).
