@@ -144,8 +144,9 @@ const score = async (t) => {
 const step = Math.max(10, Math.ceil(task.windows.reduce((sum, [from, to]) => sum + to - from, 0) / task.scanFrames));
 for (const [from, to] of task.windows) for (let t = from; t < to; t += step) await score(t);
 const likely = () => [...scores].filter(([, p]) => p >= 0.7).map(([t]) => t).sort((x, y) => x - y);
-const [held] = likely();
-const before = held === undefined ? 0 : task.windows.find(([from, to]) => held >= from && held < to)[0];
+const inWindow = (t) => task.windows.find(([from, to]) => t >= from && t < to);
+const held = likely().find(inWindow);
+const before = held === undefined ? 0 : inWindow(held)[0];
 for (let t = 0; t < before; t += Math.max(step, Math.ceil(before / task.scanFrames))) await score(t);
 const sorted = [...scores].sort((x, y) => x[0] - y[0]);
 await tools.bash({ command: `cat > ${dir}/task.json <<'EOF'\n${JSON.stringify({ ...task, scores: sorted, spentUsd: spent })}\nEOF` });

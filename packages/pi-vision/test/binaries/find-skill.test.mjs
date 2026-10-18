@@ -263,9 +263,11 @@ test("a step run again asks nothing it has, and counts nothing twice", async () 
 
 test("words say where to look first: a sighting before the window they name is found", async () => {
   transcript(ONCE, "early.mp4");
-  const { values: [words, scanned, halved, named, checked] } = await steps([narrowWith('video: "film.mp4", best: "film.mp4"', 'video: "early.mp4", best: "early.mp4"'), scan, halve, name, check]);
+  const { values: [words, scanned, again, halved, named, checked], jev } = await steps([narrowWith('video: "film.mp4", best: "film.mp4"', 'video: "early.mp4", best: "early.mp4"'), scan, scan, halve, name, check]);
   assert.deepEqual(words.windows, [[130, 254]]);
   assert.deepEqual(scanned.likely, [60, 70, 80, 190, 200, 210, 220, 230, 240], "the scan before the window found the red box at 60");
+  assert.deepEqual([again.frames, again.likely, again.spentUsd], [scanned.frames, scanned.likely, scanned.spentUsd], "run again with a likely frame outside the windows: the same, and nothing asked");
+  assert.equal(jev.requests.length, scanned.frames + 3);
   assert.deepEqual([halved.window, named.at, checked.t], [[25, 85], 60, 60]);
 });
 
