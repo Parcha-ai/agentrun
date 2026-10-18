@@ -421,10 +421,10 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   }
 }
 
-/** The tool kills of an attempt that did not fire: those the child's log (`landed` rows) does not show. */
+/** The tool kills of an attempt that did not fire: those whose place in the plan the child's log (`landed` rows, each naming the entry that fired) does not show. Two kills at one point (or with different `where`) are told apart by that place. */
 export function notLanded<T extends object>(tools: readonly T[], log: string): T[] {
-  const landed = rows<Crossing>(log).filter((crossing) => crossing.landed).map((crossing) => crossing.point);
-  return tools.filter((entry) => { const at = 'point' in entry ? landed.indexOf(String(entry.point)) : -1; if (at >= 0) landed.splice(at, 1); return at < 0; });
+  const fired = new Set(rows<Crossing>(log).filter((crossing) => crossing.landed && typeof crossing.tool === 'number').map((crossing) => crossing.tool));
+  return tools.filter((_entry, index) => !fired.has(index));
 }
 
 const readEventsOf = (dir: string) => rows<Record<string, unknown>>(join(dir, 'events.jsonl'));
