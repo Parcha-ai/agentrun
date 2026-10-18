@@ -1,7 +1,7 @@
 // The reference entry as a demo's platform (item A of the entry brief): the spec's kills list through the supervisor (a named crossing, a storm, a box kind),
 // --input, --max-usd, the browser choice, and the box the job's tools run in. The demo here is the reference job itself, started through demo-fixture.ts.
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -967,6 +967,156 @@ test('fakes.input is the no-key default (--input still wins), the models the liv
     await run(t, {}, [], { DEMO_SOURCES_ITEMS: join(tmp, 'items.json'), DEMO_FAKES_INPUT: '', DEMO_LIVE_PROBE: '', DEMO_MANIFEST: '' });
   } finally { console.log = log; }
   assert.ok(lines.some((line) => /^  stopped: this input needs 1 source file\(s\)/.test(line)), lines.join('\n'));
+});
+
+// ---- secrets in a recording ------------------------------------------------------------------------------------------------------------------
+
+/** A sign-in home with made-up tokens (derived from their names, so no literal in this file looks like a credential). */
+const signInHome = async (t) => {
+  const home = await mkdtemp(join(tmpdir(), 'reference-signin-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const tokens = Object.fromEntries(['access', 'refresh', 'idToken'].map((field) => [field, `made-up-${field}-token-${'x'.repeat(24)}`]));
+  const key = `made-up-provider-key-${'z'.repeat(24)}`;
+  writeFileSync(join(home, 'auth.json'), JSON.stringify({ version: 1, hostId: 'host-for-the-test', credentials: { openai: { type: 'oauth', ...tokens, expires: 1_900_000_000_000, clientId: 'client-for-the-test', scopes: ['scope-for-the-test'] }, other: { type: 'api_key', key } } }));
+  return { home, tokens: { ...tokens, key } };
+};
+const filesIn = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? filesIn(join(dir, entry.name)) : [join(dir, entry.name)]));
+
+test('the sign-in\'s secret strings are read from auth.json by key (access, refresh, id token and an API key), a missing file is fine, and an unreadable or non-JSON one fails without a value in the message', async (t) => {
+  const { signInSecrets, signInFile } = await import('./reference/secrets.ts');
+  const { home, tokens } = await signInHome(t);
+  const found = signInSecrets(join(home, 'auth.json'));
+  assert.deepEqual(found.map((secret) => secret.key.replace(`${home}/auth.json `, '')), ['credentials.openai.access', 'credentials.openai.refresh', 'credentials.openai.idToken', 'credentials.other.key']);
+  assert.deepEqual(found.map((secret) => secret.value), [tokens.access, tokens.refresh, tokens.idToken, tokens.key], 'every secret string a credential holds, and no expiry, client id, host id or scope');
+  writeFileSync(join(home, 'short.json'), JSON.stringify({ credentials: { openai: { type: 'oauth', access: 'short', refresh: 'tiny' } } }));
+  assert.deepEqual(signInSecrets(join(home, 'short.json')), [], 'a short string is a word, not a secret');
+  assert.deepEqual(signInSecrets(join(home, 'absent.json')), [], 'no sign-in is fine');
+  mkdirSync(join(home, 'dir.json'));
+  assert.throws(() => signInSecrets(join(home, 'dir.json')), /cannot be read/);
+  writeFileSync(join(home, 'bad.json'), `{ not json ${tokens.access}`);
+  assert.throws(() => signInSecrets(join(home, 'bad.json')), (error) => /is not JSON/.test(error.message) && !error.message.includes(tokens.access));
+  assert.equal(signInFile({ AGENTRUN_HOME: '/elsewhere' }), '/elsewhere/auth.json');
+  assert.match(signInFile({}), /\.config\/agentrun\/auth\.json$/);
+});
+
+test('--record holds none of the sign-in\'s tokens in any line, text blob or the manifest, though a tool result carried each; a recording without a sign-in is unchanged', { timeout: 300_000 }, async (t) => {
+  const { home, tokens } = await signInHome(t);
+  const values = Object.values(tokens);
+  const leaked = await run(t, {}, ['--json'], { AGENTRUN_HOME: home, DEMO_LEAK: JSON.stringify(values), DEMO_RESULT: '1' });
+  assert.equal(leaked.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(leaked.result.processes.at(-1)));
+  const files = filesIn(leaked.recording);
+  assert.ok(files.some((file) => file.endsWith('events.jsonl')) && files.some((file) => file.endsWith('manifest.json')));
+  for (const file of files) for (const value of values) assert.ok(!readFileSync(file).includes(value), `${file.slice(leaked.recording.length)} holds a token`);
+  assert.ok(readFileSync(join(leaked.recording, 'events.jsonl'), 'utf8').includes('[redacted]'), 'the tool result is there, with the values taken out');
+  // A text blob is redacted before it is hashed and named: the result's cited blob carried every value, and the recording passes the validator and the gallery gate (every blob hashes to its own name).
+  const blobs = readdirSync(join(leaked.recording, 'blobs')).filter((name) => name.endsWith('.txt'));
+  assert.equal(blobs.length, 1, 'the cited text blob');
+  assert.equal(readFileSync(join(leaked.recording, 'blobs', blobs[0]), 'utf8').match(/\[redacted\]/g).length, values.length, 'every value in it is taken out');
+  assert.deepEqual(validateRecording(leaked.recording), []);
+  const dist = await mkdtemp(join(tmpdir(), 'reference-dist-'));
+  t.after(() => rm(dist, { recursive: true, force: true }));
+  cpSync(leaked.recording, join(dist, 'recordings', 'leaked'), { recursive: true });
+  // The build that ships recordings as files: an index of the manifest and each blob's path, no more.
+  const manifest = JSON.parse(readFileSync(join(leaked.recording, 'manifest.json'), 'utf8'));
+  const held = readdirSync(join(leaked.recording, 'blobs'));
+  writeFileSync(join(dist, 'recordings', 'index.json'), JSON.stringify([{ id: 'leaked', manifest, blobs: Object.fromEntries(held.map((name) => [name.split('.')[0], `blobs/${name}`])) }]));
+  writeFileSync(join(dist, 'gallery.js'), "window.AGENTRUN_GALLERY_INDEX = 'recordings/index.json';\n");
+  const { gateProblems } = await import('../scripts/recording/gate.mjs');
+  assert.deepEqual(gateProblems(dist), [], 'the gallery gate passes the redacted recording');
+  // No sign-in: nothing to redact, nothing refused, and the lines are what they were.
+  const bare = await mkdtemp(join(tmpdir(), 'reference-nosignin-'));
+  t.after(() => rm(bare, { recursive: true, force: true }));
+  const plain = await run(t, {}, ['--json'], { AGENTRUN_HOME: bare, DEMO_LEAK: JSON.stringify(values) });
+  assert.equal(plain.result.processes.at(-1).outcome.status, 'complete');
+  assert.ok(readFileSync(join(plain.recording, 'events.jsonl'), 'utf8').includes(values[0]), 'a recording without a sign-in is not touched');
+  assert.ok(!readFileSync(join(plain.recording, 'events.jsonl'), 'utf8').includes('[redacted]'));
+});
+
+test('a sign-in file that cannot be read fails the record before the run, and the record-time scan refuses a secret that slipped through, naming the key and the file and never the value', async (t) => {
+  const { scanRecording } = await import('./reference/secrets.ts');
+  const unreadable = await mkdtemp(join(tmpdir(), 'reference-unreadable-'));
+  t.after(() => rm(unreadable, { recursive: true, force: true }));
+  mkdirSync(join(unreadable, 'auth.json'));
+  await assert.rejects(() => run(t, {}, ['--json'], { AGENTRUN_HOME: unreadable }), /sign-in file .* cannot be read/);
+  const recording = await mkdtemp(join(tmpdir(), 'reference-slipped-'));
+  t.after(() => rm(recording, { recursive: true, force: true }));
+  mkdirSync(join(recording, 'blobs'));
+  const value = `made-up-slipped-token-${'y'.repeat(24)}`;
+  writeFileSync(join(recording, 'blobs', 'a.txt'), `a blob with ${value} in it`);
+  assert.throws(() => scanRecording(recording, [{ key: 'DEMO_SECRET', value }]), (error) => /DEMO_SECRET is in blobs\/a\.txt/.test(error.message) && !error.message.includes(value));
+  assert.doesNotThrow(() => scanRecording(recording, []));
+});
+
+test('the child uses the sign-in file the recorder reads (AGENTRUN_HOME is handed down), a token the sign-in refreshes mid-run is redacted from the next write on, and a token that was written before the recorder saw the file change refuses the recording', { timeout: 300_000 }, async (t) => {
+  const { home, tokens } = await signInHome(t);
+  const files = (recording) => filesIn(recording).filter((file) => !file.endsWith('.png'));
+  const holds = (recording, value) => files(recording).some((file) => readFileSync(file).includes(value));
+  // (c) A child that reads its token from its own AGENTRUN_HOME gets the file the recorder reads, so what it returns is redacted.
+  const child = await run(t, {}, ['--json'], { AGENTRUN_HOME: home, DEMO_LEAK_STEPS: 'homeToken' });
+  assert.equal(child.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(child.result.processes.at(-1)));
+  assert.ok(!holds(child.recording, tokens.access), 'the child\'s token is not in the recording');
+  assert.ok(readFileSync(join(child.recording, 'events.jsonl'), 'utf8').includes('[redacted]'), 'and it was there to be redacted');
+  // (d) A refresh mid-run: the sign-in rewrites auth.json with a new access token, and a later line carries it.
+  const refreshed = `made-up-refreshed-access-token-${'r'.repeat(30)}`;
+  const mid = await run(t, {}, ['--json'], { AGENTRUN_HOME: home, DEMO_LEAK_STEPS: 'rotate,homeToken', DEMO_ROTATE_TOKEN: refreshed });
+  assert.equal(mid.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(mid.result.processes.at(-1)));
+  assert.ok(!holds(mid.recording, refreshed), 'the refreshed token, unknown at the start, is not in the recording');
+  assert.ok((readFileSync(join(mid.recording, 'events.jsonl'), 'utf8').match(/\[redacted\]/g) ?? []).length >= 1);
+  // (e) An event carries the new token BEFORE the file shows it; the final read of auth.json catches it, and the recording is refused: no manifest, the key and the file named, the value never.
+  const late = `made-up-late-access-token-${'l'.repeat(30)}`;
+  const { home: lateHome } = await signInHome(t);
+  const recording = join(await mkdtemp(join(tmpdir(), 'reference-late-')), 'recording');
+  t.after(() => rm(join(recording, '..'), { recursive: true, force: true }));
+  await assert.rejects(() => run(t, {}, ['--json', '--record', recording], { AGENTRUN_HOME: lateHome, DEMO_LEAK: JSON.stringify([late]), DEMO_LEAK_STEPS: 'leak,rotate', DEMO_ROTATE_TOKEN: late }), (error) => /credentials\.openai\.access is in /.test(error.message) && !error.message.includes(late));
+  assert.ok(!existsSync(join(recording, 'manifest.json')), 'the refused recording is not a finished one');
+});
+
+test('a token the sign-in rotated twice during the run, which the child learned and returned in its result, is not in the recording: the child redacts what it tells the supervisor with every token it has seen', { timeout: 300_000 }, async (t) => {
+  const { home } = await signInHome(t);
+  const second = `made-up-second-access-token-${'s'.repeat(30)}`;
+  const third = `made-up-third-access-token-${'h'.repeat(30)}`;
+  const recording = join(await mkdtemp(join(tmpdir(), 'reference-rotated-')), 'recording');
+  t.after(() => rm(join(recording, '..'), { recursive: true, force: true }));
+  // The access token goes first -> second -> third inside one run; the result the child returns carries the second, which the supervisor's own list (the first, then the file's last) never held.
+  const done = await run(t, {}, ['--json', '--record', recording], { AGENTRUN_HOME: home, DEMO_LEAK_STEPS: 'rotate,rotate2', DEMO_ROTATE_TOKEN: second, DEMO_ROTATE_TOKEN_2: third, DEMO_RESULT: '1', DEMO_RESULT_LEAK: second });
+  assert.equal(done.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(done.result.processes.at(-1)));
+  const files = filesIn(recording).filter((file) => !file.endsWith('.png'));
+  for (const value of [second, third]) assert.ok(!files.some((file) => readFileSync(file).includes(value)), 'an intermediate token is not in the recording');
+  assert.ok(files.some((file) => readFileSync(file, 'utf8').includes('[redacted]')), 'it was there to be redacted');
+});
+
+test('the final scan finds a token as a line stores it, JSON-escaped: one with a quote, a backslash or a newline', async (t) => {
+  const { scanRecording } = await import('./reference/secrets.ts');
+  const dir = await mkdtemp(join(tmpdir(), 'reference-scan-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const value = 'made-up-token-with-"quote"-and-\\back\nline-' + 'q'.repeat(20);
+  writeFileSync(join(dir, 'events.jsonl'), `${JSON.stringify({ data: { text: value } })}\n`);
+  assert.ok(!readFileSync(join(dir, 'events.jsonl'), 'utf8').includes(value), 'the line holds only the escaped form');
+  assert.throws(() => scanRecording(dir, [{ key: 'the key', value }]), /the key is in events\.jsonl/);
+  writeFileSync(join(dir, 'events.jsonl'), '{"data":{"text":"[redacted]"}}\n');
+  assert.doesNotThrow(() => scanRecording(dir, [{ key: 'the key', value }]));
+});
+
+test('the tracker keeps the union of every value seen, reads a changed auth.json before the next write, and reads it once more at the end', async (t) => {
+  const { trackSecrets } = await import('./reference/secrets.ts');
+  const { home, tokens } = await signInHome(t);
+  const file = join(home, 'auth.json');
+  const tracked = trackSecrets({ AGENTRUN_HOME: home }, { name: 'x' });
+  assert.equal(tracked.redact(`a line with ${tokens.access}`), 'a line with [redacted]');
+  const next = `made-up-next-access-token-${'n'.repeat(30)}`;
+  assert.equal(tracked.redact(`a line with ${next}`), `a line with ${next}`, 'a token the file does not hold yet is not known');
+  const stored = JSON.parse(readFileSync(file, 'utf8'));
+  stored.credentials.openai.access = next;
+  writeFileSync(file, JSON.stringify(stored));
+  assert.equal(tracked.redact(`a line with ${next}`), 'a line with [redacted]', 'the changed file is read before the write');
+  assert.equal(tracked.redact(`a line with ${tokens.access}`), 'a line with [redacted]', 'the old token is still known: the union');
+  const last = `made-up-last-access-token-${'t'.repeat(30)}`;
+  stored.credentials.openai.access = last;
+  writeFileSync(file, JSON.stringify(stored));
+  assert.ok(tracked.final().some((secret) => secret.value === last), 'the final read sees the newest token');
+  assert.ok(tracked.final().some((secret) => secret.value === tokens.access), 'and every earlier one');
+
+
 });
 
 test('a crossing a tool kill takes still counts for a run kill at the same point: the run kill at n 2 fires on the second matching crossing', async (t) => {

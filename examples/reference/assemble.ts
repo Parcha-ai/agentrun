@@ -229,7 +229,7 @@ export function finalDetail(result: RunResult, storeSha256: string | undefined, 
 
 /** The same run as options for `pi-durable-disk run --app`: the instance claims the run, fences it, opens the store and resumes it; `onOpen` drives the job on it and, when it has delivered, writes the run's final
  *  status, `done` with the record and the hash of the store, releases the run and ends the process. `report` is told how the run ended before the process does (the child prints its outcome line there). */
-export async function appOf(place: RunPlace, host: Host, job: Job, options: RunOptions, report: (outcome: { result: RunResult; storeSha256: string | undefined }) => void | Promise<void>, extra: Record<string, unknown> = {}): Promise<AppOptions> {
+export async function appOf(place: RunPlace, host: Host, job: Job, options: RunOptions, report: (outcome: { result: RunResult; storeSha256: string | undefined }) => void | Promise<void>, extra: Record<string, unknown> = {}, redact?: (text: string) => string): Promise<AppOptions> {
   const composed = await compose(place, host, job, options);
   return {
     registry: composed.registry, models: composed.models, ...(composed.beforeResume ? { beforeResume: composed.beforeResume } : {}),
@@ -240,7 +240,7 @@ export async function appOf(place: RunPlace, host: Host, job: Job, options: RunO
       const storeSha256 = existsSync(storeFile) ? createHash('sha256').update(readFileSync(storeFile)).digest('hex') : undefined;
       await report({ result, storeSha256 });
       // A box place has only run.json: the record and the store's hash are in the final status as well.
-      await durable.setStatus(result.status === 'complete' ? 'done' : 'failed', finalDetail(result, storeSha256, extra) as JsonValue);
+      await durable.setStatus(result.status === 'complete' ? 'done' : 'failed', (redact ? JSON.parse(redact(JSON.stringify(finalDetail(result, storeSha256, extra)))) : finalDetail(result, storeSha256, extra)) as JsonValue);
       await durable.release();
       process.exit(0);
     },
