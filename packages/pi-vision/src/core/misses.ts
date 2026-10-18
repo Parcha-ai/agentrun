@@ -4,6 +4,7 @@
 import type { MissCode } from "./contract.js";
 import { fileLook, quietly, type Filing, type LookRecord } from "./evidence.js";
 import type { ToolResult } from "./host.js";
+import { pathSafe } from "./paths.js";
 
 /** One read or look that could not give the model what it asked for, for the host's rows. */
 export type MissEvent = {
@@ -67,8 +68,8 @@ export const linkSafe = (line: string): string => line.split(/(\s+)/).map((escap
   return `${word.slice(0, at)}${url.origin}${url.pathname}${word.slice(end)}`;
 }).join("");
 
-/** The first line of an error's message, its links cut to origin and path, bounded. */
-export const firstLine = (error: unknown, max = 300): string => linkSafe(String((error as Error)?.message || error).split("\n")[0]!).slice(0, max);
+/** The first line of an error's message, its links cut to origin and path and any absolute file path to its last part, bounded. */
+export const firstLine = (error: unknown, max = 300): string => pathSafe(linkSafe(String((error as Error)?.message || error).split("\n")[0]!)).slice(0, max);
 
 /** A refusal of the arguments: one line, `isError: true`. */
 export const refusal = (text: string): ToolResult => ({ content: [{ type: "text", text }], isError: true });

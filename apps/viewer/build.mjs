@@ -1,6 +1,7 @@
-// node build.mjs [outDir] [--files]: the viewer as static files, with no dependency. Each module's types are stripped,
+// node build.mjs [outDir] [--files]: the viewer as static files, with no install. Each module's types are stripped,
 // the modules are joined in import order into one classic script (a page opened from file:// may not load module scripts
-// or fetch), and the bundled recordings are embedded in gallery.js and copied beside the page. With --files (off by
+// or fetch), PDF.js's release files are copied beside it (vendor/pdfjs, loaded only to draw a PDF page), and the bundled
+// recordings are embedded in gallery.js and copied beside the page. With --files (off by
 // default), the recordings are shipped as files only: recordings/index.json lists each one's manifest and blob paths,
 // and the page fetches a recording when it is opened, so the page stays small; that needs a static host, not file://.
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -30,10 +31,10 @@ function ordered(entry) {
   return seen;
 }
 
-/** What a module may import: only names from the viewer's own modules. A package would be a dependency; a bare
+/** What a module may import: only names from the viewer's own modules. A package would need an install; a bare
  *  `import './x.ts'` is neither followed nor removed, so x would be left out and the import left in a classic script. */
 export function checkModule(file, code) {
-  if (/^\s*import\s[^;]*from\s+'(?!\.\/)/m.test(code)) throw new Error(`${file} imports a package; the viewer has no dependencies`);
+  if (/^\s*import\s[^;]*from\s+'(?!\.\/)/m.test(code)) throw new Error(`${file} imports a package; the viewer imports none (PDF.js is loaded beside the page, vendor/pdfjs)`);
   const bare = /^\s*import\s+'([^']+)';?\s*$/m.exec(code);
   if (bare) throw new Error(`${file} imports ${bare[1]} for its side effect alone; import a name from it, so the build includes it in order`);
 }
@@ -56,6 +57,10 @@ export function build(target = out, recordingsDir = join(here, 'recordings'), { 
   mkdirSync(target, { recursive: true });
   writeFileSync(join(target, 'viewer.js'), `(() => {\n'use strict';\n${parts.join('\n')}\n})();\n`);
   writeFileSync(join(target, 'index.html'), readFileSync(join(here, 'index.html')));
+  // A `.js` name: every static host serves it as JavaScript, which a module script must be.
+  mkdirSync(join(target, 'pdfjs'));
+  for (const [from, to] of [['pdf.min.mjs', 'pdf.min.js'], ['pdf.worker.min.mjs', 'pdf.worker.min.js'], ['LICENSE.txt', 'LICENSE.txt']]) cpSync(join(here, 'vendor', 'pdfjs', from), join(target, 'pdfjs', to));
+  cpSync(join(here, 'vendor', 'pdfjs', 'wasm'), join(target, 'pdfjs', 'wasm'), { recursive: true });
 
   // A recorder writes a blob as `.<sha>.<ext>.tmp-<pid>` and renames it once whole, so a copy of a recording taken while
   // it goes may hold such a name: it is not a blob yet, and is neither listed nor shipped.

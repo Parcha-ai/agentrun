@@ -11,6 +11,7 @@ import type { CallContext, CallSetup, EyesAnswer, ImageContent, TextContent, Too
 import { imageHeader, KINDS, type Kind } from "./kinds.js";
 import { RESULT_BYTES_SHARE, type Limits } from "./limits.js";
 import { firstLine, linkSafe, MISS_ACTION, reportMiss, type Miss } from "./misses.js";
+import { pathSafe } from "./paths.js";
 import { packRequests, type Fit, type Part } from "./plan.js";
 
 /** The question the eyes answer when the agent asked none: say what is shown, completely and only that. */
@@ -142,7 +143,7 @@ export async function guardResult(result: ToolResult, call: CallContext, setup: 
   const filing: Filing = { conversationId: call.conversationId, label: setup.scope.label, evidence: media.path ? setup.evidence : { file: async () => null }, onLook: setup.onLook, onMiss: setup.onMiss };
   // A miss filed before any request to the eyes cost nothing; one after a request says what it knows of that request.
   const miss = async (what: string, unit: readonly ImageContent[], cause: Miss, spent: Partial<LookRecord["facts"]> = { tokens_in: 0, tokens_out: 0, cost_usd: 0 }): Promise<TextContent> => {
-    const m = { ...cause, reason: linkSafe(cause.reason) };
+    const m = { ...cause, reason: pathSafe(linkSafe(cause.reason)) };
     const receipt = await reportMiss(filing, tool, record(unit, false, m.model ?? "no vision route", "", spent), m);
     return { type: "text", text: `(${what} withheld for this model and not described: ${m.reason}.${saved ? ` The file is saved at ${saved}.` : ""}${receipt ? ` Receipt filed at ${receipt}.` : ""} ${MISS_ACTION[m.code]})` };
   };
