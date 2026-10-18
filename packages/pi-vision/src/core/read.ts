@@ -16,6 +16,7 @@ import type { ImageProcessor } from "./image.js";
 import type { Kind } from "./kinds.js";
 import { SOURCE_BYTES_IN_PROCESS, type Limits } from "./limits.js";
 import { firstLine, linkSafe, MISS_ACTION, refusal, reportMiss } from "./misses.js";
+import { pathSafe } from "./paths.js";
 import { lookTiming } from "./timing.js";
 import { PACKAGE_KINDS } from "./readers.js";
 import type { Fit } from "./plan.js";
@@ -204,7 +205,7 @@ const extensionOf = (name: string): string => {
 /** A miss the model can act on, filed as a failed look and told to the host. No read path asks a model before one, so
  *  it cost nothing. `setup`: the host's own callbacks failed before any look was made, so the host is given no record. */
 async function missResult(filing: Filing, name: string, kind: Kind, sha256: string, code: MissCode, cause: string, args: ReadArgs, text?: string, setup?: true): Promise<ToolResult> {
-  const reason = linkSafe(cause);
+  const reason = pathSafe(linkSafe(cause));
   const ask = asked(args);
   const page = num(args.page);
   const [fromS, toS] = [num(args.from_s), num(args.to_s)];
