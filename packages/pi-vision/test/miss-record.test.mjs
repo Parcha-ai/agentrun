@@ -86,7 +86,7 @@ test("a failed look a door named is still filed as a receipt, and the event carr
   assert.equal(h.filed.length, 1);
   const [miss] = h.misses;
   assert.equal(miss.receipt, "evidence/n/1-look.md");
-  assert.deepEqual(miss.record, h.filed[0], "the same record, filed and told");
+  assert.equal(miss.record, h.filed[0], "the same record, filed and told");
   assert.deepEqual([miss.record.status, miss.record.args.path, miss.record.args.ask, miss.record.facts.sha256], ["failed", "drawer.png", "What is shown?", "ab".repeat(32)]);
   assert.ok(miss.record.facts.cost_usd > 0);
   assert.equal(h.looks.length, 0);
@@ -101,7 +101,7 @@ test("a file that cannot be read is a failed look with a record that costs nothi
   const out = await readMedia(env, { path: "blob.bin" }, call, h.setup);
   assert.match(out.content[0].text, /^blob\.bin could not be read/);
   const [unreadable] = h.misses;
-  assert.deepEqual(unreadable.record, h.filed[0]);
+  assert.equal(unreadable.record, h.filed[0]);
   assert.deepEqual([unreadable.code, unreadable.record.status, unreadable.record.facts.cost_usd, unreadable.record.args.model], ["unsupported", "failed", 0, "none"]);
 
   const rows = host({ sources: { session: { via: "reviewer", look: async () => ({ text: "  ", model: "reviewer-1", costUsd: 0.02 }) } } });
@@ -109,7 +109,7 @@ test("a file that cannot be read is a failed look with a record that costs nothi
   assert.match(recording.content[0].text, /returned no text/);
   const [empty] = rows.misses;
   assert.deepEqual([empty.code, empty.record.status, empty.record.facts.cost_usd, empty.record.facts.provider, empty.record.facts.kind], ["look_failed", "failed", 0.02, "reviewer", "recording"]);
-  assert.deepEqual(empty.record, rows.filed[0]);
+  assert.equal(empty.record, rows.filed[0]);
 
   const threw = host({ sources: { session: { via: "reviewer", look: async () => { throw new Error("reviewer down"); } } } });
   await readMedia(env, { path: "session:abc" }, call, threw.setup);
@@ -121,13 +121,13 @@ test("vision.see and vision.judge fail a look with its record too, each as filed
   const h = host({ eyes: fakeEyes({ answers: [{ text: "", input: 700, output: 7 }] }) });
   await assert.rejects(see({ ask: "What is it?", images: blocks }, undefined, call, h.setup), (error) => error instanceof SeeMiss && error.code === "look_failed");
   const [seen] = h.misses;
-  assert.deepEqual(seen.record, h.filed[0]);
+  assert.equal(seen.record, h.filed[0]);
   assert.deepEqual([seen.tool, seen.record.status, seen.record.facts.tokens_in, seen.record.facts.cost_usd > 0, seen.record.facts.key.length], ["vision.see", "failed", 700, true, 64]);
 
   const jev = host({ images: sharpImages(sharp), jev: { judge: fakeJev({ fail: Object.assign(new Error("400 Bad Request: an image was rejected"), { status: 400 }) }).judge } });
   await assert.rejects(judge({ images: blocks, questions: { q: { type: "noul", instructions: "Is `images[0].image` blank?" } } }, undefined, call, jev.setup), /Jev failed/);
   const [judged] = jev.misses;
-  assert.deepEqual(judged.record, jev.filed[0]);
+  assert.equal(judged.record, jev.filed[0]);
   assert.deepEqual([judged.tool, judged.record.status, judged.record.args.via, "cost_usd" in judged.record.facts, judged.record.facts.key.length], ["vision.judge", "failed", "jev", false, 64]);
 });
 
@@ -142,7 +142,7 @@ test("vision.transcribe fails a look with its record: an answer without word tim
   const untimed = host({ transcriber: { provider: "stt", model: "stt-1", usdPerMinute: 0.006, transcribe: async () => ({ text: "hello there", words: [], durationS: 120 }) } });
   await assert.rejects(transcribe({ path: "landing.mp3" }, env, call, untimed.setup), (error) => error instanceof SeeMiss && error.code === "unsupported");
   const [charged] = untimed.misses;
-  assert.deepEqual(charged.record, untimed.filed[0]);
+  assert.equal(charged.record, untimed.filed[0]);
   assert.deepEqual([charged.tool, charged.record.tool, charged.record.status, charged.record.facts.cost_usd, charged.record.facts.provider, charged.record.facts.key.length], ["vision.transcribe", "transcribe", "failed", 0.012, "stt", 64]);
   const threw = host({ transcriber: { provider: "stt", model: "stt-1", usdPerMinute: 0.006, transcribe: async () => { throw new Error("stt down"); } } });
   await assert.rejects(transcribe({ path: "landing.mp3" }, env, call, threw.setup), SeeMiss);
