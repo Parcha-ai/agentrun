@@ -1,6 +1,6 @@
 // The result as the recording keeps it: the agent's report (its page under report/ and every picture and clip it shows)
-// kept as blobs, and a cited record whose one row is the answer, citing the report and every look the report cites,
-// by its key, at the file's own fragment, labelled as the report labels it.
+// kept as blobs, and a cited record whose one row is the answer, citing every look the report cites, by its key, at
+// the file's own fragment, labelled as the report labels it.
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, relative } from 'node:path';
 import type { DemoOptions } from '@parcha/agentrun-reference';
@@ -28,9 +28,8 @@ export const result: NonNullable<DemoOptions['result']> = (record, { dir, keep }
     const label = tag.replace(/<[^>]*>/g, '').trim();
     return look ? [{ look, fragment: href.includes('#') ? href.slice(href.indexOf('#')) : '', note: label }] : [];
   });
-  const reportBlob = files[relative(folder, html)];
   return {
-    json: { format: 'agentrun.cited/1', title: answer.answer, rows: [{ label: 'Answer', value: answer.answer, cites: [...(reportBlob ? [{ blob: reportBlob, note: answer.report }] : []), ...cites] }], report: { page: answer.report, files } },
+    json: { format: 'agentrun.cited/1', title: answer.answer, rows: [{ label: 'Answer', value: answer.answer, cites }], report: { page: answer.report, files } },
     title: answer.answer,
   };
 };

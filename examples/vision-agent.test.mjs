@@ -77,7 +77,8 @@ test('on fakes the document check runs over the committed PDFs and ends with a r
   const page = readFileSync(join(record, 'blobs', `${kept.report.files['report.html']}.html`), 'utf8');
   assert.match(page, /<section id="answer">/);
   assert.ok(existsSync(join(record, 'blobs', `${kept.report.files['frames/one.png']}.png`)), 'the picture the report shows is a blob too');
-  const [, cite] = kept.rows[0].cites;
+  const [cite, ...more] = kept.rows[0].cites;
+  assert.deepEqual(more, [], 'one cite, a look: the page itself is the result\'s report, not a cite');
   assert.deepEqual([cite.fragment, cite.note], ['#page=1', 'page 1']);
   const filed = readdirSync(join(tmp, 'run', 'evidence'), { recursive: true }).filter((name) => name.endsWith('.json')).map((name) => JSON.parse(readFileSync(join(tmp, 'run', 'evidence', name), 'utf8')));
   assert.ok(filed.some((look) => look.facts.key === cite.look), 'the report\'s cite names a look the run filed');
@@ -93,5 +94,5 @@ test('on fakes a film question runs over a film given beside it, and the report 
   assert.equal(statusOf(run), 'complete', stderrOf(run));
   const manifest = JSON.parse(readFileSync(join(tmp, 'recording', 'manifest.json'), 'utf8'));
   const kept = JSON.parse(readFileSync(join(tmp, 'recording', 'blobs', `${manifest.result.blob}.json`), 'utf8'));
-  assert.deepEqual(kept.rows[0].cites.slice(1).map((cite) => [cite.fragment, cite.note]), [['#t=1', '1 s']]);
+  assert.deepEqual(kept.rows[0].cites.map((cite) => [cite.fragment, cite.note]), [['#t=1', '1 s']]);
 });
