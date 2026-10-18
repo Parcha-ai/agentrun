@@ -247,6 +247,18 @@ test('the publish set is the explicit release map minus the held packages, and a
   for (const name of heldPackages) assert.equal(repoManifest(name).publishConfig?.access, 'public');
 });
 
+test('the root README\'s status column says published exactly for the packages a release publishes', () => {
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  const table = readme.split(/^### Use one piece$/m)[1].split(/^#/m)[0];
+  const directories = new Map(listedPackages.map(directory => [releasePackageNames[directory], directory]));
+  const rows = [...table.matchAll(/^\| \[`(@parcha\/[a-z-]+)`\].*\| ([^|]+) \|$/gm)];
+  assert.ok(rows.length > 0, 'the table has rows');
+  for (const [, name, status] of rows) {
+    assert.ok(directories.has(name), `${name} is in the release map`);
+    assert.match(status, heldPackages.includes(directories.get(name)) ? /^held\b/ : /^published\b/, `${name}: ${status}`);
+  }
+});
+
 test('publication order is dependency order, fixed by the release map and not by directory listing', () => {
   assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'harness'], 'dsl before jev and pi, the packages that depend on none of them after, then serve (@parcha/agentrun-serve), which depends on pi-durable-disk and pi-durable-agent, and the reference host, which depends on dsl, pi, pi-browser, pi-durable-disk and pi-vision, last');
   const names = new Map(listedPackages.map(directory => [releasePackageNames[directory], directory]));

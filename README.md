@@ -66,11 +66,12 @@ Each package works on its own. Install the ones you need.
 | --- | --- | --- | --- | --- |
 | [`@parcha/agentrun-dsl`](packages/dsl/README.md) | Define, validate, inspect and run workflows | Node 22.19+ | `npx agentrun demo` | published (`@beta`) |
 | [`@parcha/agentrun-jev`](packages/jev/README.md) | Jev typed decisions as a workflow's `runJudge` | the DSL; `TYPESAFE_API_KEY` for live calls | its README's [offline test](packages/jev/README.md#offline-tests) | published (`@beta`) |
-| [`@parcha/agentrun-pi`](packages/pi/README.md) | The `/agentrun` Pi extension and a Pi-backed node runner | Pi 1.1.0; a model for live runs; pi-durable for its `./durable` entry | `/agentrun demo` in Pi (scripted, no model calls) | published (`@beta`); the `./durable` entry is in this repository, not yet in the published beta |
+| [`@parcha/agentrun-pi`](packages/pi/README.md) | The `/agentrun` Pi extension and a Pi-backed node runner | Pi 1.1.0; a model for live runs; pi-durable for its `./durable` entry | `/agentrun demo` in Pi (scripted, no model calls) | published (`@beta`) |
 | [`@parcha/pi-durable-disk`](packages/pi-durable-disk/README.md) | Run a pi-durable agent on a network disk: one owner per run, a fence, a supervisor | pi-durable and chord; an Archil account, a disk and an API key | none yet | published (`@beta`) |
-| [`@parcha/pi-browser`](packages/pi-browser/README.md) | A browser for pi agents: crash-safe session custody, evidence with SHA-256, typed failures | pi-durable and chord; a provider (a local Chrome needs no key, Browserbase needs its key) | its README's [no-key command](packages/pi-browser/README.md#try-it-without-a-key-or-a-chrome) | not yet published; a release publishes it |
+| [`@parcha/pi-browser`](packages/pi-browser/README.md) | A browser for pi agents: crash-safe session custody, evidence with SHA-256, typed failures | pi-durable and chord; a provider (a local Chrome needs no key, Browserbase needs its key) | its README's [no-key command](packages/pi-browser/README.md#try-it-without-a-key-or-a-chrome) | published (`@beta`) |
 | [`@parcha/pi-vision`](packages/pi-vision/README.md) | Eyes for pi agents: documents, images, scans and video within the model's limits, a receipt for every look | nothing for a document's text; Photon or sharp for images; a pi-durable host (pi-durable, chord and pi-ai); a model that looks, for questions about a file | its README's [first read](packages/pi-vision/README.md#a-first-read-with-no-key) | published (`@beta`) |
 | [`@parcha/pi-transport`](packages/pi-transport/README.md) | Boxes for pi agents: one interface over a directory, a container, a sandbox or a VM | pi-durable and chord; Docker for the Docker provider | the "A box" example in its README (needs Docker) | held, not published |
+| [`@parcha/agentrun-harness`](packages/harness/README.md) | A reference harness: the host we use to run AgentRun demos and tests, meant to be read and forked | pi-durable, chord, pi-ai, pi-codemode and typebox; pi-transport only for a demo with boxes | its README's [first demo](packages/harness/README.md#run-a-demo-from-an-install-with-no-key) | published (`@beta`) from `0.1.0-beta.18` |
 
 A held package is built, tested and verified with the others, and its manifest says `"private": true`; it installs from
 a packed tarball, not from npm.
@@ -176,11 +177,12 @@ It plans subquestions, researches them in parallel, screens evidence, and writes
 | [`@parcha/agentrun-jev`](packages/jev/README.md) | Connect Jev typed decisions |
 | [`@parcha/agentrun-pi`](packages/pi/README.md) | Pi extension and agent runner |
 | [`@parcha/pi-durable-disk`](packages/pi-durable-disk/README.md) | Run pi-durable agents on a network disk (Archil): one owner per run, a fence, and a supervisor |
-| [`@parcha/pi-browser`](packages/pi-browser/README.md) | A browser for pi agents: crash-safe session custody, evidence with SHA-256, typed failures (not yet published) |
+| [`@parcha/pi-browser`](packages/pi-browser/README.md) | A browser for pi agents: crash-safe session custody, evidence with SHA-256, typed failures |
 | [`@parcha/pi-vision`](packages/pi-vision/README.md) | Eyes for pi agents: documents, images, scans and video within the model's limits, typed misses, a priced receipt for every look |
-| [`@parcha/pi-transport`](packages/pi-transport/README.md) | Boxes for pi agents: one small interface over a directory, a container, a sandbox or a VM, providers for this machine and Docker, a strict config, and a conformance suite a vendor can run (not yet published) |
+| [`@parcha/pi-transport`](packages/pi-transport/README.md) | Boxes for pi agents: one small interface over a directory, a container, a sandbox or a VM, providers for this machine and Docker, a strict config, and a conformance suite a vendor can run |
+| [`@parcha/agentrun-harness`](packages/harness/README.md) | A reference harness: one pi-durable host that runs a job on this machine, with the supervisor, the recorder and fakes |
 
-This release is `0.1.0-beta.4`. See the [changelog](CHANGELOG.md) and [contracts and limits](docs/guide.md#limits).
+Every published package is at one version under npm's `beta` dist-tag; `npm view @parcha/agentrun-dsl dist-tags` prints it. The status column of [Use one piece](#use-one-piece) says which packages are published. See the [changelog](CHANGELOG.md) and [contracts and limits](docs/guide.md#limits).
 
 Ordinary functions may be enough for a fixed sequence. AgentRun stores the steps in a workflow document that you can inspect, rerun, or call from an agent. Code nodes execute JavaScript with process privileges; untrusted workflow authors require a host-controlled sandbox. Typed decisions and validated output shapes do not prove that an answer is factually correct.
 
