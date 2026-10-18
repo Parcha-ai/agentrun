@@ -1831,7 +1831,7 @@ test('a path in a detail is replaced whole, spaces and all; and a machine named 
   const aliceHome = ['', 'home', 'alice'].join('/');
   assert.equal(plainText(`wrote ${aliceHome}/Private Documents/report.txt, then stopped`), 'wrote <path>, then stopped');
   assert.equal(machineSecrets('host').some((secret) => secret.key.includes('host name')), false, 'a machine named host: its name is a word of the recording');
-  assert.equal(machineSecrets('greppy-mrb').some((secret) => secret.value === 'greppy-mrb'), true, 'an ordinary name is taken');
+  assert.equal(machineSecrets('build-box-7').some((secret) => secret.value === 'build-box-7'), true, 'an ordinary name is taken');
   const line = '{"channel":"live","source":"host","kind":"run.json","data":{"holder":{"host":"host-1"}}}';
   const redact = redactorOf(machineSecrets('host').filter((secret) => secret.key.includes('host name')));
   assert.equal(redact ? redact(line) : line, line, 'the lines of the format are unchanged');
