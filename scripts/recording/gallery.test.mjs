@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { GALLERY_LIMIT, RECORDING_LIMIT, galleryOf, packGallery, readLock, readTar, unpackGallery, writeTar } from './gallery.mjs';
+import { GALLERY_LIMIT, RECORDING_LIMIT, exampleFolders, galleryOf, packGallery, readLock, readTar, unpackGallery, writeTar } from './gallery.mjs';
 
 const script = fileURLToPath(new URL('./gallery.mjs', import.meta.url));
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -16,18 +16,19 @@ const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
 const JSON_BLOB = Buffer.from('{"answer":"a page"}\n');
 
-/** A directory with two recording-shaped folders, `a` (a picture and a JSON blob) and `b` (no blobs). */
-const recordings = (t) => {
+/** A directory with two recording-shaped folders, `a` (a picture and a JSON blob, its manifest naming its example) and
+ *  `b` (no blobs, its task naming it), or the same under `ids`. */
+const recordings = (t, [a, b] = ['a', 'b']) => {
   const dir = mkdtempSync(join(tmpdir(), 'gallery-src-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  for (const id of ['a', 'b']) {
+  for (const [id, manifest] of [[a, { title: a, task: 'vision-agent', example: a }], [b, { title: b, task: b }]]) {
     mkdirSync(join(dir, id));
-    writeFileSync(join(dir, id, 'manifest.json'), `{"title":"${id}"}\n`);
+    writeFileSync(join(dir, id, 'manifest.json'), `${JSON.stringify(manifest)}\n`);
     writeFileSync(join(dir, id, 'events.jsonl'), `{"t":1,"id":"${id}"}\n`);
   }
-  mkdirSync(join(dir, 'a', 'blobs'));
-  writeFileSync(join(dir, 'a', 'blobs', `${sha256(PNG)}.png`), PNG);
-  writeFileSync(join(dir, 'a', 'blobs', `${sha256(JSON_BLOB)}.json`), JSON_BLOB);
+  mkdirSync(join(dir, a, 'blobs'));
+  writeFileSync(join(dir, a, 'blobs', `${sha256(PNG)}.png`), PNG);
+  writeFileSync(join(dir, a, 'blobs', `${sha256(JSON_BLOB)}.json`), JSON_BLOB);
   return dir;
 };
 const lockOf = (ids, bytes = Buffer.alloc(0)) => ({ asset: 'recordings.tar', sha256: sha256(bytes), ids: ids.map((each) => (typeof each === 'string' ? { id: each } : each)) });
@@ -158,6 +159,21 @@ test('a header whose checksum fails, or a tar cut short, is refused', () => {
   assert.match(galleryOf(bent, lock).problems[0], /^the asset is not a tar: /);
 });
 
+test('an id is the name of its example folder, as the run\'s own manifest says: one recording per example', (t) => {
+  const dir = recordings(t);
+  const tar = packGallery(dir, lockOf(['a', 'b']));
+  const lock = lockOf(['a', 'b'], tar);
+  assert.equal(galleryOf(tar, lock, { examples: new Set(['a', 'b', 'c']) }).problems, undefined, 'a by its example, b by its task');
+  assert.deepEqual(galleryOf(tar, lock, { examples: new Set(['a']) }).problems, ['b: names no example folder (examples/b)']);
+  // A run filed under another example's id: its manifest says whose it is.
+  const swapped = pinned(files(dir).map(({ path, data }) => ({ path, data: path === 'b/manifest.json' ? Buffer.from('{"task":"vision-agent","example":"a"}') : data })), ['a', 'b']);
+  assert.deepEqual(galleryOf(swapped.tar, lockOf(['a', 'b'], swapped.tar)).problems, ['b: its manifest names the example "a", not b']);
+  const unread = pinned(files(dir).map(({ path, data }) => ({ path, data: path === 'b/manifest.json' ? Buffer.from('{') : data })), ['a', 'b']);
+  assert.deepEqual(galleryOf(unread.tar, lockOf(['a', 'b'], unread.tar)).problems, ['b: its manifest names the example null, not b']);
+  // A second take of one example cannot be listed: the lock refuses an id twice.
+  assert.match(readLock(JSON.stringify({ ...lock, ids: ['a', 'b', 'a'] })).problems[0], /^a is listed twice$/);
+});
+
 test('a recording over its limit, or a gallery over its own, is refused', (t) => {
   const dir = recordings(t);
   const tar = packGallery(dir, lockOf(['a', 'b']));
@@ -199,23 +215,32 @@ test('the gallery unpacks only into a directory with no recording in it', (t) =>
 const run = (args) => new Promise((resolve) => execFile(process.execPath, [script, ...args], (error, stdout, stderr) => resolve({ code: error ? error.code : 0, stdout, stderr })));
 
 test('the command: fetch --from unpacks a pinned tar and says so; a problem is printed and exits 1 with nothing written; pack writes the tar and the lock', async (t) => {
-  const dir = recordings(t);
+  const [a, b] = ['document-check', 'hear-and-find'];
+  assert.ok(exampleFolders().has(a) && exampleFolders().has(b), 'both are example folders');
+  const dir = recordings(t, [a, b]);
   const work = mkdtempSync(join(tmpdir(), 'gallery-cli-'));
   t.after(() => rmSync(work, { recursive: true, force: true }));
   const lockPath = join(work, 'recordings.lock.json');
-  writeFileSync(lockPath, JSON.stringify({ asset: 'recordings.tar', sha256: '0'.repeat(64), ids: ['a', { id: 'b' }] }));
+  writeFileSync(lockPath, JSON.stringify({ asset: 'recordings.tar', sha256: '0'.repeat(64), ids: [a, { id: b }] }));
   const packed = await run(['pack', dir, lockPath, join(work, 'recordings.tar')]);
   assert.equal(packed.code, 0, packed.stderr);
   const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
   assert.equal(lock.sha256, sha256(readFileSync(join(work, 'recordings.tar'))));
-  assert.deepEqual(lock.ids, [{ id: 'a' }, { id: 'b' }]);
+  assert.deepEqual(lock.ids, [{ id: a }, { id: b }]);
   const fetched = await run(['fetch', lockPath, join(work, 'out'), '--from', join(work, 'recordings.tar')]);
   assert.equal(fetched.code, 0, fetched.stderr);
   assert.match(fetched.stdout, /: 2 recording\(s\) from recordings\.tar \([0-9a-f]{12}\)\n$/);
-  writeFileSync(lockPath, JSON.stringify({ ...lock, ids: [{ id: 'a', poster: sha256(JSON_BLOB) }, 'b'] }));
+  writeFileSync(lockPath, JSON.stringify({ ...lock, ids: [{ id: a, poster: sha256(JSON_BLOB) }, b] }));
   const refused = await run(['fetch', lockPath, join(work, 'refused'), '--from', join(work, 'recordings.tar')]);
   assert.equal(refused.code, 1);
-  assert.match(refused.stderr, /^a: its poster [0-9a-f]{64} is not an image blob it holds\n$/);
+  assert.match(refused.stderr, /^document-check: its poster [0-9a-f]{64} is not an image blob it holds\n$/);
+  // An id that is no example folder is refused by the command too.
+  const other = recordings(t, ['a', b]);
+  writeFileSync(lockPath, JSON.stringify({ asset: 'recordings.tar', sha256: '0'.repeat(64), ids: ['a', b] }));
+  const unnamed = await run(['pack', other, lockPath, join(work, 'other.tar')]);
+  assert.equal(unnamed.code, 1);
+  assert.match(unnamed.stderr, /^a: names no example folder \(examples\/a\)\n$/);
+  assert.ok(!existsSync(join(work, 'other.tar')), 'nothing written');
   assert.ok(!existsSync(join(work, 'refused')));
   const usage = await run(['fetch']);
   assert.equal(usage.code, 2);

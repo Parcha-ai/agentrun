@@ -6,7 +6,9 @@
 // - the tar hashes to the lock's SHA-256;
 // - it holds only directories and regular files (no link, device or other entry), each at `<id>/manifest.json`,
 //   `<id>/events.jsonl` or `<id>/blobs/<sha256>.<ext>` of an id the lock names, once each;
-// - it holds exactly the lock's ids, each with its manifest and its lines;
+// - it holds exactly the lock's ids, each with its manifest and its lines, each id once and the name of the example
+//   folder (`examples/<id>`) whose run it is, as its own manifest says (`example`, else `task`): one recording per
+//   example, so a re-take replaces its id;
 // - no recording is over 40 MB and the gallery is not over 150 MB;
 // - a poster is an image blob (PNG, JPEG, WebP or GIF, by its bytes) of the recording it is the poster of;
 // - the directory it unpacks into holds no recording already.
@@ -22,7 +24,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 /** The release the asset is on: a tag no release workflow reads (they read `v*`). */
 export const RELEASE = 'gallery';
@@ -145,9 +147,10 @@ export function writeTar(files) {
 }
 
 /** What the tar `bytes` would unpack to under `lock`, as `{ files, problems }`: `files` each `{ id, path, data }` and only
- *  when there is no problem. `limits`: the most a recording and the gallery may hold, in bytes. */
+ *  when there is no problem. `limits`: the most a recording and the gallery may hold, in bytes, and `examples`, the
+ *  example folders an id may name (every name when absent). */
 export function galleryOf(bytes, lock, limits = {}) {
-  const { recording: recordingLimit = RECORDING_LIMIT, gallery: galleryLimit = GALLERY_LIMIT } = limits;
+  const { recording: recordingLimit = RECORDING_LIMIT, gallery: galleryLimit = GALLERY_LIMIT, examples } = limits;
   const problems = [];
   const digest = sha256(bytes);
   if (digest !== lock.sha256) return { problems: [`the asset hashes to ${digest}, not the lock's ${lock.sha256}`] };
@@ -175,6 +178,13 @@ export function galleryOf(bytes, lock, limits = {}) {
   }
   for (const { id, poster } of lock.ids) {
     if (!seen.has(`${id}/manifest.json`) || !seen.has(`${id}/events.jsonl`)) problems.push(`${id}: the asset holds no ${seen.has(`${id}/manifest.json`) ? 'events.jsonl' : 'manifest.json'} for it`);
+    if (examples && !examples.has(id)) problems.push(`${id}: names no example folder (examples/${id})`);
+    const manifest = files.find((file) => file.path === `${id}/manifest.json`);
+    if (manifest) {
+      let named;
+      try { const value = JSON.parse(manifest.data.toString('utf8')); named = isObject(value) ? (typeof value.example === 'string' ? value.example : value.task) : undefined; } catch { named = undefined; }
+      if (named !== id) problems.push(`${id}: its manifest names the example ${JSON.stringify(named ?? null)}, not ${id}`);
+    }
     if ((sizes.get(id) ?? 0) > recordingLimit) problems.push(`${id}: is ${sizes.get(id)} bytes, over the ${recordingLimit} a recording may be`);
     if (poster === undefined) continue;
     const blob = files.find((file) => file.id === id && file.path.startsWith(`${id}/blobs/${poster}.`));
@@ -216,8 +226,13 @@ export function packGallery(dir, lock) {
   return writeTar(files);
 }
 
+/** The repository's example folders: the names a gallery id may take. */
+export const exampleFolders = (root = fileURLToPath(new URL('../../examples/', import.meta.url))) =>
+  new Set(readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name));
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [command, ...rest] = process.argv.slice(2);
+  const examples = exampleFolders();
   const fail = (lines) => { for (const line of lines) console.error(line); process.exit(1); };
   if (command === 'fetch' && (rest.length === 2 || (rest.length === 4 && rest[2] === '--from'))) {
     const [lockPath, dir, , from] = rest;
@@ -234,7 +249,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     }
     // Read whole only when it could be a gallery the limit allows: every entry adds a header and its padding.
     if (statSync(tar).size > 2 * GALLERY_LIMIT) fail([`${lock.asset} is ${statSync(tar).size} bytes, more than a gallery of ${GALLERY_LIMIT} could be`]);
-    const unpacked = unpackGallery(readFileSync(tar), lock, dir);
+    const unpacked = unpackGallery(readFileSync(tar), lock, dir, { examples });
     if (!from) rmSync(join(tar, '..'), { recursive: true, force: true });
     if (unpacked.length) fail(unpacked);
     console.log(`${dir}: ${lock.ids.length} recording(s) from ${lock.asset} (${lock.sha256.slice(0, 12)})`);
@@ -244,7 +259,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     if (problems) fail(problems.map((problem) => `${lockPath}: ${problem}`));
     const tar = packGallery(dir, lock);
     const packed = { ...lock, sha256: sha256(tar) };
-    const checked = galleryOf(tar, packed);
+    const checked = galleryOf(tar, packed, { examples });
     if (checked.problems) fail(checked.problems);
     writeFileSync(out, tar);
     writeFileSync(lockPath, `${JSON.stringify({ asset: lock.asset, sha256: packed.sha256, ids: lock.ids }, null, 2)}\n`);
