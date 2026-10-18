@@ -120,7 +120,7 @@ For an authoritative SOP, supply complete `rubricSections` during authoring and 
 <a id="transport"></a>
 ## Run an agent's tools where each step needs them
 
-[`@parcha/pi-transport`](../packages/pi-transport/README.md) (not yet published) runs a pi agent's tools on another machine: this machine, a Docker container, or a Daytona or Modal sandbox, behind one `Box` interface. The session, its store and its model calls stay with the host; only the tools go to the box. Use it when a step needs a machine the host is not: a GPU, more memory, or a sandbox apart from the host for code the agent writes and runs. Jev can choose the machine for each step from a one-line purpose you give each environment, and the host can keep a receipt for each box.
+[`@parcha/pi-transport`](../packages/pi-transport/README.md) (not yet published) runs a pi agent's tools on another machine: this machine, a Docker container, or a Daytona or Modal sandbox, behind one `Box` interface. The session, its store and its model calls stay with the host; only the tools go to the box. Use it when a step needs a machine the host is not: a GPU, more memory, or a sandbox apart from the host for code the agent writes and runs. Jev can choose the machine for each step from a one-line purpose you give each environment.
 
 This runs with no key and no Docker. The box is a directory on this machine, with no isolation:
 
@@ -140,7 +140,7 @@ console.log(ran.ok ? `exit ${ran.value.exitCode}` : ran.error);
 await box.destroy(BACKGROUND_CONTEXT);
 ```
 
-`boxEnv` is pi's `ExecutionEnv`, so a pi-durable Harness given it as `env` runs the agent's `read`, `write`, `edit` and `bash` in the box. For a container, use `dockerBoxes()` from `@parcha/pi-transport/box/docker`. The [package README](../packages/pi-transport/README.md) covers the providers, the config that sends each conversation's tools to an environment, Jev's placement, receipts, and a session that lives in a box.
+`boxEnv` is pi's `ExecutionEnv`, so a pi-durable Harness given it as `env` runs the agent's `read`, `write`, `edit` and `bash` in the box. For a container, use `dockerBoxes()` from `@parcha/pi-transport/box/docker`. The [package README](../packages/pi-transport/README.md) covers the providers, the config that sends each conversation's tools to an environment, and Jev's placement.
 
 <a id="primitives"></a>
 ## The primitives

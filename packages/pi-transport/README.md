@@ -17,18 +17,12 @@ stay with the host; only the tools go to the box.
   `read`, `write`, `edit` and `bash` run there. `transport(config, host)` does it for each conversation, from a config
   that names the environments.
 - **Jev places each step.** Give each environment a one-line `purpose`. At a user message or a turn's end the host asks
-  `jevPlacer`: Jev reads the step and those lines and says where it should run, and the host moves the session, or
-  points its tools, there. The host keeps each decision in the session (`recordPlacement`); Jev's key stays on the host.
-- **A receipt per box.** `boxReceipts` names each box by a label (`box-1`, `box-2`, never the provider's id) and writes
-  its receipt when it ends: the provider, the kind of box, when it started and ended, and its cost at the rates the
-  host passes. This package holds no price table; a box the host gives no rate gets no receipt.
-- **A session can live in a box too:** it moves between boxes, and comes back from a killed process or a lost box.
+  `jevPlacer`: Jev reads the step and those lines and says where it should run, and the host points its tools there.
 
 The reference below takes each part in turn: [a box](#a-box), [tools in a box](#hands-tools-run-in-a-box),
 [where tools run](#where-tools-run-is-a-line-of-config),
 [a store and a workspace](#moving-a-home-a-store-and-a-workspace),
-[a home](#a-home-the-session-runs-somewhere-and-can-stop-without-a-cut) (its link, its moves, its checkpoints, the
-record stream and [where a session runs](#where-a-session-runs-the-placer)),
+[a home](#a-home-the-session-runs-somewhere-and-can-stop-without-a-cut), [Jev's placement](#where-a-session-runs-the-placer),
 [ownership](#ownership-one-writer-per-session), [the box place](#a-sessions-place-in-a-box-place),
 [receipts](#what-a-box-cost-receipts), [a program kept alive in a box](#home-a-program-kept-alive-in-a-box) and
 [writing a provider](#writing-a-provider).
@@ -264,6 +258,8 @@ archive next to the tree it is packing (about the size of the files), and the ta
 tree it unpacks (the same again). A side that streams needs none. The host holds one part in memory at a time.
 
 ## A home: the session runs somewhere, and can stop without a cut
+
+A session can live in a box too: it moves between boxes, and comes back from a killed process or a lost box.
 
 `openHome(options)` is one place a session can run: its store, its workspace and pi's Harness over them. It does
 nothing by itself. A host gives it orders, in its own process today and over a link later:
@@ -648,6 +644,10 @@ It makes the box, and
 - `release()` closes the link and destroys every box the place made.
 
 ## What a box cost: receipts
+
+`boxReceipts` names each box by a label (`box-1`, `box-2`, never the provider's id) and writes its receipt when it
+ends: the provider, the kind of box, when it started and ended, and its cost at the rates the host passes. This
+package holds no price table; a box the host gives no rate gets no receipt.
 
 `boxReceipts({ prices, write })` keeps a ledger of the boxes its providers make: `ledger.wrap(provider)` is the same
 provider, and each box it makes gets one receipt when it ends, destroyed through it, found ended by `status`, or found
