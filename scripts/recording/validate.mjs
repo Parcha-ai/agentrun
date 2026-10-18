@@ -9,6 +9,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { TEXT_FILE, credentialIn, credentialInFile, credentialInValue } from '../../packages/reference/src/scan.ts';
+import { artifactProblems, readFile, readsAs } from '../../packages/reference/src/artifact.ts';
 
 export const FORMAT = 'agentrun.recording/1';
 export const SOURCES = ['workflow', 'pi', 'browser', 'vision', 'transport', 'host'];
@@ -45,7 +46,16 @@ export function manifestProblems(manifest) {
   need(isObject(manifest.source) && typeof manifest.source.run === 'string' && SHA256.test(manifest.source.store_sha256 ?? ''), 'source needs run and a 64-hex store_sha256');
   if (manifest.providers !== undefined) need(manifest.providers === 'real' || manifest.providers === 'scripted', `providers is ${JSON.stringify(manifest.providers)}, expected real or scripted`);
   if (manifest.result !== undefined) need(isObject(manifest.result) && SHA256.test(manifest.result.blob ?? '') && typeof manifest.result.title === 'string', 'result needs a 64-hex blob and a title');
+  if (manifest.artifact !== undefined) problems.push(...artifactProblems(manifest.artifact).map(what => `manifest.${what}`));
   return problems;
+}
+
+/** The look keys a line files: a live `LookEvent` (`data.record.facts.key`) and a `vision.*` document's `looks` (`data.value.looks[].record.facts.key`). */
+export function lookKeysOf(data) {
+  const keyOf = record => (isObject(record) && isObject(record.facts) && typeof record.facts.key === 'string' ? [record.facts.key] : []);
+  if (!isObject(data)) return [];
+  const filed = isObject(data.value) && Array.isArray(data.value.looks) ? data.value.looks.flatMap(filing => (isObject(filing) ? keyOf(filing.record) : [])) : [];
+  return [...keyOf(data.record), ...filed];
 }
 
 /** The problems with one parsed line, as strings (not its place among the others). */
@@ -116,6 +126,23 @@ const blobFiles = dir => {
 };
 
 /** Every problem in the recording at `dir`, in file order: `{ where, line?, message }`. */
+/** What the report's files do (draft 41): each blob is present, hashes to its name and carries its path's extension; every page is read with the parser: no script, no on* attribute, no data: URL, no iframe, object, embed, form, base or meta refresh, every load inside `files` (a relative link to a file the report does not hold goes nowhere and is allowed), and each `data-look` names a look the run filed. */
+function artifactFileProblems(artifact, blobs, lookKeys, add, checkBlob) {
+  const where = 'manifest.json';
+  for (const [path, hash] of Object.entries(artifact.files)) {
+    checkBlob(hash, where, undefined);
+    const file = blobs.get(hash);
+    if (!file) continue;
+    const extension = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
+    if (!file.toLowerCase().endsWith(`.${extension}`)) add(where, `artifact file ${path} is blob ${hash}, which does not carry the extension .${extension}`);
+    if (!readsAs(path)) continue;
+    const reading = readFile(path, readFileSync(file, 'utf8'));
+    for (const message of reading.problems) add(where, `artifact page ${path} ${message}`);
+    for (const target of reading.loads) if (!(target in artifact.files)) add(where, `artifact page ${path} reaches ${target}, which is not in files`);
+    for (const key of reading.looks) if (!lookKeys.has(key)) add(where, `artifact page ${path} cites look ${JSON.stringify(key.slice(0, 80))}, which the run did not file`);
+  }
+}
+
 export function validateRecording(dir) {
   const problems = [];
   const add = (where, message, line) => problems.push({ where, ...(line === undefined ? {} : { line }), message });
@@ -163,6 +190,7 @@ export function validateRecording(dir) {
   const records = [];
   const drops = [];
   let processes = 0;
+  const lookKeys = new Set();
   const liveGenerations = new Set();
   lines.forEach((text, index) => {
     const line = index + 1;
@@ -223,8 +251,10 @@ export function validateRecording(dir) {
       if (before !== undefined && event.seq <= before) add('events.jsonl', `seq ${event.seq} does not increase past ${before} in ${event.gen === undefined ? 'the supervisor\'s lines' : `generation ${event.gen}`}`, line);
       lastSeq.set(space, event.seq);
     }
+    for (const key of lookKeysOf(event.data)) lookKeys.add(key);
     for (const hash of event.blobs ?? []) checkBlob(hash, 'events.jsonl', line);
   });
+  if (isObject(manifest?.artifact) && artifactProblems(manifest.artifact).length === 0) artifactFileProblems(manifest.artifact, blobs, lookKeys, add, checkBlob);
   // A restore or a move names the head of the store its target generation opened, anchored on that generation's snapshot at open
   // (the store's latest commit then). A generation with no snapshot (a bare export) skips the continuity check. A restore's
   // snapshot may be at its head itself when pi committed once at open (draft 37): its first new commit is then head + 1.

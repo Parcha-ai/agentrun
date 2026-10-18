@@ -37,7 +37,7 @@ export function credentialInValue(value: unknown): string | undefined {
 }
 
 /** The files a scan reads as text, by extension; the others (images, video) are kept whole and not read. */
-export const TEXT_FILE = /\.(?:json|jsonl|txt|md|html|csv|svg|xml|yaml|yml|log)$/i;
+export const TEXT_FILE = /\.(?:json|jsonl|txt|md|html|css|csv|svg|xml|yaml|yml|log)$/i;
 
 /** The credential shape in a file's text: raw, then decoded when the whole text is JSON, whatever its extension (an escape
  *  hides one in any text, `\u0073k-`); and, for JSON lines, each line decoded too, since a file of lines is not one JSON

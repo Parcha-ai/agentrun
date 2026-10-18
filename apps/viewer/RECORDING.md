@@ -32,6 +32,8 @@ type Manifest = {
                                       //   section 6's cost, so usd is null when any part is
   source: { run: string; store_sha256: string };   // the run record this was cut from
   result?: { blob: string; title: string };         // the payoff, e.g. the report
+  artifact?: { title: string; entry: string; files: Record<string, string> };
+                                      // the agent's report page (7.1): path under report/ -> the blob's SHA-256
   chapters?: { title: string; at: { gen: number; commit: number }; focus?: string }[];
                                       // jump points: the screen just after that commit (gen and commit, because a
                                       //   restore reuses commit numbers, 3.2); focus: an execution path prefix
@@ -223,3 +225,11 @@ snapshots included. A lost branch (3.2) is events, not state: the per-generation
 - Blobs are kept whole. A recording too large for a static host replaces its `frame` lines with `frame.track` lines
   (a WebM per session), and only then drops frames; it never drops durable lines.
 
+### 7.1 The report (`manifest.artifact`)
+
+A run may end in a page the agent wrote: `report/index.html` in its work directory, and the files the page shows beside it.
+
+- **The recorder takes the entry's closure**, not the folder: the entry, and every file it reaches through `src`, `srcset`, `poster`, a stylesheet's `href`, CSS `url()` and `@import`, and a relative `<a href>` to a file of the folder, transitively. Each is a blob (`blobs/<sha256>.<the path's extension>`), kept byte for byte, and `files` maps its path under `report/` to the hash. A file nothing reaches (a killed attempt's leftover) is not taken. A link to a file the folder does not hold goes nowhere and is left out; a load of one is refused.
+- **What a page may not do** (the recorder, the validator and the gate read it with one HTML parser): no `<script>`, no `on*` attribute, no `data:` or `javascript:` URL, no `<iframe>`, `<object>`, `<embed>`, `<form>`, `<base>`, or meta refresh; every load is a path in `files`. A link may go out (`https://`) but loads nothing.
+- **The validator** checks `entry` is in `files` and ends in `.html`; every path is relative POSIX (no leading `/`, no `..`, no `\`, no scheme) and unique ignoring case; every blob is present, hashes to its name and carries its path's extension; the page rules above; and each `data-look` names a look the run filed (`record.facts.key` of a `LookEvent`, or of a `vision.*` document's `looks`).
+- **Machine values**: the recorder's scan reads every artifact blob's bytes for the run's host name, user name, home directory and run paths, and the gate repeats the machine-path scan on every blob that is not text.
