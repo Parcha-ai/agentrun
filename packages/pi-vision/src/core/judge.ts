@@ -59,7 +59,7 @@ function checked(input: unknown): JudgeRequest {
   const questions = object(r.questions) ? Object.values(r.questions) : [];
   const said = JSON.stringify(r.questions ?? null);
   // A text judgment: no path, image, fragment or example, no box question, and a state that carries the text.
-  const bare = [r.images, r.paths, r.fragments, r.examples].every((v) => v === undefined || (Array.isArray(v) ? v.length === 0 : object(v) && Object.keys(v).length === 0));
+  const bare = [r.images, r.paths, r.fragments].every((v) => v === undefined || (Array.isArray(v) && v.length === 0)) && (r.examples === undefined || (object(r.examples) && Object.keys(r.examples).length === 0));
   const text = bare && object(r.state) && Object.keys(r.state).length > 0 && questions.every((q) => object(q) && q.type !== "box" && q.image === undefined);
   if (!(namesMedia(r) || text) || !questions.length || !questions.every((q) => object(q) && TYPES.includes(q.type as string) && (q.image === undefined || (Number.isInteger(q.image) && (q.image as number) >= 0 && (q.image as number) < count)))
     || !(r.state === undefined || (object(r.state) && !("images" in r.state))) || !(r.examples === undefined || (object(r.examples) && Object.keys(r.examples).every((ref) => said.includes(ref))))) {
