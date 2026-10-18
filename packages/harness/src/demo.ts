@@ -38,7 +38,7 @@ import { keepLooks, shownShots } from './looks.ts';
 import { transcriberFromEnv } from './transcriber.ts';
 import type { LookRecord } from '@parcha/pi-vision';
 import { localPlace, type Exit, type Place, type Runner } from './place.ts';
-import { checkModelKeys, checkPrograms, refuseJudgeCaps, inputOf, declaredEnv, childPlansOf, chooseBrowser, effectiveBoxes, killsOf, maxUsdOf, plansOf, type ChildPlan, type DemoSpec } from './demo-spec.ts';
+import { checkModelKeys, checkPrograms, refuseJudgeCaps, inputOf, declaredEnv, childPlansOf, chooseBrowser, effectiveBoxes, handoffPlansOf, handoffsOf, killsOf, maxUsdOf, plansOf, type ChildPlan, type DemoSpec } from './demo-spec.ts';
 import { cost } from './fold.ts';
 import { checkItems, fetchSources, missingCommitted, readSources, withSources } from './sources.ts';
 import { localHost, type BrowserPlane, type Fakes, type Host, type RunPlace } from './host.ts';
@@ -109,7 +109,7 @@ export type DemoResult = {
   unlanded: string[];
 };
 
-const FLAGS = { child: { type: 'boolean' }, live: { type: 'boolean' }, kill: { type: 'boolean' }, debug: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, 'local-chrome': { type: 'boolean' }, 'fetch-sources': { type: 'boolean' }, cache: { type: 'string' }, dir: { type: 'string' }, json: { type: 'boolean' }, provider: { type: 'string' }, model: { type: 'string' }, 'eyes-model': { type: 'string' }, 'see-also': { type: 'string', multiple: true }, 'operator-kill': { type: 'string' } } as const;
+const FLAGS = { child: { type: 'boolean' }, live: { type: 'boolean' }, kill: { type: 'boolean' }, handoff: { type: 'boolean' }, debug: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, 'local-chrome': { type: 'boolean' }, 'fetch-sources': { type: 'boolean' }, cache: { type: 'string' }, dir: { type: 'string' }, json: { type: 'boolean' }, provider: { type: 'string' }, model: { type: 'string' }, 'eyes-model': { type: 'string' }, 'see-also': { type: 'string', multiple: true }, 'operator-kill': { type: 'string' } } as const;
 /** The repository a demo lives in: `options.root`, else the nearest folder above the demo's own file that holds a
  *  `package.json` or a `.git`. Never this package's own location, which is inside `node_modules` once installed. */
 function rootOf(options: { root?: string; self: string }): string {
@@ -383,7 +383,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   refuseJudgeCaps(spec);
   // A place of the caller's runs the job somewhere else, with that machine's programs; the default place runs it here.
   if (!options.place) checkPrograms(spec, live);
-  const plans = values.kill ? plansOf(killsOf(spec)) : [];
+  // `--kill` runs the spec's kills; `--handoff` its handoffs (a process releases the run cleanly and the next opens it). A spec that has both checks them against each other at load.
+  const handoffs = handoffsOf(spec);
+  const plans = [...(values.kill ? plansOf(killsOf(spec)) : []), ...(values.handoff ? handoffPlansOf(handoffs) : [])];
   const maxUsd = maxUsdOf(values['max-usd'], spec);
   // The operator's control file: a path the caller names (`--operator-kill`), which must not exist yet (a stale one would kill the first process).
   const operatorKill = values['operator-kill'] ? resolve(values['operator-kill']) : undefined;
@@ -458,6 +460,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   // (RECORDING.md's host row). Read at the boundaries (a runner's start and exit, a kill, a result) and on a slow tick while a runner runs; a place without `status()` writes none, and a reading never fails the run.
   let lastRunRecord = '';
   let lastGeneration: number | undefined;
+  // What the last reading of run.json said: the run's status and the label of the holder it last named (a released run names none), for a handoff's line.
+  let lastRunStatus: string | undefined;
+  let lastHolderLabel: string | undefined;
   let currentGen = 0;
   const delegationSeen = new Map<string, string>();
   const hostLabels = new Map<string, string>();
@@ -483,6 +488,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
         const record = status?.record;
         if (record && typeof record.run === 'string' && Number.isInteger(record.generation)) {
           lastGeneration = record.generation as number;
+          lastRunStatus = typeof record.status === 'string' ? record.status : undefined;
           const key = JSON.stringify([record.status, record.generation, record.holder, record.sealedSeq]);
           if (key !== lastRunRecord) {
             lastRunRecord = key;
@@ -491,6 +497,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
             const holder = record.holder && typeof record.holder === 'object' ? (record.holder as Record<string, unknown>) : undefined;
             const kept = (source: Record<string, unknown>, names: readonly string[]) => Object.fromEntries(names.filter((name) => source[name] !== undefined).map((name) => [name, source[name]]));
             const safeHolder = holder ? { ...kept(holder, ['driver', 'pid', 'since']), ...(typeof holder.host === 'string' ? { host: labelOf(hostLabels, 'host', holder.host) } : {}), ...(typeof holder.bootId === 'string' ? { bootId: labelOf(bootLabels, 'boot', holder.bootId) } : {}) } : undefined;
+            if (typeof safeHolder?.host === 'string') lastHolderLabel = safeHolder.host;
             const detail = record.detail === undefined || record.detail === null ? undefined : plainText(record.detail);
             supervisor.host('run.json', { gen: record.generation, ...kept(record, ['run', 'status', 'generation', 'sealedSeq', 'wakeAt', 'heartbeatAt', 'updatedAt']), ...(safeHolder ? { holder: safeHolder } : {}), ...(detail ? { detail } : {}) });
           }
@@ -656,6 +663,16 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       if (followError) break;
       processes.push(result);
       if (killFailed || signalsFailed || (killed && killed.label === 'max-usd')) break;
+      // A handoff: the process took the planned crossing, released the run (the instance drained: sealed `sleeping` or `paused`, claim released) and exited 0. Nothing was killed, so no kill line: one `handoff` line, and the
+      // next process is started through the place, not recovered from a loss. A process that took the crossing but did not leave the run sealed that way is not a handoff; it falls to the cases below (a handoff that did not land is reported as one that did not).
+      const handedOff = !killed && plan.run && !('storm' in plan.run) && plan.run.handoff ? rows<Crossing>(log).find((crossing) => crossing.handoff) : undefined;
+      if (handedOff && plan.run && !('storm' in plan.run) && result.exit === 0 && (lastRunStatus === 'sleeping' || lastRunStatus === 'paused')) {
+        supervisor.host('handoff', { point: plan.run.point, n: handedOff.n, why: plan.run.why, ...(lastHolderLabel ? { from: lastHolderLabel } : {}) });
+        // The place reads a run left sealed `sleeping` as a failed outcome; this process did what it was asked: it released the run.
+        if (result.outcome) result.outcome = { ...result.outcome, status: 'released' };
+        previous = undefined;
+        continue;
+      }
       // A tool kill of an attempt that ended in a process kill and did not fire never will (the plan is consumed): it is reported, not carried off with the attempt.
       const missed = () => { for (const entry of notLanded(plan.tools, log)) unlanded.push('point' in entry ? entry.point : `storm (gap ${entry.gapMs} ms)`); };
       if (killed) {

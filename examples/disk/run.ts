@@ -10,7 +10,10 @@ import { job } from './job.ts';
 
 const raw = JSON.parse(readFileSync(new URL('./demo.json', import.meta.url), 'utf8'));
 // The spec's kill is the box going away, which a disk place can do (the sandbox is deleted). The local place has no box of its own: on fakes the same crossing ends the process.
-const spec = process.argv.includes('--live') ? raw : { ...raw, kills: raw.kills.map(({ kind, ...kill }: { kind?: string }) => kill) };
+// The spec has the kill beat and the handoff beat at one crossing, which the entry refuses: a run takes the one its flag asks for (--handoff: the process releases the run cleanly and a second one opens it; no kill).
+const { handoffs, ...killing } = raw;
+const { kills, kill, ...handing } = raw;
+const spec = process.argv.includes('--handoff') ? handing : process.argv.includes('--live') ? killing : { ...killing, kills: killing.kills.map(({ kind, ...entry }: { kind?: string }) => entry) };
 // `--app` takes a file: the reference package's `./child-app` export, resolved.
 const childApp = fileURLToPath(import.meta.resolve('@parcha/agentrun-reference/child-app'));
 

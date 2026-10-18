@@ -97,3 +97,36 @@ test('the template: demo.json names the claim, the kill and the panels, SETUP-PR
   assert.ok(readme.includes('npm run demo:disk') && readme.includes('-- --live'));
   assert.ok(existsSync(new URL('./disk/run.ts', import.meta.url)));
 });
+
+test('beat 4, a handoff: the run is released cleanly at the fifth paid call and a second process opens it from the disk, with no kill anywhere', { timeout: 200_000 }, async (t) => {
+  const root = await scratch(t);
+  const recording = join(root, 'recording');
+  const dir = join(root, 'run');
+  const result = JSON.parse(demo(['--handoff', '--json', '--record', recording, '--dir', dir]).stdout);
+  // Two processes, the first one ended by itself (exit 0, no signal), the second delivered.
+  assert.deepEqual(result.processes.map((process) => [process.exit, process.signal]), [[0, null], [0, null]]);
+  assert.deepEqual(result.processes.map((process) => process.outcome.status), ['released', 'complete']);
+  assert.deepEqual(result.kills, []);
+  assert.deepEqual(validateRecording(recording), []);
+  const lines = readEvents(recording);
+  const host = lines.filter((line) => line.source === 'host');
+  assert.deepEqual(host.filter((line) => ['kill', 'kill.failed', 'kill.request.ignored', 'revoke', 'fenced', 'signals.failed'].includes(line.kind)), [], 'a handoff writes no kill, revoke or fence');
+  assert.equal(host.filter((line) => line.kind === 'process.started').length, 2);
+  const handoffs = host.filter((line) => line.kind === 'handoff');
+  assert.equal(handoffs.length, 1);
+  assert.deepEqual([handoffs[0].data.point, handoffs[0].data.n], ['effect.kept charge', 5]);
+  assert.match(handoffs[0].data.from, /^host-\d+$/, 'the releasing holder is a label, never a machine');
+  // The disk's own record: sealed sleeping by the first holder, then done by the second at generation 2.
+  const statuses = host.filter((line) => line.kind === 'run.json').map((line) => line.data.status);
+  assert.ok(statuses.includes('sleeping'), `the run was sealed sleeping between the two processes: ${statuses}`);
+  assert.equal(statuses.at(-1), 'done');
+  const counted = fold(lines);
+  assert.deepEqual([counted.processes, counted.kills, counted.unknown, counted.measured], [2, 0, 0, true]);
+  assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).generation, 2);
+  // The release is at the planned crossing: five charges by the first process, the other five by the second, none twice.
+  assert.equal(charges(dir).length, 10);
+  assert.deepEqual(Object.values(Object.groupBy(charges(dir), (row) => row.incarnation)).map((group) => group.length), [5, 5]);
+  assert.equal(result.record.charged, 10);
+  assert.deepEqual(result.record.receipts.map((receipt) => receipt.invoice), INVOICES);
+  assert.equal(JSON.stringify(lines).includes('kill'), false, 'the word kill is nowhere in a handoff recording');
+});
