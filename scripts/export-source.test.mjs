@@ -159,6 +159,23 @@ test('formal model sources are archived and scanned as text; an unreviewed file 
   await assert.rejects(f.run(), /Unreviewed source-export file type: spec\/model\/Model\.toolbox/);
 });
 
+test('a PDF is archived only when one line of ASSETS.md names it with its SHA-256', async t => {
+  const f = await fixture(t);
+  const pdf = '%PDF-1.4\n% fixture\n%%EOF\n';
+  await f.write('examples/demo/sample.pdf', pdf);
+  await assert.rejects(f.run(), /Unreviewed PDF: examples\/demo\/sample\.pdf is not in ASSETS\.md with its SHA-256/);
+  await f.write('ASSETS.md', `| \`sample.pdf\` | a fixture | \`${'0'.repeat(64)}\` |\n`);
+  await assert.rejects(f.run(), /Unreviewed PDF/, 'its name with another hash is not its entry');
+  const other = '%PDF-1.4\n% another fixture\n%%EOF\n';
+  await f.write('ASSETS.md', `| \`sample.pdf\` | a fixture | \`${hash(other)}\` |\n| \`other.pdf\` | another | \`${hash(pdf)}\` |\n`);
+  await assert.rejects(f.run(), /Unreviewed PDF/, 'its name on one line and its hash on another line is not its entry');
+  await f.write('ASSETS.md', `| \`sample.pdf\` | a fixture | \`${hash(pdf)}\` |\n`);
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok((await f.listing()).includes('agentrun-dsl-source/examples/demo/sample.pdf\n'));
+  assert.equal(receipt.files.find(file => file.path === 'examples/demo/sample.pdf')?.kind, 'binary');
+});
+
 test('the code owners file is archived and scanned as text; another extensionless .github file still stops the export', async t => {
   const f = await fixture(t);
   await f.write('.github/CODEOWNERS', '* @example-owner\n');
@@ -229,4 +246,22 @@ test('the scan stays linear on a long line of host characters and still finds an
   await assert.rejects(f.run(), error => /unreviewed finding/.test(error.stderr));
   const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
   assert.ok(receipt.findings.some(finding => finding.path === 'docs/host.md' && finding.rule === 'internal_domain'));
+});
+
+test('vendored code an app keeps is listed apart, with its source, licenses and size, and a license the inventory does not take is flagged', async t => {
+  const f = await fixture(t);
+  const manifest = (license) => JSON.stringify({ name: 'some-lib', version: '1.2.3', license: 'MIT', source: 'https://registry.example.org/some-lib-1.2.3.tgz',
+    files: [{ path: 'lib.min.mjs', from: 'build/lib.min.mjs', license, bytes: 10, sha256: '0'.repeat(64) }, { path: 'LICENSE.txt', from: 'LICENSE', license: 'MIT', bytes: 5, sha256: '1'.repeat(64) }] });
+  await f.run('--inventory-only');
+  const without = await readFile(join(f.root, 'docs/dependencies.md'), 'utf8');
+  assert.doesNotMatch(without, /Vendored code/, 'no section when no app vendors code');
+  await f.write('apps/viewer/vendor/some-lib/vendored.json', manifest('MIT AND BSD-3-Clause'));
+  await f.run('--inventory-only');
+  const inventory = await readFile(join(f.root, 'docs/dependencies.md'), 'utf8');
+  assert.match(inventory, /## Vendored code/);
+  assert.match(inventory, /\| some-lib \| 1\.2\.3 \| BSD-3-Clause, MIT \| apps\/viewer\/vendor\/some-lib \| https:\/\/registry\.example\.org\/some-lib-1\.2\.3\.tgz \| 15 \|/);
+  assert.match(inventory, /No missing, restrictive, reciprocal, or unrecognized license identifiers/);
+  await f.write('apps/viewer/vendor/some-lib/vendored.json', manifest('GPL-3.0-only'));
+  await f.run('--inventory-only');
+  assert.match(await readFile(join(f.root, 'docs/dependencies.md'), 'utf8'), /\*\*some-lib@1\.2\.3:\*\* GPL-3\.0-only — Restrictive or reciprocal metadata needs release-owner review\./);
 });

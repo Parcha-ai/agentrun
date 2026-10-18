@@ -245,3 +245,11 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | yaml | 2.9.0 | ISC | pi, pi-agent-learn, pi-browser, pi-git-remote, reference | no | 1 |
 | zod | 4.4.3 | MIT | pi-browser, reference | no | 2 |
 | zod | 4.6.5 | MIT | pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, reference, serve | no | 1 |
+
+## Vendored code
+
+Release files kept in the repository rather than installed, so not in `package-lock.json`. Each folder's `vendored.json` lists every file with the path it has in its package, its license, its size and its SHA-256.
+
+| Package | Version | Licenses | Where | Source | Bytes |
+| --- | --- | --- | --- | --- | --- |
+| pdfjs-dist | 6.4.299 | Apache-2.0, BSD-2-Clause, BSD-3-Clause | apps/viewer/vendor/pdfjs | https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-6.4.299.tgz | 2348024 |
