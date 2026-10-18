@@ -521,16 +521,17 @@ export function proxyBoxes(names: readonly string[], options?: { readonly resume
 	};
 	/**
 	 * Tell the host what the call holds, so it lets those frames go and reads on: every ACK_EVERY frames or half a window
-	 * of output, and only while what the app has not read is under the window. An app that does not read its program's
-	 * output stops the acknowledgements, so the host stops reading and the program waits on its full pipe.
+	 * of output (`now`: at once), and only while what the app has not read is under the window. An app that does not
+	 * read its program's output stops the acknowledgements, so the host stops reading and the program waits on its full
+	 * pipe. An acknowledgement counts only once the link took it: one that cannot leave is made when the link is back.
 	 */
-	const acknowledge = (call: OpenCall) => {
-		if (!open.has(call.id) || call.seq <= call.lastAcked) return;
+	const acknowledge = (call: OpenCall, now = false) => {
+		if (send === undefined || !open.has(call.id) || call.seq <= call.lastAcked) return;
 		if ((call.unread?.() ?? 0) >= STREAM_WINDOW_BYTES) return;
-		if (call.seq - call.lastAcked < ACK_EVERY && call.bytesSinceAck < STREAM_WINDOW_BYTES / 2) return;
+		if (!now && call.seq - call.lastAcked < ACK_EVERY && call.bytesSinceAck < STREAM_WINDOW_BYTES / 2) return;
+		if (send({ t: "box-ack", id: call.id, seq: call.seq }) !== true) return;
 		call.lastAcked = call.seq;
 		call.bytesSinceAck = 0;
-		send?.({ t: "box-ack", id: call.id, seq: call.seq });
 	};
 
 	/** One call with one answer. */
@@ -760,6 +761,10 @@ export function proxyBoxes(names: readonly string[], options?: { readonly resume
 				// The host answers with what was missed, or with box-unknown when the call never reached it.
 				next({ t: "box-resume", id: call.id, after: call.seq });
 				for (const pending of call.pending.values()) next(pending);
+				// An acknowledgement the link lost on its way down is said again, and what the app read while the link was
+				// down is acknowledged now: the host may be waiting at its window for it.
+				if (call.lastAcked > 0) next({ t: "box-ack", id: call.id, seq: call.lastAcked });
+				acknowledge(call, true);
 			}
 		},
 		down(reason) {

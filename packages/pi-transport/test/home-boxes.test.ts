@@ -182,6 +182,33 @@ describe("the host's box proxy", () => {
 		}
 	}, 60_000);
 
+	it("goes on after a link that dropped while the app read what the host had sent: what it read is acknowledged once the link is back", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-transport-boxes-"));
+		const made = served(root);
+		try {
+			const box = getOrThrow(await made.provider.create({ maxLifetimeMs: 60_000 }, context));
+			const program = getOrThrow(
+				await box.exec(["sh", "-c", `head -c ${16 * 1024 * 1024} /dev/zero`], undefined, context),
+			);
+			// Nothing read: the host sends its window and waits for an acknowledgement.
+			await new Promise((resolve) => setTimeout(resolve, 1_000));
+			made.link.close("the box's network dropped");
+			// The app reads what came while the link is down: its acknowledgement cannot leave.
+			const read = Promise.all([readStream(program.stdout), readStream(program.stderr)]);
+			await new Promise((resolve) => setTimeout(resolve, 500));
+			const again = connect(made.proxy, made.server);
+			const outcome = await Promise.race([
+				read.then(async ([stdout]) => ({ bytes: stdout.byteLength, exit: getOrThrow(await program.wait()) })),
+				new Promise((resolve) => setTimeout(() => resolve("stuck at the window"), 20_000)),
+			]);
+			expect(outcome).toEqual({ bytes: 16 * 1024 * 1024, exit: 0 });
+			getOrThrow(await box.destroy(context));
+			again.close("done");
+		} finally {
+			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+		}
+	}, 60_000);
+
 	it("paces a program by what the app reads: unread output blocks it as a full pipe would", async () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-transport-boxes-"));
 		const made = served(root);
