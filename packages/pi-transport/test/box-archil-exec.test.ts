@@ -383,6 +383,102 @@ describe("archil exec boxes", () => {
 		}
 	});
 
+	it("ends a timed-out command at the caller's own deadline and does not stall on a kill it cannot make", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const env = boxEnv(box);
+			const started = Date.now();
+			const ran = await env.exec("sleep 6; echo late > late.txt", { timeout: 1 }, context);
+			expect(Date.now() - started).toBeLessThan(4_000);
+			expect(ran.ok).toBe(false);
+			if (!ran.ok) expect((ran.error as { killUnconfirmed?: boolean }).killUnconfirmed).toBeUndefined();
+			await new Promise((resolve) => setTimeout(resolve, 600));
+			expect(existsSync(join(fake.root, "boxes", box.id, "late.txt"))).toBe(false);
+		} finally {
+			close();
+		}
+	});
+
+	it("does not run a command later that it reported as not started", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const env = boxEnv(box, { opTimeoutMs: 500 });
+			const first = run(box, ["sleep", "2"]);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const second = await env.exec("echo ran > ran.txt", { timeout: 1 }, context);
+			expect(second.ok).toBe(false);
+			await first;
+			await run(box, ["true"]);
+			expect(existsSync(join(fake.root, "boxes", box.id, "ran.txt"))).toBe(false);
+		} finally {
+			close();
+		}
+	});
+
+	it("keeps every append of concurrent appends, and an append made while a command writes the same file", async () => {
+		const { provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const env = boxEnv(box);
+			await Promise.all(["A\n", "B\n", "C\n"].map((piece) => env.appendFile("c.txt", piece, context)));
+			const joined = await env.readTextFile("c.txt", context);
+			expect(joined.ok && joined.value.split("\n").sort().join("")).toBe("ABC");
+			expect((await env.writeFile("log.txt", "base\n", context)).ok).toBe(true);
+			const command = env.exec("sleep 1; echo from-cmd >> log.txt", undefined, context);
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			expect((await env.appendFile("log.txt", "from-append\n", context)).ok).toBe(true);
+			expect((await command).ok).toBe(true);
+			const log = await env.readTextFile("log.txt", context);
+			expect(log.ok && log.value).toBe("base\nfrom-cmd\nfrom-append\n");
+		} finally {
+			close();
+		}
+	});
+
+	it("keeps the complete output of a command in a file inside the workspace when it spills", async () => {
+		const { provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const env = boxEnv(box);
+			const ran = await env.exec("seq 1 3000", { spill: { afterBytes: 100, afterLines: 10 } }, context);
+			expect(ran.ok).toBe(true);
+			if (ran.ok) {
+				const spill = (ran.value as { spillPath?: string }).spillPath;
+				expect(spill).toBeDefined();
+				const whole = await env.readTextFile(spill as string, context);
+				expect(whole.ok && whole.value.trim().split("\n").length).toBe(3000);
+			}
+		} finally {
+			close();
+		}
+	});
+
+	it("reads exact bytes through a binary reader, refuses bytes outside the workspace, and writes nothing for an aborted call", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const env = boxEnv(box);
+			const binary = new Uint8Array([0, 255, 254, 128]);
+			expect((await env.writeFile("b.bin", binary, context)).ok).toBe(true);
+			const reader = await env.openBinaryReader("b.bin", undefined, context);
+			if (!reader.ok) throw reader.error;
+			const piece = await reader.value.read(0, 10, context);
+			expect(piece.ok && new Uint8Array(piece.value)).toEqual(binary);
+			const outside = await env.readBinaryFile("/tmp/x.bin", context);
+			expect(outside.ok).toBe(false);
+			if (!outside.ok) expect(outside.error.code).not.toBe("unknown");
+			const cancel = withCancel(context);
+			cancel.cancel();
+			const aborted = await env.writeFile("never.txt", "x", cancel.context);
+			expect(aborted.ok).toBe(false);
+			expect(existsSync(join(fake.root, "boxes", box.id, "never.txt"))).toBe(false);
+		} finally {
+			close();
+		}
+	});
+
 	it("is gone for an upload or a download from a handle whose box another client ended, queued or not", async () => {
 		const { fake, provider, close } = rig();
 		try {

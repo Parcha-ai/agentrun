@@ -174,6 +174,9 @@ const TEMP_ROOT = 't=$TMPDIR; [ -n "$t" ] || t=/tmp';
 const STATE_ROOT = `${TEMP_ROOT}; s=$t/.pi-transport`;
 const TEMP_DIR_SCRIPT = `${TEMP_ROOT}; mktemp -d "$t/$1XXXXXX"`;
 const TEMP_FILE_SCRIPT = `${TEMP_ROOT}; mktemp --suffix="$2" "$t/$1XXXXXX"`;
+const TEMP_HERE_ROOT = 't="$1/.pi-transport-tmp"; mkdir -p -- "$t" || exit 6';
+const TEMP_DIR_HERE_SCRIPT = `${TEMP_HERE_ROOT}; mktemp -d "$t/$2XXXXXX"`;
+const TEMP_FILE_HERE_SCRIPT = `${TEMP_HERE_ROOT}; mktemp --suffix="$3" "$t/$2XXXXXX"`;
 const HOME_SCRIPT = 'printf %s "$HOME"';
 /**
  * One snapshot of every watch target: four arguments each (path, `1` for recursive, `1` to skip hidden names, the
@@ -456,6 +459,8 @@ class BoxEnv implements ExecutionEnv {
 	readonly #boxMaxExecMs: number | undefined;
 	/** A box that keeps no program between calls takes no stdin: its files go through `upload` and `download`. */
 	readonly #noStdin: boolean;
+	/** Whole-file writes of one environment, one after another: a read-modify-write must not see another's old copy. */
+	#stores: Promise<unknown> = Promise.resolve();
 	readonly #statusTimeoutMs: number;
 	readonly #watchIntervalMs: number;
 	readonly #maxReaderBytes: number;
@@ -504,17 +509,46 @@ class BoxEnv implements ExecutionEnv {
 
 	async readBinaryFile(path: string, context: Context): Promise<Result<Uint8Array, FileError>> {
 		if (this.#noStdin) {
-			// A box that answers with text only would replace the bytes of a binary file: its bytes come from `download`.
-			const resolved = await this.#resolve(path, context);
-			if (!resolved.ok) return resolved;
-			const got = await this.#box.download([resolved.value], context);
-			if (got.ok) return ok(got.value[0]?.bytes ?? new Uint8Array());
-			if (got.error.code !== "invalid") return err(this.#fileError(got.error, resolved.value));
+			const fetched = await this.#fetch(path, context);
+			if (!fetched.ok) return fetched;
+			if (fetched.value === undefined) {
+				return err(
+					new FileError(
+						"not_supported",
+						"a box that answers with text cannot return the bytes of a file outside its workspace",
+						path,
+					),
+				);
+			}
+			return ok(fetched.value);
 		}
 		return this.#file(path, READ_SCRIPT, [], undefined, context, ({ stdout }) => stdout);
 	}
 
+	/**
+	 * A file of a box with no stdin, as `download` gives it: its exact bytes, or undefined for a path outside the box's workspace (only `exec` reaches it,
+	 * and as text). A box that answers with text only would replace the bytes of a binary file.
+	 */
+	async #fetch(path: string, context: Context): Promise<Result<Uint8Array | undefined, FileError>> {
+		if (isAborted(context)) return err(new FileError("aborted", "aborted", path));
+		const resolved = await this.#resolve(path, context);
+		if (!resolved.ok) return resolved;
+		const got = await this.#box.download([resolved.value], context);
+		if (got.ok) return ok(got.value[0]?.bytes ?? new Uint8Array());
+		if (got.error.code === "invalid") return ok(undefined);
+		return err(await this.#fileFailure(got.error, resolved.value, context));
+	}
+
 	async readTextFile(path: string, context: Context): Promise<Result<string, FileError>> {
+		if (this.#noStdin) {
+			const fetched = await this.#fetch(path, context);
+			if (!fetched.ok) return fetched;
+			if (fetched.value !== undefined)
+				return ok(new TextDecoder("utf-8", { ignoreBOM: true }).decode(fetched.value));
+			// Outside the workspace: the text exec gives, as the shell prints it.
+			const text = await this.#file(path, READ_SCRIPT, [], undefined, context, ({ stdout }) => stdout);
+			return text.ok ? ok(new TextDecoder("utf-8", { ignoreBOM: true }).decode(text.value)) : text;
+		}
 		const read = await this.readBinaryFile(path, context);
 		// A byte-order mark stays in the text, as it does when Node reads a file as UTF-8.
 		return read.ok ? ok(new TextDecoder("utf-8", { ignoreBOM: true }).decode(read.value)) : read;
@@ -579,6 +613,23 @@ class BoxEnv implements ExecutionEnv {
 		context: Context,
 	): Promise<Result<BinaryReader, FileError>> {
 		// The file as it is now, whole: a rename or a rewrite of the path does not change what the reader sees.
+		if (this.#noStdin) {
+			const fetched = await this.#fetch(path, context);
+			if (!fetched.ok) return fetched;
+			if (fetched.value === undefined) {
+				return err(
+					new FileError(
+						"not_supported",
+						"a box that answers with text cannot return the bytes of a file outside its workspace",
+						path,
+					),
+				);
+			}
+			const resolved = await this.#resolve(path, context);
+			if (!resolved.ok) return resolved;
+			if (fetched.value.length > this.#maxReaderBytes) return err(this.#grown(resolved.value));
+			return this.#readerOf(fetched.value, resolved.value, 0);
+		}
 		const opened = await this.#file(
 			path,
 			OPEN_SCRIPT,
@@ -590,12 +641,17 @@ class BoxEnv implements ExecutionEnv {
 		if (!opened.ok) return opened;
 		const { bytes, found, resolved } = opened.value;
 		if (bytes.length > this.#maxReaderBytes) return err(this.#grown(resolved));
+		return this.#readerOf(bytes, resolved, found?.mtimeMs ?? 0);
+	}
+
+	/** A reader over a file's bytes as they are now. */
+	#readerOf(bytes: Uint8Array, resolved: string, mtimeMs: number): Result<BinaryReader, FileError> {
 		const info: FileInfo = {
 			name: posix.basename(resolved),
 			path: resolved,
 			kind: "file",
 			size: bytes.length,
-			mtimeMs: found?.mtimeMs ?? 0,
+			mtimeMs,
 		};
 		let closed = false;
 		const refused = (readContext: Context): Result<never, FileError> | undefined => {
@@ -706,14 +762,13 @@ class BoxEnv implements ExecutionEnv {
 
 	async writeFile(path: string, content: string | Uint8Array, context: Context): Promise<Result<void, FileError>> {
 		const bytes = typeof content === "string" ? encoder.encode(content) : content;
-		if (this.#noStdin) return this.#store(path, () => bytes, context);
+		if (this.#noStdin) return this.#store(path, null, bytes, context);
 		return this.#file(path, WRITE_SCRIPT, [], bytes, context, () => undefined);
 	}
 
 	async appendFile(path: string, content: string | Uint8Array, context: Context): Promise<Result<void, FileError>> {
 		const bytes = typeof content === "string" ? encoder.encode(content) : content;
 		if (this.#noStdin) {
-			// Read then write: two appends from one environment run in order, two environments appending to one file can lose one.
 			return this.#store(
 				path,
 				(before) => {
@@ -722,30 +777,46 @@ class BoxEnv implements ExecutionEnv {
 					whole.set(bytes, before.length);
 					return whole;
 				},
+				bytes,
 				context,
 			);
 		}
 		return this.#file(path, APPEND_SCRIPT, [], bytes, context, () => undefined);
 	}
 
-	/** A box with no stdin writes a file through `upload`: `next` makes the new bytes from the old (empty when there is no file). */
-	async #store(
+	/**
+	 * A box with no stdin writes a file through `upload`. `next` makes the new bytes from the old (empty when there is no file); `null` is a plain
+	 * write, which reads nothing. This environment's writes go one at a time, and the box runs its own calls in order, so a read-modify-write sees what
+	 * the calls before it left.
+	 */
+	#store(
 		path: string,
-		next: (before: Uint8Array) => Uint8Array,
+		next: ((before: Uint8Array) => Uint8Array) | null,
+		bytes: Uint8Array,
 		context: Context,
 	): Promise<Result<void, FileError>> {
-		const resolved = await this.#resolve(path, context);
-		if (!resolved.ok) return resolved;
-		const target = resolved.value;
-		let before: Uint8Array = new Uint8Array();
-		const had = await this.#box.download([target], context);
-		if (had.ok) before = had.value[0]?.bytes ?? before;
-		else if (had.error.code !== "not_found") return err(this.#fileError(had.error, target));
-		const sent = await this.#box.upload([{ path: target, bytes: next(before) }], context);
-		return sent.ok ? ok(undefined) : err(this.#fileError(sent.error, target));
+		const turn = this.#stores.then(async (): Promise<Result<void, FileError>> => {
+			if (isAborted(context)) return err(new FileError("aborted", "aborted", path));
+			const resolved = await this.#resolve(path, context);
+			if (!resolved.ok) return resolved;
+			const target = resolved.value;
+			let whole = bytes;
+			if (next !== null) {
+				const had = await this.#box.download([target], context);
+				if (!had.ok && had.error.code !== "not_found")
+					return err(await this.#fileFailure(had.error, target, context));
+				whole = next(had.ok ? (had.value[0]?.bytes ?? new Uint8Array()) : new Uint8Array());
+			}
+			const sent = await this.#box.upload([{ path: target, bytes: whole }], context);
+			return sent.ok ? ok(undefined) : err(await this.#fileFailure(sent.error, target, context));
+		});
+		this.#stores = turn;
+		return turn;
 	}
 
-	#fileError(error: BoxError, path: string): FileError {
+	/** What a box said about a file it would not serve, as a file error; a box found gone is recorded as lost, as a command would. */
+	async #fileFailure(error: BoxError, path: string, context: Context): Promise<FileError> {
+		if (error.code === "gone") await this.#diagnose(error, context);
 		const code =
 			error.code === "not_found"
 				? "not_found"
@@ -794,6 +865,16 @@ class BoxEnv implements ExecutionEnv {
 	}
 
 	async createTempDir(prefix: string | undefined, context: Context): Promise<Result<string, FileError>> {
+		if (this.#noStdin) {
+			return this.#script(
+				this.cwd,
+				TEMP_DIR_HERE_SCRIPT,
+				[this.#box.facts().workspace, prefix ?? "tmp-"],
+				undefined,
+				context,
+				({ stdout }) => decode(stdout).replace(/\n$/, ""),
+			);
+		}
 		return this.#script("/tmp", TEMP_DIR_SCRIPT, [prefix ?? "tmp-"], undefined, context, ({ stdout }) =>
 			decode(stdout).replace(/\n$/, ""),
 		);
@@ -804,6 +885,17 @@ class BoxEnv implements ExecutionEnv {
 		context: Context,
 	): Promise<Result<string, FileError>> {
 		const args = [options?.prefix ?? "", options?.suffix ?? ""];
+		// A box with no stdin lets a file be written only inside its workspace, and its /tmp is gone with the container.
+		if (this.#noStdin) {
+			return this.#script(
+				this.cwd,
+				TEMP_FILE_HERE_SCRIPT,
+				[this.#box.facts().workspace, ...args],
+				undefined,
+				context,
+				({ stdout }) => decode(stdout).replace(/\n$/, ""),
+			);
+		}
 		return this.#script("/tmp", TEMP_FILE_SCRIPT, args, undefined, context, ({ stdout }) =>
 			decode(stdout).replace(/\n$/, ""),
 		);
@@ -917,6 +1009,8 @@ class BoxEnv implements ExecutionEnv {
 		// Ends the command's group and reads back that it is gone, within KILL_BOUND_MS of wall time. A call that fails, times out or answers `alive` is sent
 		// again, never dropped; a stop that could not confirm leaves the command tracked, so `cleanup` ends it later, and says so on its error.
 		const kill = async (): Promise<boolean> => {
+			// A call already sent to a box that keeps no program between calls cannot be reached by a second call (it queues behind it); its own deadline in the box ends it.
+			if (this.#noStdin) return true;
 			const confirmed = await this.#killGroup(id, context);
 			if (!confirmed) this.#unconfirmed.add(id);
 			return confirmed;
@@ -1025,7 +1119,7 @@ class BoxEnv implements ExecutionEnv {
 				? undefined
 				: {
 						timeoutMs: Math.min(
-							timeoutMs + COMMAND_BACKSTOP_MS,
+							timeoutMs + (this.#noStdin ? 0 : COMMAND_BACKSTOP_MS),
 							MAX_TIMEOUT_MS,
 							this.#boxMaxExecMs ?? MAX_TIMEOUT_MS,
 						),
@@ -1044,6 +1138,8 @@ class BoxEnv implements ExecutionEnv {
 				void launch
 					.then((late) => (late.ok ? Promise.all([kill(), finish(late.value)]) : undefined))
 					.catch(() => {});
+				// A caller that gave up on a queued command is not run later.
+				if (this.#noStdin) call.cancel();
 				if (started.error.code === "aborted") {
 					const confirmed = await kill();
 					return err(unconfirmed(new ExecutionError("aborted", "aborted"), confirmed));

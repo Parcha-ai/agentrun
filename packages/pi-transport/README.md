@@ -115,6 +115,13 @@ a typed error:
 - **Aborting the context ends the wait at once.** The SDK has no signal to stop the command in the container, so the
   command ends at its own deadline (an abort of the raw HTTP request was measured to stop a command at the platform, but
   not through this SDK).
+- **Through `boxEnv` (the file and bash tools).** An environment on such a box reads and writes files through `upload` and
+  `download`, so a write keeps every byte and a binary read is exact; a path outside the box's workspace can be read as
+  text only and not written. Its writes go one at a time, so concurrent appends all land. A command's own deadline is
+  the caller's `timeout`, and a caller that gives up (an abort, a command not started in time) never has its command
+  run later. A command stopped by a timeout or an abort cannot be killed: nothing reaches a running call, so it ends at
+  its own deadline, and the next call to the box waits for it. Temporary and spill files go under the workspace. A
+  watcher bills one call per interval.
 - **One command at a time per box, across processes.** Every `exec` checks out the box's directory with a queue
   (`queueMs`, default 60 s), so a second process that attached the same box (a restore, another host) waits for the
   first instead of being refused (a plain write without a checkout loses writes: 3 of 5 parallel appends were refused),

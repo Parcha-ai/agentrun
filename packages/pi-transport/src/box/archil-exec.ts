@@ -464,20 +464,29 @@ class ArchilExecBox implements Box {
 
 	async download(paths: readonly string[], _context: Context): Promise<Result<readonly BoxFile[], BoxError>> {
 		if (!(await this.#alive())) return err(new BoxError("gone", `box ${this.id} has ended`));
-		const recorded = await this.#recorded();
-		if (!recorded.ok) return recorded;
-		const files: BoxFile[] = [];
+		const keyed: { path: string; key: string }[] = [];
 		for (const path of paths) {
 			const key = this.#keyOf(path);
 			if (!key.ok) return key;
-			try {
-				files.push({ path, bytes: await this.#shared.disk.getObject(key.value) });
-			} catch (cause) {
-				if (notFound(cause)) return err(new BoxError("not_found", `${path} does not exist`, cause));
-				return err(failure(`could not read ${path}`, cause));
-			}
+			keyed.push({ path, key: key.value });
 		}
-		return ok(files);
+		// After the commands this process already asked for, as `upload`: what they wrote is what a read returns.
+		const turn = this.#tail.then(async (): Promise<Result<readonly BoxFile[], BoxError>> => {
+			const recorded = await this.#recorded();
+			if (!recorded.ok) return recorded;
+			const files: BoxFile[] = [];
+			for (const { path, key } of keyed) {
+				try {
+					files.push({ path, bytes: await this.#shared.disk.getObject(key) });
+				} catch (cause) {
+					if (notFound(cause)) return err(new BoxError("not_found", `${path} does not exist`, cause));
+					return err(failure(`could not read ${path}`, cause));
+				}
+			}
+			return ok(files);
+		});
+		this.#tail = turn;
+		return turn;
 	}
 
 	async status(): Promise<Result<BoxStatus, BoxError>> {
