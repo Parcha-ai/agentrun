@@ -65,7 +65,7 @@ const gate = (t, recordings) => {
 test('the gate, as the step runs it, passes the build of the bundled recordings and fails the step on a problem', async (t) => {
   const passed = await gate(t, join(root, 'apps/viewer/recordings'));
   assert.equal(passed.code, 0, passed.stderr);
-  assert.match(passed.stdout, /apps\/viewer\/dist: 2 recording\(s\), every published file checked/);
+  assert.match(passed.stdout, /apps\/viewer\/dist: 1 recording\(s\), every published file checked/);
   const copy = mkdtempSync(join(tmpdir(), 'pages-recordings-'));
   t.after(() => rmSync(copy, { recursive: true, force: true }));
   cpSync(join(root, 'apps/viewer/recordings/reference-job'), join(copy, 'reference-job'), { recursive: true });
