@@ -172,7 +172,7 @@ const BASH = {
 };
 
 /** Runs the steps in order, each in a sandbox of its own over the same workspace and the same Jev. */
-async function steps(codes, { bash = BASH.object, jev = pixelJev() } = {}) {
+async function steps(codes, { bash = BASH.object, jev = pixelJev(), fails = false } = {}) {
   const filed = [];
   const vision = createVisionExtension({ jev: { judge: jev.judge }, evidence: { file: async (_label, record) => { filed.push(record); return { path: `receipts/${filed.length}.json` }; } }, scope: () => ({ label: "verify", deriveDir: ".vision" }) });
   const values = [];
@@ -181,6 +181,7 @@ async function steps(codes, { bash = BASH.object, jev = pixelJev() } = {}) {
     const sandbox = new CodemodeSandbox({ tools: [bash], globals: [vision.judge(nodeVisionEnv({ cwd }), call)] });
     try {
       const ran = await sandbox.execute(code);
+      if (fails) { values.push(ran.ok ? ran.value : ran.error); continue; }
       assert.ok(ran.ok, ran.ok ? "" : ran.error.message);
       values.push(ran.value);
     } finally { await sandbox.close(); }
@@ -242,7 +243,8 @@ test("the same document with its marks taken out: every mark no, no box drawn, e
   const rows = byId(verdict.rows);
   for (const id of ["seal", "signature", "file_number", "authentication"]) assert.deepEqual(rows[id].cites.map((c) => c.fragment), ["certificate.pdf#page=1"], `${id}: Jev's box is dropped`);
   assert.deepEqual(rows.stamp.cites.map((c) => c.fragment), ["certificate.pdf#page=2"]);
-  assert.deepEqual(rows.numbers_match.cites.map((c) => c.fragment), ["certificate.pdf#page=1", "certificate.pdf#page=2"]);
+  assert.deepEqual(rows.numbers_match.cites, [{ fragment: "certificate.pdf#page=1", receipts: ["receipts/1.json"] }, { fragment: "certificate.pdf#page=2", receipts: ["receipts/2.json"] }], "each part's page with the look that found nothing there");
+  assert.deepEqual(rows.seal.cites, [{ fragment: "certificate.pdf#page=1", receipts: ["receipts/1.json"] }]);
   assert.equal(rows.numbers_match.note, "file_number and stamp not there");
   assert.match(rows.seal.note, /^not there: /);
   assert.equal(jev.requests.length, 3, "nothing to compare: no request for the numbers");
@@ -287,4 +289,13 @@ test("another kind of document is another checklist file and another file name, 
   assert.deepEqual(verdict.rows.map((row) => [row.id, row.value, row.cites.map((c) => c.fragment.split("&")[0])]), [["stamp", "yes", ["my ticket.pdf#page=1"]], ["seal", "no", ["my ticket.pdf#page=1"]]]);
   assert.deepEqual(Object.keys(jev.requests[0].questions), ["kind", "stamp", "stamp_at", "seal", "seal_at"]);
   assert.ok(fs.existsSync(path.join(cwd, ".verify", "my_ticket.pdf", "pages.json")));
+});
+
+test("a checklist whose ids would share a question name is refused before any request: kind, an id ending in _at, an id used twice", async () => {
+  for (const ids of [["kind"], ["seal", "seal_at"], ["seal", "seal"], ["has space"]]) {
+    write("clash.json", JSON.stringify({ pages: { certification: "A page with a navy band across its top." }, marks: ids.map((id) => ({ id, page: "certification", mark: id, present: "", question: "Is there a red seal in `images[0].image`?", box: "the red seal in `images[0].image`" })) }));
+    const { values: [error], jev } = await steps([withTask(pagesStep, 'const task = { document: "certificate.pdf", checklist: "clash.json" };')], { fails: true });
+    assert.match(error.message, /a mark's id is letters, digits and _, used once, not kind and not ending in _at/, ids.join(", "));
+    assert.equal(jev.requests.length, 0, `${ids.join(", ")}: no request`);
+  }
 });

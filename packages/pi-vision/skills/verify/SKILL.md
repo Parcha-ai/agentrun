@@ -34,8 +34,10 @@ there and where, not whether the document is genuine: a copy, a specimen or a fo
 
 - `pages`: each kind of page a mark sits on, said the way it looks. A page that is none of them is `other`.
 - `marks`: `id` is the mark's short name. Jev's yes-or-no question about it is asked under that name and its box under
-  `<id>_at`, so keep it short, in letters, digits and `_`. `page` is the kind of page it sits on, `question` asks whether
-  it is there, `box` names it for the box, and `present` says what it looks like when it is there (the row's note).
+  `<id>_at`, beside the page's `kind`, so an id is letters, digits and `_`, used once, never `kind` and never ending in
+  `_at`; step 1 refuses a checklist that breaks this before it asks anything. `page` is the kind of page it sits on,
+  `question` asks whether it is there, `box` names it for the box, and `present` says what it looks like when it is
+  there (the row's note).
 - A mark with `same: [a, b]` instead of `page` asks whether two marks show the same thing, such as one number on two
   pages: both are cut out of their pages, larger, and asked about side by side. It is a no when either is not there.
 - Write each question about `images[0].image`, and a `same` mark's about `images[0].image` and `images[1].image`.
@@ -59,6 +61,9 @@ const sh = async (command) => {
 const q = (text) => `'${String(text).replaceAll("'", "'\\''")}'`;
 const dir = `.verify/${task.document.replace(/[^\w.-]+/g, "_")}`;
 const list = JSON.parse(await sh(`cat ${q(task.checklist)}`));
+const ids = list.marks.map((mark) => mark.id);
+const clash = ids.filter((id, i) => !/^\w+$/.test(id) || id === "kind" || id.endsWith("_at") || ids.indexOf(id) !== i);
+if (clash.length) throw new Error(`a mark's id is letters, digits and _, used once, not kind and not ending in _at: ${clash.join(", ")}`);
 await sh(`rm -rf ${q(dir)} && mkdir -p ${q(dir)}/pages && pdftoppm -cropbox -r 100 -png ${q(task.document)} ${q(dir)}/pages/p`);
 const files = (await sh(`ls ${q(dir)}/pages`)).split("\n").filter((name) => name.endsWith(".png")).sort();
 const onPage = list.marks.filter((mark) => mark.page);
@@ -102,39 +107,41 @@ const list = JSON.parse(await sh(`cat ${q(task.checklist)}`));
 const { pages } = JSON.parse(await sh(`cat ${q(dir)}/pages.json`));
 const r = (v) => Math.round(v * 1000) / 1000;
 const found = {};
+const pageOnly = (fragment) => fragment.replace(/&xywh=[^&]*/, "");
 for (const mark of list.marks.filter((m) => m.page)) {
   const best = pages.filter((p) => p.kind === mark.page).sort((a, b) => b.marks[mark.id].p - a.marks[mark.id].p)[0];
-  if (!best) { found[mark.id] = { p: 0, pages: [], at: [], receipts: [], why: `no ${mark.page} page was found` }; continue; }
+  if (!best) { found[mark.id] = { p: 0, there: false, cites: [], why: `no ${mark.page} page was found` }; continue; }
   const { p, at } = best.marks[mark.id];
-  found[mark.id] = { p, pages: [best.page], at: p >= 0.5 ? [at] : [], receipts: best.receipts };
+  found[mark.id] = { p, there: p >= 0.5, page: best.page, at, cites: [{ fragment: p >= 0.5 ? at : `${task.document}#page=${best.page}`, receipts: best.receipts }] };
 }
 for (const mark of list.marks.filter((m) => m.same)) {
   const parts = mark.same.map((id) => found[id]);
-  const missing = mark.same.filter((id, i) => !parts[i].at.length);
-  if (missing.length) { found[mark.id] = { p: 0, pages: parts.flatMap((part) => part.pages), at: [], receipts: [], why: `${missing.join(" and ")} not there` }; continue; }
+  const missing = mark.same.filter((id, i) => !parts[i].there);
+  if (missing.length) {
+    found[mark.id] = { p: 0, there: false, cites: parts.flatMap((part) => part.cites.map((cite) => ({ fragment: pageOnly(cite.fragment), receipts: cite.receipts }))), why: `${missing.join(" and ")} not there` };
+    continue;
+  }
   const crops = [];
   for (const [i, part] of parts.entries()) {
-    const [x, y, w, h] = part.at[0].split("percent:")[1].split(",").map(Number);
+    const [x, y, w, h] = part.at.split("percent:")[1].split(",").map(Number);
     const [x0, y0] = [r(Math.max(0, x - 2)), r(Math.max(0, y - 2))];
     const [cw, ch] = [r(Math.min(100, x + w + 2) - x0), r(Math.min(100, y + h + 2) - y0)];
     const out = `${dir}/${mark.id}-${i + 1}`;
-    await sh(`pdftoppm -cropbox -r 300 -f ${part.pages[0]} -l ${part.pages[0]} -singlefile -png ${q(task.document)} ${q(out)}-page`);
+    await sh(`pdftoppm -cropbox -r 300 -f ${part.page} -l ${part.page} -singlefile -png ${q(task.document)} ${q(out)}-page`);
     const [W, H] = (await sh(`ffprobe -v error -select_streams v -show_entries stream=width,height -of csv=p=0 ${q(out)}-page.png`)).trim().split(",").map(Number);
     const [px, py, pw, ph] = [Math.round((x0 / 100) * W), Math.round((y0 / 100) * H), Math.round((cw / 100) * W), Math.round((ch / 100) * H)];
     // Jev takes images 280 to 1,568 px a side: a cut-out line of print is scaled up to that, never down.
     const up = Math.max(1, Math.min(320 / Math.min(pw, ph), 1568 / Math.max(pw, ph)));
     await sh(`ffmpeg -v error -y -i ${q(out)}-page.png -vf crop=${pw}:${ph}:${px}:${py},scale=${Math.round(pw * up)}:${Math.round(ph * up)} ${q(out)}.png`);
-    crops.push({ path: `${out}.png`, fragment: `${task.document}#page=${part.pages[0]}&xywh=percent:${x0},${y0},${cw},${ch}` });
+    crops.push({ path: `${out}.png`, fragment: `${task.document}#page=${part.page}&xywh=percent:${x0},${y0},${cw},${ch}` });
   }
   const { answers, receipts } = await vision.judge({ paths: crops.map((c) => c.path), fragments: crops.map((c) => c.fragment), questions: { [mark.id]: { type: "noul", instructions: mark.question } } });
   const p = answers[mark.id].noul;
-  found[mark.id] = { p, pages: parts.map((part) => part.pages[0]), at: p >= 0.5 ? parts.map((part) => part.at[0]) : [], receipts };
+  found[mark.id] = { p, there: p >= 0.5, cites: parts.map((part) => ({ fragment: p >= 0.5 ? part.at : `${task.document}#page=${part.page}`, receipts })) };
 }
 const rows = list.marks.map((mark) => {
   const f = found[mark.id];
-  const there = f.at.length > 0;
-  const cites = there ? f.at.map((at) => ({ fragment: at, receipts: f.receipts })) : f.pages.map((page) => ({ fragment: `${task.document}#page=${page}`, receipts: f.receipts }));
-  return { id: mark.id, mark: mark.mark, value: there ? "yes" : "no", p: r(f.p), note: there ? mark.present : f.why ?? `not there: ${mark.present}`, cites };
+  return { id: mark.id, mark: mark.mark, value: f.there ? "yes" : "no", p: r(f.p), note: f.there ? mark.present : f.why ?? `not there: ${mark.present}`, cites: f.cites };
 });
 const table = ["| Mark | There | Where |", "|---|---|---|", ...rows.map((row) => `| ${row.mark} | ${row.value} | ${row.cites.map((c) => c.fragment).join(", ") || "-"} |`)].join("\n");
 await sh(`printf %s ${q(JSON.stringify({ document: task.document, rows }))} > ${q(dir)}/marks.json`);
@@ -142,7 +149,8 @@ return { document: task.document, every: rows.every((row) => row.value === "yes"
 ```
 
 Cite each row by its fragments and receipts: the fragment is where on which page, and the receipt is the look that
-saw it. A row that says no cites the page it was looked for on, so a reader can see the empty place for themselves.
+saw it. A row that says no cites the page it was looked for on, with the look that found nothing there, so a reader can
+see the empty place for themselves; a `same` mark with a part missing cites each part's page and look.
 
 ## When pdftoppm or ffmpeg is missing
 
