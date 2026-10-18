@@ -1,0 +1,14 @@
+{
+ "about": "The files the question is about, fetched once on --live (or with --fetch-sources) and checked by size and SHA-256 before they are used.",
+ "items": [
+  {
+   "id": "middleton-fair",
+   "title": "The Middleton Family at the New York World's Fair (made by Audio Productions Inc. for Westinghouse, 1939, Technicolor, 54 minutes 44 seconds; Prelinger Archives rendition, 640x480): a corporate drama in which a family spends a day among the fair's exhibits",
+   "url": "https://archive.org/download/middleton_family_worlds_fair_1939/middleton_family_at_the_worlds_fair_1939.mp4",
+   "source": "https://archive.org/details/middleton_family_worlds_fair_1939",
+   "license": "Public Domain, as the source page states it (rights: \"Public Domain.\"; Prelinger Archives, Internet Archive). A Westinghouse-sponsored corporate film, not a government work; its soundtrack is the film's own. The project uses the film as the source page publishes it, relying on its public-domain statement.",
+   "bytes": 342367204,
+   "sha256": "b92706bb51004fe1527bd242ecf6c227b93c53226d9ad6b5890f464eb98eb4cc"
+  }
+ ]
+}
