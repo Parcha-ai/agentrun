@@ -95,3 +95,15 @@ test('the transport panel\'s cost row reads as the strip: its box at list price,
   assert.match(screen(lines), /cost unknown/, 'the box has no receipt yet');
   assert.match(screen([...lines, receipt('box-1', 40, 0.00005, 'transport')]), /cost scripted lead, boxes \$0\.0020 at list price/);
 });
+
+test('a box billed per call (draft 40) is summed like any receipt, its calls times its price, at list price', () => {
+  const perCall = live('host', 'box.receipt', { box: 'box-2', provider: 'archil', kind: 'exec', from: '2026-10-18T08:00:00Z', to: '2026-10-18T08:02:00Z',
+    seconds: 120, calls: 10, usd_per_call: 0.00005, cost_usd: 0.0005, source: 'transport', priced: '2026-10-18' });
+  const lines = [live('host', 'process.started', { gen: 1 }), lead(0.001), receipt('box-1', 40, 0.00005), perCall];
+  const got = counters(lines);
+  assert.ok(Math.abs(got.costParts.boxes! - 0.0025) < 1e-12, `boxes ${got.costParts.boxes}: 40 s at $0.00005 and 10 calls at $0.00005, never 120 s of calls`);
+  assert.ok(Math.abs(got.cost! - 0.0035) < 1e-12, String(got.cost));
+  assert.equal(costLabel(got.cost, got.costLowerBound, 'real', got.costParts), '$0.0035 (boxes $0.0025 at list price)');
+  const unpriced = live('host', 'box.receipt', { box: 'box-3', provider: 'archil', kind: 'exec', seconds: 5, calls: 2, usd_per_call: null, cost_usd: null, source: 'transport' });
+  assert.equal(counters([...lines, unpriced]).cost, null, 'a per-call box with no published price makes the cost unknown, never 0');
+});
