@@ -20,6 +20,16 @@ export { finishRecording } from './record.ts';
 export { codeOf } from './record.ts';
 /** The store export the recorder reads the run's commits through; it throws if this build of the package lacks it. */
 export { packageCommitRecorder } from './record-store.ts';
+/** A recorder's redaction of exact secret values: each one, raw and as a JSON string holds it, becomes `[redacted]`. */
+export { redactorOf } from './secrets.ts';
+/** The scrub of the machine a run is on (#733): its user name, its home (`~`) and the run's directories `DIR`, `RECORD_DIR` and `HOME` (`<run>`). */
+export { runScrub } from './secrets.ts';
+/** The record-time scan of a finished recording: every file, text and bytes alike, holds none of the values; it throws naming the key and the file. */
+export { scanRecording } from './secrets.ts';
+/** The scan of what a viewer following the run could already have fetched (`events.jsonl` as placed, and every blob). */
+export { scanPlaced } from './secrets.ts';
+/** A secret value and the name a finding reports it by. */
+export type { Secret } from './secrets.ts';
 
 /** The cost of the run a recording's lines record, for the manifest: `usd` is the sum of the priced parts, and null while any part is unknown (never 0). */
 export { cost } from './fold.ts';
