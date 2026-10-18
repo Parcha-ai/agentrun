@@ -7,6 +7,7 @@ import type { Eyes, EyesAnswer } from "../core/host.js";
 import { resolveLimits, SEE_TIMEOUT_MS, type LimitsOverride } from "../core/limits.js";
 import type { Part } from "../core/plan.js";
 
+/** What the host gives `piAiEyes` beyond the model: how the key is read, the thinking level, a view of the payload, a timeout and limits. */
 export type PiAiEyesOptions = {
   /** The key for each request, read when the request is made. */
   readonly apiKey?: () => string | undefined;
@@ -25,6 +26,10 @@ const LEVELS: readonly string[] = ["minimal", "low", "medium", "high", "xhigh", 
 /** A part as pi-ai content: a video goes as an image block with its video MIME type. */
 const content = (part: Part) => (part.type === "text" ? { type: "text" as const, text: part.text } : { type: "image" as const, data: part.data, mimeType: part.mimeType });
 
+/** Eyes on a pi-ai `model` the host built. One `completeSimple` request a look, at the thinking level in `options` and never
+ *  off, cut at the timeout, with its usage and its price on the answer (null when the model has no rates). The key comes from
+ *  `options.apiKey`, read at each request; without it pi-ai reads the provider's own variable. Either way the key is taken out of
+ *  any error's words. */
 export function piAiEyes(model: Model<Api>, options: PiAiEyesOptions = {}): Eyes {
   const limits = resolveLimits(model, options.limits);
   const reasoning = (LEVELS.includes(options.reasoning ?? "") ? options.reasoning : "minimal") as ThinkingLevel;
