@@ -495,7 +495,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     const { manifest } = recording;
     if (following) return { header: el('header', {}, el('h1', { text: manifest.title }), el('p', { class: 'meta' }, `following ${live!.url} · `, liveStatus)), problemsNote: undefined };
     const header = el('header', {}, el('h1', { text: manifest.title }), el('p', { class: 'meta', text:
-      `${manifest.task} · ${manifest.model} · ${manifest.generations} process${manifest.generations === 1 ? '' : 'es'} · ${manifest.kills} kill${manifest.kills === 1 ? '' : 's'}${manifest.providers ? ` · ${manifest.providers} providers` : ''} · recorded ${manifest.recorded.started} · code ${manifest.code.commit.slice(0, 8)}` }));
+      `${manifest.task} · ${manifest.model}${manifest.providers ? ` · ${manifest.providers} providers` : ''} · recorded ${manifest.recorded.started} · code ${manifest.code.commit.slice(0, 8)}` }));
     if (live) header.append(el('p', { class: 'meta' }, `followed live from ${live.url} · `, liveStatus));
     const problemsNote = problems.length ? el('p', { class: 'problems', text: `This recording breaks the format: ${problems.slice(0, 3).join('; ')}` }) : undefined;
     if (problemsNote && !embedded) header.append(problemsNote);
@@ -767,7 +767,7 @@ function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entr
   const list = el('ul', { class: 'gallery' }, ...entries.map((entry) => {
     // A demo opens in the chat + report view; its inspection is ./?r=<id>, linked from there.
     const link = Object.assign(el('a', { text: entry.manifest.title }), { href: `chat.html?r=${encodeURIComponent(entry.id)}` });
-    return el('li', {}, link, el('span', { class: 'meta', text: ` ${entry.manifest.generations} process${entry.manifest.generations === 1 ? '' : 'es'}, ${entry.manifest.kills} kill${entry.manifest.kills === 1 ? '' : 's'}, ${entry.manifest.model}` }));
+    return el('li', {}, link, el('span', { class: 'meta', text: ` ${entry.manifest.model}` }));
   }));
   const picker = Object.assign(el('input'), { type: 'file', multiple: true }) as HTMLInputElement;
   picker.setAttribute('webkitdirectory', '');
@@ -792,7 +792,7 @@ function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entr
     }
     onOpen(await fromFiles(files));
   });
-  root.replaceChildren(el('header', {}, el('h1', { text: 'agentrun run viewer' }), el('p', { class: 'meta', text: 'Replays a run recorded as agentrun.recording/1: every process, every kill, every commit.' })),
+  root.replaceChildren(el('header', {}, el('h1', { text: 'agentrun run viewer' }), el('p', { class: 'meta', text: 'Replays a run recorded as agentrun.recording/1.' })),
     el('h2', { text: 'Recordings' }), unread !== undefined ? el('p', { class: 'problems', text: `The gallery could not be read (${unread}); a recording folder can still be opened below.` })
       : entries.length ? list : el('p', { class: 'empty', text: 'No recordings yet.' }), drop);
 }
