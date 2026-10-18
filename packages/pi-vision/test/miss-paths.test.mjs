@@ -100,6 +100,24 @@ test("an eyes route, a judge's port and a provider's detection that fail with a 
   neverHolds(r, [text, detection, ...surfaces(r)], "route");
 });
 
+test("a workspace whose directories have apostrophes in their names is hidden whole: by the error's own path when it names one, by the shape of the line when an apostrophe is followed by a word", async (t) => {
+  const dir = await fixtureDir("pi-vision-miss-paths-");
+  t.after(() => dir.remove());
+  const work = join(dir.path, "owner's-private", "o' x", "work");
+  await mkdir(work, { recursive: true });
+  const misses = [];
+  const setup = { limits: resolveLimits(TEXT_ONLY), eyes: fakeEyes(), providers: [], sources: {}, scope: { label: "n", deriveDir: "evidence/n" }, evidence: { file: async () => null }, onMiss: (miss) => misses.push(miss) };
+  await assert.rejects(see({ ask: "What is it?", paths: ["gone.png"] }, nodeVisionEnv({ cwd: work }), call, setup), (error) => {
+    assert.match(error.message, /^unreadable: gone\.png is not a file that opens \(ENOENT: no such file or directory, lstat 'gone\.png'\)$/);
+    return true;
+  });
+  const scan = new LeakScan({ owner: "owner's-private", space: "o' x", dir: dir.path });
+  scan.value("see", misses);
+  assert.equal(scan.report(), "no sentinel found");
+  const quoted = join(dir.path, "owner's-private", "work", "gone.png");
+  assert.equal(firstLine(new Error(`ENOENT: no such file or directory, open '${quoted}'`)), "ENOENT: no such file or directory, open 'gone.png'", "an apostrophe a word goes on from is part of the name");
+});
+
 test("firstLine names a path by its last part and leaves every other slash alone", () => {
   const cases = [
     ["ENOENT: no such file or directory, open '/srv/run/work/.find'", "ENOENT: no such file or directory, open '.find'"],
@@ -107,6 +125,8 @@ test("firstLine names a path by its last part and leaves every other slash alone
     ["spawn /usr/local/bin/ffmpeg ENOENT", "spawn ffmpeg ENOENT"],
     ["could not open \"/srv/my files/scan one.png\" for reading", "could not open \"scan one.png\" for reading"],
     ["failed (/srv/run/work/a.pdf), then retried", "failed (a.pdf), then retried"],
+    ["ENOENT: no such file or directory, lstat '/srv/owner's-private/work/gone.png'", "ENOENT: no such file or directory, lstat 'gone.png'"],
+    ["rename '/srv/it's/a.tmp' -> '/srv/it's/b.txt'", "rename 'a.tmp' -> 'b.txt'"],
     ["cannot read /srv/run/work/a.pdf.", "cannot read a.pdf."],
     ["cwd=/srv/run/work failed", "cwd=work failed"],
     ["open 'C:\\Users\\run\\work\\a.png' failed", "open 'a.png' failed"],
