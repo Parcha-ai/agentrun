@@ -103,7 +103,7 @@ const assetsLines = (await readFile(join(root, 'ASSETS.md'), 'utf8').catch(() =>
 function extension(path) { const leaf = path.split('/').at(-1); return leaf.includes('.') ? leaf.slice(leaf.lastIndexOf('.')).toLowerCase() : ''; }
 function excluded(path) {
   const parts = path.split('/');
-  return parts.some(part => part === 'pi.config.mjs' || excludedComponents.has(part) || /(?:^|\.)review(?:\.|$)/.test(part) || /^\.env(?:\.|$)/.test(part) || /(?:^|\.)local(?:\.|$)/.test(part)) ||
+  return parts.some(part => part === 'pi.config.mjs' || excludedComponents.has(part) || /(?:^|\.)review(?:\.|$)/.test(part) || /^\.env(?:\.|$)/.test(part) || /\.local(?:\.|$)/.test(part)) ||
     /\.(?:tgz|tar|gz|pem|key|p12|pfx|map|log)$/.test(path);
 }
 const forbidden = [
