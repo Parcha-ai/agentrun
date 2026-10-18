@@ -3,7 +3,7 @@
 // nodes, LLM calls, tool calls, the model calls made inside a tool), what each look read, the run's cited answer and
 // the agent's artifact. The same code for every run; pure but for reading a blob's JSON, which the caller passes.
 import type { Json, Recording } from './format.ts';
-import type { ChatItem, ChatModel, ChatRow, ChatSource, ChatSpan, ChatThread } from './chat-model.ts';
+import type { ChatDecision, ChatItem, ChatModel, ChatRow, ChatSource, ChatSpan, ChatThread } from './chat-model.ts';
 
 type Obj = { [key: string]: Json };
 const chatObj = (value: Json | undefined): Obj | undefined => (value && typeof value === 'object' && !Array.isArray(value) ? value : undefined);
@@ -50,14 +50,15 @@ function chatText(content: Json | undefined): string {
 }
 
 /** A Jev answer (typed decisions) read as plain words, and the regions it found for marks it says are there. */
-function chatDecisions(body: Obj): { text: string; regions: { label: string; href: string }[] } {
+function chatDecisions(body: Obj): { text: string; decisions: ChatDecision[]; regions: { label: string; href: string }[] } {
   const parts: string[] = [];
+  const decisions: ChatDecision[] = [];
   const boxes: { name: string; href: string }[] = [];
   for (const [name, decision] of Object.entries(body)) {
     const d = chatObj(decision);
     if (!d) continue;
-    if (d.type === 'noul' && typeof d.noul === 'number') parts.push(`${name.replace(/_/g, ' ')}: ${d.noul >= 0.5 ? 'yes' : 'no'}`);
-    else if (d.type === 'choice' && typeof d.choice === 'string') parts.push(`${name.replace(/_/g, ' ')}: ${d.choice}`);
+    if (d.type === 'noul' && typeof d.noul === 'number') { parts.push(`${name.replace(/_/g, ' ')}: ${d.noul >= 0.5 ? 'yes' : 'no'}`); decisions.push({ name, kind: 'noul', score: d.noul }); }
+    else if (d.type === 'choice' && typeof d.choice === 'string') { parts.push(`${name.replace(/_/g, ' ')}: ${d.choice}`); decisions.push({ name, kind: 'choice', choice: d.choice }); }
     else if (d.type === 'box' && typeof d.fragment === 'string') boxes.push({ name, href: d.fragment });
   }
   // A box for a mark the same answer says is not there is no finding: keep a region only when its yes-or-no is yes.
@@ -65,16 +66,16 @@ function chatDecisions(body: Obj): { text: string; regions: { label: string; hre
     const present = chatObj(body[box.name.replace(/_at$/, '')]);
     return !(present?.type === 'noul' && typeof present.noul === 'number' && present.noul < 0.5);
   }).map((box) => ({ label: box.name.replace(/_at$/, '').replace(/_/g, ' '), href: box.href }));
-  return { text: parts.join(' · '), regions };
+  return { text: parts.join(' · '), decisions, regions };
 }
 
 /** A look's answer as one line (words, or decisions read plainly) and its regions. */
-function chatLookAnswer(body: Json | undefined): { text: string; regions: { label: string; href: string }[] } {
+function chatLookAnswer(body: Json | undefined): { text: string; decisions: ChatDecision[]; regions: { label: string; href: string }[] } {
   const raw = chatStr(body)?.trim() ?? '';
   if (raw.startsWith('{')) {
     try { const parsed = chatObj(JSON.parse(raw) as Json); if (parsed) return chatDecisions(parsed); } catch { /* words */ }
   }
-  return { text: chatClip(chatFirstLine(raw.replace(/^[\d.]+\t[\d.]+\t/gm, '')), 220), regions: [] };
+  return { text: chatClip(chatFirstLine(raw.replace(/^[\d.]+\t[\d.]+\t/gm, '')), 220), decisions: [], regions: [] };
 }
 
 /** The chat + report view's model of a recording. `readJson` reads a blob's JSON (the run's cited result). */
@@ -208,15 +209,22 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     toolSpans.push({ span, conversation: chatId(line.conv), callId });
   }
   const lookItem = new Map<string, string>();
+  // What a look filed about itself (its fragment, the image it was shown), by its key.
+  const lookFacts = new Map<string, Obj>();
+  for (const line of live('LookEvent')) {
+    const facts = chatObj(chatObj(chatObj(line.data)?.record)?.facts);
+    const key = chatStr(facts?.key);
+    if (facts && key && !lookFacts.has(key)) lookFacts.set(key, facts);
+  }
   for (const line of live('LookEvent')) {
     const d = chatObj(line.data);
     const tool = chatStr(d?.tool) ?? 'look';
     const model = chatStr(d?.model);
     const conversation = chatId(d?.conversationId);
-    // A look line that names its call and its start is placed exactly; one that does not nests under the innermost
-    // tool call of its conversation whose span holds its one time.
-    const parentId = chatStr(d?.toolCallId);
-    const started = typeof d?.startedAt === 'number' ? d.startedAt : typeof d?.t0 === 'number' ? d.t0 : undefined;
+    // A look line that names its parent call and its start is placed exactly; one that does not nests under the
+    // innermost tool call of its conversation whose span holds its time.
+    const parentId = chatStr(d?.parentToolCallId);
+    const started = typeof (line as unknown as { t0?: unknown }).t0 === 'number' ? (line as unknown as { t0: number }).t0 : undefined;
     const holder = (parentId ? toolSpans.find((each) => each.callId === parentId) : undefined)
       ?? toolSpans.filter((each) => each.conversation === conversation && each.span.t0 <= line.t && (each.span.t1 ?? Infinity) >= line.t)
         .sort((a, b) => b.span.t0 - a.span.t0)[0];
@@ -227,6 +235,24 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
       ...(holder ? { parentLane: holder.span.lane } : {}), ...(item ? { item: item.id } : {}) });
   }
 
+  // Any other line with its own start (t0 on the recording's clock) is a model call made inside a tool: a span under
+  // the call it names as its parent, else under the innermost tool call of its conversation whose span holds its start.
+  for (const line of lines) {
+    if (line.channel !== 'live' || line.kind === 'LookEvent' || line.kind.startsWith('tool_execution') || line.kind.startsWith('message_')) continue;
+    const started = (line as unknown as { t0?: unknown }).t0;
+    if (typeof started !== 'number') continue;
+    const d = chatObj(line.data);
+    const parentId = chatStr(d?.parentToolCallId);
+    const conversation = chatId(d?.conversationId) ?? chatId(line.conv);
+    const holder = (parentId ? toolSpans.find((each) => each.callId === parentId) : undefined)
+      ?? toolSpans.filter((each) => each.conversation === conversation && each.span.t0 <= started && (each.span.t1 ?? Infinity) >= started)
+        .sort((a, b) => b.span.t0 - a.span.t0)[0];
+    if (!holder) continue;
+    const name = chatStr(d?.tool) ?? chatStr(d?.name) ?? line.kind;
+    const model = chatStr(d?.model);
+    spans.push({ id: `span-${spans.length + 1}`, actor: 'inner', lane: name, parentLane: holder.span.lane, label: model ? `${name} ${model}` : name, t0: started, t1: line.t, ...(holder.span.item ? { item: holder.span.item } : {}) });
+  }
+
   // What each look read, by its key: its address, its answer, its images and the regions it boxed.
   const sources: Record<string, ChatSource> = {};
   for (const line of lines) {
@@ -234,11 +260,17 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     const key = chatStr(chatObj(line.data)?.key);
     const look = chatObj(chatList(chatObj(chatObj(line.data)?.value)?.looks)[0]);
     const record = chatObj(look?.record);
-    const href = chatStr(chatObj(record?.args)?.path);
-    if (!key || !href || sources[key]) continue;
-    const { text, regions } = chatLookAnswer(record?.body);
-    const media = chatList(look?.images).map((each) => chatStr(each) ?? chatStr(chatObj(each)?.blob)).filter((sha): sha is string => !!sha && !!recording.blobUrl(sha));
-    sources[key] = { href, takeaway: text, media, regions, ...(lookItem.has(key) ? { item: lookItem.get(key)! } : {}) };
+    const path = chatStr(chatObj(record?.args)?.path);
+    if (!key || !path || sources[key]) continue;
+    // An address with no fragment takes the one the look filed (a page, a time).
+    const facts = lookFacts.get(key);
+    const fragment = chatStr(facts?.fragment)?.replace(/^#/, '');
+    const href = !path.includes('#') && fragment ? `${path}#${fragment}` : path;
+    const { text, decisions, regions } = chatLookAnswer(record?.body);
+    const listed = chatList(look?.images).map((each) => chatStr(each) ?? chatStr(chatObj(each)?.blob)).filter((sha): sha is string => !!sha && !!recording.blobUrl(sha));
+    const shown = chatStr(facts?.sha256);
+    const media = listed.length ? listed : shown && recording.blobUrl(shown) ? [shown] : [];
+    sources[key] = { href, takeaway: text, decisions, media, regions, ...(lookItem.has(key) ? { item: lookItem.get(key)! } : {}) };
   }
 
   // A call that made exactly one look says what that look found; its own first line is the tool's framing.
@@ -267,6 +299,16 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
       });
       answer = { title: chatStr(result.title) ?? manifest.result.title ?? manifest.title, rows };
     }
+  }
+
+  // The decisive look of each call: the one the answer cites, else the one scored highest.
+  const cited = new Set((answer?.rows ?? []).flatMap((row) => row.cites.map((cite) => cite.look)).filter((look): look is string => !!look));
+  for (const item of toolItems.values()) {
+    const looks = item.looks.filter((look) => sources[look]);
+    if (!looks.length) continue;
+    const top = (look: string) => Math.max(-1, ...sources[look]!.decisions.map((each) => (each.kind === 'noul' ? each.score : -1)));
+    const pick = looks.filter((look) => cited.has(look));
+    for (const look of pick.length ? pick : [looks.reduce((best, look) => (top(look) > top(best) ? look : best))]) sources[look]!.decisive = true;
   }
 
   const times = lines.map((line) => line.t).filter((t) => typeof t === 'number' && t > 0);

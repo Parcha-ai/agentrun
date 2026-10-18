@@ -124,3 +124,17 @@ test("a cite's address keeps its file and fragment however the fragment is writt
   assert.equal(chatCiteHref('other.pdf#page=1', 'notes.pdf'), 'other.pdf#page=1');
   assert.equal(chatCiteHref('', 'notes.pdf', 'notes.pdf#page=9'), 'notes.pdf#page=9');
 });
+
+test('a line with its own start is a span under the call it names as parent, or under the call holding its start', async () => {
+  const { recording } = opened(referenceJob);
+  const start = recording.lines.find((line) => line.kind === 'tool_execution_start')!;
+  const callId = (start.data as { toolCallId: string }).toolCallId;
+  const inner = JSON.stringify({ channel: 'live', source: 'vision', kind: 'model.call', t0: start.t + 1, t: start.t + 2, conv: start.conv, data: { parentToolCallId: callId, tool: 'see', model: 'eyes-1' } });
+  const m = await model(referenceJob, (events) => `${events.trimEnd()}\n${inner}\n`);
+  const span = m.spans.find((each) => each.actor === 'inner' && each.lane === 'see');
+  assert.ok(span, 'the inner call is drawn');
+  assert.equal(span.t0, start.t + 1);
+  assert.equal(span.t1, start.t + 2);
+  assert.equal(span.parentLane, `tool ${(start.data as { toolName: string }).toolName}`);
+  assert.equal(span.label, 'see eyes-1');
+});

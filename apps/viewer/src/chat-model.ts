@@ -45,8 +45,13 @@ export type ChatSpan = {
   item?: string;
 };
 
-/** What a look read, by its key: the address it read, what it found, its images and the regions it boxed. */
-export type ChatSource = { href: string; takeaway: string; media: string[]; regions: { label: string; href: string }[]; item?: string };
+/** One typed decision a look's answer carries (a Jev call): a yes-or-no with its score, or a choice. */
+export type ChatDecision = { name: string; kind: 'noul'; score: number } | { name: string; kind: 'choice'; choice: string };
+
+/** What a look read, by its key: the address it read, what it found, its decisions, its images and the regions it
+ *  boxed. `decisive`: the look the run's answer cites (or, in a call none of whose looks is cited, the one scored
+ *  highest), the one whose frame opens first. */
+export type ChatSource = { href: string; takeaway: string; decisions: ChatDecision[]; media: string[]; regions: { label: string; href: string }[]; item?: string; decisive?: boolean };
 
 /** One row of the run's cited answer, each cite resolved to the look (and its card) that made it. */
 export type ChatRow = { label: string; text: string; cites: { href: string; look?: string; item?: string }[] };

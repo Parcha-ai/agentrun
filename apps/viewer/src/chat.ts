@@ -6,7 +6,7 @@ import { extractChat } from './chat-extract.ts';
 import { drawChat } from './chat-view.ts';
 
 async function chatMain(): Promise<void> {
-  const root = document.getElementById('chat') ?? document.body;
+  const root = document.getElementById('chat-root') ?? document.body;
   const params = new URLSearchParams(location.search);
   const id = params.get('r');
   const src = params.get('src');
@@ -27,7 +27,7 @@ async function chatMain(): Promise<void> {
     drawChat(root, await extractChat(recording, readJson), recording);
   } catch (error) {
     const note = document.createElement('p');
-    note.className = 'problems';
+    note.className = 'chat-error';
     note.textContent = `This recording could not be opened: ${error instanceof Error ? error.message : String(error)}`;
     root.replaceChildren(note);
   }
