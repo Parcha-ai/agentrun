@@ -2,9 +2,12 @@
 
 **Experimental.** The API changes without notice between releases.
 
-A [pi](https://github.com/earendil-works/pi) agent's tools run on the machine each step needs: this machine, a Docker
-container, or a Daytona or Modal sandbox, all behind one `Box` interface. The session, its store and its model calls
-stay with the host; only the tools go to the box.
+A run's tool calls go to Daytona and Modal sandboxes, and Jev places each one on the sandbox that fits it.
+
+`boxEnv(box)` gives a [pi](https://github.com/earendil-works/pi) agent's `read`, `write`, `edit` and `bash` a box: it
+is pi's `ExecutionEnv` over the box, for a pi-durable Harness. `transport(config, host)` does it for each conversation,
+from a config that names the environments. The session, its store and its model calls stay with the host; only the
+tool calls go to the box. Every provider is behind one `Box` interface:
 
 | Where | Provider | Isolation |
 | --- | --- | --- |
@@ -13,11 +16,8 @@ stay with the host; only the tools go to the box.
 | Daytona | `daytonaBoxes`, from `@parcha/pi-transport/box/daytona` | a container per box on the host kernel; a `linux-vm` snapshot is a VM |
 | Modal | `modalBoxes`, from `@parcha/pi-transport/box/modal` | a gVisor sandbox, or a VM (`isolation: "vm"`) |
 
-- **Tools in a box.** `boxEnv(box)` is pi's `ExecutionEnv` over a box: give it to a pi-durable Harness and the agent's
-  `read`, `write`, `edit` and `bash` run there. `transport(config, host)` does it for each conversation, from a config
-  that names the environments.
-- **Jev places each step.** Give each environment a one-line `purpose`. At a user message or a turn's end the host asks
-  `jevPlacer`: Jev reads the step and those lines and says where it should run, and the host points its tools there.
+Jev places a call from each environment's one-line `purpose`: the host asks `jevPlacer`, Jev reads the step and those
+lines and says where it should run, and the host points its tools there.
 
 The reference below takes each part in turn: [a box](#a-box), [tools in a box](#hands-tools-run-in-a-box),
 [where tools run](#where-tools-run-is-a-line-of-config),
