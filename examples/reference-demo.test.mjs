@@ -1583,8 +1583,8 @@ test('code mode is off by default; on, the agent\'s `code` tool runs a script wh
     'const ran = await tools.bash({ command: "echo hello > proof.txt; pwd > where.txt; echo $?" });',
     'const reach = [typeof fetch, typeof process, typeof require, typeof WebAssembly, typeof setTimeout, typeof vision.see].join(",");',
     'await tools.bash({ command: "printf %s " + JSON.stringify(reach) + " > reach.txt" });',
-    'text("ran " + ran.exitCode);',
-    'return ran.exitCode;',
+    'text("ran " + JSON.stringify(ran.trim()));',
+    'return ran;',
   ].join('\n');
   const on = await run(t, {}, ['--json'], { DEMO_CODE: script, DEMO_CODE_ON: '1' });
   assert.equal(on.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(on.result.processes.at(-1)));
@@ -1745,7 +1745,7 @@ test('the follower redacts every line it places (a line a box\'s child wrote wit
 
 test('code mode: a command\'s output is clipped while it streams (head kept, the rest counted), a command stops with its script, and the tool\'s description carries the declaration of vision.see', { timeout: 300_000 }, async (t) => {
   // Output: 100000 characters from one command; the script is given the first 100 and a count of the rest.
-  const loud = ['const ran = await tools.bash({ command: "head -c 100000 /dev/zero | tr \'\\\\0\' x" });', 'await tools.bash({ command: "printf %s " + JSON.stringify(ran.output) + " > out.txt" });', 'return ran.output.length;'].join('\n');
+  const loud = ['const ran = await tools.bash({ command: "head -c 100000 /dev/zero | tr \'\\\\0\' x" });', 'await tools.bash({ command: "printf %s " + JSON.stringify(ran) + " > out.txt" });', 'return ran.length;'].join('\n');
   const clipped = await run(t, { codeMode: { outputChars: 100 } }, ['--json'], { DEMO_CODE: loud, DEMO_CODE_ON: '' });
   const out = readFileSync(join(clipped.result.dir, 'work', 'out.txt'), 'utf8');
   assert.ok(out.startsWith('x'.repeat(100)) && out.includes('[99900 more characters not shown]') && out.length < 200, `the script got the head and a count: ${out.slice(0, 160)}`);
@@ -1756,7 +1756,7 @@ test('code mode: a command\'s output is clipped while it streams (head kept, the
   assert.ok(!existsSync(join(cut.result.dir, 'work', 'late.txt')), 'the command stopped with its script');
   // The declaration the model reads is in the tool\'s description.
   const { codeModeExtension } = await import('./reference/code-mode.ts');
-  const tool = codeModeExtension({ see: () => ({ signature: '(request: { ask: string }): Promise<{ text: string }>', description: 'Ask the eyes about images.' }) }, {}).tools[0];
+  const tool = codeModeExtension({ see: () => ({ signature: '(request: { ask: string }): Promise<{ text: string }>', description: 'Ask the eyes about images.' }), judge: () => ({ signature: '(request: J): Promise<K>', description: 'Ask Jev.' }) }, {}).tools[0];
   assert.match(tool.description, /vision\.see` is declared as `\(request: \{ ask: string \}\): Promise<\{ text: string \}>`: Ask the eyes about images\./);
 });
 
@@ -2333,4 +2333,52 @@ test('a kill line carries the crossing\'s own number: a held kill the point\'s c
   storm('event workflow.node.start');
   storm('judge.asked a');
   assert.ok(fired.at(-1) > 0, `a storm kill has the process's crossing number, not 0: ${fired.at(-1)}`);
+});
+
+test('code mode\'s tools.bash resolves the output string for a zero exit, and rejects for a non-zero exit with an Error that names the exit code and holds the output', { timeout: 300_000 }, async (t) => {
+  const script = [
+    'const ok = await tools.bash({ command: "echo fine" });',
+    'let failed;',
+    'try { await tools.bash({ command: "echo partial; echo oops 1>&2; exit 3" }); } catch (error) { failed = { message: String(error.message) }; }',
+    'await tools.bash({ command: "printf %s \'" + JSON.stringify({ ok, failed }) + "\' > contract.json" });',
+    'return typeof ok;',
+  ].join('\n');
+  const { result } = await run(t, { codeMode: true }, ['--json'], { DEMO_CODE: script, DEMO_CODE_ON: '' });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
+  const { ok, failed } = JSON.parse(readFileSync(join(result.dir, 'work', 'contract.json'), 'utf8'));
+  assert.equal(ok, 'fine\n', 'a zero exit resolves the output as a string');
+  assert.match(failed.message, /^the command exited with code 3:\n/, 'a non-zero exit rejects, and the message names its exit code');
+  assert.ok(failed.message.includes('partial') && failed.message.includes('oops'), `and holds its output, stdout and stderr: ${JSON.stringify(failed)}`);
+});
+
+test('code mode: vision.judge answers through the host\'s judge seam (counted against its cap, priced, with a receipt), the declaration is in the tool\'s description, and the sandbox still has no fetch, process, require, WebAssembly or timers', { timeout: 300_000 }, async (t) => {
+  const { deflateSync } = await import('node:zlib');
+  // A solid 320 x 320 PNG, made here (Jev's images are at least 280 px a side).
+  const crc = (bytes) => { let c = ~0; for (const byte of bytes) { c ^= byte; for (let bit = 0; bit < 8; bit += 1) c = (c >>> 1) ^ (0xedb88320 & -(c & 1)); } return ~c >>> 0; };
+  const chunk = (type, data) => { const body = Buffer.concat([Buffer.from(type), data]); const out = Buffer.alloc(8 + data.length + 4); out.writeUInt32BE(data.length, 0); body.copy(out, 4); out.writeUInt32BE(crc(body), 8 + data.length); return out; };
+  const header = Buffer.alloc(13); header.writeUInt32BE(320, 0); header.writeUInt32BE(320, 4); header[8] = 8; header[9] = 2;
+  const row = Buffer.concat([Buffer.from([0]), Buffer.alloc(320 * 3, 200)]);
+  const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', header), chunk('IDAT', deflateSync(Buffer.concat(Array.from({ length: 320 }, () => row)))), chunk('IEND', Buffer.alloc(0))]).toString('base64');
+  const script = [
+    `await tools.bash({ command: "printf %s ${png} | base64 -d > a.png" });`,
+    'const reach = [typeof fetch, typeof process, typeof require, typeof WebAssembly, typeof setTimeout, typeof vision.see, typeof vision.judge].join(",");',
+    'await tools.bash({ command: "printf %s " + JSON.stringify(reach) + " > reach.txt" });',
+    'const judged = await vision.judge({ paths: ["a.png"], questions: { q: { type: "noul", instructions: "Is the image plain?" } } });',
+    "await tools.bash({ command: \"printf %s '\" + JSON.stringify(judged) + \"' > judged.json\" });",
+    'return judged.costUsd;',
+  ].join('\n');
+  const { result } = await run(t, { codeMode: true }, ['--json'], { DEMO_CODE: script, DEMO_CODE_ON: '' });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
+  const work = join(result.dir, 'work');
+  assert.equal(readFileSync(join(work, 'reach.txt'), 'utf8'), 'undefined,undefined,undefined,undefined,undefined,function,function', 'the sandbox has no fetch, process, require, WebAssembly or timers; vision.see and vision.judge are there');
+  const judged = JSON.parse(readFileSync(join(work, 'judged.json'), 'utf8'));
+  assert.equal(judged.answers.q.noul, 0.92, 'the host\'s judge answered');
+  assert.ok(judged.receipts.length >= 1 && typeof judged.costUsd === 'number', 'a receipt, and a price that is a number');
+  // It went through the capped seam: the run\'s judge count has the workflow\'s own question and this one.
+  const spent = readFileSync(join(result.dir, 'judge-spent.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)).reduce((sum, entry) => sum + entry.requests, 0);
+  assert.equal(spent, 2, 'two judge requests were counted against the cap');
+  // The description the model reads declares it.
+  const { codeModeExtension } = await import('./reference/code-mode.ts');
+  const tool = codeModeExtension({ see: () => ({ signature: '(request: S): Promise<A>', description: 'Ask the eyes.' }), judge: () => ({ signature: '(request: J): Promise<K>', description: 'Ask Jev.' }) }, {}).tools[0];
+  assert.match(tool.description, /vision\.judge` is declared as `\(request: J\): Promise<K>`: Ask Jev\./);
 });
