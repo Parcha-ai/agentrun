@@ -282,6 +282,7 @@ export function followRecording(dir: string, options: { holdMs?: number; /** Eve
   const started = Date.parse(startedAt(dir));
   const events = join(dir, 'events.jsonl');
   if (!existsSync(events)) writeFileSync(events, '');
+  const checkedBlobs = new Set<string>();
   const offsets = new Map<string, number>();
   // The unfinished tail of each spool, as bytes: a multibyte character cut by a read is decoded with the rest of its line.
   const partial = new Map<string, Buffer>();
@@ -333,13 +334,18 @@ export function followRecording(dir: string, options: { holdMs?: number; /** Eve
       // What a viewer can fetch is checked before it is placed: the exact-value redaction knows only the values the run was told of, and the credential shapes the finished recording is refused for are looked for here too.
       const found = credentialInFile('events.jsonl', text);
       if (found) throw new Error(`a line the run wrote holds a ${found}: it is not published, and the recording is refused`);
-      // The text blobs these lines name are fetched by a viewer as soon as the lines are placed: they are looked at first, as the finished recording's blobs are.
+      // The text blobs these lines name are fetched by a viewer as soon as the lines are placed: they are looked at first, as the finished recording's blobs are. The directory is listed once per poll, and a blob (named by its hash, so its
+      // content never changes) is checked once.
+      let names: string[] | undefined;
       for (const line of ready) for (const hash of Array.isArray(line.blobs) ? line.blobs as string[] : []) {
-        for (const name of existsSync(join(dir, 'blobs')) ? readdirSync(join(dir, 'blobs')).filter((entry) => entry.startsWith(`${hash}.`)) : []) {
+        if (checkedBlobs.has(hash)) continue;
+        names ??= existsSync(join(dir, 'blobs')) ? readdirSync(join(dir, 'blobs')) : [];
+        for (const name of names.filter((entry) => entry.startsWith(`${hash}.`))) {
           if (!/\.(?:txt|json|jsonl|md|html|csv|xml|yaml|yml|log)$/i.test(name)) continue;
           const inBlob = credentialInFile(name, readFileSync(join(dir, 'blobs', name), 'utf8'));
           if (inBlob) throw new Error(`a blob the run kept holds a ${inBlob}: its lines are not published, and the recording is refused`);
         }
+        checkedBlobs.add(hash);
       }
       appendFileSync(events, text);
     },
