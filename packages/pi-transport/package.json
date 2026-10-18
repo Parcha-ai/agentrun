@@ -33,6 +33,7 @@
     "./box/box": null,
     "./box/child": null,
     "./box/files": null,
+    "./box/receipts": null,
     "./hands": {
       "source": "./src/hands/index.ts",
       "types": "./dist/hands/index.d.ts",
@@ -44,6 +45,12 @@
       "types": "./dist/home/index.d.ts",
       "import": "./dist/home/index.js",
       "default": "./dist/home/index.js"
+    },
+    "./place": {
+      "source": "./src/place/index.ts",
+      "types": "./dist/place/index.d.ts",
+      "import": "./dist/place/index.js",
+      "default": "./dist/place/index.js"
     },
     "./testing": {
       "source": "./src/testing/index.ts",

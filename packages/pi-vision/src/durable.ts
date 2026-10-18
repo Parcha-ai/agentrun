@@ -7,7 +7,7 @@
 // paid answer is a memo before the result that reports it.
 import type { Context, JsonValue } from "@earendil-works/chord";
 import type { ConversationDocFamilyToken, ConversationId, Extension, HookApi, HookRegistration, ModelRef, ToolExecutionApi, ToolExecutionResult, ToolHooks, ToolRegistration, Wrap } from "@earendil-works/pi-durable";
-import { VISION_JUDGE, VISION_SEE, withReadMedia } from "./core/contract.js";
+import { VISION_JUDGE, VISION_SEE, VISION_TRANSCRIBE, withReadMedia } from "./core/contract.js";
 import type { VisionEnv } from "./core/env.js";
 import { guardResult } from "./core/guard.js";
 import type { CallContext, CallSetup, Eyes, Json, ReadArgs, ToolResult, VisionOptions } from "./core/host.js";
@@ -18,6 +18,7 @@ import { pdfText } from "./core/pdf.js";
 import { detectOnce } from "./core/provider.js";
 import { readMedia, readWithoutSetup } from "./core/read.js";
 import { judge, type JudgeGlobal } from "./core/judge.js";
+import { transcribe, type TranscribeGlobal } from "./core/transcribe.js";
 import { see, SeeMiss, type CodeGlobal, type SeeGlobal } from "./core/see.js";
 import { modelsEyes, modelsOf, type ModelsDoor } from "./eyes/models.js";
 import { childEnvOf, nodeVisionEnv, type ChildEnv } from "./node.js";
@@ -42,6 +43,8 @@ export type VisionHandle = {
   see(env: VisionEnv | undefined, call: CallContext): SeeGlobal;
   /** `vision.judge`, Jev's typed answers about images (`VisionOptions.jev`), for the same sandbox, built the same way. */
   judge(env: VisionEnv | undefined, call: CallContext): JudgeGlobal;
+  /** `vision.transcribe`, what is said in a recording (`VisionOptions.transcriber`), for the same sandbox, built the same way. */
+  transcribe(env: VisionEnv | undefined, call: CallContext): TranscribeGlobal;
 };
 
 /** The names pi-durable gives a result's blocks: `output` from 1.2, `content` in 1.0 and 1.1. Each release reads its own
@@ -201,6 +204,7 @@ export function createVisionExtension(options: VisionAdapterOptions): VisionHand
     sources: options.sources ?? {},
     ...(options.allow ? { allow: options.allow } : {}),
     ...(options.jev ? { jev: options.jev } : {}),
+    ...(options.transcriber ? { transcriber: options.transcriber } : {}),
     // `onLook` reaches the core as the host gave it: the core never lets it fail a call, and reads its throw as the host
     // not having heard of the look.
     ...(options.onLook ? { onLook: options.onLook } : {}),
@@ -279,5 +283,6 @@ export function createVisionExtension(options: VisionAdapterOptions): VisionHand
     pdfText: (bytes, signal) => pdfText(bytes, { env: here, providers, ...(signal ? { signal } : {}) }),
     see: codeGlobal(VISION_SEE, see),
     judge: codeGlobal(VISION_JUDGE, judge),
+    transcribe: codeGlobal(VISION_TRANSCRIBE, transcribe),
   };
 }
