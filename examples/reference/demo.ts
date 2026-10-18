@@ -490,7 +490,6 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     });
     return reading;
   };
-  placeRef = place;
   // A place whose child writes its recording inside the place brings it home through `recordHome.bringHome`: every status tick while a runner runs, and once more, final, after the runner has exited (before the follower closes, the manifest and the release). A tick that fails is
   // retried at the next one; a final failure refuses the recording unless the attempt's box was lost (then the attempt's lines after its last carried tick are a gap, like a kill losing its in-flight commit).
   let carrying: Promise<void> = Promise.resolve();
@@ -514,6 +513,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const meterTimer = maxUsd === null ? undefined : setInterval(() => { if (meterKnown(recordDir) > maxUsd) overBudget = true; }, 250);
   try {
     place = options.place ? await options.place({ paths, self: options.self, destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live), requestFile }) : localPlace({ self: options.self, paths, requestFile, ...(spec.boxes ? { destroyBoxes: () => destroyBoxes(spec, runLabel, paths.root, live) } : {}) });
+    // The follower's hold reads the place's clock allowance from here on (it was assigned before the place existed, so it was never seen).
+    placeRef = place;
     const remaining = childPlansOf(plans);
     let runner: Runner | undefined;
     let previous: { runner: Runner; kind: 'process' | 'box' } | undefined;
@@ -600,7 +601,14 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
         } else if (overBudget) deciding = decide(undefined);
       }, 20);
       const tick = setInterval(() => { if (!inflight) void readStatus(); if (!carryBusy) void carry(gen, false, () => false); }, 2000);
-      const exit = await Promise.race([runner.exited, gaveUp.then(() => undefined)]);
+      let exit: Exit | undefined;
+      try { exit = await Promise.race([runner.exited, gaveUp.then(() => undefined)]); } catch (error) {
+        clearInterval(watch);
+        clearInterval(tick);
+        await iterator?.return?.().catch(() => undefined);
+        await pump.catch(() => undefined);
+        throw error;
+      }
       const result: Exit = exit ?? { exit: null, signal: null, stderr: 'the place could not stop this process' };
       clearInterval(watch);
       clearInterval(tick);
@@ -705,10 +713,10 @@ export function plainText(value: unknown): string {
   return text.replace(/(?<![\w/:.-])\/[^\n:;,"'`]*/g, '<path>').slice(0, 240);
 }
 
-/** The tool kills of an attempt that did not fire: those the child's log (`landed` rows) does not show. A kill that landed is not carried to the next attempt, where it would take another box. */
+/** The tool kills of an attempt that did not fire: those whose place in the plan the child's log (`landed` rows, each naming the entry that fired) does not show. Two kills at one point (or with different `where`) are told apart by that place. */
 export function notLanded<T extends object>(tools: readonly T[], log: string): T[] {
-  const landed = rows<Crossing>(log).filter((crossing) => crossing.landed).map((crossing) => crossing.point);
-  return tools.filter((entry) => { const at = 'point' in entry ? landed.indexOf(String(entry.point)) : -1; if (at >= 0) landed.splice(at, 1); return at < 0; });
+  const fired = new Set(rows<Crossing>(log).filter((crossing) => crossing.landed && typeof crossing.tool === 'number').map((crossing) => crossing.tool));
+  return tools.filter((_entry, index) => !fired.has(index));
 }
 
 const readEventsOf = (dir: string) => rows<Record<string, unknown>>(join(dir, 'events.jsonl'));
