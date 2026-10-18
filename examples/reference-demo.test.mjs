@@ -1386,6 +1386,63 @@ test('a holder\'s host and boot id are labels in the recording (host-1, host-2, 
   assert.deepEqual(validateRecording(recording), []);
 });
 
+// ---- signals-failed, and the messages the supervisor writes about a place's failures --------------------------------------------------------------
+
+test('a place\'s signals may end with signals-failed or throw: a signals.failed host line, the attempt ends as after a failed kill, nothing ends the supervisor; and a message holds no absolute path outside the run\'s directory', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-signals-failed-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'spec.json');
+  Object.assign(process.env, { DEMO_SPEC: file });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  t.after(() => process.off('unhandledRejection', onUnhandled));
+  const hostLines = (recording, kind) => readEvents(recording).filter((line) => line.source === 'host' && line.kind === kind);
+  // A message: a path outside the run\'s directory becomes <path>, the run\'s own stays, and it is capped at 240 characters.
+  const { messageOf } = await import('./reference/demo.ts');
+  assert.equal(messageOf(new Error('cannot reach /srv/elsewhere/x and /run/root/store/run.sqlite at http://host/a/b'), '/run/root'), 'cannot reach <path> and /run/root/store/run.sqlite at http://host/a/b');
+  assert.equal(messageOf('/run/root and /run/rootless', '/run/root'), '/run/root and <path>');
+  assert.equal(messageOf('x'.repeat(500), '/run/root').length, 240);
+  // A path outside the run is replaced whole: a folder with a space in its name, and a Windows drive path.
+  const aliceHome = ['', 'home', 'alice'].join('/');
+  assert.equal(messageOf(`could not read ${aliceHome}/Private Documents/report.txt now`, '/run/root'), 'could not read <path> now');
+  assert.equal(messageOf('could not read C:\\Users\\alice\\private.txt, giving up', '/run/root'), 'could not read <path>, giving up');
+  assert.equal(messageOf('could not read C:\\Users\\alice\\My Files\\x.txt now', '/run/root'), 'could not read <path> now');
+  // kill.failed: the same scrub.
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] }));
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const killRecording = join(tmp, 'kill-recording');
+  const failedKill = await demo({ ...options, argv: ['--kill', '--json', '--record', killRecording], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner, kill: async (runner, kind) => { await inner.kill(runner, kind); throw Object.assign(new Error(`cannot reach /srv/elsewhere/x and ${paths.root}/store/run.sqlite`), { code: 'S3_GONE' }); } };
+  } });
+  assert.deepEqual(failedKill.failedKills.map((entry) => entry.code), ['S3_GONE']);
+  assert.equal(hostLines(killRecording, 'kill.failed')[0].data.message, `cannot reach <path> and ${failedKill.dir}/store/run.sqlite`);
+  // signals-failed: the iterator ends with it.
+  writeFileSync(file, JSON.stringify({ name: 'reference' }));
+  const { options: plain } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const endedRecording = join(tmp, 'ended-recording');
+  const ended = await demo({ ...plain, argv: ['--json', '--record', endedRecording], place: ({ paths, self, destroyBoxes, requestFile }) => ({
+    ...localPlace({ self, paths, destroyBoxes, requestFile }),
+    signals: () => ({ [Symbol.asyncIterator]() { let done = false; return { next: async () => (done ? { done: true, value: undefined } : (done = true, { done: false, value: { kind: 'signals-failed', code: 'S3_DOWN', message: `the reader lost /srv/elsewhere/x under ${paths.root}/signals` } })), return: async () => ({ done: true, value: undefined }) }; } }),
+  }) });
+  assert.deepEqual(ended.failedSignals, [{ gen: 1, code: 'S3_DOWN' }]);
+  assert.deepEqual(hostLines(endedRecording, 'signals.failed').map((line) => [line.data.gen, line.data.code, line.data.message]), [[1, 'S3_DOWN', `the reader lost <path> under ${ended.dir}/signals`]]);
+  assert.equal(ended.processes.length, 1, 'the attempt ended as after a failed kill: no further process');
+  assert.equal(hostLines(endedRecording, 'kill').length, 0);
+  // A reader that throws: the same line, and the supervisor is fine.
+  const threwRecording = join(tmp, 'threw-recording');
+  const threw = await demo({ ...plain, argv: ['--json', '--record', threwRecording], place: ({ paths, self, destroyBoxes, requestFile }) => ({
+    ...localPlace({ self, paths, destroyBoxes, requestFile }),
+    signals: () => ({ [Symbol.asyncIterator]() { return { next: async () => { throw Object.assign(new Error('the reader threw at /srv/elsewhere/y'), { code: 'BOOM' }); }, return: async () => ({ done: true, value: undefined }) }; } }),
+  }) });
+  assert.deepEqual(threw.failedSignals, [{ gen: 1, code: 'BOOM' }]);
+  assert.deepEqual(hostLines(threwRecording, 'signals.failed').map((line) => [line.data.code, line.data.message]), [['BOOM', 'the reader threw at <path>']]);
+  assert.deepEqual(unhandled, [], 'nothing in the pump ended the supervisor');
+  assert.deepEqual(validateRecording(threwRecording), []);
+});
+
 // ---- the operator's kill ------------------------------------------------------------------------------------------------------------------------
 
 test('an operator kill (a control file the supervisor watches, never the child\'s request file) kills through the place, writes a kill line with crossing null and label operator, and the run resumes with repeated 0', { timeout: 300_000 }, async (t) => {
