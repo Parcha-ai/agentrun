@@ -12,12 +12,16 @@ The hosted gallery is at https://parcha-ai.github.io/agentrun/. It is this repla
 ## The chat + report view
 
 `chat.html?r=<id>` (or `?src=<url>`) opens a recording as a conversation and a report, the gallery's default view. It
-is made from the recording's own events, with nothing per recording: each recorded conversation as a thread (the user
-message as recorded, the assistant's text, the run's own thinking folded, one card per tool call titled by the tool
-and its arguments, consecutive calls of one tool folded into "+ N more"); a session timeline under the title, collapsed,
+is made from the recording's own events, with nothing per recording: the run's input as given (the workflow's input
+record, its fields in plain form) as the user's message; each recorded conversation as a thread (its messages as
+recorded, without the prompt the host composed to open it, the assistant's text, the run's own thinking folded, one
+card per tool call titled by the tool and its arguments, a failed call by its error's first line, consecutive calls
+of one tool folded into "+ N more"); a session timeline under the title, collapsed,
 of workflow nodes, LLM calls (by model), tool calls (by name) and the model calls a tool makes, nested under it (a span
 when the line names its call and start, else a point at its time); and on the right the agent's artifact
-(`manifest.artifact`: its entry and files as blobs), in a frame that runs no script, or else the run's cited answer.
+(`manifest.artifact`: its entry and files as blobs), in a frame that runs no script; else the run's cited answer; else
+the result record it submitted, its evidence paths as cites; else its final assistant text. The title is the
+artifact's, else the first line of the input's question, else the recording's title.
 Citations are the cited file's own address (`file.pdf#page=3&xywh=percent:...`, `film.webm#t=10`) and open that page
 or frame with its region boxed. "How this ran" opens the same recording in this replay viewer. `src/chat-extract.ts`
 makes the model, `src/chat-view.ts` and `src/chat-report.ts` draw it.
