@@ -2,10 +2,36 @@
 
 **Experimental.** The API changes without notice between releases.
 
-Run a [pi-durable](https://github.com/earendil-works/pi) session's tools in another machine, or move the session
-there. This release holds the first layers: the `Box` interface with two providers and a conformance suite, `boxEnv`,
-which runs a session's tools in a box, and `transport()`, which sends each conversation's tools to the box its
-config names.
+A [pi](https://github.com/earendil-works/pi) agent's tools run on the machine each step needs: this machine, a Docker
+container, or a Daytona or Modal sandbox, all behind one `Box` interface. The session, its store and its model calls
+stay with the host; only the tools go to the box.
+
+| Where | Provider | Isolation |
+| --- | --- | --- |
+| This machine | `localBoxes`, from `@parcha/pi-transport/box/local` | none: for development and tests |
+| Docker | `dockerBoxes`, from `@parcha/pi-transport/box/docker` | a container per box |
+| Daytona | `daytonaBoxes`, from `@parcha/pi-transport/box/daytona` | a container per box on the host kernel; a `linux-vm` snapshot is a VM |
+| Modal | `modalBoxes`, from `@parcha/pi-transport/box/modal` | a gVisor sandbox, or a VM (`isolation: "vm"`) |
+
+- **Tools in a box.** `boxEnv(box)` is pi's `ExecutionEnv` over a box: give it to a pi-durable Harness and the agent's
+  `read`, `write`, `edit` and `bash` run there. `transport(config, host)` does it for each conversation, from a config
+  that names the environments.
+- **Jev places each step.** Give each environment a one-line `purpose`. At a user message or a turn's end the host asks
+  `jevPlacer`: Jev reads the step and those lines and says where it should run, and the host moves the session, or
+  points its tools, there. The host keeps each decision in the session (`recordPlacement`); Jev's key stays on the host.
+- **A receipt per box.** `boxReceipts` names each box by a label (`box-1`, `box-2`, never the provider's id) and writes
+  its receipt when it ends: the provider, the kind of box, when it started and ended, and its cost at the rates the
+  host passes. This package holds no price table; a box the host gives no rate gets no receipt.
+- **A session can live in a box too:** it moves between boxes, and comes back from a killed process or a lost box.
+
+The reference below takes each part in turn: [a box](#a-box), [tools in a box](#hands-tools-run-in-a-box),
+[where tools run](#where-tools-run-is-a-line-of-config),
+[a store and a workspace](#moving-a-home-a-store-and-a-workspace),
+[a home](#a-home-the-session-runs-somewhere-and-can-stop-without-a-cut) (its link, its moves, its checkpoints, the
+record stream and [where a session runs](#where-a-session-runs-the-placer)),
+[ownership](#ownership-one-writer-per-session), [the box place](#a-sessions-place-in-a-box-place),
+[receipts](#what-a-box-cost-receipts), [a program kept alive in a box](#home-a-program-kept-alive-in-a-box) and
+[writing a provider](#writing-a-provider).
 
 ## A box
 
@@ -30,14 +56,7 @@ await box.destroy(BACKGROUND_CONTEXT);
 Expected failures are returned as `Result` values with a `BoxError` and a code. Every box has a maximum lifetime
 that its provider enforces with no call from the host, so a host that dies does not leave boxes behind. A program in
 a box never receives the host process's environment. A provider refuses a spec field it cannot honour instead of
-ignoring it.
-
-| Provider | Import | Isolation |
-| --- | --- | --- |
-| This machine | `@parcha/pi-transport/box/local` | none: for development and tests |
-| Docker | `@parcha/pi-transport/box/docker` | a container per box |
-| Daytona | `@parcha/pi-transport/box/daytona` | a container per box on the host kernel; a `linux-vm` snapshot is a VM |
-| Modal | `@parcha/pi-transport/box/modal` | a gVisor sandbox, or a VM (`isolation: "vm"`) |
+ignoring it. The table above lists the providers; the sections below say what each one does with a spec.
 
 ### Daytona
 
@@ -141,43 +160,6 @@ Where it differs from `NodeExecutionEnv`, on purpose:
   Node reads the ranges it is asked for. `readTextLines` with `maxLines` brings only those lines out of the box.
 
 Not covered by hands: MCP servers, code mode and model calls stay with the Harness.
-## Moving a home: a store and a workspace
-
-`@parcha/pi-transport/home` holds the two movers a session needs when there is no disk the boxes share. They know
-nothing of sessions beyond "a SQLite file and a directory". Node only.
-
-- **A store.** `sealStore(path)` returns a `Seal` (head, SHA-256, size) of a store its owner has closed; a store with a
-  write-ahead log that holds content is refused with `not_sealed`. `checkpointStore(path, to)` takes a consistent copy
-  of a store that is still open, with `VACUUM INTO` through a second read-only connection; the copy appears whole or
-  not at all. `verifyStore(path, seal)` checks size, hash, SQLite's quick check and the head, in that order. The head is
-  one read of `durable_metadata.next_seq`, the only knowledge of pi's schema here.
-- **A file.** `moveFile(from, path, to, path, seal)` copies one file between boxes through this process and checks it by
-  hash on the way and on the target; it appears at its path whole or not at all.
-- **A directory.** `manifestOf(box, root, { exclude })` lists a directory in the box: every path with its kind, size,
-  mode, link target and, for files, SHA-256. `moveWorkspace(from, to, { fromRoot, toRoot, exclude, maxBytes })` copies it
-  as a `tar` stream, relayed a chunk at a time with no temporary file, then checks the target against the source:
-  `too_large` and `unsupported_entry` (a socket, device or pipe, named) are decided from the listing before a byte
-  moves; `changed` says the source changed during the copy; `mismatch` names the first path where the target differs.
-  The receipt has bytes, files, the time of each part, MB per second and which side the relay waited on more.
-
-Kept: file contents, permission bits, symbolic links as links, empty directories, modification times in whole
-seconds, names with any bytes. Not kept: owners and groups, extended attributes, ACLs, and the access times. A target
-that already holds other files fails the check. The boxes need `tar`, `find`, `xargs`, `split` and `sha256sum` from GNU
-coreutils and findutils, as `boxEnv` does.
-
-**How the bytes travel.** Each side of a move decides for itself by its box's `facts().bulk`: `stream` moves the
-archive through the streams of `exec`, and is what `localBoxes` and `dockerBoxes` say; anything else, including a box
-that says nothing, moves it as files through `upload` and `download`, because a remote provider's streams can be far
-slower than its file calls (measured: Daytona's at 0.1 to 2.8 MB/s against 25 to 40 MB/s for files, a Modal sandbox's
-at 2 MB/s against 31 to 35). Out of Docker into Daytona the archive streams out and arrives as files. A host can
-override either side in the options (`fromPipe`, `toPipe`) and set the size of the parts (`chunkBytes`, default
-32 MiB). With files, the archive is cut into parts in a directory of its own under the box's temporary directory
-(`TMPDIR`, else `/tmp`); every part is hashed where it is made and checked where it lands, so a part that is missing,
-short or flipped is `mismatch`; the directories are removed on success, on failure and on abort.
-
-**Disk a move needs.** A side that moves files holds the archive once more: the source box needs free space for the
-archive next to the tree it is packing (about the size of the files), and the target box for the archive next to the
-tree it unpacks (the same again). A side that streams needs none. The host holds one part in memory at a time.
 
 ### Where tools run is a line of config
 
@@ -242,6 +224,44 @@ a provider may store and return, and never in a command line.
 ```sh
 node --experimental-strip-types examples/01-hands.ts examples/hands.docker.json 'hostname; pwd'
 ```
+
+## Moving a home: a store and a workspace
+
+`@parcha/pi-transport/home` holds the two movers a session needs when there is no disk the boxes share. They know
+nothing of sessions beyond "a SQLite file and a directory". Node only.
+
+- **A store.** `sealStore(path)` returns a `Seal` (head, SHA-256, size) of a store its owner has closed; a store with a
+  write-ahead log that holds content is refused with `not_sealed`. `checkpointStore(path, to)` takes a consistent copy
+  of a store that is still open, with `VACUUM INTO` through a second read-only connection; the copy appears whole or
+  not at all. `verifyStore(path, seal)` checks size, hash, SQLite's quick check and the head, in that order. The head is
+  one read of `durable_metadata.next_seq`, the only knowledge of pi's schema here.
+- **A file.** `moveFile(from, path, to, path, seal)` copies one file between boxes through this process and checks it by
+  hash on the way and on the target; it appears at its path whole or not at all.
+- **A directory.** `manifestOf(box, root, { exclude })` lists a directory in the box: every path with its kind, size,
+  mode, link target and, for files, SHA-256. `moveWorkspace(from, to, { fromRoot, toRoot, exclude, maxBytes })` copies it
+  as a `tar` stream, relayed a chunk at a time with no temporary file, then checks the target against the source:
+  `too_large` and `unsupported_entry` (a socket, device or pipe, named) are decided from the listing before a byte
+  moves; `changed` says the source changed during the copy; `mismatch` names the first path where the target differs.
+  The receipt has bytes, files, the time of each part, MB per second and which side the relay waited on more.
+
+Kept: file contents, permission bits, symbolic links as links, empty directories, modification times in whole
+seconds, names with any bytes. Not kept: owners and groups, extended attributes, ACLs, and the access times. A target
+that already holds other files fails the check. The boxes need `tar`, `find`, `xargs`, `split` and `sha256sum` from GNU
+coreutils and findutils, as `boxEnv` does.
+
+**How the bytes travel.** Each side of a move decides for itself by its box's `facts().bulk`: `stream` moves the
+archive through the streams of `exec`, and is what `localBoxes` and `dockerBoxes` say; anything else, including a box
+that says nothing, moves it as files through `upload` and `download`, because a remote provider's streams can be far
+slower than its file calls (measured: Daytona's at 0.1 to 2.8 MB/s against 25 to 40 MB/s for files, a Modal sandbox's
+at 2 MB/s against 31 to 35). Out of Docker into Daytona the archive streams out and arrives as files. A host can
+override either side in the options (`fromPipe`, `toPipe`) and set the size of the parts (`chunkBytes`, default
+32 MiB). With files, the archive is cut into parts in a directory of its own under the box's temporary directory
+(`TMPDIR`, else `/tmp`); every part is hashed where it is made and checked where it lands, so a part that is missing,
+short or flipped is `mismatch`; the directories are removed on success, on failure and on abort.
+
+**Disk a move needs.** A side that moves files holds the archive once more: the source box needs free space for the
+archive next to the tree it is packing (about the size of the files), and the target box for the archive next to the
+tree it unpacks (the same again). A side that streams needs none. The host holds one part in memory at a time.
 
 ## A home: the session runs somewhere, and can stop without a cut
 

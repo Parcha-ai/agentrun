@@ -117,6 +117,31 @@ For authoring, `authorWorkflow` from `@parcha/agentrun-dsl` retains a candidate 
 
 For an authoritative SOP, supply complete `rubricSections` during authoring and the same source text through runtime `sop`. The author conservatively requires every generative node to carry all supplied sections and rejects semantic paths that cannot carry them. See [Pi SDK setup](../packages/pi/README.md#sdk-embed-the-runner) for configuration and limits.
 
+<a id="transport"></a>
+## Run an agent's tools where each step needs them
+
+[`@parcha/pi-transport`](../packages/pi-transport/README.md) (not yet published) runs a pi agent's tools on another machine: this machine, a Docker container, or a Daytona or Modal sandbox, behind one `Box` interface. The session, its store and its model calls stay with the host; only the tools go to the box. Use it when a step needs a machine the host is not: a GPU, more memory, or a sandbox apart from the host for code the agent writes and runs. Jev can choose the machine for each step from a one-line purpose you give each environment, and the host can keep a receipt for each box.
+
+This runs with no key and no Docker. The box is a directory on this machine, with no isolation:
+
+```js
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { localBoxes } from "@parcha/pi-transport/box/local";
+import { boxEnv } from "@parcha/pi-transport/hands";
+
+const created = await localBoxes({ root: "./boxes" }).create({ maxLifetimeMs: 10 * 60_000 }, BACKGROUND_CONTEXT);
+if (!created.ok) throw created.error;
+const box = created.value;
+
+const env = boxEnv(box);
+await env.writeFile("notes/a.txt", "hello from the box\n", BACKGROUND_CONTEXT);
+const ran = await env.exec("cat notes/a.txt", { timeout: 10, onOutput: (text) => process.stdout.write(text) }, BACKGROUND_CONTEXT);
+console.log(ran.ok ? `exit ${ran.value.exitCode}` : ran.error);
+await box.destroy(BACKGROUND_CONTEXT);
+```
+
+`boxEnv` is pi's `ExecutionEnv`, so a pi-durable Harness given it as `env` runs the agent's `read`, `write`, `edit` and `bash` in the box. For a container, use `dockerBoxes()` from `@parcha/pi-transport/box/docker`. The [package README](../packages/pi-transport/README.md) covers the providers, the config that sends each conversation's tools to an environment, Jev's placement, receipts, and a session that lives in a box.
+
 <a id="primitives"></a>
 ## The primitives
 
