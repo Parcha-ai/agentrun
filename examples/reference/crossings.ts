@@ -48,6 +48,8 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
   const seen = new Map<unknown, number>();
   const eligible = new Map<unknown, number>();
   const done = new Set<number>();
+  // A run kill is taken once, at the first eligible matching crossing at or after its nth: one a tool kill took at the same crossing is not lost, it lands at the next.
+  let fired = false;
   let parkedCount = 0;
   let killAsked = false;
   const cross = ((point: string, options: { cut?: boolean; info?: Info } = {}) => {
@@ -73,9 +75,9 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
     // A kill with `hold` is taken by `park`, not here: the crossing parks the nth filing and the ones after it.
     if (!('storm' in run) && run.hold !== undefined) return false;
     // A named point is taken as named; a storm waits for the first node to have begun.
-    const due = 'storm' in run ? begun && point !== 'event workflow.node.start' && Date.now() - started >= run.gapMs : run.point === point && matches(run.where, info) && timesEligible === run.n;
+    const due = 'storm' in run ? begun && point !== 'event workflow.node.start' && Date.now() - started >= run.gapMs : run.point === point && matches(run.where, info) && timesEligible >= run.n && !fired;
     if (point === 'event workflow.node.start') begun = true;
-    if (due) kill({ point, n, pid: process.pid });
+    if (due) { fired = true; kill({ point, n, pid: process.pid }); }
     return false;
   }) as Cross;
   (cross as { park: NonNullable<Cross['park']> }).park = (point, info) => {
