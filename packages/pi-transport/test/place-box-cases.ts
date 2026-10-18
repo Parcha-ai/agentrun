@@ -1103,6 +1103,43 @@ export function registerBoxPlaceCases(name: string, setup: BoxPlaceSetup): void 
 		);
 
 		it.skipIf(setup.poolProgram === undefined)(
+			"ends the pool's boxes at release when the host did not end them first, each with its receipt",
+			async () => {
+				const made = world(setup);
+				try {
+					const boxes = localBoxes({ root: join(dirname(made.host), "pool") });
+					const secret: BoxProvider = {
+						name: "secret",
+						create: (spec, at) => boxes.create(spec, at),
+						attach: (id, at) => boxes.attach(id, at),
+						list: (labels, at) => boxes.list(labels, at),
+					};
+					const receipts: BoxReceipt[] = [];
+					const ledger = boxReceipts({
+						prices: [
+							{ provider: "secret", kind: "none", usdPerSecond: 0.0001, source: "test", priced: "2026-10-18" },
+						],
+						write: (receipt) => receipts.push(receipt),
+					});
+					const place = await placeIn(made, { program: setup.poolProgram, pool: { secret }, receipts: ledger });
+					const runner = await place.start(orderOf(made, place, 1));
+					await firstSignal(place, 1, "kill-request");
+					// The runner made its pool box and waits with a program running in it.
+					expect(getOrThrow(await boxes.list({}, context))).toHaveLength(1);
+					await place.kill(runner, "process");
+					await runner.exited;
+					// No endPool: the release ends what the pool holds.
+					await place.release();
+					expect(getOrThrow(await boxes.list({}, context))).toEqual([]);
+					expect(receipts.map(({ provider }) => provider)).toEqual(["secret"]);
+				} finally {
+					made.remove();
+				}
+			},
+			setup.timeoutMs ?? 60_000,
+		);
+
+		it.skipIf(setup.poolProgram === undefined)(
 			"makes the pool's boxes on the host: no token reaches the home box, and a runner restored after a home-box kill finds its pool box by label",
 			async () => {
 				const made = world(setup);
