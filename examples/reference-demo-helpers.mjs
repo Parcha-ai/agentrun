@@ -90,6 +90,15 @@ export const specWith = async (t, spec) => {
   return { tmp, options };
 };
 
+/** Ends the processes a test left running and returns when they are gone: a test that fakes a kill leaves the real child writing under the run's directory, and the directory's removal fails (ENOTEMPTY) while it does. Call it in a `finally`, before the test ends. */
+export const reap = async (pids) => {
+  for (const pid of pids) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+  const deadline = Date.now() + 10_000;
+  for (const pid of pids) {
+    while (Date.now() < deadline) { try { process.kill(pid, 0); } catch { break; } await new Promise((resolve) => setTimeout(resolve, 20)); }
+  }
+};
+
 export const SITES = { registry: { title: 'The company registry', description: 'Company records: number, incorporation date, status.', startUrl: 'http://registry.example/companies/01234567' } };
 
 // ---- secrets in a recording ------------------------------------------------------------------------------------------------------------------
