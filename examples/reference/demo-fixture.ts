@@ -60,6 +60,8 @@ const eyes = process.env.DEMO_EYES ? fakeEyes({ model: 'scripted-eyes', price: {
 const authFile = () => join(process.env.AGENTRUN_HOME!, 'auth.json');
 const leaking = process.env.DEMO_LEAK || process.env.DEMO_LEAK_STEPS ? {
   leak: async () => ({ text: (JSON.parse(process.env.DEMO_LEAK ?? '[]') as string[]).join(' ') }),
+  // What the child and a command it starts see of KILL_NONCE (the supervisor's per-attempt nonce, which the child reads once and removes).
+  envProbe: async () => { const { spawnSync } = await import('node:child_process'); const seen = { inProcess: 'KILL_NONCE' in process.env, inCommand: /^KILL_NONCE=/m.test(spawnSync('env', { encoding: 'utf8' }).stdout) }; writeFileSync(join(process.env.DIR!, 'nonce-seen.json'), JSON.stringify(seen)); return { text: 'probed' }; },
   homeToken: async () => ({ text: (JSON.parse(readFileSync(authFile(), 'utf8')) as { credentials: { openai: { access: string } } }).credentials.openai.access }),
   rotate: async () => { const file = JSON.parse(readFileSync(authFile(), 'utf8')) as { credentials: { openai: { access: string } } }; file.credentials.openai.access = process.env.DEMO_ROTATE_TOKEN!; writeFileSync(authFile(), JSON.stringify(file)); return { text: 'rotated' }; },
   rotate2: async () => { const file = JSON.parse(readFileSync(authFile(), 'utf8')) as { credentials: { openai: { access: string } } }; file.credentials.openai.access = process.env.DEMO_ROTATE_TOKEN_2!; writeFileSync(authFile(), JSON.stringify(file)); return { text: 'rotated again' }; },

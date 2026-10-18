@@ -20,7 +20,10 @@ export default async function app(ctx: AppContext): Promise<AppOptions> {
   let options: DemoOptions | undefined;
   try { options = ((await import(entry)) as { options?: DemoOptions }).options; } finally { delete importing[IMPORTING_DEMO]; }
   if (!options) throw new Error(`${entry} exports no \`options\` (the DemoOptions the demo passes to demo()).`);
-  const prepared = await prepareChild(options, process.env, { id: ctx.ref.id, root: ctx.root, work: ctx.work, store: ctx.store });
+  // The attempt's nonce goes into the kill request and out of the environment before anything starts.
+  const killNonce = process.env.KILL_NONCE;
+  delete process.env.KILL_NONCE;
+  const prepared = await prepareChild(options, process.env, { id: ctx.ref.id, root: ctx.root, work: ctx.work, store: ctx.store }, killNonce);
   const opened = await appOf(prepared.place, prepared.host, prepared.job, prepared.runOptions, async ({ result, storeSha256 }) => {
     // The recorder is detached and the prepared parts released whether or not the result hook and the report succeed.
     try {

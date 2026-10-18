@@ -17,7 +17,7 @@ export type RunnerOrder = { gen: number; env: Record<string, string>; stdin?: st
 export type MoveReceipt = Record<string, unknown>;
 /** What a runner announces to its supervisor: a crossing it took, or a request to be killed at one (a child parks at a planned crossing until the supervisor's kill arrives, so the
  *  latency of reading it from a remote place is acceptable). `info` carries what the place knows of the crossing (`gen`, `box`, `tool`, a transport crossing's `session` and `epoch`). */
-export type PlaceSignal = { kind: 'crossing' | 'kill-request'; crossing: { point: string; n: number; pid?: number; info?: Record<string, unknown> } };
+export type PlaceSignal = { kind: 'crossing' | 'kill-request'; crossing: { point: string; n: number; pid?: number; info?: Record<string, unknown> }; /** The attempt's nonce the runner wrote into its request (a place passes every request field through): the supervisor honors a kill request only with the nonce it minted for that attempt. */ nonce?: string };
 
 export type Place = {
   /** For the recording's lines and the README: `local`, `box:docker`, `archil`. */
@@ -31,6 +31,8 @@ export type Place = {
   start(order: RunnerOrder): Promise<Runner>;
   /** The crossings and kill requests of attempt `attempt`, as they are announced; the supervisor stops reading when the runner has exited. The local place reads the files its child writes; a box place reads them from the run's disk (over S3 for a remote one). The supervisor reads nothing under the run's directory itself. The iterator's `return()` must end a pending `next()`: the supervisor calls it when the runner has exited. */
   signals?(attempt: number): AsyncIterable<PlaceSignal>;
+  /** Where attempt n's runner writes its kill request: the place answers it (the child never derives it), and a place that has `signals(attempt)` has `requestFile(attempt)`; the two agree. */
+  requestFile?(attempt: number): string;
   /** Kills the runner: `process` ends the runner, `box` takes the place's machine away. The supervisor has written the kill line before it calls this. Safe on a runner that is already gone. */
   kill(runner: Runner, kind: 'process' | 'box'): Promise<void>;
   /** How the session stands, read the way the place reads it (a package's status reader), never from the store or `work/`: the supervisor is control-plane only. */
@@ -73,7 +75,7 @@ export function localPlace(options: { self: string; paths: RunPlace; destroyBoxe
   return {
     name: 'local', paths: options.paths, kills: options.destroyBoxes ? ['process', 'box'] : ['process'],
     start, kill,
-    ...(options.requestFile ? { signals: (attempt) => localSignals(options.requestFile!(attempt)) } : {}),
+    ...(options.requestFile ? { requestFile: options.requestFile, signals: (attempt) => localSignals(options.requestFile!(attempt)) } : {}),
     recover: async (last, kind, order) => { if (!stopped.has(last)) await kill(last, kind); return { runner: await start(order) }; },
     release: async () => undefined,
   };
@@ -85,12 +87,20 @@ function localSignals(file: string): AsyncIterable<PlaceSignal> {
   return {
     [Symbol.asyncIterator]() {
       let closed = false;
+      let last: string | undefined;
       return {
         async next(): Promise<IteratorResult<PlaceSignal>> {
           for (;;) {
             if (closed) return { done: true, value: undefined };
             if (existsSync(file)) {
-              try { const crossing = JSON.parse(readFileSync(file, 'utf8')); closed = true; return { done: false, value: { kind: 'kill-request', crossing } }; } catch { /* written whole by rename: a half read is retried */ }
+              try {
+                const text = readFileSync(file, 'utf8');
+                if (text !== last) {
+                  const { nonce, ...crossing } = JSON.parse(text);
+                  last = text;
+                  return { done: false, value: { kind: 'kill-request', crossing, ...(typeof nonce === 'string' ? { nonce } : {}) } };
+                }
+              } catch { /* written whole by rename: a half read is retried */ }
             }
             await new Promise((resolve) => setTimeout(resolve, 20));
           }

@@ -1,7 +1,7 @@
 // The reference entry as a demo's platform (item A of the entry brief): the spec's kills list through the supervisor (a named crossing, a storm, a box kind),
 // --input, --max-usd, the browser choice, and the box the job's tools run in. The demo here is the reference job itself, started through demo-fixture.ts.
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -458,7 +458,8 @@ test('the place seam: the supervisor starts, kills and recovers through the plac
   assert.equal(JSON.parse(readFileSync(join(recording, 'blobs', `${manifest.result.blob}.json`), 'utf8')).record.company, 'Acme Ltd');
   assert.match(manifest.source.store_sha256, /^[0-9a-f]{64}$/);
   assert.notEqual(manifest.source.store_sha256, '0'.repeat(64));
-  assert.equal(localPlace({ self: FIXTURE, paths: { id: 'r', root: '/x', work: '/x/work', store: '/x/store' } }).token, undefined, 'the local place mints no token');
+  const localOnly = localPlace({ self: FIXTURE, paths: { id: 'r', root: '/x', work: '/x/work', store: '/x/store' } });
+  assert.equal(localOnly.token, undefined, 'the local place mints no token');
 });
 
 test('a place that cannot lose its machine refuses a box kill, and says which place', { timeout: 300_000 }, async (t) => {
@@ -907,7 +908,7 @@ test('a kill\'s where: only a crossing whose info has those values counts, and n
 
 });
 
-test('a run is keyed by its demo\'s name (the place\'s paths.id), so two demos never share a run', { timeout: 300_000 }, async (t) => {
+test('a run is keyed by a fresh id that starts with its demo\'s name (the place\'s paths.id), so two demos never share a run', { timeout: 300_000 }, async (t) => {
   const { readJournal } = await import('@parcha/agentrun-pi/durable');
   const { RUN_KEY } = await import('./reference/index.ts');
   const parent = await mkdtemp(join(tmpdir(), 'reference-keyed-'));
@@ -917,7 +918,9 @@ test('a run is keyed by its demo\'s name (the place\'s paths.id), so two demos n
     const { result } = await run(t, { name }, ['--json', '--dir', dir]);
     assert.equal(result.processes.at(-1).outcome.status, 'complete');
     const file = join(dir, 'store', 'run.sqlite');
-    assert.ok(readJournal(file, name)?.binding, `${name}'s journal is under its own name`);
+    assert.match(result.runId, new RegExp(`^${name}-[0-9a-f]{8}$`));
+    assert.ok(readJournal(file, result.runId)?.binding, `${name}'s journal is under its own run id`);
+    assert.equal(readJournal(file, name), undefined, 'and not under the bare name');
     assert.equal(readJournal(file, RUN_KEY), undefined, `nothing is kept under the fixed key ${RUN_KEY}`);
   }
 });
@@ -1170,9 +1173,149 @@ test('a directory a run already used keeps its identity: a demo whose name diffe
   const dir = join(tmp, 'run');
   const first = await run(t, {}, ['--json', '--dir', dir]);
   assert.equal(first.result.processes.at(-1).outcome.status, 'complete');
-  assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).run, 'reference');
+  const saved = JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).run;
+  assert.match(saved, /^reference/, 'the run is named for its demo (and an invocation)');
   // The same directory again, by a demo of another name (a directory saved before the run was named for its demo): it is not refused, and stays what it was.
   const again = await run(t, { name: 'another-demo' }, ['--json', '--dir', dir]);
   assert.equal(again.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(again.result.processes.at(-1)));
-  assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).run, 'reference');
+  assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).run, saved, 'resumed under the saved name');
+});
+
+// ---- the place answers where the kill request is, and the supervisor honors it only with the attempt's nonce ---------------------------------------
+
+test('askToBeKilled writes the request durably (whole, with the attempt\'s nonce), and the request written at requestFile(gen) is the one signals(gen) yields, for localPlace and a place with its own requestFile and signals', { timeout: 120_000 }, async (t) => {
+  const { spawn } = await import('node:child_process');
+  const { localPlace } = await import('./reference/index.ts');
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-request-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const asks = (file, nonce) => new Promise((resolve) => {
+    const child = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', '-e', 'import("./examples/reference/crossings.ts").then((m) => m.askToBeKilled(process.argv[1], process.argv[2])({ point: "vision.filing", n: 2, pid: process.pid }))', file, nonce], { cwd: new URL('..', import.meta.url).pathname, stdio: 'ignore' });
+    const wait = setInterval(() => { if (existsSync(file)) { clearInterval(wait); resolve(child); } }, 20);
+  });
+  const first = async (iterable) => { const iterator = iterable[Symbol.asyncIterator](); const next = await iterator.next(); await iterator.return?.(); return next.value; };
+  const local = localPlace({ self: FIXTURE, paths: { id: 'r', root: tmp, work: join(tmp, 'work'), store: join(tmp, 'store') }, requestFile: (attempt) => join(tmp, `kill-${attempt}.json`) });
+  assert.equal(local.requestFile(3), join(tmp, 'kill-3.json'));
+  const a = await asks(local.requestFile(1), 'nonce-for-attempt-1');
+  t.after(() => a.kill('SIGKILL'));
+  assert.deepEqual(readdirSync(tmp).filter((name) => name.includes('kill-1')), ['kill-1.json'], 'written whole: no temporary file is left beside it');
+  assert.deepEqual(await first(local.signals(1)), { kind: 'kill-request', crossing: { point: 'vision.filing', n: 2, pid: a.pid }, nonce: 'nonce-for-attempt-1' });
+  // A place of its own: a requestFile outside the run\'s work/ (the disk place\'s <root>/signals/kill-<gen>.json) and a signals that reads that same file.
+  mkdirSync(join(tmp, 'signals'));
+  const own = (attempt) => join(tmp, 'signals', `kill-${attempt}.json`);
+  const other = { ...local, requestFile: own, signals: (attempt) => localPlace({ self: FIXTURE, paths: local.paths, requestFile: own }).signals(attempt) };
+  const b = await asks(other.requestFile(2), 'nonce-for-attempt-2');
+  t.after(() => b.kill('SIGKILL'));
+  assert.deepEqual(await first(other.signals(2)), { kind: 'kill-request', crossing: { point: 'vision.filing', n: 2, pid: b.pid }, nonce: 'nonce-for-attempt-2' });
+});
+
+const killSpec = async (t, extra = {}) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-nonce-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'spec.json');
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }], ...extra }));
+  Object.assign(process.env, { DEMO_SPEC: file });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  return { tmp, options };
+};
+
+test('every order\'s KILL_REQUEST is the place\'s requestFile(gen); a request with the attempt\'s nonce kills, and a missing or wrong one is ignored with a host line', { timeout: 300_000 }, async (t) => {
+  const { tmp, options } = await killSpec(t);
+  mkdirSync(join(tmp, 'signals'));
+  const orders = [];
+  const own = (attempt) => join(tmp, 'signals', `kill-${attempt}.json`);
+  const recording = join(tmp, 'recording');
+  const result = await demo({ ...options, argv: ['--kill', '--json', '--record', recording], place: ({ paths, self, destroyBoxes }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile: own });
+    return {
+      ...inner,
+      start: (order) => { orders.push(order.env); return inner.start(order); },
+      recover: (last, kind, order) => { orders.push(order.env); return inner.recover(last, kind, order); },
+      // Before the child\'s own request, forged ones: no nonce, and another nonce. A custom iterator, not a generator: the supervisor\'s return() must end a pending next().
+      signals: (attempt) => ({ [Symbol.asyncIterator]() {
+        const forged = attempt === 1 ? [{ kind: 'kill-request', crossing: { point: 'forged.no-nonce', n: 1 } }, { kind: 'kill-request', crossing: { point: 'forged.wrong-nonce', n: 1 }, nonce: 'not-this-attempts-nonce' }] : [];
+        const real = inner.signals(attempt)[Symbol.asyncIterator]();
+        return { next: async () => (forged.length ? { done: false, value: forged.shift() } : real.next()), return: () => real.return() };
+      } }),
+    };
+  } });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.deepEqual(orders.map((env) => env.KILL_REQUEST), [own(1), own(2)], 'the order\'s KILL_REQUEST is the place\'s requestFile(gen), on start and recover alike');
+  assert.ok(orders.every((env) => /^[0-9a-f]{32}$/.test(env.KILL_NONCE)) && orders[0].KILL_NONCE !== orders[1].KILL_NONCE, 'a fresh 16-byte nonce for each attempt');
+  assert.ok(existsSync(own(1)) && JSON.parse(readFileSync(own(1), 'utf8')).nonce === orders[0].KILL_NONCE, 'the child wrote its request there, with its attempt\'s nonce');
+  const lines = readEvents(recording).filter((line) => line.source === 'host');
+  assert.deepEqual(lines.filter((line) => line.kind === 'kill').map((line) => line.data.crossing?.point), ['judge.asked verdict'], 'one kill line, at the real crossing: a forged request never makes one');
+  assert.deepEqual(lines.filter((line) => line.kind === 'kill.request.ignored').map((line) => [line.data.point, line.data.reason]), [['forged.no-nonce', 'no nonce'], ['forged.wrong-nonce', 'wrong nonce']]);
+  assert.ok(!JSON.stringify(lines).includes(orders[0].KILL_NONCE), 'the nonce is on no line');
+});
+
+test('the child reads KILL_NONCE once and removes it before anything starts: a command the child starts does not see it', { timeout: 300_000 }, async (t) => {
+  const { options } = await killSpec(t, { kills: [] });
+  process.env.DEMO_LEAK_STEPS = 'envProbe';
+  let nonce;
+  const { localPlace } = await import('./reference/index.ts');
+  const result = await demo({ ...options, argv: ['--json', '--record', join(await mkdtemp(join(tmpdir(), 'reference-probe-')), 'recording')], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner, start: (order) => { nonce = order.env.KILL_NONCE; return inner.start(order); } };
+  } });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
+  assert.match(nonce, /^[0-9a-f]{32}$/, 'the order had one');
+  assert.deepEqual(JSON.parse(readFileSync(join(result.dir, 'nonce-seen.json'), 'utf8')), { inProcess: false, inCommand: false });
+});
+
+test('one fresh run id per invocation, shared by its processes: a second run of one demo on a shared disk finds none of the first\'s signals, and the manifest is written before the place is released', { timeout: 300_000 }, async (t) => {
+  const shared = await mkdtemp(join(tmpdir(), 'reference-shared-disk-'));
+  t.after(() => rm(shared, { recursive: true, force: true }));
+  const { options } = await killSpec(t);
+  const { localPlace } = await import('./reference/index.ts');
+  const seen = [];
+  const released = [];
+  const invoke = async (name) => {
+    const recording = join(shared, `recording-${name}`);
+    const ids = new Set();
+    const result = await demo({ ...options, argv: ['--kill', '--json', '--record', recording, '--dir', join(shared, `run-${name}`)], place: ({ paths, self, destroyBoxes }) => {
+      // A shared disk: every run\'s signals are under one directory, by run id (paths.id), and a release deletes the run\'s tree.
+      const requestFile = (attempt) => join(shared, 'signals', paths.id, `kill-${attempt}.json`);
+      mkdirSync(join(shared, 'signals', paths.id), { recursive: true });
+      const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+      return {
+        ...inner,
+        start: (order) => { ids.add(order.env.RUN_ID); return inner.start(order); },
+        recover: (last, kind, order) => { ids.add(order.env.RUN_ID); return inner.recover(last, kind, order); },
+        release: async () => { released.push({ name, manifestFirst: existsSync(join(recording, 'manifest.json')) }); rmSync(join(shared, 'signals', paths.id), { recursive: true, force: true }); },
+      };
+    } });
+    assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
+    assert.equal(ids.size, 1, 'the same run id across the invocation\'s processes (a kill and its resume)');
+    assert.deepEqual([...ids], [result.runId]);
+    assert.match(result.runId, /^reference-[0-9a-f]{8}$/);
+    seen.push(result.runId);
+    return recording;
+  };
+  const first = await invoke('first');
+  const second = await invoke('second');
+  assert.notEqual(seen[0], seen[1], 'a second run of one demo has its own run id');
+  assert.deepEqual(released.map((entry) => entry.manifestFirst), [true, true], 'the manifest is written before the place releases (a release may delete the run tree)');
+  const kills = (recording) => readEvents(recording).filter((line) => line.source === 'host' && line.kind === 'kill').length;
+  assert.deepEqual([kills(first), kills(second)], [1, 1], 'each run made its own kill');
+  assert.equal(readEvents(second).filter((line) => line.kind === 'kill.request.ignored').length, 0, 'the second run saw none of the first\'s signals');
+});
+
+test('a kill request written in short pieces is whole when it is renamed into place: the supervisor reads the complete request', { timeout: 60_000 }, async (t) => {
+  const { spawn } = await import('node:child_process');
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-request-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'kill-1.json');
+  const crossings_ = new URL('./reference/crossings.ts', import.meta.url).href;
+  const script = `
+    import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+    const writeSync = fs.writeSync;
+    fs.writeSync = (fd, data, offset = 0) => writeSync(fd, data, offset, Math.min(5, data.length - offset));
+    syncBuiltinESMExports();
+    const { askToBeKilled } = await import(${JSON.stringify(crossings_)});
+    askToBeKilled(process.argv[1], 'a-nonce')({ point: 'judge.asked verdict', n: 1, pid: process.pid });`;
+  const child = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', '--input-type=module', '-e', script, file], { stdio: 'ignore' });
+  t.after(() => { try { child.kill('SIGKILL'); } catch { /* gone */ } });
+  for (let waited = 0; !existsSync(file) && waited < 20_000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { point: 'judge.asked verdict', n: 1, pid: child.pid, nonce: 'a-nonce' }, 'the whole request, though each write took 5 bytes');
 });

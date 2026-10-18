@@ -1,7 +1,8 @@
 // Crossings: the named points a process takes as it runs, and the kill that ends it at one. The child counts its crossings as it takes them, writes each
 // to `CROSS_LOG` so a process that dies leaves them behind, and ends itself with SIGKILL at the planned one. A crossing is never a clock: where a kill lands
 // is a fact of the run. A package adds its own crossings through the same `cross` function (`vision.filing`), so `kills[].point` can name them.
-import { appendFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, fsyncSync, openSync, renameSync, writeSync } from 'node:fs';
+import { dirname } from 'node:path';
 import type { Fakes, Host, StatusEvent, ToolContext } from './host.ts';
 import type { ChildPlan } from './demo-spec.ts';
 
@@ -20,13 +21,19 @@ const matches = (where: Info | undefined, info: Info | undefined) => !where || O
 export type Kill = (crossing: Crossing) => void;
 const selfKill: Kill = () => { process.kill(process.pid, 'SIGKILL'); };
 
-/** Asks the supervisor to kill this process at the crossing, and waits: the request is a file (whole, by rename), the wait blocks this thread, and the supervisor's kill ends it.
- *  If nobody answers in a minute it kills itself, so a lost supervisor leaves no process parked for good. */
-export function askToBeKilled(file: string): Kill {
+/** Asks the supervisor to kill this process at the crossing, and waits: the request is a file written durably (a temporary file beside it, synced, renamed into place, the directory synced), it carries the attempt's `nonce`
+ *  (the supervisor minted it for this attempt and put it in the process's environment, which the process read once and removed: the supervisor honors a request only with its attempt's nonce, so a stray file on a shared mount never makes a kill), the wait blocks this thread,
+ *  and the supervisor's kill ends it. If nobody answers in a minute it kills itself, so a lost supervisor leaves no process parked for good. */
+export function askToBeKilled(file: string, nonce?: string): Kill {
   return (crossing) => {
     const whole = `${file}.${process.pid}`;
-    writeFileSync(whole, JSON.stringify(crossing));
+    const descriptor = openSync(whole, 'w');
+    const request = Buffer.from(JSON.stringify({ ...crossing, ...(nonce !== undefined ? { nonce } : {}) }));
+    // `writeSync` may write fewer bytes than asked (a full disk, a signal): every byte is written before the sync and the rename, or the call throws.
+    try { for (let offset = 0; offset < request.length;) offset += writeSync(descriptor, request, offset); fsyncSync(descriptor); } finally { closeSync(descriptor); }
     renameSync(whole, file);
+    const directory = openSync(dirname(file), 'r');
+    try { fsyncSync(directory); } finally { closeSync(directory); }
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60_000);
     process.kill(process.pid, 'SIGKILL');
   };
