@@ -332,16 +332,16 @@ test('one fresh run id per invocation, shared by its processes: a second run of 
 });
 // ---- browser: false ----------------------------------------------------------------------------------------------------------------------------
 
-test('browser:false creates no browser, live or on fakes: --live needs no Browserbase key and no Chrome, and a page call fails with "this demo has no browser"; the default is unchanged', { timeout: 300_000 }, async (t) => {
+test('browser:false creates no browser, live or on fakes: --live needs no Browserbase key and no Chrome, and the agent is offered no browser tool, so a page call is answered as one that is not available; the default is unchanged', { timeout: 300_000 }, async (t) => {
   const programs = [{ name: 'fixture spec', env: 'DEMO_SPEC' }, { name: 'fixture probe', env: 'DEMO_LIVE_PROBE' }];
   const none = { BROWSERBASE_API_KEY: '', BB_API_KEY: '', BROWSERBASE_PROJECT_ID: '', CHROME_PATH: '' };
   // Live, with no browser key and no Chrome anywhere: the default asks for one.
   await assert.rejects(() => run(t, { programs }, ['--json', '--live'], { DEMO_LIVE_PROBE: '1', ...none }), /A live run needs a browser/);
   const live = await run(t, { programs, browser: false }, ['--json', '--live'], { DEMO_LIVE_PROBE: '1', ...none });
   assert.equal(live.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(live.result.processes.at(-1)));
-  // The page call the reference lead makes failed, and said why.
-  const said = (recording) => readFileSync(join(recording, 'events.jsonl'), 'utf8').includes('this demo has no browser');
-  assert.ok(said(live.recording), 'a page call fails with a clear error, not a missing key');
+  // The page call the reference lead makes reached no browser: none is installed, so pi answers that the tool is not available.
+  const said = (recording) => readFileSync(join(recording, 'events.jsonl'), 'utf8').includes('Tool run is not available');
+  assert.ok(said(live.recording), 'the page call is answered as a tool the run does not offer, not a missing key');
   // On fakes: no browser either.
   const fakes = await run(t, { browser: false }, ['--json'], { DEMO_LIVE_PROBE: '' });
   assert.ok(said(fakes.recording));

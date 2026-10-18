@@ -150,6 +150,12 @@ function fakeBrowser(url: string): BrowserPlane {
   };
 }
 
+/** The browser a demo's run process drives: none when the demo says `browser: false`, whatever its environment says
+ *  (`pi-durable-disk run --app` starts it without the supervisor's `BROWSER`), else the supervisor's choice, else the fake. */
+export function childBrowser(spec: { browser?: boolean }, env: NodeJS.ProcessEnv): 'fake' | 'browserbase' | 'chrome' | 'none' {
+  return spec.browser === false ? 'none' : (env.BROWSER ?? 'fake') as 'fake' | 'browserbase' | 'chrome' | 'none';
+}
+
 /** The browser of a demo that has none (`browser: false`): any page call fails, saying so. */
 function noBrowser(): BrowserPlane {
   const refuse = (): never => { throw new Error('this demo has no browser'); };
@@ -231,7 +237,7 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   const lazy = env.RECORD_DIR ? lazyRecorder(() => openRecorder({ dir: env.RECORD_DIR!, commits: commits!, ...(env.RECORD_GEN ? { gen: Number(env.RECORD_GEN) } : {}), ...(env.RECORD_STARTED ? { started: env.RECORD_STARTED } : {}), ...(redact ? { redact } : {}) })) : undefined;
   const recorder: Recorder | undefined = lazy;
   const live = env.LIVE === '1';
-  const browserKind = (env.BROWSER ?? 'fake') as 'fake' | 'browserbase' | 'chrome' | 'none';
+  const browserKind = childBrowser(options.spec, env);
   let box: Awaited<ReturnType<typeof inBox>> | undefined;
   const parts = live ? await options.live!({ env, browser: browserKind, models: env.MODELS ? (JSON.parse(env.MODELS) as LiveModels) : {} }) : {};
   // Docker only with --live: a no-key run uses a local box, so it starts no container.
@@ -294,7 +300,7 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
       onMiss: async (miss) => { await kept.onMiss?.(miss); await own.onMiss?.(miss); },
     };
   };
-  const runOptions: RunOptions = { codeImages: shown.note, ...(boxes && boxSpec?.runIn ? { env: () => box!.env() } : {}), ...(options.spec.sites ? { sites: options.spec.sites } : {}), ...(options.codeMode ?? options.spec.codeMode ? { codeMode: options.codeMode ?? (options.spec.codeMode as CodeModeOptions | boolean) } : {}), vision, ...(options.layout ? { layout: options.layout } : {}) };
+  const runOptions: RunOptions = { codeImages: shown.note, ...(browserKind === 'none' ? { browser: false } : {}), ...(boxes && boxSpec?.runIn ? { env: () => box!.env() } : {}), ...(options.spec.sites ? { sites: options.spec.sites } : {}), ...(options.codeMode ?? options.spec.codeMode ? { codeMode: options.codeMode ?? (options.spec.codeMode as CodeModeOptions | boolean) } : {}), vision, ...(options.layout ? { layout: options.layout } : {}) };
   const made = async (result: Awaited<ReturnType<typeof run>>) => (result.status === 'complete' && options.result ? options.result(result.output, { dir: place.root, keep: (bytes, extension) => (recorder ? recorder.blob(bytes, extension) : createHash('sha256').update(bytes).digest('hex')) }) : undefined);
   return { models: parts.models, place, host: local.host, job: { ...options.job, input }, runOptions, recorder, redact, open, made, done: async () => { await box?.destroy(); } };
 }
