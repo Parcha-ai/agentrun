@@ -348,7 +348,19 @@ export function followRecording(dir: string, options: { holdMs?: number | (() =>
       ready.sort(compareLines);
       for (const line of ready) pending.splice(pending.indexOf(line), 1);
       for (const line of ready) if (line.channel === 'durable' && line.order === null) { line.order = next.get(line.commit as number) ?? 0; next.set(line.commit as number, (line.order as number) + 1); }
-      appendFileSync(events, ready.map((line) => (options.redact ?? ((text: string) => text))(JSON.stringify(line))).join('\n') + '\n');
+      const text = ready.map((line) => (options.redact ?? ((value: string) => value))(JSON.stringify(line))).join('\n') + '\n';
+      // What a viewer can fetch is checked before it is placed: the exact-value redaction knows only the values the run was told of, and the credential shapes the finished recording is refused for are looked for here too.
+      const found = credentialInFile('events.jsonl', text);
+      if (found) throw new Error(`a line the run wrote holds a ${found}: it is not published, and the recording is refused`);
+      // The text blobs these lines name are fetched by a viewer as soon as the lines are placed: they are looked at first, as the finished recording's blobs are.
+      for (const line of ready) for (const hash of Array.isArray(line.blobs) ? line.blobs as string[] : []) {
+        for (const name of existsSync(join(dir, 'blobs')) ? readdirSync(join(dir, 'blobs')).filter((entry) => entry.startsWith(`${hash}.`)) : []) {
+          if (!/\.(?:txt|json|jsonl|md|html|csv|xml|yaml|yml|log)$/i.test(name)) continue;
+          const inBlob = credentialInFile(name, readFileSync(join(dir, 'blobs', name), 'utf8'));
+          if (inBlob) throw new Error(`a blob the run kept holds a ${inBlob}: its lines are not published, and the recording is refused`);
+        }
+      }
+      appendFileSync(events, text);
     },
     close() { ingest(); },
   };

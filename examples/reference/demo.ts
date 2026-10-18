@@ -32,7 +32,7 @@ import { pathsAt, placeAt, run, type Job, type RunOptions } from './assemble.ts'
 import { RUN_LABEL, tapBox } from './boxes.ts';
 import type { Recorder, Redact } from './record.ts';
 import { capJudge, JEV_CAPS } from './judge.ts';
-import { askToBeKilled, crossings, tapFakes, tapHost, tapLive, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
+import { askToBeKilled, aroundOwnFiling, crossings, tapFakes, tapHost, tapLive, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
 import { keepLooks, shownShots } from './looks.ts';
 import { transcriberFromEnv } from './transcriber.ts';
 import type { LookRecord } from '@parcha/pi-vision';
@@ -269,7 +269,7 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
       // The host's speech-to-text model for `vision.transcribe`: the demo's own (a scripted one on fakes), else the one its declared keys name; the key stays in the adapter.
       ...(own.transcriber || !live ? {} : (() => { const transcriber = transcriberFromEnv(env); return transcriber ? { transcriber } : {}; })()),
       ...own,
-      onLook: async (look) => { await kept.onLook?.(look); await own.onLook?.(look); },
+      onLook: (look) => aroundOwnFiling(cross, look, async () => { await kept.onLook?.(look); await own.onLook?.(look); }),
       onMiss: async (miss) => { await kept.onMiss?.(miss); await own.onMiss?.(miss); },
     };
   };
@@ -375,17 +375,30 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const backend = new FakeBackend({ start: options.fakes.start, pages: options.fakes.pages });
   options.fakes.backend?.(backend);
   const served = await backend.serve();
-  const supervisor = openSupervisor({ dir: recordDir, ...(redact ? { redact } : {}) });
-  // A live run and its replay are one file: events.jsonl is appended to as the run goes (whole lines, section 3's order), and finishRecording completes it. The job is a blob from the start, so a viewer can draw the workflow graph at once.
+  // Setting the recording up writes to the disk: if it fails (the disk full, say) the backend, the timer and the scratch are closed before the error goes on.
+  let supervisor!: ReturnType<typeof openSupervisor>;
+  let follower!: ReturnType<typeof followRecording>;
+  let following: ReturnType<typeof setInterval> | undefined;
   let placeRef: Place | undefined;
   // The recording's clock as a value, in every order's env: a box's child writes it into its own spool directory when it has none, so a place never writes into the run's disk.
-  const startedText = readFileSync(join(recordDir, '.spool', 'started'), 'utf8');
-  const follower = followRecording(recordDir, { ...(redact ? { redact } : {}), holdMs: () => Math.max(options.followHoldMs ?? 1000, 2 * (placeRef?.clockSkewMs ?? 0)) });
-  // A failure of the follower (the disk full, say) is not thrown from the timer: it is kept, the running child is stopped, and the run ends through the normal path, which releases the place.
+  let startedText!: string;
   let followError: unknown;
-  const following = setInterval(() => { try { follower.poll(); } catch (error) { followError ??= error; clearInterval(following); } }, 100);
-  const jobText = JSON.stringify({ workflow: job.workflow, input: input ?? (live ? undefined : options.fakes.input) ?? job.input, files: Object.keys(job.files ?? {}) });
-  const jobBlob = keepBlob(recordDir, Buffer.from(redact ? redact(jobText) : jobText), 'json');
+  let jobBlob!: string;
+  try {
+    supervisor = openSupervisor({ dir: recordDir, ...(redact ? { redact } : {}) });
+    // A live run and its replay are one file: events.jsonl is appended to as the run goes (whole lines, section 3's order), and finishRecording completes it. The job is a blob from the start, so a viewer can open it at once.
+    startedText = readFileSync(join(recordDir, '.spool', 'started'), 'utf8');
+    follower = followRecording(recordDir, { ...(redact ? { redact } : {}), holdMs: () => Math.max(options.followHoldMs ?? 1000, 2 * (placeRef?.clockSkewMs ?? 0)) });
+    // A failure of the follower (the disk full, say) is not thrown from the timer: it is kept, the running child is stopped, and the run ends through the normal path, which releases the place.
+    following = setInterval(() => { try { follower.poll(); } catch (error) { followError ??= error; clearInterval(following); } }, 100);
+    const jobText = JSON.stringify({ workflow: job.workflow, input: input ?? (live ? undefined : options.fakes.input) ?? job.input, files: Object.keys(job.files ?? {}) });
+    jobBlob = keepBlob(recordDir, Buffer.from(redact ? redact(jobText) : jobText), 'json');
+  } catch (error) {
+    clearInterval(following);
+    await served.close();
+    if (!values.record && !values.dir) await rm(scratch, { recursive: true, force: true });
+    throw error;
+  }
   // A label no other run shares, on every box this run makes: cleanup finds these and no others.
   const runLabel = randomUUID();
   const base: Record<string, string> = { ...(values.record ? { AGENTRUN_HOME: dirname(signInFile(process.env)) } : {}), DEMO_ENTRY: options.self, DEMO_NAME: spec.name, RUN_LABEL: runLabel, HOME: scratch, TMPDIR: scratch, DIR: dir, RECORD_DIR: recordDir, BACKEND: served.url, BROWSER: browser, ...(live ? { LIVE: '1' } : {}), ...(Object.keys(models).length ? { MODELS: JSON.stringify(models) } : {}), ...(values['fetch-sources'] ? { FETCH_SOURCES: '1' } : {}), CACHE_DIR: values.cache ?? join(tmpdir(), 'agentrun-sources'), ...(input ? { INPUT: JSON.stringify(input) } : {}) };
@@ -534,7 +547,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       // The reading runs beside the supervision: the kill requests and the spend cap are watched from the start, however slow the place's read is.
       void readStatus();
       // A takeover that revoked the old holder's delegations (an Archil place): what was revoked, and how long the whole takeover took.
-      const revoked = (Array.isArray(recovered?.revoked) ? recovered!.revoked : []).map(delegationOf).filter((entry) => entry !== undefined).map(({ clientId, inodeId, path, isOrphaned }) => safeDelegation({ clientId, inodeId, path, isOrphaned }));
+      const revoked = (Array.isArray(recovered?.revoked) ? recovered!.revoked : []).map(delegationOf).filter((entry) => entry !== undefined).map(({ clientId, inodeId, path, isOrphaned }) => safeDelegation({ clientId, inodeId, ...(path !== undefined ? { path } : {}), isOrphaned }));
       if (revoked.length) supervisor.host('revoke', { gen, revoked, ...(Number.isFinite(recovered?.ms) ? { ms: recovered!.ms } : {}) });
       // The supervisor decides when: a crossing asks to be killed (read through the place's signals), or the spend cap is passed. It writes the kill line, and only then does the place kill.
       // A kill the place cannot make is recorded and ends the attempt: it is never an unhandled rejection.
@@ -582,7 +595,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       // the attempt does not finish (nor the place release) until the kill, with its provider cleanup, is done.
       let deciding: Promise<void> = Promise.resolve();
       const watch = setInterval(() => {
-        if (followError && !decided) { decided = true; deciding = place.kill(runner!, 'process').catch(() => undefined); return; }
+        if (followError && !decided) { decided = true; deciding = place.kill(runner!, 'process').catch((error) => { failed(String((error as { code?: unknown } | null)?.code ?? 'KILL_FAILED'), messageOf(error, paths.root), 'process'); }); return; }
         if (decided) return;
         if (operatorKill && existsSync(operatorKill)) {
           // A control that cannot be removed (a directory made by mistake, a parent that forbids it) is a failed kill, reported through the normal path: the supervisor does not crash with the child still running.
@@ -680,11 +693,12 @@ export function messageOf(error: unknown, root: string): string {
 }
 
 /** One delegation as the recording holds it: the allowlisted fields, with the path clipped; anything that is not a delegation is not one. */
-function delegationOf(value: unknown): { clientId: string; inodeId: string | number; isOrphaned: boolean; isPending: boolean; path: string } | undefined {
+function delegationOf(value: unknown): { clientId: string; inodeId: string | number; isOrphaned: boolean; isPending: boolean; path?: string } | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const entry = value as Record<string, unknown>;
-  if (typeof entry.clientId !== 'string' || (typeof entry.inodeId !== 'string' && typeof entry.inodeId !== 'number') || typeof entry.path !== 'string') return undefined;
-  return { clientId: entry.clientId, inodeId: entry.inodeId, isOrphaned: entry.isOrphaned === true, isPending: entry.isPending === true, path: entry.path.slice(0, 240) };
+  if (typeof entry.clientId !== 'string' || (typeof entry.inodeId !== 'string' && typeof entry.inodeId !== 'number')) return undefined;
+  // A delegation the package found by matching its inode to the run's has no path: it is kept, without one.
+  return { clientId: entry.clientId, inodeId: entry.inodeId, isOrphaned: entry.isOrphaned === true, isPending: entry.isPending === true, ...(typeof entry.path === 'string' ? { path: entry.path.slice(0, 240) } : {}) };
 }
 
 /** A place's detail as the recording holds it: text of at most 240 characters, every absolute path replaced by `<path>`. */

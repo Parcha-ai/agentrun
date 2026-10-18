@@ -1,7 +1,7 @@
 // A demo's `run.ts` as the reference entry's own test uses it: the reference job and its fakes, the spec from `DEMO_SPEC` (a JSON file), the standard flags.
 import type { Message } from '@earendil-works/pi-ai';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fakeEyes, fakeTranscriptionFetch } from '@parcha/pi-vision/testing';
 import { falTranscriber } from '@parcha/pi-vision/transcribers';
@@ -82,11 +82,30 @@ const withLeak = leaking ? { ...job, workflow: { ...job.workflow, schemas: { ...
 const fanning = process.env.DEMO_FANOUT ? { slow: async () => { await new Promise((resolve) => setTimeout(resolve, 120)); return {}; } } : undefined;
 const withFan = fanning ? { ...job, workflow: { ...job.workflow, schemas: { ...job.workflow.schemas, Slow: { type: 'object' } }, root: { ...job.workflow.root, steps: [(job.workflow.root as { steps: unknown[] }).steps[0], { node: 'code', label: 'items', as: 'items', code: '(s) => [1, 2, 3, 4, 5, 6]' }, { node: 'map', label: 'fan', itemsPath: 'items', as: 'fanned', resultPath: 'row', maxConcurrency: 4, body: { node: 'call', label: 'slow', via: 'tool', tool: 'slow', args: {}, out: 'Slow', as: 'row', deadline_s: 30 } }, ...(job.workflow.root as { steps: unknown[] }).steps.slice(1)] } } } as unknown as typeof job : undefined;
 const scripted = { ...fakes, ...(fanning ? { tools: { ...fakes.tools, ...fanning } } : {}), ...(leaking ? { tools: { ...fakes.tools, ...leaking } } : {}), ...(process.env.DEMO_SITES ? { model: sitesLead as typeof fakes.model } : {}), ...(process.env.DEMO_CODE ? { model: codeLead as typeof fakes.model } : {}), ...(lingering ? { tools: { ...fakes.tools, ...lingering.tools } } : {}), ...(boxTool ? { tools: { ...fakes.tools, ...(lingering?.tools ?? {}), ...boxTool } } : {}), ...(judgeCost ? { judge: async (request: Parameters<typeof fakes.judge>[0]) => ({ ...(await fakes.judge(request)), cost_usd: judgeCost }) } : {}) };
+// A test knob: DEMO_OPERATOR_HOLD names the operator's control file. The first process holds the lead's first model call (blocking, in the child) until the control file has appeared and been consumed, then waits for the supervisor's kill: the run cannot
+// finish before the operator's kill lands. A marker beside it lets the process that resumes after the kill go on.
+const holdFile = process.env.DEMO_OPERATOR_HOLD;
+let held = false;
+const holdForOperator = (model: typeof fakes.model): typeof fakes.model => (messages) => {
+  if (holdFile && !held) {
+    held = true;
+    const marker = `${holdFile}.held`;
+    if (!existsSync(marker)) {
+      writeFileSync(marker, '');
+      const pause = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+      while (!existsSync(holdFile)) pause(5);
+      while (existsSync(holdFile)) pause(5);
+      pause(60_000);
+    }
+  }
+  return model(messages);
+};
+const scriptedHeld = holdFile ? { ...scripted, model: holdForOperator(scripted.model) } : scripted;
 // And `sourcesFor`: the items an input needs, from a JSON list whose ids start `a-` for the default company and `o-` for another.
 const sourcesFor = process.env.DEMO_SOURCES_ITEMS ? (input: Record<string, unknown>) => (JSON.parse(readFileSync(process.env.DEMO_SOURCES_ITEMS!, 'utf8')) as Array<{ id: string; url: string; bytes: number; sha256: string }>).filter((item) => item.id.startsWith(input.company === 'Beta Ltd' ? 'o-' : 'a-')) : undefined;
 // And a vision lane the entry must honor (`fakes.vision`) and a result hook (`result`): tests read the probe file and the recording's result.
 const probe = process.env.DEMO_VISION_PROBE ? (host: { deliver?: unknown }, running: { harness: unknown }, context: { input: unknown; place: { root: string; work: string } }) => { writeFileSync(join(process.env.DIR!, 'vision-called.json'), JSON.stringify({ hasHost: typeof host.deliver === 'function', harnessUndefinedAtBuild: running.harness === undefined, input: context.input, place: context.place })); return {}; } : undefined;
-const result = process.env.DEMO_RESULT ? (record: unknown, context: { keep(bytes: string, extension: string): string }) => ({ json: { format: 'agentrun.cited/1', title: 'The company', rows: [{ label: 'company', value: String((record as { company: string }).company) + (process.env.DEMO_RESULT_LEAK ? ` ${process.env.DEMO_RESULT_LEAK}` : ''), cites: [{ blob: context.keep(`a cited file${process.env.DEMO_LEAK ? ` ${process.env.DEMO_LEAK}` : ''}`, 'txt') }] }] }, title: 'A cited result' }) : undefined;
+const result = process.env.DEMO_RESULT ? (record: unknown, context: { keep(bytes: string, extension: string): string }) => ({ json: { format: 'agentrun.cited/1', title: 'The company', rows: [{ label: 'company', value: String((record as { company: string }).company) + (process.env.DEMO_RESULT_LEAK ? ` ${process.env.DEMO_RESULT_LEAK}` : '') + (process.env.DEMO_RESULT_PAD ? ` ${process.env.DEMO_RESULT_PAD}` : ''), cites: [{ blob: context.keep(`a cited file${process.env.DEMO_LEAK ? ` ${process.env.DEMO_LEAK}` : ''}`, 'txt') }] }] }, title: 'A cited result' }) : undefined;
 // And live parts that write what the child saw: its environment's names and what its live vision was called with.
 const live = process.env.DEMO_LIVE_PROBE ? (context: { env: NodeJS.ProcessEnv; models: unknown }) => {
   writeFileSync(join(process.env.DIR!, 'models-seen.json'), JSON.stringify(context.models));
@@ -110,5 +129,5 @@ const transcribing = process.env.DEMO_TRANSCRIBE ? (() => {
   const answer = fakeTranscriptionFetch('fal', { words: [{ text: 'hello', start: 0.1, end: 0.5 }, { text: 'world', start: 0.6, end: 1 }] });
   return () => ({ transcriber: falTranscriber({ apiKey: () => `made-up-stt-key-${'k'.repeat(24)}`, fetch: answer.fetch, pollMs: 1, usdPerMinute: 0.6 }) });
 })() : undefined;
-export const options = { ...(process.env.DEMO_FOLLOW_HOLD_MS ? { followHoldMs: Number(process.env.DEMO_FOLLOW_HOLD_MS) } : {}), ...(process.env.DEMO_CODE_ON ? { codeMode: true } : {}), ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withBox ?? withFan ?? withLeak ?? withSites ?? lingering?.job ?? job, fakes: { ...scripted, ...(process.env.DEMO_FAKES_INPUT ? { input: { company: 'Beta Ltd' } } : {}), ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : transcribing ? { vision: transcribing } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}) };
+export const options = { ...(process.env.DEMO_FOLLOW_HOLD_MS ? { followHoldMs: Number(process.env.DEMO_FOLLOW_HOLD_MS) } : {}), ...(process.env.DEMO_CODE_ON ? { codeMode: true } : {}), ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withBox ?? withFan ?? withLeak ?? withSites ?? lingering?.job ?? job, fakes: { ...scriptedHeld, ...(process.env.DEMO_FAKES_INPUT ? { input: { company: 'Beta Ltd' } } : {}), ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : transcribing ? { vision: transcribing } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}) };
 if (process.argv.includes('--child')) await demo(options);

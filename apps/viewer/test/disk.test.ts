@@ -238,3 +238,17 @@ test('a holder is shown by the label the recording gives it, verbatim, and two g
   assert.deepEqual(state(kept).incarnations.map((each) => each.holder?.host), ['host-1', 'host-1']);
   assert.match(screen(kept), /local host-1 pid/);
 });
+
+test('a delegation\'s client and inode ids are numbers or labels (non-empty strings), read as they come: repeats of either scheme make one orphan event, the two schemes are two claims, and an empty inode id is refused', () => {
+  const delegation = (t: number, clientId: Json, inodeId: Json, isOrphaned: boolean): Line => parseLines(JSON.stringify({ channel: 'live', source: 'host', kind: 'delegation', t, seq: t, data: { gen: 1, clientId, inodeId, isOrphaned, isPending: false, path: '/runs/x' } }))[0]!;
+  const orphans = (all: Line[]) => state(all).events.filter((event) => event.what === 'orphan');
+  assert.equal(orphans([delegation(1, 71, 7001, true), delegation(2, 71, 7001, true)]).length, 1, 'numeric ids repeated: one orphan event');
+  assert.equal(orphans([delegation(1, 'client-1', 'inode-1', true), delegation(2, 'client-1', 'inode-1', true)]).length, 1, 'labels repeated: one orphan event');
+  assert.equal(orphans([delegation(1, 'client-1', 'f-7002', false), delegation(2, 'client-1', 'f-7002', true)]).length, 1, 'any non-empty string is an id, not only inode-N');
+  // The reader cannot link 7001 to inode-1: one orphaned delegation written in each scheme is two claims, so two events.
+  assert.equal(orphans([delegation(1, 71, 7001, true), delegation(2, 'client-1', 'inode-1', true)]).length, 2);
+  assert.equal(orphans([delegation(1, 71, '', true)]).length, 0, 'an empty inode id is refused');
+  assert.equal(state([delegation(1, 71, '', true)]).seen, false, 'and counts as nothing seen');
+  // The takeover fixture reads as it did.
+  assert.match(screen(), /orphan flag seen on the claim of client 71 \(the first poll that saw it\)/);
+});

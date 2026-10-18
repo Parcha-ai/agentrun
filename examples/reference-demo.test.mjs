@@ -1478,13 +1478,13 @@ test('an operator kill (a control file the supervisor watches, never the child\'
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const file = join(tmp, 'spec.json');
   writeFileSync(file, JSON.stringify({ name: 'reference' }));
-  Object.assign(process.env, { DEMO_SPEC: file });
+  Object.assign(process.env, { DEMO_SPEC: file, DEMO_OPERATOR_HOLD: join(tmp, 'control', 'kill-now') });
   t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
   const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
   const control = join(tmp, 'control', 'kill-now');
   mkdirSync(join(tmp, 'control'));
   const recording = join(tmp, 'recording');
-  // The operator\'s page, here a test: once the judge has answered in the first process, it makes the control file.
+  // The operator\'s page, here a test: once the first process has asked its first model request (where the fixture holds it until the control file is consumed, so the run cannot finish first), it makes the control file.
   const killed = [];
   const placeOn = (trigger) => ({ paths, self, destroyBoxes, requestFile }) => {
     const inner = localPlace({ self, paths, destroyBoxes, requestFile });
@@ -1495,7 +1495,7 @@ test('an operator kill (a control file the supervisor watches, never the child\'
       return runner;
     } };
   };
-  const place = placeOn('judge.answered verdict');
+  const place = placeOn('model.request turn 0');
   const result = await demo({ ...options, argv: ['--json', '--record', recording, '--operator-kill', control], place });
   assert.deepEqual(result.processes.map((process) => [process.signal, process.outcome?.status ?? null]), [['SIGKILL', null], [null, 'complete']], JSON.stringify(result.processes));
   assert.equal(result.record.company, 'Acme Ltd');
@@ -1510,6 +1510,7 @@ test('an operator kill (a control file the supervisor watches, never the child\'
   // The plan\'s own kill is not lost: an operator kill that ends an attempt first leaves its planned kill for the next one.
   killed.length = 0;
   writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'planned' }] }));
+  rmSync(join(tmp, 'control', 'kill-now.held'), { force: true });
   const { options: planned } = await import(`${FIXTURE}?options=${Date.now()}`);
   const both = await demo({ ...planned, argv: ['--kill', '--json', '--operator-kill', control], place: placeOn('model.request turn 0') });
   assert.deepEqual(both.kills.map((kill) => [kill.gen, kill.point ?? 'operator']), [[1, 'operator'], [2, 'judge.asked verdict']]);
@@ -1805,6 +1806,24 @@ test('a kill request written in short pieces is whole when it is renamed into pl
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { point: 'judge.asked verdict', n: 1, pid: child.pid, nonce: 'a-nonce' }, 'the whole request, though each write took 5 bytes');
 });
 
+test('a screenshot look, which the evidence sink does not file, takes the vision.filing and vision.filed crossings around its own keeping, and a hold parks it; a look the sink filed has had them already', async () => {
+  const { aroundOwnFiling } = await import('./reference/crossings.ts');
+  const events = [];
+  const cross = Object.assign((point) => { events.push(point); return false; }, { park: (point) => { events.push(`park ${point}`); return undefined; } });
+  await aroundOwnFiling(cross, { receipt: null }, async () => { events.push('keep'); });
+  assert.deepEqual(events, ['vision.filing', 'park vision.filing', 'keep', 'vision.filed'], 'around the screenshot look\'s own keeping');
+  events.length = 0;
+  await aroundOwnFiling(cross, { receipt: 'evidence/look-1.json' }, async () => { events.push('keep'); });
+  assert.deepEqual(events, ['keep'], 'a look the sink filed is not crossed twice');
+  // A parked filing never keeps the look: the hold waits for the kill.
+  events.length = 0;
+  const parkedForever = Object.assign((point) => { events.push(point); return false; }, { park: () => new Promise(() => {}) });
+  let kept = false;
+  void aroundOwnFiling(parkedForever, { receipt: null }, async () => { kept = true; });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(kept, false);
+});
+
 test('a path in a detail is replaced whole, spaces and all; and a machine named like one of the recording\'s own words is not redacted out of its lines', async () => {
   const { plainText } = await import('./reference/demo.ts');
   const { machineSecrets, redactorOf } = await import('./reference/secrets.ts');
@@ -1933,6 +1952,31 @@ test('on --live the effect door dispatches to LiveParts.tools (with its receipt)
   assert.equal(fakes.result.processes.at(-1).outcome.status, 'complete');
   assert.ok(!fromLive(fakes.result.dir), 'fakes.tools never see LIVE');
   assert.ok(!existsSync(join(fakes.result.dir, 'models-seen.json')), 'the live hook is supplied and is never called on fakes');
+
+
+});
+
+test('the follower does not publish a line that holds a credential shape: it stops the recording instead; and a recording that cannot be set up closes what it opened', { timeout: 120_000 }, async (t) => {
+  const { startedAt, followRecording } = await import('./reference/record.ts');
+  const dir = await mkdtemp(join(tmpdir(), 'reference-follow-cred-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, '.spool'), { recursive: true });
+  startedAt(dir);
+  const follower = followRecording(dir, { holdMs: 0 });
+  const secret = `sk-${'a1'.repeat(20)}`;
+  appendFileSync(join(dir, '.spool', 'live-1.jsonl'), `${JSON.stringify({ channel: 'live', source: 'workflow', kind: 'x', gen: 1, seq: 0, t: 1, data: { header: secret } })}\n`);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.throws(() => follower.poll(), /holds a provider secret.*not published/);
+  assert.ok(!readFileSync(join(dir, 'events.jsonl'), 'utf8').includes(secret), 'the line was never placed');
+  // A setup that fails (here the blobs directory is a file) rejects, and leaves no timer running.
+  const { options } = await specWith(t, { name: 'reference' });
+  const broken = await mkdtemp(join(tmpdir(), 'reference-setup-fails-'));
+  t.after(() => rm(broken, { recursive: true, force: true }));
+  writeFileSync(join(broken, 'blobs'), 'not a directory');
+  const timers = () => process.getActiveResourcesInfo().filter((name) => name === 'Timeout').length;
+  const before = timers();
+  await assert.rejects(() => demo({ ...options, argv: ['--json', '--record', broken] }));
+  assert.ok(timers() <= before, 'the follower\'s timer was stopped');
 });
 
 // ---- the live host's crossings ------------------------------------------------------------------------------------------------------------------
@@ -2016,6 +2060,35 @@ test('a live host whose fallback judge is the fakes\' (already tapped) has each 
   composeHost(other, { decisions: { runJudge: async () => ({ answers: {}, usage: { input_tokens: 1, output_tokens: 0 } }) } }, cross, { open: 0 }, join(tmp, 'spent2.jsonl'), true, undefined, true);
   await other.decisions.runJudge({ label: 'verdict' });
   assert.deepEqual(crossed.filter((point) => point.startsWith('judge.')), ['judge.asked verdict', 'judge.answered verdict']);
+
+
+});
+
+test('the follower looks at the text blobs a line names before it places the line; and a failing kill after a follower error ends the attempt with the follower\'s error', { timeout: 120_000 }, async (t) => {
+  const { startedAt, followRecording } = await import('./reference/record.ts');
+  const dir = await mkdtemp(join(tmpdir(), 'reference-follow-blob-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, '.spool'), { recursive: true });
+  mkdirSync(join(dir, 'blobs'));
+  startedAt(dir);
+  const secret = `sk-${'b2'.repeat(20)}`;
+  const hash = 'c'.repeat(64);
+  writeFileSync(join(dir, 'blobs', `${hash}.json`), JSON.stringify({ body: secret }));
+  const follower = followRecording(dir, { holdMs: 0 });
+  appendFileSync(join(dir, '.spool', 'live-1.jsonl'), `${JSON.stringify({ channel: 'live', source: 'workflow', kind: 'x', gen: 1, seq: 0, t: 1, blobs: [hash], data: { evidence: 'a receipt' } })}\n`);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.throws(() => follower.poll(), /a blob the run kept holds a provider secret/);
+  assert.ok(!readFileSync(join(dir, 'events.jsonl'), 'utf8').includes(hash), 'the line was not placed');
+  // Follower error and a kill that fails too: the attempt ends and the call rejects with the follower\'s error.
+  const { tmp, options } = await specWith(t, { name: 'reference' });
+  process.env.DEMO_LINGER_MS = '20000';
+  const recording = join(tmp, 'recording');
+  await assert.rejects(() => demo({ ...options, argv: ['--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner,
+      start: async (order) => { rmSync(join(recording, 'events.jsonl'), { force: true }); mkdirSync(join(recording, 'events.jsonl')); const runner = await inner.start(order); return { ...runner, exited: new Promise(() => {}) }; },
+      kill: async () => { throw Object.assign(new Error('the provider refused'), { code: 'KILL_REFUSED' }); } };
+  } }), /EISDIR|is a directory/i);
 });
 
 // ---- delegation and revoke lines ---------------------------------------------------------------------------------------------------------------
@@ -2050,7 +2123,8 @@ test('delegation lines are written from place.status() when a delegation appears
   assert.deepEqual(lines(recording, 'revoke').map((line) => [line.data.gen, line.data.revoked, line.data.ms]), [[2, [{ clientId: 'client-1', inodeId: 'inode-1', path: '/runs/the-run', isOrphaned: true }], 1234]]);
   assert.deepEqual(lines(recording, 'delegation').map((line) => line.data.inodeId), ['inode-1', 'inode-1', 'inode-2'], 'the same value the same label, a new one the next');
   const text = readFileSync(join(recording, 'events.jsonl'), 'utf8');
-  for (const raw of ['c-9a41', 'c-b2e7', '7001', 'f-7002']) assert.ok(!text.includes(raw), `${raw} is not in the recording`);
+  // The ids as the place wrote them: the strings as text, and the number as the field's value (a bare 7001 can occur in a timestamp).
+  for (const raw of ['c-9a41', 'c-b2e7', '"inodeId":7001', 'f-7002']) assert.ok(!text.includes(raw), `${raw} is not in the recording`);
   assert.deepEqual(validateRecording(recording), []);
   // A place without delegations or a revoke writes none.
   const plain = join(tmp, 'plain');
@@ -2333,6 +2407,24 @@ test('a kill line carries the crossing\'s own number: a held kill the point\'s c
   storm('event workflow.node.start');
   storm('judge.asked a');
   assert.ok(fired.at(-1) > 0, `a storm kill has the process's crossing number, not 0: ${fired.at(-1)}`);
+
+
+});
+
+test('a delegation without a path (the package finds it by its inode) is kept: a delegation line and a revoke entry are written without one', { timeout: 300_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] });
+  const recording = join(tmp, 'recording');
+  const bare = { clientId: 'client-x', inodeId: 4242, isOrphaned: true, isPending: false };
+  await demo({ ...options, argv: ['--kill', '--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner, status: async () => ({ record: null, delegations: [bare] }), recover: async (last, kind, order) => ({ ...(await inner.recover(last, kind, order)), revoked: [bare], ms: 5 }) };
+  } });
+  const lines = readEvents(recording).filter((line) => line.source === 'host');
+  const delegation = lines.find((line) => line.kind === 'delegation');
+  assert.ok(delegation, 'the delegation line is written');
+  assert.equal('path' in delegation.data, false);
+  const revoke = lines.find((line) => line.kind === 'revoke');
+  assert.equal(revoke.data.revoked.length, 1, 'and the revoke names it');
 });
 
 test('code mode\'s tools.bash resolves the output string for a zero exit, and rejects for a non-zero exit with an Error that names the exit code and holds the output', { timeout: 300_000 }, async (t) => {
