@@ -672,7 +672,7 @@ class Lease implements RunLease {
         // While a new run seeds it has no `run.json` heartbeat, and a supervisor keeps a start in its grace only while its
         // start mark is younger than the grace: the mark is kept fresh until the seed ends, through the held claim directory.
         // A seeder that dies stops, and the grace runs out as for any start.
-        const stop = keepStartMark(this.#dir!.at, this.#lease.heartbeatMs);
+        const stop = keepStartMark(this.#dir!.at, this.#lease.heartbeatMs, claim.root);
         try {
           await seed({ root: claim.root, storePath: join(claim.store, STORE_FILE), workDir: claim.work });
         } finally {
