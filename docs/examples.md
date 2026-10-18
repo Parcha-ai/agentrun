@@ -10,9 +10,19 @@ After `npm ci --ignore-scripts` and `npm run build`:
 | [Typed research](authoring.md) | `npm run demo` | Reuse one research component across questions and stop when evidence is missing. |
 | [Rank a list](../examples/rank-candidates.mjs) | `npm run demo:rank` | Score candidates against your brief, drop duplicates, cap each bucket, keep the top k; call it from another workflow. |
 | [Standalone TypeScript app](../examples/starter/README.md) | Follow the app's install steps, then `npm test` and `npm start` | Build outside this checkout with public package imports. |
+| [The reference host](reference-host.md) | `npm run demo:reference` | One durable pi run with the recovery driver, a browser and vision: replace the scripted model, tools, browser and eyes with yours. |
+| [The hero job](../examples/hero/README.md) | `npm run demo:hero` | One agent reads nine grid operators' dashboard charts with vision, each in a browser session of its own, and, where the operator also publishes the mix as data, checks each reading against it. |
 
 The ranking example is a reusable workflow built from existing nodes, not a node of its own. A `sift` scores every candidate with a leveled question, and the continuous score in `<as>.answers[i].answers.<question>.score` orders them. Sorting, the minimum score, per-bucket quotas and the cut-off are a `code` step. A second `sift` over pairs finds near-duplicates among the best `consider` candidates, the only ones that can make the list. That costs `consider × (consider − 1) / 2` questions, so the caller chooses it. A long list needs no batching in the workflow: a `sift` over the host's per-request limits splits itself. `npm run demo:rank -- --live --input request.json` ranks your own list with Jev.
 
 Each example includes a failure or uncertainty path. `npm run demo:support -- unresolved` and `npm run demo -- --no-evidence` exit with code `2` after escalation.
 
 To connect models, follow [support integration](support-quickstart.md) or [research integration](live-research.md). Your application supplies tool permissions, credentials and cancellation. Scripted answers remain fixed when you edit a prompt.
+
+## Vision examples to come
+
+[`@parcha/pi-vision`](../packages/pi-vision/README.md) reads files for a model; the hero job and the reference host above use it. Three examples built around it are not in this repository yet. Each gets a row in the table above when it lands:
+
+- **Video chapters.** Drop a long film: the agent writes its chapters, each with a keyframe and the minutes it rests on.
+- **Hear and find.** Ask when a phrase is said and when a thing is first seen in a long film: the agent answers with both seconds, the frame and a box around the thing.
+- **Document verification.** Give it a certificate of incorporation: the agent answers yes or no for each characteristic a certificate of that state has, with a box on each thing it found in the document.

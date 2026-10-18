@@ -22,8 +22,10 @@ const { parentPort, workerData: d } = process.getBuiltinModule("node:worker_thre
 })().catch((e) => parentPort.postMessage({ error: { name: e && e.name, message: String((e && e.message) || e) } }));
 `;
 
+/** The worker's time and heap caps; the defaults hold when they are left out. */
 export type UnpdfOptions = { readonly timeoutMs?: number; readonly memoryMb?: number };
 
+/** PDF text with nothing installed: pdf.js through `unpdf`, in a worker thread with a time and heap cap. */
 export function unpdfProvider(options: UnpdfOptions = {}): PdfProvider {
   const document: PdfProvider["document"] = async (source, call) => {
     const { url, version } = await resolvePdfDependency("unpdf");
