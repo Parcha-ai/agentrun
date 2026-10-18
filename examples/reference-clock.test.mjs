@@ -5,7 +5,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { demo, localPlace } from '@parcha/agentrun-reference';
+import { demo, localPlace } from '@parcha/agentrun-harness';
 
 async function lengths(t, skew) {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-clock-'));

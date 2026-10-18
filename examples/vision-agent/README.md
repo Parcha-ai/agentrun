@@ -36,4 +36,4 @@ On fakes a scripted lead runs one script whatever is asked (one look at the firs
 
 ## Runtime dependencies
 
-`@parcha/agentrun-reference` (the host: `demo()`, code mode, the judge seam), `@parcha/pi-vision` (the functions, the skills, the transcribers, the scripted eyes), `@parcha/agentrun-jev` (Jev for a live run), `@earendil-works/pi-ai` (the live models and the scripted lead's messages), `@earendil-works/pi-codemode` (the sandbox, through the host) and `@parcha/agentrun-dsl` (the workflow's types).
+`@parcha/agentrun-harness` (the host: `demo()`, code mode, the judge seam), `@parcha/pi-vision` (the functions, the skills, the transcribers, the scripted eyes), `@parcha/agentrun-jev` (Jev for a live run), `@earendil-works/pi-ai` (the live models and the scripted lead's messages), `@earendil-works/pi-codemode` (the sandbox, through the host) and `@parcha/agentrun-dsl` (the workflow's types).

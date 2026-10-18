@@ -94,7 +94,7 @@ try {
     assert.equal(text, JSON.stringify(JSON.parse(text), null, 2) + '\n', `packages/${entry.name}/package.json is not canonical two-space JSON: a key appears twice, or the layout differs`);
   }
   receipt.checks.push('Every packages/*/package.json is canonical two-space JSON, so no key appears twice.');
-  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'reference'];
+  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'harness'];
   const tarballs = [];
   for (const directory of packageDirectories) {
     const cwd = join(root, 'packages', directory);
@@ -278,9 +278,9 @@ import { execFileSync } from 'node:child_process';
 import * as agentExport from '@parcha/pi-durable-agent/export';
 import * as serve from '@parcha/agentrun-serve';
 import * as piSignin from '@parcha/agentrun-pi/signin';
-import * as reference from '@parcha/agentrun-reference';
-import * as referenceScan from '@parcha/agentrun-reference/scan';
-import * as referencePlace from '@parcha/agentrun-reference/place';
+import * as reference from '@parcha/agentrun-harness';
+import * as referenceScan from '@parcha/agentrun-harness/scan';
+import * as referencePlace from '@parcha/agentrun-harness/place';
 import { fileURLToPath } from 'node:url';
 const { createPiRunner } = pi;
 assert.equal('authorWorkflow' in pi, false);
@@ -325,8 +325,8 @@ assert.deepEqual([agentExport.EXPORTABLE_KINDS,agentExport.SECRET_KINDS,agentExp
 { const ready=piSignin.checkKeys({name:'consumer',models:{lead:{needs:['text']}},keys:[{env:'CONSUMER_KEY',why:'w',where:'x',required:true}],programs:[],expectedCalls:0,expectedCost:0},{env:{}}); assert.equal(ready.exitCode,2); assert.equal(typeof piSignin.resolveModel,'function'); }
 assert.ok(loadAuthorReference('language').includes(authorContract()));
 { assert.equal(typeof serve.startServe,'function'); const caps=serve.capabilities({}); assert.equal(caps.contract,'agentrun.v2/0'); assert.equal(caps.backend,'local'); assert.equal(caps.models,undefined); assert.equal(serve.ERROR_STATUS.unsupported_here,501); }
-for (const name of ['demo','run','placeAt','localHost','codeOf','tapBox']) assert.equal(typeof reference[name],'function',name); assert.equal(typeof referenceScan.credentialIn,'function'); assert.equal(typeof referencePlace.localPlace,'function'); assert.ok(existsSync(fileURLToPath(import.meta.resolve('@parcha/agentrun-reference/child-app'))),'the child app resolves to a file');
-console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,serve:true,git:true,learn:true,reference:true,network:'prohibited'}));
+for (const name of ['demo','run','placeAt','localHost','codeOf','tapBox']) assert.equal(typeof reference[name],'function',name); assert.equal(typeof referenceScan.credentialIn,'function'); assert.equal(typeof referencePlace.localPlace,'function'); assert.ok(existsSync(fileURLToPath(import.meta.resolve('@parcha/agentrun-harness/child-app'))),'the child app resolves to a file');
+console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,serve:true,git:true,learn:true,harness:true,network:'prohibited'}));
 `);
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
   assert.deepEqual(smoke, runtimeSmokeChecks);
@@ -511,17 +511,17 @@ const curated = (repo: Repo, judge: Judge): Promise<CurateReport> => curate({ re
 void [start, code, curated, agentLearn({ guard, secrets: () => [] })];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'learn-consumer.ts'], consumer);
-  // @parcha/agentrun-reference without @parcha/pi-transport, its optional peer: the package and its @parcha dependencies alone,
+  // @parcha/agentrun-harness without @parcha/pi-transport, its optional peer: the package and its @parcha dependencies alone,
   // where its public types compile under --strict with no skipLibCheck. @google/genai's types (under pi-ai) import the MCP
   // SDK, genai's own optional peer, so a strict consumer of pi-ai supplies it at the range genai names.
   const bare = join(temporary, 'consumer-reference');
   await mkdir(bare);
-  await writeFile(join(bare, 'package.json'), JSON.stringify({ name: 'agentrun-reference-consumer', version: '1.0.0', private: true, type: 'module', overrides }));
-  await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', ...['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'reference'].map(directory => tarballs[packageDirectories.indexOf(directory)])], bare);
+  await writeFile(join(bare, 'package.json'), JSON.stringify({ name: 'agentrun-harness-consumer', version: '1.0.0', private: true, type: 'module', overrides }));
+  await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', ...['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'harness'].map(directory => tarballs[packageDirectories.indexOf(directory)])], bare);
   const mcp = (await json(join(bare, 'node_modules', '@google', 'genai', 'package.json'))).peerDependencies?.['@modelcontextprotocol/sdk'];
   await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-dev', '--save-exact', `typescript@${typescript.version}`, `@types/node@${nodeTypes.version}`, ...(mcp ? [`@modelcontextprotocol/sdk@${mcp}`] : [])], bare);
   assert.equal(existsSync(join(bare, 'node_modules', '@parcha', 'pi-transport')), false, 'the reference consumer holds no @parcha/pi-transport');
-  await writeFile(join(bare, 'reference-consumer.ts'), `import { demo, localHost, placeAt, type Boxes, type DemoOptions, type Fakes, type Job, type ToolContext } from '@parcha/agentrun-reference';
+  await writeFile(join(bare, 'reference-consumer.ts'), `import { demo, localHost, placeAt, type Boxes, type DemoOptions, type Fakes, type Job, type ToolContext } from '@parcha/agentrun-harness';
 const fakes: Fakes = { model: () => { throw new Error('no model'); }, tools: { lookup: (args) => ({ id: String(args.id), score: 1 }) }, judge: async () => { throw new Error('no judge'); }, pages: {}, start: '' };
 const job: Job = { workflow: { v: 2, name: 'typed', schemas: { Any: { type: 'object' } }, output: { schemaId: 'Any', path: 'final' }, root: { node: 'code', label: 'finish', code: 's => ({ final: {} })' } }, input: {} };
 const options: DemoOptions = { self: import.meta.url, spec: { name: 'typed' }, job, fakes };
@@ -530,7 +530,7 @@ const useTool = (context: ToolContext): boolean => context.live;
 void [demo, localHost, placeAt, options, boxes, useTool];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'reference-consumer.ts'], bare);
-  receipt.checks.push('@parcha/agentrun-reference, installed with its @parcha dependencies and without @parcha/pi-transport, compiles under --strict with no skipLibCheck.');
+  receipt.checks.push('@parcha/agentrun-harness, installed with its @parcha dependencies and without @parcha/pi-transport, compiles under --strict with no skipLibCheck.');
   receipt.checks.push('Installed ESM imports, core execution, fake Jev/Pi adapters, and strict TypeScript consumer compilation passed.');
   await rm(join(receiptDir, 'packages'), { recursive: true, force: true });
   await mkdir(join(receiptDir, 'packages'), { recursive: true });

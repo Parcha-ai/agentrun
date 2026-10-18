@@ -5,8 +5,8 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs
 import { join } from 'node:path';
 import { fakeEyes, fakeTranscriptionFetch } from '@parcha/pi-vision/testing';
 import { openAiTranscriber } from '@parcha/pi-vision/transcribers';
-import { demo } from '@parcha/agentrun-reference';
-import type { ToolContext } from '@parcha/agentrun-reference';
+import { demo } from '@parcha/agentrun-harness';
+import type { ToolContext } from '@parcha/agentrun-harness';
 import type { BoxProvider } from '@parcha/pi-transport';
 import { fakes, job, lead } from './job.ts';
 

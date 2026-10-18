@@ -11,8 +11,8 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
-import { effectiveBoxes } from '../packages/reference/dist/demo-spec.js';
-import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-reference';
+import { effectiveBoxes } from '../packages/harness/dist/demo-spec.js';
+import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
 import { ORIGINAL, FIXTURE, BASELINE, run, composeHost, destroyBoxes, meterKnown, RUN_LABEL, localBoxes, ctx, finish, lines, planFor, recordingPlace, specWith, SITES, signInHome, filesIn, killSpec, boxed } from './reference-demo-helpers.mjs';
 
 test('the boxes capability: a tool\'s box is destroyed once at "a box command in flight", the run\'s process lives, no kill line is written, and the transport box lines record the loss', { timeout: 300_000 }, async (t) => {
@@ -73,7 +73,7 @@ test('the judge seam prices at Jev\'s public list price when the answer reports 
 test('a scripted tool is handed the run\'s place, so it can read the run\'s evidence files and the job\'s files', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-place-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
-  const { localHost, placeAt } = await import('@parcha/agentrun-reference');
+  const { localHost, placeAt } = await import('@parcha/agentrun-harness');
   const place = await placeAt(join(tmp, 'run'));
   let seen;
   const local = localHost(place, { model: () => { throw new Error('unused'); }, tools: { look: (_args, context) => { seen = context; return {}; } }, judge: async () => ({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }), pages: {}, start: 'about:blank' });
@@ -99,7 +99,7 @@ test('judge cap: a request is counted before it is sent, so concurrent questions
 test('live parts: merged member by member FIRST, then the crossings and the judge caps wrap the final host: a live judge is capped, a live status keeps its crossings, tools and decisions keep what the host had', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-compose-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
-  const { localHost, placeAt } = await import('@parcha/agentrun-reference');
+  const { localHost, placeAt } = await import('@parcha/agentrun-harness');
   const place = await placeAt(join(tmp, 'run'));
   const host = localHost(place, { model: () => { throw new Error('unused'); }, tools: {}, judge: async () => ({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }), pages: {}, start: 'about:blank' }).host;
   const probe = { name: 'probe', tools: [] };
@@ -248,9 +248,9 @@ test('a held kill waits for every tool call to return before it asks: a tool a p
 // ---- the demo's own Jev caps, and a model whose key the demo does not declare ----------------------------------------------------------------------
 
 test('models.judge.caps sets the demo\'s own Jev caps (positive integers at most 4 times the default), the default is unchanged, a value past the ceiling is refused at load, and the run still refuses past the caps', { timeout: 300_000 }, async (t) => {
-  const { judgeCapsOf } = await import('../packages/reference/dist/demo-spec.js');
-  const { composeHost } = await import('../packages/reference/dist/demo.js');
-  const { localHost, placeAt, crossings } = await import('@parcha/agentrun-reference');
+  const { judgeCapsOf } = await import('../packages/harness/dist/demo-spec.js');
+  const { composeHost } = await import('../packages/harness/dist/demo.js');
+  const { localHost, placeAt, crossings } = await import('@parcha/agentrun-harness');
   assert.deepEqual(judgeCapsOf({ name: 'x' }), { requests: 50, tokens: 40_000 }, 'the default is unchanged');
   assert.deepEqual(judgeCapsOf({ name: 'x', models: { judge: { jev: true } } }), { requests: 50, tokens: 40_000 });
   assert.deepEqual(judgeCapsOf({ name: 'x', models: { judge: { jev: true, caps: { requests: 2, tokens: 100 } } } }), { requests: 2, tokens: 100 });
@@ -288,14 +288,14 @@ test('a demo that names models.judge (Jev) without a Jev key group is refused at
 test('a live host whose fallback judge is the fakes\' (already tapped) has each crossing counted once; a judge the live parts supply is tapped here', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-tap-once-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
-  const { localHost, placeAt } = await import('@parcha/agentrun-reference');
-  const { composeHost } = await import('../packages/reference/dist/demo.js');
+  const { localHost, placeAt } = await import('@parcha/agentrun-harness');
+  const { composeHost } = await import('../packages/harness/dist/demo.js');
   const place = await placeAt(join(tmp, 'run'));
   const crossed = [];
   const cross = (point) => { crossed.push(point); return false; };
   const fakes = { model: () => { throw new Error('unused'); }, tools: {}, judge: async () => ({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }), pages: {}, start: 'about:blank' };
   // The entry taps the fakes when the live parts supply tools; the live parts here supply tools only.
-  const { tapFakes } = await import('@parcha/agentrun-reference');
+  const { tapFakes } = await import('@parcha/agentrun-harness');
   const host = localHost(place, tapFakes(fakes, cross)).host;
   composeHost(host, { tools: { runEffect: async () => 'live' } }, cross, { open: 0 }, join(tmp, 'spent.jsonl'), true, undefined, true);
   await host.decisions.runJudge({ label: 'verdict' });
@@ -340,7 +340,7 @@ test('a kill at a point that is often ineligible lands every time across 8 runs,
   const lines = [];
   const log = console.log;
   // The summary says it when they differ.
-  const { summarize } = await import('../packages/reference/dist/demo.js');
+  const { summarize } = await import('../packages/harness/dist/demo.js');
   console.log = (...args) => lines.push(args.join(' '));
   try { summarize({ spec: { name: 'x' } }, { processes: [{ outcome: { status: 'complete' } }], kills: [{ gen: 1, point: 'p', kind: 'process', why: 'w', n: 12, planned: 10 }, { gen: 2, point: 'q', kind: 'process', why: 'w', n: 3, planned: 3 }], failedKills: [], failedSignals: [], unlanded: [], usd: 0, maxUsd: null, overBudget: false }); } finally { console.log = log; }
   assert.ok(lines.some((line) => line.includes('at p (planned n=10, landed at n=12): w')) && lines.some((line) => line.includes('at q: w') && !line.includes('planned')), lines.join('\n'));

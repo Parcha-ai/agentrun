@@ -14,7 +14,7 @@ import { test } from 'node:test';
 import { exampleAt, fileName, inputOf, INSTRUCTIONS, skills } from './vision-agent/agent.ts';
 import { argvFor, options } from './vision-agent/run.ts';
 import { jevOptionsOf } from './vision-agent/live.ts';
-import { demo } from '@parcha/agentrun-reference';
+import { demo } from '@parcha/agentrun-harness';
 
 const PROGRAMS = (() => { try { for (const cmd of ['ffmpeg', 'ffprobe', 'pdftoppm']) execFileSync(cmd, [cmd === 'pdftoppm' ? '-v' : '-version'], { stdio: 'ignore' }); return false; } catch { return 'ffmpeg, ffprobe and pdftoppm are needed'; } })();
 const EXAMPLES = ['video-chapters', 'hear-and-find', 'document-check', 'apollo-descent', 'boulder-chapters', 'fair-robot'];
