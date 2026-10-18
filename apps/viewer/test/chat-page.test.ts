@@ -215,6 +215,8 @@ function writeNarrated(dir: string) {
     pi(12, 'pi.user', { role: 'user', content: 'You stopped without submitting. Call submit.' }),
     pi(13, 'pi.assistant', { role: 'assistant', content: [{ type: 'thinking', thinking: '[Reasoning redacted]', redacted: true }, { type: 'thinking', thinking: '**Settling the answer**' }, { type: 'thinking', thinking: 'Checking that the four agree\nthey do, line for line.' }, { type: 'text', text: 'All four pages agree.' },
       { type: 'toolCall', id: 'b1', name: 'bash', arguments: { command: COMMAND } }, { type: 'toolCall', id: 'b2', name: 'bash', arguments: { command: 'ls missing-dir' } }] }),
+    live('tool_execution_start', { type: 'tool_execution_start', toolCallId: 'b1', toolName: 'bash', args: { command: COMMAND } }),
+    live('tool_execution_end', { type: 'tool_execution_end', toolCallId: 'b1', toolName: 'bash' }),
     pi(14, 'pi.tool-result', { role: 'toolResult', toolCallId: 'b1', toolName: 'bash', content: [{ type: 'text', text: '{"pages": 4}' }], isError: false }),
     pi(15, 'pi.tool-result', { role: 'toolResult', toolCallId: 'b2', toolName: 'bash', content: [{ type: 'text', text: 'ls: cannot access missing-dir' }], isError: true }),
   ];
@@ -332,11 +334,10 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.equal(wide.split, true, 'the chat on the left, the report wider on the right');
     assert.deepEqual(wide.said, ['Done. The alarm is on page 2.'], 'its last words as recorded');
     assert.match(String(wide.last), /Three pages, read\s*The page the agent wrote/, 'the card that opens the page it wrote closes the chat, after every conversation');
-    // A step nothing the agent thought or wrote leads into speaks with what its look asked: a quiet line above its
-    // title, inside its card, muted, with no bubble.
-    assert.deepEqual(await value(`(() => { const c = card('wide', 'read film.mp4 from_s=0 to_s=30'); const v = c.querySelector('.voice'); return [v.textContent, c.firstElementChild === v,
-      v.getBoundingClientRect().bottom <= c.querySelector('.calls').getBoundingClientRect().top + 1, getComputedStyle(v).color, getComputedStyle(v).backgroundColor]; })()`),
-      ['What changes in this window?', true, true, 'rgb(164, 164, 173)', 'rgba(0, 0, 0, 0)']);
+    // A step whose looks lead speaks through its first look's ask, once: no voice line repeats it above.
+    assert.deepEqual(await value(`(() => { const c = card('wide', 'read film.mp4 from_s=0 to_s=30'); return [!!c.querySelector('.voice'), callTitle(c.querySelector('.call')),
+      c.textContent.split('What changes in this window?').length - 1, doc('wide').querySelectorAll('.voice').length]; })()`),
+      [false, 'What changes in this window?', 1, 0]);
 
     // The agent's page runs nothing, keeps only its own files, and is held to the recording's blobs by its policy.
     const frame = await value<Record<string, unknown>>(`(() => { const f = doc('wide').querySelector('.report-frame'); const a = art('wide'); return {
@@ -359,12 +360,13 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.doesNotMatch(String(frame.styles), /evil\.example|url\((?!"blob:)/, 'every url() in its styles is a blob, or gone');
     assert.match(String(frame.styles), /\.sheet\{background-image:url\("blob:/, 'its sheet, inlined, with its own reference resolved from its own path');
 
-    // The timeline: a click on a hidden card's bar opens its run, scrolls the chat to the card and flashes it.
-    const target = await value<string>(`doc('narrated').querySelector('.step[hidden]').dataset.item`);
+    // The timeline: a click on the bar of a step folded into "ran N commands" opens that line, scrolls the chat to the
+    // step and flashes it.
+    const target = await value<string>(`doc('narrated').querySelector('.plumb-steps > .step').dataset.item`);
     await page.evaluate(`doc('narrated').querySelector('.tl-toggle').click(); doc('narrated').querySelector('.tbar[data-goto="${target}"]').click()`);
-    await until(`(() => { const d = doc('narrated'); const c = d.querySelector('.step[data-item="${target}"]'); return shown(d.querySelector('.tl-body')) && !c.hidden && c.classList.contains('flash') && inView(c, d.querySelector('.thread')); })()`, 'the card scrolled into view and flashed');
-    assert.equal(await value(`doc('narrated').querySelector('.steps > .more').textContent`), 'Show less');
-    await page.evaluate(`doc('narrated').querySelector('.steps > .more').click(); doc('narrated').querySelector('.tl-toggle').click()`);
+    await until(`(() => { const d = doc('narrated'); const c = d.querySelector('.step[data-item="${target}"]'); return shown(d.querySelector('.tl-body')) && shown(c) && c.classList.contains('flash') && inView(c, d.querySelector('.thread')); })()`, 'the step scrolled into view and flashed');
+    assert.equal(await value(`doc('narrated').querySelector('.plumb-line').getAttribute('aria-expanded')`), 'true');
+    await page.evaluate(`doc('narrated').querySelector('.plumb-line').click(); doc('narrated').querySelector('.tl-toggle').click()`);
 
     // A citation in the agent's page opens its look with the region its address carries; the card opens the same look
     // at its own address, which carries none, so none is drawn.
@@ -524,12 +526,11 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       redacted: [[...m.querySelectorAll('.thought.redacted')].map((n) => [n.textContent, n.tagName]), doc('narrated').body.textContent.includes('[Reasoning redacted]')],
       thoughts: [...m.querySelectorAll('.thought:not(.redacted)')].map((n) => [n.querySelector('.thought-title').textContent, shown(n.querySelector('.thought-title')), n.tagName,
         shown(n.querySelector('.thought-body')), n.querySelector('.thought-body')?.textContent ?? null, n.querySelector('.thought-tag').textContent, getComputedStyle(n.querySelector('.thought-tag'), '::after').display]) }; })()`);
-    // Eight reads in a row: the first three show, the fourth folds; the fifth speaks (its look's ask), so it starts a run
-    // of its own and shows with its line, and the run after it folds again after three. A card led by a thought or the
-    // agent's words has no voice line.
+    // Eight reads in a row, the fifth a look step: every one shows. Only steps that only ran a command fold. No step
+    // draws a voice line.
     assert.deepEqual(narrated, { order: ['who', 'thought', 'said-text', 'steps', 'host-note', 'thought redacted', 'thought', 'thought', 'said-text', 'steps'], said: [['I will read each page in turn.', 0, false], ['All four pages agree.', 0, false]],
-      cards: [false, false, false, true, false, false, false, true], more: ['+ 1 more', '+ 1 more'],
-      voices: [null, null, null, null, 'What is on page 5?', null, null, null], host: ['Host', 'You stopped without submitting. Call submit.', false], users: ['YouRead the four pages of notes.pdf.'],
+      cards: [false, false, false, false, false, false, false, false], more: [],
+      voices: [null, null, null, null, null, null, null, null], host: ['Host', 'You stopped without submitting. Call submit.', false], users: ['YouRead the four pages of notes.pdf.'],
       redacted: [[['thinking · redacted', 'DIV']], false],
       thoughts: [['Analyzing transcript data', true, 'DETAILS', false, 'I am reading page 2 before the others.', 'thinking', 'inline-block'],
         ['Settling the answer', true, 'DIV', false, null, 'thinking', 'none'], ['Checking that the four agree', true, 'DETAILS', false, 'they do, line for line.', 'thinking', 'inline-block']] });

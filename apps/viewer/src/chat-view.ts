@@ -22,7 +22,7 @@ const SOURCE_SAID: Record<SourceKind, string> = { page: 'Read on the page', imag
 /** How many lines, or characters, of a long message show before "Show the whole message". */
 const THREAD_LINES = 8;
 const THREAD_CHARS = 600;
-/** How many cards of one kind in a row show before "+ N more": calls of one tool, calls inside one call. */
+/** How many of a step's looks show before "+ N more" (its decisive ones always show). */
 const THREAD_SHOWN = 3;
 
 const threadIcon = (name: string): Element => {
@@ -435,7 +435,8 @@ function threadCard(recording: Recording, model: ChatModel, item: ToolItem, fold
   // away.
   if (item.looks.length > 0) {
     const named = item.title.startsWith(`${item.tool} `) ? item.title.slice(item.tool.length + 1) : item.title;
-    return reportEl('div', { class: `step looking${item.failed ? ' failed' : ''}${item.judge ? ' judge' : ''}`, 'data-item': item.id }, voice,
+    // Its looks speak for it (the first card's ask), so its voice line is not drawn.
+    return reportEl('div', { class: `step looking${item.failed ? ' failed' : ''}${item.judge ? ' judge' : ''}`, 'data-item': item.id },
       reportEl('div', { class: 'calls' }, ...calls, more),
       reportEl('button', { class: 'made', type: 'button', 'data-open': item.id, title: item.title },
         item.judge && threadJudge(), reportEl('span', { class: 'made-in', text: `made in ${item.tool} ·` }), reportEl('span', { class: 'made-title', text: named }),
@@ -537,21 +538,16 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     reportEl('div', { class: 'title', text: model.title }),
     reportEl('a', { class: 'how', href: reportHowHref(recording), text: 'How this ran' }));
 
-  // Each conversation as recorded: its messages, its thinking, its tool cards (calls of one tool in a row show the first
-  // three, the rest behind "+ N more"). A folded card is opened by its group's opener.
+  // Each conversation as recorded: its messages, its thinking, its tool cards, every one shown but the steps that only ran
+  // a command, which fold into one line. A folded card is opened by its group's opener.
   const cards = new Map<string, HTMLElement>();
   const nodes = new Map<string, HTMLElement>();
   const openers = new Map<HTMLElement, () => void>();
-  const toggleRun = (run: { more: HTMLButtonElement; extras: HTMLElement[] }, open = run.extras[0]?.hidden ?? false) => {
-    for (const node of run.extras) node.hidden = !open;
-    run.more.textContent = open ? 'Show less' : `+ ${run.extras.length} more`;
-  };
   const agentMessage = (className = 'msg') => reportEl('div', { class: className }, reportEl('div', { class: 'who' }, threadIcon('brand'), 'Agent'));
   const drawThread = (thread: ChatThread): HTMLElement[] => {
     const out: HTMLElement[] = [];
     let agent: HTMLElement | undefined;
     let steps: HTMLElement | undefined;
-    let run: { tool: string; cards: HTMLElement[] } | undefined;
     // Steps that only ran a command or a script, in a row, fold into one quiet line.
     let plumbing: { line: HTMLButtonElement; body: HTMLElement; count: number; failed: number } | undefined;
     const plumbingOf = (into: HTMLElement) => {
@@ -564,20 +560,10 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
       into.append(reportEl('div', { class: 'plumbing' }, line, body));
       return (plumbing = { line, body, count: 0, failed: 0 });
     };
-    const closeRun = () => {
-      if (run && steps && run.cards.length > THREAD_SHOWN) {
-        const group = { more: reportEl('button', { class: 'more', type: 'button' }), extras: run.cards.slice(THREAD_SHOWN) };
-        group.more.addEventListener('click', () => toggleRun(group));
-        toggleRun(group, false);
-        for (const card of group.extras) openers.set(card, () => toggleRun(group, true));
-        steps.append(group.more);
-      }
-      run = undefined;
-      plumbing = undefined;
-    };
+    const endPlumbing = () => { plumbing = undefined; };
     for (const item of thread.items) {
       if (item.kind === 'user') {
-        closeRun();
+        endPlumbing();
         agent = undefined;
         steps = undefined;
         const node = threadYou(reportEl('div', { class: 'bubble', text: item.text }), threadLong(item.text), item.id);
@@ -587,7 +573,7 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
       }
       if (item.kind === 'host') {
         // A message the host added sits where it was recorded, inside the agent's turn, as the host's.
-        closeRun();
+        endPlumbing();
         steps = undefined;
         const node = reportEl('div', { class: 'host-note', 'data-item': item.id }, reportEl('span', { class: 'host-who', text: 'Host' }), reportEl('span', { class: 'host-text', text: item.text }));
         nodes.set(item.id, node);
@@ -601,7 +587,6 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
         cards.set(item.id, card);
         nodes.set(item.id, card);
         if (item.plumbing) {
-          if (run) closeRun();
           const group = plumbingOf(steps);
           group.body.append(card);
           group.count += 1;
@@ -609,21 +594,17 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
           group.line.textContent = `ran ${group.count === 1 ? 'a command' : `${group.count} commands`}${group.failed ? `, ${group.failed} failed` : ''}`;
           continue;
         }
-        plumbing = undefined;
-        // A step that speaks (its voice) starts a run of its own, so its line is never folded away.
-        if (run && (run.tool !== item.tool || item.voice)) closeRun();
+        endPlumbing();
         steps.append(card);
-        run ??= { tool: item.tool, cards: [] };
-        run.cards.push(card);
         continue;
       }
-      closeRun();
+      endPlumbing();
       steps = undefined;
       const node = item.kind === 'thinking' ? (item.redacted ? threadRedacted() : threadThinking(item.text)) : reportEl('div', { class: 'said-text', 'data-item': item.id }, ...reportParagraphs(item.text));
       nodes.set(item.id, node);
       agent.append(node);
     }
-    closeRun();
+    endPlumbing();
     return out;
   };
   const input = model.input && threadInput(model.input);
