@@ -130,7 +130,7 @@ a typed error:
 - Refused before any call: a GPU, a snapshot, a `workspace`, an isolation other than `vm`, more than 2 vCPU or 3938 MiB
   (`unsupported`); a label in the providers' namespace, an env name that is not a shell name, a lifetime that is not
   positive (`invalid`).
-- Spend: Archil bills each call (list price $0.00005). A box priced that way gets its receipt with `calls`
+- Spend: Archil bills each call. A box priced that way gets its receipt with `calls`
   (see receipts below).
 
 The live suite spends cents and runs only when asked. It needs the key in `ARCHIL_API_KEY` and the SDK:
