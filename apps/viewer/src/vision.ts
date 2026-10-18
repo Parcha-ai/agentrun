@@ -409,6 +409,10 @@ export const visionTranscript = (body: string): { start: number; end: number; wo
   });
   return rows.length > 0 && rows.every((row) => row !== undefined && Number.isFinite(row.start) && Number.isFinite(row.end) && row.start <= row.end) ? rows as { start: number; end: number; words: string }[] : undefined;
 };
+/** A transcription's rows at the seconds of the file it names: a piece cut from a film (its path `film.mp4#t=600,660`)
+ *  counts its words from the start of the piece, so each row moves by the piece's start. Undefined when the body is not a
+ *  transcript. */
+const visionHeard = (look: VisionLook) => visionTranscript(look.body)?.map((row) => ({ ...row, start: row.start + (look.fromS ?? 0), end: row.end + (look.fromS ?? 0) }));
 /** A second of a recording as a clock: `m:ss`, or `h:mm:ss` from an hour. */
 const visionClock = (seconds: number): string => {
   const whole = Math.max(0, Math.floor(seconds));
@@ -526,7 +530,7 @@ function visionSpeech(looks: VisionLook[], chosen: VisionLook | undefined, momen
   const heard = visionOnce(looks.filter((look) => visionLane(look) === 'speech'));
   if (heard.length === 0) return false;
   const shown = chosen && visionLane(chosen) === 'speech' ? chosen : heard.at(-1)!;
-  const rows = shown.status === 'ok' ? visionTranscript(shown.body) : undefined;
+  const rows = shown.status === 'ok' ? visionHeard(shown) : undefined;
   const moments = momentsOf(shown).map((fragment) => visionWindow(fragment)).filter((moment): moment is { from: number; to?: number } => moment.from !== undefined);
   const falls = (row: { start: number; end: number }, moment: { from: number; to?: number }) => row.start <= (moment.to ?? moment.from) && moment.from <= row.end;
   const cited = (row: { start: number; end: number }) => moments.some((moment) => falls(row, moment));
@@ -630,7 +634,7 @@ function visionReceipt(look: VisionLook, chosen: boolean): Node {
   const row = (name: string, value: string | undefined): Node | false => value !== undefined && value !== '' && h('div', { class: 'vz-row' }, h('span', { class: 'k' }, name), h('span', {}, value));
   // A transcript's answer is its rows, drawn in the speech lane: the receipt says how many, and over which seconds.
   const speech = visionLane(look) === 'speech';
-  const transcript = speech ? visionTranscript(look.body) : undefined;
+  const transcript = speech ? visionHeard(look) : undefined;
   const seconds = (value: number) => String(Number(value.toFixed(2)));
   const answer = transcript ? `${transcript.length} row${transcript.length === 1 ? '' : 's'}, ${seconds(transcript[0]!.start)} to ${seconds(transcript.at(-1)!.end)} s` : look.body;
   return h('div', { class: `vz-receipt${look.status === 'failed' ? ' missed' : ''}` },

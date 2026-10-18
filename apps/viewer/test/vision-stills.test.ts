@@ -87,3 +87,19 @@ test('the hear-and-find recording: Jev\'s looks on stills cut from the film are 
   assert.deepEqual(find(frame, (each) => each.tag === 'img').map((each) => ('blob' in each ? each.blob : undefined)), [result.rows.flatMap((row) => row.cites).find((each) => each.blob)!.blob]);
   assert.deepEqual(find(frame, cls('vz-box')).map((box) => ('box' in box ? box.box : undefined)), [{ x: 30.3, y: 5.6, w: 50.3, h: 54.4 }]);
 });
+
+test('a transcription of a piece cut from a film reads its rows at the film\'s seconds', () => {
+  // The transcribe skill cuts a long film into pieces and names each by its place in the film (`film.mp4#t=600,660` in
+  // the record's path); the words' seconds count from the start of the piece. Shown and cited, a row is at the film's
+  // second: the piece's start plus its own.
+  const KEY = sha256('a piece from 600 s');
+  const piece: Line[] = [lines[0]!, filed(KEY, { tool: 'transcribe', args: { path: 'film.mp4#t=600,660', model: 'faux/ears', native: false, via: 'faux' }, status: 'ok',
+    body: '0.00\t4.00\tHouston, Tranquility Base here\n5.00\t9.50\tThe Eagle has landed', facts: { sha256: sha256('piece'), kind: 'audio', key: KEY, cost_usd: 0.001 } } as unknown as Json), lines.at(-1)!];
+  const at = (fragment: string) => visionPanel.view(reduceTo(visionPanel, piece, piece.length), { t: 0, cite: KEY,
+    json: (sha) => (sha === RESULT ? { format: 'agentrun.cited/1', rows: [{ label: 'landed', value: 'x', cites: [{ look: KEY, fragment }] }] } as unknown as Json : undefined) });
+  const speech = lane(at('#t=606'), /^Speech/)!;
+  assert.deepEqual(find(speech, cls('vz-line')).map(text), ['10:00–10:04 Houston, Tranquility Base here', '10:05–10:09 The Eagle has landed']);
+  assert.deepEqual(find(speech, cls('vz-line')).map((row) => cls('cited')(row)), [false, true], 'the film\'s second 606 is the piece\'s 6');
+  assert.match(text(lane(at('#t=6'), /^Speech/)!), /#t=6 is in no row of this transcript/, 'a second of the piece alone is not the film\'s');
+  assert.match(text(find(at('#t=606'), cls('vz-receipt'))[0]!), /answer 2 rows, 600 to 609\.5 s/);
+});
