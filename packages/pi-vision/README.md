@@ -257,7 +257,10 @@ than resizing it. A box answer also has `fragment`, its region as `file#xywh=per
 in, mapped back through the fit and through the region a crop names. Each judgment is filed and told like a look
 (`via: jev`) at the price the judge gives (none known is filed as unknown, never $0), kept as a memo before it is told,
 and a miss throws a `SeeMiss` with its code; a box asked of a model that has none is an `unsupported` miss before any
-request. Without `jev`, every judgment is a `no_vision_route` miss.
+request. With no image at all a request is a text judgment: its text goes in `state`, it asks `choice`, `noul` or `score`
+(a `box` needs an image), and nothing but the state and the questions goes to Jev; it is filed and told like any other
+look, as a look of `text`, and its key follows the state, so another claim or other evidence is another judgment. Without
+`jev`, every judgment is a `no_vision_route` miss.
 
 ## For a host: `vision.transcribe`, speech to text in code mode
 
