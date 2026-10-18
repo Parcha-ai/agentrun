@@ -19,6 +19,8 @@ const TURNS: Readonly<Record<number, { readonly flip?: true; readonly flop?: tru
   2: { flop: true }, 3: { rotate: 180 }, 4: { flip: true }, 5: { flop: true, rotate: 270 }, 6: { rotate: 90 }, 7: { flop: true, rotate: 90 }, 8: { rotate: 270 },
 });
 
+/** The fast image processor, on the host's own `sharp` module. The package never resolves sharp itself, so its native libraries stay
+ *  with the host's install. */
 export function sharpImages(sharp: SharpModule): ImageProcessor & Provider {
   if (typeof sharp !== "function") throw new TypeError("sharpImages takes sharp's default export: import sharp from \"sharp\"");
   const open = (bytes: Uint8Array, maxPixels?: number) => sharp(bytes, { limitInputPixels: maxPixels ?? false, failOn: "error" });

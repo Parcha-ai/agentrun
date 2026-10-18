@@ -37,6 +37,9 @@ export type BaselineView = { label: string; counters: Counters; ms: number | nul
 export type ViewContext = { t: number; /** The playback clock in ms: the time of the point at a stop (a scrub sets it), and running between stops while playing. A view that draws motion reads it. */ now?: number; focus?: string; baseline?: BaselineView; providers?: 'real' | 'scripted'; cite?: string; json?: (sha: string) => Json | undefined;
   /** The run is followed while it goes and has not finished: its cost is not known yet. */
   following?: true;
+  /** The page's debug views (`?debug=`, a comma list): `durability` shows what a public replay hides, the kills and
+   *  resumes and the receipts drawn as they are (PANELS.md, "What a public replay shows"). */
+  debug?: readonly string[];
   /** A blob's media type, from its name in `blobs/` (undefined until the shell has found it): a view tells a picture it may
    *  draw from a file it links. */
   blobType?: (sha: string) => string | undefined };
