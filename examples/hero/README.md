@@ -13,7 +13,8 @@ The recorded gallery take is a real run and comes with the live run; `--record <
 ## What you will see
 
 1. The job: nine operators' dashboards, each opened in a browser session of its own and all at once. The numbers exist only in the charts, so vision reads them; where the operator also publishes the mix as data, a `call` fetches it as the check. The run ends in `snapshot.html`, a table of the nine grids with each reading linked to the screenshot it came from.
-2. Receipts with cost: every look the eyes were shown is filed with its screenshot, so the strip counts it and the manifest's cost holds the eyes' price (a number, never a 0 it did not earn). The result is `agentrun.cited/1`: each number names the screenshot (`blob`) and the look (`look`) that read it, and a grid that was not read is a row with no cite.
+2. The evidence: each of the nine numbers cites the screenshot and the look it was read from, one click away (`agentrun.cited/1`: each number names the screenshot (`blob`) and the look (`look`); a grid that was not read is a row with no cite).
+3. Receipts: every look the eyes were shown is filed with its screenshot and its receipt, behind "Receipts" in the viewer, and the recording's cost is the eyes' price, never a 0 it did not earn.
 
 | Flag | What it does |
 |---|---|
@@ -66,4 +67,4 @@ entry:
 
 ## For developers: the kill and resume
 
-The template's kill-and-resume beat is a test, not what the demo shows (`npm run demo:hero -- --kill` runs it). the process dies after the host has kept a published figure (the first one kept while no other call is running, so the kill is reachable however the nine branches overlap, and for any input) and before the driver committed it. The resumed process settles the call from the kept answer, so each figure is fetched once per grid in all and the recording's own fold reads repeated 0.
+The template's kill-and-resume beat is a test, not what the demo shows (`npm run demo:hero -- --kill` runs it). The process dies after the host has kept a published figure (the first one kept while no other call is running, so the kill is reachable however the nine branches overlap, and for any input) and before the driver committed it. The resumed process settles the call from the kept answer, so each figure is fetched once per grid in all and the recording's own fold reads repeated 0.
