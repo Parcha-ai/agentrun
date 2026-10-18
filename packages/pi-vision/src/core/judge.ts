@@ -139,11 +139,13 @@ export async function judge(input: unknown, env: VisionEnv | undefined, call: Ca
       ({ answer: result, readBack } = await keptAnswer<JevResult>(call.memo, at.facts.key, ask));
     } catch (error) {
       if (call.signal?.aborted) throw error;
-      // A request that threw may still have been billed: its price is not known, so none is filed. A box asked of a
-      // model that has none is refused by the port before any request.
+      // A request that threw may still have been billed: its price is not known, so none is filed. A request the port
+      // refused before it sent anything (a box asked of a model that has none, a state over the host's limit, an image it
+      // does not take) is marked by its request diagnostic: it cost nothing and began no call.
       const { status, requestDiagnostic } = (error ?? {}) as { status?: unknown; requestDiagnostic?: { reason?: unknown } };
+      const refused = typeof requestDiagnostic?.reason === "string";
       const code = requestDiagnostic?.reason === "unsupported_model" ? "unsupported" : status === 413 ? "over_budget" : "look_failed";
-      return fail({ code, reason: `Jev failed: ${firstLine(error)}`, model }, code === "unsupported" ? undefined : lookTiming(call, startedAt));
+      return fail({ code, reason: `Jev failed: ${firstLine(error)}`, model }, code === "unsupported" || refused ? undefined : lookTiming(call, startedAt));
     }
     const costUsd = result.cost_usd ?? null;
     const usage: Usage | null = result.usage ? { input: result.usage.input_tokens, output: result.usage.output_tokens, cacheRead: 0, cacheWrite: 0, totalTokens: result.usage.input_tokens + result.usage.output_tokens, cost: { input: costUsd ?? 0, output: 0, cacheRead: 0, cacheWrite: 0, total: costUsd ?? 0 } } : null;

@@ -144,6 +144,12 @@ test("vision.see, vision.judge and vision.transcribe each time their own request
   const failing = host({ images: sharpImages(sharp) });
   await assert.rejects(judge({ images: [png(300, 300)], questions: { q: { type: "noul", instructions: "Is `images[0].image` blank?" } } }, undefined, call, { ...failing.setup, jev: { judge: fakeJev({ fail: Object.assign(new Error("400 Bad Request"), { status: 400 }) }).judge } }), /Jev failed/);
   assert.deepEqual([Number.isInteger(failing.misses[0].record.facts.startedAt), failing.misses[0].record.facts.parentToolCallId], [true, "code-9"], "a failed judgment is timed too");
+  // The port refused before it sent anything: a state over the host's limit is no model call, whatever its code.
+  const tooBig = host({ images: sharpImages(sharp) });
+  const refusal = Object.assign(new Error("Jev assembled state is 900 UTF-8 bytes; configured host limit is 500 bytes. No request was sent."), { requestDiagnostic: { reason: "state_too_large" } });
+  await assert.rejects(judge({ images: [png(300, 300)], questions: { q: { type: "noul", instructions: "Is `images[0].image` blank?" } } }, undefined, call, { ...tooBig.setup, jev: { judge: fakeJev({ fail: refusal }).judge } }), /No request was sent/);
+  const unsent = tooBig.misses[0].record;
+  assert.deepEqual([unsent.status, "startedAt" in unsent.facts, unsent.facts.parentToolCallId, unsent.facts.cost_usd, unsent.facts.tokens_in], ["failed", false, "code-9", 0, 0], "no call began and none cost anything");
   const notSent = host();
   await assert.rejects(transcribe({ path: "landing.mp3" }, env, call, { ...notSent.setup, transcriber: { provider: "stt", model: "stt-1", transcribe: async () => { const { ProviderMiss } = await import("@parcha/pi-vision"); throw new ProviderMiss("over_budget", "too long for one request"); } } }));
   assert.deepEqual(["startedAt" in notSent.misses[0].record.facts, notSent.misses[0].record.facts.parentToolCallId], [false, "code-9"], "a request refused before it was sent began no call");
