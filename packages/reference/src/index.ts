@@ -1,6 +1,6 @@
-// The reference assembly as one import, for another example that wants the same pi-durable host: its own job and its own
-// fakes, this file's wiring. `import { run, placeAt, localHost } from '../reference/index.ts'`. The names below are the
-// surface; the other files of this directory are the example's own and may change.
+// The reference assembly as one import, for an example that wants the same pi-durable host: its own job and its own
+// fakes, this package's wiring. `import { run, placeAt, localHost } from '@parcha/agentrun-reference'`. The names below are
+// the surface, with the subpaths `./scan`, `./child-app` and `./place`; the package's other files are not public.
 
 /** Runs a job on a place through the open packages (pi-durable on a plain directory, the workflow's task, the browser and vision) and returns how it ended. A second call on the same place resumes the run. */
 export { run } from './assemble.ts';
@@ -48,6 +48,7 @@ export { crossings, tapFakes, tapHost } from './crossings.ts';
 export type { Cross } from './crossings.ts';
 /** The box provider the entry hands a demo, with its crossings (`transport.box.exec`: a box command in flight) and transport box lines built in. */
 export { tapBox, BOX_CROSSINGS } from './boxes.ts';
+export type { Boxes } from './boxes.ts';
 
 /** The judge seam: Jev's caps (50 requests, 40,000 tokens; the next is refused with JEV_CAP_REACHED, a failed request counts and a refused one does not) and Jev's public list price, for every demo. */
 export { capJudge, jevCost, JEV_CAPS, JEV_LIST_PRICE } from './judge.ts';

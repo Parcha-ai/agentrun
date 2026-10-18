@@ -1,0 +1,99 @@
+{
+  "name": "@parcha/agentrun-reference",
+  "version": "0.1.0-beta.15",
+  "description": "The agentrun reference host: one pi-durable host that runs an agentrun job on this machine, with kill-anywhere, a recorder, a supervisor and fakes, so an example runs from an npm install.",
+  "keywords": [
+    "agentrun",
+    "pi",
+    "pi-durable",
+    "agent",
+    "reference",
+    "durable"
+  ],
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "Parcha Labs, Inc.",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./scan": {
+      "source": "./src/scan.ts",
+      "types": "./dist/scan.d.ts",
+      "import": "./dist/scan.js",
+      "default": "./dist/scan.js"
+    },
+    "./child-app": {
+      "source": "./src/child-app.ts",
+      "types": "./dist/child-app.d.ts",
+      "import": "./dist/child-app.js",
+      "default": "./dist/child-app.js"
+    },
+    "./place": {
+      "source": "./src/place.ts",
+      "types": "./dist/place.d.ts",
+      "import": "./dist/place.js",
+      "default": "./dist/place.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && node scripts/rewrite-dts.mjs dist",
+    "prepack": "npm run build",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/chord": ">=1.0.4 <1.4.0",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-codemode": ">=1.0.4 <1.4.0",
+    "@earendil-works/pi-durable": ">=1.0.4 <1.4.0",
+    "@parcha/pi-transport": "0.1.0-beta.15",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@parcha/pi-transport": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@parcha/agentrun-dsl": "0.1.0-beta.15",
+    "@parcha/agentrun-pi": "0.1.0-beta.15",
+    "@parcha/pi-browser": "0.1.0-beta.15",
+    "@parcha/pi-durable-disk": "0.1.0-beta.15",
+    "@parcha/pi-vision": "0.1.0-beta.15"
+  },
+  "devDependencies": {
+    "@earendil-works/chord": "1.1.0",
+    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-codemode": "1.1.0",
+    "@earendil-works/pi-durable": "1.1.0",
+    "@parcha/pi-transport": "0.1.0-beta.15",
+    "typebox": "1.3.7"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Parcha-ai/agentrun.git",
+    "directory": "packages/reference"
+  },
+  "bugs": {
+    "url": "https://github.com/Parcha-ai/agentrun/issues"
+  },
+  "homepage": "https://agentrun.ai",
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
+  }
+}

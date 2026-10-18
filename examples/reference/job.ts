@@ -5,8 +5,8 @@ import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/provid
 import type { Workflow } from '@parcha/agentrun-dsl';
 import { fixturePage } from '@parcha/pi-browser/testing';
 import { pngBytes } from '@parcha/pi-vision/testing';
-import type { Job } from './assemble.ts';
-import type { Fakes } from './host.ts';
+import type { Job } from '@parcha/agentrun-reference';
+import type { Fakes } from '@parcha/agentrun-reference';
 
 const REGISTRY = 'http://registry.example/companies/01234567';
 const NEWS = 'http://news.example/acme-opens-a-second-plant';

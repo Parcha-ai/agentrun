@@ -16,12 +16,18 @@ import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import type { Cross, EffectWindow } from './crossings.ts';
 import type { Recorder } from './record.ts';
 
+/** The boxes a demo's tools get (`context.boxes`): a pi-transport `BoxProvider` at run time. pi-transport is an optional
+ *  peer, so this package's types name only what every provider has; a tool that makes boxes types `context.boxes` with
+ *  pi-transport's own `BoxProvider`. */
+export type Boxes = { readonly name: string };
+
 export const BOX_CROSSINGS = ['transport.box.create', 'transport.box.created', 'transport.box.exec', 'transport.box.destroy'] as const;
 
 /** The label every box of a run carries, so one run's cleanup finds its own boxes and no other run's. */
 export const RUN_LABEL = 'agentrun-run';
 
-export function tapBox(provider: BoxProvider, options: { cross: Cross; window: EffectWindow; recorder?: Recorder; /** The run's unique label value: put on every box the run makes, tool-made ones too. */ runLabel?: string }): BoxProvider {
+export function tapBox(boxes: Boxes, options: { cross: Cross; window: EffectWindow; recorder?: Recorder; /** The run's unique label value: put on every box the run makes, tool-made ones too. */ runLabel?: string }): Boxes {
+  const provider = boxes as BoxProvider;
   const { cross, recorder } = options;
   const line = (kind: 'box.created' | 'box.killed' | 'box.ended', data: Record<string, unknown>) => { try { recorder?.live('transport', kind, data); } catch { /* a recording line never fails a call */ } };
   // A crossing in a tool call cannot end the run's process: it is logged, and it may still end the box (the crossing function says so when a tool-box kill is due).
@@ -61,7 +67,7 @@ export function tapBox(provider: BoxProvider, options: { cross: Cross; window: E
     return { box: proxy, lose };
   };
   const labelled = <S extends { labels?: Readonly<Record<string, string>> }>(spec: S): S => (options.runLabel ? { ...spec, labels: { ...spec.labels, [RUN_LABEL]: options.runLabel } } : spec);
-  return {
+  const tapped: BoxProvider = {
     name: provider.name,
     list: (labels, context) => provider.list(labels, context),
     // A box a tool reconnects to is the run's too: it is wrapped, so its commands are crossings and its life is on the recording.
@@ -81,4 +87,5 @@ export function tapBox(provider: BoxProvider, options: { cross: Cross; window: E
       return { ok: true, value: wrapped.box } as typeof made;
     },
   };
+  return tapped;
 }

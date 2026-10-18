@@ -374,16 +374,35 @@ export function followRecording(dir: string, options: { holdMs?: number | (() =>
 
 export type { DurableLine };
 
-/** The code a recording was cut from: the repository, its commit, and the version of each workspace package. */
+/** `owner/name` of a GitHub remote URL (https, ssh or scp form), or undefined for any other host. A URL's user and password are
+ *  never part of the answer, so a token in a remote URL never reaches a recording. */
+function githubRepoOf(url: string): string | undefined {
+  const scp = /^[\w.-]+@github\.com:([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/.exec(url);
+  if (scp) return `${scp[1]}/${scp[2]}`;
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return undefined; }
+  if (!['https:', 'http:', 'ssh:', 'git:'].includes(parsed.protocol) || parsed.hostname.toLowerCase() !== 'github.com') return undefined;
+  const parts = /^\/([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/.exec(parsed.pathname);
+  return parts ? `${parts[1]}/${parts[2]}` : undefined;
+}
+
+/** The code a recording was cut from: the run root's repository (its GitHub `origin` as `owner/name`, else `unknown`; never a
+ *  raw URL, which could name a private host), its commit, and the version of each package the run loaded. */
 export function codeOf(root: string): Header['code'] {
   const git = spawnSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+  const origin = spawnSync('git', ['-C', root, 'remote', 'get-url', 'origin'], { encoding: 'utf8' });
+  const repo = (origin.status === 0 && githubRepoOf(origin.stdout.trim())) || 'unknown';
   const packages: Record<string, string> = {};
-  for (const entry of readdirSync(join(root, 'packages'))) {
-    try { const manifest = JSON.parse(readFileSync(join(root, 'packages', entry, 'package.json'), 'utf8')); packages[manifest.name] = manifest.version; } catch { /* not a package */ }
+  // The workspace's packages in the repository; in a project that installed this package, the @parcha packages it loaded.
+  const workspace = join(root, 'packages');
+  const installed = join(root, 'node_modules', '@parcha');
+  const from = existsSync(workspace) ? workspace : existsSync(installed) ? installed : undefined;
+  for (const entry of from ? readdirSync(from) : []) {
+    try { const manifest = JSON.parse(readFileSync(join(from!, entry, 'package.json'), 'utf8')); packages[manifest.name] = manifest.version; } catch { /* not a package */ }
   }
   // The pi packages the run loaded: what a recording's pi lines are the lines of (section 2 lists them beside ours).
   for (const name of ['pi-durable', 'chord', 'pi-ai', 'pi-agent-core', 'pi-coding-agent', 'pi-tui']) {
     try { packages[`@earendil-works/${name}`] = JSON.parse(readFileSync(join(root, 'node_modules', '@earendil-works', name, 'package.json'), 'utf8')).version; } catch { /* not installed here */ }
   }
-  return { repo: 'Parcha-ai/agentrun', commit: git.status === 0 ? git.stdout.trim() : 'unknown', packages };
+  return { repo, commit: git.status === 0 ? git.stdout.trim() : 'unknown', packages };
 }

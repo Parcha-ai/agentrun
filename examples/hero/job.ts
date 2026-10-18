@@ -7,7 +7,7 @@
 // the pages and the published figures are in `fakes.ts`; a live host brings its own models, browser and eyes. `sources.json` (the nine
 // operators and how each page was checked by hand) is data this job carries inside its workflow.
 import type { Workflow } from '@parcha/agentrun-dsl';
-import type { Job } from '../reference/index.ts';
+import type { Job } from '@parcha/agentrun-reference';
 import sources from './sources.json' with { type: 'json' };
 
 /** One operator of `sources.json`, as the job takes it. */

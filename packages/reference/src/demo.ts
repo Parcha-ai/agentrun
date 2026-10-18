@@ -106,7 +106,16 @@ export type DemoResult = {
 };
 
 const FLAGS = { child: { type: 'boolean' }, live: { type: 'boolean' }, kill: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, 'local-chrome': { type: 'boolean' }, 'fetch-sources': { type: 'boolean' }, cache: { type: 'string' }, dir: { type: 'string' }, json: { type: 'boolean' }, provider: { type: 'string' }, model: { type: 'string' }, 'eyes-model': { type: 'string' }, 'see-also': { type: 'string', multiple: true }, 'operator-kill': { type: 'string' } } as const;
-const ROOT = fileURLToPath(new URL('../../', import.meta.url));
+/** The repository a demo lives in: `options.root`, else the nearest folder above the demo's own file that holds a
+ *  `package.json` or a `.git`. Never this package's own location, which is inside `node_modules` once installed. */
+function rootOf(options: { root?: string; self: string }): string {
+  if (options.root) return options.root;
+  const start = dirname(fileURLToPath(options.self));
+  for (let dir = start; ; dir = dirname(dir)) {
+    if (existsSync(join(dir, 'package.json')) || existsSync(join(dir, '.git'))) return dir;
+    if (dirname(dir) === dir) return start;
+  }
+}
 
 /** Set while `pi-durable-disk run --app` imports a demo's module for its `options`: the module's own top-level `demo(options)` then does nothing, so it is safe to import. */
 export const IMPORTING_DEMO = Symbol.for('agentrun.reference.importing-demo');
@@ -168,16 +177,28 @@ export function mergeParts(host: Host, parts: Partial<Host> | undefined): void {
   if (credentials) host.credentials = { ...host.credentials, ...credentials };
 }
 
+/** pi-transport is an optional peer: a demo that declares `boxes` needs it installed, and says so in one line when it is not. */
+async function transport<T>(load: () => Promise<T>): Promise<T> {
+  try {
+    return await load();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND' && String((error as Error).message).includes("'@parcha/pi-transport")) {
+      throw new Error('this demo declares boxes, which need pi-transport: npm install @parcha/pi-transport');
+    }
+    throw error;
+  }
+}
+
 /** The demo's box provider: its `boxes` declaration, a directory of this machine (`local`) or Docker. */
 async function boxProvider(boxes: ReturnType<typeof effectiveBoxes>, place: { root: string }) {
   if (!boxes) return undefined;
-  return boxes.kind === 'local' ? (await import('@parcha/pi-transport/box/local')).localBoxes({ root: join(place.root, 'boxes') }) : (await import('@parcha/pi-transport/box/docker')).dockerBoxes(boxes.image ? { image: boxes.image } : undefined);
+  return boxes.kind === 'local' ? (await transport(() => import('@parcha/pi-transport/box/local'))).localBoxes({ root: join(place.root, 'boxes') }) : (await transport(() => import('@parcha/pi-transport/box/docker'))).dockerBoxes(boxes.image ? { image: boxes.image } : undefined);
 }
 
 /** One box the job's own tools (the disk package's shell and files) run in: a directory of this machine whose workspace is the run's `work/`, or a container the
  *  job's files are uploaded to. It comes from the tapped provider, so its commands are crossings and its life is on the recording. */
 async function inBox(provider: BoxProvider, kind: 'local' | 'docker', place: { id: string; work: string }, files: Record<string, Uint8Array>) {
-  const { boxEnv } = await import('@parcha/pi-transport/hands');
+  const { boxEnv } = await transport(() => import('@parcha/pi-transport/hands'));
   const created = await provider.create({ maxLifetimeMs: 15 * 60_000, labels: {}, ...(kind === 'local' ? { workspace: place.work } : {}) }, ctx);
   if (!created.ok) throw created.error;
   const box = created.value;
@@ -218,7 +239,7 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   // `pi-durable-disk run --app` opens the run's tools on the claim's own environment and cannot take another: a job that must run in a box is refused there, not run outside it.
   if (at && boxSpec?.runIn) throw new Error('boxes.runIn is not supported under pi-durable-disk run --app: the app opens its tools on the claim\'s own environment, not in a box. Run the demo through its own command, or drop runIn.');
   const provider = await boxProvider(boxSpec, place);
-  const boxes = provider ? tapBox(provider, { cross, window, ...(env.RUN_LABEL ? { runLabel: env.RUN_LABEL } : {}), ...(recorder ? { recorder } : {}) }) : undefined;
+  const boxes = provider ? (tapBox(provider, { cross, window, ...(env.RUN_LABEL ? { runLabel: env.RUN_LABEL } : {}), ...(recorder ? { recorder } : {}) }) as BoxProvider) : undefined;
   // Live tools get the same crossings the fakes' do (a kill before or after a dispatch); the ones a demo declares `local: "fakes"` fall back to the fakes' own, tapped the same way.
   const tapped = live && parts.tools ? tapFakes({ ...options.fakes, tools: parts.tools }, cross) : undefined;
   const fakesTapped = live && parts.tools ? tapFakes(options.fakes, cross) : undefined;
@@ -364,7 +385,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const seeAlso = (values['see-also'] ?? []).map((path) => seeAlsoOf(path));
   const kindOf = (path: string) => { try { const stat = statSync(path); return stat.isFile() ? 'file' as const : stat.isDirectory() ? 'directory' as const : undefined; } catch { return undefined; } };
   const demoDir = dirname(fileURLToPath(options.self));
-  const input = values.input === undefined ? undefined : inputOf(values.input, spec, { demo: basename(demoDir), root: options.root ?? ROOT, live, read: (path) => readFileSync(path, 'utf8'), kind: kindOf });
+  const input = values.input === undefined ? undefined : inputOf(values.input, spec, { demo: basename(demoDir), root: rootOf(options), live, read: (path) => readFileSync(path, 'utf8'), kind: kindOf });
   if (values.record && (existsSync(join(values.record, '.spool')) || existsSync(join(values.record, 'manifest.json')))) throw new Error(`${values.record} already holds a recording or an unfinished one: record into a directory of its own`);
 
   const scratch = await mkdtemp(join(tmpdir(), `agentrun-${spec.name}-`));
@@ -667,7 +688,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     finishRecording(recordDir, {
       ...(redact ? { redact } : {}), job: { blob: jobBlob, sha256: jobBlob },
       title: spec.title ?? spec.name, task: job.workflow.name ?? spec.name, model: live ? 'live' : 'faux/faux-1', generations: processesStarted, kills: kills.length,
-      code: codeOf(options.root ?? ROOT), cost, source: { run: runName, ...(last?.storeSha256 ? { store_sha256: last.storeSha256 } : {}) }, ...(seeAlso.length ? { see_also: seeAlso } : {}), ...(extra ? { extra } : {}), ...(resultBlob ? { result: resultBlob } : {}), ...(live ? { providers: 'real' as const } : {}),
+      code: codeOf(rootOf(options)), cost, source: { run: runName, ...(last?.storeSha256 ? { store_sha256: last.storeSha256 } : {}) }, ...(seeAlso.length ? { see_also: seeAlso } : {}), ...(extra ? { extra } : {}), ...(resultBlob ? { result: resultBlob } : {}), ...(live ? { providers: 'real' as const } : {}),
     });
     // The record-time scan: a recording that still holds a secret is refused (its manifest removed, so it is not a finished recording), naming the key and the file, never the value.
     try { scanRecording(recordDir, tracked?.final() ?? []); } catch (error) { rmSync(join(recordDir, 'manifest.json'), { force: true }); throw error; }
@@ -732,7 +753,7 @@ export function summarize(options: DemoOptions, result: DemoResult) {
 /** The demo's `sources.json`: `true` is the one beside `run.ts`; a path is relative to the demo's directory, or to the repository when it starts with `examples/` (as demo.json's schema writes it). */
 function sourcesPath(options: DemoOptions): string {
   const named = typeof options.spec.sources === 'string' ? options.spec.sources : 'sources.json';
-  return named.startsWith('examples/') ? resolve(options.root ?? ROOT, named) : resolve(dirname(fileURLToPath(options.self)), named);
+  return named.startsWith('examples/') ? resolve(rootOf(options), named) : resolve(dirname(fileURLToPath(options.self)), named);
 }
 
 /** A `--see-also` recording, linked by its directory's name and labeled by its manifest's title: the recording must be a finished one. */

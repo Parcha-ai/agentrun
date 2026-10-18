@@ -8,7 +8,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { fetchSources, fileOf, readSources, withSources } from './reference/sources.ts';
+import { fetchSources, fileOf, readSources, withSources } from '../packages/reference/dist/sources.js';
 
 const sha = (text) => createHash('sha256').update(text).digest('hex');
 

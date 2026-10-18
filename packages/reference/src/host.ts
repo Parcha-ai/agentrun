@@ -18,7 +18,7 @@ import { FakeBackend, fakeDriver, type FixturePage } from '@parcha/pi-browser/te
 import type { Eyes, LookEvent, LookRecord, MissEvent } from '@parcha/pi-vision';
 import type { VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import type { ChildEnv } from '@parcha/pi-vision/node';
-import type { BoxProvider } from '@parcha/pi-transport';
+import type { Boxes } from './boxes.ts';
 import type { Recorder } from './record.ts';
 
 /** Where one run lives: the disk package's `AppContext`. */
@@ -75,7 +75,7 @@ export type Host = {
 };
 
 /** What a scripted tool is handed beside its arguments: the box provider of the demo's `boxes` (crossings and transport box lines already in it), when it declares one. */
-export type ToolContext = { /** True on a live run: one set of tools reads the live thing, or replays a capture when this is false. */ live: boolean; boxes?: BoxProvider; /** The run's directory and its `work/`: a tool that reads the run's evidence files or the job's files reads them here. */ place?: { root: string; work: string } };
+export type ToolContext = { /** True on a live run: one set of tools reads the live thing, or replays a capture when this is false. */ live: boolean; boxes?: Boxes; /** The run's directory and its `work/`: a tool that reads the run's evidence files or the job's files reads them here. */ place?: { root: string; work: string } };
 
 /** What a job scripts for the no-key host. */
 export type Fakes = {
@@ -115,7 +115,7 @@ const quiet = <T,>(report: (event: T) => void) => (event: T) => { try { report(e
 export type LocalHost = { host: Host; backend?: FakeBackend; ledger(): LedgerRow[]; evidence(): string[]; /** Makes the two logs empty files: done by `localHost` itself unless `options.deferLogs`, which a process on a disk not yet mounted sets and calls this once its claim is open. */ touchLogs(): void };
 
 /** The no-key host for a run at `place`, from the job's `fakes`: scripted lead, tools, judge and browser pages, a ledger row for every fake call, and the run's events under the place. `options.browser` swaps the fake browser for another; `options.recorder` records the run. */
-export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: BrowserPlane; recorder?: Recorder; boxes?: BoxProvider; live?: boolean; deferLogs?: boolean; /** On a live run, the live parts' tools (`LiveParts.tools`): the effect door dispatches to these. A tool missing here runs from `fakes.tools` only when it is in `fakesDeclared` (demo.json's `tools` entry says `local: "fakes"`), else the call fails `no live source for <tool>`. Absent, every tool runs from `fakes.tools` as before. */ liveTools?: Fakes['tools']; fakesDeclared?: ReadonlySet<string> } = {}): LocalHost {
+export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: BrowserPlane; recorder?: Recorder; boxes?: Boxes; live?: boolean; deferLogs?: boolean; /** On a live run, the live parts' tools (`LiveParts.tools`): the effect door dispatches to these. A tool missing here runs from `fakes.tools` only when it is in `fakesDeclared` (demo.json's `tools` entry says `local: "fakes"`), else the call fails `no live source for <tool>`. Absent, every tool runs from `fakes.tools` as before. */ liveTools?: Fakes['tools']; fakesDeclared?: ReadonlySet<string> } = {}): LocalHost {
   const recorder = options.recorder;
   const ledgerFile = join(place.root, 'ledger.jsonl');
   // Kept by the effect's id (hashed into a file name): two effects with one `argsHash`, a poll and its next, never share an answer.

@@ -5,8 +5,9 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs
 import { join } from 'node:path';
 import { fakeEyes, fakeTranscriptionFetch } from '@parcha/pi-vision/testing';
 import { openAiTranscriber } from '@parcha/pi-vision/transcribers';
-import { demo } from './demo.ts';
-import type { ToolContext } from './host.ts';
+import { demo } from '@parcha/agentrun-reference';
+import type { ToolContext } from '@parcha/agentrun-reference';
+import type { BoxProvider } from '@parcha/pi-transport';
 import { fakes, job, lead } from './job.ts';
 
 const spec = JSON.parse(readFileSync(process.env.DEMO_SPEC!, 'utf8'));
@@ -24,7 +25,7 @@ const boxTool = process.env.DEMO_BOX_TOOL ? {
     const { finish } = await import('@parcha/pi-transport');
     const { BACKGROUND_CONTEXT: ctx } = await import('@earendil-works/chord/context');
     for (let attempt = 1; attempt <= 2; attempt += 1) {
-      const made = await context!.boxes!.create({ maxLifetimeMs: 60_000, labels: { 'agentrun-demo': 'install' } }, ctx);
+      const made = await (context!.boxes as BoxProvider).create({ maxLifetimeMs: 60_000, labels: { 'agentrun-demo': 'install' } }, ctx);
       if (!made.ok) throw made.error;
       // When the demo plans to lose the install box, its first command WAITS UNTIL IT IS KILLED (no timer at all): the loss always lands mid-command, however slow the machine, and the second attempt's short command completes. Without a planned loss the command completes normally.
       const losing = attempt === 1 && (spec.kills ?? []).some((kill: { target?: string }) => kill.target === 'tool');

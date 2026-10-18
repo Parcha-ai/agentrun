@@ -5,7 +5,7 @@ import type { Message, ToolCall, ToolResultMessage } from '@earendil-works/pi-ai
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { fakeImage, fixturePage, type FakeBackend } from '@parcha/pi-browser/testing';
 import { fakeEyes, type FakeEyes } from '@parcha/pi-vision/testing';
-import type { Fakes } from '../reference/index.ts';
+import type { Fakes } from '@parcha/agentrun-reference';
 import sources from './sources.json' with { type: 'json' };
 
 /** One operator of `sources.json`, as the fakes take it. */

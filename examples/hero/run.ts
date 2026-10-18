@@ -1,6 +1,6 @@
 // npm run demo:hero [-- --live] [-- --kill] [-- --record <dir>] [-- --input <json|file>]: the hero job on the reference entry. See README.md.
 import { pathToFileURL } from 'node:url';
-import { demo } from '../reference/index.ts';
+import { demo } from '@parcha/agentrun-reference';
 import spec from './demo.json' with { type: 'json' };
 import { fakes } from './fakes.ts';
 import { job } from './job.ts';

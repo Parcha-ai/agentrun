@@ -1,4 +1,61 @@
-# The reference assembly
+# @parcha/agentrun-reference
+
+The agentrun reference host as a package: one pi-durable host that runs an agentrun job on this machine, with the
+supervisor that kills and restarts its process anywhere, the recorder, and fakes, so an example runs from an npm install.
+
+## Run a demo from an install, with no key
+
+```sh
+npm install @parcha/agentrun-reference
+```
+
+npm installs the pi peers it needs (`@earendil-works/pi-ai`, `pi-durable`, `chord`, `pi-codemode` and `typebox`).
+`@parcha/pi-transport` is optional: only a demo that declares `boxes` needs it, and one that does says so in one line.
+
+Save this as `demo.mjs`:
+
+```js
+import { demo } from '@parcha/agentrun-reference';
+
+// One tool call and one step of code, on a scripted tool: no model, no key, no network.
+const workflow = {
+  v: 2,
+  name: 'first-demo',
+  schemas: {
+    Any: { type: 'object' },
+    Found: { type: 'object', required: ['id', 'score'], properties: { id: { type: 'string' }, score: { type: 'number' } } },
+  },
+  output: { schemaId: 'Any', path: 'final' },
+  root: {
+    node: 'chain',
+    steps: [
+      { node: 'call', label: 'search', via: 'tool', tool: 'lookup', args: { id: 'x' }, out: 'Found', as: 'search', deadline_s: 30 },
+      { node: 'code', label: 'finish', code: 's => ({ final: { id: s.search.id, score: s.search.score * 2 } })' },
+    ],
+  },
+};
+const fakes = {
+  model: () => { throw new Error('this job asks no model'); },
+  tools: { lookup: (args) => ({ id: String(args.id), score: 21 }) },
+  judge: async () => { throw new Error('this job asks no judge'); },
+  pages: {},
+  start: '',
+};
+
+await demo({ self: import.meta.url, spec: { name: 'first-demo', kills: [{ point: 'effect.kept lookup', n: 1, why: 'the lookup is kept; the rest is the next process' }] }, job: { workflow, input: {} }, fakes });
+```
+
+```sh
+node demo.mjs --kill
+```
+
+It prints `first-demo: complete in 2 processes, 1 kill`: the supervisor kills the first process once the lookup's
+answer is kept, and the second resumes the run from its store and finishes with `{ id: 'x', score: 42 }`, without
+calling the tool again. `node demo.mjs` runs it in one process; `--json` prints the whole result.
+
+`pi-durable-disk run --app` takes this package's child app as a file: `import.meta.resolve('@parcha/agentrun-reference/child-app')`.
+
+## The reference assembly
 
 One program that puts the open packages together and runs one job end to end on pi-durable. A host supplies seven
 functions; `assemble.ts` wires them into a durable run, the recovery driver, the node runner, the browser and vision.

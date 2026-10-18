@@ -1,4 +1,4 @@
-// The reference child as an app module (examples/reference/child-app.ts) under `pi-durable-disk run --dir <dir> --app`: one open path, the disk package's own. The job runs on fakes to the end, its
+// The reference child as an app module (@parcha/agentrun-reference/child-app, built to packages/reference/dist/child-app.js) under `pi-durable-disk run --dir <dir> --app`: one open path, the disk package's own. The job runs on fakes to the end, its
 // outcome line carries the record, and run.json's final status `done` carries the record and the store's hash too (a box place has only run.json). A kill -9 (a crossing that ends the process) and the
 // same command again resumes the run.
 import assert from 'node:assert/strict';
@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { FakeBackend } from '@parcha/pi-browser/testing';
 
 const CLI = fileURLToPath(new URL('../packages/pi-durable-disk/dist/cli.js', import.meta.url));
-const APP = fileURLToPath(new URL('./reference/child-app.ts', import.meta.url));
+const APP = fileURLToPath(import.meta.resolve('@parcha/agentrun-reference/child-app'));
 const FIXTURE = new URL('./reference/demo-fixture.ts', import.meta.url);
 
 async function instance(t, env) {
@@ -70,7 +70,7 @@ test('nothing is written under the run\'s directory before the claim is open: th
   writeFileSync(spec, JSON.stringify({ name: 'reference' }));
   process.env.DEMO_SPEC = spec;
   const { options } = await import(FIXTURE.href);
-  const { prepareChild } = await import('./reference/demo.ts');
+  const { prepareChild } = await import('../packages/reference/dist/demo.js');
   // The run's directory does not exist yet: the mountpoint is bare until the claim mounts the disk, and whatever is written there is hidden by it.
   const root = join(tmp, 'mountpoint');
   const record = join(root, 'record');
@@ -106,13 +106,13 @@ test('a job that must run in a box is refused under the app, not run outside the
   writeFileSync(spec, JSON.stringify({ name: 'reference' }));
   process.env.DEMO_SPEC = spec;
   const { options } = await import(FIXTURE.href);
-  const { prepareChild } = await import('./reference/demo.ts');
+  const { prepareChild } = await import('../packages/reference/dist/demo.js');
   const place = { id: 'reference', root: join(tmp, 'root'), work: join(tmp, 'root', 'work'), store: join(tmp, 'root', 'store') };
   await assert.rejects(() => prepareChild({ ...options, spec: { ...options.spec, boxes: { kind: 'local', runIn: true } } }, { BACKEND: 'http://127.0.0.1:1' }, place), /boxes\.runIn is not supported under pi-durable-disk run --app/);
 });
 
 test('the run\'s final status carries the models the live parts chose, so a place that reads only run.json (a box place) hands them to manifest() too', async () => {
-  const { finalDetail } = await import('./reference/assemble.ts');
+  const { finalDetail } = await import('../packages/reference/dist/assemble.js');
   const done = { status: 'complete', generation: 1, output: { company: 'Acme' } };
   assert.deepEqual(finalDetail(done, 'ab', { models: { lead: 'openai/gpt-6-luna', eyes: 'google/gemini-3.8-flash' } }), { status: 'complete', record: { company: 'Acme' }, storeSha256: 'ab', models: { lead: 'openai/gpt-6-luna', eyes: 'google/gemini-3.8-flash' } });
   assert.deepEqual(finalDetail({ status: 'refused', generation: 1, code: 'X', message: 'm' }, undefined), { status: 'refused' }, 'nothing extra when the live parts chose none');
@@ -120,7 +120,7 @@ test('the run\'s final status carries the models the live parts chose, so a plac
 });
 
 test('the end of an app\'s run announces only after the final status and the release succeeded: a failed finish is never reported as a success', async () => {
-  const { finishRun } = await import('./reference/assemble.ts');
+  const { finishRun } = await import('../packages/reference/dist/assemble.js');
   const order = [];
   const durable = (failAt) => ({ setStatus: async () => { order.push('status'); if (failAt === 'status') throw new Error('the disk failed'); }, release: async () => { order.push('release'); if (failAt === 'release') throw new Error('the claim was lost'); } });
   await finishRun(durable(), 'done', { status: 'complete' }, () => { order.push('announce'); });

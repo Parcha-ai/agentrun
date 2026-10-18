@@ -10,11 +10,11 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import * as validator from '../scripts/recording/validate.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
-import { placeAt, run } from './reference/assemble.ts';
-import { localHost } from './reference/host.ts';
+import { placeAt, run } from '@parcha/agentrun-reference';
+import { localHost } from '@parcha/agentrun-reference';
 import { fakes, job } from './reference/job.ts';
-import { codeOf, finishRecording, moveImages, openRecorder, openSupervisor } from './reference/record.ts';
-import * as scan from './reference/scan.ts';
+import { codeOf, finishRecording, moveImages, openRecorder, openSupervisor } from '../packages/reference/dist/record.js';
+import * as scan from '../packages/reference/dist/scan.js';
 
 const lines = (dir) => readFileSync(join(dir, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
 
