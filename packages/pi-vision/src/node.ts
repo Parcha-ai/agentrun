@@ -12,6 +12,7 @@ import { constants } from "node:fs";
 import { lstat, mkdir, mkdtemp, open, readFile, rename, rm, writeFile, type FileHandle } from "node:fs/promises";
 import { constants as os, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { hideDirs } from "./core/paths.js";
 import type { VisionBinaryReader, VisionContext, VisionEnv, VisionEnvError, VisionFileInfo, VisionResult } from "./core/env.js";
 
 type Result<T> = VisionResult<T, VisionEnvError>;
@@ -44,9 +45,15 @@ const FILE_CODES: Readonly<Record<string, string>> = {
 
 const ok = <T>(value: T): Result<T> => ({ ok: true, value });
 const fail = (code: string, message: string): Result<never> => ({ ok: false, error: Object.assign(new Error(message), { code }) });
+/** An error's words, with the absolute paths it names (its `path` and `dest`) cut to their last part: the host's
+ *  directories are no part of what a caller is told. */
+const said = (error: unknown): string => {
+  const named = (error ?? {}) as { path?: unknown; dest?: unknown };
+  return hideDirs(error instanceof Error ? error.message : String(error), named.path, named.dest);
+};
 const failed = (error: unknown): Result<never> => {
   const code = (error as { code?: unknown } | undefined)?.code;
-  return fail(typeof code === "string" ? (FILE_CODES[code] ?? "unknown") : "unknown", error instanceof Error ? error.message : String(error));
+  return fail(typeof code === "string" ? (FILE_CODES[code] ?? "unknown") : "unknown", said(error));
 };
 const aborted = (context: VisionContext) => (context.abortSignal?.aborted ? fail("aborted", "aborted") : undefined);
 
@@ -154,7 +161,7 @@ export function nodeVisionEnv(options: { cwd: string; env?: ChildEnv }): NodeVis
           child = spawn(argv[0]!, argv.slice(1), { cwd: run?.cwd ? at(run.cwd) : env.cwd, env: { ...(own ? {} : childEnvOf(options.env)), ...run?.env }, stdio: "ignore", detached: true });
         } catch (error) {
           // An argument spawn refuses outright (a NUL byte) is a failed result like any other.
-          settle(fail("spawn_error", error instanceof Error ? error.message : String(error)));
+          settle(fail("spawn_error", said(error)));
           return;
         }
         let cause: "timeout" | "aborted" | undefined;
@@ -167,7 +174,7 @@ export function nodeVisionEnv(options: { cwd: string; env?: ChildEnv }): NodeVis
           context.abortSignal?.removeEventListener("abort", onAbort);
           settle(result);
         };
-        child.once("error", (error) => done(fail("spawn_error", error.message)));
+        child.once("error", (error) => done(fail("spawn_error", said(error))));
         child.once("close", (code, signal) => done(cause ? fail(cause, cause) : ok({ exitCode: code ?? (signal ? 128 + (os.signals[signal] ?? 0) : 1) })));
       });
     },
