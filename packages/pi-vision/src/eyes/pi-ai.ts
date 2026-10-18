@@ -28,8 +28,8 @@ const content = (part: Part) => (part.type === "text" ? { type: "text" as const,
 
 /** Eyes on a pi-ai `model` the host built. One `completeSimple` request a look, at the thinking level in `options` and never
  *  off, cut at the timeout, with its usage and its price on the answer (null when the model has no rates). The key comes from
- *  `options.apiKey`, read at each request; without it pi-ai reads the provider's own variable. Either way the key is taken out of
- *  any error's words. */
+ *  `options.apiKey`, read at each request, and that key is taken out of any error's words; without `apiKey` pi-ai reads the
+ *  provider's own variable, and what pi-ai puts in an error is left as it is. */
 export function piAiEyes(model: Model<Api>, options: PiAiEyesOptions = {}): Eyes {
   const limits = resolveLimits(model, options.limits);
   const reasoning = (LEVELS.includes(options.reasoning ?? "") ? options.reasoning : "minimal") as ThinkingLevel;
