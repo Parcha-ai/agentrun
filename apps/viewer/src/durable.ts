@@ -74,10 +74,12 @@ export const receiptCountOf = (doc: DocLine): number | undefined => {
   return Array.isArray(value) ? value.length : isObj(value) ? Object.keys(value).length : 0;
 };
 
-/** A message's text, its image blocks' blobs, and its tool calls. */
-export const textOf = (message: Message): string =>
-  typeof message.content === 'string' ? message.content
-    : Array.isArray(message.content) ? message.content.map((block) => (isObj(block) && typeof block.text === 'string' ? block.text : '')).join('') : '';
+/** A message's text parts, in order (a string content is one part); its image blocks' blobs; its tool calls. */
+export const textPartsOf = (message: Message): string[] =>
+  typeof message.content === 'string' ? [message.content]
+    : Array.isArray(message.content) ? message.content.flatMap((block) => (isObj(block) && typeof block.text === 'string' ? [block.text] : [])) : [];
+/** A message's text: its text parts, each set apart from the next by a blank line. */
+export const textOf = (message: Message): string => textPartsOf(message).join('\n\n');
 export const toolCallsOf = (message: Message): { id: string; name: string; arguments: Json }[] =>
   Array.isArray(message.content)
     ? message.content.flatMap((block) => (isObj(block) && block.type === 'toolCall' ? [{ id: String(block.id), name: String(block.name), arguments: block.arguments ?? null }] : []))
