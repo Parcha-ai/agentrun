@@ -113,7 +113,8 @@ a typed error:
   so move bytes with `upload` and `download`, which use the disk's object API and carry every byte value (8 MiB measured
   in about 0.3 s each way).
 - **Aborting the context ends the wait at once.** The SDK has no signal to stop the command in the container, so the
-  command ends at its own deadline; the disk TL measured that a client abort stops a command at the platform.
+  command ends at its own deadline (an abort of the raw HTTP request was measured to stop a command at the platform, but
+  not through this SDK).
 - **One command at a time per box, across processes.** Every `exec` checks out the box's directory with a queue
   (`queueMs`, default 60 s), so a second process that attached the same box (a restore, another host) waits for the
   first instead of being refused (a plain write without a checkout loses writes: 3 of 5 parallel appends were refused),

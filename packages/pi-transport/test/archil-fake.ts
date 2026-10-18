@@ -41,7 +41,7 @@ export class FakeArchil {
 	/** False: the service ignores `checkoutPaths`, as one that did not honour the request would. */
 	enforceCheckout = true;
 
-	constructor(id = "dsk-fake") {
+	constructor(id = "disk-fake") {
 		this.disk = {
 			id,
 			getObject: async (key) => {
