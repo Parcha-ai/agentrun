@@ -1,9 +1,10 @@
-// Placed frames with no key: the zoom on local boxes standing in for both sandboxes, with the scripted placer. It checks what a live run rests on: each frame is one tool call whose
-// answer names its environment, its box by label and the placer's reason; the frames the run kept are the ones the answers name; the boxes are ended; the result is the picture;
-// and the recording holds no dollar figure and no provider id. Also: Jev through a base URL of the user's, the rates option, and a live run's refusal without its keys.
+// Placed frames with no key: a scripted lead asks for the zoom's frames, on local boxes standing in for both sandboxes and with the scripted placer. It checks what a live run rests on: each frame
+// is one tool call of the agent whose answer names its environment, its box by label and the line composed from the placement record; the frames the run kept are the ones the answers name; the
+// boxes are ended; the result is the picture, and every row of its card cites the tool calls it counts; and the recording holds no dollar figure, no provider id and none of the placer's own
+// sentences. Also: Jev through a base URL of the user's, the rates option, and a live run's refusal without its keys.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -11,12 +12,13 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import { demo } from '@parcha/agentrun-reference';
+import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node';
 import { jevPlacer } from '@parcha/pi-transport';
 import { localBoxes } from '@parcha/pi-transport/box/local';
 import { HEAVY_ITERATIONS, scriptedModels } from './placed-frames/fakes.ts';
-import { jevModels, liveParts } from './placed-frames/live.ts';
+import { jevBaseUrl, jevModels, leadCatalog, liveParts } from './placed-frames/live.ts';
 import { options } from './placed-frames/run.ts';
-import { ENVIRONMENTS, factsOf, frameTools, placedLine, REST, stepOf } from './placed-frames/tools.ts';
+import { ENVIRONMENTS, factsOf, placedFrames, placedLine, REST, stepOf } from './placed-frames/tools.ts';
 import { iterationsOf } from './placed-frames/programs/params.mjs';
 
 const FRAMES = 12;
@@ -27,19 +29,24 @@ const scratch = async (t) => { const dir = await mkdtemp(join(tmpdir(), 'placed-
 /** Every file under a folder, with its bytes as text. */
 const texts = (dir) => readdirSync(dir, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => readFileSync(join(entry.parentPath, entry.name), 'latin1'));
 
-test('the zoom on fakes: one placed tool call a frame, each answer naming its environment, its box by label and the line composed from the record; the picture is the result', { timeout: 300_000 }, async (t) => {
+test('the zoom on fakes: the agent asks for one placed tool call a frame, each answer naming its environment, its box by label and the line composed from the record; the picture is the result', { timeout: 300_000 }, async (t) => {
   const tmp = await scratch(t);
   const recording = join(tmp, 'recording');
   const run = await demo({ ...options, argv: ['--record', recording, '--dir', join(tmp, 'run')] });
   assert.deepEqual(run.processes.map((process) => process.outcome?.status), ['complete']);
   assert.deepEqual(run.kills, []);
+  // The agent's own calls, as the recording holds them: one `frame` each and one `release`; no judge is asked, and the lead is a model turn.
+  const events = readFileSync(join(recording, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  const started = events.filter((event) => event.kind === 'tool_execution_start').map((event) => event.data);
+  assert.equal(started.filter((call) => call.toolName === 'frame').length, FRAMES, 'one call a frame');
+  assert.equal(started.filter((call) => call.toolName === 'release').length, 1);
   const ledger = readFileSync(join(run.dir, 'ledger.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
-  assert.equal(ledger.filter((row) => row.kind === 'tool' && row.name === 'frame').length, FRAMES, 'one call a frame');
-  assert.equal(ledger.filter((row) => row.kind === 'tool' && row.name === 'release').length, 1);
-  assert.equal(ledger.filter((row) => row.kind === 'model' || row.kind === 'judge').length, 0, 'no model and no judge is asked');
+  assert.ok(ledger.some((row) => row.kind === 'model'), 'the lead is a model');
+  assert.equal(ledger.filter((row) => row.kind === 'judge').length, 0, 'no judge is asked');
 
-  const answers = readdirSync(join(run.dir, 'answers')).map((name) => JSON.parse(readFileSync(join(run.dir, 'answers', name), 'utf8')).value);
-  const frames = answers.filter((value) => typeof value?.f === 'number').sort((a, b) => a.f - b.f);
+  // Each call's record as the tools kept it beside the frames: the tool, its arguments and its answer.
+  const kept = readdirSync(join(run.dir, 'work', 'frames')).filter((name) => name.endsWith('.call.json')).map((name) => JSON.parse(readFileSync(join(run.dir, 'work', 'frames', name), 'utf8')));
+  const frames = kept.filter((call) => call.tool === 'frame').map((call) => call.answer).sort((a, b) => a.f - b.f);
   assert.deepEqual(frames.map((frame) => frame.f), [...Array(FRAMES).keys()]);
   for (const frame of frames) {
     // The script's split, fixed by hand from params.mjs: 80 + 10 f iterations, heavy from 150.
@@ -52,17 +59,40 @@ test('the zoom on fakes: one placed tool call a frame, each answer naming its en
     assert.equal(frame.placed.reason, undefined, 'the placer\'s reason is not carried');
     assert.equal(sha256(readFileSync(join(run.dir, 'work', 'frames', `f${frame.f}.idx`))), frame.sha256, 'the frame kept is the one its answer names');
   }
-  const released = answers.find((value) => Array.isArray(value?.boxes));
+  const released = kept.find((call) => call.tool === 'release').answer;
   assert.deepEqual(released, { boxes: [{ box: 'box-1', environment: 'daytona', provider: 'local' }, { box: 'box-2', environment: 'modal', provider: 'local' }] }, 'both boxes ended, and no receipt without rates');
   for (const environment of ['daytona', 'modal']) assert.deepEqual(readdirSync(join(run.dir, 'boxes', environment)), [], `no ${environment} box is left`);
-  assert.deepEqual(run.record, { frames: FRAMES, placed: { daytona: [1, 2, 3, 4, 5, 6, 7], modal: [8, 9, 10, 11, 12] }, boxes: released.boxes });
+  // The agent's own answer says what the results say.
+  assert.deepEqual(run.record, { answer: '(scripted) Drew 12 frames: 7 on daytona and 5 on modal.' });
 
   // The recording: the picture is the result, and it holds no dollar figure and no provider id.
   const manifest = JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8'));
   assert.equal(manifest.format, 'agentrun.recording/1');
-  assert.deepEqual([manifest.kills, manifest.generations, manifest.cost.usd, manifest.placer], [0, 1, null, 'a script (no Jev call)']);
+  assert.deepEqual([manifest.kills, manifest.generations, manifest.placer, manifest.lead], [0, 1, 'a script (no Jev call)', 'a scripted lead (pi-ai faux)']);
   const cited = JSON.parse(readFileSync(join(recording, 'blobs', `${manifest.result.blob}.json`), 'utf8'));
   assert.deepEqual(cited.rows.map((row) => [row.label, row.value]), [['the zoom', `${FRAMES} frames, in order, 4 to a row`], ['daytona', 'frames 1, 2, 3, 4, 5, 6, 7'], ['modal', 'frames 8, 9, 10, 11, 12']]);
+  // Grounding: every row cites what it rests on. An environment's row cites each tool call placed there, kept in the recording (its tool, arguments and answer), and the release call;
+  // the zoom's row cites the sheet and each frame's own picture, whose hash is the one the frame's answer names for its pixels' picture.
+  const blobOf = (hash, extension) => readFileSync(join(recording, 'blobs', `${hash}.${extension}`));
+  for (const row of cited.rows.slice(1)) {
+    const list = row.value.replace('frames ', '').split(', ').map(Number);
+    const calls = row.cites.filter((cite) => /^the call for frame/.test(cite.note));
+    assert.deepEqual(calls.map((cite) => JSON.parse(blobOf(cite.blob, 'json')).args.f + 1), list, `${row.label}: one cited call for each frame it counts`);
+    for (const cite of calls) {
+      const call = JSON.parse(blobOf(cite.blob, 'json'));
+      assert.equal(sha256(blobOf(cite.blob, 'json')), cite.blob);
+      assert.deepEqual([call.tool, call.answer.environment], ['frame', row.label]);
+    }
+    const released = row.cites.filter((cite) => cite.note === 'the release call, which names the box');
+    assert.equal(released.length, 1);
+    assert.ok(JSON.parse(blobOf(released[0].blob, 'json')).answer.boxes.some((box) => box.environment === row.label));
+  }
+  const pictures = cited.rows[0].cites.slice(1);
+  assert.equal(pictures.length, FRAMES, 'the sheet row cites each frame\'s picture');
+  for (const [f, cite] of pictures.entries()) {
+    assert.equal(sha256(blobOf(cite.blob, 'png')), cite.blob);
+    assert.match(cite.note, new RegExp(`^frame ${f + 1}, drawn in box-[12]$`));
+  }
   const blob = cited.rows[0].cites[0].blob;
   const picture = readFileSync(join(recording, 'blobs', `${blob}.png`));
   assert.equal(sha256(picture), blob);
@@ -116,11 +146,16 @@ test('the placed line is composed from the record\'s fields, whatever the placer
 test('rates are an option: with them each box ends with its receipt; without them there is none', async (t) => {
   const tmp = await scratch(t);
   const run = async (rates) => {
-    const tools = frameTools({ providers: () => Object.fromEntries(ENVIRONMENTS.map((environment) => [environment.id, localBoxes({ root: join(tmp, String(Boolean(rates)), environment.id), path: `${process.execPath.replace(/\/[^/]+$/, '')}:/usr/bin:/bin` })])), models: scriptedModels(), placer: 'scripted', ...(rates ? { rates } : {}) });
-    const place = { root: tmp, work: join(tmp, `work-${Boolean(rates)}`) };
-    await tools.frame({ f: 0, frames: FRAMES }, { live: false, place });
-    await tools.frame({ f: 11, frames: FRAMES }, { live: false, place });
-    return tools.release();
+    const work = join(tmp, `work-${Boolean(rates)}`);
+    mkdirSync(work, { recursive: true });
+    const extension = placedFrames({ providers: () => Object.fromEntries(ENVIRONMENTS.map((environment) => [environment.id, localBoxes({ root: join(tmp, String(Boolean(rates)), environment.id), path: `${process.execPath.replace(/\/[^/]+$/, '')}:/usr/bin:/bin` })])), models: scriptedModels(), placer: 'scripted', ...(rates ? { rates } : {}) });
+    const tool = (name) => extension.tools.find((each) => each.name === name);
+    const api = { env: new NodeExecutionEnv({ cwd: work }) };
+    await tool('frame').execute({ f: 0, frames: FRAMES }, api, BACKGROUND_CONTEXT);
+    await tool('frame').execute({ f: 11, frames: FRAMES }, api, BACKGROUND_CONTEXT);
+    const released = await tool('release').execute({}, api, BACKGROUND_CONTEXT);
+    assert.deepEqual(released.content, released.output, 'the answer is in both the content and the output');
+    return JSON.parse(released.content[0].text);
   };
   const without = await run(undefined);
   assert.equal(without.receipts, undefined);
@@ -131,4 +166,18 @@ test('rates are an option: with them each box ends with its receipt; without the
 test('a live run without its keys is refused before any box is made, naming the key', async () => {
   await assert.rejects(liveParts({ env: {} }), /--live needs DAYTONA_API_KEY/);
   await assert.rejects(liveParts({ env: { DAYTONA_API_KEY: 'x' } }), /--live needs MODAL_TOKEN_ID/);
+});
+
+test('the lead is a key away: Gemini\'s own, or a gateway that serves it and passes Jev through at /typesafe/v1', () => {
+  assert.throws(() => leadCatalog({}), /--live needs GEMINI_API_KEY/);
+  assert.throws(() => leadCatalog({ VIDEO_MODEL_BASE_URL: 'http://gateway.example/v1' }), /needs VIDEO_MODEL_API_KEY/);
+  assert.ok(leadCatalog({ VIDEO_MODEL_BASE_URL: 'http://gateway.example/v1', VIDEO_MODEL_API_KEY: 'x' }));
+  assert.equal(jevBaseUrl({ VIDEO_MODEL_BASE_URL: 'http://gateway.example/v1' }), 'http://gateway.example/typesafe/v1');
+  assert.equal(jevBaseUrl({ TYPESAFE_BASE_URL: 'https://proxy.example/v1' }), 'https://proxy.example/v1');
+  assert.equal(jevBaseUrl({}), undefined);
+});
+
+test('a live run with every provider key but no lead is refused before any box is made', async () => {
+  const keys = { DAYTONA_API_KEY: 'x', MODAL_TOKEN_ID: 'x', MODAL_TOKEN_SECRET: 'x', TYPESAFE_API_KEY: 'x' };
+  await assert.rejects(liveParts({ env: keys }), /--live needs GEMINI_API_KEY/);
 });

@@ -1,6 +1,7 @@
 // The result as the recording keeps it: every frame of the zoom on one sheet, a PNG drawn from the frames the run kept on its disk, and a cited record with one row for the
-// sheet and one for each environment: its frames and its box.
-import { readFileSync } from 'node:fs';
+// sheet and one for each environment. Every row cites what it rests on: the sheet row cites the sheet and each frame's own picture; an environment's row cites each tool call that was
+// placed there (the call kept as a blob: the tool, its arguments and its answer) and the release call that names its box.
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { crc32, deflateSync } from 'node:zlib';
 import type { DemoOptions } from '@parcha/agentrun-reference';
@@ -32,7 +33,21 @@ export function png(width: number, height: number, rgb: Uint8Array): Uint8Array 
 }
 
 type Box = { box: string; environment: string; provider: string };
-type Made = { frames: number; placed: Record<string, number[]>; boxes: Box[] };
+type Call = { tool: string; args: Record<string, unknown>; answer: { f?: number; environment?: string; box?: string; boxes?: Box[]; iterations?: number } };
+
+/** The agent's tool calls as the run's disk holds them (`work/frames/*.call.json`, one for each call the tools answered): the tool, its arguments and its answer. */
+function callsOf(dir: string): Call[] {
+  const frames = join(dir, 'work', 'frames');
+  return readdirSync(frames).filter((name) => name.endsWith('.call.json')).map((name) => JSON.parse(readFileSync(join(frames, name), 'utf8')) as Call)
+    .sort((a, b) => (a.answer.f ?? Infinity) - (b.answer.f ?? Infinity));
+}
+
+/** One frame's own picture (its palette indices drawn in colour). */
+export function framePicture(pixels: Buffer): Uint8Array {
+  const rgb = new Uint8Array(WIDTH * HEIGHT * 3);
+  for (let i = 0; i < pixels.length; i += 1) rgb.set(rgbOf(pixels[i]!), i * 3);
+  return png(WIDTH, HEIGHT, rgb);
+}
 
 /** The sheet: frame f at column f % COLUMNS, row f / COLUMNS, in the order of the zoom. */
 export function sheet(frames: Buffer[]): Uint8Array {
@@ -48,17 +63,37 @@ export function sheet(frames: Buffer[]): Uint8Array {
   return png(width, height, rgb);
 }
 
-export const result: NonNullable<DemoOptions['result']> = (record, { dir, keep }) => {
-  const made = record as Made;
-  // Each frame as the run kept it (the test checks each against the hash its answer names); a missing frame fails the result.
-  const frames = Array.from({ length: made.frames }, (_, f) => readFileSync(join(dir, 'work', 'frames', `f${f}.idx`)));
+export const result: NonNullable<DemoOptions['result']> = (_record, { dir, keep }) => {
+  // Everything the card says is read from the calls the tools answered and the frames the run kept, never from what the agent wrote.
+  const calls = callsOf(dir);
+  const frameCalls = calls.filter((call) => call.tool === 'frame');
+  const release = calls.find((call) => call.tool === 'release');
+  const count = frameCalls.length;
+  // Each frame as the run kept it; a missing frame fails the result.
+  const frames = frameCalls.map((call) => readFileSync(join(dir, 'work', 'frames', `f${call.answer.f}.idx`)));
   const blob = keep(sheet(frames), 'png');
-  const title = `A zoom of ${made.frames} frames, each a tool call placed in a sandbox`;
+  // Each tool call is kept as a blob, and cited by it: the row for an environment cites the calls it counts.
+  const callBlob = new Map(calls.map((call) => [call, keep(JSON.stringify({ tool: call.tool, args: call.args, answer: call.answer }), 'json')]));
+  const placed = new Map<string, number[]>();
+  for (const call of frameCalls) placed.set(call.answer.environment!, [...(placed.get(call.answer.environment!) ?? []), call.answer.f! + 1]);
+  const title = `A zoom of ${count} frames, each a tool call placed in a sandbox`;
   const rows = [
-    { label: 'the zoom', value: `${made.frames} frames, in order, ${COLUMNS} to a row`, note: 'drawn from the frames the run kept', cites: [{ blob, note: 'every frame of the zoom' }] },
-    ...Object.entries(made.placed).map(([environment, list]) => {
-      const box = made.boxes.find((each) => each.environment === environment);
-      return { label: environment, value: `frames ${list.join(', ')}`, note: box ? `in ${box.box} (${box.provider})` : 'its box is not in the release', cites: [] };
+    {
+      label: 'the zoom', value: `${count} frames, in order, ${COLUMNS} to a row`, note: 'drawn from the frames the run kept',
+      cites: [
+        { blob, note: 'every frame of the zoom on one sheet' },
+        ...frames.map((pixels, i) => ({ blob: keep(framePicture(pixels), 'png'), note: `frame ${i + 1}, drawn in ${frameCalls[i]!.answer.box}` })),
+      ],
+    },
+    ...[...placed].map(([environment, list]) => {
+      const box = (release?.answer.boxes ?? []).find((each) => each.environment === environment);
+      return {
+        label: environment, value: `frames ${list.join(', ')}`, note: box ? `in ${box.box} (${box.provider})` : 'its box is not in the release',
+        cites: [
+          ...frameCalls.filter((call) => call.answer.environment === environment).map((call) => ({ blob: callBlob.get(call)!, note: `the call for frame ${call.answer.f! + 1}, in ${call.answer.box}` })),
+          ...(release ? [{ blob: callBlob.get(release)!, note: 'the release call, which names the box' }] : []),
+        ],
+      };
     }),
   ];
   return { json: { format: 'agentrun.cited/1', title, rows }, title };

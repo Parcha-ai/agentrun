@@ -1,34 +1,123 @@
 {
   "name": "placed-frames",
   "title": "Placed Frames",
-  "targets": ["local"],
+  "targets": [
+    "local"
+  ],
   "browser": false,
-  "claim": "A run's tool calls go to Daytona and Modal sandboxes, and Jev places each one on the sandbox that fits it.",
-  "models": {},
+  "claim": "A pi agent's tool calls go to Daytona and Modal sandboxes, and Jev places each one on the sandbox that fits it.",
+  "models": {
+    "lead": {
+      "needs": [
+        "text",
+        "tools"
+      ],
+      "default": "google/gemini-3.8-flash"
+    }
+  },
   "keys": [
-    { "env": "DAYTONA_API_KEY", "why": "The daytona environment: Daytona sandboxes, made through Daytona's REST API.", "where": "app.daytona.io, Keys", "required": true, "for": "live" },
-    { "env": "DAYTONA_SNAPSHOT", "why": "A Daytona snapshot with node, when your organization's default sandbox has none.", "where": "app.daytona.io, Snapshots", "required": false, "for": "live" },
-    { "env": "MODAL_TOKEN_ID", "why": "The modal environment: Modal sandboxes, through the modal SDK (npm install --no-save modal@0.11.0).", "where": "modal.com, Settings, API Tokens", "required": true, "for": "live" },
-    { "env": "MODAL_TOKEN_SECRET", "why": "The secret of that Modal token.", "where": "modal.com, Settings, API Tokens", "required": true, "for": "live" },
-    { "env": "TYPESAFE_API_KEY", "why": "Jev at TypeSafe, which places each frame.", "where": "typesafe.ai", "required": true, "for": "live" },
-    { "env": "TYPESAFE_BASE_URL", "why": "Another address for TypeSafe's API, when you reach it through a proxy of your own.", "where": "your proxy's base URL", "required": false, "for": "live" }
+    {
+      "oneOf": [
+        {
+          "env": "GEMINI_API_KEY",
+          "why": "The lead (google/gemini-3.8-flash, thinking at medium).",
+          "where": "aistudio.google.com, Get API key",
+          "required": true,
+          "for": "live"
+        },
+        [
+          {
+            "env": "VIDEO_MODEL_BASE_URL",
+            "why": "An OpenAI-compatible gateway that serves the lead under its public id and passes TypeSafe through at /typesafe/v1, instead of a Gemini key.",
+            "where": "your gateway's base URL, ending in /v1",
+            "required": true
+          },
+          {
+            "env": "VIDEO_MODEL_API_KEY",
+            "why": "The gateway's credential.",
+            "where": "your gateway",
+            "required": true
+          }
+        ]
+      ],
+      "why": "A key for the lead: Gemini's own, or a gateway's.",
+      "for": "live"
+    },
+    {
+      "env": "DAYTONA_API_KEY",
+      "why": "The daytona environment: Daytona sandboxes, made through Daytona's REST API.",
+      "where": "app.daytona.io, Keys",
+      "required": true,
+      "for": "live"
+    },
+    {
+      "env": "DAYTONA_SNAPSHOT",
+      "why": "A Daytona snapshot with node, when your organization's default sandbox has none.",
+      "where": "app.daytona.io, Snapshots",
+      "required": false,
+      "for": "live"
+    },
+    {
+      "env": "MODAL_TOKEN_ID",
+      "why": "The modal environment: Modal sandboxes, through the modal SDK (npm install --no-save modal@0.11.0).",
+      "where": "modal.com, Settings, API Tokens",
+      "required": true,
+      "for": "live"
+    },
+    {
+      "env": "MODAL_TOKEN_SECRET",
+      "why": "The secret of that Modal token.",
+      "where": "modal.com, Settings, API Tokens",
+      "required": true,
+      "for": "live"
+    },
+    {
+      "env": "TYPESAFE_API_KEY",
+      "why": "Jev at TypeSafe, which places each frame.",
+      "where": "typesafe.ai",
+      "required": true,
+      "for": "live"
+    },
+    {
+      "env": "TYPESAFE_BASE_URL",
+      "why": "Another address for TypeSafe's API, when you reach it through a proxy of your own.",
+      "where": "your proxy's base URL",
+      "required": false,
+      "for": "live"
+    }
   ],
   "programs": [
-    { "cmd": "node", "why": "runs the demo here, and the tile program in each sandbox", "required": true, "min": "22.19.0" }
+    {
+      "cmd": "node",
+      "why": "runs the demo here, and the tile program in each sandbox",
+      "required": true,
+      "min": "22.19.0"
+    }
   ],
   "placement": {
     "rest": "daytona",
     "environments": [
-      { "id": "daytona", "provider": "daytona", "purpose": "A small sandbox for light work: wide views of the zoom, at few iterations per pixel." },
-      { "id": "modal", "provider": "modal", "purpose": "A sandbox with two CPUs for heavy work: deep views of the zoom, at many iterations per pixel.", "cpus": 2, "image": "node:22-slim" }
+      {
+        "id": "daytona",
+        "provider": "daytona",
+        "purpose": "A small sandbox for light work: wide views of the zoom, at few iterations per pixel."
+      },
+      {
+        "id": "modal",
+        "provider": "modal",
+        "purpose": "A sandbox with two CPUs for heavy work: deep views of the zoom, at many iterations per pixel.",
+        "cpus": 2,
+        "image": "node:22-slim"
+      }
     ]
   },
   "rates": null,
-  "expectedCalls": 13,
-  "panels": ["workflow-map"],
-  "tools": [
-    { "name": "frame", "local": "tools.ts", "hosted": null },
-    { "name": "release", "local": "tools.ts", "hosted": null }
+  "expectedCalls": 26,
+  "panels": [
+    "workflow-map"
   ],
-  "input": { "shape": "examples/placed-frames/job.ts, Input: how many frames the zoom has" }
+  "tools": [],
+  "input": {
+    "shape": "examples/placed-frames/job.ts, Input: how many frames the zoom has"
+  }
 }

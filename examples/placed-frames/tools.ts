@@ -1,15 +1,16 @@
-// The run's two tools, over the host's sandboxes, one box per environment. `frame` asks the placer where one frame of the zoom runs, draws the frame's four tiles there with the tile
+// The agent's two tools, a pi extension over the host's sandboxes, one box per environment. `frame` asks the placer where one frame of the zoom runs, draws the frame's four tiles there with the tile
 // program, and keeps the frame on the run's disk; its answer names the environment, the box by its label (`box-1`, never the provider's id) and the line the example composes from the placement record. `release` ends
 // every box the run made and answers which; with rates (an option, off in demo.json) it also answers each box's receipt. A box is made the first time a frame is placed in its
-// environment, and every later frame placed there uses it.
+// environment, and every later frame placed there uses it. Each call also leaves a record beside the frames (`frames/*.call.json`: the tool, its arguments and its answer), which the result cites.
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import type { Models } from '@earendil-works/pi-ai';
 import type { ExecutionEnv } from '@earendil-works/pi-durable/env';
-import type { ToolContext } from '@parcha/agentrun-reference';
+import { defineExtension, defineTool, type Extension, type ToolExecutionResult } from '@earendil-works/pi-durable';
+import { Type } from 'typebox';
 import { type Box, type BoxPrice, type BoxProvider, type BoxReceipt, type BoxSpec, boxReceipts, type EnvironmentFacts, jevPlacer, type Placer, type PlacementRecord } from '@parcha/pi-transport';
 import { boxEnv } from '@parcha/pi-transport/hands';
 import spec from './demo.json' with { type: 'json' };
@@ -80,22 +81,35 @@ async function sh(env: ExecutionEnv, command: string, timeoutS: number): Promise
 type Made = { box: Box; env: ExecutionEnv; label: string; provider: string };
 type State = { providers: Record<string, BoxProvider>; labelOf(provider: string, id: string): string | undefined; receipts: BoxReceipt[]; placer: Placer; boxes: Map<string, Promise<Made>> };
 
-/** The tools of one run: `frame` and `release`, sharing the run's boxes. */
-export function frameTools(hosting: Hosting) {
-  let state: Promise<State> | undefined;
-  const open = (place: { root: string; work: string }) => (state ??= (async () => {
-    const receipts: BoxReceipt[] = [];
-    const ledger = boxReceipts({ prices: hosting.rates ?? [], write: (receipt) => receipts.push(receipt) });
-    const given = await hosting.providers(place);
-    const providers = Object.fromEntries(ENVIRONMENTS.map((environment) => {
-      const provider = given[environment.id];
-      if (!provider) throw new Error(`no provider for the environment ${environment.id}`);
-      return [environment.id, ledger.wrap(provider)];
-    }));
-    const placer = await jevPlacer(hosting.models, JEV, { rest: REST, timeoutMs: 30_000 });
-    if (!placer.ok) throw placer.error;
-    return { providers, labelOf: (provider, id) => ledger.labelOf(provider, id), receipts, placer: placer.value, boxes: new Map() };
-  })());
+/** A tool's answer as pi keeps it: the JSON text in both the result's `content` and its `output`, so a reader of either sees it. */
+function answered(value: unknown): ToolExecutionResult {
+  const blocks = [{ type: 'text' as const, text: JSON.stringify(value) }];
+  return { content: blocks, output: blocks } as ToolExecutionResult;
+}
+
+/** The agent's extension: `frame` and `release`, sharing the run's boxes (one set of boxes for each run's work directory). */
+export function placedFrames(hosting: Hosting): Extension {
+  const runs = new Map<string, Promise<State>>();
+  const open = (place: { root: string; work: string }) => {
+    let state = runs.get(place.work);
+    if (!state) {
+      state = (async () => {
+        const receipts: BoxReceipt[] = [];
+        const ledger = boxReceipts({ prices: hosting.rates ?? [], write: (receipt) => receipts.push(receipt) });
+        const given = await hosting.providers(place);
+        const providers = Object.fromEntries(ENVIRONMENTS.map((environment) => {
+          const provider = given[environment.id];
+          if (!provider) throw new Error(`no provider for the environment ${environment.id}`);
+          return [environment.id, ledger.wrap(provider)];
+        }));
+        const placer = await jevPlacer(hosting.models, JEV, { rest: REST, timeoutMs: 30_000 });
+        if (!placer.ok) throw placer.error;
+        return { providers, labelOf: (provider: string, id: string) => ledger.labelOf(provider, id), receipts, placer: placer.value, boxes: new Map() } satisfies State;
+      })();
+      runs.set(place.work, state);
+    }
+    return state;
+  };
 
   /** The environment's box: made, checked for node and given the tile program the first time, then the same one. */
   const boxIn = (s: State, environment: Environment): Promise<Made> => {
@@ -123,47 +137,81 @@ export function frameTools(hosting: Hosting) {
     return making;
   };
 
-  const frame = async (args: Record<string, unknown>, context?: ToolContext) => {
-    if (!context?.place) throw new Error('the frame tool needs the run\'s place');
-    const s = await open(context.place);
-    const [f, frames] = [Number(args.f), Number(args.frames)];
-    const record = await s.placer.decide({ session: 'placed-frames', phase: 'message', what: 'hands', current: REST, options: ENVIRONMENTS.map(factsOf), next: stepOf(f, frames) }, ctx);
-    const environment = ENVIRONMENTS.find((each) => each.id === record.target)!;
-    const made = await boxIn(s, environment);
-    const cells = Array.from({ length: TILES_X * TILES_Y }, (_, i) => ({ tx: i % TILES_X, ty: Math.floor(i / TILES_X) }));
-    const tiles = await Promise.all(cells.map(async ({ tx, ty }) => {
-      const ran = await sh(made.env, `node ${IN_BOX}/tile.mjs '${JSON.stringify({ f, tx, ty })}'`, 120);
-      if (ran.exitCode !== 0) throw new Error(`tile ${f}/${tx}/${ty} failed in ${made.label}: ${ran.errs.slice(0, 200)}`);
-      return { tx, ty, px: Buffer.from((JSON.parse(ran.out.trim().split('\n').at(-1)!) as { px: string }).px, 'base64') };
-    }));
-    const pixels = Buffer.alloc(WIDTH * HEIGHT);
-    for (const { tx, ty, px } of tiles) for (let y = 0; y < TILE_H; y += 1) px.copy(pixels, (ty * TILE_H + y) * WIDTH + tx * TILE_W, y * TILE_W, (y + 1) * TILE_W);
-    const dir = join(context.place.work, 'frames');
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, `f${f}.idx.partial`), pixels);
-    renameSync(join(dir, `f${f}.idx.partial`), join(dir, `f${f}.idx`));
-    const need = record.answers?.need?.type === 'bool' ? Number(record.answers.need.probability.toFixed(2)) : null;
-    return {
-      f, environment: environment.id, provider: made.provider, box: made.label,
-      placed: { by: hosting.placer === 'scripted' ? 'scripted' : record.by, need, line: placedLine(record, REST, hosting.placer === 'scripted' ? 'the script' : 'Jev'), ...(record.error ? { error: record.error.code } : {}) },
-      sha256: createHash('sha256').update(pixels).digest('hex'), iterations: iterationsOf(f),
-    };
+  /** The run's work directory and its parent, from the call's environment. */
+  const placeOf = async (env: ExecutionEnv | undefined) => {
+    if (!env) throw new Error('this run gives a tool no environment to keep its frames in');
+    const work = await env.absolutePath('.', ctx);
+    if (!work.ok) throw work.error;
+    return { work: work.value, root: dirname(work.value) };
+  };
+  /** A file in the run's work directory, written whole or not at all. */
+  const keep = async (env: ExecutionEnv, path: string, bytes: Uint8Array | string) => {
+    const wrote = await env.writeFile(`${path}.partial`, bytes, ctx);
+    if (!wrote.ok) throw wrote.error;
+    const moved = await env.renameFile(`${path}.partial`, path, ctx);
+    if (!moved.ok) throw moved.error;
   };
 
-  const release = async () => {
-    if (!state) return { boxes: [] };
-    const s = await state;
-    const ended: Array<{ box: string; environment: string; provider: string }> = [];
-    for (const [environment, making] of s.boxes) {
-      const made = await making.catch(() => undefined);
-      if (!made) continue;
-      const done = await made.box.destroy(ctx);
-      if (!done.ok) throw done.error;
-      ended.push({ box: made.label, environment, provider: made.provider });
-    }
-    ended.sort((a, b) => a.box.localeCompare(b.box, 'en', { numeric: true }));
-    return { boxes: ended, ...(s.receipts.length > 0 ? { receipts: s.receipts } : {}) };
-  };
+  const frameTool = defineTool({
+    name: 'frame',
+    description: 'Draw one frame of a zoom into the Mandelbrot set: frame `f` (counting from 0) of `frames`. Each later frame is closer than the one before and takes more iterations per pixel. The host runs the frame in a sandbox it picks and answers which one (`environment`, and the box by its label), what it judged and the frame\'s SHA-256. Frames are independent: ask for several at once.',
+    parameters: Type.Object({ f: Type.Integer({ minimum: 0, description: 'The frame, counting from 0.' }), frames: Type.Integer({ minimum: 2, maximum: 24, description: 'How many frames the zoom has.' }) }),
+    replay: 'safe',
+    execute: async (args, api) => {
+      const { f, frames } = args;
+      if (f >= frames) throw new Error(`frame ${f} is past the last frame, ${frames - 1}`);
+      const env = api.env;
+      const place = await placeOf(env);
+      const s = await open(place);
+      const record = await s.placer.decide({ session: 'placed-frames', phase: 'message', what: 'hands', current: REST, options: ENVIRONMENTS.map(factsOf), next: stepOf(f, frames) }, ctx);
+      const environment = ENVIRONMENTS.find((each) => each.id === record.target)!;
+      const made = await boxIn(s, environment);
+      const cells = Array.from({ length: TILES_X * TILES_Y }, (_, i) => ({ tx: i % TILES_X, ty: Math.floor(i / TILES_X) }));
+      const tiles = await Promise.all(cells.map(async ({ tx, ty }) => {
+        const ran = await sh(made.env, `node ${IN_BOX}/tile.mjs '${JSON.stringify({ f, tx, ty })}'`, 120);
+        if (ran.exitCode !== 0) throw new Error(`tile ${f}/${tx}/${ty} failed in ${made.label}: ${ran.errs.slice(0, 200)}`);
+        return { tx, ty, px: Buffer.from((JSON.parse(ran.out.trim().split('\n').at(-1)!) as { px: string }).px, 'base64') };
+      }));
+      const pixels = Buffer.alloc(WIDTH * HEIGHT);
+      for (const { tx, ty, px } of tiles) for (let y = 0; y < TILE_H; y += 1) px.copy(pixels, (ty * TILE_H + y) * WIDTH + tx * TILE_W, y * TILE_W, (y + 1) * TILE_W);
+      const made_ = await env!.exec('mkdir -p frames', undefined, ctx);
+      if (!made_.ok) throw made_.error;
+      await keep(env!, `frames/f${f}.idx`, pixels);
+      const need = record.answers?.need?.type === 'bool' ? Number(record.answers.need.probability.toFixed(2)) : null;
+      const answer = {
+        f, environment: environment.id, provider: made.provider, box: made.label,
+        placed: { by: hosting.placer === 'scripted' ? 'scripted' : record.by, need, line: placedLine(record, REST, hosting.placer === 'scripted' ? 'the script' : 'Jev'), ...(record.error ? { error: record.error.code } : {}) },
+        sha256: createHash('sha256').update(pixels).digest('hex'), iterations: iterationsOf(f),
+      };
+      await keep(env!, `frames/f${f}.call.json`, JSON.stringify({ tool: 'frame', args: { f, frames }, answer }));
+      return answered(answer);
+    },
+  });
 
-  return { frame, release };
+  const releaseTool = defineTool({
+    name: 'release',
+    description: 'End every sandbox this run made and answer which ones. Call it once, after every frame is drawn.',
+    parameters: Type.Object({}),
+    execute: async (_args, api) => {
+      const env = api.env;
+      const place = await placeOf(env);
+      const s = await open(place);
+      const ended: Array<{ box: string; environment: string; provider: string }> = [];
+      for (const [environment, making] of s.boxes) {
+        const made = await making.catch(() => undefined);
+        if (!made) continue;
+        const done = await made.box.destroy(ctx);
+        if (!done.ok) throw done.error;
+        ended.push({ box: made.label, environment, provider: made.provider });
+      }
+      ended.sort((a, b) => a.box.localeCompare(b.box, 'en', { numeric: true }));
+      const answer = { boxes: ended, ...(s.receipts.length > 0 ? { receipts: s.receipts } : {}) };
+      const made_ = await env!.exec('mkdir -p frames', undefined, ctx);
+      if (!made_.ok) throw made_.error;
+      await keep(env!, 'frames/release.call.json', JSON.stringify({ tool: 'release', args: {}, answer }));
+      return answered(answer);
+    },
+  });
+
+  return defineExtension({ name: 'placed-frames', tools: [frameTool, releaseTool] });
 }
