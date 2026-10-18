@@ -58,7 +58,8 @@ counts only what it pays for (an answer kept from before costs nothing). Name ea
 in letters, digits and dashes (`.find/umbrella`): the folder goes into every path and command as it is, and a second
 search never mixes in frames or scores of the first. The steps are code-mode programs:
 `tools.bash` runs ffmpeg and reads files, `vision.judge` and `vision.see` answer (the `look` skill says what each takes
-and returns). Every path goes to the shell quoted, so a name with spaces works.
+and returns). The video's and the best copy's paths go to the shell quoted, so a film named with spaces works; the
+search's folder is the one word above.
 
 ## What each step costs
 
