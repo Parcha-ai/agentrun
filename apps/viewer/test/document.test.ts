@@ -160,7 +160,10 @@ test('a recording whose result only its manifest names shows its pages at every 
   const manifestResult = { blob: CHECK_SHA, title: CHECK.title };
   const at0 = documentPanel.view(reduceTo(documentPanel, lineless, 0), { t: 0, json: (sha) => (sha === CHECK_SHA ? CHECK as unknown as Json : undefined), blobType: (sha) => types[sha], manifestResult });
   assert.equal(find(at0, (each) => each.tag === 'pdf-page').length, 4, 'drawn from the first stop');
+  assert.deepEqual(find(at0, cls('doc-final')).map(words), ['The run\'s final result, from its manifest: no line of the recording says when it was delivered.'], 'labelled as the run\'s final result, since no line gives its time');
   assert.match(words(view(delivered.findIndex((line) => line.kind === 'result'))), /has not delivered its result yet/, 'with a result line, not before it');
+  assert.deepEqual(find(view(delivered.length), cls('doc-final')), [], 'and a result a line delivers carries no such label');
+  assert.deepEqual(find(view(delivered.length, { manifestResult }), cls('doc-final')), [], 'even when the shell also has the manifest\'s');
   const manifest = { result: manifestResult } as never;
   assert.deepEqual(viewContext(5, manifest, { delivered: false }).manifestResult, manifestResult, 'the shell hands it over when no line delivers one');
   assert.equal(viewContext(5, manifest, { delivered: true }).manifestResult, undefined, 'and not when a line does');

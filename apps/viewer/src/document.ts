@@ -88,7 +88,9 @@ export const documentPanel: Panel<DocState> = {
     const cited = visionCitedOf(value);
     const pages = cited ? docPagesOf(cited, blobType) : [];
     if (!cited || pages.length === 0) return note('The result cites no page of a file in this recording.');
-    return h('div', { class: 'doc-panel' }, cited.title !== undefined && h('p', { class: 'doc-title' }, cited.title), ...pages.map((page) => docPageView(page, cite)));
+    // No line gives a manifest's result a time: shown at every stop, it says it is the run's final result.
+    return h('div', { class: 'doc-panel' }, !state.result && h('p', { class: 'doc-final' }, 'The run\'s final result, from its manifest: no line of the recording says when it was delivered.'),
+      cited.title !== undefined && h('p', { class: 'doc-title' }, cited.title), ...pages.map((page) => docPageView(page, cite)));
   },
 };
 
