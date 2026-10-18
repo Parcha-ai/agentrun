@@ -73,16 +73,16 @@ test('on fakes, the filed pages: every mark yes, each boxed on its page, the PDF
   const cited = run.record;
   assert.equal(cited.format, 'agentrun.cited/1');
   assert.equal(cited.title, `${sample.files.filed}: 6 of 6 marks there`);
-  assert.deepEqual(cited.rows.map((row) => [row.label, row.value]), checklist.marks.map((mark) => [mark.mark, 'yes']));
+  assert.deepEqual(cited.rows.map((row) => [row.id, row.label, row.value]), checklist.marks.map((mark) => [mark.id, mark.mark, 'yes']));
   assert.deepEqual(cited.document_check.marks.map((mark) => mark.id), checklist.marks.map((mark) => mark.id));
   const blob = sha256(readFileSync(join(HERE, 'sample', sample.files.filed)));
   for (const row of recorded(record).rows) for (const cite of row.cites) {
     assert.equal(cite.blob, blob);
     assert.match(cite.look, /^[0-9a-f]{64}$/, `${row.label}: a look backs the place`);
   }
-  const rows = Object.fromEntries(cited.rows.map((row, i) => [checklist.marks[i].id, row]));
+  const rows = Object.fromEntries(cited.rows.map((row) => [row.id, row]));
   for (const id of ['seal', 'signature', 'file_number', 'authentication']) {
-    assert.match(rows[id].cites[0].fragment, /^#page=1&xywh=percent:/);
+    assert.match(rows[id].cites[0].fragment, /^page=1&xywh=percent:/);
     near(xywh(rows[id].cites[0].fragment), placeOf('1', id), id);
   }
   near(xywh(rows.filed_stamp.cites[0].fragment), placeOf('3', 'filed_stamp'), 'filed_stamp');
@@ -99,7 +99,7 @@ test('on fakes, the TEST COPY: every mark no, each row citing only the page it w
   const cited = run.record;
   assert.equal(cited.title, `${sample.files.test_copy}: 0 of 6 marks there`);
   assert.deepEqual(cited.rows.map((row) => row.value), checklist.marks.map(() => 'no'));
-  assert.deepEqual(cited.rows.map((row) => row.cites.map((cite) => cite.fragment)), [['#page=1'], ['#page=1'], ['#page=1'], ['#page=1'], ['#page=3'], ['#page=1', '#page=3']]);
+  assert.deepEqual(cited.rows.map((row) => row.cites.map((cite) => cite.fragment)), [['page=1'], ['page=1'], ['page=1'], ['page=1'], ['page=3'], ['page=1', 'page=3']]);
   assert.equal(cited.rows.at(-1).note, 'file_number and filed_stamp not there');
   const blob = sha256(readFileSync(join(HERE, 'sample', sample.files.test_copy)));
   assert.ok(recorded(record).rows.flatMap((row) => row.cites).every((cite) => cite.blob === blob), 'the cites name the TEST COPY');
@@ -117,9 +117,9 @@ test('cite builds the rows step 2 wrote, in the checklist\'s order, whatever the
   writeFileSync(join(folder, 'marks.json'), JSON.stringify({ document: 'a b.pdf', rows: written }));
   const submitted = [{ ...written[1] }, { ...written[0], value: 'yes' }, { id: 'table', mark: 'Table of marks', value: 'no', p: 0, note: '', cites: [] }];
   const cited = citedOf(tmp, { document: 'a b.pdf', checklist: 'list.json', every: true, rows: submitted });
-  assert.deepEqual(cited.rows.map((row) => [row.label, row.value]), [['The seal', 'yes'], ['The stamp', 'no']]);
+  assert.deepEqual(cited.rows.map((row) => [row.id, row.label, row.value]), [['seal', 'The seal', 'yes'], ['stamp', 'The stamp', 'no']]);
   assert.equal(cited.title, 'a b.pdf: 1 of 2 marks there');
   assert.equal(cited.document_check.every, false);
   assert.deepEqual(cited.document_check.differences, ['the lead submitted stamp: yes, which step 2 did not write', 'the lead submitted table: no, which step 2 did not write']);
-  assert.deepEqual(cited.rows[0].cites, [{ fragment: '#page=1&xywh=percent:1,2,3,4', note: 'no look this run filed backs this place' }], 'a receipt that is no look the run filed backs nothing');
+  assert.deepEqual(cited.rows[0].cites, [{ fragment: 'page=1&xywh=percent:1,2,3,4', note: 'no look this run filed backs this place' }], 'a receipt that is no look the run filed backs nothing');
 });

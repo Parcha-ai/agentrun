@@ -1,5 +1,6 @@
-// The job's `cite` tool: one row a mark of the checklist, in its order, its value yes or no, citing the look and the place
-// on the page (`#page=N` and, for a mark that is there, `&xywh=percent:x,y,w,h` of the page's crop box). The rows are the
+// The job's `cite` tool: one row a mark of the checklist, in its order: its short id, its label in words, its value yes or
+// no, citing the look and the place on the page (`page=N` and, for a mark that is there, `&xywh=percent:x,y,w,h` of the
+// page's crop box). The rows are the
 // ones the verify skill's step 2 wrote to `.verify/<document>/marks.json` in the workspace, so a lead that submits other
 // rows changes nothing; each row it submitted otherwise is listed in `differences`. It reads only what the run filed under
 // its directory; a receipt that is not an ok look there is dropped, and a row left with no look keeps its places, said so.
@@ -12,7 +13,7 @@ export type Cite = { look?: string; blob?: string; fragment: string; note?: stri
 /** The check itself, beside the cited rows: the document, the checklist, whether every mark is there, and each mark's
  *  short name with Jev's probability that it is there. */
 export type DocumentCheck = { format: 'document-check/1'; document: string; checklist: string; every: boolean; marks: { id: string; value: 'yes' | 'no'; p: number }[]; differences: string[] };
-export type Cited = { format: 'agentrun.cited/1'; title: string; rows: { label: string; value: string; note?: string; cites: Cite[] }[]; document_check: DocumentCheck };
+export type Cited = { format: 'agentrun.cited/1'; title: string; rows: { id: string; label: string; value: string; note?: string; cites: Cite[] }[]; document_check: DocumentCheck };
 
 /** A receipt the run filed, read back: the record, when the path is a file under the run's `evidence/` that parses as an ok look. */
 export function lookAt(root: string, path: string): LookRecord | undefined {
@@ -24,8 +25,9 @@ export function lookAt(root: string, path: string): LookRecord | undefined {
   } catch { return undefined; }
 }
 
-/** `file.pdf#page=1&xywh=...` as the cited format writes a place in a document it keeps as a blob: `#page=1&xywh=...`. */
-const placeOf = (fragment: string) => fragment.slice(fragment.lastIndexOf('#'));
+/** `file.pdf#page=1&xywh=...` as the cited format writes a place in a document it keeps as a blob: the fragment alone,
+ *  `page=1&xywh=...`, as pi-vision's formatFragment writes it. */
+const placeOf = (fragment: string) => fragment.slice(fragment.lastIndexOf('#') + 1);
 
 /** The rows step 2 wrote for `document` (the folder name is the skill's), each mark of the checklist once in its order. */
 function writtenRows(work: string, document: string, checklist: string): Row[] {
@@ -49,7 +51,7 @@ export function citedOf(root: string, args: { document: string; checklist: strin
       const looks = cite.receipts.flatMap((receipt) => { const record = lookAt(root, receipt); return record ? [record.facts.key] : []; });
       return looks.length ? looks.map((look) => ({ look, fragment: placeOf(cite.fragment) })) : [{ fragment: placeOf(cite.fragment), note: 'no look this run filed backs this place' }];
     });
-    return { label: row.mark, value: row.value, note: row.note, cites };
+    return { id: row.id, label: row.mark, value: row.value, note: row.note, cites };
   });
   const there = written.filter((row) => row.value === 'yes').length;
   return {

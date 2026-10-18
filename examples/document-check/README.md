@@ -23,8 +23,8 @@ npm run demo:document-check -- --record <dir>        # keep the run as an agentr
 1. **The job.** One agent writes its own code with the `code` tool (`bash` and `vision.judge`), following pi-vision's `verify` skill:
    - It renders every page through its crop box and asks Jev, one request a page, which kind of page it is and, for each mark, whether it is there and where.
    - It then cuts the two file numbers out at 300 dpi and asks whether they agree.
-2. **The result.** An `agentrun.cited/1` result with one row a mark, its value yes or no.
-   - Each row cites the look that saw the mark and its place: `#page=1&xywh=percent:38.862,82.783,13.27,10.109`, in percent of the page's crop box, which is the page PDF.js shows.
+2. **The result.** An `agentrun.cited/1` result with one row a mark: its short id, its label in words, and its value yes or no.
+   - Each row cites the look that saw the mark and its place: `page=1&xywh=percent:38.862,82.783,13.27,10.109`, in percent of the page's crop box, which is the page PDF.js shows.
    - A mark that is not there cites the page it was looked for on, with no box.
    - The PDF is kept in the recording, so the viewer opens the page a row cites and draws the box over it.
 3. **The TEST COPY.** The same pages with the marks painted white come back with every mark no. A box Jev gives for a thing that is not there is never drawn.
