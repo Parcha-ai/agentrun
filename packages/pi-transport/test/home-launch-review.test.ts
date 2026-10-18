@@ -10,18 +10,21 @@ import { localBoxes } from "../src/box/local.ts";
 import { launch, launchStatus, stopLaunch } from "../src/home/launch.ts";
 import { LAUNCHER_SCRIPT } from "../src/home/launcher-script.ts";
 import { recording, sh, until } from "./home-launch-support.ts";
+import { assertNothingOfBox, guardLeaks } from "./leak-guard.ts";
 
 const context = BACKGROUND_CONTEXT;
 const HAS_PROC = existsSync("/proc/self/stat");
+const { env: MARK } = guardLeaks();
 
 async function withLocalBox(use: (box: Box) => Promise<void>): Promise<void> {
 	const root = mkdtempSync(join(tmpdir(), "pi-transport-launch-review-"));
-	const box = getOrThrow(await localBoxes({ root }).create({ maxLifetimeMs: 10 * 60_000 }, context));
+	const box = getOrThrow(await localBoxes({ root }).create({ maxLifetimeMs: 10 * 60_000, env: MARK }, context));
 	try {
 		await use(box);
 	} finally {
 		await box.destroy(context);
 		rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+		await assertNothingOfBox(box.id);
 	}
 }
 
@@ -218,7 +221,7 @@ describe.skipIf(!HAS_PROC)("the launcher's own sections", () => {
 		return d;
 	};
 	afterAll(() => rmSync(root, { recursive: true, force: true }));
-	const env = { PATH: process.env.PATH ?? "/usr/bin:/bin" };
+	const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", ...MARK };
 
 	it("starts nothing for a wrapper that comes up after a stop was asked for", () => {
 		const d = dir("stopped-first", "GEN='g1'\nrun_program() {\n  echo started >> marker\n  exec sleep 1\n}\n");

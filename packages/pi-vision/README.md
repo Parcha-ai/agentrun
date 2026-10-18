@@ -13,7 +13,10 @@ about them with `vision.see`, have Jev judge them with typed answers (`vision.ju
 write what a recording says, word by word with its second (`vision.transcribe`): the functions this package puts in a
 host's code mode. Only the answers, where they looked or listened and the price enter the caller's context. For a long
 recording, the `transcribe` skill (`skills/transcribe/SKILL.md`) shows it how to cut the audio into pieces, transcribe
-each with `vision.transcribe`, write one timestamped transcript and search it with `rg` to the second.
+each with `vision.transcribe`, write one timestamped transcript and search it with `rg` to the second. The
+`find` skill (`skills/find/SKILL.md`) finds every time a phrase is said in a long video, from its transcript, and the
+second a thing is first seen and its box, coarse to fine: the words narrow the search, Jev scores frames, the eyes
+name the second, Jev draws the box.
 
 ## Status
 
