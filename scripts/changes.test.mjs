@@ -209,6 +209,59 @@ test("a second fold keeps a held changelog's earlier text where it was: only thi
   assert.equal(await readFile(join(root, heldPath), 'utf8'), `${heldLog}- Placer.\n- Record stream.\n`, 'the held entry stays first');
 }));
 
+/** The same for published changelogs: the release folds, main takes `late` fragments, the release merges main and folds again. */
+async function foldPublishedInTwoBatches(root, git, first, late) {
+  await git('branch', '-M', 'main');
+  for (const [name, text] of Object.entries(first)) await writeFile(join(root, 'changes', name), text);
+  await git('add', '-A'); await git('commit', '-q', '-m', 'fragments');
+  await git('checkout', '-q', '-b', 'release');
+  await fold(root, '0.1.0-beta.16', '2026-10-18', 'main');
+  await git('add', '-A'); await git('commit', '-q', '-m', 'fold');
+  await git('checkout', '-q', 'main');
+  for (const [name, text] of Object.entries(late)) await writeFile(join(root, 'changes', name), text);
+  await git('add', '-A'); await git('commit', '-q', '-m', 'late fragments land on main');
+  await git('checkout', '-q', 'release');
+  await git('merge', '-q', '--no-edit', 'main');
+  return fold(root, '0.1.0-beta.16', '2026-10-18', 'main');
+}
+
+test("a published changelog folded in two commits (a late fix that sorts between two earlier ones) is the single fold's text, in the root and in a package", () => repo(async (root, git) => {
+  const both = (name, kind, body) => ({ [`${name}.md`]: fragment('repo, @parcha/pi-vision', kind, body) });
+  await foldPublishedInTwoBatches(root, git,
+    { ...both('recording-validator-fixes', 'fix', 'Validator fixes.'), ...both('viewer-skip-temp-blobs', 'fix', 'Skip temp blobs.'), ...both('docs-look', 'docs', 'Look docs.'), ...both('feature-find', 'feature', 'Find.') },
+    both('recording-spaces-fix', 'fix', 'Spaces fix.'));
+  // One fold's order: the section's own earlier bullet, then feature, fix (by file name), docs.
+  const bulletsOf = text => text.slice(text.indexOf('## 0.1.0-beta.16'), text.indexOf('## 0.1.0-beta.12')).split('\n').filter(line => line.startsWith('- '));
+  const order = ['- Existing root bullet.', '- Find.', '- Spaces fix.', '- Validator fixes.', '- Skip temp blobs.', '- Look docs.'];
+  assert.deepEqual(bulletsOf(await readFile(join(root, 'CHANGELOG.md'), 'utf8')), order);
+  assert.deepEqual(await unreleasedEdits(root, 'main'), { fold: true, edited: [] });
+  // The same fragments folded once in a fresh repo give the same changelogs.
+  await repo(async single => {
+    for (const [name, kind, body] of [['recording-validator-fixes', 'fix', 'Validator fixes.'], ['viewer-skip-temp-blobs', 'fix', 'Skip temp blobs.'], ['docs-look', 'docs', 'Look docs.'], ['feature-find', 'feature', 'Find.'], ['recording-spaces-fix', 'fix', 'Spaces fix.']]) {
+      await writeFile(join(single, `changes/${name}.md`), fragment('repo, @parcha/pi-vision', kind, body));
+    }
+    await fold(single, '0.1.0-beta.16', '2026-10-18');
+    for (const file of ['CHANGELOG.md', 'packages/pi-vision/CHANGELOG.md']) assert.equal(await readFile(join(root, file), 'utf8'), await readFile(join(single, file), 'utf8'), file);
+  });
+}));
+
+test("a published changelog hand-edited between the two folds is not rebuilt: the late bullet goes at the end of the section, and the check refuses it", () => repo(async (root, git) => {
+  await git('branch', '-M', 'main');
+  await writeFile(join(root, 'changes/a-fix.md'), fragment('repo', 'fix', 'A fix.'));
+  await git('add', '-A'); await git('commit', '-q', '-m', 'fragments');
+  await git('checkout', '-q', '-b', 'release');
+  await fold(root, '0.1.0-beta.16', '2026-10-18', 'main');
+  await writeFile(join(root, 'CHANGELOG.md'), (await readFile(join(root, 'CHANGELOG.md'), 'utf8')).replace('- A fix.\n', '- A fix.\n- Written by hand.\n'));
+  await git('add', '-A'); await git('commit', '-q', '-m', 'fold, and a hand edit');
+  await git('checkout', '-q', 'main');
+  await writeFile(join(root, 'changes/0-late.md'), fragment('repo', 'feature', 'Late feature.'));
+  await git('add', '-A'); await git('commit', '-q', '-m', 'a late fragment lands on main');
+  await git('checkout', '-q', 'release');
+  await git('merge', '-q', '--no-edit', 'main');
+  await fold(root, '0.1.0-beta.16', '2026-10-18', 'main');
+  assert.match(await readFile(join(root, 'CHANGELOG.md'), 'utf8'), /- A fix\.\n- Written by hand\.\n- Late feature\.\n/);
+}));
+
 test("a held changelog hand-edited between the two folds is not rebuilt: the late bullet is appended after it, and the check refuses the edit", () => repo(async (root, git) => {
   await git('branch', '-M', 'main');
   await heldTree(root, git, { 'pi-transport-record-stream.md': fragment('@parcha/pi-transport', 'feature', 'Record stream.') });
