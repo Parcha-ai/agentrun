@@ -29,6 +29,8 @@ export function chatCiteHref(fragment: string, file: string, fallback?: string):
 /** The node runner's delivery tool: its reply on success is the runner's own, not the run's. */
 const chatRunnerSubmit = 'submit';
 
+const chatIsAddress = (value: string) => /^[\w./:%-]+\.[a-z0-9]{2,5}(#\S*)?$|^https?:\/\//i.test(value);
+
 const chatClip = (text: string, size: number) => (text.length > size ? `${text.slice(0, size - 1)}…` : text);
 const chatFirstLine = (text: string) => text.split('\n').map((line) => line.trim()).find((line) => line !== '' && !/^<\/?[\w-]+>$/.test(line)) ?? '';
 
@@ -61,7 +63,7 @@ export function chatToolTitle(name: string, args: Json | undefined): string {
   const entries = Object.entries(a);
   const only = entries.length === 1 ? entries[0] : undefined;
   if (only && typeof only[1] === 'string' && only[1].trim()) return `${name} ${chatClip(chatFirstLine(only[1]), 90)}`;
-  const addressed = entries.find(([, value]) => typeof value === 'string' && /^[\w./:%-]+\.[a-z0-9]{2,5}(#\S*)?$|^https?:\/\//i.test(value));
+  const addressed = entries.find(([, value]) => typeof value === 'string' && chatIsAddress(value));
   const short = entries.filter(([key, value]) => key !== addressed?.[0] && (typeof value === 'number' || typeof value === 'boolean' || (typeof value === 'string' && value.length <= 24 && !value.includes('\n'))));
   const parts = [...(addressed ? [String(addressed[1])] : []), ...short.map(([key, value]) => `${key}=${value}`)];
   return chatClip(parts.length ? `${name} ${parts.join(' ')}` : name, 110);
@@ -296,12 +298,15 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     // An address with no fragment takes the one the look filed (a page, a time).
     const facts = lookFacts.get(key);
     const fragment = chatStr(facts?.fragment)?.replace(/^#/, '');
-    const href = !path.includes('#') && fragment ? `${path}#${fragment}` : path;
+    // A look over several addresses files them joined by ", "; it opens at its first.
+    const pieces = path.split(/,\s+/);
+    const addresses = pieces.length > 1 && pieces.every(chatIsAddress) ? pieces : [path];
+    const href = !addresses[0]!.includes('#') && fragment ? `${addresses[0]}#${fragment}` : addresses[0]!;
     const { text, decisions, regions } = chatLookAnswer(record?.body);
     const listed = chatList(look.images).map((each) => chatStr(each) ?? chatStr(chatObj(each)?.blob)).filter((sha): sha is string => !!sha && !!recording.blobUrl(sha));
     const shown = chatStr(facts?.sha256);
     const media = listed.length ? listed : shown && recording.blobUrl(shown) ? [shown] : [];
-    sources[key] = { href, takeaway: text, decisions, media, regions, ...(lookItem.has(key) ? { item: lookItem.get(key)! } : {}) };
+    sources[key] = { href, ...(addresses.length > 1 ? { more: addresses.slice(1) } : {}), takeaway: text, decisions, media, regions, ...(lookItem.has(key) ? { item: lookItem.get(key)! } : {}) };
   }
 
   // A call that made exactly one look says what that look found; its own first line is the tool's framing.

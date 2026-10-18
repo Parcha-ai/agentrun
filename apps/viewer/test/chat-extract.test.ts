@@ -188,3 +188,10 @@ test('every look of a write is a source, keyed by its own record, with the pictu
   assert.equal(m.sources.k2?.href, 'a.pdf#page=2');
   assert.deepEqual(m.sources.k2?.media, [shown]);
 });
+
+test('a look over several addresses opens at its first and keeps the rest in order', async () => {
+  const write = JSON.stringify({ channel: 'durable', source: 'vision', kind: 'vision.looks', t: 1, data: { doc: 'vision.looks', key: 'k3', value: { looks: [{ record: { tool: 'see', args: { path: 'a.pdf#page=1, a.pdf#page=2, b.pdf#page=1' }, body: 'two notes', facts: { key: 'k3' } }, images: [] }] }, version: 1 } });
+  const m = await model(referenceJob, (events) => `${events.trimEnd()}\n${write}\n`);
+  assert.equal(m.sources.k3?.href, 'a.pdf#page=1');
+  assert.deepEqual(m.sources.k3?.more, ['a.pdf#page=2', 'b.pdf#page=1']);
+});
