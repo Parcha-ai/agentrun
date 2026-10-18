@@ -43,6 +43,7 @@ import { checkItems, fetchSources, missingCommitted, readSources, withSources } 
 import { localHost, type BrowserPlane, type Fakes, type Host, type RunPlace } from './host.ts';
 import { codeOf, finishRecording, followRecording, keepBlob, lazyRecorder, openRecorder, openSupervisor } from './record.ts';
 import { packageCommitRecorder } from './record-store.ts';
+import { recordFrames } from './frames.ts';
 import { scanPlaced, scanRecording, signInFile, trackSecrets } from './secrets.ts';
 
 /** What `--live` swaps for the scripted parts: host members (models, tools, decisions, the browser plane) and vision options. The demo supplies them from its
@@ -257,6 +258,9 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   composeHost(local.host, parts.host, cross, window, join(place.root, 'judge-spent.jsonl'), live, judgeCapsOf(options.spec), fakesTapped !== undefined);
   // A demo with `browser: false` has none, whatever the live parts supplied.
   if (browserKind === 'none') local.host.tools = { ...local.host.tools, browser: noBrowser() };
+  // A recorded run on a real browser keeps what the browser showed: its frames, and a track per session made when the recorder detaches.
+  const frames = recorder && env.RECORD_DIR && (browserKind === 'chrome' || browserKind === 'browserbase') ? recordFrames(recorder, env.RECORD_DIR, env.RECORD_STARTED ? { started: env.RECORD_STARTED } : {}) : undefined;
+  if (frames) local.host.tools = { ...local.host.tools, browser: frames.plane(local.host.tools.browser) };
   // The checked files the job reads, fetched into work/ and verified: on --live and with --fetch-sources (a no-key run uses the files the demo commits). `sourcesFor(input)` names only the items this input needs;
   // else the demo's sources.json lists them all. A fetched file is cached by its hash (`--cache`), so a re-run does not fetch it again.
   // The input: `--input`'s, else the demo's for this mode (`fakes.input` on fakes, which may be a smaller slice), else the job's own.
@@ -302,7 +306,8 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   };
   const runOptions: RunOptions = { codeImages: shown.note, ...(browserKind === 'none' ? { browser: false } : {}), ...(boxes && boxSpec?.runIn ? { env: () => box!.env() } : {}), ...(options.spec.sites ? { sites: options.spec.sites } : {}), ...(options.codeMode ?? options.spec.codeMode ? { codeMode: options.codeMode ?? (options.spec.codeMode as CodeModeOptions | boolean) } : {}), vision, ...(options.layout ? { layout: options.layout } : {}) };
   const made = async (result: Awaited<ReturnType<typeof run>>) => (result.status === 'complete' && options.result ? options.result(result.output, { dir: place.root, keep: (bytes, extension) => (recorder ? recorder.blob(bytes, extension) : createHash('sha256').update(bytes).digest('hex')) }) : undefined);
-  return { models: parts.models, place, host: local.host, job: { ...options.job, input }, runOptions, recorder, redact, open, made, done: async () => { await box?.destroy(); } };
+  const recorded: Recorder | undefined = recorder && frames ? { ...recorder, detach: async () => { await frames.finish(); await recorder.detach(); } } : recorder;
+  return { models: parts.models, place, host: local.host, job: { ...options.job, input }, runOptions, recorder: recorded, redact, open, made, done: async () => { await box?.destroy(); } };
 }
 
 const storeShaOf = (place: RunPlace) => {
