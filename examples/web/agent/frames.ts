@@ -7,7 +7,8 @@
 // While the person drives the browser the store is held: from `hold()` (request_sign_in calls it before its result
 // exists) until `lift()` (the agent's next tool call), it refuses every frame, and it writes one `frame.gap`
 // (`credential_on_page`, detail `host`) where the frames stopped. A refused frame is one the recorder counts as dropped,
-// so it never becomes the place a later gap starts from. The recorder's own credential check runs as well.
+// so it never becomes the place a later gap starts from. The recorder's own credential check runs as well. Each line
+// the store keeps, and only those, is handed to `kept` once it is on disk (the run's recording, when it has one).
 import { createHash } from "node:crypto";
 import { appendFile, chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -28,7 +29,7 @@ export type FrameStore = {
 };
 
 /** The frames of the run in `runDir`; `clock` is the `t` of the gap a hold writes (ms since the recording started). */
-export function frameStore(runDir: string, clock: () => number): FrameStore {
+export function frameStore(runDir: string, clock: () => number, kept?: FrameSink): FrameStore {
   const dir = join(runDir, FRAMES_DIR);
   const blobs = join(dir, "blobs");
   const file = join(dir, FRAMES_FILE);
@@ -57,6 +58,7 @@ export function frameStore(runDir: string, clock: () => number): FrameStore {
     }
     seq = n + 1;
     await appendFile(file, `${JSON.stringify({ ...line, seq: seq })}\n`, { mode: 0o600 });
+    try { await kept?.(line, bytes); } catch { /* a recording never loses the run its frames */ }
   }
 
   /** In the order lines were handed over; a line that cannot be written is lost, never retried out of order. */

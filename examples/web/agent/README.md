@@ -3,8 +3,9 @@
 An agent that signs in to a website through a person, then reads the pages behind the sign-in and writes what it found
 to files. A person asks it in a chat. It opens a real browser on Browserbase, opens the site's sign-in page and calls
 `request_sign_in`, which ends its turn. The person signs in in the browser's live view and replies "done". The agent goes
-on, writes `report.md` and `pages.csv` in its workspace, and releases the browser. The next run of the same agent starts
-signed in, because both runs use the agent's Browserbase context.
+on, writes `report.md`, `pages.csv` and `report/index.html` (the report as one script-free page) in its workspace, and
+releases the browser. The next run of the same agent starts signed in, because both runs use the agent's Browserbase
+context.
 
 Use a test account on a practice site, such as https://the-internet.herokuapp.com/login. In this release the model's
 page code can still read what the person types into the page, so a real password must not go through the live view.
@@ -13,12 +14,13 @@ page code can still read what the person types into the page, so a real password
 | --- | --- |
 | `agent.json` | The agent definition: `id`, `version`, `name`, `description`, `instructions`, `skills`, `tools`, `input_schema`, `output_schema`, `max_cost_usd`. It names no model: the host picks it. Its tools are `read`, `write` and `edit` in the workspace, the browser's `snapshot`, `run`, `browser_read` and `browser_release`, and `request_sign_in`. A tool name can also be a whole extension (`browser`). |
 | `skills/<name>/SKILL.md` | The skills `agent.json` names, added to the prompt in that order. |
-| `frames.ts` | `frameStore(runDir, clock)`: the sink for pi-browser's frame recorder, which keeps what the browser showed in `<run>/frames/` (owner-only, outside `work/`) for the page's replay player, and drops every frame while the person signs in. |
+| `frames.ts` | `frameStore(runDir, clock, kept)`: the sink for pi-browser's frame recorder, which keeps what the browser showed in `<run>/frames/` (owner-only, outside `work/`) for the page's replay player, drops every frame while the person signs in, and hands each line it keeps to `kept` (the run's recording). |
 | `chrome.ts` | The run's own Chrome for `AGENT_BROWSER=chrome`: its profile directory in the home and the save lease that decides who opens it, its arguments, and its start and stop by pid. |
 | `home.mjs` | `ensureAgentHome(dir)`: the agent home of [`@parcha/pi-durable-agent`](../../../packages/pi-durable-agent/README.md), made from `agent.json` and the skills the first time (owner-only), opened after that. |
 | `app.ts` | The app `pi-durable-disk run --app` loads: the definition and skills from the home, the model from the environment, the file tools, the browser on the agent's saved sign-in and its frame recorder (2 frames a second), and `request_sign_in`. |
-| `start-run.mjs` | Runs one started run, with its door on loopback. |
-| `agent.test.mjs` | Offline tests: no network, no key, no model call. |
+| `record.ts` | The run's recording when `RECORD_DIR` is set: the reference package's recorder inside the run, its redaction, and the finish start-run.mjs calls once the run has exited. |
+| `start-run.mjs` | Runs one started run, with its door on loopback, and finishes its recording. |
+| `agent.test.mjs`, `record.test.mjs` | Offline tests: no network, no key, no model call. |
 
 ## Run one
 
@@ -66,6 +68,8 @@ the definition's prompt and tools and the browser's configuration in the commit 
 | `AGENT_MODEL_PRICE` | no | `input,output,cacheRead[,cacheWrite]` in USD per million tokens, so the run's usage has a price. Unset, it is $0. |
 | `AGENT_THINKING` | no | `minimal`, `low`, `medium` (default), `high` or `xhigh`. Thinking is never off. |
 | `AGENT_HOME` | no | The agent home. Default: the run directory's `../..`, the home `startRun` made it in. |
+| `RECORD_DIR` | no | A new or empty directory: the run is recorded there (below). |
+| `RECORD_REDACT` | no | With `RECORD_DIR`: a JSON array of words the recording must not hold, taken out wherever they appear. |
 
 SIGTERM stops a run. It releases its Browserbase session first, so the sign-in is saved and nothing paid stays open, then
 lets go of the run (`run.json` says `sleeping`) and exits 0. Starting the same directory again resumes it. Then
@@ -91,6 +95,35 @@ when the page changes, so a page that did not change after the sign-in (the pers
 leaves no frame after the gap until it does. A process started again while the person signs in starts without the hold,
 and records nothing either: the recorder captures a session only from its next attach, which only a browser call makes.
 When pi-browser's `FrameRecorderOptions.hold` reaches this repo, this hold moves to it.
+
+## A recorded run
+
+With `RECORD_DIR` set to a new or empty directory, the run is recorded as an agentrun.recording/1 directory
+([RECORDING.md](../../../apps/viewer/RECORDING.md)) that the viewer replays: `manifest.json`, `events.jsonl` and `blobs/`.
+The reference package's recorder runs inside the run (`record.ts`). From `beforeResume` on, before anything commits, it
+writes a snapshot of every document, then the lines of each commit (pi's messages and every document; none is dropped),
+pi's live events (turns, messages, tool calls) and each line the frame store keeps, all on the run's clock. When the run
+lets go of its browser, each session's frames also become a WebM and its index (`frame.track`, when ffmpeg is on the
+PATH). Once the run has exited, start-run.mjs finishes the recording: the agent's `report/` (`report/index.html` and what
+it shows) as `manifest.artifact`, the manifest (`generations` from the recorded processes, `kills` 0, the model's and the
+browser's cost), and the scans.
+
+What a recording never holds, and how:
+
+- The Browserbase key, the browser profile's id (the context id, or the Chrome profile's path), every live view, any
+  `token=` value, and each word `RECORD_REDACT` names (a JSON array: words the person types that a page may also print,
+  such as a practice site's shared account): each is `[redacted]`. The ids are learned where they arise, from the provider's answers and from the
+  profile as it resolves, before anything writes them; the finish reads every id the run's store holds once more.
+- A browser session's id: `session-` and 12 hex digits of its hash, so a session's lines and its frames still go together.
+- A `liveView` in a document: null.
+- The machine: the reference's scrub takes out the user name, the home directory and the run's directories.
+- A frame while the person drives: the frame store keeps none, so the recording has none.
+
+Before it lets go, the run scans what it placed for every id it learned, its live views included. The finish scans every
+file of the recording for every id the store holds and the key, and writes no manifest when it finds one. Both name the
+key and the file, never the value. A recording is of one run, finished when the run's process exits: a run started with
+`RECORD_DIR` naming a finished recording fails, so record each run into a directory of its own. The server passes its
+environment to every run it starts, so set `RECORD_DIR` only for a server that starts one run.
 
 ## A local Chrome
 
@@ -130,7 +163,7 @@ yet: live.json then says `live view not available for local Chrome yet`, and the
   released.
 - The context id never reaches the model: the browser's redactor scrubs it from every tool result. It is in the run's
   store, in the browser's configuration document, which the model does not read.
-- No recorder runs: the app installs no frame or trace recorder, and the agent has no screenshot tool.
+- Without `RECORD_DIR` the only recorder is the frame recorder above, and the agent has no screenshot tool.
 
 ## Limits
 

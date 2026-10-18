@@ -11,7 +11,7 @@
 // tools and the browser's configuration in the commit that creates it. Beside the run, outside `work/` (the only place
 // the model's file tools reach), `live.json` holds the browser's live view for the person's page and `frames/` what the
 // browser showed (frames.ts), with nothing kept while the person drives it. Neither the context id nor the live view
-// enters a model-visible string.
+// enters a model-visible string. With `RECORD_DIR` set the run is recorded as well (record.ts).
 import { createHash } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -34,6 +34,7 @@ import { durableProfileStore, openAgentHome, readAgentHome, type AgentDefinition
 import { ArchilCodingTools, type AppContext, type AppOptions } from "@parcha/pi-durable-disk";
 import { browserOf, CHROME_PROFILE, type BrowserKind } from "./chrome.ts";
 import { frameStore } from "./frames.ts";
+import { openRunRecording } from "./record.ts";
 
 const THINKING: readonly ModelThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
 /** Long enough for a person to sign in in the live view while the agent's turn has ended. */
@@ -238,11 +239,12 @@ function modelsOf(env: NodeJS.ProcessEnv) {
 /**
  * The run's Harness options, and the browser extension they install (its documents name what the run holds). The run is
  * `<home>/runs/<id>`; `AGENT_HOME` names the home when it is elsewhere. `makeContext` makes a new browser profile, a
- * Browserbase context by default.
+ * Browserbase context by default; `provider` and `driver` stand in for the browser's own (a test's fakes).
  */
-export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = process.env, { makeContext = (signal: AbortSignal) => createContext(env, signal) } = {}) {
+export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = process.env, { makeContext = (signal: AbortSignal) => createContext(env, signal), provider: given, driver = stagehandDriver() }: { makeContext?: (signal: AbortSignal) => Promise<string>; provider?: BrowserProvider; driver?: ReturnType<typeof stagehandDriver> } = {}) {
   const chosen = browserOptions(env);
-  const state = await readAgentHome(await openAgentHome(resolve(env.AGENT_HOME || join(where.root, "..", ".."))));
+  const homeDir = resolve(env.AGENT_HOME || join(where.root, "..", ".."));
+  const state = await readAgentHome(await openAgentHome(homeDir));
   const { definition } = state;
   const instructions = promptOf(state);
   const { models, model, thinking } = modelsOf(env);
@@ -255,11 +257,14 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
   const page = { browser: chosen.kind, ...note };
   if (chosen.kind === "chrome") await writePrivate(live, { liveViewUrl: null, sessionId: null, change: "none", updatedAt: new Date().toISOString(), ...page });
   let liveWrites = Promise.resolve();
-  const base = chosen.kind === "chrome" ? cdpProvider(chosen.options) : browserbaseProvider(chosen.options);
-  const provider = viewer ? viewer.wrap(base) : base;
-  // `t` of every frame line is ms since the run started, so a resumed run's frames go on where they stopped.
+  const base = given ?? (chosen.kind === "chrome" ? cdpProvider(chosen.options) : browserbaseProvider(chosen.options));
+  // `t` of every frame line is ms since the run started, so a resumed run's frames go on where they stopped; the
+  // recording keeps the same clock.
   const startedAt = Date.parse(state.runs[where.ref.id]?.startedAt ?? "") || Date.now();
-  const frames = frameStore(where.root, () => Date.now() - startedAt);
+  const recording = env.RECORD_DIR ? await openRunRecording({ dir: resolve(env.RECORD_DIR), root: where.root, home: homeDir, started: new Date(startedAt).toISOString(), env }) : null;
+  const viewed = viewer ? viewer.wrap(base) : base;
+  const provider = recording ? recording.provider(viewed) : viewed;
+  const frames = frameStore(where.root, () => Date.now() - startedAt, recording ? (line, bytes) => recording.frame(line, bytes) : undefined);
   const recorder = frameRecorder({ sink: frames.sink, clock: () => Date.now() - startedAt, maxFps: FRAMES_PER_SECOND });
 
   // ---- the sign-in's site, on the run's profile ------------------------------------------------------------------------
@@ -304,7 +309,7 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
 
   const browser = createBrowserExtension({
     provider: ({ conversationId }) => recorder.watch(provider, conversationId),
-    driver: stagehandDriver(),
+    driver,
     // Each read the model cites is filed in the workspace, named by its hash, so a read replayed after a crash files the
     // same path again.
     evidence: {
@@ -357,10 +362,18 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
     // session finds it again, or learns that it ended.
     // A local Chrome's profile is a directory of the home: the run that opened it records it, so `carryBack` gives the
     // home the profile and its save lease decides the next run that may open it.
-    beforeResume: async ({ harness, context }) => {
+    // A recorded run learns its saved profile's id, then takes its snapshot at the hook's head before anything here commits.
+    beforeResume: async (run) => {
+      const { harness, context } = run;
       opened = harness;
-      if (chosen.kind === "browserbase") contextId = await durableProfileStore(harness).resolve(PROFILE, makeContext);
-      else if (env.AGENT_CHROME_PROFILE === "shared") await durableProfileStore(harness, { provider: "chrome" }).resolve(CHROME_PROFILE, async () => `chrome/${CHROME_PROFILE}`);
+      if (recording) {
+        const saved = profileKey ? (await harness.snapshot(Profiles, profileKey, context))?.ref : null;
+        recording.profile(typeof saved === "string" ? saved : null);
+        await recording.attach(run);
+      }
+      const made = async (ref: string) => (recording?.profile(ref), ref);
+      if (chosen.kind === "browserbase") contextId = await durableProfileStore(harness).resolve(PROFILE, async (signal) => made(await makeContext(signal)));
+      else if (env.AGENT_CHROME_PROFILE === "shared") await durableProfileStore(harness, { provider: "chrome" }).resolve(CHROME_PROFILE, () => made(`chrome/${CHROME_PROFILE}`));
       resolved = true;
       await browser.reconcile(harness, () => true, context);
     },
@@ -375,11 +388,12 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
     // On SIGTERM the instance records its wake and lets go of the run; the browser goes first, so nothing paid stays open.
     wake: async (run, at) => {
       await releaseBrowsers(run.harness, BACKGROUND_CONTEXT).catch(() => undefined);
+      await recording?.detach().catch((error: Error) => console.error(`the recording is refused: ${error.message}`));
       // The default wake, through the run's own API: sleeping, with the deadline its work waits for (null: idle, woken on demand).
       await run.setStatus("sleeping", { reason: at === null ? "idle" : "waiting" }, { wakeAt: at === null ? null : new Date(at).toISOString() });
     },
   };
-  return { options, browser, frames, signIn: { seen } };
+  return { options, browser, frames, recording, signIn: { seen } };
 }
 
 export default async function app(where: AppContext): Promise<AppOptions> {

@@ -4,7 +4,8 @@
 // <home>/runs/<id> --app examples/web/agent/app.ts --serve 0` on loopback, so the run's door address is in its run.json
 // (`holder.serve`). SIGTERM or SIGINT goes to the run, which releases its browser and exits 0; starting the same
 // directory again resumes it. With `AGENT_BROWSER=chrome` it first starts the run's own Chrome (chrome.ts) and stops it,
-// by its pid, once the run has exited. Credentials come from the environment and nothing here prints them.
+// by its pid, once the run has exited. With `RECORD_DIR` set, the run's recording is finished once the run has exited
+// (record.ts). Credentials come from the environment and nothing here prints them.
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
@@ -12,6 +13,7 @@ import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openAgentHome, readAgentHome } from '@parcha/pi-durable-agent';
 import { browserOf, chromeProfileFor, startChrome } from './chrome.ts';
+import { finishRunRecording } from './record.ts';
 
 const [dir] = process.argv.slice(2);
 if (!dir || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(basename(resolve(dir)))) {
@@ -41,10 +43,20 @@ if (!existsSync(join(run, 'store', 'run.sqlite'))) {
 let chrome = null;
 let profile = null;
 let child = null;
-/** The run's Chrome goes, and a profile of the run's own with it (it holds nothing the agent keeps); then this exits. */
+/** The run's Chrome goes, and a profile of the run's own with it (it holds nothing the agent keeps); a recorded run's
+ *  recording is finished; then this exits. */
 const finish = async (code) => {
   await chrome?.stop().catch(() => {});
   if (profile && !profile.shared) await rm(profile.dir, { recursive: true, force: true }).catch(() => {});
+  if (child && code === 0 && process.env.RECORD_DIR) {
+    try {
+      const done = await finishRunRecording({ dir: resolve(process.env.RECORD_DIR), run, env: process.env, providers: 'real' });
+      console.error(`start-run: recorded ${done.lines} lines, ${done.frames} frames, ${done.tracks} frame tracks, report files ${done.artifact.join(', ') || 'none'}`);
+    } catch (error) {
+      console.error(`start-run: the recording is not finished: ${error.message}`);
+      code = 1;
+    }
+  }
   process.exit(code);
 };
 // Installed before anything starts: a stop while Chrome starts ends that Chrome by its pid, never leaves it on the
