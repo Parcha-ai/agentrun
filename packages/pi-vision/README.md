@@ -167,9 +167,10 @@ code stays with the host's install. This package's own tarball carries none of t
 ## For a host: eyes, with a provider key of your own
 
 The eyes are the model that answers a look: a picture or a scan the lead cannot see, a question about a file. pi-vision
-names no model and holds no key. The host builds the eyes, and they hold the key the way a transcriber does: a function
-read at each request, never stored, taken out of an error's words, and in nothing the agent's code, an answer, a receipt
-or a miss carries. There are two ways to give them a model:
+names no model and holds no key. The host builds the eyes, and a key it gives them is held the way a transcriber holds
+its: a function read at each request, never stored, taken out of any error's words, and in nothing the agent's code, an
+answer, a receipt or a miss carries. (A key pi-ai reads from the provider's own variable is pi-ai's: this package never
+sees it, so it cannot take it out of an error.) There are two ways to give them a model:
 
 - `piAiEyes(model, { apiKey })` from `@parcha/pi-vision/eyes/pi-ai`, passed as `eyes: () => eyes`. `model` is any entry of
   pi-ai's catalog that takes images, and `apiKey` is a function. Leave `apiKey` out and pi-ai reads the provider's own
