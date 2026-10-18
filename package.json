@@ -33,7 +33,8 @@
     "demo:kill": "node scripts/check-node.mjs && node --no-warnings=ExperimentalWarning examples/reference/kill-anywhere.ts",
     "demo:hero": "node scripts/check-node.mjs && node --no-warnings=ExperimentalWarning examples/hero/run.ts",
     "demo:learn": "node scripts/check-node.mjs && node --no-warnings=ExperimentalWarning examples/agent-learn/demo.mjs",
-    "test:support": "node --test examples/support-answer.test.mjs examples/support-answer-runner.test.mjs"
+    "test:support": "node --test examples/support-answer.test.mjs examples/support-answer-runner.test.mjs",
+    "demo:document-check": "node scripts/check-node.mjs && node --no-warnings=ExperimentalWarning examples/document-check/run.ts"
   },
   "devDependencies": {
     "@earendil-works/pi-codemode": "1.1.0",

@@ -1,0 +1,49 @@
+{
+  "name": "document-check",
+  "title": "A Certificate, Checked",
+  "targets": ["local"],
+  "browser": false,
+  "codeMode": { "timeoutMs": 600000 },
+  "claim": "One agent checks a Delaware certified copy against a checklist of the marks Delaware law gives it: the Secretary of State's seal and signature, the file and SR numbers, the authentication number, the FILED stamp, and the file numbers agreeing. Each mark is yes or no, and the ones there are boxed on their page.",
+  "models": {
+    "lead": { "needs": ["text", "tools"], "default": "openai/gpt-6-luna" }
+  },
+  "keys": [
+    {
+      "oneOf": [
+        { "env": "TYPESAFE_API_KEY", "why": "Jev: each page's kind, and each mark's yes or no and box.", "where": "console.typesafe.ai, API keys", "required": true, "for": "live" },
+        { "env": "OPENROUTER_API_KEY", "why": "Jev through OpenRouter.", "where": "openrouter.ai/keys", "required": true, "for": "live" }
+      ],
+      "why": "The judge is Jev.",
+      "for": "live"
+    },
+    {
+      "oneOf": [
+        { "env": "OPENAI_API_KEY", "why": "The lead (openai/gpt-6-luna), which writes the code.", "where": "platform.openai.com, API keys", "required": true, "for": "live" },
+        { "env": "ANTHROPIC_API_KEY", "why": "The lead (anthropic/claude-haiku-5-5) when it is the only key.", "where": "console.anthropic.com, API keys", "required": true, "for": "live" },
+        { "env": "GEMINI_API_KEY", "why": "The lead (google/gemini-3.8-flash) when it is the only key.", "where": "aistudio.google.com, Get API key", "required": true, "for": "live" },
+        [
+          { "env": "DEMO_MODEL_BASE_URL", "why": "An OpenAI-compatible gateway that serves the lead under its public id, instead of a provider key.", "where": "your gateway's base URL, ending in /v1", "required": true },
+          { "env": "DEMO_MODEL_API_KEY", "why": "The gateway's credential.", "where": "your gateway", "required": true }
+        ]
+      ],
+      "why": "A model provider's key for the lead.",
+      "for": "live"
+    }
+  ],
+  "programs": [
+    { "cmd": "pdftoppm", "why": "The agent's code renders the pages with it (poppler-utils).", "required": true },
+    { "cmd": "ffmpeg", "why": "The agent's code cuts the two file numbers out of their pages with it.", "required": true },
+    { "cmd": "ffprobe", "why": "The agent's code reads a page render's size with it.", "required": true }
+  ],
+  "expectedCalls": 8,
+  "expectedCost": 0.05,
+  "panels": ["workflow-map", "vision"],
+  "tools": [
+    { "name": "cite", "local": "examples/document-check/tools.ts", "hosted": null }
+  ],
+  "input": {
+    "shape": "examples/document-check/job.ts, Input: the PDF to check and the checklist, two files in the workspace",
+    "fixtures": { "test-copy": "examples/document-check/fixtures/test-copy.json" }
+  }
+}
