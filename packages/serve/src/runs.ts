@@ -4,12 +4,13 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { closeSync, openSync } from "node:fs";
-import { open as openFile, readFile, stat, writeFile } from "node:fs/promises";
+import { open as openFile, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentHomeError, carryBack, startRun } from "@parcha/pi-durable-agent";
 import { registerLabel, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { type AgentEntry, type Agents, homeError } from "./agents.js";
+import { readJson, writeWhole } from "./files.js";
 import { ASK_TOOL } from "./app.js";
 import { ApiError } from "./errors.js";
 import { EFFORT_ENV, FAUX_ENV } from "./model.js";
@@ -42,10 +43,11 @@ const CARRY_BACK_RETRIES_MS = [500, 1_000, 2_000, 4_000, 8_000];
 /** How long a run's process may live on after it released the run before its store is read anyway: the process holds the
  *  store's exclusive lock until it exits. */
 const EXIT_AFTER_RELEASE_MS = 30_000;
+/** How many 500 ms ticks in a row a live run's record may be unreadable before it is settled anyway. */
+const UNREADABLE_TICKS = 10;
 /** SQLITE_BUSY or SQLITE_LOCKED: another connection holds the database. */
 const sqliteBusy = (error: unknown) => isObject(error) && error.code === "ERR_SQLITE_ERROR" && typeof error.errcode === "number" && [5, 6].includes(error.errcode & 0xff);
 const warn = (runId: string, text: string) => void process.stderr.write(`agentrun-serve: run ${runId}: ${text}\n`);
-const readJson = (path: string) => readFile(path, "utf8").then((text) => JSON.parse(text) as Json, () => null);
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 const isLoopback = (host: string) => host === "localhost" || host === "[::1]" || host === "::1" || /^127\./.test(host);
 
@@ -329,9 +331,14 @@ export class Runs {
     run.orphan = pid;
     this.connect(run);
     let releasedAt: number | undefined;
+    let unreadable = 0;
     const timer = setInterval(() => {
       void this.record(run).then((now) => {
         if (run.orphan !== pid || (this.doorOf(now) && alive(pid))) return;
+        // A record that cannot be read while the process lives is read again at the next tick, a few times at most.
+        if (now === null && alive(pid) && ++unreadable < UNREADABLE_TICKS) return;
+        if (now === null && alive(pid)) warn(run.id, `its run.json could not be read ${UNREADABLE_TICKS} times in a row; settling it`);
+        if (now !== null) unreadable = 0;
         if (RELEASED.has(String(now?.status)) && alive(pid)) {
           releasedAt ??= Date.now();
           if (Date.now() - releasedAt < EXIT_AFTER_RELEASE_MS) return;
@@ -518,7 +525,7 @@ export class Runs {
     const answer = answerOf(run.rows);
     const cost = costOf(run.rows);
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message };
-    await writeFile(join(run.dir, META), `${JSON.stringify(run.meta)}\n`, { mode: 0o600 });
+    await writeWhole(join(run.dir, META), `${JSON.stringify(run.meta)}\n`);
     if (entry) {
       // A home held by another writer is tried again with backoff; past the last try the run stays unsettled, and the
       // next start carries it back.
@@ -592,7 +599,7 @@ export class Runs {
       ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
       ...(outputSchema ? { output_schema: outputSchema } : {}),
     };
-    await writeFile(join(started.dir, META), `${JSON.stringify(meta)}\n`, { mode: 0o600 });
+    await writeWhole(join(started.dir, META), `${JSON.stringify(meta)}\n`);
     const run = this.blank(id, entry.home.identity.id, started.dir, meta);
     this.runs.set(id, run);
     run.submitted = 1;

@@ -130,7 +130,9 @@ async function adoptedStandIn(t) {
     await rename(`${file}.tmp`, file);
   };
   await write({ ...released, status: "running", heartbeatAt: new Date().toISOString(), holder });
-  return { data, runId, standIn, release: () => write({ ...released, holder }) };
+  // A record caught half written, as a plain rewrite leaves it for a moment.
+  const tear = () => writeFile(file, '{"run": "');
+  return { data, runId, standIn, release: () => write({ ...released, holder }), tear };
 }
 
 /** The next server, once it has adopted the run: a read of the run answers only after the server has taken it up. */
@@ -155,6 +157,19 @@ test("an adopted run that released is read only once its process has exited, so 
   assert.equal(busy, 0, "the store was not read while the run's process lived");
   assert.equal((await api("GET", `/runs/${runId}/timeline?after=0`)).body.final, false);
   store.close();
+  standIn.kill("SIGKILL");
+  const { last } = await follow(api, runId, ["completed"]);
+  assert.equal(last.final, true);
+  assert.equal((await readAgentHome({ dir: join(data, "calc") })).runs[runId].outcome, "completed");
+});
+
+test("a run record read half written neither crashes the server nor settles the run: it is read again", async (t) => {
+  const { data, runId, standIn, release, tear } = await adoptedStandIn(t);
+  const api = await adopting(t, data, runId);
+  await tear();
+  await sleep(1_600);
+  assert.equal((await api("GET", `/runs/${runId}/timeline?after=0`)).body.final, false, "not settled on an unreadable record");
+  await release();
   standIn.kill("SIGKILL");
   const { last } = await follow(api, runId, ["completed"]);
   assert.equal(last.final, true);
