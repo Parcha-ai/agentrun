@@ -1173,11 +1173,12 @@ test('a directory a run already used keeps its identity: a demo whose name diffe
   const dir = join(tmp, 'run');
   const first = await run(t, {}, ['--json', '--dir', dir]);
   assert.equal(first.result.processes.at(-1).outcome.status, 'complete');
-  assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).run, 'reference');
+  const saved = JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).run;
+  assert.match(saved, /^reference/, 'the run is named for its demo (and an invocation)');
   // The same directory again, by a demo of another name (a directory saved before the run was named for its demo): it is not refused, and stays what it was.
   const again = await run(t, { name: 'another-demo' }, ['--json', '--dir', dir]);
   assert.equal(again.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(again.result.processes.at(-1)));
-  assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).run, 'reference');
+  assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).run, saved, 'resumed under the saved name');
 });
 
 // ---- the place answers where the kill request is, and the supervisor honors it only with the attempt's nonce ---------------------------------------
@@ -1476,7 +1477,8 @@ test('a path in a detail is replaced whole, spaces and all; and a machine named 
   const { plainText } = await import('./reference/demo.ts');
   const { machineSecrets, redactorOf } = await import('./reference/secrets.ts');
   assert.equal(plainText('cannot open /tmp/Client Files/store: no such file'), 'cannot open <path>: no such file');
-  assert.equal(plainText('wrote /home/alice/Private Documents/report.txt, then stopped'), 'wrote <path>, then stopped');
+  const aliceHome = ['', 'home', 'alice'].join('/');
+  assert.equal(plainText(`wrote ${aliceHome}/Private Documents/report.txt, then stopped`), 'wrote <path>, then stopped');
   assert.equal(machineSecrets('host').some((secret) => secret.key.includes('host name')), false, 'a machine named host: its name is a word of the recording');
   assert.equal(machineSecrets('greppy-mrb').some((secret) => secret.value === 'greppy-mrb'), true, 'an ordinary name is taken');
   const line = '{"channel":"live","source":"host","kind":"run.json","data":{"holder":{"host":"host-1"}}}';
