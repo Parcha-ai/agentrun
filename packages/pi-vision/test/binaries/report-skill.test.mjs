@@ -549,6 +549,7 @@ test("a cite to a region alone says which region, so several on one picture are 
 
 test("a document page takes its look from a row's cite as well as a finding's, or from its own data", async () => {
   const byRow = data
+    .replace(/  notChecked: \[[^\n]*\n/, "  notChecked: [],\n")
     .replace('cites: [{ file: "contract.pdf", page: 3, xywh: "percent:7,6,70,4", look: lookPage.key }] }', 'cites: [{ file: "contract.pdf", look: lookPage.key }] }')
     .replace("  notChecked:", '  rows: [{ id: "p3", label: "Page 3", text: "The rule is set here.", thumb: await thumb("frames/contract-p3.jpg", "p3-thumb"), cites: [{ file: "contract.pdf", page: 3, look: lookPage.key }] }],\n  notChecked:');
   assert.notEqual(byRow, data);
@@ -694,4 +695,54 @@ test("the skill's check refuses markdown in any visible text of the page, names 
   // Code and pre are exempt, a lone * or # inside a sentence is not markdown, and CSS (which holds * selectors) is not text.
   const fine = await doctored(swap("</main>", "<pre>**bold** and `tick`</pre><p>Use <code>## heading</code> in markdown; 5 * 3 is 15 and item #2 is next.</p></main>"));
   assert.ok(fine.result.ok, fine.result.ok ? "" : fine.result.error.message);
+});
+
+test("what was not checked lists only what no look covered, each item a file, its pages or seconds and a reason; the section is left out when nothing is", async () => {
+  await built();
+  const html = HTML();
+  assert.match(html, /<section id="not-checked"><h2>Not checked<\/h2><ul class="limits"><li>talk\.mp4, 30 to 40 s: not looked at<\/li><li>contract\.pdf, pages 1, 2, 4: not looked at<\/li><\/ul><\/section>\s*<\/main>/);
+  const none = data.replace(/  notChecked: \[[^\n]*\n/, "  notChecked: [],\n");
+  assert.notEqual(none, data);
+  onDisk = "other";
+  const { result } = await run([helpers, assets, looking, none, render, check]);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  assert.ok(!HTML().includes("not-checked"), "no list, no section");
+});
+
+test("the check refuses an item of not-checked that a look of the run covers: a page it looked at, a window its look falls in, a file it looked at", async () => {
+  const listed = async (items, extra = "") => {
+    const variant = data.replace(/  notChecked: \[[^\n]*\n/, `  notChecked: ${JSON.stringify(items)},\n`).replace("\nconst report = {", `\n${extra}\nconst report = {`);
+    assert.notEqual(variant, data);
+    onDisk = "other";
+    return run([helpers, assets, looking, variant, render, check]);
+  };
+  const refused = async (items, pattern, extra) => { const { result } = await listed(items, extra); assert.ok(!result.ok, JSON.stringify(items)); assert.match(result.error.message, pattern); };
+  const accepted = async (items, extra) => { const { result } = await listed(items, extra); assert.ok(result.ok, result.ok ? "" : result.error.message); };
+  await refused([{ file: "contract.pdf", pages: [2, 3], why: "not looked at" }], /contract\.pdf, pages 2, 3: listed as not checked, but a look of this run covers it: take it out of the list/);
+  await refused([{ file: "talk.mp4", t: [20, 30], why: "not looked at" }], /talk\.mp4, 20 to 30 s: listed as not checked, but a look of this run covers it/);
+  await refused([{ file: "photo.jpg", why: "not looked at" }], /photo\.jpg, the whole file: listed as not checked, but a look of this run covers it/);
+  await refused([{ file: "contract.pdf", pages: [2], why: "not looked at" }], /contract\.pdf, page 2: listed as not checked, but a look of this run covers it/, 'cover("contract.pdf#page=2");   // a look the run made earlier');
+  await accepted([{ file: "talk.mp4", t: [26, 40], why: "out of budget" }, { file: "contract.pdf", pages: [1, 2, 4], why: "could not be read" }, { file: "other.pdf", why: "not looked at" }]);
+  await accepted([{ file: "talk.mp4", t: [0, 18], why: "not looked at" }, { file: "talk.mp4", t: [30, 40], why: "not looked at" }], "");
+});
+
+test("an item of not-checked that states a finding or an absence, or is not an item, is refused: the reason is one of a short list", async () => {
+  const listed = async (items) => {
+    const variant = data.replace(/  notChecked: \[[^\n]*\n/, `  notChecked: ${JSON.stringify(items)},\n`);
+    onDisk = "other";
+    return run([helpers, assets, looking, variant, render, check]);
+  };
+  for (const [item, shown] of [
+    [{ file: "contract.pdf", pages: [2], why: "page 2 has no seal" }, 'page 2 has no seal'],
+    ["Pages 2 and 4 do not contain the primary marks.", "Pages 2 and 4"],
+    [{ file: "contract.pdf", pages: [2], t: [0, 5], why: "not looked at" }, "contract.pdf"],
+    [{ pages: [2], why: "not looked at" }, "pages"],
+    [{ file: "talk.mp4", t: [30, 20], why: "not looked at" }, "talk.mp4"],
+    [{ file: "contract.pdf", pages: [], why: "not looked at" }, "contract.pdf"],
+  ]) {
+    const { result } = await listed([item]);
+    assert.ok(!result.ok, JSON.stringify(item));
+    assert.match(result.error.message, /is not an item of notChecked: \{ file, pages or t: \[from, to\], why \}, with why one of not looked at, out of budget, could not be read; a finding or an absence is not listed here/);
+    assert.ok(result.error.message.includes(shown.slice(0, 20)) || shown === "pages", `names ${shown}`);
+  }
 });

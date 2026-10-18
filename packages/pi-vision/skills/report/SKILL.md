@@ -16,7 +16,7 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
   under a row, never the rows. A question that names no shape gets the sentence and the key points.
 - **Never state what the run did not read.** Every name, place, time and number on the page comes from a look's answer or from
   the file's own text, and carries its cite. A caption says what the look saw, not what you remember about the subject.
-  What the run did not read is left out, or goes under what you did not check.
+  What the run did not read is left out; a place it did not look at goes under what you did not check.
 - **The text is yours, in plain sentences.** Every sentence on the page (a caption, an evidence paragraph, a row) is one plain
   sentence in your own words, drawn from the look's answer: never the answer pasted. The page is HTML, so markdown shows as raw
   symbols (`**`, `##`, a `* ` list mark, backticks); the check refuses them in any text outside `<code>` and `<pre>` and names
@@ -42,7 +42,10 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
   and the check refuses a page cite with no page entry.
 - **A film is shown by its moments.** A window of the film is one short clip, with a poster that is the window's opening
   frame. The same window is never a clip twice: later it is a frame, from `frame()`, with a box if it has one.
-- **What you did not check** is last: what you assumed, could not reach or did not look at.
+- **What you did not check** is last, and lists only what no look of the run covered: a page, a window of a film, a file the run
+  did not look at. It never states a finding, a presence or an absence ("page 2 has no seal"): those are findings, and need
+  their look and their cite. If the run looked at a page, that page is not in the list. Each item names its file, its pages
+  or seconds and one reason from a short list, and the check refuses an item that a look of the run covers.
 
 ## What the page is
 
@@ -73,7 +76,7 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
   number printed on it), `talk.mp4#t=21.5` or `#t=18,26`, a box on a page `contract.pdf#page=3&xywh=percent:7,6,70,4`, a
   box on a film `talk.mp4#t=21.5&xywh=percent:61,40,12,9`, a box on a photo `photo.jpg#xywh=percent:10,20,30,15`
   (`pixel:` for pixel boxes). Every cite carries `data-look`, the key of the look it rests on, so the viewer can open that
-  look at that fragment. A claim with no look behind it is not a finding: look first, or put it under what you did not check.
+  look at that fragment. A claim with no look behind it is not a finding: look first, or leave it out.
   A cite names a file of `report/` or a film in `outside`, as `keep()` and the page spell it, never with `../`.
 - **Boxes are the look's percentages**, placed on the picture with CSS `left`, `top`, `width` and `height` in `%`. Do no
   arithmetic; show the picture the look saw (or the same whole picture at another size: a crop moves the percentages). A
@@ -175,10 +178,10 @@ const keep = async (file) => {   // a document or photo the run was given, copie
 Look at the pictures you will show, if the run has not already, and take each look's key from its receipt. `vision.see`
 returns the receipts' paths, one for each request. A receipt is a JSON record (its key is `facts.key`) or a text file whose
 header has a `key:` line before the first `---`. A look the run made earlier is cited the same way: give `keyOf` its
-receipt's path.
+receipt's path, and say what it covered with `cover("file#page=2")` (`look()` does that for its own looks), since the list of what you did not check is what no look covered.
 
 ```js
-const looks = new Set();
+const looks = new Set(), covered = [];   // covered: what the run looked at, as { file, page? , t? }
 const keyOf = async (receipt) => {
   if (!receipt) throw new Error("no receipt: this host files none, so there is no look to cite");
   const text = await sh(`cat ${q(receipt)}`).catch(() => sh(`cat ${q(`../${receipt}`)}`));   // a host may file receipts in the folder above the workspace
@@ -189,8 +192,13 @@ const keyOf = async (receipt) => {
   looks.add(key);
   return key;
 };
+const cover = (fragment) => {   // "file#page=3", "file#t=18,26", "file#t=21.5&xywh=...", or a bare file: put a look made earlier here too
+  const [file, frag = ""] = fragment.split("#"), page = /(?:^|&)page=(\d+)/.exec(frag)?.[1], time = /(?:^|&)t=([\d.]+)(?:,([\d.]+))?/.exec(frag);
+  covered.push({ file, ...(page ? { page: Number(page) } : {}), ...(time ? { t: [Number(time[1]), Number(time[2] ?? time[1])] } : {}) });
+};
 const look = async (path, fragment, ask) => {
   const seen = await vision.see({ ask, paths: [path], fragments: [fragment] });
+  cover(fragment);
   return { key: await keyOf(seen.receipts[0]), text: seen.text.trim() };
 };
 ```
@@ -239,7 +247,7 @@ const report = {
   ],
   documents: [{ id: "contract", file: await keep("contract.pdf"), pages: [{ n: 3, src: page3, boxes: [{ id: "mark-rule", finding: "contract", at: "7,6,70,4", label: "the rule", look: lookPage.key }] }] }],
   outside: ["talk.mp4"],   // a film is cited by its own name and not copied; every other cited file was kept above
-  notChecked: ["The talk's figures were read from the chart, not from a table."],
+  notChecked: [{ file: "talk.mp4", t: [30, 40], why: "not looked at" }, { file: "contract.pdf", pages: [1, 2, 4], why: "not looked at" }],   // only what no look covered; never a finding or an absence
 };
 ```
 
@@ -270,6 +278,8 @@ const finding = (f) => f.routine
   ? `<details class="finding routine" id="f-${f.id}"><summary>${say(f.title)}</summary>${body(f)}</details>`
   : `<article class="finding" id="f-${f.id}">${body(f)}</article>`;
 const rows = (list) => list.length ? `<ol class="rows">${list.map((r) => `<li class="row" id="r-${esc(r.id)}"><img class="thumb" src="${esc(r.thumb)}" alt="${say(r.text)}" loading="lazy"><span class="when">${say(r.label)}</span><span class="what">${say(r.text)}</span><span class="cites">${r.cites.map(cite).join(" ")}</span></li>`).join("")}</ol>` : "";
+const span = (n) => n.pages ? `page${n.pages.length > 1 ? "s" : ""} ${n.pages.join(", ")}` : n.t ? `${n.t.map(num).join(" to ")} s` : "the whole file";
+const limit = (n) => `<li>${say(n.file)}, ${span(n)}: ${say(n.why)}</li>`;
 const docPage = (d, p) => `<figure class="docpage" id="${esc(d.id)}-p${p.n}"><header><span class="n">${say(documents.length > 1 ? `${d.file}, ` : "")}p. ${p.n}</span><a class="cite" href="${encodeURIComponent(d.file)}#page=${p.n}" data-look="${esc(p.look ?? [...(report.rows ?? []), ...report.findings].flatMap((x) => x.cites).find((c) => c.file === d.file && c.page === p.n)?.look ?? "")}">open at p. ${p.n}</a></header>${sheet({ ...p, alt: p.alt ?? `Page ${p.n} of ${d.file}` })}</figure>`;
 
 const css = `:root{color-scheme:light dark;--bg:#f7f6f2;--fg:#17181a;--mute:#5c6068;--card:#fff;--line:#e2e1db;--accent:#d96a00;--box:#6b4fd8}
@@ -299,7 +309,7 @@ const page = `<!doctype html>
 ${keyFindings.length ? `<section id="evidence"><h2>Evidence</h2>${keyFindings.map(finding).join("\n")}</section>` : ""}
 ${documents.length ? `<section id="document"><h2>${documents.length > 1 ? "The documents" : "The document"}, with their marks</h2>${documents.flatMap((d) => d.pages.map((p) => docPage(d, p))).join("\n")}</section>` : ""}
 ${routine.length ? `<section id="routine"><h2>Checked, as expected</h2>${routine.map(finding).join("\n")}</section>` : ""}
-<section id="not-checked"><h2>Not checked</h2><ul class="limits">${report.notChecked.map((line) => `<li>${say(line)}</li>`).join("")}</ul></section>
+${report.notChecked.length ? `<section id="not-checked"><h2>Not checked</h2><ul class="limits">${report.notChecked.map(limit).join("")}</ul></section>` : ""}
 </main></body></html>
 `;
 await write("report/index.html", page);
@@ -321,7 +331,16 @@ if (banned || /url\(|@import/i.test(style) || /https?:|\/\/[a-z0-9-]+\./i.test(p
 if ([...attr("src"), ...attr("href"), ...attr("poster")].some((v) => /^\s*data:/i.test(v))) problems.push("the page uses a data: URL: a picture is a file");
 if ([...attr("src"), ...attr("href"), ...attr("poster")].some((v) => /(^|[\/\\])\.\.([\/\\]|$)/.test(v))) problems.push("a path with ../ leaves report/: copy the file in with keep(), or name a film in outside; never write ../");
 if (report.outside.some((name) => /[\/\\:]|^\./.test(name))) problems.push("outside names bare file names, never a path");
-if ([...(report.rows ?? []), ...report.findings].some((x) => !x.cites?.length)) problems.push("a row or a finding has no cite: leave out what no look read, or put it under what you did not check");
+if ([...(report.rows ?? []), ...report.findings].some((x) => !x.cites?.length)) problems.push("a row or a finding has no cite: leave out what no look read");
+const REASONS = ["not looked at", "out of budget", "could not be read"];
+const seen = [...covered, ...[...(report.rows ?? []), ...report.findings].flatMap((x) => x.cites).map((c) => ({ file: c.file, ...(c.page ? { page: c.page } : {}), ...(c.t ? { t: [c.t[0], c.t.at(-1)] } : {}) }))];
+const covers = (s, n) => s.file === n.file && (n.pages ? s.page === undefined && s.t === undefined || n.pages.includes(s.page)
+  : n.t ? s.page === undefined && s.t === undefined || (s.t !== undefined && (s.t[0] === s.t[1] ? s.t[0] >= n.t[0] && s.t[0] <= n.t[1] : Math.max(s.t[0], n.t[0]) < Math.min(s.t[1], n.t[1]))) : true);
+for (const n of report.notChecked) {
+  const bad = typeof n !== "object" || !n || !n.file || !REASONS.includes(n.why) || (n.pages && n.t) || (n.pages && !(Array.isArray(n.pages) && n.pages.length && n.pages.every(Number.isInteger))) || (n.t && !(Array.isArray(n.t) && n.t.length === 2 && n.t[0] < n.t[1]));
+  if (bad) problems.push(`${JSON.stringify(n).slice(0, 80)} is not an item of notChecked: { file, pages or t: [from, to], why }, with why one of ${REASONS.join(", ")}; a finding or an absence is not listed here`);
+  else if (seen.some((s) => covers(s, n))) problems.push(`${n.file}, ${span(n)}: listed as not checked, but a look of this run covers it: take it out of the list`);
+}
 for (const ref of [...attr("src"), ...attr("poster")]) {
   if (/^([a-z][a-z0-9+.-]*:|\/|\.\.)/i.test(ref)) problems.push(`${ref} is not a file in report/`);
   else if (!(await has(ref))) problems.push(`${ref} is missing or empty`);
