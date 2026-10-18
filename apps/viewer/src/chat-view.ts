@@ -52,19 +52,22 @@ export function sourceWithin(cited: string, window: string | null): boolean {
   return at === from || (at >= from && at < (to === undefined || Number.isNaN(to) ? from : to));
 }
 
-/** The look a citation's address names: the one with that exact address, else one of the same file whose page is the
- *  cited page and whose window holds the cited second. */
+/** Every address a look read: the one it opens at, then the rest, in order. */
+export const sourceAddresses = (source: ChatSource) => [source.href, ...(source.more ?? [])];
+
+/** The look a citation's address names: one that read that exact address, else one that read the same file at the cited
+ *  page or over a window holding the cited second. */
 export function sourceByHref(sources: Record<string, ChatSource>, href: string): string | undefined {
   const file = href.split('#')[0];
   const cited = reportFragmentOf(href);
   const entries = Object.entries(sources);
-  return (entries.find(([, source]) => source.href === href) ?? entries.find(([, source]) => {
-    if (source.href.split('#')[0] !== file) return false;
-    const own = reportFragmentOf(source.href);
+  return (entries.find(([, source]) => sourceAddresses(source).includes(href)) ?? entries.find(([, source]) => sourceAddresses(source).some((address) => {
+    if (address.split('#')[0] !== file) return false;
+    const own = reportFragmentOf(address);
     const page = cited.get('page');
     const t = cited.get('t');
     return (!page || own.get('page') === page) && (!t || sourceWithin(t, own.get('t')));
-  }))?.[0];
+  })))?.[0];
 }
 
 /** The look that shows page N of the cited file by itself (its address is exactly file#page=N, with one medium). */
@@ -125,6 +128,21 @@ function sourceMedium(recording: Recording, sha: string, alt: string, regions: S
 const sourceDecisions = (source: ChatSource) => source.decisions.map((each) => `${each.name.replace(/_/g, ' ')}: ${each.kind === 'noul' ? (each.score >= 0.5 ? 'yes' : 'no') : each.choice}`);
 
 /** Regions no picture carries, listed: each label with its address. */
+/** The addresses shown, one a line; each opens in a tab at its page or second when the agent's page holds its file. */
+function sourceAddressList(model: ChatModel, recording: Recording, addresses: string[]): HTMLElement {
+  return reportEl('div', { class: 'addrs' }, ...addresses.map((address) => {
+    const line = reportEl('a', { class: 'addr', text: address });
+    const at = reportFragmentOf(address);
+    const page = at.get('page');
+    const t = at.get('t');
+    void reportHeldFile(model, recording, address.split('#')[0]!).then((url) => {
+      if (!url) return;
+      Object.assign(line, { href: page ? `${url}#page=${encodeURIComponent(page)}` : t ? `${url}#t=${encodeURIComponent(t)}` : url, target: '_blank', rel: 'noopener', title: page ? `Open page ${page}` : 'Open the file' });
+    });
+    return line;
+  }));
+}
+
 const sourceRegionList = (regions: SourceRegion[]) => reportEl('ul', { class: 'regions' },
   ...regions.map((region) => reportEl('li', {}, reportEl('b', { text: region.label ?? 'cited here' }), reportEl('span', { text: region.href }))));
 
@@ -140,7 +158,8 @@ function sourceView(recording: Recording, model: ChatModel, shown: SourceShown, 
   backButton.addEventListener('click', back);
   const title = shown.item?.title ?? reportCiteLabel(shown.href);
   const pane = reportEl('div', { class: 'pane' }, reportEl('div', { class: 'phead' }, backButton,
-    reportEl('div', {}, reportEl('div', { class: 'kind', text: source ? SOURCE_KIND[kind] : shown.item ? SOURCE_KIND.other : 'Source' }), reportEl('div', { class: 'ptitle', text: title }), shown.href !== '' && reportEl('div', { class: 'addr', text: shown.href }))));
+    reportEl('div', {}, reportEl('div', { class: 'kind', text: source ? SOURCE_KIND[kind] : shown.item ? SOURCE_KIND.other : 'Source' }), reportEl('div', { class: 'ptitle', text: title }),
+      shown.href !== '' && sourceAddressList(model, recording, [...new Set([shown.href, ...(source ? sourceAddresses(source) : [])])]))));
   if (!source && !shown.item) {
     pane.append(reportEl('div', { class: 'said' }, reportEl('p', { text: 'No look in this recording shows this address.' })));
     if (shown.regions.length) pane.append(sourceRegionList(shown.regions));
@@ -158,16 +177,6 @@ function sourceView(recording: Recording, model: ChatModel, shown: SourceShown, 
       button.addEventListener('click', () => pick(look));
       return button;
     })));
-  }
-  // A look kept no picture: its document opens at its page when the recording holds that document; a video window that
-  // kept no frames shows none.
-  const file = (source?.href ?? shown.href).split('#')[0]!;
-  if (/\.pdf$/i.test(file)) {
-    const page = reportFragmentOf(shown.href).get('page') ?? reportFragmentOf(source?.href ?? '').get('page');
-    const name = file.split('/').at(-1) ?? file;
-    const link = reportEl('a', { class: 'open-file', target: '_blank', rel: 'noopener', hidden: true, text: page ? `Open ${name} at page ${page}` : `Open ${name}` });
-    pane.append(link);
-    void reportHeldFile(model, recording, file).then((url) => { if (url) { link.href = page ? `${url}#page=${encodeURIComponent(page)}` : url; link.hidden = false; } });
   }
   const media = source?.media ?? shown.item?.media ?? [];
   if (source && kind === 'video') {
@@ -253,6 +262,30 @@ const threadAt = (href: string) => {
   return page ? `p. ${page}` : Number.isFinite(t) ? `t ${reportClock(t)}` : href.split('#')[0]!.split('/').at(-1) || href;
 };
 
+/** Pages as runs: 1, 2, 3, 5 is "1–3, 5". */
+const threadRuns = (pages: number[]) => pages.reduce<[number, number][]>((runs, page) => {
+  const last = runs.at(-1);
+  if (last && page === last[1] + 1) last[1] = page; else runs.push([page, page]);
+  return runs;
+}, []).map(([from, to]) => (from === to ? `${from}` : `${from}–${to}`)).join(', ');
+
+/** The place of a look over several addresses: of one file, its pages as runs or its seconds as one span; of several
+ *  files, the first address's place and how many more. */
+export function threadPlace(addresses: readonly string[]): string {
+  if (addresses.length < 2) return threadAt(addresses[0] ?? '');
+  const files = new Set(addresses.map((address) => address.split('#')[0]));
+  const at = addresses.map(reportFragmentOf);
+  const pages = at.map((each) => each.get('page') ?? '');
+  const times = at.map((each) => (each.get('t') ?? '').split(',').map(parseFloat));
+  if (files.size === 1 && pages.every((page) => /^\d+$/.test(page))) return `p. ${threadRuns(pages.map(Number))}`;
+  if (files.size === 1 && times.every(([from]) => Number.isFinite(from))) {
+    const from = Math.min(...times.map(([start]) => start!));
+    const to = Math.max(...times.map(([start, end]) => (Number.isFinite(end) ? end! : start!)));
+    return to > from ? `t ${reportClock(from)}–${reportClock(to)}` : `t ${reportClock(from)}`;
+  }
+  return `${threadAt(addresses[0]!)} +${addresses.length - 1}`;
+}
+
 /** A decision in a strip cell: a yes-or-no as its score to two places and its word, a choice as its value; named when
  *  the look made more than one. The strip is the one place a score shows. */
 const threadDecision = (decision: ChatDecision, named: boolean) => {
@@ -270,9 +303,10 @@ function threadCard(recording: Recording, model: ChatModel, item: ToolItem): HTM
   const cells = looks.map((each) => {
     const found = model.sources[each]!;
     const picture = threadPicture(recording, found.media);
-    const at = threadAt(found.href);
+    const addresses = sourceAddresses(found);
+    const at = threadPlace(addresses);
     const said = found.decisions.map((decision) => threadDecision(decision, found.decisions.length > 1));
-    return reportEl('button', { class: found.decisive ? 'look decisive' : 'look', type: 'button', 'data-look': each, title: found.href, 'aria-label': [at, ...said].join(', ') },
+    return reportEl('button', { class: found.decisive ? 'look decisive' : 'look', type: 'button', 'data-look': each, title: addresses.join(', '), 'aria-label': [at, ...said, addresses.join(', ')].join('; ') },
       picture ? reportEl('img', { src: recording.blobUrl(picture), alt: '', loading: 'lazy' }) : undefined,
       reportEl('span', { class: 'cell-at', text: at }), ...said.map((text) => reportEl('span', { class: 'cell-said', text })));
   });

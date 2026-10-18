@@ -2,6 +2,7 @@
 // the recording's blobs, else the run's cited answer drawn here. A citation in either calls `open` with its address.
 import type { ChatArtifact, ChatModel } from './chat-model.ts';
 import type { Recording } from './format.ts';
+import { opensInPage } from './blobs.ts';
 
 type ReportChild = Node | string | undefined | false;
 
@@ -75,11 +76,11 @@ function reportBlobUrl(recording: Recording, sha: string): Promise<string | unde
 }
 
 /** A file the agent's page carries, by its path there, as a URL a tab of this page may open; undefined when it carries
- *  none by that path. */
+ *  none by that path, or when the file is of a type that would run in a tab (a page, an SVG, an unknown type). */
 export function reportHeldFile(model: ChatModel, recording: Recording, path: string): Promise<string | undefined> {
   const files = model.artifact?.files ?? {};
   const sha = files[path] ?? files[`./${path}`];
-  return sha ? reportBlobUrl(recording, sha) : Promise.resolve(undefined);
+  return sha && opensInPage(recording.blobType(sha)) ? reportBlobUrl(recording, sha) : Promise.resolve(undefined);
 }
 
 /** A reference in the artifact, relative to the file `from`, as the artifact file it names and its fragment; undefined

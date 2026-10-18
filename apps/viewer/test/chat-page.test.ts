@@ -18,7 +18,7 @@ import { build } from '../build.mjs';
 import type { ChatSource } from '../src/chat-model.ts';
 import type { Line } from '../src/format.ts';
 import { reportFileOf, reportLinkOf } from '../src/chat-report.ts';
-import { sourceByHref, sourceFrameAt, sourceKindOf, sourcePageOf, sourceRegionOf } from '../src/chat-view.ts';
+import { sourceByHref, sourceFrameAt, sourceKindOf, sourcePageOf, sourceRegionOf, threadPlace } from '../src/chat-view.ts';
 import { CITED, K, lines, PAGES, SCANS, deliverInstead, writeRecording } from './vision-hand.ts';
 import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
 
@@ -60,6 +60,20 @@ test('a region comes from the citation\'s address alone, and lands on the page o
   assert.equal(sourceByHref(sources, 'film.mp4#t=1290'), undefined);
   assert.equal(sourcePageOf(sources, 'scans.pdf#page=2&xywh=percent:6,8,80,6'), sources.p2, 'the page\'s own picture, whichever look cites it');
   assert.equal(sourcePageOf(sources, 'film.mp4#t=1270'), undefined);
+  const several = { ...sources, spread: { ...source('deck.pdf#page=4'), more: ['deck.pdf#page=7', 'deck.pdf#page=9'] } };
+  assert.equal(sourceByHref(several, 'deck.pdf#page=7'), 'spread', 'a look over several addresses is found by any of them');
+  assert.equal(sourceByHref(several, 'deck.pdf#page=9&xywh=percent:1,2,3,4'), 'spread');
+});
+
+test('a look over several addresses reads as one place: its pages as runs, its seconds as a span, else the first and how many more', UNIT, () => {
+  assert.equal(threadPlace(['a.pdf#page=1', 'a.pdf#page=2', 'a.pdf#page=3', 'a.pdf#page=4']), 'p. 1–4');
+  assert.equal(threadPlace(['a.pdf#page=1', 'a.pdf#page=3']), 'p. 1, 3');
+  assert.equal(threadPlace(['a.pdf#page=1', 'a.pdf#page=2', 'a.pdf#page=3', 'a.pdf#page=5']), 'p. 1–3, 5');
+  assert.equal(threadPlace(['f.webm#t=10,20', 'f.webm#t=30,40']), 't 0:10–0:40');
+  assert.equal(threadPlace(['f.webm#t=10', 'f.webm#t=40']), 't 0:10–0:40');
+  assert.equal(threadPlace(['a.pdf#page=1', 'b.pdf#page=2', 'c.pdf#page=3']), 'p. 1 +2', 'several files: the first and how many more');
+  assert.equal(threadPlace(['a.pdf#page=2']), 'p. 2');
+  assert.equal(threadPlace(['f.webm#t=0,30']), 't 0:00');
 });
 
 const sha256 = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
@@ -67,14 +81,19 @@ const TASK = 'Read the three scanned pages and the photographs, and say what hap
 const THOUGHT = '**Page 2** holds the alarm; I will cite its `line`.';
 /** A look's address that is a long list of files with no space to break at, as a real run cites one. */
 const LONG = Array.from({ length: 40 }, (_, n) => `scan-${n}.pdf`).join(',');
+/** A look over three pages, filed as one path joined by ", ", as a live run files one. */
+const THREE = ['scans.pdf#page=1', 'scans.pdf#page=2', 'scans.pdf#page=3'];
 /** The hand vision run: the input it was given, the host's prompt as each conversation's first user entry, and, when
  *  asked, the lead's own thinking and last words. Its look lines name their conversation, as a vision run's do; the
  *  weaker eyes' look read a long list of files. */
 function handRun(said: boolean): Line[] {
   const run = lines.map((line): Line => {
     const named = line.kind === 'LookEvent' ? { ...line, data: { ...(line.data as object), conversationId: String(line.conv) } } : line;
-    return (line.kind === 'LookEvent' || line.kind === 'vision.looks') && JSON.stringify(line).includes(K.weak1)
-      ? JSON.parse(JSON.stringify(named).replaceAll('"path":"scans.pdf"', `"path":"${LONG}"`).replaceAll('"fragment":"page=1"', '"fragment":""')) as Line : named;
+    const json = JSON.stringify(named);
+    if (line.kind !== 'LookEvent' && line.kind !== 'vision.looks') return named;
+    if (json.includes(K.weak1)) return JSON.parse(json.replaceAll('"path":"scans.pdf"', `"path":"${LONG}"`).replaceAll('"fragment":"page=1"', '"fragment":""')) as Line;
+    if (json.includes(K.page3)) return JSON.parse(json.replaceAll('"path":"scans.pdf"', `"path":"${THREE.join(', ')}"`)) as Line;
+    return named;
   });
   const result = run.findLastIndex((line) => line.kind === 'result');
   const first = run.findIndex((line) => line.channel === 'durable');
@@ -258,16 +277,24 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     await until(`shown(doc('wide').querySelector('.src .media img'))`, 'the card\'s source view');
     assert.equal(await value(`doc('wide').querySelectorAll('.src .jbox').length`), 0, 'no region the address does not carry');
     assert.equal(await value(`doc('wide').defaultView.location.hash`), `#look=${K.page2}`);
-    await until(`shown(doc('wide').querySelector('.src a.open-file'))`, 'the look\'s document, held by the recording, opens at its page');
-    assert.deepEqual(await value(`(() => { const a = doc('wide').querySelector('.src a.open-file'); return [a.textContent, /^blob:.*#page=2$/.test(a.href), a.target, a.rel]; })()`), ['Open scans.pdf at page 2', true, '_blank', 'noopener']);
+    await until(`!!doc('wide').querySelector('.src a.addr[href]')`, 'the look\'s document, held by the recording, opens at its page');
+    assert.deepEqual(await value(`[...doc('wide').querySelectorAll('.src a.addr')].map((a) => [a.textContent, /^blob:.*#page=2$/.test(a.href), a.target, a.rel])`), [['scans.pdf#page=2', true, '_blank', 'noopener']]);
+    // A look over three pages: its cell reads them as one place and carries the whole list; its source lists every
+    // address, each opening its own page.
+    const three = await value<Record<string, unknown>>(`(() => { const cell = doc('wide').querySelector('.step-looks .look[data-look="${K.page3}"]'); cell.click(); return {
+      at: cell.querySelector('.cell-at').textContent, title: cell.title, label: cell.getAttribute('aria-label') }; })()`);
+    assert.deepEqual(three, { at: 'p. 1–3', title: THREE.join(', '), label: `p. 1–3; ${THREE.join(', ')}` });
+    await until(`[...doc('wide').querySelectorAll('.src a.addr[href]')].length === 3`, 'every address of the look, each a link');
+    assert.deepEqual(await value(`[...doc('wide').querySelectorAll('.src a.addr')].map((a) => [a.textContent, a.href.replace(/^blob:.*#/, '#')])`),
+      THREE.map((address) => [address, `#${address.split('#')[1]}`]));
     // A look that kept no picture: its card has no picture and no empty frame, its strip cell its place alone, and its
     // source its address and answer, with no player and no frame.
     const film = await value<Record<string, unknown>>(`(() => { const c = card('wide', 'read film.mp4 from_s=0 to_s=30'); c.querySelector('.step-main').click(); return {
       main: [c.querySelector('.step-main').className, c.querySelector('.step-main').children.length], cells: [...c.querySelectorAll('.step-looks .look')].map((n) => [n.textContent, n.querySelectorAll('img').length]) }; })()`);
     assert.deepEqual(film, { main: ['step-main bare', 1], cells: [['t 0:00', 0]] });
     await until(`doc('wide').querySelector('.src .addr')?.textContent.startsWith('film.mp4')`, 'the video look\'s source');
-    assert.deepEqual(await value(`(() => { const d = doc('wide'); return [d.querySelectorAll('.src video, .src img, .src .media').length, shown(d.querySelector('.src a.open-file')), d.querySelector('.src .said p')?.textContent]; })()`),
-      [0, false, 'The ground slides past; at 20 s a shadow crosses the frame.']);
+    assert.deepEqual(await value(`(() => { const d = doc('wide'); return [d.querySelectorAll('.src video, .src img, .src .media').length, d.querySelectorAll('.src a.addr[href]').length, d.querySelector('.src .said p')?.textContent]; })()`),
+      [0, 0, 'The ground slides past; at 20 s a shadow crosses the frame.']);
 
     // "In the report" on the card the page cites: the report again, scrolled to that spot, flashed. In-page links stay in it.
     assert.deepEqual(await value(`[...doc('wide').querySelectorAll('.step')].filter((c) => c.querySelector('.inrep')).map((c) => c.querySelector('.t span').textContent)`), ['read scans.pdf page=2'], 'only the cards the page cites');
@@ -319,7 +346,7 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       { regions: ['cited hereeagle-heard-and-seen.webm#t=28&xywh=percent:30.3,5.6,50.3,54.4'], boxes: 0, pictures: 0 });
     await page.evaluate(`doc('hear').querySelector('.step-looks .look.decisive').closest('.step').querySelector('.step-main').click()`);
     await until(`doc('hear').querySelector('.src .addr')?.textContent === 'eagle-heard-and-seen.webm#t=0,34.092'`, 'the card opens its first decisive look');
-    assert.equal(await value(`doc('hear').querySelectorAll('.src video, .src img, .src .media, .src a.open-file:not([hidden])').length`), 0, 'a video window that kept no frames shows no player and no frame');
+    assert.equal(await value(`doc('hear').querySelectorAll('.src video, .src img, .src .media, .src a.addr[href]').length`), 0, 'a video window that kept no frames shows no player and no frame');
 
     // A submitted record: the run's answer, a row per field, a field of evidence paths as its label and chips; the input's
     // fields as the person's message. Calls of different tools do not fold.

@@ -83,7 +83,6 @@ details.fold>.fold-body{color:var(--ink);font-size:15px;margin-top:12px}
 .step-looks .look.decisive .cell-at{color:var(--acc)}
 .step-looks .look:hover{border-color:var(--ink)}
 .step-looks .more.cells{align-self:center;padding:0 4px}
-.open-file{display:inline-block;margin:0 0 16px;font:400 12px var(--mono);color:var(--acc)}
 .regions{list-style:none;margin:0 0 16px;padding:0;background:var(--panel);border:1px solid var(--line)}
 .regions li{display:grid;grid-template-columns:minmax(80px,auto) minmax(0,1fr);gap:12px;padding:8px 14px;border-top:1px solid #1f1f23;font-size:13px}
 .regions li:first-child{border-top:0}
@@ -112,7 +111,8 @@ details.fold>.fold-body{color:var(--ink);font-size:15px;margin-top:12px}
 .back:hover{color:var(--ink)}
 .kind{font:500 10.5px var(--mono);letter-spacing:.7px;text-transform:uppercase;color:var(--dim)}
 .ptitle{font:500 19px/1.35 var(--mono);margin:4px 0 2px;overflow-wrap:anywhere}
-.addr{font:400 11.5px var(--mono);color:var(--dim);margin-top:2px;word-break:break-all}
+.addr{display:block;font:400 11.5px var(--mono);color:var(--dim);margin-top:2px;word-break:break-all;text-decoration:none}
+a.addr[href]{color:var(--acc);text-decoration:underline dotted}
 .said{background:var(--panel);border:1px solid var(--line);border-left:2px solid var(--acc);padding:12px 14px;margin:0 0 16px}
 .said p{margin:4px 0 0;font-size:14.5px;overflow-wrap:anywhere}
 .decisions{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
