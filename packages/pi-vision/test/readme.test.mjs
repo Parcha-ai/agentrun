@@ -110,6 +110,28 @@ for (const sample of RUN) {
   });
 }
 
+test("the shell the code-mode excerpt gives the sandbox runs the commands a skill recipe runs, and rejects with what a failed one printed", (t) => {
+  const tool = /const bash: CodemodeTool = \{[\s\S]*?\n\};\n/.exec(block(SEE, "ts").text)?.[0];
+  assert.ok(tool, "the excerpt declares a bash tool");
+  const dir = project(t);
+  const { outputText } = ts.transpileModule(`import { execFile } from "node:child_process";\nimport { inheritedEnv } from "@parcha/pi-vision/node";\n${tool}\nexport { bash };\n`, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2023 } });
+  fs.writeFileSync(path.join(dir, "bash-tool.mjs"), outputText);
+  fs.writeFileSync(path.join(dir, "run.mjs"), `
+    import { CodemodeSandbox } from "@earendil-works/pi-codemode";
+    import { bash } from "./bash-tool.mjs";
+    const sandbox = new CodemodeSandbox({ tools: [bash] });
+    const ok = await sandbox.execute('return await tools.bash({ command: "printf hello; ls ." })');
+    const failed = await sandbox.execute('try { await tools.bash({ command: "echo oops >&2; exit 3" }); return "no rejection"; } catch (error) { return error.message; }');
+    await sandbox.close();
+    console.log(JSON.stringify({ ok: ok.ok && ok.value, failed: failed.ok && failed.value }));
+  `);
+  const run = spawnSync(process.execPath, ["run.mjs"], { cwd: dir, env: { PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin`, HOME: dir }, encoding: "utf8", timeout: 60_000 });
+  assert.equal(run.status, 0, run.stderr);
+  const { ok, failed } = JSON.parse(run.stdout);
+  assert.match(ok, /^hello/, "the command's output comes back, run in the working directory");
+  assert.match(failed, /oops/, "a failed command rejects with its stderr");
+});
+
 test("the host excerpts type-check against the built package and the pi types this workspace resolves", (t) => {
   const dir = project(t);
   for (const sample of TYPES) fs.writeFileSync(path.join(dir, sample.name), block(sample.heading, "ts", sample.index).text);

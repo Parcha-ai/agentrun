@@ -168,12 +168,15 @@ code stays with the host's install. This package's own tarball carries none of t
 
 `handle.see(env, call)` is `vision.see` bound to one call, in the shape pi-codemode's `globals` take. Build it per call,
 so it reads paths through that call's environment and keeps its answers in that call's memos. This is a host's whole
-code-mode tool, a pi-durable extension next to `vision.extension`:
+code-mode tool, a pi-durable extension next to `vision.extension`. `tools` is the host's own: the `look` skill's recipes
+render pages and cut frames with `tools.bash`, so a sandbox with no shell cannot run them:
 
 ```ts
-import { CodemodeSandbox } from "@earendil-works/pi-codemode";
+import { execFile } from "node:child_process";
+import { CodemodeSandbox, type CodemodeTool } from "@earendil-works/pi-codemode";
 import type { Extension } from "@earendil-works/pi-durable";
 import { callContext, createVisionExtension, piResult } from "@parcha/pi-vision/durable";
+import { inheritedEnv } from "@parcha/pi-vision/node";
 
 const vision = createVisionExtension({
   evidence: { file: async () => null }, // where looks are filed
@@ -181,7 +184,18 @@ const vision = createVisionExtension({
   eyesModel: { provider: "anthropic", modelId: "claude-sonnet-5-5" }, // looked through the host's pi-ai Models
 });
 
-// The model's script runs in a sandbox that has `vision.see` for this call.
+// The shell the skill's recipes call as `tools.bash({ command })`: the command's output, or a rejection that carries it.
+// Like every program a read starts, it gets `inheritedEnv()` and not the host's whole environment.
+const bash: CodemodeTool = {
+  name: "bash",
+  description: "Run a shell command in the run's directory",
+  execute: (args) => new Promise((resolve, reject) => {
+    const command = String((args as { command?: unknown }).command);
+    execFile("bash", ["-c", command], { cwd: process.cwd(), env: inheritedEnv() }, (error, stdout, stderr) => (error ? reject(new Error(`${stderr}${error.message}`)) : resolve(stdout)));
+  }),
+};
+
+// The model's script runs in a sandbox that has the shell and `vision.see` for this call.
 export const codeMode: Extension = {
   name: "code-mode",
   tools: [{
@@ -191,7 +205,7 @@ export const codeMode: Extension = {
     replay: "safe",
     execute: async ({ code }, api, context) => {
       const call = await callContext(api, context);
-      const sandbox = new CodemodeSandbox({ globals: [vision.see(api.env, call)] });
+      const sandbox = new CodemodeSandbox({ tools: [bash], globals: [vision.see(api.env, call)] });
       try {
         const run = await sandbox.execute(code, { signal: context.abortSignal });
         return piResult({ content: [{ type: "text", text: JSON.stringify(run.ok ? run.value : run.error.message) }] });
