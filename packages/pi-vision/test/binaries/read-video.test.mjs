@@ -1,7 +1,8 @@
 // A video through `read` with the package's own readers and the environment's ffmpeg: a lead that takes no video is shown
 // frames found by seek over the file or its window, one look's worth; a lead that takes video is given the file when it
-// fits and a window cut from it when one is asked; a lead that takes no images, with eyes that take video, has the eyes
-// look at the file or its window as one clip. Runs in the `vision-binaries` job, where a missing ffmpeg fails it.
+// fits and a window cut from it when one is asked; a lead that takes no video, with eyes that take video, has the eyes
+// look at the file or its window as one clip, whatever images the lead takes. Runs in the `vision-binaries` job, where a
+// missing ffmpeg fails it.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -73,16 +74,21 @@ test("a read of a video window that misses is filed with the video, its kind, it
   assert.deepEqual([record.args.path, record.args.from_s, record.args.to_s, record.facts.kind, record.facts.sha256, record.facts.fragment], ["clip.mp4", 2, 5, "video", sha256, "t=2,5"]);
 });
 
-/** A read and its guard on one call, as the durable extension composes them: a lead of `input` and these eyes. */
+/** A read and its guard on one call, as the durable extension composes them: a lead of `input` and these eyes. Looks
+ *  are filed in `filed` and the call keeps its memos in `memos`, as a host's evidence and pi-durable's memos do. */
 async function rigWithEyes({ input, eyes, leadVideo = false }) {
   const dir = await fixtureDir("pi-vision-read-video-eyes-");
   execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=10:duration=12", "-c:v", "libx264", "-pix_fmt", "yuv420p", `${dir.path}/clip.mp4`]);
   const env = new NodeExecutionEnv({ cwd: dir.path });
   const model = { id: "lead-model", input };
   const limits = resolveLimits(model, { video: { native: leadVideo } });
-  const setup = { limits, eyes, providers: [ffmpegProvider()], sources: {}, scope: { label: "n", deriveDir: `${dir.path}/evidence/n/media` }, evidence: { file: async () => null } };
-  const call = { conversationId: "c1", callId: "t1", model, signal: undefined };
-  return { dir, read: async (args) => guardResult(await readMedia(env, args, call, setup), call, setup, imageHeader) };
+  const filed = [];
+  const memos = new Map();
+  const evidence = { file: async (label, record) => { filed.push(record); return { path: `evidence/${label}/${filed.length}-look.md` }; } };
+  const setup = { limits, eyes, providers: [ffmpegProvider()], sources: {}, scope: { label: "n", deriveDir: `${dir.path}/evidence/n/media` }, evidence };
+  const memo = async (key, compute) => { if (!memos.has(key)) memos.set(key, await compute()); return memos.get(key); };
+  const call = { conversationId: "c1", callId: "t1", model, signal: undefined, memo };
+  return { dir, filed, memos, read: async (args) => guardResult(await readMedia(env, args, call, setup), call, setup, imageHeader) };
 }
 const seenParts = (request) => request.parts.filter((p) => p.type !== "text").map((p) => p.mimeType);
 
@@ -107,15 +113,51 @@ test("eyes that take no video still look at frames for a lead that takes no imag
   assert.deepEqual(eyes.ledger.map(seenParts), [Array(VIDEO_FRAMES_PER_READ).fill("image/jpeg")]);
 });
 
-test("a lead that takes images but not video still sees frames itself, and one that takes video the file, whatever the eyes take", { skip }, async (t) => {
-  const eyes = fakeEyes({ accepts: { video: true } });
-  const images = await rigWithEyes({ input: ["text", "image"], eyes });
-  const video = await rigWithEyes({ input: ["text", "image"], eyes, leadVideo: true });
+test("a lead that takes images but not video, with eyes that take video: the eyes get the file, or the window asked, as one clip, and the lead their words", { skip }, async (t) => {
+  const eyes = fakeEyes({ accepts: { video: true }, answers: ["A test card with a moving bar."] });
+  const r = await rigWithEyes({ input: ["text", "image"], eyes });
+  t.after(() => r.dir.remove());
+  const whole = await r.read({ path: "clip.mp4", ask: "What moves?" });
+  assert.deepEqual(eyes.ledger.map(seenParts), [["video/mp4"]], "one look at the clip itself, never frames");
+  assert.equal(eyes.ledger[0].ask, "What moves?");
+  assert.equal(blocks(whole).length, 0, "no frame reaches the lead");
+  assert.match(text(whole), /video seen for you by fake-eyes/);
+  await r.read({ path: "clip.mp4", from_s: 2, to_s: 5, ask: "What moves?" });
+  assert.deepEqual(eyes.ledger.map(seenParts), [["video/mp4"], ["video/mp4"]], "a window is one clip too");
+});
+
+test("a lead that takes images, with eyes that take no video, sees the frames itself; a lead that takes video, the file; the eyes are not asked", { skip }, async (t) => {
+  const still = fakeEyes();
+  const watching = fakeEyes({ accepts: { video: true } });
+  const images = await rigWithEyes({ input: ["text", "image"], eyes: still });
+  const video = await rigWithEyes({ input: ["text", "image"], eyes: watching, leadVideo: true });
   t.after(() => Promise.all([images.dir.remove(), video.dir.remove()]));
   const frames = await images.read({ path: "clip.mp4", ask: "What moves?" });
   assert.equal(blocks(frames).length, VIDEO_FRAMES_PER_READ);
   assert.ok(blocks(frames).every((b) => b.mimeType.startsWith("image/")));
   const clip = await video.read({ path: "clip.mp4" });
   assert.deepEqual(blocks(clip).map((b) => b.mimeType), ["video/mp4"]);
-  assert.equal(eyes.ledger.length, 0, "the eyes are not asked when the lead sees the media itself");
+  assert.deepEqual([still.ledger.length, watching.ledger.length], [0, 0], "the eyes are not asked when the lead sees the media itself");
+});
+
+test("an image-taking lead's clip look is filed and kept in the same shape as a text-only lead's, and its answer is kept for the call", { skip }, async (t) => {
+  const shapeOf = (r) => {
+    const [record] = r.filed;
+    return { args: Object.keys(record.args).sort(), facts: Object.keys(record.facts).sort(), kind: record.facts.kind, native: record.args.native, model: record.args.model,
+      memos: [...r.memos.keys()].map((key) => key.split(":").slice(0, 2).join(":")).sort(), kept: Object.keys([...r.memos].find(([key]) => key.startsWith("vision:look:"))[1]).sort() };
+  };
+  const blindEyes = fakeEyes({ accepts: { video: true }, answers: ["A moving bar."] });
+  const imageEyes = fakeEyes({ accepts: { video: true }, answers: ["A moving bar."] });
+  const blind = await rigWithEyes({ input: ["text"], eyes: blindEyes });
+  const images = await rigWithEyes({ input: ["text", "image"], eyes: imageEyes });
+  t.after(() => Promise.all([blind.dir.remove(), images.dir.remove()]));
+  const args = { path: "clip.mp4", from_s: 2, to_s: 5, ask: "What moves?" };
+  await blind.read(args);
+  await images.read(args);
+  assert.equal(images.filed.length, 1, "the look is filed once");
+  assert.deepEqual(shapeOf(images), shapeOf(blind));
+  assert.deepEqual([images.filed[0].facts.kind, images.filed[0].args.native, images.filed[0].args.model], ["video", false, "fake-eyes"]);
+  const again = await images.read(args);
+  assert.equal(imageEyes.ledger.length, 1, "the same call reads the same window again from its kept answer, unpaid");
+  assert.match(text(again), /A moving bar\./);
 });
