@@ -313,6 +313,39 @@ describe("the host's box proxy", () => {
 		}
 	});
 
+	it("ends at release a box whose create was still running, also one that finishes after the sweep began", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-transport-boxes-"));
+		const local = localBoxes({ root });
+		// A provider that takes its time to make a box and does not stop when the call is cancelled.
+		const slow: BoxProvider = {
+			name: "local",
+			create: async (spec, at) => {
+				await new Promise((resolve) => setTimeout(resolve, 300));
+				return local.create(spec, at);
+			},
+			attach: (id, at) => local.attach(id, at),
+			list: (labels, at) => local.list(labels, at),
+		};
+		const server = serveBoxes({ providers: { local: slow } });
+		const proxy = proxyBoxes(server.names);
+		const link = connect(proxy, server);
+		try {
+			const asked = (proxy.providers.local as BoxProvider).create({ maxLifetimeMs: 60_000 }, context);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			server.close();
+			await server.release(context);
+			// The closed host answers nothing more: the runner's call waits for a link that does not come back.
+			void asked;
+			await new Promise((resolve) => setTimeout(resolve, 500));
+			// Nothing the host made is left running, and it holds nothing.
+			expect(getOrThrow(await local.list({}, context))).toEqual([]);
+			expect(server.held.size).toBe(0);
+		} finally {
+			link.close("done");
+			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+		}
+	});
+
 	it("applies a stdin write once when the runner sends it again, as it does after a resume whose ack was lost", async () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-transport-boxes-"));
 		const server = serveBoxes({ providers: { local: localBoxes({ root }) } });

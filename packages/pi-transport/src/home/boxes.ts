@@ -117,7 +117,10 @@ export interface BoxServer {
 	down(send?: (frame: Frame) => boolean): void;
 	/** End every call that still runs. The boxes stay: `release` ends them. */
 	close(): void;
-	/** Destroy every box this server made that is not ended yet: a sweep, when the session is done with its boxes. */
+	/**
+	 * Destroy every box this server made that is not ended yet: a sweep, when the session is done with its boxes. A create
+	 * still running is waited for first, so a box a provider finishes late is ended too.
+	 */
 	release(context: Context): Promise<void>;
 	/** The boxes the server made, by the label the runner knows each by, ended ones too until `release`. */
 	readonly held: ReadonlyMap<string, { readonly provider: string; readonly box: Box }>;
@@ -148,6 +151,8 @@ export function serveBoxes(options: ServeBoxesOptions): BoxServer {
 	for (const [name, provider] of Object.entries(options.providers)) providers.set(name, ledger.wrap(provider));
 	const held = new Map<string, { provider: string; box: Box }>();
 	const calls = new Map<string, ServedCall>();
+	// The creates running now: a provider may finish one after its call was cancelled.
+	const making = new Set<Promise<unknown>>();
 
 	const labelOf = (provider: string, box: Box): string => {
 		const wrapped = providers.get(provider) as BoxProvider;
@@ -204,11 +209,20 @@ export function serveBoxes(options: ServeBoxesOptions): BoxServer {
 				const spec = (args.spec ?? {}) as BoxSpec;
 				const refused = options.allow?.(name, spec);
 				if (refused !== undefined) return err(new BoxError("invalid", refused));
-				const made = await provider.create(spec, call.context);
-				if (!made.ok) return made;
-				const label = labelOf(name, made.value);
-				held.set(label, { provider: name, box: made.value });
-				return ok({ box: label, facts: made.value.facts() });
+				// The whole create, until the box is held: `release` waits for it, so a box made late is still ended.
+				const creating = (async () => {
+					const made = await provider.create(spec, call.context);
+					if (!made.ok) return made;
+					const label = labelOf(name, made.value);
+					held.set(label, { provider: name, box: made.value });
+					return ok({ box: label, facts: made.value.facts() });
+				})();
+				making.add(creating);
+				try {
+					return await creating;
+				} finally {
+					making.delete(creating);
+				}
 			}
 			if (op === "attach") {
 				const known = boxIn(args.box);
@@ -402,6 +416,8 @@ export function serveBoxes(options: ServeBoxesOptions): BoxServer {
 			}
 		},
 		async release(context) {
+			// A create still running (one whose call was cancelled too) is waited for, so its box is ended here.
+			while (making.size > 0) await Promise.allSettled([...making]);
 			for (const [label, { box }] of [...held]) {
 				const destroyed = await box.destroy(context).catch(() => undefined);
 				if (destroyed?.ok === true) held.delete(label);
