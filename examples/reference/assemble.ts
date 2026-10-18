@@ -28,6 +28,11 @@ export type Job = { workflow: Workflow; input: Record<string, unknown>; files?: 
 /** How the workflow's task ended, as the task reports it, with the run's generation and what it spent. */
 export type RunResult = WorkflowOutcome & { generation: number; usage: Awaited<ReturnType<Harness['usage']>> };
 
+/** What the host says of the agent a node runs: the lead model, and the node's own thinking level, else `low` (the DSL runner's default), never pi-durable's `off`. */
+export function nodeAgent(model: Host['models']['lead'], node: { thinking?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'off' | undefined }) {
+  return { model, thinkingLevel: node.thinking ?? 'low' } as { model: Host['models']['lead']; thinkingLevel: NonNullable<typeof node.thinking> };
+}
+
 /** The work a conversation does, which names its evidence directory for the browser and for vision alike. */
 const Label = defineDoc<{ label: string }>({ kind: 'reference.label', version: 1, scope: 'conversation', history: 'latest', fork: 'current', initial: () => ({ label: '' }) });
 
@@ -145,7 +150,7 @@ export async function compose(place: RunPlace, host: Host, job: Job, options: Ru
     onMiss: async (miss) => { await visionBase.onMiss?.(miss); await more.onMiss?.(miss); },
   });
   const nodes = nodeRunner({
-    agent: () => ({ model: host.models.lead }),
+    agent: (node) => nodeAgent(host.models.lead, node),
     record: () => ({ instructions: 'Cite each source by the evidence path its tool returned.' }),
     // The browser needs its configuration in the commit that creates the conversation; `init` is the one member that runs there.
     init: async (node, tx, conversationId) => {
