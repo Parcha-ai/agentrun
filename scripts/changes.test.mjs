@@ -245,7 +245,7 @@ test("a published changelog folded in two commits (a late fix that sorts between
   });
 }));
 
-test("a published changelog hand-edited between the two folds is not rebuilt: the late bullet goes at the end of the section, and the check refuses it", () => repo(async (root, git) => {
+test("a published changelog hand-edited between the two folds is not rebuilt: the edit stays and the late bullet goes at the end of the section", () => repo(async (root, git) => {
   await git('branch', '-M', 'main');
   await writeFile(join(root, 'changes/a-fix.md'), fragment('repo', 'fix', 'A fix.'));
   await git('add', '-A'); await git('commit', '-q', '-m', 'fragments');
