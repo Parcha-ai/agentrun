@@ -145,8 +145,9 @@ export function writeTar(files) {
 }
 
 /** What the tar `bytes` would unpack to under `lock`, as `{ files, problems }`: `files` each `{ id, path, data }` and only
- *  when there is no problem. */
-export function galleryOf(bytes, lock) {
+ *  when there is no problem. `limits`: the most a recording and the gallery may hold, in bytes. */
+export function galleryOf(bytes, lock, limits = {}) {
+  const { recording: recordingLimit = RECORDING_LIMIT, gallery: galleryLimit = GALLERY_LIMIT } = limits;
   const problems = [];
   const digest = sha256(bytes);
   if (digest !== lock.sha256) return { problems: [`the asset hashes to ${digest}, not the lock's ${lock.sha256}`] };
@@ -174,7 +175,7 @@ export function galleryOf(bytes, lock) {
   }
   for (const { id, poster } of lock.ids) {
     if (!seen.has(`${id}/manifest.json`) || !seen.has(`${id}/events.jsonl`)) problems.push(`${id}: the asset holds no ${seen.has(`${id}/manifest.json`) ? 'events.jsonl' : 'manifest.json'} for it`);
-    if ((sizes.get(id) ?? 0) > RECORDING_LIMIT) problems.push(`${id}: is ${sizes.get(id)} bytes, over the ${RECORDING_LIMIT} a recording may be`);
+    if ((sizes.get(id) ?? 0) > recordingLimit) problems.push(`${id}: is ${sizes.get(id)} bytes, over the ${recordingLimit} a recording may be`);
     if (poster === undefined) continue;
     const blob = files.find((file) => file.id === id && file.path.startsWith(`${id}/blobs/${poster}.`));
     const ext = blob?.path.split('.').at(-1);
@@ -183,16 +184,16 @@ export function galleryOf(bytes, lock) {
     if (!image) problems.push(`${id}: its poster ${poster} is not an image blob it holds`);
   }
   const total = [...sizes.values()].reduce((sum, size) => sum + size, 0);
-  if (total > GALLERY_LIMIT) problems.push(`the gallery is ${total} bytes, over the ${GALLERY_LIMIT} it may be`);
+  if (total > galleryLimit) problems.push(`the gallery is ${total} bytes, over the ${galleryLimit} it may be`);
   return problems.length ? { problems } : { files };
 }
 
 /** Unpack `bytes` under `lock` into `dir`, or return the problems and write nothing. `dir` may hold files (its README)
  *  but no directory: a recording already there would be built into the gallery unchecked. */
-export function unpackGallery(bytes, lock, dir) {
+export function unpackGallery(bytes, lock, dir, limits = {}) {
   const there = existsSync(dir) ? readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name) : [];
   if (there.length) return [`${dir} already holds ${JSON.stringify(there)}: the gallery unpacks into a directory with no recording`];
-  const { files, problems } = galleryOf(bytes, lock);
+  const { files, problems } = galleryOf(bytes, lock, limits);
   if (problems) return problems;
   for (const file of files) {
     mkdirSync(join(dir, file.path, '..'), { recursive: true });
