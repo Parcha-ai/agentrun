@@ -38,6 +38,9 @@ a{color:inherit}
 .user .bubble{border-left:2px solid var(--acc);background:#ff87000d;padding:12px 14px;font:400 13.5px/1.6 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
 .said-text{margin:8px 0 12px;padding:12px 14px;background:#ffffff0a;border-left:2px solid #4a4a52;font:400 14.5px/1.6 var(--sans);color:var(--ink);overflow-wrap:anywhere}
 .said-text p{margin:0 0 8px}.said-text p:last-child{margin-bottom:0}
+.host-note{display:flex;gap:8px;align-items:baseline;min-width:0;margin:8px 0 10px;font:400 12.5px/1.5 var(--sans);color:var(--muted);overflow-wrap:anywhere}
+.host-who{flex:none;font:500 10.5px var(--mono);letter-spacing:.7px;text-transform:uppercase;color:var(--muted)}
+.host-text{min-width:0;white-space:pre-wrap}
 .user .bubble.fields{margin:0;display:grid;gap:6px;white-space:normal}
 .user .bubble.fields div{display:grid;grid-template-columns:minmax(0,max-content) minmax(0,1fr);gap:12px}
 .user .bubble.fields dt{color:var(--muted)}
@@ -86,6 +89,8 @@ details.fold>.fold-body{color:var(--ink);font-size:15px;margin-top:12px}
 .call.judge.decisive{outline:1px solid #ff870066;outline-offset:-1px}
 .judge-chip{display:inline-flex;align-items:center;gap:4px;flex:none;font:500 9.5px/1.5 var(--mono);letter-spacing:.4px;text-transform:uppercase;color:var(--ink);border:1px solid var(--judge);background:color-mix(in srgb,var(--judge) 10%,transparent);padding:0 5px;margin-right:6px;vertical-align:1px}
 .judge-chip::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--judge)}
+.call.judge .jbox,.pane.judge .jbox{border-color:var(--judge);box-shadow:0 0 0 1px #0b0b0d}
+.pane.judge .jbox span{background:#0b0b0d;color:var(--ink);border:1px solid var(--judge);top:-23px}
 .judge-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--judge);margin-right:5px;vertical-align:1px}
 .call[aria-current="true"]{border-color:var(--acc)}
 .call .media.thumb{flex:none;width:72px;background:#000}
@@ -191,7 +196,7 @@ a.addr[href]{color:var(--acc);text-decoration:underline dotted}
 @keyframes flash{0%{background:#ff870033}100%{background:var(--panel)}}
 .msg.flash{animation-name:flash-msg}
 @keyframes flash-msg{0%{background:#ff870022}100%{background:transparent}}
-.msg.user.flash,.said-text.flash,details.flash{animation:flash-msg 1.4s ease-out}
+.msg.user.flash,.said-text.flash,.host-note.flash,details.flash{animation:flash-msg 1.4s ease-out}
 @media (max-width:860px){
  :root{--top:74px}
  .top{padding:6px 12px;gap:2px 8px;flex-wrap:wrap;align-content:center}.brand small{display:none}

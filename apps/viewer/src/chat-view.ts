@@ -169,7 +169,9 @@ function sourceView(recording: Recording, model: ChatModel, shown: SourceShown, 
   const backButton = reportEl('button', { class: 'back', type: 'button', text: '← Report' });
   backButton.addEventListener('click', back);
   const title = shown.item?.title ?? shown.picture?.label ?? reportCiteLabel(shown.href);
-  const pane = reportEl('div', { class: 'pane' }, reportEl('div', { class: 'phead' }, backButton,
+  // A look a judge made: its boxes are the judge's, drawn in its accent.
+  const judged = !!shown.look && model.threads.some((thread) => thread.items.some((item) => item.kind === 'tool' && item.calls.some((call) => call.judge && call.look === shown.look)));
+  const pane = reportEl('div', { class: judged ? 'pane judge' : 'pane' }, reportEl('div', { class: 'phead' }, backButton,
     reportEl('div', {}, reportEl('div', { class: 'kind', text: source ? SOURCE_KIND[kind] : shown.item ? SOURCE_KIND.other : shown.picture ? SOURCE_KIND.image : 'Source' }), reportEl('div', { class: 'ptitle', text: title }),
       shown.href !== '' && sourceAddressList(model, recording, [...new Set([shown.href, ...(source ? sourceAddresses(source) : [])])]))));
   // A picture the citation names by itself: drawn with the region its address carries.
@@ -505,6 +507,15 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
         const node = threadYou(reportEl('div', { class: 'bubble', text: item.text }), threadLong(item.text), item.id);
         nodes.set(item.id, node);
         out.push(node);
+        continue;
+      }
+      if (item.kind === 'host') {
+        // A message the host added sits where it was recorded, inside the agent's turn, as the host's.
+        closeRun();
+        steps = undefined;
+        const node = reportEl('div', { class: 'host-note', 'data-item': item.id }, reportEl('span', { class: 'host-who', text: 'Host' }), reportEl('span', { class: 'host-text', text: item.text }));
+        nodes.set(item.id, node);
+        if (agent) agent.append(node); else out.push(node);
         continue;
       }
       if (!agent) { agent = agentMessage(); out.push(agent); }

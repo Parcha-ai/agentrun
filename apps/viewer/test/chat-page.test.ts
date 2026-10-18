@@ -89,7 +89,7 @@ test('a look over several addresses reads as one place: its pages as runs, its s
 });
 
 const sha256 = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
-/** A look over two photographs whose answer boxes a mark on the second. */
+/** A judge's look over two photographs whose answer boxes a mark on the second. */
 const TWO = ['photos/photo-001.png', 'photos/photo-002.png'];
 const FLAG = JSON.stringify({ flag: { type: 'noul', noul: 0.9 }, flag_at: { type: 'box', fragment: 'photos/photo-002.png#xywh=percent:5,5,20,20' } });
 const TASK = 'Read the three scanned pages and the photographs, and say what happened.';
@@ -107,8 +107,11 @@ function handRun(said: boolean): Line[] {
     const json = JSON.stringify(named);
     if (line.kind !== 'LookEvent' && line.kind !== 'vision.looks') return named;
     if (json.includes(K.weak1)) return JSON.parse(json.replaceAll('"path":"scans.pdf"', `"path":"${LONG}"`).replaceAll('"fragment":"page=1"', '"fragment":""')) as Line;
-    if (json.includes(K.photo1)) return JSON.parse(json.replaceAll('"path":"photos/photo-001.png"', `"path":"${TWO.join(', ')}"`).replaceAll('"images":[]', `"images":${JSON.stringify(PHOTOS.slice(0, 2))}`)
-      .replaceAll('"body":"ground"', `"body":${JSON.stringify(FLAG)}`)) as Line;
+    if (json.includes(K.photo1)) {
+      const two = json.replaceAll('"path":"photos/photo-001.png"', `"path":"${TWO.join(', ')}"`).replaceAll('"images":[]', `"images":${JSON.stringify(PHOTOS.slice(0, 2))}`)
+        .replaceAll('"body":"ground"', `"body":${JSON.stringify(FLAG)}`);
+      return JSON.parse(line.kind === 'LookEvent' ? two.replace('"tool":"read"', '"tool":"judge"') : two) as Line;
+    }
     if (json.includes(K.page3)) return JSON.parse(json.replaceAll('"path":"scans.pdf"', `"path":"${THREE.join(', ')}"`).replaceAll(`"images":["${PAGES[2]}"]`, `"images":${JSON.stringify(PAGES)}`)) as Line;
     return named;
   });
@@ -170,7 +173,8 @@ function writeFixtures(dir: string) {
   writeFileSync(join(plain, 'events.jsonl'), `${untimed.join('\n')}\n`);
 }
 
-/** A run whose agent speaks between its calls: its words, four calls of one tool, its words again. */
+/** A run whose agent speaks between its calls: its words, four calls of one tool, a message the host adds, its words
+ *  again. */
 function writeNarrated(dir: string) {
   let t = 0;
   const pi = (commit: number, kind: string, content: unknown): Line => ({ channel: 'durable', source: 'pi', kind, gen: 1, t: (t += 10), commit, order: 0, conv: 1, data: { kind, model: [content] } as never });
@@ -180,7 +184,8 @@ function writeNarrated(dir: string) {
     pi(2, 'pi.user', { role: 'user', content: 'The host\'s prompt.' }),
     pi(3, 'pi.assistant', { role: 'assistant', content: [{ type: 'text', text: 'I will read each page in turn.' }, ...[1, 2, 3, 4].map((n) => ({ type: 'toolCall', id: `r${n}`, name: 'read', arguments: { path: 'notes.pdf', page: n } }))] }),
     ...[1, 2, 3, 4].map((n) => pi(3 + n, 'pi.tool-result', { role: 'toolResult', toolCallId: `r${n}`, toolName: 'read', content: [{ type: 'text', text: `Page ${n} says the same.` }], isError: false })),
-    pi(8, 'pi.assistant', { role: 'assistant', content: [{ type: 'text', text: 'All four pages agree.' }] }),
+    pi(8, 'pi.user', { role: 'user', content: 'You stopped without submitting. Call submit.' }),
+    pi(9, 'pi.assistant', { role: 'assistant', content: [{ type: 'text', text: 'All four pages agree.' }] }),
   ];
   mkdirSync(join(dir, 'blobs'), { recursive: true });
   const { result: _result, ...rest } = handManifest;
@@ -452,18 +457,23 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.deepEqual(bare, { report: 'This run has no report.How this ran: every call, look and file of the run.', link: './?r=hand-bare', card: false });
 
     // The agent's own words are bubbles between its cards, in the order recorded, never folded: words, four calls of one
-    // tool (three shown, "+ 1 more"), words.
+    // tool (three shown, "+ 1 more"), then the host's added message as a note of the host's inside the same turn, words.
     const narrated = await value<Record<string, unknown>>(`(() => { const m = doc('narrated').querySelector('.thread > .msg:not(.user):not(.answer)'); return {
       order: [...m.children].map((n) => n.className), said: [...m.querySelectorAll('.said-text')].map((n) => [n.textContent, n.querySelectorAll('.more').length, n.classList.contains('clamped')]),
-      cards: [...m.querySelectorAll('.steps > .step')].map((n) => n.hidden), more: m.querySelector('.steps > .more')?.textContent }; })()`);
-    assert.deepEqual(narrated, { order: ['who', 'said-text', 'steps', 'said-text'], said: [['I will read each page in turn.', 0, false], ['All four pages agree.', 0, false]],
-      cards: [false, false, false, true], more: '+ 1 more' });
+      cards: [...m.querySelectorAll('.steps > .step')].map((n) => n.hidden), more: m.querySelector('.steps > .more')?.textContent,
+      host: [m.querySelector('.host-note .host-who').textContent, m.querySelector('.host-note .host-text').textContent, !!m.querySelector('.host-note').closest('.msg.user')],
+      users: [...doc('narrated').querySelectorAll('.msg.user')].map((n) => n.textContent) }; })()`);
+    assert.deepEqual(narrated, { order: ['who', 'said-text', 'steps', 'host-note', 'said-text'], said: [['I will read each page in turn.', 0, false], ['All four pages agree.', 0, false]],
+      cards: [false, false, false, true], more: '+ 1 more', host: ['Host', 'You stopped without submitting. Call submit.', false], users: ['YouRead the four pages of notes.pdf.'] });
 
-    // A look over two photographs that boxed a mark on the second: opened at the first, the box is on the second.
+    // A judge's look over two photographs that boxed a mark on the second: opened at the first, the box is on the second,
+    // in the judge's accent.
     await page.evaluate(`card('answer', 'read photos/photo-001.png').querySelector('.step-main').click()`);
     await until(`doc('answer').querySelectorAll('.src .media img').length === 2`, 'the look\'s two pictures');
     assert.deepEqual(await value(`[...doc('answer').querySelectorAll('.src .media')].map((m) => [m.querySelector('img').alt, [...m.querySelectorAll('.jbox')].map((b) => [b.textContent, b.style.cssText])])`),
       [['photos/photo-001.png', []], ['photos/photo-002.png', [['flag', 'left: 5%; top: 5%; width: 20%; height: 20%;']]]]);
+    assert.deepEqual(await value(`(() => { const b = doc('answer').querySelector('.src .jbox'); return [getComputedStyle(b).borderTopColor, getComputedStyle(b.querySelector('span')).color]; })()`),
+      ['rgb(229, 81, 186)', 'rgb(242, 242, 242)'], 'a judge\'s box in its accent, its label in ink');
 
     // Opened by its URL (?src=), the agent's page keeps the stylesheet it links.
     assert.equal(await value(`getComputedStyle(art('srcsheet').body).backgroundColor`), 'rgb(16, 16, 18)');
