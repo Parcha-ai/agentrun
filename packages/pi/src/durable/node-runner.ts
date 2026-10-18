@@ -23,10 +23,19 @@ import { DELIVERY_ATTEMPTS, lintRecordRoot, submitFooter, type Disagreement, typ
 import { workspaceRecordFile } from "./record-file.js";
 import { RecordDoc, recordNudge, recordTool, spendNudge, submitDefinition, type RecordToolOptions } from "./record-tool.js";
 
-/** A node's configuration: what its conversation's prompt and `submit` tool are drawn from. */
-export const NodeDoc = defineDoc<{ system: string; label: string; schema: JsonValue | null; fileKey: string | null }>({
+/** A node's configuration: what its conversation's prompt and `submit` tool are drawn from. `input` is the node's
+ *  prompt state, the JSON object its user text was stringified from, for a reader that shows what the node was given;
+ *  it is absent when that text is not a JSON object, and in a document an older build wrote. */
+export const NodeDoc = defineDoc<{ system: string; label: string; schema: JsonValue | null; fileKey: string | null; input?: { [key: string]: JsonValue } }>({
   kind: "agentrun.node", version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => ({ system: "", label: "", schema: null, fileKey: null }),
 });
+
+/** The JSON object a node's user text holds, or nothing: the interpreter sends a node its prompt state stringified. */
+function inputOf(user: string): { input?: { [key: string]: JsonValue } } {
+  let value: unknown;
+  try { value = JSON.parse(user); } catch { return {}; }
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? { input: value as { [key: string]: JsonValue } } : {};
+}
 
 /** A node as the host is asked about it: the interpreter's request, and the attempt it runs as, with the sessions of
  *  the attempts before it (a host that refuses to repeat a call an earlier attempt left unknown reads them). */
@@ -190,6 +199,7 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
         const offered = (listed<ToolRegistration>(agent.tools) ? agent.tools : listed<Extension>(agent.extensions) ? agent.extensions.flatMap((selected) => selected.tools ?? []) : [])
           .map((offer) => offer.name).filter((name) => name !== "submit");
         const system = [...node.system, host.stance?.(node, { tools: offered })].filter(Boolean).join("\n\n");
+        const input = inputOf(node.user);
         const reviewers: Reviewer[] = [
           ...(host.verify ? [(candidate: unknown, at: { round: boolean }) => host.verify!(candidate, node, at)] : []),
           ...(review ? [async (candidate: unknown): Promise<Disagreement[]> => {
@@ -208,13 +218,13 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
           agent: withNodes(agent),
           user: `${node.user}\n${submitFooter({ label, schema: node.schema, reviewed: reviewers.length > 0, ...(record.file ? { fileKey: record.file.key } : {}), ...(record.instructions ? { instructions: record.instructions } : {}) })}`,
           init: async (tx, id) => {
-            Object.assign(await tx.doc(NodeDoc, id), { system, label, schema: node.schema as JsonValue, fileKey: record.file?.key ?? null });
+            Object.assign(await tx.doc(NodeDoc, id), { system, label, schema: node.schema as JsonValue, fileKey: record.file?.key ?? null, ...input });
             await host.init?.(node, tx, id);
           },
           adopt: async (tx, id, stored) => {
             const held = await tx.doc(NodeDoc, id);
             if (held.schema !== null) return;
-            Object.assign(held, { system: typeof stored.system === "string" ? stored.system : system, label, schema: node.schema as JsonValue, fileKey: record.file?.key ?? null });
+            Object.assign(held, { system: typeof stored.system === "string" ? stored.system : system, label, schema: node.schema as JsonValue, fileKey: record.file?.key ?? null, ...input });
             // The older build selected an extension of its own for this conversation, which is not installed here.
             const own = typeof stored.extension === "string" ? [{ name: stored.extension } as Extension] : [];
             const given = withNodes(agent);
