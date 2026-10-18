@@ -248,6 +248,60 @@ async function skewOf(box: Box): Promise<number> {
 	return Math.max(0, Math.round(Math.abs(there - (before + after) / 2) - (after - before) / 2));
 }
 
+/** The longest line of a runner's error output that is read whole: a longer one is cut, and is never an outcome. */
+export const LINE_MAX_CHARS = 1_048_576;
+/** How much of a runner's error output, its outcome lines left out, is kept for its exit: the start of it. */
+export const SAID_MAX_CHARS = 600;
+
+/**
+ * A runner's error output read as it comes: each whole line once, a `{"outcome":...}` line handed to `onOutcome`, and
+ * the start of the rest kept for the exit. What it holds stays bounded (`held()`) however much the runner writes: the
+ * line being written up to LINE_MAX_CHARS and the kept start. `end()` reads a last line that has no newline.
+ */
+export function errorOutput(onOutcome: (line: string) => void): {
+	push(text: string): void;
+	end(): void;
+	said(): string;
+	held(): number;
+} {
+	let partial = "";
+	let said = "";
+	// The line being written was cut at the limit: what is left of it is dropped up to its newline.
+	let cut = false;
+	const keep = (text: string) => {
+		if (said.length < SAID_MAX_CHARS) said = `${said}${text}`.slice(0, SAID_MAX_CHARS);
+	};
+	const take = (line: string) => {
+		if (line.startsWith('{"outcome"')) onOutcome(line);
+		else keep(`${line}\n`);
+	};
+	return {
+		push(text) {
+			const lines = `${partial}${text}`.split("\n");
+			partial = lines.pop() ?? "";
+			for (const [n, line] of lines.entries()) {
+				if (n === 0 && cut) {
+					cut = false;
+					continue;
+				}
+				take(line);
+			}
+			if (partial.length > LINE_MAX_CHARS) {
+				if (!cut) keep(partial);
+				partial = "";
+				cut = true;
+			}
+		},
+		end() {
+			if (!cut && partial !== "") take(partial);
+			partial = "";
+			cut = false;
+		},
+		said: () => said.trim(),
+		held: () => partial.length + said.length,
+	};
+}
+
 /** Write `bytes` whole under a temporary name in its directory, sync it, and rename it into place. */
 async function writeWhole(path: string, bytes: Uint8Array): Promise<void> {
 	const temp = join(dirname(path), `.${path.slice(dirname(path).length + 1)}.tmp-${process.pid}`);
@@ -480,13 +534,26 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 	};
 
 	/**
-	 * Start a runner in `at` at `epochAt` and hold it: what it writes on its error output is kept for its exit, a line
-	 * `{"outcome":...}` ends it in order (the link closes, the home closes, the process exits 0), and its carried files
-	 * come back while it runs and when it exits.
+	 * Start a runner in `at` at `epochAt` and hold it: the start of what it writes on its error output is kept for its
+	 * exit, a line `{"outcome":...}` ends it in order once the order that opened it has its answer (`answered()`: the
+	 * link closes, the home closes, the process exits 0), and its carried files come back while it runs and when it exits.
 	 */
 	const runnerOf = (gen: number, env: Record<string, string>, carried: Map<string, string>) => {
-		let stderr = "";
 		let outcome: Outcome | undefined;
+		// The resume that opened the session here has its answer: before it, closing the link would fail that resume.
+		let answered = false;
+		const closeIfDone = () => {
+			if (outcome !== undefined && answered) held?.close("the runner reported its outcome");
+		};
+		const errors = errorOutput((line) => {
+			if (outcome !== undefined) return;
+			try {
+				outcome = (JSON.parse(line) as { outcome: Outcome }).outcome;
+				closeIfDone();
+			} catch {
+				// Not an outcome after all: a line that only starts like one.
+			}
+		});
 		let started: BoxProcess | undefined;
 		let held: HomeHandle | undefined;
 		let ranIn: Box | undefined;
@@ -501,19 +568,7 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 			onProcess: (process) => {
 				started = process;
 			},
-			onErrors: (text) => {
-				stderr += text;
-				if (outcome !== undefined) return;
-				for (const line of stderr.split("\n")) {
-					if (!line.startsWith('{"outcome"')) continue;
-					try {
-						outcome = (JSON.parse(line) as { outcome: Outcome }).outcome;
-						held?.close("the runner reported its outcome");
-					} catch {
-						// The line is not whole yet.
-					}
-				}
-			},
+			onErrors: (text) => errors.push(text),
 		});
 		const start: StartRunner = async (at, epochAt, startContext) => {
 			ranIn = at.box;
@@ -524,6 +579,7 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 		};
 		const exited = async (): Promise<Exit> => {
 			const waited = started === undefined ? undefined : await started.wait();
+			errors.end();
 			held?.close("the runner ended");
 			if (ranIn !== undefined) await carryOut(ranIn, env, carried).catch(() => {});
 			const code = waited?.ok ? waited.value : null;
@@ -535,19 +591,22 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 							? "SIGTERM"
 							: `signal ${code - 128}`
 					: null;
-			const said = stderr
-				.split("\n")
-				.filter((line) => !line.startsWith('{"outcome"'))
-				.join("\n")
-				.trim();
 			return {
 				exit: signal ?? code,
 				signal,
 				...(outcome === undefined ? {} : { outcome }),
-				stderr: said.slice(0, 600),
+				stderr: errors.said(),
 			};
 		};
-		return { start, exited, handle: () => held };
+		return {
+			start,
+			exited,
+			handle: () => held,
+			answered: () => {
+				answered = true;
+				closeIfDone();
+			},
+		};
 	};
 
 	/** One checkpoint at rest, tried again while the session is busy, as many times as the options say. */
@@ -637,14 +696,18 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 			epoch = taken.value.epoch;
 			line("lease", { epoch, holder: where(box) });
 			const runner = runnerOf(order.gen, env, carried);
-			const begun = await runner.start(homePlace(), epoch, context);
-			if (!begun.ok) throw begun.error;
-			handle = begun.value;
-			const ready = await handle.ready;
-			if (!ready.ok) throw new Error(`the runner did not answer: ${ready.error.message}`);
-			const resumed = await handle.resume({ epoch, env }, context);
-			if (!resumed.ok) throw new Error(`the runner did not resume the session: ${resumed.error.message}`);
-			return { epoch, exited: runner.exited() };
+			try {
+				const begun = await runner.start(homePlace(), epoch, context);
+				if (!begun.ok) throw begun.error;
+				handle = begun.value;
+				const ready = await handle.ready;
+				if (!ready.ok) throw new Error(`the runner did not answer: ${ready.error.message}`);
+				const resumed = await handle.resume({ epoch, env }, context);
+				if (!resumed.ok) throw new Error(`the runner did not resume the session: ${resumed.error.message}`);
+				return { epoch, exited: runner.exited() };
+			} finally {
+				runner.answered();
+			}
 		},
 		signals(n) {
 			const file = place.requestFile(n);
@@ -773,10 +836,12 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 							}),
 				},
 				context,
-			).catch(async (error: unknown) => {
-				await afterFailure(next, named.box);
-				throw error;
-			});
+			)
+				.finally(() => runner.answered())
+				.catch(async (error: unknown) => {
+					await afterFailure(next, named.box);
+					throw error;
+				});
 			if (!recovered.ok) {
 				await afterFailure(next, named.box);
 				// A restore that failed again where it was being finished is finished there next time.

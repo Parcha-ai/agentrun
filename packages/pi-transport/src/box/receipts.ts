@@ -17,8 +17,10 @@ export type BoxPrice = {
 /**
  * What one box cost at list price, written once when the box ends: the `data` of a live line with source `transport`
  * and kind `box.receipt` (RECORDING.md). `box` is a label (`box-1`, `box-2`, ... by first appearance), never the
- * provider's id. `from` and `to` are ISO times. `cost_usd` is an ESTIMATE, `seconds` times the published price per
- * second: not the provider's invoice, which bills by its own rounding, minimums and discounts.
+ * provider's id. `from` and `to` are ISO times. `to` is when the ledger saw the box end, but never later than its
+ * maximum lifetime as its facts state it (a box found ended long after it expired ran until it expired; a provider that
+ * rounds the lifetime up can run a box a little longer). `cost_usd` is an ESTIMATE, `seconds` times the published price
+ * per second: not the provider's invoice, which bills by its own rounding, minimums and discounts.
  */
 export type BoxReceipt = {
 	readonly box: string;
@@ -110,7 +112,14 @@ export function boxReceipts(options: BoxReceiptsOptions): BoxReceipts {
 	// The boxes made and not yet ended, by provider and id.
 	const open = new Map<
 		string,
-		{ readonly provider: string; readonly kind: string; readonly from: number; readonly box: string }
+		{
+			readonly provider: string;
+			readonly kind: string;
+			readonly from: number;
+			readonly box: string;
+			// When its provider ends it by its lifetime, at the latest: no receipt runs past it.
+			readonly until: number | undefined;
+		}
 	>();
 
 	const end = (key: string) => {
@@ -119,7 +128,7 @@ export function boxReceipts(options: BoxReceiptsOptions): BoxReceipts {
 		open.delete(key);
 		const price = options.prices.find((one) => one.provider === made.provider && one.kind === made.kind);
 		if (price === undefined) return;
-		const to = Math.max(made.from, now());
+		const to = Math.max(made.from, Math.min(now(), made.until ?? Number.POSITIVE_INFINITY));
 		const seconds = (to - made.from) / 1000;
 		options.write({
 			box: made.box,
@@ -171,8 +180,15 @@ export function boxReceipts(options: BoxReceiptsOptions): BoxReceipts {
 					const kind = kindOf(facts);
 					const from = now();
 					const box = label({ provider: inner.name, kind, spec, facts });
+					const lifetime = facts.maxLifetimeMs ?? spec.maxLifetimeMs;
 					labels.set(key, box);
-					open.set(key, { provider: inner.name, kind, from, box });
+					open.set(key, {
+						provider: inner.name,
+						kind,
+						from,
+						box,
+						until: lifetime > 0 ? from + lifetime : undefined,
+					});
 					return ok(onLedger(key, made.value));
 				},
 				async attach(id, context) {
