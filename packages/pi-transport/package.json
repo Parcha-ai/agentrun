@@ -1,6 +1,6 @@
 {
   "name": "@parcha/pi-transport",
-  "version": "0.1.0-beta.15",
+  "version": "0.1.0-beta.16",
   "private": true,
   "description": "Run a pi-durable session's tools in another machine, or move the session there: one small box interface, providers for this machine and Docker, and a conformance suite a vendor can run.",
   "keywords": [
@@ -33,6 +33,7 @@
     "./box/box": null,
     "./box/child": null,
     "./box/files": null,
+    "./box/receipts": null,
     "./hands": {
       "source": "./src/hands/index.ts",
       "types": "./dist/hands/index.d.ts",
@@ -44,6 +45,12 @@
       "types": "./dist/home/index.d.ts",
       "import": "./dist/home/index.js",
       "default": "./dist/home/index.js"
+    },
+    "./place": {
+      "source": "./src/place/index.ts",
+      "types": "./dist/place/index.d.ts",
+      "import": "./dist/place/index.js",
+      "default": "./dist/place/index.js"
     },
     "./testing": {
       "source": "./src/testing/index.ts",

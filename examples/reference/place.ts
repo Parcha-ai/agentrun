@@ -22,7 +22,7 @@ export type PlaceSignal = { kind: 'crossing' | 'kill-request'; crossing: { point
   kind: 'signals-failed'; code: string; message: string };
 
 /** A delegation of the run's own path (an Archil place): who holds it and whether it is orphaned or still pending. */
-export type PlaceDelegation = { clientId: string; inodeId: string | number; path: string; isOrphaned: boolean; isPending?: boolean };
+export type PlaceDelegation = { clientId: string; inodeId: string | number; path?: string; isOrphaned: boolean; isPending?: boolean };
 
 /** A box place's recording, brought home (the one seam for a place whose child writes its spool inside the place: a disk place, a transport box). `dir(attempt)` is the recording directory as the child sees it inside the place (the place rewrites the order's `RECORD_DIR` to it; the recording's clock reaches the child as the order's `RECORD_STARTED`,
  *  which the child writes into its own `.spool/` when it has none, so a place writes nothing into the run's disk). `bringHome(into)` is idempotent: it pulls what is new from the place into the host recording directory `into`: first the blobs not
