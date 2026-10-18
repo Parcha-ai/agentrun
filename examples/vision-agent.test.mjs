@@ -17,7 +17,7 @@ import { jevKeyOf, jevOptionsOf, liveParts, missingKeys, namedModels, preflight 
 import { demo } from '@parcha/agentrun-reference';
 
 const PROGRAMS = (() => { try { for (const cmd of ['ffmpeg', 'ffprobe', 'pdftoppm']) execFileSync(cmd, [cmd === 'pdftoppm' ? '-v' : '-version'], { stdio: 'ignore' }); return false; } catch { return 'ffmpeg, ffprobe and pdftoppm are needed'; } })();
-const EXAMPLES = ['video-chapters', 'hear-and-find', 'document-check'];
+const EXAMPLES = ['video-chapters', 'hear-and-find', 'document-check', 'apollo-descent', 'boulder-chapters', 'fair-robot'];
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const scratch = async (t) => { const tmp = await mkdtemp(join(tmpdir(), 'vision-agent-')); t.after(() => rm(tmp, { recursive: true, force: true })); return tmp; };
 async function go(tmp, argv, env = {}) {
