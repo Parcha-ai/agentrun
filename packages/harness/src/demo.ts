@@ -470,8 +470,6 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   // What the last reading of run.json said: the run's status and the label of the holder it last named (a released run names none), for a handoff's line.
   let lastRunStatus: string | undefined;
   let lastRunSeal: number | null = null;
-  const lastRunGenerationOf = () => lastGeneration ?? 0;
-  const sealAtOpen = new Map<number, number | null>();
   const sealOf = new Map<number, number | null>();
   let lastHolderLabel: string | undefined;
   let currentGen = 0;
@@ -500,11 +498,10 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
         if (record && typeof record.run === 'string' && Number.isInteger(record.generation)) {
           lastGeneration = record.generation as number;
           lastRunStatus = typeof record.status === 'string' ? record.status : undefined;
-          // The seal of the generation this record is of, against the one the record carried when the generation was first read: a running record carries the previous generation's seal, and a seal added to a released generation completes its release.
+          // What run.json carries of the seal (the disk package's status.ts): `sealedSeq` is the store's last committed sequence at a clean release, null once the generation's store is open and while it runs, and the previous release's seal only
+          // between a claim and that point. It does not name its generation; the record's `generation` (incremented on every claim) is the generation that wrote it, and a release writes status and seal into that same record.
           const seal = Number.isInteger(record.sealedSeq) ? record.sealedSeq as number : null;
-          const generation = record.generation as number;
-          if (!sealAtOpen.has(generation)) sealAtOpen.set(generation, record.status === 'running' ? seal : (sealOf.get(generation - 1) ?? null));
-          sealOf.set(generation, seal);
+          sealOf.set(record.generation as number, seal);
           lastRunSeal = seal;
           const key = JSON.stringify([record.status, record.generation, record.holder, record.sealedSeq]);
           if (key !== lastRunRecord) {
@@ -601,6 +598,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       const order = { gen, env: { ...base, CROSS_LOG: log, KILL_REQUEST: request, KILL_NONCE: nonce, RECORD_GEN: String(gen), RECORD_STARTED: startedText, PLAN: JSON.stringify(plan) }, ...(token !== undefined ? { stdin: token } : {}) };
       if (previous && !place.kills.includes(previous.kind)) throw new Error(`the ${place.name} place cannot lose its ${previous.kind}: this kill is not one it can make`);
       currentGen = gen;
+      // The generation run.json was at before this attempt's process opened the run: the released generation must be a later one.
+      const generationBefore = lastGeneration ?? 0;
       const recovered = previous ? await place.recover(previous.runner, previous.kind, order) : undefined;
       runner = recovered ? recovered.runner : await place.start(order);
       supervisor.host('process.started', { gen, pid: runner.pid });
@@ -687,7 +686,11 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       // and the next process is started through the place, not recovered from a loss. Anything else is a `handoff.failed` line with its reason, and the run goes on as for a process that ended on its own.
       if (!killed && plan.run && !('storm' in plan.run) && plan.run.handoff) {
         const landed = rows<Crossing>(log).find((crossing) => crossing.handoff);
-        const sealed = lastRunSeal !== null && lastRunSeal !== sealAtOpen.get(lastRunGenerationOf());
+        // The release is complete when run.json, read after the exit, is of a generation this process opened (later than the one before it started), says `sleeping` or `paused`, and carries a seal that is not below the store's sequence when that
+        // generation opened: the seal the previous release wrote, which no earlier generation's can exceed. Not "a seal is present": a running record may carry an old one. The opening sequence is taken from the earlier generations' records, not from this
+        // generation's first read, because a poll can miss a generation that seals before it is first read. If no earlier generation's seal was ever read (a first run, or polls that missed it), the opening sequence is 0 and the rest is the rule.
+        const opening = Math.max(0, ...[...sealOf].filter(([generation, seal]) => generation < lastGeneration! && seal !== null).map(([, seal]) => seal!));
+        const sealed = lastGeneration !== undefined && lastGeneration > generationBefore && lastRunSeal !== null && lastRunSeal >= opening;
         const reason: HandoffFailure | undefined = !landed ? 'crossing not logged' : result.exit !== 0 ? 'exit not 0' : (lastRunStatus === 'sleeping' || lastRunStatus === 'paused') && sealed ? undefined : 'not released';
         if (!reason && landed) {
           // The line is ranked before the next process's start (as a kill's is), so it must be later than the run.json line just read by more than the recording's tick: a tie in one millisecond would sort it before that line.

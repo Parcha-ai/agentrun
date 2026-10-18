@@ -160,6 +160,7 @@ const place = (ctx) => {
     const end = async (runner) => ({ ...runner, exited: runner.exited.then((exit) => ({ ...exit, exit: 1 })) });
     return { ...made, start: async (order) => end(await made.start(order)), recover: async (last, kind, order) => { const r = await made.recover(last, kind, order); return { ...r, runner: await end(r.runner) }; } };
   }
+  if (wrap === 'unsealed') return { ...made, status: async () => { const s = await made.status(); return { ...s, record: s.record && { ...s.record, sealedSeq: null } }; } };
   if (wrap === 'status') return { ...made, status: async () => { const s = await made.status(); return { ...s, record: s.record && { ...s.record, status: 'running' } }; } };
   return made;
 };
@@ -193,6 +194,13 @@ test('handoff.failed, "exit not 0": the crossing is logged but the process did n
 
 test('handoff.failed, "not released": the process exited 0 but the last run.json does not show the run released', { timeout: 200_000 }, async (t) => {
   const { ran, lines } = await failing(t, { wrap: 'status' });
+  assert.notEqual(ran.status, 0);
+  assert.deepEqual(failedOf(lines), [{ gen: 1, point: 'effect.kept charge', n: 5, reason: 'not released' }]);
+  assert.equal(lines.filter((line) => line.kind === 'handoff').length, 0);
+});
+
+test('handoff.failed, "not released": a record that says sleeping without the released generation\'s seal is not a completed release', { timeout: 200_000 }, async (t) => {
+  const { ran, lines } = await failing(t, { wrap: 'unsealed' });
   assert.notEqual(ran.status, 0);
   assert.deepEqual(failedOf(lines), [{ gen: 1, point: 'effect.kept charge', n: 5, reason: 'not released' }]);
   assert.equal(lines.filter((line) => line.kind === 'handoff').length, 0);
