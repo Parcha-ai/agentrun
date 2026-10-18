@@ -24,6 +24,7 @@ import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.t
 
 const UNIT = { timeout: 5_000 };
 const here = new URL('.', import.meta.url).pathname;
+const ALL = ['wide', 'phone', 'answer', 'files', 'hear', 'none', 'pageonly', 'said', 'bare', 'plain', 'srcpage'];
 const IN_CHROME = { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}`, timeout: 120_000 };
 after(async () => { assert.deepEqual(await closeLeftBrowsers(), [], 'every browser a test started was closed by that test'); });
 
@@ -142,6 +143,12 @@ function writeFixtures(dir: string) {
     const { result: _result, ...unanswered } = JSON.parse(readFileSync(join(dir, id, 'manifest.json'), 'utf8'));
     writeFileSync(join(dir, id, 'manifest.json'), JSON.stringify(unanswered, null, 2));
   }
+  // The reference job with no times and no workflow input: its spans sit in file order, its first user entry is drawn.
+  const plain = join(dir, 'reference-plain');
+  cpSync(join(here, '..', 'recordings', 'reference-job'), plain, { recursive: true });
+  const untimed = readFileSync(join(plain, 'events.jsonl'), 'utf8').split('\n').filter((line) => line.trim() !== '').map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((line) => line.kind !== 'agentrun.workflow').map(({ t: _t, t0: _t0, ...line }) => JSON.stringify(line));
+  writeFileSync(join(plain, 'events.jsonl'), `${untimed.join('\n')}\n`);
 }
 
 /** Run in the harness page: each chat page in an iframe of its own width, side by side, all in view. */
@@ -155,6 +162,8 @@ const HARNESS = `<!doctype html><body style="margin:0">
 <iframe id="pageonly" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=chat-artifact"></iframe>
 <iframe id="said" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=hand-said"></iframe>
 <iframe id="bare" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=hand-bare"></iframe>
+<iframe id="plain" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=reference-plain"></iframe>
+<iframe id="srcpage" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?src=recordings%2Fhand-bare%2F"></iframe>
 <script>
 const doc = (id) => document.getElementById(id).contentDocument;
 const art = (id) => doc(id)?.querySelector('.report-frame')?.contentDocument;
@@ -166,7 +175,7 @@ const unstripped = (id) => { const body = doc(id).body.cloneNode(true); for (con
 const card = (id, title) => [...doc(id).querySelectorAll('.step')].find((each) => each.querySelector('.t span').textContent === title);
 const inView = (node, box) => { const a = node.getBoundingClientRect(); const b = box.getBoundingClientRect(); return a.top >= b.top - 1 && a.bottom <= b.bottom + 1; };
 const shown = (node) => !!node && node.checkVisibility();
-const PAGES = ['wide', 'phone', 'answer', 'files', 'hear', 'none', 'pageonly', 'said', 'bare'];
+const PAGES = ['wide', 'phone', 'answer', 'files', 'hear', 'none', 'pageonly', 'said', 'bare', 'plain', 'srcpage'];
 const narrow = () => { for (const id of PAGES) { const f = document.getElementById(id); f.style.width = '390px'; f.style.height = '844px'; } };
 const unfold = (id) => { for (const more of doc(id).querySelectorAll('.more')) if (/^\\+ \\d+ more$|^Show the whole message$/.test(more.textContent)) more.click(); };
 const wider = (id) => doc(id).documentElement.scrollWidth - doc(id).defaultView.innerWidth;
@@ -201,7 +210,7 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
   try {
     const loaded = `({ drawn: PAGES.filter((id) => !ready(id)), pages: ['wide', 'phone', 'files'].filter((id) => !artReady(id)), answer: !!doc('answer').querySelector('.arow'),
       pageonly: art('pageonly')?.URL === 'about:srcdoc' && art('pageonly').querySelector('#first img')?.naturalWidth > 0 })`;
-    await until(`(() => { const now = ${loaded}; return !now.drawn.length && !now.pages.length && now.answer && now.pageonly; })()`, 'the nine chat pages drawn, their agent\'s pages loaded')
+    await until(`(() => { const now = ${loaded}; return !now.drawn.length && !now.pages.length && now.answer && now.pageonly; })()`, 'every chat page drawn, their agent\'s pages loaded')
       .catch(async (error: Error) => { throw new Error(`${error.message}: ${JSON.stringify(await value(loaded))}`); });
 
     // 1440, the agent's page: the input as the person's one message (the host's prompt is no message), its conversations
@@ -309,6 +318,10 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       button: shown(d.querySelector('.report-btn')) && d.querySelector('.report-btn').textContent, sheetBelow: d.querySelector('.art').getBoundingClientRect().top >= d.defaultView.innerHeight - 1,
       first: d.querySelector('.thread').getBoundingClientRect().top < 140 }; })()`);
     assert.deepEqual(phone, { flat: { page: 0, panes: 0 }, open: false, button: 'Open the report', sheetBelow: true, first: true });
+    // Under the brand, the run's title on a line of its own, one line high, and the timeline under it.
+    assert.deepEqual(await value(`(() => { const d = doc('phone'); const title = d.querySelector('.top .title').getBoundingClientRect(); const brand = d.querySelector('.top .brand').getBoundingClientRect();
+      return { text: d.querySelector('.top .title').textContent, shown: shown(d.querySelector('.top .title')), below: title.top >= brand.bottom - 1, oneLine: title.height <= 20, timeline: d.querySelector('.tl').getBoundingClientRect().top >= title.bottom - 1 }; })()`),
+      { text: 'Three pages, read', shown: true, below: true, oneLine: true, timeline: true });
     await page.evaluate(`doc('phone').querySelector('.report-btn').click()`);
     await until(`doc('phone').querySelector('.art').classList.contains('open') && Math.abs(doc('phone').querySelector('.art').getBoundingClientRect().bottom - 844) < 2`, 'the sheet opened by the bottom bar');
     await page.evaluate(`doc('phone').querySelector('.shut').click(); card('phone', 'read scans.pdf page=1').querySelector('.step-main').click()`);
@@ -347,6 +360,14 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     await page.evaluate(`doc('hear').querySelector('.step-looks .look.decisive').closest('.step').querySelector('.step-main').click()`);
     await until(`doc('hear').querySelector('.src .addr')?.textContent === 'eagle-heard-and-seen.webm#t=0,34.092'`, 'the card opens its first decisive look');
     assert.equal(await value(`doc('hear').querySelectorAll('.src video, .src img, .src .media, .src a.addr[href]').length`), 0, 'a video window that kept no frames shows no player and no frame');
+    // A row's note, muted under its value; a cite of a picture the recording holds (no look) opens that picture, its
+    // region boxed, under the cite's own label.
+    assert.deepEqual(await value(`[...doc('hear').querySelectorAll('.arow .anote')].map((n) => n.textContent.slice(0, 22))`), ['(scripted lead: it tak', 'Jev: 0.95 that it is t']);
+    await page.evaluate(`[...doc('hear').querySelectorAll('.cite')].find((n) => n.textContent === 'the frame, with the box Jev drew').click()`);
+    await until(`shown(doc('hear').querySelector('.src .media img')) && doc('hear').querySelector('.src .media img').complete`, 'the cited picture');
+    assert.deepEqual(await value(`(() => { const d = doc('hear'); return { kind: d.querySelector('.src .kind').textContent, title: d.querySelector('.src .ptitle').textContent,
+      box: d.querySelector('.src .jbox')?.style.cssText, none: d.querySelector('.src').textContent.includes('No look'), picture: d.querySelector('.src .media img').src.slice(0, 5) }; })()`),
+      { kind: 'Image', title: 'the frame, with the box Jev drew', box: 'left: 30.3%; top: 5.6%; width: 50.3%; height: 54.4%;', none: false, picture: 'data:' });
 
     // A submitted record: the run's answer, a row per field, a field of evidence paths as its label and chips; the input's
     // fields as the person's message. Calls of different tools do not fold.
@@ -366,6 +387,17 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     const bare = await value<Record<string, unknown>>(`(() => { const d = doc('bare'); return { report: d.querySelector('.report').textContent, link: d.querySelector('.report a')?.getAttribute('href'), card: !!d.querySelector('.doccard') }; })()`);
     assert.deepEqual(bare, { report: 'This run has no report.How this ran: every call, look and file of the run.', link: './?r=hand-bare', card: false });
 
+    // Opened by its URL (?src=), "How this ran" opens the same URL in the inspection viewer, in the header and the report.
+    assert.deepEqual(await value(`[doc('srcpage').querySelector('a.how').getAttribute('href'), doc('srcpage').querySelector('.report a').getAttribute('href')]`),
+      ['./?src=recordings%2Fhand-bare%2F', './?src=recordings%2Fhand-bare%2F']);
+
+    // A recording with no times: the timeline shows, its spans in file order, its axis "in order", no clock anywhere on
+    // it. With no workflow input, the first user entry is the person's message, drawn as one.
+    const plain = await value<Record<string, unknown>>(`(() => { const d = doc('plain'); return { axis: d.querySelector('.tl .axis').textContent, lanes: d.querySelectorAll('.tl .lane').length,
+      clock: /\\d:\\d\\d|\\d s\\b/.test(d.querySelector('.tl').textContent), first: d.querySelector('.thread').firstElementChild.matches('.msg.user[data-item]'),
+      users: d.querySelectorAll('.msg.user').length, fold: d.querySelector('.msg.user .more')?.textContent }; })()`);
+    assert.deepEqual(plain, { axis: 'in order', lanes: 8, clock: false, first: true, users: 1, fold: 'Show the whole message' });
+
     // A run with the agent's page and no conversation: a plain line, the card that opens the page, and the page; its
     // picture outside its files is dropped, its in-page link stays inside, its citation lists the region it carries.
     const pageOnly = await value<Record<string, unknown>>(`(() => { const d = doc('pageonly'); return { thread: d.querySelector('.thread').textContent, timeline: !!d.querySelector('.tl'),
@@ -381,10 +413,10 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     await page.evaluate(`narrow(); for (const id of PAGES) unfold(id)`);
     await page.sleep(500);
     assert.ok(await value(`[...doc('wide').querySelectorAll('.cell-at')].some((n) => n.textContent.startsWith('scan-0.pdf,scan-1.pdf'))`), 'the long list is drawn');
-    assert.deepEqual(await value(`Object.fromEntries(PAGES.map((id) => [id, Math.max(0, wider(id))]))`), Object.fromEntries(['wide', 'phone', 'answer', 'files', 'hear', 'none', 'pageonly', 'said', 'bare'].map((id) => [id, 0])));
+    assert.deepEqual(await value(`Object.fromEntries(PAGES.map((id) => [id, Math.max(0, wider(id))]))`), Object.fromEntries(ALL.map((id) => [id, 0])));
 
     // The public rules, over every word drawn on each page, its sources and the agent's page; a score only in a strip.
-    for (const id of ['wide', 'phone', 'answer', 'files', 'hear', 'none', 'pageonly', 'said', 'bare']) {
+    for (const id of ALL) {
       assert.doesNotMatch(await value<string>(`unstripped('${id}')`), /\d\.\d\d (yes|no)\b/, `${id}: no score outside a card's strip`);
       const drawn = await value<string>(`words('${id}')`);
       assert.doesNotMatch(drawn, /\b(kill|killed|resume|processes?)\b/i, `${id}: no process or kill mark`);

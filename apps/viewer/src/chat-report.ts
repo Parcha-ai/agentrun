@@ -75,6 +75,12 @@ function reportBlobUrl(recording: Recording, sha: string): Promise<string | unde
   return held;
 }
 
+/** The inspection viewer for this run: the gallery's id it was opened by (?r=), or the recording's URL (?src=). */
+export function reportHowHref(recording: Recording): string {
+  const src = new URLSearchParams(location.search).get('src');
+  return !new URLSearchParams(location.search).has('r') && src ? `./?src=${encodeURIComponent(src)}` : `./?r=${encodeURIComponent(recording.id)}`;
+}
+
 /** A file the agent's page carries, by its path there, as a URL a tab of this page may open; undefined when it carries
  *  none by that path, or when the file is of a type that would run in a tab (a page, an SVG, an unknown type). */
 export function reportHeldFile(model: ChatModel, recording: Recording, path: string): Promise<string | undefined> {
@@ -221,28 +227,28 @@ const reportCenter = (scroller: Window | HTMLElement, node: Element) => {
   else scroller.scrollTo({ top: box.top - scroller.getBoundingClientRect().top + scroller.scrollTop - scroller.clientHeight / 2 + box.height / 2 });
 };
 
-/** A cite that points somewhere: an address, or a look of the run. */
-const reportCites = (cite: { href: string; look?: string }) => cite.href !== '' || cite.look !== undefined;
+/** A cite that points somewhere: an address, a look of the run, or a picture the recording holds. */
+const reportCites = (cite: { href: string; look?: string; blob?: string }) => cite.href !== '' || cite.look !== undefined || cite.blob !== undefined;
 
 /** The run's answer, drawn here (cited, its submitted record, or its final message): each row with its chips, each chip
  *  opening the source it cites. */
-function reportAnswer(pane: HTMLElement, model: ChatModel, recording: Recording, open: (href: string, look?: string) => void, none = 'This run has no report.') {
+function reportAnswer(pane: HTMLElement, model: ChatModel, recording: Recording, open: ReportOpen, none = 'This run has no report.') {
   const scroller = reportEl('div', { class: 'report' });
   const answer = model.answer;
   if (!answer) {
     scroller.append(reportEl('div', { class: 'pane' }, reportEl('p', { class: 'report-none', text: none }),
-      reportEl('p', { class: 'report-none' }, reportEl('a', { href: `./?r=${encodeURIComponent(recording.id)}`, text: 'How this ran' }), ': every call, look and file of the run.')));
+      reportEl('p', { class: 'report-none' }, reportEl('a', { href: reportHowHref(recording), text: 'How this ran' }), ': every call, look and file of the run.')));
     pane.append(scroller);
     return { scroller, cited: new Set<string>() };
   }
   const cited = new Set<string>();
   const rows = answer.rows.map((row) => reportEl('li', { class: row.label === '' ? 'arow wide' : 'arow' },
     row.label !== '' && reportEl('span', { class: 'alabel', text: row.label }),
-    reportEl('div', {}, ...reportParagraphs(row.text), row.cites.some(reportCites) && reportEl('div', { class: 'cites' }, ...row.cites.filter(reportCites).map((cite) => {
+    reportEl('div', {}, ...reportParagraphs(row.text), row.note && reportEl('p', { class: 'anote', text: row.note }), row.cites.some(reportCites) && reportEl('div', { class: 'cites' }, ...row.cites.filter(reportCites).map((cite) => {
       if (cite.look) cited.add(cite.look);
       if (cite.item) cited.add(cite.item);
-      const chip = reportEl('button', { class: 'cite', type: 'button', 'data-look': cite.look, 'data-item': cite.item, title: cite.href || undefined, text: reportCiteLabel(cite.href) || 'the look it cites' });
-      chip.addEventListener('click', () => open(cite.href, cite.look));
+      const chip = reportEl('button', { class: 'cite', type: 'button', 'data-look': cite.look, 'data-item': cite.item, title: cite.href || undefined, text: cite.label ?? (reportCiteLabel(cite.href) || 'the look it cites') });
+      chip.addEventListener('click', () => open(cite.href, cite.look, cite.blob ? { blob: cite.blob, label: cite.label } : undefined));
       return chip;
     })))));
   scroller.append(reportEl('div', { class: 'pane' },
@@ -256,7 +262,10 @@ function reportAnswer(pane: HTMLElement, model: ChatModel, recording: Recording,
 /** The right side: the artifact when the run wrote one (the answer when it cannot be read), else the run's answer. A
  *  citation calls `open(href, look)`; `scrollToLook` scrolls to the first element citing that look (or the card a row
  *  cites, or an id) and flashes it; `cited` holds the looks and card ids the report cites once it is read. */
-export function drawReport(pane: HTMLElement, model: ChatModel, recording: Recording, open: (href: string, look?: string) => void): { scrollToLook(look: string): boolean; cited: Promise<Set<string>> } {
+/** Opens a citation: its address, the look it names, and the picture it names when it names no look. */
+export type ReportOpen = (href: string, look?: string, picture?: { blob: string; label?: string }) => void;
+
+export function drawReport(pane: HTMLElement, model: ChatModel, recording: Recording, open: ReportOpen): { scrollToLook(look: string): boolean; cited: Promise<Set<string>> } {
   pane.replaceChildren();
   const native = (none?: string) => {
     const { scroller, cited } = reportAnswer(pane, model, recording, open, none);

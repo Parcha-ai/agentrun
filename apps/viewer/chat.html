@@ -137,6 +137,7 @@ a.addr[href]{color:var(--acc);text-decoration:underline dotted}
 .arow.wide{grid-template-columns:minmax(0,1fr)}
 .alabel{font:500 13px var(--mono);color:var(--acc);padding-top:3px;overflow-wrap:anywhere}
 .arow p{margin:0 0 8px;overflow-wrap:anywhere}
+.arow p.anote{font-size:13px;color:var(--muted)}
 .cites{display:flex;flex-wrap:wrap;gap:6px}
 .cite{font:400 11.5px var(--mono);color:var(--muted);border:1px solid var(--line);padding:1px 7px;background:var(--panel);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cite:hover{color:var(--ink);border-color:var(--acc)}
@@ -176,8 +177,10 @@ a.addr[href]{color:var(--acc);text-decoration:underline dotted}
 @keyframes flash-msg{0%{background:#ff870022}100%{background:transparent}}
 .msg.user.flash,.said-text.flash,details.flash{animation:flash-msg 1.4s ease-out}
 @media (max-width:860px){
- :root{--top:52px}
- .top{padding:0 12px;gap:8px}.top .title,.brand small{display:none}
+ :root{--top:74px}
+ .top{padding:6px 12px;gap:2px 8px;flex-wrap:wrap;align-content:center}.brand small{display:none}
+ .top .how{order:2}
+ .top .title{order:3;flex:1 0 100%;padding-left:0;border-left:0;font-size:12px;color:var(--muted)}
  .app{display:block;height:auto}
  .chat{border-right:0;min-height:calc(100dvh - var(--top))}
  .thread{padding:18px 16px 96px;overflow:visible}

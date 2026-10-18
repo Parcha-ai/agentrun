@@ -4,7 +4,7 @@
 // alone. On a phone the right side is a bottom sheet.
 import type { ChatDecision, ChatItem, ChatModel, ChatSource, ChatSpan, ChatThread } from './chat-model.ts';
 import type { Recording } from './format.ts';
-import { drawReport, reportCiteLabel, reportClock, reportEl, reportFragmentOf, reportHeldFile, reportInline, reportParagraphs } from './chat-report.ts';
+import { drawReport, reportCiteLabel, reportClock, reportEl, reportFragmentOf, reportHeldFile, reportHowHref, reportInline, reportParagraphs } from './chat-report.ts';
 
 type ToolItem = Extract<ChatItem, { kind: 'tool' }>;
 type SourceKind = 'page' | 'image' | 'video' | 'other';
@@ -146,7 +146,7 @@ function sourceAddressList(model: ChatModel, recording: Recording, addresses: st
 const sourceRegionList = (regions: SourceRegion[]) => reportEl('ul', { class: 'regions' },
   ...regions.map((region) => reportEl('li', {}, reportEl('b', { text: region.label ?? 'cited here' }), reportEl('span', { text: region.href }))));
 
-export type SourceShown = { look?: string; item?: ToolItem; href: string; regions: SourceRegion[] };
+export type SourceShown = { look?: string; item?: ToolItem; href: string; regions: SourceRegion[]; picture?: { blob: string; label?: string } };
 
 /** What a citation or a card points at: what was found, then the medium with the regions given and no other. A page
  *  address shows that page's own picture, whichever look cites it. */
@@ -156,10 +156,15 @@ function sourceView(recording: Recording, model: ChatModel, shown: SourceShown, 
   const kind = source && sourceKindOf(source.href) !== 'other' ? sourceKindOf(source.href) : sourceKindOf(shown.href);
   const backButton = reportEl('button', { class: 'back', type: 'button', text: '← Report' });
   backButton.addEventListener('click', back);
-  const title = shown.item?.title ?? reportCiteLabel(shown.href);
+  const title = shown.item?.title ?? shown.picture?.label ?? reportCiteLabel(shown.href);
   const pane = reportEl('div', { class: 'pane' }, reportEl('div', { class: 'phead' }, backButton,
-    reportEl('div', {}, reportEl('div', { class: 'kind', text: source ? SOURCE_KIND[kind] : shown.item ? SOURCE_KIND.other : 'Source' }), reportEl('div', { class: 'ptitle', text: title }),
+    reportEl('div', {}, reportEl('div', { class: 'kind', text: source ? SOURCE_KIND[kind] : shown.item ? SOURCE_KIND.other : shown.picture ? SOURCE_KIND.image : 'Source' }), reportEl('div', { class: 'ptitle', text: title }),
       shown.href !== '' && sourceAddressList(model, recording, [...new Set([shown.href, ...(source ? sourceAddresses(source) : [])])]))));
+  // A picture the citation names by itself: drawn with the region its address carries.
+  if (!source && !shown.item && shown.picture) {
+    const medium = sourceMedium(recording, shown.picture.blob, title, shown.regions);
+    if (medium) { pane.append(medium); return pane; }
+  }
   if (!source && !shown.item) {
     pane.append(reportEl('div', { class: 'said' }, reportEl('p', { text: 'No look in this recording shows this address.' })));
     if (shown.regions.length) pane.append(sourceRegionList(shown.regions));
@@ -374,8 +379,11 @@ function timelineOf(model: ChatModel, go: (id: string) => void): HTMLElement | u
     model.answeredAt !== undefined && reportEl('i', { class: 'rep', style: `left:calc(${pct(model.answeredAt / end)} - 2px)` }));
   const toggle = reportEl('button', { class: 'tl-toggle', type: 'button', 'aria-expanded': 'false' },
     reportEl('span', { class: 'lab', text: 'Timeline' }), mini, reportEl('span', { class: 'chev', 'aria-hidden': 'true' }));
+  // A recording with no times places each span at its line's position: the axis is an order, never a clock.
   const length = end < 10_000 ? `${(end / 1000).toFixed(1)} s` : reportClock(end / 1000);
-  const axis = reportEl('div', { class: 'axis' }, reportEl('span'), reportEl('div', {}, reportEl('span', { text: '0:00' }), reportEl('span', { text: length })));
+  const axis = reportEl('div', { class: 'axis' }, reportEl('span'), model.inOrder
+    ? reportEl('div', {}, reportEl('span', { text: 'in order' }), reportEl('span'))
+    : reportEl('div', {}, reportEl('span', { text: '0:00' }), reportEl('span', { text: length })));
   const body = reportEl('div', { class: 'tl-body', hidden: true }, ...laneNodes, axis);
   toggle.addEventListener('click', () => {
     const open = toggle.getAttribute('aria-expanded') !== 'true';
@@ -403,7 +411,7 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
   const header = reportEl('header', { class: 'top' },
     reportEl('span', { class: 'brand' }, threadIcon('brand'), reportEl('b', {}, 'agent', reportEl('span', { text: '.run()' })), reportEl('small', { text: 'by grep.ai' })),
     reportEl('div', { class: 'title', text: model.title }),
-    reportEl('a', { class: 'how', href: `./?r=${encodeURIComponent(recording.id)}`, text: 'How this ran' }));
+    reportEl('a', { class: 'how', href: reportHowHref(recording), text: 'How this ran' }));
 
   // Each conversation as recorded: its messages, its thinking, its tool cards (calls of one tool in a row show the first,
   // the rest behind "+ N more").
@@ -526,11 +534,11 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     else showSource({ item, href: '', regions: [] });
   };
   // A citation: the look it names, with the region its own address carries and no other.
-  const report = drawReport(reportPane, model, recording, (href, look) => {
-    const key = look && model.sources[look] ? look : sourceByHref(model.sources, href);
+  const report = drawReport(reportPane, model, recording, (href, look, picture) => {
+    const key = look && model.sources[look] ? look : picture ? undefined : sourceByHref(model.sources, href);
     const item = toolOf(key ? model.sources[key]!.item : undefined);
     const region = sourceRegionOf(href);
-    showSource({ ...(key ? { look: key } : {}), ...(item ? { item } : {}), href, regions: region ? [region] : [] });
+    showSource({ ...(key ? { look: key } : {}), ...(item ? { item } : {}), ...(picture ? { picture } : {}), href, regions: region ? [region] : [] });
   });
 
   const scrollToItem = (id: string) => {
