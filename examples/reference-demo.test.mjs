@@ -1173,11 +1173,12 @@ test('a directory a run already used keeps its identity: a demo whose name diffe
   const dir = join(tmp, 'run');
   const first = await run(t, {}, ['--json', '--dir', dir]);
   assert.equal(first.result.processes.at(-1).outcome.status, 'complete');
-  assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).run, 'reference');
+  const saved = JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).run;
+  assert.match(saved, /^reference/, 'the run is named for its demo (and an invocation)');
   // The same directory again, by a demo of another name (a directory saved before the run was named for its demo): it is not refused, and stays what it was.
   const again = await run(t, { name: 'another-demo' }, ['--json', '--dir', dir]);
   assert.equal(again.result.processes.at(-1).outcome.status, 'complete', JSON.stringify(again.result.processes.at(-1)));
-  assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).run, 'reference');
+  assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).run, saved, 'resumed under the saved name');
 });
 
 // ---- the place answers where the kill request is, and the supervisor honors it only with the attempt's nonce ---------------------------------------
