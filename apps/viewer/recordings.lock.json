@@ -1,0 +1,9 @@
+{
+  "asset": "recordings.tar",
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "ids": [
+    { "id": "document-check" },
+    { "id": "hear-and-find" },
+    { "id": "video-chapters" }
+  ]
+}

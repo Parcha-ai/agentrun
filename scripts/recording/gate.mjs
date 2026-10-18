@@ -72,7 +72,7 @@ export function gateProblems(dist) {
   for (const entry of gallery) {
     if (!beside.includes(entry.id)) continue;
     const dir = join(recordings, entry.id);
-    const keys = files ? ['blobs', 'id', 'manifest'] : ['blobs', 'events', 'id', 'manifest'];
+    const keys = [...(files ? ['blobs', 'id', 'manifest'] : ['blobs', 'events', 'id', 'manifest']), ...('card' in entry ? ['card'] : [])].sort();
     if (canonical(Object.keys(entry).sort()) !== canonical(keys)) add(where, `holds ${JSON.stringify(Object.keys(entry))} for ${entry.id}, not ${JSON.stringify(keys)}`);
     let manifest;
     try { manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')); } catch { manifest = undefined; }
@@ -88,6 +88,16 @@ export function gateProblems(dist) {
       const data = !files && typeof value === 'string' ? /^data:[^,;]*;base64,([A-Za-z0-9+/]*={0,2})$/.exec(value) : null;
       const right = files ? value === `blobs/${name}` : data !== null && Buffer.from(data[1], 'base64').equals(readFileSync(join(dir, 'blobs', name)));
       if (!right) add(where, `names ${JSON.stringify(typeof value === 'string' ? value.slice(0, 80) : value)} for ${sha} of ${entry.id}, not that blob in its directory`);
+    }
+    // Its card, when the build gives one: the run's title and line as words, its place in the lock's order, and a poster
+    // that is an image the recording holds.
+    if ('card' in entry) {
+      const card = entry.card;
+      const shape = isObject(card) && Object.keys(card).every((key) => ['title', 'line', 'poster', 'rank'].includes(key))
+        && typeof card.title === 'string' && card.title.trim() !== '' && (card.line === undefined || typeof card.line === 'string')
+        && (card.rank === undefined || (Number.isInteger(card.rank) && card.rank >= 0));
+      if (!shape) add(where, `holds a card for ${entry.id} that is not { title, line?, poster?, rank? }`);
+      else if (card.poster !== undefined && !(typeof card.poster === 'string' && /\.(png|jpe?g|webp|gif)$/.test(held.get(card.poster) ?? ''))) add(where, `names ${JSON.stringify(card.poster)} as the poster of ${entry.id}, not an image it holds`);
     }
   }
   return problems;
