@@ -689,6 +689,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
         // The release is complete when run.json, read after the exit, is of a generation this process opened (later than the one before it started), says `sleeping` or `paused`, and carries a seal that is not below the store's sequence when that
         // generation opened: the seal the previous release wrote, which no earlier generation's can exceed. Not "a seal is present": a running record may carry an old one. The opening sequence is taken from the earlier generations' records, not from this
         // generation's first read, because a poll can miss a generation that seals before it is first read. If no earlier generation's seal was ever read (a first run, or polls that missed it), the opening sequence is 0 and the rest is the rule.
+        // That fallback is safe because it never stands alone: the crossing-logged check below comes first, a handoff point is an `effect.kept` crossing, and a LOGGED one means this generation's store was opened and `live()` cleared any earlier
+        // `sealedSeq`, so a seal present after the exit can only be this generation's own.
         const opening = Math.max(0, ...[...sealOf].filter(([generation, seal]) => generation < lastGeneration! && seal !== null).map(([, seal]) => seal!));
         const sealed = lastGeneration !== undefined && lastGeneration > generationBefore && lastRunSeal !== null && lastRunSeal >= opening;
         const reason: HandoffFailure | undefined = !landed ? 'crossing not logged' : result.exit !== 0 ? 'exit not 0' : (lastRunStatus === 'sleeping' || lastRunStatus === 'paused') && sealed ? undefined : 'not released';

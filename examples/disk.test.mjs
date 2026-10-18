@@ -181,6 +181,10 @@ test('handoff.failed, "crossing not logged": the crossing is never taken, the jo
   assert.deepEqual(result.unlanded, []);
   assert.equal(result.processes.at(-1).outcome.status, 'complete');
   assert.equal(JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8')).handoffs, 0);
+  // The run ended done and sealed: a seal is present, and the missing crossing is still the reason (the crossing check comes before the seal's).
+  const sealed = lines.filter((line) => line.source === 'host' && line.kind === 'run.json').at(-1).data;
+  assert.equal(sealed.status, 'done');
+  assert.ok(Number.isInteger(sealed.sealedSeq), 'a seal is present');
 });
 
 test('handoff.failed, "exit not 0": the crossing is logged but the process did not exit 0', { timeout: 200_000 }, async (t) => {
