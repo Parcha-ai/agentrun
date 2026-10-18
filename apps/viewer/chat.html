@@ -49,6 +49,15 @@ a{color:inherit}
 .msg p{margin:0 0 10px;overflow-wrap:anywhere}
 code{font:400 .9em var(--mono);background:var(--panel2);border:1px solid var(--line);padding:0 4px;overflow-wrap:anywhere}
 details.think summary em code{font-style:normal}
+.thought{display:block;min-width:0;margin:6px 0 10px;padding-left:10px;border-left:1px solid var(--line)}
+.thought summary{display:block;list-style:none;cursor:pointer}
+.thought summary::-webkit-details-marker{display:none}
+.thought-title{font:400 14.5px/1.55 var(--sans);color:var(--ink);overflow-wrap:anywhere}
+.thought-tag{font:400 10.5px var(--mono);color:var(--dim);margin-left:8px;white-space:nowrap}
+.thought-tag::after{content:"";display:inline-block;width:5px;height:5px;margin-left:6px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:translateY(-2px) rotate(45deg);transition:transform .15s}
+.thought[open] .thought-tag::after{transform:translateY(1px) rotate(-135deg)}
+.thought-body{color:var(--muted);font-size:13.5px;margin-top:6px}
+.thought-body p{margin:0 0 8px}
 details.think{border-left:2px solid var(--line);padding:2px 0 2px 12px;margin:4px 0 14px;min-width:0}
 details.think summary{list-style:none;cursor:pointer;font:400 12px var(--mono);color:var(--muted);display:flex;align-items:center;gap:6px;min-width:0}
 details.think summary::-webkit-details-marker{display:none}

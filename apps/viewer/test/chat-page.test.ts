@@ -18,7 +18,7 @@ import { build } from '../build.mjs';
 import type { ChatSource } from '../src/chat-model.ts';
 import type { Line } from '../src/format.ts';
 import { reportFileOf, reportLinkOf } from '../src/chat-report.ts';
-import { sourceByHref, sourceFrameAt, sourceKindOf, sourcePageOf, sourcePictureFor, sourceRegionOf, threadPlace } from '../src/chat-view.ts';
+import { sourceByHref, sourceFrameAt, sourceKindOf, sourcePageOf, sourcePictureFor, sourceRegionOf, threadPlace, threadThought } from '../src/chat-view.ts';
 import { CITED, K, lines, manifest as handManifest, PAGES, PHOTOS, SCANS, deliverInstead, writeRecording } from './vision-hand.ts';
 import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
 
@@ -64,6 +64,14 @@ test('a region comes from the citation\'s address alone, and lands on the page o
   const several = { ...sources, spread: { ...source('deck.pdf#page=4'), more: ['deck.pdf#page=7', 'deck.pdf#page=9'] } };
   assert.equal(sourceByHref(several, 'deck.pdf#page=7'), 'spread', 'a look over several addresses is found by any of them');
   assert.equal(sourceByHref(several, 'deck.pdf#page=9&xywh=percent:1,2,3,4'), 'spread');
+});
+
+test('a thought reads as its first line, a wholly bold line without its markers, and the rest as its body', UNIT, () => {
+  assert.deepEqual(threadThought('**Analyzing transcript data**\n\nI am reading page 2.'), { title: 'Analyzing transcript data', body: 'I am reading page 2.' });
+  assert.deepEqual(threadThought('\n__Checking the pages__\nfirst, then second'), { title: 'Checking the pages', body: 'first, then second' });
+  assert.deepEqual(threadThought('**Page 2** holds the alarm; I will cite its `line`.'), { title: '**Page 2** holds the alarm; I will cite its `line`.', body: '' }, 'a line only partly bold keeps its marks for the inline render');
+  assert.deepEqual(threadThought('Plain first line\nand more'), { title: 'Plain first line', body: 'and more' });
+  assert.equal(threadThought(`${'x'.repeat(200)}`).title.length, 120, 'a long first line is clipped');
 });
 
 test('a region is drawn on the picture whose address holds it; of several, the cited one; of none, the cited one', UNIT, () => {
@@ -182,10 +190,10 @@ function writeNarrated(dir: string) {
     { channel: 'live', source: 'host', kind: 'process.started', t: (t += 10), seq: 1, data: { gen: 1 } },
     { channel: 'durable', source: 'workflow', kind: 'agentrun.workflow', gen: 1, t: (t += 10), commit: 1, order: 0, data: { doc: 'agentrun.workflow', input: { input: 'Read the four pages of notes.pdf.' } } },
     pi(2, 'pi.user', { role: 'user', content: 'The host\'s prompt.' }),
-    pi(3, 'pi.assistant', { role: 'assistant', content: [{ type: 'text', text: 'I will read each page in turn.' }, ...[1, 2, 3, 4].map((n) => ({ type: 'toolCall', id: `r${n}`, name: 'read', arguments: { path: 'notes.pdf', page: n } }))] }),
+    pi(3, 'pi.assistant', { role: 'assistant', content: [{ type: 'thinking', thinking: '**Analyzing transcript data**\n\nI am reading page 2 before the others.' }, { type: 'text', text: 'I will read each page in turn.' }, ...[1, 2, 3, 4].map((n) => ({ type: 'toolCall', id: `r${n}`, name: 'read', arguments: { path: 'notes.pdf', page: n } }))] }),
     ...[1, 2, 3, 4].map((n) => pi(3 + n, 'pi.tool-result', { role: 'toolResult', toolCallId: `r${n}`, toolName: 'read', content: [{ type: 'text', text: `Page ${n} says the same.` }], isError: false })),
     pi(8, 'pi.user', { role: 'user', content: 'You stopped without submitting. Call submit.' }),
-    pi(9, 'pi.assistant', { role: 'assistant', content: [{ type: 'text', text: 'All four pages agree.' }] }),
+    pi(9, 'pi.assistant', { role: 'assistant', content: [{ type: 'thinking', thinking: 'Checking that the four agree\nthey do, line for line.' }, { type: 'text', text: 'All four pages agree.' }] }),
   ];
   mkdirSync(join(dir, 'blobs'), { recursive: true });
   const { result: _result, ...rest } = handManifest;
@@ -262,12 +270,12 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     const wide = await value<Record<string, unknown>>(`(() => { const d = doc('wide'); return {
       task: [...d.querySelectorAll('.msg.user .bubble')].map((n) => n.textContent), first: d.querySelector('.thread').firstElementChild.matches('.msg.user'),
       prompt: d.body.textContent.includes("The host's prompt"), marks: d.body.textContent.includes('**') || d.body.textContent.includes('\u0060'),
-      strong: [...d.querySelectorAll('details.think summary em strong, details.think > div strong, .said-text strong')].map((n) => n.textContent),
-      code: [...d.querySelectorAll('details.think summary em code, details.think > div code')].map((n) => n.textContent),
+      strong: [...d.querySelectorAll('.thought strong, .said-text strong')].map((n) => n.textContent),
+      code: [...d.querySelectorAll('.thought code')].map((n) => n.textContent),
       cards: [...d.querySelectorAll('.thread > .msg .step')].map((c) => c.querySelector('.t span').textContent), hidden: d.querySelectorAll('.step[hidden]').length,
       more: [...d.querySelectorAll('.more')].map((n) => n.textContent),
       folds: [...d.querySelectorAll('details.fold')].map((n) => ({ open: n.open, label: n.querySelector('summary .lab').textContent, cards: n.querySelectorAll('.step').length })),
-      thinking: [...d.querySelectorAll('details.think:not(.fold)')].map((n) => ({ open: n.open, text: n.querySelector('div').textContent })),
+      thinking: [...d.querySelectorAll('.thought')].map((n) => ({ fold: n.tagName === 'DETAILS', title: n.querySelector('.thought-title').textContent })),
       how: d.querySelector('a.how').getAttribute('href'),
       timeline: { body: shown(d.querySelector('.tl-body')), expanded: d.querySelector('.tl-toggle').getAttribute('aria-expanded'), dot: !!d.querySelector('.tl .dot') },
       flat: flat('wide'), split: d.querySelector('.chat').getBoundingClientRect().width < d.querySelector('.art').getBoundingClientRect().width,
@@ -278,13 +286,13 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.equal(wide.first, true, 'at the top of the chat');
     assert.equal(wide.prompt, false, 'the host\'s prompt is not drawn');
     assert.equal(wide.marks, false, 'no markdown marks left as text');
-    assert.deepEqual(wide.strong, ['Page 2', 'Page 2', 'alarm'], 'bold in the thinking\'s title and body and in the last words');
-    assert.deepEqual(wide.code, ['line', 'line'], 'inline code in the thinking\'s title and body');
+    assert.deepEqual(wide.strong, ['Page 2', 'alarm'], 'bold in the thought\'s line and in the last words');
+    assert.deepEqual(wide.code, ['line'], 'inline code in the thought\'s line');
     assert.deepEqual(wide.cards, ['read film.mp4 from_s=0 to_s=30', 'read scans.pdf page=1', 'read scans.pdf page=2', 'read scans.pdf page=3', 'read scans.pdf page=1'], 'one card per tool call of the first conversation, in order');
     assert.deepEqual(wide.more, ['+ 2 more'], 'calls of one tool in a row: the first three shown, the rest behind "+ N more"; three in a row do not fold');
     assert.equal(wide.hidden, 2);
     assert.deepEqual(wide.folds, [{ open: false, label: 'conversation 2', cards: 3 }], 'the second conversation, folded');
-    assert.deepEqual(wide.thinking, [{ open: false, text: 'Page 2 holds the alarm; I will cite its line.' }], 'the run\'s own thinking, folded');
+    assert.deepEqual(wide.thinking, [{ fold: false, title: 'Page 2 holds the alarm; I will cite its line.' }], 'the run\'s own thought of one line, a line with no fold');
     assert.equal(wide.how, './?r=hand-page', 'the inspection viewer, with no other query parameter');
     assert.deepEqual(wide.timeline, { body: false, expanded: 'false', dot: true }, 'the timeline starts collapsed');
     assert.deepEqual(wide.flat, { page: 0, panes: 0 }, 'no horizontal scroll');
@@ -375,7 +383,7 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
 
     // No page from the agent: the run's answer, labelled as the run's, its chips opening their sources; no thinking fold.
     const answer = await value<Record<string, unknown>>(`(() => { const d = doc('answer'); return { kicker: d.querySelector('.kicker').textContent, title: d.querySelector('.atitle').textContent,
-      rows: d.querySelectorAll('.arow').length, frames: d.querySelectorAll('iframe').length, thinking: d.querySelectorAll('details.think:not(.fold)').length,
+      rows: d.querySelectorAll('.arow').length, frames: d.querySelectorAll('iframe').length, thinking: d.querySelectorAll('.thought').length,
       inReport: [...d.querySelectorAll('.step')].filter((c) => c.querySelector('.inrep')).map((c) => c.querySelector('.t span').textContent), flat: flat('answer') }; })()`);
     assert.deepEqual(answer, { kicker: 'The run\'s answer', title: CITED.title, rows: CITED_PAGES.rows.length, frames: 0, thinking: 0,
       inReport: ['read scans.pdf page=2', 'read scans.pdf page=3', 'read photos/photo-001.png'], flat: { page: 0, panes: 0 } });
@@ -462,9 +470,11 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       order: [...m.children].map((n) => n.className), said: [...m.querySelectorAll('.said-text')].map((n) => [n.textContent, n.querySelectorAll('.more').length, n.classList.contains('clamped')]),
       cards: [...m.querySelectorAll('.steps > .step')].map((n) => n.hidden), more: m.querySelector('.steps > .more')?.textContent,
       host: [m.querySelector('.host-note .host-who').textContent, m.querySelector('.host-note .host-text').textContent, !!m.querySelector('.host-note').closest('.msg.user')],
-      users: [...doc('narrated').querySelectorAll('.msg.user')].map((n) => n.textContent) }; })()`);
-    assert.deepEqual(narrated, { order: ['who', 'said-text', 'steps', 'host-note', 'said-text'], said: [['I will read each page in turn.', 0, false], ['All four pages agree.', 0, false]],
-      cards: [false, false, false, true], more: '+ 1 more', host: ['Host', 'You stopped without submitting. Call submit.', false], users: ['YouRead the four pages of notes.pdf.'] });
+      users: [...doc('narrated').querySelectorAll('.msg.user')].map((n) => n.textContent),
+      thoughts: [...m.querySelectorAll('.thought')].map((n) => [n.querySelector('.thought-title').textContent, shown(n.querySelector('.thought-title')), n.open, shown(n.querySelector('.thought-body')), n.querySelector('.thought-body').textContent, n.querySelector('.thought-tag').textContent]) }; })()`);
+    assert.deepEqual(narrated, { order: ['who', 'thought', 'said-text', 'steps', 'host-note', 'thought', 'said-text'], said: [['I will read each page in turn.', 0, false], ['All four pages agree.', 0, false]],
+      cards: [false, false, false, true], more: '+ 1 more', host: ['Host', 'You stopped without submitting. Call submit.', false], users: ['YouRead the four pages of notes.pdf.'],
+      thoughts: [['Analyzing transcript data', true, false, false, 'I am reading page 2 before the others.', 'thinking'], ['Checking that the four agree', true, false, false, 'they do, line for line.', 'thinking']] });
 
     // A judge's look over two photographs that boxed a mark on the second: opened at the first, the box is on the second,
     // in the judge's accent.

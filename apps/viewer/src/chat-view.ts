@@ -248,12 +248,30 @@ function sourceView(recording: Recording, model: ChatModel, shown: SourceShown, 
   return pane;
 }
 
-/** Thinking the run's own model wrote, folded, its first line as a preview. */
+/** How many characters of a thought's first line show as its title. */
+const THREAD_TITLE = 120;
+
+/** A thinking part as its title and its body: the title is its first line (a wholly bold line without its markers, as
+ *  a model's thought summary writes it, else the line clipped); the body is the rest. */
+export function threadThought(text: string): { title: string; body: string } {
+  const lines = text.split('\n');
+  const at = lines.findIndex((line) => line.trim() !== '');
+  if (at < 0) return { title: '', body: '' };
+  const line = lines[at]!.trim();
+  const bold = /^(\*\*|__)(?=\S)(.+?\S)\1$/.exec(line);
+  const title = bold && !bold[2]!.includes(bold[1]!) ? bold[2]! : line.length > THREAD_TITLE ? `${line.slice(0, THREAD_TITLE - 1).trimEnd()}…` : line;
+  return { title, body: lines.slice(at + 1).join('\n').trim() };
+}
+
+/** Thinking the run's own model wrote, in the agent's voice: its title as a line in the chat, its body folded behind it
+ *  (a thought of one line has no fold). */
 function threadThinking(text: string): HTMLElement {
-  const preview = text.split('\n').find((line) => line.trim() !== '')?.trim() ?? '';
-  return reportEl('details', { class: 'think' },
-    reportEl('summary', {}, reportEl('span', { class: 'lab', text: 'Thinking' }), reportEl('em', {}, ...reportInline(preview))),
-    reportEl('div', {}, ...reportParagraphs(text)));
+  const { title, body } = threadThought(text);
+  const line = reportEl('span', { class: 'thought-title' }, ...reportInline(title));
+  if (body === '') return reportEl('div', { class: 'thought' }, line);
+  return reportEl('details', { class: 'thought' },
+    reportEl('summary', {}, line, reportEl('span', { class: 'thought-tag', text: 'thinking' })),
+    reportEl('div', { class: 'thought-body' }, ...reportParagraphs(body)));
 }
 
 /** A message from the person: its body, and past a few lines a fold with "Show the whole message". */
