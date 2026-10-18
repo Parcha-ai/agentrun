@@ -1,0 +1,99 @@
+{
+  "name": "disk",
+  "title": "Run outlives its box",
+  "claim": "An agent's run lives on an Archil disk: delete its sandbox mid-job and a new one takes over in seconds, with every paid tool call made once.",
+  "models": {
+    "lead": {
+      "needs": [
+        "text",
+        "tools"
+      ]
+    }
+  },
+  "keys": [
+    {
+      "env": "ARCHIL_API_KEY",
+      "why": "the run's directory and its claim live on an Archil disk; the demo mounts it, and creates and deletes run directories and token users on it",
+      "where": "the Archil console, in a SCRATCH organisation (never a production one): API keys",
+      "required": true,
+      "for": "live"
+    },
+    {
+      "env": "PDA_LIVE_DISK",
+      "why": "the disk the run lives on (dsk-...)",
+      "where": "the Archil console, a disk in that scratch organisation that holds nothing else",
+      "required": true,
+      "for": "live"
+    },
+    {
+      "env": "PDA_LIVE_REGION",
+      "why": "the disk's region; aws-us-east-1 when unset",
+      "where": "the Archil console, the disk's page",
+      "required": false,
+      "for": "live"
+    },
+    {
+      "env": "DAYTONA_API_KEY",
+      "why": "the live kill deletes the Daytona sandbox the run is in, and the successor starts in a new one",
+      "where": "the Daytona dashboard: Keys, for an organisation on Tier 3 or 4 (the archil client needs full egress)",
+      "required": true,
+      "for": "kill"
+    }
+  ],
+  "programs": [
+    {
+      "cmd": "node",
+      "why": "runs the demo; Node 22.19 or later",
+      "required": true
+    },
+    {
+      "cmd": "archil",
+      "why": "the Archil client mounts the run's directory (0.8.42 or later)",
+      "required": true,
+      "platforms": [
+        "linux"
+      ],
+      "for": "live"
+    },
+    {
+      "cmd": "fusermount",
+      "why": "FUSE, which the archil client mounts through (package fuse3)",
+      "required": true,
+      "platforms": [
+        "linux"
+      ],
+      "for": "live"
+    },
+    {
+      "cmd": "archil-scoped",
+      "why": "this package's wrapper around the archil client, installed root-owned: the one command the run may run as root, through one sudoers line",
+      "required": true,
+      "platforms": [
+        "linux"
+      ],
+      "for": "live"
+    }
+  ],
+  "expectedCalls": 11,
+  "expectedCost": 0.15,
+  "kills": [
+    {
+      "point": "effect.kept charge",
+      "n": 5,
+      "why": "the fifth charge is paid and its answer kept, and the box is gone before the run commits it",
+      "kind": "box",
+      "target": "run"
+    }
+  ],
+  "kill": {
+    "point": "effect.kept charge",
+    "why": "the fifth charge is paid and its answer kept, and the box is gone before the run commits it"
+  },
+  "panels": [
+    "workflow",
+    "disk"
+  ],
+  "targets": [
+    "local"
+  ]
+}
