@@ -18,6 +18,7 @@ import { pdfDrawer, type PdfDrawn } from './pdf.ts';
 import { transportPanel } from './transport.ts';
 import { visionPanel } from './vision.ts';
 import { documentPanel } from './document.ts';
+import { landingOf } from './landing.ts';
 
 const SPEEDS = [0.5, 1, 2, 4, 10];
 
@@ -763,7 +764,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   };
 }
 
-function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entries: readonly { id: string; manifest: Manifest }[], unread?: string) {
+function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entries: readonly (GalleryEntry | IndexEntry)[], unread?: string) {
   const list = el('ul', { class: 'gallery' }, ...entries.map((entry) => {
     // A demo opens in the chat + report view; its inspection is ./?r=<id>, linked from there.
     const link = Object.assign(el('a', { text: entry.manifest.title }), { href: `chat.html?r=${encodeURIComponent(entry.id)}` });
@@ -792,7 +793,9 @@ function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entr
     }
     onOpen(await fromFiles(files));
   });
-  root.replaceChildren(el('header', {}, el('h1', { text: 'agentrun run viewer' }), el('p', { class: 'meta', text: 'Replays a run recorded as agentrun.recording/1: every process, every kill, every commit.' })),
+  // The gallery is the site's landing: the chat view's look, its line and its featured runs above the list.
+  document.documentElement.classList.add('landing-page');
+  root.replaceChildren(landingOf(entries), el('header', {}, el('h1', { text: 'agentrun run viewer' }), el('p', { class: 'meta', text: 'Replays a run recorded as agentrun.recording/1: every process, every kill, every commit.' })),
     el('h2', { text: 'Recordings' }), unread !== undefined ? el('p', { class: 'problems', text: `The gallery could not be read (${unread}); a recording folder can still be opened below.` })
       : entries.length ? list : el('p', { class: 'empty', text: 'No recordings yet.' }), drop);
 }
