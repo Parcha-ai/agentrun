@@ -30,6 +30,8 @@ const visionNum = (value: Json | undefined): number | undefined => (typeof value
 /** A picture the eyes saw: its blob, and its second in the film when the host named it. */
 /** `keyframe`: not what the eyes saw, but the keyframe a cited result pairs with the look (the row's label). */
 export type VisionImage = { blob: string; at?: number; caption?: string; keyframe?: string };
+/** A box a cite draws, in percent of the picture, and the second of the film it names (a still's), when it names one. */
+type VisionBox = { x: number; y: number; w: number; h: number; at?: number };
 /** One filing of a LookRecord. `cost` is null when the price is not known; a native look has none of its own. */
 export type VisionLook = {
   /** The document that filed it (`(doc, key, conv, task)`), and its place in that document's list. */
@@ -37,7 +39,9 @@ export type VisionLook = {
   /** The call that filed it: `look`, or `transcribe` for a transcription. `via`: the provider a transcription went through. */
   tool: string; via?: string;
   model: string; ask?: string; body: string; kind: string; sha256: string; fragment: string; source: string; item?: string;
-  page?: number; fromS?: number; toS?: number; tokensIn?: number; tokensOut?: number; cost: number | null;
+  page?: number; fromS?: number; toS?: number;
+  /** The seconds of the film the stills a look was made on were cut at (an image look named `film.mp4#t=S`). */
+  stills?: number[]; tokensIn?: number; tokensOut?: number; cost: number | null;
   images: VisionImage[]; miss?: { code: string; reason?: string };
   /** The generation of the first line that carried it, its commit, and whether a restore went back over that commit. */
   gen: number; commit: number; t: number; lost: boolean; path?: string; conv?: number;
@@ -125,10 +129,16 @@ function visionLooksOf(line: Line, gen: number): { doc: string; length: number; 
     const key = visionStr(facts?.key);
     if (!filing || !record || !args || !facts || key === undefined) return [];
     const receipt = visionStr(filing.receipt) ?? null;
-    const fragment = visionStr(facts.fragment) ?? '';
-    const window = visionWindow(fragment);
+    // Code that cuts a still or a clip out of a film names where it came from in the look's path (`film.mp4#t=S`, several
+    // joined by ", "), and the record's own fragment is empty: the path's fragments say the seconds then.
+    const named = (visionStr(args.path) ?? '').split(', ');
+    const pathFragments = named.map((part) => (part.includes('#') ? part.slice(part.indexOf('#') + 1) : '')).filter((part) => part !== '');
+    const fragment = visionStr(facts.fragment) || pathFragments.join(', ');
+    const windows = (visionStr(facts.fragment) ? [visionStr(facts.fragment)!] : pathFragments).map(visionWindow).filter((each) => each.from !== undefined);
+    const window = { from: windows.length ? Math.min(...windows.map((each) => each.from!)) : undefined, to: windows.length ? Math.max(...windows.map((each) => each.to ?? each.from!)) : undefined };
     const fromS = visionNum(args.from_s) ?? window.from;
     const toS = visionNum(args.to_s) ?? window.to;
+    const stills = visionStr(facts.kind) === 'image' ? windows.map((each) => each.from!) : [];
     const page = visionNum(args.page) ?? visionPage(fragment);
     const ask = visionStr(args.ask);
     const via = visionStr(args.via) ?? visionStr(facts.provider);
@@ -141,7 +151,7 @@ function visionLooksOf(line: Line, gen: number): { doc: string; length: number; 
     return [{
       doc: id, at: index, receipt, key, status: record.status === 'ok' ? 'ok' : 'failed', tool: visionStr(record.tool) ?? 'look', ...(via !== undefined ? { via } : {}),
       native: args.native === true, kept: facts.kept === true, model: visionStr(args.model) ?? 'not recorded', body: visionStr(record.body) ?? '',
-      kind: visionStr(facts.kind) ?? 'unknown', sha256: visionStr(facts.sha256) ?? '', fragment, source: visionStr(args.path) ?? '',
+      kind: visionStr(facts.kind) ?? 'unknown', sha256: visionStr(facts.sha256) ?? '', fragment, source: named[0]!.split('#')[0]!, ...(stills.length ? { stills } : {}),
       ...(ask !== undefined ? { ask } : {}), ...(item !== undefined ? { item } : {}), ...(page !== undefined ? { page } : {}),
       ...(fromS !== undefined ? { fromS } : {}), ...(toS !== undefined ? { toS } : {}),
       ...(tokensIn !== undefined ? { tokensIn } : {}), ...(tokensOut !== undefined ? { tokensOut } : {}),
@@ -387,9 +397,9 @@ const VISION_CELLS = 60;
 const visionMoney = (usd: number | null) => (usd === null ? 'unknown' : `$${usd.toFixed(4)}`);
 const visionShort = (sha: string) => (sha.length > 12 ? `${sha.slice(0, 6)}…${sha.slice(-4)}` : sha);
 /** The lane a look is drawn in. A transcription is speech whatever the file was: a video transcribed is heard, not read in
- *  windows. */
+ *  windows. A look on stills cut from a film is the film's, at their seconds, never a photograph. */
 const visionLane = (look: VisionLook): 'speech' | 'film' | 'pages' | 'photos' | undefined =>
-  (look.tool === 'transcribe' || look.kind === 'audio' ? 'speech' : look.kind === 'video' ? 'film' : look.kind === 'pdf' ? 'pages' : look.kind === 'image' ? 'photos' : undefined);
+  (look.tool === 'transcribe' || look.kind === 'audio' ? 'speech' : look.kind === 'video' || look.stills !== undefined ? 'film' : look.kind === 'pdf' ? 'pages' : look.kind === 'image' ? 'photos' : undefined);
 /** A transcript's rows, from a body of lines `start<TAB>end<TAB>words` in seconds (blank lines skipped), or undefined when
  *  the body is not one. */
 export const visionTranscript = (body: string): { start: number; end: number; words: string }[] | undefined => {
@@ -438,25 +448,34 @@ const visionOnce = (looks: VisionLook[]): VisionLook[] => {
   return [...chosen.values()];
 };
 
-function visionFilm(looks: VisionLook[], state: VisionState, chosen: VisionLook | undefined): Node {
+function visionFilm(looks: VisionLook[], state: VisionState, chosen: VisionLook | undefined, boxes: VisionBox[]): Node {
   const film = visionOnce(looks.filter((look) => visionLane(look) === 'film'));
   const running = Object.values(state.running).filter((read) => read.fromS !== undefined || read.toS !== undefined);
   if (film.length === 0 && running.length === 0) return h('section', { class: 'vz-lane' }, h('h5', {}, 'Film'), h('p', { class: 'empty' }, 'No window of film read yet.'));
-  const end = Math.max(1, ...film.map((look) => look.toS ?? look.fromS ?? 0), ...running.map((read) => read.toS ?? read.fromS ?? 0));
+  const end = Math.max(1, ...film.map((look) => Math.max(look.toS ?? look.fromS ?? 0, ...(look.stills ?? []))), ...running.map((read) => read.toS ?? read.fromS ?? 0));
   const cellOf = (s: number) => Math.max(0, Math.min(VISION_CELLS - 1, Math.floor((s / end) * VISION_CELLS)));
   const cells = Array.from({ length: VISION_CELLS }, () => new Set<string>());
   const mark = (from: number | undefined, to: number | undefined, flag: string) => { for (let at = cellOf(from ?? 0); at <= cellOf(to ?? from ?? 0); at += 1) cells[at]!.add(flag); };
-  for (const look of film) mark(look.fromS, look.toS, look.status === 'ok' ? 'read' : 'missed');
+  // A window marks its span; a still, only its own second.
+  const marks = (look: VisionLook, flag: string) => (look.stills ? look.stills.forEach((second) => mark(second, second, flag)) : mark(look.fromS, look.toS, flag));
+  for (const look of film) marks(look, look.status === 'ok' ? 'read' : 'missed');
   for (const read of running) mark(read.fromS, read.toS, 'reading');
-  if (chosen && visionLane(chosen) === 'film') mark(chosen.fromS, chosen.toS, 'cited');
+  if (chosen && visionLane(chosen) === 'film') marks(chosen, 'cited');
   const shown = chosen && visionLane(chosen) === 'film' ? chosen : film.findLast((look) => look.status === 'ok');
   const source = shown?.item ?? shown?.source ?? film[0]?.item ?? film[0]?.source ?? 'the film';
+  const windows = film.filter((look) => look.stills === undefined).length;
+  const stills = film.reduce((sum, look) => sum + (look.stills?.length ?? 0), 0);
+  const counted = [...(windows || !stills ? [`${windows} window${windows === 1 ? '' : 's'} read`] : []), ...(stills ? [`${stills} still${stills === 1 ? '' : 's'} looked at`] : [])];
+  // A box a cite draws over a still is on the frame at the cite's second (the first frame when it names none).
+  const boxesOn = (image: VisionImage | undefined, at: number) => boxes.filter((box) => (box.at === undefined ? at === 0 : image?.at === box.at || (image?.at === undefined && at === 0)));
   return h('section', { class: 'vz-lane' },
-    h('h5', {}, `Film · ${source} · ${film.length} window${film.length === 1 ? '' : 's'} read`),
+    h('h5', {}, `Film · ${source} · ${counted.join(' · ')}`),
     h('div', { class: 'vz-cells', title: `0 to ${end} s; shaded: read; hatched: reading now` }, ...cells.map((flags) => h('span', { class: `vz-cell ${[...flags].join(' ')}`.trim() }))),
     shown !== undefined && shown.images.length > 0 && shown.images.every((image) => image.keyframe !== undefined) && h('p', { class: 'vz-note' }, 'The chapter\'s keyframe, not what the eyes saw: they looked at the window itself.'),
     shown && h('div', { class: 'vz-strip' }, ...(shown.images.length ? shown.images : [undefined]).map((image, at) => h('figure', {},
-      visionPicture(image, `${source} ${shown.fragment}`, 'vz-frame'),
+      boxesOn(image, at).length && image ? h('div', { class: 'vz-still' }, visionPicture(image, `${source} ${shown.fragment}`, 'vz-scan'),
+        ...boxesOn(image, at).map((box) => h('span', { class: 'vz-box', title: `xywh=percent:${box.x},${box.y},${box.w},${box.h}`, box: { x: box.x, y: box.y, w: box.w, h: box.h } })))
+        : visionPicture(image, `${source} ${shown.fragment}`, 'vz-frame'),
       h('figcaption', {}, image?.keyframe !== undefined ? `keyframe: ${image.keyframe}` : image?.at !== undefined ? `${image.at} s` : image?.caption ?? (at === 0 ? `#${shown.fragment}` : ''))))),
     shown && visionSaid(`#${shown.fragment}`, shown.body));
 }
@@ -588,11 +607,13 @@ const VISION_PICTURES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image
 const visionKeyframes = (cited: VisionCitedResult | undefined, isImage: (sha: string) => boolean): Map<string, VisionImage[]> => {
   const paired = new Map<string, VisionImage[]>();
   for (const row of cited?.rows ?? []) {
-    const pictures = row.cites.flatMap((each) => (each.blob && isImage(each.blob) ? [each.blob] : []));
+    // A picture keeps the second its cite names (`#t=S`), so a still at that second can tell it is its own frame.
+    const pictures = row.cites.flatMap((each) => (each.blob && isImage(each.blob) ? [{ blob: each.blob, at: visionWindow(each.fragment).from }] : []));
     for (const each of row.cites) {
       if (!each.look) continue;
       const held = paired.get(each.look) ?? [];
-      paired.set(each.look, [...held, ...pictures.filter((blob) => !held.some((image) => image.blob === blob)).map((blob) => ({ blob, keyframe: row.label }))]);
+      paired.set(each.look, [...held, ...pictures.filter((picture) => !held.some((image) => image.blob === picture.blob))
+        .map((picture) => ({ blob: picture.blob, keyframe: row.label, ...(picture.at !== undefined ? { at: picture.at } : {}) }))]);
     }
   }
   return new Map([...paired].filter(([, images]) => images.length > 0));
@@ -652,15 +673,24 @@ function visionView(state: VisionState, context: ViewContext): Node {
   // a cite draws are on that page.
   const isImage = (sha: string) => VISION_PICTURES.has(context.blobType?.(sha)?.split(';')[0]!.trim().toLowerCase() ?? '');
   const keyframes = visionKeyframes(cited, isImage);
+  // A still's own frame is a picture a row cites beside it at the still's second: what the eyes looked at, no keyframe.
+  const framesOf = (look: VisionLook): VisionImage[] | undefined => {
+    const paired = keyframes.get(look.key);
+    return look.stills ? paired?.filter((image) => image.at !== undefined && look.stills!.includes(image.at)).map(({ keyframe: _row, ...frame }) => frame) : paired;
+  };
   const pictured = (look: VisionLook): VisionLook => (look.images.length ? look
-    : { ...look, images: state.shown[visionShownKey(look.conv, look.source, look.page, look.fromS, look.toS)] ?? (visionLane(look) === 'film' ? keyframes.get(look.key) : undefined) ?? [] });
+    : { ...look, images: state.shown[visionShownKey(look.conv, look.source, look.page, look.fromS, look.toS)] ?? (visionLane(look) === 'film' ? framesOf(look) : undefined) ?? [] });
   const named = visionCited(state, context.cite);
   const chosen = named && pictured(named);
   // A box is where a cite of the chosen look says the line stands: the account's or a cited result's fragments.
   const fragments = [...(account?.entries.flatMap((entry) => entry.cites).map((each) => ({ look: each.receipt, fragment: each.fragment })) ?? []),
     ...(cited?.rows.flatMap((row) => row.cites).map((each) => ({ look: each.look, fragment: each.fragment })) ?? [])];
-  // Only the pages lane draws boxes, so only a chosen page has them.
-  const boxes = chosen && visionLane(chosen) === 'pages' ? fragments.filter((each) => each.look === chosen.key).flatMap((each) => { const box = visionRegion(each.fragment); return box ? [box] : []; }) : [];
+  // A chosen page draws its boxes, and a chosen still draws them over its frame at the second the cite names.
+  const boxes: VisionBox[] = chosen && (visionLane(chosen) === 'pages' || visionLane(chosen) === 'film') ? fragments.filter((each) => each.look === chosen.key).flatMap((each) => {
+    const box = visionRegion(each.fragment);
+    const at = visionWindow(each.fragment).from;
+    return box ? [{ ...box, ...(at !== undefined ? { at } : {}) }] : [];
+  }) : [];
   // The lanes draw the run's own eyes; a weaker model the account compares them with is drawn in its own scene.
   const lanes = state.looks.filter((look) => !look.native && look.model !== account?.weak?.model).map(pictured);
   const shown = chosen ?? lanes.at(-1);
@@ -677,7 +707,7 @@ function visionView(state: VisionState, context: ViewContext): Node {
       state.kills.length > 0 && h('span', { class: 'vz-badge red' }, `killed ${state.kills.length === 1 ? 'once' : `${state.kills.length} times`}${state.kills.at(-1)?.label ? `: ${state.kills.at(-1)!.label}` : ''}`),
       kept > 0 && h('span', { class: 'vz-badge ok' }, `resumed · ${kept} kept`)),
     h('div', { class: 'vz-grid' },
-      h('div', { class: 'vz-col' }, visionFilm(lanes, state, chosen), visionPages(lanes, state, chosen, boxes), visionPhotos(lanes, chosen, account, context.focus), visionSpeech(lanes, chosen, momentsOf)),
+      h('div', { class: 'vz-col' }, visionFilm(lanes, state, chosen, chosen && visionLane(chosen) === 'film' ? boxes : []), visionPages(lanes, state, chosen, chosen && visionLane(chosen) === 'pages' ? boxes : []), visionPhotos(lanes, chosen, account, context.focus), visionSpeech(lanes, chosen, momentsOf)),
       h('div', { class: 'vz-col' },
         h('h5', {}, cited ? cited.title ?? state.result?.title ?? 'The result' : 'The account'),
         !state.result ? h('p', { class: 'empty' }, 'Not delivered yet.')

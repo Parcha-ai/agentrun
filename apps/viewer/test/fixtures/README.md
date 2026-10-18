@@ -63,3 +63,14 @@ was killed at `effect.kept charge` before the store recorded the call, and settl
 kept in evidence (its call carries `via: "evidence"`) without calling again; the last five paid by generation 2. It is not a valid
 recording on its own (no manifest, no driver, pi or browser lines), and the tests only fold it.
 
+
+## hear-and-find
+
+A whole recording of pi-vision's hear-and-find example (`examples/hear-and-find`) on its scripted path: a 34 s
+public-domain NASA clip of the Apollo 11 landing, a scripted lead, scripted eyes, a scripted Jev and a scripted
+transcriber, so it holds no model's output, no key and no cost. The run transcribes the clip, then has Jev look at
+stills it cuts from the film, each look named `eagle-heard-and-seen.webm#t=S` (kind `image`, its own fragment empty),
+and its `agentrun.cited/1` result cites the frame at 28 s with the box Jev drew (`#t=28&xywh=percent:30.3,5.6,50.3,54.4`).
+It is kept whole (manifest, lines and its 12 blobs, 472 KB): the vision panel's tests read it to draw those looks in the
+film lane at their seconds, never as photographs. It is a valid recording: the repository's validator and the viewer's
+`validate` find nothing in it, and the credential and machine-value scans found nothing.
