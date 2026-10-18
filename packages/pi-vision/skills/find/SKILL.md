@@ -54,8 +54,9 @@ Search coarse to fine, and pay for each step only where the step before points:
 
 Each step writes what it found to `.find/<search>/task.json` and the next step reads it, so a run cut short goes on
 from the last step that finished. A step run again asks nothing it already has (a scanned frame keeps its score) and
-counts only what it pays for (an answer kept from before costs nothing). Name each search by its thing
-(`.find/umbrella`), so a second search never mixes in frames or scores of the first. The steps are code-mode programs:
+counts only what it pays for (an answer kept from before costs nothing). Name each search by one word of its thing,
+in letters, digits and dashes (`.find/umbrella`): the folder goes into every path and command as it is, and a second
+search never mixes in frames or scores of the first. The steps are code-mode programs:
 `tools.bash` runs ffmpeg and reads files, `vision.judge` and `vision.see` answer (the `look` skill says what each takes
 and returns). Every path goes to the shell quoted, so a name with spaces works.
 
@@ -103,6 +104,7 @@ the same file when there is no other.
 ```js
 const task = { video: "film.mp4", best: "film.mp4", thing: "a red umbrella", box: "the umbrella", words: "umbrella|parasol", chapters: null, scanFrames: 300, budgetUsd: 0.1 };
 const dir = ".find/umbrella";
+if (!/^\.find\/[\w-]+$/.test(dir)) throw new Error(`name the search with one word of letters, digits and dashes, like .find/umbrella, not ${dir}`);
 const q = (text) => `'${String(text).replaceAll("'", "'\\''")}'`;
 const duration = Math.floor(Number(await tools.bash({ command: `ffprobe -v error -show_entries format=duration -of csv=p=0 ${q(task.video)}` })));
 const heard = (await tools.bash({ command: `grep -lxF -- ${q(task.video)} .hear/*/video 2>/dev/null || true` })).split("\n")[0].replace(/\/video$/, "");
