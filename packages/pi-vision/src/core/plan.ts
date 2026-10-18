@@ -32,11 +32,13 @@ export type SourceFacts = {
  *  carry text (a `read` with a question); a plan for the eyes always renders. */
 export type Selector = { readonly pages?: PageSpan; readonly fromS?: number; readonly toS?: number; readonly region?: Region; readonly render?: boolean };
 
+/** `show`: what the lead is shown in a tool result. `ask`: what the eyes are asked about, in requests that fit the model. */
 export type PlanMode = "show" | "ask";
 
 /** A host's own caps on one plan for the eyes (`ask`): the pages, and the frames or clips, it may take. None by default. */
 export type PlanCaps = { readonly pages?: number; readonly frames?: number };
 
+/** How a plan reduced its source to fit: not at all, shrunk, tiled, sampled, cut to a window, to text only, or refused. */
 export type Reduction = "as_is" | "downscaled" | "tiled" | "sampled" | "windowed" | "text_only" | "refused";
 
 /** What a plan did to fit, with the numbers a receipt and the model's first line carry. */
@@ -70,6 +72,7 @@ export type PlannedPart = {
   readonly maxBytes?: number;
 };
 
+/** The parts to derive, in order, and what the plan did to fit them. */
 export type Plan = { readonly parts: readonly PlannedPart[]; readonly fit: Fit };
 
 /** A derived part, ready for a model. `data` is base64. `fragment` is the citation form of where it came from. */
@@ -318,6 +321,8 @@ function planVideo(facts: SourceFacts, selector: Selector, limits: Limits, mode:
   return { parts: sized, fit: { reduction: "sampled", original, shown } };
 }
 
+/** What a source's parts are, and how they fit `limits`, by its kind: shown to the lead (`show`) or asked of the eyes (`ask`).
+ *  A source no kind reads is a plan with no parts and `fit.reduction` `refused`. */
 export function plan(facts: SourceFacts, selector: Selector, limits: Limits, mode: PlanMode, caps: PlanCaps = {}): Plan {
   switch (facts.kind) {
     case "image": return planImage(facts, selector, limits, mode);
