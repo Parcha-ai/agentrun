@@ -418,8 +418,9 @@ function threadCard(recording: Recording, model: ChatModel, item: ToolItem, fold
     for (const node of rest) fold(node, () => toggle(true));
   }
   return reportEl('div', { class: `step${item.failed ? ' failed' : ''}${item.judge ? ' judge' : ''}`, 'data-item': item.id },
-    // A step nothing the agent thought or wrote leads into speaks with what its look asked, inside its card.
-    item.voice && reportEl('p', { class: 'voice' }, ...reportInline(item.voice)),
+    // A step nothing the agent thought or wrote leads into speaks with what its look asked, inside its card, tagged as
+    // the ask so it never reads as the agent talking.
+    item.voice && reportEl('p', { class: 'voice' }, reportEl('span', { class: 'voice-tag', text: 'asked' }), reportEl('span', { class: 'voice-text' }, ...reportInline(item.voice))),
     reportEl('button', { class: thumb ? 'step-main' : 'step-main bare', type: 'button', 'data-open': item.id },
       reportEl('div', {}, reportEl('div', { class: 't' }, threadIcon(sourceKindOf(source?.href ?? '')), item.judge && threadJudge(), reportEl('span', { text: item.title }), item.failed && reportEl('small', { class: 'tag', text: 'failed' })),
         item.takeaway !== '' && reportEl('div', { class: 'k', text: item.takeaway })),
@@ -660,14 +661,26 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     showSource({ ...(key ? { look: key } : {}), ...(item ? { item } : {}), ...(picture ? { picture } : {}), href, regions: region ? [region] : [] });
   });
 
+  let jumps = 0;
   const scrollToItem = (id: string) => {
     const target = id === 'answer' ? answerNode : nodes.get(id);
     if (!target) return;
+    const jump = ++jumps;
     reveal(target);
     target.scrollIntoView({ block: 'center', behavior: motion() });
     target.classList.remove('flash');
     void target.offsetWidth;
     target.classList.add('flash');
+    // Pictures above the card still to load would move it as they come in: they load now, and once they have, or after
+    // 1.5 s, the card is centred again, once, unless another jump came since.
+    const waiting = [...thread.querySelectorAll<HTMLImageElement>('img')].filter((img) => !img.complete && img.getClientRects().length > 0
+      && (target.contains(img) || (img.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0));
+    if (waiting.length === 0) return;
+    const loaded = waiting.map((img) => new Promise((done) => { img.addEventListener('load', done, { once: true }); img.addEventListener('error', done, { once: true }); }));
+    for (const img of waiting) img.loading = 'eager';
+    void Promise.race([Promise.all(loaded), new Promise((done) => setTimeout(done, 1_500))]).then(() => {
+      if (jump === jumps) target.scrollIntoView({ block: 'center', behavior: motion() });
+    });
   };
 
   // "In the report" on each card whose look the report cites: the report again, at that spot (a phone opens the sheet).
