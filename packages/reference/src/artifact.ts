@@ -77,7 +77,7 @@ const cssTargets = (css: string): string[] => {
   const out: string[] = [];
   for (const match of text.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)'"\s][^)]*?))\s*\)/gi)) out.push(match[1] ?? match[2] ?? match[3] ?? '');
   for (const match of text.matchAll(/@import\s+(?:"([^"]*)"|'([^']*)')/gi)) out.push(match[1] ?? match[2] ?? '');
-  for (const match of text.matchAll(/image-set\(([^)]*)\)/gi)) for (const inner of match[1]!.matchAll(/"([^"]*)"|'([^']*)'/g)) out.push(inner[1] ?? inner[2] ?? '');
+  for (const match of text.matchAll(/image-set\(((?:[^()]|\([^)]*\))*)\)/gi)) for (const inner of match[1]!.replace(/type\(\s*(?:"[^"]*"|'[^']*')\s*\)/gi, '').matchAll(/"([^"]*)"|'([^']*)'/g)) out.push(inner[1] ?? inner[2] ?? '');
   return out;
 };
 

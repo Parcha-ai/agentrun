@@ -184,6 +184,9 @@ test('what a browser reads is read here: an embedded tab in a scheme, escaped CS
     'a ping': [PAGE('<a href="#x" ping="https://elsewhere.example/p">x</a>'), /a ping loads https:\/\/elsewhere.example\/p/],
   };
   for (const [what, [html, message]] of Object.entries(refused)) assert.throws(() => take(report(t, { 'index.html': html })), message, what);
+  // image-set candidates are files; the type() beside one is a MIME string, not a file.
+  const { artifact: set } = take(report(t, { 'index.html': PAGE('<p style="background-image:image-set(\'a.avif\' type(\'image/avif\') 1x, \'a.png\' type(\'image/png\') 2x)">x</p>'), 'a.avif': PNG, 'a.png': Buffer.from('png') }));
+  assert.deepEqual(Object.keys(set.files).sort(), ['a.avif', 'a.png', 'index.html']);
   // A local file named through an escaped url() is followed, not missed.
   const { artifact } = take(report(t, { 'index.html': PAGE('<p style="background:u\\72l(img/a.png)">x</p>'), 'img/a.png': PNG }));
   assert.deepEqual(Object.keys(artifact.files).sort(), ['img/a.png', 'index.html']);
