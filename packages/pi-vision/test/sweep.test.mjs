@@ -13,7 +13,7 @@ import { registerFauxProvider, fauxAssistantMessage } from "@earendil-works/pi-a
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { DEFAULT_LIMITS, citation, detectOnce, firstLine, formatFragment, guardResult, imageHeader, limitsFromModel, linkSafe, notBuilt, packRequests, parseCitation, parseFragment, plan, readMedia, reportMiss, resolveLimits, see, visionContext, visionSection, withReadMedia } from "@parcha/pi-vision";
+import { DEFAULT_LIMITS, citation, detectOnce, firstLine, formatFragment, guardResult, imageHeader, judge, limitsFromModel, linkSafe, notBuilt, packRequests, parseCitation, parseFragment, plan, readMedia, reportMiss, resolveLimits, see, visionContext, visionSection, withReadMedia } from "@parcha/pi-vision";
 import { callContext, createVisionExtension, modelsEyes, modelsOf, packageProviders, piResult } from "@parcha/pi-vision/durable";
 import { piAiEyes } from "@parcha/pi-vision/eyes/pi-ai";
 import { childEnvOf, inheritedEnv, nodeVisionEnv } from "@parcha/pi-vision/node";
@@ -239,6 +239,15 @@ const CASES = [
       for (let i = 0; i < FIRST_LINES.length; i++) sink.out("thrown", await see({ ask: "what is it?", images: [png(40, 30 + i)] }, undefined, CALL, guardSetup(sink, LIMITS, eyes)).catch((error) => error));
     },
   },
+  {
+    // Each request to a Jev whose errors carry the key and links: the miss `vision.judge` throws, its receipt and event.
+    id: ".#judge",
+    run: async (sink) => {
+      let n = 0;
+      const jev = { judge: async () => { throw failure(FIRST_LINES[n++]); } };
+      for (let i = 0; i < FIRST_LINES.length; i++) sink.out("thrown", await judge({ images: [png(300, 300 + i)], questions: { q: { type: "noul", instructions: "Is it a chart?" } } }, undefined, CALL, { ...guardSetup(sink, LIMITS), jev }).catch((error) => error));
+    },
+  },
   { id: ".#SeeMiss", exempt: "an error class" },
   { id: ".#NotBuiltError", exempt: "an error class" },
   { id: ".#notBuilt", exempt: "names a part chosen in source" },
@@ -269,6 +278,20 @@ const CASES = [
       const global = (await handle(sink)).see(nodeVisionEnv({ cwd: sink.workDir }), CALL);
       sink.out("thrown", await global.execute({ ask: "what is the total?", paths: [path] }).catch((error) => error));
       sink.out("answer", await global.execute({ ask: "what is the total?", paths: [path] }));
+    },
+  },
+  {
+    id: "./durable#VisionHandle.judge",
+    run: async (sink) => {
+      const path = `${sink.workDir}/frame.png?${SENTINEL_LINK_QUERY}`;
+      sink.echoes.push(path, basename(path));
+      await writeFile(path, pngBytes(3000, 1000));
+      let calls = 0;
+      const judge = async () => { if (calls++ === 0) throw failure(lineWith(1, 1)); return { model: "jev-1.14.0", answers: { where: { type: "box", box: { top: 0, bottom: 1, left: 0, right: 0.5 }, confidence: 0.5 } }, usage: { input_tokens: 10, output_tokens: 0 }, cost_usd: null }; };
+      const global = createVisionExtension({ jev: { judge }, evidence: { file: async (label, record) => { sink.out("receipt", { label, record }); return { path: `evidence/${label}.md` }; } }, scope: () => ({ label: "sweep", deriveDir: sink.deriveDir }), onLook: (event) => sink.out("look event", event), onMiss: (event) => sink.out("miss event", event) }).judge(nodeVisionEnv({ cwd: sink.workDir }), CALL);
+      const ask = { paths: [path], questions: { where: { type: "box", instructions: "the total" } } };
+      sink.out("thrown", await global.execute(ask).catch((error) => error));
+      sink.out("answer", await global.execute(ask));
     },
   },
   { id: "./node#nodeVisionEnv", run: ({ out, workDir }) => { const node = nodeVisionEnv({ cwd: workDir }); out("env", { id: node.id, cwd: node.cwd }); } },
@@ -421,7 +444,7 @@ const CASES = [
 const BUILT = [
   ".#limitsFromModel", ".#resolveLimits", ".#detectOnce", ".#linkSafe", ".#firstLine", ".#guardResult", ".#readMedia", ".#visionContext", ".#parseFragment",
   ".#formatFragment", ".#citation", ".#parseCitation", ".#withReadMedia", ".#visionSection", ".#plan", ".#packRequests", ".#see",
-  "./durable#createVisionExtension", "./durable#createVisionExtension.env", "./durable#VisionHandle.fit", "./durable#VisionHandle.pdfText", "./durable#VisionHandle.read", "./durable#VisionHandle.see",
+  "./durable#createVisionExtension", "./durable#createVisionExtension.env", "./durable#VisionHandle.fit", "./durable#VisionHandle.pdfText", "./durable#VisionHandle.read", "./durable#VisionHandle.see", "./durable#VisionHandle.judge", ".#judge",
   "./durable#callContext", "./durable#piResult", "./durable#modelsEyes", "./durable#modelsOf", "./durable#packageProviders",
   "./node#nodeVisionEnv", "./node#nodeVisionEnv.env", "./node#inheritedEnv", "./node#childEnvOf", "./eyes/pi-ai#piAiEyes",
   "./providers/unpdf#unpdfProvider", "./providers/pdfium#pdfiumProvider", "./providers/office-js#officeJsProvider", "./providers/photon#photonImages",
