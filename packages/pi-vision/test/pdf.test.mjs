@@ -4,8 +4,8 @@
 // invented; the binaries' suite (test/binaries) holds poppler to the same.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { execFileSync, spawnSync } from "node:child_process";
-import { readFile, readdir, writeFile } from "node:fs/promises";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { after, test } from "node:test";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import sharp from "sharp";
@@ -224,6 +224,60 @@ test("an engine's worker sees none of the host's environment and writes nothing 
     console.log(JSON.stringify(await runPdfWorker(worker, {}, { timeoutMs: 10000, memoryMb: 64 })));`;
   const run = spawnSync(process.execPath, ["--input-type=module", "-e", script], { cwd: new URL("..", import.meta.url), encoding: "utf8", timeout: 30_000, env: { ...process.env, PI_VISION_TEST_KEY: "sentinel-value" } });
   assert.deepEqual([run.status, run.stdout.trim(), run.stderr], [0, "[]", ""]);
+});
+
+const engine = (script, body, options = {}) => {
+  const host = `
+    import { runPdfWorker } from "@parcha/pi-vision";
+    const script = ${JSON.stringify(`const { parentPort, workerData: d } = process.getBuiltinModule("node:worker_threads"); ${script}`)};
+    ${body}`;
+  return spawnSync(process.execPath, ["--input-type=module", "-e", host], { cwd: new URL("..", import.meta.url), encoding: "utf8", timeout: 60_000, ...options });
+};
+const outcome = `try { console.log(JSON.stringify({ value: await runPdfWorker(script, input, { timeoutMs: 30_000, memoryMb: 96 }) })); } catch (error) { console.log(JSON.stringify({ code: error.code, name: error.name, message: error.message })); }`;
+
+test("one allocation past the heap cap ends the engine's process, not the host's: an over_budget miss, and the host exits normally", () => {
+  const run = engine("const a = new Array(5e7).fill(0); parentPort.postMessage({ value: a.length });", `const input = {}; ${outcome}`);
+  assert.deepEqual([run.status, run.signal], [0, null], `the host ended: ${run.stderr.slice(0, 200)}`);
+  assert.deepEqual(JSON.parse(run.stdout), { code: "over_budget", name: "ProviderMiss", message: "the PDF engine needed more than 96 MB" });
+});
+
+test("growth the heap limit can stop in the engine's thread is the same miss", () => {
+  for (const grow of ["const a = []; for (;;) a.push(new Array(1e6).fill(0));", "const a = []; for (;;) a.push({ a: 1, b: [1, 2, 3] });"]) {
+    const run = engine(grow, `const input = {}; ${outcome}`);
+    assert.deepEqual([run.status, run.signal], [0, null], run.stderr.slice(0, 200));
+    assert.deepEqual(JSON.parse(run.stdout), { code: "over_budget", name: "ProviderMiss", message: "the PDF engine needed more than 96 MB" });
+  }
+});
+
+test("an engine that cannot be started is a needs miss, and a payload of tens of megabytes reaches the engine and back", () => {
+  const sum = "parentPort.postMessage({ value: [d.bytes.length, d.bytes[d.bytes.length - 1]] });";
+  const big = engine(sum, `const bytes = new Uint8Array(24 * 1024 * 1024); bytes[bytes.length - 1] = 7; const input = { bytes }; ${outcome}`);
+  assert.deepEqual([big.status, big.signal], [0, null], big.stderr.slice(0, 200));
+  assert.deepEqual(JSON.parse(big.stdout), { value: [24 * 1024 * 1024, 7] });
+  const missing = engine(sum, `process.execPath = "/nonexistent/node"; const input = { bytes: new Uint8Array(1) }; ${outcome}`);
+  assert.deepEqual([missing.status, missing.signal], [0, null], missing.stderr.slice(0, 200));
+  const miss = JSON.parse(missing.stdout);
+  assert.deepEqual([miss.code, miss.name, miss.message.startsWith("the PDF engine could not be started (")], ["needs", "ProviderMiss", true]);
+});
+
+test("an engine does not outlive its host: killed with its host mid-run, it is gone", { skip: process.platform !== "linux" && "reads /proc" }, async () => {
+  const marker = `${dir.path}/engine.pid`;
+  const spin = `process.getBuiltinModule("node:fs").writeFileSync(${JSON.stringify(marker)}, String(process.pid)); for (;;) {}`;
+  const host = spawn(process.execPath, ["--input-type=module", "-e", `
+    import { runPdfWorker } from "@parcha/pi-vision";
+    await runPdfWorker(${JSON.stringify(spin)}, {}, { timeoutMs: 60_000, memoryMb: 96 });`], { cwd: new URL("..", import.meta.url), stdio: "ignore" });
+  const exists = (path) => stat(path).then(() => true, () => false);
+  const until = async (done) => { for (let waited = 0; !(await done()) && waited < 100; waited++) await new Promise((resolve) => setTimeout(resolve, 100)); };
+  try {
+    await until(() => exists(marker));
+    const pid = Number(await readFile(marker, "utf8"));
+    assert.ok(pid > 0 && pid !== host.pid, "the engine is a process of its own");
+    host.kill("SIGKILL");
+    await until(async () => !(await exists(`/proc/${pid}`)));
+    assert.equal(await exists(`/proc/${pid}`), false, "the engine exited when its host did");
+  } finally {
+    host.kill("SIGKILL");
+  }
 });
 
 test("a word shown a hundred million times runs the text reader out of heap inside its worker: a miss, and the host lives", async () => {
