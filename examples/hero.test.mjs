@@ -86,9 +86,13 @@ test('killed inside a paid call, the resumed process settles it from the kept an
   // Paid calls: the published figure is fetched once per grid in all, never again after the kill; the eyes were asked once per grid.
   assert.equal(run.ledger.filter((row) => row.kind === 'tool' && row.name === 'published').length, 9);
   assert.equal(run.eyesRequests, 9);
-  const byProcess = run.ledger.filter((row) => row.kind === 'tool' && row.name === 'published').reduce((counts, row) => ({ ...counts, [row.incarnation]: (counts[row.incarnation] ?? 0) + 1 }), {});
-  const [before, after] = Object.values(byProcess);
-  assert.ok(Object.keys(byProcess).length === 2 && before >= 3 && before + after === 9, `the killed process fetched at least the three it kept, the resumed one the rest: ${JSON.stringify(byProcess)}`);
+  // How the nine fetches split between the two processes is the scheduler's (on a loaded machine all nine branches can fetch before the third kept crossing is taken alone), so the claims are the ones that hold under any
+  // schedule: at most two processes fetched, the killed one at least the three it had kept when the kill came, and nine fetches in all (the resumed one never re-fetched what the first kept).
+  const published = run.ledger.filter((row) => row.kind === 'tool' && row.name === 'published');
+  const byProcess = published.reduce((counts, row) => ({ ...counts, [row.incarnation]: (counts[row.incarnation] ?? 0) + 1 }), {});
+  assert.ok(Object.keys(byProcess).length <= 2, `at most the two processes fetched: ${JSON.stringify(byProcess)}`);
+  assert.ok(byProcess[published[0].incarnation] >= 3, `the killed process fetched at least the three it kept: ${JSON.stringify(byProcess)}`);
+  assert.equal(Object.values(byProcess).reduce((sum, count) => sum + count, 0), 9, 'nine fetches in all: none twice across the kill');
   assert.deepEqual(validateRecording(recording), []);
   const lines = readEvents(recording);
   const counted = fold(lines);

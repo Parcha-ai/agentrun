@@ -33,7 +33,8 @@ export type KindRequest = {
   readonly ask?: string; readonly page?: number; readonly fromS?: number; readonly toS?: number;
 };
 /** What a kind's reader works with: the environment; the limits its images must meet (the lead's, with the eyes' image
- *  limits when the lead takes no images); where kept derivations go, named by the source's hash and their parameters
+ *  limits when the lead takes no images, and the eyes' video limits for a video when the eyes take video and the lead
+ *  does not); where kept derivations go, named by the source's hash and their parameters
  *  (absent: nothing is kept); a directory removed when the read ends; and the image processor and providers. */
 export type KindContext = {
   readonly env: VisionEnv; readonly signal: AbortSignal | undefined; readonly limits: Limits; readonly deriveDir?: string; readonly tempDir: string;
@@ -47,6 +48,7 @@ export type KindResult =
       readonly document?: Readonly<Record<string, unknown>> }
   | { readonly miss: MissCode; readonly reason: string; readonly text?: string }
   | { readonly refusal: string };
+/** The reader of one kind: a request in, the content or the miss out. */
 export type KindReader = (request: KindRequest, context: KindContext) => Promise<KindResult>;
 
 /** The package's own kind wiring: the kind of a file's first bytes, an image header's pixels, and a reader per kind. */
@@ -199,8 +201,8 @@ const extensionOf = (name: string): string => {
 };
 
 /** A miss the model can act on, filed as a failed look and told to the host. No read path asks a model before one, so
- *  it cost nothing. */
-async function missResult(filing: Filing, name: string, kind: Kind, sha256: string, code: MissCode, cause: string, args: ReadArgs, text?: string): Promise<ToolResult> {
+ *  it cost nothing. `setup`: the host's own callbacks failed before any look was made, so the host is given no record. */
+async function missResult(filing: Filing, name: string, kind: Kind, sha256: string, code: MissCode, cause: string, args: ReadArgs, text?: string, setup?: true): Promise<ToolResult> {
   const reason = linkSafe(cause);
   const ask = asked(args);
   const page = num(args.page);
@@ -210,7 +212,7 @@ async function missResult(filing: Filing, name: string, kind: Kind, sha256: stri
   let fragment = "";
   try { fragment = page !== undefined ? formatFragment({ page: { from: page, to: page } }) : windowed ? formatFragment({ t: { from: Math.max(0, fromS ?? 0), ...(toS !== undefined ? { to: toS } : {}) } }) : ""; } catch { fragment = ""; }
   const record: LookRecord = { tool: "look", args: { path: name, ...(ask ? { ask } : {}), ...(page !== undefined ? { page } : {}), ...(fromS !== undefined ? { from_s: Math.max(0, fromS) } : {}), ...(toS !== undefined ? { to_s: toS } : {}), model: "none", native: false }, status: "failed", facts: { sha256, kind, fragment, key: lookKey({ sha256, fragment, ask, model: "none" }), tokens_in: 0, tokens_out: 0, cost_usd: 0 }, body: "" };
-  const receipt = await reportMiss(filing, "read", record, { code, reason });
+  const receipt = await reportMiss(filing, "read", record, { code, reason, ...(setup ? { setup } : {}) });
   return {
     content: [{ type: "text", text: `${name} could not be read: ${reason}. The file is saved at ${name}.${receipt ? ` Receipt filed at ${receipt}.` : ""} ${MISS_ACTION[code]}${text?.trim() ? `\n${text.trim()}` : ""}` }],
     details: { path: name, ...(receipt ? { look: receipt } : {}), miss: { code } },
@@ -311,15 +313,22 @@ export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext
     source = { path: data ? `${temp.value}/source${extensionOf(name)}` : name, kind, bytes: size, sha256: await sha256() };
     const request: KindRequest = { source, ...(data ? { data } : {}), name, mimeType: sniffed.mimeType ?? "application/octet-stream", ...(pixels ? { width: pixels.width, height: pixels.height } : {}), ...(ask ? { ask } : {}), ...(page !== undefined ? { page } : {}), ...(fromS !== undefined ? { fromS: Math.max(0, fromS) } : {}), ...(toS !== undefined ? { toS } : {}) };
     // The media a reader makes are fitted for the model that will see them: the lead, or the eyes when the lead takes no
-    // images, a video then planned as the eyes take it (the clip or a window of it for eyes that take video). A source
-    // read where it is keeps no derivation.
+    // images. A video the lead cannot take as video is planned as eyes that take video take it, the file or a window of
+    // it as one clip with its sound, whatever images the lead takes; frames are for eyes that take none. A lead that
+    // takes images is given its own frames when no such clip can be made, a file or window over the eyes' inline budget
+    // among them; a lead that takes no images is given the miss. A source read where it is keeps no derivation.
     const eyes = setup.eyes;
     const clipForEyes = eyes?.accepts.video === true && !setup.limits.video.native;
+    const eyesVideo = clipForEyes ? { video: { ...eyes.limits.video, native: true }, requestBytes: eyes.limits.requestBytes } : {};
+    const clipOrFrames = kind === "video" && clipForEyes && setup.limits.image.native;
     const limits = !setup.limits.image.native && eyes?.accepts.image
-      ? { ...setup.limits, image: { ...eyes.limits.image, native: false }, ...(clipForEyes ? { video: { ...eyes.limits.video, native: true }, requestBytes: eyes.limits.requestBytes } : {}) }
-      : setup.limits;
+      ? { ...setup.limits, image: { ...eyes.limits.image, native: false }, ...eyesVideo }
+      : clipOrFrames ? { ...setup.limits, ...eyesVideo } : setup.limits;
+    const readerEnv = data ? holding(env, source.path, data, probe.mtimeMs) : env;
+    const readWith = (budget: Limits) => reader(request, { env: readerEnv, signal: call.signal, limits: budget, ...(data ? { deriveDir: setup.scope.deriveDir } : {}), tempDir: temp.value, images: setup.images, providers: setup.providers });
     try {
-      result = await reader(request, { env: data ? holding(env, source.path, data, probe.mtimeMs) : env, signal: call.signal, limits, ...(data ? { deriveDir: setup.scope.deriveDir } : {}), tempDir: temp.value, images: setup.images, providers: setup.providers });
+      result = await readWith(limits);
+      if (clipOrFrames && "miss" in result) result = await readWith(setup.limits);
     } catch (error) {
       // A reader that throws on a file it cannot parse gives the model the cause, never a lost call.
       if (call.signal?.aborted) throw error;
@@ -356,7 +365,7 @@ export async function readWithoutSetup(env: VisionEnv, args: ReadArgs, call: Cal
     if (!probe || (probe.sniffed.ok && probe.sniffed.kind === "text")) return null;
   }
   const filing: Filing = { conversationId: call.conversationId, label: "", evidence: NO_RECEIPT, onMiss: host.onMiss };
-  return missResult(filing, name, "unknown", "", "look_failed", `this host could not set the read up: ${firstLine(error)}`, args);
+  return missResult(filing, name, "unknown", "", "look_failed", `this host could not set the read up: ${firstLine(error)}`, args, undefined, true);
 }
 
 /** Whether a call is the host's plain text read: no handle a source serves, no media argument, and a file that is not
