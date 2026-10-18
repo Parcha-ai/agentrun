@@ -312,7 +312,8 @@ function wmLedger(state: WmState, base: BaselineView, providers: 'real' | 'scrip
   const comparable = providers === 'real' && base.providers === 'real';
   const delta = !comparable ? `not comparable (run: ${providers ?? 'not recorded'}, baseline: ${base.providers ?? 'not recorded'}; the price needs both real)`
     : base.counters.cost !== null && mine.cost !== null ? `${mine.cost - base.counters.cost >= 0 ? '+' : '-'}$${Math.abs(mine.cost - base.counters.cost).toFixed(2)}` : 'unknown';
-  return h('div', { class: 'wm-ledger' },
+  // The price of chaos is the kills' story: marked `durability`, drawn only with `?debug=durability`.
+  return h('div', { class: 'wm-ledger durability' },
     h('h4', {}, `The price of chaos: ${base.label} against ${state.kills.length} kills`),
     h('table', {},
       h('tr', {}, h('th', {}, ''), h('th', {}, base.label), h('th', {}, `${state.kills.length} kills`)),

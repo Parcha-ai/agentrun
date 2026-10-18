@@ -214,17 +214,18 @@ function cachedReduce<S>(fold: Fold<S>, lines: Line[], p: number, cache: Map<num
 /** The strip. `measured`: the recording has durable lines; without them every count from the store is not measured
  *  and cost is unknown, never 0 (processes and kills still come from the supervisor's lines). */
 
-function drawCounters(counters: Counters, measured = counters.measured, providers?: 'real' | 'scripted', following = false): HTMLElement {
+function drawCounters(counters: Counters, measured = counters.measured, providers?: 'real' | 'scripted', following = false, receiptsInline = false): HTMLElement {
   const reasked = counters.modelTurns.reasked;
   const item = (label: string, value: string, title: string, extra = '') => el('div', { class: `counter${extra}`, title }, el('span', { class: 'value', text: value }), el('span', { class: 'label', text: label }));
   const stored = (label: string, value: string, title: string, extra = '') => (measured ? item(label, value, title, extra)
     : item(label, 'not measured', 'This recording has no durable lines: nothing from the store can be counted.', extra.includes('durability') ? ' durability' : ''));
   // What a kill and a resume did (processes, kills, a repeat, a call asked twice, the journal's opens) is marked
-  // `durability`: an embed with `&hide=durability` hides it (PANELS.md, "Embedding").
-  return el('div', { class: 'counters' },
+  // `durability`, drawn only with `?debug=durability`; the payments and the cost are `receipt`s, kept under one
+  // disclosure, Receipts, unless the page shows its debug view (PANELS.md, "What a public replay shows").
+  const counted = [
     stored('paid calls made', String(counters.paid.total), `Workflow effects completed: ${counters.paid.workflow}. Agent receipts: ${counters.paid.agent}. Vision looks paid: ${counters.paid.vision}.`),
     stored('looks paid', `${counters.paid.vision}${counters.vision.possible ? ` + ${counters.vision.possible} possible` : ''}`,
-      `Looks the eyes answered and billed, per look key${counters.vision.native ? `; ${counters.vision.native} the lead looked at itself, which charge nothing` : ''}.${counters.vision.possible ? ` ${counters.vision.possible} more possible: a look started in a process that ended before filing it, so no durable line shows whether it was paid, and the cost is a lower bound.` : ''}`),
+      `Looks the eyes answered and billed, per look key${counters.vision.native ? `; ${counters.vision.native} the lead looked at itself, which charge nothing` : ''}.${counters.vision.possible ? ` ${counters.vision.possible} more possible: a look started in a process that ended before filing it, so no durable line shows whether it was paid, and the cost is a lower bound.` : ''}`, ' receipt'),
     stored('repeated', `${repeatedLabel(counters)}${counters.pageActions.possible ? ` + ${counters.pageActions.possible} possible` : ''}`,
       `An applied call in a later process than an earlier applied one.${counters.repeatedNotMeasured > 0 ? ` ${counters.repeatedNotMeasured} effects report no calls: their repeats are not measured, never shown as 0.` : ''}${counters.pageActions.possible ? ` ${counters.pageActions.possible} more possible: a browser page action dispatched again after one that never showed reaching the page, so no durable line says whether it was applied twice.` : ''}${counters.pageActions.measured ? '' : ' The browser\'s page actions are not measured: its session records are an export\'s, which keeps only their latest revision.'}`,
       counters.repeated > 0 ? ' alarm durability' : ' durability'),
@@ -241,9 +242,12 @@ function drawCounters(counters: Counters, measured = counters.measured, provider
     item('processes', String(counters.processes), 'From the supervisor\'s process lines.', ' durability'),
     item('kills', String(counters.kills), 'From the supervisor\'s kill lines.', ' durability'),
     item('cost', costLabel(counters.cost, counters.costLowerBound, providers, counters.costParts), following ? 'A run followed while it goes: its cost is known once it finishes.' :
-      `Unknown until a line prices a part, and when any priced part is unknown: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}${providers === 'scripted' ? ' Scripted: at least one priced part was served by a fake, a cassette or a script, so this is not a provider\'s bill, though it may include real charges for the other parts.' : ''}${counters.costParts.boxes !== undefined ? ' Boxes: each box\'s time at its provider\'s published list price, an estimate, not the provider\'s invoice; unknown while a box has no receipt or its kind has no published price.' : ''}`),
+      `Unknown until a line prices a part, and when any priced part is unknown: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}${providers === 'scripted' ? ' Scripted: at least one priced part was served by a fake, a cassette or a script, so this is not a provider\'s bill, though it may include real charges for the other parts.' : ''}${counters.costParts.boxes !== undefined ? ' Boxes: each box\'s time at its provider\'s published list price, an estimate, not the provider\'s invoice; unknown while a box has no receipt or its kind has no published price.' : ''}`, ' receipt'),
     stored('journal opens', String(counters.journalOpens), 'A fact of the store: agentrun.driver\'s generation. It counts journal opens, which can exceed processes.', ' fact durability'),
-  );
+  ];
+  if (receiptsInline) return el('div', { class: 'counters' }, ...counted);
+  const receipts = counted.filter((node) => node.classList.contains('receipt'));
+  return el('div', { class: 'counters' }, ...counted.filter((node) => !receipts.includes(node)), el('details', { class: 'receipts' }, el('summary', { text: 'Receipts' }), ...receipts));
 }
 
 function drawTimeline(player: Player, onScrub: (t: number) => void, onFocus: (path: string) => void, hideDurability = false): SVGSVGElement {
@@ -459,11 +463,11 @@ export function baselineViewOf(label: string, other: Recording): BaselineView {
 /** What the shell hands a panel's view at a stop: the time, the run's own providers (`real` or `scripted`) when its manifest says, and
  *  the view inputs it holds: the focus, the baseline the manifest names, the selected citation, the result's JSON blobs read so far, and the
  *  playback clock (`now`, the time of the point at a stop). */
-export function viewContext(t: number, manifest: Manifest, inputs: { focus?: string; baseline?: BaselineView; cite?: string; json?: Map<string, Json>; now?: number; following?: boolean; blobType?: (sha: string) => string | undefined } = {}): ViewContext {
-  const { focus, baseline, cite, json, now, following, blobType } = inputs;
+export function viewContext(t: number, manifest: Manifest, inputs: { focus?: string; baseline?: BaselineView; cite?: string; json?: Map<string, Json>; now?: number; following?: boolean; blobType?: (sha: string) => string | undefined; debug?: readonly string[] } = {}): ViewContext {
+  const { focus, baseline, cite, json, now, following, blobType, debug } = inputs;
   return { t, now: now ?? t, ...(focus ? { focus } : {}), ...(baseline ? { baseline } : {}), ...(manifest.providers ? { providers: manifest.providers } : {}),
     ...(cite !== undefined ? { cite } : {}), ...(json ? { json: (sha: string) => json.get(sha) } : {}), ...(following ? { following: true as const } : {}),
-    ...(blobType ? { blobType } : {}) };
+    ...(blobType ? { blobType } : {}), ...(debug && debug.length ? { debug } : {}) };
 }
 
 /** The chapter a point is in: the one with the greatest stop at or before it (a manifest's chapters keep the order it
@@ -566,10 +570,11 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   if (opened !== undefined) player.p = head.seekTime(opened);
   player.focus = params.get('focus') ?? undefined;
   player.cite = citeParam ?? undefined;
-  // `&hide=durability` (PANELS.md, "Embedding"): a page that replays a run without its kills and resumes hides every part
-  // marked `durability` (the process lane, the kills, repeats and journal opens) and the chapters made of processes and
-  // kills. Off by default: without it the viewer is unchanged.
-  const hideDurability = (params.get('hide') ?? '').split(',').includes('durability');
+  // A public replay (PANELS.md, "What a public replay shows") draws no part marked `durability` (the process lane, the
+  // kills, a repeat, the journal's opens), no chapter made of a process or a kill, and keeps the payments and the cost
+  // under Receipts. `?debug=durability` shows all of it as it is: a view no public page sets.
+  const debug = (params.get('debug') ?? '').split(',').map((each) => each.trim()).filter((each) => each !== '');
+  const showDurability = debug.includes('durability');
   let json: Map<string, Json> | undefined;
 
   // The manifest's chapters when it names them; else each process start, each kill, and the end (while a run is followed,
@@ -577,8 +582,8 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const chaptersOf = (): { title: string; p: number; focus?: string }[] => (recording.manifest.chapters && !following
     ? recording.manifest.chapters.map((chapter) => ({ title: chapter.title, p: afterCommit(chapter.at.commit, chapter.at.gen), ...(chapter.focus ? { focus: chapter.focus } : {}) }))
     : [
-      ...lines.flatMap((line, index) => (!hideDurability && line.source === 'host' && line.kind === 'process.started' ? [{ title: `process ${processOf(line)} starts`, p: index + 1 }] : [])),
-      ...lines.flatMap((line, index) => (!hideDurability && line.source === 'host' && line.kind === 'kill' ? [{ title: `killed: ${(line.data as { label?: string }).label ?? ''}`, p: snap(player.stops, index) }] : [])),
+      ...lines.flatMap((line, index) => (showDurability && line.source === 'host' && line.kind === 'process.started' ? [{ title: `process ${processOf(line)} starts`, p: index + 1 }] : [])),
+      ...lines.flatMap((line, index) => (showDurability && line.source === 'host' && line.kind === 'kill' ? [{ title: `killed: ${(line.data as { label?: string }).label ?? ''}`, p: snap(player.stops, index) }] : [])),
       { title: following ? 'now' : 'the end', p: last },
     ].sort((a, b) => a.p - b.p));
   let chapters = chaptersOf();
@@ -634,7 +639,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   let featured = featuredPanel(shown, lines);
   const featuredBox = el('div', { class: 'featured' });
   if (embedded) document.documentElement.classList.add('embed');
-  if (hideDurability) document.documentElement.classList.add('hide-durability');
+  if (!showDurability) document.documentElement.classList.add('hide-durability');
   const layout = () => {
     const top = embedded ? (problemsNote ? [problemsNote] : []) : [header];
     if (featured) root.replaceChildren(...top, featuredBox, controls, counters, baselineRow, timeline, chapterList, focusBar, panels);
@@ -673,8 +678,8 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     const counterState = cachedReduce(counterFold, lines, player.p, cacheOf(counterFold) as Map<number, never>);
     // A run that goes has no cost yet: what its lines have priced so far is short by every call still paying.
     const counted = countersOf(counterState, player.p === last && !following);
-    counters.replaceChildren(drawCounters(following ? { ...counted, cost: null, costLowerBound: false } : counted, measured, recording.manifest.providers, following));
-    timeline.replaceChildren(drawTimeline(player, (at) => scrubTo(stopAt(lines, player.stops, at)), setFocus, hideDurability));
+    counters.replaceChildren(drawCounters(following ? { ...counted, cost: null, costLowerBound: false } : counted, measured, recording.manifest.providers, following, showDurability));
+    timeline.replaceChildren(drawTimeline(player, (at) => scrubTo(stopAt(lines, player.stops, at)), setFocus, !showDurability));
     range.value = String(player.p);
     const line = lines[player.p - 1];
     position.textContent = player.p === 0 ? 'before the first line' : `${(t / 1000).toFixed(2)} s · ${line?.channel === 'durable' ? `after commit ${line.commit}${restored ? ` of generation ${line.gen}` : ''}` : `${line?.kind}`} · line ${player.p} of ${last}`;
@@ -715,7 +720,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     const drawn = (panel: Panel<unknown>) => {
       const state = cachedReduce(panel, lines, player.p, cacheOf(panel.id) as Map<number, never>);
       const section = el('section', { class: 'panel' }, el('h3', { text: panel.title }),
-        renderNode(panel.view(state, viewContext(t, recording.manifest, { focus: player.focus, baseline, cite: player.cite, json, now: head.clock, following, blobType: (sha) => recording.blobType(sha) })), player, frames, t, setFocus, setCite));
+        renderNode(panel.view(state, viewContext(t, recording.manifest, { focus: player.focus, baseline, cite: player.cite, json, now: head.clock, following, blobType: (sha) => recording.blobType(sha), debug })), player, frames, t, setFocus, setCite));
       sections.set(panel.id, section);
       return section;
     };
@@ -780,7 +785,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     baselineOf(recording, base).then((loaded) => {
       baseline = loaded;
       baselineRow.replaceChildren(loaded
-        ? el('div', {}, el('p', { class: 'meta', text: `Beside it, ${loaded.label}, at its end:` }), drawCounters(loaded.counters, loaded.counters.measured, loaded.providers))
+        ? el('div', {}, el('p', { class: 'meta', text: `Beside it, ${loaded.label}, at its end:` }), drawCounters(loaded.counters, loaded.counters.measured, loaded.providers, false, showDurability))
         : el('p', { class: 'meta', text: `Baseline ${recording.manifest.baseline!.label}: not available here` }));
       draw();
     }).catch(() => baselineRow.replaceChildren(el('p', { class: 'meta', text: `Baseline ${recording.manifest.baseline!.label}: could not be opened` })));
