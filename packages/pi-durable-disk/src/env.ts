@@ -30,6 +30,7 @@ import { COMMANDS_MARK, CommandRecorder } from "./commands.ts";
 import { canonicalizeSync, confineHooks, Confinement, fileError, inside, namesHeld, PathOutsideWorkError } from "./confine.ts";
 import type { Pin, PinSpec } from "./confine.ts";
 import { PdaError } from "./errors.ts";
+import { fdPath } from "./held-fd.ts";
 
 type ExecCommand = string | readonly string[];
 
@@ -297,7 +298,7 @@ class ArchilExecutionEnv extends NodeExecutionEnv {
     // (macOS), through the path just checked.
     const byPath = this.#scope.confinement.byPath;
     return this.#file(path, context, { access: "read", flags: constants.O_RDONLY }, (handle, pin) =>
-      super.openTextLineReader(byPath ? pin.entry : `/proc/self/fd/${handle.fd}`, context),
+      super.openTextLineReader(byPath ? pin.entry : fdPath(handle), context),
     );
   }
 
@@ -475,7 +476,7 @@ class ArchilExecutionEnv extends NodeExecutionEnv {
       try {
         // By path (macOS): made under tmp/'s path once that path is checked to still name the directory held.
         if (confinement.byPath && !(await namesHeld(tempRoot, held))) throw new PathOutsideWorkError(tempRoot, "changed", `${tempRoot}: changed while it was being resolved`);
-        name = basename(await mkdtemp(`${confinement.byPath ? tempRoot : `/proc/self/fd/${held.fd}`}/${prefix ?? "tmp-"}`));
+        name = basename(await mkdtemp(`${confinement.byPath ? tempRoot : fdPath(held)}/${prefix ?? "tmp-"}`));
       } finally {
         await held.close();
       }
