@@ -413,6 +413,8 @@ function threadCard(recording: Recording, model: ChatModel, item: ToolItem, fold
     for (const node of rest) fold(node, () => toggle(true));
   }
   return reportEl('div', { class: `step${item.failed ? ' failed' : ''}${item.judge ? ' judge' : ''}`, 'data-item': item.id },
+    // A step nothing the agent thought or wrote leads into speaks with what its look asked, inside its card.
+    item.voice && reportEl('p', { class: 'voice' }, ...reportInline(item.voice)),
     reportEl('button', { class: thumb ? 'step-main' : 'step-main bare', type: 'button', 'data-open': item.id },
       reportEl('div', {}, reportEl('div', { class: 't' }, threadIcon(sourceKindOf(source?.href ?? '')), item.judge && threadJudge(), reportEl('span', { text: item.title }), item.failed && reportEl('small', { class: 'tag', text: 'failed' })),
         item.takeaway !== '' && reportEl('div', { class: 'k', text: item.takeaway })),

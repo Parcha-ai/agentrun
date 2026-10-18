@@ -306,6 +306,11 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.equal(wide.split, true, 'the chat on the left, the report wider on the right');
     assert.deepEqual(wide.said, ['Done. The alarm is on page 2.'], 'its last words as recorded');
     assert.match(String(wide.last), /Three pages, read\s*The page the agent wrote/, 'the card that opens the page it wrote closes the chat, after every conversation');
+    // A step nothing the agent thought or wrote leads into speaks with what its look asked: a quiet line above its
+    // title, inside its card, muted, with no bubble.
+    assert.deepEqual(await value(`(() => { const c = card('wide', 'read film.mp4 from_s=0 to_s=30'); const v = c.querySelector('.voice'); return [v.textContent, c.firstElementChild === v,
+      v.getBoundingClientRect().bottom <= c.querySelector('.t').getBoundingClientRect().top + 1, getComputedStyle(v).color, getComputedStyle(v).backgroundColor]; })()`),
+      ['What changes in this window?', true, true, 'rgb(164, 164, 173)', 'rgba(0, 0, 0, 0)']);
 
     // The agent's page runs nothing, keeps only its own files, and is held to the recording's blobs by its policy.
     const frame = await value<Record<string, unknown>>(`(() => { const f = doc('wide').querySelector('.report-frame'); const a = art('wide'); return {
@@ -483,6 +488,7 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       host: [m.querySelector('.host-note .host-who').textContent, m.querySelector('.host-note .host-text').textContent, !!m.querySelector('.host-note').closest('.msg.user')],
       users: [...doc('narrated').querySelectorAll('.msg.user')].map((n) => n.textContent),
       thoughts: [...m.querySelectorAll('.thought')].map((n) => [n.querySelector('.thought-title').textContent, shown(n.querySelector('.thought-title')), n.open, shown(n.querySelector('.thought-body')), n.querySelector('.thought-body').textContent, n.querySelector('.thought-tag').textContent]) }; })()`);
+    assert.equal(await value(`doc('narrated').querySelectorAll('.step .voice').length`), 0, 'a card led by a thought or the agent\'s words has no voice line');
     assert.deepEqual(narrated, { order: ['who', 'thought', 'said-text', 'steps', 'host-note', 'thought', 'said-text', 'steps'], said: [['I will read each page in turn.', 0, false], ['All four pages agree.', 0, false]],
       cards: [false, false, false, true, false], more: '+ 1 more', host: ['Host', 'You stopped without submitting. Call submit.', false], users: ['YouRead the four pages of notes.pdf.'],
       thoughts: [['Analyzing transcript data', true, false, false, 'I am reading page 2 before the others.', 'thinking'], ['Checking that the four agree', true, false, false, 'they do, line for line.', 'thinking']] });
