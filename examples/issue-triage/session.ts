@@ -127,6 +127,7 @@ async function session(options: { dir: string; input: Input; record?: string; pl
   } as never);
   const harness = durable.harness;
   let outcome: { status: string; answer?: string; message?: string } = { status: 'error' };
+  let job: { workflow: unknown; input: unknown } | undefined;
   let patience: NodeJS.Timeout | undefined;
   try {
     const root = await harness.root(ctx, { agent: { model: lead, thinkingLevel: 'medium', instructions: INSTRUCTIONS, extensions: [tool.extension] } } as never);
@@ -164,6 +165,11 @@ async function session(options: { dir: string; input: Input; record?: string; pl
     const { messages } = await root.context(ctx) as unknown as { messages: Array<{ role: string; content: unknown; toolName?: string }> };
     const runs = messages.filter((m) => m.role === 'toolResult' && m.toolName === 'agentrun').map((m) => textOf(m.content)).flatMap((t) => { try { const j = JSON.parse(t); return j.outcome ? [j] : []; } catch { return []; } });
     const last = runs.at(-1);
+    // The workflow the agent drafted is the last one it inspected (a run and a dry run take the saved draft, with no workflow argument): the viewer draws its graph from the job blob.
+    const inspected = messages.flatMap((m) => (m.role === 'assistant' && Array.isArray(m.content) ? m.content as Array<{ type: string; name?: string; arguments?: { action?: string; workflow?: unknown; input?: unknown } }> : []))
+      .filter((part) => part.type === 'toolCall' && part.name === 'agentrun' && part.arguments?.action === 'inspect' && part.arguments.workflow !== undefined);
+    const drafted = inspected.at(-1)?.arguments;
+    if (drafted) job = { workflow: drafted.workflow, input: drafted.input ?? null };
     const answer = textOf(messages.findLast((m) => m.role === 'assistant')?.content).trim();
     if (last?.outcome?.status === 'complete') await host.deliver({ record: last.outcome.output });
     await recorder?.detach();
@@ -180,7 +186,8 @@ async function session(options: { dir: string; input: Input; record?: string; pl
     const title = 'An agent writes the workflow, and runs it';
     const blob = openRecorder({ dir: options.record }).blob(JSON.stringify(recorded ?? { error: 'no result' }), 'json');
     supervisor?.host('result', { gen: 1, blob, title }, { blobs: [blob] });
-    finishRecording(options.record, { title, task: 'issue-triage', model: 'live', generations: 1, kills: 0, code: codeOf(ROOT), cost, source: { run: 'issue-triage', store: join(options.dir, 'store', 'run.sqlite') }, result: { blob, title }, providers: 'real' } as never);
+    const jobBlob = job ? openRecorder({ dir: options.record }).blob(JSON.stringify({ ...job, files: [] }), 'json') : undefined;
+    finishRecording(options.record, { ...(jobBlob ? { job: { blob: jobBlob, sha256: jobBlob } } : {}), title, task: 'issue-triage', model: 'live', generations: 1, kills: 0, code: codeOf(ROOT), cost, source: { run: 'issue-triage', store: join(options.dir, 'store', 'run.sqlite') }, result: { blob, title }, providers: 'real' } as never);
   }
   console.log(JSON.stringify({ outcome: outcome.status, agreement: recorded?.agreement?.summary ?? null, rows: recorded?.rows.length ?? 0, ...(options.record ? { recording: options.record } : {}), ...(outcome.message ? { message: outcome.message } : {}) }));
   if (outcome.status !== 'complete') process.exitCode = 1;
