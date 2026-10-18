@@ -1802,6 +1802,27 @@ test('a kill request written in short pieces is whole when it is renamed into pl
   t.after(() => { try { child.kill('SIGKILL'); } catch { /* gone */ } });
   for (let waited = 0; !existsSync(file) && waited < 20_000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { point: 'judge.asked verdict', n: 1, pid: child.pid, nonce: 'a-nonce' }, 'the whole request, though each write took 5 bytes');
+
+  assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).run, 'reference');
+
+});
+
+test('a screenshot look, which the evidence sink does not file, takes the vision.filing and vision.filed crossings around its own keeping, and a hold parks it; a look the sink filed has had them already', async () => {
+  const { aroundOwnFiling } = await import('./reference/crossings.ts');
+  const events = [];
+  const cross = Object.assign((point) => { events.push(point); return false; }, { park: (point) => { events.push(`park ${point}`); return undefined; } });
+  await aroundOwnFiling(cross, { receipt: null }, async () => { events.push('keep'); });
+  assert.deepEqual(events, ['vision.filing', 'park vision.filing', 'keep', 'vision.filed'], 'around the screenshot look\'s own keeping');
+  events.length = 0;
+  await aroundOwnFiling(cross, { receipt: 'evidence/look-1.json' }, async () => { events.push('keep'); });
+  assert.deepEqual(events, ['keep'], 'a look the sink filed is not crossed twice');
+  // A parked filing never keeps the look: the hold waits for the kill.
+  events.length = 0;
+  const parkedForever = Object.assign((point) => { events.push(point); return false; }, { park: () => new Promise(() => {}) });
+  let kept = false;
+  void aroundOwnFiling(parkedForever, { receipt: null }, async () => { kept = true; });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(kept, false);
 });
 
 test('a path in a detail is replaced whole, spaces and all; and a machine named like one of the recording\'s own words is not redacted out of its lines', async () => {
@@ -1932,6 +1953,31 @@ test('on --live the effect door dispatches to LiveParts.tools (with its receipt)
   assert.equal(fakes.result.processes.at(-1).outcome.status, 'complete');
   assert.ok(!fromLive(fakes.result.dir), 'fakes.tools never see LIVE');
   assert.ok(!existsSync(join(fakes.result.dir, 'models-seen.json')), 'the live hook is supplied and is never called on fakes');
+
+
+});
+
+test('the follower does not publish a line that holds a credential shape: it stops the recording instead; and a recording that cannot be set up closes what it opened', { timeout: 120_000 }, async (t) => {
+  const { startedAt, followRecording } = await import('./reference/record.ts');
+  const dir = await mkdtemp(join(tmpdir(), 'reference-follow-cred-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, '.spool'), { recursive: true });
+  startedAt(dir);
+  const follower = followRecording(dir, { holdMs: 0 });
+  const secret = `sk-${'a1'.repeat(20)}`;
+  appendFileSync(join(dir, '.spool', 'live-1.jsonl'), `${JSON.stringify({ channel: 'live', source: 'workflow', kind: 'x', gen: 1, seq: 0, t: 1, data: { header: secret } })}\n`);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.throws(() => follower.poll(), /holds a provider secret.*not published/);
+  assert.ok(!readFileSync(join(dir, 'events.jsonl'), 'utf8').includes(secret), 'the line was never placed');
+  // A setup that fails (here the blobs directory is a file) rejects, and leaves no timer running.
+  const { options } = await specWith(t, { name: 'reference' });
+  const broken = await mkdtemp(join(tmpdir(), 'reference-setup-fails-'));
+  t.after(() => rm(broken, { recursive: true, force: true }));
+  writeFileSync(join(broken, 'blobs'), 'not a directory');
+  const timers = () => process.getActiveResourcesInfo().filter((name) => name === 'Timeout').length;
+  const before = timers();
+  await assert.rejects(() => demo({ ...options, argv: ['--json', '--record', broken] }));
+  assert.ok(timers() <= before, 'the follower\'s timer was stopped');
 });
 
 // ---- the live host's crossings ------------------------------------------------------------------------------------------------------------------
