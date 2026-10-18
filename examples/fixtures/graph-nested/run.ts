@@ -4,8 +4,8 @@
 // records at each commit. packages/dsl/test/fixtures/graph/record.mjs cuts the fixture from such a recording.
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { demo } from '../../reference/index.ts';
-import type { Fakes } from '../../reference/host.ts';
+import { demo } from '@parcha/agentrun-reference';
+import type { Fakes } from '@parcha/agentrun-reference';
 import { SHAPES } from '../../../packages/dsl/test/fixtures/graph/generate.mjs';
 
 const spec = JSON.parse(readFileSync(fileURLToPath(new URL('./demo.json', import.meta.url)), 'utf8'));

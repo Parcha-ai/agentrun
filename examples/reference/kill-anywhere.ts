@@ -20,14 +20,14 @@ import { join, relative } from 'node:path';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { FakeBackend, remoteDriver, remoteProvider } from '@parcha/pi-browser/testing';
-import { placeAt, run } from './assemble.ts';
-import { localHost, type LedgerRow, type StatusEvent } from './host.ts';
+import { placeAt, run } from '@parcha/agentrun-reference';
+import { localHost, type LedgerRow, type StatusEvent } from '@parcha/agentrun-reference';
 import { gates } from './gates.ts';
 import { fakes, job, lead } from './job.ts';
 import { summary } from './run.ts';
-import { cost } from './fold.ts';
-import { codeOf, finishRecording, openRecorder, openSupervisor } from './record.ts';
-import { packageCommitRecorder } from './record-store.ts';
+import { cost } from '@parcha/agentrun-reference';
+import { codeOf, finishRecording, openRecorder, openSupervisor } from '@parcha/agentrun-reference';
+import { packageCommitRecorder } from '@parcha/agentrun-reference';
 
 const SELF = fileURLToPath(import.meta.url);
 
