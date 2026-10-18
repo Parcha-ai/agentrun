@@ -199,8 +199,8 @@ const extensionOf = (name: string): string => {
 };
 
 /** A miss the model can act on, filed as a failed look and told to the host. No read path asks a model before one, so
- *  it cost nothing. */
-async function missResult(filing: Filing, name: string, kind: Kind, sha256: string, code: MissCode, cause: string, args: ReadArgs, text?: string): Promise<ToolResult> {
+ *  it cost nothing. `setup`: the host's own callbacks failed before any look was made, so the host is given no record. */
+async function missResult(filing: Filing, name: string, kind: Kind, sha256: string, code: MissCode, cause: string, args: ReadArgs, text?: string, setup?: true): Promise<ToolResult> {
   const reason = linkSafe(cause);
   const ask = asked(args);
   const page = num(args.page);
@@ -210,7 +210,7 @@ async function missResult(filing: Filing, name: string, kind: Kind, sha256: stri
   let fragment = "";
   try { fragment = page !== undefined ? formatFragment({ page: { from: page, to: page } }) : windowed ? formatFragment({ t: { from: Math.max(0, fromS ?? 0), ...(toS !== undefined ? { to: toS } : {}) } }) : ""; } catch { fragment = ""; }
   const record: LookRecord = { tool: "look", args: { path: name, ...(ask ? { ask } : {}), ...(page !== undefined ? { page } : {}), ...(fromS !== undefined ? { from_s: Math.max(0, fromS) } : {}), ...(toS !== undefined ? { to_s: toS } : {}), model: "none", native: false }, status: "failed", facts: { sha256, kind, fragment, key: lookKey({ sha256, fragment, ask, model: "none" }), tokens_in: 0, tokens_out: 0, cost_usd: 0 }, body: "" };
-  const receipt = await reportMiss(filing, "read", record, { code, reason });
+  const receipt = await reportMiss(filing, "read", record, { code, reason, ...(setup ? { setup } : {}) });
   return {
     content: [{ type: "text", text: `${name} could not be read: ${reason}. The file is saved at ${name}.${receipt ? ` Receipt filed at ${receipt}.` : ""} ${MISS_ACTION[code]}${text?.trim() ? `\n${text.trim()}` : ""}` }],
     details: { path: name, ...(receipt ? { look: receipt } : {}), miss: { code } },
@@ -356,7 +356,7 @@ export async function readWithoutSetup(env: VisionEnv, args: ReadArgs, call: Cal
     if (!probe || (probe.sniffed.ok && probe.sniffed.kind === "text")) return null;
   }
   const filing: Filing = { conversationId: call.conversationId, label: "", evidence: NO_RECEIPT, onMiss: host.onMiss };
-  return missResult(filing, name, "unknown", "", "look_failed", `this host could not set the read up: ${firstLine(error)}`, args);
+  return missResult(filing, name, "unknown", "", "look_failed", `this host could not set the read up: ${firstLine(error)}`, args, undefined, true);
 }
 
 /** Whether a call is the host's plain text read: no handle a source serves, no media argument, and a file that is not
