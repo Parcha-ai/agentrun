@@ -193,8 +193,29 @@ test("unreadable reads scattered between readable ones never add up to the limit
     await heal();
     await sleep(550);
   }
-  assert.ok(!lines.some((line) => line.includes(runId) && line.includes("could not be read")), "the server did not give up on the record");
+  assert.ok(!lines.some((line) => line.includes(runId) && line.includes("still watching")), "scattered unreadable reads never added up to the warning");
   assert.equal((await api("GET", `/runs/${runId}/timeline?after=0`)).body.final, false, "not settled while the process lives");
+  await release();
+  standIn.kill("SIGKILL");
+  const { last } = await follow(api, runId, ["completed"]);
+  assert.equal(last.final, true);
+});
+
+test("a record unreadable for longer than 5 s while the process lives is still watched, and the server says so", async (t) => {
+  const { data, runId, standIn, release, tear, heal } = await adoptedStandIn(t);
+  const lines = [];
+  const write = process.stderr.write;
+  process.stderr.write = function (chunk, ...rest) {
+    lines.push(String(chunk));
+    return write.call(this, chunk, ...rest);
+  };
+  t.after(() => (process.stderr.write = write));
+  const api = await adopting(t, data, runId);
+  await tear();
+  await sleep(6_500);
+  assert.ok(lines.some((line) => line.includes(runId) && line.includes("still watching")), "the server said it is still watching");
+  assert.equal((await api("GET", `/runs/${runId}/timeline?after=0`)).body.final, false, "not settled while the process lives");
+  await heal();
   await release();
   standIn.kill("SIGKILL");
   const { last } = await follow(api, runId, ["completed"]);

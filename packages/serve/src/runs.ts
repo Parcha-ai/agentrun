@@ -43,7 +43,7 @@ const CARRY_BACK_RETRIES_MS = [500, 1_000, 2_000, 4_000, 8_000];
 /** How long a run's process may live on after it released the run before its store is read anyway: the process holds the
  *  store's exclusive lock until it exits. */
 const EXIT_AFTER_RELEASE_MS = 30_000;
-/** How many 500 ms ticks in a row a live run's record may be unreadable before it is settled anyway. */
+/** How many 500 ms ticks in a row a live run's record is unreadable before the server says so. */
 const UNREADABLE_TICKS = 10;
 /** SQLITE_BUSY or SQLITE_LOCKED: another connection holds the database. */
 const sqliteBusy = (error: unknown) => isObject(error) && error.code === "ERR_SQLITE_ERROR" && typeof error.errcode === "number" && [5, 6].includes(error.errcode & 0xff);
@@ -336,9 +336,12 @@ export class Runs {
       void this.record(run).then((now) => {
         if (now !== null) unreadable = 0;
         if (run.orphan !== pid || (this.doorOf(now) && alive(pid))) return;
-        // A record that cannot be read while the process lives is read again at the next tick, a few times at most.
-        if (now === null && alive(pid) && ++unreadable < UNREADABLE_TICKS) return;
-        if (now === null && alive(pid)) warn(run.id, `its run.json could not be read ${UNREADABLE_TICKS} times in a row; settling it`);
+        // A record that cannot be read while the process lives is read again at every tick: settling on no record could
+        // leave the run unsettled and unwatched. The server says so once the record has been unreadable for a while.
+        if (now === null && alive(pid)) {
+          if (++unreadable === UNREADABLE_TICKS) warn(run.id, `its run.json has been unreadable for ${UNREADABLE_TICKS / 2} s; still watching its process ${pid}`);
+          return;
+        }
         if (RELEASED.has(String(now?.status)) && alive(pid)) {
           releasedAt ??= Date.now();
           if (Date.now() - releasedAt < EXIT_AFTER_RELEASE_MS) return;
