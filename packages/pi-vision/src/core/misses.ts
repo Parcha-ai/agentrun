@@ -17,11 +17,18 @@ export type MissEvent = {
   readonly reason: string;
   /** The eyes' model, when eyes were asked. */
   readonly model?: string;
+  /** Where the failed look was filed, or null when the sink filed nothing (an image no door named has no receipt). */
   readonly receipt: string | null;
+  /** The failed look as it was filed, whether or not the sink filed it: `status` failed, a `body` that says why, and in
+   *  `facts` its `key` and what the eyes charged (`cost_usd` null when the price is unknown, absent when a request
+   *  threw and may have been billed). A host files it like any look it keeps, so what a failed look cost is counted.
+   *  Absent when the host's own setup failed before any look was made. */
+  readonly record?: LookRecord;
 };
 
-/** Why a look did not happen: the code, the cause in one line, and the eyes' model when eyes were asked. */
-export type Miss = { readonly code: MissCode; readonly reason: string; readonly model?: string };
+/** Why a look did not happen: the code, the cause in one line, and the eyes' model when eyes were asked. `setup` is set
+ *  when the host's own callbacks failed before any look was made: the event then carries no record. */
+export type Miss = { readonly code: MissCode; readonly reason: string; readonly model?: string; readonly setup?: true };
 
 /** What the model can do about each miss. */
 export const MISS_ACTION: Readonly<Record<MissCode, string>> = Object.freeze({
@@ -66,12 +73,13 @@ export const firstLine = (error: unknown, max = 300): string => linkSafe(String(
 /** A refusal of the arguments: one line, `isError: true`. */
 export const refusal = (text: string): ToolResult => ({ content: [{ type: "text", text }], isError: true });
 
-/** File a miss as a failed look and tell the host. The receipt path, or null. */
+/** File a miss as a failed look and tell the host, with the record it filed. The receipt path, or null. */
 export async function reportMiss(filing: Filing, tool: string, record: LookRecord, miss: Miss): Promise<string | null> {
-  const receipt = await fileLook(filing, tool, { ...record, status: "failed", body: `not seen: ${miss.reason}` });
+  const failed: LookRecord = { ...record, status: "failed", body: `not seen: ${miss.reason}` };
+  const receipt = await fileLook(filing, tool, failed);
   await quietly(filing.onMiss, {
     conversationId: filing.conversationId, tool, source: record.args.path, ...(record.args.ask ? { ask: record.args.ask } : {}),
-    code: miss.code, reason: miss.reason, ...(miss.model ? { model: miss.model } : {}), receipt,
+    code: miss.code, reason: miss.reason, ...(miss.model ? { model: miss.model } : {}), receipt, ...(miss.setup ? {} : { record: failed }),
   });
   return receipt;
 }

@@ -22,6 +22,7 @@ import type { FileHandle } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { err, FileError, ok } from "@earendil-works/pi-durable/env";
 import type { BinaryReader, DirReader, FileErrorCode, FileInfo, Result } from "@earendil-works/pi-durable/env";
+import { fdPath, hold } from "./held-fd.ts";
 
 export type RefusalReason = "outside_work" | "changed";
 
@@ -183,7 +184,7 @@ export class Pin {
     this.name = name;
     this.#byPath = held.byPath;
     this.#names = held.names ?? [];
-    this.dir = held.byPath ? held.path : `/proc/self/fd/${handle.fd}`;
+    this.dir = held.byPath ? (hold(handle), held.path) : fdPath(handle);
     this.entry = dirMode ? this.dir : name === "" ? `${this.dir}/.` : `${this.dir}/${name}`;
     this.#real = dirMode || name === "" ? canonical : dirname(canonical);
   }
@@ -392,12 +393,12 @@ async function walk(root: string, names: readonly string[], create: "none" | "al
   }
   try {
     // The root was opened by name: it must be the directory that name denotes now, not one swapped in on the way.
-    const actual = await readlink(`/proc/self/fd/${dir.fd}`);
+    const actual = await readlink(fdPath(dir));
     if (actual !== root) throw changed(canonical);
     let real = root;
     for (const name of names) {
       if (name === "" || name === "." || name === ".." || name.includes("\0")) throw changed(canonical);
-      const step = `/proc/self/fd/${dir.fd}/${name}`;
+      const step = `${fdPath(dir)}/${name}`;
       real = join(real, name);
       let next: FileHandle;
       try {

@@ -4,6 +4,7 @@
 // result and never throw for an expected failure, as pi's do; a binary's output is written to a file and read back,
 // since a shell's output is text.
 
+/** A result that is never thrown for an expected failure: the value, or the error to act on. */
 export type VisionResult<T, E> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: E };
 
 /** The shape of pi's `FileError` and `ExecutionError`: a code to act on and a message for people. */
@@ -16,6 +17,7 @@ export interface VisionContext {
   toString(): string;
 }
 
+/** What the environment knows of a file: its name, path, kind, size in bytes and modification time in milliseconds. */
 export interface VisionFileInfo {
   name: string;
   path: string;
@@ -31,6 +33,8 @@ export interface VisionBinaryReader {
   close(context: VisionContext): Promise<void>;
 }
 
+/** The environment a source is read in and a program runs in: the part of pi-durable's `ExecutionEnv` this package uses.
+ *  A pi-durable host passes its `api.env`; `nodeVisionEnv` from `./node` is the one for a host whose `read` is its own. */
 export interface VisionEnv {
   /** Equal ids see the same files at the same paths; a cache keyed by a provider's detection uses it. */
   readonly id: string;
