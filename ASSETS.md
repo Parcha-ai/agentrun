@@ -22,3 +22,12 @@ The website is maintained in a separate private repository. Its artwork is outsi
 ## The vision examples' NASA film
 
 [examples/video-chapters](examples/video-chapters/inputs.json) and [examples/hear-and-find](examples/hear-and-find/inputs.json) read NASA's film "The Flight of Apollo 11: The Eagle Has Landed" (1969) by URL; nothing of it is committed. A live run fetches the mobile rendition from images.nasa.gov and checks it by size and SHA-256 (`c3ccbdfc11398b9e7c714722939aaac04ba008919721faa7a0ad421631df7dc8`). NASA material is generally not subject to copyright in the United States; it does not acquire this repository's license, and its use here implies no endorsement by NASA.
+
+## Vendored code
+
+The run viewer ships PDF.js, `pdfjs-dist` 6.4.299 (Mozilla Foundation, Apache-2.0), with its JavaScript decoders for a
+scan's images (PDFium's for CCITT and JBIG2, BSD-3-Clause; OpenJPEG's for JPEG 2000, BSD-2-Clause), as the package's
+release files, unchanged, from https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-6.4.299.tgz. They are in
+[apps/viewer/vendor/pdfjs](apps/viewer/vendor/pdfjs/README.md) with their license files; `vendored.json` there lists
+each file's size and SHA-256 (2,348,024 bytes in all), a test checks every file against it, and `docs/dependencies.md`
+lists it under "Vendored code".

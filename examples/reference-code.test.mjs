@@ -46,6 +46,15 @@ test('a project whose origin is not on GitHub names no repository, never the URL
   assert.ok(!JSON.stringify(code).includes('internal.example'));
 });
 
+test('a project with its own packages/ names the @parcha packages it installed, never its own', (t) => {
+  const dir = project(t);
+  mkdirSync(join(dir, 'packages', 'widget'), { recursive: true });
+  writeFileSync(join(dir, 'packages', 'widget', 'package.json'), '{"name":"widget","version":"1.0.0"}\n');
+  const code = codeOf(dir);
+  assert.equal(code.packages['@parcha/agentrun-reference'], '9.9.9');
+  assert.ok(!('widget' in code.packages));
+});
+
 test('a project with no git names no repository and no commit', (t) => {
   const dir = project(t);
   const code = codeOf(dir);

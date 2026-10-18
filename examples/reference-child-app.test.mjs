@@ -140,3 +140,13 @@ test('a large outcome reaches the supervisor whole: the app waits for its stdout
   assert.equal(result.outcome.status, 'complete');
   assert.ok(JSON.stringify(result.outcome.result).includes(big), 'the whole result line, not a cut one');
 });
+
+test('the demo\'s shaped result is also in run.json\'s final status: a place that reads only run.json keeps the cited result, not just the raw record', { timeout: 180_000 }, async (t) => {
+  const { dir, start } = await instance(t, { DEMO_RESULT: '1' });
+  const result = await start();
+  assert.equal(result.code, 0, result.stderr);
+  const run = JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8'));
+  assert.equal(run.detail.result.title, 'A cited result');
+  assert.equal(run.detail.result.json.format, 'agentrun.cited/1');
+  assert.deepEqual(run.detail.result, result.outcome.result, 'the same result the outcome line carries');
+});

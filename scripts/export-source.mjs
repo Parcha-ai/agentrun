@@ -62,7 +62,18 @@ for (const consumer of roots) {
 }
 const rows = [...inventory.values()].sort((a, b) => `${a.name}@${a.version}`.localeCompare(`${b.name}@${b.version}`)).map(row => ({ ...row, consumers: [...row.consumers].sort(), locations: [...row.locations].sort() }));
 const permissive = new Set(['MIT', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC', '0BSD', 'BlueOak-1.0.0', 'CC0-1.0', 'Unlicense']);
-const flagged = rows.filter(row => !permissive.has(row.license)).map(row => ({ name: row.name, version: row.version, license: row.license, reason: row.license === 'UNKNOWN' ? 'Missing license metadata' : /GPL|AGPL|LGPL|SSPL|BUSL|BSL|UNLICENSED/i.test(row.license) ? 'Restrictive or reciprocal metadata needs release-owner review' : 'License expression needs release-owner review' }));
+// Release files an app keeps in the repository rather than installing (`apps/<app>/vendor/<name>/vendored.json` lists
+// them): not in the lockfile, so listed apart, each with where it came from, its licenses and its size.
+const vendored = [];
+for (const app of (await readdir(join(root, 'apps'), { withFileTypes: true }).catch(() => [])).filter(entry => entry.isDirectory()).map(entry => entry.name).sort()) {
+  for (const name of (await readdir(join(root, 'apps', app, 'vendor'), { withFileTypes: true }).catch(() => [])).filter(entry => entry.isDirectory()).map(entry => entry.name).sort()) {
+    let manifest;
+    try { manifest = JSON.parse(await readFile(join(root, 'apps', app, 'vendor', name, 'vendored.json'), 'utf8')); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    const licenses = [...new Set(manifest.files.flatMap(file => String(file.license ?? 'UNKNOWN').split(' AND ')))].sort();
+    vendored.push({ name: manifest.name, version: manifest.version, source: manifest.source, where: `apps/${app}/vendor/${name}`, licenses, bytes: manifest.files.reduce((sum, file) => sum + file.bytes, 0) });
+  }
+}
+const flagged = [...rows, ...vendored.flatMap(row => row.licenses.map(license => ({ ...row, license })))].filter(row => !permissive.has(row.license)).map(row => ({ name: row.name, version: row.version, license: row.license, reason: row.license === 'UNKNOWN' ? 'Missing license metadata' : /GPL|AGPL|LGPL|SSPL|BUSL|BSL|UNLICENSED/i.test(row.license) ? 'Restrictive or reciprocal metadata needs release-owner review' : 'License expression needs release-owner review' }));
 const missingOptional = [...new Map(unresolved.map(item => [`${item.from}:${item.dependency}`, item])).values()];
 const licenses = [...new Set(rows.map(row => row.license))].sort();
 const cell = value => String(value).replace(/\|/g, '\\|').replace(/\n/g, ' ');
@@ -86,7 +97,15 @@ ${missingOptional.length ? `Optional peer/dependency names absent from this lock
 | Package | Version | Declared license | Used by | Optional | Lock locations |
 | --- | --- | --- | --- | --- | --- |
 ${rows.map(row => `| ${cell(row.name)} | ${cell(row.version)} | ${cell(row.license)} | ${row.consumers.join(', ')} | ${row.optional ? 'yes' : 'no'} | ${row.locations.length} |`).join('\n')}
-`;
+${vendored.length ? `
+## Vendored code
+
+Release files kept in the repository rather than installed, so not in \`package-lock.json\`. Each folder's \`vendored.json\` lists every file with the path it has in its package, its license, its size and its SHA-256.
+
+| Package | Version | Licenses | Where | Source | Bytes |
+| --- | --- | --- | --- | --- | --- |
+${vendored.map(row => `| ${cell(row.name)} | ${cell(row.version)} | ${row.licenses.map(cell).join(', ')} | ${cell(row.where)} | ${cell(row.source)} | ${row.bytes} |`).join('\n')}
+` : ''}`;
 await writeFile(join(root, 'docs/dependencies.md'), dependencyDoc);
 if (arguments_.includes('--inventory-only')) {
   console.log(`Dependency inventory updated: ${rows.length} locked runtime package/version pairs.`);

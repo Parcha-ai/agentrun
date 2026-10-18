@@ -332,7 +332,7 @@ test('a path in a detail is replaced whole, spaces and all; and a machine named 
   const aliceHome = ['', 'home', 'alice'].join('/');
   assert.equal(plainText(`wrote ${aliceHome}/Private Documents/report.txt, then stopped`), 'wrote <path>, then stopped');
   assert.equal(machineSecrets('host').some((secret) => secret.key.includes('host name')), false, 'a machine named host: its name is a word of the recording');
-  assert.equal(machineSecrets('greppy-mrb').some((secret) => secret.value === 'greppy-mrb'), true, 'an ordinary name is taken');
+  assert.equal(machineSecrets('build-box-7').some((secret) => secret.value === 'build-box-7'), true, 'an ordinary name is taken');
   const line = '{"channel":"live","source":"host","kind":"run.json","data":{"holder":{"host":"host-1"}}}';
   const redact = redactorOf(machineSecrets('host').filter((secret) => secret.key.includes('host name')));
   assert.equal(redact ? redact(line) : line, line, 'the lines of the format are unchanged');
@@ -406,4 +406,23 @@ test('the follower looks at the text blobs a line names before it places the lin
       start: async (order) => { rmSync(join(recording, 'events.jsonl'), { force: true }); mkdirSync(join(recording, 'events.jsonl')); const runner = await inner.start(order); return { ...runner, exited: new Promise(() => {}) }; },
       kill: async () => { throw Object.assign(new Error('the provider refused'), { code: 'KILL_REFUSED' }); } };
   } }), /EISDIR|is a directory/i);
+});
+
+test('a machine named like an ordinary word (gateway) is redacted only as a whole token in text: never inside a JSON key, a dotted event name, a longer word or a source value; and a name of the format\'s own words (node) is not taken', async () => {
+  const { machineSecrets, redactorOf, scanRecording } = await import('../packages/reference/dist/secrets.js');
+  assert.equal(machineSecrets('node').filter((secret) => secret.key.includes('host name')).length, 0, 'a name of the format\'s own words is not taken');
+  const word = machineSecrets('gateway').filter((secret) => secret.key.includes('host name'));
+  assert.equal(word.length, 1);
+  const line = '{"gateway":1,"source":"gateway","kind":"gateway.start","data":{"text":"connected to gateway on port 22; the gateway.example.org host; gateways"}}';
+  const out = redactorOf(word)(line);
+  assert.ok(out.includes('"gateway":1'), 'a JSON key is not rewritten');
+  assert.ok(out.includes('"kind":"gateway.start"') && out.includes('gateway.example.org') && out.includes('gateways'), 'a dotted name and a longer word are not rewritten');
+  assert.ok(out.includes('connected to [redacted] on port 22'), 'the name as a whole token in text is');
+  const dir = await mkdtemp(join(tmpdir(), 'reference-whole-'));
+  try {
+    writeFileSync(join(dir, 'events.jsonl'), '{"gateway":1,"kind":"gateway.start"}\n');
+    assert.doesNotThrow(() => scanRecording(dir, word), 'a key and a format word are not a mention');
+    writeFileSync(join(dir, 'events.jsonl'), 'connected to gateway\n');
+    assert.throws(() => scanRecording(dir, word), /host name/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

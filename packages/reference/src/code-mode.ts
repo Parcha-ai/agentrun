@@ -11,10 +11,14 @@ import { CodemodeSandbox, type CodemodeTool } from '@earendil-works/pi-codemode'
 import { defineExtension, defineTool, type Extension } from '@earendil-works/pi-durable';
 import { callContext, piResult, type VisionHandle } from '@parcha/pi-vision/durable';
 import { Type } from 'typebox';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
+/** Where a code-mode look's picture is noted (looks.ts `note`), and the directory the script's relative image paths are read from. */
+export type CodeModeImages = { note(conversationId: string, tool: string, path: string | undefined, bytes: Buffer, mimeType: string): void; workDir: string };
 export type CodeModeOptions = { /** The script's overall deadline, tools included (default 5 minutes). */ timeoutMs?: number; /** The most a shell command's output the script gets back, in characters (default 64 KiB). */ outputChars?: number };
 
-export function codeModeExtension(vision: VisionHandle, options: CodeModeOptions = {}): Extension {
+export function codeModeExtension(vision: VisionHandle, options: CodeModeOptions = {}, images?: CodeModeImages): Extension {
   const outputChars = options.outputChars ?? 64 * 1024;
   // The model writes its script before the sandbox exists, so the declaration of `vision.see` (its signature and what it does) is in the tool's description, taken from the handle's own global.
   const see = vision.see(undefined as never, {} as never);
@@ -51,7 +55,27 @@ export function codeModeExtension(vision: VisionHandle, options: CodeModeOptions
           },
         };
         const call = await callContext(api, context);
-        const sandbox = new CodemodeSandbox({ tools: [bash], globals: [vision.see(api.env, call), vision.judge(api.env, call), vision.transcribe(api.env, call)], ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}) });
+        // The image files a script hands the eyes are noted before the call, by their path: the look the eyes' answer files names the same path, and is filed with the picture.
+        const MIME: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif' };
+        const watched = <G extends { execute(request: any, context?: any): Promise<unknown> }>(global: G, tool: string, conversationId: string): G => (!images ? global : {
+          ...global,
+          execute: async (request: any, scripted?: any) => {
+            // Each picture is noted under the label its look will file: the fragment the script gave for it (images come first in `fragments`, then the paths), else the path.
+            const given = Array.isArray(request?.fragments) ? request.fragments as unknown[] : [];
+            const offset = Array.isArray(request?.images) ? (request.images as unknown[]).length : 0;
+            (Array.isArray(request?.paths) ? request.paths as unknown[] : []).forEach((path, index) => {
+              const mimeType = typeof path === 'string' ? MIME[path.split('#')[0]!.split('.').pop()!.toLowerCase()] : undefined;
+              if (typeof path !== 'string' || !mimeType) return;
+              const label = typeof given[offset + index] === 'string' ? given[offset + index] as string : path;
+              try { images.note(conversationId, tool, label, readFileSync(join(images.workDir, path.split('#')[0]!)), mimeType); } catch { /* a path the script made that is not there is the look's miss to name */ }
+            });
+            (Array.isArray(request?.images) ? request.images as { data?: string; mimeType?: string }[] : []).forEach((block, index) => {
+              if (typeof block?.data === 'string') images.note(conversationId, tool, typeof given[index] === 'string' ? given[index] as string : `image ${index + 1}`, Buffer.from(block.data, 'base64'), block.mimeType ?? 'image/png');
+            });
+            return global.execute(request, scripted);
+          },
+        } as G);
+        const sandbox = new CodemodeSandbox({ tools: [bash], globals: [watched(vision.see(api.env, call), 'vision.see', call.conversationId), watched(vision.judge(api.env, call), 'vision.judge', call.conversationId), vision.transcribe(api.env, call)], ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}) });
         try {
           const run = await sandbox.execute(code, { signal: context.abortSignal });
           const content = [

@@ -192,10 +192,13 @@ test('code mode: vision.judge answers through the host\'s judge seam (counted ag
     'const reach = [typeof fetch, typeof process, typeof require, typeof WebAssembly, typeof setTimeout, typeof vision.see, typeof vision.judge].join(",");',
     'await tools.bash({ command: "printf %s " + JSON.stringify(reach) + " > reach.txt" });',
     'const judged = await vision.judge({ paths: ["a.png"], questions: { q: { type: "noul", instructions: "Is the image plain?" } } });',
+    'const seen = await vision.see({ ask: "What is in the image?", paths: ["a.png"] });',
+    'await tools.bash({ command: "cp a.png b.png" });',
+    'await vision.judge({ paths: ["a.png", "b.png"], fragments: ["a.png#page=1", "b.png#page=2"], questions: { q: { type: "noul", instructions: "Are the images the same?" } } });',
     "await tools.bash({ command: \"printf %s '\" + JSON.stringify(judged) + \"' > judged.json\" });",
     'return judged.costUsd;',
   ].join('\n');
-  const { result } = await run(t, { codeMode: true }, ['--json'], { DEMO_CODE: script, DEMO_CODE_ON: '' });
+  const { result, recording } = await run(t, { codeMode: true }, ['--json'], { DEMO_CODE: script, DEMO_CODE_ON: '', DEMO_EYES: '1' });
   assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
   const work = join(result.dir, 'work');
   assert.equal(readFileSync(join(work, 'reach.txt'), 'utf8'), 'undefined,undefined,undefined,undefined,undefined,function,function', 'the sandbox has no fetch, process, require, WebAssembly or timers; vision.see and vision.judge are there');
@@ -204,7 +207,16 @@ test('code mode: vision.judge answers through the host\'s judge seam (counted ag
   assert.ok(judged.receipts.length >= 1 && typeof judged.costUsd === 'number', 'a receipt, and a price that is a number');
   // It went through the capped seam: the run\'s judge count has the workflow\'s own question and this one.
   const spent = readFileSync(join(result.dir, 'judge-spent.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)).reduce((sum, entry) => sum + entry.requests, 0);
-  assert.equal(spent, 2, 'two judge requests were counted against the cap');
+  assert.equal(spent, 3, 'three judge requests were counted against the cap: the workflow\'s own and the script\'s two');
+  // Every look a code-mode script made carries its picture as a blob: the look is filed with the images the eyes were shown, whichever tool held them.
+  const looks = readEvents(recording).filter((line) => line.data?.doc === 'vision.looks').flatMap((line) => line.data.value.looks).filter((look) => look.record.args.path === 'a.png');
+  assert.ok(looks.length >= 2, `a see look and a judge look are filed: ${looks.length}`);
+  for (const look of looks) assert.ok(look.images.length >= 1 && look.images.every((image) => /^[0-9a-f]{64}$/.test(image.blob)), `the look carries its picture: ${JSON.stringify(look.images)}`);
+  // A judge over two images WITH fragments files one look named by both fragments, and carries both pictures, in the look's order.
+  const two = readEvents(recording).filter((line) => line.data?.doc === 'vision.looks').flatMap((line) => line.data.value.looks).filter((look) => look.record.args.path === 'a.png#page=1, b.png#page=2');
+  assert.ok(two.length >= 1, `the two-image judge look is filed under its fragments: ${JSON.stringify(readEvents(recording).filter((line) => line.data?.doc === 'vision.looks').flatMap((line) => line.data.value.looks).map((look) => look.record.args.path))}`);
+  assert.equal(two[0].images.length, 2, 'both pictures');
+  assert.ok(two[0].images.every((image) => /^[0-9a-f]{64}$/.test(image.blob)));
   // The description the model reads declares it.
   const { codeModeExtension } = await import('../packages/reference/dist/code-mode.js');
   const tool = codeModeExtension({ see: () => ({ signature: '(request: S): Promise<A>', description: 'Ask the eyes.' }), judge: () => ({ signature: '(request: J): Promise<K>', description: 'Ask Jev.' }), transcribe: () => ({ signature: '(request: T): Promise<W>', description: 'Write what is said.' }) }, {}).tools[0];
