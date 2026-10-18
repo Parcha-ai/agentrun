@@ -33,13 +33,19 @@ if (process.env.PI_TRANSPORT_LIVE_ARCHIL === "1") {
 	const apiKey = process.env.ARCHIL_API_KEY;
 	if (apiKey === undefined || apiKey === "") throw new Error("the live Archil suite needs ARCHIL_API_KEY");
 	const region = "aws-us-east-1";
-	const specifier = "disk";
-	let sdk: Sdk;
+	// PI_TRANSPORT_LIVE_ARCHIL_SDK names the SDK's entry file when the `disk` this workspace resolves is another version.
+	const specifier = process.env.PI_TRANSPORT_LIVE_ARCHIL_SDK ?? "disk";
+	let sdk: Sdk & { VERSION?: string };
 	try {
-		sdk = (await import(specifier)) as Sdk;
+		sdk = (await import(specifier)) as Sdk & { VERSION?: string };
 	} catch (cause) {
 		throw new Error(
 			`the live Archil suite needs the SDK: run \`npm install --no-save disk@${SDK_VERSION}\` (${String(cause)})`,
+		);
+	}
+	if (sdk.VERSION !== SDK_VERSION) {
+		throw new Error(
+			`the live Archil suite is pinned to disk@${SDK_VERSION}, the SDK found is ${String(sdk.VERSION)}`,
 		);
 	}
 	const client = new sdk.Archil({ apiKey, region });

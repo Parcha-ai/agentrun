@@ -285,6 +285,69 @@ describe("archil exec boxes", () => {
 		}
 	});
 
+	it("does not start a command whose caller gave up while it waited behind another, and does not bill it", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const first = run(box, ["sleep", "1"]);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const before = fake.calls.length;
+			const queued = await box.exec(["sh", "-c", "echo late > late.txt"], { timeoutMs: 150 }, context);
+			expect(queued.ok).toBe(false);
+			if (!queued.ok) expect(queued.error.code).toBe("timeout");
+			const cancel = withCancel(context);
+			setTimeout(() => cancel.cancel(), 100);
+			const aborted = await box.exec(["sh", "-c", "echo late2 > late2.txt"], undefined, cancel.context);
+			expect(aborted.ok).toBe(false);
+			if (!aborted.ok) expect(aborted.error.code).toBe("aborted");
+			await first;
+			await run(box, ["true"]);
+			expect(fake.calls.length - before).toBe(1);
+			expect(existsSync(join(fake.root, "boxes", box.id, "late.txt"))).toBe(false);
+			expect(existsSync(join(fake.root, "boxes", box.id, "late2.txt"))).toBe(false);
+		} finally {
+			close();
+		}
+	});
+
+	it("is gone for an upload or a download from a handle whose box another client ended, queued or not", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			const box = unwrap(await provider.create(SPEC, context));
+			const other = archilExecBoxes({ client: fake.client, disk: fake.disk });
+			const there = unwrap(await other.attach(box.id, context)) as Box;
+			const held = run(box, ["sleep", "0.5"]);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const queuedUpload = box.upload([{ path: "x.txt", bytes: new Uint8Array([1]) }], context);
+			unwrap(await there.destroy(context));
+			const result = await queuedUpload;
+			expect(result.ok).toBe(false);
+			if (!result.ok) expect(result.error.code).toBe("gone");
+			const read = await box.download(["x.txt"], context);
+			expect(read.ok).toBe(false);
+			if (!read.ok) expect(read.error.code).toBe("gone");
+			await held;
+			expect(existsSync(join(fake.root, "boxes", box.id, "x.txt"))).toBe(false);
+		} finally {
+			close();
+		}
+	});
+
+	it("removes an expired box's record when it sweeps it, so a later list makes no call for it", async () => {
+		const { fake, provider, close } = rig();
+		try {
+			unwrap(await provider.create({ ...SPEC, maxLifetimeMs: 100 }, context));
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			expect(unwrap(await provider.list({}, context))).toEqual([]);
+			expect(readdirSync(join(fake.root, "boxes.records"))).toEqual([]);
+			const before = fake.calls.length;
+			expect(unwrap(await provider.list({}, context))).toEqual([]);
+			expect(fake.calls.slice(before).filter((call) => call.command.includes("rm -rf"))).toEqual([]);
+		} finally {
+			close();
+		}
+	});
+
 	it("refuses stdin with an unsupported error and carries output after the call", async () => {
 		const { provider, close } = rig();
 		try {

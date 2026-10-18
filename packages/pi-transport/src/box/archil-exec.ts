@@ -184,6 +184,17 @@ async function settle<T>(shared: Shared, call: () => Promise<T>): Promise<T> {
 
 const encoder = new TextEncoder();
 
+/** One command in a box's local queue: `began` settles when its request is on its way or it was skipped. */
+type Entry = { cancelled: boolean; started: () => void; readonly began: Promise<void> };
+
+function newEntry(): Entry {
+	let started: () => void = () => {};
+	const began = new Promise<void>((resolve) => {
+		started = resolve;
+	});
+	return { cancelled: false, started, began };
+}
+
 /**
  * A box that is one directory of the agent's work disk. Every `exec` is one Archil `exec` call.
  * Limits, all stated in the facts or refused with a typed error: a call is cut at 300 s (`maxExecMs`; a longer
@@ -232,10 +243,28 @@ class ArchilExecBox implements Box {
 		return true;
 	}
 
+	/** Whether the box's record is still there: the box is gone for every client when it is not. */
+	async #recorded(): Promise<Result<void, BoxError>> {
+		try {
+			await this.#shared.disk.getObject(this.#recordKey);
+			return ok(undefined);
+		} catch (cause) {
+			if (!notFound(cause)) return err(failure(`could not read the state of box ${this.id}`, cause));
+			this.#ended = true;
+			return err(new BoxError("gone", `box ${this.id} has ended`));
+		}
+	}
+
 	/** One call with the box's directory checked out, after every call this process already asked for. */
-	#call(command: string, context: Context): Promise<Result<Settled, BoxError>> {
+	#call(command: string, context: Context, entry: Entry): Promise<Result<Settled, BoxError>> {
 		const run = async (): Promise<Result<Settled, BoxError>> => {
-			if (context.abortSignal?.aborted) return err(new BoxError("aborted", "the call was aborted"));
+			// A command whose caller gave up while it waited its turn is never sent: it would run after the caller retried it.
+			if (entry.cancelled || context.abortSignal?.aborted) {
+				entry.cancelled = true;
+				entry.started();
+				return err(new BoxError("aborted", "the call was given up before it started"));
+			}
+			entry.started();
 			try {
 				const result = await this.#shared.client.exec({
 					disks: {
@@ -290,10 +319,39 @@ class ArchilExecBox implements Box {
 			// `env --` first: a program whose name starts with a dash is a name, never an option of timeout or env.
 			`exec timeout -k 1 ${seconds} env -- ${env.length === 0 ? "" : `${env.join(" ")} `}${command.map(quote).join(" ")}`,
 		].join("; ");
-		return ok(this.#process(line, timeoutMs, context));
+		// The call is accepted once its request is on its way: a caller that gives up while it waits behind this process's
+		// earlier commands (aborts, or passes its own deadline) has run nothing and is billed nothing.
+		const entry = newEntry();
+		const done = this.#call(line, context, entry);
+		const signal = context.abortSignal;
+		let release: () => void = () => {};
+		const gaveUp = new Promise<BoxError>((resolve) => {
+			const onAbort = () => resolve(new BoxError("aborted", "the call was aborted"));
+			const timer =
+				timeoutMs === undefined
+					? undefined
+					: setTimeout(
+							() => resolve(new BoxError("timeout", `the command did not start in ${timeoutMs} ms`)),
+							timeoutMs,
+						);
+			release = () => {
+				clearTimeout(timer);
+				signal?.removeEventListener("abort", onAbort);
+			};
+			if (signal?.aborted) onAbort();
+			else signal?.addEventListener("abort", onAbort, { once: true });
+		});
+		const first = await Promise.race([entry.began.then(() => undefined), gaveUp]);
+		release();
+		if (first !== undefined) {
+			entry.cancelled = true;
+			return err(first);
+		}
+		if (entry.cancelled) return err(new BoxError("aborted", "the call was given up before it started"));
+		return ok(this.#process(done, timeoutMs, context));
 	}
 
-	#process(line: string, timeoutMs: number | undefined, context: Context): BoxProcess {
+	#process(done: Promise<Result<Settled, BoxError>>, timeoutMs: number | undefined, context: Context): BoxProcess {
 		const signal = context.abortSignal;
 		const settled = new Promise<Result<Settled, BoxError>>((resolve) => {
 			let timer: NodeJS.Timeout | undefined;
@@ -310,7 +368,7 @@ class ArchilExecBox implements Box {
 					timeoutMs + CALL_GRACE_MS,
 				);
 			}
-			void this.#call(line, context).then(finish);
+			void done.then(finish);
 			if (signal?.aborted) onAbort();
 			else signal?.addEventListener("abort", onAbort, { once: true });
 		});
@@ -372,6 +430,10 @@ class ArchilExecBox implements Box {
 		}
 		// After the commands this process already asked for: a write to a directory a command holds is refused by the service.
 		const turn = this.#tail.then(async (): Promise<Result<void, BoxError>> => {
+			// Checked when its turn comes: another client may have ended the box while this waited, and a write would
+			// recreate the directory only for the next list to remove it.
+			const recorded = await this.#recorded();
+			if (!recorded.ok) return recorded;
 			for (const { key, file } of keyed) {
 				try {
 					await settle(this.#shared, () =>
@@ -393,6 +455,8 @@ class ArchilExecBox implements Box {
 
 	async download(paths: readonly string[], _context: Context): Promise<Result<readonly BoxFile[], BoxError>> {
 		if (!(await this.#alive())) return err(new BoxError("gone", `box ${this.id} has ended`));
+		const recorded = await this.#recorded();
+		if (!recorded.ok) return recorded;
 		const files: BoxFile[] = [];
 		for (const path of paths) {
 			const key = this.#keyOf(path);
@@ -509,7 +573,11 @@ export function archilExecBoxes(options: ArchilExecBoxesOptions): BoxProvider {
 			})
 			.catch(() => {});
 	};
-	const sweep = (record: BoxRecord): Promise<void> => sweepDirectory(record.facts.workspace);
+	const sweep = async (record: BoxRecord): Promise<void> => {
+		// The record goes first: an expired box that keeps its record is swept, and paid for, by every later list.
+		await settle(shared, () => shared.disk.deleteObject(recordKeyOf(record.id))).catch(() => {});
+		await sweepDirectory(record.facts.workspace);
+	};
 
 	return {
 		name: "archil-exec",
