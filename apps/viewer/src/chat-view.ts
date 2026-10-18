@@ -58,16 +58,19 @@ export const sourceAddresses = (source: ChatSource) => [source.href, ...(source.
 /** The look a citation's address names: one that read that exact address, else one that read the same file at the cited
  *  page or over a window holding the cited second. */
 export function sourceByHref(sources: Record<string, ChatSource>, href: string): string | undefined {
-  const file = href.split('#')[0];
-  const cited = reportFragmentOf(href);
   const entries = Object.entries(sources);
-  return (entries.find(([, source]) => sourceAddresses(source).includes(href)) ?? entries.find(([, source]) => sourceAddresses(source).some((address) => {
-    if (address.split('#')[0] !== file) return false;
-    const own = reportFragmentOf(address);
-    const page = cited.get('page');
-    const t = cited.get('t');
-    return (!page || own.get('page') === page) && (!t || sourceWithin(t, own.get('t')));
-  })))?.[0];
+  return (entries.find(([, source]) => sourceAddresses(source).includes(href)) ?? entries.find(([, source]) => sourceAddresses(source).some((address) => sourceHolds(address, href))))?.[0];
+}
+
+/** Whether an address a look read holds a cited one: the same file, at the cited page, over a window holding the cited
+ *  second. */
+export function sourceHolds(address: string, cited: string): boolean {
+  if (address.split('#')[0] !== cited.split('#')[0]) return false;
+  const own = reportFragmentOf(address);
+  const at = reportFragmentOf(cited);
+  const page = at.get('page');
+  const t = at.get('t');
+  return (!page || own.get('page') === page) && (!t || sourceWithin(t, own.get('t')));
 }
 
 /** The look that shows page N of the cited file by itself (its address is exactly file#page=N, with one medium). */
@@ -207,6 +210,19 @@ function sourceView(recording: Recording, model: ChatModel, shown: SourceShown, 
       pane.append(shownFrame, strip);
       show(first);
     } else if (shown.regions.length) pane.append(sourceRegionList(shown.regions));
+    return pane;
+  }
+  // A look over several addresses with a picture for each: the cited address's picture first, each with the regions
+  // its own address holds, a region of no listed address on the first.
+  const pictures = source?.pictures;
+  const cited = pictures?.find((picture) => sourceHolds(picture.href, shown.href));
+  if (pictures && cited) {
+    const ordered = [cited, ...pictures.filter((picture) => picture !== cited)];
+    const named = (region: SourceRegion) => /(^|&)(page|t)=/.test(region.href.split('#')[1] ?? '') && pictures.some((each) => sourceHolds(each.href, region.href));
+    const placed = (picture: { href: string }) => shown.regions.filter((region) => (named(region) ? sourceHolds(picture.href, region.href) : picture === cited));
+    const paper = kind === 'page' ? 'paper' : '';
+    pane.append(sourceMedium(recording, cited.sha, cited.href, placed(cited), paper) ?? '');
+    if (ordered.length > 1) pane.append(reportEl('div', { class: 'crops' }, ...ordered.slice(1).map((picture) => sourceMedium(recording, picture.sha, picture.href, placed(picture), paper))));
     return pane;
   }
   const page = sourcePageOf(model.sources, shown.href);

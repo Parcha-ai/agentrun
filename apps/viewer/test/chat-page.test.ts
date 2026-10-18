@@ -24,7 +24,7 @@ import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.t
 
 const UNIT = { timeout: 5_000 };
 const here = new URL('.', import.meta.url).pathname;
-const ALL = ['wide', 'phone', 'answer', 'files', 'hear', 'none', 'pageonly', 'said', 'bare', 'plain', 'srcpage'];
+const ALL = ['wide', 'phone', 'answer', 'files', 'hear', 'none', 'pageonly', 'said', 'bare', 'plain', 'srcpage', 'srcsheet'];
 const IN_CHROME = { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}`, timeout: 120_000 };
 after(async () => { assert.deepEqual(await closeLeftBrowsers(), [], 'every browser a test started was closed by that test'); });
 
@@ -82,7 +82,7 @@ const TASK = 'Read the three scanned pages and the photographs, and say what hap
 const THOUGHT = '**Page 2** holds the alarm; I will cite its `line`.';
 /** A look's address that is a long list of files with no space to break at, as a real run cites one. */
 const LONG = Array.from({ length: 40 }, (_, n) => `scan-${n}.pdf`).join(',');
-/** A look over three pages, filed as one path joined by ", ", as a live run files one. */
+/** A look over three pages, filed as one path joined by ", " with a picture for each page, as a live run files one. */
 const THREE = ['scans.pdf#page=1', 'scans.pdf#page=2', 'scans.pdf#page=3'];
 /** The hand vision run: the input it was given, the host's prompt as each conversation's first user entry, and, when
  *  asked, the lead's own thinking and last words. Its look lines name their conversation, as a vision run's do; the
@@ -93,7 +93,7 @@ function handRun(said: boolean): Line[] {
     const json = JSON.stringify(named);
     if (line.kind !== 'LookEvent' && line.kind !== 'vision.looks') return named;
     if (json.includes(K.weak1)) return JSON.parse(json.replaceAll('"path":"scans.pdf"', `"path":"${LONG}"`).replaceAll('"fragment":"page=1"', '"fragment":""')) as Line;
-    if (json.includes(K.page3)) return JSON.parse(json.replaceAll('"path":"scans.pdf"', `"path":"${THREE.join(', ')}"`)) as Line;
+    if (json.includes(K.page3)) return JSON.parse(json.replaceAll('"path":"scans.pdf"', `"path":"${THREE.join(', ')}"`).replaceAll(`"images":["${PAGES[2]}"]`, `"images":${JSON.stringify(PAGES)}`)) as Line;
     return named;
   });
   const result = run.findLastIndex((line) => line.kind === 'result');
@@ -117,6 +117,8 @@ const ENTRY = `<!doctype html><html><head><meta charset="utf-8"><title>Three pag
 <img id="page" src="media/page-2.png" alt="page 2"><img id="far" src="https://evil.example/x.png" alt=""><img id="none" src="media/none.png" alt="">
 <p style="height:2400px">More words.</p><a id="jump" href="#top">Back to the top</a>
 </body></html>`;
+/** The cited answer with a row citing the third page of the look over three pages, a box on it. */
+const CITED_PAGES = { ...CITED, rows: [...CITED.rows, { label: 'Contact', value: 'on the third page', cites: [{ look: K.page3, fragment: '#page=3&xywh=percent:10,20,30,10' }] }] };
 const SHEET = 'body{background:#101012;color:#eee}.sheet{background-image:url(../media/page-2.png)}';
 
 /** The recordings: the repository's chat fixtures and reference job (a submitted record), and the hand run as
@@ -137,7 +139,7 @@ function writeFixtures(dir: string) {
   writeFileSync(join(page, 'manifest.json'), JSON.stringify(manifest, null, 2));
   const answer = join(dir, 'hand-answer');
   writeRecording(answer, handRun(false));
-  deliverInstead(answer, CITED as never);
+  deliverInstead(answer, CITED_PAGES as never);
   for (const [id, said] of [['hand-said', true], ['hand-bare', false]] as const) {
     writeRecording(join(dir, id), handRun(said));
     const { result: _result, ...unanswered } = JSON.parse(readFileSync(join(dir, id, 'manifest.json'), 'utf8'));
@@ -164,6 +166,7 @@ const HARNESS = `<!doctype html><body style="margin:0">
 <iframe id="bare" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=hand-bare"></iframe>
 <iframe id="plain" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=reference-plain"></iframe>
 <iframe id="srcpage" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?src=recordings%2Fhand-bare%2F"></iframe>
+<iframe id="srcsheet" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?src=recordings%2Fhand-page%2F"></iframe>
 <script>
 const doc = (id) => document.getElementById(id).contentDocument;
 const art = (id) => doc(id)?.querySelector('.report-frame')?.contentDocument;
@@ -175,7 +178,7 @@ const unstripped = (id) => { const body = doc(id).body.cloneNode(true); for (con
 const card = (id, title) => [...doc(id).querySelectorAll('.step')].find((each) => each.querySelector('.t span').textContent === title);
 const inView = (node, box) => { const a = node.getBoundingClientRect(); const b = box.getBoundingClientRect(); return a.top >= b.top - 1 && a.bottom <= b.bottom + 1; };
 const shown = (node) => !!node && node.checkVisibility();
-const PAGES = ['wide', 'phone', 'answer', 'files', 'hear', 'none', 'pageonly', 'said', 'bare', 'plain', 'srcpage'];
+const PAGES = ['wide', 'phone', 'answer', 'files', 'hear', 'none', 'pageonly', 'said', 'bare', 'plain', 'srcpage', 'srcsheet'];
 const narrow = () => { for (const id of PAGES) { const f = document.getElementById(id); f.style.width = '390px'; f.style.height = '844px'; } };
 const unfold = (id) => { for (const more of doc(id).querySelectorAll('.more')) if (/^\\+ \\d+ more$|^Show the whole message$/.test(more.textContent)) more.click(); };
 const wider = (id) => doc(id).documentElement.scrollWidth - doc(id).defaultView.innerWidth;
@@ -208,7 +211,7 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
   const value = async <T>(expression: string) => JSON.parse(String(await page.evaluate(`JSON.stringify(${expression})`))) as T;
   const until = (expression: string, what: string) => page.once(expression, 'true', 20_000, what);
   try {
-    const loaded = `({ drawn: PAGES.filter((id) => !ready(id)), pages: ['wide', 'phone', 'files'].filter((id) => !artReady(id)), answer: !!doc('answer').querySelector('.arow'),
+    const loaded = `({ drawn: PAGES.filter((id) => !ready(id)), pages: ['wide', 'phone', 'files', 'srcsheet'].filter((id) => !artReady(id)), answer: !!doc('answer').querySelector('.arow'),
       pageonly: art('pageonly')?.URL === 'about:srcdoc' && art('pageonly').querySelector('#first img')?.naturalWidth > 0 })`;
     await until(`(() => { const now = ${loaded}; return !now.drawn.length && !now.pages.length && now.answer && now.pageonly; })()`, 'every chat page drawn, their agent\'s pages loaded')
       .catch(async (error: Error) => { throw new Error(`${error.message}: ${JSON.stringify(await value(loaded))}`); });
@@ -333,8 +336,13 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     const answer = await value<Record<string, unknown>>(`(() => { const d = doc('answer'); return { kicker: d.querySelector('.kicker').textContent, title: d.querySelector('.atitle').textContent,
       rows: d.querySelectorAll('.arow').length, frames: d.querySelectorAll('iframe').length, thinking: d.querySelectorAll('details.think:not(.fold)').length,
       inReport: [...d.querySelectorAll('.step')].filter((c) => c.querySelector('.inrep')).map((c) => c.querySelector('.t span').textContent), flat: flat('answer') }; })()`);
-    assert.deepEqual(answer, { kicker: 'The run\'s answer', title: CITED.title, rows: CITED.rows.length, frames: 0, thinking: 0,
-      inReport: ['read scans.pdf page=2', 'read photos/photo-001.png'], flat: { page: 0, panes: 0 } });
+    assert.deepEqual(answer, { kicker: 'The run\'s answer', title: CITED.title, rows: CITED_PAGES.rows.length, frames: 0, thinking: 0,
+      inReport: ['read scans.pdf page=2', 'read scans.pdf page=3', 'read photos/photo-001.png'], flat: { page: 0, panes: 0 } });
+    // A cite to the third page of a look over three: that page's picture first with the box, the others below, unboxed.
+    await page.evaluate(`doc('answer').querySelector('.cite[data-look="${K.page3}"]').click()`);
+    await until(`doc('answer').querySelector('.src .media img')?.alt === 'scans.pdf#page=3'`, 'the cited page\'s picture first');
+    assert.deepEqual(await value(`[...doc('answer').querySelectorAll('.src .media')].map((m) => [m.querySelector('img').alt, [...m.querySelectorAll('.jbox')].map((b) => b.style.cssText)])`),
+      [['scans.pdf#page=3', ['left: 10%; top: 20%; width: 30%; height: 10%;']], ['scans.pdf#page=1', []], ['scans.pdf#page=2', []]]);
     await page.evaluate(`doc('answer').querySelector('.cite[data-look="${K.page2}"]').click()`);
     await until(`shown(doc('answer').querySelector('.src .jbox'))`, 'a chip opens its source with its region');
     assert.equal(await value(`doc('answer').querySelector('.src .jbox').style.cssText`), 'left: 6%; top: 8%; width: 80%; height: 6%;');
@@ -386,6 +394,9 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.deepEqual(said, { kicker: 'The run\'s final message', rows: [['arow wide', null, 'Done. The alarm is on page 2.']], strong: 'alarm', card: 'The run\'s final message.' });
     const bare = await value<Record<string, unknown>>(`(() => { const d = doc('bare'); return { report: d.querySelector('.report').textContent, link: d.querySelector('.report a')?.getAttribute('href'), card: !!d.querySelector('.doccard') }; })()`);
     assert.deepEqual(bare, { report: 'This run has no report.How this ran: every call, look and file of the run.', link: './?r=hand-bare', card: false });
+
+    // Opened by its URL (?src=), the agent's page keeps the stylesheet it links.
+    assert.equal(await value(`getComputedStyle(art('srcsheet').body).backgroundColor`), 'rgb(16, 16, 18)');
 
     // Opened by its URL (?src=), "How this ran" opens the same URL in the inspection viewer, in the header and the report.
     assert.deepEqual(await value(`[doc('srcpage').querySelector('a.how').getAttribute('href'), doc('srcpage').querySelector('.report a').getAttribute('href')]`),
