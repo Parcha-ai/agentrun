@@ -155,6 +155,56 @@ describe("the host's box proxy", () => {
 		}
 	});
 
+	it("stops reading a program's output past its window while the runner's link is down, and brings it whole once it is back", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-transport-boxes-"));
+		const made = served(root);
+		try {
+			const box = getOrThrow(await made.provider.create({ maxLifetimeMs: 60_000 }, context));
+			const done = join(box.facts().workspace, "done");
+			// Far more output than the window, then a mark that the program got to its end.
+			const program = getOrThrow(
+				await box.exec(["sh", "-c", `head -c ${16 * 1024 * 1024} /dev/zero; touch done`], undefined, context),
+			);
+			made.link.close("the box's network dropped");
+			await new Promise((resolve) => setTimeout(resolve, 1_500));
+			// The host holds a window of output, not all of it: the program waits on its full pipe.
+			expect(existsSync(done)).toBe(false);
+			const again = connect(made.proxy, made.server);
+			const [stdout, stderr] = await Promise.all([readStream(program.stdout), readStream(program.stderr)]);
+			expect(getOrThrow(await program.wait())).toBe(0);
+			expect(stdout.byteLength).toBe(16 * 1024 * 1024);
+			expect(stderr.byteLength).toBe(0);
+			expect(existsSync(done)).toBe(true);
+			getOrThrow(await box.destroy(context));
+			again.close("done");
+		} finally {
+			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+		}
+	}, 60_000);
+
+	it("paces a program by what the app reads: unread output blocks it as a full pipe would", async () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-transport-boxes-"));
+		const made = served(root);
+		try {
+			const box = getOrThrow(await made.provider.create({ maxLifetimeMs: 60_000 }, context));
+			const done = join(box.facts().workspace, "done");
+			const program = getOrThrow(
+				await box.exec(["sh", "-c", `head -c ${16 * 1024 * 1024} /dev/zero; touch done`], undefined, context),
+			);
+			// The link is up and nothing is read: neither the host nor the runner keeps it all.
+			await new Promise((resolve) => setTimeout(resolve, 1_500));
+			expect(existsSync(done)).toBe(false);
+			const [stdout] = await Promise.all([readStream(program.stdout), readStream(program.stderr)]);
+			expect(getOrThrow(await program.wait())).toBe(0);
+			expect(stdout.byteLength).toBe(16 * 1024 * 1024);
+			expect(existsSync(done)).toBe(true);
+			getOrThrow(await box.destroy(context));
+		} finally {
+			made.link.close("done");
+			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+		}
+	}, 60_000);
+
 	it("applies a stdin write once when the runner sends it again, as it does after a resume whose ack was lost", async () => {
 		const root = mkdtempSync(join(tmpdir(), "pi-transport-boxes-"));
 		const server = serveBoxes({ providers: { local: localBoxes({ root }) } });

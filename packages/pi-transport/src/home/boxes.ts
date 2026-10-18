@@ -60,6 +60,12 @@ const DEFAULT_KEEP_MS = 10 * 60_000;
 const DEFAULT_RESUME_WITHIN_MS = 60_000;
 /** A runner acknowledges a call's frames this often, so the host lets them go. */
 const ACK_EVERY = 16;
+/**
+ * The most of an exec's output, in bytes, the host reads ahead of the runner's acknowledgements, and the most the runner
+ * holds unread before it stops acknowledging: past it the host stops reading the program's streams, so the program
+ * waits on its full pipe as it would with no proxy, and neither end holds much more than this.
+ */
+const STREAM_WINDOW_BYTES = 1_048_576;
 
 const toBase64 = (bytes: Uint8Array) =>
 	Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
@@ -84,6 +90,11 @@ type ServedCall = {
 	readonly frames: Frame[];
 	/** The highest sequence the runner said it holds: frames up to it are let go. */
 	acked: number;
+	/** The output bytes of each frame in `frames` (0 for the others), and their sum: what the runner has not acknowledged. */
+	readonly sizes: number[];
+	unacked: number;
+	/** An exec's output pumps waiting at the window, woken when an acknowledgement makes room or the call is cancelled. */
+	readonly room: Set<() => void>;
 	seq: number;
 	done: boolean;
 	send: ((frame: Frame) => boolean) | undefined;
@@ -142,11 +153,28 @@ export function serveBoxes(options: ServeBoxesOptions): BoxServer {
 		const wrapped = providers.get(provider) as BoxProvider;
 		return ledger.labelOf(wrapped.name, box.id) ?? `${provider}-${held.size + 1}`;
 	};
-	const emit = (call: ServedCall, frame: Frame) => {
+	const emit = (call: ServedCall, frame: Frame, size = 0) => {
 		call.seq += 1;
 		const numbered: Frame = { ...frame, id: call.id, seq: call.seq };
 		call.frames.push(numbered);
+		call.sizes.push(size);
+		call.unacked += size;
 		call.send?.(numbered);
+	};
+	/** Wait while the call's unacknowledged output is at the window: until an acknowledgement makes room or it is cancelled. */
+	const roomIn = async (call: ServedCall) => {
+		const signal = call.context.abortSignal;
+		while (call.unacked >= STREAM_WINDOW_BYTES && signal?.aborted !== true) {
+			await new Promise<void>((resolve) => {
+				const wake = () => {
+					call.room.delete(wake);
+					signal?.removeEventListener("abort", wake);
+					resolve();
+				};
+				call.room.add(wake);
+				signal?.addEventListener("abort", wake, { once: true });
+			});
+		}
 	};
 	const answer = (call: ServedCall, result: Result<unknown, unknown>) =>
 		emit(
@@ -265,7 +293,13 @@ export function serveBoxes(options: ServeBoxesOptions): BoxServer {
 		started(process);
 		answer(call, ok(null));
 		const pump = async (stream: "stdout" | "stderr", from: AsyncIterable<Uint8Array>) => {
-			for await (const chunk of from) emit(call, { t: "box-stream", stream, bytes: toBase64(chunk) });
+			for await (const chunk of from) {
+				// Past the window the runner has not acknowledged (it reads slowly, or its link is down) the pump waits, and
+				// the program waits on its full pipe. A cancelled call's output is read on and dropped.
+				await roomIn(call);
+				if (call.context.abortSignal?.aborted === true) continue;
+				emit(call, { t: "box-stream", stream, bytes: toBase64(chunk) }, chunk.byteLength);
+			}
 		};
 		await Promise.all([pump("stdout", process.stdout), pump("stderr", process.stderr)]).catch(() => {});
 		const exit = await process.wait();
@@ -302,6 +336,9 @@ export function serveBoxes(options: ServeBoxesOptions): BoxServer {
 					context: within.context,
 					frames: [],
 					acked: 0,
+					sizes: [],
+					unacked: 0,
+					room: new Set(),
 					seq: 0,
 					done: false,
 					send: reply,
@@ -322,7 +359,9 @@ export function serveBoxes(options: ServeBoxesOptions): BoxServer {
 			} else if (frame.t === "box-ack") {
 				if (call !== undefined && typeof frame.seq === "number" && frame.seq > call.acked) {
 					call.frames.splice(0, frame.seq - call.acked);
+					for (const size of call.sizes.splice(0, frame.seq - call.acked)) call.unacked -= size;
 					call.acked = frame.seq;
+					for (const wake of [...call.room]) wake();
 				}
 			} else if (frame.t === "box-stdin") {
 				const n = typeof frame.n === "number" ? frame.n : 0;
@@ -371,16 +410,20 @@ export function serveBoxes(options: ServeBoxesOptions): BoxServer {
 	};
 }
 
-/** A stream of chunks a consumer reads with `for await`, fed by frames. */
-function chunks() {
+/** A stream of chunks a consumer reads with `for await`, fed by frames: `onRead` is told each time it takes one. */
+function chunks(onRead: () => void) {
 	const queue: Uint8Array[] = [];
+	let unread = 0;
 	let ended = false;
 	let wake: (() => void) | undefined;
 	return {
 		push(chunk: Uint8Array) {
 			queue.push(chunk);
+			unread += chunk.byteLength;
 			wake?.();
 		},
+		/** The bytes pushed and not read yet. */
+		unread: () => unread,
 		end() {
 			ended = true;
 			wake?.();
@@ -390,6 +433,8 @@ function chunks() {
 				for (;;) {
 					const next = queue.shift();
 					if (next !== undefined) {
+						unread -= next.byteLength;
+						onRead();
 						yield next;
 						continue;
 					}
@@ -409,6 +454,10 @@ type OpenCall = {
 	readonly request: Frame;
 	seq: number;
 	lastAcked: number;
+	/** The output bytes received since the last acknowledgement. */
+	bytesSinceAck: number;
+	/** An exec's output the app has not read yet, in bytes. */
+	unread?: () => number;
 	deadline: ReturnType<typeof setTimeout> | undefined;
 	/** A single answer, or the exec's start. */
 	onAnswer(frame: Frame): void;
@@ -457,6 +506,7 @@ export function proxyBoxes(names: readonly string[], options?: { readonly resume
 			request,
 			seq: 0,
 			lastAcked: 0,
+			bytesSinceAck: 0,
 			deadline: undefined,
 			pending: new Map(),
 			...handlers,
@@ -468,6 +518,19 @@ export function proxyBoxes(names: readonly string[], options?: { readonly resume
 	const end = (call: OpenCall) => {
 		open.delete(call.id);
 		clearTimeout(call.deadline);
+	};
+	/**
+	 * Tell the host what the call holds, so it lets those frames go and reads on: every ACK_EVERY frames or half a window
+	 * of output, and only while what the app has not read is under the window. An app that does not read its program's
+	 * output stops the acknowledgements, so the host stops reading and the program waits on its full pipe.
+	 */
+	const acknowledge = (call: OpenCall) => {
+		if (!open.has(call.id) || call.seq <= call.lastAcked) return;
+		if ((call.unread?.() ?? 0) >= STREAM_WINDOW_BYTES) return;
+		if (call.seq - call.lastAcked < ACK_EVERY && call.bytesSinceAck < STREAM_WINDOW_BYTES / 2) return;
+		call.lastAcked = call.seq;
+		call.bytesSinceAck = 0;
+		send?.({ t: "box-ack", id: call.id, seq: call.seq });
 	};
 
 	/** One call with one answer. */
@@ -503,8 +566,9 @@ export function proxyBoxes(names: readonly string[], options?: { readonly resume
 		context: Context,
 	) =>
 		new Promise<Result<BoxProcess, BoxError>>((resolve) => {
-			const stdout = chunks();
-			const stderr = chunks();
+			// What the app reads of either stream may let the runner acknowledge again.
+			const stdout = chunks(() => acknowledge(call));
+			const stderr = chunks(() => acknowledge(call));
 			let exited!: (result: Result<number, BoxError>) => void;
 			const exit = new Promise<Result<number, BoxError>>((done) => {
 				exited = done;
@@ -569,7 +633,9 @@ export function proxyBoxes(names: readonly string[], options?: { readonly resume
 							const result = frame.exit as { ok?: boolean; value?: unknown; error?: unknown };
 							stop(result.ok === true ? ok(Number(result.value)) : err(boxErrorOf(result.error)));
 						} else {
-							(frame.stream === "stderr" ? stderr : stdout).push(fromBase64(frame.bytes));
+							const chunk = fromBase64(frame.bytes);
+							call.bytesSinceAck += chunk.byteLength;
+							(frame.stream === "stderr" ? stderr : stdout).push(chunk);
 						}
 					},
 					lose(why) {
@@ -581,6 +647,7 @@ export function proxyBoxes(names: readonly string[], options?: { readonly resume
 					},
 				},
 			);
+			call.unread = () => stdout.unread() + stderr.unread();
 			// Aborting ends the wait; it does not promise the program died, as for any box.
 			function onAbort() {
 				send?.({ t: "box-abort", id: call.id });
@@ -682,10 +749,7 @@ export function proxyBoxes(names: readonly string[], options?: { readonly resume
 			call.seq = seq;
 			if (frame.t === "box-answer") call.onAnswer(frame);
 			else call.onStream?.(frame);
-			if (open.has(call.id) && call.seq - call.lastAcked >= ACK_EVERY) {
-				call.lastAcked = call.seq;
-				send?.({ t: "box-ack", id: call.id, seq: call.seq });
-			}
+			acknowledge(call);
 			return true;
 		},
 		up(next) {
