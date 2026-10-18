@@ -257,6 +257,12 @@ test('a kill that never lands is reported, not hidden: the process finished with
   assert.deepEqual(result.kills, []);
 });
 
+test('a tool kill that never fires is reported though its attempt ended in a process kill: it is not carried off with the attempt', { timeout: 300_000 }, async (t) => {
+  const { result } = await run(t, { kills: [{ point: 'judge.asked verdict', why: 'the run kill that does land' }, { point: 'no.such.point', why: 'a tool kill at a point never taken', target: 'tool' }] }, ['--kill', '--json']);
+  assert.equal(result.kills.length, 1, 'the run kill landed');
+  assert.deepEqual(result.unlanded, ['no.such.point'], 'and the tool kill that did not is reported');
+});
+
 test('a scripted tool is handed the run\'s place, so it can read the run\'s evidence files and the job\'s files', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-place-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
@@ -948,6 +954,15 @@ test('a crossing a tool kill takes still counts for a run kill at the same point
   assert.deepEqual(kills, []);
   assert.equal(cross('transport.tool.started'), false);
   assert.deepEqual(kills, ['SIGKILL'], 'the run kill is the second matching crossing, not the third');
+  // Both due at the same crossing (n 1 each): the tool kill takes it, and the run kill is not lost, it lands at the next matching one.
+  kills.length = 0;
+  const both = crossings({ run: { point: 'transport.tool.started', kind: 'process', target: 'run', why: 'same', n: 1 }, tools: [{ point: 'transport.tool.started', kind: 'box', target: 'tool', why: 'same', n: 1 }] }, undefined);
+  assert.equal(both('transport.tool.started'), true);
+  assert.deepEqual(kills, []);
+  both('transport.tool.started');
+  assert.deepEqual(kills, ['SIGKILL'], 'the pending run kill lands at the next matching crossing');
+  both('transport.tool.started');
+  assert.deepEqual(kills, ['SIGKILL'], 'and only once');
 });
 
 test('a held kill waits for every tool call to return before it asks: a tool a parallel branch started while the filing was parked is never cut', async () => {
