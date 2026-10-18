@@ -42,7 +42,10 @@ export type ViewContext = { t: number; /** The playback clock in ms: the time of
   following?: true;
   /** A blob's media type, from its name in `blobs/` (undefined until the shell has found it): a view tells a picture it may
    *  draw from a file it links. */
-  blobType?: (sha: string) => string | undefined };
+  blobType?: (sha: string) => string | undefined;
+  /** The result the manifest names, for a recording in which no line delivers one: a view that shows a result from its
+   *  `result` line shows this one at every stop. */
+  manifestResult?: { blob: string; title: string } };
 
 /** A node's class under a focus: a line with a path outside the focused branch is dimmed; one with no path stays. */
 const dimmed = (path: string | undefined, focus: string | undefined) => (focus !== undefined && path !== undefined && !under(path, focus) ? ' dim' : '');

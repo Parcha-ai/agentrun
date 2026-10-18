@@ -110,7 +110,9 @@ The shell gives `view` a context: `t`, the time of the current point; `focus`, t
 as unknown); `cite`, the selected citation if there is one (a node with `cite` selects it, `?cite=` opens with it, and selecting one
 moves no stop, so the screen it was clicked on stays); `json(sha)`, the parsed JSON of a blob the manifest's `result`
 or a `result` line names, undefined until the shell has read it; `blobType(sha)`, a blob's media type from its name in
-`blobs/` (undefined until the shell has found it), so a view can draw a picture a result cites and link any other file; and `baseline` when the manifest names one (`BaselineView`: its label, the counters of that other recording at its end,
+`blobs/` (undefined until the shell has found it), so a view can draw a picture a result cites and link any other file;
+`manifestResult`, the result the manifest names (`{ blob, title }`) for a recording in which no line delivers one, so a
+view that shows a result from its `result` line shows that one at every stop; and `baseline` when the manifest names one (`BaselineView`: its label, the counters of that other recording at its end,
 and how long it ran in ms, or null; another real recording, opened beside this one, never typed-in numbers). When
 `counters.measured` is false the recording has no durable line, so its counts are not measured and its cost is
 unknown, a box's receipt notwithstanding: show that, never its zeros. `counters.costParts` is the cost by part (the

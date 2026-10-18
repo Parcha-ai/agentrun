@@ -16,6 +16,7 @@ import { after, test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
+import { viewContext } from '../src/app.ts';
 import { typeOfName } from '../src/blobs.ts';
 import { docPagesOf, documentPanel } from '../src/document.ts';
 import { parseLines, validate, type Json, type Line } from '../src/format.ts';
@@ -112,7 +113,7 @@ const view = (p: number, context: Partial<ViewContext> = {}) => documentPanel.vi
 
 test('the cited pages, in the order first cited, each with its rows: a box where the fragment names a region, none where it does not, and no picture', () => {
   const pages = docPagesOf(visionCitedOf(CHECK as unknown as Json)!, (sha) => types[sha]);
-  assert.deepEqual(pages.map((page) => [page.blob, page.page, page.rows.map((shown) => [shown.row.label, shown.boxes])]), [
+  assert.deepEqual(pages.map((page) => [page.blob, page.page, page.rows.map((shown) => [shown.row.label, shown.boxes.map(({ box }) => box)])]), [
     [PDF, 1, [['seal', [SEAL]], ['signature', [SIGNATURE]], ['file number', []]]],
     [PDF, 2, [['filed stamp', [STAMP]]]],
     [PDF, 3, [['scanned block', [BLOCK]]]],
@@ -145,12 +146,24 @@ test('a selected citation lights its box and its row; a click on either selects 
   assert.deepEqual(find(node, (each) => 'cite' in each && each.cite !== undefined).map((each) => 'cite' in each && each.cite), [K.page1, K.page2, K.page1, K.page2, K.page3]);
 });
 
-test('a row that cites two regions of a page is one numbered row there, and both its boxes carry its number', () => {
-  const twice = { ...CHECK, rows: [CHECK.rows[0]!, { ...CHECK.rows[1]!, cites: [...CHECK.rows[1]!.cites, { blob: PDF, look: K.page2, fragment: `page=1&${at(STAMP)}` }] }] };
-  const node = view(delivered.length, { json: () => twice as unknown as Json });
+test('a row that cites two regions of a page is one numbered row there; each of its boxes carries its number and selects the look its own cite names', () => {
+  const twice = { ...CHECK, rows: [CHECK.rows[0]!, { ...CHECK.rows[1]!, cites: [...CHECK.rows[1]!.cites, { blob: PDF, look: K.page3, fragment: `page=1&${at(STAMP)}` }] }] };
+  const node = view(delivered.length, { json: () => twice as unknown as Json, cite: K.page3 });
   const sheet = find(node, (each) => each.tag === 'pdf-page')[0]!;
-  assert.deepEqual(find(sheet, cls('doc-box')).map((box) => ['box' in box && box.box, words(box)]), [[SEAL, '1 seal'], [SIGNATURE, '2 signature'], [STAMP, '2 signature']]);
-  assert.deepEqual(find(node, cls('doc-mark')).map(words), ['seal yes · box at 40, 70, 20, 15 % · noul 0.95', 'signature yes · boxes at 65, 87, 25, 8 %; 55, 5, 35, 12 %']);
+  assert.deepEqual(find(sheet, cls('doc-box')).map((box) => ['box' in box && box.box, words(box), 'cite' in box && box.cite, box.class]),
+    [[SEAL, '1 seal', K.page1, 'doc-box'], [SIGNATURE, '2 signature', K.page2, 'doc-box'], [STAMP, '2 signature', K.page3, 'doc-box hot']], 'only the box whose own cite is the selected look is lit');
+  assert.deepEqual(find(node, cls('doc-mark')).map((mark) => [words(mark), mark.class]), [['seal yes · box at 40, 70, 20, 15 % · noul 0.95', 'doc-mark'], ['signature yes · boxes at 65, 87, 25, 8 %; 55, 5, 35, 12 %', 'doc-mark hot']]);
+});
+
+test('a recording whose result only its manifest names shows its pages at every stop; one with a result line, once it is delivered', () => {
+  const lineless = delivered.filter((line) => line.kind !== 'result');
+  const manifestResult = { blob: CHECK_SHA, title: CHECK.title };
+  const at0 = documentPanel.view(reduceTo(documentPanel, lineless, 0), { t: 0, json: (sha) => (sha === CHECK_SHA ? CHECK as unknown as Json : undefined), blobType: (sha) => types[sha], manifestResult });
+  assert.equal(find(at0, (each) => each.tag === 'pdf-page').length, 4, 'drawn from the first stop');
+  assert.match(words(view(delivered.findIndex((line) => line.kind === 'result'))), /has not delivered its result yet/, 'with a result line, not before it');
+  const manifest = { result: manifestResult } as never;
+  assert.deepEqual(viewContext(5, manifest, { delivered: false }).manifestResult, manifestResult, 'the shell hands it over when no line delivers one');
+  assert.equal(viewContext(5, manifest, { delivered: true }).manifestResult, undefined, 'and not when a line does');
 });
 
 test('rows that cite the same region share one box, with both numbers and both rows\' words', () => {
@@ -326,7 +339,7 @@ test('a document recording (DOCUMENT_RECORDING): the format holds, every page an
   const node = documentPanel.view(reduceTo(documentPanel, run, run.length), { t: 0, json: (sha) => (sha === manifest.result.blob ? result : undefined), blobType: typeOf });
   assert.deepEqual(find(node, (each) => each.tag === 'pdf-page').map((sheet) => 'page' in sheet && sheet.page), cited.map((page) => page.page));
   // Rows that cite one region share its box.
-  const regions = (rows: typeof cited[number]['rows']) => [...new Map(rows.flatMap((shown) => shown.boxes.map((box) => [JSON.stringify(box), box] as const))).values()];
+  const regions = (rows: typeof cited[number]['rows']) => [...new Map(rows.flatMap((shown) => shown.boxes.map(({ box }) => [JSON.stringify(box), box] as const))).values()];
   assert.deepEqual(find(node, cls('doc-box')).map((box) => 'box' in box && box.box), cited.flatMap((page) => regions(page.rows)));
   if (!existsSync(chrome)) return;
   const out = mkdtempSync(join(tmpdir(), 'viewer-document-recorded-'));

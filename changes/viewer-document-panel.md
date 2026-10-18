@@ -10,7 +10,8 @@ kind: feature
   A box and a row that cite a look select it, as a citation chip does. A recording whose result cites no page draws no
   document panel.
 - The panel contract gains a `pdf-page` node (the shell draws that page of a PDF blob, its children placed over it in
-  percent) and `showsResult(result)`, which draws a panel for a recording by its result as `shows` does by its lines.
+  percent), `showsResult(result, { blobType })`, which draws a panel for a recording by its result as `shows` does by its
+  lines, and `ViewContext.manifestResult`, the manifest's result for a recording in which no line delivers one.
 - PDF.js (`pdfjs-dist` 6.4.299, Apache-2.0) ships as its release files in `apps/viewer/vendor/pdfjs/`, copied to
   `dist/pdfjs/`, so the viewer still builds with no install; a scan's CCITT, JBIG2 and JPEG 2000 images are decoded by
   its JavaScript decoders (PDFium's, BSD-3-Clause, and OpenJPEG's, BSD-2-Clause), shipped beside it with their

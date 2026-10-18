@@ -482,11 +482,11 @@ export function baselineViewOf(label: string, other: Recording): BaselineView {
 /** What the shell hands a panel's view at a stop: the time, the run's own providers (`real` or `scripted`) when its manifest says, and
  *  the view inputs it holds: the focus, the baseline the manifest names, the selected citation, the result's JSON blobs read so far, and the
  *  playback clock (`now`, the time of the point at a stop). */
-export function viewContext(t: number, manifest: Manifest, inputs: { focus?: string; baseline?: BaselineView; cite?: string; json?: Map<string, Json>; now?: number; following?: boolean; blobType?: (sha: string) => string | undefined } = {}): ViewContext {
-  const { focus, baseline, cite, json, now, following, blobType } = inputs;
+export function viewContext(t: number, manifest: Manifest, inputs: { focus?: string; baseline?: BaselineView; cite?: string; json?: Map<string, Json>; now?: number; following?: boolean; blobType?: (sha: string) => string | undefined; delivered?: boolean } = {}): ViewContext {
+  const { focus, baseline, cite, json, now, following, blobType, delivered } = inputs;
   return { t, now: now ?? t, ...(focus ? { focus } : {}), ...(baseline ? { baseline } : {}), ...(manifest.providers ? { providers: manifest.providers } : {}),
     ...(cite !== undefined ? { cite } : {}), ...(json ? { json: (sha: string) => json.get(sha) } : {}), ...(following ? { following: true as const } : {}),
-    ...(blobType ? { blobType } : {}) };
+    ...(blobType ? { blobType } : {}), ...(delivered === false && manifest.result ? { manifestResult: manifest.result } : {}) };
 }
 
 /** The chapter a point is in: the one with the greatest stop at or before it (a manifest's chapters keep the order it
@@ -605,6 +605,8 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   let restored = player.lanes.restores.length > 0;
   // With no durable line anywhere, nothing from the store is measured; before a recording's first one, its zeros are true.
   let measured = lines.some((line) => line.channel === 'durable');
+  /** Whether a line of the recording delivers a result: when none does, a view shows the one its manifest names. */
+  let delivered = lines.some((line) => line.source === 'host' && line.kind === 'result');
   let baseline: BaselineView | undefined;
   const baselineRow = el('div', { class: 'baseline' });
 
@@ -736,7 +738,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     const drawn = (panel: Panel<unknown>) => {
       const state = cachedReduce(panel, lines, player.p, cacheOf(panel.id) as Map<number, never>);
       const section = el('section', { class: 'panel' }, el('h3', { text: panel.title }),
-        renderNode(panel.view(state, viewContext(t, recording.manifest, { focus: player.focus, baseline, cite: player.cite, json, now: head.clock, following, blobType: (sha) => recording.blobType(sha) })), player, frames, t, setFocus, setCite));
+        renderNode(panel.view(state, viewContext(t, recording.manifest, { focus: player.focus, baseline, cite: player.cite, json, now: head.clock, following, blobType: (sha) => recording.blobType(sha), delivered })), player, frames, t, setFocus, setCite));
       sections.set(panel.id, section);
       return section;
     };
@@ -837,6 +839,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     chapters = chaptersOf();
     restored = player.lanes.restores.length > 0;
     measured = lines.some((line) => line.channel === 'durable');
+    delivered = lines.some((line) => line.source === 'host' && line.kind === 'result');
     range.max = String(last);
     choosePanels();
   };

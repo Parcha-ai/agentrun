@@ -10,8 +10,9 @@ import { h, register, type Box, type Node, type Panel } from './panels.ts';
 import { visionCitedOf, visionPage, visionRegion, type VisionCitedResult, type VisionCitedRow } from './vision.ts';
 
 type DocState = { result?: { blob: string; title: string } };
-/** A row as a page shows it: the row, the looks it cites there, and every region it names there. */
-type DocRow = { row: VisionCitedRow; looks: string[]; boxes: Box[] };
+/** A row as a page shows it: the row, the looks it cites there, and every region it names there with the look that cite
+ *  names. */
+type DocRow = { row: VisionCitedRow; looks: string[]; boxes: { box: Box; look?: string }[] };
 type DocPage = { blob: string; page: number; rows: DocRow[] };
 
 const isResult = (line: Line) => line.channel === 'live' && line.source === 'host' && line.kind === 'result';
@@ -28,7 +29,7 @@ export function docPagesOf(cited: VisionCitedResult, blobType: (sha: string) => 
       const held = pages.get(key) ?? pages.set(key, { blob: cite.blob, page, rows: [] }).get(key)!;
       const shown = held.rows.find((each) => each.row === row) ?? held.rows[held.rows.push({ row, looks: [], boxes: [] }) - 1]!;
       const box = visionRegion(cite.fragment);
-      if (box) shown.boxes.push(box);
+      if (box) shown.boxes.push({ box, ...(cite.look !== undefined ? { look: cite.look } : {}) });
       if (cite.look !== undefined && !shown.looks.includes(cite.look)) shown.looks.push(cite.look);
     }
   }
@@ -38,20 +39,22 @@ export function docPagesOf(cited: VisionCitedResult, blobType: (sha: string) => 
 const docPercent = (box: Box) => `${[box.x, box.y, box.w, box.h].map((value) => Math.round(value * 100) / 100).join(', ')} %`;
 
 /** A page with its boxes and its rows. Each row is numbered on its page, and each of its boxes carries that number,
- *  with the row's words beside it where there is room: rows that cite the same region share one box. */
+ *  with the row's words beside it where there is room: rows that cite the same region share one box. A box selects the
+ *  look its own cite names, and is lit when that look is the one selected. */
 function docPageView(page: DocPage, cite: string | undefined): Node {
   const hot = (shown: DocRow) => cite !== undefined && shown.looks.includes(cite);
-  const regions = new Map<string, { box: Box; rows: { shown: DocRow; n: number }[] }>();
+  const regions = new Map<string, { box: Box; rows: { shown: DocRow; n: number }[]; looks: string[] }>();
   page.rows.forEach((shown, at) => {
-    for (const box of shown.boxes) {
+    for (const { box, look } of shown.boxes) {
       const key = [box.x, box.y, box.w, box.h].join(',');
-      const region = regions.get(key) ?? regions.set(key, { box, rows: [] }).get(key)!;
+      const region = regions.get(key) ?? regions.set(key, { box, rows: [], looks: [] }).get(key)!;
       if (!region.rows.some((each) => each.shown === shown)) region.rows.push({ shown, n: at + 1 });
+      if (look !== undefined && !region.looks.includes(look)) region.looks.push(look);
     }
   });
-  const boxes = [...regions.values()].map(({ box, rows }): Node => {
-    const look = rows.find(({ shown }) => shown.looks.length > 0)?.shown.looks[0];
-    return h('div', { class: `doc-box${rows.some(({ shown }) => hot(shown)) ? ' hot' : ''}`, box, title: rows.map(({ shown }) => `${shown.row.label}: ${shown.row.value}`).join('\n'), ...(look ? { cite: look } : {}) },
+  const boxes = [...regions.values()].map(({ box, rows, looks }): Node => {
+    const look = looks[0];
+    return h('div', { class: `doc-box${cite !== undefined && looks.includes(cite) ? ' hot' : ''}`, box, title: rows.map(({ shown }) => `${shown.row.label}: ${shown.row.value}`).join('\n'), ...(look ? { cite: look } : {}) },
       h('span', { class: 'doc-box-label' }, h('b', {}, rows.map(({ n }) => n).join(', ')), h('span', { class: 'doc-box-words' }, ` ${rows.map(({ shown }) => shown.row.label).join(' · ')}`)));
   });
   return h('figure', { class: 'doc-page' },
@@ -59,7 +62,7 @@ function docPageView(page: DocPage, cite: string | undefined): Node {
     h('figcaption', {}, `Page ${page.page}`, ' · ', { tag: 'a', blob: page.blob, text: 'the file', class: 'doc-file', fragment: `page=${page.page}` }),
     h('ol', { class: 'doc-marks' }, ...page.rows.map((shown) => h('li', { class: `doc-mark${hot(shown) ? ' hot' : ''}`, ...(shown.looks[0] !== undefined ? { cite: shown.looks[0] } : {}) },
       h('span', { class: 'doc-mark-name' }, shown.row.label), ' ', h('b', {}, shown.row.value),
-      h('span', { class: 'doc-note' }, shown.boxes.length ? ` · ${shown.boxes.length === 1 ? 'box' : 'boxes'} at ${shown.boxes.map(docPercent).join('; ')}` : ' · no box'),
+      h('span', { class: 'doc-note' }, shown.boxes.length ? ` · ${shown.boxes.length === 1 ? 'box' : 'boxes'} at ${shown.boxes.map(({ box }) => docPercent(box)).join('; ')}` : ' · no box'),
       shown.row.note !== undefined && h('span', { class: 'doc-note' }, ` · ${shown.row.note}`)))));
 }
 
@@ -75,10 +78,12 @@ export const documentPanel: Panel<DocState> = {
     const data = line.data as { blob?: unknown; title?: unknown } | null;
     return typeof data?.blob === 'string' ? { result: { blob: data.blob, title: typeof data.title === 'string' ? data.title : 'The result' } } : state;
   },
-  view(state, { json, blobType, cite }): Node {
+  view(state, { json, blobType, cite, manifestResult }): Node {
     const note = (text: string) => h('div', { class: 'doc-panel' }, h('p', { class: 'empty' }, text));
-    if (!state.result) return note('The run has not delivered its result yet: the pages it cites show when it does.');
-    const value = json?.(state.result.blob);
+    // A recording whose result only its manifest names has it from the start; one with a result line, once delivered.
+    const result = state.result ?? manifestResult;
+    if (!result) return note('The run has not delivered its result yet: the pages it cites show when it does.');
+    const value = json?.(result.blob);
     if (value === undefined) return note('Reading the result.');
     const cited = visionCitedOf(value);
     const pages = cited ? docPagesOf(cited, blobType) : [];
