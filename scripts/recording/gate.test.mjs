@@ -131,7 +131,11 @@ test('each gallery entry is exactly what its files give: no swapped or missing b
   has(indexWith((entry) => { delete entry.blobs[a]; }), `for ${id}, not the blobs in its directory`);
   has(indexWith((entry) => { entry.blobs = {}; }), `for ${id}, not the blobs in its directory`);
   has(indexWith((entry) => { entry.manifest = { ...entry.manifest, title: 'Another run' }; }), `holds a manifest for ${id} other than its manifest.json`);
-  has(indexWith((entry) => { entry.events = ''; }), `for ${id}, not ["blobs","id","manifest"]`);
+  has(indexWith((entry) => { entry.events = ''; }), `for ${id}, not ["blobs","card","id","manifest"]`);
+  has(indexWith((entry) => { entry.card = { ...entry.card, title: 'Another title' }; }), `holds a card for ${id} other than its run gives`);
+  const notImage = Object.entries(index[0].blobs).find(([, path]) => !/\.(png|jpe?g|webp|gif)$/.test(path))[0];
+  has(indexWith((entry) => { entry.card = { ...entry.card, poster: notImage }; }), `names a poster for ${id} that is no image it holds`);
+  has(indexWith((entry) => { entry.card = { ...entry.card, rank: -1 }; }), `ranks ${id} at -1`);
   assert.deepEqual(indexWith((entry) => { entry.manifest = Object.fromEntries(Object.entries(entry.manifest).reverse()); }), [], 'its keys in another order, the same manifest');
   // Embedded: its lines, and each blob's bytes as a data: URL, too.
   const embedded = built(t);

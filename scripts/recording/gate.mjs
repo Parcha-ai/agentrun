@@ -10,6 +10,8 @@ import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { chatCard } from '../../apps/viewer/src/chat-extract.ts';
+import { parseLines } from '../../apps/viewer/src/format.ts';
 import { credentialInFile } from '../../examples/reference/scan.ts';
 import { validateRecording } from './validate.mjs';
 
@@ -72,7 +74,7 @@ export function gateProblems(dist) {
   for (const entry of gallery) {
     if (!beside.includes(entry.id)) continue;
     const dir = join(recordings, entry.id);
-    const keys = files ? ['blobs', 'id', 'manifest'] : ['blobs', 'events', 'id', 'manifest'];
+    const keys = files ? ['blobs', 'card', 'id', 'manifest'] : ['blobs', 'card', 'events', 'id', 'manifest'];
     if (canonical(Object.keys(entry).sort()) !== canonical(keys)) add(where, `holds ${JSON.stringify(Object.keys(entry))} for ${entry.id}, not ${JSON.stringify(keys)}`);
     let manifest;
     try { manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')); } catch { manifest = undefined; }
@@ -82,6 +84,14 @@ export function gateProblems(dist) {
     const held = new Map((existsSync(join(dir, 'blobs')) ? readdirSync(join(dir, 'blobs')) : []).flatMap((name) => { const named = BLOB.exec(name); return named ? [[named[1], name]] : []; }));
     const blobs = isObject(entry.blobs) ? entry.blobs : {};
     if (canonical(Object.keys(blobs).sort()) !== canonical([...held.keys()].sort())) add(where, `maps ${JSON.stringify(Object.keys(blobs))} for ${entry.id}, not the blobs in its directory ${JSON.stringify([...held.keys()])}`);
+    // Its card: the title and line its own run gives, a poster only of an image it holds, a place in the featured row.
+    const card = isObject(entry.card) ? entry.card : {};
+    const lines = existsSync(join(dir, 'events.jsonl')) ? parseLines(readFileSync(join(dir, 'events.jsonl'), 'utf8')) : [];
+    const own = manifest ? chatCard({ manifest, lines }) : undefined;
+    if (!own || card.title !== own.title || card.line !== own.line) add(where, `holds a card for ${entry.id} other than its run gives`);
+    if (card.poster !== undefined && !/\.(?:png|jpe?g|webp|gif)$/i.test(held.get(card.poster) ?? '')) add(where, `names a poster for ${entry.id} that is no image it holds`);
+    if (card.rank !== undefined && !(Number.isInteger(card.rank) && card.rank >= 0)) add(where, `ranks ${entry.id} at ${JSON.stringify(card.rank)}`);
+    if (Object.keys(card).some((key) => !['title', 'line', 'poster', 'rank'].includes(key))) add(where, `holds a card for ${entry.id} with ${JSON.stringify(Object.keys(card))}`);
     for (const [sha, value] of Object.entries(blobs)) {
       const name = held.get(sha);
       if (!name) continue;
