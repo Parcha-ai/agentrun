@@ -105,6 +105,9 @@ test('a missing lead or eyes key names the key, the role and the model; flags ch
   assert.deepEqual(namedModels({ provider: 'openai', model: 'gpt-6-luna' }), { lead: 'openai/gpt-6-luna' });
   assert.deepEqual(namedModels({ model: 'google/x', eyesModel: 'google/y' }), { lead: 'google/x', eyes: 'google/y' });
   assert.match(preflight([...live, '--model', 'nowhere/x'], jev), /^a model is named provider\/id with a provider of openai, google, anthropic; nowhere\/x is not$/, 'a model named wrongly is its own error, not a missing key');
+  const typo = /^a model is named provider\/id with a provider of openai, google, anthropic; nowhere\/x is not$/;
+  assert.match(preflight([...live, '--model', 'nowhere/x'], GATEWAY), typo, 'a gateway serves any provider, but a typo in the name is refused before anything starts all the same');
+  assert.match(preflight([...live, '--eyes-model', 'nowhere/x'], GATEWAY), typo);
   assert.equal(preflight([...live, '--model', 'openai/gpt-6-luna'], { ...jev, OPENAI_API_KEY: 'fake', GEMINI_API_KEY: 'fake' }), undefined);
 });
 

@@ -124,6 +124,7 @@ export function namedModels(models: { provider?: string; model?: string; eyesMod
 export function missingKeys(env: NodeJS.ProcessEnv, named: { lead?: string; eyes?: string } = {}): string[] {
   const missing: string[] = [];
   if (env.VIDEO_MODEL_BASE_URL) {
+    chooseModels(env, named);
     if (!env.VIDEO_MODEL_API_KEY) missing.push("VIDEO_MODEL_API_KEY (the gateway's credential: VIDEO_MODEL_BASE_URL is set, and the gateway serves the lead, the eyes and Jev)");
     return missing;
   }
