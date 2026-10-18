@@ -248,7 +248,7 @@ test('every node thinks: its own level, else low, never off', { timeout: 120_000
   const model = { id: 'lead' };
   assert.equal(nodeAgent(model, {}).thinkingLevel, 'low', 'a node with no thinking runs at low');
   assert.equal(nodeAgent(model, { thinking: 'high' }).thinkingLevel, 'high', 'a node\'s own level wins');
-  assert.equal(nodeAgent(model, { thinking: 'off' }).thinkingLevel, 'off', 'an explicit off is the node\'s own choice');
+  assert.equal(nodeAgent(model, { thinking: 'off' }).thinkingLevel, 'low', 'thinking is never off, whatever a node carries');
   assert.equal(nodeAgent(model, {}).model, model);
   // In a run: the conversations the job's nodes open are recorded with the level they were given.
   const { recording } = await run(t, {}, ['--json']);
