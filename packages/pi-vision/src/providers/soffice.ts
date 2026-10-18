@@ -17,6 +17,7 @@ const DETECT_TIMEOUT_S = 30;
 const CONVERT_TIMEOUT_S = 180;
 const NEEDS = "LibreOffice (soffice) in the environment";
 
+/** What `sofficeProvider` takes: the program to run, its timeout in seconds and the archive limits. */
 export type SofficeOptions = {
   /** The program to run; default `soffice`. */
   readonly command?: string;
@@ -29,6 +30,7 @@ const step = <T>(result: VisionResult<T, Error>, what: string): T => {
   return result.value;
 };
 
+/** A faithful render of an office document: LibreOffice in the environment converts it to PDF with a private profile. */
 export function sofficeProvider(options: SofficeOptions = {}): Provider {
   const command = options.command ?? "soffice";
   const timeout = options.timeoutS ?? CONVERT_TIMEOUT_S;

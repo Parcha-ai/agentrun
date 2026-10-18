@@ -25,6 +25,7 @@ export const PDF_RENDER_MAX_PIXELS = 25_000_000;
 
 /** Why a PDF could not be read, as the model reads it after the file's name. */
 export type PdfMiss = DeriveMiss;
+/** What a PDF operation gave: its value, or the miss that says why there is none. */
 export type PdfOutcome<T> = DeriveOutcome<T>;
 
 /** What the file's own structure says: pages and their sizes in points, with each page's rotation applied. */
@@ -56,8 +57,10 @@ export type PdfProvider = Provider & {
 
 export { ProviderMiss as PdfProviderError } from "./derive.js";
 
+/** What a PDF operation runs with: the environment, the providers to try, where derivations are kept and the signal. */
 export type PdfContext = DeriveContext;
 
+/** What a worker may use: milliseconds and megabytes of heap, and the signal that stops it. */
 export type PdfWorkerCaps = { readonly timeoutMs: number; readonly memoryMb: number; readonly signal?: AbortSignal };
 
 /** Runs `script`, plain JavaScript with no `require` or `import` statement, in a worker thread with `input` as its
