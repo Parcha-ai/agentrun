@@ -1542,6 +1542,27 @@ test('a kill request written in short pieces is whole when it is renamed into pl
   t.after(() => { try { child.kill('SIGKILL'); } catch { /* gone */ } });
   for (let waited = 0; !existsSync(file) && waited < 20_000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { point: 'judge.asked verdict', n: 1, pid: child.pid, nonce: 'a-nonce' }, 'the whole request, though each write took 5 bytes');
+
+  assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).run, 'reference');
+
+});
+
+test('a screenshot look, which the evidence sink does not file, takes the vision.filing and vision.filed crossings around its own keeping, and a hold parks it; a look the sink filed has had them already', async () => {
+  const { aroundOwnFiling } = await import('./reference/crossings.ts');
+  const events = [];
+  const cross = Object.assign((point) => { events.push(point); return false; }, { park: (point) => { events.push(`park ${point}`); return undefined; } });
+  await aroundOwnFiling(cross, { receipt: null }, async () => { events.push('keep'); });
+  assert.deepEqual(events, ['vision.filing', 'park vision.filing', 'keep', 'vision.filed'], 'around the screenshot look\'s own keeping');
+  events.length = 0;
+  await aroundOwnFiling(cross, { receipt: 'evidence/look-1.json' }, async () => { events.push('keep'); });
+  assert.deepEqual(events, ['keep'], 'a look the sink filed is not crossed twice');
+  // A parked filing never keeps the look: the hold waits for the kill.
+  events.length = 0;
+  const parkedForever = Object.assign((point) => { events.push(point); return false; }, { park: () => new Promise(() => {}) });
+  let kept = false;
+  void aroundOwnFiling(parkedForever, { receipt: null }, async () => { kept = true; });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(kept, false);
 });
 
 test('a path in a detail is replaced whole, spaces and all; and a machine named like one of the recording\'s own words is not redacted out of its lines', async () => {
