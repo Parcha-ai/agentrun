@@ -1,22 +1,23 @@
-// The disk demo on fakes, the template's three beats (examples/disk): the job finishes and writes its payoff; with --kill the process dies at the named crossing, the next one
-// resumes, and the recording's own fold reads repeated 0 and unknown 0 with every paid call made once; every paid call has a receipt, the recording validates, and its cost is a number
-// or unknown. The expected values are fixed by hand from the scripted job (ten invoices of 1250 + 175 n cents), not read back from the run.
+// The disk demo on fakes: an agent reviews ten invoices against a policy in its workspace, the workflow pays the approved ones through a simulated paid tool, and a last agent writes a report that cites the lines it read.
+// Beats: the job finishes with every decision the key says; with --kill the process dies at the named crossing and the next resumes with every paid call made once; every paid call has a receipt, the recording validates
+// and its cost is a number or unknown; with --handoff the run is released cleanly and a second process opens it (no kill). The expected values are fixed by hand from the invoice files (examples/disk/files.ts), not read back
+// from a run. The scripted lead is the test fixture; a live run is checked by the same checks (examples/disk-review-checks.mjs).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
+import { HELD, PAID, readsOf, reviewProblems } from './disk-review-checks.mjs';
 
 const RUN = new URL('./disk/run.ts', import.meta.url).pathname;
 const DEMO = JSON.parse(readFileSync(new URL('./disk/demo.json', import.meta.url), 'utf8'));
-const INVOICES = Array.from({ length: 10 }, (_, index) => `INV-${String(index + 1).padStart(3, '0')}`);
-const CENTS = INVOICES.map((_, index) => 1250 + 175 * index);
+const PAID_NUMBERS = PAID.map(([invoice]) => invoice);
+const PAID_CENTS = PAID.reduce((sum, [, cents]) => sum + cents, 0);
 
 const scratch = async (t) => { const dir = await mkdtemp(join(tmpdir(), 'disk-demo-')); t.after(() => rm(dir, { recursive: true, force: true })); return dir; };
 /** `node examples/disk/run.ts <args>`: what `npm run demo:disk -- <args>` runs. */
@@ -28,16 +29,22 @@ const demo = (args) => {
 const rows = (file) => readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
 const charges = (dir) => rows(join(dir, 'ledger.jsonl')).filter((row) => row.kind === 'tool' && row.name === 'charge');
 
-test('beat 1, the job: ten invoices charged once each, the settlement note written, every receipt named', { timeout: 200_000 }, async (t) => {
-  const dir = join(await scratch(t), 'run');
-  const result = JSON.parse(demo(['--json', '--dir', dir]).stdout);
+test('beat 1, the job: eight invoices paid once each and two held, as the policy says, the report written and every cite resolved', { timeout: 200_000 }, async (t) => {
+  const root = await scratch(t);
+  const dir = join(root, 'run');
+  const recording = join(root, 'recording');
+  const result = JSON.parse(demo(['--json', '--record', recording, '--dir', dir]).stdout);
   assert.deepEqual(result.processes.map((process) => process.outcome.status), ['complete']);
   const { record } = result;
   assert.equal(record.batch, 'october-vendors');
-  assert.deepEqual([record.charged, record.cents], [10, CENTS.reduce((sum, cents) => sum + cents, 0)]);
-  assert.deepEqual(record.receipts, INVOICES.map((invoice, index) => ({ invoice, receipt: `rcpt-${invoice}`, cents: CENTS[index] })));
-  assert.equal(record.note, '10 invoices settled, each charged once.');
-  assert.equal(charges(dir).length, 10, 'the paid tool was called once per invoice');
+  const decisions = Object.fromEntries(record.entries.map((entry) => [entry.review.invoice, entry.review.decision]));
+  for (const invoice of PAID_NUMBERS) assert.equal(decisions[invoice], 'approve', invoice);
+  for (const invoice of HELD) assert.equal(decisions[invoice], 'hold', invoice);
+  // The paid ones carry the paid tool's receipt, the held ones none.
+  assert.deepEqual(record.entries.filter((entry) => entry.receipt).map((entry) => [entry.receipt.invoice, entry.receipt.receipt, entry.receipt.cents]), PAID.map(([invoice, cents]) => [invoice, `rcpt-${invoice}`, cents]));
+  assert.equal(record.entries.filter((entry) => entry.receipt).reduce((sum, entry) => sum + entry.receipt.cents, 0), PAID_CENTS);
+  assert.equal(record.report, 'report/index.html');
+  assert.deepEqual(reviewProblems({ recording, dir, record }), []);
 });
 
 test('beat 2, a kill and a resume: the box goes at the fifth paid call, the next process finishes, and no charge is made twice', { timeout: 200_000 }, async (t) => {
@@ -54,17 +61,15 @@ test('beat 2, a kill and a resume: the box goes at the fifth paid call, the next
   assert.equal(kill.data.crossing.point, 'effect.kept charge');
   const counted = fold(lines);
   assert.deepEqual([counted.processes, counted.kills, counted.repeated, counted.unknown, counted.measured], [2, 1, 0, 0, true]);
-  // Every invoice was charged once in all: five before the kill, five after it, none of the first five again.
-  assert.deepEqual(charges(dir).length, 10);
+  // Every approved invoice was paid once in all: five before the kill, three after it, none of the first five again.
+  assert.deepEqual(charges(dir).length, PAID.length);
   const perProcess = Object.values(Object.groupBy(charges(dir), (row) => row.incarnation)).map((group) => group.length);
-  assert.deepEqual(perProcess, [5, 5], 'five charges before the kill, the other five after it, by two processes');
+  assert.deepEqual(perProcess, [5, 3], 'five charges before the kill, the other three after it, by two processes');
   // The run is the disk package's own: run.json names the demo's run (its name and a fresh id for each invocation) and says done at generation 2, which the next open after the kill took.
   const run = JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8'));
   assert.match(run.run, /^disk-[0-9a-f]{8}$/);
   assert.deepEqual([run.status, run.generation], ['done', 2]);
-  // The resumed run's payoff is the unkilled run's.
-  assert.deepEqual(result.record.receipts.map((receipt) => receipt.invoice), INVOICES);
-  assert.equal(result.record.charged, 10);
+  assert.deepEqual(reviewProblems({ recording, dir, record: result.record }), []);
 });
 
 test('beat 3, receipts with cost: a receipt for each paid call, a recording that validates, a cost that is a number or unknown', { timeout: 200_000 }, async (t) => {
@@ -77,10 +82,10 @@ test('beat 3, receipts with cost: a receipt for each paid call, a recording that
   assert.equal(manifest.providers, 'scripted', 'on fakes the manifest says so');
   assert.ok(manifest.cost.usd === null || typeof manifest.cost.usd === 'number', 'a number or unknown, never a value it did not earn');
   assert.equal(manifest.kills, 1);
-  // The run kept each paid call's answer under the call's own id: ten answers, each the receipt of its invoice.
+  // The run kept each paid call's answer under the call's own id: eight answers, each the receipt of its invoice.
   const answers = readdirSync(join(dir, 'answers')).map((name) => JSON.parse(readFileSync(join(dir, 'answers', name), 'utf8')));
-  assert.equal(answers.length, 10);
-  assert.deepEqual(answers.map((answer) => answer.value.receipt).sort(), INVOICES.map((invoice) => `rcpt-${invoice}`));
+  assert.equal(answers.length, PAID.length);
+  assert.deepEqual(answers.map((answer) => answer.value.receipt).sort(), PAID_NUMBERS.map((invoice) => `rcpt-${invoice}`));
 });
 
 test('the template: demo.json names the claim, the kill and the panels, SETUP-PROMPT.md names every key and program and nothing more, the job is data, the README has the fixed shape', () => {
@@ -129,11 +134,17 @@ test('beat 4, a handoff: the run is released cleanly at the fifth paid call and 
   const counted = fold(lines);
   assert.deepEqual([counted.processes, counted.kills, counted.unknown, counted.measured], [2, 0, 0, true]);
   assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).generation, 2);
-  // The release is at the planned crossing: five charges by the first process, the other five by the second, none twice.
-  assert.equal(charges(dir).length, 10);
-  assert.deepEqual(Object.values(Object.groupBy(charges(dir), (row) => row.incarnation)).map((group) => group.length), [5, 5]);
-  assert.equal(result.record.charged, 10);
-  assert.deepEqual(result.record.receipts.map((receipt) => receipt.invoice), INVOICES);
+  // The release is at the planned crossing: five charges by the first process, the other three by the second, none twice.
+  assert.equal(charges(dir).length, PAID.length);
+  assert.deepEqual(Object.values(Object.groupBy(charges(dir), (row) => row.incarnation)).map((group) => group.length), [5, 3]);
+  assert.deepEqual(reviewProblems({ recording, dir, record: result.record }), []);
+  // Receipts are unique in the run and stable across the replay: the report, written by the second host, cites reads the first host made, and every receipt is stated once.
+  const reads = readsOf(lines);
+  assert.equal(new Set(reads.map((read) => read.receipt)).size, reads.length);
+  assert.deepEqual([...new Set(reads.map((read) => read.gen))].sort(), [1, 2], 'reads were made on both hosts');
+  const html = readFileSync(join(dir, 'work', 'report', 'index.html'), 'utf8');
+  const cited = [...html.matchAll(/data-receipt="([^"]+)"/g)].map((match) => match[1]);
+  assert.ok(cited.some((receipt) => reads.find((read) => read.receipt === receipt)?.gen === 1), 'a cite of the report rests on a read of the first host');
   assert.equal(JSON.stringify(lines).includes('kill'), false, 'the word kill is nowhere in a handoff recording');
 });
 

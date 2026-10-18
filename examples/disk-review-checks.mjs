@@ -1,0 +1,92 @@
+// The by-code checks of a disk invoice-review run (no model judges these): what was paid against the key fixed by hand, the held pair, every cite of the report resolved through the receipt of the read that made it, no
+// path outside the workspace, receipts unique in the run, and (for a live run) a readable thinking block. Used by examples/disk.test.mjs on the fixture, and on a live run's recording and directory before anything is
+// published. Each problem is a sentence; an empty list is a pass.
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { readEvents } from '../scripts/recording/fold.mjs';
+
+/** What the policy says of the batch (examples/disk/files.ts's KEY, by hand): the invoices paid in order with their cents, and those held with the rule each breaks. */
+export const PAID = [['INV-001', 1250], ['INV-002', 1425], ['INV-003', 1600], ['INV-005', 1950], ['INV-006', 2125], ['INV-008', 2475], ['INV-009', 2650], ['INV-010', 2825]];
+export const HELD = ['INV-004', 'INV-007'];
+
+const rowsOf = (file) => (existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []);
+const lineCount = (text) => { const parts = text.split('\n'); if (parts.at(-1) === '') parts.pop(); return parts.length; };
+
+/** The reads of a recording: each `read_lines` result with its receipt, window, content and the generation that wrote it. */
+export function readsOf(lines) {
+  return lines.filter((line) => line.kind === 'pi.tool-result' && line.data?.model?.[0]?.toolName === 'read_lines').map((line) => {
+    const result = line.data.model[0];
+    return { receipt: result.details?.receipt, path: result.details?.path, window: result.details?.lines, content: result.content, isError: result.isError === true, diagnostics: line.data.data?.diagnostics ?? [], gen: line.gen };
+  });
+}
+
+export function reviewProblems({ recording, dir, record, live = false }) {
+  const problems = [];
+  const lines = readEvents(recording);
+  // 1. What was paid: the paid tool was called once for each invoice of the key and for no other, with the key's cents. The ledger counts each call; the run keeps each call's answer, with its arguments, under its own id.
+  const calls = rowsOf(join(dir, 'ledger.jsonl')).filter((row) => row.kind === 'tool' && row.name === 'charge').length;
+  const answersDir = join(dir, 'answers');
+  const kept = existsSync(answersDir) ? readdirSync(answersDir).map((name) => JSON.parse(readFileSync(join(answersDir, name), 'utf8'))) : [];
+  const paid = kept.map((answer) => [answer.args?.invoice, answer.args?.cents]).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  if (JSON.stringify(paid) !== JSON.stringify([...PAID].sort((a, b) => a[0].localeCompare(b[0])))) problems.push(`the paid tool's kept answers are for ${JSON.stringify(paid)}, not the key ${JSON.stringify(PAID)}`);
+  if (calls !== PAID.length) problems.push(`the paid tool was called ${calls} times, not ${PAID.length}`);
+  // 2. The entries the run delivered: the decisions are the key's, the held pair is held and nothing else is.
+  const entries = record?.entries ?? [];
+  const decided = Object.fromEntries(entries.map((entry) => [entry.review.invoice, entry.review.decision]));
+  for (const [invoice] of PAID) if (decided[invoice] !== 'approve') problems.push(`${invoice} should be approved and is ${decided[invoice]}`);
+  for (const invoice of HELD) if (decided[invoice] !== 'hold') problems.push(`${invoice} should be held and is ${decided[invoice]}`);
+  if (entries.length !== PAID.length + HELD.length) problems.push(`the run has ${entries.length} entries, not ${PAID.length + HELD.length}`);
+  // 3. Receipts: each read states one, unique in the run (across hosts too), and its window is exactly its part.
+  const reads = readsOf(lines);
+  const receipts = reads.map((read) => read.receipt);
+  if (receipts.some((receipt) => typeof receipt !== 'string' || !receipt)) problems.push('a read states no receipt');
+  if (new Set(receipts).size !== receipts.length) problems.push('two reads share a receipt');
+  for (const read of reads) {
+    if (read.isError) continue;
+    const { from, to, part } = read.window ?? {};
+    if (![from, to, part].every(Number.isInteger)) { problems.push(`read ${read.receipt} states no window`); continue; }
+    const text = read.content?.[part]?.type === 'text' ? read.content[part].text : undefined;
+    if (text === undefined) { problems.push(`read ${read.receipt}: part ${part} is not a text part`); continue; }
+    if (text.split('\n').length - 1 !== to - from) problems.push(`read ${read.receipt}: part ${part} holds ${text.split('\n').length - 1} line breaks, not ${to - from}`);
+    if (read.diagnostics.some((diagnostic) => diagnostic.code === 'truncated')) problems.push(`read ${read.receipt}: the harness cut its result`);
+    const file = join(dir, 'work', read.path ?? '');
+    if (existsSync(file)) {
+      const all = readFileSync(file, 'utf8');
+      const parts = all.split('\n'); if (parts.at(-1) === '') parts.pop();
+      if (text !== parts.slice(from, to).map((line, index) => line + (from + index < parts.length - 1 || all.endsWith('\n') ? '\n' : '')).join('')) problems.push(`read ${read.receipt}: part ${part} is not the lines ${from} to ${to} of ${read.path}`);
+    }
+  }
+  // 4. The report: every invoice has a row, and every cite resolves through a read of that file whose window holds it.
+  const reportFile = join(dir, 'work', 'report', 'index.html');
+  if (!existsSync(reportFile)) problems.push('there is no report/index.html');
+  else {
+    const html = readFileSync(reportFile, 'utf8');
+    if (/<script/i.test(html)) problems.push('the report holds a script');
+    for (const [invoice] of [...PAID, ...HELD.map((held) => [held])]) if (!html.includes(invoice)) problems.push(`the report has no row for ${invoice}`);
+    const rows = html.split(/<tr>/i).slice(1);
+    for (const row of rows) if (!/data-receipt="/.test(row)) problems.push(`a row of the report has no cite: ${row.replace(/<[^>]+>/g, ' ').trim().slice(0, 60)}`);
+    const byReceipt = new Map(reads.map((read) => [read.receipt, read]));
+    for (const match of html.matchAll(/<a href="\.\.\/([^"#]+)#line=(\d+),(\d+)" data-receipt="([^"]+)"/g)) {
+      const [, path, a, b, receipt] = match;
+      const read = byReceipt.get(receipt);
+      if (!read) { problems.push(`a cite names receipt ${receipt}, which no read stated`); continue; }
+      if (read.path !== path) problems.push(`a cite of ${path} names receipt ${receipt}, a read of ${read.path}`);
+      else if (!(Number(a) >= read.window.from && Number(b) <= read.window.to && Number(a) < Number(b))) problems.push(`a cite of ${path} lines ${a} to ${b} is outside the read's window ${read.window.from} to ${read.window.to}`);
+      const file = join(dir, 'work', path);
+      if (existsSync(file) && Number(b) > lineCount(readFileSync(file, 'utf8'))) problems.push(`a cite of ${path} reaches line ${b}, past the end of the file`);
+    }
+  }
+  // 5. Nothing outside the workspace: no tool call's arguments or results name an absolute path of a machine.
+  const outside = /(^|[\s"'=(])\/(home|tmp|mnt|root|var|Users|opt|etc|run)\//;
+  for (const line of lines) {
+    if (line.kind !== 'pi.assistant' && line.kind !== 'pi.tool-result') continue;
+    const text = JSON.stringify(line.data?.model ?? '');
+    if (outside.test(text.replaceAll('\\n', ' ').replaceAll('\\"', '"'))) { problems.push(`a ${line.kind} line names a path outside the workspace`); break; }
+  }
+  // 6. A live agent's readable thinking: a thinking block with text in the agent's own messages.
+  if (live) {
+    const thinking = lines.filter((line) => line.kind === 'pi.assistant').flatMap((line) => line.data?.model?.[0]?.content ?? []).filter((block) => block.type === 'thinking' && typeof block.thinking === 'string' && block.thinking.trim());
+    if (!thinking.length) problems.push('no readable thinking block in the recording');
+  }
+  return problems;
+}
