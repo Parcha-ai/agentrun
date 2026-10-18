@@ -23,3 +23,6 @@
   symlink or anything the package's limits refuse, compares the directory with what it held at the last save, and commits nothing
   the second time. Options, `--git-remote`, `--git-ref`,
   `--git-allow`, `--git-branch` and `--git-checkout-dir`, or the `gitRemote` key of pi's settings configure it.
+- `branches(prefix)` lists the branches under a prefix (`runs/`), here and on the remote, at the commit `resolve` gives;
+  `commitTo(branch, { allowEmpty: true })` makes a commit that changes no file, for a commit whose message and trailers are
+  the record.
