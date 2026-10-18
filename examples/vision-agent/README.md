@@ -1,6 +1,6 @@
 # A Vision Agent
 
-One agent, any question about a set of files. It is given the question in plain words and the files; it plans its own steps and writes code (a `code` tool with `bash`, `vision.see`, `vision.judge` and `vision.transcribe`) following every skill pi-vision ships (how to look, find, and the others), as the package ships them. It ends with an HTML report that cites every claim at the file's own page, second or region. The examples beside this folder are questions and files, nothing more:
+One agent, any question about a set of files. It is given the question in plain words and the files; it plans its own steps and writes code (a `code` tool with `bash`, `vision.see`, `vision.judge` and `vision.transcribe`; Jev, through `vision.judge`, makes every yes-or-no, choice, count and box) following every skill pi-vision ships (how to look, find, and the others), as the package ships them. It ends with an HTML report that cites every claim at the file's own page, second or region. The examples beside this folder are questions and files, nothing more:
 
 ```sh
 npm ci --ignore-scripts && npm run build
