@@ -116,4 +116,18 @@ test('the run\'s final status carries the models the live parts chose, so a plac
   const done = { status: 'complete', generation: 1, output: { company: 'Acme' } };
   assert.deepEqual(finalDetail(done, 'ab', { models: { lead: 'openai/gpt-6-luna', eyes: 'google/gemini-3.8-flash' } }), { status: 'complete', record: { company: 'Acme' }, storeSha256: 'ab', models: { lead: 'openai/gpt-6-luna', eyes: 'google/gemini-3.8-flash' } });
   assert.deepEqual(finalDetail({ status: 'refused', generation: 1, code: 'X', message: 'm' }, undefined), { status: 'refused' }, 'nothing extra when the live parts chose none');
+
+});
+
+test('the end of an app\'s run announces only after the final status and the release succeeded: a failed finish is never reported as a success', async () => {
+  const { finishRun } = await import('./reference/assemble.ts');
+  const order = [];
+  const durable = (failAt) => ({ setStatus: async () => { order.push('status'); if (failAt === 'status') throw new Error('the disk failed'); }, release: async () => { order.push('release'); if (failAt === 'release') throw new Error('the claim was lost'); } });
+  await finishRun(durable(), 'done', { status: 'complete' }, () => { order.push('announce'); });
+  assert.deepEqual(order, ['status', 'release', 'announce']);
+  for (const failAt of ['status', 'release']) {
+    order.length = 0;
+    await assert.rejects(() => finishRun(durable(failAt), 'done', { status: 'complete' }, () => { order.push('announce'); }), /failed|lost/);
+    assert.ok(!order.includes('announce'), `nothing was announced when the ${failAt} failed`);
+  }
 });
