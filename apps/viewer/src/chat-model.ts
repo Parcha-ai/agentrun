@@ -18,8 +18,8 @@ export type ChatItem =
     title: string;
     /** Its one argument in full when that spans lines (a command, a script), shown where the card opens. */
     detail?: string;
-    /** With no thinking and no text of the agent's right before it, a step that made a look speaks for itself: what its
-     *  first look asked when that is words, else that look's line. */
+    /** With no thinking and no text of the agent's right before it, a step speaks for itself with what a look of it asked
+     *  in words; with no such ask it has no voice. */
     voice?: string;
     /** The result's first line; empty when the result had no words. */
     takeaway: string;
