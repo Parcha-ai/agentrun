@@ -45,9 +45,24 @@ export const VISION_SEE = Object.freeze({
   signature: "(request: { ask: string; paths?: string[]; images?: { type: \"image\"; data: string; mimeType: string }[]; fragments?: string[] }): Promise<{ text: string; model: string; costUsd: number | null; receipts: string[]; kept?: true }>",
 } as const);
 
+/** `vision.judge`, a global of a host's code-mode sandbox beside `vision.see`: Jev's typed answers about images. */
+export const VISION_JUDGE = Object.freeze({
+  name: "vision.judge",
+  description: "Have Jev, a fast and cheap judge, answer typed questions about images: choice (one of your labels, with a probability each), noul (yes or no, as the probability of yes), score (a level of your rubric) and box (where a thing is). One call is one request. The images (files by path or image blocks, each fitted to Jev's limits) are `state.images`, in order, as `{ source, image }`, `source` being the image's fragment: refer to one as `images[0].image`. `examples` are more images, such as examples that define a choice's labels: write a key of it (\"<thumb>\") in a question's instructions or criteria where the image belongs. `state` adds fields of your own. A box is always given, even when the thing is absent, so ask a noul whether it is there; its `fragment` is the region it found, as file#xywh=percent:x,y,w,h of the image `image` names (an index, default 0). Returns the answers, the model, the price in dollars and the receipts. A look that cannot be made throws an Error whose message starts with its miss code.",
+  signature: "(request: { questions: { [name: string]: { type: \"choice\" | \"noul\" | \"score\" | \"box\"; instructions?: unknown; criteria?: unknown; image?: number } }; paths?: string[]; images?: { type: \"image\"; data: string; mimeType: string }[]; fragments?: string[]; examples?: { [reference: string]: string | { type: \"image\"; data: string; mimeType: string } }; state?: { [field: string]: unknown } }): Promise<{ answers: { [name: string]: { type: string; choice?: string; noul?: number; score?: number; confidence?: number | null; probabilities?: { [label: string]: number }; box?: { top: number; bottom: number; left: number; right: number }; fragment?: string } }; model: string; costUsd: number | null; receipts: string[]; kept?: true }>",
+} as const);
+
+/** `vision.transcribe`, a global of a host's code-mode sandbox beside `vision.see`: what is said in a recording. */
+export const VISION_TRANSCRIBE = Object.freeze({
+  name: "vision.transcribe",
+  description: "Have the host's speech-to-text model write what is said in one audio or video file, as words with their start and end in seconds of that file. The host picks the model and pays for it. A file over the model's limit throws an over_budget miss that names the limit: cut it into pieces with ffmpeg, transcribe each, and add each piece's start to its words. Returns the words, the whole text, the provider and model, the price in dollars (null when unknown) and the receipt to cite; `kept` is true when this file was already transcribed, which costs nothing. A transcription that cannot be made throws an Error whose message starts with its miss code.",
+  signature: "(request: { path: string; fragment?: string; language?: string }): Promise<{ words: { text: string; start: number; end: number }[]; text: string; provider: string; model: string; costUsd: number | null; receipts: string[]; kept?: true }>",
+} as const);
+
 /** The static section a host renders once in the system prompt. Nothing live enters it. */
 export const VISION_SECTION_HEADING = "LOOKING AT FILES";
-export const VISION_SECTION_TEXT = "read shows you a file: text for documents and spreadsheets, the image itself for pictures and scans, frames for video. For many pages, a long video or many images, render them with bash (pdftoppm, ffmpeg) and call vision.see from code mode: a vision model answers about them and you get its words and what it cost. Every look is filed under evidence/ and is citable: cite the receipt, and the place as file#page=N or file#t=seconds.";
+/** The section's body: what `read` shows for each kind of file, and where the agent looks for many pages or a long video. */
+export const VISION_SECTION_TEXT = "read shows you a file: text for documents and spreadsheets, the image itself for pictures and scans, frames for video. For many pages, a long video or many images, render them with bash (pdftoppm, ffmpeg) and call vision.see from code mode: a vision model answers about them and you get its words and what it cost; vision.judge has Jev give typed answers (a label, a yes or no, a score, where a thing is) for a fraction of a cent. Every look is filed under evidence/ and is citable: cite the receipt, and the place as file#page=N or file#t=seconds.";
 
 /** The section, with the host's addendum after it when there is one. */
 export function visionSection(addendum?: string): string {
@@ -61,4 +76,5 @@ export const MISS_CODES = Object.freeze([
   "no_vision_route", "look_failed", "video_unseeable",
   "over_budget", "needs", "unsupported", "unreadable", "not_ready", "refused",
 ] as const);
+/** One of `MISS_CODES`: the code a miss is named by in a row, a receipt and the model's first line. */
 export type MissCode = (typeof MISS_CODES)[number];

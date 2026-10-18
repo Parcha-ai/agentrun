@@ -6,6 +6,7 @@ const MiB = 1024 * 1024;
 
 /** Image edges in pixels and base64 bytes: pi-ai 1.0.4's registry resize profile for its Anthropic, OpenAI and Google models (read 2026-10-09). */
 export const DEFAULT_IMAGE_MAX_EDGE = 2000;
+/** The most base64 bytes an image block carries: 4.5 MiB. */
 export const DEFAULT_IMAGE_MAX_BYTES = 4_718_592;
 /** JPEG quality of a re-encoded image: the same registry profile (read 2026-10-09). */
 export const DEFAULT_JPEG_QUALITY = 80;
@@ -29,6 +30,7 @@ export const RESULT_BYTES_SHARE = 0.25;
 export const PAGES_PER_READ = 4;
 /** A page renders at `min(PDF_MAX_DPI, floor(POINTS_PER_INCH * maxEdge / long edge in points))`: 150 dpi read as well as 181 and 200 on synthetic scans, at 46% fewer tokens than 181 (measured 2026-10-11). */
 export const PDF_MAX_DPI = 150;
+/** The points of a PDF page to an inch. */
 export const POINTS_PER_INCH = 72;
 /** Characters of a page's text layer shown beside its render: the cap hosts already apply (read 2026-10-09). */
 export const PAGE_TEXT_CHARS = 8000;
@@ -36,6 +38,7 @@ export const PAGE_TEXT_CHARS = 8000;
 export const VIDEO_FRAMES_PER_READ = 8;
 /** A window that does not fit by stream copy is re-encoded once, to this long edge and frame rate; never the whole file (measured 2026-10-09). */
 export const VIDEO_REENCODE_EDGE = 1280;
+/** The frame rate of that re-encode. */
 export const VIDEO_REENCODE_FPS = 6;
 /** Inline video is at most this share of the request budget, in raw bytes after base64's 4/3 growth (2026-10-09). */
 export const VIDEO_INLINE_SHARE = 0.6;
@@ -57,6 +60,18 @@ export const LOOK_FRAME_SPACING_S = 1;
 export const LOOK_TOKENS_PER_PART = 3000;
 /** One request to the eyes is cut after this long (2026-10-09). */
 export const SEE_TIMEOUT_MS = 120_000;
+/** Jev's images (docs.typesafe.ai/images, read 2026-10-16): PNG or JPEG stills, each side 280 to 1,568 px, 16 MiB a
+ *  file and 32 MiB of images a request after the API re-encodes them, so a quarter is kept free; out of range is
+ *  rejected, never resized; the EXIF orientation is not applied. */
+export const JEV_MIN_EDGE = 280;
+/** The longest side of an image Jev takes, in pixels. */
+export const JEV_MAX_EDGE = 1568;
+/** The largest image file Jev takes. */
+export const JEV_IMAGE_BYTES = 16 * MiB;
+/** The most bytes of images one Jev request carries, a quarter under the API's own cap. */
+export const JEV_REQUEST_BYTES = 24 * MiB;
+/** The model `vision.judge` asks unless the host names one: Jev 1.14, the first that answers box questions (read 2026-10-16). */
+export const JEV_MODEL = "jev-1.14.0";
 /** Source bytes read into this process; a larger file needs a provider that works on it in its environment: pdf.js held 455 MB for a 200 page file (measured 2026-10-09). */
 export const SOURCE_BYTES_IN_PROCESS = 64 * MiB;
 
@@ -86,6 +101,7 @@ export type LimitsOverride = {
   readonly video?: Partial<Limits["video"]>;
 };
 
+/** The limits when the lead's model names none: the common resize profile, images shown natively, no native video. */
 export const DEFAULT_LIMITS: Limits = Object.freeze({
   image: Object.freeze({ maxWidth: DEFAULT_IMAGE_MAX_EDGE, maxHeight: DEFAULT_IMAGE_MAX_EDGE, maxBytes: DEFAULT_IMAGE_MAX_BYTES, jpegQuality: DEFAULT_JPEG_QUALITY, native: true }),
   imagesPerCall: IMAGES_PER_CALL,

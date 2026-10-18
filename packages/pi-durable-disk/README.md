@@ -767,7 +767,8 @@ await openDurableRun(ref, {
   (`--start-grace`, `startGraceMs`; default the lease expiry, 90 s) only while its start mark (`start.json`) is younger
   than the grace. So while the seed runs, the instance rewrites the mark's time every heartbeat, through its claim, when a
   supervisor's mark for generation 1 is there. It does so on a thread of its own, so a seed that holds its thread (a
-  synchronous import through `DatabaseSync`) is covered too. A live seed of any length stays `starting`. A seeder that dies stops
+  synchronous import through `DatabaseSync`) is covered too. A live seed of any length stays `starting`. If the mark
+  can't be rewritten, the instance says so once, as a process warning with code `PDA_START_MARK`. A seeder that dies stops
   rewriting, the grace runs out as for any start, and the claim is revoked. If the claim is revoked while the seed still
   runs, its next write or its barrier is refused, the instance is fenced (exit 75) with nothing published, and the next
   start seeds again.
@@ -949,6 +950,11 @@ the app set. Its `status` is the run's word, not the record's, so a supervisor n
 when the run is `done` and that detail carries a record, `failed` for anything else (done with no record, failed, or a
 run its instance left `running`, `paused` or `sleeping`). So an app that runs on a box and wants its supervisor to have
 its record puts the record there, in its final `setStatus("done", { record })`.
+
+Either way the outcome may carry `models`, the role-to-model ids the run's live parts chose (`lead`, `eyes`, ...), on any
+status, a failed run's too: from the outcome line's `models`, or from the final detail's (`setStatus("done", { record,
+models })`). Both places keep it only when it is a plain object whose values are all strings; a missing or malformed one
+is left out, never replaced by `{}`.
 
 ## Tests
 

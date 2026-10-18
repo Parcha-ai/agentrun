@@ -40,6 +40,7 @@ function jpegSize(b: Uint8Array): { width: number; height: number } | null {
   return null;
 }
 
+/** Video through ffmpeg and ffprobe in the environment: the probe, frames by seek, and a window by stream copy or one re-encode. */
 export function ffmpegProvider(): VideoProvider {
   const ctx = (call: ProviderCall) => visionContext(call.signal);
   const at = (call: ProviderCall, name: string) => `${call.tempDir.replace(/\/+$/, "")}/${name}`;
