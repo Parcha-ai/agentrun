@@ -218,7 +218,7 @@ function drawCounters(counters: Counters, measured = counters.measured, provider
   const reasked = counters.modelTurns.reasked;
   const item = (label: string, value: string, title: string, extra = '') => el('div', { class: `counter${extra}`, title }, el('span', { class: 'value', text: value }), el('span', { class: 'label', text: label }));
   const stored = (label: string, value: string, title: string, extra = '') => (measured ? item(label, value, title, extra)
-    : item(label, 'not measured', 'This recording has no durable lines: nothing from the store can be counted.', extra.includes('durability') ? ' durability' : ''));
+    : item(label, 'not measured', 'This recording has no durable lines: nothing from the store can be counted.', extra.split(' ').filter((name) => name === 'durability' || name === 'receipt').map((name) => ` ${name}`).join('')));
   // What a kill and a resume did (processes, kills, a repeat, a call asked twice, the journal's opens) is marked
   // `durability`, drawn only with `?debug=durability`; the counts a developer reads (paid calls made, unknown, judge
   // asks, model turns, re-asks) with the payments and the cost are `receipt`s, kept under one disclosure, Receipts,

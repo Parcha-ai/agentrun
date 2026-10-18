@@ -503,7 +503,7 @@ function visionPages(looks: VisionLook[], state: VisionState, chosen: VisionLook
       ...[...boxes, ...(lead.publicView ? visionJevOf(shown)?.boxes ?? [] : [])].map((box) => h('span', { class: 'vz-box', title: `xywh=percent:${box.x},${box.y},${box.w},${box.h}`, box })))], 'The page') : []));
 }
 
-function visionPhotos(looks: VisionLook[], chosen: VisionLook | undefined, account: VisionAccount | undefined, focus: string | undefined): Node {
+function visionPhotos(looks: VisionLook[], chosen: VisionLook | undefined, account: VisionAccount | undefined, focus: string | undefined, lead: VisionLead): Node {
   const photos = visionOnce(looks.filter((look) => visionLane(look) === 'photos'));
   if (photos.length === 0) return h('section', { class: 'vz-lane' }, h('h5', {}, 'Photographs'), h('p', { class: 'empty' }, 'No photograph looked at yet.'));
   const labels = new Map((account?.photos ?? []).map((photo) => [photo.receipt ?? photo.item, photo]));
@@ -520,7 +520,17 @@ function visionPhotos(looks: VisionLook[], chosen: VisionLook | undefined, accou
         visionPicture(look.images[0], look.item ?? look.source, 'vz-thumb', true), photo ? h('span', { class: 'vz-label' }, photo.label)
           // A miss is labelled by its code: a tile with no picture says why.
           : look.status === 'failed' && h('span', { class: 'vz-label' }, look.miss?.code.replaceAll('_', ' ') ?? 'missed'));
-    })));
+    })),
+    // A public replay says what a Jev decision on a picture found, as it does in the film and pages lanes: the chosen
+    // photograph's, else the latest one Jev decided.
+    ...visionPhotoAnswer(photos, chosen, lead));
+}
+
+/** The sentences of the photograph a public replay names under the grid: the chosen one, else the latest Jev decided. */
+function visionPhotoAnswer(photos: VisionLook[], chosen: VisionLook | undefined, lead: VisionLead): Node[] {
+  if (!lead.publicView) return [];
+  const shown = chosen && photos.some((look) => look.key === chosen.key) ? chosen : photos.findLast((look) => visionJevOf(look) !== undefined);
+  return shown && visionJevOf(shown) ? [visionAnswer(lead, shown, shown.fragment ? `#${shown.fragment}` : shown.item ?? shown.source), lead.citedOf(shown)].filter((node): node is Node => node !== false) : [];
 }
 
 /** A typed time and how the eyes read it: the typed one's digits the reading dropped are struck. */
@@ -673,7 +683,7 @@ function visionView(state: VisionState, context: ViewContext): Node {
       state.kills.length > 0 && h('span', { class: 'vz-badge red durability' }, `killed ${state.kills.length === 1 ? 'once' : `${state.kills.length} times`}${state.kills.at(-1)?.label ? `: ${state.kills.at(-1)!.label}` : ''}`),
       kept > 0 && h('span', { class: 'vz-badge ok durability' }, `resumed · ${kept} kept`)),
     h('div', { class: 'vz-grid' },
-      h('div', { class: 'vz-col' }, visionFilm(lanes, state, chosen, lead), visionPages(lanes, state, chosen, boxes, lead), visionPhotos(lanes, chosen, account, context.focus)),
+      h('div', { class: 'vz-col' }, visionFilm(lanes, state, chosen, lead), visionPages(lanes, state, chosen, boxes, lead), visionPhotos(lanes, chosen, account, context.focus, lead)),
       h('div', { class: 'vz-col' },
         h('h5', {}, cited ? cited.title ?? state.result?.title ?? 'The result' : 'The account'),
         !state.result ? h('p', { class: 'empty' }, 'Not delivered yet.')
