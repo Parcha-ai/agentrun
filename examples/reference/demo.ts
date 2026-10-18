@@ -604,8 +604,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     // What the run delivered and its store's hash come from the last runner's own report: nothing is read under the run's directory.
     const last = processes.at(-1)?.outcome;
     const delivered = last && last.status === 'complete' && 'record' in last ? { record: last.record } : null;
-    if (maxUsd !== null && meterKnown(recordDir) > maxUsd) overBudget = true;
+    // The last read can add a box's priced receipt: the cap is checked after it.
     await settled(readStatus(true));
+    if (maxUsd !== null && meterKnown(recordDir) > maxUsd) overBudget = true;
     const processesStarted = processes.length;
     // The demo's result hook, reported by the process that delivered, shapes the result line and its blob; without one, the delivered record is the result.
     const made = processes.at(-1)?.outcome?.result;

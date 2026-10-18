@@ -2117,3 +2117,17 @@ test('boxes of one provider, kind and start are two boxes, labelled box-N when t
   writeFileSync(join(dir, '.spool', 'supervisor-1.jsonl'), `${receipt('box-1', 1)}\n${receipt('box-2', null)}\n`);
   assert.equal(meterKnown(dir), 1, 'the priced box counts against the cap, though the other has no price');
 });
+
+test('a box charge that first appears in the last status read counts against the cap: the run is over budget', { timeout: 300_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference', expectedCost: 0.05 });
+  const recording = join(tmp, 'recording');
+  let reads = 0;
+  const result = await demo({ ...options, argv: ['--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    const box = { provider: 'prov', kind: 'sandbox', from: '2026-10-16T10:00:00.000Z', usdPerSecond: 1, source: 'list', priced: true };
+    // The box's end is first reported by the third read, the last one the supervisor makes (start, exit, end): $60 against a cap of $0.10.
+    return { ...inner, status: async () => { reads += 1; return { record: null, boxes: [reads >= 3 ? { ...box, to: '2026-10-16T10:01:00.000Z' } : box] }; } };
+  } });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.equal(result.overBudget, true, 'the charge that arrived with the last read is over the cap');
+});
