@@ -95,6 +95,7 @@ test("the skill holds the six pieces this test runs, and nothing more", () => {
   assert.ok(/^name: report$/m.test(SKILL) && /^description: .{40,}$/m.test(SKILL));
   const description = /^description: (.*)$/m.exec(SKILL)[1];
   assert.ok(description.length <= 1024, `${description.length} characters of description`);
+  assert.ok(!description.includes(": ") && !description.includes(" #"), "a plain YAML scalar: no colon-space and no comment mark, or the skills loader refuses the front matter");
 });
 
 test("a file is written byte for byte, whatever it holds, with no chunk ending inside a character", async () => {
@@ -136,7 +137,7 @@ test("every file the page shows is in report/, is not empty and is within budget
   await built();
   const html = HTML();
   const refs = [...attrs(html, "src"), ...attrs(html, "poster")];
-  assert.deepEqual([...new Set(refs)].sort(), ["clips/talk-chart.mp4", "frames/contract-p3.jpg", "frames/site-photo.jpg", "frames/talk-chart-poster.jpg", "frames/talk-chart.jpg", "frames/talk-later.jpg"]);
+  assert.deepEqual([...new Set(refs)].sort(), ["clips/talk-chart.mp4", "frames/contract-p3.jpg", "frames/contract-rule.jpg", "frames/site-photo.jpg", "frames/talk-chart-poster.jpg", "frames/talk-chart.jpg", "frames/talk-later.jpg"]);
   for (const ref of refs) {
     assert.ok(!path.isAbsolute(ref) && !ref.split("/").includes(".."), `${ref} stays in the folder`);
     assert.ok(sizeOf(ref) > 0, `${ref} is not empty`);
@@ -144,7 +145,7 @@ test("every file the page shows is in report/, is not empty and is within budget
   for (const ref of refs.filter((r) => r.startsWith("frames/"))) assert.ok(sizeOf(ref) <= 700_000, `${ref}: ${sizeOf(ref)} bytes`);
   assert.ok(sizeOf("clips/talk-chart.mp4") <= 1_500_000, "a clip is at most 1.5 MB");
   assert.ok(all(path.join(cwd, "report")).reduce((n, f) => n + fs.statSync(f).size, 0) <= 8_000_000, "the folder is at most 8 MB");
-  assert.deepEqual(all(path.join(cwd, "report")).map((f) => path.relative(path.join(cwd, "report"), f)).sort(), ["clips/talk-chart.mp4", "contract.pdf", "frames/contract-p3.jpg", "frames/site-photo.jpg", "frames/talk-chart-poster.jpg", "frames/talk-chart.jpg", "frames/talk-later.jpg", "index.html", "photo.jpg"]);
+  assert.deepEqual(all(path.join(cwd, "report")).map((f) => path.relative(path.join(cwd, "report"), f)).sort(), ["clips/talk-chart.mp4", "contract.pdf", "frames/contract-p3.jpg", "frames/contract-rule.jpg", "frames/site-photo.jpg", "frames/talk-chart-poster.jpg", "frames/talk-chart.jpg", "frames/talk-later.jpg", "index.html", "photo.jpg"]);
   assert.deepEqual(fs.readFileSync(path.join(cwd, "report", "contract.pdf")), fs.readFileSync(path.join(cwd, "contract.pdf")), "a source document is copied as it is");
   assert.ok(!fs.existsSync(path.join(cwd, "report", "talk.mp4")), "a film named in outside is not copied");
   const photo = fs.readFileSync(path.join(cwd, "report", "photo.jpg"));
@@ -227,8 +228,9 @@ test("a box is its look's percentages on the picture, inside it, links back to i
   const boxes = [...html.matchAll(/<div class="mark( right)?" id="([^"]*)" data-xywh="percent:([^"]*)" data-look="([^"]*)" style="([^"]*)"><a class="tag" href="#([^"]*)">([^<]*)<\/a><\/div>/g)];
   assert.deepEqual(boxes.map((b) => [b[2], b[3], b[4], b[5], b[6], b[7], Boolean(b[1])]), [
     ["mark-peak", "61.2,40,12,9", keys[0], "left:61.2%;top:40%;width:12%;height:9%", "f-chart", "second quarter", true],
+    ["crop-rule", "7,33.33,70,33.33", keys[1], "left:7%;top:33.33%;width:70%;height:33.33%", "f-contract", "the rule", false],
     ["mark-rule", "7,6,70,4", keys[1], "left:7%;top:6%;width:70%;height:4%", "f-contract", "the rule", false],
-  ], "the percentages as written, with no arithmetic; a box on the right half has its label on its right edge");
+  ], "the percentages as written, with no arithmetic (the crop's box is computed by crop(), not by the model); a box on the right half has its label on its right edge");
   for (const [, , , xywh] of boxes) {
     const [x, y, w, h] = xywh.split(",").map(Number);
     assert.ok(x >= 0 && y >= 0 && w > 0 && h > 0 && x + w <= 100 && y + h <= 100);
@@ -257,8 +259,8 @@ test("the answer comes first with its key points, the key findings are open, the
     assert.match(article, /<h3>[^<]+<\/h3><p>[^<]+<\/p>/, "a claim and its words");
     assert.match(article, /<p class="cites">(<a class="cite" [^>]*>[^<]*<\/a>\s*)+/, "its cites");
   }
-  const figures = html.match(/<figure class="pic">[\s\S]*?<\/figure>/g);
-  assert.equal(figures.length, 4, "the chart, the same chart later, the clip and the photo");
+  const figures = html.match(/<figure class="pic"[^>]*>[\s\S]*?<\/figure>/g);
+  assert.equal(figures.length, 5, "the chart, the same chart later, the clip, the close crop of the rule and the photo");
   for (const figure of figures) assert.match(figure, /<figcaption>[^<]{12,}<\/figcaption>/, "a caption that says why the picture is kept");
   assert.match(html, /alt="A bar chart with the second bar tallest"/, "a picture has alternative text");
   assert.match(html, /<section id="document"><h2>The document, with its marks<\/h2><figure class="docpage" id="page-3"><header><span class="n">p\. 3<\/span><a class="cite" href="contract\.pdf#page=3"/);
@@ -403,8 +405,8 @@ test("a relative link names a file of report/ or a film left in outside, and not
 
 test("when the question names a shape, the answer section is that shape: one cited row for each unit, before any finding", async () => {
   const shaped = data.replace("  notChecked:", `  rows: [
-    { id: "m1", label: "0:00 to 0:20", text: "The chart is on the screen.", cites: [{ file: "talk.mp4", t: [0, 20], look: lookTalk.key }] },
-    { id: "m2", label: "0:20 to 0:40", text: "The speaker names the rule.", cites: [{ file: "contract.pdf", page: 3, look: lookPage.key }] },
+    { id: "m1", label: "0:00 to 0:20", text: "The chart is on the screen.", thumb: await thumb("talk.mp4", "m1-thumb", { t: 10 }), cites: [{ file: "talk.mp4", t: [0, 20], look: lookTalk.key }] },
+    { id: "m2", label: "0:20 to 0:40", text: "The speaker names the rule.", thumb: await thumb("talk.mp4", "m2-thumb", { t: 30 }), cites: [{ file: "contract.pdf", page: 3, look: lookPage.key }] },
   ],
   notChecked:`);
   assert.notEqual(shaped, data);
@@ -548,7 +550,7 @@ test("a cite to a region alone says which region, so several on one picture are 
 test("a document page takes its look from a row's cite as well as a finding's, or from its own data", async () => {
   const byRow = data
     .replace('cites: [{ file: "contract.pdf", page: 3, xywh: "percent:7,6,70,4", look: lookPage.key }] }', 'cites: [{ file: "contract.pdf", look: lookPage.key }] }')
-    .replace("  notChecked:", '  rows: [{ id: "p3", label: "Page 3", text: "The rule is set here.", cites: [{ file: "contract.pdf", page: 3, look: lookPage.key }] }],\n  notChecked:');
+    .replace("  notChecked:", '  rows: [{ id: "p3", label: "Page 3", text: "The rule is set here.", thumb: await thumb("frames/contract-p3.jpg", "p3-thumb"), cites: [{ file: "contract.pdf", page: 3, look: lookPage.key }] }],\n  notChecked:');
   assert.notEqual(byRow, data);
   onDisk = "other";
   const { result, keys } = await run([helpers, assets, looking, byRow, render, check]);
@@ -564,7 +566,7 @@ test("an embedded page takes the look cited for that page of its own document, n
   const two = data
     .replace("\nconst report = {", '\nconst lookOther = await look(`report/${page3}`, "other.pdf#page=3", "What else is on this page?");\nconst report = {')
     .replace('outside: ["talk.mp4"]', 'outside: ["talk.mp4", "other.pdf"]')
-    .replace("  notChecked:", '  rows: [{ id: "o3", label: "Other, page 3", text: "Another document.", cites: [{ file: "other.pdf", page: 3, look: lookOther.key }] }, { id: "p3", label: "Page 3", text: "The rule is set here.", cites: [{ file: "contract.pdf", page: 3, look: lookPage.key }] }],\n  notChecked:');
+    .replace("  notChecked:", '  rows: [{ id: "o3", label: "Other, page 3", text: "Another document.", thumb: await thumb("talk.mp4", "o3-thumb", { t: 3 }), cites: [{ file: "other.pdf", page: 3, look: lookOther.key }] }, { id: "p3", label: "Page 3", text: "The rule is set here.", thumb: await thumb("frames/contract-p3.jpg", "p3-thumb"), cites: [{ file: "contract.pdf", page: 3, look: lookPage.key }] }],\n  notChecked:');
   assert.notEqual(two, data);
   onDisk = "other";
   const { result, keys } = await run([helpers, assets, looking, two, render, check]);
@@ -572,4 +574,85 @@ test("an embedded page takes the look cited for that page of its own document, n
   assert.equal(keys.length, 4);
   assert.notEqual(keys[1], keys[3]);
   assert.match(HTML(), new RegExp(`<a class="cite" href="contract\\.pdf#page=3" data-look="${keys[1]}">open at p\\. 3</a>`), "the embedded page carries its own document's look");
+});
+
+test("rich by default: every finding shows a picture or a clip, a document mark has a close crop whose box is the mark, and no picture is shown twice", async () => {
+  await built();
+  const html = HTML();
+  const findings = [...html.matchAll(/<(article|details) class="finding[^"]*" id="f-([a-z-]+)">([\s\S]*?)<\/\1>/g)].map((m) => ({ id: m[2], block: m[3] }));
+  assert.deepEqual(findings.map((f) => f.id).sort(), ["chart", "contract", "site"], "the routine finding too");
+  for (const f of findings) assert.match(f.block, /<img src="frames\/|<video /, `finding ${f.id} shows its evidence`);
+  assert.match(findings.find((f) => f.id === "chart").block, /<video controls[\s\S]*<img src="frames\/talk-chart\.jpg"|<img src="frames\/talk-chart\.jpg"[\s\S]*<video controls/, "a film: the frame and the clip");
+  assert.match(html, /<details class="finding routine" id="f-site">[\s\S]*<img src="frames\/site-photo\.jpg"[\s\S]*<figcaption>[^<]{12,}<\/figcaption>/, "a photo with its caption, inside the fold");
+  const shown = attrs(html, "src").filter((ref) => ref.startsWith("frames/"));
+  assert.equal(new Set(shown).size, shown.length, "no picture twice");
+  // The document mark: its finding holds a crop, tied to the mark by data-mark, with the mark's box in the crop.
+  const crop = /<figure class="pic" data-mark="mark-rule"><div class="sheet"><img src="(frames\/contract-rule\.jpg)"[^>]*><div class="mark[^"]*" id="crop-rule" data-xywh="percent:([\d.,]+)"/.exec(html);
+  assert.ok(crop, "the crop of the rule, with its box");
+  assert.ok(html.includes('id="mark-rule"'), "and the mark itself on the embedded page");
+  const [bx, by, bw, bh] = crop[2].split(",").map(Number);
+  assert.ok(bx >= 0 && by >= 0 && bw > 0 && bh > 0 && bx + bw <= 100 && by + bh <= 100, "the box is inside the crop");
+  // Pixel proof: the region the box marks in the crop is the region the mark marks on the page (7,6,70,4 percent of it).
+  const page = sharp(path.join(cwd, "report", "frames", "contract-p3.jpg")), cropped = sharp(path.join(cwd, "report", crop[1]));
+  const [pm, cm] = [await page.metadata(), await cropped.metadata()];
+  const region = (meta, image, [x, y, w, h]) => image.clone().extract({ left: Math.round(meta.width * x / 100), top: Math.round(meta.height * y / 100), width: Math.max(1, Math.round(meta.width * w / 100)), height: Math.max(1, Math.round(meta.height * h / 100)) }).greyscale().resize(560, 40, { fit: "fill" }).raw().toBuffer();
+  const [fromPage, fromCrop] = [await region(pm, page, [7, 6, 70, 4]), await region(cm, cropped, [bx, by, bw, bh])];
+  const diff = fromPage.reduce((n, v, i) => n + Math.abs(v - fromCrop[i]), 0) / fromPage.length;
+  assert.ok(diff < 14, `the crop's box shows what the page's mark shows (mean difference ${diff.toFixed(1)})`);
+  assert.ok(cm.width <= 900 && cm.width >= 480, `a crop of ${cm.width} px`);
+  assert.ok(sizeOf(crop[1]) <= 700_000);
+  assert.ok(all(path.join(cwd, "report")).reduce((n, f) => n + fs.statSync(f).size, 0) < 2_000_000, "the rich sketch is far inside the folder budget");
+});
+
+test("crop() frames a mark with room around it, clamped to the picture, and the box in the crop is the mark", async () => {
+  onDisk = "other";
+  const marks = ["7,6,70,4", "0,0,100,100", "95,95,5,5", "0,0,3,3", "40,50,20,1", "50,0,10,100", "12.5,33.3,7.7,2.2"];
+  const { result } = await run([helpers, assets, `return ${JSON.stringify(marks)}.map((at) => [at, around(at)]);`]);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  for (const [at, { from: [cx, cy, cw, ch], box }] of result.value) {
+    const [x, y, w, h] = at.split(",").map(Number), [bx, by, bw, bh] = box.split(",").map(Number);
+    assert.ok(cx >= 0 && cy >= 0 && cw > 0 && ch > 0 && cx + cw <= 100.0001 && cy + ch <= 100.0001, `${at}: the crop is inside the picture`);
+    assert.ok(bx >= 0 && by >= 0 && bw > 0 && bh > 0 && bx + bw <= 100 && by + bh <= 100, `${at}: the box ${box} is inside the crop`);
+    for (const [name, got, want] of [["x", cx + (bx * cw) / 100, x], ["y", cy + (by * ch) / 100, y], ["w", (bw * cw) / 100, w], ["h", (bh * ch) / 100, h]]) assert.ok(Math.abs(got - want) < 0.05, `${at}: the box maps back to the mark's ${name} (${got} against ${want})`);
+    assert.ok(cx <= x && cy <= y && cx + cw >= x + w - 0.0001 && cy + ch >= y + h - 0.0001, `${at}: the crop holds the mark`);
+  }
+});
+
+test("a thumbnail is a small picture of a row's evidence, from a moment of a film or from a picture of the folder", async () => {
+  onDisk = "other";
+  const { result } = await run([helpers, assets, 'await pdfPage("contract.pdf", 3, "p3"); return [await thumb("talk.mp4", "t-film", { t: 12 }), await thumb("frames/p3.jpg", "t-page")];']);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  assert.deepEqual(result.value, ["frames/t-film.jpg", "frames/t-page.jpg"]);
+  for (const file of result.value) {
+    const meta = await sharp(path.join(cwd, "report", file)).metadata();
+    assert.equal(meta.width, 240, file);
+    assert.ok(sizeOf(file) < 40_000, `${file}: ${sizeOf(file)} bytes`);
+  }
+  const at12 = path.join(cwd, ".thumb-ref.jpg");
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-ss", "12", "-i", path.join(cwd, "talk.mp4"), "-frames:v", "1", "-vf", "scale=240:-2", "-q:v", "8", at12]);
+  assert.ok(psnr(path.join(cwd, "report", "frames", "t-film.jpg"), at12) > 30, "the thumbnail is the film's moment");
+});
+
+test("the skill's check refuses a finding with no picture or clip, a row with no thumbnail, a document mark with no crop and a picture shown twice", async () => {
+  const bare = data.replace(/      pics: \[\{ src: site,[^\n]*\n/, "");
+  assert.notEqual(bare, data);
+  onDisk = "other";
+  const none = await run([helpers, assets, looking, bare, render, check]);
+  assert.ok(!none.result.ok);
+  assert.match(none.result.error.message, /finding site shows no picture or clip: show its evidence/);
+  const rows = data.replace("  notChecked:", '  rows: [{ id: "m1", label: "0:00", text: "The chart is on the screen.", cites: [{ file: "talk.mp4", t: [0, 20], look: lookTalk.key }] }],\n  notChecked:');
+  assert.notEqual(rows, data);
+  const nothumb = await run([helpers, assets, looking, rows, render, check]);
+  assert.ok(!nothumb.result.ok);
+  assert.match(nothumb.result.error.message, /row m1 has no thumbnail/);
+  const uncropped = data.replace(' mark: "mark-rule",', "");
+  assert.notEqual(uncropped, data);
+  const nocrop = await run([helpers, assets, looking, uncropped, render, check]);
+  assert.ok(!nocrop.result.ok);
+  assert.match(nocrop.result.error.message, /the mark mark-rule has no close crop in its finding/);
+  await refuses(swap("</main>", '<figure class="pic"><img src="frames/site-photo.jpg" alt="again"><figcaption>The same photo twice.</figcaption></figure></main>'), /a picture is shown twice: drop the duplicate/);
+});
+
+test("when the folder is over budget the check names the largest files", async () => {
+  await refuses('await sh("head -c 8500000 /dev/zero > report/clips/huge.bin");', /report\/ is over 8000000 bytes; the largest files:\n8500000 report\/clips\/huge\.bin/);
 });

@@ -1,6 +1,6 @@
 ---
 name: report
-description: End a run with your own report, one self-contained, script-free HTML page, report/index.html, that leads with the answer and its few key points and folds the routine detail. Show the document, the film frames, the photos and short clips you looked at only where they help the answer, mark the cited region on the picture, and cite every claim as a link to the file's own address (file#page=N, file#t=a,b, file#xywh=percent:x,y,w,h). Use at the end of a run that looked at documents, images or video, when the person needs to see what you saw and not only read your words.
+description: End a run with your own report, one self-contained, script-free HTML page, report/index.html, that answers in the shape the question asks, states only what the run read, and shows the evidence for every finding and a thumbnail for every row (the document page with its mark boxed and a close crop, the film moment's frame and a short clip, the photo with what it shows boxed and captioned). Cite every claim as a link to the file's own address (file#page=N, file#t=a,b, file#xywh=percent:x,y,w,h). Use at the end of a run that looked at documents, images or video, so the person sees what you saw and not only your words.
 ---
 
 # End the run with a report
@@ -11,19 +11,26 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
 
 ## Choose what the page says
 
-- **The answer first**, in a sentence or two, then three or four key points, each a link to the finding or the mark it
-  stands on. Someone who reads only that much has the answer.
 - **The answer is in the shape the question asks.** When the question names a shape (minute by minute, page by page, mark by
   mark, a table), the answer section is that shape: one row for each unit, every row cited. Group or fold only the detail
   under a row, never the rows. A question that names no shape gets the sentence and the key points.
 - **Never state what the run did not read.** Every name, place, time and number on the page comes from a look's answer or from
   the file's own text, and carries its cite. A caption says what the look saw, not what you remember about the subject.
   What the run did not read is left out, or goes under what you did not check.
-- **Fold the routine.** What was checked and found as expected goes in a folded section (`<details>`), one line each. What
-  surprised, failed or decided the answer is a finding of its own, open, and first.
-- **Media only where it helps.** A picture is kept when it shows what the claim is about; a frame or a page that proves
-  nothing is dropped, not shown to look thorough. Each kept picture has a caption that says why it matters, in a sentence
-  ("the tallest bar is the second quarter's"), not what it is ("a chart").
+- **The answer first**, in a sentence or two, then three or four key points, each a link to the finding or the mark it
+  stands on. Someone who reads only that much has the answer.
+- **Every finding shows its evidence; every row has a thumbnail.** A page that only says is a page nobody checks. Show:
+  - **a document:** the page with the cited mark boxed (the embedded page, below) and, in the finding, a close crop of the
+    mark with its box in the crop. `crop()` computes the crop and the box in it; you do no arithmetic;
+  - **a film:** the cited moment's frame, boxed when the look gave a box, and a short clip of the cited window (a window is
+    a clip once; any later use of it is a frame);
+  - **a photo:** the photo, boxed when a look gave a box, with a caption that says what it shows;
+  - **a row** of a row-shaped answer: a thumbnail of its evidence (`thumb()`), small enough for many rows.
+  Each picture has a caption in a sentence, from the look's answer: what it shows and why it matters ("the tallest bar is the
+  second quarter's"), not what it is ("a chart"). Drop only a duplicate (the same picture twice) and a picture that shows
+  nothing its claim says.
+- **Fold the routine.** What was checked and found as expected goes in a folded section (`<details>`), one line each, its
+  evidence inside the fold. What surprised, failed or decided the answer is a finding of its own, open, and first.
 - **A document is embedded.** When the run read a document, the page shows it as a viewer would: each page the findings
   stand on as an image, in order, with every found mark outlined and labelled on its page. Each mark links to its finding
   and back, and the page links to the PDF itself at `#page=N`.
@@ -47,9 +54,12 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
   (`example.com/terms`) so nothing in it can be mistaken for a load.
 - **Light and dark, phone width.** `color-scheme: light dark`, one `prefers-color-scheme` rule, one column that becomes two
   where there is room, system fonts.
-- **A size budget**, one place to change (`BUDGET`): a picture at most 1600 px wide and 700 KB (960 px for a film frame), a
-  clip a few seconds at 480 px, silent unless the sound is the point, at most 1.5 MB, the folder at most 8 MB. The artifact
-  counts toward the recording's own limit.
+- **A size budget**, one place to change (`BUDGET`): a picture at most 1600 px wide and 700 KB (960 px for a film frame, about
+  900 px for a crop, 240 px for a thumbnail), a clip a few seconds at 480 px, silent unless the sound is the point, at most
+  1.5 MB, the folder at most 8 MB. The folder counts toward the recording's own 10 MB, so 8 MB leaves the run its events.
+  With many clips, lower `BUDGET.clip` first (about 800 KB for ten): `clip()` re-encodes down a ladder until a clip fits. When
+  the folder is still over, the check names the largest files: shorten a clip, drop a duplicate, or drop a picture that shows
+  nothing its claim says.
 - **No metadata, no machine.** Frames, photos and clips are re-encoded with their metadata stripped (`-map_metadata -1`; a
   clip keeps only its codec's own name). No file names the machine's paths, the home directory or a key; a path in the page
   is the run's own relative one.
@@ -94,8 +104,9 @@ const slug = (name) => { if (!/^[a-z0-9-]+$/.test(name)) throw new Error(`${name
 
 ### 2. The files the page shows
 
-A film frame, a page of a PDF and a photo each become a JPEG under `report/frames/`; a window of a film becomes a silent MP4
-under `report/clips/` with its poster, re-encoded down a ladder until it fits; a document or photo the page cites is copied beside it.
+A film frame, a page of a PDF and a photo each become a JPEG under `report/frames/`; a mark on a picture becomes a close crop
+and a row's evidence a thumbnail, in the same folder; a window of a film becomes a silent MP4 under `report/clips/` with its
+poster, re-encoded down a ladder until it fits; a document or photo the page cites is copied beside it.
 Each helper returns a path relative to `report/`, which is what the page uses.
 
 ```js
@@ -110,6 +121,22 @@ const pdfPage = async (pdf, page, name) => {   // the crop box, as a viewer show
 };
 const photo = async (file, name) => {
   await sh(`mkdir -p report/frames && ffmpeg -v error -y -i ${q(file)} -vf "scale='min(960,iw)':-2" ${jpeg} report/frames/${slug(name)}.jpg`);
+  return `frames/${name}.jpg`;
+};
+const around = (at) => {   // the crop that frames a mark (x,y,w,h in percent of its picture) with room around it, and the mark's box in the crop
+  const [x, y, w, h] = at.split(",").map(Number), r2 = (n) => Math.round(n * 100) / 100;
+  const padX = Math.max(w * 0.6, 4), padY = Math.max(h * 0.6, 4);
+  const cx = Math.max(0, x - padX), cy = Math.max(0, y - padY), cw = Math.min(100, x + w + padX) - cx, ch = Math.min(100, y + h + padY) - cy;
+  const bx = r2(((x - cx) / cw) * 100), by = r2(((y - cy) / ch) * 100);
+  return { from: [cx, cy, cw, ch], box: [bx, by, Math.min(r2((w / cw) * 100), r2(100 - bx)), Math.min(r2((h / ch) * 100), r2(100 - by))].join(",") };
+};
+const crop = async (picture, at, name) => {   // a close crop of a mark on a picture of report/: { src, box } with the box inside the crop
+  const { from: [cx, cy, cw, ch], box } = around(at);
+  await sh(`ffmpeg -v error -y -i ${q(`report/${picture}`)} -vf "crop=iw*${cw}/100:ih*${ch}/100:iw*${cx}/100:ih*${cy}/100,scale='min(900,max(iw,480))':-2:flags=lanczos" ${jpeg} report/frames/${slug(name)}.jpg`);
+  return { src: `frames/${name}.jpg`, box };
+};
+const thumb = async (source, name, { t = 0 } = {}) => {   // a small picture of a row's evidence: a picture of report/, or a moment of a film
+  await sh(`mkdir -p report/frames && ffmpeg -v error -y ${/\.(mp4|mov|webm|mkv)$/i.test(source) ? `-ss ${t} -i ${q(source)}` : `-i ${q(`report/${source}`)}`} -frames:v 1 -vf "scale=240:-2" -map_metadata -1 -fflags +bitexact -q:v 8 report/frames/${slug(name)}.jpg`);
   return `frames/${name}.jpg`;
 };
 const windows = new Map();
@@ -168,7 +195,8 @@ Everything the page says is data here first. The file names are the run's own; t
 looks you made (a `vision.judge` box answer carries its `fragment`; `find` and `look` say where a thing is). A finding is a
 key one (open) or `routine` (folded). A box belongs to a finding and links back to it; `points` are the three or four key
 points of the answer. When the question names a shape, add `rows` to the report, one for each unit it names:
-`rows: [{ id: "m1", label: "0:00 to 1:00", text: "what the look read there", cites: [{ file: "talk.mp4", t: [0, 60], look: lookTalk.key }] }]`.
+`rows: [{ id: "m1", label: "0:00 to 1:00", text: "what the look read there", thumb: await thumb("talk.mp4", "m1-thumb", { t: 30 }), cites: [{ file: "talk.mp4", t: [0, 60], look: lookTalk.key }] }]`.
+A mark on a document page gets `crop()` for its finding and its box on the embedded page; a film moment gets `frame()` and the window's `clip()`; a photo gets `photo()`.
 An embedded page takes its look from a cite of that page of that document, in a finding or a row, or from a `look` of its own.
 
 ```js
@@ -179,6 +207,7 @@ const site = await photo("photo.jpg", "site-photo");
 const lookTalk = await look(`report/${talk}`, "talk.mp4#t=21.5", "What does the chart on the screen show?");
 const lookPage = await look(`report/${page3}`, "contract.pdf#page=3", "What rule does this page set?");
 const lookSite = await look(`report/${site}`, "photo.jpg", "What is in the photo?");
+const rule = await crop(page3, "7,6,70,4", "contract-rule");   // the mark, close, and its box in the crop
 
 const report = {
   title: "The talk, the contract and the site",
@@ -195,9 +224,11 @@ const report = {
       clip: { ...(await clip("talk.mp4", 18, 26, "talk-chart")), caption: "The eight seconds around the chart." },
       cites: [{ file: "talk.mp4", t: [21.5], xywh: "percent:61.2,40,12,9", look: lookTalk.key }, { file: "talk.mp4", t: [18, 26], look: lookTalk.key }] },
     { id: "contract", title: "The contract sets the rule on page 3", why: lookPage.text,
+      pics: [{ src: rule.src, alt: "The rule, cropped from page 3", caption: "The rule as the page prints it, the clause the answer rests on.", mark: "mark-rule",
+               boxes: [{ id: "crop-rule", finding: "contract", at: rule.box, label: "the rule", look: lookPage.key }] }],
       cites: [{ file: "contract.pdf", page: 3, xywh: "percent:7,6,70,4", look: lookPage.key }] },
     { id: "site", routine: true, title: "The site", why: lookSite.text,
-      pics: [{ src: site, alt: "A photo of the site", caption: "Nothing in the photo bears on the answer; it is kept as the record of the visit." }],
+      pics: [{ src: site, alt: "A photo of the site", caption: "The site as photographed; nothing in it bears on the answer, so it is kept as the record of the visit." }],
       cites: [{ file: await keep("photo.jpg"), look: lookSite.key }] },
   ],
   document: { file: await keep("contract.pdf"), pages: [{ n: 3, src: page3, boxes: [{ id: "mark-rule", finding: "contract", at: "7,6,70,4", label: "the rule", look: lookPage.key }] }] },
@@ -221,7 +252,7 @@ const cite = (c) => `<a class="cite" href="${encodeURIComponent(c.file)}${part(c
 const box = (b) => { const [x, y, w, h] = b.at.split(",");
   return `<div class="mark${Number(x) + Number(w) / 2 > 50 ? " right" : ""}" id="${esc(b.id)}" data-xywh="percent:${esc(b.at)}" data-look="${esc(b.look)}" style="left:${x}%;top:${y}%;width:${w}%;height:${h}%"><a class="tag" href="#f-${esc(b.finding)}">${say(b.label)}</a></div>`; };
 const sheet = (p) => `<div class="sheet"><img src="${esc(p.src)}" alt="${say(p.alt)}" loading="lazy">${(p.boxes ?? []).map(box).join("")}</div>`;
-const pic = (p) => `<figure class="pic">${sheet(p)}<figcaption>${say(p.caption)}</figcaption></figure>`;
+const pic = (p) => `<figure class="pic"${p.mark ? ` data-mark="${esc(p.mark)}"` : ""}>${sheet(p)}<figcaption>${say(p.caption)}</figcaption></figure>`;
 const movie = (c) => `<figure class="pic"><video controls muted playsinline preload="metadata" poster="${esc(c.poster)}"><source src="${esc(c.src)}" type="video/mp4"></video><figcaption>${say(c.caption)}</figcaption></figure>`;
 const spots = [...(report.document?.pages ?? []).flatMap((p) => (p.boxes ?? []).map((b) => [b, `p. ${p.n}`])), ...report.findings.flatMap((f) => (f.pics ?? []).flatMap((p) => (p.boxes ?? []).map((b) => [b, "the picture"])))];
 const where = (id) => spots.filter(([b]) => b.finding === id).map(([b, at]) => `<a class="jump" href="#${esc(b.id)}">show on ${at}</a>`).join(" ");
@@ -231,7 +262,7 @@ const body = (f) => `<h3>${say(f.title)}</h3><p>${say(f.why)}</p>
 const finding = (f) => f.routine
   ? `<details class="finding routine" id="f-${f.id}"><summary>${say(f.title)}</summary>${body(f)}</details>`
   : `<article class="finding" id="f-${f.id}">${body(f)}</article>`;
-const rows = (list) => list.length ? `<ol class="rows">${list.map((r) => `<li class="row" id="r-${esc(r.id)}"><span class="when">${say(r.label)}</span><span class="what">${say(r.text)}</span><span class="cites">${r.cites.map(cite).join(" ")}</span></li>`).join("")}</ol>` : "";
+const rows = (list) => list.length ? `<ol class="rows">${list.map((r) => `<li class="row" id="r-${esc(r.id)}"><img class="thumb" src="${esc(r.thumb)}" alt="${say(r.text)}" loading="lazy"><span class="when">${say(r.label)}</span><span class="what">${say(r.text)}</span><span class="cites">${r.cites.map(cite).join(" ")}</span></li>`).join("")}</ol>` : "";
 const docPage = (p) => `<figure class="docpage" id="page-${p.n}"><header><span class="n">p. ${p.n}</span><a class="cite" href="${encodeURIComponent(report.document.file)}#page=${p.n}" data-look="${esc(p.look ?? [...(report.rows ?? []), ...report.findings].flatMap((x) => x.cites).find((c) => c.file === report.document.file && c.page === p.n)?.look ?? "")}">open at p. ${p.n}</a></header>${sheet({ ...p, alt: p.alt ?? `Page ${p.n} of ${report.document.file}` })}</figure>`;
 
 const css = `:root{color-scheme:light dark;--bg:#f7f6f2;--fg:#17181a;--mute:#5c6068;--card:#fff;--line:#e2e1db;--accent:#d96a00;--box:#6b4fd8}
@@ -248,7 +279,7 @@ h2{font-size:.78rem;letter-spacing:.1em;text-transform:uppercase;color:var(--mut
 .mark{position:absolute;border:3px solid var(--box);border-radius:.25rem;scroll-margin-top:6rem}.mark:target{outline:3px solid var(--accent)}
 .tag{position:absolute;left:-3px;bottom:100%;white-space:nowrap;background:var(--box);color:#fff;font:600 .7rem/1.5 system-ui,sans-serif;padding:0 .4rem;border-radius:.25rem .25rem .25rem 0;text-decoration:none}.right .tag{left:auto;right:-3px;border-radius:.25rem .25rem 0}
 .cites{margin:.2rem 0 0;display:flex;flex-wrap:wrap;gap:.4rem;align-items:center}.cite{font:.8rem/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--accent);border:1px solid var(--line);border-radius:999px;padding:.2rem .6rem;text-decoration:none}.jump{font-size:.85rem;color:var(--mute)}
-.rows{list-style:none;margin:1rem 0 0;padding:0}.row{display:flex;flex-wrap:wrap;gap:.3rem .8rem;align-items:baseline;border-top:1px solid var(--line);padding:.5rem 0}.when{font:700 .85rem ui-monospace,monospace;min-width:6rem}.what{flex:1 1 14rem}.row .cites{margin:0 0 0 auto}
+.rows{list-style:none;margin:1rem 0 0;padding:0}.row{display:flex;flex-wrap:wrap;gap:.3rem .8rem;align-items:baseline;border-top:1px solid var(--line);padding:.5rem 0}.thumb{width:6rem;height:auto;border:1px solid var(--line);border-radius:.3rem;flex:none}.when{font:700 .85rem ui-monospace,monospace;min-width:6rem}.what{flex:1 1 14rem}.row .cites{margin:0 0 0 auto}
 .docpage{margin:0 0 1.2rem;scroll-margin-top:1rem}.docpage>header{display:flex;justify-content:space-between;align-items:center}.n{font:700 .85rem ui-monospace,monospace}ul.limits{color:var(--mute);padding-left:1.2rem}`;
 
 const keyFindings = report.findings.filter((f) => !f.routine), routine = report.findings.filter((f) => f.routine);
@@ -293,7 +324,7 @@ for (const ref of [...attr("src"), ...attr("poster")]) {
 const clips = attr("src").filter((ref) => ref.startsWith("clips/"));
 if (new Set(clips).size !== clips.length) problems.push("a clip is shown twice: show a frame of its window instead");
 if ((page.match(/<video[^>]*>/g) ?? []).some((tag) => !/ poster="/.test(tag))) problems.push("a clip has no poster");
-if (Number((await sh("find report -type f -exec cat {} + | wc -c")).trim()) > BUDGET.folder) problems.push(`report/ is over ${BUDGET.folder} bytes`);
+if (Number((await sh("find report -type f -exec cat {} + | wc -c")).trim()) > BUDGET.folder) problems.push(`report/ is over ${BUDGET.folder} bytes; the largest files:\n${(await sh("find report -type f -printf '%s %p\\n' | sort -rn | head -4")).trim()}`);
 for (const path of [(await sh("pwd")).trim(), (await sh("echo $HOME")).trim()].filter((p) => p.length > 1)) {
   if ((await sh(`grep -rlF ${q(path)} report || true`)).trim()) problems.push("a file in report/ names a path of this machine");
 }
@@ -314,7 +345,12 @@ for (const xywh of attr("data-xywh")) {
   const [x, y, w, h] = xywh.replace("percent:", "").split(",").map(Number);
   if (![x, y, w, h].every(Number.isFinite) || x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > 100 || y + h > 100) problems.push(`${xywh} is not inside 0 to 100`);
 }
-if ((page.match(/<figure class="pic">/g) ?? []).length !== (page.match(/<figcaption>\s*[^<\s][^<]*<\/figcaption>/g) ?? []).length) problems.push("a picture has no caption that says why it matters");
+if ((page.match(/<figure class="pic"[^>]*>/g) ?? []).length !== (page.match(/<figcaption>\s*[^<\s][^<]*<\/figcaption>/g) ?? []).length) problems.push("a picture has no caption that says what it shows and why it matters");
+for (const f of report.findings) if (!(f.pics?.length || f.clip)) problems.push(`finding ${f.id} shows no picture or clip: show its evidence`);
+for (const r of report.rows ?? []) if (!r.thumb) problems.push(`row ${r.id} has no thumbnail`);
+for (const b of (report.document?.pages ?? []).flatMap((p) => p.boxes ?? [])) if (!page.includes(`data-mark="${b.id}"`)) problems.push(`the mark ${b.id} has no close crop in its finding`);
+const shown = attr("src").filter((ref) => ref.startsWith("frames/"));
+if (new Set(shown).size !== shown.length) problems.push("a picture is shown twice: drop the duplicate");
 if (report.points.length < 1 || report.points.length > 4) problems.push("the answer has one to four key points");
 const first = page.indexOf('id="answer"'), firstFinding = page.search(/class="finding[ "]/);   // a finding is open or `finding routine`
 if (first < 0 || (firstFinding >= 0 && first > firstFinding)) problems.push("the answer is not first");
@@ -327,7 +363,8 @@ cites; nothing in the answer is missing from the evidence; a page you did not ne
 
 ## The last message
 
-Short: the answer in a sentence or two, then where the report is. Do not repeat the page.
+Short: the answer in a sentence or two, then where the report is and that it holds the evidence. Do not repeat the page.
 
 > The second quarter is the highest bar, and page 3 of the contract sets the rule the talk gave. The report is
-> `report/index.html`: the chart with its box and a clip of the moment, and the contract page with its mark.
+> `report/index.html`, and it holds the evidence: the chart with its box and a clip of the moment, and the contract page
+> with its mark and a close crop of it.
