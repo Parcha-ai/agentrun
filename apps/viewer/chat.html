@@ -57,7 +57,8 @@ details.think summary em code{font-style:normal}
 .thought-tag::after{content:"";display:inline-block;width:5px;height:5px;margin-left:6px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:translateY(-2px) rotate(45deg);transition:transform .15s}
 .thought[open] .thought-tag::after{transform:translateY(1px) rotate(-135deg)}
 .thought-body{color:var(--muted);font-size:13.5px;margin-top:6px}
-.thought.withheld .thought-tag{margin-left:0}
+.thought.redacted .thought-tag{margin-left:0}
+div.thought .thought-tag::after{display:none}
 .thought-body p{margin:0 0 8px}
 details.think{border-left:2px solid var(--line);padding:2px 0 2px 12px;margin:4px 0 14px;min-width:0}
 details.think summary{list-style:none;cursor:pointer;font:400 12px var(--mono);color:var(--muted);display:flex;align-items:center;gap:6px;min-width:0}
@@ -98,7 +99,7 @@ details.fold>.fold-body{color:var(--ink);font-size:15px;margin-top:12px}
 .call.decisive{border-left:2px solid var(--acc)}
 .call.judge{border-left:2px solid var(--judge)}
 .call.judge.decisive{outline:1px solid #ff870066;outline-offset:-1px}
-.judge-chip{display:inline-flex;align-items:center;gap:4px;flex:none;font:500 9.5px/1.5 var(--mono);letter-spacing:.4px;text-transform:uppercase;color:var(--ink);border:1px solid var(--judge);background:color-mix(in srgb,var(--judge) 10%,transparent);padding:0 5px;margin-right:6px;vertical-align:1px}
+.judge-chip{display:inline-flex;align-items:center;gap:4px;flex:none;font:500 9.5px/1.5 var(--mono);letter-spacing:.4px;text-transform:uppercase;color:var(--ink);border:1px solid var(--judge);background:transparent;padding:0 5px;margin-right:6px;vertical-align:1px}
 .judge-chip::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--judge)}
 .call.judge .jbox,.pane.judge .jbox{border-color:var(--judge);box-shadow:0 0 0 1px #0b0b0d}
 .pane.judge .jbox span{background:#0b0b0d;color:var(--ink);border:1px solid var(--judge);top:-23px}

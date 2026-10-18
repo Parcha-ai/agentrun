@@ -266,26 +266,28 @@ function sourceViewOf(recording: Recording, model: ChatModel, shown: SourceShown
 const THREAD_TITLE = 120;
 
 /** A thinking part as its title and its body: the title is its first line (a wholly bold line without its markers, as
- *  a model's thought summary writes it, else the line clipped); the body is the rest. */
+ *  a model's thought summary writes it, else the line, clipped); the body is the rest. A clipped title is a preview
+ *  only, so its body is the whole part from that line on. */
 export function threadThought(text: string): { title: string; body: string } {
   const lines = text.split('\n');
   const at = lines.findIndex((line) => line.trim() !== '');
   if (at < 0) return { title: '', body: '' };
   const line = lines[at]!.trim();
   const bold = /^(\*\*|__)(?=\S)(.+?\S)\1$/.exec(line);
-  const title = bold && !bold[2]!.includes(bold[1]!) ? bold[2]! : line.length > THREAD_TITLE ? `${line.slice(0, THREAD_TITLE - 1).trimEnd()}…` : line;
-  return { title, body: lines.slice(at + 1).join('\n').trim() };
+  if (bold && !bold[2]!.includes(bold[1]!)) return { title: bold[2]!, body: lines.slice(at + 1).join('\n').trim() };
+  if (line.length > THREAD_TITLE) return { title: `${line.slice(0, THREAD_TITLE - 1).trimEnd()}…`, body: lines.slice(at).join('\n').trim() };
+  return { title: line, body: lines.slice(at + 1).join('\n').trim() };
 }
 
-/** A thought the provider withheld: its mark, and no words. */
-const threadWithheld = () => reportEl('div', { class: 'thought withheld' }, reportEl('span', { class: 'thought-tag', text: 'thinking, withheld by the provider' }));
+/** A thought the provider redacted: its mark, and none of its words. */
+const threadRedacted = () => reportEl('div', { class: 'thought redacted' }, reportEl('span', { class: 'thought-tag', text: 'thinking · redacted' }));
 
-/** Thinking the run's own model wrote, in the agent's voice: its title as a line in the chat, its body folded behind it
- *  (a thought of one line has no fold). */
+/** Thinking the run's own model wrote, in the agent's voice: its title as a line in the chat with its "thinking" tag,
+ *  its body folded behind it (a thought of one line has no fold, and no chevron). */
 function threadThinking(text: string): HTMLElement {
   const { title, body } = threadThought(text);
   const line = reportEl('span', { class: 'thought-title' }, ...reportInline(title));
-  if (body === '') return reportEl('div', { class: 'thought' }, line);
+  if (body === '') return reportEl('div', { class: 'thought' }, line, reportEl('span', { class: 'thought-tag', text: 'thinking' }));
   return reportEl('details', { class: 'thought' },
     reportEl('summary', {}, line, reportEl('span', { class: 'thought-tag', text: 'thinking' })),
     reportEl('div', { class: 'thought-body' }, ...reportParagraphs(body)));
@@ -570,7 +572,7 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
       }
       closeRun();
       steps = undefined;
-      const node = item.kind === 'thinking' ? (item.redacted ? threadWithheld() : threadThinking(item.text)) : reportEl('div', { class: 'said-text', 'data-item': item.id }, ...reportParagraphs(item.text));
+      const node = item.kind === 'thinking' ? (item.redacted ? threadRedacted() : threadThinking(item.text)) : reportEl('div', { class: 'said-text', 'data-item': item.id }, ...reportParagraphs(item.text));
       nodes.set(item.id, node);
       agent.append(node);
     }

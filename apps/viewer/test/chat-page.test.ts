@@ -71,7 +71,9 @@ test('a thought reads as its first line, a wholly bold line without its markers,
   assert.deepEqual(threadThought('\n__Checking the pages__\nfirst, then second'), { title: 'Checking the pages', body: 'first, then second' });
   assert.deepEqual(threadThought('**Page 2** holds the alarm; I will cite its `line`.'), { title: '**Page 2** holds the alarm; I will cite its `line`.', body: '' }, 'a line only partly bold keeps its marks for the inline render');
   assert.deepEqual(threadThought('Plain first line\nand more'), { title: 'Plain first line', body: 'and more' });
-  assert.equal(threadThought(`${'x'.repeat(200)}`).title.length, 120, 'a long first line is clipped');
+  const long = threadThought('x'.repeat(200));
+  assert.deepEqual([long.title.length, long.body], [120, 'x'.repeat(200)], 'a long first line is clipped as its title, and its fold holds the whole of it');
+  assert.deepEqual(threadThought(`${'y'.repeat(130)}\nmore`), { title: `${'y'.repeat(119)}…`, body: `${'y'.repeat(130)}\nmore` });
 });
 
 test('a region is drawn on the picture whose address holds it; of several, the cited one; of none, the cited one', UNIT, () => {
@@ -130,7 +132,8 @@ function handRun(said: boolean): Line[] {
   run.splice(first + 1, 0, { ...run[first]!, kind: 'pi.user', source: 'pi', conv: 1, order: 1, data: { kind: 'pi.user', model: [{ role: 'user', content: `The host's prompt. ${TASK}` }] } },
     { ...run[first]!, kind: 'agentrun.workflow', order: 2, data: { doc: 'agentrun.workflow', input: { input: TASK } } },
     // Each conversation is a workflow node's, so the runner speaks in it: its first user entry is the composed prompt.
-    ...[1, 2].map((conv, n): Line => ({ ...run[first]!, kind: 'agentrun.nodes', order: 3 + n, path: conv === 1 ? '/root/lead' : '/root/steps/1/items/0', data: { doc: 'agentrun.nodes', value: { conversation: conv } } })));
+    ...[1, 2].map((conv, n): Line => ({ ...run[first]!, kind: 'agentrun.nodes', order: 3 + n, path: conv === 1 ? '/root/lead' : '/root/steps/1/items/0',
+      data: { doc: 'agentrun.nodes', key: `hand:node:${conv}`, value: { conversation: conv, closed: false }, version: 1 } })));
   if (said) run.splice(result + 2, 0, { channel: 'durable', source: 'pi', kind: 'pi.assistant', gen: 2, t: run[result + 2]!.t - 1, commit: 28, order: 0, conv: 1,
     data: { kind: 'pi.assistant', model: [{ role: 'assistant', content: [{ type: 'thinking', thinking: THOUGHT }, { type: 'text', text: 'Done. The **alarm** is on page 2.' }] }] } });
   return run;
@@ -201,7 +204,7 @@ function writeNarrated(dir: string) {
   const run: Line[] = [
     { channel: 'live', source: 'host', kind: 'process.started', t: (t += 10), seq: 1, data: { gen: 1 } },
     { channel: 'durable', source: 'workflow', kind: 'agentrun.workflow', gen: 1, t: (t += 10), commit: 1, order: 0, data: { doc: 'agentrun.workflow', input: { input: 'Read the four pages of notes.pdf.' } } },
-    { channel: 'durable', source: 'workflow', kind: 'agentrun.nodes', gen: 1, t: (t += 10), commit: 1, order: 1, path: '/root/reader', data: { doc: 'agentrun.nodes', value: { conversation: 1 } } },
+    { channel: 'durable', source: 'workflow', kind: 'agentrun.nodes', gen: 1, t: (t += 10), commit: 1, order: 1, path: '/root/reader', data: { doc: 'agentrun.nodes', key: 'narrated:reader', value: { conversation: 1, closed: false }, version: 1 } },
     pi(2, 'pi.user', { role: 'user', content: 'The host\'s prompt.' }),
     pi(3, 'pi.assistant', { role: 'assistant', content: [{ type: 'thinking', thinking: '**Analyzing transcript data**\n\nI am reading page 2 before the others.' }, { type: 'text', text: 'I will read each page in turn.' }, ...READS.map((n) => ({ type: 'toolCall', id: `r${n}`, name: 'read', arguments: { path: 'notes.pdf', page: n } }))] }),
     ...READS.flatMap((n) => [live('tool_execution_start', { type: 'tool_execution_start', toolCallId: `r${n}`, toolName: 'read', args: { path: 'notes.pdf', page: n } }),
@@ -210,7 +213,7 @@ function writeNarrated(dir: string) {
       live('tool_execution_end', { type: 'tool_execution_end', toolCallId: `r${n}`, toolName: 'read' }),
       pi(3 + n, 'pi.tool-result', { role: 'toolResult', toolCallId: `r${n}`, toolName: 'read', content: [{ type: 'text', text: `Page ${n} says the same.` }], isError: false })]),
     pi(12, 'pi.user', { role: 'user', content: 'You stopped without submitting. Call submit.' }),
-    pi(13, 'pi.assistant', { role: 'assistant', content: [{ type: 'thinking', thinking: 'a provider placeholder', redacted: true }, { type: 'thinking', thinking: 'Checking that the four agree\nthey do, line for line.' }, { type: 'text', text: 'All four pages agree.' },
+    pi(13, 'pi.assistant', { role: 'assistant', content: [{ type: 'thinking', thinking: '[Reasoning redacted]', redacted: true }, { type: 'thinking', thinking: '**Settling the answer**' }, { type: 'thinking', thinking: 'Checking that the four agree\nthey do, line for line.' }, { type: 'text', text: 'All four pages agree.' },
       { type: 'toolCall', id: 'b1', name: 'bash', arguments: { command: COMMAND } }] }),
     pi(14, 'pi.tool-result', { role: 'toolResult', toolCallId: 'b1', toolName: 'bash', content: [{ type: 'text', text: '{"pages": 4}' }], isError: false }),
   ];
@@ -294,7 +297,7 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       cards: [...d.querySelectorAll('.thread > .msg .step')].map((c) => c.querySelector('.t span').textContent), hidden: d.querySelectorAll('.step[hidden]').length,
       more: [...d.querySelectorAll('.more')].map((n) => n.textContent),
       folds: [...d.querySelectorAll('details.fold')].map((n) => ({ open: n.open, label: n.querySelector('summary .lab').textContent, cards: n.querySelectorAll('.step').length })),
-      thinking: [...d.querySelectorAll('.thought')].map((n) => ({ fold: n.tagName === 'DETAILS', title: n.querySelector('.thought-title').textContent })),
+      thinking: [...d.querySelectorAll('.thought')].map((n) => ({ fold: n.tagName === 'DETAILS', title: n.querySelector('.thought-title').textContent, tag: n.querySelector('.thought-tag')?.textContent })),
       how: d.querySelector('a.how').getAttribute('href'),
       timeline: { body: shown(d.querySelector('.tl-body')), expanded: d.querySelector('.tl-toggle').getAttribute('aria-expanded'), dot: !!d.querySelector('.tl .dot') },
       flat: flat('wide'), split: d.querySelector('.chat').getBoundingClientRect().width < d.querySelector('.art').getBoundingClientRect().width,
@@ -311,7 +314,7 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.deepEqual(wide.more, [], 'each read here made a look nothing leads into, so each speaks and none folds');
     assert.equal(wide.hidden, 0);
     assert.deepEqual(wide.folds, [{ open: false, label: 'conversation 2', cards: 3 }], 'the second conversation, folded');
-    assert.deepEqual(wide.thinking, [{ fold: false, title: 'Page 2 holds the alarm; I will cite its line.' }], 'the run\'s own thought of one line, a line with no fold');
+    assert.deepEqual(wide.thinking, [{ fold: false, title: 'Page 2 holds the alarm; I will cite its line.', tag: 'thinking' }], 'the run\'s own thought of one line: a line with its tag and no fold');
     assert.equal(wide.how, './?r=hand-page', 'the inspection viewer, with no other query parameter');
     assert.deepEqual(wide.timeline, { body: false, expanded: 'false', dot: true }, 'the timeline starts collapsed');
     assert.deepEqual(wide.flat, { page: 0, panes: 0 }, 'no horizontal scroll');
@@ -443,10 +446,10 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     // stays ink; a call that is no judge carries none.
     const PINK = 'rgb(229, 81, 186)';
     assert.deepEqual(await value(`(() => { const d = doc('hear'); const css = (n, p) => getComputedStyle(n)[p]; const judge = d.querySelector('.call[data-call="call-4"]'); const other = d.querySelector('.call[data-call="call-3"]');
-      return { card: css(judge, 'borderLeftColor'), chip: [css(judge.querySelector('.judge-chip'), 'borderTopColor'), css(judge.querySelector('.judge-chip'), 'color'), judge.querySelector('.judge-chip').textContent],
+      return { card: css(judge, 'borderLeftColor'), chip: [css(judge.querySelector('.judge-chip'), 'borderTopColor'), css(judge.querySelector('.judge-chip'), 'color'), judge.querySelector('.judge-chip').textContent, css(judge.querySelector('.judge-chip'), 'backgroundColor')],
         span: css(d.querySelector('.tbar[data-goto="call-4"]'), 'backgroundColor'), lane: [...d.querySelectorAll('.tl .lane')].filter((n) => n.querySelector('.judge-dot')).map((n) => n.querySelector('.ln').textContent),
         other: [css(other, 'borderLeftColor'), !!other.querySelector('.judge-chip'), css(d.querySelector('.tbar[data-goto="call-3"]'), 'backgroundColor')] }; })()`),
-      { card: PINK, chip: [PINK, 'rgb(242, 242, 242)', 'judge'], span: PINK, lane: ['Jev judge'], other: ['rgb(255, 135, 0)', false, 'rgb(90, 90, 98)'] });
+      { card: PINK, chip: [PINK, 'rgb(242, 242, 242)', 'judge', 'rgba(0, 0, 0, 0)'], span: PINK, lane: ['Jev judge'], other: ['rgb(255, 135, 0)', false, 'rgb(90, 90, 98)'] });
     // A timeline click on a folded call opens its group, scrolls to it and flashes it.
     await page.evaluate(`doc('hear').querySelector('.tl-toggle').click(); doc('hear').querySelector('.tbar[data-goto="call-11"]').click()`);
     await until(`(() => { const d = doc('hear'); const c = d.querySelector('.call[data-call="call-11"]'); return !c.hidden && c.classList.contains('flash') && inView(c, d.querySelector('.thread')); })()`, 'the folded call scrolled into view and flashed');
@@ -501,16 +504,18 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       voices: [...m.querySelectorAll('.steps > .step')].map((n) => n.querySelector('.voice')?.textContent ?? null),
       host: [m.querySelector('.host-note .host-who').textContent, m.querySelector('.host-note .host-text').textContent, !!m.querySelector('.host-note').closest('.msg.user')],
       users: [...doc('narrated').querySelectorAll('.msg.user')].map((n) => n.textContent),
-      withheld: [[...m.querySelectorAll('.thought.withheld')].map((n) => n.textContent), doc('narrated').body.textContent.includes('a provider placeholder')],
-      thoughts: [...m.querySelectorAll('.thought:not(.withheld)')].map((n) => [n.querySelector('.thought-title').textContent, shown(n.querySelector('.thought-title')), n.open, shown(n.querySelector('.thought-body')), n.querySelector('.thought-body').textContent, n.querySelector('.thought-tag').textContent]) }; })()`);
+      redacted: [[...m.querySelectorAll('.thought.redacted')].map((n) => [n.textContent, n.tagName]), doc('narrated').body.textContent.includes('[Reasoning redacted]')],
+      thoughts: [...m.querySelectorAll('.thought:not(.redacted)')].map((n) => [n.querySelector('.thought-title').textContent, shown(n.querySelector('.thought-title')), n.tagName,
+        shown(n.querySelector('.thought-body')), n.querySelector('.thought-body')?.textContent ?? null, n.querySelector('.thought-tag').textContent, getComputedStyle(n.querySelector('.thought-tag'), '::after').display]) }; })()`);
     // Eight reads in a row: the first three show, the fourth folds; the fifth speaks (its look's ask), so it starts a run
     // of its own and shows with its line, and the run after it folds again after three. A card led by a thought or the
     // agent's words has no voice line.
-    assert.deepEqual(narrated, { order: ['who', 'thought', 'said-text', 'steps', 'host-note', 'thought withheld', 'thought', 'said-text', 'steps'], said: [['I will read each page in turn.', 0, false], ['All four pages agree.', 0, false]],
+    assert.deepEqual(narrated, { order: ['who', 'thought', 'said-text', 'steps', 'host-note', 'thought redacted', 'thought', 'thought', 'said-text', 'steps'], said: [['I will read each page in turn.', 0, false], ['All four pages agree.', 0, false]],
       cards: [false, false, false, true, false, false, false, true, false], more: ['+ 1 more', '+ 1 more'],
       voices: [null, null, null, null, 'What is on page 5?', null, null, null, null], host: ['Host', 'You stopped without submitting. Call submit.', false], users: ['YouRead the four pages of notes.pdf.'],
-      withheld: [['thinking, withheld by the provider'], false],
-      thoughts: [['Analyzing transcript data', true, false, false, 'I am reading page 2 before the others.', 'thinking'], ['Checking that the four agree', true, false, false, 'they do, line for line.', 'thinking']] });
+      redacted: [[['thinking · redacted', 'DIV']], false],
+      thoughts: [['Analyzing transcript data', true, 'DETAILS', false, 'I am reading page 2 before the others.', 'thinking', 'inline-block'],
+        ['Settling the answer', true, 'DIV', false, null, 'thinking', 'none'], ['Checking that the four agree', true, 'DETAILS', false, 'they do, line for line.', 'thinking', 'inline-block']] });
 
     // A card of a command of several lines opens with the whole command under what it found; a card with a look keeps
     // the look first and its command folded under it.
