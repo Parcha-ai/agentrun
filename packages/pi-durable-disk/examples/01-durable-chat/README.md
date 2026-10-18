@@ -11,7 +11,7 @@ read back from the run's store, shows which generation and which host produced e
 
 This demo needs a checkout of the repository (it imports `../lib/demo.ts`), so it does not run from an install; the no-key variant below, `on-a-directory.mjs`, runs from an install of 0.1.0-beta.13 or later.
 
-You need the Quickstart's setup from the [top-level README](../../README.md#quickstart-on-a-linux-host-two-hosts-one-run)
+You need the Quickstart's setup from the [top-level README](../../docs/reference.md#quickstart-on-a-linux-host-two-hosts-one-run)
 (the root-owned wrapper and the two mount roots, once per machine), a scratch disk and its API key. No model key: the model is
 pi-ai's faux provider.
 
