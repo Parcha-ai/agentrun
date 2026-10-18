@@ -21,6 +21,9 @@ export type PlaceSignal = { kind: 'crossing' | 'kill-request'; crossing: { point
   /** A place's signals may END with this: it could not keep reading (a store that went away, a credential that expired). The supervisor writes a `signals.failed` host line and ends the attempt as it does after a kill that failed. */
   kind: 'signals-failed'; code: string; message: string };
 
+/** A delegation of the run's own path (an Archil place): who holds it and whether it is orphaned or still pending. */
+export type PlaceDelegation = { clientId: string; inodeId: string | number; path: string; isOrphaned: boolean; isPending?: boolean };
+
 export type Place = {
   /** For the recording's lines and the README: `local`, `box:docker`, `archil`. */
   name: string;
@@ -38,9 +41,9 @@ export type Place = {
   /** Kills the runner: `process` ends the runner, `box` takes the place's machine away. The supervisor has written the kill line before it calls this. Safe on a runner that is already gone. */
   kill(runner: Runner, kind: 'process' | 'box'): Promise<void>;
   /** How the session stands, read the way the place reads it (a package's status reader), never from the store or `work/`: the supervisor is control-plane only. */
-  status?(): Promise<unknown>;
+  status?(): Promise<unknown>; // { record?: the run's record, delegations?: PlaceDelegation[], boxes?: HostBox[] } for a place that has them
   /** The next runner after a kill: a process kill restarts in the same place with the store intact; a box kill replaces the machine and restores from the last checkpoint, and says what it restored and replayed. */
-  recover(last: Runner, kind: 'process' | 'box', order: RunnerOrder): Promise<{ runner: Runner; restored?: { checkpoint: string; head: number }; replayed?: { from: number; to: number } }>;
+  recover(last: Runner, kind: 'process' | 'box', order: RunnerOrder): Promise<{ runner: Runner; restored?: { checkpoint: string; head: number }; replayed?: { from: number; to: number }; /** A takeover that revoked the old holder's delegations (an Archil place): what was revoked, and how long the whole takeover took in ms (the revoke plus the start of the next holder). Written as a `revoke` host line. */ revoked?: PlaceDelegation[]; ms?: number }>;
   /** Takes a checkpoint at rest; reports what held it when it could not. A place that cannot lose its machine has none. */
   checkpoint?(): Promise<{ taken: boolean; heldBy?: string }>;
   /** Moves the session to another place. */
