@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai";
+import type { JsonValue } from "@earendil-works/chord";
 import { createRegistry } from "@earendil-works/pi-durable";
 import type { AppContext, AppOptions } from "../../src/index.ts";
 
@@ -23,10 +24,12 @@ export default function app(where: AppContext): AppOptions {
         await new Promise(() => {});
       }
       const record = { order };
-      if (!process.env.PLACE_SILENT) process.stdout.write(`${JSON.stringify({ outcome: { status: "complete", generation: run.generation, record } })}\n`);
+      // PLACE_MODELS (JSON): the models its live parts chose, in its outcome line and its final status detail alike.
+      const models: Record<string, JsonValue> = process.env.PLACE_MODELS === undefined ? {} : { models: JSON.parse(process.env.PLACE_MODELS) as JsonValue };
+      if (!process.env.PLACE_SILENT) process.stdout.write(`${JSON.stringify({ outcome: { status: "complete", generation: run.generation, record, ...models } })}\n`);
       // PLACE_FAIL: the run gives up; PLACE_NO_RECORD: it ends done with no result.
-      if (process.env.PLACE_FAIL) await run.setStatus("failed", { code: "APP_GAVE_UP", record });
-      else await run.setStatus("done", process.env.PLACE_NO_RECORD ? { steps: 1 } : { record });
+      if (process.env.PLACE_FAIL) await run.setStatus("failed", { code: "APP_GAVE_UP", record, ...models });
+      else await run.setStatus("done", process.env.PLACE_NO_RECORD ? { steps: 1, ...models } : { record, ...models });
       await run.release();
       process.exit(0);
     },

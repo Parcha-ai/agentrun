@@ -17,7 +17,7 @@ const b64 = (bytes) => Buffer.from(bytes).toString("base64");
 
 test("the sentinels are obviously fake, long enough to find a head or a tail, distinct, and a link carries its secrets in its query", () => {
   const values = Object.values(SENTINELS);
-  assert.deepEqual(Object.keys(SENTINELS), ["eyesKey", "linkSignature", "linkToken"]);
+  assert.deepEqual(Object.keys(SENTINELS), ["eyesKey", "transcriberKey", "linkSignature", "linkToken"]);
   for (const value of values) assert.ok(value.length >= 32 && value.startsWith("pv-sentinel-"), value);
   assert.equal(new Set(values).size, values.length);
   for (const a of values) for (const b of values) assert.ok(a === b || !a.includes(b), "no sentinel holds another");
@@ -54,7 +54,7 @@ test("the scanner sees every sentinel in every form it checks, and nothing that 
     near.value("probe", [`X${value.slice(1, -1)}Y`, value.slice(0, 15), value.slice(-15), value.toUpperCase()]);
     assert.equal(near.report(), "no sentinel found", `${name}: a near miss is not a leak`);
   }
-  assert.equal(forms, 3 * 12);
+  assert.equal(forms, 4 * 12);
   const held = leakNeedles(SENTINEL_EYES_KEY).map((n) => n.form);
   for (const form of ["raw", "hex", "base64+0", "base64+1", "base64+2", "head", "tail"]) assert.ok(held.includes(form), form);
 });

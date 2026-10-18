@@ -5,7 +5,7 @@
 
 import { DECODE_GUARD_PIXELS } from "./limits.js";
 
-export const KINDS = Object.freeze(["image", "pdf", "office", "sheet", "video", "recording", "text", "unknown"] as const);
+export const KINDS = Object.freeze(["image", "pdf", "office", "sheet", "video", "audio", "recording", "text", "unknown"] as const);
 /** `office` is a word processor or slide document, `sheet` a spreadsheet, `recording` a handle such as `session:<id>`,
  *  `text` a file the host's own text read serves. */
 export type Kind = (typeof KINDS)[number];
@@ -33,6 +33,8 @@ const FORMATS = {
   pdf: ["a PDF document", "pdf", "application/pdf"], rtf: ["an RTF document", "office", null],
   mp4: ["an MP4 video", "video", "video/mp4"], mov: ["a QuickTime video", "video", "video/quicktime"],
   webm: ["a WebM video", "video", "video/webm"], mkv: ["a Matroska video", "video", "video/x-matroska"],
+  mp3: ["an MP3 audio file", "audio", "audio/mpeg"], wav: ["a WAV audio file", "audio", "audio/wav"], ogg: ["an Ogg audio file", "audio", "audio/ogg"],
+  flac: ["a FLAC audio file", "audio", "audio/flac"], m4a: ["an M4A audio file", "audio", "audio/mp4"],
   zip: ["a zip archive", "unknown", null], ole2: ["an OLE2 container (a legacy Office file)", "unknown", null],
   empty: ["an empty file", "text", null], text: ["text", "text", null], binary: ["binary data in no format this package reads", "unknown", null],
 } as const satisfies Record<string, readonly [string, Kind, string | null]>;
@@ -41,7 +43,7 @@ export type SniffedFormat = keyof typeof FORMATS;
 /** The kind a file name's extension claims. Text has no entry: any content can be named anything. */
 const EXTENSION_KINDS = new Map<string, Kind>(Object.entries({
   image: "png jpg jpeg gif webp bmp tif tiff heic heif avif", pdf: "pdf", office: "doc docx odt rtf ppt pptx odp",
-  sheet: "xls xlsx xlsm ods", video: "mp4 m4v mov webm mkv",
+  sheet: "xls xlsx xlsm ods", video: "mp4 m4v mov webm mkv", audio: "mp3 wav ogg oga opus flac m4a",
 }).flatMap(([kind, extensions]) => extensions.split(" ").map((extension): [string, Kind] => [extension, kind as Kind])));
 
 const ascii = (bytes: Uint8Array, at: number, text: string): boolean => bytes.length >= at + text.length && [...text].every((char, i) => bytes[at + i] === char.charCodeAt(0));
@@ -151,6 +153,7 @@ function isoFormat(bytes: Uint8Array): SniffedFormat {
   for (let at = 8; at + 4 <= end; at += at === 8 ? 8 : 4) brands.push(latin1(bytes, at, 4));
   if (brands.some((brand) => brand === "avif" || brand === "avis")) return "avif";
   if (brands.some((brand) => HEIC_BRANDS.includes(brand))) return "heic";
+  if (brands.includes("M4A ")) return "m4a";
   return brands.includes("qt  ") ? "mov" : "mp4";
 }
 
@@ -164,6 +167,10 @@ function identify(bytes: Uint8Array): SniffedFormat {
   if (ascii(bytes, 0, "II*\0") || ascii(bytes, 0, "MM\0*")) return "tiff";
   if (ascii(bytes, 4, "ftyp")) return isoFormat(bytes);
   if (ascii(bytes, 0, "\x1a\x45\xdf\xa3")) return latin1(bytes, 0, 64).includes("webm") ? "webm" : "mkv";
+  if (ascii(bytes, 0, "RIFF") && ascii(bytes, 8, "WAVE")) return "wav";
+  if (ascii(bytes, 0, "OggS")) return "ogg";
+  if (ascii(bytes, 0, "fLaC")) return "flac";
+  if (ascii(bytes, 0, "ID3") || (bytes[0] === 0xff && ((bytes[1] ?? 0) & 0xe6) === 0xe2)) return "mp3";
   if (ascii(bytes, 0, "PK\x03\x04") || ascii(bytes, 0, "PK\x05\x06")) return "zip";
   if (ascii(bytes, 0, "\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")) return "ole2";
   if (ascii(bytes, 0, "{\\rtf")) return "rtf";
