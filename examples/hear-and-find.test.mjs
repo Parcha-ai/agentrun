@@ -46,22 +46,32 @@ test('beat 1: on fakes, the agent hears the phrase both times and picks one, the
   assert.deepEqual(rows.map((row) => row.label), ['Heard, the landing call, during the descent: "Tranquility Base"', 'Also heard: "Tranquility Base"', 'Seen, the planted flag, first seen: a United States flag standing planted on the ground']);
   assert.deepEqual(rows.map((row) => row.value), ['0:15 (15.06 s)', '0:05 (4.7 s)', '0:28 (28 s)']);
   const filed = new Map(evidence(tmp).map((look) => [look.facts.key, look]));
-  for (const row of rows.slice(0, 2)) {
+  for (const [row, at] of [[rows[0], 15.06], [rows[1], 4.7]]) {
     assert.equal(row.cites.length, 1, `${row.label} cites the transcript that heard it`);
     assert.equal(filed.get(row.cites[0].look)?.tool, 'transcribe');
+    assert.deepEqual([row.cites[0].fragment, row.cites[0].note], [`#t=${at}`, `${at} s`], 'the film\'s own fragment, labelled with its number');
+    assert.match(row.cites[0].file, /^\.find\/heard-\d\.mp4$/, 'the clip around the hit, cut from the film');
   }
   assert.equal(found.seen.found, true);
   assert.equal(found.seen.at, CLIP.seen.from_s);
   found.seen.box.forEach((value, i) => assert.ok(Math.abs(value - CLIP.seen.box[i]) < 0.5, `the box ${found.seen.box} is clip.json's ${CLIP.seen.box}`));
+  assert.equal(rows[2].cites.length, 1);
   const [jev] = rows[2].cites;
   assert.equal(filed.get(jev.look)?.args.via, 'jev', 'the sighting cites the Jev look that checked its frame');
   assert.match(jev.fragment, /^#t=28&xywh=percent:/);
-  // The recording's result is the same record with the frame and its box kept as a blob.
+  assert.deepEqual([jev.note, jev.file], ['28 s', '.find/answer-frame.jpg']);
+  // The recording's result is the same record with each cite's clip or frame kept as a blob, beside its look.
   const manifest = JSON.parse(readFileSync(join(record, 'manifest.json'), 'utf8'));
   const kept = JSON.parse(readFileSync(join(record, 'blobs', `${manifest.result.blob}.json`), 'utf8'));
-  const picture = kept.rows[2].cites[0];
-  assert.ok(picture.blob && existsSync(join(record, 'blobs', `${picture.blob}.jpg`)), 'the frame with its box is a blob of the recording');
-  assert.match(picture.fragment, /^#t=28&xywh=percent:/);
+  const cites = kept.rows.flatMap((row) => row.cites);
+  assert.equal(cites.length, 3);
+  for (const cite of cites) {
+    assert.ok(filed.has(cite.look), 'every cite names a look the run filed');
+    assert.equal(cite.file, undefined, 'no workspace path in the recording');
+  }
+  assert.deepEqual(cites.map((cite) => existsSync(join(record, 'blobs', `${cite.blob}.${cite === cites[2] ? 'jpg' : 'mp4'}`))), [true, true, true], 'two clips and the frame with its box are blobs of the recording');
+  const streams = execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', join(record, 'blobs', `${cites[0].blob}.mp4`)], { encoding: 'utf8' }).split('\n').filter(Boolean).sort();
+  assert.deepEqual(streams, ['audio', 'video'], 'a heard clip keeps its sound');
 });
 
 test('beat 2: the recording validates, says scripted, names the films it fetches, costs 0, and each transcript and judgment is filed once', { timeout: 300_000, skip: FFMPEG }, async () => {

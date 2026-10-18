@@ -10,7 +10,7 @@ npm run demo:hear-and-find -- --live          # real models, your keys (SETUP-PR
 
 ## What you will see
 
-1. Heard: one row for the landing call, its second and why it is the one the question means, then a row for every other time the phrase is said, each citing the transcript that heard it (`#t=` of the film).
+1. Heard: one row for the landing call, its second and why it is the one the question means, then a row for every other time the phrase is said, each citing the transcript that heard it at the film's own `#t=`, with a few seconds of the film around it, sound and all.
 2. Seen: the second the flag is first seen standing planted, Jev's score, and the frame with the box Jev drew, cited as `film#t=S&xywh=percent:x,y,w,h`. The viewer shows the frame.
 3. How the agent got there: it writes its own code (a `code` tool with `bash`, `vision.transcribe`, `vision.judge` and `vision.see`), following pi-vision's transcribe and find skills. It transcribes the film once in ten-minute pieces, searches the transcript, narrows the flag search with the words, scans frames with Jev, halves to a few seconds, has the eyes name the second with the sound, and has Jev check that frame and the seconds beside it.
 4. Receipts with cost: every transcript, look and judgment is filed with what it read, the model and its price. Each is paid for once.
@@ -52,7 +52,7 @@ Until the reference host is published as a package that carries them, the exampl
 ## How it is built
 
 - `needles.json`: what is asked. `job.ts`: the workflow as data: one `agent` with the `code` tool, whose instructions are the task and pi-vision's transcribe and find skills, then a `call` to `answer`.
-- `tools.ts`: `answer`, which resolves each hit to the transcript that heard it and the sighting to the Jev look that checked its frame, takes that frame with its box, and builds the cited result. `result.ts` keeps the frame as a blob of the recording.
+- `tools.ts`: `answer`, which resolves each hit to the transcript that heard it and the sighting to the Jev look that checked its frame, cuts the clip around each hit and the frame with its box, and builds the cited result: every cite names its look by key and the film's own fragment, labelled with its number. `result.ts` keeps each clip and the frame as blobs of the recording, on their cites.
 - `fakes.ts`: the scripted lead runs the skills' own programs; the scripted eyes, Jev and transcriber answer from `clip/clip.json`, never from a model. `models.ts`: the live lead, eyes, Jev and transcriber.
 - `sources.json`: NASA's film (and its original, a sharper copy for the box) by URL, size and SHA-256. `clip/`: three pieces of the film, cut by `clip/cut.sh`, what a run on fakes reads (`ASSETS.md` names the source).
 - Everything else is the reference entry (`demo()`).
