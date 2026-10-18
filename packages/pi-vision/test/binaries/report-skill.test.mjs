@@ -247,7 +247,7 @@ test("a box is its look's percentages on the picture, inside it, links back to i
 test("the answer comes first with its key points, the key findings are open, the routine one is folded, the document is embedded, and what was not checked is last", async () => {
   await built();
   const html = HTML();
-  const order = ["<h1>", 'id="answer"', 'id="evidence"', 'class="finding" id="f-chart"', 'class="finding" id="f-contract"', 'id="document"', 'class="docpage" id="page-3"', 'id="routine"', 'class="finding routine" id="f-site"', 'id="not-checked"'].map((marker) => html.indexOf(marker));
+  const order = ["<h1>", 'id="answer"', 'id="evidence"', 'class="finding" id="f-chart"', 'class="finding" id="f-contract"', 'id="document"', 'class="docpage" id="contract-p3"', 'id="routine"', 'class="finding routine" id="f-site"', 'id="not-checked"'].map((marker) => html.indexOf(marker));
   assert.ok(order.every((at) => at >= 0), "every part is there");
   assert.deepEqual(order, [...order].sort((a, b) => a - b), "in that order");
   assert.equal((html.match(/<article class="finding"/g) ?? []).length, 2);
@@ -263,7 +263,7 @@ test("the answer comes first with its key points, the key findings are open, the
   assert.equal(figures.length, 5, "the chart, the same chart later, the clip, the close crop of the rule and the photo");
   for (const figure of figures) assert.match(figure, /<figcaption>[^<]{12,}<\/figcaption>/, "a caption that says why the picture is kept");
   assert.match(html, /alt="A bar chart with the second bar tallest"/, "a picture has alternative text");
-  assert.match(html, /<section id="document"><h2>The document, with its marks<\/h2><figure class="docpage" id="page-3"><header><span class="n">p\. 3<\/span><a class="cite" href="contract\.pdf#page=3"/);
+  assert.match(html, /<section id="document"><h2>The document, with their marks<\/h2><figure class="docpage" id="contract-p3"><header><span class="n">p\. 3<\/span><a class="cite" href="contract\.pdf#page=3"/);
   assert.match(html, /<section id="not-checked">[\s\S]*<\/section>\s*<\/main>/);
 });
 
@@ -562,18 +562,38 @@ test("a document page takes its look from a row's cite as well as a finding's, o
   assert.ok(alone.result.ok, alone.result.ok ? "" : alone.result.error.message);
 });
 
-test("an embedded page takes the look cited for that page of its own document, not another document's page of the same number", async () => {
+test("two documents are two entries of documents: each embedded page takes the look cited for its own document's page, with its file named", async () => {
+  fs.copyFileSync(path.join(cwd, "contract.pdf"), path.join(cwd, "other.pdf"));
   const two = data
-    .replace("\nconst report = {", '\nconst lookOther = await look(`report/${page3}`, "other.pdf#page=3", "What else is on this page?");\nconst report = {')
-    .replace('outside: ["talk.mp4"]', 'outside: ["talk.mp4", "other.pdf"]')
+    .replace("\nconst report = {", '\nconst otherPage = await pdfPage("other.pdf", 3, "other-p3");\nconst lookOther = await look(`report/${otherPage}`, "other.pdf#page=3", "What else is on this page?");\nconst report = {')
+    .replace(/(  documents: \[\{[^\n]*)\}\],\n/, '$1}, { id: "other", file: await keep("other.pdf"), pages: [{ n: 3, src: otherPage }] }],\n')
     .replace("  notChecked:", '  rows: [{ id: "o3", label: "Other, page 3", text: "Another document.", thumb: await thumb("talk.mp4", "o3-thumb", { t: 3 }), cites: [{ file: "other.pdf", page: 3, look: lookOther.key }] }, { id: "p3", label: "Page 3", text: "The rule is set here.", thumb: await thumb("frames/contract-p3.jpg", "p3-thumb"), cites: [{ file: "contract.pdf", page: 3, look: lookPage.key }] }],\n  notChecked:');
   assert.notEqual(two, data);
+  assert.ok(two.includes('id: "other"') && two.includes("rows:"), "both edits applied");
   onDisk = "other";
   const { result, keys } = await run([helpers, assets, looking, two, render, check]);
   assert.ok(result.ok, result.ok ? "" : result.error.message);
   assert.equal(keys.length, 4);
-  assert.notEqual(keys[1], keys[3]);
-  assert.match(HTML(), new RegExp(`<a class="cite" href="contract\\.pdf#page=3" data-look="${keys[1]}">open at p\\. 3</a>`), "the embedded page carries its own document's look");
+  const html = HTML();
+  assert.match(html, new RegExp(`<figure class="docpage" id="contract-p3"><header><span class="n">contract\\.pdf, p\\. 3</span><a class="cite" href="contract\\.pdf#page=3" data-look="${keys[1]}">open at p\\. 3</a>`), "the contract's page carries the contract's look");
+  assert.match(html, new RegExp(`<figure class="docpage" id="other-p3"><header><span class="n">other\\.pdf, p\\. 3</span><a class="cite" href="other\\.pdf#page=3" data-look="${keys[3]}">open at p\\. 3</a>`), "and the other's page its own");
+  assert.match(html, /<h2>The documents, with their marks<\/h2>/);
+});
+
+test("a cite of a page of a document needs that page embedded: crops alone are refused, and so is a second document that is not embedded", async () => {
+  const cropsOnly = data.replace(/  documents: \[\{[^\n]*\n/, "");
+  assert.notEqual(cropsOnly, data);
+  onDisk = "other";
+  const gap = await run([helpers, assets, looking, cropsOnly, render, check]);
+  assert.ok(!gap.result.ok);
+  assert.match(gap.result.error.message, /contract\.pdf page 3 is cited but no embedded page shows it: add it to documents with its marks, and a crop of each mark in its finding/);
+  const second = data.replace("  notChecked:", '  rows: [{ id: "o3", label: "Other", text: "Another document.", thumb: await thumb("talk.mp4", "o3-thumb", { t: 3 }), cites: [{ file: "other.pdf", page: 3, look: lookTalk.key }] }],\n  notChecked:').replace('outside: ["talk.mp4"]', 'outside: ["talk.mp4", "other.pdf"]');
+  assert.notEqual(second, data);
+  const open = await run([helpers, assets, looking, second, render, check]);
+  assert.ok(!open.result.ok);
+  assert.match(open.result.error.message, /other\.pdf page 3 is cited but no embedded page shows it/);
+  const embedded = await run([helpers, assets, looking, data, render, check]);
+  assert.ok(embedded.result.ok, embedded.result.ok ? "" : embedded.result.error.message);
 });
 
 test("rich by default: every finding shows a picture or a clip, a document mark has a close crop whose box is the mark, and no picture is shown twice", async () => {

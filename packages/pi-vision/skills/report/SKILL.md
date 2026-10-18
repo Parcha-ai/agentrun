@@ -32,8 +32,10 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
 - **Fold the routine.** What was checked and found as expected goes in a folded section (`<details>`), one line each, its
   evidence inside the fold. What surprised, failed or decided the answer is a finding of its own, open, and first.
 - **A document is embedded.** When the run read a document, the page shows it as a viewer would: each page the findings
-  stand on as an image, in order, with every found mark outlined and labelled on its page. Each mark links to its finding
-  and back, and the page links to the PDF itself at `#page=N`.
+  stand on as an image, in order, with every found mark outlined and labelled on its page (`documents`, one entry for each
+  document, one page entry for each page). Each mark links to its finding and back, and the page links to the PDF itself at
+  `#page=N`. Every cite of a page of a document has that page embedded: a crop of a mark with no embedded page is not enough,
+  and the check refuses a page cite with no page entry.
 - **A film is shown by its moments.** A window of the film is one short clip, with a poster that is the window's opening
   frame. The same window is never a clip twice: later it is a frame, from `frame()`, with a box if it has one.
 - **What you did not check** is last: what you assumed, could not reach or did not look at.
@@ -231,7 +233,7 @@ const report = {
       pics: [{ src: site, alt: "A photo of the site", caption: "The site as photographed; nothing in it bears on the answer, so it is kept as the record of the visit." }],
       cites: [{ file: await keep("photo.jpg"), look: lookSite.key }] },
   ],
-  document: { file: await keep("contract.pdf"), pages: [{ n: 3, src: page3, boxes: [{ id: "mark-rule", finding: "contract", at: "7,6,70,4", label: "the rule", look: lookPage.key }] }] },
+  documents: [{ id: "contract", file: await keep("contract.pdf"), pages: [{ n: 3, src: page3, boxes: [{ id: "mark-rule", finding: "contract", at: "7,6,70,4", label: "the rule", look: lookPage.key }] }] }],
   outside: ["talk.mp4"],   // a film is cited by its own name and not copied; every other cited file was kept above
   notChecked: ["The talk's figures were read from the chart, not from a table."],
 };
@@ -254,7 +256,8 @@ const box = (b) => { const [x, y, w, h] = b.at.split(",");
 const sheet = (p) => `<div class="sheet"><img src="${esc(p.src)}" alt="${say(p.alt)}" loading="lazy">${(p.boxes ?? []).map(box).join("")}</div>`;
 const pic = (p) => `<figure class="pic"${p.mark ? ` data-mark="${esc(p.mark)}"` : ""}>${sheet(p)}<figcaption>${say(p.caption)}</figcaption></figure>`;
 const movie = (c) => `<figure class="pic"><video controls muted playsinline preload="metadata" poster="${esc(c.poster)}"><source src="${esc(c.src)}" type="video/mp4"></video><figcaption>${say(c.caption)}</figcaption></figure>`;
-const spots = [...(report.document?.pages ?? []).flatMap((p) => (p.boxes ?? []).map((b) => [b, `p. ${p.n}`])), ...report.findings.flatMap((f) => (f.pics ?? []).flatMap((p) => (p.boxes ?? []).map((b) => [b, "the picture"])))];
+const documents = report.documents ?? [];
+const spots = [...documents.flatMap((d) => d.pages.flatMap((p) => (p.boxes ?? []).map((b) => [b, `p. ${p.n}`]))), ...report.findings.flatMap((f) => (f.pics ?? []).flatMap((p) => (p.boxes ?? []).map((b) => [b, "the picture"])))];
 const where = (id) => spots.filter(([b]) => b.finding === id).map(([b, at]) => `<a class="jump" href="#${esc(b.id)}">show on ${at}</a>`).join(" ");
 const body = (f) => `<h3>${say(f.title)}</h3><p>${say(f.why)}</p>
 <div class="media">${(f.pics ?? []).map(pic).join("")}${f.clip ? movie(f.clip) : ""}</div>
@@ -263,7 +266,7 @@ const finding = (f) => f.routine
   ? `<details class="finding routine" id="f-${f.id}"><summary>${say(f.title)}</summary>${body(f)}</details>`
   : `<article class="finding" id="f-${f.id}">${body(f)}</article>`;
 const rows = (list) => list.length ? `<ol class="rows">${list.map((r) => `<li class="row" id="r-${esc(r.id)}"><img class="thumb" src="${esc(r.thumb)}" alt="${say(r.text)}" loading="lazy"><span class="when">${say(r.label)}</span><span class="what">${say(r.text)}</span><span class="cites">${r.cites.map(cite).join(" ")}</span></li>`).join("")}</ol>` : "";
-const docPage = (p) => `<figure class="docpage" id="page-${p.n}"><header><span class="n">p. ${p.n}</span><a class="cite" href="${encodeURIComponent(report.document.file)}#page=${p.n}" data-look="${esc(p.look ?? [...(report.rows ?? []), ...report.findings].flatMap((x) => x.cites).find((c) => c.file === report.document.file && c.page === p.n)?.look ?? "")}">open at p. ${p.n}</a></header>${sheet({ ...p, alt: p.alt ?? `Page ${p.n} of ${report.document.file}` })}</figure>`;
+const docPage = (d, p) => `<figure class="docpage" id="${esc(d.id)}-p${p.n}"><header><span class="n">${say(documents.length > 1 ? `${d.file}, ` : "")}p. ${p.n}</span><a class="cite" href="${encodeURIComponent(d.file)}#page=${p.n}" data-look="${esc(p.look ?? [...(report.rows ?? []), ...report.findings].flatMap((x) => x.cites).find((c) => c.file === d.file && c.page === p.n)?.look ?? "")}">open at p. ${p.n}</a></header>${sheet({ ...p, alt: p.alt ?? `Page ${p.n} of ${d.file}` })}</figure>`;
 
 const css = `:root{color-scheme:light dark;--bg:#f7f6f2;--fg:#17181a;--mute:#5c6068;--card:#fff;--line:#e2e1db;--accent:#d96a00;--box:#6b4fd8}
 @media (prefers-color-scheme:dark){:root{--bg:#0d0d0f;--fg:#ecebe7;--mute:#a1a5ad;--card:#161618;--line:#2a2b30;--accent:#ff8700;--box:#b4a0ff}}
@@ -290,7 +293,7 @@ const page = `<!doctype html>
 <header><h1>${say(report.title)}</h1><p class="question">${say(report.question)}</p></header>
 <section id="answer" aria-label="Answer"><p>${say(report.answer)}</p><ul class="points">${report.points.map((p) => `<li><small>${say(p.label)}</small><a href="#${esc(p.to)}">${say(p.value)}</a></li>`).join("")}</ul>${rows(report.rows ?? [])}</section>
 ${keyFindings.length ? `<section id="evidence"><h2>Evidence</h2>${keyFindings.map(finding).join("\n")}</section>` : ""}
-${report.document ? `<section id="document"><h2>The document, with its marks</h2>${report.document.pages.map(docPage).join("\n")}</section>` : ""}
+${documents.length ? `<section id="document"><h2>${documents.length > 1 ? "The documents" : "The document"}, with their marks</h2>${documents.flatMap((d) => d.pages.map((p) => docPage(d, p))).join("\n")}</section>` : ""}
 ${routine.length ? `<section id="routine"><h2>Checked, as expected</h2>${routine.map(finding).join("\n")}</section>` : ""}
 <section id="not-checked"><h2>Not checked</h2><ul class="limits">${report.notChecked.map((line) => `<li>${say(line)}</li>`).join("")}</ul></section>
 </main></body></html>
@@ -348,7 +351,9 @@ for (const xywh of attr("data-xywh")) {
 if ((page.match(/<figure class="pic"[^>]*>/g) ?? []).length !== (page.match(/<figcaption>\s*[^<\s][^<]*<\/figcaption>/g) ?? []).length) problems.push("a picture has no caption that says what it shows and why it matters");
 for (const f of report.findings) if (!(f.pics?.length || f.clip)) problems.push(`finding ${f.id} shows no picture or clip: show its evidence`);
 for (const r of report.rows ?? []) if (!r.thumb) problems.push(`row ${r.id} has no thumbnail`);
-for (const b of (report.document?.pages ?? []).flatMap((p) => p.boxes ?? [])) if (!page.includes(`data-mark="${b.id}"`)) problems.push(`the mark ${b.id} has no close crop in its finding`);
+for (const b of documents.flatMap((d) => d.pages.flatMap((p) => p.boxes ?? []))) if (!page.includes(`data-mark="${b.id}"`)) problems.push(`the mark ${b.id} has no close crop in its finding`);
+const embedded = documents.flatMap((d) => d.pages.map((p) => `${d.file}#${p.n}`));
+for (const c of [...(report.rows ?? []), ...report.findings].flatMap((x) => x.cites)) if (c.page && !embedded.includes(`${c.file}#${c.page}`)) problems.push(`${c.file} page ${c.page} is cited but no embedded page shows it: add it to documents with its marks, and a crop of each mark in its finding`);
 const shown = attr("src").filter((ref) => ref.startsWith("frames/"));
 if (new Set(shown).size !== shown.length) problems.push("a picture is shown twice: drop the duplicate");
 if (report.points.length < 1 || report.points.length > 4) problems.push("the answer has one to four key points");
