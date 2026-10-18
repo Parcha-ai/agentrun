@@ -416,6 +416,47 @@ const visionOnce = (looks: VisionLook[]): VisionLook[] => {
   return [...chosen.values()];
 };
 
+/** Jev's answers to a look as sentences (pi-vision's `vision.judge`: the look's ask is its typed questions, its body the
+ *  typed answers), each with its score, and the boxes it drew in percent of the picture it looked at. Undefined when the
+ *  look is not a Jev decision. */
+export function visionJevOf(look: Pick<VisionLook, 'ask' | 'body'>): { sentences: string[]; boxes: { x: number; y: number; w: number; h: number }[] } | undefined {
+  let questions: Json, answers: Json;
+  try { questions = JSON.parse(look.ask ?? '') as Json; answers = JSON.parse(look.body) as Json; } catch { return undefined; }
+  const asked = visionObj(questions);
+  const said = visionObj(answers);
+  const typed = (value: Json | undefined) => ['choice', 'noul', 'score', 'box'].includes(String(visionObj(value)?.type));
+  if (!asked || !said || Object.keys(said).length === 0 || !Object.values(said).every(typed)) return undefined;
+  const score = (value: number) => String(Math.round(value * 100) / 100);
+  const sentences: string[] = [];
+  const boxes: { x: number; y: number; w: number; h: number }[] = [];
+  for (const [name, value] of Object.entries(said)) {
+    const answer = visionObj(value)!;
+    const question = visionObj(asked[name]);
+    const about = typeof question?.instructions === 'string' ? question.instructions : name;
+    const sure = (value: Json | undefined) => (visionNum(value) !== undefined ? `, ${score(visionNum(value)!)} sure` : '');
+    if (answer.type === 'noul' && visionNum(answer.noul) !== undefined) sentences.push(`Jev is ${score(visionNum(answer.noul)!)} sure: ${about}`);
+    else if (answer.type === 'choice' && answer.choice !== undefined) sentences.push(`Jev picks ${typeof answer.choice === 'string' ? answer.choice : JSON.stringify(answer.choice)}${sure(answer.confidence)}: ${about}`);
+    else if (answer.type === 'score' && (answer.score !== undefined || answer.level !== undefined)) sentences.push(`Jev scores it ${JSON.stringify(answer.score ?? answer.level)}: ${about}`);
+    else if (answer.type === 'box') {
+      const box = visionObj(answer.box);
+      const [left, top, right, bottom] = ['left', 'top', 'right', 'bottom'].map((side) => visionNum(box?.[side]));
+      if (left !== undefined && top !== undefined && right !== undefined && bottom !== undefined) {
+        boxes.push({ x: Math.round(left * 1000) / 10, y: Math.round(top * 1000) / 10, w: Math.round((right - left) * 1000) / 10, h: Math.round((bottom - top) * 1000) / 10 });
+        sentences.push(`Jev boxed it${sure(answer.confidence)}: ${about}`);
+      } else sentences.push(`Jev found no box: ${about}`);
+    }
+  }
+  return sentences.length ? { sentences, boxes } : undefined;
+}
+
+/** What a lane says a look answered: a Jev decision as sentences with their scores, its raw answer behind a click, in a
+ *  public replay; the answer as the eyes gave it otherwise. */
+const visionAnswer = (lead: VisionLead, look: VisionLook, head: string): Node => {
+  const jev = lead.publicView ? visionJevOf(look) : undefined;
+  return jev ? h('div', { class: 'vz-jev' }, ...jev.sentences.map((sentence) => h('p', { class: 'vz-jev-says' }, sentence)),
+    h('details', { class: 'vz-raw' }, h('summary', {}, 'The raw answer'), visionSaid(head, look.body))) : visionSaid(head, look.body);
+};
+
 /** How a lane draws its look. A public replay leads with what the eyes answered and the rows that cite it, the picture
  *  below it, closed until a click opens it; the debug view (`?debug=durability`) draws the picture first, as it was. */
 type VisionLead = { publicView: boolean; citedOf: (look: VisionLook) => Node | false };
@@ -439,7 +480,7 @@ function visionFilm(looks: VisionLook[], state: VisionState, chosen: VisionLook 
   return h('section', { class: 'vz-lane' },
     h('h5', {}, `Film · ${source} · ${film.length} window${film.length === 1 ? '' : 's'} read`),
     h('div', { class: 'vz-cells', title: `0 to ${end} s; shaded: read; hatched: reading now` }, ...cells.map((flags) => h('span', { class: `vz-cell ${[...flags].join(' ')}`.trim() }))),
-    ...(shown ? visionLead(lead, shown, visionSaid(`#${shown.fragment}`, shown.body), [
+    ...(shown ? visionLead(lead, shown, visionAnswer(lead, shown, `#${shown.fragment}`), [
       ...(shown.images.length > 0 && shown.images.every((image) => image.keyframe !== undefined) ? [h('p', { class: 'vz-note' }, 'The chapter\'s keyframe, not what the eyes saw: they looked at the window itself.')] : []),
       h('div', { class: 'vz-strip' }, ...(shown.images.length ? shown.images : [undefined]).map((image, at) => h('figure', {},
         visionPicture(image, `${source} ${shown.fragment}`, 'vz-frame'),
@@ -456,13 +497,13 @@ function visionPages(looks: VisionLook[], state: VisionState, chosen: VisionLook
   const source = shown?.item ?? shown?.source ?? 'the scans';
   return h('section', { class: 'vz-lane' },
     h('h5', {}, `Pages · ${source} · ${read.size} page${read.size === 1 ? '' : 's'} read${running.length ? ` · reading p.${running.map((each) => each.page).join(', p.')}` : ''}`),
-    ...(shown ? visionLead(lead, shown, visionSaid(`p.${shown.page ?? '?'}${shown.status === 'failed' ? ' (missed)' : ''}`, shown.body), [h('div', { class: 'vz-page' },
+    ...(shown ? visionLead(lead, shown, visionAnswer(lead, shown, `p.${shown.page ?? '?'}${shown.status === 'failed' ? ' (missed)' : ''}`), [h('div', { class: 'vz-page' },
       visionPicture(shown.images[0], `${source} page ${shown.page ?? ''}`, 'vz-scan'),
-      // A box is where the account says the line stands: the eyes' estimate, so it is drawn dashed.
-      ...boxes.map((box) => h('span', { class: 'vz-box', title: `xywh=percent:${box.x},${box.y},${box.w},${box.h}`, box })))], 'The page') : []));
+      // A box is where the account says the line stands, or where Jev found it: the eyes' estimate, so it is drawn dashed.
+      ...[...boxes, ...(lead.publicView ? visionJevOf(shown)?.boxes ?? [] : [])].map((box) => h('span', { class: 'vz-box', title: `xywh=percent:${box.x},${box.y},${box.w},${box.h}`, box })))], 'The page') : []));
 }
 
-function visionPhotos(looks: VisionLook[], chosen: VisionLook | undefined, account: VisionAccount | undefined, focus: string | undefined): Node {
+function visionPhotos(looks: VisionLook[], chosen: VisionLook | undefined, account: VisionAccount | undefined, focus: string | undefined, lead: VisionLead): Node {
   const photos = visionOnce(looks.filter((look) => visionLane(look) === 'photos'));
   if (photos.length === 0) return h('section', { class: 'vz-lane' }, h('h5', {}, 'Photographs'), h('p', { class: 'empty' }, 'No photograph looked at yet.'));
   const labels = new Map((account?.photos ?? []).map((photo) => [photo.receipt ?? photo.item, photo]));
@@ -479,7 +520,17 @@ function visionPhotos(looks: VisionLook[], chosen: VisionLook | undefined, accou
         visionPicture(look.images[0], look.item ?? look.source, 'vz-thumb', true), photo ? h('span', { class: 'vz-label' }, photo.label)
           // A miss is labelled by its code: a tile with no picture says why.
           : look.status === 'failed' && h('span', { class: 'vz-label' }, look.miss?.code.replaceAll('_', ' ') ?? 'missed'));
-    })));
+    })),
+    // A public replay says what a Jev decision on a picture found, as it does in the film and pages lanes: the chosen
+    // photograph's, else the latest one Jev decided.
+    ...visionPhotoAnswer(photos, chosen, lead));
+}
+
+/** The sentences of the photograph a public replay names under the grid: the chosen one, else the latest Jev decided. */
+function visionPhotoAnswer(photos: VisionLook[], chosen: VisionLook | undefined, lead: VisionLead): Node[] {
+  if (!lead.publicView) return [];
+  const shown = chosen && photos.some((look) => look.key === chosen.key) ? chosen : photos.findLast((look) => visionJevOf(look) !== undefined);
+  return shown && visionJevOf(shown) ? [visionAnswer(lead, shown, shown.fragment ? `#${shown.fragment}` : shown.item ?? shown.source), lead.citedOf(shown)].filter((node): node is Node => node !== false) : [];
 }
 
 /** A typed time and how the eyes read it: the typed one's digits the reading dropped are struck. */
@@ -632,7 +683,7 @@ function visionView(state: VisionState, context: ViewContext): Node {
       state.kills.length > 0 && h('span', { class: 'vz-badge red durability' }, `killed ${state.kills.length === 1 ? 'once' : `${state.kills.length} times`}${state.kills.at(-1)?.label ? `: ${state.kills.at(-1)!.label}` : ''}`),
       kept > 0 && h('span', { class: 'vz-badge ok durability' }, `resumed · ${kept} kept`)),
     h('div', { class: 'vz-grid' },
-      h('div', { class: 'vz-col' }, visionFilm(lanes, state, chosen, lead), visionPages(lanes, state, chosen, boxes, lead), visionPhotos(lanes, chosen, account, context.focus)),
+      h('div', { class: 'vz-col' }, visionFilm(lanes, state, chosen, lead), visionPages(lanes, state, chosen, boxes, lead), visionPhotos(lanes, chosen, account, context.focus, lead)),
       h('div', { class: 'vz-col' },
         h('h5', {}, cited ? cited.title ?? state.result?.title ?? 'The result' : 'The account'),
         !state.result ? h('p', { class: 'empty' }, 'Not delivered yet.')

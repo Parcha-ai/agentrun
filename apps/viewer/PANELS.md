@@ -160,8 +160,13 @@ public page sets.
   - the workflow map: its kills, a cell's mark of a kill that cut it, and the price of chaos;
   - the transport panel: its kills;
   - the disk panel: a generation that ended without a holder.
-- **Receipts, one click away.** The strip's looks paid and cost sit under a disclosure, Receipts. So do the vision
-  panel's meters and the receipt of its look.
+- **Receipts, one click away.** The strip's counts sit under a disclosure, Receipts: paid calls made, looks paid,
+  unknown, judge asks, model turns, re-asks and the cost. So do the vision panel's meters and the receipt of its look.
+- **The session, closed under the title.** The timeline sits in a disclosure, The session, right under the title.
+  Opened, a click on any point seeks the replay there, and the model's turns scroll to that moment.
+- **A Jev decision reads as words.** A look whose ask is Jev's typed questions (pi-vision's `vision.judge`) shows each
+  answer as a sentence with its score ("Jev is 0.95 sure: ..."), a box it drew over the page in the pages lane, and its
+  raw answer behind a click (`visionJevOf`).
 - **A look leads with its answer.** In the vision panel's film and pages lanes, a look shows what the eyes answered and
   the rows that cite it first. Its picture (the frames, the page with its boxes) is below, in a disclosure a click opens.
 

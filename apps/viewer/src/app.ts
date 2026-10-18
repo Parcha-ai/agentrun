@@ -218,27 +218,28 @@ function drawCounters(counters: Counters, measured = counters.measured, provider
   const reasked = counters.modelTurns.reasked;
   const item = (label: string, value: string, title: string, extra = '') => el('div', { class: `counter${extra}`, title }, el('span', { class: 'value', text: value }), el('span', { class: 'label', text: label }));
   const stored = (label: string, value: string, title: string, extra = '') => (measured ? item(label, value, title, extra)
-    : item(label, 'not measured', 'This recording has no durable lines: nothing from the store can be counted.', extra.includes('durability') ? ' durability' : ''));
+    : item(label, 'not measured', 'This recording has no durable lines: nothing from the store can be counted.', extra.split(' ').filter((name) => name === 'durability' || name === 'receipt').map((name) => ` ${name}`).join('')));
   // What a kill and a resume did (processes, kills, a repeat, a call asked twice, the journal's opens) is marked
-  // `durability`, drawn only with `?debug=durability`; the payments and the cost are `receipt`s, kept under one
-  // disclosure, Receipts, unless the page shows its debug view (PANELS.md, "What a public replay shows").
+  // `durability`, drawn only with `?debug=durability`; the counts a developer reads (paid calls made, unknown, judge
+  // asks, model turns, re-asks) with the payments and the cost are `receipt`s, kept under one disclosure, Receipts,
+  // unless the page shows its debug view (PANELS.md, "What a public replay shows").
   const counted = [
-    stored('paid calls made', String(counters.paid.total), `Workflow effects completed: ${counters.paid.workflow}. Agent receipts: ${counters.paid.agent}. Vision looks paid: ${counters.paid.vision}.`),
+    stored('paid calls made', String(counters.paid.total), `Workflow effects completed: ${counters.paid.workflow}. Agent receipts: ${counters.paid.agent}. Vision looks paid: ${counters.paid.vision}.`, ' receipt'),
     stored('looks paid', `${counters.paid.vision}${counters.vision.possible ? ` + ${counters.vision.possible} possible` : ''}`,
       `Looks the eyes answered and billed, per look key${counters.vision.native ? `; ${counters.vision.native} the lead looked at itself, which charge nothing` : ''}.${counters.vision.possible ? ` ${counters.vision.possible} more possible: a look started in a process that ended before filing it, so no durable line shows whether it was paid, and the cost is a lower bound.` : ''}`, ' receipt'),
     stored('repeated', `${repeatedLabel(counters)}${counters.pageActions.possible ? ` + ${counters.pageActions.possible} possible` : ''}`,
       `An applied call in a later process than an earlier applied one.${counters.repeatedNotMeasured > 0 ? ` ${counters.repeatedNotMeasured} effects report no calls: their repeats are not measured, never shown as 0.` : ''}${counters.pageActions.possible ? ` ${counters.pageActions.possible} more possible: a browser page action dispatched again after one that never showed reaching the page, so no durable line says whether it was applied twice.` : ''}${counters.pageActions.measured ? '' : ' The browser\'s page actions are not measured: its session records are an export\'s, which keeps only their latest revision.'}`,
       counters.repeated > 0 ? ' alarm durability' : ' durability'),
     stored('asked twice', askedTwiceLabel(counters), `A call dispatched twice in one process: the model asking again.${counters.pageActions.measured ? '' : ' The browser\'s page actions are not measured: its session records are an export\'s.'}`, ' durability'),
-    stored(counters.inFlight > 0 ? 'unknown (in flight)' : 'unknown', counters.inFlight > 0 ? `${counters.unknown} (${counters.inFlight})` : String(counters.unknown), 'Effects admitted and never completed.'),
-    stored('judge asks', String(counters.judge.answered + counters.judge.failed), `Answered ${counters.judge.answered}, failed ${counters.judge.failed}, re-asked ${counters.judge.reasked}.`),
-    stored('model turns', String(counters.modelTurns.committed), 'Committed assistant turns.'),
+    stored(counters.inFlight > 0 ? 'unknown (in flight)' : 'unknown', counters.inFlight > 0 ? `${counters.unknown} (${counters.inFlight})` : String(counters.unknown), 'Effects admitted and never completed.', ' receipt'),
+    stored('judge asks', String(counters.judge.answered + counters.judge.failed), `Answered ${counters.judge.answered}, failed ${counters.judge.failed}, re-asked ${counters.judge.reasked}.`, ' receipt'),
+    stored('model turns', String(counters.modelTurns.committed), 'Committed assistant turns.', ' receipt'),
     stored('re-asks', reasked === null ? 'not measured'
       : `${reasked.proven.reasks}${reasked.proven.reasks ? ` over ${reasked.proven.turns} turn${reasked.proven.turns === 1 ? '' : 's'}` : ''}${reasked.possible.reasks ? ` + ${reasked.possible.reasks} possible` : ''}`,
       reasked === null
         ? 'No ask start was committed to this run\'s pi.live (or its version is not one this viewer knows), so a turn asked again cannot be shown.'
         : 'Extra asks after a kill cut an ask, each counted once: proven when the cut ask had committed a partial (the model was answering), possible when only its start (the process may have died before calling the model). Only proven ones count.',
-      reasked?.proven.reasks ? ' alarm' : ''),
+      reasked?.proven.reasks ? ' alarm receipt' : ' receipt'),
     item('processes', String(counters.processes), 'From the supervisor\'s process lines.', ' durability'),
     item('kills', String(counters.kills), 'From the supervisor\'s kill lines.', ' durability'),
     item('cost', costLabel(counters.cost, counters.costLowerBound, providers, counters.costParts), following ? 'A run followed while it goes: its cost is known once it finishes.' :
@@ -624,6 +625,9 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   let { header, problemsNote } = headerOf();
   const counters = el('div');
   const timeline = el('div', { class: 'timeline-wrap' });
+  // A public replay keeps the session's timeline closed under its title: opened, a click on any point seeks there and
+  // the model's turns scroll to that moment. The debug view draws it open, where it was.
+  const session = el('details', { class: 'session' }, el('summary', { text: 'The session' }), timeline);
   const position = el('span', { class: 'position' });
   const range = Object.assign(el('input'), { type: 'range', min: '0', max: String(last), value: String(player.p) }) as HTMLInputElement;
   const playButton = el('button', { text: 'play' });
@@ -642,7 +646,8 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   if (!showDurability) document.documentElement.classList.add('hide-durability');
   const layout = () => {
     const top = embedded ? (problemsNote ? [problemsNote] : []) : [header];
-    if (featured) root.replaceChildren(...top, featuredBox, controls, counters, baselineRow, timeline, chapterList, focusBar, panels);
+    if (!showDurability) root.replaceChildren(...top, session, ...(featured ? [featuredBox] : []), controls, counters, baselineRow, chapterList, focusBar, panels);
+    else if (featured) root.replaceChildren(...top, featuredBox, controls, counters, baselineRow, timeline, chapterList, focusBar, panels);
     else root.replaceChildren(...top, counters, baselineRow, timeline, controls, chapterList, focusBar, panels);
   };
   layout();
@@ -671,6 +676,8 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   // Selecting a citation is a view input: it moves no stop, so the account it was clicked in stays on screen.
   const setCite = (cite: string | undefined) => { player.cite = cite; draw(); };
   const scrubTo = (p: number) => { player.p = head.seek(p); draw(); };
+  /** After a seek from the timeline: the model's turns shown at the moment it chose, their latest in view. */
+  const toMoment = () => { (panels.querySelector('.turns > .turn:last-of-type') as HTMLElement | null)?.scrollIntoView({ block: 'nearest' }); };
 
   function draw() {
     const t = player.p > 0 ? lines[player.p - 1]!.t : 0;
@@ -679,7 +686,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     // A run that goes has no cost yet: what its lines have priced so far is short by every call still paying.
     const counted = countersOf(counterState, player.p === last && !following);
     counters.replaceChildren(drawCounters(following ? { ...counted, cost: null, costLowerBound: false } : counted, measured, recording.manifest.providers, following, showDurability));
-    timeline.replaceChildren(drawTimeline(player, (at) => scrubTo(stopAt(lines, player.stops, at)), setFocus, !showDurability));
+    timeline.replaceChildren(drawTimeline(player, (at) => { scrubTo(stopAt(lines, player.stops, at)); toMoment(); }, setFocus, !showDurability));
     range.value = String(player.p);
     const line = lines[player.p - 1];
     position.textContent = player.p === 0 ? 'before the first line' : `${(t / 1000).toFixed(2)} s · ${line?.channel === 'durable' ? `after commit ${line.commit}${restored ? ` of generation ${line.gen}` : ''}` : `${line?.kind}`} · line ${player.p} of ${last}`;
