@@ -59,7 +59,7 @@ test("a source that is not there: the miss names it as asked, and nothing of the
     return true;
   });
   assert.equal(r.misses.length, 3);
-  assert.ok(r.misses.every((miss, i) => miss.code === "unreadable" && !miss.reason.includes(r.work) && r.filed[i].body === `not seen: ${miss.reason}`), "the event and the record say the same words");
+  assert.ok(r.misses.every((miss, i) => miss.code === "unreadable" && !miss.reason.includes(r.work) && r.filed[i].body === `not seen: ${miss.reason}` && miss.record === r.filed[i]), "the event and the record say the same words");
 });
 
 /** The environment of a host whose own errors carry absolute paths, as pi's do: no program starts, and the error says
