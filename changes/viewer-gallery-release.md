@@ -14,3 +14,6 @@ kind: feature
 - A part of the inspection view that draws a dollar figure is marked `cost` and drawn only with `?debug=cost` or
   `?debug=durability`, under Receipts too: the strip's cost, the vision panel's spend and a receipt's price, and the
   transport panel's cost.
+- The vision panel no longer says the eyes have not looked when live lines tell of a look no store document filed: it
+  lists the look (a native one as the lead's own) under what live lines told, as never filed once the run delivered,
+  and counts nothing from it.

@@ -47,7 +47,8 @@ export type VisionState = {
   counters: CounterState;
   /** Live: looks the eyes answered and misses told, by key or receipt, that no durable line has filed yet; a miss with
    *  no receipt is never filed. */
-  told: Record<string, { what: 'look' | 'miss'; source: string; fragment?: string; code?: string; receipt: boolean; t: number }>;
+  /** Looks and misses only live lines tell of: `native` when the lead looked at the image itself. */
+  told: Record<string, { what: 'look' | 'miss'; source: string; fragment?: string; code?: string; native?: true; receipt: boolean; t: number }>;
   /** Live: the pictures each read showed, by `visionShownKey`. */
   shown: Record<string, VisionImage[]>;
   processes: number;
@@ -236,7 +237,8 @@ function visionReduce(start: VisionState, line: Line): VisionState {
     const key = visionStr(visionObj(record?.facts)?.key);
     if (key === undefined || before.looks.some((look) => look.key === key)) return before;
     const fragment = visionStr(data.fragment);
-    return { ...before, told: { ...before.told, [key]: { what: 'look', source: visionStr(data.source) ?? '', ...(fragment ? { fragment } : {}), receipt: typeof data.receipt === 'string', t: line.t } } };
+    const native = visionObj(record?.args)?.native === true ? { native: true as const } : {};
+    return { ...before, told: { ...before.told, [key]: { what: 'look', source: visionStr(data.source) ?? '', ...(fragment ? { fragment } : {}), ...native, receipt: typeof data.receipt === 'string', t: line.t } } };
   }
   const receipt = visionStr(data.receipt);
   const id = receipt ?? `miss ${line.gen ?? 0} ${line.seq ?? 0}`;
@@ -593,8 +595,9 @@ function visionView(state: VisionState, context: ViewContext): Node {
   const parsed = state.result && resultValue !== undefined ? visionAccountOf(resultValue) : undefined;
   const account = typeof parsed === 'object' ? parsed : undefined;
   const cited = account ? undefined : visionCitedOf(resultValue);
-  // A cited result shows with no look at all: its rows may cite only files, or nothing.
-  const looked = state.looks.length > 0 || Object.keys(state.running).length > 0;
+  // A cited result shows with no look at all: its rows may cite only files, or nothing. A look only live lines tell of is
+  // a look too: the panel lists it, and counts nothing from it.
+  const looked = state.looks.length > 0 || Object.keys(state.running).length > 0 || Object.keys(state.told).length > 0;
   if (!looked && !cited) return h('div', { class: 'vz' }, h('p', { class: 'empty' }, 'The eyes have not looked at anything yet.'));
   const kept = meters.kept;
   // A look's pictures: those its filing names, else those its read showed, else, for a window of film, the keyframes a
@@ -644,10 +647,11 @@ function visionView(state: VisionState, context: ViewContext): Node {
         account?.accuracy && visionAccuracyView(account.accuracy),
         !publicView && receipts[1],
         context.cite !== undefined && !chosen && h('p', { class: 'empty' }, 'The look this citation names is not filed at this point.'),
+        // Once the run delivered its result no process is left to file what live lines told of: it is never filed.
         (Object.keys(state.running).length > 0 || Object.keys(state.told).length > 0) && h('div', { class: 'vz-flight' },
-          h('h5', {}, 'In flight (live lines)'),
+          h('h5', {}, state.result ? 'Told by live lines only' : 'In flight (live lines)'),
           h('ul', {}, ...Object.values(state.running).map((read) => h('li', {}, `reading ${read.source}${read.page !== undefined ? ` p.${read.page}` : ''}${read.fromS !== undefined ? ` ${read.fromS}-${read.toS ?? ''} s` : ''}`)),
-            ...Object.values(state.told).map((told) => h('li', {}, `${told.what === 'look' ? `the eyes answered for ${told.source}${told.fragment ? ` #${told.fragment}` : ''}` : `a miss (${told.code}) on ${told.source}`}${told.receipt ? ', not filed yet' : ', with no receipt'}`)))))));
+            ...Object.values(state.told).map((told) => h('li', {}, `${told.what === 'look' ? `${told.native ? 'the lead looked at' : 'the eyes answered for'} ${told.source}${told.native ? ' itself' : ''}${told.fragment ? ` #${told.fragment}` : ''}` : `a miss (${told.code}) on ${told.source}`}${!told.receipt ? ', with no receipt' : state.result ? ', never filed in the store' : ', not filed yet'}`)))))));
 }
 
 export const visionPanel: Panel<VisionState> = {
