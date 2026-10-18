@@ -1,0 +1,5 @@
+---
+packages: @parcha/pi-vision
+kind: feature
+---
+The `report` skill ships in the package (`skills/report/SKILL.md`, beside `look`, `transcribe` and `find` under `pi.skills`): how an agent ends a run with its own report, `report/report.html`, one self-contained page with the answer first and the evidence after. The frames and photos it looked at, short clips cut from a film at a size budget and boxes drawn over a picture from a look's `#xywh=percent:` sit beside it in `report/`. Every cite is a link with the source file's own fragment (`#page=N`, `#t=`, `#xywh=`), labelled with that number and carrying the key of the look it rests on in `data-look`. The skill is six pieces of code for code mode and a check to run before the agent stops: no network and no script, every file present and within budget, every cite well formed and resolving to a look the run made, every box inside the picture. `test/binaries/report-skill.test.mjs` runs the pieces on a film, a PDF and a photo the test builds, checks the page it writes, and shows the check refusing each fault.
