@@ -739,10 +739,39 @@ test("an item of not-checked that states a finding or an absence, or is not an i
     [{ pages: [2], why: "not looked at" }, "pages"],
     [{ file: "talk.mp4", t: [30, 20], why: "not looked at" }, "talk.mp4"],
     [{ file: "contract.pdf", pages: [], why: "not looked at" }, "contract.pdf"],
+    [{ file: 123, why: "not looked at" }, "123"],
+    [{ file: "", why: "not looked at" }, "file"],
+    [{ file: "contract.pdf", pages: [0], why: "not looked at" }, "contract.pdf"],
+    [{ file: "contract.pdf", pages: [1.5], why: "not looked at" }, "contract.pdf"],
+    [{ file: "talk.mp4", t: [-5, -1], why: "not looked at" }, "talk.mp4"],
+    [{ file: "talk.mp4", t: [1, Infinity], why: "not looked at" }, "talk.mp4"],
+    [{ file: "talk.mp4", t: ["1", "9"], why: "not looked at" }, "talk.mp4"],
   ]) {
     const { result } = await listed([item]);
     assert.ok(!result.ok, JSON.stringify(item));
     assert.match(result.error.message, /is not an item of notChecked: \{ file, pages or t: \[from, to\], why \}, with why one of not looked at, out of budget, could not be read; a finding or an absence is not listed here/);
-    assert.ok(result.error.message.includes(shown.slice(0, 20)) || shown === "pages", `names ${shown}`);
+    assert.ok(result.error.message.includes(shown.slice(0, 20)) || ["pages", "file"].includes(shown), `names ${shown}`);
   }
+});
+
+test("cover() reads a page range and a file name with a # in it, so a page of a range, or of such a file, is covered and cannot be listed as not checked", async () => {
+  fs.copyFileSync(path.join(cwd, "contract.pdf"), path.join(cwd, "contract#2?draft.pdf"));
+  const listed = async (items, extra) => {
+    const variant = data.replace(/  notChecked: \[[^\n]*\n/, `  notChecked: ${JSON.stringify(items)},\n`).replace("\nconst report = {", `\n${extra}\nconst report = {`);
+    onDisk = "other";
+    return run([helpers, assets, looking, variant, render, check]);
+  };
+  const range = await listed([{ file: "other.pdf", pages: [3], why: "not looked at" }], 'cover("other.pdf#page=1-4");');
+  assert.ok(!range.result.ok);
+  assert.match(range.result.error.message, /other\.pdf, page 3: listed as not checked, but a look of this run covers it/, "page 3 is in 1-4");
+  const outside = await listed([{ file: "other.pdf", pages: [5, 6], why: "not looked at" }], 'cover("other.pdf#page=1-4");');
+  assert.ok(outside.result.ok, outside.result.ok ? "" : outside.result.error.message);
+  const hash = await listed([{ file: "contract#2?draft.pdf", pages: [2], why: "not looked at" }], 'cover("contract#2?draft.pdf#page=2");');
+  assert.ok(!hash.result.ok);
+  assert.match(hash.result.error.message, /contract#2\?draft\.pdf, page 2: listed as not checked, but a look of this run covers it/, "the file name keeps its #");
+  const sibling = await listed([{ file: "contract", pages: [2], why: "not looked at" }], 'cover("contract#2?draft.pdf#page=2");');
+  assert.ok(sibling.result.ok, "a file called contract is another file, and was not looked at");
+  const seconds = await listed([{ file: "talk.mp4", t: [5, 8], why: "not looked at" }], 'cover("talk.mp4#t=4,9&xywh=percent:1,2,3,4");');
+  assert.ok(!seconds.result.ok);
+  assert.match(seconds.result.error.message, /talk\.mp4, 5 to 8 s: listed as not checked/);
 });

@@ -181,7 +181,7 @@ header has a `key:` line before the first `---`. A look the run made earlier is 
 receipt's path, and say what it covered with `cover("file#page=2")` (`look()` does that for its own looks), since the list of what you did not check is what no look covered.
 
 ```js
-const looks = new Set(), covered = [];   // covered: what the run looked at, as { file, page? , t? }
+const looks = new Set(), covered = [];   // covered: what the run looked at, as { file, pages?: [from, to], t?: [from, to] }
 const keyOf = async (receipt) => {
   if (!receipt) throw new Error("no receipt: this host files none, so there is no look to cite");
   const text = await sh(`cat ${q(receipt)}`).catch(() => sh(`cat ${q(`../${receipt}`)}`));   // a host may file receipts in the folder above the workspace
@@ -192,9 +192,10 @@ const keyOf = async (receipt) => {
   looks.add(key);
   return key;
 };
-const cover = (fragment) => {   // "file#page=3", "file#t=18,26", "file#t=21.5&xywh=...", or a bare file: put a look made earlier here too
-  const [file, frag = ""] = fragment.split("#"), page = /(?:^|&)page=(\d+)/.exec(frag)?.[1], time = /(?:^|&)t=([\d.]+)(?:,([\d.]+))?/.exec(frag);
-  covered.push({ file, ...(page ? { page: Number(page) } : {}), ...(time ? { t: [Number(time[1]), Number(time[2] ?? time[1])] } : {}) });
+const cover = (fragment) => {   // "file#page=3", "file#page=1-4", "file#t=18,26", "file#t=21.5&xywh=...", or a bare file: put a look made earlier here too
+  const [, file, frag = ""] = /^(.*)#((?:page|t|xywh)=[^#]*)$/.exec(fragment) ?? [, fragment];   // a `#` inside a file name is not a fragment
+  const page = /(?:^|&)page=(\d+)(?:-(\d+))?/.exec(frag), time = /(?:^|&)t=([\d.]+)(?:,([\d.]+))?/.exec(frag);
+  covered.push({ file, ...(page ? { pages: [Number(page[1]), Number(page[2] ?? page[1])] } : {}), ...(time ? { t: [Number(time[1]), Number(time[2] ?? time[1])] } : {}) });
 };
 const look = async (path, fragment, ask) => {
   const seen = await vision.see({ ask, paths: [path], fragments: [fragment] });
@@ -259,7 +260,7 @@ the end.
 ```js
 const esc = (text) => String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const say = (text) => esc(String(text).replace(/\b(?:https?|ftp|file):(?:\/\/)?/gi, "").replace(/\bmailto:/gi, "").replace(/(^|[\s(])\/\/(?=[a-z0-9-]+\.)/gi, "$1"));
-const num = (n) => String(Number(n.toFixed(2)));
+const num = (n) => String(Number(Number(n).toFixed(2)));
 const part = (c) => [c.page && `page=${c.page}`, c.t && `t=${c.t.map(num).join(",")}`, c.xywh && `xywh=${c.xywh}`].filter(Boolean).join("&");
 const label = (c) => c.page ? `p. ${c.page}` : c.t ? `${c.t.map(num).join(" to ")} s` : c.xywh ? `box ${c.xywh.replace(/^percent:/, "").replace(/^pixel:/, "px ")}` : "file";
 const cite = (c) => `<a class="cite" href="${encodeURIComponent(c.file)}${part(c) ? `#${esc(part(c))}` : ""}" data-look="${esc(c.look)}">${esc(label(c))}</a>`;
@@ -333,11 +334,15 @@ if ([...attr("src"), ...attr("href"), ...attr("poster")].some((v) => /(^|[\/\\])
 if (report.outside.some((name) => /[\/\\:]|^\./.test(name))) problems.push("outside names bare file names, never a path");
 if ([...(report.rows ?? []), ...report.findings].some((x) => !x.cites?.length)) problems.push("a row or a finding has no cite: leave out what no look read");
 const REASONS = ["not looked at", "out of budget", "could not be read"];
-const seen = [...covered, ...[...(report.rows ?? []), ...report.findings].flatMap((x) => x.cites).map((c) => ({ file: c.file, ...(c.page ? { page: c.page } : {}), ...(c.t ? { t: [c.t[0], c.t.at(-1)] } : {}) }))];
-const covers = (s, n) => s.file === n.file && (n.pages ? s.page === undefined && s.t === undefined || n.pages.includes(s.page)
-  : n.t ? s.page === undefined && s.t === undefined || (s.t !== undefined && (s.t[0] === s.t[1] ? s.t[0] >= n.t[0] && s.t[0] <= n.t[1] : Math.max(s.t[0], n.t[0]) < Math.min(s.t[1], n.t[1]))) : true);
+const seen = [...covered, ...[...(report.rows ?? []), ...report.findings].flatMap((x) => x.cites).map((c) => ({ file: c.file, ...(c.page ? { pages: [c.page, c.page] } : {}), ...(c.t ? { t: [c.t[0], c.t.at(-1)] } : {}) }))];
+const meets = (a, b) => a[0] <= b[1] && b[0] <= a[1];   // two closed spans share a page or a second
+const covers = (s, n) => s.file === n.file && (n.pages ? !s.pages && !s.t || (s.pages && n.pages.some((p) => meets(s.pages, [p, p])))
+  : n.t ? !s.pages && !s.t || (s.t && (s.t[0] === s.t[1] ? s.t[0] >= n.t[0] && s.t[0] <= n.t[1] : Math.max(s.t[0], n.t[0]) < Math.min(s.t[1], n.t[1]))) : true);
+const whole = (v) => typeof v === "number" && Number.isFinite(v);
 for (const n of report.notChecked) {
-  const bad = typeof n !== "object" || !n || !n.file || !REASONS.includes(n.why) || (n.pages && n.t) || (n.pages && !(Array.isArray(n.pages) && n.pages.length && n.pages.every(Number.isInteger))) || (n.t && !(Array.isArray(n.t) && n.t.length === 2 && n.t[0] < n.t[1]));
+  const bad = typeof n !== "object" || !n || typeof n.file !== "string" || !n.file.trim() || !REASONS.includes(n.why) || (n.pages && n.t)
+    || (n.pages && !(Array.isArray(n.pages) && n.pages.length && n.pages.every((p) => Number.isInteger(p) && p >= 1)))
+    || (n.t && !(Array.isArray(n.t) && n.t.length === 2 && n.t.every((s) => whole(s) && s >= 0) && n.t[0] < n.t[1]));
   if (bad) problems.push(`${JSON.stringify(n).slice(0, 80)} is not an item of notChecked: { file, pages or t: [from, to], why }, with why one of ${REASONS.join(", ")}; a finding or an absence is not listed here`);
   else if (seen.some((s) => covers(s, n))) problems.push(`${n.file}, ${span(n)}: listed as not checked, but a look of this run covers it: take it out of the list`);
 }
