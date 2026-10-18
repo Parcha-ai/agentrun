@@ -60,6 +60,7 @@ export function build(target = out, recordingsDir = join(here, 'recordings'), { 
   // A `.js` name: every static host serves it as JavaScript, which a module script must be.
   mkdirSync(join(target, 'pdfjs'));
   for (const [from, to] of [['pdf.min.mjs', 'pdf.min.js'], ['pdf.worker.min.mjs', 'pdf.worker.min.js'], ['LICENSE.txt', 'LICENSE.txt']]) cpSync(join(here, 'vendor', 'pdfjs', from), join(target, 'pdfjs', to));
+  cpSync(join(here, 'vendor', 'pdfjs', 'wasm'), join(target, 'pdfjs', 'wasm'), { recursive: true });
 
   // A recorder writes a blob as `.<sha>.<ext>.tmp-<pid>` and renames it once whole, so a copy of a recording taken while
   // it goes may hold such a name: it is not a blob yet, and is neither listed nor shipped.

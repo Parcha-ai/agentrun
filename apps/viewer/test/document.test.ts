@@ -1,9 +1,10 @@
 // The document panel: the pages of a PDF a cited result names, drawn with PDF.js, each box a row cites placed over its
 // page in percent of the crop box. On the hand recording of vision-hand.ts delivering a made-up certificate check whose
 // PDF this file writes by hand (a crop box inside the media box on page 1, so a box placed on the media box would land
-// off its mark), the view is checked as nodes, and the page in a real Chrome under a static host's policy (scripts,
-// workers and fetches only from its own origin): embedded, opened by URL and followed, each mark's box over the black
-// rectangle the PDF draws there, and nothing the policy refused.
+// off its mark, and page 3 a scan whose image is CCITT coded, as a scanner writes one), the view is checked as nodes,
+// and the page in a real Chrome under a static host's policy (scripts, workers and fetches only from its own origin):
+// embedded, opened by URL and followed, each mark's box over the black the PDF draws there, and nothing the policy
+// refused.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -24,24 +25,43 @@ import { visionCitedOf } from '../src/vision.ts';
 import { closeAll, closeLeftBrowsers, chrome, drivenPage } from './driven-page.ts';
 import { ACCOUNT, CHAPTERS, deliverInstead, K, lines, PAGES, RESULT, writeRecording } from './vision-hand.ts';
 
-/** A PDF of `pages`, each `media` points wide and high with its crop box, and a black rectangle at each mark (percent of
- *  the crop box, from its top left), with the byte offsets its cross-reference table names. */
-function pdfOf(pages: { media: [number, number]; crop: [number, number, number, number]; marks: Box[] }[]): Buffer {
+/** A scan of 400 by 500 pixels, white with a black block over columns 100 to 300 and rows 200 to 300, coded as CCITT
+ *  Group 4 (T.6), each line against the one above it: a white line under a white one is one vertical code (1); the
+ *  block's first line a horizontal code (001, white 100 as 11011 00010101, black 200 as 000011001001 000101) and a
+ *  vertical one; each line under it three vertical codes; the first white line after it a pass code (0001) and a
+ *  vertical one; then the end of the block. */
+function g4Scan(): Buffer {
+  const line = (row: number) => (row === 200 ? '001' + '11011' + '00010101' + '000011001001' + '000101' + '1' : row > 200 && row < 300 ? '111' : row === 300 ? '00011' : '1');
+  const coded = `${Array.from({ length: 500 }, (_, row) => line(row)).join('')}000000000001000000000001`;
+  const bits = coded.padEnd(Math.ceil(coded.length / 8) * 8, '0');
+  return Buffer.from(Array.from({ length: bits.length / 8 }, (_, at) => parseInt(bits.slice(at * 8, at * 8 + 8), 2)));
+}
+
+/** A PDF of `pages`, each `media` points wide and high with its crop box, a black rectangle at each mark (percent of the
+ *  crop box, from its top left), and a scan over the whole crop box when it has one, with the byte offsets its
+ *  cross-reference table names. */
+function pdfOf(pages: { media: [number, number]; crop: [number, number, number, number]; marks: Box[]; scan?: Buffer }[]): Buffer {
+  const bytes = (text: string) => Buffer.byteLength(text, 'latin1');
   const bodies: string[] = ['', ''];
   const kids: number[] = [];
   for (const page of pages) {
     const [x0, y0, x1, y1] = page.crop;
     const [w, h] = [x1 - x0, y1 - y0];
-    const stream = `0 0 0 rg\n${page.marks.map((m) => `${x0 + (m.x / 100) * w} ${y1 - ((m.y + m.h) / 100) * h} ${(m.w / 100) * w} ${(m.h / 100) * h} re f`).join('\n')}\n`;
-    bodies.push(`<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}endstream`);
-    bodies.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${page.media.join(' ')}] /CropBox [${page.crop.join(' ')}] /Contents ${bodies.length} 0 R >>`);
+    let image = '';
+    if (page.scan) {
+      bodies.push(`<< /Type /XObject /Subtype /Image /Width 400 /Height 500 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /CCITTFaxDecode /DecodeParms << /K -1 /Columns 400 /Rows 500 >> /Length ${page.scan.length} >>\nstream\n${page.scan.toString('latin1')}\nendstream`);
+      image = ` /Resources << /XObject << /Scan ${bodies.length} 0 R >> >>`;
+    }
+    const stream = `${page.scan ? `q ${w} 0 0 ${h} ${x0} ${y0} cm /Scan Do Q\n` : ''}0 0 0 rg\n${page.marks.map((m) => `${x0 + (m.x / 100) * w} ${y1 - ((m.y + m.h) / 100) * h} ${(m.w / 100) * w} ${(m.h / 100) * h} re f`).join('\n')}\n`;
+    bodies.push(`<< /Length ${bytes(stream)} >>\nstream\n${stream}endstream`);
+    bodies.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${page.media.join(' ')}] /CropBox [${page.crop.join(' ')}]${image} /Contents ${bodies.length} 0 R >>`);
     kids.push(bodies.length);
   }
   bodies[0] = '<< /Type /Catalog /Pages 2 0 R >>';
   bodies[1] = `<< /Type /Pages /Kids [${kids.map((id) => `${id} 0 R`).join(' ')}] /Count ${kids.length} >>`;
   let out = '%PDF-1.4\n';
-  const offsets = bodies.map((body, at) => { const offset = Buffer.byteLength(out); out += `${at + 1} 0 obj\n${body}\nendobj\n`; return offset; });
-  const xref = Buffer.byteLength(out);
+  const offsets = bodies.map((body, at) => { const offset = bytes(out); out += `${at + 1} 0 obj\n${body}\nendobj\n`; return offset; });
+  const xref = bytes(out);
   out += `xref\n0 ${bodies.length + 1}\n0000000000 65535 f \n${offsets.map((offset) => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')}`;
   return Buffer.from(`${out}trailer\n<< /Size ${bodies.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`, 'latin1');
 }
@@ -49,7 +69,10 @@ function pdfOf(pages: { media: [number, number]; crop: [number, number, number, 
 const SEAL = { x: 40, y: 70, w: 20, h: 15 };
 const SIGNATURE = { x: 65, y: 87, w: 25, h: 8 };
 const STAMP = { x: 55, y: 5, w: 35, h: 12 };
-const PDF_BYTES = pdfOf([{ media: [612, 792], crop: [36, 36, 576, 756], marks: [SEAL, SIGNATURE] }, { media: [612, 792], crop: [0, 0, 612, 792], marks: [STAMP] }]);
+/** Where the scan's black block is on its page: columns 100 to 300 and rows 200 to 300 of 400 by 500. */
+const BLOCK = { x: 25, y: 40, w: 50, h: 20 };
+const PDF_BYTES = pdfOf([{ media: [612, 792], crop: [36, 36, 576, 756], marks: [SEAL, SIGNATURE] }, { media: [612, 792], crop: [0, 0, 612, 792], marks: [STAMP] },
+  { media: [612, 792], crop: [0, 0, 612, 792], marks: [], scan: g4Scan() }]);
 const PDF = createHash('sha256').update(PDF_BYTES).digest('hex');
 const at = (box: Box) => `xywh=percent:${box.x},${box.y},${box.w},${box.h}`;
 
@@ -61,6 +84,7 @@ const CHECK = {
     { label: 'signature', value: 'present', cites: [{ blob: PDF, look: K.page2, fragment: `page=1&${at(SIGNATURE)}` }] },
     { label: 'file number', value: 'absent', cites: [{ blob: PDF, look: K.page3, fragment: 'page=1' }] },
     { label: 'filed stamp', value: 'present', cites: [{ blob: PDF, fragment: `#page=2&${at(STAMP)}` }] },
+    { label: 'scanned block', value: 'present', cites: [{ blob: PDF, fragment: `page=3&${at(BLOCK)}` }] },
     { label: 'page 1 as the eyes saw it', value: 'kept', cites: [{ blob: PAGES[0]!, fragment: 'page=1' }] },
     { label: 'summary', value: '3 of 4 marks', cites: [] },
   ],
@@ -86,23 +110,25 @@ test('the cited pages, in the order first cited, each with its rows: a box where
   assert.deepEqual(pages.map((page) => [page.blob, page.page, page.marks.map((mark) => [mark.row.label, mark.box ?? null])]), [
     [PDF, 1, [['seal', SEAL], ['signature', SIGNATURE], ['file number', null]]],
     [PDF, 2, [['filed stamp', STAMP]]],
+    [PDF, 3, [['scanned block', BLOCK]]],
   ]);
-  assert.deepEqual(docPagesOf(visionCitedOf(CHECK as unknown as Json)!).map((page) => [page.blob, page.page]), [[PDF, 1], [PDF, 2], [PAGES[0], 1]], 'a file of a type not known yet is taken for a page; the shell says when it is not');
+  assert.deepEqual(docPagesOf(visionCitedOf(CHECK as unknown as Json)!).map((page) => [page.blob, page.page]), [[PDF, 1], [PDF, 2], [PDF, 3], [PAGES[0], 1]], 'a file of a type not known yet is taken for a page; the shell says when it is not');
 });
 
 test('each page a pdf-page node with its boxes over it, a caption that links the file at the page, and its rows listed, a box or not', () => {
   const node = view(delivered.length);
   const sheets = find(node, (each) => each.tag === 'pdf-page');
-  assert.deepEqual(sheets.map((sheet) => 'page' in sheet && [sheet.blob, sheet.page, sheet.alt]), [[PDF, 1, 'page 1'], [PDF, 2, 'page 2']]);
+  assert.deepEqual(sheets.map((sheet) => 'page' in sheet && [sheet.blob, sheet.page, sheet.alt]), [[PDF, 1, 'page 1'], [PDF, 2, 'page 2'], [PDF, 3, 'page 3']]);
   const boxes = sheets.map((sheet) => find(sheet, cls('doc-box')).map((box) => ['box' in box && box.box, words(box), 'cite' in box ? box.cite : undefined]));
-  assert.deepEqual(boxes, [[[SEAL, 'seal', K.page1], [SIGNATURE, 'signature', K.page2]], [[STAMP, 'filed stamp', undefined]]]);
+  assert.deepEqual(boxes, [[[SEAL, 'seal', K.page1], [SIGNATURE, 'signature', K.page2]], [[STAMP, 'filed stamp', undefined]], [[BLOCK, 'scanned block', undefined]]]);
   assert.deepEqual(find(node, cls('doc-mark')).map(words), [
     'seal present · box at 40, 70, 20, 15 % · noul 0.95',
     'signature present · box at 65, 87, 25, 8 %',
     'file number absent · no box',
     'filed stamp present · box at 55, 5, 35, 12 %',
+    'scanned block present · box at 25, 40, 50, 20 %',
   ]);
-  assert.deepEqual(find(node, (each) => each.tag === 'a').map((link) => 'fragment' in link && [link.blob, link.fragment]), [[PDF, 'page=1'], [PDF, 'page=2']]);
+  assert.deepEqual(find(node, (each) => each.tag === 'a').map((link) => 'fragment' in link && [link.blob, link.fragment]), [[PDF, 'page=1'], [PDF, 'page=2'], [PDF, 'page=3']]);
   assert.equal(words(find(node, cls('doc-title'))[0]!), CHECK.title);
 });
 
@@ -135,23 +161,24 @@ test('a scrub to any point equals a fresh reduce to it', () => {
   }
 });
 
-test('PDF.js is its release files, unchanged, and the build ships them beside the page as scripts with the license', () => {
+test('PDF.js and its JavaScript image decoders are their release files, unchanged, and the build ships them beside the page as scripts with their licenses', () => {
   const vendor = new URL('../vendor/pdfjs/', import.meta.url);
   const table = [...readFileSync(new URL('README.md', vendor), 'utf8').matchAll(/^\| `([^`]+)` \| `[^`]+` \| `([0-9a-f]{64})` \|$/gm)].map((row) => [row[1], row[2]]);
-  assert.deepEqual(table.map(([name]) => name), ['pdf.min.mjs', 'pdf.worker.min.mjs', 'LICENSE.txt']);
+  assert.deepEqual(table.map(([name]) => name), ['pdf.min.mjs', 'pdf.worker.min.mjs', 'LICENSE.txt', 'wasm/jbig2_nowasm_fallback.js', 'wasm/openjpeg_nowasm_fallback.js',
+    'wasm/LICENSE_JBIG2.txt', 'wasm/LICENSE_PDFJS_JBIG2.txt', 'wasm/LICENSE_OPENJPEG.txt', 'wasm/LICENSE_PDFJS_OPENJPEG.txt']);
   for (const [name, sha] of table) assert.equal(createHash('sha256').update(readFileSync(new URL(name!, vendor))).digest('hex'), sha, `${name} is the released file`);
   const out = mkdtempSync(join(tmpdir(), 'viewer-pdfjs-build-'));
   try {
     mkdirSync(join(out, 'none'));
     build(join(out, 'dist'), join(out, 'none'));
-    for (const [from, to] of [['pdf.min.mjs', 'pdf.min.js'], ['pdf.worker.min.mjs', 'pdf.worker.min.js'], ['LICENSE.txt', 'LICENSE.txt']]) assert.ok(readFileSync(join(out, 'dist', 'pdfjs', to!)).equals(readFileSync(new URL(from!, vendor))), `dist/pdfjs/${to}`);
+    for (const [from, to] of [['pdf.min.mjs', 'pdf.min.js'], ['pdf.worker.min.mjs', 'pdf.worker.min.js'], ...table.slice(2).map(([name]) => [name!, name!])]) assert.ok(readFileSync(join(out, 'dist', 'pdfjs', to!)).equals(readFileSync(new URL(from!, vendor))), `dist/pdfjs/${to}`);
   } finally { rmSync(out, { recursive: true, force: true }); }
 });
 
 // A browser a test left open would hold this file's process: each is ended here, and the file fails.
 after(async () => { assert.deepEqual(await closeLeftBrowsers(), [], 'every browser a test started was closed by that test'); });
 
-/** The documents host's policy, as it answers: scripts, workers and fetches from its own origin only, no eval. */
+/** A strict static host's policy: scripts, workers and fetches from its own origin only, and no eval. */
 const POLICY = "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self'; frame-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'; object-src 'none'";
 /** Kept in the page before anything else runs: each request the policy refused. */
 const LISTEN = "<script>window.refused=[];document.addEventListener('securitypolicyviolation',(e)=>refused.push(e.violatedDirective+' '+e.blockedURI));</script>";
@@ -172,7 +199,7 @@ const MEASURE = `(() => [...document.querySelectorAll('.doc-sheet')].map((sheet)
   });
 }))()`;
 
-test('in Chrome under the documents host policy, each cited page is drawn with its boxes over its marks: embedded, opened by URL, and followed', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` }, async (t) => {
+test('in Chrome under a strict static host\'s policy, each cited page is drawn with its boxes over its marks: embedded, opened by URL, and followed', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` }, async (t) => {
   const out = mkdtempSync(join(tmpdir(), 'viewer-document-'));
   const dir = join(out, 'recordings', 'certificate');
   writeRecording(dir);
@@ -204,11 +231,11 @@ test('in Chrome under the documents host policy, each cited page is drawn with i
       await page.evaluate(`window.before = true; location.assign(${JSON.stringify(`${origin}/${opened}`)})`);
       await page.once(`window.before === undefined && document.readyState === 'complete'`, 'true', 30_000, `${opened} opening`);
     }
-    const ready = `[...document.querySelectorAll('.doc-sheet img.pdf-picture')].filter((img) => img.complete && img.naturalWidth > 0).length === 2 || document.body.innerText.includes('could not be drawn')`;
-    await page.once(ready, 'true', 30_000, `${opened}: both cited pages drawn`);
+    const ready = `[...document.querySelectorAll('.doc-sheet img.pdf-picture')].filter((img) => img.complete && img.naturalWidth > 0).length === 3 || document.body.innerText.includes('could not be drawn')`;
+    await page.once(ready, 'true', 30_000, `${opened}: the three cited pages drawn`);
     assert.doesNotMatch(String(await page.evaluate('document.body.innerText')), /could not be drawn|breaks the format/, opened);
     const sheets = await page.evaluate(MEASURE) as { place: number[]; inside: number[]; outside: number; corner: number }[][];
-    assert.deepEqual(sheets.map((boxes) => boxes.map((box) => box.place)), [[SEAL, SIGNATURE].map((box) => [box.x, box.y, box.w, box.h]), [[STAMP.x, STAMP.y, STAMP.w, STAMP.h]]], `${opened}: each box at its cite's percent of its page`);
+    assert.deepEqual(sheets.map((boxes) => boxes.map((box) => box.place)), [[SEAL, SIGNATURE].map((box) => [box.x, box.y, box.w, box.h]), [[STAMP.x, STAMP.y, STAMP.w, STAMP.h]], [[BLOCK.x, BLOCK.y, BLOCK.w, BLOCK.h]]], `${opened}: each box at its cite's percent of its page`);
     for (const box of sheets.flat()) {
       assert.ok(box.inside.every((shade) => shade < 60), `${opened}: the page is black inside the box at ${box.place} (${box.inside})`);
       assert.ok(box.outside > 200 && box.corner > 200, `${opened}: and white just outside it and at the corner (${box.outside}, ${box.corner})`);
@@ -232,5 +259,5 @@ test('from a file, where PDF.js cannot load, the page says so and links the file
   const text = String(await page.evaluate('document.body.innerText'));
   assert.match(text, /page 1 could not be drawn: PDF\.js cannot load in a page opened from a file/);
   assert.match(text, /seal present · box at 40, 70, 20, 15 %/);
-  assert.equal(await page.evaluate(`[...document.querySelectorAll('.doc-sheet a')].map((a) => a.href.split('#')[1]).join(' ')`), 'page=1 page=2');
+  assert.equal(await page.evaluate(`[...document.querySelectorAll('.doc-sheet a')].map((a) => a.href.split('#')[1]).join(' ')`), 'page=1 page=2 page=3');
 });

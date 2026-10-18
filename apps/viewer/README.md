@@ -117,6 +117,7 @@ both deploy buttons build that way):
 | What | Version | License | Where | Used for |
 | --- | --- | --- | --- | --- |
 | PDF.js (`pdfjs-dist`, Mozilla Foundation) | 6.4.299 | Apache-2.0 | `vendor/pdfjs/`, copied to `dist/pdfjs/` | drawing a page of a PDF the result cites (the document panel) |
+| its JavaScript image decoders: PDFium's JBIG2 and CCITT, and OpenJPEG | as in 6.4.299 | BSD-3-Clause, BSD-2-Clause | `vendor/pdfjs/wasm/`, each with its licenses | a scan's images |
 
 The page loads PDF.js only when it draws a PDF page, as a module script beside it, with its worker a file of the same
 origin, and hands it the PDF's bytes (never a `data:` or `blob:` address to fetch), so it draws under a host policy that

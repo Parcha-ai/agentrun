@@ -3,7 +3,8 @@
 // handed to PDF.js as bytes, never as an address to fetch: an embedded blob is a data: URL, and a host whose policy
 // fetches only from its own origin refuses to fetch one. Each page is drawn once into a picture and kept, so a redraw
 // only places it. A page opened from file:// cannot load PDF.js (a module script); it says so, and the view's own text
-// stays.
+// stays. A scan's images (CCITT, JBIG2, JPEG 2000) are decoded by PDF.js's JavaScript decoders beside it, never by
+// WebAssembly, so the page needs no file type a static host might not serve.
 import type { Recording } from './format.ts';
 
 /** A page as the shell has it: drawn (a picture and its size in pixels), being drawn, or not drawable, and why. */
@@ -11,16 +12,16 @@ export type PdfDrawn = { kind: 'drawn'; url: string; w: number; h: number } | { 
 
 type PdfPageProxy = { getViewport(options: { scale: number }): { width: number; height: number }; render(options: { canvas: HTMLCanvasElement; viewport: unknown }): { promise: Promise<void> } };
 type PdfDocument = { numPages: number; getPage(page: number): Promise<PdfPageProxy> };
-type PdfLibrary = { GlobalWorkerOptions: { workerSrc: string }; getDocument(options: { data: Uint8Array; enableXfa: boolean }): { promise: Promise<PdfDocument> } };
+type PdfLibrary = { GlobalWorkerOptions: { workerSrc: string }; getDocument(options: { data: Uint8Array; enableXfa: boolean; useWasm: boolean; wasmUrl: string }): { promise: Promise<PdfDocument> } };
 
 /** How wide a page is drawn, in pixels: sharp across a wide panel on a dense screen. */
 const PDF_WIDTH = 1600;
 
 let pdfLibrary: Promise<PdfLibrary> | undefined;
+const pdfAt = () => new URL('pdfjs/', document.baseURI).href;
 const loadPdfLibrary = (): Promise<PdfLibrary> => (pdfLibrary ??= (async () => {
-  const at = new URL('pdfjs/', document.baseURI).href;
-  const library = await import(`${at}pdf.min.js`) as PdfLibrary;
-  library.GlobalWorkerOptions.workerSrc = `${at}pdf.worker.min.js`;
+  const library = await import(`${pdfAt()}pdf.min.js`) as PdfLibrary;
+  library.GlobalWorkerOptions.workerSrc = `${pdfAt()}pdf.worker.min.js`;
   return library;
 })());
 
@@ -45,7 +46,7 @@ export function pdfDrawer(recording: Recording, drawn: () => void): (sha: string
     const library = await loadPdfLibrary().catch((error: unknown) => {
       throw new Error(location.protocol === 'file:' ? 'PDF.js cannot load in a page opened from a file; open the viewer from a web server' : `PDF.js did not load (${error instanceof Error ? error.message : String(error)})`);
     });
-    return library.getDocument({ data: await blobBytes(recording, sha), enableXfa: false }).promise;
+    return library.getDocument({ data: await blobBytes(recording, sha), enableXfa: false, useWasm: false, wasmUrl: `${pdfAt()}wasm/` }).promise;
   })()).get(sha)!;
   return (sha, page) => {
     const key = `${sha}#${page}`;
