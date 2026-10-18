@@ -4,7 +4,7 @@
 // and that each example folder is a question, files with their sources and checks, and a README. Without ffmpeg and
 // pdftoppm the runs skip.
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { exampleAt, fileName, inputOf, INSTRUCTIONS, skills } from './vision-agent/agent.ts';
 import { argvFor, options } from './vision-agent/run.ts';
-import { jevOptionsOf } from './vision-agent/live.ts';
+import { jevKeyOf, jevOptionsOf, liveParts, missingKeys, namedModels, preflight } from './vision-agent/live.ts';
 import { demo } from '@parcha/agentrun-reference';
 
 const PROGRAMS = (() => { try { for (const cmd of ['ffmpeg', 'ffprobe', 'pdftoppm']) execFileSync(cmd, [cmd === 'pdftoppm' ? '-v' : '-version'], { stdio: 'ignore' }); return false; } catch { return 'ffmpeg, ffprobe and pdftoppm are needed'; } })();
@@ -67,6 +67,77 @@ test('Jev goes through the gateway\'s /typesafe when a gateway is set, else TYPE
   assert.equal('baseURL' in jevOptionsOf(key), false, 'no gateway and no base: the SDK\'s own address');
   assert.equal(jevOptionsOf(key).apiKey, 'not-a-secret');
   assert.ok(options.spec.keys.some((entry) => entry.env === 'TYPESAFE_BASE_URL'), 'declared, so a live child gets it');
+});
+
+// A live run's keys, told before anything starts. Every value here is a made-up string: no network, no model.
+const GATEWAY = { VIDEO_MODEL_BASE_URL: 'https://gateway.invalid/v1', VIDEO_MODEL_API_KEY: 'not-a-secret-gateway' };
+const live = ['examples/document-check', '--live'];
+
+test('a gateway serves the lead, the eyes and Jev: with no TYPESAFE_API_KEY its key is Jev\'s, and the preflight passes', () => {
+  assert.deepEqual(missingKeys(GATEWAY), []);
+  assert.equal(preflight(live, GATEWAY), undefined);
+  assert.equal(jevKeyOf(GATEWAY), 'not-a-secret-gateway');
+  assert.equal(jevOptionsOf(GATEWAY).apiKey, 'not-a-secret-gateway');
+  assert.equal(jevOptionsOf({ ...GATEWAY, TYPESAFE_API_KEY: 'not-a-secret-jev' }).apiKey, 'not-a-secret-jev', 'TypeSafe\'s own key wins when it is given');
+  assert.deepEqual(missingKeys({ ...GATEWAY, TYPESAFE_API_KEY: 'not-a-secret-jev' }), []);
+  assert.equal(jevKeyOf({ VIDEO_MODEL_API_KEY: 'not-a-secret-gateway' }), undefined, 'a gateway key without a gateway is no key for TypeSafe');
+});
+
+test('no gateway: Jev needs TYPESAFE_API_KEY, each provider the run uses needs its key, and the message names exactly what is missing', () => {
+  const ok = { TYPESAFE_API_KEY: 'not-a-secret-jev', GEMINI_API_KEY: 'not-a-secret-google' };
+  assert.deepEqual(missingKeys(ok), []);
+  assert.equal(preflight(live, ok), undefined);
+  const noJev = preflight(live, { GEMINI_API_KEY: 'not-a-secret-google' });
+  assert.match(noJev, /^--live is missing TYPESAFE_API_KEY \(typesafe\.ai: Jev judges the frames and pages and draws the boxes\)\. SETUP-PROMPT\.md says where to get it\.$/);
+  assert.ok(!/GEMINI_API_KEY|VIDEO_MODEL/.test(noJev), 'a key it has is not named');
+  const nothing = preflight(live, {});
+  assert.match(nothing, /TYPESAFE_API_KEY/);
+  assert.match(nothing, /OPENAI_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY\) or a gateway \(VIDEO_MODEL_BASE_URL and VIDEO_MODEL_API_KEY\)/);
+  assert.match(nothing, /where to get them\.$/);
+});
+
+test('a missing lead or eyes key names the key, the role and the model; flags choose what is checked', () => {
+  const jev = { TYPESAFE_API_KEY: 'not-a-secret-jev' };
+  assert.match(preflight([...live, '--model', 'anthropic/claude-haiku-5-5'], { ...jev, GEMINI_API_KEY: 'not-a-secret-google' }), /^--live is missing ANTHROPIC_API_KEY \(the lead anthropic\/claude-haiku-5-5\)\./);
+  assert.match(preflight([...live, '--eyes-model', 'openai/gpt-6-sol'], { ...jev, GEMINI_API_KEY: 'not-a-secret-google' }), /^--live is missing OPENAI_API_KEY \(the eyes openai\/gpt-6-sol\)\./);
+  assert.match(preflight([...live, '--model', 'openai/a', '--eyes-model', 'openai/b'], jev), /^--live is missing OPENAI_API_KEY \(the lead openai\/a and the eyes openai\/b\)\./, 'one key, both its roles');
+  assert.match(preflight([...live, '--provider', 'openai', '--model', 'gpt-6-luna'], jev), /^--live is missing OPENAI_API_KEY \(the lead openai\/gpt-6-luna\); a key for the eyes \(OPENAI_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY\) or a gateway/, 'the lead named, the eyes with no key to choose from');
+  assert.deepEqual(namedModels({ provider: 'openai', model: 'gpt-6-luna' }), { lead: 'openai/gpt-6-luna' });
+  assert.deepEqual(namedModels({ model: 'google/x', eyesModel: 'google/y' }), { lead: 'google/x', eyes: 'google/y' });
+  assert.match(preflight([...live, '--model', 'nowhere/x'], jev), /^a model is named provider\/id with a provider of openai, google, anthropic; nowhere\/x is not$/, 'a model named wrongly is its own error, not a missing key');
+  assert.equal(preflight([...live, '--model', 'openai/gpt-6-luna'], { ...jev, OPENAI_API_KEY: 'not-a-secret-openai', GEMINI_API_KEY: 'not-a-secret-google' }), undefined);
+});
+
+test('a gateway without its key names VIDEO_MODEL_API_KEY, and a run that is not live, or is a child of one, is not checked', () => {
+  const lacking = preflight(live, { VIDEO_MODEL_BASE_URL: 'https://gateway.invalid/v1' });
+  assert.match(lacking, /^--live is missing VIDEO_MODEL_API_KEY \(the gateway's credential/);
+  assert.ok(!/TYPESAFE_API_KEY/.test(lacking), 'a gateway needs only its own key');
+  assert.equal(preflight(['examples/document-check'], {}), undefined, 'a run on fakes needs no key');
+  assert.equal(preflight(['--live', '--child'], {}), undefined, 'the supervisor has checked');
+  assert.equal(preflight(['--record', 'r', '--max-usd', '1'], {}), undefined);
+});
+
+/** run.ts as the command line starts it, with exactly `env` (so no key of this machine leaks in), in a directory of its own. */
+function command(dir, args, env) {
+  return spawnSync(process.execPath, ['--no-warnings=ExperimentalWarning', join(import.meta.dirname, 'vision-agent', 'run.ts'), ...args], { cwd: dir, env: { PATH: process.env.PATH, HOME: dir, TMPDIR: dir, ...env }, encoding: 'utf8', timeout: 120_000 });
+}
+
+test('a live run without its keys stops with the message and a failing code, and leaves nothing: no recording, no run directory, no cost line', async (t) => {
+  const dir = await scratch(t);
+  const record = join(dir, 'recording');
+  const ran = command(dir, ['examples/document-check', '--live', '--record', record].map((arg) => (arg.startsWith('examples/') ? join(import.meta.dirname, '..', arg) : arg)), {});
+  assert.notEqual(ran.status, 0);
+  assert.match(ran.stderr, /^--live is missing TYPESAFE_API_KEY .*; .*or a gateway \(VIDEO_MODEL_BASE_URL and VIDEO_MODEL_API_KEY\)\. SETUP-PROMPT\.md says where to get them\.\n$/s);
+  assert.doesNotMatch(`${ran.stdout}${ran.stderr}`, /cost:|recording:|run directory:|stopped:/);
+  assert.deepEqual(readdirSync(dir), [], 'nothing was written: not the recording, not a scratch directory');
+  assert.equal(existsSync(record), false);
+});
+
+test('the live parts build with a gateway and no TYPESAFE_API_KEY (Jev under the gateway\'s key), and refuse, naming the key, without one', () => {
+  const parts = liveParts({ env: GATEWAY, models: {} });
+  assert.equal(parts.models.jev, 'typesafe/jev-1.14.0');
+  assert.equal(typeof parts.host.decisions.runJudge, 'function');
+  assert.throws(() => liveParts({ env: { GEMINI_API_KEY: 'not-a-secret-google' }, models: {} }), /^Error: --live is missing TYPESAFE_API_KEY \(typesafe\.ai/);
 });
 
 test('an example folder becomes the run\'s input', () => {
