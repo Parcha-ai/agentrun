@@ -1,0 +1,5 @@
+---
+packages: @parcha/pi-vision
+kind: fix
+---
+A miss reason no longer carries the host's absolute paths. An error from the file system, a program, a provider or a model route names the directory the host ran in (`ENOENT: no such file or directory, lstat '/srv/run/work/shots/gone.png'`, `spawn /usr/local/bin/pdftotext ENOENT (cwd /srv/run/work)`), and that line reached the model, the filed record, the host's `onMiss` and the error `vision.see`, `vision.judge` and `vision.transcribe` throw, so a published recording held a machine's directories. `firstLine` and every miss now cut an absolute path (POSIX, drive-letter or `file:` URL) to its last part: `lstat 'gone.png'`, `spawn pdftotext ENOENT (cwd work)`. A relative path, a link (cut to its origin and path as before) and the slashes of `and/or` or `3/4` are untouched. A bare request path such as `POST /v1/messages` in a provider's error is also cut to its last part.

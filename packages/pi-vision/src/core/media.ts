@@ -12,6 +12,7 @@ import type { ImageProcessor } from "./image.js";
 import { sniffKind, SNIFF_BYTES, type Kind } from "./kinds.js";
 import { SOURCE_BYTES_IN_PROCESS } from "./limits.js";
 import { firstLine, linkSafe, reportMiss, type Miss } from "./misses.js";
+import { pathSafe } from "./paths.js";
 
 /** A look `vision.see` or `vision.judge` could not make, thrown once it is filed and told; the message starts with the code. */
 export class SeeMiss extends Error {
@@ -62,7 +63,7 @@ export const namesMedia = (r: Record<string, unknown>): boolean =>
  *  cancelled read, say), not the source or the model; it rejects with the stop's reason. */
 export async function throwMiss(filing: Filing, tool: string, call: CallContext, cause: Miss, record: LookRecord): Promise<never> {
   if (call.signal?.aborted) throw call.signal.reason;
-  const reason = linkSafe(cause.reason);
+  const reason = pathSafe(linkSafe(cause.reason));
   await reportMiss(filing, tool, record, { ...cause, reason });
   throw new SeeMiss(cause.code, reason);
 }
