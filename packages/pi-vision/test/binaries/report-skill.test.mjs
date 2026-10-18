@@ -559,3 +559,17 @@ test("a document page takes its look from a row's cite as well as a finding's, o
   const alone = await run([helpers, assets, looking, own, render, check]);
   assert.ok(alone.result.ok, alone.result.ok ? "" : alone.result.error.message);
 });
+
+test("an embedded page takes the look cited for that page of its own document, not another document's page of the same number", async () => {
+  const two = data
+    .replace("\nconst report = {", '\nconst lookOther = await look(`report/${page3}`, "other.pdf#page=3", "What else is on this page?");\nconst report = {')
+    .replace('outside: ["talk.mp4"]', 'outside: ["talk.mp4", "other.pdf"]')
+    .replace("  notChecked:", '  rows: [{ id: "o3", label: "Other, page 3", text: "Another document.", cites: [{ file: "other.pdf", page: 3, look: lookOther.key }] }, { id: "p3", label: "Page 3", text: "The rule is set here.", cites: [{ file: "contract.pdf", page: 3, look: lookPage.key }] }],\n  notChecked:');
+  assert.notEqual(two, data);
+  onDisk = "other";
+  const { result, keys } = await run([helpers, assets, looking, two, render, check]);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  assert.equal(keys.length, 4);
+  assert.notEqual(keys[1], keys[3]);
+  assert.match(HTML(), new RegExp(`<a class="cite" href="contract\\.pdf#page=3" data-look="${keys[1]}">open at p\\. 3</a>`), "the embedded page carries its own document's look");
+});

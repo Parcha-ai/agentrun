@@ -168,7 +168,7 @@ looks you made (a `vision.judge` box answer carries its `fragment`; `find` and `
 key one (open) or `routine` (folded). A box belongs to a finding and links back to it; `points` are the three or four key
 points of the answer. When the question names a shape, add `rows` to the report, one for each unit it names:
 `rows: [{ id: "m1", label: "0:00 to 1:00", text: "what the look read there", cites: [{ file: "talk.mp4", t: [0, 60], look: lookTalk.key }] }]`.
-An embedded page takes its look from a cite of that page, in a finding or a row, or from a `look` of its own.
+An embedded page takes its look from a cite of that page of that document, in a finding or a row, or from a `look` of its own.
 
 ```js
 const talk = await frame("talk.mp4", 21.5, "talk-chart");
@@ -231,7 +231,7 @@ const finding = (f) => f.routine
   ? `<details class="finding routine" id="f-${f.id}"><summary>${say(f.title)}</summary>${body(f)}</details>`
   : `<article class="finding" id="f-${f.id}">${body(f)}</article>`;
 const rows = (list) => list.length ? `<ol class="rows">${list.map((r) => `<li class="row" id="r-${esc(r.id)}"><span class="when">${say(r.label)}</span><span class="what">${say(r.text)}</span><span class="cites">${r.cites.map(cite).join(" ")}</span></li>`).join("")}</ol>` : "";
-const docPage = (p) => `<figure class="docpage" id="page-${p.n}"><header><span class="n">p. ${p.n}</span><a class="cite" href="${encodeURIComponent(report.document.file)}#page=${p.n}" data-look="${esc(p.look ?? [...(report.rows ?? []), ...report.findings].flatMap((x) => x.cites).find((c) => c.page === p.n)?.look ?? "")}">open at p. ${p.n}</a></header>${sheet({ ...p, alt: p.alt ?? `Page ${p.n} of ${report.document.file}` })}</figure>`;
+const docPage = (p) => `<figure class="docpage" id="page-${p.n}"><header><span class="n">p. ${p.n}</span><a class="cite" href="${encodeURIComponent(report.document.file)}#page=${p.n}" data-look="${esc(p.look ?? [...(report.rows ?? []), ...report.findings].flatMap((x) => x.cites).find((c) => c.file === report.document.file && c.page === p.n)?.look ?? "")}">open at p. ${p.n}</a></header>${sheet({ ...p, alt: p.alt ?? `Page ${p.n} of ${report.document.file}` })}</figure>`;
 
 const css = `:root{color-scheme:light dark;--bg:#f7f6f2;--fg:#17181a;--mute:#5c6068;--card:#fff;--line:#e2e1db;--accent:#d96a00;--box:#6b4fd8}
 @media (prefers-color-scheme:dark){:root{--bg:#0d0d0f;--fg:#ecebe7;--mute:#a1a5ad;--card:#161618;--line:#2a2b30;--accent:#ff8700;--box:#b4a0ff}}
