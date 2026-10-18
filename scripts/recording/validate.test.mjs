@@ -134,8 +134,12 @@ test('an image stays out of the line: a block holds its blob, never its data', a
   assert.deepEqual([first(await recording(t, { lines: inline })).line, first(await recording(t, { lines: inline })).message.slice(0, 22)], [4, 'holds image data inlin']);
   const dataUrl = events.map((line, index) => (index === 3 ? { ...line, data: { src: 'data:image/png;base64,AAAA' } } : line));
   assert.match(first(await recording(t, { lines: dataUrl })).message, /image data inline/);
-  const long = events.map((line, index) => (index === 3 ? { ...line, data: { frame: 'A'.repeat(5000) } } : line));
-  assert.match(first(await recording(t, { lines: long })).message, /image data inline/);
+  // What is an image is structural: an image block that holds its data. Long base64 anywhere else is data (a store's
+  // chunk, a checkpoint), whatever its length, so a writer never has to cut it up to pass.
+  const long = events.map((line, index) => (index === 3 ? { ...line, data: { frame: 'A'.repeat(5000), chunks: ['A'.repeat(8000)], part: { type: 'chunk', data: 'A'.repeat(6000) } } } : line));
+  assert.deepEqual(validateRecording(await recording(t, { lines: long, started: 2 })), []);
+  const longBlock = events.map((line, index) => (index === 3 ? { ...line, data: { content: [{ type: 'image', mimeType: 'image/png', data: 'A'.repeat(5000) }] } } : line));
+  assert.match(first(await recording(t, { lines: longBlock })).message, /image data inline/);
   const unlisted = events.map((line, index) => (index === 3 ? { ...line, blobs: undefined, data: { content: [block] } } : line));
   assert.match(first(await recording(t, { lines: unlisted })).message, /does not list/);
 });
@@ -194,7 +198,13 @@ test('a restore (3.2): a drop in commit at a generation\'s first snapshot is acc
   const none = await refused(restored);
   assert.equal(none.line, lost.length + 1 + 2);
   assert.match(none.message, /first snapshot is at commit 4, below the 7 already seen.*no transport\.moves restore record( after it)? with checkpoint head 5/);
-  assert.match((await refused([...restored, moves(4, 24)])).message, /checkpoint head 5/);
+  // Draft 37: pi may commit once at open, so a snapshot at the head (4) with the first new commit head + 1 (5) is accepted;
+  // a head below the snapshot's commit, or above the first new commit, is not.
+  assert.deepEqual(validateRecording(await recording(t, { lines: [...restored, moves(4, 24)], started: 2 })), []);
+  assert.match((await refused([...restored, moves(3, 24)])).message, /checkpoint head 5/);
+  assert.match((await refused([...restored, moves(6, 24)])).message, /checkpoint head 5/);
+  const twoAtOpen = [...lost, snap(4, 0, 20, 2), snap(4, 1, 21, 2), durable(6, 0, { t: 22, gen: 2 }), moves(4, 24)];
+  assert.ok(validateRecording(await recording(t, { lines: twoAtOpen, started: 2 })).some(problem => /a restore's head is 4, but the process's first commit is 6/.test(problem.message)), 'head + 2 is more than pi\'s one commit at open');
   assert.ok(validateRecording(await recording(t, { lines: [...restored, moves(5, 24, 2, 'move')], started: 2 })).some(problem => /no transport\.moves restore record( after it)? with checkpoint head 5/.test(problem.message)), 'a move is not a restore');
   // matched by process, not by generation value: the snapshot's gen is an earlier process's, and the record's is whatever the driver says
   assert.deepEqual(validateRecording(await recording(t, { lines: [...restored, moves(5, 24, 3)], started: 2 })), []);
@@ -229,6 +239,17 @@ test('a move: the target\'s record anchors on its snapshot at open (3.2)', async
   const dropped = await run([durable(1, 0), durable(3, 0, { t: 12 }), snap(2, 0, 20, 2), moveAt(3, 3, 0, 22)]);
   assert.ok(dropped.some(problem => /first snapshot is at commit 2, below the 3 already seen/.test(problem.message)));
   assert.ok(dropped.some(problem => /highest commit seen before it is 3; a move keeps one store/.test(problem.message)) || dropped.some(problem => /restore record/.test(problem.message)));
+});
+
+test('draft 37: a restore whose pi committed once at open, snapshot at head 9: the record at commit 10 passes, at 11 fails', async t => {
+  // pi-transport's restore mid-turn: process 1 reached commit 12; the store reopens at the checkpoint's head 9 and pi
+  // commits once at open, so process 2's snapshot is at commit 9 and its first new commit, the moves record's, is 10.
+  const first = Array.from({ length: 12 }, (_, n) => durable(n + 1, 0, { t: n + 1 }));
+  const record = commit => durable(commit, 0, { source: 'transport', kind: 'transport.moves', t: 22, gen: 2, data: { doc: 'transport.moves', value: { moves: [{ kind: 'restore', head: 9, checkpoint: { head: 9, sha256: 'a'.repeat(64), bytes: 1, at: 'x' } }] } } });
+  const lines = at => [...first, durable(9, 0, { snapshot: true, t: 20, gen: 2 }), durable(9, 1, { snapshot: true, t: 21, gen: 2 }), record(at), durable(at, 1, { t: 23, gen: 2 })];
+  assert.deepEqual(validateRecording(await recording(t, { lines: lines(10), started: 2 })), []);
+  const late = validateRecording(await recording(t, { lines: lines(11), started: 2 }));
+  assert.ok(late.some(problem => /a restore's head is 9, but the process's first commit is 11/.test(problem.message)), JSON.stringify(late));
 });
 
 test('head is top-level: a move\'s head equals its seal.head, and a replayed restore has no drop', async t => {
