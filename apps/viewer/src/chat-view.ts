@@ -442,7 +442,8 @@ function threadCard(recording: Recording, model: ChatModel, item: ToolItem, fold
     more.addEventListener('click', () => toggle());
     for (const node of rest) fold(node, () => toggle(true));
   }
-  const voice = item.voice && reportEl('p', { class: 'voice' }, ...reportInline(item.voice));
+  // Tagged as the ask, so it never reads as the agent talking.
+  const voice = item.voice && reportEl('p', { class: 'voice' }, reportEl('span', { class: 'voice-tag', text: 'asked' }), reportEl('span', { class: 'voice-text' }, ...reportInline(item.voice)));
   // A step that made looks shows them first; the step itself is a quiet line under them, its result and command a click
   // away.
   if (item.looks.length > 0) {
@@ -728,14 +729,26 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     showSource({ ...(key ? { look: key } : {}), ...(item ? { item } : {}), ...(picture ? { picture } : {}), href, regions: region ? [region] : [] });
   });
 
+  let jumps = 0;
   const scrollToItem = (id: string) => {
     const target = id === 'answer' ? answerNode : nodes.get(id);
     if (!target) return;
+    const jump = ++jumps;
     reveal(target);
     target.scrollIntoView({ block: 'center', behavior: motion() });
     target.classList.remove('flash');
     void target.offsetWidth;
     target.classList.add('flash');
+    // Pictures above the card still to load would move it as they come in: they load now, and once they have, or after
+    // 1.5 s, the card is centred again, once, unless another jump came since.
+    const waiting = [...thread.querySelectorAll<HTMLImageElement>('img')].filter((img) => !img.complete && img.getClientRects().length > 0
+      && (target.contains(img) || (img.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0));
+    if (waiting.length === 0) return;
+    const loaded = waiting.map((img) => new Promise((done) => { img.addEventListener('load', done, { once: true }); img.addEventListener('error', done, { once: true }); }));
+    for (const img of waiting) img.loading = 'eager';
+    void Promise.race([Promise.all(loaded), new Promise((done) => setTimeout(done, 1_500))]).then(() => {
+      if (jump === jumps) target.scrollIntoView({ block: 'center', behavior: motion() });
+    });
   };
 
   // "In the report" on each card whose look the report cites: the report again, at that spot (a phone opens the sheet).

@@ -53,7 +53,8 @@ test("a text-only lead: the eyes answer the agent's question in the image's plac
   assert.equal(record.status, "ok");
   assert.equal(record.body, "Badges: three payment marks.");
   const facts = receiptFacts(record);
-  assert.deepEqual(Object.keys(facts), ["original", "shown", "shown_blocks", "shown_bytes", "sha256", "kind", "key", "tokens_in", "tokens_out", "cost_usd"], "an empty fragment (the whole file) is left out");
+  assert.deepEqual(Object.keys(facts), ["original", "shown", "shown_blocks", "shown_bytes", "sha256", "kind", "key", "tokens_in", "tokens_out", "cost_usd", "startedAt"], "an empty fragment (the whole file) is left out; the request's start is a fact, and no tool call was named");
+  assert.ok(Number.isInteger(facts.startedAt) && Math.abs(Date.now() - facts.startedAt) < 60_000, "the milliseconds the request began");
   assert.deepEqual([facts.original, facts.shown, facts.shown_blocks, facts.shown_bytes, facts.sha256, facts.kind], ["40x30", "40x30", 1, shot(media).content[1].data.length, media.sha256, "image"]);
   assert.deepEqual([facts.tokens_in, facts.tokens_out], [1200, 30]);
   assert.ok(Math.abs(facts.cost_usd - (1200 * 1 + 30 * 4) / 1e6) < 1e-12);

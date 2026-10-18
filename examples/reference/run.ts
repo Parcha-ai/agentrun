@@ -10,12 +10,12 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import type { FixturePage } from '@parcha/pi-browser/testing';
-import { placeAt, run, type RunResult } from './assemble.ts';
-import { localHost, type BrowserPlane, type LocalHost, type RunPlace, type StatusEvent } from './host.ts';
+import { placeAt, run, type RunResult } from '@parcha/agentrun-reference';
+import { localHost, type BrowserPlane, type LocalHost, type RunPlace, type StatusEvent } from '@parcha/agentrun-reference';
 import { fakes, job } from './job.ts';
-import { cost } from './fold.ts';
-import { codeOf, finishRecording, openRecorder, openSupervisor } from './record.ts';
-import { packageCommitRecorder } from './record-store.ts';
+import { cost } from '@parcha/agentrun-reference';
+import { codeOf, finishRecording, openRecorder, openSupervisor } from '@parcha/agentrun-reference';
+import { packageCommitRecorder } from '@parcha/agentrun-reference';
 
 /** The run as one value: what the workflow returned, what each package did, what was spent, every fake call. */
 export function summary(place: RunPlace, result: RunResult, local: LocalHost) {

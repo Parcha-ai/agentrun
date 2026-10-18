@@ -17,6 +17,7 @@ import type { Kind } from "./kinds.js";
 import { SOURCE_BYTES_IN_PROCESS, type Limits } from "./limits.js";
 import { firstLine, linkSafe, MISS_ACTION, refusal, reportMiss } from "./misses.js";
 import { pathSafe } from "./paths.js";
+import { lookTiming } from "./timing.js";
 import { PACKAGE_KINDS } from "./readers.js";
 import type { Fit } from "./plan.js";
 import type { Provider, ProviderSource } from "./provider.js";
@@ -238,16 +239,18 @@ async function readRecording(scheme: string, id: string, handle: string, raw: Re
   const window = fromS !== undefined || toS !== undefined ? ` (${fromS ?? 0}s\u2013${toS !== undefined ? `${toS}s` : "end"})` : "";
   const sha256 = createHash("sha256").update(handle).digest("hex");
   const fragment = window ? formatFragment({ t: { from: fromS ?? 0, ...(toS !== undefined ? { to: toS } : {}) } }) : "";
+  // When this call's request to the source began; none when the answer is read back.
+  let startedAt: number | undefined;
   const record = (model: string, status: "ok" | "failed", body: string, paid?: { readonly costUsd: number; readonly billedBy: string }, kept?: boolean): LookRecord => ({
     tool: "look", args: { path: handle, ...(ask ? { ask } : {}), ...(fromS !== undefined ? { from_s: fromS } : {}), ...(toS !== undefined ? { to_s: toS } : {}), via: source.via, native: false, model },
-    status, facts: { sha256, kind: "recording", fragment, key: lookKey({ sha256, fragment, ask, model }), ...(paid ? { cost_usd: paid.costUsd, provider: paid.billedBy } : {}), ...(kept ? { kept: true } : {}) }, body,
+    status, facts: { sha256, kind: "recording", fragment, key: lookKey({ sha256, fragment, ask, model }), ...(paid ? { cost_usd: paid.costUsd, provider: paid.billedBy } : {}), ...(kept ? { kept: true } : {}), ...lookTiming(call, startedAt) }, body,
   });
   // A source that threw may have been billed at a price nobody knows; one that answered with no words names its price.
   let unanswered: LookRecord | undefined;
   try {
     // The reviewer's answer is kept as the eyes' is, before the result that reports it.
     const key = lookKey({ sha256, fragment, ask, model: source.via });
-    const { answer: look, readBack } = await keptAnswer(call.memo, key, () => source.look!({ id, ask: ask ?? DESCRIBE_ASK, ...(fromS !== undefined ? { fromS } : {}), ...(toS !== undefined ? { toS } : {}) }, call.signal ?? new AbortController().signal));
+    const { answer: look, readBack } = await keptAnswer(call.memo, key, () => { startedAt = Date.now(); return source.look!({ id, ask: ask ?? DESCRIBE_ASK, ...(fromS !== undefined ? { fromS } : {}), ...(toS !== undefined ? { toS } : {}) }, call.signal ?? new AbortController().signal); });
     const paid = { costUsd: look.costUsd, billedBy: look.billedBy ?? source.via };
     // An answer with no words is a look that failed, as the eyes' is, at the price it was answered for.
     if (!look.text.trim()) { unanswered = record("none", "failed", "", paid, readBack); throw new Error(`the recording reviewer ${look.model} via ${source.via} returned no text`); }

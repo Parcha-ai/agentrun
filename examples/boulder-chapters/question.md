@@ -1,0 +1,1 @@
+Watch this film and cut it into chapters. For each chapter, give it a short title, say where it starts and ends, say in one line what happens in it, and show a frame that stands for it. Cite the moments of the film each chapter rests on.

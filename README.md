@@ -87,7 +87,7 @@ npm run build
 npm run demo:reference
 ```
 
-[`examples/reference/`](examples/reference/README.md) has the job and the code. [What a host supplies](docs/reference-host.md)
+[`examples/reference/`](examples/reference/) has the job; the host is the package [`@parcha/agentrun-reference`](packages/reference/README.md). [What a host supplies](docs/reference-host.md)
 lists the seven functions the packages ask a host for, the install order and why, and what the example does not do yet.
 
 ## What a workflow looks like

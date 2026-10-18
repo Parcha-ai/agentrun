@@ -484,13 +484,13 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   // A step that ran a command or a script and made no look and no picture is plumbing.
   for (const [callId, item] of toolItems) if (commands.has(callId) && !item.calls.some((call) => call.look) && item.media.length === 0) item.plumbing = true;
 
-  // A step that nothing the agent thought or wrote leads into, and that made a look, speaks for itself with what the
-  // look asked; its result is a log, never a voice.
+  // A step that nothing the agent thought or wrote leads into speaks for itself with what a look of it asked in words;
+  // a step whose looks asked nothing in words has no voice (a look's line and a call's result are logs, never a voice).
   for (const thread of ordered) thread.items.forEach((item, index) => {
     const before = thread.items[index - 1];
     if (item.kind !== 'tool' || before?.kind === 'thinking' || before?.kind === 'assistant') return;
-    const look = item.calls.find((call) => call.look);
-    if (look) item.voice = look.ask ?? look.label;
+    const asked = item.calls.find((call) => call.look && call.ask)?.ask;
+    if (asked) item.voice = asked;
   });
 
   // The run's answer: its cited result, each cite on the look (and the card) that made it; else the result record it

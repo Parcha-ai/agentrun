@@ -4,12 +4,12 @@
 
 /** The media type of a blob file's extension. */
 export const MIME: Record<string, string> = {
-  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', webm: 'video/webm',
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', webm: 'video/webm', mp4: 'video/mp4',
   json: 'application/json', html: 'text/html', md: 'text/markdown', txt: 'text/plain', pdf: 'application/pdf',
   sqlite: 'application/vnd.sqlite3', css: 'text/css',
 };
 export const typeOfName = (name: string): string | undefined => MIME[name.split('.').at(-1)?.toLowerCase() ?? ''];
 
-const PASSIVE = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'video/webm', 'application/json', 'text/plain', 'text/markdown', 'application/pdf']);
+const PASSIVE = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'video/webm', 'video/mp4', 'application/json', 'text/plain', 'text/markdown', 'application/pdf']);
 /** Whether a blob of this type may open in a tab of the viewer's origin: never a page, an SVG or an unknown type. */
 export const opensInPage = (type: string | undefined): boolean => type !== undefined && PASSIVE.has(type.split(';')[0]!.trim().toLowerCase());

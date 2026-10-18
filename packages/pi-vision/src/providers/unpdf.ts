@@ -1,9 +1,9 @@
-// PDF text with nothing installed: pdf.js through `unpdf`, in a worker thread with a time and heap cap, so a file built
+// PDF text with nothing installed: pdf.js through `unpdf`, in a child process with a time and heap cap, so a file built
 // to run a reader out of either ends in a typed miss and never takes the host with it. It reads the page sizes, producer
 // and creator in the same pass.
 import { PDF_TEXT_TIMEOUT_MS, PDF_WORKER_MEMORY_MB, PdfProviderError, readPdfBytes, resolvePdfDependency, runPdfWorker, type PdfInfo, type PdfProvider } from "../core/pdf.js";
 
-/** The worker's script: the document's text by page, then each page's size and the document's own metadata. It takes
+/** The engine's script: the document's text by page, then each page's size and the document's own metadata. It takes
  *  its built-in modules from the process, so it runs the same whether the host's eval is CommonJS or ESM. */
 const SCRIPT = `
 const { parentPort, workerData: d } = process.getBuiltinModule("node:worker_threads");

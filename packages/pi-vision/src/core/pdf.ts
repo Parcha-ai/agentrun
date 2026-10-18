@@ -1,14 +1,14 @@
 // PDF: the free facts (pages, their sizes, which carry a text layer, producer, creator, saved revisions, signatures),
 // text by page, and a page rendered at a dpi. Zero install: `unpdf` for text and PDFium (WASM) for pages, each in a
-// worker thread with a time and memory cap, since a hostile file can run a reader out of time or memory; poppler when
+// child process with a time and memory cap, since a hostile file can run a reader out of time or memory; poppler when
 // the environment has it. Providers are tried in the order the host lists them: the first that reads the file wins, a
 // failure falls to the next, and every result names the provider and version that made it (`derive.ts`). The text of a
 // PDF held in memory is what a browser's fetch takes for a fetched document.
 
 import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { Worker } from "node:worker_threads";
 import { derivations, derivedName, ProviderMiss, viaProviders, type DeriveContext, type DeriveMiss, type DeriveOutcome } from "./derive.js";
 import { visionContext } from "./env.js";
 import { SOURCE_BYTES_IN_PROCESS } from "./limits.js";
@@ -63,30 +63,46 @@ export type PdfContext = DeriveContext;
 /** What a worker may use: milliseconds and megabytes of heap, and the signal that stops it. */
 export type PdfWorkerCaps = { readonly timeoutMs: number; readonly memoryMb: number; readonly signal?: AbortSignal };
 
-/** Runs `script`, plain JavaScript with no `require` or `import` statement, in a worker thread with `input` as its
- *  `workerData`. The script posts `{ value }` or `{ error: { name, message } }` once. A worker that runs out of time or
- *  heap is terminated and the call is an `over_budget` error. The script is a string, so a bundled host carries it. */
+const ENGINE = `
+const { Worker } = process.getBuiltinModule("node:worker_threads");
+process.once("disconnect", () => process.exit(1));
+process.once("message", ({ script, input }) => {
+  const worker = new Worker(script, { eval: true, workerData: input, env: {}, stdout: true, stderr: true, execArgv: [], transferList: [...new Set(Object.values(input).filter(ArrayBuffer.isView).map((view) => view.buffer))] });
+  worker.stdout.resume();
+  worker.stderr.resume();
+  let replied = false;
+  const reply = (message) => { if (!replied) { replied = true; process.send(message, () => process.exit(0)); } };
+  worker.once("message", reply);
+  worker.once("error", (error) => reply(error.code === "ERR_WORKER_OUT_OF_MEMORY" ? { memory: true } : { error: { name: error.name, message: String(error.message) } }));
+  worker.once("exit", () => reply({ error: { name: "Error", message: "the PDF engine's worker stopped" } }));
+});
+`;
+
+/** Runs `script`, plain JavaScript with no `require` or `import` statement, in a worker thread of a child process of its
+ *  own, with `input` as its `workerData`. The script posts `{ value }` or `{ error: { name, message } }` once. A file can
+ *  make an engine run out of heap past the point where V8 can still stop one thread, and V8 then aborts the whole
+ *  process: that ends the child, never the host. A child that runs out of time or heap is killed and the call is an
+ *  `over_budget` error; one that cannot be started is a `needs` error. The child has no environment variables, no output
+ *  and no way to outlive its host. The script is a string, so a bundled host carries it. */
 export function runPdfWorker<T>(script: string, input: Record<string, unknown>, caps: PdfWorkerCaps): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     if (caps.signal?.aborted) return reject(caps.signal.reason);
-    // The worker gets no environment variables (a file it reads cannot reach the host's keys) and its output is dropped.
-    const worker = new Worker(script, { eval: true, workerData: input, env: {}, stdout: true, stderr: true, resourceLimits: { maxOldGenerationSizeMb: caps.memoryMb } });
-    worker.stdout.resume();
-    worker.stderr.resume();
+    const child = spawn(process.execPath, [`--max-old-space-size=${Math.floor(caps.memoryMb)}`, "-e", ENGINE], { env: {}, stdio: ["ignore", "ignore", "ignore", "ipc"], serialization: "advanced", windowsHide: true });
     const end = (settle: () => void) => {
       clearTimeout(timer);
       caps.signal?.removeEventListener("abort", onAbort);
-      void worker.terminate();
+      child.kill("SIGKILL");
       settle();
     };
+    const memory = () => new ProviderMiss("over_budget", `the PDF engine needed more than ${caps.memoryMb} MB`);
     const onAbort = () => end(() => reject(caps.signal!.reason));
     const timer = setTimeout(() => end(() => reject(new ProviderMiss("over_budget", `the PDF engine did not finish within ${Number((caps.timeoutMs / 1000).toFixed(2))} s`))), caps.timeoutMs);
     caps.signal?.addEventListener("abort", onAbort, { once: true });
-    worker.once("message", (m: { value?: T; error?: { name?: string; message?: string } }) =>
-      end(() => (m.error ? reject(Object.assign(new Error(m.error.message), { name: m.error.name })) : resolve(m.value as T))));
-    worker.once("error", (error: Error & { code?: string }) =>
-      end(() => reject(error.code === "ERR_WORKER_OUT_OF_MEMORY" ? new ProviderMiss("over_budget", `the PDF engine needed more than ${caps.memoryMb} MB`) : error)));
-    worker.once("exit", (code) => end(() => reject(new Error(`the PDF engine stopped (exit ${code})`))));
+    child.once("error", (error) => end(() => reject(new ProviderMiss("needs", `the PDF engine could not be started (${error.message.split("\n")[0]})`))));
+    child.once("message", (m: { value?: T; memory?: true; error?: { name?: string; message?: string } }) =>
+      end(() => (m.memory ? reject(memory()) : m.error ? reject(Object.assign(new Error(m.error.message), { name: m.error.name })) : resolve(m.value as T))));
+    child.once("exit", (code, signal) => end(() => reject(signal === "SIGABRT" ? memory() : new Error(`the PDF engine stopped (${signal ?? `exit ${code}`})`))));
+    child.send({ script, input }, (error) => { if (error) end(() => reject(error)); });
   });
 }
 

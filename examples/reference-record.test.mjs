@@ -10,11 +10,11 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import * as validator from '../scripts/recording/validate.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
-import { placeAt, run } from './reference/assemble.ts';
-import { localHost } from './reference/host.ts';
+import { placeAt, run } from '@parcha/agentrun-reference';
+import { localHost } from '@parcha/agentrun-reference';
 import { fakes, job } from './reference/job.ts';
-import { codeOf, finishRecording, moveImages, openRecorder, openSupervisor } from './reference/record.ts';
-import * as scan from './reference/scan.ts';
+import { codeOf, finishRecording, moveImages, openRecorder, openSupervisor } from '../packages/reference/dist/record.js';
+import * as scan from '../packages/reference/dist/scan.js';
 
 const lines = (dir) => readFileSync(join(dir, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
 
@@ -183,11 +183,34 @@ test('a process start sorts before the lines it writes at the same millisecond, 
   assert.deepEqual(lines(circle).map((line) => line.kind), ['process.started', 'kill', 'process.started', 'pi.assistant', 'node.start']);
 });
 
+test('detach stops every watcher, one still being set up included, before it makes the last sync: a line a late watcher writes is synced', async (t) => {
+  const { syncBuiltinESMExports } = await import('node:module');
+  const fs = (await import('node:fs')).default;
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-detach-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'rec');
+  const events = [];
+  const { appendFileSync: appended, openSync: opened } = fs;
+  fs.appendFileSync = (path, ...rest) => { if (String(path).includes('live-')) events.push('append'); return appended(path, ...rest); };
+  fs.openSync = (path, flag, ...rest) => { if (flag === 'r+' && String(path).includes('live-')) events.push('sync'); return opened(path, flag, ...rest); };
+  syncBuiltinESMExports();
+  t.after(() => { fs.appendFileSync = appended; fs.openSync = opened; syncBuiltinESMExports(); });
+  // A commit that names a conversation starts a watcher; its setup takes 150 ms, and it delivers an event the moment it starts.
+  const watch = () => new Promise((resolve) => setTimeout(() => resolve({ start: (listener) => { void listener([{ type: 'turn_start' }]); }, stop: async () => undefined }), 150));
+  const withWatch = async (_input, write) => { write({ channel: 'durable', source: 'workflow', kind: 'agentrun.driver', gen: 1, commit: 1, order: 0, conv: 1, snapshot: true, data: { doc: 'agentrun.driver', value: {} } }); return async () => undefined; };
+  const recorder = openRecorder({ dir, commits: withWatch, watch });
+  await recorder.attach({ session: {}, context: {}, gen: 1 });
+  await recorder.detach();
+  assert.ok(events.includes('append'), 'the late watcher wrote its line');
+  assert.ok(events.lastIndexOf('sync') > events.lastIndexOf('append'), `the last sync came after the last write: ${events.join(',')}`);
+
+});
+
 test('a process killed while it writes a blob never leaves a torn file in blobs/: the bytes go to a temporary file in .spool/ and are renamed whole', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-blob-kill-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const bytes = 'x'.repeat(200_000);
-  const record = new URL('./reference/record.ts', import.meta.url).href;
+  const record = new URL('../packages/reference/dist/record.js', import.meta.url).href;
   // A child that keeps one blob and is SIGKILLed at a point of the write: part-way through the bytes, or after them and before the rename.
   const script = `
     import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
@@ -291,10 +314,12 @@ test('a JWT (a sign-in token) or a Browserbase key in a tool result, a blob or t
   for (const text of [jwt.split('.')[0], 'BROWSERBASE_API_KEY=bb_live_...']) assert.equal(scan.credentialIn(text), undefined, text);
 });
 
-test('one scanner: the validator and the gallery\'s gate use the recorder\'s own', () => {
-  assert.equal(validator.credentialIn, scan.credentialIn);
-  assert.equal(validator.credentialInValue, scan.credentialInValue);
-  // The gate imports the scanner itself, by the same module, and scans each file as the recorder does.
+test('one scanner: the validator and the gallery\'s gate use the recorder\'s own', async () => {
+  // The validator and the gate read the scanner's source (the Pages job has no install); the recorder runs its build.
+  const source = await import('../packages/reference/src/scan.ts');
+  assert.equal(validator.credentialIn, source.credentialIn);
+  assert.equal(validator.credentialInValue, source.credentialInValue);
+  assert.match(readFileSync(new URL('../packages/reference/dist/record.js', import.meta.url), 'utf8'), /^import \{[^}]*\bcredentialInFile\b[^}]*\} from "\.\/scan\.js";$/m);
   const gate = readFileSync(new URL('../scripts/recording/gate.mjs', import.meta.url), 'utf8');
-  assert.match(gate, /^import \{[^}]*\bcredentialInFile\b[^}]*\} from '\.\.\/\.\.\/examples\/reference\/scan\.ts';$/m);
+  assert.match(gate, /^import \{[^}]*\bcredentialInFile\b[^}]*\} from '\.\.\/\.\.\/packages\/reference\/src\/scan\.ts';$/m);
 });

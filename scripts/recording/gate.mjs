@@ -12,7 +12,7 @@ import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chatCard } from '../../apps/viewer/src/chat-extract.ts';
 import { parseLines } from '../../apps/viewer/src/format.ts';
-import { credentialInFile } from '../../examples/reference/scan.ts';
+import { credentialInFile } from '../../packages/reference/src/scan.ts';
 import { validateRecording } from './validate.mjs';
 
 const BLOB = /^([0-9a-f]{64})\.[a-z0-9]+$/;
