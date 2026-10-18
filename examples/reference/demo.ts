@@ -71,6 +71,8 @@ export type DemoOptions = {
   root?: string;
   /** The recovery driver's layout for the run (`v4`: the keyed one); the driver's default when absent. A host's choice, so it is not the job's. */
   layout?: 'v3' | 'v4';
+  /** Keep the run's directory when neither `--dir` nor `--record` is given, and say where it is (`run directory: <path>`): a demo whose result is files there (the hero's `out/snapshot.html`) needs them to outlive the command. */
+  keepRun?: boolean;
 };
 
 export type DemoResult = {
@@ -320,6 +322,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   mkdirSync(recordDir, { recursive: true });
   // The fake browser's backend outlives a killed process: it is served here, and each child reaches it by URL.
   const backend = new FakeBackend({ start: options.fakes.start, pages: options.fakes.pages });
+  options.fakes.backend?.(backend);
   const served = await backend.serve();
   const supervisor = openSupervisor({ dir: recordDir });
   // A label no other run shares, on every box this run makes: cleanup finds these and no others.
@@ -450,7 +453,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     // The backend and the scratch are closed whatever the place did: a place that failed to be made, or to be released, leaves neither open.
     try { await place?.release(); } finally {
       await served.close();
-      if (!values.record && !values.dir) await rm(scratch, { recursive: true, force: true });
+      if (!values.record && !values.dir && !options.keepRun) await rm(scratch, { recursive: true, force: true });
     }
   }
 }
@@ -464,6 +467,7 @@ function summarize(options: DemoOptions, result: DemoResult) {
   if (result.unlanded.length) console.log(`kills that never landed: ${result.unlanded.join(', ')}`);
   console.log(`cost: ${result.usd === null ? 'unknown' : `$${result.usd}`}${result.maxUsd === null ? '' : ` (cap $${result.maxUsd})`}${result.overBudget ? ' — over the cap' : ''}`);
   if (result.recording) console.log(`recording: ${result.recording}`);
+  if (options.keepRun) console.log(`run directory: ${result.dir}`);
 }
 
 /** The demo's `sources.json`: `true` is the one beside `run.ts`; a path is relative to the demo's directory, or to the repository when it starts with `examples/` (as demo.json's schema writes it). */

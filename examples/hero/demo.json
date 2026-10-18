@@ -1,0 +1,32 @@
+{
+  "name": "hero",
+  "title": "Nine Grids Read",
+  "targets": ["local"],
+  "claim": "One agent reads nine grid operators' charts with vision, survives a kill inside a paid call, and pays for each call once.",
+  "models": {
+    "lead": { "needs": ["text", "tools"], "default": "openai/gpt-6-luna" },
+    "eyes": { "needs": ["images"] }
+  },
+  "keys": [
+    {
+      "oneOf": [[
+        { "env": "BROWSERBASE_API_KEY", "required": true, "where": "your Browserbase account (browserbase.com)", "why": "the browser a live run drives: nine sessions on the operators' real dashboards" },
+        { "env": "BROWSERBASE_PROJECT_ID", "required": true, "where": "your Browserbase account (browserbase.com)", "why": "the project the nine sessions belong to" }
+      ]],
+      "why": "a live run's browser is Browserbase, which sandboxes it",
+      "for": "live"
+    }
+  ],
+  "programs": [],
+  "expectedCalls": 36,
+  "expectedCost": 7.5,
+  "kills": [
+    { "point": "effect.kept published", "why": "a published figure is kept and not yet committed, with no other call running: the worst moment for a paid call" }
+  ],
+  "panels": ["workflow-map", "vision"],
+  "sources": "examples/hero/sources.json",
+  "tools": [
+    { "name": "published", "local": "fakes", "hosted": null }
+  ],
+  "input": { "shape": "examples/hero/job.ts, Input" }
+}
