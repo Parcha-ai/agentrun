@@ -2,7 +2,7 @@
 // one's manifest and blob paths, gallery.js embeds nothing, and the page fetches a recording when it is opened.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -10,6 +10,10 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
+import { chatCard, chatRunInput, chatTitle } from '../src/chat-extract.ts';
+import { parseLines, type Manifest } from '../src/format.ts';
+
+const opened = (dir: string) => ({ manifest: JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')) as Manifest, lines: parseLines(readFileSync(join(dir, 'events.jsonl'), 'utf8')) });
 
 const chrome = process.env.CHROME_PATH ?? '/usr/bin/google-chrome';
 const fixtures = new URL('fixtures/', import.meta.url).pathname;
@@ -37,6 +41,25 @@ test('the index lists each recording with its manifest and blob paths, and galle
   build(embedded, fixtures);
   assert.ok(readFileSync(join(embedded, 'gallery.js'), 'utf8').startsWith('window.AGENTRUN_GALLERY = ['));
   assert.ok(!existsSync(join(embedded, 'recordings', 'index.json')));
+});
+
+test("each run's card comes from the run itself, its place and poster from the lock: a poster only when the run holds that image", (t) => {
+  const out = mkdtempSync(join(tmpdir(), 'viewer-files-'));
+  t.after(() => rmSync(out, { recursive: true, force: true }));
+  const image = readdirSync(join(fixtures, 'chat-hear-and-find', 'blobs')).find((name) => /\.(png|jpe?g|webp)$/.test(name))!.split('.')[0]!;
+  const lock = join(out, '..', `${out.split('/').at(-1)}.lock.json`);
+  t.after(() => rmSync(lock, { force: true }));
+  writeFileSync(lock, JSON.stringify({ asset: 'recordings.tar', sha256: '0', ids: [{ id: 'chat-hear-and-find', poster: image }, { id: 'chat-artifact', poster: image }, 'reference-killed'] }));
+  build(out, fixtures, { files: true, lock });
+  const index = JSON.parse(readFileSync(join(out, 'recordings', 'index.json'), 'utf8')) as { id: string; manifest: Manifest; card: { title: string; line?: string; poster?: string; rank?: number } }[];
+  const card = (id: string) => index.find((entry) => entry.id === id)!.card;
+  const hear = opened(join(fixtures, 'chat-hear-and-find'));
+  assert.deepEqual(card('chat-hear-and-find'), { ...chatCard(hear), poster: image, rank: 0 }, "the chat view's own title and question");
+  assert.equal(card('chat-hear-and-find').title, chatTitle(hear.manifest, chatRunInput(hear.lines)));
+  assert.equal(card('chat-artifact').poster, undefined, 'a poster the run does not hold is left out');
+  assert.equal(card('chat-artifact').rank, 1);
+  assert.equal(card('reference-killed').rank, 2, 'an id with no poster keeps its place');
+  assert.equal(card('disk-takeover').rank, undefined, 'a run the lock does not name has no place in the featured row');
 });
 
 test('served over http: the gallery lists from the index, a run and its bundled baseline open from it with their blobs, and ?src= does without it', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}` }, async (t) => {
