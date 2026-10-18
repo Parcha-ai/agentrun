@@ -4,9 +4,12 @@ import { visionContext, type VisionEnv } from "./env.js";
 import type { Kind } from "./kinds.js";
 import { detectOnce, type Capability, type Provider, type ProviderCall, type ProviderSource } from "./provider.js";
 
+/** A derivation that could not be made: the miss code, and the cause the model reads. */
 export type DeriveMiss = { readonly code: MissCode; readonly detail: string };
+/** The derived value, or the typed miss that says why there is none. */
 export type DeriveOutcome<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly miss: DeriveMiss };
 
+/** The codes a provider may throw (`ProviderMiss`); the other `MissCode`s are the core's to name. */
 export type ProviderMissCode = Extract<MissCode, "unreadable" | "over_budget" | "unsupported" | "needs">;
 
 /** What a provider throws for a source it cannot serve, so the miss carries the right code. Any other error is `unreadable`. */
@@ -17,6 +20,7 @@ export class ProviderMiss extends Error {
   }
 }
 
+/** What a derivation runs with: the call's environment, the providers to try, where derived files are kept and the call's signal. */
 export type DeriveContext = {
   readonly env: VisionEnv;
   /** In the order to try them: a binary first, the zero-install provider last. */
@@ -32,6 +36,7 @@ const cause = (error: unknown): string => String((error as Error)?.message ?? er
 export const derivedName = (source: Pick<ProviderSource, "sha256">, provider: Pick<Provider, "name">, version: string, part = ""): string =>
   `${source.sha256.slice(0, 16)}${part}.${provider.name}-${version}`.replace(/[^\w.-]/g, "_");
 
+/** The files one call keeps for its derivations, named by `derivedName`: where one is, what is in it, and a whole write. */
 export type Derivations = {
   /** Where `name` is kept, or null when the host keeps nothing. */
   path(name: string): string | null;
@@ -41,6 +46,7 @@ export type Derivations = {
   keep(name: string, bytes: Uint8Array): Promise<string | null>;
 };
 
+/** The derivation store of one call in `ctx.env`, under `ctx.deriveDir`; with no `deriveDir` nothing is kept. */
 export function derivations(ctx: Pick<DeriveContext, "env" | "deriveDir" | "signal">): Derivations {
   const path = (name: string) => (ctx.deriveDir ? `${ctx.deriveDir}/${name}` : null);
   return {

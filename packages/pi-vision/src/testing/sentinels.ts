@@ -11,6 +11,7 @@ export const SENTINEL_TRANSCRIBER_KEY = "pv-sentinel-stt-key-3f8a1d6c0e2b95b7";
 
 /** The secret parts of a signed link, each a sentinel of its own; their first 16 characters differ, so a finding says which. */
 export const SENTINEL_LINK_SIGNATURE = "pv-sentinel-sig-0d4b9e71a3c85f26e8b7c4a1593d60f2";
+/** The link's token, secret like its signature. */
 export const SENTINEL_LINK_TOKEN = "pv-sentinel-tok-8a15c3f7e0b94d62b7d3a0e96c41f58d";
 
 /** A signed link to `path`. Its origin, path and expiry are no secret; its signature and token are. The host name is
@@ -18,6 +19,7 @@ export const SENTINEL_LINK_TOKEN = "pv-sentinel-tok-8a15c3f7e0b94d62b7d3a0e96c41
 export const signedLink = (path = "reports/statement.pdf"): string =>
   `https://files.sentinel.invalid/${path}?X-Sentinel-Expires=1790000000&X-Sentinel-Signature=${SENTINEL_LINK_SIGNATURE}&token=${SENTINEL_LINK_TOKEN}&page=2`;
 
+/** A signed link to the default path. */
 export const SENTINEL_SIGNED_LINK = signedLink();
 
 /** What a file named after the link carries past its `?`. */

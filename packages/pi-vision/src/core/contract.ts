@@ -61,6 +61,7 @@ export const VISION_TRANSCRIBE = Object.freeze({
 
 /** The static section a host renders once in the system prompt. Nothing live enters it. */
 export const VISION_SECTION_HEADING = "LOOKING AT FILES";
+/** The section's body: what `read` shows for each kind of file, and where the agent looks for many pages or a long video. */
 export const VISION_SECTION_TEXT = "read shows you a file: text for documents and spreadsheets, the image itself for pictures and scans, frames for video. For many pages, a long video or many images, render them with bash (pdftoppm, ffmpeg) and call vision.see from code mode: a vision model answers about them and you get its words and what it cost; vision.judge has Jev give typed answers (a label, a yes or no, a score, where a thing is) for a fraction of a cent. Every look is filed under evidence/ and is citable: cite the receipt, and the place as file#page=N or file#t=seconds.";
 
 /** The section, with the host's addendum after it when there is one. */
@@ -75,4 +76,5 @@ export const MISS_CODES = Object.freeze([
   "no_vision_route", "look_failed", "video_unseeable",
   "over_budget", "needs", "unsupported", "unreadable", "not_ready", "refused",
 ] as const);
+/** One of `MISS_CODES`: the code a miss is named by in a row, a receipt and the model's first line. */
 export type MissCode = (typeof MISS_CODES)[number];

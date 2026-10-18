@@ -299,8 +299,9 @@ function view(state: TransportState, t: number, now: number, providers?: 'real' 
       h('summary', {}, 'Every flight, kill and box, in words'),
       h('h4', {}, 'Flights'),
       state.flights.length === 0 ? h('p', { class: 'empty' }, 'The session has not moved yet.') : h('ol', {}, ...state.flights.map((flight) => flightNode(state, flight))),
-      state.kills.length > 0 && h('h4', {}, 'Kills'),
-      ...(state.kills.length > 0 ? [h('ul', {}, ...state.kills.map((kill) => killNode(state, kill)))] : []),
+      // The kills are marked `durability`, drawn only with `?debug=durability` (PANELS.md, "What a public replay shows").
+      state.kills.length > 0 && h('h4', { class: 'durability' }, 'Kills'),
+      ...(state.kills.length > 0 ? [h('ul', { class: 'durability' }, ...state.kills.map((kill) => killNode(state, kill)))] : []),
       state.waits.length > 0 && h('h4', {}, 'Skipped waiting'),
       ...(state.waits.length > 0 ? [h('ul', {}, ...state.waits.map((wait) => h('li', { class: 'wait' }, `skipped ${seconds(wait.ms)} waiting for ${wait.what} (${wait.environment})`)))] : []),
       h('h4', {}, 'Boxes'),

@@ -244,7 +244,7 @@ function diskView(state: DiskState, context: ViewContext): Node {
     h('div', { class: 'dk-badges' },
       holding && holding.end === undefined && h('span', { class: 'dk-badge ok' }, `generation ${holding.gen} holds the run`),
       holding?.end?.how === 'released' && h('span', { class: 'dk-badge ok' }, `released${holding.sealedSeq !== undefined ? ` · sealed at sequence ${holding.sealedSeq}` : ''}`),
-      holding?.end && holding.end.how !== 'released' && h('span', { class: 'dk-badge red' }, `no holder: generation ${holding.gen} ${holding.end.how === 'killed' ? (holding.end.box ? 'lost its box' : 'was killed') : holding.end.how === 'fenced' ? 'was fenced' : 'was replaced'}`),
+      holding?.end && holding.end.how !== 'released' && h('span', { class: 'dk-badge red durability' }, `no holder: generation ${holding.gen} ${holding.end.how === 'killed' ? (holding.end.box ? 'lost its box' : 'was killed') : holding.end.how === 'fenced' ? 'was fenced' : 'was replaced'}`),
       state.record && h('span', { class: 'dk-badge' }, `run.json: ${state.record.status}, generation ${state.record.generation}`),
       state.incarnations.length > 1 && h('span', { class: 'dk-badge' }, `${state.incarnations.length} claims`)),
     h('div', { class: 'dk-lanes', title: `0 to ${diskTime(horizon)}; now ${diskTime(context.t)}` }, ...state.incarnations.map((each) => diskLane(each, horizon, state.lastT))),

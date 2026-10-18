@@ -25,6 +25,7 @@ export type SeeAnswer = { readonly text: string; readonly model: string; readonl
 
 /** A code-mode global as pi-codemode's `globals` take it: the contract's name and words, and `execute`. */
 export type CodeGlobal<C, A> = C & { execute(request: unknown, context?: { readonly signal?: AbortSignal }): Promise<A> };
+/** `vision.see` as a code-mode global: the contract's words and `execute`, which puts a question about images to the eyes. */
 export type SeeGlobal = CodeGlobal<typeof VISION_SEE, SeeAnswer>;
 
 /** A fitted block on its way to the eyes, with the fragment it came from and the line the eyes are told beside it. */

@@ -14,6 +14,7 @@ import { visionContext, type VisionEnv } from "../core/env.js";
 import { CAPABILITY_METHODS, type Capability, type Cell, type Detection, type MadeBy, type Provider, type ProviderCall, type ProviderSource } from "../core/provider.js";
 import { imageSize, pngBytes } from "./fixtures.js";
 
+/** One source and what each capability must give for it. */
 export type ConformanceFixture = {
   readonly name: string;
   readonly source: ProviderSource;
@@ -27,6 +28,7 @@ export type ConformanceFixture = {
   };
 };
 
+/** What the suite runs: the provider, a twin it must agree with, the environment and the fixtures. */
 export type ConformanceOptions = {
   readonly provider: Provider;
   /** A provider of the same job that must agree with this one on every fixture both can read. */
@@ -43,6 +45,8 @@ export type ConformanceCase = { readonly name: string; run(): Promise<void | { r
 const collapse = (text: string) => text.replace(/\s+/g, " ").trim();
 const within1 = (actual: number, expected: number, what: string) => assert.ok(Math.abs(actual - expected) <= 1, `${what}: ${actual}, expected ${expected} within 1 px`);
 
+/** The conformance cases for `options.provider`, unregistered, so a test can show the suite fails a provider that breaks it.
+ *  `registerProviderConformance` registers them. */
 export function providerConformance(options: ConformanceOptions): ConformanceCase[] {
   const { provider, twin, fixtures } = options;
   const required = options.requireAvailable ?? process.env.PI_VISION_REQUIRE_BINARIES === "1";
@@ -209,6 +213,7 @@ export function registerProviderConformance(options: ConformanceOptions): void {
 /** The fake provider's document: a JSON file of pages, each with its text and its size in points. */
 export type FakeDocument = { readonly pages: readonly { readonly text: string; readonly width: number; readonly height: number }[] };
 
+/** Knobs that make the fake provider disagree with a twin, render the wrong size or be unavailable, so the suite is shown to catch each. */
 export type FakeProviderOptions = {
   readonly name?: string;
   readonly version?: string;
