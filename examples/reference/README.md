@@ -15,6 +15,10 @@ process serves the job's pages as Chrome's proxy, and every other host fails to 
 `-- --box docker` runs the job's tools in a box of `@parcha/pi-transport` (`boxEnv`) while the run's store stays on the
 disk: a local box's workspace is the run's `work/`; a Docker box is a container (`debian:bookworm-slim`, which Docker
 pulls if it is not there) that the job's files are uploaded to. The box is destroyed when the run ends.
+`-- --record <dir>` keeps the run as an `agentrun.recording/1` directory the run viewer (`apps/viewer`) plays. Before
+it finishes one, the recorder scans every line, every text blob and the manifest with `scan.ts`, the one scanner the
+repository's recording validator and the hosted gallery's gate import: a credential's shape or a machine path stops
+it with what it found and where, and the directory is left without a manifest, so it is never a finished recording.
 
 ## The job
 
