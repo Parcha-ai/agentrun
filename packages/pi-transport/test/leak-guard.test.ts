@@ -28,13 +28,15 @@ describe.skipIf(!procAvailable())("the guard that fails a launcher case which le
 			getOrThrow(
 				(await launch(box, "looper", { argv: ["sh", "-c", recording("exec sleep 300")] }, context)) as never,
 			);
-			const marked = await until("the launcher's processes", async () => {
+			await until("the launcher's processes", async () => {
 				const found = carriersOf("PI_TRANSPORT_BOX", box.id);
 				return found.length >= 3 ? found : undefined;
 			});
-			// The box is still there: its supervisor, its watchdog and the program run, and the guard says so.
+			// The box is still there: its supervisor, its watchdog and the program run, and the guard says so. It names what still runs
+			// after its wait, and the shell that started the supervisor exits once it has detached, so any process running now counts.
+			const running = carriersOf("PI_TRANSPORT_BOX", box.id).map(({ pid }) => pid);
 			await expect(assertNothingOfBox(box.id)).rejects.toThrow(
-				new RegExp(`box ${box.id} was destroyed and left: .*${marked[0]!.pid}`),
+				new RegExp(`box ${box.id} was destroyed and left: .*\\b(${running.join("|")}) `),
 			);
 			// It ended what it found, round after round: nothing of the box runs, and a destroy is then clean.
 			await assertNothingOfBox(box.id);
