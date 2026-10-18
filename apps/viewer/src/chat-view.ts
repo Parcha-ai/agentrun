@@ -162,7 +162,20 @@ export type SourceShown = { look?: string; item?: ToolItem; href: string; region
 
 /** What a citation or a card points at: what was found, then the medium with the regions given and no other. A page
  *  address shows that page's own picture, whichever look cites it. */
+/** A call's whole command: shown under what it found, or folded under its look's own view so the picture stays first. */
+function sourceCommand(detail: string, folded: boolean): HTMLElement {
+  const text = reportEl('pre', { text: detail });
+  return folded ? reportEl('details', { class: 'command' }, reportEl('summary', { text: 'Command' }), text)
+    : reportEl('div', { class: 'command' }, reportEl('div', { class: 'kind', text: 'Command' }), text);
+}
+
 function sourceView(recording: Recording, model: ChatModel, shown: SourceShown, back: () => void, pick: (look: string) => void): HTMLElement {
+  const pane = sourceViewOf(recording, model, shown, back, pick);
+  if (shown.item?.detail && shown.look && model.sources[shown.look]) pane.append(sourceCommand(shown.item.detail, true));
+  return pane;
+}
+
+function sourceViewOf(recording: Recording, model: ChatModel, shown: SourceShown, back: () => void, pick: (look: string) => void): HTMLElement {
   const source = shown.look ? model.sources[shown.look] : undefined;
   // The look's own address says what it read; when it names a whole file, the citation's address may say more.
   const kind = source && sourceKindOf(source.href) !== 'other' ? sourceKindOf(source.href) : sourceKindOf(shown.href);
@@ -188,6 +201,7 @@ function sourceView(recording: Recording, model: ChatModel, shown: SourceShown, 
   const decisions = source ? sourceDecisions(source) : [];
   if (said || decisions.length) pane.append(reportEl('div', { class: 'said' }, reportEl('div', { class: 'kind', text: source ? SOURCE_SAID[kind] : 'Result' }),
     said !== '' && reportEl('p', { text: said }), decisions.length > 0 && reportEl('ul', { class: 'decisions' }, ...decisions.map((text) => reportEl('li', { text })))));
+  if (!source && shown.item?.detail) pane.append(sourceCommand(shown.item.detail, false));
   // The other looks the same call made, to switch to.
   const others = (shown.item?.looks ?? []).filter((look) => look !== shown.look && model.sources[look]);
   if (others.length) {

@@ -184,6 +184,8 @@ function writeFixtures(dir: string) {
   writeFileSync(join(plain, 'events.jsonl'), `${untimed.join('\n')}\n`);
 }
 
+/** A command of several lines, as an agent runs one. */
+const COMMAND = 'python3 -c "\nimport json\nprint(json.dumps({\'pages\': 4}))\n"';
 /** A run whose agent speaks between its calls: its words, four calls of one tool, a message the host adds, its words
  *  again. */
 function writeNarrated(dir: string) {
@@ -196,7 +198,9 @@ function writeNarrated(dir: string) {
     pi(3, 'pi.assistant', { role: 'assistant', content: [{ type: 'thinking', thinking: '**Analyzing transcript data**\n\nI am reading page 2 before the others.' }, { type: 'text', text: 'I will read each page in turn.' }, ...[1, 2, 3, 4].map((n) => ({ type: 'toolCall', id: `r${n}`, name: 'read', arguments: { path: 'notes.pdf', page: n } }))] }),
     ...[1, 2, 3, 4].map((n) => pi(3 + n, 'pi.tool-result', { role: 'toolResult', toolCallId: `r${n}`, toolName: 'read', content: [{ type: 'text', text: `Page ${n} says the same.` }], isError: false })),
     pi(8, 'pi.user', { role: 'user', content: 'You stopped without submitting. Call submit.' }),
-    pi(9, 'pi.assistant', { role: 'assistant', content: [{ type: 'thinking', thinking: 'Checking that the four agree\nthey do, line for line.' }, { type: 'text', text: 'All four pages agree.' }] }),
+    pi(9, 'pi.assistant', { role: 'assistant', content: [{ type: 'thinking', thinking: 'Checking that the four agree\nthey do, line for line.' }, { type: 'text', text: 'All four pages agree.' },
+      { type: 'toolCall', id: 'b1', name: 'bash', arguments: { command: COMMAND } }] }),
+    pi(10, 'pi.tool-result', { role: 'toolResult', toolCallId: 'b1', toolName: 'bash', content: [{ type: 'text', text: '{"pages": 4}' }], isError: false }),
   ];
   mkdirSync(join(dir, 'blobs'), { recursive: true });
   const { result: _result, ...rest } = handManifest;
@@ -477,9 +481,20 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       host: [m.querySelector('.host-note .host-who').textContent, m.querySelector('.host-note .host-text').textContent, !!m.querySelector('.host-note').closest('.msg.user')],
       users: [...doc('narrated').querySelectorAll('.msg.user')].map((n) => n.textContent),
       thoughts: [...m.querySelectorAll('.thought')].map((n) => [n.querySelector('.thought-title').textContent, shown(n.querySelector('.thought-title')), n.open, shown(n.querySelector('.thought-body')), n.querySelector('.thought-body').textContent, n.querySelector('.thought-tag').textContent]) }; })()`);
-    assert.deepEqual(narrated, { order: ['who', 'thought', 'said-text', 'steps', 'host-note', 'thought', 'said-text'], said: [['I will read each page in turn.', 0, false], ['All four pages agree.', 0, false]],
-      cards: [false, false, false, true], more: '+ 1 more', host: ['Host', 'You stopped without submitting. Call submit.', false], users: ['YouRead the four pages of notes.pdf.'],
+    assert.deepEqual(narrated, { order: ['who', 'thought', 'said-text', 'steps', 'host-note', 'thought', 'said-text', 'steps'], said: [['I will read each page in turn.', 0, false], ['All four pages agree.', 0, false]],
+      cards: [false, false, false, true, false], more: '+ 1 more', host: ['Host', 'You stopped without submitting. Call submit.', false], users: ['YouRead the four pages of notes.pdf.'],
       thoughts: [['Analyzing transcript data', true, false, false, 'I am reading page 2 before the others.', 'thinking'], ['Checking that the four agree', true, false, false, 'they do, line for line.', 'thinking']] });
+
+    // A card of a command of several lines opens with the whole command under what it found; a card with a look keeps
+    // the look first and its command folded under it.
+    await page.evaluate(`[...doc('narrated').querySelectorAll('.step')].at(-1).querySelector('.step-main').click()`);
+    await until(`!!doc('narrated').querySelector('.src .command pre')`, 'the command in the card\'s pane');
+    assert.deepEqual(await value(`(() => { const c = doc('narrated').querySelector('.src .command'); return [c.tagName, c.querySelector('.kind').textContent, c.querySelector('pre').textContent, shown(c.querySelector('pre'))]; })()`),
+      ['DIV', 'Command', COMMAND, true]);
+    await page.evaluate(`doc('hear').querySelector('.calls').closest('.step').querySelector('.step-main').click()`);
+    await until(`!!doc('hear').querySelector('.src details.command')`, 'the look\'s command, folded');
+    assert.deepEqual(await value(`(() => { const c = doc('hear').querySelector('.src details.command'); return [c.open, c.querySelector('summary').textContent, c.querySelector('pre').textContent.startsWith('const film = '), c.previousElementSibling !== null]; })()`),
+      [false, 'Command', true, true]);
 
     // A judge's look over two photographs that boxed a mark on the second: opened at the first, the box is on the second,
     // in the judge's accent.
