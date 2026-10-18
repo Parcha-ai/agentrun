@@ -26,6 +26,9 @@ export function chatCiteHref(fragment: string, file: string, fallback?: string):
   return /^[a-z]+=/.test(fragment) ? `${file}#${fragment}` : fragment;
 }
 
+/** The node runner's delivery tool: its reply on success is the runner's own, not the run's. */
+const chatRunnerSubmit = 'submit';
+
 const chatClip = (text: string, size: number) => (text.length > size ? `${text.slice(0, size - 1)}…` : text);
 const chatFirstLine = (text: string) => text.split('\n').map((line) => line.trim()).find((line) => line !== '' && !/^<\/?[\w-]+>$/.test(line)) ?? '';
 
@@ -187,7 +190,7 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
         const item = toolItems.get(chatStr(m.toolCallId) ?? '');
         if (!item) continue;
         if (m.isError === true) item.failed = true;
-        item.takeaway = chatClip(item.failed ? chatErrorLine(chatText(m.content)) : chatFirstLine(chatText(m.content)), 220);
+        item.takeaway = item.failed ? chatClip(chatErrorLine(chatText(m.content)), 220) : item.tool === chatRunnerSubmit ? '' : chatClip(chatFirstLine(chatText(m.content)), 220);
         item.media = (line.blobs ?? []).filter((sha) => (recording.blobType(sha) ?? '').startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(recording.blobUrl(sha) ?? ''));
       }
     }

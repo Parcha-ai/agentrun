@@ -53,6 +53,7 @@ test("a run is its input as given, then its recorded conversation: the host's pr
   const called = recording.lines.filter((line) => line.kind === 'tool_execution_start').map((line) => (line.data as { toolName: string }).toolName);
   assert.deepEqual(tools(m).map((card) => card.tool), called);
   for (const card of tools(m)) assert.ok(card.title.startsWith(`${card.tool}`), card.title);
+  assert.equal(tools(m).find((card) => card.tool === 'submit')?.takeaway, '', "the runner's reply to a delivery is not the run's");
   assert.equal(m.title, recording.manifest.title, 'an input with no question titles nothing; the recording does');
 });
 
