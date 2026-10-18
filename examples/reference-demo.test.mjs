@@ -434,6 +434,13 @@ test('a place that cannot lose its machine refuses a box kill, and says which pl
   assert.deepEqual(calls.map((call) => call.call), ['release'], 'refused before anything started or was killed: the run was not stopped first, and no box loss was recorded');
 });
 
+test('a place that can only lose its box is not refused for a run with no kill planned: the refusal is for a kill it cannot make', { timeout: 300_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference' });
+  const calls = [];
+  const result = await demo({ ...options, argv: ['--json', '--record', join(tmp, 'recording')], place: recordingPlace(calls, join(tmp, 'recording'), { kills: ['box'] }) });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+});
+
 test('a kill the place cannot make is recorded as a host line with its code and ends the attempt cleanly: no unhandled rejection, no further attempt', { timeout: 300_000 }, async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-place-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
