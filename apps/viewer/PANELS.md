@@ -143,6 +143,13 @@ names; any other message, origin or field is ignored, and no message carries cod
 
 Without `&parent=`, the viewer still posts, and listens to nothing.
 
+`&hide=durability` (off by default, framed or not) replays a run without its kills and resumes: the page draws no part
+marked `durability`. The shell marks the timeline's process lane (each process, its kill, a restore, the journal's
+opens), the processes, kills, repeated, asked twice and journal opens counters, and leaves out the chapters it would make
+of each process start and kill (a manifest's own chapters stay). A panel marks its own such parts with the class
+`durability`: the vision panel its kill and resume badges and its kept, repeated, asked twice and possible payments
+meters, the workflow map its kills. Without the option the viewer draws them all, as before.
+
 ## A panel in full
 
 ```ts

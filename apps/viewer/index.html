@@ -284,6 +284,8 @@
   .wm-shot { max-width: 100%; border: 1px solid var(--rule); border-radius: 4px; } .wm-facts, .wm-notes { font-size: 13px; }
   .wm-ledger { grid-column: 1 / -1; } .wm-ledger table { border-collapse: collapse; } .wm-ledger th, .wm-ledger td { padding: 3px 14px 3px 0; text-align: left; font-size: 14px; }
   .wm-ledger tr.alarm td { color: var(--failed); font-weight: 600; } .wm-price { font-weight: 600; }
+  /* `&hide=durability`: the parts that tell a kill and a resume (PANELS.md, "Embedding") are not drawn. */
+  .hide-durability .durability { display: none !important; }
 </style>
 </head>
 <body>

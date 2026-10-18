@@ -225,9 +225,10 @@ function wmView(state: WmState, context: { focus?: string; baseline?: BaselineVi
 }
 
 function wmKills(state: WmState): Node {
-  if (state.kills.length === 0) return h('div', { class: 'wm-kills empty' }, 'No kill yet.');
+  // The kills are marked `durability`: an embed with `&hide=durability` hides them (PANELS.md, "Embedding").
+  if (state.kills.length === 0) return h('div', { class: 'wm-kills empty durability' }, 'No kill yet.');
   const shown = state.kills.slice(-6);
-  return h('div', { class: 'wm-kills' },
+  return h('div', { class: 'wm-kills durability' },
     h('span', { class: 'wm-kill-count' }, `${state.kills.length} kill${state.kills.length === 1 ? '' : 's'}`),
     ...shown.map((kill, index) => h('span', { class: 'wm-kill', title: `${kill.label}; cut ${kill.cut.length} branch${kill.cut.length === 1 ? '' : 'es'}` },
       `✕ ${state.kills.length - shown.length + index + 1}: ${kill.label}${kill.cut.length ? ` (cut ${kill.cut.length})` : ''}`)));

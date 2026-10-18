@@ -569,10 +569,11 @@ function visionMetersView(state: VisionState, meters: VisionMeters, following = 
   const stored = (name: string, value: string, title: string, extra = '') => row(name, measured ? value : 'not measured', measured ? title : 'No vision document line in this recording: nothing here can be counted.', extra);
   return h('div', { class: 'vz-meters' },
     stored('looks paid', String(meters.paid), 'Per look key: each answer the eyes filed that is not kept, and once a key whose first answer is kept (paid by a process that died before filing it).'),
-    stored('kept after a kill', String(meters.kept), 'Answers read back from the call\'s memo in a later attempt: no new payment.'),
-    stored('repeated', String(meters.repeated), 'A look key paid again in a later generation.', meters.repeated > 0 ? ' alarm' : ' zero'),
-    meters.askedTwice > 0 && stored('asked twice', String(meters.askedTwice), 'A look key paid twice in one generation.', ' alarm'),
-    row('possible extra payments', `${meters.possible} (observed)`, 'From live lines: a look started in a process that ended without filing it. Its eyes may have answered and been paid; no durable line says.', meters.possible > 0 ? ' alarm' : ''),
+    // What a kill and a resume did is marked `durability`: an embed with `&hide=durability` hides it (PANELS.md, "Embedding").
+    stored('kept after a kill', String(meters.kept), 'Answers read back from the call\'s memo in a later attempt: no new payment.', ' durability'),
+    stored('repeated', String(meters.repeated), 'A look key paid again in a later generation.', meters.repeated > 0 ? ' alarm durability' : ' zero durability'),
+    meters.askedTwice > 0 && stored('asked twice', String(meters.askedTwice), 'A look key paid twice in one generation.', ' alarm durability'),
+    row('possible extra payments', `${meters.possible} (observed)`, 'From live lines: a look started in a process that ended without filing it. Its eyes may have answered and been paid; no durable line says.', meters.possible > 0 ? ' alarm durability' : ' durability'),
     stored('spend', measured ? `${meters.possible > 0 && meters.cost !== null ? 'at least ' : ''}${visionMoney(meters.cost)}` : 'unknown',
       following ? 'A run followed while it goes: its spend is known once it finishes.'
         : `Once per payment, with each failed look's own price; unknown when any is unknown.${meters.possible > 0 ? ' A lower bound: a possible payment is not in it.' : ''}`),
@@ -611,8 +612,8 @@ function visionView(state: VisionState, context: ViewContext): Node {
       state.lead && h('span', { class: 'vz-badge' }, `lead: ${state.lead}`),
       meters.native === 0 && state.looks.length > 0 && h('span', { class: 'vz-badge' }, 'the lead never sees an image'),
       meters.eyes.length > 0 && h('span', { class: 'vz-badge' }, `eyes: ${meters.eyes.join(', ')}`),
-      state.kills.length > 0 && h('span', { class: 'vz-badge red' }, `killed ${state.kills.length === 1 ? 'once' : `${state.kills.length} times`}${state.kills.at(-1)?.label ? `: ${state.kills.at(-1)!.label}` : ''}`),
-      kept > 0 && h('span', { class: 'vz-badge ok' }, `resumed · ${kept} kept`)),
+      state.kills.length > 0 && h('span', { class: 'vz-badge red durability' }, `killed ${state.kills.length === 1 ? 'once' : `${state.kills.length} times`}${state.kills.at(-1)?.label ? `: ${state.kills.at(-1)!.label}` : ''}`),
+      kept > 0 && h('span', { class: 'vz-badge ok durability' }, `resumed · ${kept} kept`)),
     h('div', { class: 'vz-grid' },
       h('div', { class: 'vz-col' }, visionFilm(lanes, state, chosen), visionPages(lanes, state, chosen, boxes), visionPhotos(lanes, chosen, account, context.focus)),
       h('div', { class: 'vz-col' },
