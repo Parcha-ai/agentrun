@@ -258,6 +258,9 @@ export type HostPolicy = {
   afterNode?: (context: HostPolicyContext & { state: Record<string, unknown> }) => Record<string, unknown> | undefined;
 };
 
+/** A still image a judge call carries: the PNG or JPEG file's bytes and the type they are. */
+export type JudgeImage = { bytes: Uint8Array; mime: "image/png" | "image/jpeg" };
+
 export type WorkflowDeps = {
   maxQuestionsPerRequest?: number;
   /** Most UTF-8 bytes of JSON state one judge request may carry (the Jev adapter's `maxStateBytes`
@@ -322,6 +325,12 @@ export type WorkflowDeps = {
     /** The id of this request's decision receipt (`DecisionReceipt.id`): the same request asked again
      *  carries the same id. */
     decisionId?: string;
+    /** Images this call carries, for a judge that reads them (Jev 1.13 and later): each key is a reference written literally in `state` or in a
+     *  question's text, to the file's bytes and type. The interpreter never sets it; a host that asks a judge about an image does, and the judge
+     *  it asks (`createJevRunner` from `@parcha/agentrun-jev`) sends them. */
+    assets?: Record<string, JudgeImage>;
+    /** The model this call asks, over the judge's own default (a Box question needs `jev-1.14.0`). The interpreter never sets it. */
+    model?: string;
   }) => Promise<{ answers: Record<string, SystemOneAnswer>; model?: string | null; usage?: { input_tokens: number; output_tokens: number } | null; cost_usd?: number | null; request_sha256?: string }>;
   /** Records one typed-question request and what its answers decide. It is awaited before the answers
    *  reach state, an event or a branch, so a durable recorder holds every decision the run acted on; a
