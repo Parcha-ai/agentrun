@@ -767,7 +767,8 @@ await openDurableRun(ref, {
   (`--start-grace`, `startGraceMs`; default the lease expiry, 90 s) only while its start mark (`start.json`) is younger
   than the grace. So while the seed runs, the instance rewrites the mark's time every heartbeat, through its claim, when a
   supervisor's mark for generation 1 is there. It does so on a thread of its own, so a seed that holds its thread (a
-  synchronous import through `DatabaseSync`) is covered too. A live seed of any length stays `starting`. A seeder that dies stops
+  synchronous import through `DatabaseSync`) is covered too. A live seed of any length stays `starting`. If the mark
+  can't be rewritten, the instance says so once, as a process warning with code `PDA_START_MARK`. A seeder that dies stops
   rewriting, the grace runs out as for any start, and the claim is revoked. If the claim is revoked while the seed still
   runs, its next write or its barrier is refused, the instance is fenced (exit 75) with nothing published, and the next
   start seeds again.
