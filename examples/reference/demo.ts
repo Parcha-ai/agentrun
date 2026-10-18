@@ -374,6 +374,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   let reading: Promise<void> = Promise.resolve();
   // The slow tick does not queue a read behind one still running (a place's reads can take seconds): the boundary reads, which a result waits for, then wait behind at most one.
   let inflight = false;
+  // A read the supervisor waits for (after a kill, at a process's exit, at the end) is waited for a bounded time: an optional reading never holds supervision up for a place's whole timeout.
+  const settled = (read: Promise<void>, ms = 15_000): Promise<void> => Promise.race([read, new Promise<void>((resolve) => { setTimeout(resolve, ms).unref(); })]);
   const readStatus = (): Promise<void> => {
     if (!place.status) return Promise.resolve();
     reading = reading.then(async () => {
@@ -421,7 +423,8 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       if (previous && !place.kills.includes(previous.kind)) throw new Error(`the ${place.name} place cannot lose its ${previous.kind}: this kill is not one it can make`);
       runner = previous ? (await place.recover(previous.runner, previous.kind, order)).runner : await place.start(order);
       supervisor.host('process.started', { gen, pid: runner.pid });
-      await readStatus();
+      // The reading runs beside the supervision: the kill requests and the spend cap are watched from the start, however slow the place's read is.
+      void readStatus();
       // The supervisor decides when: a crossing asks to be killed (read through the place's signals), or the spend cap is passed. It writes the kill line, and only then does the place kill.
       // A kill the place cannot make is recorded and ends the attempt: it is never an unhandled rejection.
       let killed: { point: string | null; n: number | null; label: string | null; why: string; kind: 'process' | 'box' } | undefined;
@@ -446,7 +449,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
         supervisor.host('kill', { gen, label: killed.label, crossing: killed.point === null ? null : { point: killed.point, n: killed.n }, side: 'child', kind: killed.kind });
         kills.push({ gen, point: killed.point, kind: killed.kind, why: killed.why });
         try { await place.kill(runner!, killed.kind); } catch (error) { failed(String((error as { code?: unknown } | null)?.code ?? 'KILL_FAILED'), String((error as Error | null)?.message ?? error), killed.kind); }
-        await readStatus();
+        await settled(readStatus());
       };
       const iterator = place.signals?.(gen)[Symbol.asyncIterator]();
       const pump = (async () => {
@@ -466,27 +469,28 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       const result: Exit = exit ?? { exit: null, signal: null, stderr: 'the place could not stop this process' };
       clearInterval(watch);
       clearInterval(tick);
-      await readStatus();
+      await settled(readStatus());
       await iterator?.return?.();
       await pump;
       await deciding;
       processes.push(result);
       if (killFailed || (killed && killed.label === 'max-usd')) break;
-      if (killed) { previous = { runner, kind: killed.kind }; continue; }
+      // A tool kill of an attempt that ended in a process kill and did not fire never will (the plan is consumed): it is reported, not carried off with the attempt.
+      const missed = () => { for (const entry of notLanded(plan.tools, log)) unlanded.push('point' in entry ? entry.point : `storm (gap ${entry.gapMs} ms)`); };
+      if (killed) { missed(); previous = { runner, kind: killed.kind }; continue; }
       // A process that died by SIGKILL on its own (a crash, or a kill with no supervisor) is a kill at the last crossing it logged.
       if (result.signal === 'SIGKILL') {
         const at = rows<Crossing>(log).filter((crossing) => crossing.n > 0).at(-1);
         const kind = plan.run?.kind ?? 'process';
         supervisor.host('kill', { gen, label: plan.run && !('storm' in plan.run) ? plan.run.point : at?.point ?? null, crossing: at ? { point: at.point, n: at.n } : null, side: 'child', kind });
         kills.push({ gen, point: at?.point ?? null, kind, why: plan.run?.why ?? 'a kill' });
+        missed();
         previous = { runner, kind };
         continue;
       }
       // The process ended on its own with a kill still planned for it (and any that follow): none of them landed.
-      // A tool kill of this attempt that fired is on the child's log: it landed, however the process then ended.
-      const landed = rows<Crossing>(log).filter((crossing) => crossing.landed).map((crossing) => crossing.point);
       for (const left of [plan, ...remaining]) {
-        const tools = left === plan ? left.tools.filter((entry) => { const at = 'point' in entry ? landed.indexOf(entry.point) : -1; if (at >= 0) landed.splice(at, 1); return at < 0; }) : left.tools;
+        const tools = left === plan ? notLanded(left.tools, log) : left.tools;
         for (const entry of [...(left.run ? [left.run] : []), ...tools]) if ('point' in entry) unlanded.push(entry.point); else unlanded.push(`storm (gap ${entry.gapMs} ms)`);
       }
       break;
@@ -495,7 +499,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     const last = processes.at(-1)?.outcome;
     const delivered = last && last.status === 'complete' && 'record' in last ? { record: last.record } : null;
     if (maxUsd !== null && meterKnown(recordDir) > maxUsd) overBudget = true;
-    await readStatus();
+    await settled(readStatus());
     const processesStarted = processes.length;
     // The demo's result hook, reported by the process that delivered, shapes the result line and its blob; without one, the delivered record is the result.
     const made = processes.at(-1)?.outcome?.result;
@@ -532,6 +536,12 @@ export function plainText(value: unknown): string {
   const text = typeof value === 'string' ? value : JSON.stringify(value) ?? '';
   // A path runs from its `/` to the next `:`, `;`, `,`, quote or end of line, spaces and all: a directory named `Client Files` is not left half in the recording.
   return text.replace(/(?<![\w/:.-])\/[^\n:;,"'`]*/g, '<path>').slice(0, 240);
+}
+
+/** The tool kills of an attempt that did not fire: those the child's log (`landed` rows) does not show. */
+export function notLanded<T extends object>(tools: readonly T[], log: string): T[] {
+  const landed = rows<Crossing>(log).filter((crossing) => crossing.landed).map((crossing) => crossing.point);
+  return tools.filter((entry) => { const at = 'point' in entry ? landed.indexOf(String(entry.point)) : -1; if (at >= 0) landed.splice(at, 1); return at < 0; });
 }
 
 const readEventsOf = (dir: string) => rows<Record<string, unknown>>(join(dir, 'events.jsonl'));
