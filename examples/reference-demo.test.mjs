@@ -1,7 +1,8 @@
 // The reference entry as a demo's platform (item A of the entry brief): the spec's kills list through the supervisor (a named crossing, a storm, a box kind),
 // --input, --max-usd, the browser choice, and the box the job's tools run in. The demo here is the reference job itself, started through demo-fixture.ts.
 import assert from 'node:assert/strict';
-import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1986,6 +1987,142 @@ test('delegation lines are written from place.status() when a delegation appears
   assert.equal(lines(plain, 'delegation').length + lines(plain, 'revoke').length, 0);
 });
 
+// ---- a box place's recording, brought home ------------------------------------------------------------------------------------------------------
+
+/** A place whose child writes its recording in a directory of its own (a box's, here a folder; the child writes the recording's clock there itself, from RECORD_STARTED), and that brings it home the way the seam says: blobs first (hash-checked, temp name, rename), then the new bytes of each spool file up to its last whole line. */
+const boxed = (tmp, { failOn, calls = [], kind = 'process' } = {}) => ({ paths, self, destroyBoxes, requestFile }) => {
+  const inner = localPlace({ self, paths, ...(kind === 'box' ? { destroyBoxes: async () => undefined } : {}), requestFile });
+  const dirs = new Map();
+  const offsets = new Map();
+  let into;
+  const dir = (attempt) => join(tmp, 'box', `record-${attempt}`);
+  const home = {
+    dir,
+    bringHome: async (target, { final = false } = {}) => {
+      calls.push({ final, manifest: existsSync(join(target, 'manifest.json')), attempts: [...dirs.keys()] });
+      const failure = failOn?.({ final, calls: calls.length });
+      if (failure) throw Object.assign(new Error(`the box could not be read at ${tmp}/box: ${failure}`), { code: failure });
+      for (const [attempt, from] of dirs) {
+        const blobs = join(from, 'blobs');
+        for (const name of existsSync(blobs) ? readdirSync(blobs).filter((entry) => !entry.startsWith('.')) : []) {
+          const bytes = readFileSync(join(blobs, name));
+          if (createHash('sha256').update(bytes).digest('hex') !== name.split('.')[0]) throw Object.assign(new Error('a blob does not hash to its name'), { code: 'BLOB_MISMATCH' });
+          mkdirSync(join(target, 'blobs'), { recursive: true });
+          if (!existsSync(join(target, 'blobs', name))) { const temporary = join(target, 'blobs', `.${name}.tmp-${process.pid}`); writeFileSync(temporary, bytes); renameSync(temporary, join(target, 'blobs', name)); }
+        }
+        const spool = join(from, '.spool');
+        for (const name of existsSync(spool) ? readdirSync(spool).filter((entry) => entry.endsWith('.jsonl')) : []) {
+          const text = readFileSync(join(spool, name), 'utf8');
+          const done = offsets.get(`${attempt}/${name}`) ?? 0;
+          const whole = text.slice(0, text.lastIndexOf('\n') + 1);
+          if (whole.length > done) { appendFileSync(join(target, '.spool', name), whole.slice(done)); offsets.set(`${attempt}/${name}`, whole.length); }
+        }
+      }
+    },
+  };
+  const start = async (order) => { into = order.env.RECORD_DIR; const own = dir(order.gen); mkdirSync(own, { recursive: true }); dirs.set(order.gen, own); return { order: { ...order, env: { ...order.env, RECORD_DIR: own } } }; };
+  return {
+    ...inner, recordHome: home,
+    start: async (order) => { const { order: next } = await start(order); return inner.start(next); },
+    recover: async (last, kindOf, order) => { const { order: next } = await start(order); return inner.recover(last, kindOf, next); },
+  };
+};
+
+test('a place with recordHome: the child writes its recording inside the place, the supervisor brings it home each tick and once final before the manifest, blobs first, and the recording validates', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-recordhome-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'spec.json');
+  writeFileSync(file, JSON.stringify({ name: 'reference' }));
+  Object.assign(process.env, { DEMO_SPEC: file, DEMO_RESULT: '1' });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const calls = [];
+  const recording = join(tmp, 'recording');
+  const result = await demo({ ...options, argv: ['--json', '--record', recording], place: boxed(tmp, { calls }) });
+  assert.equal(result.processes.at(-1).outcome.status, 'complete');
+  assert.ok(calls.length >= 1 && calls.at(-1).final === true, 'the last call is the final one');
+  assert.ok(calls.every((call) => call.manifest === false), 'every call, the final one too, is before the manifest');
+  assert.deepEqual(calls.at(-1).attempts, [1]);
+  assert.equal(readFileSync(join(tmp, 'box', 'record-1', '.spool', 'started'), 'utf8'), readFileSync(join(recording, 'manifest.json'), 'utf8') && JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8')).recorded.started, 'the child wrote the recording\'s clock into its own directory from RECORD_STARTED');
+  const lines = readEvents(recording);
+  assert.ok(lines.some((line) => line.source === 'workflow'), 'the child\'s own lines came home');
+  assert.ok(existsSync(join(recording, 'blobs')) && readdirSync(join(recording, 'blobs')).every((name) => !name.startsWith('.')), 'its blobs came home, none left half written');
+  assert.deepEqual(validateRecording(recording), []);
+});
+
+test('recording.carry.failed: a tick that fails is retried, a final failure refuses the recording when the attempt ended on its own, and does not when its box was lost (lost: true, the recording stands)', { timeout: 300_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-carry-failed-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'spec.json');
+  Object.assign(process.env, { DEMO_SPEC: file });
+  t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
+  writeFileSync(file, JSON.stringify({ name: 'reference' }));
+  const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const failed = (recording) => readEvents(recording).filter((line) => line.source === 'host' && line.kind === 'recording.carry.failed');
+  // A tick that fails once: a line, no refusal, and the final call brings everything home.
+  const tick = join(tmp, 'tick');
+  const retried = await demo({ ...options, argv: ['--json', '--record', tick], place: boxed(join(tmp, 'b1'), { failOn: ({ final, calls }) => (!final && calls === 1 ? 'CARRY_FAILED' : undefined) }) });
+  assert.equal(retried.processes.at(-1).outcome.status, 'complete');
+  assert.deepEqual(failed(tick).map((line) => [line.data.gen, line.data.code, 'lost' in line.data]), [[1, 'CARRY_FAILED', false]]);
+  assert.ok(!failed(tick)[0].data.message.includes(tmp) && failed(tick)[0].data.message.includes('<path>'), 'paths in the message are <path>');
+  assert.ok(readEvents(tick).some((line) => line.source === 'workflow'), 'and the child\'s lines are home');
+  // A final failure after a runner that ended on its own: refused, no manifest.
+  const refused = join(tmp, 'refused');
+  await assert.rejects(() => demo({ ...options, argv: ['--json', '--record', refused], place: boxed(join(tmp, 'b2'), { failOn: ({ final }) => (final ? 'CARRY_FAILED' : undefined) }) }), /the recording is refused: the place could not bring home process 1's recording \(CARRY_FAILED\)/);
+  assert.ok(!existsSync(join(refused, 'manifest.json')));
+  // The same failure for an attempt whose box was lost: the recording stands, with lost: true.
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'the box is taken away', kind: 'box' }] }));
+  const { options: boxKill } = await import(`${FIXTURE}?options=${Date.now()}`);
+  const lost = join(tmp, 'lost');
+  let firstFinal = true;
+  const stood = await demo({ ...boxKill, argv: ['--kill', '--json', '--record', lost], place: boxed(join(tmp, 'b3'), { kind: 'box', failOn: ({ final }) => { if (!final || !firstFinal) return undefined; firstFinal = false; return 'BOX_GONE'; } }) });
+  assert.equal(stood.processes.at(-1).outcome.status, 'complete');
+  assert.deepEqual(failed(lost).map((line) => [line.data.gen, line.data.code, line.data.lost]), [[1, 'BOX_GONE', true]]);
+  assert.ok(existsSync(join(lost, 'manifest.json')), 'the recording stands');
+  assert.deepEqual(validateRecording(lost), []);
+});
+
+test('the box child\'s own recorder redacts the box\'s host name and boot id even where no sign-in file is handed down (no AGENTRUN_HOME): a box-side line holding them is clean', async () => {
+  const { trackSecrets } = await import('./reference/secrets.ts');
+  const { hostname } = await import('node:os');
+  const boot = existsSync('/proc/sys/kernel/random/boot_id') ? readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() : undefined;
+  const { redact } = trackSecrets({}, { name: 'x' }, join(tmpdir(), 'no-such-sign-in', 'auth.json'));
+  const line = JSON.stringify({ data: { text: `the box ${hostname()} booted as ${boot ?? 'no-boot-id'} and says hello` } });
+  const cleaned = redact(line);
+  if (hostname().length >= 4 && hostname() !== 'localhost') assert.ok(!cleaned.includes(hostname()), 'the box\'s host name is gone');
+  if (boot) assert.ok(!cleaned.includes(boot), 'and its boot id');
+  assert.ok(cleaned.includes('says hello'));
+});
+
+test('RECORD_STARTED gives a fresh recording directory its clock (an existing one is left alone), and a spool rolls into segments past segmentBytes that a second process still counts as one', async (t) => {
+  const { openRecorder, startedAt } = await import('./reference/record.ts');
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-segments-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const clock = '2026-10-16T09:00:00.000Z';
+  const fresh = join(tmp, 'fresh');
+  assert.equal(startedAt(fresh, clock), clock, 'a fresh directory takes the value it is given');
+  assert.equal(startedAt(fresh, '2030-01-01T00:00:00.000Z'), clock, 'an existing one is left alone');
+  // Segments: a tiny segment size rolls the stream; the lines are all there, in segments `<stream>.<n>.jsonl`.
+  const dir = join(tmp, 'rec');
+  const first = openRecorder({ dir, started: clock, segmentBytes: 300 });
+  for (let index = 0; index < 8; index += 1) first.live('workflow', 'x', { text: 'x'.repeat(100), index });
+  await first.detach();
+  const names = readdirSync(join(dir, '.spool')).filter((name) => name.endsWith('.jsonl')).sort();
+  assert.ok(names.length >= 3 && names.every((name) => /^live-\d+-\d+\.\d+\.jsonl$/.test(name)), names.join(','));
+  const lines = names.flatMap((name) => readFileSync(join(dir, '.spool', name), 'utf8').split('\n').filter(Boolean)).map((entry) => JSON.parse(entry));
+  assert.deepEqual(lines.map((line) => line.data.index).sort(), [0, 1, 2, 3, 4, 5, 6, 7]);
+  assert.ok(names.every((name) => statSync(join(dir, '.spool', name)).size <= 600), 'each segment is small');
+  // A second process counts the first as one process, not one per segment.
+  const second = openRecorder({ dir, segmentBytes: 300 });
+  second.live('workflow', 'x', { index: 'second' });
+  await second.detach();
+  const all = readdirSync(join(dir, '.spool')).filter((name) => name.endsWith('.jsonl')).flatMap((name) => readFileSync(join(dir, '.spool', name), 'utf8').split('\n').filter(Boolean)).map((entry) => JSON.parse(entry));
+  assert.equal(all.find((line) => line.data.index === 'second').gen, 2, 'the second process is process 2');
+  assert.equal(all.find((line) => line.data.index === 0).gen, 1);
+
+
+});
+
 test('a box.receipt line is written for each box place.status() reports once its `to` appears: box-N by first appearance, seconds, the price and the cost (null with no price), never the provider\'s id; a place that reports none writes none', { timeout: 300_000 }, async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-box-receipts-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
@@ -2045,4 +2182,17 @@ test('boxes of one provider, kind and start are two boxes, labelled box-N when t
   const receipt = (box, cost_usd) => JSON.stringify({ channel: 'live', source: 'host', kind: 'box.receipt', t: 1, seq: 0, data: { box, cost_usd } });
   writeFileSync(join(dir, '.spool', 'supervisor-1.jsonl'), `${receipt('box-1', 1)}\n${receipt('box-2', null)}\n`);
   assert.equal(meterKnown(dir), 1, 'the priced box counts against the cap, though the other has no price');
+});
+
+test('the slow tick does not queue a carry behind one still running: a place whose transfers take seconds is carried a bounded number of times', { timeout: 120_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference' });
+  process.env.DEMO_LINGER_MS = '7000';
+  let carries = 0;
+  const started = Date.now();
+  await demo({ ...options, argv: ['--json', '--record', join(tmp, 'recording')], place: ({ paths, self, destroyBoxes, requestFile }) => ({
+    ...localPlace({ self, paths, destroyBoxes, requestFile }),
+    recordHome: { dir: (attempt) => join(tmp, 'box', `record-${attempt}`), bringHome: async () => { carries += 1; await new Promise((resolve) => setTimeout(resolve, 2500)); } },
+  }) });
+  // The ticks that found no carry running, plus the final one; a tick queued behind every slow carry would make six or more.
+  assert.ok(carries <= 4, `carried ${carries} times in ${Date.now() - started} ms`);
 });

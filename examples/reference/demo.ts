@@ -204,9 +204,9 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   const cross = crossings(plan, env.CROSS_LOG, Date.now(), env.KILL_REQUEST ? askToBeKilled(env.KILL_REQUEST, killNonce) : undefined, window);
   // A recording holds none of the secret values (the declared environment's, the sign-in's tokens, a refreshed token too): the supervisor hands this process the sign-in's home (`AGENTRUN_HOME`, the one name added beside
   // the declared ones, so a child that signs in uses the file the recorder reads), and this process reads the values itself.
-  const redact = env.RECORD_DIR && env.AGENTRUN_HOME ? trackSecrets(env, options.spec).redact : undefined;
+  const redact = env.RECORD_DIR ? trackSecrets(env, options.spec).redact : undefined;
   const commits = env.RECORD_DIR ? await packageCommitRecorder() : undefined;
-  const lazy = env.RECORD_DIR ? lazyRecorder(() => openRecorder({ dir: env.RECORD_DIR!, commits: commits!, ...(redact ? { redact } : {}) })) : undefined;
+  const lazy = env.RECORD_DIR ? lazyRecorder(() => openRecorder({ dir: env.RECORD_DIR!, commits: commits!, ...(env.RECORD_GEN ? { gen: Number(env.RECORD_GEN) } : {}), ...(env.RECORD_STARTED ? { started: env.RECORD_STARTED } : {}), ...(redact ? { redact } : {}) })) : undefined;
   const recorder: Recorder | undefined = lazy;
   const live = env.LIVE === '1';
   const browserKind = (env.BROWSER ?? 'fake') as 'fake' | 'browserbase' | 'chrome' | 'none';
@@ -374,7 +374,10 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const served = await backend.serve();
   const supervisor = openSupervisor({ dir: recordDir, ...(redact ? { redact } : {}) });
   // A live run and its replay are one file: events.jsonl is appended to as the run goes (whole lines, section 3's order), and finishRecording completes it. The job is a blob from the start, so a viewer can draw the workflow graph at once.
-  const follower = followRecording(recordDir, { ...(redact ? { redact } : {}), ...(options.followHoldMs !== undefined ? { holdMs: options.followHoldMs } : {}) });
+  let placeRef: Place | undefined;
+  // The recording's clock as a value, in every order's env: a box's child writes it into its own spool directory when it has none, so a place never writes into the run's disk.
+  const startedText = readFileSync(join(recordDir, '.spool', 'started'), 'utf8');
+  const follower = followRecording(recordDir, { ...(redact ? { redact } : {}), holdMs: () => Math.max(options.followHoldMs ?? 1000, 2 * (placeRef?.clockSkewMs ?? 0)) });
   const following = setInterval(() => follower.poll(), 100);
   const jobText = JSON.stringify({ workflow: job.workflow, input: input ?? (live ? undefined : options.fakes.input) ?? job.input, files: Object.keys(job.files ?? {}) });
   const jobBlob = keepBlob(recordDir, Buffer.from(redact ? redact(jobText) : jobText), 'json');
@@ -470,6 +473,26 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     });
     return reading;
   };
+  placeRef = place;
+  // A place whose child writes its recording inside the place brings it home through `recordHome.bringHome`: every status tick while a runner runs, and once more, final, after the runner has exited (before the follower closes, the manifest and the release). A tick that fails is
+  // retried at the next one; a final failure refuses the recording unless the attempt's box was lost (then the attempt's lines after its last carried tick are a gap, like a kill losing its in-flight commit).
+  let carrying: Promise<void> = Promise.resolve();
+  // The slow tick does not queue a carry behind one still running (a transfer can take seconds): the final carry, which the result waits for, then waits behind at most one.
+  let carryBusy = false;
+  let carryRefusal: { gen: number; code: string } | undefined;
+  const carry = (gen: number, final: boolean, lost: () => boolean): Promise<void> => {
+    if (!place.recordHome) return Promise.resolve();
+    carrying = carrying.then(async () => {
+      carryBusy = true;
+      try { await place.recordHome!.bringHome(recordDir, { final }); } catch (error) {
+        const code = String((error as { code?: unknown } | null)?.code ?? 'CARRY_FAILED');
+        const gone = lost() || code === 'BOX_GONE';
+        supervisor.host('recording.carry.failed', { gen, code, message: plainText((error as Error | null)?.message ?? error), ...(final && gone ? { lost: true } : {}) });
+        if (final && !gone) carryRefusal ??= { gen, code };
+      } finally { carryBusy = false; }
+    });
+    return carrying;
+  };
   // Metering: the recording's lines as they stand, folded; past the cap the supervisor stops the run.
   const meterTimer = maxUsd === null ? undefined : setInterval(() => { if (meterKnown(recordDir) > maxUsd) overBudget = true; }, 250);
   try {
@@ -493,7 +516,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       const token = place.token ? await place.token(gen) : undefined;
       // The supervisor's own nonce for this attempt: the process puts it in its kill request, and the supervisor honors only a request that carries it. The place knows nothing about it.
       const nonce = randomBytes(16).toString('hex');
-      const order = { gen, env: { ...base, CROSS_LOG: log, KILL_REQUEST: request, KILL_NONCE: nonce, PLAN: JSON.stringify(plan) }, ...(token !== undefined ? { stdin: token } : {}) };
+      const order = { gen, env: { ...base, CROSS_LOG: log, KILL_REQUEST: request, KILL_NONCE: nonce, RECORD_GEN: String(gen), RECORD_STARTED: startedText, PLAN: JSON.stringify(plan) }, ...(token !== undefined ? { stdin: token } : {}) };
       if (previous && !place.kills.includes(previous.kind)) throw new Error(`the ${place.name} place cannot lose its ${previous.kind}: this kill is not one it can make`);
       currentGen = gen;
       const recovered = previous ? await place.recover(previous.runner, previous.kind, order) : undefined;
@@ -555,12 +578,13 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
           try { rmSync(operatorKill, { force: true }); deciding = decide('operator'); } catch (error) { decided = true; failed(String((error as { code?: unknown } | null)?.code ?? 'OPERATOR_KILL_UNUSABLE'), 'the operator\'s kill control could not be removed', 'process'); }
         } else if (overBudget) deciding = decide(undefined);
       }, 20);
-      const tick = setInterval(() => { if (!inflight) void readStatus(); }, 2000);
+      const tick = setInterval(() => { if (!inflight) void readStatus(); if (!carryBusy) void carry(gen, false, () => false); }, 2000);
       const exit = await Promise.race([runner.exited, gaveUp.then(() => undefined)]);
       const result: Exit = exit ?? { exit: null, signal: null, stderr: 'the place could not stop this process' };
       clearInterval(watch);
       clearInterval(tick);
       await readStatus();
+      await carry(gen, true, () => killed?.kind === 'box');
       await iterator?.return?.();
       await pump;
       await deciding;
@@ -607,6 +631,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     const extra = options.manifest ? options.manifest({ dir, record: delivered?.record ?? null, input, live, ...(chosen ? { models: chosen } : {}) }) : undefined;
     for (const name of Object.keys(extra ?? {})) if (RESERVED.has(name)) throw new Error(`manifest(): "${name}" is written by the entry; use another name`);
     follower.close();
+    if (carryRefusal) throw new Error(`the recording is refused: the place could not bring home process ${carryRefusal.gen}'s recording (${carryRefusal.code}), and that process ended on its own`);
     // What a viewer following the run could already have fetched is not taken back: a secret in the file as it was placed refuses the recording, though the finished file is redacted.
     scanPlaced(recordDir, tracked?.final() ?? []);
     finishRecording(recordDir, {

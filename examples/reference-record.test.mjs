@@ -181,6 +181,29 @@ test('a process start sorts before the lines it writes at the same millisecond, 
   assert.deepEqual(lines(circle).map((line) => line.kind), ['process.started', 'kill', 'process.started', 'pi.assistant', 'node.start']);
 });
 
+test('detach stops every watcher, one still being set up included, before it makes the last sync: a line a late watcher writes is synced', async (t) => {
+  const { syncBuiltinESMExports } = await import('node:module');
+  const fs = (await import('node:fs')).default;
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-detach-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const dir = join(tmp, 'rec');
+  const events = [];
+  const { appendFileSync: appended, openSync: opened } = fs;
+  fs.appendFileSync = (path, ...rest) => { if (String(path).includes('live-')) events.push('append'); return appended(path, ...rest); };
+  fs.openSync = (path, flag, ...rest) => { if (flag === 'r+' && String(path).includes('live-')) events.push('sync'); return opened(path, flag, ...rest); };
+  syncBuiltinESMExports();
+  t.after(() => { fs.appendFileSync = appended; fs.openSync = opened; syncBuiltinESMExports(); });
+  // A commit that names a conversation starts a watcher; its setup takes 150 ms, and it delivers an event the moment it starts.
+  const watch = () => new Promise((resolve) => setTimeout(() => resolve({ start: (listener) => { void listener([{ type: 'turn_start' }]); }, stop: async () => undefined }), 150));
+  const withWatch = async (_input, write) => { write({ channel: 'durable', source: 'workflow', kind: 'agentrun.driver', gen: 1, commit: 1, order: 0, conv: 1, snapshot: true, data: { doc: 'agentrun.driver', value: {} } }); return async () => undefined; };
+  const recorder = openRecorder({ dir, commits: withWatch, watch });
+  await recorder.attach({ session: {}, context: {}, gen: 1 });
+  await recorder.detach();
+  assert.ok(events.includes('append'), 'the late watcher wrote its line');
+  assert.ok(events.lastIndexOf('sync') > events.lastIndexOf('append'), `the last sync came after the last write: ${events.join(',')}`);
+
+});
+
 test('the recorder scans before it finishes: a credential or a machine path in a line, a blob or the manifest writes no manifest', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-record-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
