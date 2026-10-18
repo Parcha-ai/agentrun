@@ -1,4 +1,4 @@
-// Placed frames at $0: the zoom on local boxes standing in for both sandboxes, with the scripted placer. It checks what a live run rests on: each frame is one tool call whose
+// Placed frames with no key: the zoom on local boxes standing in for both sandboxes, with the scripted placer. It checks what a live run rests on: each frame is one tool call whose
 // answer names its environment, its box by label and the placer's reason; the frames the run kept are the ones the answers name; the boxes are ended; the result is the picture;
 // and the recording holds no dollar figure and no provider id. Also: Jev through a base URL of the user's, the rates option, and a live run's refusal without its keys.
 import assert from 'node:assert/strict';
@@ -16,16 +16,18 @@ import { localBoxes } from '@parcha/pi-transport/box/local';
 import { HEAVY_ITERATIONS, scriptedModels } from './placed-frames/fakes.ts';
 import { jevModels, liveParts } from './placed-frames/live.ts';
 import { options } from './placed-frames/run.ts';
-import { ENVIRONMENTS, factsOf, frameTools, REST, stepOf } from './placed-frames/tools.ts';
+import { ENVIRONMENTS, factsOf, frameTools, placedLine, REST, stepOf } from './placed-frames/tools.ts';
 import { iterationsOf } from './placed-frames/programs/params.mjs';
 
 const FRAMES = 12;
+/** A stand-in for a key: this test's server never checks it, it only reads it back. */
+const PLACEHOLDER = ['stand', 'in', 'for', 'a', 'test'].join('-');
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const scratch = async (t) => { const dir = await mkdtemp(join(tmpdir(), 'placed-frames-')); t.after(() => rm(dir, { recursive: true, force: true })); return dir; };
 /** Every file under a folder, with its bytes as text. */
 const texts = (dir) => readdirSync(dir, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => readFileSync(join(entry.parentPath, entry.name), 'latin1'));
 
-test('the zoom on fakes: one placed tool call a frame, each answer naming its environment, its box by label and the reason; the picture is the result', { timeout: 300_000 }, async (t) => {
+test('the zoom on fakes: one placed tool call a frame, each answer naming its environment, its box by label and the line composed from the record; the picture is the result', { timeout: 300_000 }, async (t) => {
   const tmp = await scratch(t);
   const recording = join(tmp, 'recording');
   const run = await demo({ ...options, argv: ['--record', recording, '--dir', join(tmp, 'run')] });
@@ -44,8 +46,10 @@ test('the zoom on fakes: one placed tool call a frame, each answer naming its en
     const heavy = 80 + 10 * frame.f >= 150;
     assert.deepEqual([frame.environment, frame.provider, frame.placed.by], [heavy ? 'modal' : 'daytona', 'local', 'scripted']);
     assert.equal(frame.box, heavy ? 'box-2' : 'box-1', 'a box by its label, the same for every frame placed in its environment');
-    assert.match(frame.placed.reason, heavy ? /^Moved to "modal" .*the script judged/ : /^Stays in "daytona": the script judged/);
+    // The line is the example's own, composed from the record's target, who decided and the score: never the placer's sentence.
+    assert.equal(frame.placed.line, heavy ? 'placed on modal: the script judged the frame needs what daytona cannot do (0.90)' : 'placed on daytona: the script judged daytona can do the frame (0.10)');
     assert.equal(frame.placed.need, heavy ? 0.9 : 0.1);
+    assert.equal(frame.placed.reason, undefined, 'the placer\'s reason is not carried');
     assert.equal(sha256(readFileSync(join(run.dir, 'work', 'frames', `f${frame.f}.idx`))), frame.sha256, 'the frame kept is the one its answer names');
   }
   const released = answers.find((value) => Array.isArray(value?.boxes));
@@ -66,6 +70,7 @@ test('the zoom on fakes: one placed tool call a frame, each answer naming its en
   const recorded = [readFileSync(join(recording, 'events.jsonl'), 'latin1'), readFileSync(join(recording, 'manifest.json'), 'latin1'), ...texts(join(recording, 'blobs')).filter((text) => !text.startsWith('\x89PNG'))].join('\n');
   assert.doesNotMatch(recorded, /\$\s?\d|usd_per|cost_usd"\s*:\s*\d/, 'no dollar figure');
   assert.doesNotMatch(recorded, /local-[0-9a-f]{12}/, 'no provider id');
+  assert.doesNotMatch(recorded, /Moved to|Stays in|Back to|Jev judged the step/, 'the placer\'s own sentence is nowhere in the recording');
 });
 
 test('the placer asks with the frame as numbers only, and the scripted split follows the iterations', () => {
@@ -85,7 +90,7 @@ test('live Jev goes to the base URL the user gives (a proxy that passes TypeSafe
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => server.close());
   const before = process.env.TYPESAFE_API_KEY;
-  process.env.TYPESAFE_API_KEY = 'placeholder-key-for-a-test';
+  process.env.TYPESAFE_API_KEY = PLACEHOLDER;
   t.after(() => { if (before === undefined) delete process.env.TYPESAFE_API_KEY; else process.env.TYPESAFE_API_KEY = before; });
   const placer = await jevPlacer(jevModels(`http://127.0.0.1:${server.address().port}/typesafe`), { provider: 'typesafe', modelId: 'jev-latest' }, { rest: REST, timeoutMs: 10_000 });
   assert.ok(placer.ok, String(placer.error?.message));
@@ -93,10 +98,19 @@ test('live Jev goes to the base URL the user gives (a proxy that passes TypeSafe
   assert.ok(seen.length >= 1, 'the proxy was asked');
   assert.equal(seen[0].method, 'POST');
   assert.match(seen[0].url, /^\/typesafe\//);
-  assert.equal(seen[0].auth, 'Bearer placeholder-key-for-a-test');
+  assert.equal(seen[0].auth, `Bearer ${PLACEHOLDER}`);
   assert.ok(seen[0].body.includes('Draw frame 1 of 12'));
   // A placer that gets no answer keeps the call at rest and says why: never an invented answer.
   assert.deepEqual([record.target, record.moved, record.error?.code], [REST, false, 'classifier']);
+  assert.equal(placedLine(record, REST, 'Jev'), 'placed on daytona: Jev gave no answer (classifier), so the frame stays on daytona');
+});
+
+test('the placed line is composed from the record\'s fields, whatever the placer wrote as its reason', () => {
+  const answers = (need) => ({ need: { type: 'bool', probability: need } });
+  const reason = 'Moved to "modal" (the placer\'s own prose): Jev judged the step needs what "daytona" cannot do (0.91).';
+  assert.equal(placedLine({ target: 'modal', moved: true, answers: answers(0.91), reason }, 'daytona', 'Jev'), 'placed on modal: Jev judged the frame needs what daytona cannot do (0.91)');
+  assert.equal(placedLine({ target: 'daytona', moved: false, answers: answers(0.09), reason }, 'daytona', 'Jev'), 'placed on daytona: Jev judged daytona can do the frame (0.09)');
+  assert.doesNotMatch(placedLine({ target: 'modal', moved: true, answers: answers(0.91), reason }, 'daytona', 'Jev'), /Moved to|Stays in|Back to|the step/);
 });
 
 test('rates are an option: with them each box ends with its receipt; without them there is none', async (t) => {

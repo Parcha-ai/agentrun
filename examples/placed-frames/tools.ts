@@ -1,5 +1,5 @@
 // The run's two tools, over the host's sandboxes, one box per environment. `frame` asks the placer where one frame of the zoom runs, draws the frame's four tiles there with the tile
-// program, and keeps the frame on the run's disk; its answer names the environment, the box by its label (`box-1`, never the provider's id) and the placer's reason. `release` ends
+// program, and keeps the frame on the run's disk; its answer names the environment, the box by its label (`box-1`, never the provider's id) and the line the example composes from the placement record. `release` ends
 // every box the run made and answers which; with rates (an option, off in demo.json) it also answers each box's receipt. A box is made the first time a frame is placed in its
 // environment, and every later frame placed there uses it.
 import { createHash } from 'node:crypto';
@@ -10,7 +10,7 @@ import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import type { Models } from '@earendil-works/pi-ai';
 import type { ExecutionEnv } from '@earendil-works/pi-durable/env';
 import type { ToolContext } from '@parcha/agentrun-reference';
-import { type Box, type BoxPrice, type BoxProvider, type BoxReceipt, type BoxSpec, boxReceipts, type EnvironmentFacts, jevPlacer, type Placer } from '@parcha/pi-transport';
+import { type Box, type BoxPrice, type BoxProvider, type BoxReceipt, type BoxSpec, boxReceipts, type EnvironmentFacts, jevPlacer, type Placer, type PlacementRecord } from '@parcha/pi-transport';
 import { boxEnv } from '@parcha/pi-transport/hands';
 import spec from './demo.json' with { type: 'json' };
 import { HEIGHT, TILES_X, TILES_Y, TILE_H, TILE_W, WIDTH, iterationsOf, window_ } from './programs/params.mjs';
@@ -53,6 +53,19 @@ export const factsOf = (environment: Environment): EnvironmentFacts => ({
 export function stepOf(f: number, frames: number): string {
   const closer = Math.round(window_(0).width / window_(f).width).toLocaleString('en-US');
   return `Draw frame ${f + 1} of ${frames} of a zoom into the Mandelbrot set: ${closer} times closer than the first frame, at ${iterationsOf(f)} iterations per pixel, as four tiles of ${TILE_W} by ${TILE_H} pixels.`;
+}
+
+/**
+ * The line a frame's answer carries about where it went, composed here from the placement record's structured fields (its target, who decided, and Jev's score for the need). The placer's
+ * own sentence is for a session's notice and is never shown by this example. `who` names who judged: Jev live, the script on fakes.
+ */
+export function placedLine(record: Pick<PlacementRecord, 'target' | 'moved' | 'error' | 'answers'>, rest: string, who: 'Jev' | 'the script'): string {
+  if (record.error) return `placed on ${record.target}: ${who} gave no answer (${record.error.code}), so the frame stays on ${record.target}`;
+  const need = record.answers?.need;
+  const score = need?.type === 'bool' ? ` (${need.probability.toFixed(2)})` : '';
+  return record.moved || record.target !== rest
+    ? `placed on ${record.target}: ${who} judged the frame needs what ${rest} cannot do${score}`
+    : `placed on ${record.target}: ${who} judged ${rest} can do the frame${score}`;
 }
 
 /** A command in a box, with its output. */
@@ -132,7 +145,7 @@ export function frameTools(hosting: Hosting) {
     const need = record.answers?.need?.type === 'bool' ? Number(record.answers.need.probability.toFixed(2)) : null;
     return {
       f, environment: environment.id, provider: made.provider, box: made.label,
-      placed: { by: hosting.placer === 'scripted' ? 'scripted' : record.by, need, reason: hosting.placer === 'scripted' ? record.reason.replaceAll('Jev judged', 'the script judged') : record.reason, ...(record.error ? { error: record.error.code } : {}) },
+      placed: { by: hosting.placer === 'scripted' ? 'scripted' : record.by, need, line: placedLine(record, REST, hosting.placer === 'scripted' ? 'the script' : 'Jev'), ...(record.error ? { error: record.error.code } : {}) },
       sha256: createHash('sha256').update(pixels).digest('hex'), iterations: iterationsOf(f),
     };
   };

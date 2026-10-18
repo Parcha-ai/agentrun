@@ -21,7 +21,7 @@ export const workflow = {
       properties: {
         f: { type: 'integer' }, environment: { type: 'string' }, provider: { type: 'string' },
         box: { type: 'string', pattern: '^box-\\d+$', description: 'The box by its label, never the provider\'s id.' },
-        placed: { type: 'object', required: ['by', 'reason'], properties: { by: { type: 'string' }, need: { type: ['number', 'null'] }, reason: { type: 'string' } } },
+        placed: { type: 'object', required: ['by', 'line'], properties: { by: { type: 'string' }, need: { type: ['number', 'null'] }, line: { type: 'string', description: 'Where the frame was placed and on what score, composed from the placement record\'s fields.' } } },
         sha256: { type: 'string', description: 'The SHA-256 of the frame\'s pixels (palette indices, one byte each), which the run\'s disk holds under frames/.' },
         iterations: { type: 'integer' },
       },
