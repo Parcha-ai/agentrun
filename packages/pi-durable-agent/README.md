@@ -1,22 +1,56 @@
 # @parcha/pi-durable-agent
 
-An agent you can carry. Its definition, its sign-ins and its runs live in one directory, the **agent home**, as
-[pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) stores: `agent.sqlite` for the agent, and one
-`run.sqlite` per run. Each run is a `@parcha/pi-durable-disk` run directory, so `pi-durable-disk run --dir` can run it.
-Copy the directory and the agent goes with it. A run starts from the agent's definition and its saved sign-ins, and
-when it ends, the sign-ins it made go back to the agent, so the next run starts signed in.
+An agent home for pi agents. The home is one directory that keeps what makes an agent the same agent from one run to the
+next: its definition, its skills, its saved sign-ins and every run it has made. A run starts from the home. When it ends,
+the sign-ins it made go back to the home, so the agent's next run starts signed in. The home moves as that directory, or
+as one file, a pack, which leaves the sign-ins behind.
 
-Both files are ordinary pi-durable stores at `synchronous = FULL`, read and written with pi's own Session: no second
-format and no second durability layer. The host keeps everything a run needs from outside: the model, the thinking
-level, the tools, and where each tool runs. The definition names tools; the host binds them.
+Part of [AgentRun](https://github.com/Parcha-ai/agentrun). Node 22.19 or later. The agent store and each run's store are
+[pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable) stores, read and written with pi's own Session, so
+there is no second format. This package opens its own at `synchronous = FULL`.
+
+## What it does
+
+- **Keeps the agent.** `agent.sqlite` holds the definition (name, instructions, and the names of its skills and tools),
+  the skill files with their SHA-256, the saved sign-ins and an index of the runs.
+- **Starts a run from the home.** `startRun` makes the run's directory, a
+  [pi-durable-disk](https://github.com/Parcha-ai/agentrun/blob/main/packages/pi-durable-disk/README.md) run directory,
+  with the agent's skills in its workspace and its saved sign-ins in its store. The host opens its own pi-durable
+  Harness on that store.
+- **Takes the run back.** `carryBack` copies the sign-ins the run made into the home and records how the run ended, so
+  the next run starts signed in.
+- **Moves the home.** `packHome` writes the home as one tar file, `readPack` judges one, and `importPack` writes one as a
+  home. A pack and an export leave the saved sign-ins behind, so a new machine asks once.
+- **Reads a run as a timeline.** `@parcha/pi-durable-agent/timeline` turns a run's entries or live events into plain rows
+  that a page can draw.
+
+It does not run the agent. The host keeps what a run needs from outside: the model, the thinking level, the tools, and
+where each tool runs. The definition names tools; the host binds them. It does not drive a browser either:
+[pi-browser](https://github.com/Parcha-ai/agentrun/blob/main/packages/pi-browser/README.md) does, through the
+`ProfileStore` this package gives it.
 
 This package is held: it is built and tested in this repository and not published yet.
 
+## Install
+
+```sh
+npm install @parcha/pi-durable-agent@beta @earendil-works/pi-durable@~1.2.0 @earendil-works/chord@~1.2.0
+```
+
+Until it is published, use a checkout of this repository, as the quickstart below does.
+
+The package needs Node 22.19 or later, and `@earendil-works/pi-durable` and `@earendil-works/chord` as peers
+([Requirements](#requirements)). It does not need a browser, a key or a network.
+
 ## Quickstart (no key, no network)
 
-Node 22.19 or later. In a checkout of this repository, run `npm ci --ignore-scripts` and
-`npm run build -w @parcha/pi-durable-agent`, save this as `quickstart.mjs` at the repository root, and run
-`node quickstart.mjs`:
+Two runs of one agent on this machine. The first signs in, using a stand-in for the provider, and the second finds that
+sign-in already saved. The reference it prints, `ctx_1`, is a stand-in; a real one is secret. The quickstart also uses
+`@earendil-works/pi-ai` for the Harness's model registry, which a checkout has; from npm, add
+`@earendil-works/pi-ai@~1.2.0` to the install line above.
+
+In a checkout of this repository, run `npm ci --ignore-scripts` and `npm run build -w @parcha/pi-durable-agent`, save
+this as `quickstart.mjs` at the repository root, and run `node quickstart.mjs`:
 
 ```js
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -52,7 +86,7 @@ await oneRun("run-2");
 console.log((await readAgentHome(home)).profiles);
 ```
 
-```
+```text
 run-1: signing in
 run-1: profile ctx_1, save lease: false
 run-1: carried back acme.example
@@ -65,12 +99,46 @@ run-2: carried back acme.example
 
 Run 1 signs in once. Run 2 finds the sign-in ready and never makes one.
 
+## A runnable example
+
+[`examples/web`](https://github.com/Parcha-ai/agentrun/tree/main/examples/web) is a small web server over an agent home:
+a job history, each run's timeline, its files and its live browser. Its agent asks the person to sign in to a site
+through the live view, and its next run starts signed in. The browser is Browserbase by default, and a run needs a
+Browserbase key and a model endpoint. A local Chrome (`AGENT_BROWSER=chrome`) is there too, and waits for pi-browser's
+live view, which the person needs to sign in. With no key, the quickstart above is the keyless path. Run it from a
+checkout: `npm ci --ignore-scripts && npm run build`, then
+`node --no-warnings=ExperimentalWarning examples/web/server.mjs`.
+
+## A saved sign-in
+
+A sign-in is kept as the provider's reference to a signed-in browser: a Browserbase context id, or, for a local Chrome,
+the profile directory under `chrome/` in the home, which holds its cookies (the runs app does this). It sits in a
+`browser.profiles` document in `agent.sqlite`, and in the store of each run that was given it. It is not encrypted. Treat
+it like a password, because whoever holds it can open the signed-in session.
+
+- **A run gets it from the host.** `startRun` copies the agent's sign-ins into the run's store, and
+  `durableProfileStore` hands the reference to pi-browser. The model never sees it, and no tool reads or returns it.
+  A sign-in another live run holds is copied without its reference.
+- **One run saves it.** Only the run that holds a sign-in's save lease gets its reference, and only that run's changes
+  go back ([The save lease](#a-run)).
+- **A pack and an export leave it behind.** `SECRET_KINDS` names the kinds that never leave a home: `browser.profiles`
+  among them. A pack's manifest lists the sign-ins the source had (their keys and providers), and `readPack` warns that
+  they are to redo at the target. The first run on the new machine signs in again, and its carry back saves the new
+  sign-in.
+- **A copy of the directory takes it along.** Copy the home as a directory only to a place you would trust with its
+  sign-ins. A pack is the way to move a home without them.
+
+A vault, which would keep credentials as ciphertext that only the host decrypts, is not built yet
+([Not yet](#not-yet)).
+
 ## The agent home
 
 ```
 acme/                        the agent home
   agent.sqlite               the agent store: identity, definition, skills, sign-ins, the runs index
   owner.lock                 the writer lock (below); never open, copy or move it with the home
+  chrome/<key>/              a local Chrome's profile, made by a host such as the runs app, not by this package;
+                             it holds a sign-in too, and a pack never reads it
   runs/<run id>/             a pi-durable-disk run directory
     store/run.sqlite         that run's pi-durable store; the host opens its Harness on it
     work/                    that run's files, with the agent's skills under .agents/skills/
@@ -82,11 +150,12 @@ acme/                        the agent home
 `startRun` first, then `pi-durable-disk run --dir <dir> --app MODULE` (the run id defaults to the directory's name), or
 `openDurableRun(ref, { ...localRun(dir), harness })` from code, and call `carryBack` after the instance released it.
 
-Every call opens `agent.sqlite` as its only writer and closes it before it returns, so an `AgentHome` handle holds
-nothing open. Writers queue in the process, then take `owner.lock`: an exclusive SQLite lock on an empty file, which
-the kernel drops when its holder dies, so a writer that crashed never leaves it behind. A writer waits up to 5 seconds
-for another process's, then fails with `AgentHomeError` (`busy`). On a disk that one machine claims at a time, the host
-passes the claim as a `HomeAccess` and the lock is taken inside it ([An agent home on a disk](#an-agent-home-on-a-disk)).
+Every call on a home but `homeRevision` opens `agent.sqlite` as its only writer and closes it before it returns, so an
+`AgentHome` handle holds nothing open. Writers queue in the process, then take `owner.lock`: an exclusive SQLite lock on
+an empty file, which the kernel drops when its holder dies, so a writer that crashed never leaves it behind. A writer
+waits up to 5 seconds for another process's, then fails with `AgentHomeError` (`busy`). On a disk that one machine claims
+at a time, the host passes the claim as a `HomeAccess` and the lock is taken inside it
+([An agent home on a disk](#an-agent-home-on-a-disk)).
 
 ## A run
 
@@ -154,7 +223,7 @@ fields are the stored format.
 | `agent.bindings` | agent | host | `{ [tool]: target }`: where each tool runs in that host |
 | `agent.runs` | agent | run id | `{ path, host, startedAt, sha?, endedAt?, outcome?, finalAnswer?, cost? }`; `path` is relative to the home; `sha` is the home's `agent.source` when the run started |
 | `agent.leases` | agent | profile key | `{ runId, expiresAt }` |
-| `browser.profiles` | agent and run | profile key | `{ provider, ref, state, startUrl?, allowedOrigins?, verifiedAt?, heldBy? }`; `ref` is the provider's saved sign-in, `state` is `ready` once it names one, or `held` in a run store whose run has no lease on it (`ref` empty, `heldBy` the run that has) |
+| `browser.profiles` | agent and run | profile key | `{ provider, ref, state, startUrl?, allowedOrigins?, verifiedAt?, heldBy? }`; `ref` is the provider's saved sign-in (a Browserbase context id, or a local Chrome's profile directory), `state` is `ready` once it names one, or `held` in a run store whose run has no lease on it (`ref` empty, `heldBy` the run that has) |
 
 A profile's `ref` opens a signed-in session, so it is as secret as the password behind it: it reaches a run only
 through the host, and no tool reads or returns a profile.
@@ -178,6 +247,11 @@ kinds (a replay of exported stores, for one) loads them with `node:sqlite` alone
 pi-durable, chord and pi-ai.
 
 ## Moving a home
+
+A home moves as its directory or as a pack. Copying the directory takes everything with it, the saved sign-ins
+included ([A saved sign-in](#a-saved-sign-in)). A pack takes the agent, the index of its runs and each finished run's
+files, and a finished run's store only through the `exportRunStore` hook you give it. It leaves the sign-ins behind, and
+it can be made while a run is live: that run travels as an index entry only.
 
 One packer moves a home between a local server and a hosted one. `packHome(home, { out })` writes the pack,
 `readPack(file)` judges one without writing a home, and `importPack(file, dir)` writes one as a home.
@@ -275,24 +349,97 @@ origin, path and query keys but drops its query values, fragment and userinfo. `
 
 ## Library
 
+Three entry points: `@parcha/pi-durable-agent` (everything below but the timeline), `@parcha/pi-durable-agent/export`
+and `@parcha/pi-durable-agent/timeline`. A function that opens a home can also fail with the home's own errors:
+`missing` (the directory is not a home), `format` (a store this version does not read) and `busy` (another writer held
+the home for more than 5 seconds). `busy` applies to everything that writes the home, and to `openAgentHome` and
+`readAgentHome`, which take the writer lock to read. The Throws column does not repeat these except where a function
+exists to check them. [Errors](#errors) says what each code means.
+
+### `@parcha/pi-durable-agent`
+
+| Export | Does | Throws |
+|---|---|---|
+| `createAgentHome(dir, { definition, skills?, sha?, now? })` | A new agent home in `dir`: the identity (the definition's `id`, or a new UUIDv7), the definition, the skill files and, with `sha`, `agent.source`, in one commit. Returns an `AgentHome`, `{ dir, identity }` | `invalid`: a definition with a field it does not keep (a model, for one) or with a bad field, an id that is not one URL segment, a skill path that is not relative, a `sha` that is not a commit sha. `exists`: `dir` already holds a home. Nothing is created on either |
+| `openAgentHome(dir)` | The home in `dir`, checked to be this format | `missing`, `format` |
+| `readAgentHome(home, { access? })` | Everything the home holds, read in one pass: an `AgentHomeState` | `missing`, `format` |
+| `homeRevision(home, { access? })` | The agent store's head commit number: every write that changes the home moves it, reads do not. With the identity's id it is the home's version, an ETag. One read-only query, under no lock by default | `missing` (not a home, without `access`), `format` (no readable head commit) |
+| `setAlias(home, host, externalId)` | The agent's id in a host | `invalid`: an empty `host` or `externalId` |
+| `setBindings(home, host, bindings)` | Where each tool name runs in a host; replaces that host's bindings | `invalid`: an empty `host`, or bindings that are not tool names to non-empty targets |
+| `refreshAgentHome(home, { sha, from?, ifRevision?, definition, skills, now? })` | The cached definition and skills replaced by the ones at `sha`. Returns `{ changed }` ([Following the agent's repo](#following-the-agents-repo)) | `invalid`: a bad `sha`, `from`, `ifRevision`, definition or skill, a definition `id` that is not the agent's. `stale`: the home is not at `ifRevision`, or its cache is not at `from`. Nothing is written on either |
+| `startRun(home, { host, runId?, sha?, now?, leaseMs? })` | A run's start on this machine, above. Returns a `RunStart`: `{ runId, dir, storePath, workspace, agent, leases, sha? }` | `invalid`: an empty `host`, a bad `leaseMs`, `sha` or run id. `exists`: the run id is taken. `stale`: `sha` is not the home's. `format`: a skill does not match its SHA-256. A start that fails part way is undone; when the undo fails too the error is an `AggregateError` with both |
+| `prepareRun(home, { host, runId?, sha?, now?, leaseMs?, access? })` | A start's home half: the lease and the record, as a `RunSeed` ([An agent home on a disk](#an-agent-home-on-a-disk)) | as `startRun`, but `exists` only for a run in the index |
+| `seedRun({ storePath, workDir }, seed)` | A start's run half: the run's store and its skills. Safe to run again on a half-written directory | `invalid`: a seed that gives a run the reference of a sign-in it does not lease, or a bad skill path. Nothing is written |
+| `undoPrepare(home, seed, { access? })` | Undoes a `prepareRun` whose seed never landed. Returns `{ undone }`, which is `false` when that start is no longer the run's | |
+| `carryBack(home, run, { outcome, finalAnswer?, cost?, now?, access? })` | A run's end, above. Returns a `CarryBack`: `{ changed, profiles, released }`. A second call for the same run changes nothing | `invalid`: an empty `outcome`, a negative or non-finite `cost`. `missing`: the run is not the agent's, or its store is not there |
+| `runPaths(home, runId)` | A run's `dir` (what `pi-durable-disk run --dir` takes), `storePath` (`store/run.sqlite`) and `workspace` (`work/`) | `invalid`: a run id that is not one URL segment |
+| `durableProfileStore(target, { provider?, signal? })` | pi-browser's `ProfileStore` over a run store; `target` is the host's Harness or any Session on the file. `provider` names who made a profile that had none (default `browserbase`) | `resolve` rejects with `invalid` for an empty key, or when `make` returns no reference. An error from `make` passes through |
+| `localAccess(home)`, `HomeAccess` | How a call reaches a home: a directory of this machine (the default), or a disk a host claims ([An agent home on a disk](#an-agent-home-on-a-disk)) | |
+| `packHome(home, { out, maxBytes?, maxMembers?, exportRunStore?, now? })` | The pack of a home, above. Returns `{ manifest, skipped }`, `skipped` being `{ path, reason }` | `invalid`: a bad `out`, `maxBytes` or `maxMembers`. `too_large`: over `maxBytes` or `maxMembers`, or a manifest over its limit. `check`: a SQLite file that holds a sign-in kind or has a side file, a work directory or file that cannot be read, a file that changed while the pack was written, or a pack its own reader refuses (`checks` says which). `format`: a skill that does not match its SHA-256. No pack is written on any of them |
+| `readPack(file, { maxBytes?, maxMembers? })` | Judges a pack without writing a home: `{ ok, manifest, checks }`. A pack that fails a check comes back with `ok: false`, including a pack over `maxBytes` (the `size` check) | `missing`: no such file. `invalid`: not a file |
+| `importPack(file, dir, { replace?, ifRevision?, maxBytes?, maxMembers?, now? })` | The pack as the home in `dir`, in place. `ifRevision` is a `homeRevision`. Returns `{ home, report }`, `report` being `{ ok: true, agent_id, checks, written: true, replaces }` | `missing`: no such file. `invalid`: a bad `ifRevision`, a `dir` that is not a directory, is not empty and not a home, or holds another agent. `check`: the pack is refused, or the target has a live run (`checks` says which). `exists`: `dir` is a home and `replace` is not set. `stale`: `ifRevision` is not the home's. `format`: an import journal that cannot be settled. The home is left as it was on any of them |
+| `AGENT_STORE_FILE`, `RUN_STORE_FILE`, `LOCK_FILE` | The file names: `agent.sqlite`, `run.sqlite` and `owner.lock` | |
+| `PACK_FORMAT` | The pack's format name, `agentrun.home/1` | |
+| `AgentHomeError` | The one error class of this package ([Errors](#errors)) | |
+| `EXPORTABLE_KINDS`, `SECRET_KINDS`, `projectForExport(kind, value)` | What an exporter may copy, what never leaves the home, and one document as an exporter writes it ([Exporting a home](#exporting-a-home)). Also from `@parcha/pi-durable-agent/export` | |
+
+The types the package exports:
+
+- **Home.** `AgentHome` (`{ dir, identity }`), `AgentHomeState` (what `readAgentHome` returns: `identity`, `definition`,
+  `source?`, `skills`, `aliases`, `bindings`, `runs`, `leases`, `profiles`), `AgentDefinitionInput` (a definition whose
+  `id` is optional), and `HomeAccess`.
+- **Stored kinds**, field for field as in [Stored kinds](#stored-kinds): `AgentIdentity`, `AgentDefinition`,
+  `AgentSource`, `SkillFile`, `AgentAlias`, `ToolBindings`, `RunRecord`, `ProfileLease` and `BrowserProfile`.
+- **Runs.** `RunPaths`, `RunStart`, `RunSeed` (plain data, so a host can carry it to the run's side), `CarryBack`,
+  `ProfileStore` and `ProfileTarget` (the host's Harness, or any Session on the run store).
+- **Packs.** `PackOptions`, `Skipped`, `HomeManifest` (the manifest's fields, in [Moving a home](#moving-a-home)),
+  `ImportOptions`, `ImportReport`, and `HomeCheck` (`{ name, status, message, detail? }`, `status` being `ok`, `warn`
+  or `fail`). `ImportStep` and `ImportOptions.inject` belong to this package's tests and are not part of its contract.
+
+### `@parcha/pi-durable-agent/export`
+
+`EXPORTABLE_KINDS`, `SECRET_KINDS` and `projectForExport`, and nothing else. It loads no other module, so an exporter or
+a site build needs neither pi-durable nor pi-ai. `projectForExport` throws nothing of its own.
+
+### `@parcha/pi-durable-agent/timeline`
+
+No dependency, no Node built-in, and no thrown error of its own: a page, a viewer and a harness can import it.
+
 | Export | Does |
 |---|---|
-| `createAgentHome(dir, { definition, skills? })` | A new agent home. A definition with a field it does not keep (a model, for one) is refused, and nothing is created |
-| `openAgentHome(dir)` | The home in `dir`, checked to be this format |
-| `readAgentHome(home, { access? })` | Everything the home holds, read in one pass |
-| `homeRevision(home, { access? })` | The agent store's head commit number: every write that changes the home moves it, reads do not. With the identity's id it is the home's version, an ETag |
-| `setAlias(home, host, externalId)`, `setBindings(home, host, bindings)` | A host's id for the agent, and where its tools run there |
-| `startRun`, `carryBack` | A run's start and end, above; `carryBack` takes `{ access? }` |
-| `prepareRun`, `seedRun`, `undoPrepare`, `HomeAccess`, `localAccess` | A start as its home and run halves, and how a host reaches a home on a disk ([An agent home on a disk](#an-agent-home-on-a-disk)) |
-| `refreshAgentHome(home, { sha, from?, ifRevision?, definition, skills })` | The cached definition and skills replaced by the ones at `sha` ([Following the agent's repo](#following-the-agents-repo)) |
-| `runPaths(home, runId)` | A run's `dir` (what `pi-durable-disk run --dir` takes), `storePath` (`store/run.sqlite`) and `workspace` (`work/`) |
-| `durableProfileStore(target, { provider?, signal? })` | pi-browser's `ProfileStore` over a run store; `target` is the host's Harness or any Session on the file |
-| `EXPORTABLE_KINDS`, `SECRET_KINDS`, `projectForExport(kind, value)` | What an exporter may copy, what never leaves the home, and one document as an exporter writes it ([Exporting a home](#exporting-a-home)). Also from `@parcha/pi-durable-agent/export`, which loads no other module, so an exporter or a site build needs neither pi-durable nor pi-ai |
-| `timelineOf`, `timelineReducer`, `groupTimeline`, `renderText` | The timeline above, from `@parcha/pi-durable-agent/timeline` |
-| `packHome(home, { out, maxBytes?, maxMembers?, exportRunStore?, now? })` | The pack of a home, above; returns `{ manifest, skipped }`, `skipped` being `{ path, reason }` |
-| `readPack(file, { maxBytes?, maxMembers? })` | `{ ok, manifest, checks }`, without writing a home |
-| `importPack(file, dir, { replace?, ifRevision?, maxBytes?, maxMembers?, now? })` | The pack as the home in `dir`, in place; `ifRevision` is a `homeRevision`; returns `{ home, report }` |
-| `AgentHomeError` | `code` is `invalid`, `exists`, `missing`, `busy`, `format`, `stale`, `too_large` or `check` (`checks` lists the home checks behind it) |
+| `timelineOf(entries, options?)` | The rows of a stored conversation, in log order. The options (`TimelineOptions`) are `settled` (nothing is running: a call with no result is interrupted), `conversationId` (for entries and events that carry none), `agentLabel` (a row's `agent_label`, from its conversation id), `labels` (labels for this call only), `caps` (the cut lengths of `CAPS`), and `now`, the clock for retry and poll waits, which only live rows use |
+| `timelineReducer(options?)` | Live rows, with the same options. `apply(events)` takes the `snapshot` event, then each batch from `watchEvents`, and returns `{ rows, drop }` (upsert the rows by id, delete the `drop` ids); `rows()` returns every row now, in log order |
+| `groupTimeline(rows)` | Rows to groups, for a page: rounds of calls, folds and nested calls, each a `Group` |
+| `foldCalls(calls)` | Adjacent calls of one tool, folded into `Fold`s. A call with inner rows keeps its own line |
+| `failedCall(call)` | Whether a call's result has `tool_status` `failed` |
+| `renderText(rowsOrGroups, { fold? })` | Plain text, one line per row or group; `fold: false` shows every call on its own line |
+| `registerLabel(tool, label, fold?)` | The label of a host's own tool, in the past tense, for every later call; `fold` says how its calls fold into one line |
+| `labelOf(tool, args, result?, extra?)` | The label of one call. An unknown tool gets `Using tool: <name>` |
+| `foldLabel(tool, calls)` | One line for several calls of one tool, from their input and output previews |
+| `inputPreview(args, max)` | The input worth showing, or `null`: a `description`, `command`, `query`, `file_path`, `url`, `path` or `code` argument, with a URL's query values dropped, cut to `max` |
+| `CAPS` | The caps a row's `summary`, `preview`, `text` and `thinking` are cut to: 500, 500, 2000 and 100 |
+
+Its types: `TimelineEvent` (Grep's fields, plus the optional ones above) and `TimelineKind`, `TimelineOptions`,
+`EntryLike` (a pi conversation entry as stored), `AgentEventLike` (a pi event), `Call`, `Fold`, `Group`, `LabelFn`,
+`FoldSpec` and `ToolResultView`.
+
+### Errors
+
+`AgentHomeError` has a `code` and, for a `check`, the `checks` behind it (`HomeCheck[]`, the failed ones with status
+`fail`). What the package refuses is an `AgentHomeError`. A failure of the file system or of SQLite passes through as it
+is, and so does what a host's `make` throws through `durableProfileStore`. A start that fails and whose undo fails too
+throws an `AggregateError` holding both.
+
+| `code` | Means |
+|---|---|
+| `invalid` | An argument or a definition is wrong, or a target is not what the call needs |
+| `exists` | A home or a run is already there |
+| `missing` | A home, a run, a run's store or a pack file is not there |
+| `busy` | Another writer held the home for more than 5 seconds. The lock is an exclusive SQLite lock the kernel drops when its holder dies, so a crashed writer never leaves it |
+| `format` | A store or a skill this version cannot read: no identity or definition, another format version, no readable head commit, a store that does not accept `synchronous = FULL`, a skill that does not match its SHA-256, or an import journal that cannot be settled |
+| `stale` | The home moved since the caller read it: `ifRevision`, `from`, or a `sha` that is not the cache's |
+| `too_large` | A pack over `maxBytes` or `maxMembers`, from `packHome` |
+| `check` | A pack or an import failed a check: `checks` lists them all |
 
 The package does not import pi-browser at run time: `ProfileStore` is declared here by shape. `npm run typecheck`
 (after the workspace build) checks that the declaration is exactly pi-browser's type, read from the return of

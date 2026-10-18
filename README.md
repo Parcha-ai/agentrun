@@ -71,6 +71,7 @@ Each package works on its own. Install the ones you need.
 | [`@parcha/pi-browser`](packages/pi-browser/README.md) | A browser for pi agents: crash-safe session custody, evidence with SHA-256, typed failures | pi-durable and chord; a provider (a local Chrome needs no key, Browserbase needs its key) | its README's [no-key command](packages/pi-browser/README.md#try-it-without-a-key-or-a-chrome) | not yet published; a release publishes it |
 | [`@parcha/pi-vision`](packages/pi-vision/README.md) | Eyes for pi agents: documents, images, scans and video within the model's limits, a receipt for every look | nothing for a document's text; Photon or sharp for images; a pi-durable host (pi-durable, chord and pi-ai); a model that looks, for questions about a file | its README's [first read](packages/pi-vision/README.md#a-first-read-with-no-key) | published (`@beta`) |
 | [`@parcha/pi-transport`](packages/pi-transport/README.md) | Boxes for pi agents: one interface over a directory, a container, a sandbox or a VM | pi-durable and chord; Docker for the Docker provider | the "A box" example in its README (needs Docker) | held, not published |
+| [`@parcha/pi-durable-agent`](packages/pi-durable-agent/README.md) | An agent home for pi agents: its definition, skills, saved sign-ins and runs in one directory that also moves as one file, a pack. An agent's sign-ins are saved in its home, so its next run starts signed in | pi-durable and chord; nothing else for its quickstart (a browser provider such as pi-browser makes the sign-ins) | its README's [quickstart](packages/pi-durable-agent/README.md#quickstart-no-key-no-network) | not yet published; a release publishes it |
 
 A held package is built, tested and verified with the others, and its manifest says `"private": true`; it installs from
 a packed tarball, not from npm.
@@ -179,6 +180,7 @@ It plans subquestions, researches them in parallel, screens evidence, and writes
 | [`@parcha/pi-browser`](packages/pi-browser/README.md) | A browser for pi agents: crash-safe session custody, evidence with SHA-256, typed failures (not yet published) |
 | [`@parcha/pi-vision`](packages/pi-vision/README.md) | Eyes for pi agents: documents, images, scans and video within the model's limits, typed misses, a priced receipt for every look |
 | [`@parcha/pi-transport`](packages/pi-transport/README.md) | Boxes for pi agents: one small interface over a directory, a container, a sandbox or a VM, providers for this machine and Docker, a strict config, and a conformance suite a vendor can run (not yet published) |
+| [`@parcha/pi-durable-agent`](packages/pi-durable-agent/README.md) | An agent home for pi agents: its definition, skills, saved sign-ins and runs in one directory that also moves as one pack. An agent's sign-ins are saved in its home, so its next run starts signed in (not yet published) |
 
 This release is `0.1.0-beta.4`. See the [changelog](CHANGELOG.md) and [contracts and limits](docs/guide.md#limits).
 
