@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { exampleAt, fileName, inputOf, INSTRUCTIONS, skills } from './vision-agent/agent.ts';
 import { argvFor, options } from './vision-agent/run.ts';
+import { scriptFor } from './vision-agent/fakes.ts';
 import { jevKeyOf, jevOptionsOf, liveParts, missingKeys, namedModels, preflight } from './vision-agent/live.ts';
 import { demo } from '@parcha/agentrun-reference';
 
@@ -159,8 +160,8 @@ test('on fakes the document check runs over the committed PDFs and ends with a r
   const manifest = JSON.parse(readFileSync(join(record, 'manifest.json'), 'utf8'));
   assert.deepEqual([manifest.kills, manifest.generations, manifest.example], [0, 1, 'document-check']);
   const kept = JSON.parse(readFileSync(join(record, 'blobs', `${manifest.result.blob}.json`), 'utf8'));
-  assert.equal(kept.report.page, 'report/report.html');
-  const page = readFileSync(join(record, 'blobs', `${kept.report.files['report.html']}.html`), 'utf8');
+  assert.equal(kept.report.page, 'report/index.html');
+  const page = readFileSync(join(record, 'blobs', `${kept.report.files['index.html']}.html`), 'utf8');
   assert.match(page, /<section id="answer">/);
   assert.ok(existsSync(join(record, 'blobs', `${kept.report.files['frames/one.png']}.png`)), 'the picture the report shows is a blob too');
   const [cite, ...more] = kept.rows[0].cites;
@@ -181,4 +182,21 @@ test('on fakes a film question runs over a film given beside it, and the report 
   const manifest = JSON.parse(readFileSync(join(tmp, 'recording', 'manifest.json'), 'utf8'));
   const kept = JSON.parse(readFileSync(join(tmp, 'recording', 'blobs', `${manifest.result.blob}.json`), 'utf8'));
   assert.deepEqual(kept.rows[0].cites.map((cite) => [cite.fragment, cite.note]), [['#t=1', '1 s']]);
+});
+
+// The report skill writes report/index.html, so the scripted lead and the fallback prompt do too: one name, fakes and live alike.
+test('the report is report/index.html everywhere: the scripted lead writes and returns it, and the instructions name it with or without the report skill', () => {
+  const script = scriptFor({ question: 'q', files: ['a.pdf'] });
+  assert.match(script, /cat > report\/index\.html <</);
+  assert.match(script, /report: "report\/index\.html" \}/);
+  assert.match(script, /in report\/index\.html\./);
+  assert.doesNotMatch(script, /report\.html/);
+  const withSkill = INSTRUCTIONS(skills());
+  assert.ok(skills().some((skill) => skill.name === 'report'), 'the package ships the report skill');
+  assert.match(withSkill, /report\/index\.html/, 'the report skill names its entry');
+  assert.doesNotMatch(withSkill, /report\.html/);
+  const without = INSTRUCTIONS([]);
+  assert.match(without, /Write the report as `report\/index\.html`/);
+  assert.match(without, /\(`report\/index\.html`\)/);
+  assert.doesNotMatch(without, /report\.html/);
 });
