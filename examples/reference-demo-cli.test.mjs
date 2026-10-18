@@ -11,8 +11,8 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
-import { effectiveBoxes } from './reference/demo-spec.ts';
-import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from './reference/index.ts';
+import { effectiveBoxes } from '../packages/reference/dist/demo-spec.js';
+import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-reference';
 import { ORIGINAL, FIXTURE, BASELINE, run, composeHost, destroyBoxes, meterKnown, RUN_LABEL, localBoxes, ctx, finish, lines, planFor, recordingPlace, specWith, SITES, signInHome, filesIn, killSpec, boxed } from './reference-demo-helpers.mjs';
 
 test('the spec\'s kills are a list: a named crossing and a storm, in order, each ending one process, and the run finishes with nothing paid twice', { timeout: 300_000 }, async (t) => {
@@ -179,7 +179,7 @@ test('a kill spec checks hold and waitMs, and the plan carries them (waitMs defa
 test('ToolContext.live: false on a no-key run, true when the host is live, so one set of tools reads live or replays a capture', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-live-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
-  const { localHost, placeAt } = await import('./reference/index.ts');
+  const { localHost, placeAt } = await import('@parcha/agentrun-reference');
   const seen = [];
   for (const live of [false, true]) {
     const place = await placeAt(join(tmp, String(live)));
@@ -200,7 +200,7 @@ test('boxes on fakes are local, and Docker is used only with --live: a no-key ru
 test('fakes.extensions are for a no-key run: a live host does not install them', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-live-ext-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
-  const { localHost, placeAt } = await import('./reference/index.ts');
+  const { localHost, placeAt } = await import('@parcha/agentrun-reference');
   const scripted = { name: 'scripted', tools: [] };
   const fakes = { model: () => { throw new Error('unused'); }, tools: {}, judge: async () => ({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }), pages: {}, start: 'about:blank', extensions: [scripted] };
   assert.deepEqual(localHost(await placeAt(join(tmp, 'a')), fakes, { live: false }).host.tools.extensions, [scripted]);
@@ -259,7 +259,7 @@ test('a kill\'s where: only a crossing whose info has those values counts, and n
 });
 test('a run is keyed by a fresh id that starts with its demo\'s name (the place\'s paths.id), so two demos never share a run', { timeout: 300_000 }, async (t) => {
   const { readJournal } = await import('@parcha/agentrun-pi/durable');
-  const { RUN_KEY } = await import('./reference/index.ts');
+  const { RUN_KEY } = await import('@parcha/agentrun-reference');
   const parent = await mkdtemp(join(tmpdir(), 'reference-keyed-'));
   t.after(() => rm(parent, { recursive: true, force: true }));
   for (const name of ['alpha-demo', 'beta-demo']) {
@@ -297,7 +297,7 @@ test('one fresh run id per invocation, shared by its processes: a second run of 
   const shared = await mkdtemp(join(tmpdir(), 'reference-shared-disk-'));
   t.after(() => rm(shared, { recursive: true, force: true }));
   const { options } = await killSpec(t);
-  const { localPlace } = await import('./reference/index.ts');
+  const { localPlace } = await import('@parcha/agentrun-reference');
   const seen = [];
   const released = [];
   const invoke = async (name) => {

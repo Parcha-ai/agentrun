@@ -11,8 +11,8 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
-import { effectiveBoxes } from './reference/demo-spec.ts';
-import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from './reference/index.ts';
+import { effectiveBoxes } from '../packages/reference/dist/demo-spec.js';
+import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-reference';
 import { ORIGINAL, FIXTURE, BASELINE, run, composeHost, destroyBoxes, meterKnown, RUN_LABEL, localBoxes, ctx, finish, lines, planFor, recordingPlace, specWith, SITES, signInHome, filesIn, killSpec, boxed } from './reference-demo-helpers.mjs';
 
 // ---- run.json host lines from place.status() --------------------------------------------------------------------------------------------------
@@ -112,7 +112,7 @@ test('a place\'s signals may end with signals-failed or throw: a signals.failed 
   t.after(() => process.off('unhandledRejection', onUnhandled));
   const hostLines = (recording, kind) => readEvents(recording).filter((line) => line.source === 'host' && line.kind === kind);
   // A message: a path outside the run\'s directory becomes <path>, the run\'s own stays, and it is capped at 240 characters.
-  const { messageOf } = await import('./reference/demo.ts');
+  const { messageOf } = await import('../packages/reference/dist/demo.js');
   assert.equal(messageOf(new Error('cannot reach /srv/elsewhere/x and /run/root/store/run.sqlite at http://host/a/b'), '/run/root'), 'cannot reach <path> and /run/root/store/run.sqlite at http://host/a/b');
   assert.equal(messageOf('/run/root and /run/rootless', '/run/root'), '/run/root and <path>');
   assert.equal(messageOf('x'.repeat(500), '/run/root').length, 240);
@@ -272,7 +272,7 @@ test('recording.carry.failed: a tick that fails is retried, a final failure refu
   assert.deepEqual(validateRecording(lost), []);
 });
 test('the box child\'s own recorder redacts the box\'s host name and boot id even where no sign-in file is handed down (no AGENTRUN_HOME): a box-side line holding them is clean', async () => {
-  const { trackSecrets } = await import('./reference/secrets.ts');
+  const { trackSecrets } = await import('../packages/reference/dist/secrets.js');
   const { hostname } = await import('node:os');
   const boot = existsSync('/proc/sys/kernel/random/boot_id') ? readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() : undefined;
   const { redact } = trackSecrets({}, { name: 'x' }, join(tmpdir(), 'no-such-sign-in', 'auth.json'));
@@ -283,7 +283,7 @@ test('the box child\'s own recorder redacts the box\'s host name and boot id eve
   assert.ok(cleaned.includes('says hello'));
 });
 test('RECORD_STARTED gives a fresh recording directory its clock (an existing one is left alone), and a spool rolls into segments past segmentBytes that a second process still counts as one', async (t) => {
-  const { openRecorder, startedAt } = await import('./reference/record.ts');
+  const { openRecorder, startedAt } = await import('../packages/reference/dist/record.js');
   const tmp = await mkdtemp(join(tmpdir(), 'reference-segments-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const clock = '2026-10-16T09:00:00.000Z';

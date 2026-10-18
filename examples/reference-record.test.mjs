@@ -210,7 +210,7 @@ test('a process killed while it writes a blob never leaves a torn file in blobs/
   const tmp = await mkdtemp(join(tmpdir(), 'reference-blob-kill-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const bytes = 'x'.repeat(200_000);
-  const record = new URL('./reference/record.ts', import.meta.url).href;
+  const record = new URL('../packages/reference/dist/record.js', import.meta.url).href;
   // A child that keeps one blob and is SIGKILLed at a point of the write: part-way through the bytes, or after them and before the rename.
   const script = `
     import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
