@@ -323,6 +323,11 @@ jobs:
           test/local-run.test.ts test/cli-local.test.ts test/quickstart.test.ts test/confine.test.ts
           test/examples/kill-9.test.ts test/examples/audit-across-crashes.test.ts test/examples/no-double-charge.test.ts
           test/examples/fork-into-many.test.ts test/examples/serve-and-park.test.ts
+      - name: agentrun-serve's tests
+        # Each agentrun-serve run is a local run as above, so serve's API, recovery and timeline tests stand on the Mac's
+        # ps, path-addressed run root and F_FULLFSYNC too.
+        working-directory: packages/serve
+        run: node --test --test-concurrency=4 --test-timeout=240000 'test/*.test.mjs'
       - name: The stranger's no-key quickstart
         # The README's quickstart, then the keyless examples against the registry's beta (#557). On a Mac the walk installs
         # 0.1.0-beta.14 at the least, the first release that runs there (the spec's examples.platformFloors).
