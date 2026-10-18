@@ -2,7 +2,7 @@
   "name": "hero",
   "title": "Nine Grids Read",
   "targets": ["local"],
-  "claim": "One agent reads nine grid operators' charts with vision, survives a kill inside a paid call, and pays for each call once.",
+  "claim": "One agent reads nine grid operators' charts with vision, and every number it reports is cited to the screenshot it was read from.",
   "models": {
     "lead": { "needs": ["text", "tools"], "default": "openai/gpt-6-luna" },
     "eyes": { "needs": ["images"] }
