@@ -1,0 +1,42 @@
+{
+  "name": "video-chapters",
+  "title": "A Film, in Chapters",
+  "targets": ["local"],
+  "browser": false,
+  "codeMode": { "timeoutMs": 2700000 },
+  "claim": "One agent watches NASA's 1969 Apollo 11 film a minute at a time, sound included, and writes its chapters, each with a keyframe and citing the minutes it rests on.",
+  "models": {
+    "lead": { "needs": ["text", "tools"], "default": "openai/gpt-6-luna" },
+    "eyes": { "needs": ["video"], "default": "google/gemini-3.8-flash" }
+  },
+  "keys": [
+    {
+      "oneOf": [
+        { "env": "OPENAI_API_KEY", "why": "The lead (openai/gpt-6-luna), and the eyes too when it is the only key (openai/gpt-6-sol, which takes frames, not video).", "where": "platform.openai.com, API keys", "required": true, "for": "live" },
+        { "env": "GEMINI_API_KEY", "why": "The eyes (google/gemini-3.8-flash, which takes a video window with its sound), and the lead too when it is the only key.", "where": "aistudio.google.com, Get API key", "required": true, "for": "live" },
+        { "env": "ANTHROPIC_API_KEY", "why": "The lead and the eyes (anthropic/claude-haiku-5-5, which takes frames) when it is the only key.", "where": "console.anthropic.com, API keys", "required": true, "for": "live" },
+        [
+          { "env": "VIDEO_MODEL_BASE_URL", "why": "An OpenAI-compatible gateway that serves the models under their public ids, instead of provider keys.", "where": "your gateway's base URL, ending in /v1", "required": true },
+          { "env": "VIDEO_MODEL_API_KEY", "why": "The gateway's credential.", "where": "your gateway", "required": true }
+        ]
+      ],
+      "why": "A model provider's key for --live (the run names every model by provider and public id).",
+      "for": "live"
+    }
+  ],
+  "programs": [
+    { "cmd": "ffmpeg", "why": "The agent's code cuts the film's windows and keyframes with it.", "required": true },
+    { "cmd": "ffprobe", "why": "The agent's code reads the film's length with it.", "required": true }
+  ],
+  "expectedCalls": 55,
+  "expectedCost": 0.4,
+  "panels": ["workflow-map", "vision"],
+  "sources": "examples/video-chapters/sources.json",
+  "tools": [
+    { "name": "cite", "local": "examples/video-chapters/tools.ts", "hosted": null }
+  ],
+  "input": {
+    "shape": "examples/video-chapters/job.ts, Input: the film (a file in the workspace), the seconds to read from and to, the seconds of film in one look",
+    "default": "NASA's film whole, in windows of 60 s (what --live reads); a run on fakes reads the committed clip (clip/clip.json) in windows of 8 s, with no network"
+  }
+}
