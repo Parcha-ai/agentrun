@@ -60,9 +60,10 @@ export type InputItem = { id: string; title?: string; url?: string; path?: strin
 export type Example = { name: string; dir: string; question: string; items: InputItem[] };
 
 const EXAMPLES = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-/** An example folder by its path or its name under examples/. */
+/** An example folder under examples/, by its path or its name; the run carries its name, so a folder elsewhere is refused. */
 export function exampleAt(where: string): Example {
-  const dir = existsSync(where) ? resolve(where) : join(EXAMPLES, basename(where));
+  const dir = join(EXAMPLES, basename(resolve(where)));
+  if (existsSync(where) && resolve(where) !== dir) throw new Error(`${where}: an example is a folder under examples/; for files elsewhere, give --input with the question and the files`);
   const question = readFileSync(join(dir, 'question.md'), 'utf8').trim();
   const { items } = JSON.parse(readFileSync(join(dir, 'inputs.json'), 'utf8')) as { items: InputItem[] };
   return { name: basename(dir), dir, question, items };

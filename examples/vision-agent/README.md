@@ -30,8 +30,8 @@ On fakes a scripted lead runs one script whatever is asked (one look at the firs
 | Name | For |
 |---|---|
 | `GEMINI_API_KEY` (or `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or a gateway's `VIDEO_MODEL_BASE_URL` and `VIDEO_MODEL_API_KEY`) | the lead and the eyes; the defaults are one value each in `demo.json` |
-| `TYPESAFE_API_KEY` (or `OPENROUTER_API_KEY` when OpenRouter serves jev-1.14.0) | Jev, which judges frames and pages and draws boxes |
-| `FAL_KEY` | Scribe v2 on fal, for speech (not needed when the gateway passes fal's queue through) |
+| `TYPESAFE_API_KEY` | Jev, which judges frames and pages and draws boxes |
+| `FAL_KEY` | Scribe v2 on fal, only for a question about speech (not needed when the gateway passes fal's queue through) |
 | `ffmpeg`, `ffprobe`, `pdftoppm`, `pdftotext`, `node` | the agent's code cuts frames, clips and audio, renders pages and reads a PDF's text layer |
 
 ## Runtime dependencies

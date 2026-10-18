@@ -1,7 +1,7 @@
 // The models of a live run, each named by its provider and public model id as pi-ai's catalog names it: the lead writes
 // the code, the eyes watch a window with its sound (Google's take video; any other eyes take frames), Jev judges frames and
-// draws the box (TYPESAFE_API_KEY, or OPENROUTER_API_KEY through OpenRouter), and Scribe v2 on fal writes what is said
-// (FAL_KEY). A run reaches the lead and the eyes with the user's own keys, or through an OpenAI-compatible gateway
+// draws the box (TYPESAFE_API_KEY), and Scribe v2 on fal writes what is said (FAL_KEY, needed only when a question
+// needs speech). A run reaches the lead and the eyes with the user's own keys, or through an OpenAI-compatible gateway
 // (VIDEO_MODEL_BASE_URL and VIDEO_MODEL_API_KEY) that serves each model under its public id; such a gateway may also pass
 // fal's queue through at its root (`/fal-queue`), which takes its key as a bearer token.
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
@@ -80,28 +80,29 @@ function catalogOf(env: NodeJS.ProcessEnv, models: readonly PublicModel[]): Mode
   return catalog;
 }
 
-/** Scribe v2 on fal: fal's own queue with FAL_KEY, else the gateway's pass-through with its key as a bearer token. */
+/** Scribe v2 on fal: fal's own queue with FAL_KEY, else the gateway's pass-through with its key as a bearer token; none
+ *  without either, and a question that needs no speech runs without it. */
 export function transcriberOf(env: NodeJS.ProcessEnv) {
   if (env.FAL_KEY) return falTranscriber({ apiKey: () => env.FAL_KEY });
   if (env.VIDEO_MODEL_BASE_URL && env.VIDEO_MODEL_API_KEY) return falTranscriber({ apiKey: () => env.VIDEO_MODEL_API_KEY, queueUrl: `${env.VIDEO_MODEL_BASE_URL.replace(/\/v1\/?$/, '')}/fal-queue`, auth: 'bearer' });
-  throw new Error('--live needs FAL_KEY (fal.ai, for Scribe v2), or a gateway that passes fal\'s queue through (VIDEO_MODEL_BASE_URL and VIDEO_MODEL_API_KEY).');
+  return undefined;
 }
 
 /** The reference entry's live parts: the lead and eyes the flags name or the keys allow, Jev as the host's judge (which
  *  `vision.judge` goes through, held to the demo's Jev caps), and the transcriber. */
 export function liveParts(context: { env: NodeJS.ProcessEnv; models: { provider?: string; model?: string; eyesModel?: string } }): LiveParts {
   const { env, models } = context;
-  if (!env.TYPESAFE_API_KEY && !env.OPENROUTER_API_KEY) throw new Error('--live needs a Jev key, TYPESAFE_API_KEY (typesafe.ai) or OPENROUTER_API_KEY: Jev scores the frames and draws the box.');
+  if (!env.TYPESAFE_API_KEY) throw new Error('--live needs TYPESAFE_API_KEY (typesafe.ai): Jev judges the frames and pages and draws the boxes.');
   const lead = models.model && models.provider && !models.model.includes('/') ? `${models.provider}/${models.model}` : models.model;
   const chosen = chooseModels(env, { ...(lead ? { lead } : {}), ...(models.eyesModel ? { eyes: models.eyesModel } : {}) });
   const catalog = catalogOf(env, [chosen.lead, chosen.eyes]);
   const eyes = modelsEyes(catalog as never, chosen.eyes, { thinking: 'low', accepts: { video: PROVIDERS[chosen.eyes.provider]!.video } });
   if (!eyes) throw new Error(`${publicName(chosen.eyes)} takes no images, so it cannot be the eyes`);
   const transcriber = transcriberOf(env);
-  const runJudge = createJevRunner(env.TYPESAFE_API_KEY ? { apiKey: env.TYPESAFE_API_KEY, pricing: JEV_PRICE } : { provider: 'openrouter', apiKey: env.OPENROUTER_API_KEY, pricing: JEV_PRICE });
+  const runJudge = createJevRunner({ apiKey: env.TYPESAFE_API_KEY, pricing: JEV_PRICE });
   return {
     host: { models: { catalog, lead: { provider: chosen.lead.provider, modelId: chosen.lead.modelId } }, decisions: { runJudge: runJudge as never } },
-    models: { lead: publicName(chosen.lead), eyes: publicName(chosen.eyes), jev: 'typesafe/jev-1.14.0', transcriber: `fal/${transcriber.model}` },
-    vision: () => ({ eyes, transcriber }),
+    models: { lead: publicName(chosen.lead), eyes: publicName(chosen.eyes), jev: 'typesafe/jev-1.14.0', ...(transcriber ? { transcriber: `fal/${transcriber.model}` } : {}) },
+    vision: () => ({ eyes, ...(transcriber ? { transcriber } : {}) }),
   };
 }
