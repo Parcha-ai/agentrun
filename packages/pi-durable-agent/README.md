@@ -10,7 +10,14 @@ Both files are ordinary pi-durable stores at `synchronous = FULL`, read and writ
 format and no second durability layer. The host keeps everything a run needs from outside: the model, the thinking
 level, the tools, and where each tool runs. The definition names tools; the host binds them.
 
-This package is held: it is built and tested in this repository and not published yet.
+## Install
+
+```sh
+npm install @parcha/pi-durable-agent@beta
+```
+
+A release publishes it on npm under the `beta` tag, at the workspace version with this repository's other packages; its
+peers are under [Requirements](#requirements). Until one has, build it from a checkout, as the quickstart does.
 
 ## Quickstart (no key, no network)
 

@@ -94,8 +94,8 @@ test('a failed TypeScript floor rerun replaces stale success evidence', async ()
 test('release plan binds the exact verified tarballs in dependency order', () => fixture(async root => {
   const plan = await preflight(root);
   assert.deepEqual(plan.packages.map(pkg => pkg.directory), releasePackages);
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/agentrun-reference']);
-  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-agentrun-pi-${version}.tgz`, `parcha-pi-durable-disk-${version}.tgz`, `parcha-pi-browser-${version}.tgz`, `parcha-pi-vision-${version}.tgz`, `parcha-agentrun-reference-${version}.tgz`]);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/pi-durable-agent', '@parcha/agentrun-reference']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-agentrun-pi-${version}.tgz`, `parcha-pi-durable-disk-${version}.tgz`, `parcha-pi-browser-${version}.tgz`, `parcha-pi-vision-${version}.tgz`, `parcha-pi-durable-agent-${version}.tgz`, `parcha-agentrun-reference-${version}.tgz`]);
   assert.ok(plan.packages.every(pkg => /^sha512-/.test(pkg.integrity) && /^[a-f0-9]{64}$/.test(pkg.sha256)));
 }));
 test('unlicensed source and inconsistent tags fail before publication', () => fixture(async root => {
@@ -213,7 +213,7 @@ test('Apache release preserves the approved root license and notices in every ar
   await recordPackages(root);
   const plan = await preflight(root);
   assert.equal(plan.license, 'Apache-2.0');
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/agentrun-reference']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/pi-durable-agent', '@parcha/agentrun-reference']);
   await writeFile(join(root, 'packages/pi-durable-disk/NOTICE'), `${notice}\nThird-party notice kept after the repository's.\n`);
   await recordPackages(root);
   assert.equal((await preflight(root)).packages.length, releasePackages.length, 'a published package may append third-party notices to the root NOTICE');
@@ -353,6 +353,14 @@ test('the browser package is published: listed, not held, a release manifest at 
   assert.ok(plan.indexOf('@parcha/pi-browser') > plan.indexOf('@parcha/pi-durable-disk'), 'in the plan, after the packages before it in the map');
 }));
 
+test('the agent-home package is published: listed, not held, a release manifest at the workspace version, and in the plan after pi-vision', () => fixture(async root => {
+  assert.ok(releasePackages.includes('pi-durable-agent') && !heldPackages.includes('pi-durable-agent'), 'published from this checkout');
+  const workspace = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  checkManifest(repoManifest('pi-durable-agent'), 'pi-durable-agent', workspace.version, workspace.license);
+  const plan = (await preflight(root)).packages.map(pkg => pkg.name);
+  assert.ok(plan.indexOf('@parcha/pi-durable-agent') > plan.indexOf('@parcha/pi-vision'), 'in the plan, after the packages before it in the map');
+}));
+
 test('the transport package is held: listed, private, at the workspace version, and published only from a tree that lifts the hold', () => fixture(async root => {
   assert.ok(heldPackages.includes('pi-transport') && !releasePackages.includes('pi-transport'), 'held in this checkout');
   assert.equal(repoManifest('pi-transport').private, true);
@@ -362,7 +370,7 @@ test('the transport package is held: listed, private, at the workspace version, 
   const { private: _, ...lifted } = JSON.parse(await readFile(path, 'utf8'));
   await putJson(path, lifted);
   await recordPackages(root);
-  assert.deepEqual((await preflight(root)).packages.slice(-2).map(pkg => pkg.name), ['@parcha/pi-transport', '@parcha/agentrun-reference'], 'a tree that lifts the hold publishes it after the published packages, before the reference host that peers on it');
+  assert.deepEqual((await preflight(root)).packages.slice(-3).map(pkg => pkg.name), ['@parcha/pi-transport', '@parcha/pi-durable-agent', '@parcha/agentrun-reference'], 'a tree that lifts the hold publishes it in its place in the map, before pi-durable-agent and the reference host that peers on it');
 }));
 
 test('a release is refused while fragments remain or the changelog lacks the version', () => fixture(async root => {
