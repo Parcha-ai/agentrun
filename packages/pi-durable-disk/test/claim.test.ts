@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,15 +61,20 @@ function rig(init: { behave?: Record<string, unknown>; sudo?: boolean; extraMoun
   const mountRoot = join(dir, "mnt");
   const root = join(mountRoot, "runs", REF.id);
   const state: FakeState = { procMounts, proc, daemons: {}, token: TOKEN, mounts: {}, holders: {}, extraMounts: init.extraMounts ?? [], behave: init.behave ?? {}, calls: [] };
+  // Whole or not at all, as the fake host writes them: a tool started meanwhile reads the state and the mount table.
+  const replace = (path: string, text: string) => {
+    writeFileSync(`${path}.${process.pid}.tmp`, text);
+    renameSync(`${path}.${process.pid}.tmp`, path);
+  };
   const write = (s: FakeState) => {
-    writeFileSync(statePath, JSON.stringify(s));
+    replace(statePath, JSON.stringify(s));
     rmSync(proc, { recursive: true, force: true });
     for (const [pid, argv] of Object.entries(s.daemons)) {
       mkdirSync(join(proc, pid), { recursive: true });
       writeFileSync(join(proc, pid, "cmdline"), argv.join("\0") + "\0");
     }
     const lines = [...s.extraMounts, ...Object.entries(s.mounts).map(([mp, m]) => `${m.source} ${mp} fuse.archil rw,allow_other 0 0`)];
-    writeFileSync(procMounts, lines.join("\n") + "\n");
+    replace(procMounts, lines.join("\n") + "\n");
   };
   write(state);
   const wrap = (tool: string) => {
