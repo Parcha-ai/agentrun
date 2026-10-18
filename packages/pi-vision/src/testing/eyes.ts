@@ -18,6 +18,7 @@ export type FakeAnswer =
   | { readonly fail: string }
   | { readonly hang: true };
 
+/** One request the fake eyes received: its number, its question, its context and the shape of each part. */
 export type FakeEyesRequest = {
   /** 1-based, in arrival order. */
   readonly n: number;
@@ -26,6 +27,7 @@ export type FakeEyesRequest = {
   readonly parts: readonly { readonly type: Part["type"]; readonly mimeType?: string; readonly fragment?: string; readonly width?: number; readonly height?: number; readonly chars: number }[];
 };
 
+/** What the fake eyes answer and how they are priced. With `ledgerPath`, each request is also appended to that file as it arrives. */
 export type FakeEyesOptions = {
   /** Default "fake-eyes". */
   readonly model?: string;
@@ -37,6 +39,7 @@ export type FakeEyesOptions = {
   readonly ledgerPath?: string;
 };
 
+/** Eyes with a ledger of the requests they received and the credential they hold. */
 export type FakeEyes = Eyes & {
   readonly ledger: readonly FakeEyesRequest[];
   /** The credential this fake holds. */
@@ -48,6 +51,7 @@ const tokensIn = (request: FakeEyesRequest) => request.parts.reduce((sum, part) 
 
 const abortError = (signal: AbortSignal) => signal.reason instanceof Error ? signal.reason : Object.assign(new Error("aborted"), { name: "AbortError" });
 
+/** Scripted eyes: the answers in order (the last repeats), a ledger of every request, and a credential held the way real eyes hold theirs. */
 export function fakeEyes(options: FakeEyesOptions = {}): FakeEyes {
   const ledger: FakeEyesRequest[] = [];
   const answers = options.answers?.length ? options.answers : ["fake answer"];
