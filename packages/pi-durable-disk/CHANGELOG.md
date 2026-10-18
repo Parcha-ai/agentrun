@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+## 0.1.0-beta.16 (2026-10-18)
+
+- **A place's outcome carries the models the run's live parts chose (`PlaceOutcome.models`)**
+  - `PlaceOutcome.models?: Record<string, string>`: the role-to-model ids (`lead`, `eyes`, ...) the app reported, on any
+    outcome status, so a supervisor's manifest names the models of a remote run as of a local one.
+  - `archilPlace` reads it from `run.json`'s final status detail (`detail.models`); `localPlace` from the instance's
+    `{"outcome":...}` line, or from `run.json` without one.
+  - Both keep it only when it is a plain object whose values are all strings. A missing or malformed one is left out, never
+    replaced by `{}`. Before, `localPlace` passed the outcome line's `models` through unchecked, a malformed one included,
+    and `archilPlace` never carried it.
+- **`archilPlace.recordHome`: a runner on a box records into the run's disk, and the place brings the recording home**
+  - `Place.recordHome` (`PlaceRecordHome`): `dir(attempt)` is where that attempt's runner records, and
+    `bringHome(into, { final })` brings what it recorded into the supervisor's recording directory. `archilPlace` has
+    it when its control can list (`RecordControl`, as `archilControl` does); `localPlace` has none, since its runner
+    writes the supervisor's directory itself.
+  - `dir(attempt)` is `<root>/record/<attempt>`, inside the run's directory. `bringHome` reads it over S3 (list and get,
+    never the run's claim). Blobs come first, hash-checked and written whole; then the new whole lines of each
+    `.spool/*.jsonl` segment, with an offset per file name kept as what `into` already holds, so it is idempotent across
+    calls and processes. Carriers that overlap on one destination append each line once: one call at a time per
+    destination in a place, and a lock file per spool file across places and processes (a gone holder's is taken over;
+    one held past 5 s is `CARRY_FAILED`). Every write is carried to its last byte.
+  - With `ensure.create`, each start first makes the EMPTY `signals/`, `record/<attempt>/.spool/` and
+    `record/<attempt>/blobs/` over the control, owned by the run user (mode 0755), while no delegation holds the run. A
+    directory made by path on an Archil mount was seen to refuse file creates. Every file in them stays the runner's; a
+    refused put fails the start with `DIRS_REFUSED`.
+  - Box receipts: `HostDriver.box(handle)` (`HostBox`) and `PlaceStatus.boxes`. `archilPlace.status()` lists a receipt
+    for each box it started, released ones included: provider, kind, `from`, `to` and, when it has a price, the published
+    list price per second (`usdPerSecond`), the page it was read from (`source`) and the date read (`priced`). An unpriced
+    box has none of the three, never 0, and no field holds the provider's box id. `daytonaHost` reports its sandboxes, priced at `DAYTONA_LIST_PRICES`
+    (https://www.daytona.io/pricing, read 2026-10-16), with the "first 5 GiB free" applied to disk (the footnote's
+    placement is ambiguous). A box of unknown size has no price, nor does a box with a GPU, which the page prices per
+    model (`daytonaUsdPerSecond`). `localPlace` reports none.
+  - Failures carry codes (`PlaceError`). `BLOB_MISMATCH` is thrown after everything else came home. `CARRY_FAILED` is
+    thrown for a list or get that fails, and on `final` for a line whose blob never landed. `BOX_GONE` is never thrown
+    by this place: the recording lives on the disk, which outlives the box.
+- **A seed of any length stays in the supervisor's start grace**
+  - While a new run seeds it has no `run.json` heartbeat, and `ensureRunning` keeps a start in its grace only while the
+    start mark (`runs/<id>/start.json`) is younger than the grace (90 s by default). A longer seed was taken as a failed
+    start: revoked, then seeded again.
+  - Now, while the seed runs, the instance rewrites the mark's `at` every heartbeat through its claim (fsync and rename).
+    It does so only when a supervisor's mark for generation 1 is there, keeping its generation, `by`, `failures` and
+    `lastExit`. The rewrite runs on a thread of its own, one at a time, so a seed that blocks its thread (a synchronous
+    import) stays covered. It stops when the seed ends, before the open goes on, and `run.json`'s heartbeat takes over.
+  - A seeder that dies stops rewriting, and the grace runs out as for any start. The mark's format does not change.
+
 ## 0.1.0-beta.15 (2026-10-16)
 
 - **`HostDriver.kill`: take an instance away as a crash would, and `kills` says what that takes**
