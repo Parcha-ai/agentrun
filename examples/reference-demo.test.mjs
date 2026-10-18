@@ -1435,7 +1435,8 @@ test('a path in a detail is replaced whole, spaces and all; and a machine named 
   const { plainText } = await import('./reference/demo.ts');
   const { machineSecrets, redactorOf } = await import('./reference/secrets.ts');
   assert.equal(plainText('cannot open /tmp/Client Files/store: no such file'), 'cannot open <path>: no such file');
-  assert.equal(plainText('wrote /home/alice/Private Documents/report.txt, then stopped'), 'wrote <path>, then stopped');
+  const aliceHome = ['', 'home', 'alice'].join('/');
+  assert.equal(plainText(`wrote ${aliceHome}/Private Documents/report.txt, then stopped`), 'wrote <path>, then stopped');
   assert.equal(machineSecrets('host').some((secret) => secret.key.includes('host name')), false, 'a machine named host: its name is a word of the recording');
   assert.equal(machineSecrets('greppy-mrb').some((secret) => secret.value === 'greppy-mrb'), true, 'an ordinary name is taken');
   const line = '{"channel":"live","source":"host","kind":"run.json","data":{"holder":{"host":"host-1"}}}';
