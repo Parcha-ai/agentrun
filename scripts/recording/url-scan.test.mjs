@@ -51,10 +51,8 @@ test('a plain link, and a name that only contains a token word, pass', () => {
   for (const url of [
     'https://example.com/search?q=cats&page=2',
     'https://example.com/a/b?',
-    'https://example.com/a/b#token=1',
     'https://example.com/?sort_key=1&monkey=2&keys=a&tokens=3&signing=4&design=5',
     'wss://connect.browserbase.com/',
-    'ws://127.0.0.1:9222/devtools/browser/abc',
     'https://www.browserbase.com/pricing?ref=x',
     'https://docs.browserbase.com/introduction?utm=docs',
     'See https://example.com/docs. The token is not here, nor is a key=value pair.',
@@ -71,4 +69,42 @@ test('it is found raw in a text, and behind a JSON escape in a file or a value',
   const escaped = JSON.stringify({ url: 'https://example.test/live?view=1&token=abc' }).replaceAll('&', '\\u0026');
   assert.equal(credentialInFile('events.jsonl', escaped), 'url with a token-bearing query parameter (token)');
   assert.equal(credentialInFile('events.jsonl', JSON.stringify({ url: 'https://example.test/live?q=1' })), undefined);
+});
+
+// A token in the fragment is as much a credential as one in the query; our own citations use media fragments, which pass.
+test('a token-bearing name in a fragment is refused as in a query, and pi-browser\'s live-view #t=<token> with it', () => {
+  const live = `https://viewer.example/live/${s.bbSessionId}#t=${s.bbLiveViewToken}`;
+  assert.equal(credentialIn(`opened ${live}`), 'url with a token-bearing fragment parameter (t)');
+  assert.ok(!credentialIn(live).includes(s.bbLiveViewToken), 'the message holds no value');
+  for (const name of TOKEN_NAMES) assert.equal(credentialIn(`https://example.test/a#x=1&${name}=v`), `url with a token-bearing fragment parameter (${name})`, name);
+  assert.equal(credentialIn('https://example.test/a#t=abc'), 'url with a token-bearing fragment parameter (t)', 'a t that is not a media time');
+  assert.equal(credentialIn('https://example.test/a#t=19,21,x'), 'url with a token-bearing fragment parameter (t)');
+});
+
+test('media fragments pass: a time, an npt time, a page and a box', () => {
+  for (const url of ['https://example.test/film.mp4#t=19,21', 'https://example.test/film.mp4#t=npt:10,20', 'https://example.test/film.mp4#t=19', 'https://example.test/f.pdf#page=3', 'https://example.test/i.png#xywh=10,20,30,40', 'https://example.test/film.mp4#t=0:01:05.5,0:01:10', 'https://example.test/a#section-2']) {
+    assert.equal(credentialIn(url), undefined, url);
+  }
+});
+
+// A DevTools endpoint is a capability by its path alone.
+test('a ws or wss URL to a DevTools path is refused even with no query, and a plain http one is not a websocket', () => {
+  for (const url of ['ws://127.0.0.1:9222/devtools/browser/0a1b2c3d-4e5f', 'wss://chrome.example/devtools/page/ABCDEF0123']) {
+    assert.equal(credentialIn(`attach ${url}`), 'websocket url to a DevTools path', url);
+    assert.ok(!credentialIn(url).includes('0a1b2c3d') && !credentialIn(url).includes('ABCDEF0123'), 'no id in the message');
+  }
+  assert.equal(credentialIn('ws://127.0.0.1:9222/health'), undefined, 'a ws URL to another path with no query');
+  assert.equal(credentialIn('https://example.test/docs/devtools/page/overview'), undefined, 'an https docs page');
+});
+
+// Kernel's documented live view (https://www.kernel.sh/docs/browsers/live-view): api.onkernel.com/browser/live/<token>, optionally ?readOnly=true.
+test('Kernel\'s live-view path on api.onkernel.com is refused with or without a query, and the rest of that API host passes', () => {
+  for (const url of ['https://api.onkernel.com/browser/live/PLACEHOLDER-TOKEN-0123', 'https://api.onkernel.com/browser/live/PLACEHOLDER-TOKEN-0123?readOnly=true']) {
+    const found = credentialIn(`the live view is ${url}`);
+    assert.equal(found, 'kernel live-view url', url);
+    assert.ok(!found.includes('PLACEHOLDER'), 'no token in the message');
+  }
+  for (const url of ['https://api.onkernel.com/browsers', 'https://api.onkernel.com/browsers/abc123', 'https://api.onkernel.com/spec', 'https://api.onkernel.com/browser/liveness', 'https://api.onkernel.com/browser/live', 'https://docs.example.test/browser/live/x']) {
+    assert.equal(credentialIn(url), undefined, url);
+  }
 });

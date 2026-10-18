@@ -37,22 +37,44 @@ const liveViewUrl = (host: string, path: string): boolean => host === 'connect.b
 /** A parameter's name as the message may print it: its own characters only, never anything of a value. */
 const nameOf = (raw: string): string => { let name = raw; try { name = decodeURIComponent(raw); } catch { /* kept as written */ } return /^[A-Za-z0-9._-]{1,40}$/.test(name) ? name : 'unnamed'; };
 
-/** The shape of a URL that carries a credential in its query, by name, or undefined. A URL is refused when its query holds a
- *  token-bearing parameter (`token`, `access_token`, `apiKey`, `api_key`, `key`, `signature`, `sig`, `X-Amz-Signature`,
- *  `X-Goog-Signature`) with any value; when it is a ws:// or wss:// URL with a query; or when it is a live-view, debugger or
- *  connect URL with any query. The name says the parameter and never its value, so a message that repeats it leaks nothing. */
+/** A fragment's `t` is a media time (`film.mp4#t=19,21`, `#t=npt:10,20`); a `t` that is anything else is a token (a live view's own link keeps its token there). */
+const MEDIA_TIME = /^(?:npt:)?[0-9.:]+(?:,[0-9.:]+)?$/;
+const tokenName = (raw: string): boolean => { let name = raw; try { name = decodeURIComponent(raw); } catch { /* compared as written */ } return TOKEN_PARAMETERS.has(name.toLowerCase()); };
+/** Kernel's live view (https://www.kernel.sh/docs/browsers/live-view): api.onkernel.com/browser/live/<token>, optionally ?readOnly=true. The host is also Kernel's API base, so only this path prefix is a capability. */
+const KERNEL_LIVE = { host: 'api.onkernel.com', path: /^\/browser\/live\/./ } as const;
+/** A DevTools websocket endpoint is a capability by its path alone: /devtools/browser/<id>, /devtools/page/<id>. */
+const DEVTOOLS_PATH = /^\/devtools\/(?:browser|page)\/./;
+
+/** The shape of a URL that carries a credential, by name, or undefined. A URL (http, https, ws or wss) is refused when
+ *  - its query holds a token-bearing parameter (`token`, `access_token`, `apiKey`, `api_key`, `key`, `signature`, `sig`,
+ *    `X-Amz-Signature`, `X-Goog-Signature`) with any value;
+ *  - it is a ws:// or wss:// URL with a query, or a live-view, debugger or connect URL with any query;
+ *  - it is a ws:// or wss:// URL to a DevTools path (no query needed), or Kernel's live-view path on its API host;
+ *  - its fragment holds one of those names, or a `t` that is not a media time.
+ *  The name says the parameter or the kind and never a value, so a message that repeats it leaks nothing. There is no
+ *  generic path-token rule: only the named hosts and the DevTools path. */
 export function urlCredentialIn(text: string): string | undefined {
   for (const [candidate] of text.matchAll(URL_IN_TEXT)) {
-    const bare = candidate.split('#', 1)[0];
-    const mark = bare.indexOf('?');
-    if (mark === -1 || mark === bare.length - 1) continue;
-    const names = bare.slice(mark + 1).split('&').filter((part) => part !== '').map((part) => part.split('=', 1)[0]);
-    if (names.length === 0) continue;
-    const token = names.find((name) => { try { return TOKEN_PARAMETERS.has(decodeURIComponent(name).toLowerCase()); } catch { return TOKEN_PARAMETERS.has(name.toLowerCase()); } });
-    if (token !== undefined) return `url with a token-bearing query parameter (${nameOf(token)})`;
-    const where = /^[a-z]+:\/\/([^/?]*)(\/[^?]*)?/i.exec(bare.slice(0, mark));
-    if (/^wss?:/i.test(bare)) return `websocket url with a query (${nameOf(names[0])})`;
-    if (where && liveViewUrl(where[1].toLowerCase(), where[2] ?? '')) return `live-view, debugger or connect url with a query (${nameOf(names[0])})`;
+    const hash = candidate.indexOf('#');
+    const head = hash === -1 ? candidate : candidate.slice(0, hash);
+    const fragment = hash === -1 ? '' : candidate.slice(hash + 1);
+    const mark = head.indexOf('?');
+    const base = mark === -1 ? head : head.slice(0, mark);
+    const names = (part: string): [string, string][] => part.split('&').filter((item) => item !== '').map((item) => { const at = item.indexOf('='); return at === -1 ? [item, ''] : [item.slice(0, at), item.slice(at + 1)]; });
+    const queryNames = mark === -1 ? [] : names(head.slice(mark + 1));
+    const where = /^([a-z]+):\/\/([^/?]*)(\/.*)?$/i.exec(base);
+    const host = where?.[2].toLowerCase() ?? '';
+    const path = where?.[3] ?? '';
+    const token = queryNames.find(([name]) => tokenName(name));
+    if (token) return `url with a token-bearing query parameter (${nameOf(token[0])})`;
+    if (queryNames.length > 0) {
+      if (/^wss?:/i.test(base)) return `websocket url with a query (${nameOf(queryNames[0][0])})`;
+      if (liveViewUrl(host, path)) return `live-view, debugger or connect url with a query (${nameOf(queryNames[0][0])})`;
+    }
+    if (/^wss?:/i.test(base) && DEVTOOLS_PATH.test(path)) return 'websocket url to a DevTools path';
+    if (host === KERNEL_LIVE.host && KERNEL_LIVE.path.test(path)) return 'kernel live-view url';
+    const inFragment = names(fragment).find(([name, value]) => tokenName(name) || (name.toLowerCase() === 't' && !MEDIA_TIME.test(value)));
+    if (inFragment) return `url with a token-bearing fragment parameter (${nameOf(inFragment[0])})`;
   }
   return undefined;
 }
