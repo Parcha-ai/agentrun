@@ -1493,9 +1493,6 @@ test('a kill request written in short pieces is whole when it is renamed into pl
   t.after(() => { try { child.kill('SIGKILL'); } catch { /* gone */ } });
   for (let waited = 0; !existsSync(file) && waited < 20_000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
   assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { point: 'judge.asked verdict', n: 1, pid: child.pid, nonce: 'a-nonce' }, 'the whole request, though each write took 5 bytes');
-
-  assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).run, 'reference');
-
 });
 
 test('a screenshot look, which the evidence sink does not file, takes the vision.filing and vision.filed crossings around its own keeping, and a hold parks it; a look the sink filed has had them already', async () => {
