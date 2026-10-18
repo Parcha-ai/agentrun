@@ -15,16 +15,16 @@ In your project, install the core and save the complete triage workflow:
 
 ```sh
 npm install @parcha/agentrun-dsl@beta
-npx agentrun example workflow.json
-npx agentrun validate workflow.json --trusted
-npx agentrun dry-run workflow.json --trusted
+npx @parcha/agentrun-dsl@RELEASE_VERSION example workflow.json
+npx @parcha/agentrun-dsl@RELEASE_VERSION validate workflow.json --trusted
+npx @parcha/agentrun-dsl@RELEASE_VERSION dry-run workflow.json --trusted
 ```
 
 `example` refuses to overwrite a file. `--trusted` acknowledges that JavaScript in a workflow may execute during validation. Dry-run synthesizes the declared input schema; a workflow without one starts from `{}`. Supply your own JSON object when needed:
 
 ```sh
-npx agentrun validate workflow.json input.json --trusted
-npx agentrun dry-run workflow.json input.json --trusted
+npx @parcha/agentrun-dsl@RELEASE_VERSION validate workflow.json input.json --trusted
+npx @parcha/agentrun-dsl@RELEASE_VERSION dry-run workflow.json input.json --trusted
 ```
 
 Structural checks, including unknown node fields, always run. Supplied inputs also check the input schema and reachable input keys. Dry-run checks synthetic execution wiring, not model quality or effect delivery. `ok` with `skipped` means a path could not be exercised (for example, a synthetic judgment escalated or a schema cannot be synthesized); read those reasons rather than treating it as execution proof.
