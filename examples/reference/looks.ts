@@ -73,8 +73,14 @@ export function shownShots(options: { keep?: (bytes: Buffer, extension: string) 
     /** The images the eyes were shown for this look: for a `read`, the newest read of the look's own file, and for a film window only the frames inside it; for another tool whose result held the image (a screenshot), that tool's newest. A look whose read produced no image finds none. */
     of: (conversationId: string, record: LookRecord | undefined, tool: string) => {
       const reads = [...(byConversation.get(conversationId) ?? [])].reverse();
+      // A code-mode look files its path as the labels of what it was shown, joined with ', ' (a fragment when the script gave one, else the path): every picture noted under one of those labels is attached, in the look's order.
+      if (tool !== 'read' && record && reads.some((read) => read.tool === tool && read.path !== undefined)) {
+        const labels = String(record.args.path).split(', ');
+        const shown = labels.flatMap((label) => { const found = reads.find((read) => read.tool === tool && read.path === label); return found ? found.images : []; });
+        if (shown.length) return { receipt: null, images: shown };
+      }
       const entry = tool === 'read' ? reads.find((read) => read.tool === 'read' && record && read.path === record.args.path)
-        : reads.find((read) => read.tool === tool && record && read.path !== undefined && read.path === record.args.path) ?? reads.find((read) => read.tool === tool && read.path === undefined);
+        : reads.find((read) => read.tool === tool && read.path === undefined);
       if (!entry) return undefined;
       const from = record?.args.from_s;
       const to = record?.args.to_s;
