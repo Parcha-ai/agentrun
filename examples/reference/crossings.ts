@@ -22,6 +22,8 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
   const seen = new Map<unknown, number>();
   const eligible = new Map<unknown, number>();
   const done = new Set<number>();
+  // A run kill is taken once, at the first eligible matching crossing at or after its nth: one a tool kill took at the same crossing is not lost, it lands at the next.
+  let fired = false;
   return (point, options = {}) => {
     // A crossing taken while any tool call is between its dispatch and its kept answer is never a run kill point, whichever seam it is at: a kill there would leave that call unknown.
     const cut = options.cut !== false && window.open === 0;
@@ -42,9 +44,9 @@ export function crossings(plan: ChildPlan | undefined, log: string | undefined, 
     if (tool >= 0) { done.add(tool); return true; }
     if (!cut || !run) { if (point === 'event workflow.node.start') begun = true; return false; }
     // A named point is taken as named; a storm waits for the first node to have begun.
-    const due = 'storm' in run ? begun && point !== 'event workflow.node.start' && Date.now() - started >= run.gapMs : run.point === point && matches(run.where, info) && timesEligible === run.n;
+    const due = 'storm' in run ? begun && point !== 'event workflow.node.start' && Date.now() - started >= run.gapMs : run.point === point && matches(run.where, info) && timesEligible >= run.n && !fired;
     if (point === 'event workflow.node.start') begun = true;
-    if (due) process.kill(process.pid, 'SIGKILL');
+    if (due) { fired = true; process.kill(process.pid, 'SIGKILL'); }
     return false;
   };
 }
