@@ -295,7 +295,7 @@ const claimsOf = (r) => {   // every text the page states, in units that each ci
   ];
 };
 const addressOf = (c) => [c.file, c.page && `page ${c.page}`, c.t && `seconds ${c.t.join(" to ")}`, c.xywh && `region ${c.xywh}`].filter(Boolean).join(", ");   // where the cite points: a fact of the run, not a claim
-const verdictKey = (unit, text) => `${[...new Set(unit.keys)].sort().join(",")}\n${text}`;
+const verdictKey = (unit, text) => `${[...new Set(unit.keys)].sort().join(",")}\n${[...new Set(unit.cites.map(addressOf))].sort().join("|")}\n${text}`;   // the looks and the addresses are the evidence: change either and the text is judged again
 const ground = async () => {   // evidence: what each cited look read, and the address each cite names ("Cited: contract.pdf, page 3")
   const failed = [];
   for (const unit of claimsOf(report)) {
@@ -389,8 +389,9 @@ again.
 
 ```js
 const problems = [];
-await write(".check/index.html", renderPage());   // the page is what the data renders, nothing more: a text put into the file by hand was never judged
-if ((await sh("cmp -s report/index.html .check/index.html && echo same || echo changed; rm -rf .check")).trim() !== "same") problems.push("report/index.html is not what the data renders: change the data (the texts are judged) and write the page again, never the page");
+const fresh = (await sh("mktemp -d")).trim();   // a directory of its own, removed after: the page is what the data renders, nothing more
+await write(`${fresh}/index.html`, renderPage());
+if ((await sh(`cmp -s report/index.html ${q(`${fresh}/index.html`)} && echo same || echo changed; rm -rf ${q(fresh)}`)).trim() !== "same") problems.push("report/index.html is not what the data renders: change the data (the texts are judged) and write the page again, never the page");
 const attr = (name) => [...page.matchAll(new RegExp(`\\s${name}="([^"]*)"`, "g"))].map((m) => m[1]);
 const has = async (file) => (await bytes(`report/${file}`).catch(() => 0)) > 0;
 const tags = page.match(/<[a-z!][^>]*>/gi) ?? [];   // text is escaped, so a `<` in the page starts a tag
