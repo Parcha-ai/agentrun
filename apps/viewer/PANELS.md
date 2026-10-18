@@ -143,6 +143,30 @@ names; any other message, origin or field is ignored, and no message carries cod
 
 Without `&parent=`, the viewer still posts, and listens to nothing.
 
+## What a public replay shows
+
+A replay shows what the run's agent did. By default the viewer draws no part that tells a kill and a resume, and keeps
+the payments and the cost one click away. The view as it was, every part drawn, is behind `?debug=durability`, which no
+public page sets.
+
+- **Durability, not drawn.** The shell marks `durability`:
+  - the timeline's process lane, with each process, its kill, a restore and the journal's opens (the picture starts
+    below the lane);
+  - the processes, kills, repeated, asked twice and journal opens counters.
+
+  It leaves out the chapters it would make of each process start and kill, in the page and in the embed protocol's
+  `ready`; a manifest's own chapters stay. A panel marks its own such parts with the class `durability`:
+  - the vision panel: its kill and resume badges, and its kept, repeated, asked twice and possible payments meters;
+  - the workflow map: its kills, a cell's mark of a kill that cut it, and the price of chaos;
+  - the transport panel: its kills;
+  - the disk panel: a generation that ended without a holder.
+- **Receipts, one click away.** The strip's looks paid and cost sit under a disclosure, Receipts. So do the vision
+  panel's meters and the receipt of its look.
+- **A look leads with its answer.** In the vision panel's film and pages lanes, a look shows what the eyes answered and
+  the rows that cite it first. Its picture (the frames, the page with its boxes) is below, in a disclosure a click opens.
+
+A view reads the page's debug views from `ViewContext.debug` (`durability` among them in the debug view).
+
 ## A panel in full
 
 ```ts

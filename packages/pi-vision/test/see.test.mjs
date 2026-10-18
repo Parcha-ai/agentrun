@@ -166,6 +166,7 @@ test("the global is built per call, carries the contract's words, throws a SeeMi
   const throwing = createVisionExtension({ ...broken.options, scope: () => { throw new Error("no scope for c1"); } }).see(nodeVisionEnv({ cwd }), call);
   await assert.rejects(throwing.execute({ ask: "what?", paths: ["p1.png"] }), (error) => error instanceof SeeMiss && error.code === "look_failed" && error.message === "look_failed: this host could not set the look up: no scope for c1");
   assert.deepEqual(broken.misses.map((m) => [m.tool, m.code]), [["vision.see", "look_failed"]]);
+  assert.equal("record" in broken.misses[0], false, "no look was made, so there is no record of one");
   const blocks = createVisionExtension({ eyes: twoAtATime(), ...host().options }).see(undefined, call);
   assert.equal((await blocks.execute({ ask: "what?", images: [png(20, 20)] })).text, "saw image 1", "with no environment, image blocks are still seen");
   await assert.rejects(blocks.execute({ ask: "what?", paths: ["p1.png"] }), /^SeeMiss: refused: p1\.png cannot be read/);

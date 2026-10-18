@@ -35,6 +35,8 @@ export type OfficeLimits = {
   readonly maxCells: number;
 };
 
+/** The limits an archive is held to before anything is inflated, and every part is held to while it is: entries, sizes,
+ *  compression ratio, parsed elements, depth and cells. */
 export const OFFICE_LIMITS: OfficeLimits = Object.freeze({
   maxEntries: 10_000,
   maxUncompressedBytes: 16 * SOURCE_BYTES_IN_PROCESS,
@@ -50,6 +52,7 @@ export const OFFICE_LIMITS: OfficeLimits = Object.freeze({
 /** An office file that cannot be read, as a typed miss: the codes a provider's failure maps to. The message is one line
  *  the model reads, and names the sizes, the cap and how to narrow the read. */
 export type OfficeMissCode = ProviderMissCode;
+/** An office document that cannot be read, as a typed miss the model can act on. */
 export class OfficeMissError extends ProviderMiss {
   override readonly name = "OfficeMissError";
 }
@@ -77,6 +80,7 @@ export async function readSource(source: ProviderSource, call: ProviderCall): Pr
   }
 }
 
+/** One entry of a zip's central directory: its name, compression method, sizes, checksum and offset. */
 export type ZipEntry = { readonly name: string; readonly method: number; readonly size: number; readonly originalSize: number; readonly crc: number; readonly offset: number };
 
 const END_RECORD = 0x06054b50;
