@@ -793,10 +793,10 @@ function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entr
     }
     onOpen(await fromFiles(files));
   });
-  // The gallery is the site's landing: the chat view's look, its line and its featured runs above the list.
+  // The gallery is the site's landing: the chat view's look, its line and its featured runs head the page, above the list.
   document.documentElement.classList.add('landing-page');
-  root.replaceChildren(landingOf(entries), el('header', {}, el('h1', { text: 'agentrun run viewer' }), el('p', { class: 'meta', text: 'Replays a run recorded as agentrun.recording/1: every process, every kill, every commit.' })),
-    el('h2', { text: 'Recordings' }), unread !== undefined ? el('p', { class: 'problems', text: `The gallery could not be read (${unread}); a recording folder can still be opened below.` })
+  document.title = 'agent.run()';
+  root.replaceChildren(landingOf(entries), el('h2', { text: 'Recordings' }), unread !== undefined ? el('p', { class: 'problems', text: `The gallery could not be read (${unread}); a recording folder can still be opened below.` })
       : entries.length ? list : el('p', { class: 'empty', text: 'No recordings yet.' }), drop);
 }
 

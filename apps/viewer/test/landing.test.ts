@@ -1,7 +1,7 @@
-// The gallery's landing in a real Chrome, at 1440 and 390 px, over fixtures and a lock: the site's line, then the runs
-// the lock features as cards in its order, each linking to its chat view, with a poster only where the lock names one the
-// run holds; no featured row with no lock; no sideways scroll on a phone; and nothing of a run's machinery in what the
-// landing draws.
+// The gallery's landing in a real Chrome, at 1440 and 390 px, over fixtures and a lock: the site's line as the page's
+// header, then the runs the lock features as cards in its order, each linking to its chat view, with a poster only where
+// the lock names one the run holds, then the list and the folder drop; no featured row with no lock; no sideways scroll
+// on a phone; and nothing of a run's machinery anywhere on the page outside the list's items.
 import assert from 'node:assert/strict';
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -40,6 +40,9 @@ const HARNESS = `<!doctype html><body style="margin:0">
 const doc = (id) => document.getElementById(id).contentDocument;
 const ready = (id) => !!doc(id)?.querySelector('#viewer .landing');
 const cards = (id) => [...doc(id).querySelectorAll('.lcards .lcard')];
+const parts = (id) => [...doc(id).querySelector('#viewer').children].map((part) => part.tagName.toLowerCase() + (part.classList.length ? '.' + [...part.classList].join('.') : ''));
+// The page's own words: everything but the list's items, which are the runs' titles and figures.
+const words = (id) => { const page = doc(id).querySelector('#viewer').cloneNode(true); for (const item of page.querySelectorAll('ul.gallery > li')) item.remove(); return page.textContent; };
 </script></body>`;
 
 test('in Chrome: the site\'s line, the featured runs in the lock\'s order with their own posters, and a phone with no sideways scroll',
@@ -80,7 +83,7 @@ test('in Chrome: the site\'s line, the featured runs in the lock\'s order with t
 
       for (const id of ['wide', 'files']) {
         const shown = await value<Record<string, unknown>>(`(() => { const d = doc('${id}'); return {
-          first: d.querySelector('#viewer').firstElementChild.matches('.landing'), brand: d.querySelector('.lbrand').textContent,
+          parts: parts('${id}'), header: !!d.querySelector('#viewer header'), h1: [...d.querySelectorAll('h1')].map((h) => h.className), brand: d.querySelector('.lbrand').textContent,
           hero: d.querySelector('.lhero').textContent.slice(0, 40), sub: d.querySelector('.lsub').textContent.slice(0, 32),
           cards: cards('${id}').map((c) => [c.dataset.id, c.getAttribute('href'), !!c.querySelector('img'), c.querySelector('img')?.naturalWidth > 0, c.querySelector('.ltitle').textContent]),
           lines: cards('${id}').map((c) => c.querySelector('.lline')?.textContent ?? null),
@@ -89,7 +92,7 @@ test('in Chrome: the site\'s line, the featured runs in the lock\'s order with t
           eager: cards('${id}').filter((c) => c.querySelector('img')).map((c) => c.querySelector('img').loading),
           dark: getComputedStyle(d.body).backgroundColor, list: !!d.querySelector('ul.gallery'), drop: !!d.querySelector('.drop') }; })()`);
         assert.deepEqual(shown, {
-          first: true, brand: 'agent.run()', hero: 'Ask a question about a film, a document ', sub: 'It writes code to look, listen a',
+          parts: ['section.landing', 'h2', 'ul.gallery', 'div.drop'], header: false, h1: ['lhero'], brand: 'agent.run()by grep.ai', hero: 'Ask a question about a film, a document ', sub: 'It writes code to look, listen a',
           cards: [['chat-artifact', 'chat.html?r=chat-artifact', true, true, 'A two-picture report'],
             ['reference-asked', 'chat.html?r=reference-asked', false, false, `${ASKED.slice(0, 139)}…`],
             ['chat-hear-and-find', 'chat.html?r=chat-hear-and-find', true, true, 'Hear and Find']],
@@ -99,15 +102,18 @@ test('in Chrome: the site\'s line, the featured runs in the lock\'s order with t
       }
 
       // With no lock the landing has its line and no featured row; the list still holds every run.
-      assert.deepEqual(await value(`[!!doc('bare').querySelector('.lhero'), !!doc('bare').querySelector('.lcards'), doc('bare').querySelectorAll('ul.gallery li').length]`), [true, false, 5]);
+      assert.deepEqual(await value(`[parts('bare'), !!doc('bare').querySelector('.lhero'), !!doc('bare').querySelector('.lcards'), doc('bare').querySelectorAll('ul.gallery li').length]`),
+        [['section.landing', 'h2', 'ul.gallery', 'div.drop'], true, false, 5]);
 
       // A phone: one column, no sideways scroll.
       assert.deepEqual(await value(`(() => { const d = doc('phone'); return [getComputedStyle(d.querySelector('.lcards')).gridTemplateColumns.split(' ').length, Math.max(0, d.documentElement.scrollWidth - d.defaultView.innerWidth)]; })()`), [1, 0]);
 
-      // Nothing of a run's machinery in what the landing draws.
-      for (const id of ['wide', 'phone']) {
-        const drawn = await value<string>(`doc('${id}').querySelector('.landing').textContent`);
-        assert.doesNotMatch(drawn, /\b(kill|killed|kills|resume|process|processes|cost|counters?)\b|\$\s?\d/i, id);
+      // Nothing of a run's machinery in the page's own words, and the page's tab is the site's.
+      for (const id of ['wide', 'files', 'phone', 'bare']) {
+        const drawn = await value<string>(`words('${id}')`);
+        assert.ok(drawn.includes('Recordings') && drawn.includes('Drop a recording folder'), `${id}: the page's words hold the list's heading and the drop`);
+        assert.doesNotMatch(drawn, /kill|resum|process|surviv|\bcosts?\b|\bcounters?\b|\$\s?\d/i, id);
+        assert.equal(await value(`doc('${id}').title`), 'agent.run()', id);
       }
     } finally {
       await page.close();

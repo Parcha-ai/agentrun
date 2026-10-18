@@ -8,7 +8,7 @@ type LandingEntry = { id: string; blobs: Record<string, string>; card?: LandingC
 
 const LANDING_LINE = 'Ask a question about a film, a document or a pile of photos. One agent reads them and shows you where every answer comes from.';
 const LANDING_SUB = 'It writes code to look, listen and check; Jev judges what it finds; every run ends with the agent\'s own report, each line citing the page, second or region it rests on.';
-const LANDING_BRAND = '<svg width="20" height="20" viewBox="0 0 64 64" aria-hidden="true"><path d="M18 12L42 32L18 52" fill="none" stroke="#ff8700" stroke-width="8" stroke-linecap="square"/></svg>';
+const LANDING_BRAND = '<svg width="18" height="18" viewBox="0 0 64 64" aria-hidden="true"><path d="M18 12L42 32L18 52" fill="none" stroke="#ff8700" stroke-width="8" stroke-linecap="square"/></svg>';
 
 const landingEl = <K extends keyof HTMLElementTagNameMap>(tag: K, props: Record<string, string | undefined> = {}, ...children: (Node | string | undefined | false)[]) => {
   const node = document.createElement(tag);
@@ -40,13 +40,14 @@ function landingCard(entry: LandingEntry): HTMLElement {
     card.line && landingEl('span', { class: 'lline', text: card.line }));
 }
 
-/** The landing: the brand and the site's line, then a card per featured run (none when the lock features none). */
+/** The landing, the page's header: the brand and the site's line, then a card per featured run (none when the lock
+ *  features none). */
 export function landingOf(entries: readonly LandingEntry[]): HTMLElement {
   const brand = landingEl('div', { class: 'lbrand' });
-  brand.innerHTML = `${LANDING_BRAND}<b>agent<span>.run()</span></b>`;
+  brand.innerHTML = `${LANDING_BRAND}<b>agent<span>.run()</span></b><small>by grep.ai</small>`;
   const featured = landingFeatured(entries);
   const section = landingEl('section', { class: 'landing', 'aria-label': 'Featured runs' }, brand,
-    landingEl('p', { class: 'lhero', text: LANDING_LINE }), landingEl('p', { class: 'lsub', text: LANDING_SUB }),
+    landingEl('h1', { class: 'lhero', text: LANDING_LINE }), landingEl('p', { class: 'lsub', text: LANDING_SUB }),
     featured.length > 0 && landingEl('div', { class: 'lcards' }, ...featured.map(landingCard)));
   // Posters within a screen and a half of the top load at once; the rest when they come into view.
   requestAnimationFrame(() => {
