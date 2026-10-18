@@ -19,6 +19,7 @@ page code can still read what the person types into the page, so a real password
 | `home.mjs` | `ensureAgentHome(dir)`: the agent home of [`@parcha/pi-durable-agent`](../../../packages/pi-durable-agent/README.md), made from `agent.json` and the skills the first time (owner-only), opened after that. |
 | `app.ts` | The app `pi-durable-disk run --app` loads: the definition and skills from the home, the model from the environment, the file tools, the browser on the agent's saved sign-in and its frame recorder (2 frames a second), and `request_sign_in`. |
 | `record.ts` | The run's recording when `RECORD_DIR` is set: the reference package's recorder inside the run, its redaction, and the finish start-run.mjs calls once the run has exited. |
+| `redact.ts` | The rules a recording and a replay (`../replay.mjs`) share: the browser profile's id `[redacted]`, a session's id as its label, any `token=` value `[redacted]`, every `liveView` null, and the ids read from a run's store. It loads node's own modules only. |
 | `start-run.mjs` | Runs one started run, with its door on loopback, and finishes its recording. |
 | `agent.test.mjs`, `record.test.mjs` | Offline tests: no network, no key, no model call. |
 
@@ -121,9 +122,12 @@ What a recording never holds, and how:
 
 Before it lets go, the run scans what it placed for every id it learned, its live views included. The finish scans every
 file of the recording for every id the store holds and the key, and writes no manifest when it finds one. Both name the
-key and the file, never the value. A recording is of one run, finished when the run's process exits: a run started with
-`RECORD_DIR` naming a finished recording fails, so record each run into a directory of its own. The server passes its
-environment to every run it starts, so set `RECORD_DIR` only for a server that starts one run.
+key and the file, never the value. A replay of the run (`writeReplay`, [`../replay.mjs`](../replay.mjs)) takes the
+browser's ids, tokens and live views out of its rows and text files by the same rules (`redact.ts`).
+
+A recording is of one run, finished when the run's process exits: a run started with `RECORD_DIR` naming a finished
+recording fails, so record each run into a directory of its own. The server passes its environment to every run it
+starts, so set `RECORD_DIR` only for a server that starts one run.
 
 ## A local Chrome
 

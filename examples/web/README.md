@@ -182,8 +182,10 @@ The layout it writes:
 another id, a run's own directory as its files, a path of the frames layout (`frames/frames.jsonl`,
 `frames/blobs/<sha256>.jpg`), a file path that is absolute, has a `.` or `..` segment, names a dotfile, or names a file
 and a directory at once, and two runs whose paths collide (ids `a` and `a.json`); every summary and run is written with
-`live: false`, no live view, no saved sign-in it started with and no frames. It writes the new replay beside its
-directory and swaps it in, so a write that fails leaves the replay that was there whole. `pack-page.mjs` writes `index.html` (its Content-Security-Policy as a meta tag, since a
+`live: false`, no live view, no saved sign-in it started with and no frames. Every run's rows, text files, summary and
+run record go through the recording's own rules (`agent/redact.ts`): the browser profile's id the store holds is
+`[redacted]`, a browser session's id the label a recording gives it (`session-` and 12 hex digits of its hash), any
+`token=` value `[redacted]`, every `liveView` null. It writes the new replay beside its directory and swaps it in, so a write that fails leaves the replay that was there whole. `pack-page.mjs` writes `index.html` (its Content-Security-Policy as a meta tag, since a
 static host sets no headers), `replay.js`, `run-page.js`, `source.js`, `app.css` and `timeline/`; the page reads the
 replay from the `replay-data` meta tag's address, `./data/` unless `--data` says otherwise. So:
 

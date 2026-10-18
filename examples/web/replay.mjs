@@ -6,12 +6,15 @@
 // A replay acts on nothing and shows no live browser: every summary and run is written with `live: false` and no live
 // view, whose address is a full-control token. It carries nothing a sign-in left: no saved sign-in a run started with,
 // and none of a run's browser frames (`frames/`, beside the run), which after a sign-in show the person's own pages.
+// Every run's rows, text files and records go through the recording's own rules (agent/redact.ts): the browser profile's
+// id is `[redacted]`, a session's id the label a recording gives it, any `token=` value `[redacted]`, every liveView null.
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { SECRET_KINDS } from "@parcha/pi-durable-agent/export";
 import { timelineOf } from "@parcha/pi-durable-agent/timeline";
+import { browserIds, idsRedaction, readBrowserIds, withoutLiveViews } from "./agent/redact.ts";
 import { FRAMES_PATH, RUN_ID, safePath } from "./page/source.js";
 
 /** Open a store read-only, run `read` on it, close it. node:sqlite loads on first use. */
@@ -49,6 +52,8 @@ export function secretKindsIn(storePath) {
 }
 
 const HASH = /^[0-9a-f]{64}$/;
+/** The files a replay reads as text, so the redaction reaches them; the others are kept as they are. */
+const TEXT_FILE = /\.(?:txt|md|markdown|csv|tsv|json|jsonl|log|ya?ml|xml|html?|svg|js|mjs|ts|py|sh|toml|ini|css|sql)$/i;
 
 /**
  * A recording's files for its replay: the manifest's result blob as `result.<ext>` and its job blob as `job.<ext>`, out of
@@ -124,14 +129,26 @@ async function readRun(input) {
   if (input.summary?.id !== undefined && input.summary.id !== id) throw new Error(`the run ${id} has a summary for ${JSON.stringify(input.summary.id)}`);
   if ((input.store === undefined) === (input.rows === undefined)) throw new Error(`the run ${id} needs a store or ready rows, and not both`);
   let rows = input.rows;
+  const ids = browserIds();
   if (input.store !== undefined) {
     const secret = await secretKindsIn(input.store);
     if (secret.length) throw new Error(`the run ${id}'s store is not exported: it holds ${secret.join(", ")}, which no replay may carry. Export the run first.`);
+    await readBrowserIds(input.store, ids);
     rows = timelineOf(await readRunEntries(input.store), { settled: true });
   }
   if (!Array.isArray(rows)) throw new Error(`the run ${id} has no rows`);
+  // The browser's ids the store holds, as a recording shows them, any token taken out, every liveView null.
+  const redact = idsRedaction(ids);
+  const clean = (value) => JSON.parse(redact(JSON.stringify(withoutLiveViews(value))));
+  rows = clean(rows);
   const recording = input.manifest ? await recordingFiles(input.manifest) : null;
-  const files = recording ? recording.files : typeof input.files === "string" ? await filesOf(input.files) : (input.files ?? {});
+  const given = recording ? recording.files : typeof input.files === "string" ? await filesOf(input.files) : (input.files ?? {});
+  const files = Object.fromEntries(Object.entries(given).map(([path, content]) => {
+    if (!TEXT_FILE.test(path)) return [path, content];
+    const text = typeof content === "string" ? content : Buffer.from(content).toString("utf8");
+    const redacted = redact(text);
+    return [path, redacted === text ? content : redacted];
+  }));
   for (const path of Object.keys(files)) {
     if (!safePath(path)) throw new Error(`the run ${id} has a file path a replay cannot hold: ${JSON.stringify(path)}`);
     if (FRAMES_PATH.test(path)) throw new Error(`the run ${id} has ${JSON.stringify(path)}, a browser frame of the run: no replay carries them`);
@@ -141,7 +158,7 @@ async function readRun(input) {
   if (clash) throw new Error(`the run ${id} has ${JSON.stringify(clash)} as a file and as a directory`);
   const m = recording?.manifest;
   const first = rows.find((r) => r.kind === "user_message");
-  const summary = released({
+  const summary = released(clean({
     id,
     title: m?.title ?? String(first?.text ?? first?.summary ?? id).slice(0, 80),
     status: "done",
@@ -151,8 +168,8 @@ async function readRun(input) {
     // A dollar figure only for a recording whose every priced part called a real provider (its manifest's `providers`).
     costUsd: m?.providers === "real" ? (m.cost?.usd ?? null) : null,
     ...input.summary,
-  });
-  return { id, rows: summary.costUsd == null ? rows.map(countOnly) : rows, files, summary, run: released({ ...summary, ...input.run }) };
+  }));
+  return { id, rows: summary.costUsd == null ? rows.map(countOnly) : rows, files, summary, run: released(clean({ ...summary, ...input.run })) };
 }
 
 /**

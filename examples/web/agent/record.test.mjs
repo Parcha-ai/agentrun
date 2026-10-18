@@ -18,7 +18,9 @@ import { fakeCdp, jpeg as fakeJpeg } from '../../../packages/pi-browser/test/fix
 import { validateRecording } from '../../../scripts/recording/validate.mjs';
 import { createAgent } from './app.ts';
 import { ensureAgentHome } from './home.mjs';
-import { finishRunRecording, REDACTED, sessionLabel } from './record.ts';
+import { writeReplay } from '../replay.mjs';
+import { finishRunRecording } from './record.ts';
+import { REDACTED, sessionLabel } from './redact.ts';
 
 const SECURE = 'https://the-internet.herokuapp.com/secure';
 const MODEL = { AGENT_MODEL_BASE_URL: 'http://127.0.0.1:9/v1', AGENT_MODEL: 'test-model' };
@@ -43,9 +45,10 @@ const liveViews = (value, found = []) => {
 /**
  * One run as the take's run 2 makes it: the agent reads the secure page, writes report/index.html, report.md and
  * pages.csv, releases the browser and answers. `plant` commits a session row with a live view into the run's
- * `browser.sessions`, as a host that kept a whole SessionRow would, and has the answer name a URL with a token.
+ * `browser.sessions`, as a host that kept a whole SessionRow would, and has the answer name a URL with a token. Without
+ * `record` the run has no RECORD_DIR, and its store is left as the run left it.
  */
-async function recordedRun(t, { env: base, plant = false }) {
+async function recordedRun(t, { env: base, plant = false, record = true }) {
   const tmp = await mkdtemp(join(tmpdir(), 'web-record-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const home = await ensureAgentHome(join(tmp, 'home'));
@@ -57,7 +60,7 @@ async function recordedRun(t, { env: base, plant = false }) {
   const sentinels = { ...makeSentinels(), bbConnectUrl: `${cdp.url}?sessionId=none` };
   const backend = new FakeBackend({ sentinels, start: SECURE, pages: { [SECURE]: fixturePage(SECURE, `Secure Area. Welcome to the Secure Area. Signed in as ${ACCOUNT[0]}; the login page said to use ${ACCOUNT[1]}.`, 'The Internet') } });
   const contextId = randomUUID();
-  const env = { ...base, RECORD_DIR: dir, RECORD_REDACT: JSON.stringify(ACCOUNT), ...(base.AGENT_BROWSER === 'chrome' ? {} : { BROWSERBASE_API_KEY: sentinels.bbApiKey }) };
+  const env = { ...base, ...(record ? { RECORD_DIR: dir, RECORD_REDACT: JSON.stringify(ACCOUNT) } : {}), ...(base.AGENT_BROWSER === 'chrome' ? {} : { BROWSERBASE_API_KEY: sentinels.bbApiKey }) };
   const agent = await createAgent(where, env, { makeContext: async () => contextId, provider: backend.provider, driver: fakeDriver(backend) });
   const framesFile = join(run.dir, 'frames', 'frames.jsonl');
   const kept = () => (existsSync(framesFile) ? readFileSync(framesFile, 'utf8').trim().split('\n').filter(Boolean).length : 0);
@@ -92,6 +95,7 @@ async function recordedRun(t, { env: base, plant = false }) {
   await durable.release();
   const sessions = backend.ledger.filter((row) => row.op === 'create').map((row) => row.id);
   const values = { contextId, sessions, plantedSession, liveView: sentinels.bbLiveViewUrl, liveToken: sentinels.bbLiveViewToken, planted, key: sentinels.bbApiKey, connect: sentinels.bbConnectUrl };
+  if (!record) return { tmp, run, values };
   // What the run wrote itself, its spool included, already holds none of the ids it learned: they were learned where they arose.
   assertAbsent(dir, { 'the profile id': base.AGENT_BROWSER === 'chrome' ? 'chrome/local-chrome' : contextId, 'the key': env.BROWSERBASE_API_KEY, ...Object.fromEntries(sessions.map((id, n) => [`session ${n + 1}`, id])) });
   const finished = await finishRunRecording({ dir, run: run.dir, env, providers: 'scripted' });
@@ -162,4 +166,17 @@ test('a recorded run on Browserbase: the context id and the key are redacted eve
   assert.equal(config.data.value.policy.contextId, REDACTED);
   assert.deepEqual(lines.filter((line) => line.kind === 'browser.profiles').at(-1).data.value, { provider: 'browserbase', ref: REDACTED, state: 'ready' });
   assertAbsent(dir, { 'the context id': values.contextId, 'the key': values.key, ...Object.fromEntries(values.sessions.map((id, n) => [`session ${n + 1}`, id])), 'the live view': values.liveView, 'its token': values.liveToken, 'the planted live view': values.planted, 'the planted token': values.planted.split('token=')[1], 'the planted session': values.plantedSession, 'the connect URL': values.connect });
+});
+
+test('a replay of a run takes out what the recording does: no session id, token or live view in timeline.json or any file, each session under its label', { timeout: 60_000 }, async (t) => {
+  // A run on its own Chrome profile holds no saved sign-in, so its store is one a replay takes as it is.
+  const { tmp, run, values } = await recordedRun(t, { env: { ...CHROME, AGENT_CHROME_PROFILE: 'own' }, plant: true, record: false });
+  const out = join(tmp, 'replay');
+  await writeReplay(out, [{ id: 'run-1', store: join(run.dir, 'store', 'run.sqlite'), files: run.workspace }, { id: 'given', rows: [{ kind: 'tool_result', liveView: { fullscreen: values.planted } }], files: { 'view.json': JSON.stringify({ url: values.planted }) } }]);
+  assertAbsent(out, { ...Object.fromEntries([...values.sessions, values.plantedSession].map((id, n) => [`session ${n + 1}`, id])), 'the planted live view': values.planted, 'the planted token': values.planted.split('token=')[1], 'the live view': values.liveView, 'its token': values.liveToken });
+  const timeline = readFileSync(join(out, 'runs', 'run-1', 'timeline.json'), 'utf8');
+  assert.ok(timeline.includes(sessionLabel(values.sessions[0])), 'browser_release\'s session id is its label');
+  assert.ok(timeline.includes(`token=${REDACTED}`), 'the answer\'s token is redacted where it stood');
+  assert.deepEqual(liveViews(JSON.parse(readFileSync(join(out, 'runs', 'given', 'timeline.json'), 'utf8'))), [null], 'a row\'s live view is null');
+  assert.equal(JSON.parse(readFileSync(join(out, 'runs', 'given', 'files', 'view.json'), 'utf8')).url, `https://live.example.test/inspector?token=${REDACTED}`);
 });
