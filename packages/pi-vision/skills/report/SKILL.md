@@ -65,9 +65,10 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
 
 ## The script
 
-The pieces are one script, in order, sharing their names: run them in one `code` call. The example has a talk (a clip, a
-moment, a box), a contract (its page 3 embedded, a mark on it) and a routine photo. Change the data in piece 4 to yours and
-keep the rest. If cutting clips needs more time than one call has, make the files in one call and write the page in the
+The pieces are a working example, not a form to fill: write your own data, and drop or change any piece your run does not
+need (no film, no `clip()`; no document, no document section). The example has a talk (a clip, a moment, a box), a contract
+(its page 3 embedded, a mark on it) and a routine photo. The pieces are one script, in order, sharing their names: run them
+in one `code` call. If cutting clips needs more time than one call has, make the files in one call and write the page in the
 next, with pieces 1 and 3 again at its top.
 
 ### 1. The shell, and a way to write a file with it
