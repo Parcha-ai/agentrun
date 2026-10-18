@@ -1,51 +1,92 @@
 # @parcha/pi-vision
 
-Eyes for pi agents. A file becomes something a model can read or see: text for documents and spreadsheets, the
-image itself for pictures and scans, frames or a window for video, every image fitted to the model's own limits.
-What cannot be done is a typed miss the model can act on, and every look a second model answers is filed with its
-SHA-256, its question, its answer, the model and the price.
+Eyes for pi agents: an agent can read a document, look at a picture, a scan or a video, and write down what a recording
+says. Every look comes back with its answer and its price, and a look that cannot be made says why.
 
-The host keeps what is its own: which model looks and its price, where receipts are filed, its rows, path custody.
-`read` keeps its name and its arguments (`path, offset, limit, char_offset, ask, from_s, to_s, page`), so hosts and
-their stored instructions do not change. No tool is added. For many pages, a long video or many images the agent
-writes code: the `look` skill (`skills/look/SKILL.md`) shows it how to render pages and cut frames with bash and ask
-about them with `vision.see`, have Jev judge them with typed answers (`vision.judge`), or have a speech-to-text model
-write what a recording says, word by word with its second (`vision.transcribe`): the functions this package puts in a
-host's code mode. Only the answers, where they looked or listened and the price enter the caller's context. For a long
-recording, the `transcribe` skill (`skills/transcribe/SKILL.md`) shows it how to cut the audio into pieces, transcribe
-each with `vision.transcribe`, write one timestamped transcript and search it with `rg` to the second. The
-`find` skill (`skills/find/SKILL.md`) finds every time a phrase is said in a long video, from its transcript, and the
-second a thing is first seen and its box, coarse to fine: the words narrow the search, Jev scores frames, the eyes
-name the second, Jev draws the box. The `verify` skill (`skills/verify/SKILL.md`) says whether a PDF has each mark a
-checklist file names, yes or no, with its box on its page. The `report` skill (`skills/report/SKILL.md`) ends a run with
-the agent's own report: one script-free HTML page, `report/index.html`, that leads with the answer and shows the evidence
-for every finding (the document page with the mark boxed and a close crop of it, the film moment's frame and a short clip
-of its window, the photo), and cites every claim to the file's own page, second or region (`file.pdf#page=3`,
+## Try it
+
+Free, on scripted models: no key, no network. From a checkout of this repository, with Node 22.19 or later:
+
+```sh
+npm ci --ignore-scripts && npm run build
+npm run demo:vision -- examples/document-check
+```
+
+[`examples/vision-agent`](https://github.com/Parcha-ai/agentrun/tree/main/examples/vision-agent) is one agent that answers any question about a set of files. `document-check`
+asks it which of six marks a certified copy carries and where. On scripted models the agent takes one look at the first file
+and says its answer is scripted; the run still shows the whole path and writes the report. Every example runs the same way:
+`npm run demo:vision -- examples/<folder>`.
+
+## Go live
+
+```sh
+npm run demo:vision -- examples/document-check --live
+```
+
+The agent runs shell commands with your user's rights on your machine: use a container or a VM. A live run needs:
+
+- `GEMINI_API_KEY` ([aistudio.google.com](https://aistudio.google.com)), for the model that runs the agent and the model
+  that looks;
+- `TYPESAFE_API_KEY` ([console.typesafe.ai/keys](https://console.typesafe.ai/keys)), for Jev, the judge that answers
+  yes-or-no, choice, count and box questions; every `--live` run needs it;
+- `FAL_KEY`, only for a question about speech (`hear-and-find`);
+- the programs `ffmpeg`, `ffprobe`, `pdftoppm` and `pdftotext` on your path.
+
+One measured live `document-check` cost about $0.54 and took about 8 minutes; a run's cost and time vary.
+[`examples/vision-agent`](https://github.com/Parcha-ai/agentrun/tree/main/examples/vision-agent) lists every flag and key.
+
+## It runs inside a pi-durable host
+
+pi-vision is a library, not a command line. It is an extension for a pi-durable host: a process that opens an agent with
+[pi-durable](https://www.npmjs.com/package/@earendil-works/pi-durable), [chord](https://www.npmjs.com/package/@earendil-works/chord)
+and [pi-ai](https://www.npmjs.com/package/@earendil-works/pi-ai) and installs this package's extension.
+[`examples/reference`](https://github.com/Parcha-ai/agentrun/tree/main/examples/reference) is such a host, and
+[what a host supplies](https://github.com/Parcha-ai/agentrun/blob/main/docs/reference-host.md) says what each package asks
+of one. There is no pi coding-agent extension and no command line: a plain `pi install npm:@parcha/pi-vision` loads only
+the skills, and the `vision.see` they call is not defined there.
+
+## What it does
+
+A file becomes something a model can read or see: text for documents and spreadsheets, the image itself for pictures and
+scans, frames or a window for video, every image fitted to the model's own limits. What cannot be done is a miss, a failure
+with a code the model can act on (`unreadable`, `over_budget`), and every look a second model answers is filed as a
+receipt: the SHA-256 of its source, its question, its answer, the model and the price.
+
+The host keeps what is its own: which model looks and its price, where receipts are filed, its rows, path custody. `read`
+keeps its name and its arguments (`path, offset, limit, char_offset, ask, from_s, to_s, page`), so hosts and their stored
+instructions do not change. No tool is added. For many pages, a long video or many images the agent writes code, in a
+host's code mode (a short script the host runs for it, with these functions defined): the `look` skill
+(`skills/look/SKILL.md`) shows it how to render pages and cut frames with bash and ask about them with `vision.see` (a
+vision model, the eyes, answers), have Jev judge them with typed answers (`vision.judge`: a choice, a score, a box, or a
+noul, a yes or no given as the probability of yes), or have a speech-to-text model write what a recording says, word by
+word with its second (`vision.transcribe`). Only the answers, where they looked or listened and the price enter the
+caller's context. For a long recording, the `transcribe` skill (`skills/transcribe/SKILL.md`) shows it how to cut the
+audio into pieces, transcribe each with `vision.transcribe`, write one timestamped transcript and search it with `rg` to
+the second. The `find` skill (`skills/find/SKILL.md`) finds every time a phrase is said in a long video, from its
+transcript, and the second a thing is first seen and its box, coarse to fine: the words narrow the search, Jev scores
+frames, the eyes name the second, Jev draws the box. The `verify` skill (`skills/verify/SKILL.md`) says whether a PDF has
+each mark a checklist file names, yes or no, with its box on its page. The `report` skill (`skills/report/SKILL.md`) ends
+a run with the agent's own report: one script-free HTML page, `report/index.html`, that leads with the answer and shows the
+evidence for every finding (the document page with the mark boxed and a close crop of it, the film moment's frame and a
+short clip of its window, the photo), and cites every claim to the file's own page, second or region (`file.pdf#page=3`,
 `film.mp4#t=18,26`, `#xywh=percent:x,y,w,h`) with the look it rests on.
 
-To see them work together, start at [`examples/vision-agent`](https://github.com/Parcha-ai/agentrun/tree/main/examples/vision-agent):
-one agent, given any question about a set of files, that follows every skill here and ends with that report. Its examples
-are questions and files: [`video-chapters`](https://github.com/Parcha-ai/agentrun/tree/main/examples/video-chapters) (a
-film cut into chapters), [`hear-and-find`](https://github.com/Parcha-ai/agentrun/tree/main/examples/hear-and-find) (when
-a line is said and when a thing is first seen) and [`document-check`](https://github.com/Parcha-ai/agentrun/tree/main/examples/document-check)
-(which marks a certified copy carries, and where). `document-check` runs on fakes with no key
-(`npm run demo:vision -- examples/document-check`); the others are asked of real models with `--live`.
+The six examples are questions and files for that one agent, and each has its own keys, download and cost:
+[`document-check`](https://github.com/Parcha-ai/agentrun/tree/main/examples/document-check) (which marks a certified copy carries, and where),
+[`video-chapters`](https://github.com/Parcha-ai/agentrun/tree/main/examples/video-chapters) (a film cut into chapters), [`hear-and-find`](https://github.com/Parcha-ai/agentrun/tree/main/examples/hear-and-find) (when a line is
+said and when a thing is first seen), [`apollo-descent`](https://github.com/Parcha-ai/agentrun/tree/main/examples/apollo-descent) (the landing minute by minute, from the
+transcript, the photographs and the film), [`boulder-chapters`](https://github.com/Parcha-ai/agentrun/tree/main/examples/boulder-chapters) (a 1930s dam film in chapters) and
+[`fair-robot`](https://github.com/Parcha-ai/agentrun/tree/main/examples/fair-robot) (when a robot is first seen in a 1939 film, and where in the frame).
 
 ## What it needs
 
 - **Node 22.19 or later, and ESM.** The package is ESM only: `import` it. `require("@parcha/pi-vision")` is not
   supported.
-- **A pi-durable host.** pi-vision is a pi-durable extension. `createVisionExtension` wraps `read`, guards every tool's
-  images and gives the host's code mode `vision.see`, inside a process that opens a pi-durable Harness and installs the
-  extension. [`examples/reference`](https://github.com/Parcha-ai/agentrun/tree/main/examples/reference) is such a host,
-  and [what a host supplies](https://github.com/Parcha-ai/agentrun/blob/main/docs/reference-host.md) says what each
-  package asks of one. There is no pi coding-agent extension and no command line: a plain
-  `pi install npm:@parcha/pi-vision` loads only the skills, and the `vision.see` they call is not defined there. A host
-  whose `read` is its own calls `handle.read` and `handle.fit` with `nodeVisionEnv`, as the first read below does; it
-  needs no Harness for that.
+- **A pi-durable host**, as above. A host whose `read` is its own calls `handle.read` and `handle.fit` with
+  `nodeVisionEnv`, as the first read below does; it needs no Harness for that.
 - **Nothing more for documents.** A PDF's text, an office document and a spreadsheet read with nothing installed. Images
-  want Photon (`@silvia-odwyer/photon-node`), video wants ffmpeg, and a look at an image or a scan the lead cannot see
-  wants a model that sees and its key.
+  want Photon (`@silvia-odwyer/photon-node`), video wants ffmpeg, and a look at an image or a scan that the model running
+  the agent cannot see wants a model that sees, and its key.
 
 ## Status
 

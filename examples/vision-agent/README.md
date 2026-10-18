@@ -10,7 +10,7 @@ npm run demo:vision -- examples/hear-and-find --live    # real models, your keys
 
 The agent runs shell commands with your user's rights on your machine: run the examples in a container or a VM.
 
-The agent is Google's **gemini-3.8-flash, thinking at medium**: one value in `demo.json` (`models.lead.default`, also the eyes) and the node's `thinking` in `agent.ts`. Thinking is shown when the model returns it. A live run needs `GEMINI_API_KEY` for it (or a gateway that serves it); with only another provider's key it runs that provider's models instead.
+The agent is Google's **gemini-3.8-flash, thinking at medium**: one value in `demo.json` (`models.lead.default`, also the eyes) and the node's `thinking` in `agent.ts`. Thinking is shown when the model returns it. A live run needs two keys: the lead model's, `GEMINI_API_KEY` (or a gateway that serves it; with only another provider's key it runs that provider's models instead), and `TYPESAFE_API_KEY` for Jev, which every `--live` run uses. It also needs `FAL_KEY` for a question about speech, and nothing else. Each example's README lists its keys, programs, download, and what one measured live run cost and how long it took.
 
 An example folder holds `question.md` (the question), `inputs.json` (each file by URL, size and SHA-256, or committed beside it) and a README. To ask something else, write another folder, or give `--input '{"question": "...", "files": ["..."]}'` with the files in place.
 
