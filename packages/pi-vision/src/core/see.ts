@@ -12,6 +12,7 @@ import type { CallContext, CallSetup, EyesAnswer } from "./host.js";
 import { fitImage } from "./image.js";
 import { aboutMedium, AS_IS, gatherMedia, namesMedia, once, requestedAbout, throwMiss, type About, type MediaMiss, type MediaRequest } from "./media.js";
 import { firstLine } from "./misses.js";
+import { lookTiming } from "./timing.js";
 import { packRequests, type Part } from "./plan.js";
 
 export { SeeMiss } from "./media.js";
@@ -53,7 +54,7 @@ export async function see(input: unknown, env: VisionEnv | undefined, call: Call
     if (!items.length && about) {
       return {
         tool: "look", args: { path: about.path, ask, model, native: false }, status: "ok", body,
-        facts: { sha256: about.sha256, kind: about.kind, fragment: about.fragment, key: lookKey({ sha256: about.sha256, fragment: about.fragment, ask, model }), shown_blocks: 0, ...facts },
+        facts: { sha256: about.sha256, kind: about.kind, fragment: about.fragment, key: lookKey({ sha256: about.sha256, fragment: about.fragment, ask, model }), shown_blocks: 0, ...lookTiming(call), ...facts },
       };
     }
     const fragment = [...new Set(items.map((item) => item.fragment))].join(", ");
@@ -61,7 +62,7 @@ export async function see(input: unknown, env: VisionEnv | undefined, call: Call
     return {
       tool: "look", args: { path: fragment, ask, model, native: false }, status: "ok", body,
       // The key names each block's own line in order, so the same images named otherwise are another look.
-      facts: { sha256, kind: items.some(isVideo) ? "video" : "image", fragment: "", key: lookKey({ sha256, fragment: items.map((item) => item.caption).join("\n"), ask, model }), shown_blocks: items.length, ...facts },
+      facts: { sha256, kind: items.some(isVideo) ? "video" : "image", fragment: "", key: lookKey({ sha256, fragment: items.map((item) => item.caption).join("\n"), ask, model }), shown_blocks: items.length, ...lookTiming(call), ...facts },
     };
   };
   // A miss before any request cost nothing; one after a request says what it knows of that request.
@@ -94,14 +95,16 @@ export async function see(input: unknown, env: VisionEnv | undefined, call: Call
       isVideo(item) ? { type: "video", data: item.data, mimeType: item.mimeType, fragment: item.fragment }
         : { type: "image", data: item.data, mimeType: item.mimeType, width: item.width!, height: item.height!, fragment: item.fragment }]);
     let look: EyesAnswer, readBack: boolean;
+    // When this call's request began; none when the answer is read back, and a request that threw is timed all the same.
+    let startedAt: number | undefined;
     try {
-      ({ answer: look, readBack } = await keptAnswer<EyesAnswer>(call.memo, at.facts.key, () => eyes.see({ parts, ask }, call.signal ?? new AbortController().signal)));
+      ({ answer: look, readBack } = await keptAnswer<EyesAnswer>(call.memo, at.facts.key, () => { startedAt = Date.now(); return eyes.see({ parts, ask }, call.signal ?? new AbortController().signal); }));
     } catch (error) {
       if (call.signal?.aborted) throw error;
       // A request that threw may still have been billed: its price is not known, so none is filed.
-      return fail({ code: "look_failed", reason: `the vision route ${eyes.model} failed: ${firstLine(error)}`, model: eyes.model }, items, {});
+      return fail({ code: "look_failed", reason: `the vision route ${eyes.model} failed: ${firstLine(error)}`, model: eyes.model }, items, lookTiming(call, startedAt));
     }
-    const facts = { tokens_in: look.usage.input + look.usage.cacheRead + look.usage.cacheWrite, tokens_out: look.usage.output, cost_usd: look.costUsd, ...(look.billedBy ? { provider: look.billedBy } : {}), ...(readBack ? { kept: true as const } : {}) };
+    const facts = { tokens_in: look.usage.input + look.usage.cacheRead + look.usage.cacheWrite, tokens_out: look.usage.output, cost_usd: look.costUsd, ...(look.billedBy ? { provider: look.billedBy } : {}), ...(readBack ? { kept: true as const } : {}), ...lookTiming(call, startedAt) };
     if (!look.text.trim()) return fail({ code: "look_failed", reason: `the vision route ${look.model} returned no text`, model: look.model }, items, facts);
     const filed = { ...at, args: { ...at.args, model: look.model }, body: look.text.trim(), facts: { ...at.facts, ...facts } };
     const receipt = await fileTold(call.memo, at.facts.key, filing, (to, told) => fileLook(to, VISION_SEE.name, filed, told ? { ...look, kept: true } : look));
