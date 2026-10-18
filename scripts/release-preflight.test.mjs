@@ -94,8 +94,8 @@ test('a failed TypeScript floor rerun replaces stale success evidence', async ()
 test('release plan binds the exact verified tarballs in dependency order', () => fixture(async root => {
   const plan = await preflight(root);
   assert.deepEqual(plan.packages.map(pkg => pkg.directory), releasePackages);
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/agentrun-reference']);
-  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-agentrun-pi-${version}.tgz`, `parcha-pi-durable-disk-${version}.tgz`, `parcha-pi-browser-${version}.tgz`, `parcha-pi-vision-${version}.tgz`, `parcha-agentrun-reference-${version}.tgz`]);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/pi-transport', '@parcha/agentrun-reference']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-agentrun-pi-${version}.tgz`, `parcha-pi-durable-disk-${version}.tgz`, `parcha-pi-browser-${version}.tgz`, `parcha-pi-vision-${version}.tgz`, `parcha-pi-transport-${version}.tgz`, `parcha-agentrun-reference-${version}.tgz`]);
   assert.ok(plan.packages.every(pkg => /^sha512-/.test(pkg.integrity) && /^[a-f0-9]{64}$/.test(pkg.sha256)));
 }));
 test('unlicensed source and inconsistent tags fail before publication', () => fixture(async root => {
@@ -213,7 +213,7 @@ test('Apache release preserves the approved root license and notices in every ar
   await recordPackages(root);
   const plan = await preflight(root);
   assert.equal(plan.license, 'Apache-2.0');
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/agentrun-reference']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/pi-transport', '@parcha/agentrun-reference']);
   await writeFile(join(root, 'packages/pi-durable-disk/NOTICE'), `${notice}\nThird-party notice kept after the repository's.\n`);
   await recordPackages(root);
   assert.equal((await preflight(root)).packages.length, releasePackages.length, 'a published package may append third-party notices to the root NOTICE');
@@ -307,12 +307,12 @@ test('the release workflow reads the publish set into a variable, so a failed re
 
 test('the held and published sets come from the tree being checked, not from the checkout the script runs in', () => fixture(async root => {
   const set = async (directory, change) => { const path = join(root, 'packages', directory, 'package.json'); const current = JSON.parse(await readFile(path, 'utf8')); const { private: _, ...rest } = current; await putJson(path, { ...rest, ...change }); };
-  // A tree in which the transport package is no longer held publishes it, after the packages before it in the map, though this
+  // A tree in which the serve package is no longer held publishes it, after the packages before it in the map, though this
   // checkout still holds it. The other held packages stay out.
-  await set('pi-transport', {});
+  await set('serve', {});
   await recordPackages(root);
   const lifted = await preflight(root);
-  const stillHeld = heldPackages.filter(directory => directory !== 'pi-transport');
+  const stillHeld = heldPackages.filter(directory => directory !== 'serve');
   assert.deepEqual(lifted.packages.map(pkg => pkg.directory), listedPackages.filter(directory => !stillHeld.includes(directory)), 'a package unheld in the checked tree is in the plan');
   // And a package held in the checked tree is out of it, at the workspace version, though this checkout publishes it.
   await set('pi-durable-disk', { private: true });
@@ -353,16 +353,13 @@ test('the browser package is published: listed, not held, a release manifest at 
   assert.ok(plan.indexOf('@parcha/pi-browser') > plan.indexOf('@parcha/pi-durable-disk'), 'in the plan, after the packages before it in the map');
 }));
 
-test('the transport package is held: listed, private, at the workspace version, and published only from a tree that lifts the hold', () => fixture(async root => {
-  assert.ok(heldPackages.includes('pi-transport') && !releasePackages.includes('pi-transport'), 'held in this checkout');
-  assert.equal(repoManifest('pi-transport').private, true);
-  assert.equal(repoManifest('pi-transport').version, JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version, 'at the workspace version');
-  assert.ok(!(await preflight(root)).packages.some(pkg => pkg.directory === 'pi-transport'), 'not in the plan while held');
-  const path = join(root, 'packages/pi-transport/package.json');
-  const { private: _, ...lifted } = JSON.parse(await readFile(path, 'utf8'));
-  await putJson(path, lifted);
-  await recordPackages(root);
-  assert.deepEqual((await preflight(root)).packages.slice(-2).map(pkg => pkg.name), ['@parcha/pi-transport', '@parcha/agentrun-reference'], 'a tree that lifts the hold publishes it after the published packages, before the reference host that peers on it');
+test('the transport package is published: listed, not held, a release manifest at the workspace version, and in the plan after pi-vision', () => fixture(async root => {
+  assert.ok(releasePackages.includes('pi-transport') && !heldPackages.includes('pi-transport'), 'published from this checkout');
+  const workspace = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  checkManifest(repoManifest('pi-transport'), 'pi-transport', workspace.version, workspace.license);
+  const plan = (await preflight(root)).packages.map(pkg => pkg.name);
+  assert.ok(plan.indexOf('@parcha/pi-transport') > plan.indexOf('@parcha/pi-vision'), 'in the plan, after the packages before it in the map');
+  assert.equal(plan.at(-1), '@parcha/agentrun-reference', 'the reference host stays last');
 }));
 
 test('a release is refused while fragments remain or the changelog lacks the version', () => fixture(async root => {
@@ -387,13 +384,13 @@ test('the preflight passes on a tree the fold produced, for that tag', () => fix
 }));
 
 test("a release is refused while a published package's own changelog still has entries under Unreleased; a held package's may keep them", () => fixture(async root => {
-  assert.ok(releasePackages.includes('pi-vision') && heldPackages.includes('pi-transport'), 'pi-vision is published and pi-transport held in this checkout');
+  assert.ok(releasePackages.includes('pi-vision') && heldPackages.includes('serve'), 'pi-vision is published and serve held in this checkout');
   const undated = '# Changelog\n\n## Unreleased\n\n- Not dated.\n';
   await writeFile(join(root, 'packages/pi-vision/CHANGELOG.md'), undated);
   await assert.rejects(preflight(root), /@parcha\/pi-vision's CHANGELOG\.md still has entries under Unreleased/);
   await writeFile(join(root, 'packages/pi-vision/CHANGELOG.md'), '# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.1 (2026-01-02)\n\n- Dated.\n');
   assert.equal((await preflight(root)).status, 'passed');
-  await writeFile(join(root, 'packages/pi-transport/CHANGELOG.md'), undated);
+  await writeFile(join(root, 'packages/serve/CHANGELOG.md'), undated);
   assert.equal((await preflight(root)).status, 'passed', 'a held package is not published');
   // The fold and the guard agree: a tree the fold produced passes, one it was not run on does not.
   await writeFile(join(root, 'packages/pi-vision/CHANGELOG.md'), undated);
@@ -404,13 +401,13 @@ test("a release is refused while a published package's own changelog still has e
 }));
 
 test("a release folded with a held package's fragment passes the preflight, and the held changelog stays undated under Unreleased", () => fixture(async root => {
-  assert.ok(heldPackages.includes('pi-transport'), 'pi-transport is held in this checkout');
-  await writeFile(join(root, 'packages/pi-transport/CHANGELOG.md'), '# Changelog\n\n## [Unreleased]\n\n- Held entry.\n');
+  assert.ok(heldPackages.includes('serve'), 'serve is held in this checkout');
+  await writeFile(join(root, 'packages/serve/CHANGELOG.md'), '# Changelog\n\n## [Unreleased]\n\n- Held entry.\n');
   await writeFile(join(root, 'packages/pi-vision/CHANGELOG.md'), '# Changelog\n\n## Unreleased\n\n- Published entry.\n');
   await mkdir(join(root, 'changes'), { recursive: true });
-  await writeFile(join(root, 'changes/held.md'), '---\npackages: @parcha/pi-transport\nkind: feature\n---\nA held change.\n');
+  await writeFile(join(root, 'changes/held.md'), '---\npackages: @parcha/agentrun-serve\nkind: feature\n---\nA held change.\n');
   await fold(root, version, '2026-01-02');
-  const held = await readFile(join(root, 'packages/pi-transport/CHANGELOG.md'), 'utf8');
+  const held = await readFile(join(root, 'packages/serve/CHANGELOG.md'), 'utf8');
   assert.equal(held, '# Changelog\n\n## [Unreleased]\n\n- Held entry.\n- A held change.\n', 'the held changelog is not dated');
   assert.match(await readFile(join(root, 'packages/pi-vision/CHANGELOG.md'), 'utf8'), /## Unreleased\n\n## 0\.1\.0-beta\.1 \(2026-01-02\)\n\n- Published entry\./, 'a published one is');
   assert.equal((await preflight(root)).status, 'passed', 'entries left under a held package\'s Unreleased do not block the release');
