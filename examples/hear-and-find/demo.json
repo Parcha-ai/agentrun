@@ -8,7 +8,7 @@
   "models": {
     "lead": { "needs": ["text", "tools"], "default": "openai/gpt-6-luna" },
     "eyes": { "needs": ["video"], "default": "google/gemini-3.8-flash" },
-    "jev": { "needs": ["noul", "box"], "default": "typesafe/jev-1.14.0" },
+    "judge": { "jev": true, "caps": { "requests": 200, "tokens": 160000 } },
     "transcriber": { "needs": ["word times"], "default": "fal/fal-ai/elevenlabs/speech-to-text/scribe-v2" }
   },
   "keys": [

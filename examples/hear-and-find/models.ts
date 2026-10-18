@@ -84,7 +84,8 @@ export function transcriberOf(env: NodeJS.ProcessEnv) {
   throw new Error('--live needs FAL_KEY (fal.ai, for Scribe v2), or a gateway that passes fal\'s queue through (VIDEO_MODEL_BASE_URL and VIDEO_MODEL_API_KEY).');
 }
 
-/** The reference entry's live parts: the lead and eyes the flags name or the keys allow, Jev, and the transcriber. */
+/** The reference entry's live parts: the lead and eyes the flags name or the keys allow, Jev as the host's judge (which
+ *  `vision.judge` goes through, held to the demo's Jev caps), and the transcriber. */
 export function liveParts(context: { env: NodeJS.ProcessEnv; models: { provider?: string; model?: string; eyesModel?: string } }): LiveParts {
   const { env, models } = context;
   if (!env.TYPESAFE_API_KEY) throw new Error('--live needs TYPESAFE_API_KEY (typesafe.ai) for Jev, which scores frames and draws the box.');
@@ -94,10 +95,10 @@ export function liveParts(context: { env: NodeJS.ProcessEnv; models: { provider?
   const eyes = modelsEyes(catalog as never, chosen.eyes, { thinking: 'low', accepts: { video: PROVIDERS[chosen.eyes.provider]!.video } });
   if (!eyes) throw new Error(`${publicName(chosen.eyes)} takes no images, so it cannot be the eyes`);
   const transcriber = transcriberOf(env);
-  const jev = { judge: createJevRunner({ apiKey: env.TYPESAFE_API_KEY, pricing: JEV_PRICE }) };
+  const runJudge = createJevRunner({ apiKey: env.TYPESAFE_API_KEY, pricing: JEV_PRICE });
   return {
-    host: { models: { catalog, lead: { provider: chosen.lead.provider, modelId: chosen.lead.modelId } } },
+    host: { models: { catalog, lead: { provider: chosen.lead.provider, modelId: chosen.lead.modelId } }, decisions: { runJudge: runJudge as never } },
     models: { lead: publicName(chosen.lead), eyes: publicName(chosen.eyes), jev: 'typesafe/jev-1.14.0', transcriber: `fal/${transcriber.model}` },
-    vision: () => ({ eyes, jev, transcriber }),
+    vision: () => ({ eyes, transcriber }),
   };
 }

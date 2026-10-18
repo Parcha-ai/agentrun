@@ -36,6 +36,19 @@ What it looks for is data: `needles.json` names the film, the phrase and its que
 
 A `--live` run of the whole film costs about $0.40 at list prices, nine tenths of it the transcript; the search itself is about a cent. `SETUP-PROMPT.md` sets all of this up for you.
 
+## Runtime dependencies
+
+Until the reference host is published as a package that carries them, the example needs these beside it:
+
+| Package | For |
+|---|---|
+| the reference host (`examples/reference`, to be `@parcha/agentrun-reference`) | `demo()`, the run's place, code mode, the judge seam |
+| `@parcha/pi-vision` | `vision.see`, `vision.judge` and `vision.transcribe`; the transcribe and find skills; `falTranscriber`; the scripted eyes |
+| `@parcha/agentrun-jev` | Jev for a live run (`createJevRunner`) |
+| `@earendil-works/pi-ai` | the live lead and eyes, and the scripted lead's messages |
+| `@earendil-works/pi-codemode` | the `code` tool's sandbox (through the reference host) |
+| `@parcha/agentrun-dsl` | the workflow's types |
+
 ## How it is built
 
 - `needles.json`: what is asked. `job.ts`: the workflow as data: one `agent` with the `code` tool, whose instructions are the task and pi-vision's transcribe and find skills, then a `call` to `answer`.

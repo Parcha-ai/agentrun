@@ -103,8 +103,9 @@ export function scriptedEyes() {
   });
 }
 
-/** The scripted Jev: a frame at or after clip.json's second is the thing (0.95, and its box), one in the lookalike's span
- *  half is (0.6), any other is not; priced at 0. */
+/** The scripted Jev, the host's judge on fakes (`vision.judge` goes through the host's judge seam): a frame at or after
+ *  clip.json's second is the thing (0.95, and its box), one in the lookalike's span half is (0.6), any other is not;
+ *  priced at 0. */
 export function scriptedJev() {
   const requests: { source: string; questions: string[] }[] = [];
   const judge = async (params: { state: unknown; questions: Readonly<Record<string, unknown>>; model?: string }) => {
@@ -132,10 +133,10 @@ export const scriptedTranscriber: Transcriber = {
   },
 };
 
-/** The fakes the reference entry runs the job on: the scripted lead, the job's tools, no judge of its own, and the scripted
- *  eyes, Jev and transcriber. */
+/** The fakes the reference entry runs the job on: the scripted lead, the job's tools, the scripted Jev as the host's judge,
+ *  and the scripted eyes and transcriber. */
 export const fakes: Fakes = {
   model: scriptedLead, tools, pages: {}, start: 'about:blank', responses: 2_000, tokensPerSecond: 400, lead: { input: ['text'] },
-  judge: async () => { throw new Error('this job asks no judge'); },
-  vision: () => ({ eyes: scriptedEyes(), jev: { judge: scriptedJev().judge }, transcriber: scriptedTranscriber }),
+  judge: scriptedJev().judge as unknown as Fakes['judge'],
+  vision: () => ({ eyes: scriptedEyes(), transcriber: scriptedTranscriber }),
 };

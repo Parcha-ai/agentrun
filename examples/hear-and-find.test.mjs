@@ -112,7 +112,7 @@ test('the clip: the committed file is the size and SHA-256 clip.json fixes, cut 
   assert.deepEqual(new Uint8Array(options.job.files[CLIP.file]), new Uint8Array(bytes));
 });
 
-test('live models: the defaults, the transcriber through fal\'s own queue or a gateway\'s pass-through, and Jev\'s key asked for by name', () => {
+test('live models: the defaults, the transcriber through fal\'s own queue or a gateway\'s pass-through, and Jev as the host\'s judge, its key asked for by name', () => {
   const name = ({ lead, eyes }) => [`${lead.provider}/${lead.modelId}`, `${eyes.provider}/${eyes.modelId}`];
   const gateway = { VIDEO_MODEL_BASE_URL: 'http://gateway.example/v1', VIDEO_MODEL_API_KEY: 'k' };
   assert.deepEqual(name(chooseModels(gateway)), ['openai/gpt-6-luna', 'google/gemini-3.8-flash']);
@@ -121,7 +121,8 @@ test('live models: the defaults, the transcriber through fal\'s own queue or a g
   assert.throws(() => transcriberOf({}), /FAL_KEY/);
   assert.throws(() => liveParts({ env: gateway, models: {} }), /TYPESAFE_API_KEY/);
   const parts = liveParts({ env: { ...gateway, TYPESAFE_API_KEY: 'k' }, models: {} });
-  assert.deepEqual(Object.keys(parts.vision()).sort(), ['eyes', 'jev', 'transcriber']);
+  assert.deepEqual(Object.keys(parts.vision()).sort(), ['eyes', 'transcriber']);
+  assert.equal(typeof parts.host.decisions.runJudge, 'function', 'Jev is the host\'s judge: vision.judge goes through the judge seam');
   assert.equal(parts.vision().eyes.accepts.video, true);
   assert.deepEqual(parts.models, { lead: 'openai/gpt-6-luna', eyes: 'google/gemini-3.8-flash', jev: 'typesafe/jev-1.14.0', transcriber: 'fal/fal-ai/elevenlabs/speech-to-text/scribe-v2' });
 });
