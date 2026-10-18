@@ -30,6 +30,20 @@ const place = (environment: string): Place => ({
 const places = { a: place("a"), b: place("b") };
 
 /**
+ * The move record a recovery sends a target the lease names: the host knows only where the lease puts the session, and
+ * a target that wrote its record on its first open keeps that one.
+ */
+const retryRecord = (environment: string) => ({
+	from: null,
+	to: { environment, provider: "test", box: `box-${environment}` },
+	drainMs: null,
+	shipMs: null,
+	takeMs: null,
+	bytes: null,
+	stopped: [],
+});
+
+/**
  * A runner that is ready in `state`, says it is at `homeEpoch` (and, sealed, that it holds `OWN_SEAL`), and writes down
  * every order it is given; `started` holds every stop and start in order, and every epoch and close the host gave its
  * handle. `stops` false: the runner that still runs there will not stop. `onStart` runs as the runner starts.
@@ -95,7 +109,13 @@ describe("recovering a session from its lease", () => {
 			expect(recovered.lease.epoch).toBe(2);
 			expect(runner.started).toEqual(["stop b", "b@2"]);
 			expect(runner.orders).toEqual([
-				{ resume: { epoch: 2, seal: SEAL, move: { id: "move-1", notice: NOTICE, kind: "move", head: SEAL.head } } },
+				{
+					resume: {
+						epoch: 2,
+						seal: SEAL,
+						move: { id: "move-1", notice: NOTICE, kind: "move", head: SEAL.head, record: retryRecord("b") },
+					},
+				},
 			]);
 		});
 	});
@@ -179,7 +199,7 @@ describe("recovering a session from its lease", () => {
 					resume: {
 						epoch: 2,
 						seal: SEAL,
-						move: { id: "move-back", notice: NOTICE, kind: "move", head: SEAL.head },
+						move: { id: "move-back", notice: NOTICE, kind: "move", head: SEAL.head, record: retryRecord("a") },
 					},
 				},
 			]);

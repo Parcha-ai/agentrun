@@ -10,7 +10,10 @@ The host keeps what is its own: which model looks and its price, where receipts 
 their stored instructions do not change. No tool is added. For many pages, a long video or many images the agent
 writes code: the `look` skill (`skills/look/SKILL.md`) shows it how to render pages and cut frames with bash and ask
 about them with `vision.see`, or have Jev judge them with typed answers (`vision.judge`): the two functions this
-package puts in a host's code mode. Only the answers, where they looked and the price enter the caller's context.
+package puts in a host's code mode. Only the answers, where they looked and the price enter the caller's context. The
+`find` skill (`skills/find/SKILL.md`) finds every time a phrase is said in a long video, from its transcript, and the
+second a thing is first seen and its box, coarse to fine: the words narrow the search, Jev scores frames, the eyes
+name the second, Jev draws the box.
 
 ## Status
 
@@ -93,6 +96,7 @@ is the lead's model as pi-ai describes it, which sets the limits; with none, the
 - `@parcha/pi-vision/durable`: `createVisionExtension(options)`, the pi-durable adapter.
 - `@parcha/pi-vision/node`: the environment port over Node, for a host whose `read` is its own.
 - `@parcha/pi-vision/eyes/pi-ai`: eyes on a pi-ai model the host builds.
+- `@parcha/pi-vision/transcribers`: speech-to-text models for `vision.transcribe`: fal, ElevenLabs and OpenAI.
 - `@parcha/pi-vision/providers/<name>`: `unpdf`, `pdfium`, `office-js`, `photon`, `sharp`, `poppler`, `ffmpeg`,
   `soffice`.
 - `@parcha/pi-vision/testing`: fake eyes, fixture helpers and the provider conformance suite, public so a host's
@@ -184,6 +188,44 @@ in, mapped back through the fit and through the region a crop names. Each judgme
 (`via: jev`) at the price the judge gives (none known is filed as unknown, never $0), kept as a memo before it is told,
 and a miss throws a `SeeMiss` with its code; a box asked of a model that has none is an `unsupported` miss before any
 request. Without `jev`, every judgment is a `no_vision_route` miss.
+
+## For a host: `vision.transcribe`, speech to text in code mode
+
+`handle.transcribe(env, call)` is `vision.transcribe`, built per call beside `vision.see`: one audio or video file in,
+the words with their start and end in seconds out, in one shape whatever the provider gave. The host picks the
+provider in `VisionOptions.transcriber` and holds the key, the way the eyes hold theirs: each transcriber takes an
+`apiKey` function read at each request, and nothing the agent's code, the answers, the receipts or the misses see
+carries it.
+
+| Provider | Key a stranger sets | Transcriber | Model (default) | One request takes |
+| --- | --- | --- | --- | --- |
+| fal | `FAL_KEY` (`Authorization: Key`) | `falTranscriber({ apiKey: () => process.env.FAL_KEY })` | `fal-ai/elevenlabs/speech-to-text/scribe-v2`, $0.008 a minute | 2.5 MB inline, measured (fal states no limit): 10 minutes 25 seconds at 32 kbps |
+| ElevenLabs | `ELEVENLABS_API_KEY` (`xi-api-key`) | `elevenLabsTranscriber({ apiKey: () => process.env.ELEVENLABS_API_KEY })` | `scribe_v2` | 3 GB |
+| OpenAI | `OPENAI_API_KEY` (bearer) | `openAiTranscriber({ apiKey: () => process.env.OPENAI_API_KEY })` | `whisper-1`, the one OpenAI model with word times | 25 MB |
+
+Each transcriber has its own default model, since the providers name them differently; `model` names another. Never
+words without times: a model that answers with text alone is an `unsupported` miss that says so. OpenAI's
+`gpt-4o-transcribe` and `gpt-4o-mini-transcribe` give no word times, so at OpenAI's own address any model but
+`whisper-1` is that miss before any request; any other model that answers without word times is that miss at its price.
+
+A gateway that passes fal's queue through with its own bearer key is `falTranscriber({ apiKey, queueUrl, auth:
+"bearer" })`; fal's own addresses in its answers are rewritten to `queueUrl`.
+
+```ts
+import { falTranscriber } from "@parcha/pi-vision/transcribers";
+
+const vision = createVisionExtension({ evidence, scope, eyesModel, transcriber: falTranscriber({ apiKey: () => process.env.FAL_KEY }) });
+// Inside the host's code-mode tool, beside vision.see:
+const sandbox = new CodemodeSandbox({ tools, globals: [vision.see(api.env, call), vision.transcribe(api.env, call)] });
+```
+
+A file over the provider's limit is an `over_budget` miss that names it, before any request; the agent cuts the file
+into pieces and transcribes each (the `transcribe` skill shows how). Each transcript is filed and told in the shape of a
+look, as tool `transcribe` (`args` the path, model and `via` the provider; kind `audio` or `video`; the words as rows of
+start, end and words in the receipt's body), at its list price per audio minute, the length from the provider or from
+`ffprobe` in the environment (none known is filed as unknown, never $0), and kept as a memo before it is told, so a
+file asked again, or after a cut call, costs nothing. `usdPerMinute` on a transcriber sets the price where the package
+names none. Without `transcriber`, every transcription is a `no_vision_route` miss.
 
 ## For a host: what a program is started with
 

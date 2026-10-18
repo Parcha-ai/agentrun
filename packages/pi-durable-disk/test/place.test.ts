@@ -127,6 +127,54 @@ describe("localPlace outcome", () => {
   });
 });
 
+describe("place outcome models", () => {
+  const MODELS = { lead: "claude-opus-5-5", eyes: "gpt-vision-2" };
+  /** A models value the app reported, and what the outcome should carry: a plain object of strings, else nothing. */
+  const cases: [string, unknown, Record<string, string> | undefined][] = [
+    ["a plain object of strings", MODELS, MODELS],
+    ["absent", undefined, undefined],
+    ["an array", ["claude-opus-5-5"], undefined],
+    ["a string", "claude-opus-5-5", undefined],
+    ["a non-string value", { lead: "claude-opus-5-5", eyes: 2 }, undefined],
+    ["null", null, undefined],
+  ];
+  const carries = (outcome: unknown, want: Record<string, string> | undefined, name: string) => {
+    if (want === undefined) assert.ok(outcome !== null && typeof outcome === "object" && !("models" in outcome), `${name}: no models field, never {}: ${JSON.stringify(outcome)}`);
+    else assert.deepEqual((outcome as { models?: unknown }).models, want, name);
+  };
+
+  it("localPlace: the outcome line's models only when they are a plain object of strings, and run.json's on a failed run that printed none", { timeout: 240_000 }, async () => {
+    for (const [name, models, want] of cases) {
+      const place = localPlace({ app: APP })({ paths: pathsAt(scratch()) });
+      const env: Record<string, string> = { PLACE_FINISH: "1", ...(models === undefined ? {} : { PLACE_MODELS: JSON.stringify(models) }) };
+      const ended = await (await place.start({ gen: 1, env })).exited;
+      assert.equal(ended.outcome?.status, "complete", `${name}: ${ended.stderr}`);
+      carries(ended.outcome, want, `the outcome line, ${name}`);
+    }
+    const place = localPlace({ app: APP })({ paths: pathsAt(scratch()) });
+    const failed = await (await place.start({ gen: 1, env: { PLACE_FINISH: "1", PLACE_SILENT: "1", PLACE_FAIL: "1", PLACE_MODELS: JSON.stringify(MODELS) } })).exited;
+    assert.equal(failed.outcome?.status, "failed", failed.stderr);
+    assert.deepEqual(failed.outcome?.models, MODELS, "a failed run used models too: run.json's detail carries them");
+  });
+
+  it("archilPlace: run.json's final detail.models on a complete or a failed outcome, only when they are a plain object of strings", async () => {
+    for (const status of ["done", "failed"] as const) {
+      for (const [name, models, want] of cases) {
+        const control = new FakeControl();
+        const { host, states } = fakeHost(control);
+        const at = makePlace({ ...REF, control, host });
+        const runner = await at.start({ gen: 1, env: {}, stdin: await at.token!(1) });
+        control.runJson({ generation: 1, status, detail: { record: { n: 1 }, ...(models === undefined ? {} : { models }) } });
+        states.set("box-1", "stopped");
+        const outcome = (await runner.exited).outcome;
+        assert.equal(outcome?.status, status === "done" ? "complete" : "failed", name);
+        carries(outcome, want, `${status}, ${name}`);
+        await at.release();
+      }
+    }
+  });
+});
+
 describe("localPlace cleanup", () => {
   it("a box deletion that fails is tried again by the next kill or recover, and one that succeeded is not repeated", { timeout: 120_000 }, async () => {
     const root = scratch();
