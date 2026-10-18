@@ -12,7 +12,7 @@ The agent runs commands with **your user's rights**: a live demo can read and wr
 ## Run a demo from an install, with no key
 
 ```sh
-npm install @parcha/agentrun-harness
+npm install @parcha/agentrun-harness@beta
 ```
 
 npm installs the pi peers it needs (`@earendil-works/pi-ai`, `pi-durable`, `chord`, `pi-codemode` and `typebox`).
