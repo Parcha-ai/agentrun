@@ -74,7 +74,7 @@ test('the workflow map marks its kills, and the strip that says there are none',
   assert.match(parts[0]!, /^1 kill ✕ 1: storm 1/, 'the strip that lists a kill is marked');
 });
 
-test('in Chrome: by default no kill, process or repeat is drawn and the payments and cost are under Receipts; ?debug=durability draws today\'s view', { ...noChrome, timeout: 120_000 }, async (t) => {
+test('in Chrome: by default no kill, process or repeat is drawn and every count with the payments and cost is under Receipts; ?debug=durability draws today\'s view', { ...noChrome, timeout: 120_000 }, async (t) => {
   const out = mkdtempSync(join(tmpdir(), 'viewer-public-'));
   const pages: Awaited<ReturnType<typeof drivenPage>>[] = [];
   t.after(() => closeAll(pages, () => rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })), { timeout: 20_000 });
@@ -96,21 +96,21 @@ test('in Chrome: by default no kill, process or repeat is drawn and the payments
     try { return JSON.parse(String(await page.once('document.body.textContent.includes("paid calls made")', seen, 20_000, 'the page drawn'))) as Record<string, unknown>; } finally { await page.close(); }
   };
   const DURABILITY = ['processes', 'kills', 'repeated', 'asked twice', 'journal opens'];
+  const RECEIPTS = ['paid calls made', 'looks paid', 'unknown', 'judge asks', 'model turns', 're-asks', 'cost'];
   for (const query of ['r=reference-killed', 'r=reference-killed&embed=1']) {
     const shown = await read(query);
     assert.match(String(shown.root), /(^| )hide-durability( |$)/, query);
     const counters = shown.counters as string[];
-    for (const gone of [...DURABILITY, 'looks paid', 'cost']) assert.ok(!counters.includes(gone), `${query}: ${gone} is not drawn: ${counters.join(', ')}`);
-    for (const kept of ['paid calls made', 'model turns']) assert.ok(counters.includes(kept), `${query}: ${kept} stays: ${counters.join(', ')}`);
-    assert.deepEqual(shown.receipts, ['looks paid', 'cost'], `${query}: the payments and the cost are under Receipts`);
-    assert.equal(shown.opened, 2, `${query}: one click opens them`);
+    assert.deepEqual(counters, [], `${query}: no counter is drawn outside Receipts`);
+    assert.deepEqual(shown.receipts, RECEIPTS, `${query}: the developer's counts, the payments and the cost are under Receipts`);
+    assert.equal(shown.opened, RECEIPTS.length, `${query}: one click opens them`);
     assert.ok(Number(shown.lane) > 0 && shown.laneShown === 0, `${query}: the process lane and its kills are in the page, none drawn`);
     assert.equal(shown.viewBox, '0 58 1000 102', `${query}: the timeline starts below the process lane`);
     assert.doesNotMatch(String(shown.chapters), /killed|process \d+ starts/, query);
   }
   const debug = await read('r=reference-killed&debug=durability');
   assert.doesNotMatch(String(debug.root), /hide-durability/);
-  for (const there of [...DURABILITY, 'looks paid', 'cost']) assert.ok((debug.counters as string[]).includes(there), `${there} is drawn in the debug view`);
+  for (const there of [...DURABILITY, ...RECEIPTS]) assert.ok((debug.counters as string[]).includes(there), `${there} is drawn in the debug view`);
   assert.deepEqual(debug.receipts, [], 'no Receipts disclosure: the receipts are inline, as they were');
   assert.equal(debug.opened, null);
   assert.equal(debug.laneShown, debug.lane);
