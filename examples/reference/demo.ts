@@ -518,7 +518,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
       // the attempt does not finish (nor the place release) until the kill, with its provider cleanup, is done.
       let deciding: Promise<void> = Promise.resolve();
       const watch = setInterval(() => {
-        if (followError && !decided) { decided = true; deciding = place.kill(runner!, 'process').catch(() => undefined); return; }
+        if (followError && !decided) { decided = true; deciding = place.kill(runner!, 'process').catch((error) => { failed(String((error as { code?: unknown } | null)?.code ?? 'KILL_FAILED'), messageOf(error, paths.root), 'process'); }); return; }
         if (decided) return;
         if (operatorKill && existsSync(operatorKill)) {
           // A control that cannot be removed (a directory made by mistake, a parent that forbids it) is a failed kill, reported through the normal path: the supervisor does not crash with the child still running.
