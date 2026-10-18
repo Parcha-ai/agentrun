@@ -13,12 +13,15 @@ import { BOX_CROSSINGS, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CA
 
 const FIXTURE = new URL('./reference/demo-fixture.ts', import.meta.url).href;
 
+const BASELINE = new WeakMap();
 async function run(t, spec, argv, env = {}) {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-demo-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const file = join(tmp, 'demo.json');
   writeFileSync(file, JSON.stringify({ name: 'reference', ...spec }));
-  const before = { ...process.env };
+  // The environment as the test found it: the first call in a test records it, so a later call's restore cannot put back what an earlier call set.
+  if (!BASELINE.has(t)) BASELINE.set(t, { ...process.env });
+  const before = BASELINE.get(t);
   Object.assign(process.env, { DEMO_SPEC: file, ...env });
   t.after(() => { for (const name of Object.keys(process.env)) if (!(name in before)) delete process.env[name]; Object.assign(process.env, before); });
   // The supervisor is this process; it starts the fixture as each child.
@@ -374,6 +377,56 @@ test('a child started with the spend cap already passed is ended at once, and no
   const result = await spawnChild(new URL('./reference/demo-fixture.ts', import.meta.url).href, { DIR: '/tmp/never', BACKEND: 'http://127.0.0.1:1', DEMO_SPEC: '/no/such/spec.json' }, () => {}, stop);
   assert.equal(result.signal, 'SIGKILL');
   assert.ok(Date.now() - started < 10_000);
+});
+
+test('--fetch-sources: the entry fetches the demo\'s sources.json into the run\'s work/ before the job runs, and a no-key run without the flag does not', { timeout: 300_000 }, async (t) => {
+  const { createServer } = await import('node:http');
+  const { createHash } = await import('node:crypto');
+  const body = 'a checked scan';
+  const asked = [];
+  // Only the file's own path counts: on a shared machine a stray probe of this port is not the entry's request.
+  const server = createServer((request, response) => { if (request.url === '/files/scan.png') asked.push(request.url); response.end(body); });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-sources-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const file = join(tmp, 'sources.json');
+  writeFileSync(file, JSON.stringify({ items: [{ id: 'scan-1', url: `http://127.0.0.1:${server.address().port}/files/scan.png`, bytes: body.length, sha256: createHash('sha256').update(body).digest('hex') }] }));
+  const plain = await run(t, { sources: file }, ['--json']);
+  assert.equal(plain.result.processes.at(-1).outcome.status, 'complete');
+  assert.deepEqual(asked, [], 'a no-key run uses the files the demo commits: nothing fetched');
+  const fetched = await run(t, { sources: file }, ['--json', '--fetch-sources', '--cache', join(tmpdir(), `reference-cache-${process.pid}-${Date.now()}`)]);
+  assert.equal(fetched.result.processes.at(-1).outcome.status, 'complete');
+  assert.deepEqual(asked, ['/files/scan.png']);
+  assert.equal(readFileSync(join(fetched.result.dir, 'work', 'scan-1.png'), 'utf8'), body);
+});
+
+test('sourcesFor: only the items the input needs are fetched (--fetch-sources); without the flag a run that lacks their files is refused in one line, and names the fix', { timeout: 300_000 }, async (t) => {
+  const { createServer } = await import('node:http');
+  const { createHash } = await import('node:crypto');
+  const bodies = { '/a-1.png': 'default company page', '/o-1.png': 'other company page' };
+  const asked = [];
+  const server = createServer((request, response) => { if (request.url in bodies) asked.push(request.url); response.end(bodies[request.url] ?? 'x'); });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-sourcesfor-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const items = Object.entries(bodies).map(([path, body]) => ({ id: path.slice(1, 4), url: `http://127.0.0.1:${server.address().port}${path}`, bytes: body.length, sha256: createHash('sha256').update(body).digest('hex') }));
+  writeFileSync(join(tmp, 'items.json'), JSON.stringify(items));
+  const cache = join(tmp, 'cache');
+  const fetched = await run(t, {}, ['--json', '--fetch-sources', '--cache', cache], { DEMO_SOURCES_ITEMS: join(tmp, 'items.json') });
+  assert.equal(fetched.result.processes.at(-1).outcome.status, 'complete');
+  assert.deepEqual(asked, ['/a-1.png'], 'the default company\'s item only');
+  assert.equal(readFileSync(join(fetched.result.dir, 'work', 'a-1.png'), 'utf8'), 'default company page');
+  // Again with the cache: nothing asked.
+  asked.length = 0;
+  await run(t, {}, ['--json', '--fetch-sources', '--cache', cache], { DEMO_SOURCES_ITEMS: join(tmp, 'items.json') });
+  assert.deepEqual(asked, [], 'served from the cache');
+  // Without the flag, no-key: the files must be committed; the refusal is one line naming the fix.
+  const refused = await run(t, {}, ['--json'], { DEMO_SOURCES_ITEMS: join(tmp, 'items.json') });
+  const outcome = refused.result.processes.at(-1).outcome;
+  assert.equal(outcome.status, 'error');
+  assert.match(outcome.message, /^this input needs 1 source file\(s\) a no-key run does not have \(a-1\.png\): run with --fetch-sources, or --live$/);
 });
 
 // ---- the audit's five gaps (A2) -------------------------------------------------------------------------------------------------------------

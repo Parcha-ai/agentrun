@@ -40,6 +40,8 @@ export type DemoSpec = {
   /** The keys and programs the demo needs (the DSL's DemoSpec): each `{ env, ... }` or a `oneOf` group of them. A live child's environment is exactly these names. */
   keys?: unknown[];
   programs?: unknown[];
+  /** The checked files the job reads: `sources.json` beside the demo (`true`), or another path relative to it. They are fetched into the run's `work/` on `--live` and with `--fetch-sources`. */
+  sources?: boolean | string;
   /** The box the job's tools run in. */
   boxes?: BoxSpec;
   [other: string]: unknown;
