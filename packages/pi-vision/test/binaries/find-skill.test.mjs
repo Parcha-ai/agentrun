@@ -293,3 +293,24 @@ test("not found: no frame scores even 0.5, so the eyes are never asked and the t
   assert.deepEqual(halved, { found: false, best: [[0, 0.05], [10, 0.05]] });
   assert.equal(eyes.ledger.length, 0);
 });
+
+test("a search named by more than one word is refused before anything is asked: the folder goes into paths and commands as it is", async () => {
+  transcript();
+  const jev = pixelJev();
+  const vision = createVisionExtension({ eyes: watchingEyes(), jev: { judge: jev.judge }, evidence: { file: async () => null }, scope: () => ({ label: "find", deriveDir: ".vision" }) });
+  for (const name of [".find/a red umbrella", ".find/'umbrella'", ".find/umbrella/2", "umbrella"]) {
+    const code = narrow.replace('const dir = ".find/umbrella";', `const dir = ${JSON.stringify(name)};`);
+    assert.notEqual(code, narrow);
+    const call = { conversationId: "find", callId: name, model: undefined, signal: undefined };
+    const sandbox = new CodemodeSandbox({ tools: [bash], globals: [vision.see(nodeVisionEnv({ cwd }), call), vision.judge(nodeVisionEnv({ cwd }), call)] });
+    try {
+      const run = await sandbox.execute(code);
+      assert.equal(run.ok, false, name);
+      assert.match(run.error.message, /one word of letters, digits and dashes/, name);
+    } finally { await sandbox.close(); }
+    assert.equal(fs.existsSync(path.join(cwd, name)), false, `${name}: no folder made`);
+  }
+  assert.equal(jev.requests.length, 0);
+  await steps([narrowWith('const dir = ".find/umbrella";', 'const dir = ".find/red-umbrella_2";')]);
+  assert.ok(fs.existsSync(path.join(cwd, ".find", "red-umbrella_2", "task.json")), "one word with digits, dashes and underscores is a name");
+});

@@ -6,17 +6,20 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Delegation } from "disk";
 import { openDurableRun, type RunSeed } from "../src/run.ts";
+import { keepStartMark } from "../src/status.ts";
 import { ensureRunning, type HostDriver, type HostHandle, type SupervisorControl } from "../src/supervise.ts";
 import { fakeClaim, localClaimDir, localRef, scratchRoot, scriptedHarness } from "./_run-support.ts";
 
 const CHILD = fileURLToPath(new URL("./fixtures/seed-child.ts", import.meta.url));
 const LEASE = { heartbeatMs: 100, expiryMs: 5_000, marginMs: 1_000, checkMs: 100 };
-const GRACE_MS = 400;
+// Fifteen refreshes to a grace (the lease's defaults have nine: 90 s to 10 s), so a loaded runner whose fsyncs stall for a
+// few hundred milliseconds still refreshes within it.
+const GRACE_MS = 1_500;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 type Mark = { generation: number; at: string; by: string | null; failures: number; lastExit: string | null };
@@ -65,7 +68,7 @@ function supervisorOver(root: string, id: string) {
 
 /**
  * Once the keeper's first refresh has landed (`at` is no longer `since`): its thread is up. A loaded machine can take well
- * over this file's 400 ms grace to bring a worker thread up (nothing to a real grace of 90 s), so every timed check runs
+ * over this file's grace to bring a worker thread up (nothing to a real grace of 90 s), so every timed check runs
  * from here; a keeper that never comes up still fails.
  */
 async function firstRefresh(root: string, since: string, ms = 20_000): Promise<void> {
@@ -100,7 +103,7 @@ describe("a seed and the supervisor's start grace", () => {
   it("a seed that outlives the grace keeps its start mark fresh: the supervisor's tick finds it starting and revokes nothing", { timeout: 30_000 }, async () => {
     const dir = scratchRoot("seed-mark-fresh");
     try {
-      // A first start (no failures before it): the grace is the base, 400 ms; a backed-off one would be longer.
+      // A first start (no failures before it): the grace is the base, GRACE_MS; a backed-off one would be longer.
       const first: Mark = { generation: 1, at: new Date().toISOString(), by: "sup-1", failures: 0, lastExit: null };
       writeMark(dir.root, first);
       const supervisor = supervisorOver(dir.root, "r1");
@@ -169,6 +172,31 @@ describe("a seed and the supervisor's start grace", () => {
     }
   });
 
+  it("collections while the seed waits on a promise nothing else holds close nothing: the claim directory stays open and the mark fresh (GRE-3853)", { timeout: 60_000 }, async () => {
+    const dir = scratchRoot("seed-mark-gc");
+    const root = join(dir.root, "run");
+    const marker = join(dir.root, "seeding");
+    mkdirSync(root, { recursive: true });
+    const start = new Date().toISOString();
+    writeMark(root, { generation: 1, at: start, by: "sup-1", failures: 0, lastExit: null });
+    // A full collection every 100 ms in the seeder, as a process that allocates more reaches one sooner.
+    const child = spawn(process.execPath, ["--expose-gc", CHILD, root, marker, String(LEASE.heartbeatMs), "0", "100"], { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => (stderr += chunk));
+    try {
+      for (const t0 = Date.now(); !existsSync(marker) && Date.now() - t0 < 30_000; ) await sleep(20);
+      await firstRefresh(root, start);
+      await sleep(2 * GRACE_MS); // a keeper stopped by a collection would leave the mark two graces old
+      const age = Date.now() - Date.parse(readMark(root).at);
+      assert.doesNotMatch(stderr, /Closing file descriptor \d+ on garbage collection/, "no descriptor of the seeder is closed by a collection");
+      assert.ok(age < GRACE_MS, `the mark is kept fresh across collections: ${age} ms old against a ${GRACE_MS} ms grace`);
+    } finally {
+      child.kill("SIGKILL");
+      await new Promise((resolve) => (child.exitCode === null && child.signalCode === null ? child.once("close", resolve) : resolve(undefined)));
+      dir.remove();
+    }
+  });
+
   it("a seeder that dies stops refreshing, and the grace runs out as before", { timeout: 60_000 }, async () => {
     const dir = scratchRoot("seed-mark-dies");
     const root = join(dir.root, "run");
@@ -188,6 +216,67 @@ describe("a seed and the supervisor's start grace", () => {
       assert.notEqual((await supervisor.tick()).action, "starting", "past the grace the start has failed, as before");
     } finally {
       child.kill("SIGKILL");
+      dir.remove();
+    }
+  });
+});
+
+describe("the start mark's keeper", () => {
+  it("writes only while its directory is the one it started on: once the path names another, it touches nothing there and warns once", { timeout: 30_000 }, async () => {
+    const dir = scratchRoot("keeper-moved");
+    const root = join(dir.root, "run");
+    mkdirSync(root, { recursive: true });
+    const start = new Date().toISOString();
+    writeMark(root, { generation: 1, at: start, by: "sup-1", failures: 0, lastExit: null });
+    const warnings: Error[] = [];
+    const onWarning = (warning: Error) => void ((warning as { code?: string }).code === "PDA_START_MARK" && warnings.push(warning));
+    process.on("warning", onWarning);
+    const stop = keepStartMark(root, 50);
+    try {
+      await firstRefresh(root, start);
+      // The path now names another directory, with a mark of its own: what a reused descriptor number would name.
+      renameSync(root, `${root}.old`);
+      mkdirSync(root);
+      const other: Mark = { generation: 1, at: "2026-10-18T00:00:00.000Z", by: "sup-2", failures: 0, lastExit: null };
+      writeMark(root, other);
+      await sleep(500);
+      assert.deepEqual(readMark(root), other, "the directory the path names now is not written");
+      assert.equal(existsSync(join(root, "start.json.tmp")), false, "nor a temp file in it");
+      assert.equal(warnings.length, 1, `one warning: ${warnings.map((w) => w.message).join(" | ")}`);
+      assert.match(warnings[0]!.message, /is no longer the directory/);
+    } finally {
+      await stop();
+      process.off("warning", onWarning);
+      dir.remove();
+    }
+  });
+
+  it("reports a mark it cannot read, once, and stays quiet about one that is absent or not a supervisor's generation 1", { timeout: 30_000 }, async () => {
+    const dir = scratchRoot("keeper-unreadable");
+    const warnings: Error[] = [];
+    const onWarning = (warning: Error) => void ((warning as { code?: string }).code === "PDA_START_MARK" && warnings.push(warning));
+    process.on("warning", onWarning);
+    try {
+      // Quiet: no mark at all, and a mark for generation 3.
+      for (const [name, mark] of [["none", undefined], ["other", { generation: 3, at: "2026-10-18T00:00:00.000Z", by: "sup-1", failures: 0, lastExit: null }]] as const) {
+        const root = join(dir.root, name);
+        mkdirSync(root, { recursive: true });
+        if (mark) writeMark(root, mark);
+        const stop = keepStartMark(root, 50);
+        await sleep(300);
+        await stop();
+      }
+      assert.deepEqual(warnings.map((w) => w.message), [], "an absent mark and another generation's are not failures");
+      // Unreadable: start.json is a directory, so reading it fails (EISDIR) for any user.
+      const root = join(dir.root, "unreadable");
+      mkdirSync(join(root, "start.json"), { recursive: true });
+      const stop = keepStartMark(root, 50);
+      await sleep(400);
+      await stop();
+      assert.equal(warnings.length, 1, `one warning: ${warnings.map((w) => w.message).join(" | ")}`);
+      assert.match(warnings[0]!.message, /reading it failed \(EISDIR\)/);
+    } finally {
+      process.off("warning", onWarning);
       dir.remove();
     }
   });

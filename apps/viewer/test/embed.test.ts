@@ -89,7 +89,7 @@ test('embedded, the page drops its header and fills its frame, and without &pare
   const html = 'document.documentElement.outerHTML';
   const viewer = (query: string) => `${pathToFileURL(join(out, 'dist', 'index.html')).href}?${query}`;
   const embedded = String(await read(viewer('r=reference-killed&embed=1'), drawn, html, 'the embedded page drawn'));
-  assert.match(embedded, /<html[^>]* class="embed"/);
+  assert.match(embedded, /<html[^>]* class="(?:[^"]* )?embed(?: [^"]*)?"/, 'the root carries embed, beside a public replay\'s hide-durability');
   assert.doesNotMatch(embedded, /<h1>/);
   assert.match(embedded, /paid calls made/, 'the rest of the page is there');
   assert.match(String(await read(viewer('r=reference-killed'), drawn, html, 'the page drawn')), /<h1>/, 'not embedded: the header');
