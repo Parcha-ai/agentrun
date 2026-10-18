@@ -60,12 +60,21 @@ export function shownShots(options: { keep?: (bytes: Buffer, extension: string) 
       return undefined;
     } } }],
   } as unknown as Extension;
+  /** A look made in code mode (`vision.see`, `vision.judge`) shows the eyes image files the script made or held: the host notes each, by the path the look will name, so the look is filed with the picture it was shown. */
+  const note = (conversationId: string, tool: string, path: string | undefined, bytes: Buffer, mimeType: string) => {
+    const blob = options.keep ? options.keep(bytes, EXTENSIONS[mimeType] ?? 'bin') : createHash('sha256').update(bytes).digest('hex');
+    const list = byConversation.get(conversationId) ?? [];
+    list.push({ tool, receipt: null, images: [{ type: 'image', mimeType, blob }], ...(path !== undefined ? { path } : {}) });
+    byConversation.set(conversationId, list.slice(-200));
+  };
   return {
+    note,
     extension,
     /** The images the eyes were shown for this look: for a `read`, the newest read of the look's own file, and for a film window only the frames inside it; for another tool whose result held the image (a screenshot), that tool's newest. A look whose read produced no image finds none. */
     of: (conversationId: string, record: LookRecord | undefined, tool: string) => {
       const reads = [...(byConversation.get(conversationId) ?? [])].reverse();
-      const entry = tool === 'read' ? reads.find((read) => read.tool === 'read' && record && read.path === record.args.path) : reads.find((read) => read.tool === tool);
+      const entry = tool === 'read' ? reads.find((read) => read.tool === 'read' && record && read.path === record.args.path)
+        : reads.find((read) => read.tool === tool && record && read.path !== undefined && read.path === record.args.path) ?? reads.find((read) => read.tool === tool && read.path === undefined);
       if (!entry) return undefined;
       const from = record?.args.from_s;
       const to = record?.args.to_s;
