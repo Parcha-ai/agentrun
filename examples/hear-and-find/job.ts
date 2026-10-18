@@ -71,7 +71,7 @@ export const workflow = {
   input: { schemaId: 'Input' },
   output: { schemaId: 'Cited', path: 'result' },
   root: { node: 'chain', steps: [
-    { node: 'agent', label: 'hear and find', out: 'Found', as: 'found', tools: ['code'], thinking: 'low', state: { film: '{film}', best: '{best}', phrase: '{phrase}', heard_question: '{heard_question}', thing: '{thing}', box: '{box}', words: '{words}', seen_question: '{seen_question}', budget_usd: '{budget_usd}' }, instructions: TASK },
+    { node: 'agent', label: 'hear-and-find', out: 'Found', as: 'found', tools: ['code'], thinking: 'low', state: { film: '{film}', best: '{best}', phrase: '{phrase}', heard_question: '{heard_question}', thing: '{thing}', box: '{box}', words: '{words}', seen_question: '{seen_question}', budget_usd: '{budget_usd}' }, instructions: TASK },
     // A tool resolves every receipt to what the run filed, takes the frame with its box, and builds the cited result.
     { node: 'call', label: 'answer', via: 'tool', tool: 'answer', args: { film: '{film}', best: '{best}', phrase: '{phrase}', heard_question: '{heard_question}', thing: '{thing}', seen_question: '{seen_question}', found: '{found}' }, out: 'Cited', as: 'result', deadline_s: 120 },
   ] },
