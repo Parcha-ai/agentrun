@@ -60,14 +60,18 @@ export function codeModeExtension(vision: VisionHandle, options: CodeModeOptions
         const watched = <G extends { execute(request: any, context?: any): Promise<unknown> }>(global: G, tool: string, conversationId: string): G => (!images ? global : {
           ...global,
           execute: async (request: any, scripted?: any) => {
-            for (const path of Array.isArray(request?.paths) ? request.paths as unknown[] : []) {
+            // Each picture is noted under the label its look will file: the fragment the script gave for it (images come first in `fragments`, then the paths), else the path.
+            const given = Array.isArray(request?.fragments) ? request.fragments as unknown[] : [];
+            const offset = Array.isArray(request?.images) ? (request.images as unknown[]).length : 0;
+            (Array.isArray(request?.paths) ? request.paths as unknown[] : []).forEach((path, index) => {
               const mimeType = typeof path === 'string' ? MIME[path.split('#')[0]!.split('.').pop()!.toLowerCase()] : undefined;
-              if (typeof path !== 'string' || !mimeType) continue;
-              try { images.note(conversationId, tool, path, readFileSync(join(images.workDir, path.split('#')[0]!)), mimeType); } catch { /* a path the script made that is not there is the look's miss to name */ }
-            }
-            for (const block of Array.isArray(request?.images) ? request.images as { data?: string; mimeType?: string }[] : []) {
-              if (typeof block?.data === 'string') images.note(conversationId, tool, undefined, Buffer.from(block.data, 'base64'), block.mimeType ?? 'image/png');
-            }
+              if (typeof path !== 'string' || !mimeType) return;
+              const label = typeof given[offset + index] === 'string' ? given[offset + index] as string : path;
+              try { images.note(conversationId, tool, label, readFileSync(join(images.workDir, path.split('#')[0]!)), mimeType); } catch { /* a path the script made that is not there is the look's miss to name */ }
+            });
+            (Array.isArray(request?.images) ? request.images as { data?: string; mimeType?: string }[] : []).forEach((block, index) => {
+              if (typeof block?.data === 'string') images.note(conversationId, tool, typeof given[index] === 'string' ? given[index] as string : `image ${index + 1}`, Buffer.from(block.data, 'base64'), block.mimeType ?? 'image/png');
+            });
             return global.execute(request, scripted);
           },
         } as G);
