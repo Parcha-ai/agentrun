@@ -1862,3 +1862,44 @@ test('on --live the effect door dispatches to LiveParts.tools (with its receipt)
   assert.ok(!fromLive(fakes.result.dir), 'fakes.tools never see LIVE');
   assert.ok(!existsSync(join(fakes.result.dir, 'models-seen.json')), 'the live hook is supplied and is never called on fakes');
 });
+
+// ---- the live host's crossings ------------------------------------------------------------------------------------------------------------------
+
+test('a kill at "judge.asked <label>" or "model.request turn <n>" lands on a live-shaped host (no tapFakes: the judge and model are the live host\'s), the resume pays the judge once, and repeated is 0', { timeout: 300_000 }, async (t) => {
+  const programs = [{ name: 'fixture spec', env: 'DEMO_SPEC' }, { name: 'fixture probe', env: 'DEMO_LIVE_PROBE' }];
+  const keys = [[{ env: 'BROWSERBASE_API_KEY' }, { env: 'BROWSERBASE_PROJECT_ID' }]];
+  const browser = Object.fromEntries(['BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID'].map((name) => [name, `value-for-${name.toLowerCase()}`]));
+  const judged = (dir) => readFileSync(join(dir, 'ledger.jsonl'), 'utf8').split('\n').filter(Boolean).map((row) => JSON.parse(row)).filter((row) => row.kind === 'judge');
+  for (const point of ['judge.asked verdict', 'model.request turn 1']) {
+    const { result, recording } = await run(t, { keys, programs, kills: [{ point, why: `a kill at ${point} on a live host` }] }, ['--live', '--kill', '--json'], { DEMO_LIVE_PROBE: '1', ...browser });
+    assert.deepEqual(result.processes.map((process) => [process.signal, process.outcome?.status ?? null]), [['SIGKILL', null], [null, 'complete']], `${point}: ${JSON.stringify(result.processes)}`);
+    assert.deepEqual(result.kills.map((kill) => kill.point), [point]);
+    assert.deepEqual(result.unlanded, []);
+    assert.equal(judged(result.dir).length, 1, `${point}: the judge was paid for once across the kill and the resume`);
+    const counted = fold(readEvents(recording));
+    assert.deepEqual([counted.processes, counted.kills, counted.repeated], [2, 1, 0], point);
+  }
+});
+
+test('a live host whose fallback judge is the fakes\' (already tapped) has each crossing counted once; a judge the live parts supply is tapped here', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-tap-once-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const { localHost, placeAt } = await import('./reference/index.ts');
+  const { composeHost } = await import('./reference/demo.ts');
+  const place = await placeAt(join(tmp, 'run'));
+  const crossed = [];
+  const cross = (point) => { crossed.push(point); return false; };
+  const fakes = { model: () => { throw new Error('unused'); }, tools: {}, judge: async () => ({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }), pages: {}, start: 'about:blank' };
+  // The entry taps the fakes when the live parts supply tools; the live parts here supply tools only.
+  const { tapFakes } = await import('./reference/crossings.ts');
+  const host = localHost(place, tapFakes(fakes, cross)).host;
+  composeHost(host, { tools: { runEffect: async () => 'live' } }, cross, { open: 0 }, join(tmp, 'spent.jsonl'), true, true);
+  await host.decisions.runJudge({ label: 'verdict' });
+  assert.deepEqual(crossed.filter((point) => point.startsWith('judge.')), ['judge.asked verdict', 'judge.answered verdict'], 'once, not twice');
+  // A judge the live parts supply has no crossings of its own: it is tapped.
+  crossed.length = 0;
+  const other = localHost(place, tapFakes(fakes, cross)).host;
+  composeHost(other, { decisions: { runJudge: async () => ({ answers: {}, usage: { input_tokens: 1, output_tokens: 0 } }) } }, cross, { open: 0 }, join(tmp, 'spent2.jsonl'), true, true);
+  await other.decisions.runJudge({ label: 'verdict' });
+  assert.deepEqual(crossed.filter((point) => point.startsWith('judge.')), ['judge.asked verdict', 'judge.answered verdict']);
+});
