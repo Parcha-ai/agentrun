@@ -28,12 +28,12 @@ test('a project with a GitHub origin names it as owner/name, without the token i
   git(dir, 'init', '-q');
   git(dir, 'add', 'package.json');
   git(dir, 'commit', '-q', '-m', 'first');
-  git(dir, 'remote', 'add', 'origin', 'https://someone:not-a-real-password@github.com/acme/widgets.git');
+  git(dir, 'remote', 'add', 'origin', 'https://not-a-real-token@github.com/acme/widgets.git');
   const code = codeOf(dir);
   assert.equal(code.repo, 'acme/widgets');
   assert.equal(code.commit, git(dir, 'rev-parse', 'HEAD'));
   assert.equal(code.packages['@parcha/agentrun-reference'], '9.9.9', 'the @parcha packages the project installed');
-  assert.ok(!JSON.stringify(code).includes('not-a-real-password') && !JSON.stringify(code).includes('someone'));
+  assert.ok(!JSON.stringify(code).includes('not-a-real-token'));
 });
 
 test('a project whose origin is not on GitHub names no repository, never the URL', (t) => {
