@@ -4,7 +4,7 @@ import { posix } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
-import type { Box } from "../box/box.ts";
+import type { Box, BoxProcess } from "../box/box.ts";
 import { finish } from "../box/files.ts";
 import { type Crossing, type CrossingCounter, crossingCounter } from "./crossing.ts";
 import { connectHome, type HomeHandle } from "./host.ts";
@@ -35,6 +35,8 @@ export type BoxRunnerOptions = {
 	readonly crossing?: Crossing;
 	/** The place's counter, shared with its `pullCheckpoint`s, so that `n` counts across restarts and points of one session. */
 	readonly crossingCount?: CrossingCounter;
+	/** Handed each runner's process as it starts, before the host holds it: for its exit (`wait()`). Read no stream of it. */
+	readonly onProcess?: (process: BoxProcess) => void;
 	/**
 	 * The host's model server, shared by every runner this starts so that paid answers survive a restore. Default: one made
 	 * from `models`. Pass your own to call `covered(head)` on it (`pullCheckpoint({ answers })` does) and to read `paid`.
@@ -145,6 +147,7 @@ export function boxRunner(options: BoxRunnerOptions): StartRunner {
 		if (!started.ok)
 			return err(new MoveError("prepare", `could not start the runner in ${box.id}: ${started.error.message}`));
 		const process = started.value;
+		options.onProcess?.(process);
 		void (async () => {
 			const decoder = new TextDecoder();
 			for await (const chunk of process.stderr) options.onErrors?.(decoder.decode(chunk, { stream: true }));
