@@ -75,7 +75,8 @@ function runEnv(claim: Claim): RunEnv {
  *  the example's (a member you give replaces ours, except `onLook` and `onMiss`, which run after ours). It is called once when the
  *  extension is built, with a getter for the run's harness (undefined until the run is open). What differs per conversation is
  *  what the options themselves take: `limits`, `eyes` and `eyesModel` are given the conversation (`{ conversationId }`). */
-export type RunOptions = { env?: (claim: Claim) => RunEnv; /** Code mode (examples/reference/code-mode.ts): installs the `code` tool, whose sandbox gets `tools.bash` and the vision handle's `vision.see`. Off by default. */ codeMode?: boolean | CodeModeOptions; /** The sites `use_website` offers: each task runs a child agent in a browser of its own, recorded under its request id. Absent: the tool is not listed. */ sites?: Record<string, LocalSite>; vision?: (context: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions> };
+/** `layout`: the recovery driver's layout for the run, `v4` for the keyed one (the map items kept as `agentrun.items` documents); the driver's default when absent. It is the host's choice, not the job's. */
+export type RunOptions = { env?: (claim: Claim) => RunEnv; /** Code mode (examples/reference/code-mode.ts): installs the `code` tool, whose sandbox gets `tools.bash` and the vision handle's `vision.see`. Off by default. */ codeMode?: boolean | CodeModeOptions; /** The sites `use_website` offers: each task runs a child agent in a browser of its own, recorded under its request id. Absent: the tool is not listed. */ sites?: Record<string, LocalSite>; vision?: (context: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions>; layout?: 'v3' | 'v4' };
 
 /** What a run is made of before its store is opened: the registry of extensions, the models, the hook that attaches the recorder, and the three steps that follow the open. `run()` opens the store
  *  itself on a local claim; `appOf()` hands the same pieces to `pi-durable-disk run --app`, which opens it on its own claim. */
@@ -156,7 +157,7 @@ export async function compose(place: RunPlace, host: Host, job: Job, options: Ru
   const ready = new Promise<void>((resolve) => { reconciled = resolve; });
   const flow = createWorkflowExtension({
     // A host settles what a killed process left unknown through the driver's own open: one generation, not two.
-    options: () => (host.tools.answered || host.tools.rerun ? { reconcile: (unknown, complete) => reconcileEffects(unknown, complete, host.tools) } : {}),
+    options: () => ({ ...(options.layout ? { layout: options.layout } : {}), ...(host.tools.answered || host.tools.rerun ? { reconcile: (unknown, complete) => reconcileEffects(unknown, complete, host.tools) } : {}) }),
     run: async ({ key, runtime, context, driver }) => {
       runtime.signal.throwIfAborted();
       await Promise.race([ready, once(runtime.signal, 'abort').then(() => { throw runtime.signal.reason; })]);
@@ -224,28 +225,42 @@ export async function compose(place: RunPlace, host: Host, job: Job, options: Ru
   };
 }
 
+/** What the run's final status carries in `run.json` (the one thing a box place reads): how it ended, the record, the store's hash, and what the host adds (`extra`: the models the live parts chose, so a remote recording's manifest() sees them too). */
+export function finalDetail(result: RunResult, storeSha256: string | undefined, extra: Record<string, unknown> = {}) {
+  return { status: result.status, ...(result.status === 'complete' ? { record: result.output } : {}), ...(storeSha256 ? { storeSha256 } : {}), ...extra };
+}
+
+/** The end of an app's run: the final status, the release, and only then the announcement of how it ended. A status or a release that fails rejects before anything is announced. */
+export async function finishRun(durable: Pick<DurableRun, 'setStatus' | 'release'>, status: 'done' | 'failed', detail: JsonValue, announce?: () => void | Promise<void>): Promise<void> {
+  await durable.setStatus(status, detail);
+  await durable.release();
+  await announce?.();
+}
+
 /** The same run as options for `pi-durable-disk run --app`: the instance claims the run, fences it, opens the store and resumes it; `onOpen` drives the job on it and, when it has delivered, writes the run's final
  *  status, `done` with the record and the hash of the store, releases the run and ends the process. `report` is told how the run ended before the process does (the child prints its outcome line there). */
-export async function appOf(place: RunPlace, host: Host, job: Job, options: RunOptions, report: (outcome: { result: RunResult; storeSha256: string | undefined }) => void | Promise<void>): Promise<AppOptions> {
+export async function appOf(place: RunPlace, host: Host, job: Job, options: RunOptions, report: (outcome: { result: RunResult; storeSha256: string | undefined }) => void | (() => void | Promise<void>) | Promise<void | (() => void | Promise<void>)>, extra: Record<string, unknown> = {}, redact?: (text: string) => string): Promise<AppOptions> {
   const composed = await compose(place, host, job, options);
   return {
     registry: composed.registry, models: composed.models, ...(composed.beforeResume ? { beforeResume: composed.beforeResume } : {}),
     async onOpen(durable) {
-      const result = await composed.drive(durable);
-      await composed.cleanup(durable.harness);
+      // The browser sessions are released whether or not the run's drive succeeded.
+      const result = await composed.drive(durable).finally(() => composed.cleanup(durable.harness));
       const storeFile = join(place.store, 'run.sqlite');
       const storeSha256 = existsSync(storeFile) ? createHash('sha256').update(readFileSync(storeFile)).digest('hex') : undefined;
-      await report({ result, storeSha256 });
+      // `report` prepares the outcome (what must be written while the run is open) and may return what announces it: that is called only after the final status and the release succeeded, so a failed finish is never reported as a success.
+      const announce = await report({ result, storeSha256 });
       // A box place has only run.json: the record and the store's hash are in the final status as well.
-      await durable.setStatus(result.status === 'complete' ? 'done' : 'failed', { status: result.status, ...(result.status === 'complete' ? { record: result.output as JsonValue } : {}), ...(storeSha256 ? { storeSha256 } : {}) } as JsonValue);
-      await durable.release();
+      const detail = finalDetail(result, storeSha256, extra);
+      await finishRun(durable, result.status === 'complete' ? 'done' : 'failed', (redact ? JSON.parse(redact(JSON.stringify(detail))) : detail) as JsonValue, announce ?? undefined);
       process.exit(0);
     },
   };
 }
 
 /** An effect a killed process left unknown, as the driver hands it to `reconcile`: its intent and the calls its host reported before the kill. */
-export type UnknownEffect = { id: string; argsHash: string; intent?: { tool: string }; calls?: unknown[] };
+/** `args`: what the call was admitted with, which the journal keeps (absent on a record written before args were kept): a call admitted and never sent is sent again with them. */
+export type UnknownEffect = { id: string; argsHash: string; intent?: { tool: string }; args?: unknown; calls?: unknown[] };
 /** What `reconcile` is given to settle one: its value, and the receipt the driver records beside it (the calls it APPENDS to the effect's own). */
 export type Complete = (id: string, value: unknown, receipt?: { intent?: { tool: string; args?: unknown }; calls?: unknown[] }) => Promise<void>;
 
@@ -258,7 +273,7 @@ export async function reconcileEffects(unknown: UnknownEffect[], complete: Compl
     // The door keeps its answer by the effect's id, so one effect's answer is never another's (a poll and its next share an argsHash).
     const kept = answered ? await answered({ id: effect.id, argsHash: effect.argsHash }) : undefined;
     // Nothing kept: the host may run it again, when that is safe, by the effect's id (not its hash, which a retry shares).
-    const rerunAnswer = kept === undefined && rerun ? await rerun({ id: effect.id, intent: { tool: effect.intent.tool, argsHash: effect.argsHash } }) : undefined;
+    const rerunAnswer = kept === undefined && rerun ? await rerun({ id: effect.id, intent: { tool: effect.intent.tool, argsHash: effect.argsHash }, args: effect.args }) : undefined;
     const answer = kept ?? rerunAnswer;
     if (!answer) continue;
     // A host lists every applied call exactly once: settling from evidence finds the call applied, so when the effect's calls hold no applied

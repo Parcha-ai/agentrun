@@ -1,6 +1,6 @@
 {
   "name": "@parcha/pi-transport",
-  "version": "0.1.0-beta.13",
+  "version": "0.1.0-beta.15",
   "private": true,
   "description": "Run a pi-durable session's tools in another machine, or move the session there: one small box interface, providers for this machine and Docker, and a conformance suite a vendor can run.",
   "keywords": [
@@ -72,9 +72,9 @@
     "test:live": "vitest --run .live.test"
   },
   "peerDependencies": {
-    "@earendil-works/chord": ">=1.0.4 <1.3.0",
+    "@earendil-works/chord": ">=1.0.4 <1.4.0",
     "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-durable": ">=1.0.4 <1.3.0"
+    "@earendil-works/pi-durable": ">=1.0.4 <1.4.0"
   },
   "dependencies": {
     "typebox": "1.3.27"
@@ -84,6 +84,7 @@
     "@earendil-works/chord": "1.1.0",
     "@earendil-works/pi-ai": "1.1.0",
     "@earendil-works/pi-durable": "1.1.0",
+    "esbuild": "0.28.2",
     "vitest": "4.1.11"
   },
   "repository": {

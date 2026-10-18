@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +25,8 @@ import {
   takeOver,
   tokenNickname,
   unmountClaim,
+  writtenSince,
+  STRAY_CHECK_LIMIT,
   type ArchilHost,
   type ControlApi,
 } from "../src/claim.ts";
@@ -59,15 +61,20 @@ function rig(init: { behave?: Record<string, unknown>; sudo?: boolean; extraMoun
   const mountRoot = join(dir, "mnt");
   const root = join(mountRoot, "runs", REF.id);
   const state: FakeState = { procMounts, proc, daemons: {}, token: TOKEN, mounts: {}, holders: {}, extraMounts: init.extraMounts ?? [], behave: init.behave ?? {}, calls: [] };
+  // Whole or not at all, as the fake host writes them: a tool started meanwhile reads the state and the mount table.
+  const replace = (path: string, text: string) => {
+    writeFileSync(`${path}.${process.pid}.tmp`, text);
+    renameSync(`${path}.${process.pid}.tmp`, path);
+  };
   const write = (s: FakeState) => {
-    writeFileSync(statePath, JSON.stringify(s));
+    replace(statePath, JSON.stringify(s));
     rmSync(proc, { recursive: true, force: true });
     for (const [pid, argv] of Object.entries(s.daemons)) {
       mkdirSync(join(proc, pid), { recursive: true });
       writeFileSync(join(proc, pid, "cmdline"), argv.join("\0") + "\0");
     }
     const lines = [...s.extraMounts, ...Object.entries(s.mounts).map(([mp, m]) => `${m.source} ${mp} fuse.archil rw,allow_other 0 0`)];
-    writeFileSync(procMounts, lines.join("\n") + "\n");
+    replace(procMounts, lines.join("\n") + "\n");
   };
   write(state);
   const wrap = (tool: string) => {
@@ -849,6 +856,19 @@ test("a live mount that refuses to unmount is UNMOUNT_FAILED and never fusermoun
   assert.equal(await unmountClaim(join(r.dir, "nothing-here"), r.host), "none");
 });
 
+test("an incarnation given no token (a restart whose driver hands the token only to the first): it reuses a live mount, and with none to reuse it is fenced at once, CLAIM_GONE_NO_TOKEN, exit 75, with no mount tried", async () => {
+  // What the CLI hands acquire when --token-stdin read nothing (NO_TOKEN).
+  const NO_TOKEN = "none";
+  const r = disposeAfter(rig());
+  const first = await acquire(r.opts);
+  const again = await acquire({ ...r.opts, token: NO_TOKEN });
+  assert.equal(again.reused, true, "a live mount needs no token");
+  await first.release();
+  const mounts = r.calls("archil", "mount").length;
+  await assert.rejects(acquire({ ...r.opts, token: NO_TOKEN }), (e: unknown) => e instanceof FencedError && e.code === "CLAIM_GONE_NO_TOKEN" && exitCodeFor(e) === 75);
+  assert.equal(r.calls("archil", "mount").length, mounts, "never handed to archil, whose answer would be a misleading authentication failure");
+});
+
 // ---- a host that refuses every unmount of a FUSE mount (Sysbox: umount2 fails with ENOENT) -----------------------------
 
 const releasedUnder = (r: Rig) => Object.keys(r.read().mounts).filter((mp) => mp.startsWith(join(r.mountRoot, ".released") + "/"));
@@ -892,6 +912,22 @@ test("Sysbox: a failed checkin, or a delegation still listed after it, leaves th
   await assert.rejects(c2.release(), (e: unknown) => e instanceof ClaimError && e.code === "UNMOUNT_FAILED" && /still lists a delegation/.test(e.message));
   assert.equal(k.calls("archil", "retire").length, 0);
   assert.ok(k.read().mounts[k.root]);
+});
+
+test("Sysbox: the client's own bookkeeping under .archil/, which a deleted file leaves and no checkin clears, does not hold the run; the mount moves aside", async () => {
+  const r = disposeAfter(rig({ behave: { sysbox: true, bookkeeping: true } }));
+  const claim = await acquire(r.opts);
+  assert.deepEqual(await claim.release(), { via: "moved" });
+  assert.equal(r.calls("archil", "retire").length, 1);
+  assert.equal(r.read().mounts[r.root], undefined, "the path is free");
+});
+
+test("Sysbox: a delegation the checkin leaves on the run's own tree still holds it: UNMOUNT_FAILED, the mount left where it is", async () => {
+  const r = disposeAfter(rig({ behave: { sysbox: true, bookkeeping: true, fileDelegations: ["record/2/.spool/child-9-1.1.jsonl"], fileCheckinKeeps: true } }));
+  const claim = await acquire(r.opts);
+  await assert.rejects(claim.release(), (e: unknown) => e instanceof ClaimError && e.code === "UNMOUNT_FAILED" && /still lists a delegation/.test(e.message));
+  assert.equal(r.calls("archil", "retire").length, 0);
+  assert.ok(r.read().mounts[r.root]);
 });
 
 test("Sysbox: a move that leaves the path mounted, or a daemon that survives, is UNMOUNT_FAILED", async () => {
@@ -941,11 +977,58 @@ async function stderrOf<T>(fn: () => Promise<T>): Promise<{ value?: T; error?: u
   }
 }
 
+/** Leftovers of an earlier incarnation: written, then dated an hour back, before this process started. */
 function seedMountpoint(r: Rig) {
   mkdirSync(join(r.root, "jobs"), { recursive: true });
   writeFileSync(join(r.root, "run.json"), "secret-content-1\n");
   writeFileSync(join(r.root, "jobs", "a.json"), "secret-content-2\n");
+  const past = new Date(Date.now() - 3_600_000);
+  for (const p of [join(r.root, "jobs", "a.json"), join(r.root, "run.json"), join(r.root, "jobs")]) utimesSync(p, past, past);
 }
+
+test("entries this incarnation wrote into the bare mountpoint before its claim (an app's factory): the start is refused, MOUNTPOINT_WRITTEN, exit 65, naming them; nothing moves aside or is lost, and nothing mounts", async () => {
+  const r = disposeAfter(rig());
+  mkdirSync(join(r.root, "record", "1", ".spool"), { recursive: true });
+  writeFileSync(join(r.root, "events.jsonl"), "");
+  writeFileSync(join(r.root, "record", "1", ".spool", "durable-1.0.jsonl"), "");
+  await assert.rejects(acquire(r.opts), (e: unknown) => {
+    const m = (e as Error).message;
+    return e instanceof ClaimError && e.code === "MOUNTPOINT_WRITTEN" && exitCodeFor(e) === 65 && m.includes("<mp>/events.jsonl") && m.includes("<mp>/record") && !m.includes(r.root) && m.length <= 240;
+  });
+  assert.equal(r.calls("archil", "stray").length + r.calls("archil", "mount").length, 0, "never moved aside, never mounted over");
+  assert.ok(existsSync(join(r.root, "record", "1", ".spool", "durable-1.0.jsonl")), "the writes are where the app left them");
+});
+
+test("the stray check finds a file rewritten in place under an old directory, and a walk it cannot finish (past its bound, an unreadable entry) is never taken as clean", async () => {
+  const r = disposeAfter(rig());
+  seedMountpoint(r);
+  const past = new Date(Date.now() - 3_600_000);
+  writeFileSync(join(r.root, "jobs", "a.json"), "rewritten by this incarnation\n");
+  utimesSync(join(r.root, "jobs"), past, past);
+  assert.deepEqual(await writtenSince(r.root, performance.timeOrigin), { fresh: ["jobs/a.json"], unchecked: null }, "the directory kept its old time; the file did not");
+  // Three entries: jobs, run.json, jobs/a.json. A bound of 2 stops before the rewritten file.
+  assert.deepEqual(await writtenSince(r.root, performance.timeOrigin, 2), { fresh: [], unchecked: "more than 2 entries" });
+  assert.deepEqual(await writtenSince(r.root, performance.timeOrigin, 3), { fresh: ["jobs/a.json"], unchecked: null });
+  assert.equal(STRAY_CHECK_LIMIT, 100_000);
+});
+
+test("a bare mountpoint the stray check cannot look at whole is refused, MOUNTPOINT_UNCHECKED, exit 65, naming none of it; nothing moves aside and nothing mounts", async (t) => {
+  if (process.getuid?.() === 0) return t.skip("root reads every directory");
+  const r = disposeAfter(rig());
+  seedMountpoint(r);
+  const closed = join(r.root, "jobs");
+  chmodSync(closed, 0o000);
+  try {
+    await assert.rejects(acquire(r.opts), (e: unknown) => {
+      const m = (e as Error).message;
+      return e instanceof ClaimError && e.code === "MOUNTPOINT_UNCHECKED" && exitCodeFor(e) === 65 && /cannot read \(EACCES\)/.test(m) && /nothing is moved aside/.test(m) && !m.includes("jobs") && !m.includes(r.root);
+    });
+    assert.equal(r.calls("archil", "stray").length + r.calls("archil", "mount").length, 0, "never moved aside, never mounted over");
+  } finally {
+    chmodSync(closed, 0o755);
+  }
+  assert.deepEqual(readdirSync(r.root).sort(), ["jobs", "run.json"], "the entries stay where they were");
+});
 
 test("acquire moves the entries of an unmounted mountpoint aside whole, logs the run and the count, then mounts", async () => {
   const r = disposeAfter(rig());

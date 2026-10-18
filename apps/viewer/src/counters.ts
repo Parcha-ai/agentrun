@@ -3,7 +3,7 @@
 import type { Json, Line } from './format.ts';
 import type { Fold } from './replay.ts';
 import {
-  applied, browserChargesOf, callsOf, costOf, lookEventOf, lookFilingsOf, decisionRowsOf, docIdOf, docOf, effectOf, entryOf, generationOf, liveGenerationOf, receiptCountOf, stableJson, toolCallsOf,
+  applied, browserChargesOf, callsOf, pageActionsOf, costOf, lookEventOf, lookFilingsOf, decisionRowsOf, docIdOf, docOf, effectOf, entryOf, generationOf, liveGenerationOf, receiptCountOf, stableJson, toolCallsOf,
   type Effect,
 } from './durable.ts';
 import { receiptKeyOf } from './receipt-key.ts';
@@ -64,6 +64,12 @@ export type CounterState = {
    *  in a process that has not filed its key since (`<process> <key>`). Never reset: a lost branch's looks were paid. */
   looks: { seen: Record<string, true>; here: Record<string, true>; gens: Record<string, number[]>; okSeen: Record<string, true>; costs: (number | null)[]; priced: Record<string, number>; native: number;
     started: Record<string, number>; filed: Record<string, true>; ended: Record<string, true> };
+  /** The browser's page actions (section 6): each key's dispatches (`callId`s) in the order they first appear, the
+   *  generation of the line each first appears in (a snapshot's is an earlier process's), and those a revision showed
+   *  reaching the page. Never reset: a lost branch's actions were applied. `seen` and `timed`: a `browser.sessions` line,
+   *  and one with a `t` (only the in-process recorder stamps one; a bare export's lines carry none and only the latest
+   *  revision, so its page actions are not measured). */
+  pages: { order: Record<string, string[]>; gen: Record<string, number>; reached: Record<string, true>; seen: boolean; timed: boolean };
   lostCharges: number | null;
   /** Per conversation, the `pi.live` generation last seen and the ask open there: its position (the non-aborted
    *  assistant entries committed before it), the process that asked it, the latest partial it committed (as stable JSON,
@@ -79,6 +85,11 @@ export type CounterState = {
   kills: number;
   journalOpens: number;
   lastGen: number | undefined;
+  /** Box time (draft 33): each box's `box.receipt` by its label, once per box (the first kept), with its `cost_usd` at
+   *  list price (null when its kind has no published price, draft 36) and its writer (`source`); and the boxes
+   *  pi-transport's own lines show it started (`box.created`), whose receipts it writes with source `transport`. Never
+   *  reset: a box's time was spent whatever a restore discards. */
+  boxes: { receipts: Record<string, { usd: number | null; source: string | undefined }>; started: Record<string, true> };
 };
 
 export type Counters = {
@@ -86,6 +97,10 @@ export type Counters = {
   /** Vision: native looks (the lead's own, no payment), and possible payments no durable line shows (a look live lines
    *  show started in a process that ended without filing its key). With any possible one, cost is a lower bound. */
   vision: { native: number; possible: number };
+  /** The browser's page actions: dispatches of a key after one that never showed reaching the page are possible extra
+   *  applications, never proven ones (proven ones are in repeated and asked twice). Not measured when the recording's
+   *  `browser.sessions` lines are a bare export's (none carries a `t`): then none is counted, and never shown as 0. */
+  pageActions: { possible: number; measured: boolean };
   costLowerBound: boolean;
   /** Repeated over what is measured: effects whose host reported calls, and paid agent calls. */
   repeated: number;
@@ -105,15 +120,25 @@ export type Counters = {
   kills: number;
   journalOpens: number;
   cost: number | null;
+  /** The cost by part, each the sum of its own priced parts (null when one is unknown), present once a line prices it:
+   *  the model's usage (`lead`), the judge's rows, the eyes' looks, the browser's charges, and the boxes' receipts at list
+   *  price (unknown too while a box its writer's lines show started has no receipt). `cost` is their sum. */
+  costParts: Partial<Record<CostPart, number | null>>;
   /** False when no durable line was folded: every count from the store is then not measured, and cost is unknown. */
   measured: boolean;
 };
 
 
+/** How a `box.receipt` names its box (draft 33): `box-1`, `box-2`, ... by first appearance. */
+const BOX_LABEL = /^box-\d+$/;
+/** The parts of cost, in the order the strip names them. */
+export type CostPart = 'lead' | 'judge' | 'eyes' | 'browser' | 'boxes';
+export const COST_PARTS: CostPart[] = ['lead', 'judge', 'eyes', 'browser', 'boxes'];
+
 export const counterFold: Fold<CounterState> = {
   init: () => ({ effects: {}, receipts: {}, appliedIn: {}, listed: {}, effectsSeen: {}, reported: {}, paidKeys: {}, toolCalls: {}, executions: [], lostPaid: 0, lostAgent: 0, lostJudge: ZERO,
-    highest: -1, inSnapshot: false, opened: false, decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, modelPriced: false, measured: false, charges: {}, lostCharges: 0, looks: { seen: {}, here: {}, gens: {}, okSeen: {}, costs: [], priced: {}, native: 0, started: {}, filed: {}, ended: {} }, live: {}, reasks: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined }),
-  accepts: (line) => line.channel === 'durable' || line.source === 'host' || (line.source === 'vision' && line.kind === 'LookEvent'),
+    highest: -1, inSnapshot: false, opened: false, decisions: {}, committedTurns: {}, modelCost: 0, modelCostKnown: true, modelPriced: false, measured: false, charges: {}, lostCharges: 0, looks: { seen: {}, here: {}, gens: {}, okSeen: {}, costs: [], priced: {}, native: 0, started: {}, filed: {}, ended: {} }, pages: { order: {}, gen: {}, reached: {}, seen: false, timed: false }, live: {}, reasks: {}, askStarts: 0, liveKnown: true, processes: 0, kills: 0, journalOpens: 0, lastGen: undefined, boxes: { receipts: {}, started: {} } }),
+  accepts: (line) => line.channel === 'durable' || line.source === 'host' || (line.source === 'vision' && line.kind === 'LookEvent') || (line.source === 'transport' && line.kind === 'box.created'),
   reduce(state, line) {
     const next: CounterState = { ...state };
     if (line.channel === 'live') {
@@ -126,6 +151,17 @@ export const counterFold: Fold<CounterState> = {
         const key = event && !event.native ? event.key : undefined;
         const at = `${state.processes} ${key}`;
         if (key !== undefined && !state.looks.filed[at]) next.looks = { ...state.looks, started: { ...state.looks.started, [at]: (state.looks.started[at] ?? 0) + 1 } };
+      }
+      if (line.source === 'host' && line.kind === 'box.receipt' && typeof line.data === 'object' && line.data !== null && !Array.isArray(line.data)) {
+        // One box's time, once per box: a receipt's label names it (a receipt without one is still a box, its own).
+        const data = line.data as Record<string, Json>;
+        const box = typeof data.box === 'string' ? data.box : `#${line.seq ?? line.t}`;
+        const usd = typeof data.cost_usd === 'number' && Number.isFinite(data.cost_usd) ? data.cost_usd : null;
+        if (!state.boxes.receipts[box]) next.boxes = { ...state.boxes, receipts: { ...state.boxes.receipts, [box]: { usd, source: typeof data.source === 'string' ? data.source : undefined } } };
+      }
+      if (line.source === 'transport' && line.kind === 'box.created' && typeof line.data === 'object' && line.data !== null && !Array.isArray(line.data)) {
+        const box = (line.data as Record<string, Json>).box;
+        if (typeof box === 'string' && !state.boxes.started[box]) next.boxes = { ...state.boxes, started: { ...state.boxes.started, [box]: true } };
       }
       if (line.kind === 'kill') {
         next.kills = state.kills + 1;
@@ -214,6 +250,22 @@ export const counterFold: Fold<CounterState> = {
           looks.priced[id] = looks.costs.push(filing.usd) - 1;
         }
         next.looks = looks;
+      }
+      const actions = pageActionsOf(doc);
+      if (actions) next.pages = { ...next.pages, seen: true, timed: next.pages.timed || typeof line.t === 'number' };
+      if (actions?.length) {
+        const pages = { ...next.pages, order: { ...next.pages.order }, gen: { ...next.pages.gen }, reached: { ...next.pages.reached } };
+        for (const action of actions) {
+          // A dispatch is its key and its callId: another conversation may number its calls the same way.
+          const key = `${line.conv ?? ''}\u0001${action.tool}\u0001${action.codeSha}`;
+          const dispatch = `${key}\u0001${action.callId}`;
+          if (pages.gen[dispatch] === undefined) {
+            pages.gen[dispatch] = line.gen ?? 0;
+            pages.order[key] = [...(pages.order[key] ?? []), dispatch];
+          }
+          if (action.reached) pages.reached[dispatch] = true;
+        }
+        next.pages = pages;
       }
       if (priced.length) {
         const charges = { ...next.charges };
@@ -369,6 +421,22 @@ export function countersOf(state: CounterState, ended: boolean): Counters {
   // A vision look key's payments, in the order seen, are extras the same way (a first-kept payment sits just before its
   // kept filing's generation).
   Object.values(state.looks.gens).forEach(extras);
+  // A page action's key: each dispatch after one that reached the page is one extra application, counted once, in
+  // repeated when its generation is later than that one's and in asked twice when it is the same; a dispatch after
+  // earlier ones that never showed reaching it is a possible extra, never a proven one.
+  let pagePossible = 0;
+  const pagesMeasured = !state.pages.seen || state.pages.timed;
+  for (const dispatches of pagesMeasured ? Object.values(state.pages.order) : []) {
+    let reached: string | undefined;
+    dispatches.forEach((dispatch, index) => {
+      if (index > 0) {
+        if (reached === undefined) pagePossible += 1;
+        else if (state.pages.gen[dispatch]! > state.pages.gen[reached]!) repeated += 1;
+        else askedTwice += 1;
+      }
+      if (state.pages.reached[dispatch]) reached = dispatch;
+    });
+  }
   const vision = Object.values(state.looks.gens).reduce((sum, gens) => sum + gens.length, 0);
   const possible = Object.entries(state.looks.started).filter(([at]) => ended || Number(at.split(' ')[0]) < state.processes || state.looks.ended[at.split(' ')[0]!])
     .reduce((sum, [, count]) => sum + count, 0);
@@ -382,15 +450,32 @@ export function countersOf(state: CounterState, ended: boolean): Counters {
   const tallies = [state.lostJudge, ...Object.values(state.decisions).map((history) => history.at(-1)![1])];
   const answered = tallies.flatMap((tally) => tally.answered);
   const judge = { answered: answered.length, failed: tallies.reduce((sum, tally) => sum + tally.failed, 0), reasked: answered.length - new Set(answered).size };
-  // Cost is null until a durable line prices a part (section 6: null, never 0), and null when any part is unknown.
-  const parts: (number | null)[] = [...(state.modelPriced ? [state.modelCostKnown ? state.modelCost : null] : []), ...tallies.flatMap((tally) => tally.cost),
-    ...Object.values(state.charges).map((history) => history.at(-1)![1]), ...(state.lostCharges === 0 ? [] : [state.lostCharges]), ...state.looks.costs];
+  // Cost is null until a line prices a part (section 6: null, never 0), and null when any part is unknown. A box's
+  // receipt is its time at list price; a box pi-transport's lines show started with no receipt (yet) leaves it unknown.
+  const receipts = Object.values(state.boxes.receipts);
+  // A receipt names its box by label (`box-N`), never by the provider's id. Started boxes named by label are matched to
+  // their own receipts; ones named by the provider's id leave no key to join on, so each transport receipt covers one.
+  const started = Object.keys(state.boxes.started);
+  const unreceipted = started.length > 0 && started.every((box) => BOX_LABEL.test(box))
+    ? started.some((box) => state.boxes.receipts[box]?.source !== 'transport')
+    : started.length > receipts.filter((receipt) => receipt.source === 'transport').length;
+  const byPart: Record<CostPart, (number | null)[]> = {
+    lead: state.modelPriced ? [state.modelCostKnown ? state.modelCost : null] : [],
+    judge: tallies.flatMap((tally) => tally.cost),
+    eyes: state.looks.costs,
+    browser: [...Object.values(state.charges).map((history) => history.at(-1)![1]), ...(state.lostCharges === 0 ? [] : [state.lostCharges])],
+    boxes: [...receipts.map((receipt) => receipt.usd), ...(unreceipted ? [null] : [])],
+  };
+  const sum = (parts: (number | null)[]) => (parts.some((part) => part === null) ? null : parts.reduce<number>((total, part) => total + (part ?? 0), 0));
+  const costParts = Object.fromEntries(COST_PARTS.filter((part) => byPart[part].length > 0).map((part) => [part, sum(byPart[part])])) as Partial<Record<CostPart, number | null>>;
+  const parts = COST_PARTS.flatMap((part) => byPart[part]);
   const measured = state.liveKnown && state.askStarts > 0;
   const cutAsks = Object.values(state.reasks);
   const split = (kind: 'proven' | 'possible') => ({ turns: cutAsks.filter((tally) => tally[kind] > 0).length, reasks: cutAsks.reduce((sum, tally) => sum + tally[kind], 0) });
   return {
     paid: { total: workflow + agent + vision, workflow, agent, vision },
     vision: { native: state.looks.native, possible },
+    pageActions: { possible: pagePossible, measured: pagesMeasured },
     costLowerBound: possible > 0,
     repeated,
     repeatedNotMeasured,
@@ -402,10 +487,36 @@ export function countersOf(state: CounterState, ended: boolean): Counters {
     processes: state.processes,
     kills: state.kills,
     journalOpens: state.journalOpens,
-    cost: parts.length === 0 || parts.some((part) => part === null) ? null : parts.reduce<number>((sum, part) => sum + (part ?? 0), 0),
+    // With no durable line the parts the store prices are not measured, so a box's receipt alone is not the run's cost.
+    cost: parts.length === 0 || !state.measured ? null : sum(parts),
+    costParts,
     measured: state.measured,
   };
 }
 
+/** The cost on the strip: unknown when it is; a scripted run (its manifest's `providers`: at least one priced part was a
+ *  fake, a cassette or a script) says so, and its zero is "$0", never "$0.0000", since that is not a provider's bill; a
+ *  real run's in dollars to four places. A box's time is real whatever the run's providers, an estimate at list price
+ *  (draft 33), so when the boxes cost something they are named apart: a scripted run names its other parts scripted
+ *  ("scripted lead, boxes $0.0047 at list price"), never "scripted, $0" while its boxes cost something (draft 35). */
+export const costLabel = (cost: number | null, lowerBound: boolean, providers?: 'real' | 'scripted', parts: Partial<Record<CostPart, number | null>> = {}): string => {
+  if (cost === null) return 'unknown';
+  const at = lowerBound ? 'at least ' : '';
+  const boxes = parts.boxes ?? 0;
+  if (boxes === 0) {
+    const dollars = providers === 'scripted' && cost === 0 ? '$0' : `$${cost.toFixed(4)}`;
+    return `${at}${providers === 'scripted' ? `scripted, ${dollars}` : dollars}`;
+  }
+  const atList = `boxes $${boxes.toFixed(4)} at list price`;
+  if (providers !== 'scripted') return `${at}$${cost.toFixed(4)} (${atList})`;
+  // Which of a scripted run's other parts were the scripted ones its lines do not say, so they are named together.
+  const others = COST_PARTS.filter((part) => part !== 'boxes' && parts[part] !== undefined);
+  const rest = others.reduce((sum, part) => sum + (parts[part] ?? 0), 0);
+  const named = others.length === 0 ? 'scripted' : `scripted ${others.join(' and ')}${rest > 0 ? ` $${rest.toFixed(4)}` : ''}`;
+  return `${at}${named}, ${atList}${rest > 0 ? `, $${cost.toFixed(4)} in all` : ''}`;
+};
+
 /** The strip's repeated: "not measured" when nothing measured repeats and an effect's host reported no calls, never 0. */
-export const repeatedLabel = (counters: Counters): string => (counters.repeated === 0 && counters.repeatedNotMeasured > 0 ? 'not measured' : String(counters.repeated));
+export const repeatedLabel = (counters: Counters): string => (counters.repeated === 0 && (counters.repeatedNotMeasured > 0 || !counters.pageActions.measured) ? 'not measured' : String(counters.repeated));
+/** The strip's asked twice: "not measured" when nothing measured was asked twice and the browser's page actions are not measured. */
+export const askedTwiceLabel = (counters: Counters): string => (counters.askedTwice === 0 && !counters.pageActions.measured ? 'not measured' : String(counters.askedTwice));

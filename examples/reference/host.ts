@@ -48,7 +48,7 @@ export type Delivery = { record: unknown };
 /** After `answered` has nothing for an effect a killed process left unknown, the host may run it again, when running it again is safe
  *  (a read, or work in a fresh box): `rerun` is asked with the effect's id and intent, and an answer completes the effect. Undefined
  *  leaves it unknown and it is never sent again. Only an effect with an intent is asked. */
-export type Rerun = (effect: { id: string; intent: { tool: string; argsHash: string } }) => Promise<{ args: unknown; value: unknown } | undefined>;
+export type Rerun = (effect: { id: string; intent: { tool: string; argsHash: string }; /** What the call was admitted with, from the journal: send these. Absent on a record written before args were kept. */ args?: unknown }) => Promise<{ args: unknown; value: unknown } | undefined>;
 /** What a recorder takes from the run: the process's generation once it has opened the run. */
 export type Generation = { generation(n: number): void; attach?(input: { session: unknown; storage?: unknown; head?: number; context: unknown; gen: number }): Promise<void> };
 
@@ -112,10 +112,10 @@ export type LedgerRow = { kind: 'model' | 'tool' | 'judge' | 'browser'; name: st
 const json = (value: unknown) => `${JSON.stringify(value)}\n`;
 const quiet = <T,>(report: (event: T) => void) => (event: T) => { try { report(event); } catch { /* a status row never fails a call */ } };
 
-export type LocalHost = { host: Host; backend?: FakeBackend; ledger(): LedgerRow[]; evidence(): string[] };
+export type LocalHost = { host: Host; backend?: FakeBackend; ledger(): LedgerRow[]; evidence(): string[]; /** Makes the two logs empty files: done by `localHost` itself unless `options.deferLogs`, which a process on a disk not yet mounted sets and calls this once its claim is open. */ touchLogs(): void };
 
 /** The no-key host for a run at `place`, from the job's `fakes`: scripted lead, tools, judge and browser pages, a ledger row for every fake call, and the run's events under the place. `options.browser` swaps the fake browser for another; `options.recorder` records the run. */
-export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: BrowserPlane; recorder?: Recorder; boxes?: BoxProvider; live?: boolean } = {}): LocalHost {
+export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: BrowserPlane; recorder?: Recorder; boxes?: BoxProvider; live?: boolean; deferLogs?: boolean } = {}): LocalHost {
   const recorder = options.recorder;
   const ledgerFile = join(place.root, 'ledger.jsonl');
   // Kept by the effect's id (hashed into a file name): two effects with one `argsHash`, a poll and its next, never share an answer.
@@ -124,7 +124,8 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
   // Both logs exist from the start: a run that called nothing leaves an empty ledger, and a missing one was lost.
   // (A run under `pi-durable-disk run --app` builds its host before the run's directory exists: then the logs are made at their first row, and again when the run opens.)
   const append = (file: string, text: string) => { try { appendFileSync(file, text); } catch (error) { if ((error as { code?: string }).code !== 'ENOENT') throw error; mkdirSync(place.root, { recursive: true }); appendFileSync(file, text); } };
-  for (const log of [ledgerFile, eventsFile]) { try { appendFileSync(log, ''); } catch (error) { if ((error as { code?: string }).code !== 'ENOENT') throw error; } }
+  const touchLogs = () => { for (const log of [ledgerFile, eventsFile]) { try { appendFileSync(log, ''); } catch (error) { if ((error as { code?: string }).code !== 'ENOENT') throw error; } } };
+  if (!options.deferLogs) touchLogs();
   const incarnation = randomUUID();
   const count = (kind: LedgerRow['kind'], name: string, conversation?: string) =>
     append(ledgerFile, json({ kind, name, pid: process.pid, incarnation, ...(conversation ? { conversation } : {}) }));
@@ -230,7 +231,7 @@ export function localHost(place: RunPlace, fakes: Fakes, options: { browser?: Br
   const ledger = () => {
     try { return readFileSync(ledgerFile, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as LedgerRow); } catch { return []; }
   };
-  return { host, ...(backend ? { backend } : {}), ledger, evidence };
+  return { host, ...(backend ? { backend } : {}), ledger, evidence, touchLogs };
 }
 
 /** A status row as the recording's live line: the package's own record name, and the position and conversation it carries. */

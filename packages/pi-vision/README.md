@@ -9,8 +9,8 @@ The host keeps what is its own: which model looks and its price, where receipts 
 `read` keeps its name and its arguments (`path, offset, limit, char_offset, ask, from_s, to_s, page`), so hosts and
 their stored instructions do not change. No tool is added. For many pages, a long video or many images the agent
 writes code: the `look` skill (`skills/look/SKILL.md`) shows it how to render pages and cut frames with bash and ask
-about them with `vision.see`, the one function this package puts in a host's code mode. Only the answer, where it
-looked and the price enter the caller's context.
+about them with `vision.see`, or have Jev judge them with typed answers (`vision.judge`): the two functions this
+package puts in a host's code mode. Only the answers, where they looked and the price enter the caller's context.
 
 ## Status
 
@@ -33,6 +33,7 @@ read below). Parts not built yet throw `NotBuiltError`, never a half answer.
 | `read`'s media half with the package's own reader for every kind, the guard, the eyes on pi-ai, receipts and misses | built |
 | The pi-durable adapter, the Node environment and eyes on pi's `Models` | built |
 | `vision.see` for a host's code mode, and the `look` skill | built |
+| `vision.judge` (Jev's choice, noul, score and box answers) and Jev's image limits in the fit | built |
 
 ## A first read, with no key
 
@@ -131,7 +132,7 @@ are always there; programs run in the environment the agent's shell runs in, nev
 | An office document as it looks | a `needs` miss; its text still comes back | LibreOffice's `soffice` (MPL-2.0, run as a program) |
 | Video: probe, frames, windows | a `needs` miss; a file under the inline budget still goes to a route that takes video | ffmpeg and ffprobe (LGPL or GPL, run as programs) |
 
-`@earendil-works/pi-durable` and `@earendil-works/chord` (1.0.4 to 1.2.x) and `@earendil-works/pi-ai` (any version: the
+`@earendil-works/pi-durable` and `@earendil-works/chord` (1.0.4 to 1.3.x) and `@earendil-works/pi-ai` (any version: the
 host's copy) are optional peers, for the adapter and the pi-ai eyes, and Photon is one for the default image processor.
 sharp is never resolved by this package: a host that wants it passes its own module (`sharpImages(sharp)`), so its LGPL
 code stays with the host's install.
@@ -158,6 +159,31 @@ look that cannot be made throws a `SeeMiss` whose `code` is the miss code and wh
 cap on pages, frames or price: a host that wants one wraps `execute`. The planner's own caps (`plan(..., caps)`,
 `priceLook(..., capUsd)`) are also the host's to pass, with none by default. pi loads the skill from the package
 (`pi.skills`); a host that is not pi gives its agent `skills/look/SKILL.md` the way it gives any skill.
+
+## For a host: `vision.judge`, Jev in code mode
+
+`handle.judge(env, call)` is `vision.judge`, built per call beside `vision.see`. It reaches Jev, TypeSafe's System One
+model, through `VisionOptions.jev`: the judge `createJevRunner` from `@parcha/agentrun-jev` returns, which owns the
+transport, the images header and the price, and the model to ask (`jev-1.14.0` unless `jev.model` names another; it is
+the first Jev that answers box questions). pi-vision imports neither that package nor the TypeSafe SDK; it hands the
+judge each image as PNG or JPEG bytes under a reference written in the request:
+
+```ts
+import { createJevRunner } from "@parcha/agentrun-jev";
+
+const vision = createVisionExtension({ evidence, scope, eyesModel, jev: { judge: createJevRunner({ apiKey }) } });
+// Inside the host's code-mode tool:
+const call = await callContext(api, context);
+const sandbox = new CodemodeSandbox({ tools, globals: [vision.see(api.env, call), vision.judge(api.env, call)] });
+```
+
+One call is one Jev request. Every image is fitted to Jev's limits first (PNG or baseline JPEG, turned upright, each
+side 280 to 1,568 px: grown, or padded when it cannot grow, and shrunk), since Jev rejects an image out of range rather
+than resizing it. A box answer also has `fragment`, its region as `file#xywh=percent:x,y,w,h` of the image it was found
+in, mapped back through the fit and through the region a crop names. Each judgment is filed and told like a look
+(`via: jev`) at the price the judge gives (none known is filed as unknown, never $0), kept as a memo before it is told,
+and a miss throws a `SeeMiss` with its code; a box asked of a model that has none is an `unsupported` miss before any
+request. Without `jev`, every judgment is a `no_vision_route` miss.
 
 ## For a host: what a program is started with
 

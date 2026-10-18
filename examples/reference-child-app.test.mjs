@@ -3,7 +3,7 @@
 // same command again resumes the run.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -61,4 +61,73 @@ test('kill -9 at a crossing and the same command again resumes the run, on the d
   assert.deepEqual([resumed.outcome.status, resumed.outcome.generation], ['complete', 2]);
   assert.equal(resumed.outcome.record.company, 'Acme Ltd');
   assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).status, 'done');
+});
+
+test('nothing is written under the run\'s directory before the claim is open: the recorder\'s lines wait in memory and are written, in order, in the directory the mount then shows', { timeout: 120_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-app-open-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const spec = join(tmp, 'demo.json');
+  writeFileSync(spec, JSON.stringify({ name: 'reference' }));
+  process.env.DEMO_SPEC = spec;
+  const { options } = await import(FIXTURE.href);
+  const { prepareChild } = await import('./reference/demo.ts');
+  // The run's directory does not exist yet: the mountpoint is bare until the claim mounts the disk, and whatever is written there is hidden by it.
+  const root = join(tmp, 'mountpoint');
+  const record = join(root, 'record');
+  const prepared = await prepareChild(options, { RECORD_DIR: record, BACKEND: 'http://127.0.0.1:1' }, { id: 'reference', root, work: join(root, 'work'), store: join(root, 'store') });
+  prepared.recorder.host('process.started', { gen: 1, pid: 1 });
+  prepared.recorder.live('workflow', 'first', { n: 1 });
+  prepared.recorder.live('workflow', 'second', { n: 2 });
+  assert.equal(existsSync(root), false, 'the recorder, the spool and the started file wrote nothing before the open');
+  assert.throws(() => prepared.recorder.blob('x', 'txt'), /before the run is open/, 'a write that cannot wait fails loudly');
+  // The mount appears, and the claim is open: the recorder starts and the held lines come out, in order.
+  mkdirSync(root, { recursive: true });
+  await prepared.open();
+  const spool = join(record, '.spool');
+  const lines = readdirSync(spool).filter((name) => name.startsWith('live-')).flatMap((name) => readFileSync(join(spool, name), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)));
+  assert.deepEqual(lines.filter((line) => line.source === 'workflow').map((line) => line.kind), ['first', 'second'], 'no line lost, in the order they were produced');
+  assert.ok(lines.some((line) => line.source === 'host' && line.kind === 'process.started'));
+  await prepared.recorder.detach();
+});
+
+test('a demo module that calls demo(options) at its top level, as its own command does, is safe to import for the app: the nested graph fixture runs to the end through it', { timeout: 180_000 }, async (t) => {
+  const nested = new URL('./fixtures/graph-nested/run.ts', import.meta.url).href;
+  const { dir, start } = await instance(t, { DEMO_ENTRY: nested });
+  const result = await start();
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.outcome.status, 'complete');
+  assert.equal(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8')).status, 'done');
+});
+
+test('a job that must run in a box is refused under the app, not run outside the box: the app cannot take the box as its environment', { timeout: 60_000 }, async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'reference-app-box-'));
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const spec = join(tmp, 'demo.json');
+  writeFileSync(spec, JSON.stringify({ name: 'reference' }));
+  process.env.DEMO_SPEC = spec;
+  const { options } = await import(FIXTURE.href);
+  const { prepareChild } = await import('./reference/demo.ts');
+  const place = { id: 'reference', root: join(tmp, 'root'), work: join(tmp, 'root', 'work'), store: join(tmp, 'root', 'store') };
+  await assert.rejects(() => prepareChild({ ...options, spec: { ...options.spec, boxes: { kind: 'local', runIn: true } } }, { BACKEND: 'http://127.0.0.1:1' }, place), /boxes\.runIn is not supported under pi-durable-disk run --app/);
+});
+
+test('the run\'s final status carries the models the live parts chose, so a place that reads only run.json (a box place) hands them to manifest() too', async () => {
+  const { finalDetail } = await import('./reference/assemble.ts');
+  const done = { status: 'complete', generation: 1, output: { company: 'Acme' } };
+  assert.deepEqual(finalDetail(done, 'ab', { models: { lead: 'openai/gpt-6-luna', eyes: 'google/gemini-3.8-flash' } }), { status: 'complete', record: { company: 'Acme' }, storeSha256: 'ab', models: { lead: 'openai/gpt-6-luna', eyes: 'google/gemini-3.8-flash' } });
+  assert.deepEqual(finalDetail({ status: 'refused', generation: 1, code: 'X', message: 'm' }, undefined), { status: 'refused' }, 'nothing extra when the live parts chose none');
+
+});
+
+test('the end of an app\'s run announces only after the final status and the release succeeded: a failed finish is never reported as a success', async () => {
+  const { finishRun } = await import('./reference/assemble.ts');
+  const order = [];
+  const durable = (failAt) => ({ setStatus: async () => { order.push('status'); if (failAt === 'status') throw new Error('the disk failed'); }, release: async () => { order.push('release'); if (failAt === 'release') throw new Error('the claim was lost'); } });
+  await finishRun(durable(), 'done', { status: 'complete' }, () => { order.push('announce'); });
+  assert.deepEqual(order, ['status', 'release', 'announce']);
+  for (const failAt of ['status', 'release']) {
+    order.length = 0;
+    await assert.rejects(() => finishRun(durable(failAt), 'done', { status: 'complete' }, () => { order.push('announce'); }), /failed|lost/);
+    assert.ok(!order.includes('announce'), `nothing was announced when the ${failAt} failed`);
+  }
 });

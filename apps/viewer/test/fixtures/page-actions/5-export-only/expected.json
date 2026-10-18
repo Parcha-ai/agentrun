@@ -1,0 +1,4 @@
+{
+  "about": "fixture 2's store exported after the run: browser.sessions keeps only its latest revision, and an export's lines carry no t",
+  "expected": "NOT MEASURED"
+}

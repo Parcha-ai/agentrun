@@ -1,0 +1,75 @@
+{
+  "name": "@parcha/pi-durable-agent",
+  "version": "0.1.0-beta.15",
+  "private": true,
+  "description": "An agent you can carry: its definition, sign-ins and runs, as one directory of pi-durable stores.",
+  "keywords": [
+    "pi",
+    "pi-durable",
+    "agent",
+    "durable",
+    "sqlite",
+    "browser-profiles"
+  ],
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "Parcha Labs, Inc.",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./export": {
+      "types": "./dist/export.d.ts",
+      "default": "./dist/export.js"
+    },
+    "./timeline": {
+      "types": "./dist/timeline/index.d.ts",
+      "default": "./dist/timeline/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "prepack": "npm run build",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "node --test --test-concurrency=8 'test/*.test.mjs'"
+  },
+  "peerDependencies": {
+    "@earendil-works/chord": ">=1.1.0 <1.4.0",
+    "@earendil-works/pi-durable": ">=1.1.0 <1.4.0"
+  },
+  "devDependencies": {
+    "@earendil-works/chord": "1.1.0",
+    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-durable": "1.1.0",
+    "@parcha/pi-browser": "0.1.0-beta.15",
+    "@parcha/pi-durable-disk": "0.1.0-beta.15"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Parcha-ai/agentrun.git",
+    "directory": "packages/pi-durable-agent"
+  },
+  "bugs": {
+    "url": "https://github.com/Parcha-ai/agentrun/issues"
+  },
+  "homepage": "https://agentrun.ai",
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
+  }
+}

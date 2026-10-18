@@ -5,6 +5,7 @@
 import type { EvidenceSink, LookEvent } from "./evidence.js";
 import type { VisionEnv } from "./env.js";
 import type { ImageProcessor } from "./image.js";
+import type { JevPort } from "./judge.js";
 import type { Kind } from "./kinds.js";
 import type { Limits, LimitsOverride } from "./limits.js";
 import type { MissEvent } from "./misses.js";
@@ -52,9 +53,10 @@ export type CallContext = {
   readonly tool?: string;
   readonly model: unknown;
   readonly signal: AbortSignal | undefined;
-  /** The value kept under `key` for this call, else `compute`'s, kept before it is returned: a call cut by a crash and
-   *  run again gets the kept value without computing it. A paid request goes through it, so its answer is kept before
-   *  the result that reports it. Absent: computed every time. */
+  /** The value kept under `key`, else `compute`'s, kept before it is returned: a call cut by a crash and run again, or
+   *  a later call that asks the same, gets the kept value without computing it. A paid request goes through it, so its
+   *  answer is kept before the result that reports it. The pi-durable adapter keeps a tool call's on its conversation, so
+   *  a new call finds what a cut one paid for, and a hook's on its task. Absent: computed every time. */
   readonly memo?: <T extends Json>(key: string, compute: () => Promise<T>) => Promise<T>;
 };
 
@@ -107,7 +109,10 @@ export type VisionOptions = {
   /** Handles by scheme: "session" for browser recordings. */
   readonly sources?: Readonly<Record<string, SourceProvider>>;
   /** Host policy: true, or the refusal the model reads. Absent: everything is allowed. */
-  readonly allow?: (request: { readonly path: string; readonly kind: Kind; readonly tool: "read" | "vision.see" }) => true | string;
+  readonly allow?: (request: { readonly path: string; readonly kind: Kind; readonly tool: "read" | "vision.see" | "vision.judge" }) => true | string;
+  /** Jev, for `vision.judge`: the port `@parcha/agentrun-jev`'s `createJevRunner` returns. Absent: every judgment is a
+   *  `no_vision_route` miss. */
+  readonly jev?: JevPort;
   /** The host's rows and spend. A throw here never fails a call. */
   readonly onLook?: (look: LookEvent) => void | Promise<void>;
   readonly onMiss?: (miss: MissEvent) => void | Promise<void>;
@@ -128,6 +133,7 @@ export type CallSetup = {
   readonly providers: readonly Provider[];
   readonly sources: Readonly<Record<string, SourceProvider>>;
   readonly allow?: VisionOptions["allow"];
+  readonly jev?: JevPort;
   readonly onLook?: (look: LookEvent) => void | Promise<void>;
   readonly onMiss?: (miss: MissEvent) => void | Promise<void>;
 };

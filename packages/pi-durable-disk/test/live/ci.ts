@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url";
 
 export const DEFAULT_REGION = "aws-us-east-1";
 /** The host suites the default check runs, in order. */
-export const HOST_SUITES = ["claim", "env", "run", "store", "supervise", "lifecycle"] as const;
+export const HOST_SUITES = ["claim", "env", "run", "store", "supervise", "lifecycle", "with-claim"] as const;
 /** The tests that wait out fixed windows (the archil client's 5 min token refresh, five minutes of backoff): `--slow` only. */
 export const SLOW_SUITES = ["supervise-slow"] as const;
 /** The suites `suites` accepts: the package's `test:live:<name>` scripts. */
@@ -502,14 +502,24 @@ export function holdLock(lock: string): Promise<boolean> {
     stdio: ["pipe", "pipe", "inherit"],
     detached: true,
   });
-  holder.unref();
+  // The holder stays referenced until this settles. When another run holds the lock, flock exits at once; unreferenced, its
+  // pipes could close before its exit event and leave nothing to keep this process alive, and node exits 13 with the
+  // caller's top-level await unsettled. Only a holder that holds the lock is let go, so it lives as long as this process.
   return new Promise((resolve) => {
+    let settled = false;
+    const settle = (held: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (held) holder.unref();
+      resolve(held);
+    };
     holder.stdout!.once("data", () => {
       holder.stdout!.destroy();
-      resolve(true);
+      settle(true);
     });
-    holder.once("exit", () => resolve(false));
-    holder.once("error", () => resolve(false));
+    holder.once("exit", () => settle(false));
+    holder.once("close", () => settle(false));
+    holder.once("error", () => settle(false));
   });
 }
 

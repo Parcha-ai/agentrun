@@ -15,6 +15,8 @@ again.
 
 ## Run it
 
+From an install of the package instead of a checkout: this needs `@parcha/pi-durable-disk` 0.1.0-beta.13 or later (`localRun` and `beforeResume` first shipped in it); [Run one from an install](../README.md#run-one-from-an-install).
+
 You need Linux and Node 22.19 or later. No disk, no key, no network: the run is on a directory of this machine
 (`localRun`) and the agent is pi-ai's faux model, scripted.
 

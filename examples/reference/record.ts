@@ -2,12 +2,13 @@
 // server. Each process of a run writes its live and host lines to a spool of its own; one watcher (the process that
 // holds the run) writes the durable lines of its commits from inside, stamping each with the time it observed it; the
 // supervisor, outside every process, writes the host lines (`process.started`, `kill`). `finishRecording` joins the
-// spools into `events.jsonl` and writes the manifest.
+// spools into `events.jsonl`, scans the recording (scan.ts), and writes the manifest only when nothing was found.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AttachInput, CommitRecorder, DurableLine } from './record-store.ts';
+import { credentialInFile, scanRecording } from './scan.ts';
 
 export const FORMAT = 'agentrun.recording/1';
 type Meta = { path?: string; conv?: number; blobs?: string[] };
@@ -31,6 +32,26 @@ export type Recorder = {
   /** Keeps a file whole under its hash and returns the hash. */
   blob(bytes: Uint8Array | string, extension: string): string;
 };
+
+/** A recorder that touches no file until `start()`: the lines it is given before that (`host`, `live`, `memo`, `generation`) are kept in memory and written, in order, when `open()` has made the real one. A process on a disk the run has not
+ *  yet mounted starts it once its claim is open; a write before then would land on the bare mountpoint and be hidden by the mount. `blob`, `attach` and `detach` need the open run, so before `start()` they fail loudly (`detach` has nothing to stop). */
+export function lazyRecorder(open: () => Recorder): Recorder & { start(): void; readonly started: boolean } {
+  let real: Recorder | undefined;
+  const queued: Array<(recorder: Recorder) => void> = [];
+  const later = (call: (recorder: Recorder) => void) => { if (real) call(real); else queued.push(call); };
+  const needs = (name: string): never => { throw new Error(`recorder.${name} before the run is open: the recorder starts once the claim is open.`); };
+  return {
+    get started() { return real !== undefined; },
+    start() { if (real) return; real = open(); for (const call of queued.splice(0)) call(real); },
+    generation: (lease) => later((recorder) => recorder.generation(lease)),
+    live: (source, kind, data, meta) => later((recorder) => recorder.live(source, kind, data, meta)),
+    host: (kind, data, meta) => later((recorder) => recorder.host(kind, data, meta)),
+    memo: (key, value, meta) => later((recorder) => recorder.memo(key, value, meta)),
+    attach: (input) => (real ? real.attach(input) : needs('attach')),
+    detach: () => (real ? real.detach() : Promise.resolve()),
+    blob: (bytes, extension) => (real ? real.blob(bytes, extension) : needs('blob')),
+  };
+}
 
 const EXTENSIONS: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg' };
 
@@ -65,19 +86,18 @@ export function startedAt(dir: string): string {
   return readFileSync(startedFile(dir), 'utf8');
 }
 
-/** A blob that is still being written: `.<sha>.<ext>.tmp-<pid>`, which the validator, the gate and the scan skip. */
-export const TEMP_BLOB = /^\..*\.tmp-\d+$/;
-
-/** Keeps a file whole in `blobs/` under its SHA-256 and returns the hash. A viewer following a live run may fetch it at any moment, so it appears whole or not at all: it is written to a temporary name beside it, synced, and renamed
- *  into place (atomic on one filesystem). A blob already there is left alone. */
+/** Keeps a file whole in `blobs/` under its SHA-256 and returns the hash. The bytes go to a temporary file in the recording's `.spool/` (which the scan and the validator ignore), are fsynced, and are renamed into
+ *  `blobs/` (one filesystem, so the rename is atomic): a process killed while it writes leaves a temporary file in `.spool/` and never a torn blob under a name that says it is whole. */
 export function keepBlob(dir: string, buffer: Buffer, extension: string): string {
   mkdirSync(join(dir, 'blobs'), { recursive: true });
   const hash = createHash('sha256').update(buffer).digest('hex');
   const at = join(dir, 'blobs', `${hash}.${extension}`);
   if (existsSync(at)) return hash;
-  const temporary = join(dir, 'blobs', `.${hash}.${extension}.tmp-${process.pid}`);
+  mkdirSync(spool(dir), { recursive: true });
+  const temporary = join(spool(dir), `blob-${hash}.${extension}.tmp-${process.pid}`);
   const descriptor = openSync(temporary, 'w');
-  try { writeSync(descriptor, buffer); fsyncSync(descriptor); } finally { closeSync(descriptor); }
+  // `writeSync` may write fewer bytes than asked (a full disk, a signal): every byte is written before the sync and the rename, or the call throws.
+  try { for (let offset = 0; offset < buffer.length;) offset += writeSync(descriptor, buffer, offset); fsyncSync(descriptor); } finally { closeSync(descriptor); }
   renameSync(temporary, at);
   return hash;
 }
@@ -206,8 +226,12 @@ const readLines = (path: string): Record<string, unknown>[] => {
 };
 
 /** Merges the spools into `events.jsonl` (by `t`, a tie by (commit, order), then seq), writes `manifest.json`, and removes
- *  the spool. */
+ *  the spool. Before the manifest it scans the recording (its lines, its blobs and the manifest's own text): a credential's
+ *  shape or a machine path anywhere throws, and no manifest is written, so the directory is never a finished recording.
+ *  A directory that already holds a finished recording is refused before anything in it changes. */
 export function finishRecording(dir: string, header: Header): { lines: number } {
+  // A finished recording is never written over: its events would change beside a manifest that no longer describes them.
+  if (existsSync(join(dir, 'manifest.json'))) throw new Error(`${dir} already holds a finished recording; record into an empty directory.`);
   const files = existsSync(spool(dir)) ? readdirSync(spool(dir)).filter((name) => name.endsWith('.jsonl')) : [];
   const all = files.flatMap((name) => readLines(join(spool(dir), name)));
   // One total order for lines that tie on `t` (a millisecond): the supervisor's kill of one process, then the next process's start, then the
@@ -225,7 +249,13 @@ export function finishRecording(dir: string, header: Header): { lines: number } 
   const started = readFileSync(startedFile(dir), 'utf8');
   const { source, cost, generations, extra, redact: redactManifest, ...rest } = header;
   const started_ = all.filter((line) => line.source === 'host' && line.kind === 'process.started').length;
-  writeFileSync(join(dir, 'manifest.json'), (redactManifest ?? ((text: string) => text))(JSON.stringify({ ...extra, format: FORMAT, providers: 'scripted', ...rest, generations: generations ?? Math.max(1, started_), cost: typeof cost === 'function' ? cost(all) : cost, recorded: { started, ended: new Date().toISOString() }, source: { run: source.run, store_sha256: store } }, null, 2) + '\n'));
+  const manifest = (redactManifest ?? ((text: string) => text))(JSON.stringify({ ...extra, format: FORMAT, providers: 'scripted', ...rest, generations: generations ?? Math.max(1, started_), cost: typeof cost === 'function' ? cost(all) : cost, recorded: { started, ended: new Date().toISOString() }, source: { run: source.run, store_sha256: store } }, null, 2) + '\n');
+  const inManifest = credentialInFile('manifest.json', manifest);
+  const found = [...scanRecording(dir), ...(inManifest ? [{ file: 'manifest.json', found: inManifest }] : [])];
+  if (found.length) {
+    throw new Error(`${dir} is not finished: it holds ${found.map((each) => `a ${each.found} in ${each.file}`).join(', ')}. A recording is never published with one; redact it where it is written and record again.`);
+  }
+  writeFileSync(join(dir, 'manifest.json'), manifest);
   rmSync(spool(dir), { recursive: true, force: true });
   return { lines: all.length };
 }

@@ -4,16 +4,14 @@ import {
 	type AssistantMessage,
 	type AssistantMessageEvent,
 	type AssistantMessageEventStream,
-	type AssistantMessageFrame,
-	AssistantMessageFrameEncoder,
 	createAssistantMessageEventStream,
 	createModels,
 	createProvider,
 	type Model,
 	type Models,
 	type MutableModels,
-	parseStreamingJson,
 } from "@earendil-works/pi-ai";
+import { applyFrame, FrameEncoder, type ModelFrame } from "./frames.ts";
 import type { Frame } from "./link.ts";
 
 const DEFAULT_RESUME_WITHIN_MS = 30_000;
@@ -159,87 +157,6 @@ function endedHere(request: OpenRequest, stopReason: "error" | "aborted", errorM
 }
 
 /**
- * Apply one compact frame and return the pi-ai event it stands for. The block the frame touches and the content
- * array are copied, so the partial of an event already handed out never changes.
- */
-function rebuild(request: OpenRequest, frame: AssistantMessageFrame): AssistantMessageEvent {
-	if (frame.type === "start") {
-		request.partial = frame.partial;
-		return { type: "start", partial: frame.partial };
-	}
-	const before = request.partial;
-	if (before === undefined) throw new Error(`a ${frame.type} frame came before the start`);
-	const index = frame.contentIndex;
-	const put = (block: AssistantMessage["content"][number]): AssistantMessage => {
-		const content = [...before.content];
-		content[index] = block;
-		request.partial = { ...before, content };
-		return request.partial;
-	};
-	const copy = <T extends "text" | "thinking" | "toolCall">(type: T) => {
-		const block = before.content[index];
-		if (block?.type !== type) throw new Error(`a ${frame.type} frame at ${index} found ${block?.type ?? "nothing"}`);
-		return { ...block } as Extract<AssistantMessage["content"][number], { type: T }>;
-	};
-	switch (frame.type) {
-		case "text_start":
-			return { type: "text_start", contentIndex: index, partial: put(frame.content) };
-		case "text_delta": {
-			const block = copy("text");
-			block.text += frame.delta;
-			return { type: "text_delta", contentIndex: index, delta: frame.delta, partial: put(block) };
-		}
-		case "text_end": {
-			const block = copy("text");
-			block.text = frame.content;
-			if (frame.textSignature === undefined) delete block.textSignature;
-			else block.textSignature = frame.textSignature;
-			return { type: "text_end", contentIndex: index, content: frame.content, partial: put(block) };
-		}
-		case "thinking_start":
-			return { type: "thinking_start", contentIndex: index, partial: put(frame.content) };
-		case "thinking_delta": {
-			const block = copy("thinking");
-			block.thinking += frame.delta;
-			return { type: "thinking_delta", contentIndex: index, delta: frame.delta, partial: put(block) };
-		}
-		case "thinking_end": {
-			const block = copy("thinking");
-			block.thinking = frame.content;
-			if (frame.thinkingSignature === undefined) delete block.thinkingSignature;
-			else block.thinkingSignature = frame.thinkingSignature;
-			if (frame.redacted === undefined) delete block.redacted;
-			else block.redacted = frame.redacted;
-			return { type: "thinking_end", contentIndex: index, content: frame.content, partial: put(block) };
-		}
-		case "toolcall_start":
-			request.json.set(index, "");
-			return { type: "toolcall_start", contentIndex: index, partial: put(frame.toolCall) };
-		case "toolcall_checkpoint":
-		case "toolcall_delta": {
-			const block = copy("toolCall");
-			const delta = frame.type === "toolcall_delta" ? frame.delta : frame.json;
-			const json = frame.type === "toolcall_delta" ? (request.json.get(index) ?? "") + delta : delta;
-			request.json.set(index, json);
-			// The provider's own partial arguments are not on the wire: parsed here as pi-ai's adapters parse them.
-			block.arguments = parseStreamingJson(json);
-			return { type: "toolcall_delta", contentIndex: index, delta, partial: put(block) };
-		}
-		case "toolcall_end": {
-			const block = copy("toolCall");
-			block.id = frame.id;
-			block.name = frame.name;
-			block.arguments = frame.arguments;
-			if (frame.thoughtSignature === undefined) delete block.thoughtSignature;
-			else block.thoughtSignature = frame.thoughtSignature;
-			if (frame.namespace === undefined) delete block.namespace;
-			else block.namespace = frame.namespace;
-			return { type: "toolcall_end", contentIndex: index, toolCall: block, partial: put(block) };
-		}
-	}
-}
-
-/**
  * pi-ai models for a runner that holds no credential. Each provider of the host's catalog is mirrored by id with an
  * auth that says "configured" and holds nothing; a request is one `model` frame to the host, and the answer comes
  * back as pi-ai's compact frames, rebuilt here into the same events.
@@ -247,7 +164,22 @@ function rebuild(request: OpenRequest, frame: AssistantMessageFrame): AssistantM
  * A lost link keeps open requests open for `resumeWithinMs`: when it comes back the runner asks for the frames it
  * missed, so the host pays once. A request still open after that ends with a retryable error.
  */
-export function proxyModels(catalog: Catalog, options?: { readonly resumeWithinMs?: number }): ProxyModels {
+export function proxyModels(
+	catalog: Catalog,
+	options?: {
+		readonly resumeWithinMs?: number;
+		/**
+		 * The key a request is paid under, and the store position it was made at. The same key again, in another runner
+		 * process, is answered from the first answer and not paid for. It must not change across a restore: the
+		 * session, the conversation, the store position and a hash of the body.
+		 */
+		readonly keyOf?: (request: {
+			readonly model: Model<Api>;
+			readonly messages: readonly unknown[];
+			readonly options: Readonly<Record<string, unknown>>;
+		}) => { readonly key: string; readonly position: number } | undefined;
+	},
+): ProxyModels {
 	const resumeWithinMs = options?.resumeWithinMs ?? DEFAULT_RESUME_WITHIN_MS;
 	const open = new Map<string, OpenRequest>();
 	// Unique for each runner process, so a runner that started again cannot reuse an id the host still remembers.
@@ -277,12 +209,15 @@ export function proxyModels(catalog: Catalog, options?: { readonly resumeWithinM
 		counter += 1;
 		const id = `${process}.${counter}`;
 		const stream = createAssistantMessageEventStream();
+		const crossing = crossingOptions(received);
+		const keyed = options?.keyOf?.({ model, messages, options: crossing });
 		const frame: Frame = {
 			t: "model",
 			id,
 			model: { provider: model.provider, modelId: model.id },
 			messages,
-			options: crossingOptions(received),
+			options: crossing,
+			...(keyed === undefined ? {} : { key: keyed.key, position: keyed.position }),
 		};
 		const signal = received?.signal instanceof AbortSignal ? received.signal : undefined;
 		const onAbort = () => {
@@ -358,7 +293,7 @@ export function proxyModels(catalog: Catalog, options?: { readonly resumeWithinM
 			request.seq = seq;
 			try {
 				if (frame.t === "model-frame") {
-					request.stream.push(rebuild(request, frame.frame as AssistantMessageFrame));
+					request.stream.push(applyFrame(request, frame.frame as ModelFrame));
 				} else if (frame.t === "model-end") {
 					const message = frame.message as AssistantMessage;
 					finish(request, { type: "done", reason: message.stopReason as "stop", message });
@@ -390,6 +325,15 @@ export function proxyModels(catalog: Catalog, options?: { readonly resumeWithinM
 }
 
 type ServedCall = {
+	/** The request id the runner that asked last knows the call by: its frames are numbered and sent under it. */
+	id: string;
+	/** Every id the call was asked under, and the key it is paid under: let go together. */
+	readonly ids: Set<string>;
+	readonly key: string | undefined;
+	/** The store position the request was made at (its `position`): a checkpoint at or past it covers the answer. */
+	readonly position: number;
+	/** The call ended in an error or was aborted: it has no answer to give a runner that asks under its key again. */
+	failed: boolean;
 	readonly controller: AbortController;
 	/** Every frame sent for the call, kept so a runner that lost the link can ask for what it missed. */
 	readonly frames: Frame[];
@@ -418,6 +362,13 @@ export interface ModelServer {
 	close(): void;
 	/** Requests the host made to its providers: what it paid for. */
 	readonly paid: number;
+	/**
+	 * A checkpoint now covers the store up to `head` (its `Seal.head`): the keyed answers of requests made below it are
+	 * let go. Until then a completed answer is kept by its `key`, whatever `keepMs` says.
+	 */
+	covered(head: number): void;
+	/** How many keyed answers are kept. */
+	readonly kept: number;
 }
 
 /**
@@ -434,21 +385,40 @@ export function serveModels(
 	const calls = new Map<string, ServedCall>();
 	let paid = 0;
 
-	const emit = (id: string, call: ServedCall, frame: Frame) => {
-		const numbered: Frame = { ...frame, id, seq: call.frames.length + 1 };
+	// A keyed call: the same key again, from another runner process, is answered from it and not paid for again.
+	const byKey = new Map<string, ServedCall>();
+	const emit = (call: ServedCall, frame: Frame) => {
+		if (frame.t === "model-error") call.failed = true;
+		const numbered: Frame = { ...frame, id: call.id, seq: call.frames.length + 1 };
 		call.frames.push(numbered);
 		call.send?.(numbered);
 	};
+	/** What the call sent after `after`, under the id the asking runner knows it by. */
+	const replay = (call: ServedCall, after: number, reply: (frame: Frame) => boolean) => {
+		for (const kept of call.frames.slice(after)) reply({ ...kept, id: call.id });
+	};
 
 	const run = async (id: string, request: Frame, reply: (frame: Frame) => boolean): Promise<void> => {
-		const call: ServedCall = { controller: new AbortController(), frames: [], done: false, send: reply };
+		const key = typeof request.key === "string" && request.key !== "" ? request.key : undefined;
+		const call: ServedCall = {
+			id,
+			ids: new Set([id]),
+			key,
+			position: typeof request.position === "number" ? request.position : 0,
+			failed: false,
+			controller: new AbortController(),
+			frames: [],
+			done: false,
+			send: reply,
+		};
 		calls.set(id, call);
+		if (key !== undefined) byKey.set(key, call);
 		try {
 			const asked = request.model as { provider?: unknown; modelId?: unknown } | undefined;
 			const model = models.getModel(String(asked?.provider), String(asked?.modelId));
 			if (model === undefined) {
 				const errorMessage = `the model ${String(asked?.provider)}/${String(asked?.modelId)} is not available on the host`;
-				emit(id, call, { t: "model-error", reason: "error", errorMessage });
+				emit(call, { t: "model-error", reason: "error", errorMessage });
 				return;
 			}
 			paid += 1;
@@ -463,36 +433,41 @@ export function serveModels(
 				{ messages: request.messages as never },
 				requestOptions as Parameters<Models["streamSimple"]>[2],
 			);
-			const encoder = new AssistantMessageFrameEncoder();
+			const encoder = new FrameEncoder();
 			let ended = false;
 			for await (const event of events) {
 				if (event.type === "done") {
 					ended = true;
-					emit(id, call, { t: "model-end", message: event.message });
+					emit(call, { t: "model-end", message: event.message });
 				} else if (event.type === "error") {
 					ended = true;
-					emit(id, call, { t: "model-error", reason: event.reason, message: event.error });
+					emit(call, { t: "model-error", reason: event.reason, message: event.error });
 				} else {
 					const frame = encoder.encode(event);
-					if (frame !== undefined) emit(id, call, { t: "model-frame", frame });
+					if (frame !== undefined) emit(call, { t: "model-frame", frame });
 				}
 			}
 			if (!ended) {
 				const message = await events.result();
 				const failed = message.stopReason === "error" || message.stopReason === "aborted";
 				emit(
-					id,
 					call,
 					failed ? { t: "model-error", reason: message.stopReason, message } : { t: "model-end", message },
 				);
 			}
 		} catch (cause) {
 			const errorMessage = cause instanceof Error ? cause.message : String(cause);
-			emit(id, call, { t: "model-error", reason: "error", errorMessage });
+			emit(call, { t: "model-error", reason: "error", errorMessage });
 		} finally {
 			call.done = true;
-			// Kept a while for a runner that lost the link at the very end, then let go.
-			setTimeout(() => calls.delete(id), keepMs).unref?.();
+			if (call.key !== undefined && call.failed && byKey.get(call.key) === call) byKey.delete(call.key);
+			// Kept a while for a runner that lost the link at the very end, then let go. A keyed answer stays until a
+			// checkpoint covers it (`covered`): a runner rebuilt after its box was lost asks again, and is not charged twice.
+			// A call that failed has no answer to keep.
+			setTimeout(() => {
+				for (const known of call.ids) calls.delete(known);
+				if (call.key !== undefined && call.failed && byKey.get(call.key) === call) byKey.delete(call.key);
+			}, keepMs).unref?.();
 		}
 	};
 
@@ -502,8 +477,20 @@ export function serveModels(
 			const id = typeof frame.id === "string" ? frame.id : "";
 			const call = calls.get(id);
 			if (frame.t === "model") {
-				// The same id again is a resend of a request that did arrive: never call the provider twice for one id.
-				if (call === undefined) void run(id, frame, reply);
+				// The same id again is a resend of a request that did arrive: never call the provider twice for one id. The
+				// same key under a new id is the same request from a runner that started again: it takes the call over and
+				// gets what was sent, then the rest, under its own id.
+				const key = typeof frame.key === "string" && frame.key !== "" ? frame.key : undefined;
+				const asked = key === undefined ? undefined : byKey.get(key);
+				if (call === undefined && asked !== undefined && !asked.failed && !asked.controller.signal.aborted) {
+					asked.id = id;
+					asked.ids.add(id);
+					calls.set(id, asked);
+					asked.send = reply;
+					replay(asked, 0, reply);
+				} else if (call === undefined) {
+					void run(id, frame, reply);
+				}
 			} else if (frame.t === "model-abort") {
 				if (call !== undefined && !call.done) call.controller.abort();
 			} else if (call === undefined) {
@@ -512,7 +499,8 @@ export function serveModels(
 				// What the runner missed first, then the live frames, all on this link: a live frame that ran ahead of
 				// the replay would look to the runner like a gap, and it would give the answer up.
 				const after = typeof frame.after === "number" ? frame.after : 0;
-				for (const kept of call.frames.slice(after)) reply(kept);
+				call.id = id;
+				replay(call, after, reply);
 				call.send = reply;
 			}
 			return true;
@@ -528,6 +516,17 @@ export function serveModels(
 		},
 		get paid() {
 			return paid;
+		},
+		covered(head) {
+			for (const [key, call] of byKey) {
+				if (call.position < head && call.done) {
+					byKey.delete(key);
+					for (const known of call.ids) if (calls.get(known) === call) calls.delete(known);
+				}
+			}
+		},
+		get kept() {
+			return byKey.size;
 		},
 	};
 }

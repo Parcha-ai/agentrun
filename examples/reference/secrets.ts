@@ -4,7 +4,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { join, relative, resolve } from 'node:path';
-import { TEMP_BLOB, type Redact } from './record.ts';
+import type { Redact } from './record.ts';
 import { declaredEnv, type DemoSpec } from './demo-spec.ts';
 
 /** A secret value and the name it is reported by (an environment name, or `<file> credentials.<provider>.<field>`). */
@@ -40,11 +40,14 @@ export function signInSecrets(file: string): Secret[] {
   return found;
 }
 
-/** This machine's own host name and boot id (where `/proc/sys/kernel/random/boot_id` exists): a recording shows labels for a holder's, never these. A short or generic name is not taken (it would damage the lines around it). */
-export function machineSecrets(): Secret[] {
+/** Words the recording format itself is written in (its channels, sources, kinds and keys, and the values of its fixed fields): a host name that is one of them is not taken, because replacing it would rewrite the lines around it
+ *  (a machine named `host` would turn every `"source":"host"` into `"source":"[redacted]"`). Such a name says nothing about the machine anyway. */
+const RECORDING_WORDS = new Set(['host', 'process', 'kill', 'result', 'live', 'durable', 'workflow', 'browser', 'vision', 'transport', 'data', 'source', 'kind', 'channel', 'child', 'supervisor', 'run', 'status', 'point', 'label', 'side', 'null', 'true', 'false', 'blob', 'title', 'cost', 'model', 'done', 'failed', 'error', 'complete', 'revoke', 'delegation', 'receipt', 'localhost']);
+
+/** This machine's own host name and boot id (where `/proc/sys/kernel/random/boot_id` exists): a recording shows labels for a holder's, never these. A short or generic name, or one of the recording's own words, is not taken (it would damage the lines around it). `name` is for a test. */
+export function machineSecrets(name: string = hostname()): Secret[] {
   const found: Secret[] = [];
-  const name = hostname();
-  if (name.length >= 4 && name !== 'localhost') found.push({ key: 'this machine\'s host name', value: name });
+  if (name.length >= 4 && !RECORDING_WORDS.has(name.toLowerCase())) found.push({ key: 'this machine\'s host name', value: name });
   try { const boot = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(); if (boot.length >= 16) found.push({ key: 'this machine\'s boot id', value: boot }); } catch { /* not a machine that has one */ }
   return found;
 }
@@ -93,7 +96,7 @@ export function trackSecrets(env: NodeJS.ProcessEnv, spec: DemoSpec, authFile: s
   };
 }
 
-const filesUnder = (dir: string): string[] => readdirSync(dir).filter((name) => !TEMP_BLOB.test(name)).flatMap((name) => {
+const filesUnder = (dir: string): string[] => readdirSync(dir).flatMap((name) => {
   const path = join(dir, name);
   return statSync(path).isDirectory() ? filesUnder(path) : [path];
 });
@@ -104,7 +107,8 @@ export function scanRecording(dir: string, secrets: readonly Secret[]): void {
   for (const file of filesUnder(dir)) {
     const bytes = readFileSync(file);
     for (const secret of secrets) {
-      if (bytes.includes(secret.value)) throw new Error(`the recording holds a secret that the redaction should have removed: ${secret.key} is in ${relative(dir, file)}`);
+      // Raw, and as written inside a JSON string (a line holds a token with a quote, a backslash or a newline escaped): the redaction takes both forms out, so the scan looks for both.
+      if (bytes.includes(secret.value) || bytes.includes(JSON.stringify(secret.value).slice(1, -1))) throw new Error(`the recording holds a secret that the redaction should have removed: ${secret.key} is in ${relative(dir, file)}`);
     }
   }
 }

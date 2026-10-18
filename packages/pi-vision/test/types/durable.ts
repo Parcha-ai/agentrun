@@ -5,6 +5,7 @@
 
 import type { Context } from "@earendil-works/chord";
 import { CodemodeSandbox, type CodemodeTool } from "@earendil-works/pi-codemode";
+import { createJevRunner, type JevJudge } from "@parcha/agentrun-jev";
 import type { Models } from "@earendil-works/pi-ai";
 import { createRegistry, type ConversationId, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
 import type { CallContext, CallSetup, ToolResult, VisionEnv } from "../../src/index.js";
@@ -21,6 +22,11 @@ const call = (api: ToolExecutionApi, context: Context): Promise<CallContext> => 
 // A host's code-mode tool builds the global per call and passes it to pi-codemode as it is.
 const sandbox = async (api: ToolExecutionApi, context: Context) => new CodemodeSandbox({ globals: [vision.see(api.env, await callContext(api, context))] });
 const global = (api: ToolExecutionApi, call: CallContext): CodemodeTool => vision.see(api.env, call);
+// Jev is the port `@parcha/agentrun-jev` builds, passed as it is; a judge of any other shape is not one.
+const judged = createVisionExtension({ evidence: { file: async () => null }, scope: (id) => ({ label: id, deriveDir: `media/${id}` }), jev: { judge: createJevRunner({ apiKey: "a key" }), model: "jev-1.14.0" } });
+const viaPort = (judge: JevJudge) => createVisionExtension({ evidence: { file: async () => null }, scope: (id) => ({ label: id, deriveDir: `media/${id}` }), jev: { judge } });
+// @ts-expect-error a judge whose answer has no answers is not Jev's port.
+const notJev = createVisionExtension({ evidence: { file: async () => null }, scope: (id) => ({ label: id, deriveDir: `media/${id}` }), jev: { judge: async () => ({ model: "m" }) } });
 // A host's own tool names itself for `fit`'s rows, and `scope` gets pi's own id beside the string.
 const shot = (api: ToolExecutionApi, context: Context): Promise<CallContext> => callContext(api, context, "screenshot");
 const byPiId = createVisionExtension({
@@ -46,4 +52,4 @@ const unnamed = () => env.exec(["true"], { env: { ONLY: "this" }, inheritEnv: fa
 // @ts-expect-error a door without `completeSimple` cannot look.
 const blind: ModelsDoor = { getModel: () => undefined };
 
-void [door, eyes, result, call, sandbox, global, shot, byPiId, env, blind, handBuilt, passesItsOwn, andMore, named, unnamed];
+void [door, eyes, result, call, sandbox, global, judged, viaPort, notJev, shot, byPiId, env, blind, handBuilt, passesItsOwn, andMore, named, unnamed];

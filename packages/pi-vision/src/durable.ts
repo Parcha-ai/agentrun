@@ -6,8 +6,8 @@
 // an image. Every tool it installs is replay-safe: a call cut by a crash runs again with the same task and memos, and a
 // paid answer is a memo before the result that reports it.
 import type { Context, JsonValue } from "@earendil-works/chord";
-import type { ConversationId, Extension, HookApi, HookRegistration, ModelRef, ToolExecutionApi, ToolExecutionResult, ToolHooks, ToolRegistration, Wrap } from "@earendil-works/pi-durable";
-import { VISION_SEE, withReadMedia } from "./core/contract.js";
+import type { ConversationDocFamilyToken, ConversationId, Extension, HookApi, HookRegistration, ModelRef, ToolExecutionApi, ToolExecutionResult, ToolHooks, ToolRegistration, Wrap } from "@earendil-works/pi-durable";
+import { VISION_JUDGE, VISION_SEE, withReadMedia } from "./core/contract.js";
 import type { VisionEnv } from "./core/env.js";
 import { guardResult } from "./core/guard.js";
 import type { CallContext, CallSetup, Eyes, Json, ReadArgs, ToolResult, VisionOptions } from "./core/host.js";
@@ -17,7 +17,8 @@ import { firstLine } from "./core/misses.js";
 import { pdfText } from "./core/pdf.js";
 import { detectOnce } from "./core/provider.js";
 import { readMedia, readWithoutSetup } from "./core/read.js";
-import { see, SeeMiss, type SeeGlobal } from "./core/see.js";
+import { judge, type JudgeGlobal } from "./core/judge.js";
+import { see, SeeMiss, type CodeGlobal, type SeeGlobal } from "./core/see.js";
 import { modelsEyes, modelsOf, type ModelsDoor } from "./eyes/models.js";
 import { childEnvOf, nodeVisionEnv, type ChildEnv } from "./node.js";
 import { packageProviders } from "./providers/defaults.js";
@@ -39,6 +40,8 @@ export type VisionHandle = {
    *  pi-codemode's `globals`, as in `globals: [vision.see(api.env, await callContext(api, context))]`. It reads paths
    *  through `env`; with none, it sees image blocks only. */
   see(env: VisionEnv | undefined, call: CallContext): SeeGlobal;
+  /** `vision.judge`, Jev's typed answers about images (`VisionOptions.jev`), for the same sandbox, built the same way. */
+  judge(env: VisionEnv | undefined, call: CallContext): JudgeGlobal;
 };
 
 /** The names pi-durable gives a result's blocks: `output` from 1.2, `content` in 1.0 and 1.1. Each release reads its own
@@ -69,12 +72,35 @@ function coreResult(result: ToolExecutionResult): ToolResult {
   };
 }
 
-/** The call's memo port on pi's memos: the kept value when there is one, else `compute`'s, committed before it is
- *  returned. The first committed value wins, so two attempts that both computed agree on one. */
-function memoOf(api: Pick<HookApi, "memo">, context: Context): NonNullable<CallContext["memo"]> {
+type Kept = { kept: boolean; value: JsonValue };
+/** A tool call's memos kept on its conversation by key, so a later call of the conversation finds them: a new code-mode
+ *  script after one a crash cut, which pi never runs again, reads back what that one paid for. Defined at its first use,
+ *  since the adapter loads pi-durable's values only when it runs. */
+let keptDocs: Promise<ConversationDocFamilyToken<Kept, null>> | undefined;
+const kept = () => (keptDocs ??= import("@earendil-works/pi-durable").then(({ defineDocFamily }) =>
+  defineDocFamily<Kept, null>({ kind: "vision.kept", version: 1, scope: "conversation", history: "latest", fork: "current", family: true, initial: () => ({ kept: false, value: null }) })));
+
+/** The call's memo port: a tool call's on its conversation, a hook's on pi's memos of its task (a hook runs inside its
+ *  task, which a commit would wait on). The kept value when there is one, else the one the call's task holds (a value
+ *  kept on the task is never paid for again), else `compute`'s, committed before it is returned; the first committed
+ *  value wins, so two attempts that both computed agree on one. */
+function memoOf(api: Pick<HookApi, "conversationId" | "memo">, context: Context, tool?: Pick<ToolExecutionApi, "commit" | "snapshot">): NonNullable<CallContext["memo"]> {
+  if (!tool) return async <T extends Json>(key: string, compute: () => Promise<T>) => {
+    const done = await api.memo<JsonValue>(key, context);
+    return (done !== undefined ? done : await api.memo<JsonValue>(key, (await compute()) as JsonValue, context)) as T;
+  };
   return async <T extends Json>(key: string, compute: () => Promise<T>) => {
-    const kept = await api.memo<JsonValue>(key, context);
-    return (kept !== undefined ? kept : await api.memo<JsonValue>(key, (await compute()) as JsonValue, context)) as T;
+    const docs = await kept();
+    const found = await tool.snapshot(docs, api.conversationId, key, context);
+    if (found?.kept) return found.value as T;
+    const held = await api.memo<JsonValue>(key, context);
+    const value = held !== undefined ? held : ((await compute()) as JsonValue);
+    return tool.commit(async (tx) => {
+      const doc = await tx.doc(docs, api.conversationId, key, null);
+      if (doc.kept) return JSON.parse(JSON.stringify(doc.value)) as T;
+      Object.assign(doc, { kept: true, value });
+      return value as T;
+    }, context);
   };
 }
 
@@ -86,9 +112,9 @@ const modelFrom = (ref: ModelRef | undefined, models: ModelsDoor | undefined): u
  *  (1.1 or later), which `eyesModel` looks through. */
 const piCalls = new WeakMap<CallContext, { readonly id: ConversationId; readonly models: ModelsDoor | undefined }>();
 
-function contextOf(api: Pick<HookApi, "conversationId" | "memo">, callId: string, ref: ModelRef | undefined, context: Context, tool?: string): CallContext {
+function contextOf(api: Pick<HookApi, "conversationId" | "memo">, callId: string, ref: ModelRef | undefined, context: Context, tool?: string, store?: Pick<ToolExecutionApi, "commit" | "snapshot">): CallContext {
   const models = modelsOf(api);
-  const call: CallContext = { conversationId: String(api.conversationId), callId, ...(tool ? { tool } : {}), model: modelFrom(ref, models), signal: context.abortSignal, memo: memoOf(api, context) };
+  const call: CallContext = { conversationId: String(api.conversationId), callId, ...(tool ? { tool } : {}), model: modelFrom(ref, models), signal: context.abortSignal, memo: memoOf(api, context, store) };
   piCalls.set(call, { id: api.conversationId, models });
   return call;
 }
@@ -97,7 +123,7 @@ function contextOf(api: Pick<HookApi, "conversationId" | "memo">, callId: string
  *  `handle.read` and `handle.fit`, which then look through the call's `api.models` too. `tool` names the tool whose
  *  result `fit` guards, for its rows; pi's tool API does not say it. */
 export async function callContext(api: ToolExecutionApi, context: Context, tool?: string): Promise<CallContext> {
-  return contextOf(api, api.callId, (await api.agent(context)).model, context, tool);
+  return contextOf(api, api.callId, (await api.agent(context)).model, context, tool, typeof api.commit === "function" && typeof api.snapshot === "function" ? api : undefined);
 }
 
 /** What the model reads in place of an image the guard could not run on. */
@@ -174,11 +200,28 @@ export function createVisionExtension(options: VisionAdapterOptions): VisionHand
     providers,
     sources: options.sources ?? {},
     ...(options.allow ? { allow: options.allow } : {}),
+    ...(options.jev ? { jev: options.jev } : {}),
     // `onLook` reaches the core as the host gave it: the core never lets it fail a call, and reads its throw as the host
     // not having heard of the look.
     ...(options.onLook ? { onLook: options.onLook } : {}),
     ...(onMiss ? { onMiss } : {}),
   });
+  /** A code-mode global for one call: the script's signal joins the call's, and a setup the host's own callbacks fail
+   *  to make is a typed miss that `onMiss` hears of, never their error. */
+  const codeGlobal = <C extends { readonly name: string }, A>(contract: C, run: (request: unknown, env: VisionEnv | undefined, call: CallContext, made: CallSetup) => Promise<A>) =>
+    (env: VisionEnv | undefined, call: CallContext): CodeGlobal<C, A> => ({
+      ...contract,
+      execute: async (request, script) => {
+        const signal = script?.signal && call.signal ? AbortSignal.any([script.signal, call.signal]) : script?.signal ?? call.signal;
+        const made = await setup(call).catch(async (error: unknown) => {
+          if (signal?.aborted) throw error;
+          const reason = `this host could not set the look up: ${firstLine(error)}`;
+          await onMiss?.({ conversationId: call.conversationId, tool: contract.name, source: contract.name, code: "look_failed", reason, receipt: null });
+          throw new SeeMiss("look_failed", reason);
+        });
+        return run(request, env, { ...call, signal }, made);
+      },
+    });
   // A setup the host's own callbacks fail to make is a typed miss for the model and the host's `onMiss`, never their error.
   const readFor = async (env: VisionEnv, args: ReadArgs, call: CallContext): Promise<ToolResult | null> => {
     const port = withChildEnv(env, childEnv);
@@ -234,19 +277,7 @@ export function createVisionExtension(options: VisionAdapterOptions): VisionHand
     read: readFor,
     fit: async (result, call) => guardResult(result, call, await setup(call)),
     pdfText: (bytes, signal) => pdfText(bytes, { env: here, providers, ...(signal ? { signal } : {}) }),
-    see: (env, call) => ({
-      ...VISION_SEE,
-      execute: async (request, script) => {
-        const signal = script?.signal && call.signal ? AbortSignal.any([script.signal, call.signal]) : script?.signal ?? call.signal;
-        // A setup the host's own callbacks fail to make is a typed miss that `onMiss` hears of, never their error.
-        const made = await setup(call).catch(async (error: unknown) => {
-          if (signal?.aborted) throw error;
-          const reason = `this host could not set the look up: ${firstLine(error)}`;
-          await onMiss?.({ conversationId: call.conversationId, tool: VISION_SEE.name, source: VISION_SEE.name, code: "look_failed", reason, receipt: null });
-          throw new SeeMiss("look_failed", reason);
-        });
-        return see(request, env, { ...call, signal }, made);
-      },
-    }),
+    see: codeGlobal(VISION_SEE, see),
+    judge: codeGlobal(VISION_JUDGE, judge),
   };
 }

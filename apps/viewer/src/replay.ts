@@ -46,7 +46,8 @@ export function snap(stops: boolean[], p: number): number {
 export function timeParam(value: string | null): number | undefined {
   if (value === null || value.trim() === '') return undefined;
   const seconds = Number(value);
-  return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : undefined;
+  const ms = seconds * 1000;
+  return Number.isFinite(ms) && seconds >= 0 ? ms : undefined;
 }
 
 /** The `?t=` a URL keeps: the time the link opened at, while the clock is still there; once the user has sought or played on, no time (a reload would undo it). */
@@ -93,8 +94,8 @@ export function playback(lines: Line[], stops: boolean[]) {
     get clock() { return clock; },
     /** Go to the stop at or before `to`, its clock the time of the last line before it. */
     seek(to: number) { p = snap(stops, to); clock = p > 0 ? lines[p - 1]!.t : 0; return p; },
-    /** Go to the time `ms`: the stop whose lines all happened by then, with the clock at `ms` itself (a link to second 20 shows second 20). */
-    seekTime(ms: number) { clock = Math.max(0, ms); p = stopAt(lines, stops, clock); return p; },
+    /** Go to the time `ms`: the stop whose lines all happened by then, with the clock at `ms` itself (a link to second 20 shows second 20), never past the end of the run (`?t=1e300` opens at the end, not at a thousand-digit time). */
+    seekTime(ms: number) { clock = Math.min(Math.max(0, ms), lines.length > 0 ? lines[lines.length - 1]!.t : 0); p = stopAt(lines, stops, clock); return p; },
     /** Run the clock `ms` of wall time at `speed`; the stop is the last whose lines all happened by then. */
     advance(ms: number, speed: number) { clock += ms * speed; p = stopAt(lines, stops, clock); return p; },
   };

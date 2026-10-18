@@ -28,7 +28,7 @@ import {
   type RunRef,
 } from "./claim.ts";
 import { FencedError, HeldError, PdaError } from "./errors.ts";
-import { parseRunRecord, RUN_JSON, type RunRecord } from "./status.ts";
+import { parseRunRecord, parseStartMark, RUN_JSON, START_MARK, type RunRecord, type StartMark } from "./status.ts";
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
@@ -38,8 +38,29 @@ export type HostStatus = "running" | "stopped" | "failed" | "gone" | "unknown";
 /** A driver's description of one instance; the instance writes it into `run.json` as `holder`. */
 export type HostHandle = { driver: string; [key: string]: Json };
 
-/** Which start this is: the generation the instance will open (run.json's generation + 1), also in the token's nickname. */
-export type StartAttempt = { attempt: number };
+/**
+ * Which start this is: the generation the instance will open (run.json's generation + 1), also in the token's nickname.
+ * `env`: what this start adds to the instance's environment (a place's per-attempt order), merged over the driver's own
+ * `env`. PATH and PDA_HOLDER are the driver's: a start that sets either, or a name that is not a variable name, is refused.
+ */
+export type StartAttempt = { attempt: number; env?: Record<string, string> };
+
+/**
+ * A box a driver made for an instance, as a receipt: who provided it, what kind, when it was made and when it ended
+ * (null while it lives), and its published list price per second (`usdPerSecond`), with the page that price was read
+ * from (`source`) and the ISO date it was read (`priced`). A box with no price (a kind the provider's page does not
+ * price, or of unknown size) has none of the three: never a price of 0. No field holds the provider's id of the box:
+ * the supervisor labels boxes itself and computes their seconds and cost.
+ */
+export type HostBox = {
+  provider: string;
+  kind: string;
+  from: string;
+  to: string | null;
+  usdPerSecond?: number;
+  source?: string;
+  priced?: string;
+};
 
 /** Compute is disposable and pluggable: a driver is these three calls. */
 export interface HostDriver {
@@ -53,6 +74,16 @@ export interface HostDriver {
   status(handle: HostHandle): Promise<HostStatus>;
   /** Stop the instance and whatever it left on its host. A handle the driver cannot reach is a no-op. */
   stop(handle: HostHandle): Promise<void>;
+  /**
+   * Optional: take the instance away abruptly, as a crash would. No drain, no release, nothing cleaned: the run's claim is
+   * left as a crash leaves it (orphaned with its box, or held by a live mount until its lease lapses), and the
+   * supervisor's next pass decides what follows. A handle the driver cannot reach is a no-op.
+   */
+  kill?(handle: HostHandle): Promise<void>;
+  /** What `kill` takes: `process`, the instance's processes while its machine stays (a restart policy may bring them back), or `box`, its machine. */
+  readonly kills?: "process" | "box";
+  /** Optional, for a driver whose instances get machines of their own: the box `handle`'s instance runs in, as a receipt. */
+  box?(handle: HostHandle): HostBox | null;
 }
 
 /** The control-plane calls the supervisor uses; an archil `Disk` satisfies it. */
@@ -140,6 +171,12 @@ export interface EnsureOptions {
   tokenTtl?: string;
   /** Prefix of each mount token's nickname. */
   tokenPrefix?: string;
+  /**
+   * A mount token the caller minted for this start (`mintMountToken`), for a caller that mints its own (a place's
+   * `token(attempt)`): a start uses it instead of minting one, and removes it as it would its own when the driver starts
+   * nothing or adopts. A decision that starts nothing leaves it to the caller.
+   */
+  mountToken?: { token: string; identifier: string; nickname: string };
   /** The caller has work for the run now: start a paused run, or a sleeping one before its `wakeAt`. */
   demand?: boolean;
   /** Create `runs/<id>/` with this owner when it does not exist and nothing holds it. */
@@ -306,12 +343,8 @@ export async function ensureRunning(ref: RunRef, host: HostDriver, options: Ensu
   return start("lease-expired", held, stonith);
 }
 
-/**
- * The supervisor's record of its last start of a run: the generation the instance will write, when, by whom, and the
- * failed starts right before it (`failures`; `lastExit`, what the decision saw of the last one).
- */
-export const START_MARK = "start.json";
-export type StartMark = { generation: number; at: string; by: string | null; failures: number; lastExit: string | null };
+// The start mark (`start.json`): its name, shape and parser live in status.ts, which the instance also reads it with.
+export { START_MARK, type StartMark } from "./status.ts";
 
 /** The grace of a start that follows `failures` failed ones: the base doubled per failure, capped, never below the base. */
 export function startGrace(baseMs: number, failures: number, maxMs = START_BACKOFF_MAX_MS): number {
@@ -340,15 +373,7 @@ export async function readStartMark(control: Pick<SupervisorControl, "getObject"
     if (notFound(err)) return null;
     throw new SuperviseError("CONTROL_API_FAILED", `GetObject ${runPath(id)}/${START_MARK} failed`, { cause: err });
   }
-  try {
-    const v = JSON.parse(text) as Partial<StartMark>;
-    if (!Number.isSafeInteger(v.generation) || (v.generation as number) < 1 || typeof v.at !== "string" || !Number.isFinite(Date.parse(v.at))) return null;
-    const failures = Number.isSafeInteger(v.failures) && (v.failures as number) >= 0 ? (v.failures as number) : 0;
-    const lastExit = typeof v.lastExit === "string" ? v.lastExit : null;
-    return { generation: v.generation as number, at: v.at, by: typeof v.by === "string" ? v.by : null, failures, lastExit };
-  } catch {
-    return null;
-  }
+  return parseStartMark(text);
 }
 
 /** Only a run with no run.json and no holder gets here, so the directory is either absent or idle. */
@@ -446,7 +471,7 @@ async function startInstance(
   let token: { token: string; identifier: string; nickname: string };
   try {
     // The attempt is the generation the instance will write, so the token user names the incarnation it served.
-    token = await mintMountToken(opts.control, { run: { id: ref.id, attempt: why.generation + 1 }, prefix: opts.tokenPrefix, ttl: opts.tokenTtl ?? TOKEN_TTL, now: opts.now });
+    token = opts.mountToken ?? await mintMountToken(opts.control, { run: { id: ref.id, attempt: why.generation + 1 }, prefix: opts.tokenPrefix, ttl: opts.tokenTtl ?? TOKEN_TTL, now: opts.now });
   } catch (err) {
     throw new SuperviseError("CONTROL_API_FAILED", `minting a mount token for ${runPath(ref.id)} failed`, { cause: err });
   }

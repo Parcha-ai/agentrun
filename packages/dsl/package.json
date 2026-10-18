@@ -1,6 +1,6 @@
 {
   "name": "@parcha/agentrun-dsl",
-  "version": "0.1.0-beta.13",
+  "version": "0.1.0-beta.15",
   "description": "Composable, typed workflows for agents",
   "type": "module",
   "license": "Apache-2.0",
@@ -11,6 +11,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./graph": {
+      "types": "./dist/graph.d.ts",
+      "import": "./dist/graph.js"
     },
     "./demo": {
       "types": "./dist/demo.d.ts",
@@ -44,6 +48,9 @@
   },
   "dependencies": {
     "typebox": "1.3.7"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
   },
   "repository": {
     "type": "git",

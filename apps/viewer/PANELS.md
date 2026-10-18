@@ -44,7 +44,10 @@ Plain nodes, not DOM. The viewer draws them.
   panel's CSS positions).
 - A string: text.
 - `{ tag: 'img', blob, alt }`: an image from the recording's `blobs/`, by its SHA-256.
-- `{ tag: 'a', blob, text }`: a link to any file in `blobs/` (an evidence record, the result), opened beside the page.
+- `{ tag: 'a', blob, text, fragment? }`: a link to any file in `blobs/` (an evidence record, the result), opened beside
+  the page, at `fragment` when it has one (`page=2`, `t=30`).
+- `{ tag: 'a', href, text }`: a link to a page outside the recording, drawn as a link only when `href` is an `http` or
+  `https` address, and opened apart from the viewer (`noopener`, `noreferrer`); any other address is plain text.
   A view never reads a blob's bytes: the shell resolves the hash to a URL when it draws. The one exception is the
   result's JSON, which the shell reads and hands every view (`json`, below).
 - `{ tag: 'frame', session }`: a browser session's picture at the current point (below).
@@ -86,12 +89,23 @@ and lays out the tiles; the viewer draws the picture.
 ## Focus and the shell
 
 The shell gives `view` a context: `t`, the time of the current point; `focus`, the focused path if there is one;
-`cite`, the selected citation if there is one (a node with `cite` selects it, `?cite=` opens with it, and selecting one
+`following` when the run is followed while it goes and has not finished (its cost is not known yet: a view shows cost
+as unknown); `cite`, the selected citation if there is one (a node with `cite` selects it, `?cite=` opens with it, and selecting one
 moves no stop, so the screen it was clicked on stays); `json(sha)`, the parsed JSON of a blob the manifest's `result`
-or a `result` line names, undefined until the shell has read it; and `baseline` when the manifest names one (`BaselineView`: its label, the counters of that other recording at its end,
+or a `result` line names, undefined until the shell has read it; `blobType(sha)`, a blob's media type from its name in
+`blobs/` (undefined until the shell has found it), so a view can draw a picture a result cites and link any other file; and `baseline` when the manifest names one (`BaselineView`: its label, the counters of that other recording at its end,
 and how long it ran in ms, or null; another real recording, opened beside this one, never typed-in numbers). When
 `counters.measured` is false the recording has no durable line, so its counts are not measured and its cost is
-unknown: show that, never its zeros.
+unknown, a box's receipt notwithstanding: show that, never its zeros. `counters.costParts` is the cost by part (the
+model's usage as `lead`, `judge`, `eyes`, `browser`, and `boxes`, each box's `box.receipt` at list price); `costLabel`
+draws it as the strip does, naming the boxes apart at list price, and in a scripted run the other parts scripted.
+
+A run's result is the demo's own JSON, and two formats are known to the vision panel: `apollo11.account/1`, and the
+generic cited result `agentrun.cited/1` (RECORDING.md: rows of a label and a value, each citing a blob, a look or
+both, and where and when it was read). A panel that shows what a run delivered reads the generic one and ignores fields it does not know.
+The vision panel draws a cited file that is a picture in the recording (PNG, JPEG, WebP or GIF) small in its row, and
+for a window of film the eyes saw with no picture of their own, shows the pictures a row cites beside that window,
+labelled as that row's keyframe, never as what the eyes saw.
 
 A redraw keeps the reader's place: each scrolled element's offset and the element with the keyboard focus, found again
 by place alone (at each step its tag, its first class and its rank among such siblings), never by its text.
@@ -100,8 +114,34 @@ Focus is a view input (RECORDING.md section 4 rule 4). The shell drops no line f
 run, and its `view` shows what is under the focused path its own way (filter, dim, highlight, or zoom on one branch
 while the rest stays drawn). Keep the lines that have no `path` in the state: a conversation entry or a driver
 checkpoint belongs to a branch without naming it. `under(path, focus)` in `src/format.ts` says whether a path is in
-the focused branch. The two panels the viewer ships dim what is outside it. The counters strip never changes with the
+the focused branch. The two panels the viewer ships dim what is outside it, and so do the disk panel's paid calls. The counters strip never changes with the
 focus.
+
+## Embedding
+
+A page may frame the viewer with `&embed=1`: no header (a recording that breaks the format still says so), the frame's
+full width. Framed, it speaks a small protocol with `postMessage`, and steers only when its URL names the framing
+page's origin with `&parent=<origin>` (an http or https origin, written as one, such as `https://example.org`).
+
+The viewer posts, each `{ source: "agentrun-viewer", type, ... }`, to the origin `&parent=` names, else to the framing
+page's when the browser gives it (an http or https page), else to any:
+
+| `type` | when | fields |
+| --- | --- | --- |
+| `ready` | once, before the first draw | `stops` (the last stop), `chapters` (`[{ title, stop }]`) |
+| `position` | at every stop it moves to, the first draw included | `stop`, `gen` and `commit` (the last durable line's, or `null`), `t` (ms), `chapter` (`{ title, stop }` or `null`) |
+| `focus` | when the focused path changes, and once at the start | `path` (a workflow path, or `null`) |
+
+It obeys only these, and only from the framing page itself (`event.source` is its parent) at the origin `&parent=`
+names; any other message, origin or field is ignored, and no message carries code to run:
+
+| `type` | fields | what it does |
+| --- | --- | --- |
+| `seek` | exactly one of `stop` (a whole number up to the last stop), `commit` with an optional `gen` (whole numbers), or `t` (seconds, finite, not negative) | moves the point there, as the scrubber does |
+| `focus` | `path`: a workflow path (`/` then letters, digits and `_ . / : # -`, at most 512 characters), or `null` | focuses that branch, or clears the focus |
+| `theme` | `theme`: `light`, `dark` or `auto` | sets the page's colours; `auto` follows the system |
+
+Without `&parent=`, the viewer still posts, and listens to nothing.
 
 ## A panel in full
 
@@ -157,3 +197,24 @@ is still a replay:
 `?t=<seconds>` opens the viewer at a time (a number of seconds, no less than 0; anything else is ignored). It wins over
 `at` and `cite`. The stop is the last whose lines all happened by then, so a time between two commits shows the stop
 before it (never the inside of a commit), with the clock at the time asked for.
+
+## The disk panel (`src/disk.ts`)
+
+One panel for every demo that runs on a disk place. It reads the supervisor's `host` lines `run.json`, `delegation`,
+`revoke` and `fenced` (RECORDING.md section 5), the shell's own `process.started` and `kill`, and the durable
+`agentrun.effects` documents; it draws a lane per claim generation (who held it, from when, and how it ended: released
+with its sealed sequence, killed or its box taken away, fenced, or replaced between two polls), the events between them
+in order (the orphan flag as seen, the revoke and the takeover time, the fence), and each paid call marked made once,
+repeated, cut by a kill (unknown, not sent again) or in flight. The paid-call verdicts are the shell's own counter fold
+(`appliedIn`), so the panel and the counters strip agree. A recording with no disk claim line (`shows`: a `run.json`, `delegation`, `revoke` or `fenced` host line) does not draw the
+panel at all, its title included. Its test, `test/disk.test.ts`, renders `test/fixtures/disk-takeover`.
+
+## The run's picture
+
+The run's result so far as an image (RECORDING.md draft 31): the recording's home side draws it from the run's committed
+results and writes it as a `picture` host line, `{ blob, label?, commit? }`, with no `gen`, since no process the run can
+lose writes it. The picture panel draws the latest picture at or before the stop, a gap before the first, and keeps the
+last one after the run ends, a kill included. It is any job's picture, read from the line alone. A recording with no
+`picture` line draws no picture panel; one with pictures shows it first (`featured`), since a run that draws its result as
+it goes is about that picture. The image is drawn at the panel's width with its pixels kept sharp. Its test is
+`test/picture.test.ts`.

@@ -1,4 +1,28 @@
 export { type App, type AppContext, AppError, type AppOptions, loadApp } from "./app.ts";
+export { CALLS_EXTENSION, type CallEvent } from "./calls.ts";
+export {
+	type Checkpoint,
+	CheckpointSkipped,
+	type CheckpointStats,
+	type CheckpointVault,
+	checkpointStats,
+	localVault,
+	type PendingCheckpoint,
+	type PullOptions,
+	pullCheckpoint,
+	recordSink,
+	restoreNotice,
+	type SkipReason,
+	VaultError,
+} from "./checkpoint.ts";
+export { type LogEntry, ReplayError, type ReplayErrorCode, replayCommits } from "./commit-log.ts";
+export {
+	type Crossing,
+	type CrossingCounter,
+	type CrossingInfo,
+	type CrossingPoint,
+	crossingCounter,
+} from "./crossing.ts";
 export { type DirStoreOptions, dirStore } from "./dir-store.ts";
 export {
 	createGate,
@@ -11,12 +35,15 @@ export {
 	type Holdout,
 } from "./gate.ts";
 export {
+	type CallRecord,
 	type ConnectOptions,
 	connectHome,
 	type HomeHandle,
+	type HomeStatus,
 	type Ready,
 	RemoteError,
 } from "./host.ts";
+export { KEYS_EXTENSION, type KeyedRequest, requestKey } from "./keys.ts";
 export {
 	LaunchError,
 	type LaunchErrorCode,
@@ -37,7 +64,7 @@ export {
 	processLink,
 	streamLink,
 } from "./link.ts";
-export { EXIT_USAGE, runMain } from "./main.ts";
+export { EXIT_USAGE, type RunMainOptions, runMain } from "./main.ts";
 export {
 	type Catalog,
 	catalogOf,
@@ -48,6 +75,19 @@ export {
 	proxyModels,
 	serveModels,
 } from "./models.ts";
+export {
+	MoveError,
+	type MoveErrorCode,
+	type MoveOptions,
+	type MoveReceipt,
+	type MoveStep,
+	moveHome,
+	type Place,
+	type RecoverOptions,
+	recoverHome,
+	type StartRunner,
+} from "./move.ts";
+export { type LinesSync, type OutboxEntry, openOutbox } from "./outbox.ts";
 export {
 	type ConditionalStore,
 	type Holder,
@@ -61,7 +101,9 @@ export {
 	type TakeDetails,
 } from "./ownership.ts";
 export { checkHomeHands } from "./place.ts";
+export { type Recording, type RecordLine, type RecordSink, receiveRecords } from "./records.ts";
 export {
+	type CheckpointTaken,
 	type Home,
 	HomeError,
 	type HomeErrorCode,
@@ -70,6 +112,7 @@ export {
 	MOVE_ENTRY,
 	openHome,
 	type ResumeOrder,
+	type WrappedStore,
 } from "./run.ts";
 export {
 	createRunner,
@@ -79,13 +122,22 @@ export {
 	type RunnerOptions,
 	type WireError,
 } from "./runner.ts";
+export { admitsTool, type Shipped, shippingStorage } from "./shipping.ts";
+export { type BoxRunnerOptions, boxRunner, type RunnerProgram } from "./start.ts";
+export { type StopRunner, stopRunner } from "./stop.ts";
 export { checkpointStore, type Seal, StoreError, type StoreErrorCode, sealStore, verifyStore } from "./store.ts";
 export {
+	type ChangedReceipt,
+	changedEntries,
+	type Excluded,
+	excludedOf,
 	type Manifest,
 	type ManifestEntry,
 	type MoveFileOptions,
 	type MoveWorkspaceOptions,
 	manifestOf,
+	manifestSince,
+	moveChanged,
 	moveFile,
 	moveWorkspace,
 	type Pipe,

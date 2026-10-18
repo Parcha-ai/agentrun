@@ -25,7 +25,9 @@ const boxTool = process.env.DEMO_BOX_TOOL ? {
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       const made = await context!.boxes!.create({ maxLifetimeMs: 60_000, labels: { 'agentrun-demo': 'install' } }, ctx);
       if (!made.ok) throw made.error;
-      const ran = await made.value.exec([process.execPath, '-e', 'setTimeout(() => console.log("installed"), 400)'], undefined, ctx);
+      // When the demo plans to lose the install box, its first command WAITS UNTIL IT IS KILLED (no timer at all): the loss always lands mid-command, however slow the machine, and the second attempt's short command completes. Without a planned loss the command completes normally.
+      const losing = attempt === 1 && (spec.kills ?? []).some((kill: { target?: string }) => kill.target === 'tool');
+      const ran = await made.value.exec([process.execPath, '-e', losing ? 'setInterval(() => {}, 1000)' : `setTimeout(() => console.log("installed"), ${attempt === 1 ? 400 : 50})`], undefined, ctx);
       const done = ran.ok ? await finish(ran.value, undefined) : undefined;
       await made.value.destroy(ctx);
       if (done?.ok && done.value.exitCode === 0) return { attempts: attempt };
@@ -71,6 +73,7 @@ const leaking = process.env.DEMO_LEAK || process.env.DEMO_LEAK_STEPS ? {
   envProbe: async () => { const { spawnSync } = await import('node:child_process'); const seen = { inProcess: 'KILL_NONCE' in process.env, inCommand: /^KILL_NONCE=/m.test(spawnSync('env', { encoding: 'utf8' }).stdout) }; writeFileSync(join(process.env.DIR!, 'nonce-seen.json'), JSON.stringify(seen)); return { text: 'probed' }; },
   homeToken: async () => ({ text: (JSON.parse(readFileSync(authFile(), 'utf8')) as { credentials: { openai: { access: string } } }).credentials.openai.access }),
   rotate: async () => { const file = JSON.parse(readFileSync(authFile(), 'utf8')) as { credentials: { openai: { access: string } } }; file.credentials.openai.access = process.env.DEMO_ROTATE_TOKEN!; writeFileSync(authFile(), JSON.stringify(file)); return { text: 'rotated' }; },
+  rotate2: async () => { const file = JSON.parse(readFileSync(authFile(), 'utf8')) as { credentials: { openai: { access: string } } }; file.credentials.openai.access = process.env.DEMO_ROTATE_TOKEN_2!; writeFileSync(authFile(), JSON.stringify(file)); return { text: 'rotated again' }; },
 } : undefined;
 const leakSteps = (process.env.DEMO_LEAK_STEPS ?? 'leak').split(',').map((name) => ({ node: 'call', label: name, via: 'tool', tool: name, args: {}, out: 'Leaked', as: `${name}Out`, deadline_s: 30 }));
 const withLeak = leaking ? { ...job, workflow: { ...job.workflow, schemas: { ...job.workflow.schemas, Leaked: { type: 'object' } }, root: { ...job.workflow.root, steps: [(job.workflow.root as { steps: unknown[] }).steps[0], ...leakSteps, ...(job.workflow.root as { steps: unknown[] }).steps.slice(1)] } } } as unknown as typeof job : undefined;
@@ -79,7 +82,7 @@ const scripted = { ...fakes, ...(leaking ? { tools: { ...fakes.tools, ...leaking
 const sourcesFor = process.env.DEMO_SOURCES_ITEMS ? (input: Record<string, unknown>) => (JSON.parse(readFileSync(process.env.DEMO_SOURCES_ITEMS!, 'utf8')) as Array<{ id: string; url: string; bytes: number; sha256: string }>).filter((item) => item.id.startsWith(input.company === 'Beta Ltd' ? 'o-' : 'a-')) : undefined;
 // And a vision lane the entry must honor (`fakes.vision`) and a result hook (`result`): tests read the probe file and the recording's result.
 const probe = process.env.DEMO_VISION_PROBE ? (host: { deliver?: unknown }, running: { harness: unknown }, context: { input: unknown; place: { root: string; work: string } }) => { writeFileSync(join(process.env.DIR!, 'vision-called.json'), JSON.stringify({ hasHost: typeof host.deliver === 'function', harnessUndefinedAtBuild: running.harness === undefined, input: context.input, place: context.place })); return {}; } : undefined;
-const result = process.env.DEMO_RESULT ? (record: unknown, context: { keep(bytes: string, extension: string): string }) => ({ json: { format: 'agentrun.cited/1', title: 'The company', rows: [{ label: 'company', value: String((record as { company: string }).company), cites: [{ blob: context.keep(`a cited file${process.env.DEMO_LEAK ? ` ${process.env.DEMO_LEAK}` : ''}`, 'txt') }] }] }, title: 'A cited result' }) : undefined;
+const result = process.env.DEMO_RESULT ? (record: unknown, context: { keep(bytes: string, extension: string): string }) => ({ json: { format: 'agentrun.cited/1', title: 'The company', rows: [{ label: 'company', value: String((record as { company: string }).company) + (process.env.DEMO_RESULT_LEAK ? ` ${process.env.DEMO_RESULT_LEAK}` : ''), cites: [{ blob: context.keep(`a cited file${process.env.DEMO_LEAK ? ` ${process.env.DEMO_LEAK}` : ''}`, 'txt') }] }] }, title: 'A cited result' }) : undefined;
 // And live parts that write what the child saw: its environment's names and what its live vision was called with.
 const live = process.env.DEMO_LIVE_PROBE ? (context: { env: NodeJS.ProcessEnv; models: unknown }) => {
   writeFileSync(join(process.env.DIR!, 'models-seen.json'), JSON.stringify(context.models));

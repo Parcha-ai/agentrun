@@ -9,7 +9,9 @@ import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  DAYTONA_LIST_PRICES,
   daytonaHost,
+  daytonaUsdPerSecond,
   daytonaRest,
   DaytonaApiError,
   DaytonaHostError,
@@ -226,7 +228,7 @@ function shell(command: string, timeoutSec: number, cwd: string): Promise<ExecRe
 type Fault = Error | "landed-503" | "409-own" | "409-foreign";
 
 /** An in-memory Daytona: boxes start after `startAfterGets` reads; every call is recorded; faults are queued per call. */
-function fakeDaytona(o: { startAfterGets?: number; cwd?: string; writeFiles?: boolean } = {}) {
+function fakeDaytona(o: { startAfterGets?: number; cwd?: string; writeFiles?: boolean; size?: Pick<SandboxInfo, "cpu" | "gpu" | "memory" | "disk" | "createdAt"> } = {}) {
   const boxes = new Map<string, SandboxInfo & { deleted?: boolean; reads: number }>();
   const calls: { op: string; arg?: unknown }[] = [];
   const creates: CreateSandboxBody[] = [];
@@ -235,7 +237,7 @@ function fakeDaytona(o: { startAfterGets?: number; cwd?: string; writeFiles?: bo
   const faults = { create: [] as Fault[], get: [] as Error[], remove: [] as Error[], exec: [] as (Error | ExecResult)[], upload: [] as Error[] };
   let next = 1;
   const add = (body: CreateSandboxBody, labels = body.labels) => {
-    const box = { id: `sb-${next++}`, name: body.name, state: "creating", labels, target: body.target, reads: 0 };
+    const box = { id: `sb-${next++}`, name: body.name, state: "creating", labels, target: body.target, reads: 0, ...(o.size ?? {}) };
     boxes.set(box.id, box);
     return box;
   };
@@ -304,11 +306,11 @@ function fakeDaytona(o: { startAfterGets?: number; cwd?: string; writeFiles?: bo
 }
 
 /** A driver whose box is a scratch directory, its launcher this checkout's, its instance the fake one. */
-function world(codes = "hold", over: Partial<Parameters<typeof daytonaHost>[0]> = {}) {
+function world(codes = "hold", over: Partial<Parameters<typeof daytonaHost>[0]> = {}, fakeOptions: Parameters<typeof fakeDaytona>[0] = {}) {
   const d = scratch("pda-dt-");
   const box = join(d, "box");
   const out = join(d, "instance.jsonl");
-  const fake = fakeDaytona({ cwd: d });
+  const fake = fakeDaytona({ cwd: d, ...fakeOptions });
   const host = daytonaHost({
     client: fake.client,
     snapshot: "pda-runtime-test",
@@ -362,6 +364,92 @@ test("a launcher that starts nothing and gives no reason: the error carries its 
   });
 });
 
+test("a start's own environment reaches the instance over the driver's; one that sets PATH or PDA_HOLDER, or a bad name, is refused before a box is made", async () => {
+  const w = world();
+  const h = await w.host.start(REF, TOKEN, { attempt: 2, env: { PLAN: "p2" } });
+  const spec = JSON.parse(readFileSync(join(w.box, `${h.name}.json`), "utf8")) as LaunchSpec;
+  assert.equal(spec.env.PLAN, "p2");
+  assert.deepEqual(JSON.parse(spec.env.PDA_HOLDER), h);
+  const [first] = await waitFor("the instance", () => (w.lines().length ? w.lines() : null));
+  assert.ok(first.envKeys.includes("PLAN"));
+  await w.host.stop(h);
+  const creates = w.creates.length;
+  assert.equal(spec.env.PATH, undefined, "the launcher's own PATH");
+  for (const bad of [{ "A=B": "x" }, { PATH: "/elsewhere" }, { PDA_HOLDER: "{}" }] as Record<string, string>[]) {
+    await assert.rejects(w.host.start(REF, TOKEN, { attempt: 3, env: bad }), (e: unknown) => e instanceof DaytonaHostError && e.code === "INVALID_ARGUMENT", JSON.stringify(bad));
+  }
+  assert.equal(w.creates.length, creates);
+});
+
+test("box: a receipt of each box the driver made: its size, when it was made and ended, priced at Daytona's published list price with that page and the date it was read", async () => {
+  const w = world("hold", {}, { size: { cpu: 2, memory: 4, disk: 10, gpu: 0, createdAt: "2026-10-16T09:00:00.000Z" } });
+  const h = await w.host.start(REF, TOKEN);
+  assert.deepEqual(w.host.box!(h), {
+    provider: "daytona",
+    kind: "sandbox 2 vCPU, 4 GiB memory, 10 GiB disk",
+    from: "2026-10-16T09:00:00.000Z",
+    to: null,
+    usdPerSecond: (2 * 0.0504 + 4 * 0.0162 + 5 * 0.000108) / 3600,
+    source: "https://www.daytona.io/pricing",
+    priced: "2026-10-16",
+  });
+  assert.ok(!JSON.stringify(w.host.box!(h)).includes(String(h.sandboxId)), "no field holds the sandbox's id");
+  assert.equal(w.host.box!({ ...h, fleet: "other" }), null, "another fleet's handle is not this driver's");
+  await w.host.kill(h);
+  await stopLaunch(w.box, String(h.name), 1_000);
+  const ended = w.host.box!(h)!;
+  assert.ok(ended.to !== null && Date.parse(ended.to) >= Date.parse(ended.from), "ended when the driver deleted it");
+
+  // A GPU box: the page prices GPUs per model, which the driver does not map; no price at all, never 0.
+  const g = world("hold", {}, { size: { cpu: 4, memory: 16, disk: 50, gpu: 1, createdAt: "2026-10-16T09:00:00.000Z" } });
+  const gh = await g.host.start(REF, TOKEN);
+  const gpu = g.host.box!(gh)!;
+  assert.deepEqual(Object.keys(gpu).sort(), ["from", "kind", "provider", "to"], "no usdPerSecond, source or priced");
+  assert.equal(gpu.kind, "sandbox 4 vCPU, 16 GiB memory, 50 GiB disk, 1 GPU");
+  await g.host.stop(gh);
+});
+
+test("daytonaUsdPerSecond: the list price from a box's size (the first 5 GiB of disk free); none without a size, or for a box with a GPU, which the page prices per model", () => {
+  const p = DAYTONA_LIST_PRICES;
+  assert.equal(daytonaUsdPerSecond({ cpu: 1, memory: 1, disk: 3 }), (p.vcpuPerHour + p.memoryGiBPerHour) / 3600);
+  assert.equal(daytonaUsdPerSecond({ cpu: 4, memory: 8, disk: 20 }), (4 * p.vcpuPerHour + 8 * p.memoryGiBPerHour + 15 * p.diskGiBPerHour) / 3600);
+  assert.equal(daytonaUsdPerSecond({}), null);
+  assert.equal(daytonaUsdPerSecond({ cpu: 2, memory: 4, disk: 10, gpu: 1 }), null);
+  assert.deepEqual([p.page, p.readOn], ["https://www.daytona.io/pricing", "2026-10-16"], "a price never travels without its page and the date it was read");
+});
+
+test("kill: the box is deleted at once, with no launcher stop and no drain; another fleet's box and a gone one are no-ops; a refused delete powers the box off first; a box kill", async () => {
+  const live = (w: ReturnType<typeof world>) => [...w.boxes.values()].filter((b) => !b.deleted).length;
+  const w = world();
+  assert.equal(w.host.kills, "box");
+  const h = await w.host.start(REF, TOKEN);
+  const before = w.calls.length;
+  const execsBefore = w.execs.length;
+  await w.host.kill(h);
+  assert.deepEqual(w.calls.slice(before).map((c) => c.op), ["get", "remove"], "read to confirm the fleet, then DELETE");
+  assert.equal(w.execs.length, execsBefore, "no launcher stop ran in the box");
+  assert.equal(live(w), 0);
+  // The fake's box is a directory of this machine: a real DELETE takes its processes with it, so the test does that.
+  await stopLaunch(w.box, String(h.name), 1_000);
+  const n = w.calls.length;
+  await w.host.kill(h); // gone
+  assert.deepEqual(w.calls.slice(n).map((c) => c.op), ["get"]);
+  const other = world();
+  const o = await other.host.start(REF, TOKEN);
+  other.boxes.get(String(o.sandboxId))!.labels = { [LABEL_FLEET]: "someone-else" };
+  await other.host.kill(o);
+  assert.equal(live(other), 1, "another fleet's box is never deleted");
+  other.boxes.get(String(o.sandboxId))!.labels = { [LABEL_FLEET]: "p9t" };
+  await other.host.stop(o);
+  const refused = world();
+  const r = await refused.host.start(REF, TOKEN);
+  refused.faults.remove.push(new DaytonaApiError(409, "Sandbox state change in progress"));
+  await refused.host.kill(r);
+  assert.deepEqual(refused.calls.slice(-3).map((c) => c.op), ["remove", "stop", "remove"]);
+  assert.equal(live(refused), 0);
+  await stopLaunch(refused.box, String(r.name), 1_000);
+});
+
 test("start: one labeled box that deletes itself on stop and dies at its TTL; the token only in an upload into the root-only directory; the instance gets it on stdin", async () => {
   const prev = process.env.DAYTONA_API_KEY;
   process.env.DAYTONA_API_KEY = DAYTONA_KEY_SENTINEL;
@@ -411,12 +499,12 @@ test("start: one labeled box that deletes itself on stop and dies at its TTL; th
   }
 });
 
-test("restart in place: a non-terminal exit restarts the instance after 1 s with an empty stdin (it reuses its live mount)", async () => {
+test("restart in place: a non-terminal exit restarts the instance after 1 s with the attempt's token again, so one whose mount went with it can mount again", async () => {
   const w = world("3,hold");
   const h = await w.host.start(REF, TOKEN);
   const lines = await waitFor("two incarnations", () => (w.lines().length >= 2 ? w.lines() : null), 15_000);
   assert.equal(lines[0].token, TOKEN);
-  assert.equal(lines[1].token, "", "only the first incarnation gets the token");
+  assert.equal(lines[1].token, TOKEN, "every incarnation of the attempt gets its token");
   // The launcher records a spawn after the child's spawn event, so the second line can come first.
   const state = await waitFor("the launcher's record of the second spawn", () => {
     const s = readState(w.box, String(h.name));
