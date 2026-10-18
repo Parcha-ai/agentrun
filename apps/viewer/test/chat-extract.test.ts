@@ -30,18 +30,65 @@ const referenceJob = join(here, '..', 'recordings', 'reference-job');
 const hearAndFind = join(here, 'fixtures', 'chat-hear-and-find');
 const artifact = join(here, 'fixtures', 'chat-artifact');
 
-test('a run is its recorded conversation: the user message as recorded, then one card per tool call', async () => {
+/** The first stored entry of `kind`, edited in place. */
+const editFirst = (kind: string, change: (data: { model: Record<string, Json>[] }) => void) => (events: string) => {
+  let done = false;
+  return events.split('\n').map((text) => {
+    if (done || !text.trim()) return text;
+    const line = JSON.parse(text) as { channel: string; kind: string; data: { model: Record<string, Json>[] } };
+    if (line.channel !== 'durable' || line.kind !== kind) return text;
+    change(line.data);
+    done = true;
+    return JSON.stringify(line);
+  }).join('\n');
+};
+
+test("a run is its input as given, then its recorded conversation: the host's prompt is no entry, one card per tool call", async () => {
   const m = await model(referenceJob);
   const { recording } = opened(referenceJob);
+  assert.deepEqual(m.input, { fields: [{ name: 'company', value: 'Acme Ltd' }] });
   assert.equal(m.threads.length, 1);
-  const user = items(m)[0];
-  assert.equal(user?.kind, 'user');
-  const recorded = recording.lines.find((line) => line.kind === 'pi.user')!;
-  assert.equal((user as { text: string }).text, ((recorded.data as { model: { content: string }[] }).model[0]!.content));
+  const prompt = (recording.lines.find((line) => line.kind === 'pi.user')!.data as { model: { content: string }[] }).model[0]!.content;
+  assert.ok(items(m).every((item) => item.kind !== 'user' && !('text' in item && item.text === prompt)));
   const called = recording.lines.filter((line) => line.kind === 'tool_execution_start').map((line) => (line.data as { toolName: string }).toolName);
   assert.deepEqual(tools(m).map((card) => card.tool), called);
   for (const card of tools(m)) assert.ok(card.title.startsWith(`${card.tool}`), card.title);
-  assert.equal(m.answer, undefined, 'a result that is not a cited answer is not drawn as one');
+  assert.equal(m.title, recording.manifest.title, 'an input with no question titles nothing; the recording does');
+});
+
+test('a submitted result record is the answer: one row per field, its evidence paths as cites on the card that made them', async () => {
+  const m = await model(referenceJob);
+  assert.equal(m.answer?.from, 'record');
+  const rows = Object.fromEntries((m.answer?.rows ?? []).map((row) => [row.label, row]));
+  assert.equal(rows.company?.text, 'Acme Ltd');
+  assert.equal(rows.supported?.text, 'yes');
+  assert.ok(rows.answer?.text);
+  const cites = rows.citations?.cites ?? [];
+  assert.equal(cites.length, 2);
+  assert.ok(cites.some((cite) => cite.item && tools(m).some((card) => card.id === cite.item)), 'the look cited is found on its card');
+});
+
+test('with no result, the answer is the final assistant text', async () => {
+  const { recording, readJson } = opened(referenceJob, editFirst('pi.assistant', (data) => { (data.model[0]!.content as Json[]).push({ type: 'text', text: 'Incorporated on 2019-03-04.' }); }));
+  delete (recording.manifest as { result?: unknown }).result;
+  const m = await extractChat(recording, readJson);
+  assert.equal(m.answer?.from, 'text');
+  assert.equal(m.answer?.rows[0]?.text, 'Incorporated on 2019-03-04.');
+});
+
+test("a failed call's line is its error's first line, not the markup around it", async () => {
+  const failed = (text: string) => editFirst('pi.tool-result', (data) => { data.model[0]!.isError = true; data.model[0]!.content = [{ type: 'text', text }]; });
+  const wrapped = await model(referenceJob, failed('<harness>\n[error] Command exited with code 1\n</harness>'));
+  assert.equal(tools(wrapped)[0]?.failed, true);
+  assert.equal(tools(wrapped)[0]?.takeaway, '[error] Command exited with code 1');
+  const record = await model(referenceJob, failed(JSON.stringify({ ok: false, error: { kind: 'script', message: 'not a function\nat line 3' } })));
+  assert.equal(tools(record)[0]?.takeaway, 'not a function');
+});
+
+test("the title is the artifact's, else the first line of the input's question", async () => {
+  assert.equal((await model(artifact)).title, 'A two-picture report');
+  const asked = await model(referenceJob, (events) => events.replace('"input":{"company":"Acme Ltd"}', '"input":{"question":"When was Acme incorporated?\\nCite both.","company":"Acme Ltd"}'));
+  assert.equal(asked.title, 'When was Acme incorporated?');
 });
 
 test('the timeline is spans from the events: LLM calls by model, tool calls by name, inner calls under their tool', async () => {
@@ -77,17 +124,7 @@ test('every label comes from an event field: two different runs, the same kinds 
 test("thinking is the run's own: none recorded means none shown; a recorded part is shown where it was written", async () => {
   assert.equal(items(await model(referenceJob)).filter((item) => item.kind === 'thinking').length, 0);
   // One thinking part written into the first stored assistant entry, before its tool call.
-  const withThinking = await model(referenceJob, (events) => {
-    let done = false;
-    return events.split('\n').map((text) => {
-      if (done || !text.trim()) return text;
-      const line = JSON.parse(text) as { channel: string; kind: string; data: { model: { content: Json[] }[] } };
-      if (line.channel !== 'durable' || line.kind !== 'pi.assistant') return text;
-      line.data.model[0]!.content.unshift({ type: 'thinking', thinking: 'Open the registry page first.' });
-      done = true;
-      return JSON.stringify(line);
-    }).join('\n');
-  });
+  const withThinking = await model(referenceJob, editFirst('pi.assistant', (data) => { (data.model[0]!.content as Json[]).unshift({ type: 'thinking', thinking: 'Open the registry page first.' }); }));
   const thinking = items(withThinking).filter((item) => item.kind === 'thinking');
   assert.equal(thinking.length, 1);
   assert.equal((thinking[0] as { text: string }).text, 'Open the registry page first.');

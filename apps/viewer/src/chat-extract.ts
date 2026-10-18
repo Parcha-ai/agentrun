@@ -27,7 +27,28 @@ export function chatCiteHref(fragment: string, file: string, fallback?: string):
 }
 
 const chatClip = (text: string, size: number) => (text.length > size ? `${text.slice(0, size - 1)}…` : text);
-const chatFirstLine = (text: string) => text.split('\n').map((line) => line.trim()).find((line) => line !== '') ?? '';
+const chatFirstLine = (text: string) => text.split('\n').map((line) => line.trim()).find((line) => line !== '' && !/^<\/?[\w-]+>$/.test(line)) ?? '';
+
+/** A value in plain form: a string as written, a yes-or-no in words, a list of scalars joined, a record as compact JSON. */
+function chatPlain(value: Json | undefined): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'boolean') return value ? 'yes' : 'no';
+  if (Array.isArray(value) && value.every((each) => typeof each !== 'object' || each === null)) return value.map(String).join(', ');
+  return typeof value === 'object' ? JSON.stringify(value) : String(value);
+}
+
+/** A failed result's first line: a JSON error record's message, else the first line of its words. */
+function chatErrorLine(text: string): string {
+  const raw = text.trim();
+  if (raw.startsWith('{')) {
+    try {
+      const parsed = chatObj(JSON.parse(raw) as Json);
+      const said = chatStr(chatObj(parsed?.error)?.message) ?? chatStr(parsed?.error) ?? chatStr(parsed?.message);
+      if (said) return chatFirstLine(said);
+    } catch { /* words */ }
+  }
+  return chatFirstLine(raw);
+}
 
 /** A tool call in plain form: its name, the file or URL it acted on, then its short arguments as key=value; free text
  *  (an ask, a prompt) stays out of the title. One string argument alone is shown by its first line. */
@@ -110,6 +131,7 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   const toolItems = new Map<string, Extract<ChatItem, { kind: 'tool' }>>();
   const assistantItems = new Map<string, { id: string; t: number }[]>();
   const seen = new Set<string>();
+  const prompted = new Set<string>();
   let counter = 0;
   const threadOf = (conversation: string, t: number): ChatThread => {
     let thread = threads.get(conversation);
@@ -138,6 +160,7 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
       const m = chatObj(message);
       if (!m) continue;
       if (line.kind === 'pi.user') {
+        if (!prompted.has(conversation)) { prompted.add(conversation); continue; }
         const text = chatText(m.content);
         if (text.trim()) thread.items.push({ kind: 'user', id: `item-${++counter}`, text, t: line.t });
       } else if (line.kind === 'pi.assistant') {
@@ -163,9 +186,9 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
       } else {
         const item = toolItems.get(chatStr(m.toolCallId) ?? '');
         if (!item) continue;
-        item.takeaway = chatClip(chatFirstLine(chatText(m.content)), 220);
-        item.media = (line.blobs ?? []).filter((sha) => (recording.blobType(sha) ?? '').startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(recording.blobUrl(sha) ?? ''));
         if (m.isError === true) item.failed = true;
+        item.takeaway = chatClip(item.failed ? chatErrorLine(chatText(m.content)) : chatFirstLine(chatText(m.content)), 220);
+        item.media = (line.blobs ?? []).filter((sha) => (recording.blobType(sha) ?? '').startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(recording.blobUrl(sha) ?? ''));
       }
     }
   }
@@ -209,12 +232,15 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     toolSpans.push({ span, conversation: chatId(line.conv), callId });
   }
   const lookItem = new Map<string, string>();
-  // What a look filed about itself (its fragment, the image it was shown), by its key.
+  // What a look filed about itself (its fragment, the image it was shown), by its key; and its key by its receipt.
   const lookFacts = new Map<string, Obj>();
+  const receiptLook = new Map<string, string>();
   for (const line of live('LookEvent')) {
     const facts = chatObj(chatObj(chatObj(line.data)?.record)?.facts);
     const key = chatStr(facts?.key);
     if (facts && key && !lookFacts.has(key)) lookFacts.set(key, facts);
+    const receipt = chatStr(chatObj(line.data)?.receipt);
+    if (key && receipt) receiptLook.set(receipt, key);
   }
   for (const line of live('LookEvent')) {
     const d = chatObj(line.data);
@@ -279,10 +305,23 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     if (only?.takeaway) item.takeaway = only.takeaway;
   }
 
-  // The run's cited answer, each cite on the look (and the card) that made it.
+  // The run's answer: its cited result, each cite on the look (and the card) that made it; else the result record it
+  // submitted, a field of evidence paths as its cites; else its final assistant text.
   let answer: ChatModel['answer'];
   if (manifest.result?.blob) {
     const result = chatObj(await readJson(manifest.result.blob));
+    if (result && result.format !== 'agentrun.cited/1') {
+      const record = chatObj(result.record) ?? result;
+      const evidence = new Set(chatList(result.evidence).map((each) => chatStr(each)).filter((each): each is string => !!each));
+      const isCites = (value: Json) => Array.isArray(value) && value.length > 0 && value.every((each) => typeof each === 'string' && evidence.has(each));
+      const rows: ChatRow[] = Object.entries(record).map(([name, value]) => (isCites(value)
+        ? { label: name, text: '', cites: (value as string[]).map((href) => {
+          const look = receiptLook.get(href);
+          return { href, ...(look && sources[look] ? { look } : {}), ...(look && lookItem.has(look) ? { item: lookItem.get(look)! } : {}) };
+        }) }
+        : { label: name, text: chatPlain(value), cites: [] }));
+      if (rows.length) answer = { title: manifest.result.title ?? manifest.title, rows, from: 'record' };
+    }
     if (result?.format === 'agentrun.cited/1' && Array.isArray(result.rows)) {
       const rows: ChatRow[] = result.rows.map((row) => {
         const r = chatObj(row) ?? {};
@@ -297,8 +336,12 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
           }),
         };
       });
-      answer = { title: chatStr(result.title) ?? manifest.result.title ?? manifest.title, rows };
+      answer = { title: chatStr(result.title) ?? manifest.result.title ?? manifest.title, rows, from: 'cited' };
     }
+  }
+  if (!answer) {
+    const last = ordered.flatMap((thread) => thread.items).filter((item) => item.kind === 'assistant').sort((a, b) => (a.t ?? 0) - (b.t ?? 0)).at(-1);
+    if (last) answer = { title: manifest.title, rows: [{ label: '', text: last.text, cites: [] }], from: 'text' };
   }
 
   // The decisive look of each call: the one the answer cites, else the one scored highest.
@@ -314,8 +357,14 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   const times = lines.map((line) => line.t).filter((t) => typeof t === 'number' && t > 0);
   const resultLine = lines.findLast((line) => line.kind === 'result');
   const artifact = chatObj((manifest as { artifact?: Json }).artifact);
+  const given = chatObj(lines.find((line) => line.channel === 'durable' && line.kind === 'agentrun.workflow')?.data)?.input;
+  const inputValue = chatObj(given)?.input;
+  const input: ChatModel['input'] = typeof inputValue === 'string' ? { text: inputValue }
+    : chatObj(inputValue) ? { fields: Object.entries(chatObj(inputValue)!).map(([name, value]) => ({ name, value: chatPlain(value) })) } : undefined;
+  const question = typeof inputValue === 'string' ? inputValue : chatStr(chatObj(inputValue)?.question);
   return {
-    title: answer?.title ?? manifest.result?.title ?? manifest.title,
+    title: chatStr(artifact?.title) ?? (question?.trim() ? chatClip(chatFirstLine(question), 140) : manifest.title),
+    ...(input ? { input } : {}),
     threads: ordered,
     spans: times.length ? spans : [],
     sources,

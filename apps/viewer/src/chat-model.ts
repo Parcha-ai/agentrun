@@ -25,7 +25,8 @@ export type ChatItem =
     t1?: number;
   };
 
-/** One recorded conversation: an agent node's, named by its node; a run of one conversation has one thread. */
+/** One recorded conversation: an agent node's, named by its node; a run of one conversation has one thread. Its first
+ *  user entry is the prompt the host composed from the node's input, so it is not an item. */
 export type ChatThread = { id: string; label: string; items: ChatItem[]; t0?: number; t1?: number };
 
 /** A span on the session timeline, from the events: a workflow node, an LLM call, a tool call, or a model call made
@@ -59,14 +60,21 @@ export type ChatRow = { label: string; text: string; cites: { href: string; look
 /** The agent's own artifact (manifest.artifact, draft 41): its entry and every file by its SHA-256. */
 export type ChatArtifact = { title: string; entry: string; files: Record<string, string> };
 
+/** The run's input as given: a string input as its text, a record as its fields in plain form. */
+export type ChatInput = { text?: string; fields?: { name: string; value: string }[] };
+
 export type ChatModel = {
+  /** The artifact's title, else the first line of the input's question, else the recording's title. */
   title: string;
+  input?: ChatInput;
   /** In the order they began; the first is open, the rest are folded threads. */
   threads: ChatThread[];
   /** Empty when the recording has no times for anything; then the timeline does not show. */
   spans: ChatSpan[];
   sources: Record<string, ChatSource>;
-  answer?: { title: string; rows: ChatRow[] };
+  /** cited: the run's cited result. record: a submitted result record, one row per field, a field of evidence paths
+   *  as cites. text: no result, the run's final assistant text. */
+  answer?: { title: string; rows: ChatRow[]; from: 'cited' | 'record' | 'text' };
   artifact?: ChatArtifact;
   durationMs?: number;
   answeredAt?: number;
