@@ -114,4 +114,8 @@ if (process.env.PI_TRANSPORT_LIVE_ARCHIL === "1") {
 			expect(left.value, `left behind: ${JSON.stringify(left.value)}`).toEqual([]);
 		});
 	});
+} else {
+	describe.skip("archil exec boxes (set PI_TRANSPORT_LIVE_ARCHIL=1)", () => {
+		it("runs the box conformance suite on a new Archil disk", () => {});
+	});
 }
