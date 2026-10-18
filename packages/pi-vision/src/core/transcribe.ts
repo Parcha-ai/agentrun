@@ -13,6 +13,7 @@ import { sniffKind, SNIFF_BYTES, type Kind } from "./kinds.js";
 import { once, throwMiss } from "./media.js";
 import { ProviderMiss } from "./derive.js";
 import { firstLine, type Miss } from "./misses.js";
+import { lookTiming } from "./timing.js";
 import type { CodeGlobal } from "./see.js";
 
 /** A word and where it is, in seconds from the start of the file. */
@@ -88,7 +89,7 @@ export async function transcribe(input: unknown, env: VisionEnv | undefined, cal
   const plan = [heard?.provider ?? null, request.language ?? null];
   const record = (body: string, facts: Partial<LookRecord["facts"]> = {}): LookRecord => ({
     tool: "transcribe", args: { path: fragment, model, native: false, ...(heard ? { via: heard.provider } : {}) }, status: "ok", body,
-    facts: { sha256, kind, fragment: "", key: lookKey({ sha256, fragment: "", ask: "transcribe", model, plan }), ...(heard ? { provider: heard.provider } : {}), ...facts },
+    facts: { sha256, kind, fragment: "", key: lookKey({ sha256, fragment: "", ask: "transcribe", model, plan }), ...(heard ? { provider: heard.provider } : {}), ...lookTiming(call), ...facts },
   });
   const fail = (cause: Miss, spent: Partial<LookRecord["facts"]> = { cost_usd: 0 }): Promise<never> => throwMiss(filing, VISION_TRANSCRIBE.name, call, cause, record("", spent));
   if (!heard) return fail({ code: "no_vision_route", reason: "this host gives vision.transcribe no speech-to-text model" });
@@ -111,9 +112,12 @@ export async function transcribe(input: unknown, env: VisionEnv | undefined, cal
   if (allowed !== true) return fail({ code: "refused", reason: allowed });
 
   const at = record("");
+  // When this call's request began; none when the answer is read back.
+  let startedAt: number | undefined;
   const ask = async (): Promise<Heard> => {
     // Nothing runs between a paid answer and its keeping: the length is found before the request.
     const probed = heard.usdPerMinute === undefined ? undefined : await durationOf(env, request.path, call.signal);
+    startedAt = Date.now();
     const t = await heard.transcribe({ bytes: read.value, mimeType: sniffed.mimeType ?? "application/octet-stream", name: request.path.split("/").pop()! }, request.language ? { language: request.language } : {}, call.signal);
     const seconds = t.durationS ?? probed;
     const costUsd = heard.usdPerMinute === undefined || seconds === undefined ? null : Math.round((seconds / 60) * heard.usdPerMinute * 1e6) / 1e6;
@@ -129,13 +133,13 @@ export async function transcribe(input: unknown, env: VisionEnv | undefined, cal
       if (call.signal?.aborted) throw error;
       if (error instanceof ProviderMiss) return fail({ code: error.code, reason: error.message, model });
       // A request that threw may still have been billed: its price is not known, so none is filed.
-      return fail({ code: "look_failed", reason: `${heard.provider} failed: ${firstLine(error)}`, model }, {});
+      return fail({ code: "look_failed", reason: `${heard.provider} failed: ${firstLine(error)}`, model }, lookTiming(call, startedAt));
     }
     if (answer.words.length === 0 && answer.text.trim() !== "") {
-      const spent = { cost_usd: answer.costUsd, ...(readBack ? { kept: true as const } : {}) };
+      const spent = { cost_usd: answer.costUsd, ...(readBack ? { kept: true as const } : {}), ...lookTiming(call, startedAt) };
       return fail({ code: "unsupported", reason: `${answer.provider} ${answer.model} answered without word times; vision.transcribe never gives words without their seconds, so name a model that times its words`, model: answer.model }, spent);
     }
-    const filed = { ...at, args: { ...at.args, model: answer.model }, body: rows(answer.words), facts: { ...at.facts, cost_usd: answer.costUsd, ...(readBack ? { kept: true as const } : {}) } };
+    const filed = { ...at, args: { ...at.args, model: answer.model }, body: rows(answer.words), facts: { ...at.facts, cost_usd: answer.costUsd, ...(readBack ? { kept: true as const } : {}), ...lookTiming(call, startedAt) } };
     const receipt = await fileTold(call.memo, at.facts.key, filing, (to, told) => fileLook(to, VISION_TRANSCRIBE.name, filed, { usage: null, costUsd: answer.costUsd, ...(told ? { kept: true } : {}) }));
     return { answer, readBack, receipt };
   });

@@ -53,6 +53,10 @@ export type CallContext = {
   readonly callId: string;
   /** The tool the model called, as the guard's looks and misses name it in rows and receipts. Absent: `read`. */
   readonly tool?: string;
+  /** The id of the tool call this call serves, as the host's timeline names it. Every look made under it files it as
+   *  `parentToolCallId`, so a timeline draws the look under that call. A look made under `vision.see`, `vision.judge` or
+   *  `vision.transcribe` in a script is under the tool call that ran the script. Absent: a look files none. */
+  readonly toolCallId?: string;
   readonly model: unknown;
   readonly signal: AbortSignal | undefined;
   /** The value kept under `key`, else `compute`'s, kept before it is returned: a call cut by a crash and run again, or

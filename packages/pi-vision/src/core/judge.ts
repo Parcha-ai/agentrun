@@ -14,6 +14,7 @@ import { fitImage, type FitLimits, type PixelSize } from "./image.js";
 import { JEV_IMAGE_BYTES, JEV_MAX_EDGE, JEV_MIN_EDGE, JEV_MODEL, JEV_REQUEST_BYTES } from "./limits.js";
 import { aboutMedium, AS_IS, gatherMedia, namesMedia, once, requestedAbout, throwMiss, type About, type MediaMiss, type MediaRequest } from "./media.js";
 import { firstLine } from "./misses.js";
+import { lookTiming } from "./timing.js";
 import type { CodeGlobal } from "./see.js";
 
 /** A question as TypeSafe's API takes it. A `box` question's `image` is the index of the image it finds a thing in
@@ -93,7 +94,7 @@ export async function judge(input: unknown, env: VisionEnv | undefined, call: Ca
     const on = items.length ? undefined : about;
     const sha256 = on ? on.sha256 : blocksSha256([...items, ...examples.map(([, item]) => item)]);
     const key = lookKey({ sha256, fragment: on ? on.fragment : items.map((item) => item.fragment).join("\n"), model, plan: [request.questions, request.state ?? null, examples.map(([ref]) => ref)] });
-    return { tool: "look", args: { path: on ? on.path : [...new Set(items.map((item) => item.fragment))].join(", "), ask: JSON.stringify(request.questions), model: answered, native: false, via: "jev" }, status: "ok", body, facts: { sha256, kind: on ? on.kind : "image", fragment: on ? on.fragment : "", key, shown_blocks: items.length + examples.length, ...facts } };
+    return { tool: "look", args: { path: on ? on.path : [...new Set(items.map((item) => item.fragment))].join(", "), ask: JSON.stringify(request.questions), model: answered, native: false, via: "jev" }, status: "ok", body, facts: { sha256, kind: on ? on.kind : "image", fragment: on ? on.fragment : "", key, shown_blocks: items.length + examples.length, ...lookTiming(call), ...facts } };
   };
   const fail = ({ about, ...cause }: MediaMiss, spent: Partial<LookRecord["facts"]> = { tokens_in: 0, tokens_out: 0, cost_usd: 0 }): Promise<never> =>
     throwMiss(filing, VISION_JUDGE.name, call, cause, record(cause.model ?? "no vision route", "", spent, about));
@@ -122,10 +123,13 @@ export async function judge(input: unknown, env: VisionEnv | undefined, call: Ca
     const box = object(answer) && answer.type === "box" && object(answer.box) ? boxFragment(items[request.questions[name]?.image ?? 0]!, answer.box as Box) : undefined;
     return [name, box ? { ...(answer as Record<string, Json>), fragment: box } : answer];
   }));
+  // When this call's request to Jev began; none when the answer is read back.
+  let startedAt: number | undefined;
   const ask = async (): Promise<JevResult> => {
     const questions = Object.fromEntries(Object.entries(request.questions).map(([name, { image: _image, ...question }]) => [name, question]));
     const state = { ...request.state, images: items.map((item, i) => ({ source: item.fragment, image: reference(i) })) };
     const assets = Object.fromEntries([...items.map((item, i) => [reference(i), item] as const), ...examples].map(([ref, item]) => [ref, { bytes: item.bytes, mime: item.mime }]));
+    startedAt = Date.now();
     const result = await jev.judge({ label: VISION_JUDGE.name, kind: "judge", state, questions, assets, model, ...(call.signal ? { signal: call.signal } : {}) });
     return { answers: result.answers, model: result.model ?? null, usage: result.usage ?? null, cost_usd: result.cost_usd ?? null };
   };
@@ -135,15 +139,17 @@ export async function judge(input: unknown, env: VisionEnv | undefined, call: Ca
       ({ answer: result, readBack } = await keptAnswer<JevResult>(call.memo, at.facts.key, ask));
     } catch (error) {
       if (call.signal?.aborted) throw error;
-      // A request that threw may still have been billed: its price is not known, so none is filed. A box asked of a
-      // model that has none is refused by the port before any request.
+      // A request that threw may still have been billed: its price is not known, so none is filed. A request the port
+      // refused before it sent anything (a box asked of a model that has none, a state over the host's limit, an image it
+      // does not take) is marked by its request diagnostic: it cost nothing and began no call.
       const { status, requestDiagnostic } = (error ?? {}) as { status?: unknown; requestDiagnostic?: { reason?: unknown } };
+      const refused = typeof requestDiagnostic?.reason === "string";
       const code = requestDiagnostic?.reason === "unsupported_model" ? "unsupported" : status === 413 ? "over_budget" : "look_failed";
-      return fail({ code, reason: `Jev failed: ${firstLine(error)}`, model }, code === "unsupported" ? undefined : {});
+      return fail({ code, reason: `Jev failed: ${firstLine(error)}`, model }, code === "unsupported" || refused ? undefined : lookTiming(call, startedAt));
     }
     const costUsd = result.cost_usd ?? null;
     const usage: Usage | null = result.usage ? { input: result.usage.input_tokens, output: result.usage.output_tokens, cacheRead: 0, cacheWrite: 0, totalTokens: result.usage.input_tokens + result.usage.output_tokens, cost: { input: costUsd ?? 0, output: 0, cacheRead: 0, cacheWrite: 0, total: costUsd ?? 0 } } : null;
-    const facts = { ...(result.usage ? { tokens_in: result.usage.input_tokens, tokens_out: result.usage.output_tokens } : {}), cost_usd: costUsd, ...(readBack ? { kept: true as const } : {}) };
+    const facts = { ...(result.usage ? { tokens_in: result.usage.input_tokens, tokens_out: result.usage.output_tokens } : {}), cost_usd: costUsd, ...(readBack ? { kept: true as const } : {}), ...lookTiming(call, startedAt) };
     const filed = { ...at, args: { ...at.args, model: result.model ?? model }, body: JSON.stringify(mapped(result)), facts: { ...at.facts, ...facts } };
     const receipt = await fileTold(call.memo, at.facts.key, filing, (to, told) => fileLook(to, VISION_JUDGE.name, filed, { usage, costUsd, ...(told ? { kept: true } : {}) }));
     return { result, readBack, receipt, costUsd };
