@@ -59,13 +59,13 @@ test('the agent\'s instructions carry the question\'s place, the functions, the 
 });
 
 test('Jev goes through the gateway\'s /typesafe when a gateway is set, else TYPESAFE_BASE_URL, else TypeSafe\'s own address', () => {
-  const key = { TYPESAFE_API_KEY: 'placeholder' };
-  assert.equal(jevOptionsOf({ ...key, VIDEO_MODEL_BASE_URL: 'https://gateway.invalid/v1', VIDEO_MODEL_API_KEY: 'placeholder' }).baseURL, 'https://gateway.invalid/typesafe');
+  const key = { TYPESAFE_API_KEY: 'not-a-secret' };
+  assert.equal(jevOptionsOf({ ...key, VIDEO_MODEL_BASE_URL: 'https://gateway.invalid/v1', VIDEO_MODEL_API_KEY: 'not-a-secret' }).baseURL, 'https://gateway.invalid/typesafe');
   assert.equal(jevOptionsOf({ ...key, VIDEO_MODEL_BASE_URL: 'https://gateway.invalid/v1/' }).baseURL, 'https://gateway.invalid/typesafe');
   assert.equal(jevOptionsOf({ ...key, VIDEO_MODEL_BASE_URL: 'https://gateway.invalid/v1', TYPESAFE_BASE_URL: 'https://proxy.invalid' }).baseURL, 'https://gateway.invalid/typesafe', 'the gateway wins');
   assert.equal(jevOptionsOf({ ...key, TYPESAFE_BASE_URL: 'https://proxy.invalid' }).baseURL, 'https://proxy.invalid');
   assert.equal('baseURL' in jevOptionsOf(key), false, 'no gateway and no base: the SDK\'s own address');
-  assert.equal(jevOptionsOf(key).apiKey, 'placeholder');
+  assert.equal(jevOptionsOf(key).apiKey, 'not-a-secret');
   assert.ok(options.spec.keys.some((entry) => entry.env === 'TYPESAFE_BASE_URL'), 'declared, so a live child gets it');
 });
 
