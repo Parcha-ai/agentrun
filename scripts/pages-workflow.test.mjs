@@ -58,6 +58,9 @@ const gate = (t, recordings) => {
   // Both import the one scanner, which lives in the reference example.
   mkdirSync(join(dir, 'examples/reference'), { recursive: true });
   cpSync(join(root, 'examples/reference/scan.ts'), join(dir, 'examples/reference/scan.ts'));
+  // The validator checks a box's receipt by the viewer's own rule, which it imports from the viewer's source.
+  mkdirSync(join(dir, 'apps/viewer/src'), { recursive: true });
+  cpSync(join(root, 'apps/viewer/src/box-receipt.ts'), join(dir, 'apps/viewer/src/box-receipt.ts'));
   build(join(dir, 'apps/viewer/dist'), recordings);
   return new Promise((resolve) => execFile('bash', ['-c', GATE], { cwd: dir }, (error, stdout, stderr) => resolve({ code: error ? error.code : 0, stdout, stderr })));
 };

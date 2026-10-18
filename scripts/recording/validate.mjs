@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Checks a recording directory against agentrun.recording/1: the manifest, every line of events.jsonl, the three ordering
-// invariants, the blobs the lines name (present, and named by their own SHA-256), and that nothing in it looks like a
-// credential. It reports the first problem with its line number.
+// invariants, each box's receipt (one price, and its cost that price times its seconds or calls), the blobs the lines name
+// (present, and named by their own SHA-256), and that nothing in it looks like a credential. It reports the first problem
+// with its line number.
 //
 // `node scripts/recording/validate.mjs <recording-dir>`
 import { createHash } from 'node:crypto';
@@ -9,6 +10,8 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { TEXT_FILE, credentialIn, credentialInFile, credentialInValue } from '../../examples/reference/scan.ts';
+// A box's receipt is checked by the viewer's own rule (one price, its cost that price times its count), so the two agree.
+import { boxReceiptProblems } from '../../apps/viewer/src/box-receipt.ts';
 
 export const FORMAT = 'agentrun.recording/1';
 export const SOURCES = ['workflow', 'pi', 'browser', 'vision', 'transport', 'host'];
@@ -175,6 +178,7 @@ export function validateRecording(dir) {
     for (const message of own) add('events.jsonl', message, line);
     if (own.length) return;
     if (event.source === 'host' && event.kind === 'process.started') { processes += 1; processIndex += 1; }
+    if (event.channel === 'live' && event.source === 'host' && event.kind === 'box.receipt') for (const message of boxReceiptProblems(event.data)) add('events.jsonl', message, line);
     if (event.channel === 'durable' && (event.kind === 'transport.moves' || event.data?.doc === 'transport.moves')) {
       // A snapshot restates the records an earlier process wrote: only a process's own lines are its moves.
       if (!event.snapshot) for (const record of moveRecords(event.data?.value ?? event.data)) {

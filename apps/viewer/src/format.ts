@@ -1,5 +1,6 @@
 // agentrun.recording/1 (RECORDING.md): the types, the line order, and the validator of section 3's invariants.
 import { docOf, generationOf, moveOf, type Move } from './durable.ts';
+import { boxReceiptProblems } from './box-receipt.ts';
 import { counterFold, countersOf } from './counters.ts';
 
 export const FORMAT = 'agentrun.recording/1';
@@ -255,6 +256,8 @@ export function validate(manifest: unknown, lines: Line[], blobs?: Set<string>, 
       }
       const crossing = line.kind === 'kill' ? (line.data as { crossing?: { point?: unknown; n?: unknown } | null } | null)?.crossing : null;
       if (crossing !== null && crossing !== undefined && !(typeof crossing.point === 'string' && isInt(crossing.n))) note(`${at}: a kill's crossing is { point, n } or null`);
+      // A box's receipt has exactly one price, and its cost is that price times its seconds or calls (draft 40).
+      if (line.kind === 'box.receipt') for (const problem of boxReceiptProblems(line.data)) note(`${at}: ${problem}`);
       const result = line.kind === 'result' ? (line.data as { blob?: unknown; title?: unknown } | null) : undefined;
       if (result !== undefined && !(typeof result?.blob === 'string' && typeof result.title === 'string')) note(`${at}: a result names its blob and title in data`);
     } else if (line.gen !== undefined ? !isInt(line.gen, 1) : line.channel === 'live') note(`${at}: gen is not a whole number from 1`);
