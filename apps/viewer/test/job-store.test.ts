@@ -11,7 +11,7 @@ import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
-import { blobsNamed } from '../src/app.ts';
+import { blobsNamed } from '../src/load.ts';
 import { opensInPage, typeOfName } from '../src/blobs.ts';
 import { parseLines, validate, type Manifest } from '../src/format.ts';
 
