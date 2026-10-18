@@ -1,5 +1,5 @@
-// The gallery's landing in a real Chrome, at 1440 and 390 px, over fixtures and a lock: the site's line as the page's
-// header, then the runs the lock features as cards in its order, each linking to its chat view, with a poster only where
+// The gallery's landing in a real Chrome, at 1440 and 390 px, over fixtures and a lock: the brand row with the
+// repository's links, what AgentRun is and the site's line as the page's header, then the runs the lock features as cards in its order, each linking to its chat view, with a poster only where
 // the lock names one the run holds, then the list and the folder drop; no featured row with no lock; no sideways scroll
 // on a phone; and nothing of a run's machinery anywhere on the page outside the list's items.
 import assert from 'node:assert/strict';
@@ -84,6 +84,8 @@ test('in Chrome: the site\'s line, the featured runs in the lock\'s order with t
       for (const id of ['wide', 'files']) {
         const shown = await value<Record<string, unknown>>(`(() => { const d = doc('${id}'); return {
           parts: parts('${id}'), header: !!d.querySelector('#viewer header'), h1: [...d.querySelectorAll('h1')].map((h) => h.className), brand: d.querySelector('.lbrand').textContent,
+          links: [...d.querySelectorAll('.ltop .llinks a')].map((a) => [a.textContent, a.getAttribute('href')]),
+          define: [...d.querySelector('.landing').children].map((part) => part.className).slice(0, 3).join(' ') + ': ' + d.querySelector('.ldefine').textContent,
           hero: d.querySelector('.lhero').textContent.slice(0, 40), sub: d.querySelector('.lsub').textContent.slice(0, 32),
           cards: cards('${id}').map((c) => [c.dataset.id, c.getAttribute('href'), !!c.querySelector('img'), c.querySelector('img')?.naturalWidth > 0, c.querySelector('.ltitle').textContent]),
           lines: cards('${id}').map((c) => c.querySelector('.lline')?.textContent ?? null),
@@ -92,7 +94,9 @@ test('in Chrome: the site\'s line, the featured runs in the lock\'s order with t
           eager: cards('${id}').filter((c) => c.querySelector('img')).map((c) => c.querySelector('img').loading),
           dark: getComputedStyle(d.body).backgroundColor, list: !!d.querySelector('ul.gallery'), drop: !!d.querySelector('.drop') }; })()`);
         assert.deepEqual(shown, {
-          parts: ['section.landing', 'h2', 'ul.gallery', 'div.drop'], header: false, h1: ['lhero'], brand: 'agent.run()by grep.ai', hero: 'Ask a question about a film, a document ', sub: 'It writes code to look, listen a',
+          parts: ['section.landing', 'h2', 'ul.gallery', 'div.drop'], header: false, h1: ['lhero'], brand: 'agent.run()by grep.ai',
+          links: [['GitHub', 'https://github.com/Parcha-ai/agentrun'], ['Docs', 'https://github.com/Parcha-ai/agentrun/blob/main/docs/guide.md']],
+          define: 'ltop ldefine lhero: AgentRun is a workflow language for the agents you already run.', hero: 'Ask a question about a film, a document ', sub: 'It writes code to look, listen a',
           cards: [['chat-artifact', 'chat.html?r=chat-artifact', true, true, 'A two-picture report'],
             ['reference-asked', 'chat.html?r=reference-asked', false, false, `${ASKED.slice(0, 139)}…`],
             ['chat-hear-and-find', 'chat.html?r=chat-hear-and-find', true, true, 'Hear and Find']],
