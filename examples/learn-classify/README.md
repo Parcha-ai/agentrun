@@ -156,12 +156,29 @@ Live, `BROWSERBASE_API_KEY` (and `BROWSERBASE_PROJECT_ID`) put `browse` on Brows
 API; each is read when a call is made. Without the key, `browse` starts a local headless Chrome (`CHROME_PATH`, else
 `/usr/bin/google-chrome`) with its own profile under the run's directory, and `search_web` answers that it needs the key.
 `read_document`'s vision model is `gemini-3.8-flash` through the same gateway. A recording replaces each of these keys
-wherever it finds one.
+wherever it finds one, as the reference recorder does (`packages/harness/src/secrets.ts`): with this machine's host
+name, the user name, the home directory and the pass's own paths scrubbed, and a recording that still holds a value
+refused.
 
 Every one of these tools refuses what `fetch_page` refuses (the SEC and EDGAR, SIC listing sites, web archives) and,
 beyond it, this machine and its network (loopback, private, CGNAT and link-local addresses, single-label and local names).
 In the browser a second DevTools client holds each request until it is checked, so a redirect, a clicked link, a script's
 navigation, a frame or an image to a refused site is stopped before it is sent. Each result carries its `costUsd`.
+
+Before a live v2 pass runs its first job, the guard is tested on the browser the pass will use: `browse` opens a public
+page that redirects to sec.gov, and the pass stops unless that comes back refused with the sec.gov request blocked. After
+each run, `<out>/hosts/<run>.json` lists the hosts its tools visited, the hosts its searches named and the hosts that were
+refused, each with a count, so the refused list can grow.
+
+A live pass runs only in a take: a standalone checkout from `take-checkout.sh` at a pinned commit, run by
+`take-in-docker.sh --image browser`, with the two Browserbase values passed in by name and nothing else from the host.
+The take sets `AGENTRUN_BROKER_URL` (the gateway, when `LEARN_CLASSIFY_GATEWAY` is not set) and only `/run` is writable:
+
+```sh
+take-in-docker.sh --checkout <checkout> --run <run dir> --image browser \
+  --env LEARN_CLASSIFY_GATEWAY_KEY=placeholder --pass-env BROWSERBASE_API_KEY --pass-env BROWSERBASE_PROJECT_ID \
+  -- node examples/learn-classify/runner.mjs --set v2 --live --out /run/out --jobs 10 --cap-usd 10 --run-cap-usd 1.5
+```
 
 The answer is the typed `answer` tool: `sic4` (one of `data/sic-codes.json`'s 429 codes; `sic_codes({ group })` lists one
 group's, since a Jev pick holds at most 240 options), `primarySegment` (`{ name, share }` or `{ oneSegment: true }`) and

@@ -17,12 +17,14 @@ import {
   agentHomeFor, answerV1, groupsOf, jobInput, meteredJudge, prepareRun, runJob, sic2GroupsTool, sicCodesTool, textsRead, toolResultsOf, toolStats,
 } from './host.mjs';
 import { gatewayOf } from './models.mjs';
-import { writeRecording } from './recording.mjs';
-import { openOut } from './runner.mjs';
+import { recordingSecrets, writeRecording } from './recording.mjs';
+import { validateRecording } from '../../scripts/recording/validate.mjs';
+import { openOut, runLoop, scriptedParts } from './runner.mjs';
+import { SETS } from './sets.mjs';
 import { FIXTURES, fixtureFetch, readJson, scriptedJev, scriptedModel } from './scripted.mjs';
 import {
-  blockedAddress, browserbaseSearchProvider, browserFromEnv, browseTool, fakeSearchProvider, gatewayEyes, hardJobTools, MAX_DOCUMENT_BYTES,
-  readDocumentTool, refusedUrl, searchFromEnv, searchWebTool, secretValues, urlPolicy, visionFor,
+  blockedAddress, browserbaseSearchProvider, browserFromEnv, browseTool, gatewayEyes, guardSelfTest, hardJobTools, hostsOf, MAX_DOCUMENT_BYTES,
+  readDocumentTool, refusedUrl, searchFromEnv, searchWebTool, SELF_TEST_URL, urlPolicy, visionFor, writeHosts,
 } from './tools-v2.mjs';
 
 const ajv = new Ajv({ strict: false, allErrors: true });
@@ -37,6 +39,20 @@ async function scratch(t) {
   await chmod(dir, 0o755);
   t.after(() => rm(dir, { recursive: true, force: true }));
   return dir;
+}
+
+/** A search provider that answers from `results` (by query, or a function of it) and logs every query it was sent. */
+function fakeSearchProvider({ results = {}, costUsd = 0 } = {}) {
+  const queries = [];
+  return {
+    name: 'fake',
+    queries,
+    async search({ query, n }) {
+      queries.push(query);
+      const rows = typeof results === 'function' ? results(query) : results[query] ?? [];
+      return { results: rows.slice(0, n), costUsd };
+    },
+  };
 }
 
 /** Every name resolves to a public address, except names under bad.example, which resolve to a CGNAT address. */
@@ -483,8 +499,10 @@ test('a run offers the three tools to the root agent, to a workflow\'s call node
   const root = join(run.dir, 'tool-files');
   const web = await localWeb(t, { 'ir.acme.example/ar.pdf': send('application/pdf', Buffer.from(REPORT)) });
   const scripted = scriptedBrowser({ pages: ACME });
+  // Fake values in the names a take passes in, echoed by a tool result with a path under the run's directory.
   const key = 'bb_live_SENTINEL_0123456789abcdef';
-  const search = fakeSearchProvider({ results: () => [{ url: 'https://www.acme.example/', title: 'Acme', snippet: `valves ${key}` }] });
+  const project = '00000000-sentinel-project-0000000000';
+  const search = fakeSearchProvider({ results: () => [{ url: 'https://www.acme.example/', title: 'Acme', snippet: `valves ${key} ${project} at ${run.dir}/evidence/note.txt` }] });
   const more = await hardJobTools({
     root, search, eyes: fakeEyes({ answers: ['Valves, 70%.'] }),
     browser: scripted.browser, driver: scripted.driver, guard: scripted.guard, fetch: web.fetch, lookup: publicLookup,
@@ -556,13 +574,45 @@ test('a run offers the three tools to the root agent, to a workflow\'s call node
   assert.ok(textsRead(results).some((r) => r.tool === 'read_document' && r.text.includes('Valves, 70%.')));
   assert.equal(ledgerOps(scripted.backend).filter((op) => op === 'release').length, 3);
 
-  // A recording of the run carries no key a take passed in, wherever a tool result echoed it.
-  assert.deepEqual(secretValues({ BROWSERBASE_API_KEY: ` ${key} `, BROWSERBASE_PROJECT_ID: '', LEARN_CLASSIFY_GATEWAY_KEY: 'placeholder' }), [key]);
+  // The hosts it touched, for growing the refused list.
+  const hosts = hostsOf(results);
+  assert.deepEqual(hosts.visited, { 'ir.acme.example': 2, 'www.acme.example': 3 });
+  assert.deepEqual(hosts.searched, { 'www.acme.example': 2 });
+  assert.deepEqual(hosts.refused, { 'www.sec.gov': 3 });
+  await writeHosts({ dir: join(out, 'hosts'), runId: run.runId, results });
+  assert.deepEqual(JSON.parse(await readFile(join(out, 'hosts', `${run.runId}.json`), 'utf8')), { run: run.runId, ...hosts });
+
+  // The recording holds neither value nor the run's path, and passes the gallery's validation and the record-time scan.
+  const env = { BROWSERBASE_API_KEY: ` ${key} `, BROWSERBASE_PROJECT_ID: project, LEARN_CLASSIFY_GATEWAY_KEY: 'placeholder' };
+  assert.deepEqual(recordingSecrets(env).filter((s) => !s.key.startsWith('this machine')), [{ key: 'BROWSERBASE_API_KEY', value: key }, { key: 'BROWSERBASE_PROJECT_ID', value: project }]);
   const into = join(out, 'recordings');
-  await writeRecording({ into, run, job, model: 'faux/scripted', providers: 'scripted', started: 0, ended: 1, spend: { costUsd: null, judgeCostUsd: 0 }, modelUsd: null, secrets: secretValues({ BROWSERBASE_API_KEY: key }) });
+  await writeRecording({ into, run: { ...run, runId: run.runId }, job, model: 'faux/scripted', providers: 'scripted', started: 0, ended: 1, spend: { costUsd: null, judgeCostUsd: 0 }, modelUsd: null, env });
   const events = await readFile(join(into, run.runId, 'events.jsonl'), 'utf8');
-  assert.equal(events.includes(key), false);
-  assert.ok(events.includes('valves [redacted]'));
+  assert.equal(events.includes(key) || events.includes(project) || events.includes(run.dir), false);
+  assert.ok(events.includes('valves [redacted] [redacted] at <run>/evidence/note.txt'), 'redacted and scrubbed in place');
+  assert.deepEqual(validateRecording(join(into, run.runId)), []);
+  assert.ok(existsSync(join(into, run.runId, 'manifest.json')));
+});
+
+test('the guard self-test passes when a redirect to sec.gov comes back refused and blocked, and stops a pass before its first job when not', async (t) => {
+  const root = await scratch(t);
+  const held = scriptedBrowser({ pages: {}, redirects: { [SELF_TEST_URL]: 'https://www.sec.gov/' } });
+  const passed = await guardSelfTest({ root, browser: held.browser, driver: held.driver, guard: held.guard, lookup: publicLookup });
+  assert.match(passed.refused, /www\.sec\.gov is on the refused list/);
+  assert.deepEqual(passed.blocked, ['https://www.sec.gov/']);
+  assert.deepEqual(held.log.requests.map((r) => new URL(r).hostname), ['httpbin.org']);
+
+  // A guard that lets the redirect through: the self-test throws, naming what came back.
+  const open = scriptedBrowser({ pages: { 'https://www.sec.gov/': { title: 'SEC', text: 'EDGAR full-text search' } }, redirects: { [SELF_TEST_URL]: 'https://www.sec.gov/' } });
+  const leaky = async (target, options) => Object.assign(await open.guard(target, { check: async () => null }), { check: async () => null });
+  await assert.rejects(guardSelfTest({ root, browser: open.browser, driver: open.driver, guard: leaky, lookup: publicLookup }), /failed its self-test on fake: .*must come back refused/);
+
+  // The pass stops before its first job: no row, no run.
+  const out = join(root, 'out');
+  const parts = { ...scriptedParts({ set: SETS.v2 }), selfTest: async () => { throw new Error('the browser\'s request guard failed its self-test'); } };
+  await assert.rejects(runLoop({ out, parts, jobs: 1 }), /failed its self-test/);
+  assert.equal(existsSync(join(out, 'runs.jsonl')), false);
+  assert.deepEqual(await readdir(join(out, 'home', 'runs')).catch(() => []), []);
 });
 
 // A real headless Chrome (its own profile under the test's directory, killed by exact pid), against a 127.0.0.1 server
@@ -611,6 +661,8 @@ test('browse on a real Chrome: scripts run, and a redirect, a click and an image
 
   const redirected = conforms(tool, await tool.run({ url: at('/to-sec') }));
   assert.match(redirected.refused, /www\.sec\.gov is on the refused list/);
+  const tested = await guardSelfTest({ root: join(dir, 'files'), browser, url: at('/to-sec'), allowPrivate: true });
+  assert.deepEqual(tested.blocked, [`http://www.sec.gov:${port}/cgi-bin/browse-edgar?CIK=1`]);
   const clicked = conforms(tool, await tool.run({ url: at('/'), actions: [{ op: 'click', text: 'SEC filings' }] }));
   assert.match(clicked.refused, /www\.sec\.gov is on the refused list/);
   const scripted = conforms(tool, await tool.run({ url: at('/script-nav'), actions: [{ op: 'wait', ms: 1500 }] }));

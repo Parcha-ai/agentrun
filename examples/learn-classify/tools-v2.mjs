@@ -26,10 +26,9 @@ export const BROWSE_TIMEOUT_MS = 60_000;
 const DOCUMENT_HOPS = 3;
 const RENDER_DPI = 150;
 
-/** The values a take passes in for these tools and the gateway: read here at each call, never written anywhere. A
- *  recording replaces each one it finds (recording.mjs). Short values are left alone: no key is under 16 characters. */
+/** The names a take passes in for these tools and the gateway: read by pi-browser and the gateway at each call, never
+ *  written anywhere. A recording replaces each value it finds (recording.mjs). */
 export const SECRET_NAMES = Object.freeze(['BROWSERBASE_API_KEY', 'BB_API_KEY', 'BROWSERBASE_PROJECT_ID', 'LEARN_CLASSIFY_GATEWAY_KEY']);
-export const secretValues = (env = process.env) => SECRET_NAMES.map((name) => env[name]?.trim()).filter((value) => value && value.length >= 16);
 
 const size = (n) => (n >= 1048576 ? `${+(n / 1048576).toFixed(1)} MB` : `${Math.ceil(n / 1024)} KB`);
 const normalHost = (host) => String(host).toLowerCase().replace(/\.$/, '').replace(/^\[|\]$/g, '');
@@ -158,9 +157,9 @@ function refusedQuery(query) {
 }
 
 /**
- * search_web over a provider: `{ name, secrets?: () => string[], search({ query, n }, { signal }) }` answering
- * `{ results: [{ url, title, snippet? }], costUsd: number | null }`. The provider holds its key and reads it at each call;
- * `secrets` names the values to keep out of an error's words.
+ * search_web. Live, `provider` is Browserbase's Search API (`browserbaseSearchProvider`); a test passes a fake of the same
+ * shape: `{ name, secrets?: () => string[], search({ query, n }, { signal }) }` answering
+ * `{ results: [{ url, title, snippet? }], costUsd: number | null }`. `secrets` names the values kept out of an error's words.
  */
 export function searchWebTool({ provider, maxResults = MAX_RESULTS, allowPrivate = false }) {
   if (!provider || typeof provider.search !== 'function') throw new TypeError('searchWebTool needs a provider with search()');
@@ -213,23 +212,9 @@ export function searchWebTool({ provider, maxResults = MAX_RESULTS, allowPrivate
   };
 }
 
-/** A $0 search provider for tests and scripted runs: answers from `results` (by query, or a function of it). */
-export function fakeSearchProvider({ results = {}, costUsd = 0, fail } = {}) {
-  const queries = [];
-  return {
-    name: 'fake',
-    queries,
-    async search({ query, n }) {
-      queries.push(query);
-      if (fail) throw new Error(fail);
-      const rows = typeof results === 'function' ? results(query) : results[query] ?? [];
-      return { results: rows.slice(0, n), costUsd };
-    },
-  };
-}
-
-/** Search through pi-browser's Browserbase provider (its Search API, at its list price), built at each call so the key is
- *  read from `env` then: BROWSERBASE_API_KEY, or BB_API_KEY. */
+/** Search through pi-browser's Browserbase provider: Browserbase's Search API (at most 200 characters and 25 results; url,
+ *  title, author and date, no snippet), at its list price. The provider is built at each call, so the key is read from
+ *  `env` then: BROWSERBASE_API_KEY, or BB_API_KEY. */
 export function browserbaseSearchProvider({ env = process.env, make } = {}) {
   const keyOf = () => env.BROWSERBASE_API_KEY?.trim() || env.BB_API_KEY?.trim() || '';
   return {
@@ -347,14 +332,15 @@ export async function cdpRequestGuard(target, { check }) {
 }
 
 /** Where browse's browsers come from, chosen at each call: Browserbase when BROWSERBASE_API_KEY (or BB_API_KEY) is set,
- *  priced at its list rate (a minute's minimum); else a local headless Chrome under `profileRoot`, killed by exact pid
- *  when the call ends, at $0. */
+ *  billed per session at its list rate with a minute's minimum; else a local headless Chrome under `profileRoot`, killed
+ *  by exact pid when the call ends, at $0. */
 export function browserFromEnv({ env = process.env, profileRoot, chromePath, args = [] } = {}) {
   return async () => {
     if (env.BROWSERBASE_API_KEY?.trim() || env.BB_API_KEY?.trim()) {
       const { browserbaseProvider } = await import('@parcha/pi-browser/providers/browserbase');
       const perSecond = LIST_PRICES.sessionUsdPerHour / 3600;
-      return { name: 'browserbase', provider: browserbaseProvider({ env }), usd: (seconds) => Math.max(seconds, LIST_PRICES.sessionMinimumS) * perSecond };
+      const billedSeconds = (seconds) => Math.max(seconds, LIST_PRICES.sessionMinimumS);
+      return { name: 'browserbase', provider: browserbaseProvider({ env }), billedSeconds, usd: (seconds) => billedSeconds(seconds) * perSecond };
     }
     if (!profileRoot) throw new Error('a local browser needs a profile root under the run directory');
     const { cdpProvider } = await import('@parcha/pi-browser/providers/cdp');
@@ -395,6 +381,7 @@ const BROWSE_RESULT_SCHEMA = {
     blocked: { type: 'array', items: { type: 'string' }, description: 'requests the page made to refused sites, which were not sent' },
     browser: { type: 'string' },
     seconds: { type: 'number', description: 'how long the browser was held' },
+    billedSeconds: { type: 'number', description: 'the seconds the browser provider bills for this call (its minimum included); 0 for a local browser' },
     costUsd: { type: ['number', 'null'] },
     refused: { type: 'string', description: 'why the page was not opened, or why a navigation was stopped' },
     error: { type: 'string', description: 'why ok is false when nothing was refused' },
@@ -563,6 +550,7 @@ export function browseTool({ browser, root, driver, guard: openGuard = cdpReques
     const seconds = created ? (Date.now() - created) / 1000 : 0;
     result.costUsd = ref ? source.usd(seconds) : created && source.usd(1) > 0 ? null : 0;
     result.seconds = Math.round(seconds * 10) / 10;
+    result.billedSeconds = ref ? Math.round((source.billedSeconds?.(seconds) ?? 0) * 10) / 10 : 0;
     return result;
   }
 
@@ -598,6 +586,7 @@ const DOCUMENT_RESULT_SCHEMA = {
   properties: {
     ok: { type: 'boolean' },
     source: { type: 'string', description: 'the url or path asked for' },
+    url: { type: 'string', description: 'the URL the document came from, after redirects, when it was downloaded' },
     path: { type: 'string', description: 'where the document is kept: pass it as path to read it again without downloading' },
     kind: { type: 'string', enum: ['pdf', 'image', 'unknown'] },
     sha256: { type: 'string' },
@@ -732,10 +721,12 @@ export function readDocumentTool({ root, vision, allowPrivate = false, lookup = 
 
     let bytes;
     let kept;
+    let from;
     if (url) {
       const got = await download(url, { policy, fetchImpl, maxBytes, timeoutMs, signal });
       if (got.refused || got.error) return empty(got.refused ? { refused: got.refused } : { error: got.error });
       bytes = got.bytes;
+      from = got.url;
     } else {
       const at = await within(root, given);
       if (!at) return empty({ error: `${given} is not a file this run kept (a path from read_document or browse)` });
@@ -755,7 +746,7 @@ export function readDocumentTool({ root, vision, allowPrivate = false, lookup = 
     }
     const path = relative(root, kept).split(sep).join('/');
     const name = url ? new URL(url).pathname.split('/').pop() || path : path;
-    const base = { ok: true, source, path, kind: kind.kind, sha256, bytes: bytes.length };
+    const base = { ok: true, source, ...(from ? { url: from } : {}), path, kind: kind.kind, sha256, bytes: bytes.length };
 
     if (kind.kind === 'image') {
       const ask = question || 'Write out all the text this image shows, tables row by row, then say in one sentence what the image is.';
@@ -872,16 +863,69 @@ export async function gatewayEyes(gateway, { model = 'gemini-3.8-flash', thinkin
 }
 
 /**
- * The three tools for one run, from the environment at the time of the call: `search` (a provider for search_web; none
- * leaves search_web out), the browser (`browserFromEnv`: Browserbase with its key, else a local Chrome under
- * `profileRoot`), and the eyes (`gatewayEyes`, or scripted ones). `root` is where the run's documents and screenshots go.
+ * The three tools for one run, each reading the environment when it is called: search_web on Browserbase's Search API,
+ * browse on a Browserbase session (a local Chrome under `profileRoot` without the key), and read_document with `eyes`
+ * (`gatewayEyes`, or scripted ones). `root` is where the run's documents and screenshots go. `search`, `browser`,
+ * `driver`, `guard`, `lookup` and `fetch` replace the live parts in tests.
  */
 export async function hardJobTools({ root, profileRoot, search, eyes, env = process.env, browser, driver, guard, lookup, fetch, allowPrivate } = {}) {
   await mkdir(root, { recursive: true });
   const shared = { ...(allowPrivate ? { allowPrivate } : {}), ...(lookup ? { lookup } : {}) };
-  const tools = [];
-  if (search) tools.push(searchWebTool({ provider: search, ...(allowPrivate ? { allowPrivate } : {}) }));
+  const tools = [searchWebTool({ provider: search ?? browserbaseSearchProvider({ env }), ...(allowPrivate ? { allowPrivate } : {}) })];
   tools.push(browseTool({ browser: browser ?? browserFromEnv({ env, profileRoot }), root, ...(driver ? { driver } : {}), ...(guard ? { guard } : {}), ...shared }));
   tools.push(readDocumentTool({ root, vision: await visionFor({ root, eyes }), ...(fetch ? { fetch } : {}), ...shared }));
   return tools;
+}
+
+/** The hosts a run's tools touched, so the refused list can grow: `visited` (pages and documents that answered),
+ *  `searched` (hosts search results named) and `refused` (what a tool refused; nothing was sent), each host with its
+ *  count. `results` are the run's tool results as host.mjs's `toolResultsOf` reads them from its store. */
+export function hostsOf(results) {
+  const tally = { visited: {}, searched: {}, refused: {} };
+  const add = (bucket, url) => {
+    let host;
+    try {
+      host = new URL(url).hostname.toLowerCase();
+    } catch {
+      return;
+    }
+    tally[bucket][host] = (tally[bucket][host] ?? 0) + 1;
+  };
+  for (const { tool, args, value } of results) {
+    if (!value) continue;
+    if (tool === 'search_web') for (const row of value.results ?? []) add('searched', row.url);
+    if (tool === 'fetch_page' || tool === 'browse' || tool === 'read_document') {
+      const url = tool === 'read_document' ? value.url ?? (args?.url || undefined) : value.url;
+      if (value.refused) add('refused', url ?? args?.url);
+      else if (url && (value.ok || value.status > 0)) add('visited', url);
+    }
+    if (tool === 'browse') for (const url of value.blocked ?? []) add('refused', url);
+  }
+  const sorted = (bucket) => Object.fromEntries(Object.entries(bucket).sort(([a], [b]) => a.localeCompare(b)));
+  return { visited: sorted(tally.visited), searched: sorted(tally.searched), refused: sorted(tally.refused) };
+}
+
+/** Writes `<dir>/<run id>.json`: the run's hosts (`hostsOf`). */
+export async function writeHosts({ dir, runId, results }) {
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, `${runId}.json`), `${JSON.stringify({ run: runId, ...hostsOf(results) }, null, 2)}\n`);
+}
+
+/** A public page that redirects to sec.gov: the guard must stop the second hop. */
+export const SELF_TEST_URL = 'https://httpbin.org/redirect-to?url=https%3A%2F%2Fwww.sec.gov%2F';
+
+/**
+ * The browser's guard, checked once before a live pass starts: browse `url` (a redirect to sec.gov) on the browser the
+ * pass will use and require that it comes back refused, with the refused request listed in `blocked`. Throws otherwise,
+ * so the pass stops before its first job. Returns browse's result (its costUsd is the test's).
+ */
+export async function guardSelfTest({ root, profileRoot, env = process.env, url = SELF_TEST_URL, browser, driver, guard, lookup, allowPrivate }) {
+  const tool = browseTool({ browser: browser ?? browserFromEnv({ env, profileRoot }), root, ...(driver ? { driver } : {}), ...(guard ? { guard } : {}), ...(lookup ? { lookup } : {}), ...(allowPrivate ? { allowPrivate } : {}) });
+  const result = await tool.run({ url });
+  const stopped = (result.blocked ?? []).some((blocked) => refusedHost(new URL(blocked).hostname));
+  if (!result.refused || !stopped || result.text) {
+    const seen = JSON.stringify({ ok: result.ok, url: result.url, refused: result.refused ?? null, error: result.error ?? null, blocked: result.blocked ?? [] });
+    throw new Error(`the browser's request guard failed its self-test on ${result.browser ?? 'the browser'}: ${url} must come back refused with its refused request blocked; it came back ${seen}`);
+  }
+  return result;
 }
