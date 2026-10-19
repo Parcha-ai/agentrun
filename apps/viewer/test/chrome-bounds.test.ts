@@ -7,7 +7,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { drivenPage, within } from './driven-page.ts';
+import { chrome, drivenPage, within } from './driven-page.ts';
 
 /** A Chrome that hangs: it ignores SIGTERM, starts a helper that holds its stdout, adds both their pids to a line of its
  *  own, and never ends. */
@@ -57,4 +57,27 @@ test('a test that ends aborts its signal, and Chrome and its helper go at once, 
   const starts = startsIn(dir);
   assert.equal(starts.length, 1, 'not started again after the signal');
   await ended(starts.flat());
+});
+
+/** A Chrome whose first start hangs as hungChrome's does, and whose next start is the real browser. */
+function hungOnceChrome(dir: string) {
+  const path = join(dir, 'hung-once-chrome');
+  const marker = join(dir, 'started');
+  writeFileSync(path, `#!/bin/sh\nif [ ! -e '${marker}' ]; then\n  touch '${marker}'\n  trap '' TERM\n  sleep 600 &\n  echo $$ $! >> '${join(dir, 'pids')}'\n  while :; do sleep 1; done\nfi\nexec '${chrome}' "$@"\n`);
+  chmodSync(path, 0o755);
+  return path;
+}
+
+test('in Chrome: a first start that never listens is ended, and the second start gives a page that works and closes', { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}`, timeout: 60_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'chrome-bounds-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }), { timeout: 10_000 });
+  const page = await drivenPage('data:text/html,<p>recovered</p>', join(dir, 'profile'), { launchMs: 10_000, path: hungOnceChrome(dir), signal: t.signal });
+  try {
+    assert.equal(await page.evaluate(`document.querySelector('p').textContent`), 'recovered', 'the second start\'s page answers');
+    const starts = startsIn(dir);
+    assert.equal(starts.length, 1, 'the first start hung; the second is the real browser');
+    await ended(starts.flat());
+  } finally {
+    await page.close();
+  }
 });
