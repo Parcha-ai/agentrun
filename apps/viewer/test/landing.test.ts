@@ -32,6 +32,10 @@ const LOCK = { ids: [{ id: 'chat-artifact', poster: ARTIFACT_PNG }, { id: 'ten-k
 const FLAG_LOOK = '4ca88ba105746003882f2005149bae2b10f7c64580065826933785b1faa42007';
 const WHOLE_LOOK = '77f823e33e824de13d8652a6eaa3008a9deb5a2828d685d3cd236054206ef2ac';
 const TALL_LOOK = 'a'.repeat(64);
+/** Looks the test files on two wide posters (a white page, and one half black, half white), their boxes almost as wide as
+ *  the picture: no crop keeps them, so the posters are drawn whole. */
+const WIDE_LOOK = 'b'.repeat(64);
+const MIXED_LOOK = 'c'.repeat(64);
 LOCK.ids[3]!.looks = [FLAG_LOOK, WHOLE_LOOK];
 /** Two posters wider than the box: a white page (its edges one colour) and one whose top edge is half black, half white. */
 const WHITE_PAGE = png(260, 100, (x, y) => (x > 110 && x < 150 && y > 35 && y < 65 ? [20, 20, 20] : [255, 255, 255]));
@@ -39,8 +43,13 @@ const MIXED = png(260, 100, (x) => (x < 130 ? [0, 0, 0] : [255, 255, 255]));
 const sha = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 /** Every public run featured: four cards and no list; the hear-and-find run with the mixed poster, the reference job with
  *  the white page. */
-const LOCK_ALL = { ids: [...LOCK.ids.map((each) => (each.id === 'chat-hear-and-find' ? { id: each.id, poster: sha(MIXED) } : each.id === 'chat-artifact' ? { id: each.id, looks: [TALL_LOOK] } : each)),
-  { id: 'reference-job', poster: sha(WHITE_PAGE) }] };
+const LOCK_ALL = { ids: [...LOCK.ids.map((each) => (each.id === 'chat-hear-and-find' ? { id: each.id, looks: [MIXED_LOOK] } : each.id === 'chat-artifact' ? { id: each.id, looks: [TALL_LOOK] } : each)),
+  { id: 'reference-job', looks: [WIDE_LOOK] }] };
+/** A vision.looks line filing one look on `image`, its answer one box at `box` (fractions) naming `xywh`. */
+const filedLook = (key: string, image: string, box: { top: number; bottom: number; left: number; right: number }, xywh: string) => ({ channel: 'durable', source: 'vision', kind: 'vision.looks', gen: 1, commit: 900, order: 0, t: 900_000,
+  data: { doc: 'vision.looks', key, version: 1, value: { looks: [{ record: { facts: { key }, body: JSON.stringify({ where: { type: 'box', box, confidence: 0.9, fragment: `pic.png#xywh=${xywh}` } }) }, images: [image] }] } } });
+/** Appends lines to a run's events. */
+const appendLines = (dir: string, ...lines: unknown[]) => writeFileSync(join(dir, 'events.jsonl'), `${readFileSync(join(dir, 'events.jsonl'), 'utf8').trimEnd()}\n${lines.map((line) => JSON.stringify(line)).join('\n')}\n`);
 
 /** Adds `body` to a run's report page (a new page under `title` when it has none), its manifest naming the new page. */
 function addToReport(dir: string, body: string, title: string) {
@@ -109,10 +118,13 @@ test('in Chrome: the site\'s line, the featured runs in the lock\'s order with t
     addToReport(hear, `<div data-look="${FLAG_LOOK}" data-xywh="percent:30.3,5.6,50.3,54.4"></div><div class="mark" data-look="${FLAG_LOOK}" data-xywh="percent:30,6,50,54"><a class="tag">flag</a></div>`
       + `<div data-look="${WHOLE_LOOK}" data-xywh="percent:80,80,10,10">far</div>`, 'Hear and Find');
     // chat-artifact files a look on its poster whose box runs from the picture's top to its bottom, and its report marks it.
-    const tall = { channel: 'durable', source: 'vision', kind: 'vision.looks', gen: 1, commit: 900, order: 0, t: 900_000, data: { doc: 'vision.looks', key: TALL_LOOK, version: 1,
-      value: { looks: [{ record: { facts: { key: TALL_LOOK }, body: JSON.stringify({ where: { type: 'box', box: { top: 0.02, bottom: 0.98, left: 0.3, right: 0.6 }, confidence: 0.9, fragment: 'pic.png#xywh=percent:30,2,30,96' } }) }, images: [ARTIFACT_PNG] }] } } };
-    writeFileSync(join(recordings, 'chat-artifact', 'events.jsonl'), `${readFileSync(join(recordings, 'chat-artifact', 'events.jsonl'), 'utf8').trimEnd()}\n${JSON.stringify(tall)}\n`);
+    appendLines(join(recordings, 'chat-artifact'), filedLook(TALL_LOOK, ARTIFACT_PNG, { top: 0.02, bottom: 0.98, left: 0.3, right: 0.6 }, 'percent:30,2,30,96'));
     addToReport(join(recordings, 'chat-artifact'), `<div data-look="${TALL_LOOK}" data-xywh="percent:30,2,30,96">top to bottom</div>`, 'unused');
+    // Two wide posters whose one box runs almost from edge to edge, each marked by its run's report.
+    appendLines(join(recordings, 'reference-job'), filedLook(WIDE_LOOK, sha(WHITE_PAGE), { top: 0.35, bottom: 0.65, left: 0.05, right: 0.95 }, 'percent:5,35,90,30'));
+    addToReport(join(recordings, 'reference-job'), `<div data-look="${WIDE_LOOK}" data-xywh="percent:5,35,90,30">all across</div>`, 'The reference job');
+    appendLines(hear, filedLook(MIXED_LOOK, sha(MIXED), { top: 0.35, bottom: 0.65, left: 0.05, right: 0.95 }, 'percent:5,35,90,30'));
+    addToReport(hear, `<div data-look="${MIXED_LOOK}" data-xywh="percent:5,35,90,30">all across</div>`, 'Hear and Find');
     writeFileSync(join(out, 'lock.json'), JSON.stringify(LOCK));
     build(join(out, 'dist'), recordings, { lock: join(out, 'lock.json') });
     build(join(out, 'dist', 'files'), recordings, { files: true, lock: join(out, 'lock.json') });
@@ -165,15 +177,16 @@ test('in Chrome: the site\'s line, the featured runs in the lock\'s order with t
             ['reference-asked', 'chat.html?r=reference-asked', false, false, `${ASKED.slice(0, 139)}…`],
             ['chat-hear-and-find', 'chat.html?r=chat-hear-and-find', true, true, 'Hear and Find']],
           lines: [null, ASKED.replace(/\s+/g, ' ').length > 200 ? `${ASKED.replace(/\s+/g, ' ').slice(0, 199)}…` : ASKED, null], clamp: true,
-          columns: 3, eager: ['eager', 'eager'], dark: 'rgb(8, 8, 9)', list: true, drop: true, heading: 'More recordings', fits: [['chat-artifact', 'lposter'], ['chat-hear-and-find', 'lposter wide']],
+          columns: 3, eager: ['eager', 'eager'], dark: 'rgb(8, 8, 9)', list: true, drop: true, heading: 'More recordings', fits: [['chat-artifact', 'lposter'], ['chat-hear-and-find', 'lposter across']],
           marked: [['chat-artifact', []], ['reference-asked', []], ['chat-hear-and-find', ['flag']]], aligned: true, titlesOnly: true, listed: ['chat.html?r=reference-job'], closed: ['Open a recording', false, false],
-        }, `${id}: the featured runs in the lock's order, each to its chat view, a poster only where the run holds it, a poster wider than its box drawn whole (the 16:9 frame) and the others filling it, the report's labelled mark drawn on its look's picture and a box no mark cites left out, its question clamped to three lines; the list holds titles only; the drop waits behind its link`);
+        }, `${id}: the featured runs in the lock's order, each to its chat view, a poster only where the run holds it, every poster filling its box (the 16:9 frame cropped at its sides, its box kept in view), the report's labelled mark drawn on its look's picture and a box no mark cites left out, its question clamped to three lines; the list holds titles only; the drop waits behind its link`);
       }
 
       // With no lock the landing has its line and no featured row; the list holds every public run.
       assert.deepEqual(await value(`[parts('bare'), !!doc('bare').querySelector('.lhero'), !!doc('bare').querySelector('.lcards'), doc('bare').querySelectorAll('ul.gallery li').length, doc('bare').querySelector('#viewer > h2').textContent]`),
         [['section.landing', 'h2', 'ul.gallery', 'details.open-recording'], true, false, 4, 'Recordings']);
-      // Posters drawn whole: the white page's bands take its own white; the mixed one's stay the card's background.
+      // Wide posters whose boxes no crop keeps are drawn whole: the white page's bands take its own white; the mixed one's
+      // stay the card's background.
       await page.once(`cards('all').filter((c) => c.querySelector('img')).every((c) => c.querySelector('img').complete) && cards('all').filter((c) => c.querySelector('.lposter.wide')).length === 2`,
         'true', 20_000, 'the all-featured page\'s posters loaded and measured');
       assert.deepEqual(await value(`cards('all').filter((c) => c.querySelector('.lposter.wide')).map((c) => [c.dataset.id, getComputedStyle(c.querySelector('.lposter')).backgroundColor])`),

@@ -51,10 +51,11 @@
   .lcard:hover, .lcard:focus-visible { border-color: #ff8700; outline: none; }
   .lcard.words { padding-top: 16px; }
   .lposter { position: relative; display: block; aspect-ratio: 16 / 10; overflow: hidden; background: #000; border: 1px solid var(--rule); }
-  /* The picture in a frame of its own shape: fitted to the box's width (losing its top and bottom when narrower), or whole
-     (wide: bands above and below; tall: bands at the sides). Its boxes are placed on the frame, in percent of the picture. */
+  /* The picture in a frame of its own shape, filling the box (across: a wider one, cropped at its sides; else cropped at its
+     top and bottom), or whole (wide: bands above and below; tall: bands at the sides). Its boxes are placed on the frame. */
   .lframe { position: absolute; left: 0; top: 50%; width: 100%; transform: translateY(-50%); aspect-ratio: var(--ar, 16 / 10); }
   .lposter.tall .lframe { top: 0; left: 50%; width: auto; height: 100%; transform: translateX(-50%); }
+  .lposter.across .lframe { top: 0; left: 0; width: auto; height: 100%; }
   .lframe img { display: block; width: 100%; height: 100%; }
   .lposter.wide, .lposter.tall { background: transparent; }
   .lbox { position: absolute; border: 2px solid #e551ba; pointer-events: none; }

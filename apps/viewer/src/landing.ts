@@ -1,6 +1,6 @@
 // The gallery's landing: the site's own line about what a run does, then the featured runs as cards. Every card shows
 // only what its run holds (the card the build wrote from it): its title, its question, and the poster the gallery's lock
-// names among the run's own pictures, with the boxes the run's own report marked for the look the lock names (each with
+// names among the run's own pictures, with the boxes the run's own report marked for the looks the lock names (each with
 // its label). A run with no poster is a card of words. Only a run a real model made is featured.
 
 /** A run's card, written by the build from the run itself; `rank` is its place in the gallery's lock. */
@@ -109,34 +109,35 @@ async function landingMarked(entry: LandingEntry, boxes: NonNullable<LandingCard
 /** The share of a picture's height a label over its box takes, in percent. */
 const LANDING_LABEL = 9;
 
-/** A poster in its box, its boxes drawn on it. Wider than its box, it is drawn whole, with bands above and below.
- *  Narrower, it fills the box's width, and the part of its height the box shows is placed to keep every box and its label
- *  in view (centred when it has none); when they span more than the box shows, it is drawn whole, with bands at the
- *  sides. A band takes the colour of the poster's own edge beside it when that edge is one colour, else the card's. */
+/** A poster in its box, its boxes drawn on it. It fills the box, cropped where every drawn box and its label stays in
+ *  view (centred when it has none): a wider poster across, a narrower one up and down. When no crop can keep them all, it
+ *  is drawn whole, with bands above and below (wider) or at the sides (narrower), each band the colour of the poster's
+ *  own edge beside it when that edge is one colour, else the card's. */
 function landingFit(frame: HTMLElement, layer: HTMLElement, picture: HTMLImageElement, boxes: LandingBox[]): void {
   if (!picture.naturalWidth || !picture.naturalHeight) return;
   const ratio = picture.naturalWidth / picture.naturalHeight;
   frame.style.setProperty('--ar', `${picture.naturalWidth} / ${picture.naturalHeight}`);
   const box = frame.getBoundingClientRect();
   const boxRatio = box.height > 0 ? box.width / box.height : 16 / 10;
-  const wide = ratio > boxRatio * 1.05;
-  // Fitted to its width, a narrower poster shows this share of its height.
-  const shown = Math.min(1, ratio / boxRatio) * 100;
-  const top = Math.min(...boxes.map((each) => (each.y >= LANDING_LABEL ? each.y - LANDING_LABEL : each.y)));
-  const bottom = Math.max(...boxes.map((each) => each.y + each.h + (each.y < LANDING_LABEL ? LANDING_LABEL : 0)));
-  const tall = !wide && boxes.length > 0 && bottom - top > shown;
-  frame.classList.toggle('wide', wide);
-  frame.classList.toggle('tall', tall);
-  if (!wide && !tall) {
-    const centre = boxes.length ? (top + bottom) / 2 : 50;
-    const from = Math.max(0, Math.min(100 - shown, centre - shown / 2));
+  const wider = ratio > boxRatio;
+  // Filled, the box shows this share of the picture: across when it is wider, down when it is narrower.
+  const shown = (wider ? boxRatio / ratio : ratio / boxRatio) * 100;
+  const [from, to] = wider
+    ? [Math.min(...boxes.map((each) => each.x)), Math.max(...boxes.map((each) => each.x + each.w))]
+    : [Math.min(...boxes.map((each) => (each.y >= LANDING_LABEL ? each.y - LANDING_LABEL : each.y))), Math.max(...boxes.map((each) => each.y + each.h + (each.y < LANDING_LABEL ? LANDING_LABEL : 0)))];
+  const fills = boxes.length === 0 || to - from <= shown;
+  frame.classList.toggle('across', fills && wider);
+  frame.classList.toggle('wide', !fills && wider);
+  frame.classList.toggle('tall', !fills && !wider);
+  if (fills) {
+    const start = Math.max(0, Math.min(100 - shown, (boxes.length ? (from + to) / 2 : 50) - shown / 2));
     layer.style.top = '0';
-    layer.style.transform = `translateY(-${from}%)`;
+    layer.style.transform = wider ? `translateX(-${start}%)` : `translateY(-${start}%)`;
   } else {
     layer.style.top = '';
     layer.style.transform = '';
   }
-  const edge = wide ? landingEdgeColour(picture, 'rows') : tall ? landingEdgeColour(picture, 'columns') : undefined;
+  const edge = fills ? undefined : landingEdgeColour(picture, wider ? 'rows' : 'columns');
   frame.style.background = edge ?? '';
 }
 
