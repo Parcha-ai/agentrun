@@ -9,6 +9,7 @@ import type { MissCode } from "./contract.js";
 import { fitImage, fitSentence } from "./image.js";
 import { imageHeader, sniffKind, type Kind } from "./kinds.js";
 import { PAGE_TEXT_CHARS, SOURCE_BYTES_IN_PROCESS } from "./limits.js";
+import { messageLine } from "./primitives.js";
 import { ProviderMiss } from "./derive.js";
 import { notRenderedNote } from "./office.js";
 import { pdfDocument, pdfMarkedText, pdfPage, type PdfContext } from "./pdf.js";
@@ -74,7 +75,7 @@ async function keepText(request: Parameters<KindReader>[0], context: KindContext
 async function bytesOf(context: KindContext, path: string, size: number): Promise<Uint8Array | KindResult> {
   if (size > SOURCE_BYTES_IN_PROCESS) return { miss: "over_budget", reason: `it is ${size} bytes, over the ${SOURCE_BYTES_IN_PROCESS} read into this process` };
   const read = await context.env.readBinaryFile(path, visionContext(context.signal));
-  if (!read.ok) return { miss: "unreadable", reason: `it could not be read (${read.error.message.split("\n")[0]})` };
+  if (!read.ok) return { miss: "unreadable", reason: `it could not be read (${messageLine(read.error)})` };
   return read.value;
 }
 
