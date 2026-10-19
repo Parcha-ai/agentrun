@@ -16,8 +16,8 @@ npm run demo:vision -- examples/hear-and-find --live    # real models, your keys
 
 Every run, on fakes or live, needs `ffmpeg`, `ffprobe`, `pdftoppm` and `pdftotext` on your path (`brew install ffmpeg
 poppler`, or `sudo apt-get install ffmpeg poppler-utils`). "On fakes" means scripted stand-ins for every model: no key
-and no network. Of the examples, only `document-check` commits its files; the five others need `--fetch-sources` on
-fakes, which downloads 120 MB to 342 MB (each example's README says how much).
+and no network. Of the examples, `document-check` and `lake-mead` commit their files; the six others need
+`--fetch-sources` on fakes, which downloads 120 MB to 342 MB (each example's README says how much).
 
 The agent runs shell commands with your user's rights on your machine: run the examples in a container or a VM.
 

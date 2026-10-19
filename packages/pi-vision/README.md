@@ -18,9 +18,10 @@ npm run demo:vision -- examples/document-check
 [`examples/vision-agent`](https://github.com/Parcha-ai/agentrun/tree/main/examples/vision-agent) is one agent that answers questions about a set of files. `document-check`
 asks it which of six marks a certified copy carries and where. On scripted models (the free run's stand-ins for every
 model) the agent takes one look at the first file and says its answer is scripted; the run still shows the whole path and
-writes the report. `document-check` commits its two PDFs, so it runs as above. The five other examples fetch their files
-first: add `--fetch-sources` (`video-chapters` and `hear-and-find` 120 MB each, `apollo-descent` 211 MB,
-`boulder-chapters` 218 MB, `fair-robot` 342 MB), as in `npm run demo:vision -- examples/fair-robot --fetch-sources`.
+writes the report. `document-check` commits its two PDFs and `lake-mead` its thirteen images, so they run as above. The
+six other examples fetch their files first: add `--fetch-sources` (`video-chapters` and `hear-and-find` 120 MB each,
+`apollo-descent` 211 MB, `boulder-chapters` 218 MB, `market-street` 227 MB, `fair-robot` 342 MB), as in
+`npm run demo:vision -- examples/fair-robot --fetch-sources`.
 
 ## Go live
 

@@ -22,7 +22,7 @@ To connect models, follow [support integration](support-quickstart.md) or [resea
 
 ## Vision examples
 
-[`@parcha/pi-vision`](../packages/pi-vision/README.md) reads files for a model. One agent, [`examples/vision-agent`](../examples/vision-agent/README.md), answers every question below; each folder holds only the question, the files' addresses and checks, and a README. All but the document check fetch their files first: add `--fetch-sources` (the size is in each one's README).
+[`@parcha/pi-vision`](../packages/pi-vision/README.md) reads files for a model. One agent, [`examples/vision-agent`](../examples/vision-agent/README.md), answers every question below; each folder holds only the question, the files' addresses and checks, and a README. All but the document check and Lake Mead fetch their files first: add `--fetch-sources` (the size is in each one's README).
 
 - **[Video chapters](../examples/video-chapters/README.md).** A long film cut into chapters, each with a keyframe and the minutes it rests on.
 - **[Hear and find](../examples/hear-and-find/README.md).** When a phrase is said and when a thing is first seen in a long film: both seconds, the frame and a box around the thing.

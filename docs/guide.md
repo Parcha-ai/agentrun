@@ -7,7 +7,7 @@ AgentRun defines workflows that combine tools, code, Jev system one decisions, a
 
 Use Node 22.19+ and npm. Follow the [support example](../README.md#run-the-support-example) to install, build and run the support example without credentials. It searches for an answer, checks it, and calls an agent only when investigation is needed. [Connect your own tools and models](support-quickstart.md) after the scripted example works.
 
-For TypeScript authoring and reusable child workflows, follow the [research tutorial](authoring.md). The [standalone starter](../examples/starter/README.md) runs outside this checkout. See [all examples](examples.md) for their commands and failure paths. To watch an agent read and look at files, start at [`examples/vision-agent`](../examples/vision-agent/README.md): `npm run demo:vision -- examples/document-check` runs it on scripted models, free and with no key, with `ffmpeg`, `ffprobe`, `pdftoppm` and `pdftotext` on your path. The five other vision examples fetch their files first (120 MB to 342 MB): add `--fetch-sources`.
+For TypeScript authoring and reusable child workflows, follow the [research tutorial](authoring.md). The [standalone starter](../examples/starter/README.md) runs outside this checkout. See [all examples](examples.md) for their commands and failure paths. To watch an agent read and look at files, start at [`examples/vision-agent`](../examples/vision-agent/README.md): `npm run demo:vision -- examples/document-check` runs it on scripted models, free and with no key, with `ffmpeg`, `ffprobe`, `pdftoppm` and `pdftotext` on your path. `lake-mead` commits its images too; the six other vision examples fetch their files first (120 MB to 342 MB): add `--fetch-sources`.
 
 ## Inspect the smaller triage workflow
 
