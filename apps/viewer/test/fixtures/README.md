@@ -2,6 +2,21 @@
 
 These serve the tests only and are never bundled into the gallery: a hand-cut fixture is not a recording of a run.
 
+## ten-kills-seed21
+
+A recording of a run, not cut by hand, kept for the tests that read a killed run beside the clean `reference-job`
+(the timeline's golden test, the gallery gate's tests): the reference job killed ten times, at the points seed 21 picks
+(a model turn, the judge, a browser read, receipt filings, the supervisor before and after an outside call applied),
+and resumed each time. Eleven processes. Recorded at `79868e54` with `npm run demo:kill -- --seed 21 --json --record
+<dir>`, and nothing in it is edited.
+
+Its counters agree with `reference-job`'s: one paid call, one judge ask, four model turns, nothing repeated or asked
+twice, cost $0. It adds its processes and kills, and one possible re-ask: a kill cut turn 0 after its ask's start was
+committed, so the store cannot show whether the model was reached. The kill run's own ledger, which counts at the
+scripted provider, shows it was asked twice there; the ledger's gates (the record matches its schema, its citations
+name filed evidence, each scripted outside call ran once, every node ended, every browser session was released) all
+passed. The ledger is not part of the recording.
+
 ## reference-killed
 
 The reference job (`examples/reference`) killed once in the lead's model request after the browser read, then

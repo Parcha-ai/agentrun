@@ -12,6 +12,7 @@ After `npm ci --ignore-scripts` and `npm run build`:
 | [Standalone TypeScript app](../examples/starter/README.md) | Follow the app's install steps, then `npm test` and `npm start` | Build outside this checkout with public package imports. |
 | [The reference host](reference-host.md) | `npm run demo:reference` | One durable pi run with the recovery driver, a browser and vision: replace the scripted model, tools, browser and eyes with yours. |
 | [The hero job](../examples/hero/README.md) | `npm run demo:hero` | One agent reads nine grid operators' dashboard charts with vision, each in a browser session of its own, and, where the operator also publishes the mix as data, checks each reading against it. |
+| [The vision agent](../examples/vision-agent/README.md) | `npm run demo:vision -- examples/<folder> --live` | Ask a question about your own files: write a folder with the question and the files' addresses; one agent answers it and ends with its own report. |
 
 The ranking example is a reusable workflow built from existing nodes, not a node of its own. A `sift` scores every candidate with a leveled question, and the continuous score in `<as>.answers[i].answers.<question>.score` orders them. Sorting, the minimum score, per-bucket quotas and the cut-off are a `code` step. A second `sift` over pairs finds near-duplicates among the best `consider` candidates, the only ones that can make the list. That costs `consider × (consider − 1) / 2` questions, so the caller chooses it. A long list needs no batching in the workflow: a `sift` over the host's per-request limits splits itself. `npm run demo:rank -- --live --input request.json` ranks your own list with Jev.
 
@@ -19,10 +20,15 @@ Each example includes a failure or uncertainty path. `npm run demo:support -- un
 
 To connect models, follow [support integration](support-quickstart.md) or [research integration](live-research.md). Your application supplies tool permissions, credentials and cancellation. Scripted answers remain fixed when you edit a prompt.
 
-## Vision examples to come
+## Vision examples
 
-[`@parcha/pi-vision`](../packages/pi-vision/README.md) reads files for a model; the hero job and the reference host above use it. Three examples built around it are not in this repository yet. Each gets a row in the table above when it lands:
+[`@parcha/pi-vision`](../packages/pi-vision/README.md) reads files for a model. One agent, [`examples/vision-agent`](../examples/vision-agent/README.md), answers every question below; each folder holds only the question, the files' addresses and checks, and a README:
 
-- **Video chapters.** Drop a long film: the agent writes its chapters, each with a keyframe and the minutes it rests on.
-- **Hear and find.** Ask when a phrase is said and when a thing is first seen in a long film: the agent answers with both seconds, the frame and a box around the thing.
-- **Document verification.** Give it a certificate of incorporation: the agent answers yes or no for each characteristic a certificate of that state has, with a box on each thing it found in the document.
+- **[Video chapters](../examples/video-chapters/README.md).** A long film cut into chapters, each with a keyframe and the minutes it rests on.
+- **[Hear and find](../examples/hear-and-find/README.md).** When a phrase is said and when a thing is first seen in a long film: both seconds, the frame and a box around the thing.
+- **[Document check](../examples/document-check/README.md).** Two certified copies of a certificate of incorporation: which marks each carries and where, with a box on each.
+- **[The Apollo 11 descent](../examples/apollo-descent/README.md).** NASA's transcript, photographs and film, read into the landing minute by minute.
+- **[A government film, in chapters](../examples/boulder-chapters/README.md).** A 1930s film on the building of Boulder Dam, cut into chapters.
+- **[A robot in a long film](../examples/fair-robot/README.md).** When a golden robot is first seen in a 1939 film of nearly an hour, and where it is in the frame.
+- **[Lake Mead from space](../examples/lake-mead/README.md).** Thirteen Landsat images of one frame, 1984 to 2024: when the water fell most, and every shoreline it left, boxed and dated.
+- **[A trip down Market Street, 1906](../examples/market-street/README.md).** A single take from a cable car: every vehicle that crosses in front of the camera, to the second, boxed, then counted by kind.

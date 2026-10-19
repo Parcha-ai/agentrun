@@ -11,12 +11,12 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
-import { effectiveBoxes } from '../packages/reference/dist/demo-spec.js';
-import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-reference';
+import { effectiveBoxes } from '../packages/harness/dist/demo-spec.js';
+import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
 import { ORIGINAL, FIXTURE, BASELINE, run, composeHost, destroyBoxes, meterKnown, RUN_LABEL, localBoxes, ctx, finish, lines, planFor, recordingPlace, specWith, reap, SITES, signInHome, filesIn, killSpec, boxed } from './reference-demo-helpers.mjs';
 
 test('the sign-in\'s secret strings are read from auth.json by key (access, refresh, id token and an API key), a missing file is fine, and an unreadable or non-JSON one fails without a value in the message', async (t) => {
-  const { signInSecrets, signInFile } = await import('../packages/reference/dist/secrets.js');
+  const { signInSecrets, signInFile } = await import('../packages/harness/dist/secrets.js');
   const { home, tokens } = await signInHome(t);
   const found = signInSecrets(join(home, 'auth.json'));
   assert.deepEqual(found.map((secret) => secret.key.replace(`${home}/auth.json `, '')), ['credentials.openai.access', 'credentials.openai.refresh', 'credentials.openai.idToken', 'credentials.other.key']);
@@ -64,7 +64,7 @@ test('--record holds none of the sign-in\'s tokens in any line, text blob or the
   assert.ok(!readFileSync(join(plain.recording, 'events.jsonl'), 'utf8').includes('[redacted]'));
 });
 test('a sign-in file that cannot be read fails the record before the run, and the record-time scan refuses a secret that slipped through, naming the key and the file and never the value', async (t) => {
-  const { scanRecording } = await import('../packages/reference/dist/secrets.js');
+  const { scanRecording } = await import('../packages/harness/dist/secrets.js');
   const unreadable = await mkdtemp(join(tmpdir(), 'reference-unreadable-'));
   t.after(() => rm(unreadable, { recursive: true, force: true }));
   mkdirSync(join(unreadable, 'auth.json'));
@@ -119,7 +119,7 @@ test('a token the sign-in rotated twice during the run, which the child learned 
   assert.ok(files.some((file) => readFileSync(file, 'utf8').includes('[redacted]')), 'it was there to be redacted');
 });
 test('the final scan finds a token as a line stores it, JSON-escaped: one with a quote, a backslash or a newline', async (t) => {
-  const { scanRecording } = await import('../packages/reference/dist/secrets.js');
+  const { scanRecording } = await import('../packages/harness/dist/secrets.js');
   const dir = await mkdtemp(join(tmpdir(), 'reference-scan-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const value = 'made-up-token-with-"quote"-and-\\back\nline-' + 'q'.repeat(20);
@@ -130,7 +130,7 @@ test('the final scan finds a token as a line stores it, JSON-escaped: one with a
   assert.doesNotThrow(() => scanRecording(dir, [{ key: 'the key', value }]));
 });
 test('the tracker keeps the union of every value seen, reads a changed auth.json before the next write, and reads it once more at the end', async (t) => {
-  const { trackSecrets } = await import('../packages/reference/dist/secrets.js');
+  const { trackSecrets } = await import('../packages/harness/dist/secrets.js');
   const { home, tokens } = await signInHome(t);
   const file = join(home, 'auth.json');
   const tracked = trackSecrets({ AGENTRUN_HOME: home }, { name: 'x' });
@@ -161,7 +161,7 @@ test('a blob read while it is being written is absent or whole (written to a tem
   const sha = createHash('sha256').update(Buffer.alloc(bytes, 7)).digest('hex');
   const finalName = `${sha}.bin`;
   const blobs = join(tmp, 'blobs');
-  const child = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', '-e', `import("./packages/reference/dist/record.js").then((m) => process.stdout.write(m.keepBlob(process.argv[1], Buffer.alloc(${bytes}, 7), "bin")))`, tmp], { cwd: new URL('..', import.meta.url).pathname, stdio: ['ignore', 'pipe', 'inherit'] });
+  const child = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', '-e', `import("./packages/harness/dist/record.js").then((m) => process.stdout.write(m.keepBlob(process.argv[1], Buffer.alloc(${bytes}, 7), "bin")))`, tmp], { cwd: new URL('..', import.meta.url).pathname, stdio: ['ignore', 'pipe', 'inherit'] });
   const exited = new Promise((resolve) => child.on('close', resolve));
   const seen = { temporary: 0, whole: 0, absent: 0, torn: [] };
   while (child.exitCode === null && child.signalCode === null) {
@@ -181,7 +181,7 @@ test('a blob read while it is being written is absent or whole (written to a tem
   assert.deepEqual(readdirSync(join(tmp, '.spool')).filter((name) => name.startsWith('blob-')), [], 'no temporary file is left');
   assert.equal(createHash('sha256').update(readFileSync(join(blobs, finalName))).digest('hex'), sha, 'whole, and named by its own hash');
   // Already there: left alone.
-  const { keepBlob } = await import('../packages/reference/dist/record.js');
+  const { keepBlob } = await import('../packages/harness/dist/record.js');
   const before = statSync(join(blobs, finalName)).mtimeMs;
   assert.equal(keepBlob(tmp, Buffer.alloc(bytes, 7), 'bin'), sha);
   assert.equal(statSync(join(blobs, finalName)).mtimeMs, before);
@@ -189,7 +189,7 @@ test('a blob read while it is being written is absent or whole (written to a tem
 // ---- live mode, the recorder half ---------------------------------------------------------------------------------------------------------------
 
 test('the follower appends whole lines to events.jsonl in section 3\'s order as the spools fill; finishRecording completes the file, and the finished file equals a fresh export (a late line is placed by replacing the file whole)', async (t) => {
-  const { startedAt, followRecording, finishRecording, compareLines, assignMemoOrders } = await import('../packages/reference/dist/record.js');
+  const { startedAt, followRecording, finishRecording, compareLines, assignMemoOrders } = await import('../packages/harness/dist/record.js');
   const tmp = await mkdtemp(join(tmpdir(), 'reference-follow-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const dir = join(tmp, 'rec');
@@ -233,7 +233,7 @@ test('the follower appends whole lines to events.jsonl in section 3\'s order as 
   assert.ok(existsSync(join(dir, 'manifest.json')) && !existsSync(spool('')), 'the manifest is last, and the spool is gone');
 });
 test('the follower holds later lines behind a memo that waits, decodes a character a read cut in two whole, and reads only new bytes', async (t) => {
-  const { startedAt, followRecording } = await import('../packages/reference/dist/record.js');
+  const { startedAt, followRecording } = await import('../packages/harness/dist/record.js');
   const { syncBuiltinESMExports } = await import('node:module');
   const fs = (await import('node:fs')).default;
   const tmp = await mkdtemp(join(tmpdir(), 'reference-follow-order-'));
@@ -275,7 +275,7 @@ test('the follower holds later lines behind a memo that waits, decodes a charact
   assert.equal(events().at(-1).t, 40);
 });
 test('--record: a reader polling events.jsonl mid-run sees only whole lines in order and append-only, the finished file validates, and the manifest names the job blob (always, when the entry knows the job)', { timeout: 300_000 }, async (t) => {
-  const { compareLines } = await import('../packages/reference/dist/record.js');
+  const { compareLines } = await import('../packages/harness/dist/record.js');
   const tmp = await mkdtemp(join(tmpdir(), 'reference-live-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const file = join(tmp, 'spec.json');
@@ -305,8 +305,8 @@ test('--record: a reader polling events.jsonl mid-run sees only whole lines in o
   assert.deepEqual([job.workflow.name, job.input.company, Array.isArray(job.files)], ['reference-company-check', 'Acme Ltd', true]);
 });
 test('the follower redacts every line it places (a line a box\'s child wrote without the secret values is cleaned on its way in), live and in the finished file', async (t) => {
-  const { startedAt, followRecording, finishRecording } = await import('../packages/reference/dist/record.js');
-  const { redactorOf } = await import('../packages/reference/dist/secrets.js');
+  const { startedAt, followRecording, finishRecording } = await import('../packages/harness/dist/record.js');
+  const { redactorOf } = await import('../packages/harness/dist/secrets.js');
   const tmp = await mkdtemp(join(tmpdir(), 'reference-follow-redact-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const dir = join(tmp, 'rec');
@@ -326,8 +326,8 @@ test('the follower redacts every line it places (a line a box\'s child wrote wit
 
 });
 test('a path in a detail is replaced whole, spaces and all; and a machine named like one of the recording\'s own words is not redacted out of its lines', async () => {
-  const { plainText } = await import('../packages/reference/dist/demo.js');
-  const { machineSecrets, redactorOf } = await import('../packages/reference/dist/secrets.js');
+  const { plainText } = await import('../packages/harness/dist/demo.js');
+  const { machineSecrets, redactorOf } = await import('../packages/harness/dist/secrets.js');
   assert.equal(plainText('cannot open /tmp/Client Files/store: no such file'), 'cannot open <path>: no such file');
   const aliceHome = ['', 'home', 'alice'].join('/');
   assert.equal(plainText(`wrote ${aliceHome}/Private Documents/report.txt, then stopped`), 'wrote <path>, then stopped');
@@ -338,7 +338,7 @@ test('a path in a detail is replaced whole, spaces and all; and a machine named 
   assert.equal(redact ? redact(line) : line, line, 'the lines of the format are unchanged');
 });
 test('the placed-lines scan finds a token as a line stores it, JSON-escaped', async (t) => {
-  const { scanPlaced } = await import('../packages/reference/dist/secrets.js');
+  const { scanPlaced } = await import('../packages/harness/dist/secrets.js');
   const dir = await mkdtemp(join(tmpdir(), 'reference-placed-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const value = 'made-up-token-with-"quote"-and-\\back\nline-' + 'p'.repeat(20);
@@ -360,7 +360,7 @@ test('a follower that cannot write ends the run through the normal path: the run
   assert.ok(Date.now() - started < 60_000, 'the child was stopped, not waited for');
 });
 test('the follower does not publish a line that holds a credential shape: it stops the recording instead; and a recording that cannot be set up closes what it opened', { timeout: 120_000 }, async (t) => {
-  const { startedAt, followRecording } = await import('../packages/reference/dist/record.js');
+  const { startedAt, followRecording } = await import('../packages/harness/dist/record.js');
   const dir = await mkdtemp(join(tmpdir(), 'reference-follow-cred-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, '.spool'), { recursive: true });
@@ -382,7 +382,7 @@ test('the follower does not publish a line that holds a credential shape: it sto
   assert.ok(timers() <= before, 'the follower\'s timer was stopped');
 });
 test('the follower looks at the text blobs a line names before it places the line; and a failing kill after a follower error ends the attempt with the follower\'s error', { timeout: 120_000 }, async (t) => {
-  const { startedAt, followRecording } = await import('../packages/reference/dist/record.js');
+  const { startedAt, followRecording } = await import('../packages/harness/dist/record.js');
   const dir = await mkdtemp(join(tmpdir(), 'reference-follow-blob-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, '.spool'), { recursive: true });
@@ -412,7 +412,7 @@ test('the follower looks at the text blobs a line names before it places the lin
 });
 
 test('the scrub takes the run\'s user name (a whole token in a path segment or an ls column), its home directory and the paths under its directories out of lines and text blobs; ordinary words are left alone', async () => {
-  const { scrubOf } = await import('../packages/reference/dist/secrets.js');
+  const { scrubOf } = await import('../packages/harness/dist/secrets.js');
   const user = 'someuser';
   const home = ['', 'home', user].join('/');
   const run = ['', 'tmp', 'agentrun-demo-ab12cd'].join('/');
@@ -455,7 +455,7 @@ test('a tool result that carries the run\'s user name, home and run directory is
 });
 
 test('a machine named like an ordinary word (gateway) is redacted only as a whole token in text: never inside a JSON key, a dotted event name, a longer word or a source value; and a name of the format\'s own words (node) is not taken', async () => {
-  const { machineSecrets, redactorOf, scanRecording } = await import('../packages/reference/dist/secrets.js');
+  const { machineSecrets, redactorOf, scanRecording } = await import('../packages/harness/dist/secrets.js');
   assert.equal(machineSecrets('node').filter((secret) => secret.key.includes('host name')).length, 0, 'a name of the format\'s own words is not taken');
   const word = machineSecrets('gateway').filter((secret) => secret.key.includes('host name'));
   assert.equal(word.length, 1);
@@ -471,4 +471,67 @@ test('a machine named like an ordinary word (gateway) is redacted only as a whol
     writeFileSync(join(dir, 'events.jsonl'), 'connected to gateway\n');
     assert.throws(() => scanRecording(dir, word), /host name/);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('the agent\'s report (draft 41): report/index.html and the files it reaches in the run\'s work directory are recorded as blobs with manifest.artifact, a file nothing reaches is not, and the recording validates; a report that does what a page may not refuses the recording', async (t) => {
+  const folder = await mkdtemp(join(tmpdir(), 'reference-report-'));
+  t.after(() => rm(folder, { recursive: true, force: true }));
+  const page = (body) => `<!doctype html><html><head><title>The company check</title><link rel="stylesheet" href="site.css"></head><body>${body}</body></html>`;
+  mkdirSync(join(folder, 'img'));
+  writeFileSync(join(folder, 'index.html'), page('<img src="img/a.png"><a href="https://example.org/out">out</a>'));
+  writeFileSync(join(folder, 'site.css'), 'body { background: url(img/bg.png) }');
+  writeFileSync(join(folder, 'img', 'a.png'), 'picture a');
+  writeFileSync(join(folder, 'img', 'bg.png'), 'picture bg');
+  writeFileSync(join(folder, 'img', 'leftover.png'), 'an attempt\'s leftover');
+  const { recording } = await run(t, {}, ['--json'], { DEMO_REPORT: folder });
+  const manifest = JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.artifact.title, 'The company check');
+  assert.equal(manifest.artifact.entry, 'index.html');
+  assert.deepEqual(Object.keys(manifest.artifact.files).sort(), ['img/a.png', 'img/bg.png', 'index.html', 'site.css']);
+  for (const [path, hash] of Object.entries(manifest.artifact.files)) {
+    const bytes = readFileSync(join(recording, 'blobs', `${hash}.${path.slice(path.lastIndexOf('.') + 1)}`));
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), hash);
+    assert.deepEqual(bytes, readFileSync(join(folder, path)), `${path} is recorded byte for byte`);
+  }
+  assert.ok(!filesIn(join(recording, 'blobs')).some((file) => readFileSync(file, 'utf8') === 'an attempt\'s leftover'), 'a file the page does not reach is not kept');
+  assert.deepEqual(validateRecording(recording), []);
+  // A report with a script is refused: the recording is not finished.
+  writeFileSync(join(folder, 'index.html'), page('<script>steal()</script>'));
+  await assert.rejects(() => run(t, {}, ['--json'], { DEMO_REPORT: folder }), /the report is refused: index.html has a <script>/);
+});
+
+test('finishRecording removes the spool though a writer that outlived its kill is still adding files to it: no ENOTEMPTY, and the recording is finished', async (t) => {
+  const { startedAt, finishRecording } = await import('../packages/harness/dist/record.js');
+  const { spawn } = await import('node:child_process');
+  const failures = [];
+  for (let round = 0; round < 12; round += 1) {
+    const dir = await mkdtemp(join(tmpdir(), 'reference-spool-race-'));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    mkdirSync(join(dir, '.spool'), { recursive: true });
+    startedAt(dir);
+    writeFileSync(join(dir, '.spool', 'live-1.jsonl'), `${JSON.stringify({ channel: 'live', source: 'workflow', kind: 'x', gen: 1, seq: 0, t: 1, data: {} })}\n`);
+    // A process that was never stopped (the place refused the kill) keeps writing segments for a while: a file every few milliseconds for 250 ms.
+    const writer = spawn(process.execPath, ['-e', `const fs = require('node:fs'); const end = Date.now() + 400; let n = 0; const tick = () => { try { fs.mkdirSync(${JSON.stringify(join(dir, '.spool'))}, { recursive: true }); fs.writeFileSync(${JSON.stringify(join(dir, '.spool'))} + '/late-' + (n++) + '.jsonl', '{}\\n'); if (n === 1) process.stdout.write('writing\\n'); } catch {} if (Date.now() < end) setTimeout(tick, 2); }; tick();`], { stdio: ['ignore', 'pipe', 'ignore'] });
+    t.after(() => { try { writer.kill('SIGKILL'); } catch { /* gone */ } });
+    // The removal starts only once the child has written: the race is the one under test, whatever the machine's load.
+    await new Promise((resolve) => writer.stdout.once('data', resolve));
+    try { finishRecording(dir, { title: 't', task: 't', model: 'faux/faux-1', kills: 0, code: { repo: 'r', commit: 'c', packages: {} }, cost: { usd: 0, parts: {} }, source: { run: 'x', store_sha256: '0'.repeat(64) } }); } catch (error) { failures.push(String(error.code ?? error.message)); }
+    await new Promise((resolve) => writer.once('exit', resolve));
+    assert.ok(existsSync(join(dir, 'manifest.json')) || failures.length > 0, 'the manifest is written');
+  }
+  assert.deepEqual(failures, []);
+});
+
+test('removeSpool retries an ENOTEMPTY and throws the last error when it lasts, and another error at once', async () => {
+  const { removeSpool } = await import('../packages/harness/dist/record.js');
+  const fail = (code) => Object.assign(new Error(code), { code });
+  let calls = 0;
+  removeSpool('/x', { remove: () => { calls += 1; if (calls < 3) throw fail('ENOTEMPTY'); } });
+  assert.equal(calls, 3, 'two ENOTEMPTY, then it went through');
+  calls = 0;
+  assert.throws(() => removeSpool('/x', { withinMs: 100, remove: () => { calls += 1; throw fail('ENOTEMPTY'); } }), /ENOTEMPTY/);
+  assert.ok(calls > 1, 'it tried again before giving up');
+  calls = 0;
+  assert.throws(() => removeSpool('/x', { remove: () => { calls += 1; throw fail('EACCES'); } }), /EACCES/);
+  assert.equal(calls, 1, 'any other error is not retried');
 });

@@ -8,7 +8,7 @@
   "models": {
     "lead": { "needs": ["text", "tools"], "default": "google/gemini-3.8-flash" },
     "eyes": { "needs": ["video"], "default": "google/gemini-3.8-flash" },
-    "judge": { "jev": true, "caps": { "requests": 200, "tokens": 160000 } }
+    "judge": { "jev": true, "caps": { "requests": 500, "tokens": 2560000 } }
   },
   "keys": [
     {
@@ -24,7 +24,17 @@
       "why": "A model provider's key for --live (the run names every model by provider and public id).",
       "for": "live"
     },
-    { "env": "TYPESAFE_API_KEY", "why": "Jev at TypeSafe: jev-1.14.0, the first Jev that draws boxes, judges frames and pages.", "where": "typesafe.ai", "required": true, "for": "live" },
+    {
+      "oneOf": [
+        { "env": "TYPESAFE_API_KEY", "why": "Jev at TypeSafe: jev-1.14.0, the first Jev that draws boxes, judges frames and pages.", "where": "typesafe.ai", "required": true, "for": "live" },
+        [
+          { "env": "VIDEO_MODEL_BASE_URL", "why": "A gateway passes Jev through at its /typesafe.", "where": "your gateway's base URL, ending in /v1", "required": true },
+          { "env": "VIDEO_MODEL_API_KEY", "why": "The gateway's credential, which is Jev's key too when TYPESAFE_API_KEY is not set.", "where": "your gateway", "required": true }
+        ]
+      ],
+      "why": "Jev's key for --live: TypeSafe's own, or the gateway's.",
+      "for": "live"
+    },
     { "env": "TYPESAFE_BASE_URL", "why": "Another address for TypeSafe's API, when you reach it through a proxy of your own; with VIDEO_MODEL_BASE_URL set, Jev goes through that gateway's /typesafe instead.", "where": "your proxy's base URL", "required": false, "for": "live" },
     { "env": "FAL_KEY", "why": "Scribe v2 on fal, which writes what a recording says with each word's second, for a question about speech; not needed when the gateway passes fal's queue through (/fal-queue).", "where": "fal.ai, API keys", "required": false, "for": "live" }
   ],

@@ -1,0 +1,70 @@
+{
+  "sources": {
+    "file": "examples/hear-and-find/sources.json",
+    "items": [
+      {
+        "id": "eagle-has-landed",
+        "sha256": "c3ccbdfc11398b9e7c714722939aaac04ba008919721faa7a0ad421631df7dc8"
+      },
+      {
+        "id": "eagle-has-landed-original",
+        "sha256": "076bc85108feac9535a4b600c91431564e1ea9b0e8daae47682a155a7073f7d9"
+      }
+    ]
+  },
+  "models": {
+    "lead": "scripted lead (pi-ai faux)",
+    "eyes": "scripted-eyes",
+    "jev": "scripted-jev",
+    "transcriber": "scripted-words"
+  },
+  "format": "agentrun.recording/1",
+  "providers": "scripted",
+  "title": "Hear and Find",
+  "task": "hear-and-find",
+  "model": "faux/faux-1",
+  "kills": 0,
+  "code": {
+    "repo": "Parcha-ai/agentrun",
+    "commit": "69f2c5bde2a2eea38d23479ef5e58e77b8abd24b",
+    "packages": {
+      "@parcha/agentrun-dsl": "0.1.0-beta.15",
+      "@parcha/agentrun-jev": "0.1.0-beta.15",
+      "@parcha/agentrun-pi": "0.1.0-beta.15",
+      "@parcha/pi-agent-learn": "0.1.0-beta.15",
+      "@parcha/pi-browser": "0.1.0-beta.15",
+      "@parcha/pi-durable-agent": "0.1.0-beta.15",
+      "@parcha/pi-durable-disk": "0.1.0-beta.15",
+      "@parcha/pi-git-remote": "0.1.0-beta.15",
+      "@parcha/pi-transport": "0.1.0-beta.15",
+      "@parcha/pi-vision": "0.1.0-beta.15",
+      "@parcha/agentrun-serve": "0.1.0-beta.15",
+      "@earendil-works/pi-durable": "1.1.0",
+      "@earendil-works/chord": "1.1.0",
+      "@earendil-works/pi-ai": "1.1.0",
+      "@earendil-works/pi-agent-core": "1.1.0",
+      "@earendil-works/pi-coding-agent": "1.1.0",
+      "@earendil-works/pi-tui": "1.1.0"
+    }
+  },
+  "result": {
+    "blob": "67326854bc34530b5772fa41669759321451f34a60b4d2f54cd299b7265e5515",
+    "title": "eagle-heard-and-seen.webm: \"Contact light\" heard 1 time, a United States flag standing planted on the ground first seen at 0:28"
+  },
+  "generations": 1,
+  "cost": {
+    "usd": 0,
+    "parts": {
+      "model": 0,
+      "look": 0
+    }
+  },
+  "recorded": {
+    "started": "2026-10-18T01:58:57.930Z",
+    "ended": "2026-10-18T01:59:13.325Z"
+  },
+  "source": {
+    "run": "hear-and-find",
+    "store_sha256": "02ba95e8680c3708652116c386989c23e078059280c9992a7bd62d591d475976"
+  }
+}

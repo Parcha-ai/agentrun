@@ -33,7 +33,7 @@ SOFTWARE.\n`;
 const manifest = directory => ({ name: releasePackageNames[directory], ...(heldPackages.includes(directory) ? { private: true } : {}), version, license: 'MIT', type: 'module', files: ['dist', 'LICENSE'],
   repository: { type: 'git', url: 'git+https://github.com/Parcha-ai/agentrun.git', directory: `packages/${directory}` },
   homepage: 'https://agentrun.ai', bugs: { url: 'https://github.com/Parcha-ai/agentrun/issues' }, publishConfig: { access: 'public', tag: 'beta' },
-  ...(directory === 'dsl' || directory === 'pi-durable-disk' || directory === 'pi-browser' || directory === 'pi-vision' || directory === 'pi-transport' || directory === 'pi-durable-agent' || directory === 'pi-git-remote' ? {} : directory === 'serve' ? { dependencies: { '@parcha/pi-durable-agent': version, '@parcha/pi-durable-disk': version } } : directory === 'pi-agent-learn' ? { dependencies: { '@parcha/pi-git-remote': version } } : directory === 'reference' ? { dependencies: { '@parcha/agentrun-dsl': version, '@parcha/agentrun-pi': version, '@parcha/pi-browser': version, '@parcha/pi-durable-disk': version, '@parcha/pi-vision': version } } : { dependencies: { '@parcha/agentrun-dsl': version, ...(directory === 'pi' ? { '@parcha/agentrun-jev': version } : {}) } }),
+  ...(directory === 'dsl' || directory === 'pi-durable-disk' || directory === 'pi-browser' || directory === 'pi-vision' || directory === 'pi-transport' || directory === 'pi-durable-agent' || directory === 'pi-git-remote' ? {} : directory === 'serve' ? { dependencies: { '@parcha/pi-durable-agent': version, '@parcha/pi-durable-disk': version } } : directory === 'pi-agent-learn' ? { dependencies: { '@parcha/pi-git-remote': version } } : directory === 'harness' ? { dependencies: { '@parcha/agentrun-dsl': version, '@parcha/agentrun-pi': version, '@parcha/pi-browser': version, '@parcha/pi-durable-disk': version, '@parcha/pi-vision': version } } : { dependencies: { '@parcha/agentrun-dsl': version, ...(directory === 'pi' ? { '@parcha/agentrun-jev': version } : {}) } }),
 });
 const putJson = (path, value) => writeFile(path, JSON.stringify(value));
 let baseline;
@@ -60,7 +60,7 @@ async function recordPackages(root) {
     packages.push({ name: packed.name, version, filename: packed.filename, sha256 });
   }
   await putJson(join(root, '.release/verification.json'), { status: 'passed', packages,
-    runtimeSmoke: { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, agent: true, serve: true, git: true, learn: true, reference: true, network: 'prohibited' }, audit: { vulnerabilities: { high: 0, critical: 0 } } });
+    runtimeSmoke: { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, agent: true, serve: true, git: true, learn: true, harness: true, network: 'prohibited' }, audit: { vulnerabilities: { high: 0, critical: 0 } } });
 }
 after(async () => { await rm(baseline, { recursive: true, force: true }); });
 async function fixture(fn) {
@@ -94,8 +94,8 @@ test('a failed TypeScript floor rerun replaces stale success evidence', async ()
 test('release plan binds the exact verified tarballs in dependency order', () => fixture(async root => {
   const plan = await preflight(root);
   assert.deepEqual(plan.packages.map(pkg => pkg.directory), releasePackages);
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/pi-transport', '@parcha/agentrun-reference']);
-  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-agentrun-pi-${version}.tgz`, `parcha-pi-durable-disk-${version}.tgz`, `parcha-pi-browser-${version}.tgz`, `parcha-pi-vision-${version}.tgz`, `parcha-pi-transport-${version}.tgz`, `parcha-agentrun-reference-${version}.tgz`]);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/pi-transport', '@parcha/agentrun-harness']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-agentrun-pi-${version}.tgz`, `parcha-pi-durable-disk-${version}.tgz`, `parcha-pi-browser-${version}.tgz`, `parcha-pi-vision-${version}.tgz`, `parcha-pi-transport-${version}.tgz`, `parcha-agentrun-harness-${version}.tgz`]);
   assert.ok(plan.packages.every(pkg => /^sha512-/.test(pkg.integrity) && /^[a-f0-9]{64}$/.test(pkg.sha256)));
 }));
 test('unlicensed source and inconsistent tags fail before publication', () => fixture(async root => {
@@ -213,7 +213,7 @@ test('Apache release preserves the approved root license and notices in every ar
   await recordPackages(root);
   const plan = await preflight(root);
   assert.equal(plan.license, 'Apache-2.0');
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/pi-transport', '@parcha/agentrun-reference']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/agentrun-pi', '@parcha/pi-durable-disk', '@parcha/pi-browser', '@parcha/pi-vision', '@parcha/pi-transport', '@parcha/agentrun-harness']);
   await writeFile(join(root, 'packages/pi-durable-disk/NOTICE'), `${notice}\nThird-party notice kept after the repository's.\n`);
   await recordPackages(root);
   assert.equal((await preflight(root)).packages.length, releasePackages.length, 'a published package may append third-party notices to the root NOTICE');
@@ -247,8 +247,20 @@ test('the publish set is the explicit release map minus the held packages, and a
   for (const name of heldPackages) assert.equal(repoManifest(name).publishConfig?.access, 'public');
 });
 
+test('the root README\'s status column says published exactly for the packages a release publishes', () => {
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  const table = readme.split(/^### Use one piece$/m)[1].split(/^#/m)[0];
+  const directories = new Map(listedPackages.map(directory => [releasePackageNames[directory], directory]));
+  const rows = [...table.matchAll(/^\| \[`(@parcha\/[a-z-]+)`\].*\| ([^|]+) \|$/gm)];
+  assert.ok(rows.length > 0, 'the table has rows');
+  for (const [, name, status] of rows) {
+    assert.ok(directories.has(name), `${name} is in the release map`);
+    assert.match(status, heldPackages.includes(directories.get(name)) ? /^held\b/ : /^published\b/, `${name}: ${status}`);
+  }
+});
+
 test('publication order is dependency order, fixed by the release map and not by directory listing', () => {
-  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'reference'], 'dsl before jev and pi, the packages that depend on none of them after, then serve (@parcha/agentrun-serve), which depends on pi-durable-disk and pi-durable-agent, and the reference host, which depends on dsl, pi, pi-browser, pi-durable-disk and pi-vision, last');
+  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'harness'], 'dsl before jev and pi, the packages that depend on none of them after, then serve (@parcha/agentrun-serve), which depends on pi-durable-disk and pi-durable-agent, and the reference host, which depends on dsl, pi, pi-browser, pi-durable-disk and pi-vision, last');
   const names = new Map(listedPackages.map(directory => [releasePackageNames[directory], directory]));
   for (const directory of listedPackages) {
     for (const dependency of Object.keys(repoManifest(directory).dependencies ?? {})) {
@@ -359,7 +371,7 @@ test('the transport package is published: listed, not held, a release manifest a
   checkManifest(repoManifest('pi-transport'), 'pi-transport', workspace.version, workspace.license);
   const plan = (await preflight(root)).packages.map(pkg => pkg.name);
   assert.ok(plan.indexOf('@parcha/pi-transport') > plan.indexOf('@parcha/pi-vision'), 'in the plan, after the packages before it in the map');
-  assert.equal(plan.at(-1), '@parcha/agentrun-reference', 'the reference host stays last');
+  assert.equal(plan.at(-1), '@parcha/agentrun-harness', 'the harness host stays last');
 }));
 
 test('a release is refused while fragments remain or the changelog lacks the version', () => fixture(async root => {

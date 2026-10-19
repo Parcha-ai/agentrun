@@ -1,0 +1,19 @@
+{
+  "tool": "transcribe",
+  "args": {
+    "path": "eagle-heard-and-seen.webm#t=0,34.092",
+    "model": "scripted-words",
+    "native": false,
+    "via": "scripted"
+  },
+  "status": "ok",
+  "body": "1.00\t3.15\tWe copy you down, Eagle. Houston, uh,\n4.70\t6.75\tTranquility Base here. The Eagle has landed.\n10.40\t14.05\tContact light. Okay, engine stop. We copy you down, Eagle.\n15.06\t17.11\tTranquility Base here. The Eagle has landed.\n26.00\t28.65\tAn American flag is left behind on the Moon.",
+  "facts": {
+    "sha256": "257fa61a6590f71e351e2d19ed9d22625db3281de4ef311e06b2c8061bbe79df",
+    "kind": "audio",
+    "fragment": "",
+    "key": "98b971723aadca5b7de7c10f261f6bca98c2fa9ce5e67a345842fea014cf8f76",
+    "provider": "scripted",
+    "cost_usd": 0
+  }
+}
