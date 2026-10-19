@@ -1319,10 +1319,18 @@ describe("boxEnv: a stop whose kill call fails", () => {
 			await pending;
 			expect(script).toContain("live() {");
 			// A zombie that nothing reaps: a child that exited, alone in its own process group, under a parent that never waits. In a container whose
-			// first process does not reap, this is what a killed group looks like for ever, and `kill -0` on it still succeeds.
-			const parent = spawn("sh", ["-c", "setsid sh -c 'exit 0' & echo $!; exec sleep 3600"], {
-				stdio: ["ignore", "pipe", "ignore"],
-			});
+			// first process does not reap, this is what a killed group looks like for ever, and `kill -0` on it still succeeds. The child exits only
+			// once its parent is the `sleep` that never waits: a child that exited first could be reaped by the shell before its `exec`, and would
+			// never be a zombie. `setsid` runs in place (a background job of a shell without job control leads no group), so `$!` is the child
+			// and its `$PPID` the outer shell. The wait is bounded, so a child whose parent never becomes `sleep` exits and the test fails, not hangs.
+			const parent = spawn(
+				"sh",
+				[
+					"-c",
+					"setsid sh -c 'i=0; while [ \"$(cat /proc/$PPID/comm)\" != sleep ] && [ $i -lt 1000 ]; do sleep 0.01; i=$((i + 1)); done; exit 0' & echo $!; exec sleep 3600",
+				],
+				{ stdio: ["ignore", "pipe", "ignore"] },
+			);
 			try {
 				const group = await new Promise<string>((resolve) =>
 					parent.stdout.once("data", (chunk) => resolve(String(chunk).trim())),
@@ -1334,6 +1342,14 @@ describe("boxEnv: a stop whose kill call fails", () => {
 								.split(" ")[0]
 						: "gone";
 				await waitFor(() => state() === "Z", 5_000, "the child to be a zombie");
+				// The zombie is the child the test made: the leader of its own group, under the parent that never reaps.
+				const fields = readFileSync(`/proc/${group}/stat`, "utf8")
+					.replace(/^[0-9]+ \(.*\) /, "")
+					.split(" ");
+				expect([fields[1], fields[2]], "its parent is the sleep, and it leads its own group").toEqual([
+					String(parent.pid),
+					group,
+				]);
 				const id = `zombie-${process.pid}-${Date.now()}`;
 				const stateDir = join(root, box.id, "tmp", ".pi-transport");
 				mkdirSync(stateDir, { recursive: true });
