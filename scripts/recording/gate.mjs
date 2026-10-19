@@ -11,10 +11,11 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { FORBIDDEN, credentialInFile } from '../../packages/harness/src/scan.ts';
+import { SHOWN_AS_DATA } from '../../apps/viewer/src/blobs.ts';
 import { validateRecording } from './validate.mjs';
 
 const MACHINE_PATH = FORBIDDEN.find(([name]) => name === 'machine path')[1];
-const BLOB = /^([0-9a-f]{64})\.[a-z0-9]+$/;
+const BLOB = /^([0-9a-f]{64})\.([a-z0-9]+)(\.txt)?$/;
 const TEXT = /\.(?:html|js|css|json|jsonl|txt|md|csv|svg|xml|yaml|yml|log)$/i;
 const GALLERY = 'window.AGENTRUN_GALLERY = ';
 /** gallery.js in a build that ships the recordings as files (`build.mjs --files`): it only points at the index. */
@@ -45,6 +46,8 @@ export function gateProblems(dist) {
       for (const blob of readdirSync(join(dir, 'blobs'), { withFileTypes: true })) {
         const named = BLOB.exec(blob.name);
         if (!blob.isFile() || !named) add(`${at}/blobs/${blob.name}`, 'is not a blob named by its SHA-256');
+        // A page, an SVG or a script opened straight would run on the gallery's site: it is published as `<name>.txt`.
+        else if (!named[3] && !SHOWN_AS_DATA.has(named[2])) add(`${at}/blobs/${blob.name}`, `would open as a page: a .${named[2]} blob is published as ${blob.name}.txt`);
         else if (createHash('sha256').update(readFileSync(join(dir, 'blobs', blob.name))).digest('hex') !== named[1]) add(`${at}/blobs/${blob.name}`, 'does not hash to its name');
       }
     }

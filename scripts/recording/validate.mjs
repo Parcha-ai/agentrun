@@ -148,8 +148,9 @@ function artifactFileProblems(artifact, dir, lookKeys, lookSources, add) {
   const base = path => path.slice(path.lastIndexOf('/') + 1);
   for (const [path, hash] of Object.entries(artifact.files)) {
     const extension = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
-    const file = join(dir, 'blobs', `${hash}.${extension}`);
-    if (!existsSync(file)) { add(where, `artifact file ${path} needs blob ${hash}.${extension}, which is not in blobs/`); continue; }
+    // A published copy (apps/viewer/build.mjs) holds a page or a script as `<hash>.<extension>.txt`, plain text when opened.
+    const file = [`${hash}.${extension}`, `${hash}.${extension}.txt`].map((name) => join(dir, 'blobs', name)).find((each) => existsSync(each));
+    if (!file) { add(where, `artifact file ${path} needs blob ${hash}.${extension}, which is not in blobs/`); continue; }
     const bytes = readFileSync(file);
     if (createHash('sha256').update(bytes).digest('hex') !== hash) { add(where, `blob ${hash}.${extension} of artifact file ${path} does not hash to its name`); continue; }
     if (TEXT_FILE.test(file)) {
