@@ -225,6 +225,52 @@ export function chatTitle(manifest: Recording['manifest'], inputValue: Json | un
 }
 
 /** A run as a gallery card, from the run alone: its title, and its question as the card's line. */
+/** A box a look's answer found: in percent of the image the look was shown (`x`, `y`, `w`, `h`), and the `xywh` of the
+ *  address the answer names for it (`at`). */
+export type ChatLookBox = { x: number; y: number; w: number; h: number; at: string };
+
+/** A look the run filed, by its key: the image it was shown (the first it lists, else the picture its facts name) and the
+ *  boxes its answer found; a box whose own yes-or-no says no is no finding. Undefined when the run filed no such look. */
+export function chatLookBoxes(lines: Recording['lines'], key: string): { image?: string; boxes: ChatLookBox[] } | undefined {
+  for (const line of lines) {
+    if (line.kind !== 'vision.looks' || line.channel !== 'durable') continue;
+    const looks = chatList(chatObj(chatObj(line.data)?.value)?.looks).map(chatObj).filter((look): look is Obj => !!look);
+    for (const look of looks) {
+      const record = chatObj(look.record);
+      if ((chatStr(chatObj(record?.facts)?.key) ?? (looks.length === 1 ? chatStr(chatObj(line.data)?.key) : undefined)) !== key) continue;
+      const image = chatList(look.images).map((each) => chatStr(each) ?? chatStr(chatObj(each)?.blob)).find((sha) => !!sha) ?? chatStr(chatObj(record?.facts)?.sha256);
+      const raw = chatStr(record?.body)?.trim() ?? '';
+      let body: Obj | undefined;
+      try { body = raw.startsWith('{') ? chatObj(JSON.parse(raw) as Json) : undefined; } catch { body = undefined; }
+      const boxes: ChatLookBox[] = [];
+      for (const [name, value] of Object.entries(body ?? {})) {
+        const answer = chatObj(value);
+        const box = chatObj(answer?.box);
+        if (answer?.type !== 'box' || !box || typeof answer.fragment !== 'string') continue;
+        const present = chatObj(body![name.replace(/_at$/, '')]);
+        if (present?.type === 'noul' && typeof present.noul === 'number' && present.noul < 0.5) continue;
+        const [top, bottom, left, right] = ['top', 'bottom', 'left', 'right'].map((side) => box[side]);
+        const at = chatAddress(answer.fragment).params.get('xywh');
+        if (![top, bottom, left, right].every((n) => typeof n === 'number' && Number.isFinite(n)) || !at) continue;
+        const percent = (n: number) => Math.round(n * 100_000) / 1000;
+        boxes.push({ x: percent(left as number), y: percent(top as number), w: percent((right as number) - (left as number)), h: percent((bottom as number) - (top as number)), at });
+      }
+      return { ...(image ? { image } : {}), boxes };
+    }
+  }
+  return undefined;
+}
+
+/** What a card shows of the looks it names: the first named look's image, the named looks the run filed on that same
+ *  image, and their boxes, each with its look's key. Undefined when the first look is not filed or names no image. */
+export function chatLooksShown(lines: Recording['lines'], keys: readonly string[]): { image: string; looks: string[]; boxes: (ChatLookBox & { look: string })[] } | undefined {
+  const found = keys.flatMap((key) => { const look = chatLookBoxes(lines, key); return look ? [{ key, ...look }] : []; });
+  const image = found[0]?.key === keys[0] ? found[0]?.image : undefined;
+  if (!image) return undefined;
+  const same = found.filter((look) => look.image === image);
+  return { image, looks: same.map((look) => look.key), boxes: same.flatMap((look) => look.boxes.map((box) => ({ ...box, look: look.key }))) };
+}
+
 export function chatCard(recording: Pick<Recording, 'manifest' | 'lines'>): { title: string; line?: string } {
   const inputValue = chatRunInput(recording.lines);
   const question = chatQuestion(inputValue)?.trim();

@@ -9,7 +9,7 @@ import { stripTypeScriptTypes } from 'node:module';
 import { basename, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MIME } from './src/blobs.ts';
-import { chatCard } from './src/chat-extract.ts';
+import { chatCard, chatLooksShown } from './src/chat-extract.ts';
 import { parseLines } from './src/format.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
@@ -58,8 +58,9 @@ function bundle(entry) {
   });
 }
 
-/** The gallery's order and posters, a maintainer's choice: `recordings.lock.json`'s ids, each `{ id, poster? }` with
- *  `poster` the SHA-256 of an image the recording holds. None when the file is absent. */
+/** The gallery's order and posters, a maintainer's choice: `recordings.lock.json`'s ids, each `{ id, poster?, looks? }`
+ *  with `poster` the SHA-256 of an image the recording holds and `looks` the keys of looks the run filed on one image:
+ *  the card shows that image with the boxes the run's own report marked for them. None when the file is absent. */
 function lockOf(path) {
   if (!existsSync(path)) return [];
   const ids = JSON.parse(readFileSync(path, 'utf8')).ids;
@@ -104,7 +105,12 @@ export function build(target = out, recordingsDir = join(here, 'recordings'), { 
     const rank = locked.findIndex((each) => each.id === id);
     const poster = locked[rank]?.poster;
     const held = poster ? readdirSync(join(dir, 'blobs')).find((name) => name.startsWith(`${poster}.`) && IMAGE.test(extname(name).slice(1))) : undefined;
-    const card = { ...chatCard({ manifest, lines: parseLines(events) }), ...(held ? { poster } : {}), ...(rank >= 0 ? { rank } : {}) };
+    const lines = parseLines(events);
+    // A card that names looks shows their image, with the boxes their answers found; else the lock's poster.
+    const named = Array.isArray(locked[rank]?.looks) ? locked[rank].looks.filter((key) => typeof key === 'string') : [];
+    const shown = named.length ? chatLooksShown(lines, named) : undefined;
+    const lookImage = shown && readdirSync(join(dir, 'blobs')).some((name) => name.startsWith(`${shown.image}.`) && IMAGE.test(extname(name).slice(1))) ? shown.image : undefined;
+    const card = { ...chatCard({ manifest, lines }), ...(lookImage ? { poster: lookImage, looks: shown.looks, boxes: shown.boxes } : held ? { poster } : {}), ...(rank >= 0 ? { rank } : {}) };
     gallery.push(files ? { id, manifest, blobs, card } : { id, manifest, events, blobs, card });
     cpSync(dir, join(target, 'recordings', id), { recursive: true, filter: (source) => !unfinished(basename(source)) });
   }

@@ -50,10 +50,18 @@
   .lcard { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 12px; background: var(--panel); border: 1px solid var(--rule); color: var(--ink); text-decoration: none; }
   .lcard:hover, .lcard:focus-visible { border-color: #ff8700; outline: none; }
   .lcard.words { padding-top: 16px; }
-  .lposter { display: block; aspect-ratio: 16 / 10; overflow: hidden; background: #000; border: 1px solid var(--rule); }
-  .lposter img { display: block; width: 100%; height: 100%; object-fit: cover; }
-  .lposter.wide { background: transparent; }
-  .lposter.wide img { object-fit: contain; }
+  .lposter { position: relative; display: block; aspect-ratio: 16 / 10; overflow: hidden; background: #000; border: 1px solid var(--rule); }
+  /* The picture in a frame of its own shape: fitted to the box's width (losing its top and bottom when narrower), or whole
+     (wide: bands above and below; tall: bands at the sides). Its boxes are placed on the frame, in percent of the picture. */
+  .lframe { position: absolute; left: 0; top: 50%; width: 100%; transform: translateY(-50%); aspect-ratio: var(--ar, 16 / 10); }
+  .lposter.tall .lframe { top: 0; left: 50%; width: auto; height: 100%; transform: translateX(-50%); }
+  .lframe img { display: block; width: 100%; height: 100%; }
+  .lposter.wide, .lposter.tall { background: transparent; }
+  .lbox { position: absolute; border: 2px solid #e551ba; pointer-events: none; }
+  .llabel { position: absolute; z-index: 1; left: -2px; bottom: 100%; background: #e551ba; color: #080809; font: 500 11px/1.6 "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding: 0 5px; white-space: nowrap; }
+  .lbox.below .llabel, .lbox.swap .llabel { bottom: auto; top: 100%; }
+  .lbox.below.swap .llabel { top: auto; bottom: 100%; }
+  .lbox.flip .llabel { left: auto; right: -2px; }
   .ltitle { font: 500 13.5px/1.4 "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
   .lline { font-size: 14px; line-height: 1.5; color: var(--muted); overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
   @media (max-width: 1100px) { .lcards, .lcards[data-n] { grid-template-columns: repeat(2, minmax(0, 1fr)); } .lcards[data-n="1"] { grid-template-columns: minmax(0, 560px); } }

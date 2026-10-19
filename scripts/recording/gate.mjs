@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { chatCard } from '../../apps/viewer/src/chat-extract.ts';
+import { chatCard, chatLooksShown } from '../../apps/viewer/src/chat-extract.ts';
 import { parseLines } from '../../apps/viewer/src/format.ts';
 import { FORBIDDEN, credentialInFile } from '../../packages/harness/src/scan.ts';
 import { validateRecording } from './validate.mjs';
@@ -98,15 +98,19 @@ export function gateProblems(dist) {
     // the lock's order, and a poster that is an image the recording holds.
     if ('card' in entry) {
       const card = entry.card;
-      const shape = isObject(card) && Object.keys(card).every((key) => ['title', 'line', 'poster', 'rank'].includes(key))
+      const shape = isObject(card) && Object.keys(card).every((key) => ['title', 'line', 'poster', 'looks', 'boxes', 'rank'].includes(key))
         && typeof card.title === 'string' && card.title.trim() !== '' && (card.line === undefined || typeof card.line === 'string')
+        && (card.looks === undefined ? card.boxes === undefined : Array.isArray(card.looks) && card.looks.length > 0 && card.looks.every((key) => typeof key === 'string') && Array.isArray(card.boxes))
         && (card.rank === undefined || (Number.isInteger(card.rank) && card.rank >= 0));
-      if (!shape) add(where, `holds a card for ${entry.id} that is not { title, line?, poster?, rank? }`);
+      if (!shape) add(where, `holds a card for ${entry.id} that is not { title, line?, poster?, looks?, boxes?, rank? }`);
       else if (card.poster !== undefined && !(typeof card.poster === 'string' && /\.(png|jpe?g|webp|gif)$/.test(held.get(card.poster) ?? ''))) add(where, `names ${JSON.stringify(card.poster)} as the poster of ${entry.id}, not an image it holds`);
       if (shape) {
         const lines = existsSync(join(dir, 'events.jsonl')) ? parseLines(readFileSync(join(dir, 'events.jsonl'), 'utf8')) : [];
         const own = manifest ? chatCard({ manifest, lines }) : undefined;
         if (!own || card.title !== own.title || card.line !== own.line) add(where, `holds a card for ${entry.id} other than its run gives`);
+        // A card that names looks shows their image and exactly the boxes their answers found.
+        const looked = card.looks === undefined ? undefined : chatLooksShown(lines, card.looks);
+        if (card.looks !== undefined && (!looked || card.poster !== looked.image || canonical(card.looks) !== canonical(looked.looks) || canonical(card.boxes) !== canonical(looked.boxes))) add(where, `names ${JSON.stringify(card.looks)} as the looks of ${entry.id}'s card, other than looks the run filed on that image with those boxes`);
       }
     }
   }

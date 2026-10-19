@@ -6,7 +6,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseLines, type Json, type Recording } from '../src/format.ts';
-import { chatCiteHref, chatCommandLine, chatSaid, chatToolTitle, extractChat } from '../src/chat-extract.ts';
+import { chatCiteHref, chatCommandLine, chatLookBoxes, chatLooksShown, chatSaid, chatToolTitle, extractChat } from '../src/chat-extract.ts';
 import { blobsNamed } from '../src/load.ts';
 import type { ChatItem, ChatModel } from '../src/chat-model.ts';
 
@@ -351,4 +351,27 @@ test('an .mp4 blob is a video, and opens in place like a .webm', async () => {
   const { typeOfName, opensInPage } = await import('../src/blobs.ts');
   assert.equal(typeOfName('film-descent.mp4'), 'video/mp4');
   assert.ok(opensInPage(typeOfName('film-descent.mp4')));
+});
+
+/** A vision.looks line filing one look: its key, the images it lists and its answer. */
+const filed = (key: string, images: string[], answer: Record<string, unknown>) => ({ channel: 'durable', source: 'vision', kind: 'vision.looks', gen: 1, commit: 1, order: 0, t: 1,
+  data: { doc: 'vision.looks', key, value: { looks: [{ record: { facts: { key }, body: JSON.stringify(answer) }, images }] }, version: 1 } });
+const box = (top: number, bottom: number, left: number, right: number, fragment: string) => ({ type: 'box', box: { top, bottom, left, right }, confidence: 0.9, fragment });
+
+test('a look by its key: the image it was shown and the boxes its answer found, in percent of that image, with the address each names; a box its own yes-or-no denies is no finding', () => {
+  const lines = parseLines(readFileSync(join(hearAndFind, 'events.jsonl'), 'utf8'));
+  assert.deepEqual(chatLookBoxes(lines, '4ca88ba105746003882f2005149bae2b10f7c64580065826933785b1faa42007'),
+    { image: 'e93732bf7c4c17f774a9f0fb03fc07a84a486a79ce41588318a6201cefbe0e1b', boxes: [{ x: 30.3, y: 5.6, w: 50.3, h: 54.4, at: 'percent:30.3,5.6,50.3,54.4' }] });
+  assert.equal(chatLookBoxes(lines, 'f'.repeat(64)), undefined, 'a look the run did not file');
+  const denied = [filed('k', ['strip'], { seal: { type: 'noul', noul: 0.1 }, seal_at: box(0.1, 0.2, 0.1, 0.2, 'a.pdf#page=1&xywh=percent:10,80,10,2'),
+    sig: { type: 'noul', noul: 0.9 }, sig_at: box(0.5, 0.75, 0.25, 0.5, 'a.pdf#page=1&xywh=percent:25,90,25,5') })] as unknown as Recording['lines'];
+  assert.deepEqual(chatLookBoxes(denied, 'k'), { image: 'strip', boxes: [{ x: 25, y: 50, w: 25, h: 25, at: 'percent:25,90,25,5' }] }, 'the box is on the image; its address is the page\'s');
+});
+
+test('what a card shows of the looks it names: the first look\'s image, the named looks on that same image, and their boxes with their looks\' keys', () => {
+  const lines = [filed('a', ['frame'], { where: box(0.1, 0.5, 0.1, 0.4, 'f.mp4#t=9&xywh=percent:10,10,30,40') }), filed('b', ['frame'], { where: box(0.6, 0.9, 0.7, 0.9, 'f.mp4#t=9&xywh=percent:70,60,20,30') }),
+    filed('c', ['other'], { where: box(0, 1, 0, 1, 'f.mp4#t=12&xywh=percent:0,0,100,100') })] as unknown as Recording['lines'];
+  assert.deepEqual(chatLooksShown(lines, ['a', 'c', 'b']), { image: 'frame', looks: ['a', 'b'],
+    boxes: [{ x: 10, y: 10, w: 30, h: 40, at: 'percent:10,10,30,40', look: 'a' }, { x: 70, y: 60, w: 20, h: 30, at: 'percent:70,60,20,30', look: 'b' }] });
+  assert.equal(chatLooksShown(lines, ['z', 'a']), undefined, 'the first look named must be one the run filed');
 });
