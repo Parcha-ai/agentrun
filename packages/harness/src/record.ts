@@ -53,7 +53,7 @@ export function lazyRecorder(open: () => Recorder): Recorder & { start(): void; 
   };
 }
 
-const EXTENSIONS: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'txt' };
+const EXTENSIONS: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'txt', 'video/mp4': 'mp4', 'video/webm': 'webm' };
 
 /** Moves every image block inside `data` into `blobs/`, leaving `{ type: 'image', mimeType, blob }`: the SHA-256 of the file. A
  *  block that already names a blob is left alone. Returns the data and the hashes it now points at. */

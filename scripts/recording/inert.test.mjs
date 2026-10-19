@@ -153,3 +153,18 @@ test('a directory in blobs/ is a problem, not a crash, in the validator and the 
   assert.ok(problems(dir).some((each) => /is not a file/.test(each)), problems(dir).join(' | '));
   assert.ok(gated(t, dir).some((each) => /is not a file|is not a blob/.test(each)));
 });
+
+test('a native video block (mp4, webm) is kept with its own extension, and a text file that shares its hash with a media file is still scanned', (t) => {
+  const kept = [];
+  for (const mimeType of ['video/mp4', 'video/webm']) moveImages({ content: [{ type: 'image', mimeType, data: Buffer.from('frames').toString('base64') }] }, (bytes, extension) => { kept.push(extension); return sha(bytes); });
+  assert.deepEqual(kept, ['mp4', 'webm']);
+  // One content, a .png and a .json, the hash named by a line: the key in the .json is found, not hidden by the .png.
+  const text = `{"key":"AIza${'Ab1_-'.repeat(7)}"}`;
+  const hash = sha(text);
+  const dir = recording(t, { [`${hash}.png`]: text, [`${hash}.json`]: text });
+  const lines = readFileSync(join(dir, 'events.jsonl'), 'utf8').split('\n').filter(Boolean);
+  const first = JSON.parse(lines[0]);
+  first.blobs = [hash];
+  writeFileSync(join(dir, 'events.jsonl'), [JSON.stringify(first), ...lines.slice(1)].join('\n') + '\n');
+  assert.ok(problems(dir).some((each) => /contains a google api key/.test(each)), problems(dir).join(' | '));
+});
