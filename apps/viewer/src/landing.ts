@@ -1,15 +1,15 @@
 // The gallery's landing: the site's own line about what a run does, then the featured runs as cards. Every card shows
 // only what its run holds (the card the build wrote from it): its title, its question, and the poster the gallery's lock
-// names among the run's own pictures. A run with no poster is a card of words.
+// names among the run's own pictures. A run with no poster is a card of words. Only a run a real model made is featured.
 
 /** A run's card, written by the build from the run itself; `rank` is its place in the gallery's lock. */
 export type LandingCard = { title: string; line?: string; poster?: string; rank?: number };
-type LandingEntry = { id: string; blobs: Record<string, string>; card?: LandingCard };
+type LandingEntry = { id: string; blobs: Record<string, string>; card?: LandingCard; manifest: { providers?: 'real' | 'scripted' } };
 
-/** What AgentRun is, in the README's own sentence. */
-const LANDING_DEFINITION = 'AgentRun is a workflow language for the agents you already run.';
-const LANDING_LINE = 'Ask a question about a film, a document or a pile of photos. One agent reads them and shows you where every answer comes from.';
-const LANDING_SUB = 'It writes code to look, listen and check; Jev judges what it finds; every run ends with the agent\'s own report, each line citing the page, second or region it rests on.';
+/** What AgentRun is, in the site's own line. */
+const LANDING_DEFINITION = 'Open-source packages for your pi agent.';
+const LANDING_LINE = 'Watch an agent answer questions about films, documents and images.';
+const LANDING_SUB = 'Open a run to see each step it took and the report it wrote. Every answer cites its page, second or region.';
 const LANDING_LINKS = [['GitHub', 'https://github.com/Parcha-ai/agentrun'], ['Docs', 'https://github.com/Parcha-ai/agentrun/blob/main/docs/guide.md']] as const;
 const LANDING_BRAND = '<svg width="18" height="18" viewBox="0 0 64 64" aria-hidden="true"><path d="M18 12L42 32L18 52" fill="none" stroke="#ff8700" stroke-width="8" stroke-linecap="square"/></svg>';
 
@@ -23,9 +23,9 @@ const landingEl = <K extends keyof HTMLElementTagNameMap>(tag: K, props: Record<
   return node;
 };
 
-/** The runs the lock features, in its order. */
+/** The runs the lock features, in its order: a scripted run never, whatever the lock says. */
 export const landingFeatured = <E extends LandingEntry>(entries: readonly E[]): E[] =>
-  entries.filter((entry) => typeof entry.card?.rank === 'number').sort((a, b) => a.card!.rank! - b.card!.rank!);
+  entries.filter((entry) => typeof entry.card?.rank === 'number' && entry.manifest.providers === 'real').sort((a, b) => a.card!.rank! - b.card!.rank!);
 
 /** A blob of a bundled run as an address this page can load: embedded, a data: URL; shipped as files, its path in the
  *  run's directory beside the page. */

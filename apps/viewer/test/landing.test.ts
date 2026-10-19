@@ -1,7 +1,8 @@
 // The gallery's landing in a real Chrome, at 1440 and 390 px, over fixtures and a lock: the brand row with the
 // repository's links, what AgentRun is and the site's line as the page's header, then the runs the lock features as cards in its order, each linking to its chat view, with a poster only where
-// the lock names one the run holds, then the list and the folder drop; no featured row with no lock; no sideways scroll
-// on a phone; and nothing of a run's machinery anywhere on the page outside the list's items.
+// the lock names one the run holds and no card for a scripted run, then the list of titles and the folder drop behind
+// "Open a recording"; no featured row with no lock; no sideways scroll on a phone; and nothing of a run's machinery
+// anywhere on the page outside the list's items.
 import assert from 'node:assert/strict';
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -21,8 +22,9 @@ const HEAR_JPG = '049dfa77e286370003b1c0edefcc43202075f72e3f1078735d5b8705c90c7b
 /** A question long enough to be clamped on its card. */
 const ASKED = `Which company is this, when was it incorporated, and what does the registry page say about it? ${'Cite the registry page and the news story for every fact. '.repeat(3)}`.trim();
 /** The featured runs in their order. The asked run's poster names a picture it does not hold, so it is a card of words;
- *  the reference job and the bundled killed run are in the gallery and not featured. */
-const LOCK = { ids: [{ id: 'chat-artifact', poster: ARTIFACT_PNG }, { id: 'reference-asked', poster: 'f'.repeat(64) }, { id: 'chat-hear-and-find', poster: HEAR_JPG }] };
+ *  the killed run is scripted, so the lock names it and it is still no card; the reference job is in the gallery and not
+ *  featured. */
+const LOCK = { ids: [{ id: 'chat-artifact', poster: ARTIFACT_PNG }, { id: 'ten-kills-seed21' }, { id: 'reference-asked', poster: 'f'.repeat(64) }, { id: 'chat-hear-and-find', poster: HEAR_JPG }] };
 
 test('the landing names no demo in its code', { timeout: 5_000 }, () => {
   const source = readFileSync(join(here, '..', 'src', 'landing.ts'), 'utf8').toLowerCase();
@@ -61,6 +63,11 @@ test('in Chrome: the site\'s line, the featured runs in the lock\'s order with t
     cpSync(join(recordings, 'reference-job'), join(recordings, 'reference-asked'), { recursive: true });
     const events = join(recordings, 'reference-asked', 'events.jsonl');
     writeFileSync(events, readFileSync(events, 'utf8').replaceAll('"input":{"company":"Acme Ltd"}', `"input":${JSON.stringify({ question: ASKED, company: 'Acme Ltd' })}`));
+    // The fixtures are scripted; the three the landing features stand for runs a real model made.
+    for (const id of ['chat-artifact', 'reference-asked', 'chat-hear-and-find']) {
+      const manifest = join(recordings, id, 'manifest.json');
+      writeFileSync(manifest, JSON.stringify({ ...JSON.parse(readFileSync(manifest, 'utf8')), providers: 'real' }));
+    }
     writeFileSync(join(out, 'lock.json'), JSON.stringify(LOCK));
     build(join(out, 'dist'), recordings, { lock: join(out, 'lock.json') });
     build(join(out, 'dist', 'files'), recordings, { files: true, lock: join(out, 'lock.json') });
@@ -92,22 +99,24 @@ test('in Chrome: the site\'s line, the featured runs in the lock\'s order with t
           clamp: (() => { const l = d.querySelector('.lline'); return l.getBoundingClientRect().height <= parseFloat(getComputedStyle(l).lineHeight) * 3 + 1 && l.scrollHeight > l.clientHeight; })(),
           columns: getComputedStyle(d.querySelector('.lcards')).gridTemplateColumns.split(' ').length,
           eager: cards('${id}').filter((c) => c.querySelector('img')).map((c) => c.querySelector('img').loading),
-          dark: getComputedStyle(d.body).backgroundColor, list: !!d.querySelector('ul.gallery'), drop: !!d.querySelector('.drop') }; })()`);
+          dark: getComputedStyle(d.body).backgroundColor, list: !!d.querySelector('ul.gallery'), drop: !!d.querySelector('.drop'),
+          titlesOnly: [...d.querySelectorAll('ul.gallery li')].every((li) => li.textContent === li.querySelector('a').textContent),
+          closed: [d.querySelector('details.open-recording > summary').textContent, d.querySelector('details.open-recording').open, d.querySelector('.drop').checkVisibility()] }; })()`);
         assert.deepEqual(shown, {
-          parts: ['section.landing', 'h2', 'ul.gallery', 'div.drop'], header: false, h1: ['lhero'], brand: 'agent.run()by grep.ai',
+          parts: ['section.landing', 'h2', 'ul.gallery', 'details.open-recording'], header: false, h1: ['lhero'], brand: 'agent.run()by grep.ai',
           links: [['GitHub', 'https://github.com/Parcha-ai/agentrun'], ['Docs', 'https://github.com/Parcha-ai/agentrun/blob/main/docs/guide.md']],
-          define: 'ltop ldefine lhero: AgentRun is a workflow language for the agents you already run.', hero: 'Ask a question about a film, a document ', sub: 'It writes code to look, listen a',
+          define: 'ltop ldefine lhero: Open-source packages for your pi agent.', hero: 'Watch an agent answer questions about fi', sub: 'Open a run to see each step it t',
           cards: [['chat-artifact', 'chat.html?r=chat-artifact', true, true, 'A two-picture report'],
             ['reference-asked', 'chat.html?r=reference-asked', false, false, `${ASKED.slice(0, 139)}…`],
             ['chat-hear-and-find', 'chat.html?r=chat-hear-and-find', true, true, 'Hear and Find']],
           lines: [null, ASKED.replace(/\s+/g, ' ').length > 200 ? `${ASKED.replace(/\s+/g, ' ').slice(0, 199)}…` : ASKED, null], clamp: true,
-          columns: 3, eager: ['eager', 'eager'], dark: 'rgb(8, 8, 9)', list: true, drop: true,
-        }, `${id}: the featured runs in the lock's order, each to its chat view, a poster only where the run holds it, its question clamped to three lines`);
+          columns: 3, eager: ['eager', 'eager'], dark: 'rgb(8, 8, 9)', list: true, drop: true, titlesOnly: true, closed: ['Open a recording', false, false],
+        }, `${id}: the featured runs in the lock's order, each to its chat view, a poster only where the run holds it, its question clamped to three lines; the list holds titles only; the drop waits behind its link`);
       }
 
       // With no lock the landing has its line and no featured row; the list still holds every run.
       assert.deepEqual(await value(`[parts('bare'), !!doc('bare').querySelector('.lhero'), !!doc('bare').querySelector('.lcards'), doc('bare').querySelectorAll('ul.gallery li').length]`),
-        [['section.landing', 'h2', 'ul.gallery', 'div.drop'], true, false, 5]);
+        [['section.landing', 'h2', 'ul.gallery', 'details.open-recording'], true, false, 5]);
 
       // A phone: one column, no sideways scroll.
       assert.deepEqual(await value(`(() => { const d = doc('phone'); return [getComputedStyle(d.querySelector('.lcards')).gridTemplateColumns.split(' ').length, Math.max(0, d.documentElement.scrollWidth - d.defaultView.innerWidth)]; })()`), [1, 0]);
@@ -115,7 +124,7 @@ test('in Chrome: the site\'s line, the featured runs in the lock\'s order with t
       // Nothing of a run's machinery in the page's own words, and the page's tab is the site's.
       for (const id of ['wide', 'files', 'phone', 'bare']) {
         const drawn = await value<string>(`words('${id}')`);
-        assert.ok(drawn.includes('Recordings') && drawn.includes('Drop a recording folder'), `${id}: the page's words hold the list's heading and the drop`);
+        assert.ok(drawn.includes('Recordings') && drawn.includes('Open a recording'), `${id}: the page's words hold the list's heading and the drop's link`);
         assert.doesNotMatch(drawn, /kill|resum|process|surviv|\bcosts?\b|\bcounters?\b|\$\s?\d/i, id);
         assert.equal(await value(`doc('${id}').title`), 'agent.run()', id);
       }

@@ -772,7 +772,7 @@ function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entr
   const list = el('ul', { class: 'gallery' }, ...entries.map((entry) => {
     // A demo opens in the chat + report view; its inspection is ./?r=<id>, linked from there.
     const link = Object.assign(el('a', { text: entry.manifest.title }), { href: `chat.html?r=${encodeURIComponent(entry.id)}` });
-    return el('li', {}, link, el('span', { class: 'meta', text: ` ${entry.manifest.model}` }));
+    return el('li', {}, link);
   }));
   const picker = Object.assign(el('input'), { type: 'file', multiple: true }) as HTMLInputElement;
   picker.setAttribute('webkitdirectory', '');
@@ -801,7 +801,7 @@ function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entr
   document.documentElement.classList.add('landing-page');
   document.title = 'agent.run()';
   root.replaceChildren(landingOf(entries), el('h2', { text: 'Recordings' }), unread !== undefined ? el('p', { class: 'problems', text: `The gallery could not be read (${unread}); a recording folder can still be opened below.` })
-      : entries.length ? list : el('p', { class: 'empty', text: 'No recordings yet.' }), drop);
+      : entries.length ? list : el('p', { class: 'empty', text: 'No recordings yet.' }), el('details', { class: 'open-recording' }, el('summary', { text: 'Open a recording' }), drop));
 }
 
 /** How often a followed run is asked for what is new. */
