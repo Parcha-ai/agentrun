@@ -417,15 +417,18 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     if (found.name === "capabilities") return send(res, 200, caps);
     if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) throw new ApiError("unauthenticated", "this route needs Authorization: Bearer <the token in the data directory>", {}, { "www-authenticate": "Bearer" });
     if (found.capability) {
+      // A home check is gated by its own flag (the contract's E4), so `?check=1` names `home.check`.
+      const capability = found.name === "importHome" && url.searchParams.get("check") === "1" ? "home.check" : found.capability;
       const off: Record<string, string> = {
         "agents.update": "This server does not update a definition yet.",
         "home.export": "This server does not export a home yet.",
         "home.import": "This server does not import a home yet.",
+        "home.check": "This server does not check a home yet.",
         "runs.kill": "This server does not kill a run's process yet.",
         "files.upload": "This server takes no uploads yet.",
         quotes: "This server has no billing, so it gives no quotes.",
       };
-      throw unsupported(found.capability, off[found.capability]!);
+      throw unsupported(capability, off[capability]!);
     }
     const [, first, second] = found.pattern.exec(path)!;
     const id = first ? decodeURIComponent(first) : "";
