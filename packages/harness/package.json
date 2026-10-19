@@ -74,7 +74,7 @@
     "@parcha/pi-browser": "0.1.0-beta.17",
     "@parcha/pi-durable-disk": "0.1.0-beta.17",
     "@parcha/pi-vision": "0.1.0-beta.17",
-    "htmlparser2": "10.0.0"
+    "parse5": "8.0.1"
   },
   "devDependencies": {
     "@earendil-works/chord": "1.1.0",

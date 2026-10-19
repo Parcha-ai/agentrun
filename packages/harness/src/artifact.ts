@@ -3,7 +3,7 @@
 // import these same functions, so what the recorder takes and what the checks refuse are one reading of the page, by an HTML parser and never by patterns.
 import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { join, posix, sep } from 'node:path';
-import { Parser } from 'htmlparser2';
+import { parse } from 'parse5';
 import { BLOB_EXTENSIONS, PAGE_EXTENSIONS, SHEET_EXTENSIONS } from './scan.ts';
 
 /** `manifest.artifact`: `files` maps each path under `report/` to the SHA-256 of its blob (`blobs/<sha>.<the path's extension>`). */
@@ -29,9 +29,16 @@ const SHEET = /\.css$/i;
 /** The files read for what they reach; the others (images, clips, documents) are kept whole. */
 export const readsAs = (path: string): 'page' | 'sheet' | undefined => (PAGE.test(path) ? 'page' : SHEET.test(path) ? 'sheet' : undefined);
 
-const FORBIDDEN_TAGS = new Set(['script', 'iframe', 'frame', 'frameset', 'object', 'embed', 'applet', 'form', 'base']);
-/** The attributes whose value a browser fetches: each goes through the one check, whatever the element. */
-const LOADING = new Set(['src', 'poster', 'background', 'dynsrc', 'lowsrc', 'manifest', 'icon', 'codebase', 'archive', 'longdesc', 'action', 'formaction']);
+/** The elements a report page may hold (draft 50): everything else, a namespaced or prefixed element and any `svg` or `math` subtree included, is refused. */
+const ALLOWED_TAGS = new Set(('html head body title meta link style main section article header footer nav aside h1 h2 h3 h4 h5 h6 p div span ul ol li dl dt dd table caption thead tbody tfoot tr th td figure figcaption img picture source video track a em strong b i u s small sub sup code pre kbd samp blockquote q cite abbr time mark br hr details summary').split(' '));
+/** The attributes a report page may hold, and every `data-*` and `aria-*` attribute: any other (every `on*`, `srcdoc`, `formaction`, `xmlns:*`) is refused. */
+const ALLOWED_ATTRIBUTES = new Set(('class id lang dir title alt src srcset sizes width height href rel type media controls poster preload loop muted playsinline colspan rowspan scope headers open datetime start reversed charset name content property style loading decoding role').split(' '));
+const attributeAllowed = (name: string): boolean => ALLOWED_ATTRIBUTES.has(name) || /^(?:data|aria)-[a-z0-9._:-]*$/.test(name);
+const HTML = 'http://www.w3.org/1999/xhtml';
+type Node = { nodeName: string; childNodes?: Node[] };
+type TextNode = Node & { value: string };
+type Element = Node & { tagName: string; namespaceURI?: string; attrs: { name: string; value: string; prefix?: string; namespace?: string }[]; childNodes: Node[] };
+const isElement = (node: Node): node is Element => 'tagName' in node;
 const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 
 /** Why a file of the artifact may not have this path's extension (draft 50): the blob allowlist, and `html`/`htm`/`css` as the artifact's own pages and stylesheets. `svg`, `xml`, `js` and the rest never. */
@@ -112,43 +119,56 @@ export function readFile(path: string, text: string): Reading {
     reading.documents.push({ target, ...(inside ? { inside } : {}), ...(look !== undefined ? { look } : {}) });
     if (inside && !reading.links.includes(inside)) reading.links.push(inside);
   };
-  const sheet = (css: string, what: string) => { for (const target of cssTargets(css)) load(target, what); };
+  const sheet = (css: string, what: string) => {
+    for (const target of cssTargets(css)) load(target, what);
+    const read = cssText(css);
+    if (/expression\s*\(|(?<![\w-])behavior\s*:|-moz-binding|javascript\s*:|vbscript\s*:/i.test(read)) problem(`${what} has expression(, behavior, -moz-binding or a javascript: value`);
+  };
   if (readsAs(path) === 'sheet') { sheet(text, `${path}: a url()`); return reading; }
-  let titled = false;
+  // The page as a browser builds it (parse5, scripting off as in the viewer's frame): the checks read this tree, never the source text.
+  const document = parse(text, { scriptingEnabled: false });
   let title = '';
-  const parser = new Parser({
-    onopentag(name, attribs) {
-      if (FORBIDDEN_TAGS.has(name)) problem(`has a <${name}>`);
-      if (name === 'meta' && /^\s*refresh\s*$/i.test(attribs['http-equiv'] ?? '')) problem('has a meta refresh');
-      if (name === 'title') titled = true;
-      for (const [attribute, value] of Object.entries(attribs)) {
-        if (attribute.startsWith('on')) problem(`has the ${attribute} attribute`);
-        else if (attribute === 'data-look') reading.looks.push(value);
-        else if (attribute === 'data-node') reading.nodes.push(value);
-        else if (attribute === 'style') sheet(value, `a style attribute`);
-        else if (attribute === 'srcset' || attribute === 'imagesrcset') for (const target of srcsetTargets(value)) load(target, `a ${attribute}`);
-        else if (attribute === 'ping') for (const target of value.split(/\s+/).filter(Boolean)) load(target, 'a ping');
-        else if (LOADING.has(attribute)) load(value, `${name} ${attribute}`);
-        else if (attribute === 'href' || attribute === 'xlink:href') {
-          if (name === 'a' || name === 'area') link(value, attribs['data-look']);
-          else load(value, `${name} ${attribute}`);
-        } else if (/^(?:javascript|vbscript|data):/i.test(normalized(value))) problem(`has a ${normalized(value).slice(0, normalized(value).indexOf(':'))}: value in ${attribute}`);
+  // An explicit work list, not recursion: a deeply nested page is a long list, never a stack overflow.
+  const visit = (root: Node): void => {
+    const work: { node: Node; inTitle: boolean }[] = [{ node: root, inTitle: false }];
+    while (work.length) {
+      const { node, inTitle } = work.pop()!;
+      const children = [...((node as { childNodes?: Node[] }).childNodes ?? [])];
+      if (isElement(node)) {
+        const name = node.tagName;
+        if (node.namespaceURI !== HTML) problem(`has a <${name}> in the ${node.namespaceURI?.endsWith('svg') ? 'svg' : node.namespaceURI?.endsWith('MathML') ? 'math' : 'foreign'} namespace`);
+        else if (!ALLOWED_TAGS.has(name)) problem(`has a <${name}>`);
+        else elementRules(node, name);
+        if (name === 'style') sheet(node.childNodes.filter((child): child is TextNode => child.nodeName === '#text').map((child) => child.value).join(''), 'a <style> block');
+        const content = (node as unknown as { content?: Node }).content;
+        if (content) children.push(content);
+        for (const child of children.reverse()) work.push({ node: child, inTitle: name === 'title' });
+        continue;
       }
-    },
-    ontext(data) { if (titled) title += data; },
-    onclosetag(name) { if (name === 'title') titled = false; },
-  }, { decodeEntities: true, recognizeSelfClosing: true, xmlMode: false });
-  parser.write(text);
-  parser.end();
-  // <style> blocks hold CSS: a second pass keeps their raw text.
-  const styles: string[] = [];
-  const blocks = new Parser({
-    onopentag(name) { if (name === 'style') styles.push(''); },
-    ontext(data) { if (styles.length) styles[styles.length - 1] += data; },
-    onclosetag(name) { if (name === 'style') { sheet(styles.pop() ?? '', 'a <style> block'); } },
-  }, { decodeEntities: false });
-  blocks.write(text);
-  blocks.end();
+      if (node.nodeName === '#text' && inTitle) title += (node as TextNode).value;
+      for (const child of children.reverse()) work.push({ node: child, inTitle });
+    }
+  };
+  const elementRules = (node: Element, name: string): void => {
+    const attribs = new Map<string, string>();
+    for (const attribute of node.attrs) {
+      if (attribute.prefix !== undefined || attribute.namespace !== undefined || attribute.name.includes(':')) { problem(`has the ${attribute.prefix ? `${attribute.prefix}:` : ''}${attribute.name} attribute`); continue; }
+      if (!attributeAllowed(attribute.name)) { problem(`has the ${attribute.name} attribute`); continue; }
+      attribs.set(attribute.name, attribute.value);
+    }
+    if (name === 'meta' && !(attribs.has('charset') || attribs.get('name')?.toLowerCase() === 'viewport')) problem('has a <meta> that is not a charset or the viewport');
+    if (name === 'link' && !(attribs.get('rel')?.trim().toLowerCase() === 'stylesheet' && attribs.has('href'))) problem('has a <link> that is not a stylesheet with an href');
+    for (const [attribute, value] of attribs) {
+      if (attribute === 'data-look') reading.looks.push(value);
+      else if (attribute === 'data-node') reading.nodes.push(value);
+      else if (attribute === 'style') sheet(value, 'a style attribute');
+      else if (attribute === 'srcset') for (const target of srcsetTargets(value)) load(target, 'a srcset');
+      else if (attribute === 'src' || attribute === 'poster') load(value, `${name} ${attribute}`);
+      else if (attribute === 'href') { if (name === 'a') link(value, attribs.get('data-look')); else load(value, `${name} ${attribute}`); }
+      else if (/^(?:javascript|vbscript|data):/i.test(normalized(value))) problem(`has a ${normalized(value).slice(0, normalized(value).indexOf(':'))}: value in ${attribute}`);
+    }
+  };
+  visit(document as unknown as Node);
   if (title.trim()) reading.title = title.trim().slice(0, 200);
   return reading;
 }
