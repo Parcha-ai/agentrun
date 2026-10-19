@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
+import { secretValues } from './tools-v2.mjs';
 
 const require = createRequire(import.meta.url);
 const PACKAGES = ['@earendil-works/pi-durable', '@earendil-works/pi-ai', '@parcha/agentrun-dsl', '@parcha/agentrun-pi', '@parcha/agentrun-jev', '@parcha/pi-agent-learn'];
@@ -20,14 +21,16 @@ function codeCommit() {
 }
 
 /** Writes `<into>/<run id>/` and returns its name. */
-/** `spend` is the row's (`spendOf`); `modelUsd` the model part, null when unknown. */
-export async function writeRecording({ into, run, job, model, providers, started, ended, spend, modelUsd }) {
+/** `spend` is the row's (`spendOf`); `modelUsd` the model part, null when unknown. `secrets` are replaced wherever they
+ *  appear (by default the keys a take passes in, tools-v2.mjs). */
+export async function writeRecording({ into, run, job, model, providers, started, ended, spend, modelUsd, secrets = secretValues() }) {
   const dir = join(into, run.runId);
   await mkdir(dir, { recursive: true });
   const { lines } = recordingLines(run.storePath);
+  const scrub = (text) => secrets.reduce((out, secret) => out.split(secret).join('[redacted]'), text);
   // The runner is the run's one process and its supervisor: it opened the run once and never killed it.
   const opened = { channel: 'live', source: 'host', kind: 'process.started', t: 0, seq: 0, data: { gen: 1 } };
-  await writeFile(join(dir, 'events.jsonl'), [opened, ...lines.map((line) => ({ ...line, t: 0 }))].map((line) => `${JSON.stringify(line)}\n`).join(''));
+  await writeFile(join(dir, 'events.jsonl'), scrub([opened, ...lines.map((line) => ({ ...line, t: 0 }))].map((line) => `${JSON.stringify(line)}\n`).join('')));
   const storeSha = createHash('sha256').update(await readFile(run.storePath)).digest('hex');
   const manifest = {
     format: 'agentrun.recording/1',
@@ -42,6 +45,6 @@ export async function writeRecording({ into, run, job, model, providers, started
     source: { run: run.runId, store_sha256: storeSha },
     providers,
   };
-  await writeFile(join(dir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  await writeFile(join(dir, 'manifest.json'), scrub(`${JSON.stringify(manifest, null, 2)}\n`));
   return run.runId;
 }

@@ -13,7 +13,8 @@ export const JEV_PRICE = Object.freeze({ inputUsdPerMillionTokens: 0.042, output
 const NO_KEY = 'gateway-holds-the-key';
 
 export function gatewayOf(env = process.env) {
-  const root = env.LEARN_CLASSIFY_GATEWAY?.replace(/\/+$/, '');
+  // The root, also when given as the OpenAI base URL (`.../v1`), as a take's broker variable is.
+  const root = env.LEARN_CLASSIFY_GATEWAY?.replace(/\/+$/, '').replace(/\/v1$/, '');
   if (!root) throw new Error('--live needs LEARN_CLASSIFY_GATEWAY: a gateway root that serves an OpenAI Responses endpoint at /v1 and Jev at /typesafe');
   return { root, key: env.LEARN_CLASSIFY_GATEWAY_KEY || NO_KEY };
 }

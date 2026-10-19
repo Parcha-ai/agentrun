@@ -42,8 +42,8 @@ node examples/learn-classify/curve.mjs /tmp/lc-probe
 | `--no-record` | keep no recording per run |
 | `--model`, `--thinking` | live only: the model id (default `gpt-6-luna`) and the agent's thinking level (default `medium`; never `off`) |
 
-Live, `LEARN_CLASSIFY_GATEWAY` names the gateway and `LEARN_CLASSIFY_GATEWAY_KEY` its key, when it wants one; a gateway
-that holds the provider keys needs none.
+Live, `LEARN_CLASSIFY_GATEWAY` names the gateway (its root, or its OpenAI base URL ending in `/v1`) and
+`LEARN_CLASSIFY_GATEWAY_KEY` its key, when it wants one; a gateway that holds the provider keys needs none.
 
 A stopped pass is resumed by running the same command again. A finished job keeps its row. A job whose run was cut off is
 abandoned (carried back into the home, its spend kept in `progress/<run>.json` and counted by the guard) and runs again
@@ -152,6 +152,17 @@ node examples/learn-classify/runner.mjs --set v2 --scripted --out /tmp/lc-v2-dry
 node examples/learn-classify/runner.mjs --set v2 --live --out /tmp/lc-v2 --jobs 10 --cap-usd 140 --run-cap-usd 1.5
 ```
 
+Live, `BROWSERBASE_API_KEY` (and `BROWSERBASE_PROJECT_ID`) put `browse` on Browserbase and `search_web` on its Search
+API; each is read when a call is made. Without the key, `browse` starts a local headless Chrome (`CHROME_PATH`, else
+`/usr/bin/google-chrome`) with its own profile under the run's directory, and `search_web` answers that it needs the key.
+`read_document`'s vision model is `gemini-3.8-flash` through the same gateway. A recording replaces each of these keys
+wherever it finds one.
+
+Every one of these tools refuses what `fetch_page` refuses (the SEC and EDGAR, SIC listing sites, web archives) and,
+beyond it, this machine and its network (loopback, private, CGNAT and link-local addresses, single-label and local names).
+In the browser a second DevTools client holds each request until it is checked, so a redirect, a clicked link, a script's
+navigation, a frame or an image to a refused site is stopped before it is sent. Each result carries its `costUsd`.
+
 The answer is the typed `answer` tool: `sic4` (one of `data/sic-codes.json`'s 429 codes; `sic_codes({ group })` lists one
 group's, since a Jev pick holds at most 240 options), `primarySegment` (`{ name, share }` or `{ oneSegment: true }`) and
 1 to 6 cites (`{ claim: "sic" | "segment", url, locator, quote }`).
@@ -199,6 +210,7 @@ scored from it.
 | `agent-v2/`, `fixtures-v2/` | the v2 agent, and v2's made-up companies, pages, documents and answers for the scripted pass |
 | `fixtures/` | five made-up companies, their pages and ten groups, for the scripted pass and the tests |
 | `tools.mjs`, `data/` | `fetch_page` and the truth set (lane C1) |
+| `tools-v2.mjs` | v2's `search_web`, `browse` (pi-browser) and `read_document` (pi-vision), and the vision model's route (lane C3) |
 
 `node --test examples/learn-classify/*.test.mjs` runs it all offline.
 
