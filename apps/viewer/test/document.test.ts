@@ -21,6 +21,7 @@ import { typeOfName } from '../src/blobs.ts';
 import { docPagesOf, documentPanel } from '../src/document.ts';
 import { parseLines, validate, type Json, type Line } from '../src/format.ts';
 import { panelsFor, type Box, type Node, type ViewContext } from '../src/panels.ts';
+import { PDF_OPTIONS } from '../src/pdf.ts';
 import { reduceTo } from '../src/replay.ts';
 import { visionCitedOf } from '../src/vision.ts';
 import { closeAll, closeLeftBrowsers, chrome, drivenPage } from './driven-page.ts';
@@ -184,6 +185,11 @@ test('before the result, while it is read, and for a result that cites no page, 
   assert.match(words(view(delivered.length, { json: () => undefined })), /Reading the result/);
   assert.match(words(view(delivered.length, { json: () => CHAPTERS as unknown as Json })), /cites no page of a file/);
   assert.match(words(view(delivered.length, { json: () => ACCOUNT as unknown as Json })), /cites no page of a file/);
+});
+
+test('PDF.js opens every PDF with no XFA, no WebAssembly and no code compiled from the file', () => {
+  assert.deepEqual(PDF_OPTIONS, { enableXfa: false, useWasm: false, isEvalSupported: false });
+  assert.match(readFileSync(new URL('../src/pdf.ts', import.meta.url), 'utf8'), /getDocument\(\{ data: [^}]*\.\.\.PDF_OPTIONS/, 'the one call to getDocument passes them');
 });
 
 test('a recording draws the panel when its result cites a page, never for its lines alone, nor for a result that cites only pictures', () => {
