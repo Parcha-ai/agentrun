@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -410,6 +410,29 @@ test('a folder that cannot be placed is refused before anything starts, never ig
   assert.doesNotMatch(`${ran.stdout}${ran.stderr}`, /cost:|recording:|run directory:|stopped:/);
   assert.deepEqual(readdirSync(dir), [], 'nothing was written');
   assert.equal(existsSync(record), false);
+});
+
+test('a folder outside examples/ that exists, and a partly made example, are refused in one line: no stack from the module\'s import, no raw ENOENT', async (t) => {
+  const dir = await scratch(t);
+  mkdirSync(join(dir, 'document-check'));
+  const outside = join(dir, 'document-check');
+  const ran = command(dir, ['--live', outside], {});
+  assert.notEqual(ran.status, 0);
+  assert.equal(ran.stderr, `${outside}: an example is a folder under examples/; for files elsewhere, give --input with the question and the files\n`);
+  assert.doesNotMatch(ran.stdout, /\S/);
+  assert.deepEqual(readdirSync(dir), ['document-check'], 'nothing was written');
+  // An example with a question and no inputs: the check names both files, so it asks for both.
+  const partial = join(import.meta.dirname, `zz-partial-${process.pid}`);
+  mkdirSync(partial);
+  try {
+    writeFileSync(join(partial, 'question.md'), 'What is in these files?');
+    const message = (() => { try { argvFor([partial]); } catch (error) { return error.message; } })();
+    assert.match(message, /: not an example folder \(an example is a folder under examples\/ with a question\.md and an inputs\.json\)$/);
+    assert.doesNotMatch(message, /ENOENT/);
+    const refused = command(dir, [partial], {});
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /^[^\n]*: not an example folder \(.*inputs\.json\)\n$/);
+  } finally { rmSync(partial, { recursive: true, force: true }); }
 });
 
 test('on fakes a folder after a switch is the run\'s example: the command asks the folder\'s question over its committed files', { timeout: 300_000, skip: PROGRAMS }, async (t) => {

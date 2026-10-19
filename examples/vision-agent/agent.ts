@@ -91,7 +91,7 @@ const EXAMPLES = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export function exampleAt(where: string): Example {
   const dir = join(EXAMPLES, basename(resolve(where)));
   if (existsSync(where) && resolve(where) !== dir) throw new Error(`${where}: an example is a folder under examples/; for files elsewhere, give --input with the question and the files`);
-  if (!existsSync(join(dir, 'question.md'))) throw new Error(`${where}: not an example folder (an example is a folder under examples/ with a question.md and an inputs.json)`);
+  if (!existsSync(join(dir, 'question.md')) || !existsSync(join(dir, 'inputs.json'))) throw new Error(`${where}: not an example folder (an example is a folder under examples/ with a question.md and an inputs.json)`);
   const question = readFileSync(join(dir, 'question.md'), 'utf8').trim();
   const { items } = JSON.parse(readFileSync(join(dir, 'inputs.json'), 'utf8')) as { items: InputItem[] };
   return { name: basename(dir), dir, question, items };
@@ -108,10 +108,10 @@ function filesOf(): Record<string, Uint8Array> {
   const input = (() => { try { return JSON.parse(process.env.INPUT ?? '') as { example?: string }; } catch { return undefined; } })();
   const raw = process.argv.slice(2);
   const named = input?.example ?? raw[positionalAt(raw)[0] ?? -1];
-  if (named && existsSync(join(EXAMPLES, basename(named), 'inputs.json'))) {
-    const example = exampleAt(named);
-    for (const item of example.items) if (item.path) out[fileName(item)] = new Uint8Array(readFileSync(join(example.dir, item.path)));
-  }
+  // This runs when the module is imported, before the command line has its say: a folder the run will be refused for has no files here,
+  // and `run.ts` says why, in one line, rather than a stack from this import.
+  const example = named ? (() => { try { return exampleAt(named); } catch { return undefined; } })() : undefined;
+  for (const item of example?.items ?? []) if (item.path) out[fileName(item)] = new Uint8Array(readFileSync(join(example!.dir, item.path)));
   const extra = process.env.DEMO_FILES_DIR;
   if (extra && existsSync(extra)) for (const name of readdirSync(extra)) out[name] = new Uint8Array(readFileSync(join(extra, name)));
   return out;
