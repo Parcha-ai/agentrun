@@ -69,7 +69,7 @@ test("runs are the agent home's, listed newest first, with agent, status, times 
   const at = (hours) => new Date(Date.now() - hours * 3_600_000).toISOString();
   const oldEnd = at(29);
   await makeRun(home, "old", { status: "done", entries: [user(1, "old one"), assistant(2, [text("ok")])], meta: { createdAt: at(30) }, updatedAt: oldEnd });
-  await makeRun(home, "newest", { status: "sleeping", entries: transcript, meta: { title: "Newest run", agent: "Site reporter", createdAt: at(1) } });
+  await makeRun(home, "newest", { status: "sleeping", entries: transcript, meta: { title: "Newest run", agent: "Wren", createdAt: at(1) } });
   await makeRun(home, "middle", { status: "failed", meta: { createdAt: at(5) } });
   await makeRun(home, "broken", { meta: { createdAt: at(100) } });
   writeFileSync(join(root, "broken", "run.json"), "not json");
@@ -77,7 +77,7 @@ test("runs are the agent home's, listed newest first, with agent, status, times 
   mkdirSync(join(root, ".hidden"));
   mkdirSync(join(root, "unindexed"));
   const { runs } = await json("/runs");
-  assert.deepEqual(runs.slice(0, 3).map((r) => [r.id, r.status, r.title, r.agent]), [["newest", "sleeping", "Newest run", "Site reporter"], ["middle", "failed", "middle", "Site reporter"], ["old", "done", "old one", "Site reporter"]]);
+  assert.deepEqual(runs.slice(0, 3).map((r) => [r.id, r.status, r.title, r.agent]), [["newest", "sleeping", "Newest run", "Wren"], ["middle", "failed", "middle", "Wren"], ["old", "done", "old one", "Wren"]]);
   assert.equal(runs.length, 4, "the broken run is listed as unknown; a stray file, a dot directory and a directory the runs index does not name are not runs");
   assert.equal((await get("/runs/unindexed")).status, 404);
   assert.equal(runs.find((r) => r.id === "broken").status, "unknown");
@@ -434,7 +434,7 @@ setInterval(() => {}, 1000);
   const pid = server.children.get(id).pid;
   assert.ok(existsSync(join(root, id, "web.json")));
   const summary = await json(`/runs/${id}`);
-  assert.deepEqual([summary.title, summary.agent, summary.live], ["Do the thing", "Site reporter", true]);
+  assert.deepEqual([summary.title, summary.agent, summary.live], ["Do the thing", "Wren", true]);
 
   await makeRun(home, "asleep", { status: "sleeping", entries: transcript });
   assert.equal((await post("/runs/asleep/messages", { content: "wake up" })).status, 200);
@@ -714,7 +714,7 @@ test("GET /agent: the saved sign-ins, their sites and when they last worked, nev
   const body = await (await get("/agent")).text();
   assert.ok(!/ctx-secret-ref|ctx-plain-ref|\/login/.test(body), "no ref and no start address");
   assert.deepEqual(JSON.parse(body), {
-    name: "Site reporter",
+    name: "Wren",
     signIns: [
       { key: PROFILE, provider: "browserbase", state: "ready", sites: ["https://the-internet.herokuapp.com"], verifiedAt: "2026-10-16T05:58:00.000Z", heldBy: null },
       { key: "plain", provider: "browserbase", state: "ready", sites: [], verifiedAt: null, heldBy: null },

@@ -115,7 +115,8 @@ test('a recorded run on the agent\'s own Chrome: valid, its report the artifact,
   assert.deepEqual(validateRecording(dir), []);
   const lines = linesOf(dir);
   const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
-  assert.deepEqual([manifest.title, manifest.task, manifest.model, manifest.generations, manifest.kills, manifest.providers], ['Site reporter', 'Report what the practice site shows behind its login.', 'test-model', 1, 0, 'scripted']);
+  assert.deepEqual([manifest.title, manifest.task, manifest.model, manifest.generations, manifest.kills, manifest.providers], ['Wren', 'Report what the practice site shows behind its login.', 'test-model', 1, 0, 'scripted']);
+  assert.equal(lines.find((line) => line.kind === 'reference.label')?.data.value.label, 'Wren', 'the conversation is labelled with the agent\'s name');
   assert.deepEqual([manifest.artifact.title, manifest.artifact.entry, Object.keys(manifest.artifact.files)], ['What I remember', 'remember.html', ['index.html', 'remember.html']]);
   const remembered = readFileSync(join(dir, 'blobs', `${manifest.artifact.files['remember.html']}.html`), 'utf8');
   assert.match(remembered, /<h1>What I remember<\/h1>[\s\S]*<a href="index\.html">/, 'the host\'s page is the entry, and links to the report the agent wrote');

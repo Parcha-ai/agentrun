@@ -25,7 +25,7 @@ import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.l
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import type { ModelThinkingLevel, TSchema } from "@earendil-works/pi-ai";
-import { createRegistry, defineDocFamily, defineExtension, defineTool, wrapTool, type ConversationId, type Harness, type JsonObject, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
+import { createRegistry, defineDoc, defineDocFamily, defineExtension, defineTool, wrapTool, type ConversationId, type Harness, type JsonObject, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import { DEFAULT_BROWSER_POLICY, type BrowserPolicy, type BrowserProvider, type EvidenceRecord, type SessionChange, type SessionRow } from "@parcha/pi-browser";
 import { createBrowserExtension } from "@parcha/pi-browser/durable";
 import { stagehandDriver } from "@parcha/pi-browser/driver/stagehand";
@@ -51,6 +51,9 @@ const FRAMES_PER_SECOND = 2;
 /** pi-durable-agent's `browser.profiles`, by its kind: the run's copy of the agent's saved sign-ins, which `carryBack`
  *  returns to the home. Only the host writes it, and no tool reads it. */
 const Profiles = defineDocFamily<JsonObject, null>({ kind: "browser.profiles", version: 1, scope: "session", family: true, initial: () => ({}) });
+/** The conversation's label, the reference host's document of the same kind: a viewer heads the run with it. Here the
+ *  agent's name. */
+const Label = defineDoc<{ label: string }>({ kind: "reference.label", version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => ({ label: "" }) });
 
 /** The definition's instructions, then each skill it names (`<name>/SKILL.md` in the home), in order. */
 export function promptOf(state: Pick<AgentHomeState, "definition" | "skills">): string {
@@ -405,6 +408,7 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
         if (!resolved) throw new Error("the browser profile is resolved before the root conversation is created");
         const policy: BrowserPolicy = { ...DEFAULT_BROWSER_POLICY, contextId: contextId ?? null, idleReleaseS: IDLE_RELEASE_S };
         Object.assign(await tx.doc(browser.docs.Config, id), { label: definition.id, run: where.ref.id, policy });
+        (await tx.doc(Label, id)).label = definition.name;
       },
     },
     // On SIGTERM the instance records its wake and lets go of the run; the browser goes first, so nothing paid stays open.
