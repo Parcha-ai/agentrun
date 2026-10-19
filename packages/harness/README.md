@@ -2,8 +2,8 @@
 
 A reference harness: the host we use to run AgentRun demos and tests, meant to be read and forked.
 
-It is one pi-durable host that runs an agentrun job on this machine, with the supervisor that kills and restarts its
-process anywhere, the recorder, and fakes, so an example runs from an npm install.
+It is one pi-durable host that runs an agentrun job on this machine, with a supervisor, a recorder and fakes, so an
+example runs from an npm install.
 
 ## What the agent can do
 
