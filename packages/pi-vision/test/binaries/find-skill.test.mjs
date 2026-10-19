@@ -362,6 +362,16 @@ test("a scan cut short by a failed call keeps the scores it had, and a retry ask
   assert.deepEqual([retry.sent, again.frames], [22, 26], "the four scored frames are not asked again");
 });
 
+test("a halving cut short by a failed call keeps the price of the answers it had, and no request counter is saved", async () => {
+  transcript(null);
+  const small = narrowWith("scanFrames: 40", "scanFrames: 4");
+  const failing = pixelJev({ failAt: 7 });
+  await assert.rejects(steps([small, scan, halve], { jev: failing }), /503/);
+  const kept = JSON.parse(fs.readFileSync(path.join(cwd, ".find", "umbrella", "task.json"), "utf8"));
+  assert.ok(Math.abs(kept.spentUsd - 6 * JEV_USD) < 1e-12, "four scanned and two halving answers priced, the third halving request failed");
+  assert.ok(!("requests" in kept) && !("maxJudges" in kept) && !("budgetUsd" in kept), "the task holds no counter and no budget");
+});
+
 test("a check cut short after two confirmed frames keeps them: the retry asks nothing more and the match is not lost", async () => {
   transcript();
   // The scan and halving as usual, then the check on a Jev that fails on its third call.

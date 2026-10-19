@@ -199,6 +199,7 @@ while (b - a > 40) {
     const answer = await vision.judge({ paths: [`${dir}/h${t}.png`], fragments: [`${task.video}#t=${t}`], questions: { here } });
     seen ||= answer.answers.here.noul >= bar;
     spent += paid(answer);
+    await tools.bash({ command: `cat > ${dir}/task.json <<'EOF'\n${JSON.stringify({ ...task, spentUsd: spent })}\nEOF` });   // the price of each answer is kept as it comes, so a retry does not forget what was paid
   }
   [a, b] = seen ? [a, mid] : [mid, b];
 }
