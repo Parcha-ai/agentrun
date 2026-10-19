@@ -8,7 +8,7 @@
   "models": {
     "lead": { "needs": ["text", "tools"], "default": "google/gemini-3.8-flash" },
     "eyes": { "needs": ["video"], "default": "google/gemini-3.8-flash" },
-    "judge": { "jev": true, "caps": { "requests": 200, "tokens": 2560000 } }
+    "judge": { "jev": true, "caps": { "requests": 500, "tokens": 2560000 } }
   },
   "keys": [
     {

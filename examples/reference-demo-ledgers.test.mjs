@@ -247,7 +247,7 @@ test('a held kill waits for every tool call to return before it asks: a tool a p
 });
 // ---- the demo's own Jev caps, and a model whose key the demo does not declare ----------------------------------------------------------------------
 
-test('models.judge.caps sets the demo\'s own Jev caps (positive integers, at most 200 requests and 2,560,000 tokens), the default is unchanged, a value past the ceiling is refused at load, and the run still refuses past the caps', { timeout: 300_000 }, async (t) => {
+test('models.judge.caps sets the demo\'s own Jev caps (positive integers, at most 800 requests and 2,560,000 tokens), the default is unchanged, a value past the ceiling is refused at load, and the run still refuses past the caps', { timeout: 300_000 }, async (t) => {
   const { judgeCapsOf } = await import('../packages/harness/dist/demo-spec.js');
   const { composeHost } = await import('../packages/harness/dist/demo.js');
   const { localHost, placeAt, crossings } = await import('@parcha/agentrun-harness');
@@ -255,12 +255,12 @@ test('models.judge.caps sets the demo\'s own Jev caps (positive integers, at mos
   assert.deepEqual(judgeCapsOf({ name: 'x', models: { judge: { jev: true } } }), { requests: 50, tokens: 40_000 });
   assert.deepEqual(judgeCapsOf({ name: 'x', models: { judge: { jev: true, caps: { requests: 2, tokens: 100 } } } }), { requests: 2, tokens: 100 });
   assert.deepEqual(judgeCapsOf({ name: 'x', models: { judge: { caps: { requests: 200 } } } }), { requests: 200, tokens: 40_000 }, 'one given, the other default');
-  assert.deepEqual(judgeCapsOf({ name: 'x', models: { judge: { caps: { requests: 200, tokens: 2_560_000 } } } }), { requests: 200, tokens: 2_560_000 }, 'the ceiling itself is allowed: room for 200 requests of three images (about 10,000 tokens each)');
-  for (const [name, value] of [['requests', 201], ['tokens', 2_560_001], ['requests', 0], ['requests', -1], ['tokens', 1.5], ['requests', '3'], ['tokens', null]]) {
+  assert.deepEqual(judgeCapsOf({ name: 'x', models: { judge: { caps: { requests: 800, tokens: 2_560_000 } } } }), { requests: 800, tokens: 2_560_000 }, 'the ceiling itself is allowed: room for a vision demo\'s boxing and grounding requests');
+  for (const [name, value] of [['requests', 801], ['tokens', 2_560_001], ['requests', 0], ['requests', -1], ['tokens', 1.5], ['requests', '3'], ['tokens', null]]) {
     assert.throws(() => judgeCapsOf({ name: 'x', models: { judge: { caps: { [name]: value } } } }), new RegExp(`models\\.judge\\.caps\\.${name} is a positive integer at most`), `${name} ${value}`);
   }
   // Refused at load, before any process starts.
-  await assert.rejects(() => run(t, { models: { judge: { jev: true, caps: { requests: 201 } } }, keys: [{ oneOf: [{ env: 'TYPESAFE_API_KEY', required: true, where: 'w', why: 'y' }], why: 'a Jev key' }] }, ['--json']), /models\.judge\.caps\.requests is a positive integer at most 200/);
+  await assert.rejects(() => run(t, { models: { judge: { jev: true, caps: { requests: 801 } } }, keys: [{ oneOf: [{ env: 'TYPESAFE_API_KEY', required: true, where: 'w', why: 'y' }], why: 'a Jev key' }] }, ['--json']), /models\.judge\.caps\.requests is a positive integer at most 800/);
   // The caps are the judge seam\'s: the third question of a demo that set 2 is refused and never sent.
   const tmp = await mkdtemp(join(tmpdir(), 'reference-caps-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));

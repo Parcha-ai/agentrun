@@ -49,7 +49,7 @@ export type DemoSpec = {
   /** The checked files the job reads: `sources.json` beside the demo (`true`), or another path relative to it. They are fetched into the run's `work/` on `--live` and with `--fetch-sources`. */
   sources?: boolean | string;
   /** The models the demo names (the DSL's DemoSpec). `judge: { jev: true }` is the Jev judge: it needs a Jev key group in `keys` (`TYPESAFE_API_KEY` or `OPENROUTER_API_KEY`), refused at load without one. `judge.caps` sets the demo's own Jev caps
-   *  (`requests`, `tokens`: positive integers, at most 200 requests and 2,560,000 tokens); the run still refuses past them, and `--max-usd` still applies. */
+   *  (`requests`, `tokens`: positive integers, at most 800 requests and 2,560,000 tokens); the run still refuses past them, and `--max-usd` still applies. */
   models?: { lead?: unknown; eyes?: unknown; judge?: { jev?: boolean; caps?: { requests?: number; tokens?: number } } };
   /** The job's tools, each named and placed (the commercial contract): `local` is `"fakes"` or `"mcp:<url>"`, `hosted` the hosted catalogue name or null. On `--live` a tool the live parts do not supply runs from the fakes only when `local` is `"fakes"`. */
   tools?: Array<{ name: string; local?: string; hosted?: string | null }>;
@@ -187,11 +187,11 @@ export function declaredEnv(spec: DemoSpec): Set<string> {
   return names;
 }
 
-/** The most a demo may set its Jev caps to, per field: 200 requests, and 2,560,000 tokens (about $0.11 at Jev's list price) because one request with three
- *  images is about 10,000 tokens, so an image demo's request cap binds first. */
-const JEV_CAP_CEILINGS = { requests: 200, tokens: 2_560_000 } as const;
+/** The most a demo may set its Jev caps to, per field: 800 requests and 2,560,000 tokens (about $0.11 at Jev's list price). A vision demo asks one request
+ *  per item it boxes (three images, about 10,000 tokens) and one per row it grounds (about 2,000 tokens); `--max-usd` still governs what a run spends. */
+const JEV_CAP_CEILINGS = { requests: 800, tokens: 2_560_000 } as const;
 
-/** The Jev caps this demo runs under: the default (50 requests, 40,000 tokens) or `models.judge.caps`, each a positive integer at most its ceiling (200 requests, 2,560,000 tokens): a value beyond that is refused at load. */
+/** The Jev caps this demo runs under: the default (50 requests, 40,000 tokens) or `models.judge.caps`, each a positive integer at most its ceiling (800 requests, 2,560,000 tokens): a value beyond that is refused at load. */
 export function judgeCapsOf(spec: DemoSpec): { requests: number; tokens: number } {
   const given = spec.models?.judge?.caps;
   const out = { ...JEV_CAPS } as { requests: number; tokens: number };
