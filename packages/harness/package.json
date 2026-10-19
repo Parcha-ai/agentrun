@@ -1,6 +1,7 @@
 {
   "name": "@parcha/agentrun-harness",
   "version": "0.1.0-beta.17",
+  "private": true,
   "description": "The agentrun reference host: one pi-durable host that runs an agentrun job on this machine, with kill-anywhere, a recorder, a supervisor and fakes, so an example runs from an npm install.",
   "keywords": [
     "agentrun",
