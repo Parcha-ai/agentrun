@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { CATEGORIES, segmentName, segmentTruth } from './build-truth-v2.mjs';
+import { CATEGORIES, SCORING, segmentName, segmentTruth } from './build-truth-v2.mjs';
 
 const read = (name) => JSON.parse(readFileSync(new URL(`./data/${name}`, import.meta.url), 'utf8'));
 const companies = read('companies-v2.json');
@@ -138,4 +138,11 @@ test('about half the companies show a website; the rest leave it to search', () 
 test('sic-codes.json is the SEC list of 4-digit codes', () => {
   assert.ok(Object.keys(sicCodes).length > 400);
   for (const code of Object.keys(sicCodes)) assert.match(code, /^\d{4}$/);
+});
+
+test('the report carries the scoring rules the scorer follows', () => {
+  assert.deepEqual(report.scoring, SCORING);
+  assert.match(report.scoring.join(' '), /full member list/);
+  assert.match(report.scoring.join(' '), /"single".*name null.*"one segment" or "the whole company"/);
+  for (const c of report.companies) assert.ok(Array.isArray(c.segments), c.cik);
 });

@@ -59,6 +59,16 @@ const HOLDING_SIC = new Set(['6799']);
 const REIT = '6798';
 const WALL_STATUS = new Set([401, 403, 429, 503]);
 
+// How an answer is scored against segmentTruth, for the scorer (Jev) that reads this report.
+export const SCORING = [
+  'The primary segment is the truth as filed: a region ("Australia", "EMEA", "US And Canada") or an abbreviated XBRL member name ("PG", "CMD", "Opc") is the right answer when the filing says so. The scorer is given segmentTruth and the company\'s full member list (companies[].segments in this report) and matches leniently: an answer naming the same segment in other words, or the business an abbreviation stands for, is correct.',
+  'kind "single" means the company reports one segment. With name null, the answer "one segment" or "the whole company" (about 100% of revenue) is correct. With a name, that name or "the whole company" is correct.',
+];
+// Category rules that only choose which companies are sampled; nothing scores an answer from them.
+const CATEGORY_NOTES = [
+  'holding is a name pattern (Holding(s), Enterprises, Diversified) or SIC 6799, used only to sample. It misses a holding company without such a name, e.g. Berkshire Hathaway.',
+];
+
 const SPARQL_V2 = `SELECT ?item ?cik ?website ?article WHERE {
   ?item wdt:P5531 ?cik .
   OPTIONAL { ?item wdt:P856 ?website . }
@@ -360,6 +370,8 @@ async function main() {
   for (const c of companies) if (c.categories.length === 0) throw new Error(`${c.cik} is in no hard category`);
 
   const report = {
+    scoring: SCORING,
+    categoryNotes: CATEGORY_NOTES,
     builtWith: { via, secFiles: provenance.secFiles, wikidata: provenance['wikidata-v2'] },
     rules: {
       total: TOTAL, run: RUN, sealed: SEALED, categoryTarget: TARGET, groupCap: GROUP_CAP, websitesShown: WEBSITES_SHOWN,
