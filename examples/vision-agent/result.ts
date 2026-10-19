@@ -16,13 +16,13 @@ const walk = (root: string, at = root): string[] => readdirSync(at).flatMap((nam
 export const result: NonNullable<DemoOptions['result']> = (record, { dir, keep }) => {
   const answer = record as { answer: string; report: string };
   const work = join(dir, 'work');
-  const html = join(work, answer.report);
-  if (!existsSync(html)) return { json: { format: 'agentrun.cited/1', title: answer.answer, rows: [{ label: 'Answer', value: answer.answer, cites: [] }], report: null }, title: answer.answer };
+  const reportPath = join(work, answer.report);
+  if (!existsSync(reportPath)) return { json: { format: 'agentrun.cited/1', title: answer.answer, rows: [{ label: 'Answer', value: answer.answer, cites: [] }], report: null }, title: answer.answer };
   const folder = join(work, 'report');
   const files = Object.fromEntries(walk(folder).map((name) => [name, keep(new Uint8Array(readFileSync(join(folder, name))), extname(name).slice(1) || 'bin')]));
-  const page = readFileSync(html, 'utf8');
+  const reportHtml = readFileSync(reportPath, 'utf8');
   // The report's cites, as the report skill writes them: a link to the file's own fragment with the look's key.
-  const cites: Cite[] = [...page.matchAll(/<a\b[^>]*\bclass="cite"[^>]*>[\s\S]*?<\/a>/g)].flatMap(([tag]) => {
+  const cites: Cite[] = [...reportHtml.matchAll(/<a\b[^>]*\bclass="cite"[^>]*>[\s\S]*?<\/a>/g)].flatMap(([tag]) => {
     const href = (/\bhref="([^"]*)"/.exec(tag)?.[1] ?? '').replaceAll('&amp;', '&');
     const look = /\bdata-look="([0-9a-f]{64})"/.exec(tag)?.[1];
     const label = tag.replace(/<[^>]*>/g, '').trim();

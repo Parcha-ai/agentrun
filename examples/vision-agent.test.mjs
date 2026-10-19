@@ -11,7 +11,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { exampleAt, fileName, inputOf, INSTRUCTIONS, job, jobOf, skills, thinkingOf, thinkingRefusal } from './vision-agent/agent.ts';
+import { exampleAt, fileName, inputOf, instructionsOf, job, jobOf, skills, thinkingOf, thinkingRefusal } from './vision-agent/agent.ts';
 import { argvFor, options } from './vision-agent/run.ts';
 import { scriptFor } from './vision-agent/fakes.ts';
 import { jevKeyOf, jevOptionsOf, liveParts, missingKeys, namedModels, preflight } from './vision-agent/live.ts';
@@ -50,7 +50,7 @@ test('each example is a question, its files with their sources and checks, and a
 });
 
 test('the agent\'s instructions carry the question\'s place, the functions, the citation rule, the report, and every skill the package ships', () => {
-  const text = INSTRUCTIONS();
+  const text = instructionsOf();
   for (const word of ['`question`', '`files`', 'vision.see', 'vision.judge', 'vision.transcribe', '#page=N', '#t=', 'report/']) assert.ok(text.includes(word), word);
   for (const skill of skills()) assert.ok(text.includes(`The ${skill.name} skill:`) && text.includes(skill.text.slice(0, 200)), skill.name);
   assert.ok(skills().some((skill) => skill.name === 'look') && skills().some((skill) => skill.name === 'find'));
@@ -191,11 +191,11 @@ test('the report is report/index.html everywhere: the scripted lead writes and r
   assert.match(script, /report: "report\/index\.html" \}/);
   assert.match(script, /in report\/index\.html\./);
   assert.doesNotMatch(script, /report\.html/);
-  const withSkill = INSTRUCTIONS(skills());
+  const withSkill = instructionsOf(skills());
   assert.ok(skills().some((skill) => skill.name === 'report'), 'the package ships the report skill');
   assert.match(withSkill, /report\/index\.html/, 'the report skill names its entry');
   assert.doesNotMatch(withSkill, /report\.html/);
-  const without = INSTRUCTIONS([]);
+  const without = instructionsOf([]);
   assert.match(without, /Write the report as `report\/index\.html`/);
   assert.match(without, /\(`report\/index\.html`\)/);
   assert.doesNotMatch(without, /report\.html/);
