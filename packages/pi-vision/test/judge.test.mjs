@@ -164,6 +164,19 @@ test("a look that cannot be made throws with its code and is filed and told: no 
   assert.deepEqual([rows.filed[0].args.path, rows.filed[0].facts.kind, rows.filed[0].facts.sha256.length], ["clip.mp4", "video", 64], "a miss about one medium names it, its kind and the hash of its bytes");
 });
 
+test("a request TypeSafe rate-limited to the end of the runner's retries (http, HTTP 429) is a look_failed miss that cost nothing, so the run's cost stays known", async () => {
+  const cwd = workspace({ "p1.png": pngBytes(400, 300) });
+  const asks = `const out = []; for (const request of input) { try { await vision.judge(request); out.push("judged"); } catch (error) { out.push(error.message); } } return out;`;
+  const rows = host();
+  // What the Jev runner throws when it gives up on a 429: code http, status 429, and no request diagnostic.
+  const limited = Object.assign(new Error("Jev returned HTTP 429."), { code: "http", status: 429, attempts: 3 });
+  const request = { paths: ["p1.png"], questions: { q: { type: "noul", instructions: "Is it a chart?" } } };
+  const [said] = (await ran(createVisionExtension({ jev: { judge: fakeJev({ fail: limited }).judge }, ...rows.options }), cwd, `const input = [${JSON.stringify(request)}]; ${asks}`)).value;
+  assert.equal(said, "look_failed: Jev failed: rate limited, Jev returned HTTP 429.");
+  assert.deepEqual(rows.misses.map((m) => [m.tool, m.code]), [["vision.judge", "look_failed"]]);
+  assert.deepEqual(rows.filed.map((r) => [r.status, r.facts.cost_usd]), [["failed", 0]], "a rate-limited request cost nothing: its price is known");
+});
+
 // The kill: judge-child.mjs is one process of a run whose script asks two judgments, one image each.
 const CHILD = path.join(import.meta.dirname, "durable", "judge-child.mjs");
 const lines = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
