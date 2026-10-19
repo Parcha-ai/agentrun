@@ -217,7 +217,7 @@ test("only a lookalike: the search starts from the best frame, and the eyes, see
 
 test("a coarse scan is halved to a minute before the eyes watch it", async () => {
   transcript(null);
-  const { values: [, scanned, halved, named, checked], jev } = await steps([narrowWith("scanFrames: 300", "scanFrames: 4"), scan, halve, name, check]);
+  const { values: [, scanned, halved, named, checked], jev } = await steps([narrowWith("scanFrames: 40", "scanFrames: 4"), scan, halve, name, check]);
   assert.deepEqual([scanned.step, scanned.likely], [75, [225]], "frames at 0, 75, 150 and 225: the span 150 to 225 holds the first second");
   assert.deepEqual(jev.requests.slice(4, 8).map((r) => r.source), [160, 169, 179, 188].map((t) => `film.mp4#t=${t}`), "four frames across the span's first half");
   assert.deepEqual(halved.window, [139, 199], "one halving: 150 to 188 is under a minute");
@@ -288,7 +288,7 @@ test("words say where to look first: a sighting before the window they name is f
 
 test("a thing first seen right at a scanned frame is inside the minute the eyes watch", async () => {
   transcript(null);
-  const { values: [, scanned, halved, named, checked] } = await steps([narrowWith('video: "film.mp4", best: "film.mp4", thing: "a red umbrella", box: "the umbrella", words: "umbrella|parasol", chapters: null, scanFrames: 300', 'video: "late.mp4", best: "late.mp4", thing: "a red umbrella", box: "the umbrella", words: "umbrella|parasol", chapters: null, scanFrames: 5'), scan, halve, name, check]);
+  const { values: [, scanned, halved, named, checked] } = await steps([narrowWith('video: "film.mp4", best: "film.mp4", thing: "a red umbrella", box: "the umbrella", words: "umbrella|parasol", chapters: null, scanFrames: 40', 'video: "late.mp4", best: "late.mp4", thing: "a red umbrella", box: "the umbrella", words: "umbrella|parasol", chapters: null, scanFrames: 5'), scan, halve, name, check]);
   assert.deepEqual([scanned.step, scanned.likely], [60, [240]]);
   assert.deepEqual([halved.span, halved.window], [[210, 240], [195, 255]], "halved below 40 seconds, the minute holds 240");
   assert.deepEqual([named.at, checked.t], [240, 240]);
@@ -344,4 +344,48 @@ test("a box of no size has no fragment: the thing is still found by its noul, ci
   transcript();
   const { values: [, , , , checked] } = await steps([narrow, scan, halve, name, check], { jev: pixelJev({ confidence: 0.31, flat: true }) });
   assert.deepEqual([checked.found, checked.t, checked.cite, checked.noBox], [true, FIRST, `film.mp4#t=${FIRST}`, true]);
+});
+
+test("the budget is held in one place: a coarse pass of 40 frames and a request budget of 120, said once in the task and taught in the text", () => {
+  assert.equal((narrow.match(/maxJudges: 120/g) ?? []).length, 1, "one place to change it");
+  assert.match(narrow, /scanFrames: 40, maxJudges: 120, budgetUsd: 0\.1/);
+  const section = SKILL.slice(SKILL.indexOf("## The request budget"), SKILL.indexOf("## When to stop"));
+  for (const words of ["A host caps the Jev requests of a run", "200", "`maxJudges`", "a kept answer is not a request", "three requests short of it", "lower the coarse pass"]) assert.ok(section.includes(words), `the text says ${words}`);
+  assert.match(SKILL, /A long film is never scanned\s+a frame every few seconds/);
+});
+
+test("a request budget: the scan and the halving stop three requests short of it and the check still has its three; the search never asks for more than it", async () => {
+  transcript();
+  for (const [budget, frames] of [[13, 10], [12, 9]]) {
+    const { values: [, scanned, halved, , checked], jev } = await steps([narrowWith("maxJudges: 120", `maxJudges: ${budget}`), scan, halve, name, check]);
+    assert.deepEqual([scanned.frames, scanned.requests, scanned.stopped], [frames, frames, "budget"], `budget ${budget}`);
+    assert.equal(halved.requests, frames, "the halving asked nothing more: its span is already under 40 seconds");
+    assert.deepEqual([checked.found, checked.t, checked.requests, jev.requests.length], [true, FIRST, budget, budget], "three checks fill the budget, no more");
+  }
+  const { values: [, scanned, halved], jev } = await steps([narrowWith("maxJudges: 120", "maxJudges: 5"), scan, halve]);
+  assert.deepEqual([scanned.frames, scanned.requests, scanned.stopped, jev.requests.length], [2, 2, "budget", 2], "a budget of 5 holds 3 back for the check");
+  assert.deepEqual([halved.requests, halved.stopped, halved.span], [2, "budget", [0, 130]], "the halving asked nothing: the best frame so far is the lookalike at 130, and the budget is spent");
+});
+
+test("a step run again counts no request twice, and a halving that runs out of requests stops and says so", async () => {
+  transcript(null);
+  const { values: [, once, again], jev } = await steps([narrow, scan, scan]);
+  assert.deepEqual([again.requests, once.requests, jev.requests.length], [30, 30, 30], "the second scan asked, and counted, nothing");
+  const small = narrowWith("scanFrames: 40", "scanFrames: 4").replace("maxJudges: 120", "maxJudges: 10");
+  const { values: [, scanned, halved] } = await steps([small, scan, halve]);
+  assert.deepEqual([scanned.frames, scanned.requests], [4, 4], "a coarse pass of 4 frames at 75 seconds");
+  assert.deepEqual([halved.requests, halved.stopped, halved.span], [7, "budget", [150, 225]], "the halving stops at 10 minus 3, keeps the span it had and says so");
+});
+
+test("a 47-minute film is searched in about fifty Jev requests, far under a host's cap of 200, and the second is found", async () => {
+  transcript(null);
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=0x707070:s=160x120:r=1:d=2820", "-vf", "drawbox=x=96:y=24:w=40:h=48:color=red@1:t=fill:enable='between(t,1500,1700)'",
+    "-g", "30", "-sc_threshold", "0", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", path.join(cwd, "long.mp4")]);
+  const { values: [words, scanned, halved, named, checked], jev } = await steps([narrowWith('video: "film.mp4", best: "film.mp4"', 'video: "long.mp4", best: "long.mp4"'), scan, halve, name, check]);
+  assert.deepEqual([words.windows, scanned.step, scanned.frames], [[[0, 2820]], 71, 40], "a coarse pass of 40 frames, one every 71 seconds, where the old default asked 282");
+  assert.deepEqual(scanned.likely, [1562, 1633]);
+  assert.deepEqual(halved.span, [1491, 1527], "one round of four frames brought the span from 71 seconds under 40");
+  assert.deepEqual([named.at, checked.t, checked.found], [1500, 1500, true]);
+  assert.deepEqual([checked.requests, jev.requests.length], [47, 47], "40 scanned, 4 halved, 3 checked");
+  assert.ok(jev.requests.length < 60, "far under 200");
 });

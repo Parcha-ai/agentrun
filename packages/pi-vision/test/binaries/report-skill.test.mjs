@@ -30,6 +30,9 @@ const cwd = dir.path;
 // each frame says which second it is.
 execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=5:duration=40", "-f", "lavfi", "-i", "sine=frequency=440:duration=40",
   "-pix_fmt", "yuv420p", "-c:v", "libx264", "-c:a", "aac", "-shortest", path.join(cwd, "talk.mp4")]);
+// A film that is black for its first four seconds and then moves, and a photo that is black: what a dark frame is.
+execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=160x120:r=5:d=4", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=5:duration=4", "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0", "-pix_fmt", "yuv420p", "-c:v", "libx264", path.join(cwd, "opens-black.mp4")]);
+execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=160x120", "-frames:v", "1", path.join(cwd, "dark.jpg")]);
 fs.writeFileSync(path.join(cwd, "contract.pdf"), textPdf(4));
 // The photo carries a camera's metadata, as a real one does, so what a kept photo sheds can be told.
 fs.writeFileSync(path.join(cwd, "photo.jpg"), await sharp(await photoJpeg(sharp)).withMetadata({ exif: { IFD0: { Copyright: "origin-marker-9f3a" } } }).jpeg().toBuffer());
@@ -993,4 +996,40 @@ test("an absence claim is grounded by a cited Jev no-answer and refused when no 
   const unsupported = await run([helpers, assets, looking, absence("lookPage.key"), ground, render, check]);
   assert.ok(!unsupported.result.ok);
   assert.match(unsupported.result.error.message, /^row gone: "The seal is absent on page 3\." is not stated by what its cited looks read \(0\.03\)/, "cited only to a look that read the page, nothing states the absence");
+});
+
+test("a frame, a poster or a thumbnail of a film that is almost black is refused, with its mean brightness; the same film a second or two on passes", async () => {
+  const withFrame = (at) => data.replace(/\n      pics: \[\n        \{ src: talk,/, `\n      pics: [\n        { src: dark, alt: "A moment of the film", caption: "The film's opening moment, as it begins." },\n        { src: talk,`).replace("\nconst report = {", `\nconst dark = await frame("opens-black.mp4", ${at}, "opening");\nconst report = {`);
+  onDisk = "other";
+  const black = await run([helpers, assets, looking, withFrame(1), ground, render, check]);
+  assert.ok(!black.result.ok);
+  assert.match(black.result.error.message, /frames\/opening\.jpg is almost black \(mean brightness 0 of 255, under 16\): cut another moment of the film, a second or two on/);
+  const moving = await run([helpers, assets, looking, withFrame(6), ground, render, check]);
+  assert.ok(moving.result.ok, moving.result.ok ? "" : moving.result.error.message);
+});
+
+test("a poster and a thumbnail are measured too: a clip that opens on black has a black poster, and a row's thumbnail of a black moment is refused", async () => {
+  onDisk = "other";
+  const poster = await refuses('await sh("ffmpeg -v error -y -f lavfi -i color=c=black:s=160x120 -frames:v 1 report/frames/talk-chart-poster.jpg");', /frames\/talk-chart-poster\.jpg is almost black/);
+  const rows = data.replace("  notChecked:", '  rows: [{ id: "m1", label: "Seconds 0 to 20", text: "The film opens.", thumb: await thumb("opens-black.mp4", "m1-thumb", { t: 2 }), cites: [{ file: "talk.mp4", t: [0, 20], look: lookTalk.key }] }],\n  notChecked:');
+  assert.notEqual(rows, data);
+  const { result } = await run([helpers, assets, looking, rows, ground, render, check]);
+  assert.ok(!result.ok);
+  assert.match(result.error.message, /frames\/m1-thumb\.jpg is almost black/);
+  const clipped = data.replace('clip("talk.mp4", 18, 26, "talk-chart")', 'clip("opens-black.mp4", 0, 3, "talk-chart")');
+  assert.notEqual(clipped, data);
+  const opening = await run([helpers, assets, looking, clipped, ground, render, check]);
+  assert.ok(!opening.result.ok);
+  assert.match(opening.result.error.message, /frames\/talk-chart-poster\.jpg is almost black/, "the poster is the window's opening frame, and the film opens on black");
+});
+
+test("a page, a crop and a photo are the document's or the photo's own: a dark one is not refused", async () => {
+  onDisk = "other";
+  const darkPhoto = data.replace('const site = await photo("photo.jpg", "site-photo");', 'const site = await photo("dark.jpg", "site-photo");');
+  assert.notEqual(darkPhoto, data);
+  const { result } = await run([helpers, assets, looking, darkPhoto, ground, render, check]);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  const darkThumb = data.replace("  notChecked:", '  rows: [{ id: "m1", label: "Seconds 0 to 20", text: "The photo is dark.", thumb: await thumb(await photo("dark.jpg", "dark-photo"), "m1-thumb"), cites: [{ file: "talk.mp4", t: [0, 20], look: lookTalk.key }] }],\n  notChecked:');
+  const thumbed = await run([helpers, assets, looking, darkThumb, ground, render, check]);
+  assert.ok(thumbed.result.ok, thumbed.result.ok ? "" : thumbed.result.error.message);
 });
