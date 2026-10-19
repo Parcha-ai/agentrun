@@ -41,6 +41,7 @@ import { checkModelKeys, judgeCapsOf, inputOf, declaredEnv, childPlansOf, choose
 import { cost } from './fold.ts';
 import { checkItems, fetchSources, missingCommitted, readSources, withSources } from './sources.ts';
 import { localHost, type BrowserPlane, type Fakes, type Host, type RunPlace } from './host.ts';
+import { takeArtifact } from './artifact.ts';
 import { codeOf, finishRecording, followRecording, keepBlob, lazyRecorder, openRecorder, openSupervisor } from './record.ts';
 import { packageCommitRecorder } from './record-store.ts';
 import { scanPlaced, scanRecording, signInFile, trackSecrets } from './secrets.ts';
@@ -50,7 +51,7 @@ import { scanPlaced, scanRecording, signInFile, trackSecrets } from './secrets.t
 export type LiveParts = { host?: Partial<Host>; /** The live tools, the same name -> function map as `Fakes.tools`: on `--live` the effect door (evidence, receipts, kill crossings) dispatches to these. A tool missing here runs from `fakes.tools` only when demo.json's `tools` entry for it says `local: "fakes"`, else the call fails `no live source for <tool>`. Without `tools`, every tool runs from `fakes.tools` as before. */ tools?: Fakes['tools']; /** Which models the live parts chose (flags, defaults, the sign-in's plan): reported with the run's outcome, and handed to `manifest` as `models`. */ models?: Record<string, string>; /** The live vision options, built from the host and the running run exactly as `fakes.vision` is: one seam for both. */ vision?: (host: Host, running: { readonly harness: Harness | undefined }, context: { input: Record<string, unknown>; place: { root: string; work: string } }) => Partial<VisionAdapterOptions> };
 /** The model choices on the command line, handed to the demo's `live` part. */
 export type LiveModels = { provider?: string; model?: string; eyesModel?: string };
-const RESERVED = new Set(['format', 'title', 'task', 'model', 'generations', 'kills', 'code', 'cost', 'recorded', 'source', 'result', 'providers', 'see_also', 'job', 'store', 'baseline']);
+const RESERVED = new Set(['format', 'title', 'task', 'model', 'generations', 'kills', 'code', 'cost', 'recorded', 'source', 'result', 'providers', 'see_also', 'job', 'store', 'baseline', 'artifact']);
 export type DemoOptions = {
   /** How long the live recorder holds a line before placing it in `events.jsonl` (default 1000 ms, the time every writer has to get it to a spool). A test knob; a place whose clock is far from the host's wants it longer. */
   followHoldMs?: number;
@@ -697,12 +698,14 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     if (followError) throw followError;
     follower.close();
     if (carryRefusal) throw new Error(`the recording is refused: the place could not bring home process ${carryRefusal.gen}'s recording (${carryRefusal.code}), and that process ended on its own`);
+    // The agent's report (draft 41): `report/index.html` in the run's work directory and the files it reaches, kept as blobs before the scans below; a file the final page does not reach (a killed attempt's leftover) is not kept.
+    const artifact = takeArtifact(join(paths.work, 'report'), (bytes, extension) => keepBlob(recordDir, bytes, extension), spec.title ?? spec.name);
     // What a viewer following the run could already have fetched is not taken back: a secret in the file as it was placed refuses the recording, though the finished file is redacted.
     scanPlaced(recordDir, tracked?.final() ?? []);
     finishRecording(recordDir, {
       ...(redact ? { redact } : {}), job: { blob: jobBlob, sha256: jobBlob },
-      title: spec.title ?? spec.name, task: job.workflow.name ?? spec.name, model: live ? 'live' : 'faux/faux-1', generations: processesStarted, kills: kills.length,
-      code: codeOf(rootOf(options)), cost, source: { run: runName, ...(last?.storeSha256 ? { store_sha256: last.storeSha256 } : {}) }, ...(seeAlso.length ? { see_also: seeAlso } : {}), ...(extra ? { extra } : {}), ...(resultBlob ? { result: resultBlob } : {}), ...(live ? { providers: 'real' as const } : {}),
+      title: spec.title ?? spec.name, task: job.workflow.name ?? spec.name, model: live ? chosen?.lead ?? 'live' : 'faux/faux-1', generations: processesStarted, kills: kills.length,
+      code: codeOf(rootOf(options)), cost, source: { run: runName, ...(last?.storeSha256 ? { store_sha256: last.storeSha256 } : {}) }, ...(seeAlso.length ? { see_also: seeAlso } : {}), ...(extra ? { extra } : {}), ...(resultBlob ? { result: resultBlob } : {}), ...(artifact ? { artifact } : {}), ...(live ? { providers: 'real' as const } : {}),
     });
     // The record-time scan: a recording that still holds a secret is refused (its manifest removed, so it is not a finished recording), naming the key and the file, never the value.
     try { scanRecording(recordDir, tracked?.final() ?? []); } catch (error) { rmSync(join(recordDir, 'manifest.json'), { force: true }); throw error; }

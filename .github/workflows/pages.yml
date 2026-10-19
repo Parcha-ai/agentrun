@@ -34,6 +34,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
+      # The gate reads a recording's report page with an HTML parser (htmlparser2, a dependency of the reference package): installed from the lockfile, without running any package's scripts.
+      - name: Install the gate's dependencies
+        run: npm ci --ignore-scripts
       # The recordings ship as files with recordings/index.json, so the page stays small however many runs it holds.
       - name: Build the viewer and its gallery
         run: node apps/viewer/build.mjs --files
