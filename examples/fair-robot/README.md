@@ -20,4 +20,6 @@ A `--live` run needs:
 
 Three measured live runs cost about $0.30 to $0.80 and took 5 to 7 minutes. A live run prints little until it ends. A run stops past $1 unless `--max-usd <n>` sets another cap.
 
+The gallery recording ran with Claude Sonnet 5.5 as the lead (`--model anthropic/claude-sonnet-5-5 --thinking high --max-usd 3`): about $0.55 in 5 min.
+
 The agent (gemini-3.8-flash, thinking at medium; thinking is shown when the model returns it) runs shell commands with your user's rights on your machine: run it in a container or a VM.
