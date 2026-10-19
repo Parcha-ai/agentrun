@@ -1,0 +1,5 @@
+---
+packages: @parcha/pi-vision
+kind: fix
+---
+Every finding, row and the answer of a report carries `data-ground`, the key of the `vision.judge` look that judged its texts and each text's claim id (`<look key>:t0 <look key>:t1`), and the report skill's check counts a verdict without a look key as not judged: a verdict comes only from the judge's answer, never from the script. When Jev cannot be asked (a cap, an error) the unit gets no verdict and the page's Not checked lists exactly which units were not judged, by count and id, with the reason ("49 units: rows r55 to r102 (48 rows), the answer: not judged: ..."), and the check refuses a unit that is neither judged nor declared. A boxed row's thumbnail is about 10rem wide with the row's second and text aligned to its top. The skill also says text stays text (never words as a picture), and that a detail nobody asked for (a number painted on a car, a sign's words) goes on the page only when a crop of it was read and agrees with the first reading.
