@@ -6,7 +6,9 @@
 // holds the profile, the input and the output, and removes it when it ends: two conversions, of the same document too,
 // never share a profile, and nothing is left behind but the PDF, which is named by the document's hash and put in place
 // by a rename, so a reader of it sees a whole one. The document is untrusted, so its profile is seeded before the
-// program starts with settings that turn macros, active content, linked content and link updates off.
+// program starts with settings that turn macros, active content, linked content and link updates off, and where the
+// system lets a user cut a process's network (`unshare -rn`), found once per environment when the provider detects, it
+// runs with none. Where it cannot, the conversion runs as it did: a conversion never fails for want of isolation.
 import { randomUUID } from "node:crypto";
 import { visionContext, type VisionResult } from "../core/env.js";
 import { OFFICE_LIMITS, OfficeMissError, inflateEntry, readSource, zipDirectory, type OfficeLimits } from "../core/office.js";
@@ -17,6 +19,10 @@ const DETECT_TIMEOUT_S = 30;
 /** A conversion is cut after this many seconds; provisional: a cold LibreOffice start takes seconds and a long document tens of seconds (2026-10-11, not measured on this build box, which has no LibreOffice). */
 const CONVERT_TIMEOUT_S = 180;
 const NEEDS = "LibreOffice (soffice) in the environment";
+/** What puts a program in a user and network namespace of its own, with no network in it; and the probe of whether the system allows it. */
+const ISOLATE = ["unshare", "-rn", "--"] as const;
+const ISOLATION_PROBE = ["unshare", "-rn", "true"] as const;
+const ISOLATION_PROBE_TIMEOUT_S = 10;
 
 /** The settings the conversion's profile is seeded with: an untrusted document runs no macro of any kind, loads no OLE or DDE
  *  content, fetches no linked content from an address (a linked image, for one, is requested on load otherwise), and updates
@@ -56,6 +62,8 @@ export function sofficeProvider(options: SofficeOptions = {}): Provider {
   const command = options.command ?? "soffice";
   const timeout = options.timeoutS ?? CONVERT_TIMEOUT_S;
   const limits: OfficeLimits = { ...OFFICE_LIMITS, ...options.limits };
+  /** Whether each environment allowed `unshare -rn`, found by `detect`, which `detectOnce` runs once per environment. */
+  const isolated = new Map<string, boolean>();
   const provider: Provider = {
     name: "soffice",
     capabilities: ["office"],
@@ -73,7 +81,10 @@ export function sofficeProvider(options: SofficeOptions = {}): Provider {
           if (ran.value.exitCode !== 0) return missing(`${command} --version exited ${ran.value.exitCode}`);
           const read = await env.readBinaryFile(printed, context);
           const version = read.ok ? new TextDecoder().decode(read.value).split("\n")[0]!.trim() : "";
-          return version ? { available: true, version } : missing(`${command} --version printed nothing`);
+          if (!version) return missing(`${command} --version printed nothing`);
+          const cut = await env.exec(ISOLATION_PROBE, { timeout: ISOLATION_PROBE_TIMEOUT_S }, context).then((result) => result.ok && result.value.exitCode === 0, () => false);
+          isolated.set(env.id, cut);
+          return { available: true, version };
         } finally {
           await env.remove(dir.value, { recursive: true, force: true }, visionContext());
         }
@@ -101,7 +112,7 @@ export function sofficeProvider(options: SofficeOptions = {}): Provider {
         for (const dir of ["in", "out", "profile/user"]) step(await env.createDir(`${work}/${dir}`, { recursive: true }, context), "the working directory could not be made");
         step(await env.writeFile(`${work}/profile/user/registrymodifications.xcu`, PROFILE_REGISTRY, context), "the profile could not be written");
         step(await env.writeFile(input, bytes, context), "the document could not be copied for LibreOffice");
-        const ran = await env.exec([command, "--headless", "--invisible", "--norestore", "--nolockcheck", "--nodefault", "--nologo", `-env:UserInstallation=file://${`${work}/profile`.split("/").map(encodeURIComponent).join("/")}`, "--convert-to", "pdf", "--outdir", `${work}/out`, input], { timeout }, context);
+        const ran = await env.exec([...(isolated.get(env.id) ? ISOLATE : []), command, "--headless", "--invisible", "--norestore", "--nolockcheck", "--nodefault", "--nologo", `-env:UserInstallation=file://${`${work}/profile`.split("/").map(encodeURIComponent).join("/")}`, "--convert-to", "pdf", "--outdir", `${work}/out`, input], { timeout }, context);
         if (!ran.ok) {
           if (ran.error.code === "aborted") throw ran.error;
           throw new OfficeMissError(ran.error.code === "timeout" ? "over_budget" : "needs", ran.error.code === "timeout" ? `LibreOffice did not finish within ${timeout} s; read the document's text instead` : `${NEEDS}: ${ran.error.message.split("\n")[0]}`);

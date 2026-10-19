@@ -38,7 +38,23 @@ printf '%%PDF-1.4 stand-in render of %s\\n' "$name" > "$outdir/$stem.pdf"
 const MiB = 1024 * 1024;
 const misses = (code, message) => (error) => error instanceof OfficeMissError && error.code === code && message.test(error.message);
 
-async function rig(t, options = {}) {
+/** The environment with what `unshare` does decided here, and every program it was asked to start recorded. A probe
+ *  (`unshare -rn true`) answers as the system would: `works` true is success, false is a refusal, "missing" is a program
+ *  that is not there. A conversion behind `unshare -rn --` runs the program after the dashes, as the real one would. */
+function withUnshare(env, works) {
+  const started = [];
+  const exec = (command, options, context) => {
+    started.push([...command]);
+    if (command[0] !== "unshare") return env.exec(command, options, context);
+    if (works === "missing") return Promise.resolve({ ok: false, error: Object.assign(new Error("spawn unshare ENOENT"), { code: "spawn_error" }) });
+    if (!works) return Promise.resolve({ ok: true, value: { exitCode: 1 } });
+    const dashes = command.indexOf("--");
+    return dashes < 0 ? Promise.resolve({ ok: true, value: { exitCode: 0 } }) : env.exec(command.slice(dashes + 1), options, context);
+  };
+  return { env: Object.setPrototypeOf({ exec }, env), started };
+}
+
+async function rig(t, options = {}, works = false) {
   const w = await workspace(t);
   const bin = join(w.dir.path, "bin");
   const work = join(w.dir.path, "work");
@@ -49,7 +65,8 @@ async function rig(t, options = {}) {
   const mode = (value) => writeFileSync(join(bin, "mode"), value);
   const log = () => (existsSync(join(bin, "calls.log")) ? readFileSync(join(bin, "calls.log"), "utf8").trim().split("\n") : []);
   const provider = sofficeProvider({ command: join(bin, "soffice"), ...options });
-  return { ...w, bin, work, mode, log, provider, call: () => ({ env: w.env, signal: undefined, tempDir: work }) };
+  const { env, started } = withUnshare(w.env, works);
+  return { ...w, env, started, bin, work, mode, log, provider, call: () => ({ env, signal: undefined, tempDir: work }) };
 }
 
 test("detect names the program's own version line", async (t) => {
@@ -94,11 +111,48 @@ test("the timeouts it hands to exec are seconds, as the environment reads them",
   Object.setPrototypeOf(env, r.env);
   const source = await r.source("seconds.docx", docx(para("x")));
   await r.provider.office(source, {}, { ...r.call(), env });
-  assert.deepEqual(seen, [30, 7], "the version probe waits 30 s and the conversion the 7 s it was given, never 30,000 or 7,000");
+  assert.deepEqual(seen, [30, 10, 7], "the version probe waits 30 s, the isolation probe 10 s and the conversion the 7 s it was given, never 30,000 or 7,000");
   const [defaulted] = [sofficeProvider({ command: join(r.bin, "soffice") })];
   const again = [];
   await defaulted.office(await r.source("default.docx", docx(para("y"))), {}, { ...r.call(), env: Object.setPrototypeOf({ exec: (c, o, x) => { again.push(o?.timeout); return r.env.exec(c, o, x); } }, r.env) });
-  assert.deepEqual(again, [30, 180]);
+  assert.deepEqual(again, [30, 10, 180]);
+});
+
+test("where the system allows a network namespace, the conversion runs inside one, and the probe ran once", async (t) => {
+  const r = await rig(t, {}, true);
+  const program = join(r.bin, "soffice");
+  const first = await r.source("one.docx", docx(para("one")));
+  const second = await r.source("two.docx", docx(para("two")));
+  await r.provider.office(first, {}, r.call());
+  await r.provider.office(second, {}, r.call());
+  const probes = r.started.filter((command) => command[0] === "unshare" && command.at(-1) === "true");
+  assert.deepEqual(probes, [["unshare", "-rn", "true"]], "asked once, whatever the number of conversions");
+  const conversions = r.started.filter((command) => command.includes("--convert-to"));
+  assert.equal(conversions.length, 2);
+  for (const command of conversions) assert.deepEqual(command.slice(0, 4), ["unshare", "-rn", "--", program], "the program is started inside the namespace");
+  assert.equal(readFileSync(join(r.work, `soffice-${first.sha256}.pdf`), "utf8").startsWith("%PDF-1.4"), true);
+});
+
+test("where the system refuses a network namespace, or has no unshare, the conversion still runs as it did", async (t) => {
+  for (const works of [false, "missing"]) {
+    const r = await rig(t, {}, works);
+    const program = join(r.bin, "soffice");
+    const source = await r.source("untrusted.docx", docx(para("x")));
+    const out = await r.provider.office(source, {}, r.call());
+    assert.equal(readFileSync(out.path, "utf8").startsWith("%PDF-1.4"), true, `${works}: the PDF was made`);
+    const conversion = r.started.find((command) => command.includes("--convert-to"));
+    assert.equal(conversion[0], program, `${works}: the program is started as it was, with nothing before it`);
+    assert.deepEqual(out.madeBy, { provider: "soffice", version: "LibreOffice 24.8.1.2 stand-in build" }, "what the result names does not change");
+    assert.deepEqual((await r.provider.detect(r.env)).available, true, "the provider is available without isolation");
+  }
+});
+
+test("a probe that throws is a refusal, and the conversion still runs", async (t) => {
+  const r = await rig(t, {}, true);
+  const throwing = Object.setPrototypeOf({ exec: (command, options, context) => (command[0] === "unshare" ? Promise.reject(new Error("exec blew up")) : r.env.exec(command, options, context)) }, r.env);
+  const out = await r.provider.office(await r.source("a.docx", docx(para("x"))), {}, { ...r.call(), env: throwing });
+  assert.equal(readFileSync(out.path, "utf8").startsWith("%PDF-1.4"), true);
+  assert.deepEqual((await r.provider.detect(throwing)).available, true);
 });
 
 test("the profile is seeded before the program starts, with the settings that turn macros, active content, remote content and link updates off", async (t) => {
