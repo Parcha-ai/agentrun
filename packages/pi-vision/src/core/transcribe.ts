@@ -13,6 +13,7 @@ import { sniffKind, SNIFF_BYTES, type Kind } from "./kinds.js";
 import { once, throwMiss } from "./media.js";
 import { ProviderMiss } from "./derive.js";
 import { firstLine, type Miss } from "./misses.js";
+import { argvPath } from "./paths.js";
 import { lookTiming } from "./timing.js";
 import type { CodeGlobal } from "./see.js";
 
@@ -70,7 +71,7 @@ async function durationOf(env: VisionEnv, path: string, signal: AbortSignal | un
   if (!dir.ok) return undefined;
   try {
     const out = `${dir.value}/duration.txt`;
-    const run = await env.exec(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", "-o", out, path], { timeout: 60 }, ctx);
+    const run = await env.exec(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", "-o", out, argvPath(path)], { timeout: 60 }, ctx);
     if (!run.ok || run.value.exitCode !== 0) return undefined;
     const read = await env.readBinaryFile(out, ctx);
     const seconds = read.ok ? Number(Buffer.from(read.value).toString("utf8").trim()) : NaN;

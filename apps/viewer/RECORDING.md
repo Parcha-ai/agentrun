@@ -219,6 +219,7 @@ snapshots included. A lost branch (3.2) is events, not state: the per-generation
 
 ## 7. What may be in a recording
 
+- A blob's extension is one of `png jpg jpeg webp gif webm mp4 pdf json jsonl txt md csv vtt` (draft 50); the validator and the gate refuse any other. `html`/`htm` and `css` appear only as the files of `manifest.artifact` (7.1); `svg`, `xml`, `xhtml`, `js` and `mjs` never: the recorder records an `image/svg+xml` output as text (`txt`). Every blob that is not media (all but `png jpg jpeg webp gif webm mp4 pdf`) is scanned as text for credential shapes and machine values, whatever its extension.
 - No secret, ever. Packages already keep credentials out of their documents and results; the recorder also passes
   every live line through the host's redactor before writing it.
 - A published recording uses public sources only, chosen and checked before it is recorded.

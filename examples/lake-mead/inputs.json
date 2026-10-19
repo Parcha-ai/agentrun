@@ -1,0 +1,339 @@
+{
+ "about": "Thirteen Landsat images of the same frame over Lake Mead, Hoover Dam to the Overton Arm, from 1984 to 2024, committed here and checked by size and SHA-256.",
+ "frame": {
+  "crs": "WGS 84 / UTM zone 11N (EPSG:32611)",
+  "pixel_m": 60.0,
+  "width": 927,
+  "height": 1132,
+  "upper_left_m": [
+   692340.0,
+   4051800.0
+  ],
+  "covers_lon_lat": [
+   -114.85,
+   35.98,
+   -114.25,
+   36.58
+  ],
+  "wrs2_path_row": "039/035",
+  "map_bounds_m": {
+   "x_min": 692340.0,
+   "x_max": 747960.0,
+   "y_min": 3983880.0,
+   "y_max": 4051800.0
+  }
+ },
+ "rendering": "Surface reflectance (scale 0.0000275, offset -0.2) of the red, green and blue bands, averaged onto the frame, then one fixed stretch for every image: reflectance 0 to 0.30, gamma 1/1.8, JPEG quality 88.",
+ "license": {
+  "words": "There are no restrictions on Landsat data downloaded from the USGS; it can be used or redistributed as desired. We do request that you include a statement of the data source when citing, copying, or reprinting USGS Landsat data or images.",
+  "page": "https://www.usgs.gov/faqs/are-there-any-restrictions-use-or-redistribution-landsat-data",
+  "credit": "Landsat imagery courtesy of the U.S. Geological Survey"
+ },
+ "items": [
+  {
+   "id": "lake-mead-1984-05-15",
+   "title": "Lake Mead, 1984-05-15, Landsat 5 TM, true colour",
+   "path": "images/lake-mead-1984-05-15.jpg",
+   "bytes": 236904,
+   "sha256": "125f03b2cdf5c01c24267861903471787d420caa9c42c61050ec8e0440a0f252",
+   "source": {
+    "scene": "LT05_L2SP_039035_19840515_02_T1",
+    "landsat_scene_id": "LT50390351984136PAC00",
+    "date": "1984-05-15",
+    "sensor": "Landsat 5 TM",
+    "bands": [
+     "TM_B3",
+     "TM_B2",
+     "TM_B1"
+    ],
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LT05_L2SP_039035_19840515_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
+   },
+   "license": "USGS Landsat: no restrictions on use or redistribution"
+  },
+  {
+   "id": "lake-mead-1987-08-12",
+   "title": "Lake Mead, 1987-08-12, Landsat 5 TM, true colour",
+   "path": "images/lake-mead-1987-08-12.jpg",
+   "bytes": 254360,
+   "sha256": "7aa1659be6e9b89a5c49416d8c93389ef5a9e7c682c861f57374a9d5c2fa5fa6",
+   "source": {
+    "scene": "LT05_L2SP_039035_19870812_02_T1",
+    "landsat_scene_id": "LT50390351987224XXX02",
+    "date": "1987-08-12",
+    "sensor": "Landsat 5 TM",
+    "bands": [
+     "TM_B3",
+     "TM_B2",
+     "TM_B1"
+    ],
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LT05_L2SP_039035_19870812_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
+   },
+   "license": "USGS Landsat: no restrictions on use or redistribution"
+  },
+  {
+   "id": "lake-mead-1990-07-03",
+   "title": "Lake Mead, 1990-07-03, Landsat 5 TM, true colour",
+   "path": "images/lake-mead-1990-07-03.jpg",
+   "bytes": 251432,
+   "sha256": "b218a2eec96c1d258af382b38c0154db0979d533d1a3718b265f035e78a92cc1",
+   "source": {
+    "scene": "LT05_L2SP_039035_19900703_02_T1",
+    "landsat_scene_id": "LT50390351990184XXX03",
+    "date": "1990-07-03",
+    "sensor": "Landsat 5 TM",
+    "bands": [
+     "TM_B3",
+     "TM_B2",
+     "TM_B1"
+    ],
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LT05_L2SP_039035_19900703_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
+   },
+   "license": "USGS Landsat: no restrictions on use or redistribution"
+  },
+  {
+   "id": "lake-mead-1993-07-11",
+   "title": "Lake Mead, 1993-07-11, Landsat 5 TM, true colour",
+   "path": "images/lake-mead-1993-07-11.jpg",
+   "bytes": 248933,
+   "sha256": "dcf209b46d97ba25e91ff268504beb5965fdf1acbf89488d56d347df4f41faca",
+   "source": {
+    "scene": "LT05_L2SP_039035_19930711_02_T1",
+    "landsat_scene_id": "LT50390351993192AAA02",
+    "date": "1993-07-11",
+    "sensor": "Landsat 5 TM",
+    "bands": [
+     "TM_B3",
+     "TM_B2",
+     "TM_B1"
+    ],
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LT05_L2SP_039035_19930711_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
+   },
+   "license": "USGS Landsat: no restrictions on use or redistribution"
+  },
+  {
+   "id": "lake-mead-1997-07-06",
+   "title": "Lake Mead, 1997-07-06, Landsat 5 TM, true colour",
+   "path": "images/lake-mead-1997-07-06.jpg",
+   "bytes": 244539,
+   "sha256": "ffcde9b1f983c42e31b6fc0b00fbec78392871a82ae36f182990928dd9589308",
+   "source": {
+    "scene": "LT05_L2SP_039035_19970706_02_T1",
+    "landsat_scene_id": "LT50390351997187AAA01",
+    "date": "1997-07-06",
+    "sensor": "Landsat 5 TM",
+    "bands": [
+     "TM_B3",
+     "TM_B2",
+     "TM_B1"
+    ],
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LT05_L2SP_039035_19970706_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
+   },
+   "license": "USGS Landsat: no restrictions on use or redistribution"
+  },
+  {
+   "id": "lake-mead-2000-05-27",
+   "title": "Lake Mead, 2000-05-27, Landsat 5 TM, true colour",
+   "path": "images/lake-mead-2000-05-27.jpg",
+   "bytes": 248213,
+   "sha256": "cacaf34d2f0ad3cbbe08c0c826fce82a54051a58b1e8f3a21c5df6035bcb0bc6",
+   "source": {
+    "scene": "LT05_L2SP_039035_20000527_02_T1",
+    "landsat_scene_id": "LT50390352000148XXX01",
+    "date": "2000-05-27",
+    "sensor": "Landsat 5 TM",
+    "bands": [
+     "TM_B3",
+     "TM_B2",
+     "TM_B1"
+    ],
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LT05_L2SP_039035_20000527_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
+   },
+   "license": "USGS Landsat: no restrictions on use or redistribution"
+  },
+  {
+   "id": "lake-mead-2003-07-07",
+   "title": "Lake Mead, 2003-07-07, Landsat 5 TM, true colour",
+   "path": "images/lake-mead-2003-07-07.jpg",
+   "bytes": 247456,
+   "sha256": "99899f9edc9e4ab480ba02934c8155ef333638bed9b6db282b3bcba422c9c8b1",
+   "source": {
+    "scene": "LT05_L2SP_039035_20030707_02_T1",
+    "landsat_scene_id": "LT50390352003188PAC02",
+    "date": "2003-07-07",
+    "sensor": "Landsat 5 TM",
+    "bands": [
+     "TM_B3",
+     "TM_B2",
+     "TM_B1"
+    ],
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LT05_L2SP_039035_20030707_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
+   },
+   "license": "USGS Landsat: no restrictions on use or redistribution"
+  },
+  {
+   "id": "lake-mead-2006-07-15",
+   "title": "Lake Mead, 2006-07-15, Landsat 5 TM, true colour",
+   "path": "images/lake-mead-2006-07-15.jpg",
+   "bytes": 239322,
+   "sha256": "2afbb9b45053ec219d3300465c5cef91764215dac66bc9c34701d571667c9394",
+   "source": {
+    "scene": "LT05_L2SP_039035_20060715_02_T1",
+    "landsat_scene_id": "LT50390352006196PAC01",
+    "date": "2006-07-15",
+    "sensor": "Landsat 5 TM",
+    "bands": [
+     "TM_B3",
+     "TM_B2",
+     "TM_B1"
+    ],
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LT05_L2SP_039035_20060715_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
+   },
+   "license": "USGS Landsat: no restrictions on use or redistribution"
+  },
+  {
+   "id": "lake-mead-2010-06-24",
+   "title": "Lake Mead, 2010-06-24, Landsat 5 TM, true colour",
+   "path": "images/lake-mead-2010-06-24.jpg",
+   "bytes": 247654,
+   "sha256": "416a3c5fbacd163877a2f06bcd5acce42403d366edac37d889d0fa3327465784",
+   "source": {
+    "scene": "LT05_L2SP_039035_20100624_02_T1",
+    "landsat_scene_id": "LT50390352010175EDC00",
+    "date": "2010-06-24",
+    "sensor": "Landsat 5 TM",
+    "bands": [
+     "TM_B3",
+     "TM_B2",
+     "TM_B1"
+    ],
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LT05_L2SP_039035_20100624_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
+   },
+   "license": "USGS Landsat: no restrictions on use or redistribution"
+  },
+  {
+   "id": "lake-mead-2014-07-21",
+   "title": "Lake Mead, 2014-07-21, Landsat 8 OLI, true colour",
+   "path": "images/lake-mead-2014-07-21.jpg",
+   "bytes": 269862,
+   "sha256": "ed5babc75ce8951a181129701b0bfd66bdba0b0dad794838d4d85d465d466cdc",
+   "source": {
+    "scene": "LC08_L2SP_039035_20140721_02_T1",
+    "landsat_scene_id": "LC80390352014202LGN01",
+    "date": "2014-07-21",
+    "sensor": "Landsat 8 OLI",
+    "bands": [
+     "OLI_B4",
+     "OLI_B3",
+     "OLI_B2"
+    ],
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LC08_L2SP_039035_20140721_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
+   },
+   "license": "USGS Landsat: no restrictions on use or redistribution"
+  },
+  {
+   "id": "lake-mead-2018-06-30",
+   "title": "Lake Mead, 2018-06-30, Landsat 8 OLI, true colour",
+   "path": "images/lake-mead-2018-06-30.jpg",
+   "bytes": 259368,
+   "sha256": "e85df171b994df28cfea8ce8315a897ea58c0e01bec756201a07ba49e6c04571",
+   "source": {
+    "scene": "LC08_L2SP_039035_20180630_02_T1",
+    "landsat_scene_id": "LC80390352018181LGN00",
+    "date": "2018-06-30",
+    "sensor": "Landsat 8 OLI",
+    "bands": [
+     "OLI_B4",
+     "OLI_B3",
+     "OLI_B2"
+    ],
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LC08_L2SP_039035_20180630_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
+   },
+   "license": "USGS Landsat: no restrictions on use or redistribution"
+  },
+  {
+   "id": "lake-mead-2022-07-03",
+   "title": "Lake Mead, 2022-07-03, Landsat 9 OLI-2, true colour",
+   "path": "images/lake-mead-2022-07-03.jpg",
+   "bytes": 257719,
+   "sha256": "a9d4b50b01824fb6caed83fd3c251fe482eeebff4177a580b3c53a0f59cbba34",
+   "source": {
+    "scene": "LC09_L2SP_039035_20220703_02_T1",
+    "landsat_scene_id": "LC90390352022184LGN00",
+    "date": "2022-07-03",
+    "sensor": "Landsat 9 OLI-2",
+    "bands": [
+     "OLI_B4",
+     "OLI_B3",
+     "OLI_B2"
+    ],
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LC09_L2SP_039035_20220703_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
+   },
+   "license": "USGS Landsat: no restrictions on use or redistribution"
+  },
+  {
+   "id": "lake-mead-2024-07-08",
+   "title": "Lake Mead, 2024-07-08, Landsat 9 OLI-2, true colour",
+   "path": "images/lake-mead-2024-07-08.jpg",
+   "bytes": 252240,
+   "sha256": "04e9bb38db8ec90c4bde9db19f116a04b50899ab790393054db8b33c9026c8aa",
+   "source": {
+    "scene": "LC09_L2SP_039035_20240708_02_T1",
+    "landsat_scene_id": "LC90390352024190LGN00",
+    "date": "2024-07-08",
+    "sensor": "Landsat 9 OLI-2",
+    "bands": [
+     "OLI_B4",
+     "OLI_B3",
+     "OLI_B2"
+    ],
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LC09_L2SP_039035_20240708_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
+   },
+   "license": "USGS Landsat: no restrictions on use or redistribution"
+  }
+ ],
+ "mirror": {
+  "name": "Microsoft Planetary Computer, collection landsat-c2-l2",
+  "collection": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2",
+  "license_in_its_record": "Public Domain (link: https://www.usgs.gov/core-science-systems/hdds/data-policy); providers: USGS and NASA as producer and licensor, Microsoft as host",
+  "terms_of_use": "https://planetarycomputer.microsoft.com/terms (Supplemental Terms of Use for Microsoft Planetary Computer Previews, last updated January 2023)"
+ }
+}
