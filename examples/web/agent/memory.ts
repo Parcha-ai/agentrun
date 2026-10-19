@@ -21,6 +21,8 @@ export const MAX_MEMORY_BYTES = 64 * 1024;
 export const MAX_MEMORY_FILES = 32;
 
 export type MemoryFile = { name: string; text: string };
+/** A first run's index, so its first read finds a file: the agent replaces it once it keeps something. */
+export const EMPTY_INDEX = 'Nothing remembered yet.\n';
 export type CarriedBack = { changed: boolean; profiles: string[]; released: string[] };
 
 /** The memory files in `dir`, by name; null when there is no folder. A name that is not a memory file, a link, a
@@ -46,14 +48,17 @@ export async function readMemory(homeDir: string): Promise<MemoryFile[]> {
   return (await filesIn(join(homeDir, MEMORY_DIR)).catch(() => null)) ?? [];
 }
 
-/** Before the agent starts: the home's memory into the run's `work/memory/`, unless the run has its own (a resumed run).
- *  Returns how many files it copied. */
+/** Before the agent starts: the home's memory into the run's `work/memory/`, unless the run has its own (a resumed run);
+ *  a home with none gives the run an index that says so. Returns how many files it wrote. */
 export async function seedMemory(homeDir: string, workDir: string): Promise<number> {
   const to = join(workDir, MEMORY_DIR);
   if (existsSync(to)) return 0;
   const files = await readMemory(homeDir);
-  if (!files.length) return 0;
   await mkdir(to, { recursive: true });
+  if (!files.length) {
+    await writeFile(join(to, 'index.md'), EMPTY_INDEX);
+    return 1;
+  }
   for (const { name } of files) await copyFile(join(homeDir, MEMORY_DIR, name), join(to, name));
   return files.length;
 }

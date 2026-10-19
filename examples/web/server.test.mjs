@@ -543,6 +543,8 @@ test("a run that answered is released and carried back once, with the sign-in it
   assert.deepEqual([state.runs[id].outcome, state.runs[id].finalAnswer, state.runs[id].cost], ["completed", "Here is the late answer.", 0.06]);
   assert.equal(readFileSync(join(home.dir, run.path, "origin.txt"), "utf8"), server.url, "the run is told the page's origin, for a local Chrome's viewer");
   assert.equal(state.profiles[PROFILE].ref, "ctx-signed-in", "the sign-in went back to the agent home");
+  // The memory goes home right after the carry back's commit.
+  for (let i = 0; i < 100 && !existsSync(join(home.dir, "memory", "preferences.md")); i++) await new Promise((r) => setTimeout(r, 50));
   assert.equal(readFileSync(join(home.dir, "memory", "preferences.md"), "utf8"), "- Bills as PDF, newest first\n", "and its memory with it");
   assert.deepEqual((await (await fetch(`${server.url}/agent`)).json()).memory, [{ name: "preferences.md", text: "- Bills as PDF, newest first\n" }]);
 

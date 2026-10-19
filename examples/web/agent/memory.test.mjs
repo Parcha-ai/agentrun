@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { prepareProfile } from './chrome.ts';
-import { keepMemory, MAX_MEMORY_BYTES, MAX_MEMORY_FILE_BYTES, readMemory, seedMemory } from './memory.ts';
+import { EMPTY_INDEX, keepMemory, MAX_MEMORY_BYTES, MAX_MEMORY_FILE_BYTES, readMemory, seedMemory } from './memory.ts';
 import { REMEMBER_PAGE, rememberHtml, writeRememberPage } from './remember.ts';
 
 async function dirs(t) {
@@ -22,10 +22,16 @@ async function dirs(t) {
 const OWNER = { changed: true, profiles: ['local-chrome'], released: [] };
 const write = async (dir, files) => { await mkdir(dir, { recursive: true }); for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text); };
 
-test('a new run starts with the home\'s memory folder in its workspace; a resumed run keeps its own; a home with none seeds nothing', async (t) => {
+test('a new run starts with the home\'s memory folder in its workspace; a resumed run keeps its own; a home with none gives an index that says so, and the agent\'s files go home', async (t) => {
   const { home, work } = await dirs(t);
-  assert.equal(await seedMemory(home, work), 0);
-  assert.equal(existsSync(join(work, 'memory')), false);
+  assert.equal(await seedMemory(home, work), 1, 'a first run');
+  assert.deepEqual(readdirSync(join(work, 'memory')), ['index.md']);
+  assert.equal(readFileSync(join(work, 'memory', 'index.md'), 'utf8'), EMPTY_INDEX);
+  // The agent keeps something: it replaces the index and adds a file, and the owner's carry back takes them home.
+  await write(join(work, 'memory'), { 'index.md': '- preferences.md: how\n', 'preferences.md': '- Amount and due date only\n' });
+  assert.deepEqual(await keepMemory(home, work, OWNER), { written: ['index.md', 'preferences.md'], removed: [] });
+  await rm(join(home, 'memory'), { recursive: true });
+  await rm(join(work, 'memory'), { recursive: true });
   await write(join(home, 'memory'), { 'index.md': '- preferences.md: how\n', 'preferences.md': '- Amount and due date only\n' });
   assert.equal(await seedMemory(home, work), 2);
   assert.deepEqual(readdirSync(join(work, 'memory')).sort(), ['index.md', 'preferences.md']);

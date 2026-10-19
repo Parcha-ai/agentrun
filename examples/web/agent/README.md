@@ -136,7 +136,9 @@ starts, so set `RECORD_DIR` only for a server that starts one run.
 What the agent keeps between runs is files in `work/memory/`, written with its own file tools (the memory skill:
 `memory/index.md` names every file, `memory/preferences.md` holds how the person wants things done, `memory/accounts.md`
 the accounts it works on and their start pages; never a secret). start-run.mjs copies the home's memory into a new
-run's `work/memory/` before the agent starts, unless the run already has its own (a resumed run). When the server
+run's `work/memory/` before the agent starts, unless the run already has its own (a resumed run); a home with no
+memory yet gives the run a `memory/index.md` that says nothing is remembered, so the agent's first read finds a file.
+When the server
 carries a run back, the run's folder becomes the home's (`<home>/memory/`, owner-only): each changed file written whole,
 a file the run no longer has removed, nothing taken when a name is not a plain `.md` file or the folder is over its caps
 (16 KB a file, 64 KB in all, 32 files). Only the run that owns the sign-in writes it: the one that held its save lease,
