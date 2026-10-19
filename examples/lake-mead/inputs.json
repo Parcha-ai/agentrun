@@ -15,7 +15,13 @@
    -114.25,
    36.58
   ],
-  "wrs2_path_row": "039/035"
+  "wrs2_path_row": "039/035",
+  "map_bounds_m": {
+   "x_min": 692340.0,
+   "x_max": 747960.0,
+   "y_min": 3983880.0,
+   "y_max": 4051800.0
+  }
  },
  "rendering": "Surface reflectance (scale 0.0000275, offset -0.2) of the red, green and blue bands, averaged onto the frame, then one fixed stretch for every image: reflectance 0 to 0.30, gamma 1/1.8, JPEG quality 88.",
  "license": {
@@ -40,7 +46,10 @@
      "TM_B2",
      "TM_B1"
     ],
-    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance"
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LT05_L2SP_039035_19840515_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
    },
    "license": "USGS Landsat: no restrictions on use or redistribution"
   },
@@ -60,7 +69,10 @@
      "TM_B2",
      "TM_B1"
     ],
-    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance"
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LT05_L2SP_039035_19870812_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
    },
    "license": "USGS Landsat: no restrictions on use or redistribution"
   },
@@ -80,7 +92,10 @@
      "TM_B2",
      "TM_B1"
     ],
-    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance"
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LT05_L2SP_039035_19900703_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
    },
    "license": "USGS Landsat: no restrictions on use or redistribution"
   },
@@ -100,7 +115,10 @@
      "TM_B2",
      "TM_B1"
     ],
-    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance"
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LT05_L2SP_039035_19930711_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
    },
    "license": "USGS Landsat: no restrictions on use or redistribution"
   },
@@ -120,7 +138,10 @@
      "TM_B2",
      "TM_B1"
     ],
-    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance"
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LT05_L2SP_039035_19970706_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
    },
    "license": "USGS Landsat: no restrictions on use or redistribution"
   },
@@ -140,7 +161,10 @@
      "TM_B2",
      "TM_B1"
     ],
-    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance"
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LT05_L2SP_039035_20000527_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
    },
    "license": "USGS Landsat: no restrictions on use or redistribution"
   },
@@ -160,7 +184,10 @@
      "TM_B2",
      "TM_B1"
     ],
-    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance"
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LT05_L2SP_039035_20030707_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
    },
    "license": "USGS Landsat: no restrictions on use or redistribution"
   },
@@ -180,7 +207,10 @@
      "TM_B2",
      "TM_B1"
     ],
-    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance"
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LT05_L2SP_039035_20060715_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
    },
    "license": "USGS Landsat: no restrictions on use or redistribution"
   },
@@ -200,7 +230,10 @@
      "TM_B2",
      "TM_B1"
     ],
-    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance"
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LT05_L2SP_039035_20100624_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
    },
    "license": "USGS Landsat: no restrictions on use or redistribution"
   },
@@ -220,7 +253,10 @@
      "OLI_B3",
      "OLI_B2"
     ],
-    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance"
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LC08_L2SP_039035_20140721_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
    },
    "license": "USGS Landsat: no restrictions on use or redistribution"
   },
@@ -240,7 +276,10 @@
      "OLI_B3",
      "OLI_B2"
     ],
-    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance"
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LC08_L2SP_039035_20180630_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
    },
    "license": "USGS Landsat: no restrictions on use or redistribution"
   },
@@ -260,7 +299,10 @@
      "OLI_B3",
      "OLI_B2"
     ],
-    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance"
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LC09_L2SP_039035_20220703_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
    },
    "license": "USGS Landsat: no restrictions on use or redistribution"
   },
@@ -280,9 +322,18 @@
      "OLI_B3",
      "OLI_B2"
     ],
-    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance"
+    "collection": "USGS Landsat Collection 2 Level-2 surface reflectance",
+    "mirror_item": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2/items/LC09_L2SP_039035_20240708_02_T1",
+    "crop": "WRS-2 path 39, row 35; the scene resampled by area average onto one grid in WGS 84 / UTM zone 11N, 60 m pixels, 927 x 1132, map bounds x 692340 to 747960 m east, y 3983880 to 4051800 m north (about 114.85 to 114.25 degrees west, 35.98 to 36.58 degrees north)",
+    "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
    },
    "license": "USGS Landsat: no restrictions on use or redistribution"
   }
- ]
+ ],
+ "mirror": {
+  "name": "Microsoft Planetary Computer, collection landsat-c2-l2",
+  "collection": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/landsat-c2-l2",
+  "license_in_its_record": "Public Domain (link: https://www.usgs.gov/core-science-systems/hdds/data-policy); providers: USGS and NASA as producer and licensor, Microsoft as host",
+  "terms_of_use": "https://planetarycomputer.microsoft.com/terms (Supplemental Terms of Use for Microsoft Planetary Computer Previews, last updated January 2023)"
+ }
 }
