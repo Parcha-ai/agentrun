@@ -10,6 +10,7 @@ import { OfficeMissError } from "@parcha/pi-vision";
 import { sofficeProvider } from "@parcha/pi-vision/providers/soffice";
 import { registerProviderConformance } from "@parcha/pi-vision/testing";
 import { strToU8, zipSync } from "fflate";
+import { DOMParser } from "@xmldom/xmldom";
 import { docx, para, workspace } from "./office-fixtures.mjs";
 
 const FAKE = `#!/bin/sh
@@ -24,6 +25,7 @@ for arg in "$@"; do
   prev="$arg"; input="$arg"
 done
 mkdir -p "$profile"
+cp "$profile/user/registrymodifications.xcu" "$here/seen-xcu" 2>/dev/null
 case "$mode" in
   fail) echo "Error: source file could not be loaded" >&2; exit 3;;
   empty) exit 0;;
@@ -97,6 +99,37 @@ test("the timeouts it hands to exec are seconds, as the environment reads them",
   const again = [];
   await defaulted.office(await r.source("default.docx", docx(para("y"))), {}, { ...r.call(), env: Object.setPrototypeOf({ exec: (c, o, x) => { again.push(o?.timeout); return r.env.exec(c, o, x); } }, r.env) });
   assert.deepEqual(again, [30, 180]);
+});
+
+test("the profile is seeded before the program starts, with the settings that turn macros, active content, remote content and link updates off", async (t) => {
+  const r = await rig(t);
+  await r.provider.office(await r.source("untrusted.docx", docx(para("x"))), {}, r.call());
+  const seen = readFileSync(join(r.bin, "seen-xcu"), "utf8");
+  const settings = [...seen.matchAll(/<item oor:path="\/org\.openoffice\.Office\.([^"]+)"><prop oor:name="([^"]+)" oor:op="fuse"><value>([^<]*)<\/value>/g)].map((m) => [m[1], m[2], m[3]]);
+  assert.deepEqual(settings, [
+    ["Common/Security/Scripting", "MacroSecurityLevel", "3"],
+    ["Common/Security/Scripting", "DisableMacrosExecution", "true"],
+    ["Common/Security/Scripting", "DisablePythonRuntime", "true"],
+    ["Common/Security/Scripting", "DisableActiveContent", "true"],
+    ["Common/Security/Scripting", "BlockUntrustedRefererLinks", "true"],
+    ["Calc/Content/Update", "Link", "1"],
+    ["Writer/Content/Update", "Link", "2"],
+  ], "Calc counts its choices as always, never, on request; Writer as always, on request, never");
+  for (const [path, name, value] of settings) assert.match(seen, new RegExp(`<!-- ${path}/${name} = ${value}: [^>]+ -->`), `${name} is named in a comment line of the file`);
+  assert.ok(new DOMParser().parseFromString(seen, "text/xml").documentElement.localName === "items", "the file is XML");
+});
+
+test("a relative directory that starts with a dash reaches the program as an absolute path, never as an option", async (t) => {
+  const r = await rig(t);
+  mkdirSync(join(r.dir.path, "-scratch"));
+  const source = await r.source("letter.docx", docx(para("x")));
+  const out = await r.provider.office(source, {}, { ...r.call(), tempDir: "-scratch" });
+  assert.deepEqual(readdirSync(join(r.dir.path, "-scratch")), [`soffice-${source.sha256}.pdf`]);
+  assert.equal(out.path, `-scratch/soffice-${source.sha256}.pdf`);
+  const run = r.log().find((line) => line.includes("--convert-to"));
+  const args = run.split(" ");
+  assert.ok(args.at(-1).startsWith(`${r.dir.path}/-scratch/soffice-`), "the input is absolute");
+  assert.ok(args.find((a) => a.startsWith("-env:UserInstallation=")).startsWith("-env:UserInstallation=file:///"), "the profile address names a path, not a host");
 });
 
 test("two conversions of the same document at once each have a directory and a profile of their own, and the PDF is whole", async (t) => {

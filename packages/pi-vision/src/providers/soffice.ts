@@ -5,7 +5,8 @@
 // a size or a checksum never reaches the program. Each conversion works in a directory of its own, named afresh, that
 // holds the profile, the input and the output, and removes it when it ends: two conversions, of the same document too,
 // never share a profile, and nothing is left behind but the PDF, which is named by the document's hash and put in place
-// by a rename, so a reader of it sees a whole one.
+// by a rename, so a reader of it sees a whole one. The document is untrusted, so its profile is seeded before the
+// program starts with settings that turn macros, active content, linked content and link updates off.
 import { randomUUID } from "node:crypto";
 import { visionContext, type VisionResult } from "../core/env.js";
 import { OFFICE_LIMITS, OfficeMissError, inflateEntry, readSource, zipDirectory, type OfficeLimits } from "../core/office.js";
@@ -16,6 +17,26 @@ const DETECT_TIMEOUT_S = 30;
 /** A conversion is cut after this many seconds; provisional: a cold LibreOffice start takes seconds and a long document tens of seconds (2026-10-11, not measured on this build box, which has no LibreOffice). */
 const CONVERT_TIMEOUT_S = 180;
 const NEEDS = "LibreOffice (soffice) in the environment";
+
+/** The settings the conversion's profile is seeded with: an untrusted document runs no macro of any kind, loads no OLE or DDE
+ *  content, fetches no linked content from an address (a linked image, for one, is requested on load otherwise), and updates
+ *  no link when it opens. Each is a property under `org.openoffice.Office.<path>` in LibreOffice's configuration, named here
+ *  because its name and value are what the profile holds. Calc and Writer number the same choice differently: Calc's
+ *  `Update/Link` is 0 always, 1 never, 2 on request; Writer's is 0 always, 1 on request, 2 never. */
+const PROFILE_SETTINGS: readonly (readonly [path: string, name: string, value: string, what: string])[] = [
+  ["Common/Security/Scripting", "MacroSecurityLevel", "3", "the highest macro security level"],
+  ["Common/Security/Scripting", "DisableMacrosExecution", "true", "no Basic, BeanShell, JavaScript or Python macro runs, whatever the level says"],
+  ["Common/Security/Scripting", "DisablePythonRuntime", "true", "no Python runtime starts"],
+  ["Common/Security/Scripting", "DisableActiveContent", "true", "no OLE object or DDE link is active"],
+  ["Common/Security/Scripting", "BlockUntrustedRefererLinks", "true", "no link from a document outside the trusted locations (there are none) is followed"],
+  ["Calc/Content/Update", "Link", "1", "Calc never updates links when it loads a document"],
+  ["Writer/Content/Update", "Link", "2", "Writer never updates links when it loads a document"],
+];
+const PROFILE_REGISTRY = `<?xml version="1.0" encoding="UTF-8"?>
+<oor:items xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+${PROFILE_SETTINGS.map(([path, name, value, what]) => `<!-- ${path}/${name} = ${value}: ${what} -->\n<item oor:path="/org.openoffice.Office.${path}"><prop oor:name="${name}" oor:op="fuse"><value>${value}</value></prop></item>`).join("\n")}
+</oor:items>
+`;
 
 /** What `sofficeProvider` takes: the program to run, its timeout in seconds and the archive limits. */
 export type SofficeOptions = {
@@ -71,12 +92,14 @@ export function sofficeProvider(options: SofficeOptions = {}): Provider {
       const { env } = call;
       const context = visionContext(call.signal);
       const stem = source.sha256.slice(0, 16);
-      const work = `${call.tempDir}/soffice-${stem}-${randomUUID().slice(0, 8)}`;
+      const home = call.tempDir.startsWith("/") ? call.tempDir : `${env.cwd.replace(/\/+$/, "")}/${call.tempDir}`;
+      const work = `${home}/soffice-${stem}-${randomUUID().slice(0, 8)}`;
       const input = `${work}/in/${stem}${/\.[a-z0-9]{1,5}$/i.exec(source.path)?.[0].toLowerCase() ?? ""}`;
       const produced = `${work}/out/${stem}.pdf`;
       const final = `${call.tempDir}/soffice-${source.sha256}.pdf`;
       try {
-        for (const dir of ["in", "out", "profile"]) step(await env.createDir(`${work}/${dir}`, { recursive: true }, context), "the working directory could not be made");
+        for (const dir of ["in", "out", "profile/user"]) step(await env.createDir(`${work}/${dir}`, { recursive: true }, context), "the working directory could not be made");
+        step(await env.writeFile(`${work}/profile/user/registrymodifications.xcu`, PROFILE_REGISTRY, context), "the profile could not be written");
         step(await env.writeFile(input, bytes, context), "the document could not be copied for LibreOffice");
         const ran = await env.exec([command, "--headless", "--invisible", "--norestore", "--nolockcheck", "--nodefault", "--nologo", `-env:UserInstallation=file://${`${work}/profile`.split("/").map(encodeURIComponent).join("/")}`, "--convert-to", "pdf", "--outdir", `${work}/out`, input], { timeout }, context);
         if (!ran.ok) {
