@@ -445,7 +445,7 @@ for (const tag of tags.filter((tag) => /^<[a-z]/i.test(tag))) {
   const attributes = [...tag.slice(name.length + 1).matchAll(/([^\s"'<>\/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g)].map((m) => [m[1].toLowerCase(), m[2] ?? m[3] ?? m[4] ?? ""]);
   for (const [attribute, value] of attributes) {
     if (!(ATTRIBUTES.has(attribute) || /^aria-[\w-]+$/.test(attribute) || /^data-[\w.-]+$/.test(attribute))) problems.push(`${attribute} on <${name}> is not an attribute the page may use (no on* handler, srcdoc, formaction or xmlns:*)`);
-    if (attribute === "style" && refusedCss(value)) problems.push(`the style attribute on <${name}> holds CSS the page may not use: no url(), @import, data:, javascript:, expression(, behavior or -moz-binding`);
+    if (attribute === "style" && (value.includes("&") || refusedCss(value))) problems.push(`the style attribute on <${name}> holds CSS the page may not use: no character reference (&#114; is r), no url(), @import, data:, javascript:, expression(, behavior or -moz-binding`);   // a browser reads a character reference before it reads the CSS
   }
   const keys = attributes.map(([attribute]) => attribute).sort().join(",");
   if (name === "meta" && !(keys === "charset" || (keys === "content,name" && attributes.find(([attribute]) => attribute === "name")[1] === "viewport"))) problems.push('<meta> only as charset or name="viewport"');

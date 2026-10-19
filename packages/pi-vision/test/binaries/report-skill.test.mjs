@@ -1060,6 +1060,10 @@ test("a style attribute is read as CSS under the style element's rules, after it
   for (const css of ["background:url(frames/talk-chart.jpg)", "background:u\\72l(frames/talk-chart.jpg)", "background:url/**/(frames/talk-chart.jpg)", "width:expression(alert(1))", "behavior:url(x.htc)", "-moz-binding:url(x)", "background:javascript:x()", "background:data:image/png;base64,AAAA", "@import 'x'"]) {
     await refuses(swap("</main>", `<div style="${css}">x</div></main>`), /the style attribute on <div> holds CSS the page may not use/);
   }
+  // A browser reads a character reference before the CSS: u&#114;l( is url(.
+  for (const css of ["background:u&#114;l(frames/talk-chart.jpg)", "background:&#x75;rl(frames/talk-chart.jpg)", "background:url&lpar;frames/talk-chart.jpg&rpar;", "background:url&#40;x&#41;", "width:1&percnt;"]) {
+    await refuses(swap("</main>", `<div style="${css}">x</div></main>`), /the style attribute on <div> holds CSS the page may not use: no character reference/);
+  }
   await refuses(swap("</style>", "@import 'x.css';</style>"), /the style element holds CSS the page may not use|runs code or loads/);
   await refuses(swap("</style>", "a{behavior:url(x.htc)}</style>"), /the style element holds CSS the page may not use/);
 });
