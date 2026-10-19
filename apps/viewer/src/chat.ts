@@ -24,7 +24,8 @@ async function chatMain(): Promise<void> {
       const response = await fetch(url).catch(() => undefined);
       return response?.ok ? (await response.json().catch(() => undefined)) as Json | undefined : undefined;
     };
-    drawChat(root, await extractChat(recording, readJson), recording);
+    // The Muse view (the agent's header, the browser card) is opt-in: `chat.html?r=<id>&muse`. Without it a run reads as before.
+    drawChat(root, await extractChat(recording, readJson, { muse: params.has('muse') }), recording);
   } catch (error) {
     const note = document.createElement('p');
     note.className = 'chat-error';

@@ -23,6 +23,13 @@ a{color:inherit}
 .brand small{font:400 11px var(--sans);color:var(--muted);margin-left:2px}
 .top .title{flex:1;min-width:0;font:500 13px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-left:6px}
 .top .how{font:400 11.5px var(--mono);color:var(--dim);text-decoration:none;white-space:nowrap;margin-left:auto}
+.top .agent{flex:1;min-width:0;display:flex;align-items:center;gap:11px;padding-left:6px}
+.avatar{flex:none;width:30px;height:30px;display:grid;place-items:center;border:1px solid var(--line);background:var(--panel2);font:500 13px var(--mono);color:var(--ink)}
+.agent-who{min-width:0;display:flex;flex-direction:column;line-height:1.25}
+.agent-name{font:500 13px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agent-status{font:400 11.5px var(--sans);color:var(--muted)}
+.agent-status.working{color:var(--acc)}
+.agent-status.waiting{color:var(--purple)}
 .top .how:hover{color:var(--muted)}
 .app{display:grid;grid-template-columns:var(--chat) minmax(0,1fr);height:calc(100vh - var(--top));height:calc(100dvh - var(--top))}
 .chat{display:flex;flex-direction:column;min-height:0;min-width:0;border-right:1px solid var(--line)}
@@ -92,6 +99,16 @@ details.fold>.fold-body{color:var(--ink);font-size:15px;margin-top:12px}
 .step .voice{margin:0;padding:8px 10px 0 12px;font:italic 400 13.5px/1.5 var(--sans);color:var(--muted);overflow-wrap:anywhere}
 .voice-tag{margin:0 8px 0 0}
 .step-main.bare{grid-template-columns:minmax(0,1fr)}
+.browser{border-top:1px solid var(--line)}
+.bshot{display:grid;place-items:center;aspect-ratio:16/10;background:#000;overflow:hidden}
+.step .bshot img{display:block;width:100%;height:100%;object-fit:contain;border:0;background:#000}
+.bshot-none{font:400 12px var(--mono);color:var(--dim);padding:0 16px;text-align:center}
+.bstrip{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 10px 8px 12px;border-top:1px solid var(--line)}
+.blabels{min-width:0;display:flex;flex-direction:column;gap:2px}
+.blabel{font:400 12.5px/1.45 var(--sans);color:var(--muted);overflow-wrap:anywhere}
+.blabel.held{color:var(--ink)}
+.take{flex:none;font:500 11.5px var(--mono);padding:4px 10px;border:1px solid var(--line);color:var(--dim);background:transparent}
+.take:disabled{cursor:not-allowed;opacity:.7}
 .step .t{font:500 12px var(--mono);display:flex;align-items:center;gap:7px;min-width:0}
 .step .t span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .step .t svg{flex:none;color:var(--muted)}

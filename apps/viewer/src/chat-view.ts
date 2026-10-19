@@ -2,7 +2,7 @@
 // recorded, the thinking its own model wrote and one card per tool call; the session timeline under the title; and on
 // the right the report (chat-report.ts) or the source a citation or a card points at, its region drawn from an address
 // alone. On a phone the right side is a bottom sheet.
-import type { ChatCall, ChatDecision, ChatItem, ChatModel, ChatSource, ChatSpan, ChatThread } from './chat-model.ts';
+import type { ChatBrowser, ChatCall, ChatDecision, ChatItem, ChatModel, ChatSource, ChatSpan, ChatThread } from './chat-model.ts';
 import type { Recording } from './format.ts';
 import { drawReport, reportCiteLabel, reportClock, reportEl, reportFragmentOf, reportHeldFile, reportHowHref, reportInline, reportParagraphs } from './chat-report.ts';
 
@@ -453,6 +453,27 @@ function threadCall(recording: Recording, model: ChatModel, call: ChatCall): HTM
     call.raw !== '' && reportEl('details', { class: 'raw' }, reportEl('summary', { text: 'Raw output' }), reportEl('pre', { text: call.raw }))));
 }
 
+/** The browser a step drove, drawn from its recorded frames: the step's last frame in a 16:10 box (contained, black bands), under it what
+ *  the recording says of who has the browser. Driving, or a hold: "Handed the browser over: <what was asked>", and once it ended
+ *  "Handed back · <outcome>". Nothing records who acted during a hold, so none is named. Take control is the live view's; on a
+ *  replay it is shown and disabled. */
+function threadBrowser(recording: Recording, browser: ChatBrowser): HTMLElement {
+  const last = browser.frames.at(-1);
+  const src = last ? recording.blobUrl(last.blob) : undefined;
+  const lines = browser.holds.length === 0
+    ? [{ text: 'Your agent is driving the browser', held: false }]
+    : browser.holds.flatMap((hold) => [
+      { text: hold.condition ? `Handed the browser over: ${hold.condition}` : 'Handed the browser over', held: true },
+      ...(hold.t1 !== undefined ? [{ text: hold.outcome ? `Handed back · ${hold.outcome}` : 'Handed back', held: false }] : []),
+    ]);
+  const take = reportEl('button', { class: 'take', type: 'button', disabled: true, title: 'Replay: the run is over', text: 'Take control' });
+  return reportEl('div', { class: `browser${browser.holds.some((hold) => hold.t1 === undefined) ? ' held' : ''}` },
+    reportEl('div', { class: 'bshot' }, src ? reportEl('img', { loading: 'lazy', src, alt: 'The browser at the end of this step' }) : reportEl('span', { class: 'bshot-none', text: 'No picture was recorded for this step' })),
+    reportEl('div', { class: 'bstrip' },
+      reportEl('div', { class: 'blabels' }, ...lines.map((line) => reportEl('span', { class: `blabel${line.held ? ' held' : ''}`, text: line.text }))),
+      take));
+}
+
 /** A tool call's card: what it did, what it found, its own first picture, and under it a card per model call it made
  *  (a look it made with no call of its own reads as its place and decisions); three show, the decisive ones always,
  *  the rest behind "+ N more". `fold` gets each folded call's card with the opener of its group. */
@@ -490,6 +511,7 @@ function threadCard(recording: Recording, model: ChatModel, item: ToolItem, fold
     // Its looks speak for it (the first card's ask), so its voice line is not drawn.
     return reportEl('div', { class: `step looking${item.failed ? ' failed' : ''}${item.judge ? ' judge' : ''}`, 'data-item': item.id },
       reportEl('div', { class: 'calls' }, ...calls, more),
+      item.browser && threadBrowser(recording, item.browser),
       reportEl('button', { class: 'made', type: 'button', 'data-open': item.id, title: item.title },
         item.judge && threadJudge(), reportEl('span', { class: 'made-in', text: `made in ${item.tool} ·` }), reportEl('span', { class: 'made-title', text: named }),
         item.failed && reportEl('small', { class: 'tag', text: 'failed' })));
@@ -497,10 +519,11 @@ function threadCard(recording: Recording, model: ChatModel, item: ToolItem, fold
   return reportEl('div', { class: `step${item.failed ? ' failed' : ''}${item.judge ? ' judge' : ''}`, 'data-item': item.id },
     // A step nothing the agent thought or wrote leads into speaks with what its look asked, inside its card.
     voice,
-    reportEl('button', { class: thumb ? 'step-main' : 'step-main bare', type: 'button', 'data-open': item.id },
+    reportEl('button', { class: thumb && !item.browser ? 'step-main' : 'step-main bare', type: 'button', 'data-open': item.id },
       reportEl('div', {}, reportEl('div', { class: 't' }, threadIcon(sourceKindOf(source?.href ?? '')), item.judge && threadJudge(), reportEl('span', { text: item.title }), item.failed && reportEl('small', { class: 'tag', text: 'failed' })),
         item.takeaway !== '' && reportEl('div', { class: 'k', text: item.takeaway })),
-      thumb && reportEl('img', { loading: 'lazy', src: recording.blobUrl(thumb), alt: '' })),
+      thumb && !item.browser && reportEl('img', { loading: 'lazy', src: recording.blobUrl(thumb), alt: '' })),
+    item.browser && threadBrowser(recording, item.browser),
     calls.length > 0 && reportEl('div', { class: 'calls' }, ...calls, more));
 }
 
@@ -587,7 +610,13 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
 
   const header = reportEl('header', { class: 'top' },
     reportEl('span', { class: 'brand' }, threadIcon('brand'), reportEl('b', {}, 'agent', reportEl('span', { text: '.run()' })), reportEl('small', { text: 'by grep.ai' })),
-    reportEl('div', { class: 'title', text: model.title }),
+    model.agent
+      ? reportEl('div', { class: 'agent', title: model.title },
+        reportEl('span', { class: 'avatar', 'aria-hidden': 'true', text: [...model.agent.name][0]!.toUpperCase() }),
+        reportEl('div', { class: 'agent-who' },
+          reportEl('b', { class: 'agent-name', text: model.agent.name }),
+          reportEl('span', { class: `agent-status ${model.agent.status}`, text: model.agent.status === 'done' ? 'Done' : model.agent.status === 'waiting' ? 'Waiting for you' : 'Is working' })))
+      : reportEl('div', { class: 'title', text: model.title }),
     reportEl('a', { class: 'how', href: reportHowHref(recording), text: 'How this ran' }));
 
   // Each conversation as recorded: its messages, its thinking, its tool cards. Steps that only ran a command fold into one

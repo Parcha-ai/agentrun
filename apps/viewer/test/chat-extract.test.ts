@@ -30,6 +30,7 @@ const tools = (m: ChatModel) => items(m).filter((item): item is Extract<ChatItem
 const referenceJob = join(here, '..', 'recordings', 'reference-job');
 const hearAndFind = join(here, 'fixtures', 'chat-hear-and-find');
 const artifact = join(here, 'fixtures', 'chat-artifact');
+const browserFixture = join(here, 'fixtures', 'chat-browser');
 
 /** The first stored entry of `kind`, edited in place. */
 const editFirst = (kind: string, change: (data: { model: Record<string, Json>[] }) => void) => (events: string) => {
@@ -351,4 +352,47 @@ test('an .mp4 blob is a video, and opens in place like a .webm', async () => {
   const { typeOfName, opensInPage } = await import('../src/blobs.ts');
   assert.equal(typeOfName('film-descent.mp4'), 'video/mp4');
   assert.ok(opensInPage(typeOfName('film-descent.mp4')));
+});
+
+// The Muse view's pieces are read from the recording's own generic lines (frames, session rows, handoff rows, the host's label),
+// never from a tool's name, and only when asked for.
+const browserOf = (m: ChatModel, tool: string) => tools(m).find((item) => item.tool === tool)!;
+
+test('the Muse view: a frame joins the step that was running at its time, or the latest call before it; one that names no image or no step joins none', async () => {
+  const m = await model(browserFixture);
+  assert.equal(tools(m).some((item) => item.browser), false, 'without the option nothing is a browser step');
+  const { recording, readJson } = opened(browserFixture);
+  const muse = await extractChat(recording, readJson, { muse: true });
+  const run = tools(muse)[0]!;
+  assert.deepEqual(run.browser!.frames.map((frame) => frame.t), [1500, 2500], 'inside the call, then between calls');
+  assert.deepEqual(run.browser!.frames.map((frame) => [frame.w, frame.h]), [[800, 353], [800, 353]]);
+  assert.notEqual(run.browser!.frames[0]!.blob, run.browser!.frames[1]!.blob);
+  assert.equal(run.plumbing, undefined, 'a step that holds frames is never plumbing');
+  assert.equal(tools(muse).flatMap((item) => item.browser?.frames ?? []).length, 3, 'the frame before any call, the one with no image and the one on another conversation join nothing');
+});
+
+test('the Muse view: a hold is read from the session rows and the handoff rows alone, with its ask and its answer, and a run that ends held is waiting', async () => {
+  const { recording, readJson } = opened(browserFixture);
+  const muse = await extractChat(recording, readJson, { muse: true });
+  const handoff = browserOf(muse, 'browser_request_handoff');
+  assert.deepEqual(handoff.browser!.holds, [{ t0: 3200, t1: 8500, condition: 'An option is picked', outcome: 'done' }]);
+  assert.deepEqual(handoff.browser!.frames.map((frame) => frame.t), [4000]);
+  assert.equal(browserOf(muse, 'snapshot').browser, undefined, 'a step with no frame and no hold is not a browser step');
+  assert.equal(tools(muse).filter((item) => item.tool === 'run' && item.plumbing).length, 1, 'a command with no frame is still plumbing');
+  assert.deepEqual(muse.agent, { name: 'Wren', status: 'working' }, "the host's label names the agent; a run with no result is working");
+  // The same rows with the session never handed back: the hold is open and the run is waiting.
+  const held = await model(browserFixture, (events) => events.split('\n').filter((line) => !line.includes('"t":8500')).join('\n'));
+  assert.equal(held.agent, undefined, 'and without the option no agent is named');
+  const open = opened(browserFixture, (events) => events.split('\n').filter((line) => !line.includes('"t":8500')).join('\n'));
+  const waiting = await extractChat(open.recording, open.readJson, { muse: true });
+  assert.deepEqual(browserOf(waiting, 'browser_request_handoff').browser!.holds.map((hold) => [hold.t0, hold.t1, hold.outcome]), [[3200, undefined, undefined]]);
+  assert.equal(waiting.agent!.status, 'waiting');
+});
+
+test('the Muse view: the agent is named by the host label, else the recording title, and is done when the run delivered', async () => {
+  const { recording, readJson } = opened(browserFixture);
+  const unlabelled = { ...recording, lines: recording.lines.filter((line) => line.kind !== 'reference.label') };
+  assert.deepEqual((await extractChat(unlabelled, readJson, { muse: true })).agent, { name: 'Muse fixture', status: 'working' });
+  const delivered = { ...recording, lines: [...recording.lines, { channel: 'live' as const, source: 'host' as const, kind: 'result', t: 12000, seq: 1, gen: 1, data: {} }] };
+  assert.equal((await extractChat(delivered, readJson, { muse: true })).agent!.status, 'done');
 });
