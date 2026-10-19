@@ -13,6 +13,7 @@ import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openAgentHome, readAgentHome } from '@parcha/pi-durable-agent';
 import { browserOf, chromeProfileFor, startChrome } from './chrome.ts';
+import { seedPreferences } from './preferences.ts';
 import { finishRunRecording } from './record.ts';
 
 const [dir] = process.argv.slice(2);
@@ -69,12 +70,15 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
   });
 }
 
+// The home's preferences, into the workspace before the agent starts (preferences.ts).
+await seedPreferences(resolve(run, '..', '..'), join(run, 'work'));
+
 const env = { ...process.env };
 if (browser === 'chrome') {
   const home = resolve(run, '..', '..');
   try {
     profile = chromeProfileFor(home, { runId: basename(run), dir: run }, await readAgentHome(await openAgentHome(home)));
-    chrome = await startChrome(process.env.CHROME_PATH, profile.dir, { sandbox: process.env.PI_BROWSER_NO_SANDBOX !== '1', signal: starting.signal });
+    chrome = await startChrome(process.env.CHROME_PATH, profile.dir, { sandbox: process.env.PI_BROWSER_NO_SANDBOX !== '1', signal: starting.signal, downloads: join(run, 'work', 'downloads') });
   } catch (error) {
     console.error(`start-run: ${error.message}`);
     await finish(1);

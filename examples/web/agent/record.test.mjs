@@ -116,7 +116,9 @@ test('a recorded run on the agent\'s own Chrome: valid, its report the artifact,
   const lines = linesOf(dir);
   const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
   assert.deepEqual([manifest.title, manifest.task, manifest.model, manifest.generations, manifest.kills, manifest.providers], ['Site reporter', 'Report what the practice site shows behind its login.', 'test-model', 1, 0, 'scripted']);
-  assert.deepEqual([manifest.artifact.entry, Object.keys(manifest.artifact.files)], ['index.html', ['index.html']]);
+  assert.deepEqual([manifest.artifact.entry, Object.keys(manifest.artifact.files)], ['index.html', ['index.html', 'remember.html']]);
+  const remembered = readFileSync(join(dir, 'blobs', `${manifest.artifact.files['remember.html']}.html`), 'utf8');
+  assert.match(remembered, /<h1>What I remember<\/h1>/, 'the host wrote what the agent keeps beside its report');
   assert.equal(readFileSync(join(dir, 'blobs', `${manifest.artifact.files['index.html']}.html`), 'utf8'), PAGE);
 
   // What the chat view reads: pi's durable messages and its live message and tool events.

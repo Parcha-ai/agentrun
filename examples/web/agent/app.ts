@@ -35,6 +35,7 @@ import { ArchilCodingTools, type AppContext, type AppOptions } from "@parcha/pi-
 import { browserOf, CHROME_PROFILE, type BrowserKind } from "./chrome.ts";
 import { frameStore } from "./frames.ts";
 import { openRunRecording } from "./record.ts";
+import { writeRememberPage } from "./remember.ts";
 
 const THINKING: readonly ModelThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
 /** Long enough for a person to sign in in the live view while the agent's turn has ended. */
@@ -388,6 +389,10 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
     // On SIGTERM the instance records its wake and lets go of the run; the browser goes first, so nothing paid stays open.
     wake: async (run, at) => {
       await releaseBrowsers(run.harness, BACKGROUND_CONTEXT).catch(() => undefined);
+      // Beside the agent's report: what it keeps for next time, the sign-in's sites and its preferences, never the ref.
+      const saved = profileKey ? await run.harness.snapshot(Profiles, profileKey, BACKGROUND_CONTEXT).catch(() => null) : null;
+      const sites = Array.isArray(saved?.allowedOrigins) ? saved.allowedOrigins.filter((site): site is string => typeof site === "string") : [];
+      await writeRememberPage(where.work, { signIns: saved ? [{ sites, verifiedAt: typeof saved.verifiedAt === "string" ? saved.verifiedAt : null }] : [] }).catch(() => undefined);
       await recording?.detach().catch((error: Error) => console.error(`the recording is refused: ${error.message}`));
       // The default wake, through the run's own API: sleeping, with the deadline its work waits for (null: idle, woken on demand).
       await run.setStatus("sleeping", { reason: at === null ? "idle" : "waiting" }, { wakeAt: at === null ? null : new Date(at).toISOString() });

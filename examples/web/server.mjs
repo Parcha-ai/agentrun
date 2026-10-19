@@ -6,8 +6,8 @@
 // pass --host.
 // Routes follow Grep's: GET /runs, GET /runs/{id}, GET /runs/{id}/timeline (SSE while live, JSON when released),
 // GET /runs/{id}/files[/{path}], POST /runs, POST /runs/{id}/messages, POST /runs/{id}/stop, GET /search?q=; and GET
-// /agent (the agent and its saved sign-ins, never their refs) and GET /runs/{id}/frames[/{sha256}.jpg] (what the run's
-// browser showed, for the page's replay player).
+// /agent (the agent, its saved sign-ins, never their refs, and its preferences) and GET /runs/{id}/frames[/{sha256}.jpg]
+// (what the run's browser showed, for the page's replay player).
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
@@ -21,6 +21,7 @@ import { parseArgs } from "node:util";
 import { AGENT_STORE_FILE, carryBack, readAgentHome, startRun } from "@parcha/pi-durable-agent";
 import { timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
 import { ensureAgentHome } from "./agent/home.mjs";
+import { keepPreferences, readPreferences } from "./agent/preferences.ts";
 import { costOf, lastRow, RUN_ID, stateOf } from "./page/source.js";
 import { readRunEntries } from "./replay.mjs";
 
@@ -315,7 +316,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
   async function agentInfo() {
     const state = await homeState();
     const own = (record, key) => (Object.hasOwn(record, key) ? record[key] : undefined);
-    return { name: state.definition.name, signIns: Object.entries(state.profiles).map(([key, profile]) => signInOf(key, profile, own(state.leases, key), state.runs)) };
+    return { name: state.definition.name, signIns: Object.entries(state.profiles).map(([key, profile]) => signInOf(key, profile, own(state.leases, key), state.runs)), preferences: await readPreferences(home.dir) };
   }
 
   /** The saved sign-ins a run started with (web.json, written when it was started): ready, and the run's to use. */
@@ -408,7 +409,9 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
     const answer = answerOf(rows);
     if (!answer) return;
     const cost = costOf(rows);
-    await carryBack(home, { runId: id }, { outcome: "completed", finalAnswer: clip(answer.text ?? answer.summary ?? "", 2_000), ...(cost == null ? {} : { cost }) });
+    const back = await carryBack(home, { runId: id }, { outcome: "completed", finalAnswer: clip(answer.text ?? answer.summary ?? "", 2_000), ...(cost == null ? {} : { cost }) });
+    // The run's preferences go home with its sign-in, from the run that owns the sign-in only (preferences.ts).
+    await keepPreferences(home.dir, run.work, back);
     carried.add(id);
     reread();
   }

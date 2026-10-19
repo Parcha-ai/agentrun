@@ -51,7 +51,7 @@ test('the home is made from agent.json and the skills: the definition names no m
   const { tmp, home } = await agentHome(t);
   const state = await readAgentHome(home);
   assert.equal(state.identity.id, 'site-reporter');
-  assert.deepEqual(Object.keys(state.skills).sort(), ['sign-in/SKILL.md', 'site-report/SKILL.md']);
+  assert.deepEqual(Object.keys(state.skills).sort(), ['preferences/SKILL.md', 'sign-in/SKILL.md', 'site-report/SKILL.md']);
   const prompt = promptOf(state);
   assert.ok(prompt.indexOf('<skill name="sign-in">') < prompt.indexOf('<skill name="site-report">'), 'skills follow the definition order');
   assert.equal((await stat(home.dir)).mode & 0o777, 0o700, 'the home holds sign-ins: owner only');

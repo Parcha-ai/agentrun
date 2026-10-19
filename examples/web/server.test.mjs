@@ -531,6 +531,8 @@ test("a run that answered is released and carried back once, with the sign-in it
   // while that message is still on its way and the delivery starts the run again.
   for (let i = 0; i < 100 && answered.submits.length < 1; i++) await new Promise((r) => setTimeout(r, 50));
   assert.deepEqual(answered.submits.map((s) => s.content), ["Log in to the practice site and save notes.md"]);
+  // The person said how they want things done; the agent kept it in its workspace.
+  writeFileSync(join(home.dir, run.path, "work", "preferences.md"), "- Bills as PDF, newest first\n");
   answered.busy = false;
   for (let i = 0; i < 100 && server.children.has(id); i++) await new Promise((r) => setTimeout(r, 50));
   assert.ok(!server.children.has(id), "the run that answered was released");
@@ -540,6 +542,8 @@ test("a run that answered is released and carried back once, with the sign-in it
   assert.deepEqual([state.runs[id].outcome, state.runs[id].finalAnswer, state.runs[id].cost], ["completed", "Here is the late answer.", 0.06]);
   assert.equal(readFileSync(join(home.dir, run.path, "origin.txt"), "utf8"), server.url, "the run is told the page's origin, for a local Chrome's viewer");
   assert.equal(state.profiles[PROFILE].ref, "ctx-signed-in", "the sign-in went back to the agent home");
+  assert.equal(readFileSync(join(home.dir, "preferences.md"), "utf8"), "- Bills as PDF, newest first\n", "and its preferences with it");
+  assert.equal((await (await fetch(`${server.url}/agent`)).json()).preferences, "- Bills as PDF, newest first\n");
 
   // Carried back, the run is finished: a message is refused with a code, and the run is never woken.
   const refused = await post(`/runs/${id}/messages`, { content: "one more?" });
@@ -712,6 +716,7 @@ test("GET /agent: the saved sign-ins, their sites and when they last worked, nev
       { key: PROFILE, provider: "browserbase", state: "ready", sites: ["https://the-internet.herokuapp.com"], verifiedAt: "2026-10-16T05:58:00.000Z", heldBy: null },
       { key: "plain", provider: "browserbase", state: "ready", sites: [], verifiedAt: null, heldBy: null },
     ],
+    preferences: null,
   });
 
   const { id } = await (await post("/runs", { content: "Log in again" })).json();
