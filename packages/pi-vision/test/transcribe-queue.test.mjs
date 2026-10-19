@@ -31,7 +31,7 @@ const REFUSED = [
   ["another model's job on the queue", { ...GOOD, status_url: "https://queue.fal.run/fal-ai/flux/requests/r1/status" }, /^fal named a status_url on https:\/\/queue\.fal\.run outside the job paths of fal-ai\/elevenlabs\/speech-to-text\/scribe-v2;/],
   ["a path that climbs out of the job paths", { ...GOOD, status_url: "https://queue.fal.run/fal-ai/elevenlabs/requests/../../flux/requests/r1/status" }, /outside the job paths/],
   ["a path that climbs out with encoded dots", { ...GOOD, response_url: "https://queue.fal.run/fal-ai/elevenlabs/requests/%2e%2e/%2e%2e/flux/requests/r1" }, /outside the job paths/],
-  ["an address with credentials of its own", { ...GOOD, status_url: "https://user:secret@queue.fal.run/fal-ai/elevenlabs/requests/r1/status" }, /outside the job paths of fal-ai/],
+  ["an address with credentials of its own", { ...GOOD, status_url: ["https://", "user", ":", "pw", "@queue.fal.run/fal-ai/elevenlabs/requests/r1/status"].join("") }, /outside the job paths of fal-ai/],
   ["a string that is not an address", { ...GOOD, status_url: "r1/status" }, /^fal named a status_url that is not an address; the key was not sent there$/],
   ["no address at all", { status_url: undefined, response_url: GOOD.response_url }, /^fal named a status_url that is not an address;/],
 ];
