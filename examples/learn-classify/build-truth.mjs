@@ -17,17 +17,17 @@ import { gunzipSync, inflateRawSync } from 'node:zlib';
 import { domainOf, fetchPageTool, refusedHost } from './tools.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const DATA = join(HERE, 'data');
+export const DATA = join(HERE, 'data');
 const SEC_UA = 'agentrun learn-classify demo (claudio-michel[bot]@users.noreply.github.com)';
-const OPEN_UA = 'agentrun learn-classify demo (+https://github.com/Parcha-ai/agentrun)';
+export const OPEN_UA = 'agentrun learn-classify demo (+https://github.com/Parcha-ai/agentrun)';
 
 const TOTAL = 130;
 const RUN = 100;
 const SEALED = TOTAL - RUN;
-const GROUP_CAP = 10;
-const MIN_RUN_GROUPS = 25;
+export const GROUP_CAP = 10;
+export const MIN_RUN_GROUPS = 25;
 const GROUP_WEIGHT = 0.75;
-const MIN_TEXT = 400;
+export const MIN_TEXT = 400;
 const CHECK_CONCURRENCY = 8;
 
 const SEC_FILES = {
@@ -43,7 +43,7 @@ const SPARQL = `SELECT ?item ?cik ?website ?article WHERE {
 
 // Not operating businesses a website could describe: blank checks, asset-backed and commodity trusts, unit investment
 // trusts, royalty traders, ADRs, foreign governments, non-operating establishments.
-const EXCLUDED_SIC = new Set(['6189', '6221', '6726', '6770', '6792', '6795', '8880', '8888', '9995', '9999']);
+export const EXCLUDED_SIC = new Set(['6189', '6221', '6726', '6770', '6792', '6795', '8880', '8888', '9995', '9999']);
 const US = new Set('AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC'.split(' '));
 const PERIODIC = new Set(['10-K', '10-K/A', '10-KT', '10-Q', '10-Q/A']);
 
@@ -63,7 +63,7 @@ const CONVENTIONS = [
 
 // Major group names of the 1987 SIC Manual (the SEC's code list names only some of its groups). sic2.json is all of them,
 // so the label set does not reveal which groups the companies fall in.
-const MAJOR_GROUPS = {
+export const MAJOR_GROUPS = {
   '01': 'Agricultural Production Crops', '02': 'Agriculture Production Livestock And Animal Specialties', '07': 'Agricultural Services',
   '08': 'Forestry', '09': 'Fishing, Hunting, And Trapping', '10': 'Metal Mining', '12': 'Coal Mining', '13': 'Oil And Gas Extraction',
   '14': 'Mining And Quarrying Of Nonmetallic Minerals, Except Fuels', '15': 'Building Construction General Contractors And Operative Builders',
@@ -96,26 +96,26 @@ const MAJOR_GROUPS = {
   '97': 'National Security And International Affairs', '99': 'Nonclassifiable Establishments',
 };
 
-const args = Object.fromEntries(process.argv.slice(2).map((arg) => {
+export const args = Object.fromEntries(process.argv.slice(2).map((arg) => {
   const [key, value = 'true'] = arg.replace(/^--/, '').split('=');
   return [key, value];
 }));
-const via = args.via ?? 'sec';
+export const via = args.via ?? 'sec';
 if (via !== 'sec' && via !== 'wayback') throw new Error(`--via is sec or wayback, not ${via}`);
-const cache = args.cache ?? join(tmpdir(), 'learn-classify-cache');
+export const cache = args.cache ?? join(tmpdir(), 'learn-classify-cache');
 
-const rank = (salt, cik) => createHash('sha256').update(`learn-classify:${salt}:${cik}`).digest('hex');
+export const rank = (salt, cik) => createHash('sha256').update(`learn-classify:${salt}:${cik}`).digest('hex');
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const ungzip = (buf) => (buf[0] === 0x1f && buf[1] === 0x8b ? gunzipSync(buf) : buf);
 
 // Where each input came from and when it was read, for the build report.
-const provenance = { secFiles: {}, wikidata: null };
+export const provenance = { secFiles: {}, wikidata: null };
 const snapshotTime = (ts) => `${ts.slice(0, 4)}-${ts.slice(4, 6)}-${ts.slice(6, 8)}T${ts.slice(8, 10)}:${ts.slice(10, 12)}:${ts.slice(12, 14)}Z`;
 const cachedAt = async (file) => (await stat(file)).mtime.toISOString();
 
 // The SEC asks for fewer than 10 requests per second; this stays under 4.
 let lastSec = 0;
-async function secFile(name) {
+export async function secFile(name) {
   const file = join(cache, `${via}-${name}`);
   const { url, wayback } = SEC_FILES[name];
   const from = via === 'wayback' ? `https://web.archive.org/web/${wayback}id_/${url}` : url;
@@ -137,17 +137,17 @@ async function secFile(name) {
   return body;
 }
 
-async function wikidata() {
-  const file = join(cache, 'wikidata.json');
+export async function wikidata({ query = SPARQL, name = 'wikidata' } = {}) {
+  const file = join(cache, `${name}.json`);
   const record = async () => {
-    provenance.wikidata = { endpoint: WIKIDATA, query: SPARQL, retrievedAt: await cachedAt(file) };
+    provenance[name] = { endpoint: WIKIDATA, query, retrievedAt: await cachedAt(file) };
   };
   try {
     const json = JSON.parse(await readFile(file, 'utf8'));
     await record();
     return json;
   } catch {}
-  const res = await fetch(`${WIKIDATA}?query=${encodeURIComponent(SPARQL)}`, { headers: { 'user-agent': OPEN_UA, accept: 'application/sparql-results+json' } });
+  const res = await fetch(`${WIKIDATA}?query=${encodeURIComponent(query)}`, { headers: { 'user-agent': OPEN_UA, accept: 'application/sparql-results+json' } });
   if (!res.ok) throw new Error(`Wikidata answered ${res.status}`);
   const json = await res.json();
   await writeFile(file, JSON.stringify(json));
@@ -155,7 +155,8 @@ async function wikidata() {
   return json;
 }
 
-function unzipEntry(zip, name) {
+// An entry's stored bytes and compression method (0 stored, 8 deflate).
+export function zipEntry(zip, name) {
   let end = zip.length - 22;
   while (end >= 0 && zip.readUInt32LE(end) !== 0x06054b50) end--;
   if (end < 0) throw new Error('not a zip file');
@@ -165,21 +166,25 @@ function unzipEntry(zip, name) {
     if (zip.toString('utf8', at + 46, at + 46 + nameLength) === name) {
       const local = zip.readUInt32LE(at + 42);
       const start = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28);
-      const data = zip.subarray(start, start + zip.readUInt32LE(at + 20));
-      return zip.readUInt16LE(at + 10) === 0 ? data : inflateRawSync(data);
+      return { data: zip.subarray(start, start + zip.readUInt32LE(at + 20)), method: zip.readUInt16LE(at + 10) };
     }
     at += 46 + nameLength + zip.readUInt16LE(at + 30) + zip.readUInt16LE(at + 32);
   }
   throw new Error(`${name} is not in the zip`);
 }
 
-function readTsv(text) {
+export function unzipEntry(zip, name) {
+  const { data, method } = zipEntry(zip, name);
+  return method === 0 ? data : inflateRawSync(data);
+}
+
+export function readTsv(text) {
   const [head, ...lines] = text.split(/\r?\n/).filter(Boolean);
   const keys = head.split('\t');
   return lines.map((line) => Object.fromEntries(line.split('\t').map((value, i) => [keys[i], value])));
 }
 
-function readSicList(html) {
+export function readSicList(html) {
   const codes = {};
   const decode = (s) => s.replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"').trim();
   for (const m of html.matchAll(/<tr><td>(\d{3,4})<\/td><td>[^<]*<\/td><td>([^<]*)<\/td><\/tr>/g)) codes[m[1].padStart(4, '0')] = decode(m[2]);
@@ -205,7 +210,7 @@ export function siteNamesCompany(website, { name, ticker }) {
 }
 
 // One website per company: a site root (or a bare locale path) that names the filer, https first, then the shortest.
-function pickWebsite(urls, company) {
+export function pickWebsite(urls, company) {
   const roots = [...urls].map((raw) => {
     try {
       return new URL(raw);
@@ -259,7 +264,7 @@ async function pool() {
   return { candidates: candidates.filter((c) => byDomain.get(c.domain) === 1), sources: { sec: sub.length, tickers: tickers.size, wikidata: sites.size, sicCodes: Object.keys(sicList).length } };
 }
 
-async function check(company, checks) {
+export async function check(company, checks) {
   if (checks[company.cik]?.website === company.website) return checks[company.cik];
   const tool = fetchPageTool({ allowDomain: company.domain });
   const started = Date.now();
@@ -277,15 +282,15 @@ async function check(company, checks) {
 }
 
 // A bot wall answers 200 with a challenge page that says nothing about the company.
-const CHALLENGE = /^(client challenge|just a moment|attention required|access denied|security check|pardon our interruption|are you a robot)/i;
-function usable(check) {
+export const CHALLENGE = /^(client challenge|just a moment|attention required|access denied|security check|pardon our interruption|are you a robot)/i;
+export function usable(check) {
   if (!check.pageOk) return { ok: false, why: check.refused ?? check.error };
   if (CHALLENGE.test(check.title)) return { ok: false, why: `a bot challenge page (${check.title})` };
   if (check.textChars < MIN_TEXT) return { ok: false, why: `only ${check.textChars} characters of text` };
   return { ok: true };
 }
 
-async function checkAll(companies, checks) {
+export async function checkAll(companies, checks) {
   const queue = companies.filter((c) => checks[c.cik]?.website !== c.website);
   const workers = Array.from({ length: CHECK_CONCURRENCY }, async () => {
     for (let c = queue.shift(); c; c = queue.shift()) {

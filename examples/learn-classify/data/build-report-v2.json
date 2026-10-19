@@ -1,0 +1,5126 @@
+{
+ "builtWith": {
+  "via": "wayback",
+  "secFiles": {
+   "tickers": {
+    "url": "https://www.sec.gov/files/company_tickers.json",
+    "fetchedFrom": "https://web.archive.org/web/20261018055724id_/https://www.sec.gov/files/company_tickers.json",
+    "snapshot": "2026-10-18T05:57:24Z",
+    "retrievedAt": "2026-10-19T22:26:21.458Z"
+   },
+   "fsds": {
+    "url": "https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip",
+    "fetchedFrom": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip",
+    "snapshot": "2026-10-05T00:18:37Z",
+    "retrievedAt": "2026-10-19T22:26:27.780Z"
+   },
+   "sicList": {
+    "url": "https://www.sec.gov/search-filings/standard-industrial-classification-sic-code-list",
+    "fetchedFrom": "https://web.archive.org/web/20261001145830id_/https://www.sec.gov/search-filings/standard-industrial-classification-sic-code-list",
+    "snapshot": "2026-10-01T14:58:30Z",
+    "retrievedAt": "2026-10-19T22:26:23.205Z"
+   }
+  },
+  "wikidata": {
+   "endpoint": "https://query.wikidata.org/sparql",
+   "query": "SELECT ?item ?cik ?website ?article WHERE {\n  ?item wdt:P5531 ?cik .\n  OPTIONAL { ?item wdt:P856 ?website . }\n  OPTIONAL { ?article schema:about ?item ; schema:isPartOf <https://en.wikipedia.org/> . }\n}",
+   "retrievedAt": "2026-10-19T23:19:42.263Z"
+  }
+ },
+ "rules": {
+  "total": 130,
+  "run": 100,
+  "sealed": 30,
+  "categoryTarget": 26,
+  "groupCap": 10,
+  "websitesShown": 65,
+  "excludedSic": [
+   "6189",
+   "6221",
+   "6726",
+   "6770",
+   "6792",
+   "6795",
+   "8880",
+   "8888",
+   "9995",
+   "9999"
+  ],
+  "renamedSince": "20150101",
+  "holdingName": "\\b(HOLDINGS?|HLDGS|ENTERPRISES|DIVERSIFIED)\\b",
+  "holdingSic": [
+   "6799"
+  ],
+  "smallCapBelowUsd": 49060000,
+  "revenueTags": [
+   "Revenues",
+   "RevenueFromContractWithCustomerExcludingAssessedTax",
+   "RevenueFromContractWithCustomerIncludingAssessedTax",
+   "Revenue",
+   "RevenueFromContractsWithCustomers",
+   "RevenuesNetOfInterestExpense",
+   "RevenueFromSaleOfGoods"
+  ],
+  "segmentAxes": [
+   "BusinessSegments",
+   "Segments"
+  ],
+  "notASegment": "elimination|reconcil|corporate|unallocated|consolidat|^total|allother|^other(segments?)?$|intersegment|^operatingsegments$",
+  "allSegments": "^(reportablesegments?|reportablesegmentaggregationbeforeotheroperatingsegment|\\w*singlereport\\w*|primaryreporting\\w*|globalsegments?|(all)?segments?|reportingsegments?)$",
+  "singleShare": 0.95,
+  "membersSum": [
+   0.85,
+   1.2
+  ],
+  "wall": {
+   "status": [
+    401,
+    403,
+    429,
+    503
+   ],
+   "challengeTitle": "^(client challenge|just a moment|attention required|access denied|security check|pardon our interruption|are you a robot)",
+   "noText": true
+  }
+ },
+ "sources": {
+  "sub": 6169,
+  "filers": 5620,
+  "tickers": 8029,
+  "wikidata": 3715,
+  "sicCodes": 429
+ },
+ "counts": {
+  "pool": 4534,
+  "poolByCategory": {
+   "multi-segment": 615,
+   "holding": 420,
+   "small-cap": 880,
+   "renamed": 848,
+   "foreign": 268,
+   "bot-wall": 57
+  },
+  "poolSegmentTruth": 1782,
+  "byCategory": {
+   "multi-segment": {
+    "total": 59,
+    "run": 48,
+    "websiteShown": 21
+   },
+   "holding": {
+    "total": 41,
+    "run": 35,
+    "websiteShown": 15
+   },
+   "small-cap": {
+    "total": 40,
+    "run": 30,
+    "websiteShown": 9
+   },
+   "renamed": {
+    "total": 40,
+    "run": 31,
+    "websiteShown": 13
+   },
+   "foreign": {
+    "total": 40,
+    "run": 30,
+    "websiteShown": 10
+   },
+   "bot-wall": {
+    "total": 40,
+    "run": 30,
+    "websiteShown": 33
+   }
+  },
+  "categoriesPerCompany": {
+   "1": 45,
+   "2": 43,
+   "3": 39,
+   "4": 3
+  },
+  "segmentTruth": 122,
+  "segmentTruthByCategory": {
+   "multi-segment": 59,
+   "holding": 35,
+   "small-cap": 35,
+   "renamed": 40,
+   "foreign": 34,
+   "bot-wall": 37
+  },
+  "websiteShown": 65,
+  "groups": 41,
+  "runGroups": 41,
+  "largestGroup": 10
+ },
+ "companies": [
+  {
+   "cik": "0000009389",
+   "name": "BALL CORP",
+   "website": "https://www.ball.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Ball_Corporation",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260219",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "CO",
+    "former": "BALL CORP",
+    "changed": "19920703",
+    "revenueUsdAnnual": 13161000000
+   },
+   "segments": [
+    {
+     "name": "Metal Beverage Packaging North And Central America",
+     "member": "MetalBeveragePackagingNorthAndCentralAmerica",
+     "value": 6286000000,
+     "share": 0.4776
+    },
+    {
+     "name": "Metal Beverage Packaging Europe",
+     "member": "MetalBeveragePackagingEurope",
+     "value": 3983000000,
+     "share": 0.3026
+    },
+    {
+     "name": "Metal Beverage Packaging South America",
+     "member": "MetalBeveragePackagingSouthAmerica",
+     "value": 2162000000,
+     "share": 0.1643
+    }
+   ],
+   "segmentSumShare": 0.9445,
+   "check": {
+    "status": 403,
+    "url": "https://www.ball.com/",
+    "title": "Service unavailable",
+    "textChars": 89,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:33:22.564Z"
+   }
+  },
+  {
+   "cik": "0000018255",
+   "name": "CATO CORP",
+   "website": "https://www.catofashions.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Cato_Corporation",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260325",
+    "period": "20260131",
+    "countryba": "US",
+    "stprba": "NC",
+    "former": "CATO STORES INC",
+    "changed": "19701002",
+    "revenueUsdAnnual": 653812000
+   },
+   "segments": [
+    {
+     "name": "Retail",
+     "member": "ReportableSegmentsRetail",
+     "value": 651158000,
+     "share": 0.9959
+    },
+    {
+     "name": "Credit",
+     "member": "ReportableSegmentsCredit",
+     "value": 2654000,
+     "share": 0.0041
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 403,
+    "url": "https://www.catofashions.com/",
+    "title": "Just a moment...",
+    "textChars": 0,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:33:20.433Z"
+   }
+  },
+  {
+   "cik": "0000018498",
+   "name": "GENESCO INC",
+   "website": "http://www.genesco.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Genesco",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260325",
+    "period": "20260131",
+    "countryba": "US",
+    "stprba": "TN",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 2436096000
+   },
+   "segments": [
+    {
+     "name": "Journeys Group",
+     "member": "JourneysGroupSegment",
+     "value": 1494649000,
+     "share": 0.6135
+    },
+    {
+     "name": "Schuh Group",
+     "member": "SchuhGroupSegment",
+     "value": 500022000,
+     "share": 0.2053
+    },
+    {
+     "name": "Johnston And Murphy Group",
+     "member": "JohnstonAndMurphyGroupSegment",
+     "value": 320199000,
+     "share": 0.1314
+    },
+    {
+     "name": "Genesco Brands",
+     "member": "GenescoBrandsSegment",
+     "value": 121226000,
+     "share": 0.0498
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 403,
+    "url": "http://www.genesco.com/",
+    "title": "Access Denied",
+    "textChars": 195,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:32:59.641Z"
+   }
+  },
+  {
+   "cik": "0000031462",
+   "name": "ECOLAB INC.",
+   "website": "http://ecolab.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Ecolab",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260223",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "MN",
+    "former": "ECOLAB INC",
+    "changed": "19920703",
+    "revenueUsdAnnual": 16081200000
+   },
+   "segments": [
+    {
+     "name": "Water Services",
+     "member": "WaterServices",
+     "value": 7982400000,
+     "share": 0.4964
+    },
+    {
+     "name": "Global Institutional",
+     "member": "GlobalInstitutional",
+     "value": 6104600000,
+     "share": 0.3796
+    },
+    {
+     "name": "Global Healthcare And Life Sciences",
+     "member": "GlobalHealthcareAndLifeSciences",
+     "value": 747900000,
+     "share": 0.0465
+    }
+   ],
+   "segmentSumShare": 0.9225,
+   "check": {
+    "status": 403,
+    "url": "https://www.ecolab.com/",
+    "title": "Access Denied",
+    "textChars": 194,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:33:28.884Z"
+   }
+  },
+  {
+   "cik": "0000048287",
+   "name": "HNI CORP",
+   "website": "http://www.hnicorp.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/HNI_Corporation",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260303",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "IA",
+    "former": "HON INDUSTRIES INC",
+    "changed": "19920703",
+    "revenueUsdAnnual": 2839000000
+   },
+   "segments": [
+    {
+     "name": "Workplace Furnishings Americas",
+     "member": "WorkplaceFurnishingsAmericas",
+     "value": 2164100000,
+     "share": 0.7623
+    },
+    {
+     "name": "Residential Building Products",
+     "member": "ResidentialBuildingProducts",
+     "value": 674900000,
+     "share": 0.2377
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 200,
+    "url": "https://www.hnicorp.com/",
+    "title": "",
+    "textChars": 0,
+    "error": "the page has no readable text (it may need JavaScript)",
+    "checkedAt": "2026-10-19T22:33:09.541Z"
+   }
+  },
+  {
+   "cik": "0000056701",
+   "name": "KOSS CORP",
+   "website": "http://www.koss.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Koss_Corporation",
+   "facts": {
+    "form": "10-Q",
+    "filed": "20260130",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "WI",
+    "former": "KOSS ELECTRONICS INC",
+    "changed": "19721005",
+    "revenueUsdAnnual": 11445516
+   },
+   "segments": [
+    {
+     "name": "Headphones And Related Accessories",
+     "member": "HeadphonesAndRelatedAccessories",
+     "value": 2861379,
+     "share": 1
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 301,
+    "url": "https://www.koss.com/",
+    "title": "",
+    "textChars": 0,
+    "refused": "a second redirect (to https://koss.com/); one hop is followed, so fetch that URL directly if it is allowed",
+    "checkedAt": "2026-10-19T23:21:11.690Z"
+   }
+  },
+  {
+   "cik": "0000057131",
+   "name": "LA-Z-BOY INC",
+   "website": "https://www.la-z-boy.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/La-Z-Boy",
+   "facts": {
+    "form": "10-Q",
+    "filed": "20260217",
+    "period": "20260131",
+    "countryba": "US",
+    "stprba": "MI",
+    "former": "LA Z BOY CHAIR CO",
+    "changed": "19920703",
+    "revenueUsdAnnual": 2075062666.6666665
+   },
+   "segments": [
+    {
+     "name": "Wholesale",
+     "member": "WholesaleSegment",
+     "value": 366592000,
+     "share": 0.6769
+    },
+    {
+     "name": "Retail",
+     "member": "RetailSegment",
+     "value": 251934000,
+     "share": 0.4652
+    }
+   ],
+   "segmentSumShare": 1.1421,
+   "check": {
+    "status": 200,
+    "url": "https://www.la-z-boy.com/",
+    "title": "Client Challenge",
+    "textChars": 209,
+    "checkedAt": "2026-10-19T22:33:20.161Z"
+   }
+  },
+  {
+   "cik": "0000059478",
+   "name": "ELI LILLY & CO",
+   "website": "https://www.lilly.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Eli_Lilly_and_Company",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260212",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "IN",
+    "former": "LILLY ELI & CO",
+    "changed": "19941024",
+    "revenueUsdAnnual": 65179000000
+   },
+   "segments": [],
+   "check": {
+    "status": 403,
+    "url": "https://www.lilly.com/",
+    "title": "Just a moment...",
+    "textChars": 0,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:33:22.760Z"
+   }
+  },
+  {
+   "cik": "0000063908",
+   "name": "MCDONALDS CORP",
+   "website": "https://www.mcdonalds.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/McDonald%27s",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260224",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "IL",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 26885000000
+   },
+   "segments": [
+    {
+     "name": "International Operated Markets",
+     "member": "InternationalOperatedMarkets",
+     "value": 13633000000,
+     "share": 0.5071
+    },
+    {
+     "name": "US Market",
+     "member": "USMarket",
+     "value": 10825000000,
+     "share": 0.4026
+    }
+   ],
+   "segmentSumShare": 0.9097,
+   "check": {
+    "status": 403,
+    "url": "https://www.mcdonalds.com/",
+    "title": "Access Denied",
+    "textChars": 197,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:33:20.090Z"
+   }
+  },
+  {
+   "cik": "0000065770",
+   "name": "MICROVISION, INC.",
+   "website": "http://www.microvision.com/",
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260304",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "WA",
+    "former": "MICROVISION INC",
+    "changed": "19960724",
+    "revenueUsdAnnual": 1208000
+   },
+   "segments": [
+    {
+     "name": "Product Revenue",
+     "member": "ProductRevenue",
+     "value": 610000,
+     "share": 0.505
+    },
+    {
+     "name": "License And Royalty Revenue",
+     "member": "LicenseAndRoyaltyRevenue",
+     "value": 550000,
+     "share": 0.4553
+    },
+    {
+     "name": "Contract Revenue",
+     "member": "ContractRevenue",
+     "value": 48000,
+     "share": 0.0397
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 200,
+    "url": "https://microvision.com/",
+    "title": "Advanced lidar & perception solutions in autonomy & mobility | MicroVision",
+    "textChars": 6297,
+    "checkedAt": "2026-10-19T23:20:06.016Z"
+   }
+  },
+  {
+   "cik": "0000078239",
+   "name": "PVH CORP. /DE/",
+   "website": "https://www.pvh.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/PVH_Corp.",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260331",
+    "period": "20260131",
+    "countryba": "US",
+    "stprba": "NY",
+    "former": "PHILLIPS VAN HEUSEN CORP /DE/",
+    "changed": "19920703",
+    "revenueUsdAnnual": 8950200000
+   },
+   "segments": [
+    {
+     "name": "EMEA",
+     "member": "EMEASegment",
+     "value": 4273600000,
+     "share": 0.4775
+    },
+    {
+     "name": "Americas",
+     "member": "AmericasSegment",
+     "value": 2739900000,
+     "share": 0.3061
+    },
+    {
+     "name": "Asia Pacific",
+     "member": "AsiaPacificSegment",
+     "value": 1515500000,
+     "share": 0.1693
+    },
+    {
+     "name": "Licensing",
+     "member": "LicensingSegment",
+     "value": 421200000,
+     "share": 0.0471
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 403,
+    "url": "https://www.pvh.com/",
+    "title": "Access Denied",
+    "textChars": 191,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:32:54.005Z"
+   }
+  },
+  {
+   "cik": "0000082811",
+   "name": "REGAL REXNORD CORP",
+   "website": "http://www.regalrexnord.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Regal_Rexnord",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260220",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "WI",
+    "former": "REGAL BELOIT CORP",
+    "changed": "19920703",
+    "revenueUsdAnnual": 5934500000
+   },
+   "segments": [
+    {
+     "name": "Industrial Powertrain Solutions",
+     "member": "IndustrialPowertrainSolutionsSegment",
+     "value": 2594100000,
+     "share": 0.4371
+    },
+    {
+     "name": "Automation And Motion Control",
+     "member": "AutomationAndMotionControlSegment",
+     "value": 1689800000,
+     "share": 0.2847
+    },
+    {
+     "name": "Power Efficiency Solutions",
+     "member": "PowerEfficiencySolutionsSegment",
+     "value": 1650600000,
+     "share": 0.2781
+    },
+    {
+     "name": "Industrial Systems",
+     "member": "IndustrialSystemsSegment",
+     "value": 0,
+     "share": 0
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 403,
+    "url": "https://www.regalrexnord.com/",
+    "title": "Just a moment...",
+    "textChars": 0,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:33:20.448Z"
+   }
+  },
+  {
+   "cik": "0000104889",
+   "name": "GRAHAM HOLDINGS CO",
+   "website": "https://www.ghco.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Graham_Holdings",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260225",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "VA",
+    "former": "WASHINGTON POST CO",
+    "changed": "19920703",
+    "revenueUsdAnnual": 4911563000
+   },
+   "segments": [
+    {
+     "name": "Education",
+     "member": "Education",
+     "value": 1744332000,
+     "share": 0.3551
+    },
+    {
+     "name": "Automotive",
+     "member": "Automotive",
+     "value": 1133153000,
+     "share": 0.2307
+    },
+    {
+     "name": "Healthcare Divison",
+     "member": "HealthcareDivison",
+     "value": 815049000,
+     "share": 0.1659
+    },
+    {
+     "name": "Manufacturing",
+     "member": "Manufacturing",
+     "value": 436279000,
+     "share": 0.0888
+    },
+    {
+     "name": "Television Broadcasting",
+     "member": "TelevisionBroadcasting",
+     "value": 425106000,
+     "share": 0.0866
+    }
+   ],
+   "segmentSumShare": 0.9272,
+   "check": {
+    "status": 403,
+    "url": "https://www.ghco.com/",
+    "title": "Access Denied",
+    "textChars": 190,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T23:21:11.646Z"
+   }
+  },
+  {
+   "cik": "0000105418",
+   "name": "WEIS MARKETS INC",
+   "website": "https://www.weismarkets.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Weis_Markets",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260312",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "PA",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 4957709000
+   },
+   "segments": [
+    {
+     "name": "Retail",
+     "member": "RetailSegment",
+     "value": 4957709000,
+     "share": 1
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 403,
+    "url": "https://www.weismarkets.com/",
+    "title": "Attention Required! | Cloudflare",
+    "textChars": 732,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:32:56.814Z"
+   }
+  },
+  {
+   "cik": "0000109198",
+   "name": "TJX COMPANIES INC /DE/",
+   "website": "http://www.tjx.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/TJX",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260331",
+    "period": "20260131",
+    "countryba": "US",
+    "stprba": "MA",
+    "former": "ZAYRE CORP",
+    "changed": "19890625",
+    "revenueUsdAnnual": 60372000000
+   },
+   "segments": [
+    {
+     "name": "Marmaxx",
+     "member": "Marmaxx",
+     "value": 36585000000,
+     "share": 0.606
+    },
+    {
+     "name": "Home Goods",
+     "member": "HomeGoods",
+     "value": 10172000000,
+     "share": 0.1685
+    },
+    {
+     "name": "TJX International",
+     "member": "TJXInternational",
+     "value": 7986000000,
+     "share": 0.1323
+    },
+    {
+     "name": "Tjx Canada",
+     "member": "TjxCanada",
+     "value": 5629000000,
+     "share": 0.0932
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 403,
+    "url": "http://www.tjx.com/",
+    "title": "Access Denied",
+    "textChars": 160,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:33:10.540Z"
+   }
+  },
+  {
+   "cik": "0000311337",
+   "name": "SUNCOR ENERGY INC",
+   "website": "http://www.suncor.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Suncor_Energy",
+   "facts": {
+    "form": "40-F",
+    "filed": "20260226",
+    "period": "20251231",
+    "countryba": "CA",
+    "stprba": "AB",
+    "former": "SUNCOR INC",
+    "changed": "19970430",
+    "revenueUsdAnnual": null
+   },
+   "segments": [
+    {
+     "name": "Refining And Marketing",
+     "member": "RefiningAndMarketingSegment",
+     "value": 30671000000,
+     "share": 0.5856
+    },
+    {
+     "name": "Oil Sands",
+     "member": "OilSandsSegment",
+     "value": 27324000000,
+     "share": 0.5217
+    },
+    {
+     "name": "Exploration And Production",
+     "member": "ExplorationAndProductionSegment",
+     "value": 2509000000,
+     "share": 0.0479
+    }
+   ],
+   "segmentSumShare": 1.1552,
+   "check": {
+    "status": 403,
+    "url": "https://www.suncor.com/",
+    "title": "Just a moment...",
+    "textChars": 0,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T23:21:11.525Z"
+   }
+  },
+  {
+   "cik": "0000720005",
+   "name": "RAYMOND JAMES FINANCIAL INC",
+   "website": "https://www.raymondjames.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Raymond_James_Financial",
+   "facts": {
+    "form": "10-Q",
+    "filed": "20260206",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "FL",
+    "former": "RJ FINANCIAL CORP/FL",
+    "changed": "19870303",
+    "revenueUsdAnnual": 16704000000
+   },
+   "segments": [
+    {
+     "name": "Private Client Group",
+     "member": "PrivateClientGroup",
+     "value": 2768000000,
+     "share": 0.7411
+    },
+    {
+     "name": "Bank",
+     "member": "BankSegment",
+     "value": 487000000,
+     "share": 0.1304
+    },
+    {
+     "name": "Rj Bank",
+     "member": "RjBank",
+     "value": 487000000,
+     "share": 0.1304
+    },
+    {
+     "name": "Capital Markets",
+     "member": "CapitalMarkets",
+     "value": 380000000,
+     "share": 0.1017
+    },
+    {
+     "name": "Asset Management",
+     "member": "AssetManagementSegment",
+     "value": 326000000,
+     "share": 0.0873
+    }
+   ],
+   "segmentSumShare": 1.1909,
+   "check": {
+    "status": 403,
+    "url": "https://www.raymondjames.com/",
+    "title": "Access Denied",
+    "textChars": 200,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:32:50.609Z"
+   }
+  },
+  {
+   "cik": "0000726958",
+   "name": "CASEYS GENERAL STORES INC",
+   "website": "https://www.caseys.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Casey%27s",
+   "facts": {
+    "form": "10-Q",
+    "filed": "20260309",
+    "period": "20260131",
+    "countryba": "US",
+    "stprba": "IA",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 17319096000
+   },
+   "segments": [],
+   "check": {
+    "status": 403,
+    "url": "https://www.caseys.com/",
+    "title": "Just a moment...",
+    "textChars": 0,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:33:22.567Z"
+   }
+  },
+  {
+   "cik": "0000733099",
+   "name": "ROGERS COMMUNICATIONS INC",
+   "website": "https://www.rogers.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Rogers_Communications",
+   "facts": {
+    "form": "40-F",
+    "filed": "20260306",
+    "period": "20251231",
+    "countryba": "CA",
+    "stprba": "ON",
+    "former": "ROGERS CABLESYSTEMS INC",
+    "changed": "19860425",
+    "revenueUsdAnnual": null
+   },
+   "segments": [
+    {
+     "name": "Wireless",
+     "member": "WirelessSegment",
+     "value": 10715000000,
+     "share": 0.4935
+    },
+    {
+     "name": "Cable",
+     "member": "CableSegment",
+     "value": 7868000000,
+     "share": 0.3624
+    },
+    {
+     "name": "Media",
+     "member": "MediaSegment",
+     "value": 3288000000,
+     "share": 0.1514
+    }
+   ],
+   "segmentSumShare": 1.0073,
+   "check": {
+    "status": 200,
+    "url": "https://www.rogers.com/",
+    "title": "Mobile, Internet, TV, Home Monitoring, Home phone - Rogers",
+    "textChars": 3939,
+    "checkedAt": "2026-10-19T23:21:12.261Z"
+   }
+  },
+  {
+   "cik": "0000744452",
+   "name": "BNB PLUS CORP.",
+   "website": "https://www.bnb.plus/",
+   "wikipedia": null,
+   "facts": {
+    "form": "10-Q",
+    "filed": "20260212",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "NY",
+    "former": "APPLIED DNA SCIENCES INC",
+    "changed": "20021218",
+    "revenueUsdAnnual": 2261576
+   },
+   "segments": [
+    {
+     "name": "Therapeutic Dna Production",
+     "member": "TherapeuticDnaProduction",
+     "value": 451811,
+     "share": 0.7991
+    },
+    {
+     "name": "Dna Tagging And Security Products",
+     "member": "DnaTaggingAndSecurityProducts",
+     "value": 113583,
+     "share": 0.2009
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 200,
+    "url": "https://www.bnb.plus/",
+    "title": "BNB Plus - Digital Asset Treasury | NASDAQ: BNBX",
+    "textChars": 6363,
+    "checkedAt": "2026-10-19T23:21:12.612Z"
+   }
+  },
+  {
+   "cik": "0000746210",
+   "name": "TAOWEAVE, INC.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260320",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "CO",
+    "former": "OBLONG, INC.",
+    "changed": "20200309",
+    "revenueUsdAnnual": 2437000
+   },
+   "segments": [
+    {
+     "name": "Managed Services",
+     "member": "ManagedServices",
+     "value": 1957000,
+     "share": 0.803
+    },
+    {
+     "name": "Collaboration Products",
+     "member": "CollaborationProducts",
+     "value": 294000,
+     "share": 0.1206
+    },
+    {
+     "name": "Digital Assets",
+     "member": "DigitalAssets",
+     "value": 186000,
+     "share": 0.0763
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": null
+  },
+  {
+   "cik": "0000746598",
+   "name": "BRADY CORP",
+   "website": "http://www.bradycorp.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Brady_Corporation",
+   "facts": {
+    "form": "10-Q",
+    "filed": "20260219",
+    "period": "20260131",
+    "countryba": "US",
+    "stprba": "WI",
+    "former": "BRADY W H CO",
+    "changed": "19920703",
+    "revenueUsdAnnual": 1536548000
+   },
+   "segments": [
+    {
+     "name": "Americas Asia",
+     "member": "AmericasAsia",
+     "value": 251604000,
+     "share": 0.655
+    },
+    {
+     "name": "Europe Australia",
+     "member": "EuropeAustralia",
+     "value": 132533000,
+     "share": 0.345
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 403,
+    "url": "https://www.bradycorp.com/",
+    "title": "bid-na-prod-centralus-headless-app.azurewebsites.net",
+    "textChars": 43,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:32:54.793Z"
+   }
+  },
+  {
+   "cik": "0000749098",
+   "name": "MAGNA INTERNATIONAL INC",
+   "website": "https://www.magna.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Magna_International",
+   "facts": {
+    "form": "40-F",
+    "filed": "20260327",
+    "period": "20251231",
+    "countryba": "CA",
+    "stprba": "ON",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 42010000000
+   },
+   "segments": [
+    {
+     "name": "Body Exteriors And Structures",
+     "member": "BodyExteriorsAndStructures",
+     "value": 16618000000,
+     "share": 0.3956
+    },
+    {
+     "name": "Power And Vision",
+     "member": "PowerAndVision",
+     "value": 15198000000,
+     "share": 0.3618
+    },
+    {
+     "name": "Seating Systems",
+     "member": "SeatingSystems",
+     "value": 5898000000,
+     "share": 0.1404
+    },
+    {
+     "name": "Complete Vehicles",
+     "member": "CompleteVehicles",
+     "value": 4848000000,
+     "share": 0.1154
+    }
+   ],
+   "segmentSumShare": 1.0131,
+   "check": {
+    "status": 200,
+    "url": "https://www.magna.com/",
+    "title": "Magna International - Forward. For all.",
+    "textChars": 2057,
+    "checkedAt": "2026-10-19T23:20:06.061Z"
+   }
+  },
+  {
+   "cik": "0000749251",
+   "name": "GARTNER INC",
+   "website": "https://www.gartner.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Gartner",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260212",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "CT",
+    "former": "GARTNER GROUP INC",
+    "changed": "19930823",
+    "revenueUsdAnnual": 6497226000
+   },
+   "segments": [
+    {
+     "name": "Insights",
+     "member": "Insights",
+     "value": 5072570000,
+     "share": 0.7807
+    },
+    {
+     "name": "Conferences",
+     "member": "Conferences",
+     "value": 644743000,
+     "share": 0.0992
+    },
+    {
+     "name": "Consulting",
+     "member": "Consulting",
+     "value": 552499000,
+     "share": 0.085
+    },
+    {
+     "name": "Other",
+     "member": "OtherReportableSegment",
+     "value": 227414000,
+     "share": 0.035
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 403,
+    "url": "https://www.gartner.com/",
+    "title": "Just a moment... | Gartner",
+    "textChars": 144,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:33:19.367Z"
+   }
+  },
+  {
+   "cik": "0000761648",
+   "name": "CEDAR REALTY TRUST, INC.",
+   "website": "http://cedarrealtytrust.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Cedar_Realty_Trust",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260305",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "VA",
+    "former": "CEDAR SHOPPING CENTERS INC",
+    "changed": "20030812",
+    "revenueUsdAnnual": 29662000
+   },
+   "segments": [],
+   "check": {
+    "status": 301,
+    "url": "http://cedarrealtytrust.com/",
+    "title": "",
+    "textChars": 0,
+    "refused": "redirect to https://www.whlr.us/: www.whlr.us is outside the allowed hosts (cedarrealtytrust.com and its subdomains, *.wikipedia.org)",
+    "checkedAt": "2026-10-19T23:21:12.306Z"
+   }
+  },
+  {
+   "cik": "0000771999",
+   "name": "DSS, INC.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260331",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "NY",
+    "former": "DOCUMENT SECURITY SYSTEMS INC",
+    "changed": "20030326",
+    "revenueUsdAnnual": 20757000
+   },
+   "segments": [
+    {
+     "name": "Product Packaging",
+     "member": "ProductPackaging",
+     "value": 18150000,
+     "share": 0.8744
+    },
+    {
+     "name": "Securities",
+     "member": "Securities",
+     "value": 2524000,
+     "share": 0.1216
+    },
+    {
+     "name": "Securities Revenue Information",
+     "member": "SecuritiesRevenueInformation",
+     "value": 2524000,
+     "share": 0.1216
+    },
+    {
+     "name": "Commercial Banking",
+     "member": "CommercialBanking",
+     "value": 45000,
+     "share": 0.0022
+    },
+    {
+     "name": "Commercial Lending Revenue Information",
+     "member": "CommercialLendingRevenueInformation",
+     "value": 45000,
+     "share": 0.0022
+    },
+    {
+     "name": "Biotechnology",
+     "member": "Biotechnology",
+     "value": 38000,
+     "share": 0.0018
+    },
+    {
+     "name": "Biotechnology Revenue Information",
+     "member": "BiotechnologyRevenueInformation",
+     "value": 38000,
+     "share": 0.0018
+    }
+   ],
+   "segmentSumShare": 1.1256,
+   "check": null
+  },
+  {
+   "cik": "0000793733",
+   "name": "SKYWEST INC",
+   "website": "https://inc.skywest.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/SkyWest,_Inc.",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260217",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "UT",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 4058202000
+   },
+   "segments": [
+    {
+     "name": "Sky West Airlines",
+     "member": "SkyWestAirlines",
+     "value": 3415066000,
+     "share": 0.8415
+    },
+    {
+     "name": "Skywest Leasing",
+     "member": "SkywestLeasing",
+     "value": 643136000,
+     "share": 0.1585
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 403,
+    "url": "https://inc.skywest.com/",
+    "title": "Just a moment...",
+    "textChars": 0,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:33:22.562Z"
+   }
+  },
+  {
+   "cik": "0000827054",
+   "name": "MICROCHIP TECHNOLOGY INC",
+   "website": "https://www.microchip.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Microchip_Technology",
+   "facts": {
+    "form": "10-Q",
+    "filed": "20260205",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "AZ",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 4744000000
+   },
+   "segments": [
+    {
+     "name": "Semiconductor Products",
+     "member": "SemiconductorProducts",
+     "value": 1127100000,
+     "share": 0.9503
+    },
+    {
+     "name": "Technology Licensing",
+     "member": "TechnologyLicensing",
+     "value": 58900000,
+     "share": 0.0497
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 403,
+    "url": "https://www.microchip.com/",
+    "title": "Access Denied",
+    "textChars": 197,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:33:08.423Z"
+   }
+  },
+  {
+   "cik": "0000837465",
+   "name": "CALLAWAY GOLF CO",
+   "website": "https://www.callawaygolf.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Callaway_Golf_Company",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260227",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "CA",
+    "former": "TOPGOLF CALLAWAY BRANDS CORP.",
+    "changed": "20220906",
+    "revenueUsdAnnual": 2060100000
+   },
+   "segments": [
+    {
+     "name": "Golf Equipment",
+     "member": "GolfEquipmentSegment",
+     "value": 1375100000,
+     "share": 0.6675
+    },
+    {
+     "name": "Apparel Gear And Other",
+     "member": "ApparelGearAndOtherSegment",
+     "value": 685000000,
+     "share": 0.3325
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 429,
+    "url": "https://www.callawaygolf.com/",
+    "title": "Vercel Security Checkpoint",
+    "textChars": 61,
+    "error": "HTTP 429",
+    "checkedAt": "2026-10-19T22:36:30.110Z"
+   }
+  },
+  {
+   "cik": "0000838875",
+   "name": "WILLAMETTE VALLEY VINEYARDS INC",
+   "website": "http://www.willamettevalleyvineyards.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Willamette_Valley_Vineyards",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260324",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "OR",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 37197122
+   },
+   "segments": [
+    {
+     "name": "Direct Sales",
+     "member": "DirectSales",
+     "value": 20241167,
+     "share": 0.5442
+    },
+    {
+     "name": "Distributor Sales",
+     "member": "DistributorSales",
+     "value": 16955955,
+     "share": 0.4558
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 301,
+    "url": "http://www.willamettevalleyvineyards.com/",
+    "title": "",
+    "textChars": 0,
+    "refused": "redirect to https://www.wvv.com/: www.wvv.com is outside the allowed hosts (willamettevalleyvineyards.com and its subdomains, *.wikipedia.org)",
+    "checkedAt": "2026-10-19T23:21:12.049Z"
+   }
+  },
+  {
+   "cik": "0000844551",
+   "name": "WOODSIDE ENERGY GROUP LTD",
+   "website": "https://www.woodside.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Woodside_Energy",
+   "facts": {
+    "form": "20-F",
+    "filed": "20260224",
+    "period": "20251231",
+    "countryba": "AU",
+    "stprba": null,
+    "former": "WOODSIDE PETROLEUM LTD",
+    "changed": "19881222",
+    "revenueUsdAnnual": 12984000000
+   },
+   "segments": [
+    {
+     "name": "Australia",
+     "member": "AustraliaSegment",
+     "value": 7501000000,
+     "share": 0.5777
+    },
+    {
+     "name": "International",
+     "member": "InternationalSegment",
+     "value": 4069000000,
+     "share": 0.3134
+    },
+    {
+     "name": "Marketing",
+     "member": "MarketingSegment",
+     "value": 1414000000,
+     "share": 0.1089
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 200,
+    "url": "https://www.woodside.com/",
+    "title": "Woodside Energy - A Global Energy Company",
+    "textChars": 4535,
+    "checkedAt": "2026-10-19T23:21:10.663Z"
+   }
+  },
+  {
+   "cik": "0000849399",
+   "name": "GEN DIGITAL INC.",
+   "website": "https://www.gendigital.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Gen_Digital",
+   "facts": {
+    "form": "10-Q",
+    "filed": "20260206",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "AZ",
+    "former": "NORTONLIFELOCK INC.",
+    "changed": "20191030",
+    "revenueUsdAnnual": 4956000000
+   },
+   "segments": [
+    {
+     "name": "Cyber Safety Platform",
+     "member": "CyberSafetyPlatform",
+     "value": 819000000,
+     "share": 0.6605
+    },
+    {
+     "name": "Trust Based Solutions",
+     "member": "TrustBasedSolutions",
+     "value": 421000000,
+     "share": 0.3395
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 200,
+    "url": "https://www.gendigital.com/us/en/",
+    "title": "Powering Digital Freedom for people everywhere | Gen™",
+    "textChars": 7091,
+    "checkedAt": "2026-10-19T23:23:10.716Z"
+   }
+  },
+  {
+   "cik": "0000868675",
+   "name": "TELUS CORP",
+   "website": "https://www.telus.com/en/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Telus_Communications",
+   "facts": {
+    "form": "40-F",
+    "filed": "20260212",
+    "period": "20251231",
+    "countryba": "CA",
+    "stprba": "BC",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": null
+   },
+   "segments": [
+    {
+     "name": "Telus Technology Solutions",
+     "member": "TelusTechnologySolutions",
+     "value": 15444000000,
+     "share": 0.7591
+    },
+    {
+     "name": "Mobile",
+     "member": "Mobile",
+     "value": 9131000000,
+     "share": 0.4488
+    },
+    {
+     "name": "Fixed",
+     "member": "Fixed",
+     "value": 6313000000,
+     "share": 0.3103
+    },
+    {
+     "name": "Telus Digital Experience",
+     "member": "TelusDigitalExperience",
+     "value": 2861000000,
+     "share": 0.1406
+    },
+    {
+     "name": "Telus Health Inc",
+     "member": "TelusHealthInc",
+     "value": 2041000000,
+     "share": 0.1003
+    }
+   ],
+   "segmentSumShare": 1.7591,
+   "segmentTruthNull": "the segment members add up to 1.7591 of revenue, so they overlap or leave segments out",
+   "check": {
+    "status": 403,
+    "url": "https://www.telus.com/en/",
+    "title": "Just a moment...",
+    "textChars": 0,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T23:21:10.653Z"
+   }
+  },
+  {
+   "cik": "0000879764",
+   "name": "TOTALENERGIES SE",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "20-F",
+    "filed": "20260327",
+    "period": "20251231",
+    "countryba": "FR",
+    "stprba": null,
+    "former": "TOTAL SE",
+    "changed": "20200717",
+    "revenueUsdAnnual": 201196000000
+   },
+   "segments": [
+    {
+     "name": "Refining And Chemicals",
+     "member": "RefiningAndChemicalsSegment",
+     "value": 87207000000,
+     "share": 0.4334
+    },
+    {
+     "name": "Marketing And Services",
+     "member": "MarketingAndServicesSegment",
+     "value": 78708000000,
+     "share": 0.3912
+    },
+    {
+     "name": "Integrated Power",
+     "member": "IntegratedPowerSegment",
+     "value": 19587000000,
+     "share": 0.0974
+    },
+    {
+     "name": "Integrated Lng",
+     "member": "IntegratedLngSegment",
+     "value": 10096000000,
+     "share": 0.0502
+    },
+    {
+     "name": "Exploration And Production",
+     "member": "ExplorationAndProductionSegment",
+     "value": 5590000000,
+     "share": 0.0278
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": null
+  },
+  {
+   "cik": "0000880984",
+   "name": "ACORN ENERGY, INC.",
+   "website": "http://www.acornenergy.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Acorn_Energy",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260305",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "DE",
+    "former": "ACORN FACTOR, INC.",
+    "changed": "20060920",
+    "revenueUsdAnnual": 11478000
+   },
+   "segments": [
+    {
+     "name": "PG",
+     "member": "PG",
+     "value": 10741000,
+     "share": 0.9358
+    },
+    {
+     "name": "CP",
+     "member": "CP",
+     "value": 737000,
+     "share": 0.0642
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 301,
+    "url": "https://www.acornenergy.com/",
+    "title": "",
+    "textChars": 0,
+    "refused": "a second redirect (to https://acornenergy.com/); one hop is followed, so fetch that URL directly if it is allowed",
+    "checkedAt": "2026-10-19T22:33:22.565Z"
+   }
+  },
+  {
+   "cik": "0000894871",
+   "name": "ARENA GROUP HOLDINGS, INC.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260316",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "NY",
+    "former": "THEMAVEN, INC.",
+    "changed": "20161228",
+    "revenueUsdAnnual": 134828000
+   },
+   "segments": [
+    {
+     "name": "Sports And Leisure",
+     "member": "SportsAndLeisureSegment",
+     "value": 47321000,
+     "share": 0.351
+    },
+    {
+     "name": "Finance",
+     "member": "FinanceSegment",
+     "value": 38250000,
+     "share": 0.2837
+    },
+    {
+     "name": "Lifestyle",
+     "member": "LifestyleSegment",
+     "value": 37996000,
+     "share": 0.2818
+    },
+    {
+     "name": "Platform And Other",
+     "member": "PlatformAndOtherSegment",
+     "value": 11261000,
+     "share": 0.0835
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": null
+  },
+  {
+   "cik": "0000899715",
+   "name": "TANGER INC.",
+   "website": "https://www.tanger.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Tanger_Inc.",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260226",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "NC",
+    "former": "TANGER FACTORY OUTLET CENTERS, INC",
+    "changed": "20190726",
+    "revenueUsdAnnual": null
+   },
+   "segments": [],
+   "check": {
+    "status": 200,
+    "url": "https://www.tanger.com/",
+    "title": "Tanger",
+    "textChars": 1062,
+    "checkedAt": "2026-10-19T23:20:05.662Z"
+   }
+  },
+  {
+   "cik": "0000913353",
+   "name": "COLLIERS INTERNATIONAL GROUP INC.",
+   "website": "http://www.colliers.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Colliers_International",
+   "facts": {
+    "form": "40-F",
+    "filed": "20260220",
+    "period": "20251231",
+    "countryba": "CA",
+    "stprba": "ON",
+    "former": "FIRSTSERVICE CORP",
+    "changed": "19931013",
+    "revenueUsdAnnual": 5558462000
+   },
+   "segments": [
+    {
+     "name": "Real Estate Services",
+     "member": "RealEstateServices",
+     "value": 3290578000,
+     "share": 0.592
+    },
+    {
+     "name": "Engineering",
+     "member": "Engineering",
+     "value": 1734940000,
+     "share": 0.3121
+    },
+    {
+     "name": "Investment Management",
+     "member": "InvestmentManagement",
+     "value": 532274000,
+     "share": 0.0958
+    }
+   ],
+   "segmentSumShare": 0.9999,
+   "check": {
+    "status": 403,
+    "url": "https://www.colliers.com/",
+    "title": "Just a moment...",
+    "textChars": 0,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T23:21:12.359Z"
+   }
+  },
+  {
+   "cik": "0000926282",
+   "name": "ADTRAN HOLDINGS, INC.",
+   "website": "http://www.adtran.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Adtran",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260226",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "AL",
+    "former": "ADTRAN INC",
+    "changed": "19940705",
+    "revenueUsdAnnual": 1083807000
+   },
+   "segments": [
+    {
+     "name": "Network Solutions",
+     "member": "NetworkSolutions",
+     "value": 896911000,
+     "share": 0.8276
+    },
+    {
+     "name": "Services And Support",
+     "member": "ServicesAndSupport",
+     "value": 186896000,
+     "share": 0.1724
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 301,
+    "url": "https://www.adtran.com/",
+    "title": "",
+    "textChars": 0,
+    "refused": "a second redirect (to https://www.adtran.com/en/); one hop is followed, so fetch that URL directly if it is allowed",
+    "checkedAt": "2026-10-19T23:21:10.884Z"
+   }
+  },
+  {
+   "cik": "0000932696",
+   "name": "INSIGHT ENTERPRISES INC",
+   "website": "http://www.insight.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Insight_Enterprises",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260212",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "AZ",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 8247180000
+   },
+   "segments": [
+    {
+     "name": "North America",
+     "member": "NorthAmericaSegment",
+     "value": 6654537000,
+     "share": 0.8069
+    },
+    {
+     "name": "EMEA",
+     "member": "EMEASegment",
+     "value": 1355148000,
+     "share": 0.1643
+    },
+    {
+     "name": "APAC",
+     "member": "APACSegment",
+     "value": 237495000,
+     "share": 0.0288
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 301,
+    "url": "https://www.insight.com/",
+    "title": "",
+    "textChars": 0,
+    "refused": "a second redirect (to https://www.insight.com/en_US/home.html); one hop is followed, so fetch that URL directly if it is allowed",
+    "checkedAt": "2026-10-19T22:36:32.466Z"
+   }
+  },
+  {
+   "cik": "0000935419",
+   "name": "RCI HOSPITALITY HOLDINGS, INC.",
+   "website": "http://www.rcihospitality.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/RCI_Hospitality_Holdings",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260319",
+    "period": "20250930",
+    "countryba": "US",
+    "stprba": "TX",
+    "former": "RICKS CABARET INTERNATIONAL INC",
+    "changed": "19950112",
+    "revenueUsdAnnual": 279434000
+   },
+   "segments": [
+    {
+     "name": "Excluding Other",
+     "member": "ReportableSegmentsExcludingOther",
+     "value": 282921000,
+     "share": 1.0125
+    },
+    {
+     "name": "Nightclubs",
+     "member": "Nightclubs",
+     "value": 247111000,
+     "share": 0.8843
+    },
+    {
+     "name": "Bombshells",
+     "member": "Bombshells",
+     "value": 35810000,
+     "share": 0.1282
+    }
+   ],
+   "segmentTruthNull": "the largest member is 282921000 of 279434000",
+   "check": {
+    "status": 200,
+    "url": "https://www.rcihospitality.com/",
+    "title": "",
+    "textChars": 0,
+    "error": "the page has no readable text (it may need JavaScript)",
+    "checkedAt": "2026-10-19T23:23:10.672Z"
+   }
+  },
+  {
+   "cik": "0000935703",
+   "name": "DOLLAR TREE, INC.",
+   "website": "https://www.dollartree.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Dollar_Tree",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260316",
+    "period": "20260131",
+    "countryba": "US",
+    "stprba": "VA",
+    "former": "DOLLAR TREE INC",
+    "changed": "20080328",
+    "revenueUsdAnnual": 19411800000
+   },
+   "segments": [
+    {
+     "name": "Dollar Tree",
+     "member": "DollarTree",
+     "value": 19395700000,
+     "share": 1
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 200,
+    "url": "https://www.dollartree.com/",
+    "title": "",
+    "textChars": 0,
+    "error": "the page has no readable text (it may need JavaScript)",
+    "checkedAt": "2026-10-19T22:32:55.222Z"
+   }
+  },
+  {
+   "cik": "0000938323",
+   "name": "PEARSON PLC",
+   "website": "https://www.pearson.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Pearson_plc",
+   "facts": {
+    "form": "20-F",
+    "filed": "20260313",
+    "period": "20251231",
+    "countryba": "GB",
+    "stprba": null,
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": null
+   },
+   "segments": [
+    {
+     "name": "Assessments And Qualifications",
+     "member": "AssessmentsAndQualifications",
+     "value": 1604000000,
+     "share": 0.4484
+    },
+    {
+     "name": "Higher Education",
+     "member": "HigherEducation",
+     "value": 775000000,
+     "share": 0.2167
+    },
+    {
+     "name": "Virtual Learning",
+     "member": "VirtualLearning",
+     "value": 511000000,
+     "share": 0.1429
+    },
+    {
+     "name": "English Language Learning",
+     "member": "EnglishLanguageLearning",
+     "value": 405000000,
+     "share": 0.1132
+    },
+    {
+     "name": "Enterprise Learning And Skills",
+     "member": "EnterpriseLearningAndSkills",
+     "value": 282000000,
+     "share": 0.0788
+    },
+    {
+     "name": "Strategic Review",
+     "member": "StrategicReview",
+     "value": 0,
+     "share": 0
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 301,
+    "url": "https://www.pearson.com/en-us.html",
+    "title": "",
+    "textChars": 0,
+    "refused": "a second redirect (to https://www.pearson.com/en-us); one hop is followed, so fetch that URL directly if it is allowed",
+    "checkedAt": "2026-10-19T23:21:11.884Z"
+   }
+  },
+  {
+   "cik": "0001017303",
+   "name": "TRANSACT TECHNOLOGIES INC",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260312",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "CT",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 45812000
+   },
+   "segments": [
+    {
+     "name": "Transact",
+     "member": "Transact",
+     "value": 51480000,
+     "share": 1
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": null
+  },
+  {
+   "cik": "0001020859",
+   "name": "UNITED NATURAL FOODS INC",
+   "website": "https://www.unfi.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/United_Natural_Foods",
+   "facts": {
+    "form": "10-Q",
+    "filed": "20260310",
+    "period": "20260131",
+    "countryba": "US",
+    "stprba": "RI",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 31574000000
+   },
+   "segments": [
+    {
+     "name": "Natural",
+     "member": "NaturalSegment",
+     "value": 4290000000,
+     "share": 0.5398
+    },
+    {
+     "name": "Conventional",
+     "member": "ConventionalSegment",
+     "value": 3392000000,
+     "share": 0.4268
+    },
+    {
+     "name": "Retail",
+     "member": "RetailSegment",
+     "value": 560000000,
+     "share": 0.0705
+    }
+   ],
+   "segmentSumShare": 1.0371,
+   "check": {
+    "status": 200,
+    "url": "https://www.unfi.com/",
+    "title": "",
+    "textChars": 0,
+    "error": "the page has no readable text (it may need JavaScript)",
+    "checkedAt": "2026-10-19T22:36:32.462Z"
+   }
+  },
+  {
+   "cik": "0001027664",
+   "name": "ELBIT SYSTEMS LTD",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "20-F",
+    "filed": "20260317",
+    "period": "20251231",
+    "countryba": "IL",
+    "stprba": null,
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 7938627000
+   },
+   "segments": [
+    {
+     "name": "Land Systems",
+     "member": "LandSystemsSegment",
+     "value": 2318744000,
+     "share": 0.2921
+    },
+    {
+     "name": "Aerospace",
+     "member": "AerospaceSegment",
+     "value": 2066962000,
+     "share": 0.2604
+    },
+    {
+     "name": "ESA",
+     "member": "ESASegment",
+     "value": 1694095000,
+     "share": 0.2134
+    },
+    {
+     "name": "ISTAR And EW",
+     "member": "ISTARAndEWSegment",
+     "value": 1525797000,
+     "share": 0.1922
+    },
+    {
+     "name": "C4 I Cyber",
+     "member": "C4ICyberSegment",
+     "value": 930873000,
+     "share": 0.1173
+    }
+   ],
+   "segmentSumShare": 1.0753,
+   "check": null
+  },
+  {
+   "cik": "0001048268",
+   "name": "IES HOLDINGS, INC.",
+   "website": "https://www.ies-co.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Integrated_Electrical_Services",
+   "facts": {
+    "form": "10-Q",
+    "filed": "20260130",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "TX",
+    "former": "INTEGRATED ELECTRICAL SERVICES, INC.",
+    "changed": "20150106",
+    "revenueUsdAnnual": 3483832000
+   },
+   "segments": [
+    {
+     "name": "Communications",
+     "member": "Communications",
+     "value": 351920000,
+     "share": 0.4041
+    },
+    {
+     "name": "Residential",
+     "member": "Residential",
+     "value": 284044000,
+     "share": 0.3261
+    },
+    {
+     "name": "Infrastructure Solutions",
+     "member": "InfrastructureSolutions",
+     "value": 140175000,
+     "share": 0.1609
+    },
+    {
+     "name": "Commercialand Industrial",
+     "member": "CommercialandIndustrial",
+     "value": 94819000,
+     "share": 0.1089
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 200,
+    "url": "https://www.ies-co.com/",
+    "title": "IES",
+    "textChars": 3721,
+    "checkedAt": "2026-10-19T23:20:05.659Z"
+   }
+  },
+  {
+   "cik": "0001048286",
+   "name": "MARRIOTT INTERNATIONAL INC /MD/",
+   "website": "https://www.marriott.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Marriott_International",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260210",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "MD",
+    "former": "NEW MARRIOTT MI INC",
+    "changed": "19971023",
+    "revenueUsdAnnual": 26186000000
+   },
+   "segments": [
+    {
+     "name": "US And Canada",
+     "member": "USAndCanadaSegment",
+     "value": 19349000000,
+     "share": 0.7389
+    },
+    {
+     "name": "EMEA",
+     "member": "EMEASegment",
+     "value": 2407000000,
+     "share": 0.0919
+    },
+    {
+     "name": "APEC",
+     "member": "APEC",
+     "value": 1073000000,
+     "share": 0.041
+    },
+    {
+     "name": "Greater China",
+     "member": "GreaterChina",
+     "value": 590000000,
+     "share": 0.0225
+    }
+   ],
+   "segmentSumShare": 0.8943,
+   "check": {
+    "status": 403,
+    "url": "https://www.marriott.com/",
+    "title": "Access Denied",
+    "textChars": 196,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:33:09.262Z"
+   }
+  },
+  {
+   "cik": "0001050446",
+   "name": "STRATEGY INC",
+   "website": "https://www.microstrategy.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/MicroStrategy",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260219",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "VA",
+    "former": "MICROSTRATEGY INC",
+    "changed": "20180821",
+    "revenueUsdAnnual": 477233000
+   },
+   "segments": [
+    {
+     "name": "Software Business",
+     "member": "SoftwareBusiness",
+     "value": 477233000,
+     "share": 1
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 403,
+    "url": "https://www.microstrategy.com/",
+    "title": "Access Denied",
+    "textChars": 199,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T23:20:05.664Z"
+   }
+  },
+  {
+   "cik": "0001075531",
+   "name": "BOOKING HOLDINGS INC.",
+   "website": "https://bookingholdings.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Booking_Holdings",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260218",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "CT",
+    "former": "PRICELINE GROUP INC.",
+    "changed": "20140328",
+    "revenueUsdAnnual": 26917000000
+   },
+   "segments": [],
+   "check": {
+    "status": 200,
+    "url": "https://www.bookingholdings.com/",
+    "title": "Booking Holdings: World's Leading Provider of Online Travel",
+    "textChars": 1573,
+    "checkedAt": "2026-10-19T23:21:12.879Z"
+   }
+  },
+  {
+   "cik": "0001094366",
+   "name": "RADWARE LTD",
+   "website": "https://www.radware.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Radware",
+   "facts": {
+    "form": "20-F",
+    "filed": "20260331",
+    "period": "20251231",
+    "countryba": "IL",
+    "stprba": null,
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 301850000
+   },
+   "segments": [
+    {
+     "name": "Radware Core",
+     "member": "RadwareCore",
+     "value": 301222000,
+     "share": 0.9979
+    },
+    {
+     "name": "Hawks",
+     "member": "Hawks",
+     "value": 628000,
+     "share": 0.0021
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 302,
+    "url": "https://www.radware.com/",
+    "title": "",
+    "textChars": 0,
+    "refused": "redirect to http://validate.perfdrive.com/?ssa=946e48a3-db88-4354-a022-b905f6c55076&ssb=20046243828&ssc=https%3A%2F%2Fwww.radware.com%2F&ssi=542f8744-bsff-4897-8f5a-13e4a4a532c6&ssk=support@shieldsquare.com&ssm=82758409439088102104619519014213&ssn=9a57d64ba3df8029783e5ba2953ef1020813e2b7b62f-d3a2-420d-843b64&sso=479dc25f-8f266e08d7ff34fa41addaa9504ee30a9355ed67fc563b21&ssp=36209542511792413870179249240330742&ssq=70051865200677851478352006402223696287187&ssr=MTUuMjA0LjE2Mi41NQ==&sst=agentrun-learn-classify/1.0%20(fetch_page;%20text%20only;%20+https://github.com/Parcha-ai/agentrun)&ssu=&ssv=&ssw=&ssx=eyJyZCI6InJhZHdhcmUuY29tIiwiX191em1mIjoiN2Y5MDAwZTJiN2I2MmYtZDNhMi00MjBkLTgyNWYtOGYyNjZlMDhkN2ZmMS0xNzkyNDUyMDA2MDU5MC0wMDUzZjU3MWJiMmEyNmY5MDc3MTAiLCJ1em14IjoiN2ZjMDAwYzg3ODBjOGYtYTZiZS00YWVmLWE2MmItOTU4ZjBkNTgxMjFhMS0xNzkyNDUyMDA2MDU4MC0wMGE2YWUyM2JlY2FjYzlhNDYzMTAifQ==: validate.perfdrive.com is outside the allowed hosts (radware.com and its subdomains, *.wikipedia.org)",
+    "checkedAt": "2026-10-19T23:20:05.663Z"
+   }
+  },
+  {
+   "cik": "0001100682",
+   "name": "CHARLES RIVER LABORATORIES INTERNATIONAL, INC.",
+   "website": "http://www.criver.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Charles_River_Laboratories",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260218",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "MA",
+    "former": "CHARLES RIVER LABORATORIES INTERNATIONAL INC",
+    "changed": "20000605",
+    "revenueUsdAnnual": 4015382000
+   },
+   "segments": [
+    {
+     "name": "Discovery And Safety Assessment",
+     "member": "DiscoveryAndSafetyAssessmentSegment",
+     "value": 2402891000,
+     "share": 0.5984
+    },
+    {
+     "name": "Research Models And Services",
+     "member": "ResearchModelsAndServicesSegment",
+     "value": 846082000,
+     "share": 0.2107
+    },
+    {
+     "name": "Manufacturing Support",
+     "member": "ManufacturingSupportSegment",
+     "value": 766409000,
+     "share": 0.1909
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 403,
+    "url": "https://www.criver.com/",
+    "title": "criver.com",
+    "textChars": 43,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:33:23.902Z"
+   }
+  },
+  {
+   "cik": "0001119083",
+   "name": "MIND CTI LTD",
+   "website": "http://www.mindcti.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Mind_CTI",
+   "facts": {
+    "form": "20-F",
+    "filed": "20260318",
+    "period": "20251231",
+    "countryba": "IL",
+    "stprba": null,
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 19457000
+   },
+   "segments": [
+    {
+     "name": "Billing And Related Services",
+     "member": "BillingAndRelatedServices",
+     "value": 12593000,
+     "share": 0.6472
+    },
+    {
+     "name": "Messaging",
+     "member": "Messaging",
+     "value": 6864000,
+     "share": 0.3528
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 301,
+    "url": "https://www.mindcti.com/",
+    "title": "",
+    "textChars": 0,
+    "refused": "a second redirect (to https://mindcti.com/); one hop is followed, so fetch that URL directly if it is allowed",
+    "checkedAt": "2026-10-19T23:20:05.661Z"
+   }
+  },
+  {
+   "cik": "0001130464",
+   "name": "BLACK HILLS CORP /SD/",
+   "website": "https://ir.blackhillscorp.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Black_Hills_Corporation",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260211",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "SD",
+    "former": "BLACK HILLS HOLDING CORP",
+    "changed": "20001222",
+    "revenueUsdAnnual": 2310000000
+   },
+   "segments": [
+    {
+     "name": "Gas Utilities",
+     "member": "GasUtilities",
+     "value": 1382800000,
+     "share": 0.5986
+    },
+    {
+     "name": "Electric Utilities",
+     "member": "ElectricUtilities",
+     "value": 942800000,
+     "share": 0.4081
+    }
+   ],
+   "segmentSumShare": 1.0068,
+   "check": {
+    "status": 403,
+    "url": "https://ir.blackhillscorp.com/",
+    "title": "Access Denied",
+    "textChars": 199,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:32:49.882Z"
+   }
+  },
+  {
+   "cik": "0001144800",
+   "name": "TRANSALTA CORP",
+   "website": "http://www.transalta.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/TransAlta",
+   "facts": {
+    "form": "40-F",
+    "filed": "20260227",
+    "period": "20251231",
+    "countryba": "CA",
+    "stprba": "AB",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": null
+   },
+   "segments": [
+    {
+     "name": "Gas",
+     "member": "Gas",
+     "value": 1328000000,
+     "share": 0.5522
+    },
+    {
+     "name": "Energy Transition",
+     "member": "EnergyTransition",
+     "value": 504000000,
+     "share": 0.2096
+    },
+    {
+     "name": "Windand Solar",
+     "member": "WindandSolar",
+     "value": 500000000,
+     "share": 0.2079
+    },
+    {
+     "name": "Hydro",
+     "member": "Hydro",
+     "value": 364000000,
+     "share": 0.1514
+    },
+    {
+     "name": "Energy Marketing",
+     "member": "EnergyMarketing",
+     "value": 122000000,
+     "share": 0.0507
+    }
+   ],
+   "segmentSumShare": 1.1717,
+   "check": {
+    "status": 301,
+    "url": "https://www.transalta.com/",
+    "title": "",
+    "textChars": 0,
+    "refused": "a second redirect (to https://transalta.com/); one hop is followed, so fetch that URL directly if it is allowed",
+    "checkedAt": "2026-10-19T23:20:05.665Z"
+   }
+  },
+  {
+   "cik": "0001165002",
+   "name": "WESTWOOD HOLDINGS GROUP INC",
+   "website": "http://westwoodgroup.com/",
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260304",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "TX",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": null
+   },
+   "segments": [
+    {
+     "name": "Advisory",
+     "member": "Advisory",
+     "value": 84137000,
+     "share": 0.8606
+    },
+    {
+     "name": "Trust",
+     "member": "Trust",
+     "value": 21970000,
+     "share": 0.2247
+    },
+    {
+     "name": "Other Reporting",
+     "member": "OtherReportingSegment",
+     "value": -8345000,
+     "share": -0.0854
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 200,
+    "url": "https://westwoodgroup.com/",
+    "title": "Top Investment & Wealth Management | Westwood Group",
+    "textChars": 3658,
+    "checkedAt": "2026-10-19T23:23:10.771Z"
+   }
+  },
+  {
+   "cik": "0001219601",
+   "name": "CROWN HOLDINGS, INC.",
+   "website": "http://www.crowncork.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Crown_Holdings",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260227",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "FL",
+    "former": "CROWN HOLDINGS INC",
+    "changed": "20030221",
+    "revenueUsdAnnual": 12365000000
+   },
+   "segments": [
+    {
+     "name": "Americas Beverage",
+     "member": "AmericasBeverage",
+     "value": 5615000000,
+     "share": 0.4541
+    },
+    {
+     "name": "European Beverage",
+     "member": "EuropeanBeverage",
+     "value": 2325000000,
+     "share": 0.188
+    },
+    {
+     "name": "Transit Packaging",
+     "member": "TransitPackaging",
+     "value": 2026000000,
+     "share": 0.1638
+    },
+    {
+     "name": "Asia Pacific",
+     "member": "AsiaPacificSegment",
+     "value": 1096000000,
+     "share": 0.0886
+    }
+   ],
+   "segmentSumShare": 0.8946,
+   "check": {
+    "status": 200,
+    "url": "https://www.crowncork.com/",
+    "title": "Brand-Building Packaging | Crown",
+    "textChars": 5743,
+    "checkedAt": "2026-10-19T23:24:17.243Z"
+   }
+  },
+  {
+   "cik": "0001243429",
+   "name": "ARCELORMITTAL",
+   "website": "https://corporate.arcelormittal.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/ArcelorMittal",
+   "facts": {
+    "form": "20-F",
+    "filed": "20260306",
+    "period": "20251231",
+    "countryba": "LU",
+    "stprba": null,
+    "former": "ARCELOR",
+    "changed": "20030618",
+    "revenueUsdAnnual": 61352000000
+   },
+   "segments": [
+    {
+     "name": "Europe",
+     "member": "EuropeSegment",
+     "value": 25552000000,
+     "share": 0.4165
+    },
+    {
+     "name": "North America",
+     "member": "NorthAmerica",
+     "value": 12277000000,
+     "share": 0.2001
+    },
+    {
+     "name": "Brazil",
+     "member": "BrazilSegment",
+     "value": 9543000000,
+     "share": 0.1555
+    },
+    {
+     "name": "Sustainable Solutions",
+     "member": "SustainableSolutionsSegment",
+     "value": 9285000000,
+     "share": 0.1513
+    },
+    {
+     "name": "Mining",
+     "member": "Mining",
+     "value": 1365000000,
+     "share": 0.0222
+    }
+   ],
+   "segmentSumShare": 0.9457,
+   "check": {
+    "status": 403,
+    "url": "https://corporate.arcelormittal.com/",
+    "title": "Just a moment...",
+    "textChars": 0,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T23:21:12.015Z"
+   }
+  },
+  {
+   "cik": "0001262823",
+   "name": "WESTLAKE CORP",
+   "website": "http://www.westlake.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Westlake_Corporation",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260226",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "TX",
+    "former": "WESTLAKE CHEMICAL CORP",
+    "changed": "20030908",
+    "revenueUsdAnnual": 11170000000
+   },
+   "segments": [
+    {
+     "name": "Performance And Essential Materials",
+     "member": "PerformanceAndEssentialMaterials",
+     "value": 7022000000,
+     "share": 0.6286
+    },
+    {
+     "name": "Housing And Infrastructure Products",
+     "member": "HousingAndInfrastructureProducts",
+     "value": 4148000000,
+     "share": 0.3714
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 403,
+    "url": "https://www.westlake.com/",
+    "title": "403 Forbidden",
+    "textChars": 13,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:32:52.965Z"
+   }
+  },
+  {
+   "cik": "0001283699",
+   "name": "T-MOBILE US, INC.",
+   "website": "https://www.t-mobile.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/T-Mobile_US",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260211",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "WA",
+    "former": "METROPCS COMMUNICATIONS INC",
+    "changed": "20040315",
+    "revenueUsdAnnual": 88309000000
+   },
+   "segments": [
+    {
+     "name": "Wireless",
+     "member": "Wireless",
+     "value": 88309000000,
+     "share": 1
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 403,
+    "url": "https://www.t-mobile.com/",
+    "title": "Access Denied",
+    "textChars": 194,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:36:29.877Z"
+   }
+  },
+  {
+   "cik": "0001286973",
+   "name": "AMERICAS GOLD & SILVER CORP",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "40-F",
+    "filed": "20260330",
+    "period": "20251231",
+    "countryba": "CA",
+    "stprba": "ON",
+    "former": "AMERICAS SILVER CORP",
+    "changed": "20150910",
+    "revenueUsdAnnual": 117934000
+   },
+   "segments": [
+    {
+     "name": "Galena Complex",
+     "member": "GalenaComplex",
+     "value": 60248000,
+     "share": 0.5109
+    },
+    {
+     "name": "Cosala Operations",
+     "member": "CosalaOperations",
+     "value": 57686000,
+     "share": 0.4891
+    },
+    {
+     "name": "Relief Canyon",
+     "member": "ReliefCanyon",
+     "value": 0,
+     "share": 0
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": null
+  },
+  {
+   "cik": "0001287098",
+   "name": "MAXCYTE, INC.",
+   "website": "https://maxcyte.com/",
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260325",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "MD",
+    "former": "MAXCYTE INC",
+    "changed": "20040415",
+    "revenueUsdAnnual": 33026000
+   },
+   "segments": [
+    {
+     "name": "Cell Engineering Technology",
+     "member": "CellEngineeringTechnologySegment",
+     "value": 33026000,
+     "share": 1
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 200,
+    "url": "https://maxcyte.com/",
+    "title": "MaxCyte | Best-in-Class Electroporation Systems",
+    "textChars": 8000,
+    "checkedAt": "2026-10-19T23:21:12.954Z"
+   }
+  },
+  {
+   "cik": "0001293135",
+   "name": "VERMILION ENERGY INC.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "40-F",
+    "filed": "20260304",
+    "period": "20251231",
+    "countryba": "CA",
+    "stprba": "AB",
+    "former": "VERMILION ENERGY TRUST",
+    "changed": "20040607",
+    "revenueUsdAnnual": null
+   },
+   "segments": [],
+   "check": null
+  },
+  {
+   "cik": "0001298675",
+   "name": "CUBESMART",
+   "website": "https://www.cubesmart.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/CubeSmart",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260227",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "PA",
+    "former": "U-STORE-IT TRUST",
+    "changed": "20040727",
+    "revenueUsdAnnual": 1123110000
+   },
+   "segments": [
+    {
+     "name": "Self Storage",
+     "member": "SelfStorageSegment",
+     "value": 1123110000,
+     "share": 1
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 403,
+    "url": "https://www.cubesmart.com/",
+    "title": "403 Forbidden",
+    "textChars": 19,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:32:53.930Z"
+   }
+  },
+  {
+   "cik": "0001333141",
+   "name": "FRESENIUS MEDICAL CARE AG",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "20-F",
+    "filed": "20260224",
+    "period": "20251231",
+    "countryba": "DE",
+    "stprba": null,
+    "former": "FRESENIUS MEDICAL CARE AG & CO. KGAA",
+    "changed": "20050714",
+    "revenueUsdAnnual": null
+   },
+   "segments": [
+    {
+     "name": "Care Delivery",
+     "member": "CareDeliverySegment",
+     "value": 13736272000,
+     "share": 0.6998
+    },
+    {
+     "name": "Care Enablement",
+     "member": "CareEnablementSegment",
+     "value": 5476187000,
+     "share": 0.279
+    },
+    {
+     "name": "Value Based Care",
+     "member": "ValueBasedCareSegment",
+     "value": 2247373000,
+     "share": 0.1145
+    }
+   ],
+   "segmentSumShare": 1.0933,
+   "check": null
+  },
+  {
+   "cik": "0001334036",
+   "name": "CROCS, INC.",
+   "website": "https://www.crocs.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Crocs",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260212",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "CO",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 4040647000
+   },
+   "segments": [
+    {
+     "name": "Crocs Brand",
+     "member": "CrocsBrandSegment",
+     "value": 3325807000,
+     "share": 0.8231
+    },
+    {
+     "name": "HEYDUDE Brand",
+     "member": "HEYDUDEBrandSegment",
+     "value": 714840000,
+     "share": 0.1769
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 429,
+    "url": "https://www.crocs.com/",
+    "title": "",
+    "textChars": 0,
+    "error": "HTTP 429",
+    "checkedAt": "2026-10-19T22:36:29.872Z"
+   }
+  },
+  {
+   "cik": "0001355444",
+   "name": "EMBRAER S.A.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "20-F",
+    "filed": "20260330",
+    "period": "20251231",
+    "countryba": "BR",
+    "stprba": null,
+    "former": "EMBRAER - EMPRESA BRASILEIRA DE AERONAUTICA S.A.",
+    "changed": "20070329",
+    "revenueUsdAnnual": 7577500000
+   },
+   "segments": [
+    {
+     "name": "Commercial Aviation",
+     "member": "CommercialAviation",
+     "value": 2369800000,
+     "share": 0.3127
+    },
+    {
+     "name": "Executive Aviation",
+     "member": "ExecutiveAviation",
+     "value": 2205100000,
+     "share": 0.291
+    },
+    {
+     "name": "Service And Support",
+     "member": "ServiceAndSupport",
+     "value": 1925600000,
+     "share": 0.2541
+    },
+    {
+     "name": "Defense And Security",
+     "member": "DefenseAndSecurity",
+     "value": 983900000,
+     "share": 0.1298
+    }
+   ],
+   "segmentSumShare": 0.9877,
+   "check": null
+  },
+  {
+   "cik": "0001368458",
+   "name": "SALLY BEAUTY HOLDINGS, INC.",
+   "website": "https://www.sallybeauty.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Sally_Beauty_Holdings",
+   "facts": {
+    "form": "10-Q",
+    "filed": "20260209",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "TX",
+    "former": "NEW SALLY HOLDINGS, INC.",
+    "changed": "20060707",
+    "revenueUsdAnnual": 3772672000
+   },
+   "segments": [
+    {
+     "name": "Sally Beauty Supply",
+     "member": "SallyBeautySupply",
+     "value": 531601000,
+     "share": 0.5636
+    },
+    {
+     "name": "Beauty Systems Group",
+     "member": "BeautySystemsGroup",
+     "value": 411567000,
+     "share": 0.4364
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 200,
+    "url": "https://www.sallybeauty.com/",
+    "title": "Sally Beauty",
+    "textChars": 457,
+    "checkedAt": "2026-10-19T23:21:12.791Z"
+   }
+  },
+  {
+   "cik": "0001379041",
+   "name": "EMPLOYERS HOLDINGS, INC.",
+   "website": "https://www.employers.com/",
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260226",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "NV",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 858700000
+   },
+   "segments": [
+    {
+     "name": "Insurance Operations",
+     "member": "InsuranceOperations",
+     "value": 858700000,
+     "share": 1
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 200,
+    "url": "https://www.employers.com/",
+    "title": "We Are America's Workers' Comp Insurance Company | EMPLOYERS",
+    "textChars": 2348,
+    "checkedAt": "2026-10-19T23:23:10.772Z"
+   }
+  },
+  {
+   "cik": "0001402057",
+   "name": "CDW CORP",
+   "website": "http://www.cdw.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/CDW",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260220",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "IL",
+    "former": "VH HOLDINGS, INC.",
+    "changed": "20070605",
+    "revenueUsdAnnual": 22424100000
+   },
+   "segments": [
+    {
+     "name": "Public Segment Government Agencies Educationand Healthcare",
+     "member": "PublicSegmentGovernmentAgenciesEducationandHealthcare",
+     "value": 8535200000,
+     "share": 0.3806
+    },
+    {
+     "name": "Small Business",
+     "member": "SmallBusiness",
+     "value": 1726700000,
+     "share": 0.077
+    }
+   ],
+   "segmentSumShare": 0.4576,
+   "segmentTruthNull": "the segment members add up to 0.4576 of revenue, so they overlap or leave segments out",
+   "check": {
+    "status": 403,
+    "url": "http://www.cdw.com/",
+    "title": "Access Denied",
+    "textChars": 191,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:32:56.201Z"
+   }
+  },
+  {
+   "cik": "0001403568",
+   "name": "ULTA BEAUTY, INC.",
+   "website": "https://www.ulta.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Ulta_Beauty",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260326",
+    "period": "20260131",
+    "countryba": "US",
+    "stprba": "IL",
+    "former": "ULTA SALON, COSMETICS & FRAGRANCE, INC.",
+    "changed": "20070618",
+    "revenueUsdAnnual": 12392820000
+   },
+   "segments": [],
+   "check": {
+    "status": 403,
+    "url": "https://www.ulta.com/",
+    "title": "Access Denied",
+    "textChars": 192,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:36:29.882Z"
+   }
+  },
+  {
+   "cik": "0001408075",
+   "name": "GRAPHIC PACKAGING HOLDING CO",
+   "website": "http://www.graphicpkg.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Graphic_Packaging",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260302",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "GA",
+    "former": "NEW GIANT CORP",
+    "changed": "20070726",
+    "revenueUsdAnnual": 8617000000
+   },
+   "segments": [
+    {
+     "name": "Americas Paperboard Packaging",
+     "member": "AmericasPaperboardPackaging",
+     "value": 5889000000,
+     "share": 0.6834
+    },
+    {
+     "name": "Europe Paperboard Packaging",
+     "member": "EuropePaperboardPackaging",
+     "value": 2208000000,
+     "share": 0.2562
+    }
+   ],
+   "segmentSumShare": 0.9397,
+   "check": {
+    "status": 200,
+    "url": "https://www.graphicpkg.com/",
+    "title": "Innovative Consumer Packaging Solutions - Graphic Packaging International",
+    "textChars": 3365,
+    "checkedAt": "2026-10-19T23:21:12.022Z"
+   }
+  },
+  {
+   "cik": "0001427570",
+   "name": "VYOME HOLDINGS, INC",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260318",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "CA",
+    "former": "RESHAPE LIFESCIENCES INC.",
+    "changed": "20210621",
+    "revenueUsdAnnual": 319714
+   },
+   "segments": [
+    {
+     "name": "Pharmaceutical",
+     "member": "Pharmaceutical",
+     "value": 319714,
+     "share": 1
+    },
+    {
+     "name": "Biotechnology",
+     "member": "Biotechnology",
+     "value": 0,
+     "share": 0
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": null
+  },
+  {
+   "cik": "0001456346",
+   "name": "FRANCO NEVADA CORP",
+   "website": "http://www.franco-nevada.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Franco-Nevada",
+   "facts": {
+    "form": "40-F",
+    "filed": "20260319",
+    "period": "20251231",
+    "countryba": "CA",
+    "stprba": "ON",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 1822800000
+   },
+   "segments": [
+    {
+     "name": "Precious Metals",
+     "member": "PreciousMetalsSegment",
+     "value": 1562900000,
+     "share": 0.8574
+    },
+    {
+     "name": "Energy",
+     "member": "EnergySegment",
+     "value": 203800000,
+     "share": 0.1118
+    },
+    {
+     "name": "Other Mining",
+     "member": "OtherMiningSegment",
+     "value": 56100000,
+     "share": 0.0308
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 301,
+    "url": "https://www.franco-nevada.com/",
+    "title": "",
+    "textChars": 0,
+    "refused": "a second redirect (to https://www.franco-nevada.com/home/default.aspx); one hop is followed, so fetch that URL directly if it is allowed",
+    "checkedAt": "2026-10-19T23:20:05.928Z"
+   }
+  },
+  {
+   "cik": "0001464790",
+   "name": "BRC GROUP HOLDINGS, INC.",
+   "website": "https://brcgh.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/BRC_Group_Holdings",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260331",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "CA",
+    "former": "B. RILEY FINANCIAL, INC.",
+    "changed": "20141104",
+    "revenueUsdAnnual": 967599000
+   },
+   "segments": [
+    {
+     "name": "Capital Markets",
+     "member": "CapitalMarketsSegment",
+     "value": 264712000,
+     "share": 0.2736
+    },
+    {
+     "name": "Consumer Products",
+     "member": "ConsumerProducts",
+     "value": 181540000,
+     "share": 0.1876
+    },
+    {
+     "name": "Wealth Management",
+     "member": "WealthManagementSegment",
+     "value": 175572000,
+     "share": 0.1815
+    },
+    {
+     "name": "Lingo",
+     "member": "Lingo",
+     "value": 164148000,
+     "share": 0.1696
+    },
+    {
+     "name": "Magic Jack",
+     "member": "MagicJack",
+     "value": 37934000,
+     "share": 0.0392
+    },
+    {
+     "name": "Marconi Wireless",
+     "member": "MarconiWireless",
+     "value": 34784000,
+     "share": 0.0359
+    },
+    {
+     "name": "UOL",
+     "member": "UOL",
+     "value": 13145000,
+     "share": 0.0136
+    }
+   ],
+   "segmentSumShare": 0.901,
+   "check": {
+    "status": 200,
+    "url": "https://www.brcgh.com/",
+    "title": "BRC Group Holdings | Small & Middle Market Financial Solutions | BRC Group Holdings, Inc.",
+    "textChars": 2708,
+    "checkedAt": "2026-10-19T23:21:14.210Z"
+   }
+  },
+  {
+   "cik": "0001468174",
+   "name": "HYATT HOTELS CORP",
+   "website": "https://www.hyatt.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Hyatt",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260213",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "IL",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 7101000000
+   },
+   "segments": [
+    {
+     "name": "Management And Franchising",
+     "member": "ManagementAndFranchisingSegment",
+     "value": 4831000000,
+     "share": 0.6803
+    },
+    {
+     "name": "Owned And Leased",
+     "member": "OwnedAndLeasedSegment",
+     "value": 1397000000,
+     "share": 0.1967
+    },
+    {
+     "name": "Distribution",
+     "member": "DistributionSegment",
+     "value": 946000000,
+     "share": 0.1332
+    }
+   ],
+   "segmentSumShare": 1.0103,
+   "check": {
+    "status": 403,
+    "url": "https://www.hyatt.com/",
+    "title": "Hyatt Hotels and Resorts",
+    "textChars": 1738,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:32:58.058Z"
+   }
+  },
+  {
+   "cik": "0001474735",
+   "name": "GENERAC HOLDINGS INC.",
+   "website": "http://www.generac.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Generac",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260218",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "WI",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 4209147000
+   },
+   "segments": [
+    {
+     "name": "Domestic",
+     "member": "Domestic",
+     "value": 3494171000,
+     "share": 0.8301
+    },
+    {
+     "name": "International",
+     "member": "International",
+     "value": 777431000,
+     "share": 0.1847
+    }
+   ],
+   "segmentSumShare": 1.0148,
+   "check": {
+    "status": 200,
+    "url": "https://www.generac.com/",
+    "title": "Generac Power Systems | A total energy solutions company",
+    "textChars": 166,
+    "checkedAt": "2026-10-19T23:20:05.666Z"
+   }
+  },
+  {
+   "cik": "0001478242",
+   "name": "IQVIA HOLDINGS INC.",
+   "website": "https://www.iqvia.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/IQVIA",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260217",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "NC",
+    "former": "QUINTILES IMS HOLDINGS, INC.",
+    "changed": "20161003",
+    "revenueUsdAnnual": 16310000000
+   },
+   "segments": [
+    {
+     "name": "Research And Development Solutions",
+     "member": "ResearchAndDevelopmentSolutions",
+     "value": 8896000000,
+     "share": 0.5454
+    },
+    {
+     "name": "Technology And Analytics Solutions",
+     "member": "TechnologyAndAnalyticsSolutions",
+     "value": 6626000000,
+     "share": 0.4063
+    },
+    {
+     "name": "Contract Sales And Medical Solutions",
+     "member": "ContractSalesAndMedicalSolutions",
+     "value": 788000000,
+     "share": 0.0483
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 200,
+    "url": "https://www.iqvia.com/",
+    "title": "Transforming Life Sciences with Data, Technology & Human Science | IQVIA",
+    "textChars": 8000,
+    "checkedAt": "2026-10-19T23:20:05.594Z"
+   }
+  },
+  {
+   "cik": "0001493594",
+   "name": "MACOM TECHNOLOGY SOLUTIONS HOLDINGS, INC.",
+   "website": "https://www.macom.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/MACOM_Technology_Solutions",
+   "facts": {
+    "form": "10-Q",
+    "filed": "20260205",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "MA",
+    "former": "M/A-COM TECHNOLOGY SOLUTIONS HOLDINGS, INC.",
+    "changed": "20100607",
+    "revenueUsdAnnual": 1086448000
+   },
+   "segments": [],
+   "check": {
+    "status": 200,
+    "url": "https://www.macom.com/",
+    "title": "Home",
+    "textChars": 7593,
+    "checkedAt": "2026-10-19T23:21:12.590Z"
+   }
+  },
+  {
+   "cik": "0001545772",
+   "name": "BROOKFIELD PROPERTY PARTNERS L.P.",
+   "website": "https://bpy.brookfield.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Brookfield_Property_Partners",
+   "facts": {
+    "form": "20-F",
+    "filed": "20260227",
+    "period": "20251231",
+    "countryba": "BM",
+    "stprba": null,
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 7147000000
+   },
+   "segments": [
+    {
+     "name": "LP Investments",
+     "member": "LPInvestmentsSegment",
+     "value": 3656000000,
+     "share": 0.5115
+    },
+    {
+     "name": "Core Office",
+     "member": "CoreOfficeSegment",
+     "value": 1847000000,
+     "share": 0.2584
+    },
+    {
+     "name": "Core Retail",
+     "member": "CoreRetailSegment",
+     "value": 1490000000,
+     "share": 0.2085
+    }
+   ],
+   "segmentSumShare": 0.9785,
+   "check": {
+    "status": 200,
+    "url": "https://bpy.brookfield.com/",
+    "title": "Homepage | Brookfield Property Partners",
+    "textChars": 1692,
+    "checkedAt": "2026-10-19T23:21:10.655Z"
+   }
+  },
+  {
+   "cik": "0001546417",
+   "name": "BLOOMIN' BRANDS, INC.",
+   "website": "https://www.bloominbrands.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Bloomin%27_Brands",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260225",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "FL",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 3955996000
+   },
+   "segments": [
+    {
+     "name": "U.S.",
+     "member": "U.S.Segment",
+     "value": 3886425000,
+     "share": 0.9824
+    },
+    {
+     "name": "International Franchise",
+     "member": "InternationalFranchiseSegment",
+     "value": 31297000,
+     "share": 0.0079
+    }
+   ],
+   "segmentSumShare": 0.9903,
+   "check": {
+    "status": 403,
+    "url": "https://www.bloominbrands.com/",
+    "title": "Access Denied",
+    "textChars": 199,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T22:33:09.474Z"
+   }
+  },
+  {
+   "cik": "0001574565",
+   "name": "EVOGENE LTD.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "20-F",
+    "filed": "20260326",
+    "period": "20251231",
+    "countryba": "IL",
+    "stprba": null,
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 3853000
+   },
+   "segments": [
+    {
+     "name": "Industry",
+     "member": "Industry",
+     "value": 2168000,
+     "share": 0.5627
+    },
+    {
+     "name": "Agriculture",
+     "member": "Agriculture",
+     "value": 1374000,
+     "share": 0.3566
+    },
+    {
+     "name": "Human",
+     "member": "Human",
+     "value": 0,
+     "share": 0
+    }
+   ],
+   "segmentSumShare": 0.9193,
+   "check": null
+  },
+  {
+   "cik": "0001579684",
+   "name": "USA TODAY CO., INC.",
+   "website": "https://www.usatodayco.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/USA_Today_Co.",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260226",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "NY",
+    "former": "GANNETT CO., INC.",
+    "changed": "20191119",
+    "revenueUsdAnnual": 2302226000
+   },
+   "segments": [
+    {
+     "name": "USATODAY Media",
+     "member": "USATODAYMediaSegment",
+     "value": 1743582000,
+     "share": 0.7573
+    },
+    {
+     "name": "Locali Q",
+     "member": "LocaliQSegment",
+     "value": 448311000,
+     "share": 0.1947
+    },
+    {
+     "name": "Newsquest",
+     "member": "NewsquestSegment",
+     "value": 238267000,
+     "share": 0.1035
+    }
+   ],
+   "segmentSumShare": 1.0556,
+   "check": {
+    "status": 200,
+    "url": "https://www.usatodayco.com/",
+    "title": "Home - USA TODAY Co.",
+    "textChars": 1384,
+    "checkedAt": "2026-10-19T23:23:10.764Z"
+   }
+  },
+  {
+   "cik": "0001581990",
+   "name": "PLAINS GP HOLDINGS LP",
+   "website": "https://www.plainsallamerican.com/",
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260227",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "TX",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 42260000000
+   },
+   "segments": [
+    {
+     "name": "Crude Oil",
+     "member": "CrudeOilSegment",
+     "value": 44131000000,
+     "share": 0.997
+    },
+    {
+     "name": "Natural Gas Liquids",
+     "member": "NaturalGasLiquidsSegment",
+     "value": 151000000,
+     "share": 0.0034
+    }
+   ],
+   "segmentSumShare": 1.0005,
+   "check": {
+    "status": 301,
+    "url": "https://www.plainsallamerican.com/",
+    "title": "",
+    "textChars": 0,
+    "refused": "redirect to https://www.plains.com/: www.plains.com is outside the allowed hosts (plainsallamerican.com and its subdomains, *.wikipedia.org)",
+    "checkedAt": "2026-10-19T23:21:13.061Z"
+   }
+  },
+  {
+   "cik": "0001593984",
+   "name": "MEDIWOUND LTD.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "20-F",
+    "filed": "20260305",
+    "period": "20251231",
+    "countryba": "IL",
+    "stprba": null,
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 16959000
+   },
+   "segments": [
+    {
+     "name": "US",
+     "member": "US",
+     "value": 11784000,
+     "share": 0.6949
+    },
+    {
+     "name": "Other Countries",
+     "member": "OtherCountries",
+     "value": 2065000,
+     "share": 0.1218
+    },
+    {
+     "name": "ES",
+     "member": "ES",
+     "value": 1291000,
+     "share": 0.0761
+    },
+    {
+     "name": "IT",
+     "member": "IT",
+     "value": 1002000,
+     "share": 0.0591
+    },
+    {
+     "name": "DE",
+     "member": "DE",
+     "value": 817000,
+     "share": 0.0482
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": null
+  },
+  {
+   "cik": "0001599407",
+   "name": "1847 HOLDINGS LLC",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260331",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "NY",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 48272312
+   },
+   "segments": [
+    {
+     "name": "CMD",
+     "member": "CMD",
+     "value": 40467946,
+     "share": 0.8383
+    },
+    {
+     "name": "Kyles",
+     "member": "Kyles",
+     "value": 6593218,
+     "share": 0.1366
+    },
+    {
+     "name": "Wolo",
+     "member": "Wolo",
+     "value": 1177177,
+     "share": 0.0244
+    },
+    {
+     "name": "ICD",
+     "member": "ICD",
+     "value": 33971,
+     "share": 0.0007
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": null
+  },
+  {
+   "cik": "0001611005",
+   "name": "KENON HOLDINGS LTD.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "20-F",
+    "filed": "20260330",
+    "period": "20251231",
+    "countryba": "SG",
+    "stprba": null,
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 871929000
+   },
+   "segments": [
+    {
+     "name": "Opc",
+     "member": "Opc",
+     "value": 674618000,
+     "share": 0.7737
+    },
+    {
+     "name": "CPV Group",
+     "member": "CPVGroup",
+     "value": 197311000,
+     "share": 0.2263
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": null
+  },
+  {
+   "cik": "0001616262",
+   "name": "ROCKY MOUNTAIN CHOCOLATE FACTORY, INC.",
+   "website": "https://www.rmcf.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Rocky_Mountain_Chocolate",
+   "facts": {
+    "form": "10-Q",
+    "filed": "20260113",
+    "period": "20251130",
+    "countryba": "US",
+    "stprba": "CO",
+    "former": "ROCKY MOUNTAIN BRANDS, INC.",
+    "changed": "20140808",
+    "revenueUsdAnnual": 30172000
+   },
+   "segments": [
+    {
+     "name": "Manufacturing",
+     "member": "Manufacturing",
+     "value": 5918000,
+     "share": 0.7846
+    },
+    {
+     "name": "Franchising",
+     "member": "Franchising",
+     "value": 1211000,
+     "share": 0.1605
+    },
+    {
+     "name": "Retail",
+     "member": "RetailSegment",
+     "value": 617000,
+     "share": 0.0818
+    }
+   ],
+   "segmentSumShare": 1.0269,
+   "check": {
+    "status": 200,
+    "url": "https://www.rmcf.com/",
+    "title": "Rocky Mountain Chocolate Factory – Rocky Mountain Chocolate Factory",
+    "textChars": 2916,
+    "checkedAt": "2026-10-19T23:21:12.835Z"
+   }
+  },
+  {
+   "cik": "0001627282",
+   "name": "CALIBERCOS INC.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260326",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "AZ",
+    "former": "CALIBERCO INC.",
+    "changed": "20141205",
+    "revenueUsdAnnual": 20097000
+   },
+   "segments": [],
+   "check": null
+  },
+  {
+   "cik": "0001630805",
+   "name": "BABCOCK & WILCOX ENTERPRISES, INC.",
+   "website": "http://www.babcock.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Babcock_%26_Wilcox",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260316",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "OH",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 587676000
+   },
+   "segments": [
+    {
+     "name": "BW",
+     "member": "BW",
+     "value": 587676000,
+     "share": 1
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 200,
+    "url": "https://www.babcock.com/",
+    "title": "Clean Power Production Technologies » Babcock & Wilcox",
+    "textChars": 6845,
+    "checkedAt": "2026-10-19T23:21:12.295Z"
+   }
+  },
+  {
+   "cik": "0001637810",
+   "name": "FIRSTSERVICE CORP",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "40-F",
+    "filed": "20260220",
+    "period": "20251231",
+    "countryba": "CA",
+    "stprba": "ON",
+    "former": "NEW FSV CORP",
+    "changed": "20150326",
+    "revenueUsdAnnual": 5497500000
+   },
+   "segments": [
+    {
+     "name": "First Service Brands",
+     "member": "FirstServiceBrandsSegment",
+     "value": 3210903000,
+     "share": 0.5841
+    },
+    {
+     "name": "Firstservice Residential",
+     "member": "FirstserviceResidentialSegment",
+     "value": 2286597000,
+     "share": 0.4159
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": null
+  },
+  {
+   "cik": "0001648087",
+   "name": "AMERICAN REBEL HOLDINGS INC",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260331",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "TN",
+    "former": "CUBESCAPE INC",
+    "changed": "20150714",
+    "revenueUsdAnnual": 9522109
+   },
+   "segments": [],
+   "check": null
+  },
+  {
+   "cik": "0001665300",
+   "name": "PHUNWARE, INC.",
+   "website": "https://www.phunware.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Phunware",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260327",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "TX",
+    "former": "STELLAR ACQUISITION III INC.",
+    "changed": "20160128",
+    "revenueUsdAnnual": 2553000
+   },
+   "segments": [
+    {
+     "name": "Software Subscriptions And Serices",
+     "member": "SoftwareSubscriptionsAndSerices",
+     "value": 2271000,
+     "share": 0.8895
+    },
+    {
+     "name": "Advertising",
+     "member": "AdvertisingSegment",
+     "value": 282000,
+     "share": 0.1105
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 200,
+    "url": "https://www.phunware.com/",
+    "title": "Phunware | Guest Intelligence Platform & Wayfinding",
+    "textChars": 8000,
+    "checkedAt": "2026-10-19T23:21:11.142Z"
+   }
+  },
+  {
+   "cik": "0001668717",
+   "name": "ANHEUSER-BUSCH INBEV SA/NV",
+   "website": "https://www.ab-inbev.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/AB_InBev",
+   "facts": {
+    "form": "20-F",
+    "filed": "20260303",
+    "period": "20251231",
+    "countryba": null,
+    "stprba": null,
+    "former": "NEWBELCO SA/NV",
+    "changed": "20160304",
+    "revenueUsdAnnual": 59320000000
+   },
+   "segments": [
+    {
+     "name": "Beer Business",
+     "member": "BeerBusiness",
+     "value": 53050000000,
+     "share": 0.8943
+    },
+    {
+     "name": "Non Beer Business",
+     "member": "NonBeerBusiness",
+     "value": 6269000000,
+     "share": 0.1057
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 200,
+    "url": "https://www.ab-inbev.com/",
+    "title": "Home | AB InBev",
+    "textChars": 1052,
+    "checkedAt": "2026-10-19T23:23:10.766Z"
+   }
+  },
+  {
+   "cik": "0001674101",
+   "name": "VERTIV HOLDINGS CO",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260213",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "OH",
+    "former": "GS ACQUISITION HOLDINGS CORP",
+    "changed": "20160510",
+    "revenueUsdAnnual": 10229900000
+   },
+   "segments": [
+    {
+     "name": "Americas",
+     "member": "AmericasSegment",
+     "value": 6423900000,
+     "share": 0.628
+    },
+    {
+     "name": "EMEA",
+     "member": "EMEASegment",
+     "value": 2382200000,
+     "share": 0.2329
+    },
+    {
+     "name": "Asia Pacific",
+     "member": "AsiaPacificSegment",
+     "value": 2274700000,
+     "share": 0.2224
+    }
+   ],
+   "segmentSumShare": 1.0832,
+   "check": null
+  },
+  {
+   "cik": "0001674930",
+   "name": "FULGENT GENETICS, INC.",
+   "website": "https://www.fulgentgenetics.com/",
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260227",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "CA",
+    "former": "FULGENT DIAGNOSTICS, INC.",
+    "changed": "20160517",
+    "revenueUsdAnnual": 322671000
+   },
+   "segments": [
+    {
+     "name": "Laboratory Services",
+     "member": "LaboratoryServices",
+     "value": 322224000,
+     "share": 0.9986
+    },
+    {
+     "name": "Therapeutic Development",
+     "member": "TherapeuticDevelopment",
+     "value": 447000,
+     "share": 0.0014
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 403,
+    "url": "https://www.fulgentgenetics.com/",
+    "title": "403 Forbidden",
+    "textChars": 13,
+    "error": "HTTP 403",
+    "checkedAt": "2026-10-19T23:21:12.486Z"
+   }
+  },
+  {
+   "cik": "0001679688",
+   "name": "DIGITALBRIDGE GROUP, INC.",
+   "website": "https://www.digitalbridge.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/DigitalBridge",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260226",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "FL",
+    "former": "COLONY CAPITAL, INC.",
+    "changed": "20180621",
+    "revenueUsdAnnual": 93959000
+   },
+   "segments": [],
+   "check": {
+    "status": 200,
+    "url": "https://www.digitalbridge.com/",
+    "title": "DigitalBridge",
+    "textChars": 4189,
+    "checkedAt": "2026-10-19T23:23:10.767Z"
+   }
+  },
+  {
+   "cik": "0001691221",
+   "name": "FORESIGHT AUTONOMOUS HOLDINGS LTD.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "20-F",
+    "filed": "20260325",
+    "period": "20251231",
+    "countryba": "IL",
+    "stprba": null,
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 398000
+   },
+   "segments": [],
+   "segmentTruthNull": "no revenue on the business-segment axis for the filing period",
+   "check": null
+  },
+  {
+   "cik": "0001722387",
+   "name": "INTEGRA RESOURCES CORP.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "40-F",
+    "filed": "20260325",
+    "period": "20251231",
+    "countryba": "CA",
+    "stprba": "BC",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 243926000
+   },
+   "segments": [
+    {
+     "name": "Florida Canyon Mine",
+     "member": "FloridaCanyonMine",
+     "value": 243926000,
+     "share": 1
+    },
+    {
+     "name": "Delamar",
+     "member": "Delamar",
+     "value": 0,
+     "share": 0
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": null
+  },
+  {
+   "cik": "0001747079",
+   "name": "BALLY'S CORP",
+   "website": "https://www.ballys.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Bally%27s_Corporation",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260323",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "RI",
+    "former": "TWIN RIVER WORLDWIDE HOLDINGS, INC.",
+    "changed": "20201105",
+    "revenueUsdAnnual": 2436189000
+   },
+   "segments": [
+    {
+     "name": "Casinos Resorts",
+     "member": "CasinosResorts",
+     "value": 1382438000,
+     "share": 0.5675
+    },
+    {
+     "name": "Intralot B2 C",
+     "member": "IntralotB2C",
+     "value": 752996000,
+     "share": 0.3091
+    },
+    {
+     "name": "North America Interactive",
+     "member": "NorthAmericaInteractive",
+     "value": 196310000,
+     "share": 0.0806
+    },
+    {
+     "name": "Intralot B2 B",
+     "member": "IntralotB2B",
+     "value": 97354000,
+     "share": 0.04
+    }
+   ],
+   "segmentSumShare": 0.9971,
+   "check": {
+    "status": 200,
+    "url": "https://www.ballys.com/home/default.aspx",
+    "title": "Bally's Corporation - Home",
+    "textChars": 3206,
+    "checkedAt": "2026-10-19T23:21:13.051Z"
+   }
+  },
+  {
+   "cik": "0001759186",
+   "name": "COEPTIS THERAPEUTICS HOLDINGS, INC.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260319",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "PA",
+    "former": "BULL HORN HOLDINGS CORP.",
+    "changed": "20181115",
+    "revenueUsdAnnual": 1363045
+   },
+   "segments": [
+    {
+     "name": "Technology",
+     "member": "Technology",
+     "value": 1363045,
+     "share": 1
+    },
+    {
+     "name": "Biotechnology",
+     "member": "Biotechnology",
+     "value": 0,
+     "share": 0
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": null
+  },
+  {
+   "cik": "0001759631",
+   "name": "HYLIION HOLDINGS CORP.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260225",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "TX",
+    "former": "TORTOISE ACQUISITION CORP.",
+    "changed": "20181120",
+    "revenueUsdAnnual": 3475000
+   },
+   "segments": [],
+   "check": null
+  },
+  {
+   "cik": "0001809691",
+   "name": "AMTD DIGITAL INC.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "20-F",
+    "filed": "20260227",
+    "period": "20251031",
+    "countryba": "FR",
+    "stprba": null,
+    "former": "AMTD IDEA GROUP",
+    "changed": "20231228",
+    "revenueUsdAnnual": 136099000
+   },
+   "segments": [
+    {
+     "name": "Strategic Investment",
+     "member": "StrategicInvestment",
+     "value": 86028000,
+     "share": 0.6321
+    },
+    {
+     "name": "Hotel Operations Hospitality And VIP Services",
+     "member": "HotelOperationsHospitalityAndVIPServices",
+     "value": 27994000,
+     "share": 0.2057
+    },
+    {
+     "name": "Media And Entertainment Services",
+     "member": "MediaAndEntertainmentServices",
+     "value": 19104000,
+     "share": 0.1404
+    },
+    {
+     "name": "Digital Solution Services",
+     "member": "DigitalSolutionServices",
+     "value": 2973000,
+     "share": 0.0218
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": null
+  },
+  {
+   "cik": "0001818502",
+   "name": "OPPFI INC.",
+   "website": "https://www.oppfi.com/",
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260312",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "IL",
+    "former": "FG NEW AMERICA ACQUISITION CORP.",
+    "changed": "20200717",
+    "revenueUsdAnnual": 381182000
+   },
+   "segments": [],
+   "check": {
+    "status": 200,
+    "url": "https://www.oppfi.com/",
+    "title": "OppFi Official Site - Opportunity Financial LLC",
+    "textChars": 2345,
+    "checkedAt": "2026-10-19T23:23:10.769Z"
+   }
+  },
+  {
+   "cik": "0001823239",
+   "name": "MARAVAI LIFESCIENCES HOLDINGS, INC.",
+   "website": "https://www.maravai.com/",
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260226",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "CA",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 185743000
+   },
+   "segments": [
+    {
+     "name": "Tri Link",
+     "member": "TriLinkSegment",
+     "value": 119787000,
+     "share": 0.6449
+    },
+    {
+     "name": "Cygnus",
+     "member": "CygnusSegment",
+     "value": 65956000,
+     "share": 0.3551
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 200,
+    "url": "https://www.maravai.com/",
+    "title": "Maravai LifeSciences",
+    "textChars": 5348,
+    "checkedAt": "2026-10-19T23:21:11.927Z"
+   }
+  },
+  {
+   "cik": "0001826011",
+   "name": "BANZAI INTERNATIONAL, INC.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260331",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "WA",
+    "former": "7GC & CO. HOLDINGS INC.",
+    "changed": "20200924",
+    "revenueUsdAnnual": 12161419
+   },
+   "segments": [
+    {
+     "name": "Open Reel",
+     "member": "OpenReel",
+     "value": 5473389,
+     "share": 0.4501
+    },
+    {
+     "name": "Banzai Operating",
+     "member": "BanzaiOperating",
+     "value": 4426868,
+     "share": 0.364
+    },
+    {
+     "name": "Vidello Limited",
+     "member": "VidelloLimited",
+     "value": 2261162,
+     "share": 0.1859
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": null
+  },
+  {
+   "cik": "0001828108",
+   "name": "AURORA INNOVATION, INC.",
+   "website": "http://aurora.tech/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Aurora_Innovation",
+   "facts": {
+    "form": "10-K",
+    "filed": "20260211",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "PA",
+    "former": "REINVENT TECHNOLOGY PARTNERS Y",
+    "changed": "20201210",
+    "revenueUsdAnnual": 3000000
+   },
+   "segments": [],
+   "check": {
+    "status": 200,
+    "url": "https://aurora.tech/",
+    "title": "Aurora: Self-driving. Game-changing.",
+    "textChars": 5706,
+    "checkedAt": "2026-10-19T23:21:10.665Z"
+   }
+  },
+  {
+   "cik": "0001835856",
+   "name": "BETTER HOME & FINANCE HOLDING CO",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260313",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "NY",
+    "former": "AURORA ACQUISITION CORP.",
+    "changed": "20201211",
+    "revenueUsdAnnual": 11299000
+   },
+   "segments": [
+    {
+     "name": "Home Finance",
+     "member": "HomeFinanceSegment",
+     "value": 11101000,
+     "share": 0.9825
+    },
+    {
+     "name": "Banking",
+     "member": "BankingSegment",
+     "value": 198000,
+     "share": 0.0175
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": null
+  },
+  {
+   "cik": "0001836875",
+   "name": "NUVVE HOLDING CORP.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260331",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "CA",
+    "former": "NB MERGER CORP.",
+    "changed": "20201216",
+    "revenueUsdAnnual": 4793942
+   },
+   "segments": [],
+   "check": null
+  },
+  {
+   "cik": "0001837429",
+   "name": "BROOKFIELD WEALTH SOLUTIONS LTD.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "20-F",
+    "filed": "20260326",
+    "period": "20251231",
+    "countryba": "BM",
+    "stprba": null,
+    "former": "BROOKFIELD REINSURANCE LTD.",
+    "changed": "20221213",
+    "revenueUsdAnnual": 11635000000
+   },
+   "segments": [
+    {
+     "name": "Annuity",
+     "member": "AnnuitySegment",
+     "value": 7917000000,
+     "share": 0.6804
+    },
+    {
+     "name": "Property Casualty",
+     "member": "PropertyCasualty",
+     "value": 2861000000,
+     "share": 0.2459
+    },
+    {
+     "name": "Life",
+     "member": "LifeSegment",
+     "value": 603000000,
+     "share": 0.0518
+    }
+   ],
+   "segmentSumShare": 0.9782,
+   "check": null
+  },
+  {
+   "cik": "0001843586",
+   "name": "OATLY GROUP AB",
+   "website": "https://www.oatly.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Oatly",
+   "facts": {
+    "form": "20-F",
+    "filed": "20260313",
+    "period": "20251231",
+    "countryba": null,
+    "stprba": null,
+    "former": "HAVRE GLOBAL AB",
+    "changed": "20210201",
+    "revenueUsdAnnual": 862459000
+   },
+   "segments": [
+    {
+     "name": "Europe And International",
+     "member": "EuropeAndInternational",
+     "value": 484483000,
+     "share": 0.5617
+    },
+    {
+     "name": "North America",
+     "member": "NorthAmerica",
+     "value": 249559000,
+     "share": 0.2894
+    },
+    {
+     "name": "Greater China",
+     "member": "GreaterChina",
+     "value": 130039000,
+     "share": 0.1508
+    }
+   ],
+   "segmentSumShare": 1.0019,
+   "check": {
+    "status": 200,
+    "url": "https://www.oatly.com/",
+    "title": "the Original Oat Drink Company | Oatly",
+    "textChars": 741,
+    "checkedAt": "2026-10-19T23:21:12.287Z"
+   }
+  },
+  {
+   "cik": "0001843656",
+   "name": "ROYALTY MANAGEMENT HOLDING CORP",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260331",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "IN",
+    "former": "AMERICAN ACQUISITION OPPORTUNITY INC.",
+    "changed": "20210201",
+    "revenueUsdAnnual": 4949916
+   },
+   "segments": [
+    {
+     "name": "RMC Environmental Services",
+     "member": "RMCEnvironmentalServices",
+     "value": 4850358,
+     "share": 0.9799
+    },
+    {
+     "name": "Vault Holding Corporation",
+     "member": "VaultHoldingCorporation",
+     "value": 60000,
+     "share": 0.0121
+    },
+    {
+     "name": "Vault Holding Corporations",
+     "member": "VaultHoldingCorporations",
+     "value": 60000,
+     "share": 0.0121
+    },
+    {
+     "name": "Royalty Management Corporation Investments",
+     "member": "RoyaltyManagementCorporationInvestments",
+     "value": 39558,
+     "share": 0.008
+    }
+   ],
+   "segmentSumShare": 1.0121,
+   "check": null
+  },
+  {
+   "cik": "0001844505",
+   "name": "QT IMAGING HOLDINGS, INC.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260325",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "CA",
+    "former": "GIGCAPITAL5, INC.",
+    "changed": "20210204",
+    "revenueUsdAnnual": 18925000
+   },
+   "segments": [],
+   "check": null
+  },
+  {
+   "cik": "0001847409",
+   "name": "HIGH TIDE INC.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "40-F",
+    "filed": "20260129",
+    "period": "20251031",
+    "countryba": "CA",
+    "stprba": "AB",
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": null
+   },
+   "segments": [
+    {
+     "name": "Bricks And Mortar Cash Generating Units",
+     "member": "BricksAndMortarCashGeneratingUnits",
+     "value": 565316000,
+     "share": 0.9517
+    },
+    {
+     "name": "E Commerce Cash Generating Unit",
+     "member": "ECommerceCashGeneratingUnit",
+     "value": 18860000,
+     "share": 0.0318
+    },
+    {
+     "name": "Medical Cannabis Distribution Cash Generating Unit",
+     "member": "MedicalCannabisDistributionCashGeneratingUnit",
+     "value": 9810000,
+     "share": 0.0165
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": null
+  },
+  {
+   "cik": "0001847806",
+   "name": "GENIUS GROUP LTD",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "20-F",
+    "filed": "20260309",
+    "period": "20251231",
+    "countryba": "SG",
+    "stprba": null,
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 8387222
+   },
+   "segments": [
+    {
+     "name": "Academy",
+     "member": "Academy",
+     "value": 4730182,
+     "share": 0.564
+    },
+    {
+     "name": "Resorts",
+     "member": "Resorts",
+     "value": 2197708,
+     "share": 0.262
+    },
+    {
+     "name": "School",
+     "member": "School",
+     "value": 1459332,
+     "share": 0.174
+    },
+    {
+     "name": "Central",
+     "member": "Central",
+     "value": 0,
+     "share": 0
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": null
+  },
+  {
+   "cik": "0001847986",
+   "name": "DRAGONFLY ENERGY HOLDINGS CORP.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260330",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "NV",
+    "former": "CHARDAN NEXTECH ACQUISITION 2 CORP.",
+    "changed": "20210225",
+    "revenueUsdAnnual": 58630000
+   },
+   "segments": [
+    {
+     "name": "Original Equipment Manufacturers",
+     "member": "OriginalEquipmentManufacturers",
+     "value": 36934000,
+     "share": 0.63
+    },
+    {
+     "name": "Direct To Consumers",
+     "member": "DirectToConsumers",
+     "value": 20696000,
+     "share": 0.353
+    },
+    {
+     "name": "Original Equipment Manufacturers",
+     "member": "OriginalEquipmentManufacturersSegment",
+     "value": 15728,
+     "share": 0.0003
+    }
+   ],
+   "segmentSumShare": 0.9832,
+   "check": null
+  },
+  {
+   "cik": "0001870144",
+   "name": "CARDIO DIAGNOSTICS HOLDINGS, INC.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260313",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "IL",
+    "former": "MANA CAPITAL ACQUISITION CORP.",
+    "changed": "20210629",
+    "revenueUsdAnnual": 14825
+   },
+   "segments": [],
+   "check": null
+  },
+  {
+   "cik": "0001873093",
+   "name": "CYTOMED THERAPEUTICS LTD",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "20-F",
+    "filed": "20260331",
+    "period": "20251231",
+    "countryba": "SG",
+    "stprba": null,
+    "former": "CYTOMED THERAPEUTICS PTE. LTD.",
+    "changed": "20210716",
+    "revenueUsdAnnual": 252265
+   },
+   "segments": [
+    {
+     "name": "CBU Service And Related Therapy",
+     "member": "CBUServiceAndRelatedTherapy",
+     "value": 324387,
+     "share": 1
+    },
+    {
+     "name": "Immune Cell Therapy",
+     "member": "ImmuneCellTherapy",
+     "value": 0,
+     "share": 0
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": null
+  },
+  {
+   "cik": "0001877787",
+   "name": "ERMENEGILDO ZEGNA N.V.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "20-F",
+    "filed": "20260320",
+    "period": "20251231",
+    "countryba": "IT",
+    "stprba": null,
+    "former": "ERMENEGILDO ZEGNA HOLDITALIA S.P.A.",
+    "changed": "20210810",
+    "revenueUsdAnnual": null
+   },
+   "segments": [
+    {
+     "name": "Zegna",
+     "member": "Zegna",
+     "value": 1363177000,
+     "share": 0.7111
+    },
+    {
+     "name": "Tom Ford Fashion",
+     "member": "TomFordFashion",
+     "value": 317056000,
+     "share": 0.1654
+    },
+    {
+     "name": "Thom Browne",
+     "member": "ThomBrowne",
+     "value": 268899000,
+     "share": 0.1403
+    }
+   ],
+   "segmentSumShare": 1.0168,
+   "check": null
+  },
+  {
+   "cik": "0001892274",
+   "name": "VISIONARY HOLDINGS INC.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "20-F",
+    "filed": "20260128",
+    "period": "20250331",
+    "countryba": "CA",
+    "stprba": "ON",
+    "former": "VISIONARY HOLDINGS INC",
+    "changed": "20240208",
+    "revenueUsdAnnual": 5044297
+   },
+   "segments": [],
+   "segmentTruthNull": "no revenue on the business-segment axis for the filing period",
+   "check": null
+  },
+  {
+   "cik": "0001900304",
+   "name": "HALEON PLC",
+   "website": "https://www.haleon.com/",
+   "wikipedia": "https://en.wikipedia.org/wiki/Haleon",
+   "facts": {
+    "form": "20-F",
+    "filed": "20260313",
+    "period": "20251231",
+    "countryba": "GB",
+    "stprba": null,
+    "former": "DRVW 2022 LTD",
+    "changed": "20211217",
+    "revenueUsdAnnual": null
+   },
+   "segments": [
+    {
+     "name": "Emea And Latin America",
+     "member": "EmeaAndLatinAmerica",
+     "value": 4592000000,
+     "share": 0.4163
+    },
+    {
+     "name": "North America",
+     "member": "NorthAmerica",
+     "value": 3866000000,
+     "share": 0.3505
+    },
+    {
+     "name": "Asia Pacific",
+     "member": "AsiaPacific",
+     "value": 2572000000,
+     "share": 0.2332
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": {
+    "status": 200,
+    "url": "https://www.haleon.com/",
+    "title": "Home - Haleon",
+    "textChars": 5451,
+    "checkedAt": "2026-10-19T23:21:10.590Z"
+   }
+  },
+  {
+   "cik": "0001900720",
+   "name": "EPWK HOLDINGS LTD.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "20-F",
+    "filed": "20260114",
+    "period": "20250630",
+    "countryba": null,
+    "stprba": null,
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 27841607
+   },
+   "segments": [
+    {
+     "name": "Premium Business Solutions Revenue",
+     "member": "PremiumBusinessSolutionsRevenue",
+     "value": 12519123,
+     "share": 0.4497
+    },
+    {
+     "name": "Digital Marketing",
+     "member": "DigitalMarketing",
+     "value": 10837350,
+     "share": 0.3893
+    },
+    {
+     "name": "Online Promotion",
+     "member": "OnlinePromotion",
+     "value": 3099321,
+     "share": 0.1113
+    },
+    {
+     "name": "Shared Office Rental",
+     "member": "SharedOfficeRental",
+     "value": 910317,
+     "share": 0.0327
+    },
+    {
+     "name": "Value Added Service",
+     "member": "ValueAddedService",
+     "value": 475496,
+     "share": 0.0171
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": null
+  },
+  {
+   "cik": "0001951222",
+   "name": "SEALSQ CORP",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "20-F",
+    "filed": "20260331",
+    "period": "20251231",
+    "countryba": "CH",
+    "stprba": null,
+    "former": "SEAL (BVI) CORP.",
+    "changed": "20221019",
+    "revenueUsdAnnual": 18252000
+   },
+   "segments": [],
+   "check": null
+  },
+  {
+   "cik": "0001958133",
+   "name": "DECENT HOLDING INC.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "20-F",
+    "filed": "20260302",
+    "period": "20251031",
+    "countryba": "CN",
+    "stprba": null,
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 12949345
+   },
+   "segments": [],
+   "segmentTruthNull": "no revenue on the business-segment axis for the filing period",
+   "check": null
+  },
+  {
+   "cik": "0001968043",
+   "name": "NEW CENTURY LOGISTICS (BVI) LTD",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "20-F",
+    "filed": "20260217",
+    "period": "20250930",
+    "countryba": "CN",
+    "stprba": null,
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 44083731
+   },
+   "segments": [
+    {
+     "name": "Air Freight Forwarding Services",
+     "member": "AirFreightForwardingServices",
+     "value": 41934661,
+     "share": 0.9513
+    },
+    {
+     "name": "Other Services",
+     "member": "OtherServices",
+     "value": 1584129,
+     "share": 0.0359
+    },
+    {
+     "name": "Ocean Freight Forwarding Services",
+     "member": "OceanFreightForwardingServices",
+     "value": 564941,
+     "share": 0.0128
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": null
+  },
+  {
+   "cik": "0001973266",
+   "name": "TKO GROUP HOLDINGS, INC.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "10-K",
+    "filed": "20260225",
+    "period": "20251231",
+    "countryba": "US",
+    "stprba": "NY",
+    "former": "NEW WHALE INC.",
+    "changed": "20230412",
+    "revenueUsdAnnual": 4151980000
+   },
+   "segments": [
+    {
+     "name": "World Wrestling Entertainment",
+     "member": "WorldWrestlingEntertainmentSegment",
+     "value": 1709395000,
+     "share": 0.361
+    },
+    {
+     "name": "Ultimate Fighting Championship",
+     "member": "UltimateFightingChampionshipSegment",
+     "value": 1502161000,
+     "share": 0.3172
+    },
+    {
+     "name": "IMG",
+     "member": "IMGSegment",
+     "value": 1367259000,
+     "share": 0.2887
+    }
+   ],
+   "segmentSumShare": 0.967,
+   "check": null
+  },
+  {
+   "cik": "0001985139",
+   "name": "LEISHEN ENERGY HOLDING CO., LTD.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "20-F",
+    "filed": "20260130",
+    "period": "20250930",
+    "countryba": "CN",
+    "stprba": null,
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 48335553
+   },
+   "segments": [
+    {
+     "name": "Clean Energy Equipment",
+     "member": "CleanEnergyEquipment",
+     "value": 22073207,
+     "share": 0.4567
+    },
+    {
+     "name": "New Energy Production And Operation",
+     "member": "NewEnergyProductionAndOperation",
+     "value": 19536237,
+     "share": 0.4042
+    },
+    {
+     "name": "Oil And Gas Engineering Technical Services",
+     "member": "OilAndGasEngineeringTechnicalServices",
+     "value": 3994541,
+     "share": 0.0826
+    },
+    {
+     "name": "Digitalization And Integration Equipment",
+     "member": "DigitalizationAndIntegrationEquipment",
+     "value": 2731568,
+     "share": 0.0565
+    }
+   ],
+   "segmentSumShare": 1,
+   "check": null
+  },
+  {
+   "cik": "0002007846",
+   "name": "JULONG HOLDING LTD",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "20-F",
+    "filed": "20260213",
+    "period": "20250930",
+    "countryba": "CN",
+    "stprba": null,
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 35399312
+   },
+   "segments": [],
+   "segmentTruthNull": "no revenue on the business-segment axis for the filing period",
+   "check": null
+  },
+  {
+   "cik": "0002018222",
+   "name": "707 CAYMAN HOLDINGS LTD.",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "20-F",
+    "filed": "20260116",
+    "period": "20250930",
+    "countryba": "CN",
+    "stprba": null,
+    "former": "707 INTERNATIONAL LTD",
+    "changed": "20240403",
+    "revenueUsdAnnual": 13739958
+   },
+   "segments": [],
+   "check": null
+  },
+  {
+   "cik": "0002046656",
+   "name": "HAPPY CITY HOLDINGS LTD",
+   "website": null,
+   "wikipedia": null,
+   "facts": {
+    "form": "20-F",
+    "filed": "20260114",
+    "period": "20250831",
+    "countryba": "HK",
+    "stprba": null,
+    "former": null,
+    "changed": null,
+    "revenueUsdAnnual": 6799732
+   },
+   "segments": [],
+   "segmentTruthNull": "no revenue on the business-segment axis for the filing period",
+   "check": null
+  }
+ ]
+}
