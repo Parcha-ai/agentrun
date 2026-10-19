@@ -23,12 +23,14 @@ export const result: NonNullable<DemoOptions['result']> = (record, { dir, keep }
   const folder = join(work, 'report');
   const html = resolve(work, answer.report);
   const none = (note?: string) => ({ json: { format: 'agentrun.cited/1', title: answer.answer, rows: [{ label: 'Answer', value: answer.answer, ...(note ? { note } : {}), cites: [] }], report: null }, title: answer.answer });
-  // The page is read only from under report/: a path that leaves it, by its parts or through a link (report/ itself, a
-  // folder in it, or the page), is no report, and nothing it names is read.
+  // The page is read only from under report/, and only where the files kept with it are: a path that leaves report/ by
+  // its parts, or that passes through a link (report/ itself, a folder in it, or the page), is no report, and nothing it
+  // names is read.
   const refused = () => none(`No report was kept: ${JSON.stringify(answer.report)} is not a file under report/.`);
   if (!inside(folder, html)) return refused();
   if (!existsSync(html)) return none();
-  if (!lstatSync(folder).isDirectory() || !inside(realpathSync(folder), join(realpathSync(dirname(html)), basename(html))) || !lstatSync(html).isFile()) return refused();
+  const unlinked = lstatSync(folder).isDirectory() && join(realpathSync(dirname(html)), basename(html)) === join(realpathSync(folder), relative(folder, html));
+  if (!unlinked || !lstatSync(html).isFile()) return refused();
   const files = Object.fromEntries(walk(folder).map((name) => [name, keep(new Uint8Array(readFileSync(join(folder, name))), extname(name).slice(1) || 'bin')]));
   const page = readFileSync(html, 'utf8');
   // The report's cites, as the report skill writes them: a link to the file's own fragment with the look's key.

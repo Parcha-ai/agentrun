@@ -43,12 +43,13 @@ test('a report path that leaves report/ is no report: the record says so, and no
   }
 });
 
-test('a link out of report/ is no report either: report/ itself, a folder in it, the page, and a picture are not followed', async (t) => {
+test('a link in the page\'s path is no report either: report/ itself, a folder in it, the page, and a picture are not followed', async (t) => {
   const outside = (r) => join(r.dir, 'elsewhere');
   const cases = [
     ['report/ is a link', 'report/index.html', (r) => { rmSync(join(r.dir, 'work', 'report'), { recursive: true }); symlinkSync(outside(r), join(r.dir, 'work', 'report')); }],
     ['a folder in it is a link', 'report/out/index.html', (r) => symlinkSync(outside(r), join(r.dir, 'work', 'report', 'out'))],
     ['the page is a link', 'report/linked.html', (r) => symlinkSync(join(outside(r), 'index.html'), join(r.dir, 'work', 'report', 'linked.html'))],
+    ['a folder in it links to another in it, whose files are kept under their own names', 'report/pages/index.html', (r) => { mkdirSync(join(r.dir, 'work', 'report', 'content')); writeFileSync(join(r.dir, 'work', 'report', 'content', 'index.html'), page(INSIDE, 'page 1')); symlinkSync(join(r.dir, 'work', 'report', 'content'), join(r.dir, 'work', 'report', 'pages')); }],
   ];
   for (const [what, report, link] of cases) {
     const r = runDir(t);
