@@ -65,6 +65,21 @@ test('every company passed the build-time website check', () => {
   assert.equal(report.checks.filter((r) => r.selected).length, 130);
 });
 
+test('the report names where each input came from and when it was read', () => {
+  const { via, secFiles, wikidata } = report.builtWith;
+  assert.deepEqual(Object.keys(secFiles).sort(), ['fsds', 'sicList', 'tickers']);
+  for (const file of Object.values(secFiles)) {
+    assert.match(file.url, /^https:\/\/www\.sec\.gov\//);
+    assert.ok(!Number.isNaN(Date.parse(file.retrievedAt)));
+    if (via === 'wayback') {
+      const ts = file.snapshot.replace(/\D/g, '');
+      assert.equal(file.fetchedFrom, `https://web.archive.org/web/${ts}id_/${file.url}`);
+    } else assert.equal(file.fetchedFrom, file.url);
+  }
+  assert.match(wikidata.query, /wdt:P5531/);
+  assert.ok(!Number.isNaN(Date.parse(wikidata.retrievedAt)));
+});
+
 test('a website names its filer by name, distinctive word, initials or ticker', () => {
   const names = (website, name, ticker) => siteNamesCompany(website, { name, ticker });
   assert.equal(names('http://www.twilio.com/', 'TWILIO INC', 'TWLO'), true);
