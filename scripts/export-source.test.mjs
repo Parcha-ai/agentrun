@@ -20,7 +20,7 @@ async function fixture(t) {
   await write('scripts/export-source.mjs', exporter);
   await write('package.json', JSON.stringify({ name: 'fixture', private: true }));
   await write('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
-    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi': {}, 'packages/pi-durable-disk': {}, 'packages/pi-browser': {}, 'packages/pi-vision': {}, 'packages/pi-transport': {}, 'packages/pi-durable-agent': {}, 'packages/serve': {}, 'packages/pi-git-remote': {}, 'packages/pi-agent-learn': {}, 'packages/reference': {},
+    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi': {}, 'packages/pi-durable-disk': {}, 'packages/pi-browser': {}, 'packages/pi-vision': {}, 'packages/pi-transport': {}, 'packages/pi-durable-agent': {}, 'packages/serve': {}, 'packages/pi-git-remote': {}, 'packages/pi-agent-learn': {}, 'packages/harness': {},
   } }));
   await write('docs/guide.md', '# Public fixture\n');
   await write('packages/dsl/schema/workflow.schema.json', '{}\n');
@@ -61,7 +61,7 @@ test('source archives exclude website files, build output, and private review st
 
 test('a *.local.* file is excluded and a source file named local.ts is archived', async t => {
   const f = await fixture(t);
-  // pi-transport's `./box/*` export resolves `./box/local` to src/box/local.ts, and @parcha/agentrun-reference imports it: a source
+  // pi-transport's `./box/*` export resolves `./box/local` to src/box/local.ts, and @parcha/agentrun-harness imports it: a source
   // archive without it does not build. Only a name with `.local` after something (`*.local.*`, `*.local`) is a machine's own file: a
   // directory named `local` and a name that merely starts with `.localhost` are source too.
   const archived = ['packages/pi-transport/src/box/local.ts', 'packages/dsl/src/local.mjs', 'packages/dsl/src/local/index.mjs', 'examples/foo.localhost.ts'];
@@ -199,7 +199,7 @@ test('inventory generation works without build output and does not produce an ar
 
 test('the dependency inventory follows the runtime graph only: a lock that changes a dev-only entry gives the same bytes, a runtime dependency changes them', async t => {
   const f = await fixture(t);
-  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'reference'].map(name => [`packages/${name}`, {}]));
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'harness'].map(name => [`packages/${name}`, {}]));
   const lock = ({ dev, runtime } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
     '': dev ? { devDependencies: { 'dev-tool': dev } } : {},
     ...workspaces,

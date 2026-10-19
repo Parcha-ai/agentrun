@@ -7,7 +7,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Workflow } from '@parcha/agentrun-dsl';
-import type { Job } from '@parcha/agentrun-reference';
+import type { Job } from '@parcha/agentrun-harness';
 
 const SKILLS = join(dirname(fileURLToPath(import.meta.resolve('@parcha/pi-vision'))), '..', 'skills');
 /** pi-vision's skills as the package ships them, each without its front matter, in name order. */
@@ -16,7 +16,7 @@ export const skills = (): { name: string; text: string }[] => readdirSync(SKILLS
   .map((name) => ({ name, text: readFileSync(join(SKILLS, name, 'SKILL.md'), 'utf8').replace(/^---[\s\S]*?---\n/, '') }));
 
 /** The report's shape, for a package whose skills do not yet include `report`. */
-const REPORT = `Write the report as \`report/report.html\`, one page with its pictures and clips beside it in \`report/\`: inline CSS, no script and no address outside the folder. The answer first, then one finding per point (its words, its picture or clip, its cites), then what you did not check. A cite is \`<a class="cite" href="../FILE#FRAGMENT" data-look="KEY">LABEL</a>\`: the file's own fragment, LABEL that number, KEY the look's key from its receipt (\`facts.key\`).`;
+const REPORT = `Write the report as \`report/index.html\`, one page with its pictures and clips beside it in \`report/\`: inline CSS, no script and no address outside the folder. The answer first, then one finding per point (its words, its picture or clip, its cites), then what you did not check. A cite is \`<a class="cite" href="../FILE#FRAGMENT" data-look="KEY">LABEL</a>\`: the file's own fragment, LABEL that number, KEY the look's key from its receipt (\`facts.key\`).`;
 
 export const INSTRUCTIONS = (skillList = skills()) => `Answer the user's question about the files in your workspace. The question is \`question\`; the files are \`files\`.
 
@@ -32,7 +32,7 @@ Find your way quickly (a file's length, a PDF's pages, a sheet of frames), then 
 
 Say only what you read, saw or heard. Cite every claim with the file's own fragment, labelled with its number: \`#t=\` seconds for a recording, \`#page=N\` for a PDF (N the page index, from 1), \`#xywh=percent:x,y,w,h\` for a region.
 
-End with the report${skillList.some((skill) => skill.name === 'report') ? ' the report skill describes' : ' (\`report/report.html\`)'}, then submit { answer, report }: answer is two or three sentences that point to the report, report the page's path in your workspace (under \`report/\`).${skillList.some((skill) => skill.name === 'report') ? '' : `\n\n${REPORT}`}
+End with the report${skillList.some((skill) => skill.name === 'report') ? ' the report skill describes' : ' (\`report/index.html\`)'}, then submit { answer, report }: answer is two or three sentences that point to the report, report the page's path in your workspace (under \`report/\`).${skillList.some((skill) => skill.name === 'report') ? '' : `\n\n${REPORT}`}
 ${skillList.map((skill) => `\nThe ${skill.name} skill:\n${skill.text}`).join('')}`;
 
 export const workflow = {

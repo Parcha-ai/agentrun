@@ -1,11 +1,12 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-/** The run viewer's bundled recordings, read only. */
-const RECORDINGS = fileURLToPath(new URL("../../../apps/viewer/recordings/", import.meta.url));
+/** The run viewer's recordings and test fixtures, read only. */
+const VIEWER = fileURLToPath(new URL("../../../apps/viewer/", import.meta.url));
 
-export function lines(name) {
-  return readFileSync(`${RECORDINGS}/${name}/events.jsonl`, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+/** The lines of the recording at `path` under apps/viewer ("recordings/reference-job"). */
+export function lines(path) {
+  return readFileSync(`${VIEWER}/${path}/events.jsonl`, "utf8").trim().split("\n").map((line) => JSON.parse(line));
 }
 
 /** The stored entries a recording's durable lines hold. */

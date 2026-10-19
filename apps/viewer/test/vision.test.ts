@@ -111,6 +111,21 @@ test('live lines show what is in flight and change no count but the observed pos
   assert.doesNotMatch(text(viewAt(end)), /In flight/, 'nothing is in flight at the end');
 });
 
+test('a look only live lines tell of is listed, never "not looked at": a native one as the lead\'s own, and once the run delivered as never filed', () => {
+  const look: Line = { channel: 'live', source: 'vision', kind: 'LookEvent', t: 5, seq: 1, gen: 1, data: { conversationId: '1', tool: 'read', source: 'filing.png', fragment: '', receipt: 'evidence/look-1.json',
+    record: { tool: 'look', args: { path: 'filing.png', native: true }, status: 'ok', facts: { key: 'k-filing' }, body: 'shown to the model natively' } } };
+  const result: Line = { channel: 'live', source: 'host', kind: 'result', t: 9, seq: 2, data: { gen: 1, blob: RESULT, title: 'The record' } };
+  const going = text(visionPanel.view(reduceTo(visionPanel, [look], 1), { t: 5 }));
+  assert.doesNotMatch(going, /have not looked/);
+  assert.match(going, /In flight \(live lines\) the lead looked at filing\.png itself, not filed yet/);
+  const ended = text(visionPanel.view(reduceTo(visionPanel, [look, result], 2), { t: 9 }));
+  assert.match(ended, /Told by live lines only the lead looked at filing\.png itself, never filed in the store/);
+  assert.match(ended, /looks paid\s+not measured/, 'and nothing is counted from it');
+  const eyes = { ...look, data: { ...look.data as object, record: { tool: 'look', args: { path: 'filing.png' }, status: 'ok', facts: { key: 'k-eyes' } } } } as Line;
+  assert.match(text(visionPanel.view(reduceTo(visionPanel, [eyes], 1), { t: 5 })), /the eyes answered for filing\.png, not filed yet/);
+  assert.match(text(visionPanel.view(reduceTo(visionPanel, [], 0), { t: 0 })), /The eyes have not looked at anything yet\./, 'with no line about a look, the panel still says so');
+});
+
 test('a citation opens its receipt and moves its lane: the page with the line\'s box, the film window, the photo', () => {
   const page = viewAt(end, { cite: K.page2 });
   const receipt = text(find(page, cls('vz-receipt'))[0]!);

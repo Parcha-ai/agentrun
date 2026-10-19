@@ -1,7 +1,9 @@
-# @parcha/agentrun-reference
+# @parcha/agentrun-harness
 
-The agentrun reference host as a package: one pi-durable host that runs an agentrun job on this machine, with the
-supervisor that kills and restarts its process anywhere, the recorder, and fakes, so an example runs from an npm install.
+A reference harness: the host we use to run AgentRun demos and tests, meant to be read and forked.
+
+It is one pi-durable host that runs an agentrun job on this machine, with the supervisor that kills and restarts its
+process anywhere, the recorder, and fakes, so an example runs from an npm install.
 
 ## What the agent can do
 
@@ -10,7 +12,7 @@ The agent runs commands with **your user's rights**: a live demo can read and wr
 ## Run a demo from an install, with no key
 
 ```sh
-npm install @parcha/agentrun-reference
+npm install @parcha/agentrun-harness@beta
 ```
 
 npm installs the pi peers it needs (`@earendil-works/pi-ai`, `pi-durable`, `chord`, `pi-codemode` and `typebox`).
@@ -19,7 +21,7 @@ npm installs the pi peers it needs (`@earendil-works/pi-ai`, `pi-durable`, `chor
 Save this as `demo.mjs`:
 
 ```js
-import { demo } from '@parcha/agentrun-reference';
+import { demo } from '@parcha/agentrun-harness';
 
 // One tool call and one step of code, on a scripted tool: no model, no key, no network.
 const workflow = {
@@ -50,14 +52,21 @@ await demo({ self: import.meta.url, spec: { name: 'first-demo', kills: [{ point:
 ```
 
 ```sh
-node demo.mjs --kill
+node demo.mjs
 ```
 
-It prints `first-demo: complete in 2 processes, 1 kill`: the supervisor kills the first process once the lookup's
-answer is kept, and the second resumes the run from its store and finishes with `{ id: 'x', score: 42 }`, without
-calling the tool again. `node demo.mjs` runs it in one process; `--json` prints the whole result.
+It prints one line:
 
-`pi-durable-disk run --app` takes this package's child app as a file: `import.meta.resolve('@parcha/agentrun-reference/child-app')`.
+```text
+first-demo: complete
+```
+
+The fakes make no priced call, so there is no cost line. Node 22 also prints its SQLite `ExperimentalWarning` on stderr.
+The run's record, `{"id":"x","score":42}`, is in the whole result that `--json` prints. `node demo.mjs --kill` kills the
+process once the lookup's answer is kept, and the next resumes from its store without calling the tool again: it prints
+`first-demo: complete in 2 processes, 1 kill` and the kill.
+
+`pi-durable-disk run --app` takes this package's child app as a file: `import.meta.resolve('@parcha/agentrun-harness/child-app')`.
 
 ## The reference assembly
 
@@ -214,7 +223,7 @@ Each is marked in the code with the package that owns it.
 A demo's `run.ts` is about twenty lines: its spec, its job, its fakes and one call. The entry reads the standard flags and runs the job on the no-key host.
 
 ```ts
-import { demo } from '@parcha/agentrun-reference';
+import { demo } from '@parcha/agentrun-harness';
 import spec from './demo.json' with { type: 'json' };
 import { fakes } from './fakes.ts';
 import job from './job.ts';
@@ -227,6 +236,7 @@ await demo({ self: import.meta.url, spec, job, fakes });
 | (none) | the job on fakes: $0, no key |
 | `--live` | real models and services; refused unless the demo supplies them (`live`) |
 | `--kill` | the spec's `kills`, in order, each ending one process; a fresh process resumes on the same directory |
+| `--debug` | the summary line also counts the processes and the kills (`--kill` always does) |
 | `--record <dir>` | an `agentrun.recording/1` directory, through the reference recorder |
 | `--input <path\|json>` | the job's input; the job's own is the default |
 | `--max-usd <n>` | stops the run past n dollars, metered on the recording's lines (default twice `expectedCost`); a run that finishes past it says so and exits 1 |
@@ -301,7 +311,7 @@ A demo may pass `manifest({ dir, record, input, live, models })` (`models` is wh
 
 ### The child as an app module
 
-`child-app.ts` is the child as a `pi-durable-disk run --app` module, so a run has one open path (the claim, the fence, the stdin mount token, run.json's holder, the seal and restarts are the disk package's): `DEMO_ENTRY=<file URL of the demo's run.ts, which exports its \`options\`> pi-durable-disk run --dir <dir> --app "$(node -p "require.resolve('@parcha/agentrun-reference/child-app')")" --id <id>`. It builds the host exactly as the entry's own child does (the same environment, which every order carries from the supervisor, `DEMO_ENTRY` and `DEMO_NAME` included, so a place needs no wrapper: `PLAN`, `KILL_REQUEST`, `RECORD_DIR`, `INPUT`), drives the job in `onOpen`, prints its outcome line, writes the run's final status `done` with the record and the store's hash (a box place has only run.json), releases the run and exits 0. A kill -9 and the same command again resumes the run.
+`child-app.ts` is the child as a `pi-durable-disk run --app` module, so a run has one open path (the claim, the fence, the stdin mount token, run.json's holder, the seal and restarts are the disk package's): `DEMO_ENTRY=<file URL of the demo's run.ts, which exports its \`options\`> pi-durable-disk run --dir <dir> --app "$(node -p "require.resolve('@parcha/agentrun-harness/child-app')")" --id <id>`. It builds the host exactly as the entry's own child does (the same environment, which every order carries from the supervisor, `DEMO_ENTRY` and `DEMO_NAME` included, so a place needs no wrapper: `PLAN`, `KILL_REQUEST`, `RECORD_DIR`, `INPUT`), drives the job in `onOpen`, prints its outcome line, writes the run's final status `done` with the record and the store's hash (a box place has only run.json), releases the run and exits 0. A kill -9 and the same command again resumes the run.
 
 ### The default input per mode, and why a run stopped
 

@@ -5,6 +5,7 @@
 //   (none)              fakes, $0, no key: the default, and what CI runs
 //   --live              real models and services; refused unless the demo supplies them (`live`) and the keys they need are set
 //   --kill              the spec's `kills`, in order, each ending one process; a fresh process resumes
+//   --debug             the summary also counts the processes and the kills (`--kill` always does)
 //   --record <dir>      an agentrun.recording/1 directory, through the reference recorder
 //   --input <path|json> the job's input (the job's own is the default)
 //   --max-usd <n>       stops the run past n dollars, metered on the recording's lines; default twice the spec's `expectedCost`
@@ -41,6 +42,7 @@ import { checkModelKeys, judgeCapsOf, inputOf, declaredEnv, childPlansOf, choose
 import { cost } from './fold.ts';
 import { checkItems, fetchSources, missingCommitted, readSources, withSources } from './sources.ts';
 import { localHost, type BrowserPlane, type Fakes, type Host, type RunPlace } from './host.ts';
+import { takeArtifact } from './artifact.ts';
 import { codeOf, finishRecording, followRecording, keepBlob, lazyRecorder, openRecorder, openSupervisor } from './record.ts';
 import { packageCommitRecorder } from './record-store.ts';
 import { scanPlaced, scanRecording, signInFile, trackSecrets } from './secrets.ts';
@@ -50,7 +52,7 @@ import { scanPlaced, scanRecording, signInFile, trackSecrets } from './secrets.t
 export type LiveParts = { host?: Partial<Host>; /** The live tools, the same name -> function map as `Fakes.tools`: on `--live` the effect door (evidence, receipts, kill crossings) dispatches to these. A tool missing here runs from `fakes.tools` only when demo.json's `tools` entry for it says `local: "fakes"`, else the call fails `no live source for <tool>`. Without `tools`, every tool runs from `fakes.tools` as before. */ tools?: Fakes['tools']; /** Which models the live parts chose (flags, defaults, the sign-in's plan): reported with the run's outcome, and handed to `manifest` as `models`. */ models?: Record<string, string>; /** The live vision options, built from the host and the running run exactly as `fakes.vision` is: one seam for both. */ vision?: (host: Host, running: { readonly harness: Harness | undefined }, context: { input: Record<string, unknown>; place: { root: string; work: string } }) => Partial<VisionAdapterOptions> };
 /** The model choices on the command line, handed to the demo's `live` part. */
 export type LiveModels = { provider?: string; model?: string; eyesModel?: string };
-const RESERVED = new Set(['format', 'title', 'task', 'model', 'generations', 'kills', 'code', 'cost', 'recorded', 'source', 'result', 'providers', 'see_also', 'job', 'store', 'baseline']);
+const RESERVED = new Set(['format', 'title', 'task', 'model', 'generations', 'kills', 'code', 'cost', 'recorded', 'source', 'result', 'providers', 'see_also', 'job', 'store', 'baseline', 'artifact']);
 export type DemoOptions = {
   /** How long the live recorder holds a line before placing it in `events.jsonl` (default 1000 ms, the time every writer has to get it to a spool). A test knob; a place whose clock is far from the host's wants it longer. */
   followHoldMs?: number;
@@ -94,6 +96,8 @@ export type DemoResult = {
   recording?: string;
   /** The recording's cost: dollars, or null while any part is unknown (never 0). */
   usd: number | null;
+  /** Whether the run made a priced call (a model turn, a decision, a browser session, a look or a box); false means nothing was spent, and `usd` is null. */
+  priced: boolean;
   maxUsd: number | null;
   /** The run was stopped past `--max-usd`, or finished past it. */
   overBudget: boolean;
@@ -105,7 +109,7 @@ export type DemoResult = {
   unlanded: string[];
 };
 
-const FLAGS = { child: { type: 'boolean' }, live: { type: 'boolean' }, kill: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, 'local-chrome': { type: 'boolean' }, 'fetch-sources': { type: 'boolean' }, cache: { type: 'string' }, dir: { type: 'string' }, json: { type: 'boolean' }, provider: { type: 'string' }, model: { type: 'string' }, 'eyes-model': { type: 'string' }, 'see-also': { type: 'string', multiple: true }, 'operator-kill': { type: 'string' } } as const;
+const FLAGS = { child: { type: 'boolean' }, live: { type: 'boolean' }, kill: { type: 'boolean' }, debug: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, 'local-chrome': { type: 'boolean' }, 'fetch-sources': { type: 'boolean' }, cache: { type: 'string' }, dir: { type: 'string' }, json: { type: 'boolean' }, provider: { type: 'string' }, model: { type: 'string' }, 'eyes-model': { type: 'string' }, 'see-also': { type: 'string', multiple: true }, 'operator-kill': { type: 'string' } } as const;
 /** The repository a demo lives in: `options.root`, else the nearest folder above the demo's own file that holds a
  *  `package.json` or a `.git`. Never this package's own location, which is inside `node_modules` once installed. */
 function rootOf(options: { root?: string; self: string }): string {
@@ -126,7 +130,7 @@ export async function demo(options: DemoOptions): Promise<DemoResult | undefined
   if (values.child) { await child(options); return undefined; }
   const result = await supervise(options, values);
   if (values.json) console.log(JSON.stringify(result));
-  else summarize(options, result);
+  else summarize(options, result, Boolean(values.kill || values.debug));
   // A command line ends with a failing code when the run did not complete or went past its cap; a caller that passed its own arguments reads the result.
   if (options.argv === undefined && (result.overBudget || result.failedKills.length || result.failedSignals.length || result.unlanded.length || result.processes.at(-1)?.outcome?.status !== 'complete')) process.exitCode = 1;
   return result;
@@ -697,17 +701,21 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
     if (followError) throw followError;
     follower.close();
     if (carryRefusal) throw new Error(`the recording is refused: the place could not bring home process ${carryRefusal.gen}'s recording (${carryRefusal.code}), and that process ended on its own`);
+    // The agent's report (draft 41): `report/index.html` in the run's work directory and the files it reaches, kept as blobs before the scans below; a file the final page does not reach (a killed attempt's leftover) is not kept.
+    const artifact = takeArtifact(join(paths.work, 'report'), (bytes, extension) => keepBlob(recordDir, bytes, extension), spec.title ?? spec.name);
     // What a viewer following the run could already have fetched is not taken back: a secret in the file as it was placed refuses the recording, though the finished file is redacted.
     scanPlaced(recordDir, tracked?.final() ?? []);
     finishRecording(recordDir, {
       ...(redact ? { redact } : {}), job: { blob: jobBlob, sha256: jobBlob },
-      title: spec.title ?? spec.name, task: job.workflow.name ?? spec.name, model: live ? 'live' : 'faux/faux-1', generations: processesStarted, kills: kills.length,
-      code: codeOf(rootOf(options)), cost, source: { run: runName, ...(last?.storeSha256 ? { store_sha256: last.storeSha256 } : {}) }, ...(seeAlso.length ? { see_also: seeAlso } : {}), ...(extra ? { extra } : {}), ...(resultBlob ? { result: resultBlob } : {}), ...(live ? { providers: 'real' as const } : {}),
+      title: spec.title ?? spec.name, task: job.workflow.name ?? spec.name, model: live ? chosen?.lead ?? 'live' : 'faux/faux-1', generations: processesStarted, kills: kills.length,
+      code: codeOf(rootOf(options)), cost, source: { run: runName, ...(last?.storeSha256 ? { store_sha256: last.storeSha256 } : {}) }, ...(seeAlso.length ? { see_also: seeAlso } : {}), ...(extra ? { extra } : {}), ...(resultBlob ? { result: resultBlob } : {}), ...(artifact ? { artifact } : {}), ...(live ? { providers: 'real' as const } : {}),
     });
     // The record-time scan: a recording that still holds a secret is refused (its manifest removed, so it is not a finished recording), naming the key and the file, never the value.
     try { scanRecording(recordDir, tracked?.final() ?? []); } catch (error) { rmSync(join(recordDir, 'manifest.json'), { force: true }); throw error; }
-    const usd = cost(readEventsOf(recordDir)).usd;
-    return { processes, kills, record: delivered?.record ?? null, dir, runId, ...(values.record ? { recording: values.record } : {}), usd, maxUsd, overBudget, failedKills, failedSignals, unlanded };
+    const spent = cost(readEventsOf(recordDir));
+    const usd = spent.usd;
+    const priced = Object.keys(spent.parts).length > 0;
+    return { processes, kills, record: delivered?.record ?? null, dir, runId, ...(values.record ? { recording: values.record } : {}), usd, priced, maxUsd, overBudget, failedKills, failedSignals, unlanded };
   } finally {
     clearInterval(following);
     if (meterTimer) clearInterval(meterTimer);
@@ -751,15 +759,19 @@ export function notLanded<T extends object>(tools: readonly T[], log: string): T
 
 const readEventsOf = (dir: string) => rows<Record<string, unknown>>(join(dir, 'events.jsonl'));
 
-export function summarize(options: DemoOptions, result: DemoResult) {
-  console.log(`${options.spec.title ?? options.spec.name}: ${result.processes.at(-1)?.outcome?.status ?? 'no outcome'} in ${result.processes.length} process${result.processes.length === 1 ? '' : 'es'}, ${result.kills.length} kill${result.kills.length === 1 ? '' : 's'}`);
+/** `counts` (with `--kill` or `--debug`) adds how many processes the run took and how many were killed; the default line names only how the run ended. */
+export function summarize(options: DemoOptions, result: DemoResult, counts = false) {
+  const status = result.processes.at(-1)?.outcome?.status ?? 'no outcome';
+  console.log(`${options.spec.title ?? options.spec.name}: ${status}${counts ? ` in ${result.processes.length} process${result.processes.length === 1 ? '' : 'es'}, ${result.kills.length} kill${result.kills.length === 1 ? '' : 's'}` : ''}`);
   for (const kill of result.kills) console.log(`  killed process ${kill.gen} (${kill.kind}) at ${kill.point ?? 'no named crossing'}${kill.planned !== undefined && kill.n !== kill.planned ? ` (planned n=${kill.planned}, landed at n=${kill.n})` : ''}: ${kill.why}`);
   if (result.failedSignals.length) console.log(`the place's signals failed: ${result.failedSignals.map((entry) => `process ${entry.gen} (${entry.code})`).join(', ')}`);
   if (result.failedKills.length) console.log(`kills the place could not make: ${result.failedKills.map((kill) => `process ${kill.gen} (${kill.code})`).join(', ')}`);
   const last = result.processes.at(-1)?.outcome;
   if (last && last.status !== 'complete' && last.message) console.log(`  stopped: ${last.message}`);
   if (result.unlanded.length) console.log(`kills that never landed: ${result.unlanded.join(', ')}`);
-  console.log(`cost: ${result.usd === null ? 'unknown' : `$${result.usd}`}${result.maxUsd === null ? '' : ` (cap $${result.maxUsd})`}${result.overBudget ? ' — over the cap' : ''}`);
+  // A run that made no priced call has no cost line, unless it has a cap.
+  const none = result.usd === null && !result.priced;
+  if (!none || result.maxUsd !== null) console.log(`cost: ${none ? 'none' : result.usd === null ? 'unknown' : `$${result.usd}`}${result.maxUsd === null ? '' : ` (cap $${result.maxUsd})`}${result.overBudget ? ' — over the cap' : ''}`);
   if (result.recording) console.log(`recording: ${result.recording}`);
   if (options.keepRun) console.log(`run directory: ${result.dir}`);
 }

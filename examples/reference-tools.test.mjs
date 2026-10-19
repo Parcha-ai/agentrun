@@ -6,9 +6,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
-import { localHost, placeAt } from '@parcha/agentrun-reference';
-import { compose, nodeTools } from '../packages/reference/dist/assemble.js';
-import { childBrowser } from '../packages/reference/dist/demo.js';
+import { localHost, placeAt } from '@parcha/agentrun-harness';
+import { compose, nodeTools } from '../packages/harness/dist/assemble.js';
+import { childBrowser } from '../packages/harness/dist/demo.js';
 
 async function registryOf(t, options) {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-tools-'));

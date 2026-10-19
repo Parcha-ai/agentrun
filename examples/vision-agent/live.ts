@@ -1,9 +1,10 @@
 // The models of a live run, each named by its provider and public model id as pi-ai's catalog names it: the lead writes
 // the code, the eyes watch a window with its sound (Google's take video; any other eyes take frames), Jev judges frames and
-// draws the box (TYPESAFE_API_KEY), and Scribe v2 on fal writes what is said (FAL_KEY, needed only when a question
+// draws the box (TYPESAFE_API_KEY, or the gateway's key), and Scribe v2 on fal writes what is said (FAL_KEY, needed only when a question
 // needs speech). A run reaches the lead and the eyes with the user's own keys, or through an OpenAI-compatible gateway
 // (VIDEO_MODEL_BASE_URL and VIDEO_MODEL_API_KEY) that serves each model under its public id; such a gateway may also pass
 // fal's queue through at its root (`/fal-queue`), which takes its key as a bearer token, and TypeSafe (`/typesafe`).
+import { parseArgs } from 'node:util';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
 import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy';
 import { createModels, createProvider, type Models, type Provider } from '@earendil-works/pi-ai/models';
@@ -13,7 +14,7 @@ import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { createJevRunner } from '@parcha/agentrun-jev';
 import { modelsEyes } from '@parcha/pi-vision/durable';
 import { falTranscriber } from '@parcha/pi-vision/transcribers';
-import type { LiveParts } from '@parcha/agentrun-reference';
+import type { LiveParts } from '@parcha/agentrun-harness';
 import spec from './demo.json' with { type: 'json' };
 
 export type PublicModel = { provider: string; modelId: string };
@@ -32,6 +33,10 @@ export const EYES: PublicModel = byName(spec.models.eyes.default);
 /** Jev's price as TypeSafe lists it, per million input tokens. */
 const JEV_PRICE = { inputUsdPerMillionTokens: 0.042, outputUsdPerMillionTokens: 0 };
 
+/** No model key and no gateway: the one failure of `chooseModels` that is a missing key, told apart from a model named wrongly. */
+class NoModelKey extends Error {}
+const NO_MODEL_KEY = `a model key (${Object.values(PROVIDERS).map((each) => each.key).join(', ')}) or a gateway (VIDEO_MODEL_BASE_URL and VIDEO_MODEL_API_KEY)`;
+
 const parse = (name: string): PublicModel => {
   const [provider, ...id] = name.split('/');
   if (!provider || !id.length || !PROVIDERS[provider]) throw new Error(`a model is named provider/id with a provider of ${Object.keys(PROVIDERS).join(', ')}; ${name} is not`);
@@ -41,15 +46,19 @@ const parse = (name: string): PublicModel => {
 /** The lead and the eyes: those named, else the defaults when a gateway serves them or their keys are set, else the
  *  defaults of the providers whose keys are set (the eyes preferring Google's, which take video). */
 export function chooseModels(env: NodeJS.ProcessEnv, named: { lead?: string; eyes?: string } = {}): { lead: PublicModel; eyes: PublicModel } {
+  return { lead: chooseModel(env, 'lead', named.lead), eyes: chooseModel(env, 'eyes', named.eyes) };
+}
+
+/** One role's model: the one named, else the default when a gateway serves it or its key is set, else the default of
+ *  the first provider whose key is set (the eyes preferring Google's, which take video). */
+function chooseModel(env: NodeJS.ProcessEnv, role: 'lead' | 'eyes', name: string | undefined): PublicModel {
   const has = (provider: string) => Boolean(env.VIDEO_MODEL_BASE_URL || env[PROVIDERS[provider]!.key]);
-  const pick = (name: string | undefined, fallback: PublicModel, role: 'lead' | 'eyes', order: readonly string[]) => {
-    if (name) return parse(name);
-    if (has(fallback.provider)) return fallback;
-    const provider = order.find(has);
-    if (!provider) throw new Error(`--live needs a model key: ${Object.values(PROVIDERS).map((each) => each.key).join(', ')}, or a gateway (VIDEO_MODEL_BASE_URL and VIDEO_MODEL_API_KEY). SETUP-PROMPT.md says where to get one.`);
-    return { provider, modelId: PROVIDERS[provider]![role] };
-  };
-  return { lead: pick(named.lead, LEAD, 'lead', ['openai', 'anthropic', 'google']), eyes: pick(named.eyes, EYES, 'eyes', ['google', 'openai', 'anthropic']) };
+  if (name) return parse(name);
+  const fallback = role === 'lead' ? LEAD : EYES;
+  if (has(fallback.provider)) return fallback;
+  const provider = (role === 'lead' ? ['openai', 'anthropic', 'google'] : ['google', 'openai', 'anthropic']).find(has);
+  if (!provider) throw new NoModelKey(`--live needs ${NO_MODEL_KEY}. SETUP-PROMPT.md says where to get one.`);
+  return { provider, modelId: PROVIDERS[provider]![role] };
 }
 
 /** The catalog of a run's models: through the gateway when one is set (the Responses API for a model that speaks it, else
@@ -91,20 +100,77 @@ export function transcriberOf(env: NodeJS.ProcessEnv) {
   return undefined;
 }
 
+/** Jev's key: TYPESAFE_API_KEY when it is given, else the gateway's own when a gateway is set (it passes Jev through
+ *  under its credential); none otherwise. */
+export const jevKeyOf = (env: NodeJS.ProcessEnv): string | undefined => env.TYPESAFE_API_KEY || (env.VIDEO_MODEL_BASE_URL ? env.VIDEO_MODEL_API_KEY : undefined) || undefined;
+
 /** Jev's runner options: through the gateway's TypeSafe pass-through (`/typesafe`) when a gateway is set, else
  *  TYPESAFE_BASE_URL when set, else TypeSafe's own address. */
 export function jevOptionsOf(env: NodeJS.ProcessEnv) {
   const baseURL = env.VIDEO_MODEL_BASE_URL ? `${gatewayRoot(env)}/typesafe` : env.TYPESAFE_BASE_URL || undefined;
-  return { apiKey: env.TYPESAFE_API_KEY, pricing: JEV_PRICE, ...(baseURL ? { baseURL } : {}) };
+  return { apiKey: jevKeyOf(env), pricing: JEV_PRICE, ...(baseURL ? { baseURL } : {}) };
+}
+
+/** The lead and the eyes the flags name: `--model` alone names the lead, `--provider` with a bare id makes it provider/id. */
+export function namedModels(models: { provider?: string; model?: string; eyesModel?: string }): { lead?: string; eyes?: string } {
+  const lead = models.model && models.provider && !models.model.includes('/') ? `${models.provider}/${models.model}` : models.model;
+  return { ...(lead ? { lead } : {}), ...(models.eyesModel ? { eyes: models.eyesModel } : {}) };
+}
+
+/** What a live run lacks, each key by name and what it is for; empty when it can start. A gateway (VIDEO_MODEL_BASE_URL)
+ *  serves the lead, the eyes and Jev under VIDEO_MODEL_API_KEY, so it is the only key then, TYPESAFE_API_KEY being Jev's
+ *  own when given; without one, Jev needs TYPESAFE_API_KEY and each provider the run uses needs its own key. A model named
+ *  in a way that is not provider/id is not a missing key: it throws. */
+export function missingKeys(env: NodeJS.ProcessEnv, named: { lead?: string; eyes?: string } = {}): string[] {
+  const missing: string[] = [];
+  if (env.VIDEO_MODEL_BASE_URL) {
+    chooseModels(env, named);
+    if (!env.VIDEO_MODEL_API_KEY) missing.push("VIDEO_MODEL_API_KEY (the gateway's credential: VIDEO_MODEL_BASE_URL is set, and the gateway serves the lead, the eyes and Jev)");
+    return missing;
+  }
+  if (!jevKeyOf(env)) missing.push('TYPESAFE_API_KEY (typesafe.ai: Jev judges the frames and pages and draws the boxes)');
+  const uses = new Map<string, string[]>();
+  const unchosen: string[] = [];
+  for (const role of ['lead', 'eyes'] as const) {
+    try {
+      const model = chooseModel(env, role, named[role]);
+      uses.set(model.provider, [...(uses.get(model.provider) ?? []), `the ${role} ${publicName(model)}`]);
+    } catch (error) {
+      if (!(error instanceof NoModelKey)) throw error;
+      unchosen.push(role);
+    }
+  }
+  for (const [provider, roles] of uses) if (!env[PROVIDERS[provider]!.key]) missing.push(`${PROVIDERS[provider]!.key} (${roles.join(' and ')})`);
+  if (unchosen.length === 2) missing.push(NO_MODEL_KEY);
+  else if (unchosen.length) missing.push(`a key for the ${unchosen[0]} (${Object.values(PROVIDERS).map((each) => each.key).join(', ')}) or a gateway (VIDEO_MODEL_BASE_URL and VIDEO_MODEL_API_KEY)`);
+  return missing;
+}
+
+/** The error a live run that lacks keys stops with, naming each; none when it has what it needs. */
+export const keysError = (env: NodeJS.ProcessEnv, named: { lead?: string; eyes?: string } = {}): Error | undefined => {
+  const missing = missingKeys(env, named);
+  return missing.length ? new Error(`--live is missing ${missing.join('; ')}. SETUP-PROMPT.md says where to get ${missing.length === 1 ? 'it' : 'them'}.`) : undefined;
+};
+
+/** The command line's refusal of a live run that lacks keys, said before anything starts, so a refused run leaves no
+ *  recording and no directory: its message, or none when the run is not a live one or has what it needs. A child of the
+ *  run (`--child`) is the supervisor's, and the supervisor has checked. */
+export function preflight(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const { values } = parseArgs({ args: [...argv], strict: false, options: { live: { type: 'boolean' }, child: { type: 'boolean' }, provider: { type: 'string' }, model: { type: 'string' }, 'eyes-model': { type: 'string' } } });
+  if (values.live !== true || values.child === true) return undefined;
+  const text = (value: unknown) => (typeof value === 'string' ? value : undefined);
+  const named = namedModels({ ...(text(values.provider) ? { provider: text(values.provider)! } : {}), ...(text(values.model) ? { model: text(values.model)! } : {}), ...(text(values['eyes-model']) ? { eyesModel: text(values['eyes-model'])! } : {}) });
+  try { return keysError(env, named)?.message; } catch (error) { return (error as Error).message; }
 }
 
 /** The reference entry's live parts: the lead and eyes the flags name or the keys allow, Jev as the host's judge (which
  *  `vision.judge` goes through, held to the demo's Jev caps), and the transcriber. */
 export function liveParts(context: { env: NodeJS.ProcessEnv; models: { provider?: string; model?: string; eyesModel?: string } }): LiveParts {
   const { env, models } = context;
-  if (!env.TYPESAFE_API_KEY) throw new Error('--live needs TYPESAFE_API_KEY (typesafe.ai): Jev judges the frames and pages and draws the boxes.');
-  const lead = models.model && models.provider && !models.model.includes('/') ? `${models.provider}/${models.model}` : models.model;
-  const chosen = chooseModels(env, { ...(lead ? { lead } : {}), ...(models.eyesModel ? { eyes: models.eyesModel } : {}) });
+  const named = namedModels(models);
+  const lacking = keysError(env, named);
+  if (lacking) throw lacking;
+  const chosen = chooseModels(env, named);
   const catalog = catalogOf(env, [chosen.lead, chosen.eyes]);
   const eyes = modelsEyes(catalog as never, chosen.eyes, { thinking: 'low', accepts: { video: PROVIDERS[chosen.eyes.provider]!.video } });
   if (!eyes) throw new Error(`${publicName(chosen.eyes)} takes no images, so it cannot be the eyes`);

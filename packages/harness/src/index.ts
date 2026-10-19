@@ -1,5 +1,5 @@
 // The reference assembly as one import, for an example that wants the same pi-durable host: its own job and its own
-// fakes, this package's wiring. `import { run, placeAt, localHost } from '@parcha/agentrun-reference'`. The names below are
+// fakes, this package's wiring. `import { run, placeAt, localHost } from '@parcha/agentrun-harness'`. The names below are
 // the surface, with the subpaths `./scan`, `./child-app` and `./place`; the package's other files are not public.
 
 /** Runs a job on a place through the open packages (pi-durable on a plain directory, the workflow's task, the browser and vision) and returns how it ended. A second call on the same place resumes the run. */

@@ -12,9 +12,10 @@ import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chatCard } from '../../apps/viewer/src/chat-extract.ts';
 import { parseLines } from '../../apps/viewer/src/format.ts';
-import { credentialInFile } from '../../packages/reference/src/scan.ts';
+import { FORBIDDEN, credentialInFile } from '../../packages/harness/src/scan.ts';
 import { validateRecording } from './validate.mjs';
 
+const MACHINE_PATH = FORBIDDEN.find(([name]) => name === 'machine path')[1];
 const BLOB = /^([0-9a-f]{64})\.[a-z0-9]+$/;
 const TEXT = /\.(?:html|js|css|json|jsonl|txt|md|csv|svg|xml|yaml|yml|log)$/i;
 const GALLERY = 'window.AGENTRUN_GALLERY = ';
@@ -56,6 +57,8 @@ export function gateProblems(dist) {
   for (const file of existsSync(dist) ? walk(dist) : []) {
     const found = TEXT.test(file) ? credentialInFile(file, readFileSync(file, 'utf8')) : undefined;
     if (found) add(relative(dist, file), `contains a ${found}`);
+    // A blob that is not text (an image, a clip, a document of a report) is not read as text: the machine-path pattern runs on its bytes.
+    else if (!TEXT.test(file) && /(?:^|[\\/])blobs[\\/]/.test(relative(dist, file)) && MACHINE_PATH.test(readFileSync(file).toString('latin1'))) add(relative(dist, file), 'contains a machine path');
   }
   // The gallery holds the recordings beside the page, and no other, each entry exactly what its files give: the page
   // plays the gallery's copy, so what it plays is what was checked. Embedded in gallery.js, an entry is the recording's
@@ -74,7 +77,7 @@ export function gateProblems(dist) {
   for (const entry of gallery) {
     if (!beside.includes(entry.id)) continue;
     const dir = join(recordings, entry.id);
-    const keys = files ? ['blobs', 'card', 'id', 'manifest'] : ['blobs', 'card', 'events', 'id', 'manifest'];
+    const keys = [...(files ? ['blobs', 'id', 'manifest'] : ['blobs', 'events', 'id', 'manifest']), ...('card' in entry ? ['card'] : [])].sort();
     if (canonical(Object.keys(entry).sort()) !== canonical(keys)) add(where, `holds ${JSON.stringify(Object.keys(entry))} for ${entry.id}, not ${JSON.stringify(keys)}`);
     let manifest;
     try { manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')); } catch { manifest = undefined; }
@@ -84,20 +87,27 @@ export function gateProblems(dist) {
     const held = new Map((existsSync(join(dir, 'blobs')) ? readdirSync(join(dir, 'blobs')) : []).flatMap((name) => { const named = BLOB.exec(name); return named ? [[named[1], name]] : []; }));
     const blobs = isObject(entry.blobs) ? entry.blobs : {};
     if (canonical(Object.keys(blobs).sort()) !== canonical([...held.keys()].sort())) add(where, `maps ${JSON.stringify(Object.keys(blobs))} for ${entry.id}, not the blobs in its directory ${JSON.stringify([...held.keys()])}`);
-    // Its card: the title and line its own run gives, a poster only of an image it holds, a place in the featured row.
-    const card = isObject(entry.card) ? entry.card : {};
-    const lines = existsSync(join(dir, 'events.jsonl')) ? parseLines(readFileSync(join(dir, 'events.jsonl'), 'utf8')) : [];
-    const own = manifest ? chatCard({ manifest, lines }) : undefined;
-    if (!own || card.title !== own.title || card.line !== own.line) add(where, `holds a card for ${entry.id} other than its run gives`);
-    if (card.poster !== undefined && !/\.(?:png|jpe?g|webp|gif)$/i.test(held.get(card.poster) ?? '')) add(where, `names a poster for ${entry.id} that is no image it holds`);
-    if (card.rank !== undefined && !(Number.isInteger(card.rank) && card.rank >= 0)) add(where, `ranks ${entry.id} at ${JSON.stringify(card.rank)}`);
-    if (Object.keys(card).some((key) => !['title', 'line', 'poster', 'rank'].includes(key))) add(where, `holds a card for ${entry.id} with ${JSON.stringify(Object.keys(card))}`);
     for (const [sha, value] of Object.entries(blobs)) {
       const name = held.get(sha);
       if (!name) continue;
       const data = !files && typeof value === 'string' ? /^data:[^,;]*;base64,([A-Za-z0-9+/]*={0,2})$/.exec(value) : null;
       const right = files ? value === `blobs/${name}` : data !== null && Buffer.from(data[1], 'base64').equals(readFileSync(join(dir, 'blobs', name)));
       if (!right) add(where, `names ${JSON.stringify(typeof value === 'string' ? value.slice(0, 80) : value)} for ${sha} of ${entry.id}, not that blob in its directory`);
+    }
+    // Its card, when the build gives one: the title and line its own run gives (the chat view's chatCard), its place in
+    // the lock's order, and a poster that is an image the recording holds.
+    if ('card' in entry) {
+      const card = entry.card;
+      const shape = isObject(card) && Object.keys(card).every((key) => ['title', 'line', 'poster', 'rank'].includes(key))
+        && typeof card.title === 'string' && card.title.trim() !== '' && (card.line === undefined || typeof card.line === 'string')
+        && (card.rank === undefined || (Number.isInteger(card.rank) && card.rank >= 0));
+      if (!shape) add(where, `holds a card for ${entry.id} that is not { title, line?, poster?, rank? }`);
+      else if (card.poster !== undefined && !(typeof card.poster === 'string' && /\.(png|jpe?g|webp|gif)$/.test(held.get(card.poster) ?? ''))) add(where, `names ${JSON.stringify(card.poster)} as the poster of ${entry.id}, not an image it holds`);
+      if (shape) {
+        const lines = existsSync(join(dir, 'events.jsonl')) ? parseLines(readFileSync(join(dir, 'events.jsonl'), 'utf8')) : [];
+        const own = manifest ? chatCard({ manifest, lines }) : undefined;
+        if (!own || card.title !== own.title || card.line !== own.line) add(where, `holds a card for ${entry.id} other than its run gives`);
+      }
     }
   }
   return problems;

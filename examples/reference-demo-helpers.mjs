@@ -11,8 +11,8 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
-import { effectiveBoxes } from '../packages/reference/dist/demo-spec.js';
-import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-reference';
+import { effectiveBoxes } from '../packages/harness/dist/demo-spec.js';
+import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
 
 export const ORIGINAL = { ...process.env };
 
@@ -32,7 +32,7 @@ export async function run(t, spec, argv, env = {}) {
   // Back to the environment the test file started with, whatever order the hooks of several runs in one test come in.
   t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
   // The supervisor is this process; it starts the fixture as each child.
-  const { demo: fixtureDemo } = await import('@parcha/agentrun-reference');
+  const { demo: fixtureDemo } = await import('@parcha/agentrun-harness');
   // The supervisor needs the same fakes and job the fixture runs (it serves the fake browser's pages): the fixture's own module, imported.
   const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
   const recording = join(tmp, 'recording');
@@ -42,9 +42,9 @@ export async function run(t, spec, argv, env = {}) {
 
 // ---- the review of #518: one test for each thread ---------------------------------------------------------------------------------------------
 
-export const { composeHost, destroyBoxes, meterKnown } = await import('../packages/reference/dist/demo.js');
+export const { composeHost, destroyBoxes, meterKnown } = await import('../packages/harness/dist/demo.js');
 
-export const { RUN_LABEL } = await import('../packages/reference/dist/boxes.js');
+export const { RUN_LABEL } = await import('../packages/harness/dist/boxes.js');
 
 export const { localBoxes } = await import('@parcha/pi-transport/box/local');
 

@@ -1,12 +1,12 @@
 // A demo's `run.ts` as the reference entry's own test uses it: the reference job and its fakes, the spec from `DEMO_SPEC` (a JSON file), the standard flags.
 import type { Message } from '@earendil-works/pi-ai';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fakeEyes, fakeTranscriptionFetch } from '@parcha/pi-vision/testing';
 import { openAiTranscriber } from '@parcha/pi-vision/transcribers';
-import { demo } from '@parcha/agentrun-reference';
-import type { ToolContext } from '@parcha/agentrun-reference';
+import { demo } from '@parcha/agentrun-harness';
+import type { ToolContext } from '@parcha/agentrun-harness';
 import type { BoxProvider } from '@parcha/pi-transport';
 import { fakes, job, lead } from './job.ts';
 
@@ -130,5 +130,14 @@ const transcribing = process.env.DEMO_TRANSCRIBE ? (() => {
   const answer = fakeTranscriptionFetch('openai', { words: [{ text: 'hello', start: 0.1, end: 0.5 }, { text: 'world', start: 0.6, end: 1 }], durationS: 2 });
   return () => ({ transcriber: openAiTranscriber({ apiKey: () => `made-up-stt-key-${'k'.repeat(24)}`, fetch: answer.fetch, usdPerMinute: 0.6 }) });
 })() : undefined;
-export const options = { ...(process.env.DEMO_FOLLOW_HOLD_MS ? { followHoldMs: Number(process.env.DEMO_FOLLOW_HOLD_MS) } : {}), ...(process.env.DEMO_CODE_ON ? { codeMode: true } : {}), ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withBox ?? withFan ?? withLeak ?? withSites ?? lingering?.job ?? job, fakes: { ...scriptedHeld, ...(process.env.DEMO_FAKES_INPUT ? { input: { company: 'Beta Ltd' } } : {}), ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : transcribing ? { vision: transcribing } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}) };
+// A test knob: DEMO_REPORT is a directory the run finds as `report/` in its work directory (the agent's report folder, draft 41), however the run goes: the files are the job's, written before it starts.
+const reportFiles = (dir: string, base = '', out: Record<string, Uint8Array> = {}): Record<string, Uint8Array> => {
+  for (const entry of readdirSync(join(dir, base), { withFileTypes: true })) {
+    if (entry.isDirectory()) reportFiles(dir, `${base}${entry.name}/`, out);
+    else out[`report/${base}${entry.name}`] = readFileSync(join(dir, base, entry.name));
+  }
+  return out;
+};
+const withReport = (chosen: typeof job): typeof job => (process.env.DEMO_REPORT ? { ...chosen, files: { ...chosen.files, ...reportFiles(process.env.DEMO_REPORT) } } : chosen);
+export const options = { ...(process.env.DEMO_FOLLOW_HOLD_MS ? { followHoldMs: Number(process.env.DEMO_FOLLOW_HOLD_MS) } : {}), ...(process.env.DEMO_CODE_ON ? { codeMode: true } : {}), ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withReport(withBox ?? withFan ?? withLeak ?? withSites ?? lingering?.job ?? job), fakes: { ...scriptedHeld, ...(process.env.DEMO_FAKES_INPUT ? { input: { company: 'Beta Ltd' } } : {}), ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : transcribing ? { vision: transcribing } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}) };
 if (process.argv.includes('--child')) await demo(options);

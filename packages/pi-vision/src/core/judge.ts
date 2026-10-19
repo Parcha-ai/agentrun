@@ -1,7 +1,9 @@
 // `vision.judge`, a code-mode global beside `vision.see`: Jev, TypeSafe's System One model, answers typed questions
 // (choice, noul, score, box) about images the agent's code made or holds, in one request through the host's Jev port.
 // The images go in `state.images`, each fitted to Jev's limits and named by its fragment; example images go in the
-// questions' instructions or criteria by reference. The answer is kept as the call's memo before it is filed and told,
+// questions' instructions or criteria by reference. A request with no image at all is a text judgment: its text goes in
+// `state`, and it asks choice, noul or score, never a box (a box finds a thing in an image). The answer is kept as the
+// call's memo before it is filed and told,
 // so a call run again pays and tells once. A box answer also names its region as a fragment of its image
 // (`#xywh=percent:`), mapped back through the fit and through the region the image itself was cut from.
 
@@ -56,9 +58,12 @@ function checked(input: unknown): JudgeRequest {
   const count = (Array.isArray(r.images) ? r.images.length : 0) + (Array.isArray(r.paths) ? r.paths.length : 0);
   const questions = object(r.questions) ? Object.values(r.questions) : [];
   const said = JSON.stringify(r.questions ?? null);
-  if (!namesMedia(r) || !questions.length || !questions.every((q) => object(q) && TYPES.includes(q.type as string) && (q.image === undefined || (Number.isInteger(q.image) && (q.image as number) >= 0 && (q.image as number) < count)))
+  // A text judgment: no path, image, fragment or example, no box question, and a state that carries the text.
+  const bare = [r.images, r.paths, r.fragments].every((v) => v === undefined || (Array.isArray(v) && v.length === 0)) && (r.examples === undefined || (object(r.examples) && Object.keys(r.examples).length === 0));
+  const text = bare && object(r.state) && Object.keys(r.state).length > 0 && questions.every((q) => object(q) && q.type !== "box" && q.image === undefined);
+  if (!(namesMedia(r) || text) || !questions.length || !questions.every((q) => object(q) && TYPES.includes(q.type as string) && (q.image === undefined || (Number.isInteger(q.image) && (q.image as number) >= 0 && (q.image as number) < count)))
     || !(r.state === undefined || (object(r.state) && !("images" in r.state))) || !(r.examples === undefined || (object(r.examples) && Object.keys(r.examples).every((ref) => said.includes(ref))))) {
-    throw new TypeError("vision.judge takes { questions: { [name]: { type: \"choice\" | \"noul\" | \"score\" | \"box\", instructions?, criteria?, image? } }, paths?, images?, fragments?, examples?: { [reference written in a question]: path or image block }, state?: an object without `images` } with at least one path or image");
+    throw new TypeError("vision.judge takes { questions: { [name]: { type: \"choice\" | \"noul\" | \"score\" | \"box\", instructions?, criteria?, image? } }, paths?, images?, fragments?, examples?: { [reference written in a question]: path or image block }, state?: an object without `images` } with at least one path or image, or, for a text judgment with none, a non-empty state and no box question");
   }
   return r as JudgeRequest;
 }
@@ -94,7 +99,7 @@ export async function judge(input: unknown, env: VisionEnv | undefined, call: Ca
     const on = items.length ? undefined : about;
     const sha256 = on ? on.sha256 : blocksSha256([...items, ...examples.map(([, item]) => item)]);
     const key = lookKey({ sha256, fragment: on ? on.fragment : items.map((item) => item.fragment).join("\n"), model, plan: [request.questions, request.state ?? null, examples.map(([ref]) => ref)] });
-    return { tool: "look", args: { path: on ? on.path : [...new Set(items.map((item) => item.fragment))].join(", "), ask: JSON.stringify(request.questions), model: answered, native: false, via: "jev" }, status: "ok", body, facts: { sha256, kind: on ? on.kind : "image", fragment: on ? on.fragment : "", key, shown_blocks: items.length + examples.length, ...lookTiming(call), ...facts } };
+    return { tool: "look", args: { path: on ? on.path : [...new Set(items.map((item) => item.fragment))].join(", "), ask: JSON.stringify(request.questions), model: answered, native: false, via: "jev" }, status: "ok", body, facts: { sha256, kind: on ? on.kind : items.length ? "image" : "text", fragment: on ? on.fragment : "", key, shown_blocks: items.length + examples.length, ...lookTiming(call), ...facts } };
   };
   const fail = ({ about, ...cause }: MediaMiss, spent: Partial<LookRecord["facts"]> = { tokens_in: 0, tokens_out: 0, cost_usd: 0 }): Promise<never> =>
     throwMiss(filing, VISION_JUDGE.name, call, cause, record(cause.model ?? "no vision route", "", spent, about));
@@ -127,7 +132,7 @@ export async function judge(input: unknown, env: VisionEnv | undefined, call: Ca
   let startedAt: number | undefined;
   const ask = async (): Promise<JevResult> => {
     const questions = Object.fromEntries(Object.entries(request.questions).map(([name, { image: _image, ...question }]) => [name, question]));
-    const state = { ...request.state, images: items.map((item, i) => ({ source: item.fragment, image: reference(i) })) };
+    const state = items.length ? { ...request.state, images: items.map((item, i) => ({ source: item.fragment, image: reference(i) })) } : { ...request.state };
     const assets = Object.fromEntries([...items.map((item, i) => [reference(i), item] as const), ...examples].map(([ref, item]) => [ref, { bytes: item.bytes, mime: item.mime }]));
     startedAt = Date.now();
     const result = await jev.judge({ label: VISION_JUDGE.name, kind: "judge", state, questions, assets, model, ...(call.signal ? { signal: call.signal } : {}) });

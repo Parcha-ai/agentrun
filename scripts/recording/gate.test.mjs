@@ -10,6 +10,9 @@ import { build } from '../../apps/viewer/build.mjs';
 import { gateProblems } from './gate.mjs';
 
 const recordings = new URL('../../apps/viewer/recordings/', import.meta.url).pathname;
+/** A second recording, a killed run, for a gallery of two: a test fixture, not bundled. */
+const killed = new URL('../../apps/viewer/test/fixtures/ten-kills-seed21/', import.meta.url).pathname;
+const withKilled = (dir) => cpSync(killed, join(dir, 'ten-kills-seed21'), { recursive: true });
 const secret = () => `sk-${'a1'.repeat(20)}`;
 /** A built viewer whose gallery is a copy of the bundled recordings, changed by `edit` before the build. */
 const built = (t, edit = () => {}, { files = false } = {}) => {
@@ -84,6 +87,7 @@ test('a JWT (a sign-in token) or a Browserbase key in a tool result, a text blob
 
 test('a credential anywhere in a published text file is found: a manifest, the page\'s script', (t) => {
   const dist = built(t, (dir) => {
+    withKilled(dir);
     const manifest = join(dir, 'ten-kills-seed21', 'manifest.json');
     writeFileSync(manifest, JSON.stringify({ ...JSON.parse(readFileSync(manifest, 'utf8')), title: secret() }));
   });
@@ -134,8 +138,8 @@ test('each gallery entry is exactly what its files give: no swapped or missing b
   has(indexWith((entry) => { entry.events = ''; }), `for ${id}, not ["blobs","card","id","manifest"]`);
   has(indexWith((entry) => { entry.card = { ...entry.card, title: 'Another title' }; }), `holds a card for ${id} other than its run gives`);
   const notImage = Object.entries(index[0].blobs).find(([, path]) => !/\.(png|jpe?g|webp|gif)$/.test(path))[0];
-  has(indexWith((entry) => { entry.card = { ...entry.card, poster: notImage }; }), `names a poster for ${id} that is no image it holds`);
-  has(indexWith((entry) => { entry.card = { ...entry.card, rank: -1 }; }), `ranks ${id} at -1`);
+  has(indexWith((entry) => { entry.card = { ...entry.card, poster: notImage }; }), `as the poster of ${id}, not an image it holds`);
+  has(indexWith((entry) => { entry.card = { ...entry.card, rank: -1 }; }), `holds a card for ${id} that is not { title, line?, poster?, rank? }`);
   assert.deepEqual(indexWith((entry) => { entry.manifest = Object.fromEntries(Object.entries(entry.manifest).reverse()); }), [], 'its keys in another order, the same manifest');
   // Embedded: its lines, and each blob's bytes as a data: URL, too.
   const embedded = built(t);
@@ -155,7 +159,7 @@ test('each gallery entry is exactly what its files give: no swapped or missing b
 });
 
 test('the gallery embeds exactly the recordings beside it, and an empty gallery is refused', (t) => {
-  const dist = built(t);
+  const dist = built(t, withKilled);
   rmSync(join(dist, 'recordings', 'ten-kills-seed21'), { recursive: true });
   assert.ok(paths(dist).some((problem) => problem.startsWith('gallery.js: embeds')), paths(dist).join('\n'));
   writeFileSync(join(dist, 'gallery.js'), 'window.AGENTRUN_GALLERY = [');
