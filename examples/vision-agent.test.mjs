@@ -351,3 +351,75 @@ test('on fakes the command with --thinking high carries it into the workflow the
   assert.match(plain, /"tools":\["code"\],"thinking":"medium","state"/);
   assert.doesNotMatch(plain, /"thinking":"high"/);
 });
+
+// The example folder is the one token that is neither a flag nor a flag's value. A rule of "not after a --flag" took every flag for
+// one that takes a value, so a folder after a switch (--live) was silently skipped and the run asked the default question.
+const folderInput = (argv) => JSON.parse(argv.at(-1));
+
+test('the example folder is found wherever it sits among the flags: after a switch, after a flag and its value, or first', () => {
+  const doc = inputOf(exampleAt('document-check'));
+  const places = [
+    ['--live', 'examples/document-check'],
+    ['--max-usd', '3', 'examples/document-check'],
+    ['--max-usd=3', 'examples/document-check'],
+    ['--record', 'r', '--live', 'examples/document-check'],
+    ['--model', 'google/gemini-3.8-flash', '--fetch-sources', 'examples/document-check'],
+    ['--see-also', 'a', '--see-also', 'b', 'examples/document-check'],
+    ['--live', '--thinking', 'high', 'examples/document-check'],
+    ['--thinking', 'high', '--live', 'examples/document-check'],
+    ['examples/document-check', '--live', '--max-usd', '3'],
+  ];
+  for (const args of places) {
+    const argv = argvFor(args);
+    assert.deepEqual(folderInput(argv).example, 'document-check', `${args.join(' ')}: the folder is the example`);
+    assert.deepEqual(folderInput(argv).files, doc.files);
+    assert.ok(!argv.includes('examples/document-check'), `${args.join(' ')}: the folder is taken out of the arguments`);
+  }
+  assert.deepEqual(argvFor(['--live', 'examples/document-check']).slice(0, 1), ['--live'], 'a switch stays');
+  assert.deepEqual(folderInput(argvFor(['examples/document-check', '--live', '--thinking', 'high'])), { ...doc, thinking: 'high' }, 'the folder first, as before');
+  const same = argvFor(['--record', 'examples/document-check', 'examples/document-check']);
+  assert.deepEqual(same.slice(0, 2), ['--record', 'examples/document-check'], 'a value that spells the folder is still the flag\'s value');
+  assert.equal(folderInput(same).example, 'document-check');
+});
+
+test('the flags that take a value are the host\'s string options and --thinking: no flag the host reads is taken for the other kind', () => {
+  const host = readFileSync(join(import.meta.dirname, '..', 'packages', 'harness', 'src', 'demo.ts'), 'utf8');
+  const table = host.match(/const FLAGS = (\{.*?\}) as const;/s)?.[1];
+  assert.ok(table, 'demo.ts still declares its FLAGS table where this test reads it');
+  const flags = [...table.matchAll(/'?([a-z-]+)'?: \{ type: '(boolean|string)'/g)].map((match) => [match[1], match[2]]);
+  assert.ok(flags.length >= 15 && flags.some(([name]) => name === 'live') && flags.some(([name]) => name === 'max-usd'));
+  for (const [name, type] of [...flags, ['thinking', 'string']]) {
+    const args = type === 'string' ? [`--${name}`, name === 'thinking' ? 'high' : 'v', 'examples/document-check'] : [`--${name}`, 'examples/document-check'];
+    assert.equal(folderInput(argvFor(args)).example, 'document-check', `--${name} (${type}) then the folder: the folder is the example`);
+  }
+});
+
+test('a folder that cannot be placed is refused before anything starts, never ignored: a second folder, a stray token, a folder that is not an example', async (t) => {
+  assert.throws(() => argvFor(['examples/document-check', 'examples/video-chapters']), /^Error: one example folder at a time: examples\/document-check, examples\/video-chapters$/);
+  assert.throws(() => argvFor(['--live', 'examples/document-check', '--max-usd', '3', 'examples/video-chapters']), /one example folder at a time/);
+  assert.throws(() => argvFor(['--live', '3']), /^Error: 3: not an example folder/);
+  const missing = (() => { try { argvFor(['examples/nowhere']); } catch (error) { return error.message; } })();
+  assert.match(missing, /^examples\/nowhere: not an example folder/);
+  assert.doesNotMatch(missing, /\/home\/|ENOENT/, 'a message, not a stack or a path of this machine');
+  const dir = await scratch(t);
+  const record = join(dir, 'recording');
+  const ran = command(dir, ['examples/document-check', 'examples/video-chapters', '--record', record].map((arg) => (arg.startsWith('examples/') ? join(import.meta.dirname, '..', arg) : arg)), {});
+  assert.notEqual(ran.status, 0);
+  assert.match(ran.stderr, /^one example folder at a time: .*document-check, .*video-chapters\n$/);
+  assert.doesNotMatch(ran.stderr, /\n.+\n/, 'one line');
+  assert.doesNotMatch(`${ran.stdout}${ran.stderr}`, /cost:|recording:|run directory:|stopped:/);
+  assert.deepEqual(readdirSync(dir), [], 'nothing was written');
+  assert.equal(existsSync(record), false);
+});
+
+test('on fakes a folder after a switch is the run\'s example: the command asks the folder\'s question over its committed files', { timeout: 300_000, skip: PROGRAMS }, async (t) => {
+  const tmp = await scratch(t);
+  const dir = join(tmp, 'run');
+  mkdirSync(dir);
+  const record = join(dir, 'recording');
+  const ran = command(dir, ['--json', join(import.meta.dirname, '..', 'examples', 'document-check'), '--record', record], {});
+  assert.equal(ran.status, 0, `${ran.stdout}\n${ran.stderr}`);
+  const events = readFileSync(join(record, 'events.jsonl'), 'utf8');
+  assert.match(events, /"example":"document-check"/, 'the example reached the run\'s input');
+  assert.match(events, /aveo-ex3-1-pages-1-4\.pdf/, 'and its committed files reached the workspace');
+});

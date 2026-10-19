@@ -66,6 +66,22 @@ export const workflowOf = (thinking: Thinking) => ({
 } as const satisfies Workflow);
 export const workflow = workflowOf('medium');
 
+/** The flags that take a value: the host's `string` options (`demo.ts` in the harness declares them, and a test holds this list to it) and
+ *  `--thinking`. The token after one is its value; every other flag is a switch and takes none. */
+const VALUE_FLAGS = new Set(['record', 'input', 'max-usd', 'cache', 'dir', 'provider', 'model', 'eyes-model', 'see-also', 'operator-kill', 'thinking']);
+
+/** The positions of the arguments that are neither a flag nor a flag's value: the example folder among them. A folder after a switch
+ *  (`--live examples/x`) is one; the token after `--max-usd` is not. */
+export function positionalAt(argv: readonly string[]): number[] {
+  const at: number[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (!arg.startsWith('-')) at.push(i);
+    else if (arg.startsWith('--') && !arg.includes('=') && VALUE_FLAGS.has(arg.slice(2))) i++;
+  }
+  return at;
+}
+
 /** A file an example reads: fetched by URL (checked by size and SHA-256), or committed beside the example (`path`). */
 export type InputItem = { id: string; title?: string; url?: string; path?: string; bytes: number; sha256: string; license?: string; source?: string };
 export type Example = { name: string; dir: string; question: string; items: InputItem[] };
@@ -75,6 +91,7 @@ const EXAMPLES = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export function exampleAt(where: string): Example {
   const dir = join(EXAMPLES, basename(resolve(where)));
   if (existsSync(where) && resolve(where) !== dir) throw new Error(`${where}: an example is a folder under examples/; for files elsewhere, give --input with the question and the files`);
+  if (!existsSync(join(dir, 'question.md'))) throw new Error(`${where}: not an example folder (an example is a folder under examples/ with a question.md and an inputs.json)`);
   const question = readFileSync(join(dir, 'question.md'), 'utf8').trim();
   const { items } = JSON.parse(readFileSync(join(dir, 'inputs.json'), 'utf8')) as { items: InputItem[] };
   return { name: basename(dir), dir, question, items };
@@ -89,7 +106,8 @@ export const inputOf = (example: Example) => ({ question: example.question, file
 function filesOf(): Record<string, Uint8Array> {
   const out: Record<string, Uint8Array> = {};
   const input = (() => { try { return JSON.parse(process.env.INPUT ?? '') as { example?: string }; } catch { return undefined; } })();
-  const named = input?.example ?? process.argv.slice(2).find((arg, i, all) => !arg.startsWith('--') && !(all[i - 1] ?? '').startsWith('--'));
+  const raw = process.argv.slice(2);
+  const named = input?.example ?? raw[positionalAt(raw)[0] ?? -1];
   if (named && existsSync(join(EXAMPLES, basename(named), 'inputs.json'))) {
     const example = exampleAt(named);
     for (const item of example.items) if (item.path) out[fileName(item)] = new Uint8Array(readFileSync(join(example.dir, item.path)));
