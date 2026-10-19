@@ -12,8 +12,8 @@ npm run demo:vision -- examples/video-chapters --live            # real models: 
 A `--live` run needs:
 
 - `GEMINI_API_KEY` ([aistudio.google.com](https://aistudio.google.com)): the model that runs the agent and the model that looks.
-- `TYPESAFE_API_KEY` ([console.typesafe.ai/keys](https://console.typesafe.ai/keys)): Jev, the judge that answers yes-or-no, choice, count and box questions. Every `--live` run needs it.
-- `FAL_KEY` ([fal.ai](https://fal.ai)): only when the agent needs what the film says written down; the other keys are always needed.
+- `TYPESAFE_API_KEY` ([console.typesafe.ai/keys](https://console.typesafe.ai/keys)): Jev, the judge that answers yes-or-no, choice, count and box questions. Needed unless a gateway that passes TypeSafe through is set (`VIDEO_MODEL_BASE_URL` with `VIDEO_MODEL_API_KEY`); with one, `VIDEO_MODEL_API_KEY` is Jev's key unless this is set.
+- `FAL_KEY` ([fal.ai](https://fal.ai)): only when the agent needs what the film says written down; the two keys above are needed unless a gateway is set.
 - `ffmpeg`, `ffprobe`, `pdftoppm` and `pdftotext` on your path.
 - A download of about 120 MB: NASA's film, fetched once and checked by size and SHA-256. On fakes, a run without `--fetch-sources` stops and says so.
 

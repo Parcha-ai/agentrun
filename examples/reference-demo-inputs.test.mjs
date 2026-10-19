@@ -167,6 +167,7 @@ test('fakes.input is the no-key default (--input still wins), the models the liv
   assert.equal(live.result.processes.at(-1).outcome.status, 'complete');
   assert.equal(live.result.record.company, 'Acme Ltd', 'live: the job\'s own input, not the fakes\'');
   assert.deepEqual(JSON.parse(readFileSync(join(live.recording, 'manifest.json'), 'utf8')).chosen, { lead: 'chosen-lead', eyes: 'chosen-eyes' });
+  assert.equal(JSON.parse(readFileSync(join(live.recording, 'manifest.json'), 'utf8')).model, 'chosen-lead', 'a live recording names the lead model the run chose, not "live"');
   // The summary says why a child stopped.
   const lines = [];
   const log = console.log;

@@ -8,7 +8,7 @@ import { demo, type DemoOptions } from '@parcha/agentrun-harness';
 import { exampleAt, inputOf, job } from './agent.ts';
 import spec from './demo.json' with { type: 'json' };
 import { fakes } from './fakes.ts';
-import { liveParts } from './live.ts';
+import { liveParts, preflight } from './live.ts';
 import { result } from './result.ts';
 
 export const options: DemoOptions = {
@@ -32,9 +32,17 @@ export function argvFor(argv: string[]): string[] {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const run = await demo({ ...options, argv: argvFor(process.argv.slice(2)) });
-  const cited = run?.record as { answer?: string; report?: string } | null | undefined;
-  if (cited?.answer && !process.argv.includes('--json')) console.log(`  ${cited.answer}${cited.report ? `\n  report: ${join(run!.dir, 'work', cited.report)}` : ''}`);
-  // demo() sets the exit code only when it reads process.argv itself.
-  if (run && (run.overBudget || run.failedKills.length || run.failedSignals.length || run.unlanded.length || run.processes.at(-1)?.outcome?.status !== 'complete')) process.exitCode = 1;
+  const argv = argvFor(process.argv.slice(2));
+  // A live run that lacks a key is refused here, before the recorder starts: nothing is written, and no cost is printed.
+  const refused = preflight(argv);
+  if (refused) {
+    console.error(refused);
+    process.exitCode = 1;
+  } else {
+    const run = await demo({ ...options, argv });
+    const cited = run?.record as { answer?: string; report?: string } | null | undefined;
+    if (cited?.answer && !process.argv.includes('--json')) console.log(`  ${cited.answer}${cited.report ? `\n  report: ${join(run!.dir, 'work', cited.report)}` : ''}`);
+    // demo() sets the exit code only when it reads process.argv itself.
+    if (run && (run.overBudget || run.failedKills.length || run.failedSignals.length || run.unlanded.length || run.processes.at(-1)?.outcome?.status !== 'complete')) process.exitCode = 1;
+  }
 }

@@ -472,3 +472,30 @@ test('a machine named like an ordinary word (gateway) is redacted only as a whol
     assert.throws(() => scanRecording(dir, word), /host name/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test('the agent\'s report (draft 41): report/index.html and the files it reaches in the run\'s work directory are recorded as blobs with manifest.artifact, a file nothing reaches is not, and the recording validates; a report that does what a page may not refuses the recording', async (t) => {
+  const folder = await mkdtemp(join(tmpdir(), 'reference-report-'));
+  t.after(() => rm(folder, { recursive: true, force: true }));
+  const page = (body) => `<!doctype html><html><head><title>The company check</title><link rel="stylesheet" href="site.css"></head><body>${body}</body></html>`;
+  mkdirSync(join(folder, 'img'));
+  writeFileSync(join(folder, 'index.html'), page('<img src="img/a.png"><a href="https://example.org/out">out</a>'));
+  writeFileSync(join(folder, 'site.css'), 'body { background: url(img/bg.png) }');
+  writeFileSync(join(folder, 'img', 'a.png'), 'picture a');
+  writeFileSync(join(folder, 'img', 'bg.png'), 'picture bg');
+  writeFileSync(join(folder, 'img', 'leftover.png'), 'an attempt\'s leftover');
+  const { recording } = await run(t, {}, ['--json'], { DEMO_REPORT: folder });
+  const manifest = JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.artifact.title, 'The company check');
+  assert.equal(manifest.artifact.entry, 'index.html');
+  assert.deepEqual(Object.keys(manifest.artifact.files).sort(), ['img/a.png', 'img/bg.png', 'index.html', 'site.css']);
+  for (const [path, hash] of Object.entries(manifest.artifact.files)) {
+    const bytes = readFileSync(join(recording, 'blobs', `${hash}.${path.slice(path.lastIndexOf('.') + 1)}`));
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), hash);
+    assert.deepEqual(bytes, readFileSync(join(folder, path)), `${path} is recorded byte for byte`);
+  }
+  assert.ok(!filesIn(join(recording, 'blobs')).some((file) => readFileSync(file, 'utf8') === 'an attempt\'s leftover'), 'a file the page does not reach is not kept');
+  assert.deepEqual(validateRecording(recording), []);
+  // A report with a script is refused: the recording is not finished.
+  writeFileSync(join(folder, 'index.html'), page('<script>steal()</script>'));
+  await assert.rejects(() => run(t, {}, ['--json'], { DEMO_REPORT: folder }), /the report is refused: index.html has a <script>/);
+});

@@ -4,7 +4,7 @@
 // and that each example folder is a question, files with their sources and checks, and a README. Without ffmpeg and
 // pdftoppm the runs skip.
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -13,7 +13,8 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { exampleAt, fileName, inputOf, INSTRUCTIONS, skills } from './vision-agent/agent.ts';
 import { argvFor, options } from './vision-agent/run.ts';
-import { jevOptionsOf } from './vision-agent/live.ts';
+import { scriptFor } from './vision-agent/fakes.ts';
+import { jevKeyOf, jevOptionsOf, liveParts, missingKeys, namedModels, preflight } from './vision-agent/live.ts';
 import { demo } from '@parcha/agentrun-harness';
 
 const PROGRAMS = (() => { try { for (const cmd of ['ffmpeg', 'ffprobe', 'pdftoppm']) execFileSync(cmd, [cmd === 'pdftoppm' ? '-v' : '-version'], { stdio: 'ignore' }); return false; } catch { return 'ffmpeg, ffprobe and pdftoppm are needed'; } })();
@@ -69,6 +70,80 @@ test('Jev goes through the gateway\'s /typesafe when a gateway is set, else TYPE
   assert.ok(options.spec.keys.some((entry) => entry.env === 'TYPESAFE_BASE_URL'), 'declared, so a live child gets it');
 });
 
+// A live run's keys, told before anything starts. Every value here is a made-up string: no network, no model.
+const GATEWAY = { VIDEO_MODEL_BASE_URL: 'https://gateway.invalid/v1', VIDEO_MODEL_API_KEY: 'not-a-secret' };
+const live = ['examples/document-check', '--live'];
+
+test('a gateway serves the lead, the eyes and Jev: with no TYPESAFE_API_KEY its key is Jev\'s, and the preflight passes', () => {
+  assert.deepEqual(missingKeys(GATEWAY), []);
+  assert.equal(preflight(live, GATEWAY), undefined);
+  assert.equal(jevKeyOf(GATEWAY), 'not-a-secret');
+  assert.equal(jevOptionsOf(GATEWAY).apiKey, 'not-a-secret');
+  assert.equal(jevOptionsOf({ ...GATEWAY, TYPESAFE_API_KEY: 'fake-test-key' }).apiKey, 'fake-test-key', 'TypeSafe\'s own key wins when it is given');
+  assert.deepEqual(missingKeys({ ...GATEWAY, TYPESAFE_API_KEY: 'fake-test-key' }), []);
+  assert.equal(jevKeyOf({ VIDEO_MODEL_API_KEY: 'not-a-secret' }), undefined, 'a gateway key without a gateway is no key for TypeSafe');
+});
+
+test('no gateway: Jev needs TYPESAFE_API_KEY, each provider the run uses needs its key, and the message names exactly what is missing', () => {
+  const ok = { TYPESAFE_API_KEY: 'fake-test-key', GEMINI_API_KEY: 'fake' };
+  assert.deepEqual(missingKeys(ok), []);
+  assert.equal(preflight(live, ok), undefined);
+  const noJev = preflight(live, { GEMINI_API_KEY: 'fake' });
+  assert.match(noJev, /^--live is missing TYPESAFE_API_KEY \(typesafe\.ai: Jev judges the frames and pages and draws the boxes\)\. SETUP-PROMPT\.md says where to get it\.$/);
+  assert.ok(!/GEMINI_API_KEY|VIDEO_MODEL/.test(noJev), 'a key it has is not named');
+  const nothing = preflight(live, {});
+  assert.match(nothing, /TYPESAFE_API_KEY/);
+  assert.match(nothing, /OPENAI_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY\) or a gateway \(VIDEO_MODEL_BASE_URL and VIDEO_MODEL_API_KEY\)/);
+  assert.match(nothing, /where to get them\.$/);
+});
+
+test('a missing lead or eyes key names the key, the role and the model; flags choose what is checked', () => {
+  const jev = { TYPESAFE_API_KEY: 'fake-test-key' };
+  assert.match(preflight([...live, '--model', 'anthropic/claude-haiku-5-5'], { ...jev, GEMINI_API_KEY: 'fake' }), /^--live is missing ANTHROPIC_API_KEY \(the lead anthropic\/claude-haiku-5-5\)\./);
+  assert.match(preflight([...live, '--eyes-model', 'openai/gpt-6-sol'], { ...jev, GEMINI_API_KEY: 'fake' }), /^--live is missing OPENAI_API_KEY \(the eyes openai\/gpt-6-sol\)\./);
+  assert.match(preflight([...live, '--model', 'openai/a', '--eyes-model', 'openai/b'], jev), /^--live is missing OPENAI_API_KEY \(the lead openai\/a and the eyes openai\/b\)\./, 'one key, both its roles');
+  assert.match(preflight([...live, '--provider', 'openai', '--model', 'gpt-6-luna'], jev), /^--live is missing OPENAI_API_KEY \(the lead openai\/gpt-6-luna\); a key for the eyes \(OPENAI_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY\) or a gateway/, 'the lead named, the eyes with no key to choose from');
+  assert.deepEqual(namedModels({ provider: 'openai', model: 'gpt-6-luna' }), { lead: 'openai/gpt-6-luna' });
+  assert.deepEqual(namedModels({ model: 'google/x', eyesModel: 'google/y' }), { lead: 'google/x', eyes: 'google/y' });
+  assert.match(preflight([...live, '--model', 'nowhere/x'], jev), /^a model is named provider\/id with a provider of openai, google, anthropic; nowhere\/x is not$/, 'a model named wrongly is its own error, not a missing key');
+  const typo = /^a model is named provider\/id with a provider of openai, google, anthropic; nowhere\/x is not$/;
+  assert.match(preflight([...live, '--model', 'nowhere/x'], GATEWAY), typo, 'a gateway serves any provider, but a typo in the name is refused before anything starts all the same');
+  assert.match(preflight([...live, '--eyes-model', 'nowhere/x'], GATEWAY), typo);
+  assert.equal(preflight([...live, '--model', 'openai/gpt-6-luna'], { ...jev, OPENAI_API_KEY: 'fake', GEMINI_API_KEY: 'fake' }), undefined);
+});
+
+test('a gateway without its key names VIDEO_MODEL_API_KEY, and a run that is not live, or is a child of one, is not checked', () => {
+  const lacking = preflight(live, { VIDEO_MODEL_BASE_URL: 'https://gateway.invalid/v1' });
+  assert.match(lacking, /^--live is missing VIDEO_MODEL_API_KEY \(the gateway's credential/);
+  assert.ok(!/TYPESAFE_API_KEY/.test(lacking), 'a gateway needs only its own key');
+  assert.equal(preflight(['examples/document-check'], {}), undefined, 'a run on fakes needs no key');
+  assert.equal(preflight(['--live', '--child'], {}), undefined, 'the supervisor has checked');
+  assert.equal(preflight(['--record', 'r', '--max-usd', '1'], {}), undefined);
+});
+
+/** run.ts as the command line starts it, with exactly `env` (so no key of this machine leaks in), in a directory of its own. */
+function command(dir, args, env) {
+  return spawnSync(process.execPath, ['--no-warnings=ExperimentalWarning', join(import.meta.dirname, 'vision-agent', 'run.ts'), ...args], { cwd: dir, env: { PATH: process.env.PATH, HOME: dir, TMPDIR: dir, ...env }, encoding: 'utf8', timeout: 120_000 });
+}
+
+test('a live run without its keys stops with the message and a failing code, and leaves nothing: no recording, no run directory, no cost line', async (t) => {
+  const dir = await scratch(t);
+  const record = join(dir, 'recording');
+  const ran = command(dir, ['examples/document-check', '--live', '--record', record].map((arg) => (arg.startsWith('examples/') ? join(import.meta.dirname, '..', arg) : arg)), {});
+  assert.notEqual(ran.status, 0);
+  assert.match(ran.stderr, /^--live is missing TYPESAFE_API_KEY .*; .*or a gateway \(VIDEO_MODEL_BASE_URL and VIDEO_MODEL_API_KEY\)\. SETUP-PROMPT\.md says where to get them\.\n$/s);
+  assert.doesNotMatch(`${ran.stdout}${ran.stderr}`, /cost:|recording:|run directory:|stopped:/);
+  assert.deepEqual(readdirSync(dir), [], 'nothing was written: not the recording, not a scratch directory');
+  assert.equal(existsSync(record), false);
+});
+
+test('the live parts build with a gateway and no TYPESAFE_API_KEY (Jev under the gateway\'s key), and refuse, naming the key, without one', () => {
+  const parts = liveParts({ env: GATEWAY, models: {} });
+  assert.equal(parts.models.jev, 'typesafe/jev-1.14.0');
+  assert.equal(typeof parts.host.decisions.runJudge, 'function');
+  assert.throws(() => liveParts({ env: { GEMINI_API_KEY: 'fake' }, models: {} }), /^Error: --live is missing TYPESAFE_API_KEY \(typesafe\.ai/);
+});
+
 test('an example folder becomes the run\'s input', () => {
   const argv = argvFor(['examples/hear-and-find', '--live', '--record', 'r']);
   assert.deepEqual(argv.slice(0, 3), ['--live', '--record', 'r']);
@@ -85,8 +160,8 @@ test('on fakes the document check runs over the committed PDFs and ends with a r
   const manifest = JSON.parse(readFileSync(join(record, 'manifest.json'), 'utf8'));
   assert.deepEqual([manifest.kills, manifest.generations, manifest.example], [0, 1, 'document-check']);
   const kept = JSON.parse(readFileSync(join(record, 'blobs', `${manifest.result.blob}.json`), 'utf8'));
-  assert.equal(kept.report.page, 'report/report.html');
-  const page = readFileSync(join(record, 'blobs', `${kept.report.files['report.html']}.html`), 'utf8');
+  assert.equal(kept.report.page, 'report/index.html');
+  const page = readFileSync(join(record, 'blobs', `${kept.report.files['index.html']}.html`), 'utf8');
   assert.match(page, /<section id="answer">/);
   assert.ok(existsSync(join(record, 'blobs', `${kept.report.files['frames/one.png']}.png`)), 'the picture the report shows is a blob too');
   const [cite, ...more] = kept.rows[0].cites;
@@ -107,4 +182,21 @@ test('on fakes a film question runs over a film given beside it, and the report 
   const manifest = JSON.parse(readFileSync(join(tmp, 'recording', 'manifest.json'), 'utf8'));
   const kept = JSON.parse(readFileSync(join(tmp, 'recording', 'blobs', `${manifest.result.blob}.json`), 'utf8'));
   assert.deepEqual(kept.rows[0].cites.map((cite) => [cite.fragment, cite.note]), [['#t=1', '1 s']]);
+});
+
+// The report skill writes report/index.html, so the scripted lead and the fallback prompt do too: one name, fakes and live alike.
+test('the report is report/index.html everywhere: the scripted lead writes and returns it, and the instructions name it with or without the report skill', () => {
+  const script = scriptFor({ question: 'q', files: ['a.pdf'] });
+  assert.match(script, /cat > report\/index\.html <</);
+  assert.match(script, /report: "report\/index\.html" \}/);
+  assert.match(script, /in report\/index\.html\./);
+  assert.doesNotMatch(script, /report\.html/);
+  const withSkill = INSTRUCTIONS(skills());
+  assert.ok(skills().some((skill) => skill.name === 'report'), 'the package ships the report skill');
+  assert.match(withSkill, /report\/index\.html/, 'the report skill names its entry');
+  assert.doesNotMatch(withSkill, /report\.html/);
+  const without = INSTRUCTIONS([]);
+  assert.match(without, /Write the report as `report\/index\.html`/);
+  assert.match(without, /\(`report\/index\.html`\)/);
+  assert.doesNotMatch(without, /report\.html/);
 });

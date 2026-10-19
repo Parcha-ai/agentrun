@@ -42,8 +42,8 @@ export function scriptFor(state: { question: string; files: string[] }): string 
       + '<section id="answer"><h1>Answer</h1><p>(scripted: no model read the question) One look at ${file}, ${label}.</p></section>'
       + '<article class="finding"><p>${seen.text.split("\\n")[0].replace(/[<>&]/g, "")}</p><img src="frames/one.png" alt="the look"><p><a class="cite" href="../${file}${fragment}" data-look="${key}">${label}</a></p></article>'
       + '<section id="not-checked"><p>Everything else.</p></section>`;',
-    'await tools.bash({ command: `cat > report/report.html <<\'HTML\'\\n${html}\\nHTML` });',
-    'return { answer: "(scripted) One look at " + file + ", in report/report.html.", report: "report/report.html" };',
+    'await tools.bash({ command: `cat > report/index.html <<\'HTML\'\\n${html}\\nHTML` });',
+    'return { answer: "(scripted) One look at " + file + ", in report/index.html.", report: "report/index.html" };',
   ].join('\n');
 }
 

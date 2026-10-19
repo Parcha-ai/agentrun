@@ -12,7 +12,7 @@ npm run demo:vision -- examples/document-check --live     # real models: about $
 A `--live` run needs:
 
 - `GEMINI_API_KEY` ([aistudio.google.com](https://aistudio.google.com)): the model that runs the agent and the model that looks.
-- `TYPESAFE_API_KEY` ([console.typesafe.ai/keys](https://console.typesafe.ai/keys)): Jev, the judge that answers yes-or-no, choice, count and box questions. Every `--live` run needs it.
+- `TYPESAFE_API_KEY` ([console.typesafe.ai/keys](https://console.typesafe.ai/keys)): Jev, the judge that answers yes-or-no, choice, count and box questions. Needed unless a gateway that passes TypeSafe through is set (`VIDEO_MODEL_BASE_URL` with `VIDEO_MODEL_API_KEY`); with one, `VIDEO_MODEL_API_KEY` is Jev's key unless this is set.
 - `FAL_KEY` ([fal.ai](https://fal.ai)): only for a question about speech; this example does not need it.
 - `ffmpeg`, `ffprobe`, `pdftoppm` and `pdftotext` on your path.
 - No download: its two PDFs are committed in [sample/](sample/).
