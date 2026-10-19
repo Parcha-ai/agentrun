@@ -16,7 +16,8 @@ test('a live run\'s keys never reach the agent\'s commands: bash and code mode s
   const programs = ['DEMO_SPEC', 'DEMO_LIVE_PROBE', 'DEMO_CODE', 'DEMO_CODE_ON', 'DEMO_BASH'].map((env) => ({ name: `fixture ${env}`, env }));
   const env = {
     DEMO_LIVE_PROBE: '1', BROWSERBASE_API_KEY: canary, BROWSERBASE_PROJECT_ID: `${canary}-project`,
-    DEMO_BASH: 'printenv | tee bash-env.txt', DEMO_CODE_ON: '1', DEMO_CODE: 'return await tools.bash({ command: "printenv | tee code-env.txt" });',
+    // Into files only: a command's output is in the transcript, and the recorder refuses one that names this machine's paths.
+    DEMO_BASH: 'printenv > bash-env.txt', DEMO_CODE_ON: '1', DEMO_CODE: 'await tools.bash({ command: "printenv > code-env.txt" }); return 1;',
   };
   const { result, recording } = await run(t, { keys, programs }, ['--json', '--live'], env);
   assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
