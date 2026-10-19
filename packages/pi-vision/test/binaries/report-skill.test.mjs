@@ -1074,3 +1074,51 @@ test("what the allowlist lets through is not refused: aria-*, data-*, loading, a
   const html = HTML();
   for (const needle of ['aria-label="Answer"', 'loading="lazy"', 'data-xywh="percent:', 'style="left:', '<meta name="viewport"', '<meta charset="utf-8">']) assert.ok(html.includes(needle), `the template page has ${needle}`);
 });
+
+/** The sketch with one row, its thumbnail taken at the second of the look it is boxed on. */
+const boxedRow = (boxes) => data.replace("  notChecked:", `  rows: [{ id: "m1", label: "Seconds 18 to 26", text: "The second bar is the tallest.", thumb: await thumb("talk.mp4", "m1-thumb", { t: 21.5 }), ${boxes === undefined ? "" : `boxes: ${boxes}, `}cites: [{ file: "talk.mp4", t: [18, 26], xywh: "percent:61.2,40,12,9", look: lookTalk.key }] }],\n  notChecked:`);
+
+test("a row's boxes are drawn on its thumbnail, as marks with no label, and the page passes the check, the allowlist included", async () => {
+  onDisk = "other";
+  const { result, keys } = await run([helpers, assets, looking, boxedRow('[{ id: "m1-box", at: "61.2,40,12,9", look: lookTalk.key }, { id: "m1-box2", at: "10,20,30,15", look: lookTalk.key }]'), ground, render, check]);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  const html = HTML();
+  const row = /<li class="row" id="r-m1">([\s\S]*?)<\/li>/.exec(html)[1];
+  assert.match(row, new RegExp(`^<div class="sheet thumb"><img src="frames/m1-thumb\\.jpg" alt="The second bar is the tallest\\." loading="lazy"><div class="mark right" id="m1-box" data-xywh="percent:61\\.2,40,12,9" data-look="${keys[0]}" style="left:61\\.2%;top:40%;width:12%;height:9%"></div><div class="mark" id="m1-box2" data-xywh="percent:10,20,30,15" data-look="${keys[0]}" style="left:10%;top:20%;width:30%;height:15%"></div></div>`), "the thumbnail is a small sheet carrying both marks");
+  assert.ok(!/class="tag"/.test(row), "a mark on a thumbnail has no label link");
+  assert.ok(!/<img class="thumb"/.test(row), "the image is inside the sheet");
+  // The thumbnail is the film's frame at the boxed look's second.
+  const same = path.join(cwd, ".thumb-ref.jpg");
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-ss", "21.5", "-i", path.join(cwd, "talk.mp4"), "-frames:v", "1", "-vf", "scale=240:-2", "-q:v", "8", same]);
+  assert.ok(psnr(path.join(cwd, "report", "frames", "m1-thumb.jpg"), same) > 30, "taken at the second of the boxed look");
+  assert.match(html, /\.sheet\.thumb\{margin-top:0\}/, "the thumbnail's sheet is as small as the thumbnail");
+});
+
+test("a row without boxes renders as it did: an image with its class, no sheet, no mark", async () => {
+  onDisk = "other";
+  const { result } = await run([helpers, assets, looking, boxedRow(undefined), ground, render, check]);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  const row = /<li class="row" id="r-m1">([\s\S]*?)<\/li>/.exec(HTML())[1];
+  assert.match(row, /^<img class="thumb" src="frames\/m1-thumb\.jpg" alt="The second bar is the tallest\." loading="lazy"><span class="when">Seconds 18 to 26<\/span>/);
+  assert.ok(!/sheet|mark/.test(row));
+  const empty = await run([helpers, assets, looking, boxedRow("[]"), ground, render, check]);
+  assert.ok(empty.result.ok);
+  assert.match(/<li class="row" id="r-m1">([\s\S]*?)<\/li>/.exec(HTML())[1], /^<img class="thumb"/, "an empty list of boxes is no boxes");
+});
+
+test("a row's box is checked like any other: inside its picture, a look the run made, a unique id", async () => {
+  onDisk = "other";
+  const outside = await run([helpers, assets, looking, boxedRow('[{ id: "m1-box", at: "90,40,12,9", look: lookTalk.key }]'), ground, render, check]);
+  assert.ok(!outside.result.ok);
+  assert.match(outside.result.error.message, /percent:90,40,12,9 is not inside 0 to 100/);
+  const stranger = await run([helpers, assets, looking, boxedRow(`[{ id: "m1-box", at: "10,40,12,9", look: "${"f".repeat(64)}" }]`), ground, render, check]);
+  assert.ok(!stranger.result.ok);
+  assert.match(stranger.result.error.message, /is no look this run made/);
+  const twice = await run([helpers, assets, looking, boxedRow('[{ id: "mark-peak", at: "10,40,12,9", look: lookTalk.key }]'), ground, render, check]);
+  assert.ok(!twice.result.ok);
+  assert.match(twice.result.error.message, /two things on the page share an id/);
+});
+
+test("the skill teaches a boxed row (the thumbnail at the boxed look's second), a count as what was logged, and a row's text beyond its label", () => {
+  for (const words of ["A row may carry `boxes`", "Take the thumbnail at the second of the boxed look", "the box and the frame must be the same moment", "with no label on them", 'boxes: [{ id: "m1-box"', "A count over rows is stated as what was logged", "never as the film's true total, unless every moment was looked at and the page says so", "says what the look saw beyond its label, not the label again"]) assert.ok(SKILL.replace(/\s+/g, " ").includes(words), `the skill says ${words}`);
+});
