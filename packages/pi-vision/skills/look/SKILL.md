@@ -213,6 +213,16 @@ const check = await vision.judge({ paths: [".look/table.png"], fragments: [answe
 return Object.entries(check.answers).filter(([, a]) => a.noul > 0.5).map(([side]) => side);
 ```
 
+## A series of images of one scene over time
+
+When the images are one scene at many dates (a shoreline the water left, a building that went up) and the question is when something changed, answer it place by place, from each place's own picture, never from the scene as a whole.
+
+- Each place the question asks about is its own small box: one contiguous area, such as one cove, one wash or one building, never a region that spans several named places.
+- Use the place names the run's own files give (a map key, if there is one), not names of your own.
+- For each place, bracket and then bisect the dates on that place's own crop: find the last image where the thing is present and the first where it is gone. Look at the crop at each candidate date. Do not infer a date from a whole-scene average such as "half of its lost water is dry".
+- A place is "dry" or "gone" in an image when its crop shows none of it, as the eyes say (`vision.see`) and Jev confirms with a typed question for each crop and each date (`noul`, such as "Is there open water in this crop?"). A pixel mask or a brightness threshold only points where to look and never answers: water can be dark, green, turbid or glinting, and a threshold set on one date misses it on another.
+- "Against the first image" means present in the first image and absent in some later one, even if it comes back later. Report the first date it is absent, and say when it returns.
+
 ## When pdftoppm or ffmpeg is missing
 
 Install them where bash runs:
