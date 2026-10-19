@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { MissCode } from "./contract.js";
 import { visionContext, type VisionEnv } from "./env.js";
 import type { Kind } from "./kinds.js";
@@ -40,21 +40,40 @@ export const derivedName = (source: Pick<ProviderSource, "sha256">, provider: Pi
 export type Derivations = {
   /** Where `name` is kept, or null when the host keeps nothing. */
   path(name: string): string | null;
-  /** The kept bytes, or null when there are none or they cannot be read. */
+  /** The kept bytes, or null when there are none, they cannot be read, or they are not bytes this process kept there. */
   read(name: string): Promise<Uint8Array | null>;
   /** Writes to a temp name and renames into place, so a reader never sees a partial file; the path, or null when nothing was kept. */
   keep(name: string, bytes: Uint8Array): Promise<string | null>;
 };
 
+/** The most kept paths this process remembers; past it the oldest is forgotten, and its derivation is made again. */
+const KEPT_PATHS = 10_000;
+/** The sha256 of every set of bytes this process kept, by environment and path. The derive directory is shared with
+ *  whatever runs in the environment, so a kept file is taken back only when it holds bytes this process wrote under
+ *  that name: one another process left, or one a command wrote or changed, is made again. Held in this process's
+ *  memory, which nothing the environment runs can change. */
+const kept = new Map<string, Set<string>>();
+const sha256Of = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+
+function remember(slot: string, digest: string): void {
+  const digests = kept.get(slot) ?? new Set<string>();
+  kept.delete(slot);
+  kept.set(slot, digests.add(digest));
+  if (kept.size > KEPT_PATHS) kept.delete(kept.keys().next().value!);
+}
+
 /** The derivation store of one call in `ctx.env`, under `ctx.deriveDir`; with no `deriveDir` nothing is kept. */
 export function derivations(ctx: Pick<DeriveContext, "env" | "deriveDir" | "signal">): Derivations {
   const path = (name: string) => (ctx.deriveDir ? `${ctx.deriveDir}/${name}` : null);
+  const slot = (at: string) => `${ctx.env.id}\0${ctx.env.cwd}\0${at}`;
   return {
     path,
     async read(name) {
       const at = path(name);
-      const read = at ? await ctx.env.readBinaryFile(at, visionContext(ctx.signal)) : null;
-      return read?.ok ? read.value : null;
+      const digests = at ? kept.get(slot(at)) : undefined;
+      if (!at || !digests) return null;
+      const read = await ctx.env.readBinaryFile(at, visionContext(ctx.signal));
+      return read.ok && digests.has(sha256Of(read.value)) ? read.value : null;
     },
     async keep(name, bytes) {
       const at = path(name);
@@ -63,6 +82,7 @@ export function derivations(ctx: Pick<DeriveContext, "env" | "deriveDir" | "sign
       const temp = `${at}.${randomBytes(4).toString("hex")}.tmp`;
       const done = (await ctx.env.createDir(ctx.deriveDir!, { recursive: true }, c)).ok && (await ctx.env.writeFile(temp, bytes, c)).ok && (await ctx.env.renameFile(temp, at, c)).ok;
       if (!done) await ctx.env.remove(temp, { force: true }, visionContext());
+      else remember(slot(at), sha256Of(bytes));
       return done ? at : null;
     },
   };
