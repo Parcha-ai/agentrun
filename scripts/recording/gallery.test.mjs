@@ -52,9 +52,9 @@ const header = (path, type, data = Buffer.alloc(0)) => {
 const raw = (...parts) => Buffer.concat([...parts, Buffer.alloc(1024)]);
 const empty = (t) => { const dir = mkdtempSync(join(tmpdir(), 'gallery-out-')); t.after(() => rmSync(dir, { recursive: true, force: true })); return join(dir, 'recordings'); };
 
-test('the limits are 40 MB a recording and 150 MB the gallery', () => {
-  assert.equal(RECORDING_LIMIT, 40_000_000);
-  assert.equal(GALLERY_LIMIT, 150_000_000);
+test('the limits are 80 MB a recording and 300 MB the gallery, raw', () => {
+  assert.equal(RECORDING_LIMIT, 80_000_000);
+  assert.equal(GALLERY_LIMIT, 300_000_000);
 });
 
 test('the lock reads plain ids and { id, poster }, and refuses every other shape', () => {

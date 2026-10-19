@@ -9,7 +9,8 @@
 // - it holds exactly the lock's ids, each with its manifest and its lines, each id once and the name of the example
 //   folder (`examples/<id>`) whose run it is, as its own manifest says (`example`, else `task`): one recording per
 //   example, so a re-take replaces its id;
-// - no recording is over 40 MB and the gallery is not over 150 MB;
+// - no recording is over 80 MB and the gallery is not over 300 MB, measured raw on the files it unpacks (a run's
+//   pi.live revisions are whole documents, which the format keeps as recorded);
 // - a poster is an image blob (PNG, JPEG, WebP or GIF, by its bytes) of the recording it is the poster of;
 // - the directory it unpacks into holds no recording already.
 //
@@ -28,8 +29,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 /** The release the asset is on: a tag no release workflow reads (they read `v*`). */
 export const RELEASE = 'gallery';
-export const RECORDING_LIMIT = 40_000_000;
-export const GALLERY_LIMIT = 150_000_000;
+export const RECORDING_LIMIT = 80_000_000;
+export const GALLERY_LIMIT = 300_000_000;
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;

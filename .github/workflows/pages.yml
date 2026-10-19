@@ -39,7 +39,7 @@ jobs:
         run: npm ci --ignore-scripts
       # The recordings are not in git: they are one tar on the release tagged gallery, which the lock names with its
       # SHA-256 and the gallery's ids. Nothing is unpacked unless the tar hashes to the lock, holds only those ids'
-      # manifests, lines and blobs, no recording is over 40 MB and the gallery not over 150 MB, and each poster is an
+      # manifests, lines and blobs, no recording is over 80 MB and the gallery not over 300 MB (raw), and each poster is an
       # image its recording holds. The download uses the job's own token, which reads the repository.
       - name: Fetch the gallery's recordings
         env:
