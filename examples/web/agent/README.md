@@ -16,14 +16,14 @@ page code can still read what the person types into the page, so a real password
 | `skills/<name>/SKILL.md` | The skills `agent.json` names, added to the prompt in that order. |
 | `frames.ts` | `frameStore(runDir, clock, kept)`: the sink for pi-browser's frame recorder, which keeps what the browser showed in `<run>/frames/` (owner-only, outside `work/`) for the page's replay player, drops every frame while the person signs in, and hands each line it keeps to `kept` (the run's recording). |
 | `chrome.ts` | The run's own Chrome for `AGENT_BROWSER=chrome`: its profile directory in the home and the save lease that decides who opens it, the run's download folder, its arguments, and its start and stop by pid. |
-| `preferences.ts` | The agent's preferences between runs: the home's copy into a new run's `work/preferences.md`, and the run's file back to the home when the server carries back the run that owns the sign-in. |
+| `memory.ts` | The agent's memory between runs: the home's `memory/` into a new run's `work/memory/`, and the run's folder back to the home when the server carries back the run that owns the sign-in. |
 | `remember.ts` | "What I remember": `report/remember.html`, written beside the agent's report when the run lets go. |
 | `home.mjs` | `ensureAgentHome(dir)`: the agent home of [`@parcha/pi-durable-agent`](../../../packages/pi-durable-agent/README.md), made from `agent.json` and the skills the first time (owner-only), opened after that. |
 | `app.ts` | The app `pi-durable-disk run --app` loads: the definition and skills from the home, the model from the environment, the file tools, the browser on the agent's saved sign-in and its frame recorder (2 frames a second), and `request_sign_in`. |
 | `record.ts` | The run's recording when `RECORD_DIR` is set: the reference package's recorder inside the run, its redaction, and the finish start-run.mjs calls once the run has exited. |
 | `redact.ts` | The rules a recording and a replay (`../replay.mjs`) share: the browser profile's id `[redacted]`, a session's id as its label, any `token=` value `[redacted]`, every `liveView` null, and the ids read from a run's store. It loads node's own modules only. |
 | `start-run.mjs` | Runs one started run, with its door on loopback, and finishes its recording. |
-| `agent.test.mjs`, `record.test.mjs`, `preferences.test.mjs` | Offline tests: no network, no key, no model call. |
+| `agent.test.mjs`, `record.test.mjs`, `memory.test.mjs` | Offline tests: no network, no key, no model call. |
 
 ## Run one
 
@@ -131,24 +131,26 @@ A recording is of one run, finished when the run's process exits: a run started 
 recording fails, so record each run into a directory of its own. The server passes its environment to every run it
 starts, so set `RECORD_DIR` only for a server that starts one run.
 
-## Preferences, downloads and what the agent remembers
+## Memory, downloads and what the agent remembers
 
-How the person wants things done is the agent's to keep, in `work/preferences.md`, with its own file tools (the
-preferences skill: read it at the start, add what the person states, never a secret). start-run.mjs puts the home's
-copy into a new run's workspace before the agent starts, unless the run already has its own (a resumed run). When the
-server carries a run back, the run's file becomes the home's copy (`<home>/preferences.md`, written whole, owner-only,
-at most 16 KB), but only for the run that owns the sign-in: the one that held its save lease, or made it. So one run
-writes at a time, as for sign-ins. `GET /agent` returns the preferences beside the sign-ins. **This file does not travel
-in a pack yet**: `packHome` copies the agent store and the runs only. Moving it into the agent store is pi-durable-agent's
-to do; `work/preferences.md` stays the agent's contract either way.
+What the agent keeps between runs is files in `work/memory/`, written with its own file tools (the memory skill:
+`memory/index.md` names every file, `memory/preferences.md` holds how the person wants things done, `memory/accounts.md`
+the accounts it works on and their start pages; never a secret). start-run.mjs copies the home's memory into a new
+run's `work/memory/` before the agent starts, unless the run already has its own (a resumed run). When the server
+carries a run back, the run's folder becomes the home's (`<home>/memory/`, owner-only): each changed file written whole,
+a file the run no longer has removed, nothing taken when a name is not a plain `.md` file or the folder is over its caps
+(16 KB a file, 64 KB in all, 32 files). Only the run that owns the sign-in writes it: the one that held its save lease,
+or made it. So one run writes at a time, as for sign-ins. `GET /agent` returns the memory files beside the sign-ins.
+**This folder does not travel in a pack yet**: `packHome` copies the agent store and the runs only. Moving it into the
+agent store is pi-durable-agent's to do; `work/memory/` stays the agent's contract either way.
 
 With `AGENT_BROWSER=chrome`, each run's Chrome saves a file the page offers as a download into that run's
 `work/downloads/` without asking: start-run.mjs sets the profile's download folder again for every run, since the
 profile is shared across runs. The agent's file tools read a downloaded file by its name, and cannot list a folder.
 
 When the run lets go of its browser, the app writes `report/remember.html` beside the agent's report: the sites the
-agent is signed in to and when that was last checked, and its preferences, never a profile's ref. The report links to
-it, and a recording carries both pages in `manifest.artifact`.
+agent is signed in to and when that was last checked, each memory file with its text, and the agent's runs, never a
+profile's ref. The report links to it, and a recording carries both pages in `manifest.artifact`.
 
 ## A local Chrome
 
