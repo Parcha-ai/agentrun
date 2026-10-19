@@ -123,7 +123,7 @@ it with what it found and where, and the directory is left without a manifest, s
 | 4 | `decisions` | the workflow's `judge` (`runJudge`), the browser's page judge (`classifyPage`) | the job's scripted answers; a page judge only when the fakes give one. Each answer's receipt is a row in the run's store (`agentrun.decisions`) before it acts, and a resumed run replays it instead of asking again |
 | 5 | `status` | browser sessions and reconcile, vision looks and misses, workflow events | one JSON line per row in `<run>/events.jsonl` |
 | 6 | `deliver` | the workflow's output | `<run>/out/record.json` |
-| 7 | `credentials` | the browser's `redact`, the environment of a program vision starts | none; a started program sees only `PATH` |
+| 7 | `credentials` | the browser's `redact`, the environment of a program vision starts | none; a started program sees only `PATH`. A command the agent runs (its `bash` tool, code mode's `tools.bash`) sees only `PATH`, `HOME`, `TMPDIR` and `LANG`: a key stays in the host (`command-env.ts`) |
 
 Where the run lives (`RunPlace`) is the disk package's `AppContext`: `root`, `work`, `store` (`<root>/store`, holding
 `run.sqlite`, which the package's readers take as a file; a directory whose store is at `<root>/durable`, where the
