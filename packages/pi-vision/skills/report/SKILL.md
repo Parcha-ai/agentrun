@@ -13,7 +13,8 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
 
 - **The answer is in the shape the question asks.** When the question names a shape (minute by minute, page by page, mark by
   mark, a table), the answer section is that shape: one row for each unit, every row cited. Group or fold only the detail
-  under a row, never the rows. A question that names no shape gets the sentence and the key points.
+  under a row, never the rows. A row's text says what the look saw beyond its label, not the label again (a row labelled
+  "automobile" does not read "automobile crosses the street"). A question that names no shape gets the sentence and the key points.
 - **Never state what the run did not read.** Every name, place, time and number on the page comes from a look's answer or from
   the file's own text, and carries its cite. A caption says what the look saw, not what you remember about the subject.
   What the run did not read is left out; a place it did not look at goes under what you did not check.
@@ -28,7 +29,8 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
   symbols (`**`, `##`, a `* ` list mark, backticks); the check refuses them in any text outside `<code>` and `<pre>` and names
   the element.
 - **The answer first**, in a sentence or two, then three or four key points, each a link to the finding or the mark it
-  stands on. Someone who reads only that much has the answer.
+  stands on. Someone who reads only that much has the answer. A count over rows is stated as what was logged ("34 vehicles
+  logged crossing"), never as the film's true total, unless every moment was looked at and the page says so.
 - **Every finding shows its evidence; every row has a thumbnail.** A page that only says is a page nobody checks. Show:
   - **a document:** the page with the cited mark boxed (the embedded page, below) and, in the finding, a close crop of the
     mark with its box in the crop. `crop()` computes the crop and the box in it; you do no arithmetic;
@@ -68,7 +70,7 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
     listed in `outside`. Any other relative link is dead.
 - **No script, nothing from the network.** Inline CSS. No `<script>`, no `on...` attributes, no `data:` URLs (a picture is a
   file), no `<iframe>`, `<object>`, `<embed>`, `<form>`, `<base>`, `<link>` or `<meta http-equiv>`, no `url()`, no `@import`,
-  no remote font or image. A link out is allowed but loads nothing; a URL in text is written without its scheme
+  no remote font or image. The page is made of the same allowlist the recording format uses: only the elements and attributes of the check below (an `svg`, a `button`, an `on...` handler or a `srcdoc` is refused, and a `style` attribute is read as CSS under the same rules as the style element). A link out is allowed but loads nothing; a URL in text is written without its scheme
   (`example.com/terms`) so nothing in it can be mistaken for a load.
 - **Light and dark, phone width.** `color-scheme: light dark`, one `prefers-color-scheme` rule, one column that becomes two
   where there is room, system fonts.
@@ -260,6 +262,7 @@ looks you made (a `vision.judge` box answer carries its `fragment`; `find` and `
 key one (open) or `routine` (folded). A box belongs to a finding and links back to it; `points` are the three or four key
 points of the answer. When the question names a shape, add `rows` to the report, one for each unit it names:
 `rows: [{ id: "m1", label: "0:00 to 1:00", text: "what the look read there", thumb: await thumb("talk.mp4", "m1-thumb", { t: 30 }), cites: [{ file: "talk.mp4", t: [0, 60], look: lookTalk.key }] }]`.
+A row may carry `boxes`, the same `{ id, at, look }` as a picture's (the look's percentages): its thumbnail then shows the marks, with no label on them (a thumbnail is too small for one). Take the thumbnail at the second of the boxed look, `thumb("talk.mp4", "m1-thumb", { t: 21.5 })` for a look at `talk.mp4#t=21.5`: the box and the frame must be the same moment, or the mark lands on another picture. One row, boxed: `{ id: "m1", label: "Seconds 18 to 26", text: "the second bar is the tallest", thumb: await thumb("talk.mp4", "m1-thumb", { t: 21.5 }), boxes: [{ id: "m1-box", at: "61.2,40,12,9", look: lookTalk.key }], cites: [{ file: "talk.mp4", t: [21.5], xywh: "percent:61.2,40,12,9", look: lookTalk.key }] }`.
 A claim about what was said cites the look of `hear()`, made in piece 3's way: `const said1 = await hear("talk.mp4")`, then `look: said1.key`.
 A mark on a document page gets `crop()` for its finding and its box on the embedded page; a film moment gets `frame()` and the window's `clip()`; a photo gets `photo()`.
 An embedded page takes its look from a cite of that page of that document, in a finding or a row, or from a `look` of its own.
@@ -358,9 +361,12 @@ const num = (n) => String(Number(Number(n).toFixed(2)));
 const part = (c) => [c.page && `page=${c.page}`, c.t && `t=${c.t.map(num).join(",")}`, c.xywh && `xywh=${c.xywh}`].filter(Boolean).join("&");
 const label = (c) => c.page ? `p. ${c.page}` : c.t ? `${c.t.map(num).join(" to ")} s` : c.xywh ? `box ${c.xywh.replace(/^percent:/, "").replace(/^pixel:/, "px ")}` : "file";
 const cite = (c) => `<a class="cite" href="${encodeURIComponent(c.file)}${part(c) ? `#${esc(part(c))}` : ""}" data-look="${esc(c.look)}">${esc(label(c))}</a>`;
-const box = (b) => { const [x, y, w, h] = b.at.split(",");
-  return `<div class="mark${Number(x) + Number(w) / 2 > 50 ? " right" : ""}" id="${esc(b.id)}" data-xywh="percent:${esc(b.at)}" data-look="${esc(b.look)}" style="left:${x}%;top:${y}%;width:${w}%;height:${h}%"><a class="tag" href="#f-${esc(b.finding)}">${say(b.label)}</a></div>`; };
-const sheet = (p) => `<div class="sheet"><img src="${esc(p.src)}" alt="${say(p.alt)}" loading="lazy">${(p.boxes ?? []).map(box).join("")}</div>`;
+const box = (b, small = false) => { const [x, y, w, h] = b.at.split(",");   // small: a mark on a thumbnail, too small for a label
+  return `<div class="mark${Number(x) + Number(w) / 2 > 50 ? " right" : ""}" id="${esc(b.id)}" data-xywh="percent:${esc(b.at)}" data-look="${esc(b.look)}" style="left:${x}%;top:${y}%;width:${w}%;height:${h}%">${small ? "" : `<a class="tag" href="#f-${esc(b.finding)}">${say(b.label)}</a>`}</div>`; };
+const sheet = (p) => `<div class="sheet"><img src="${esc(p.src)}" alt="${say(p.alt)}" loading="lazy">${(p.boxes ?? []).map((b) => box(b)).join("")}</div>`;
+const thumbOf = (r) => r.boxes?.length   // a row's thumbnail, with its boxes drawn on it when it has them
+  ? `<div class="sheet thumb"><img src="${esc(r.thumb)}" alt="${say(r.text)}" loading="lazy">${r.boxes.map((b) => box(b, true)).join("")}</div>`
+  : `<img class="thumb" src="${esc(r.thumb)}" alt="${say(r.text)}" loading="lazy">`;
 const pic = (p) => `<figure class="pic"${p.mark ? ` data-mark="${esc(p.mark)}"` : ""}>${sheet(p)}<figcaption>${say(p.caption)}</figcaption></figure>`;
 const movie = (c) => `<figure class="pic"><video controls muted playsinline preload="metadata" poster="${esc(c.poster)}"><source src="${esc(c.src)}" type="video/mp4"></video><figcaption>${say(c.caption)}</figcaption></figure>`;
 const documents = report.documents ?? [];
@@ -372,7 +378,7 @@ const body = (f) => `<h3>${say(f.title)}</h3><p>${say(f.why)}</p>
 const finding = (f) => f.routine
   ? `<details class="finding routine" id="f-${f.id}"><summary>${say(f.title)}</summary>${body(f)}</details>`
   : `<article class="finding" id="f-${f.id}">${body(f)}</article>`;
-const rows = (list) => list.length ? `<ol class="rows">${list.map((r) => `<li class="row" id="r-${esc(r.id)}"><img class="thumb" src="${esc(r.thumb)}" alt="${say(r.text)}" loading="lazy"><span class="when">${say(r.label)}</span><span class="what">${say(r.text)}</span><span class="cites">${r.cites.map(cite).join(" ")}</span></li>`).join("")}</ol>` : "";
+const rows = (list) => list.length ? `<ol class="rows">${list.map((r) => `<li class="row" id="r-${esc(r.id)}">${thumbOf(r)}<span class="when">${say(r.label)}</span><span class="what">${say(r.text)}</span><span class="cites">${r.cites.map(cite).join(" ")}</span></li>`).join("")}</ol>` : "";
 const span = (n) => n.pages ? `page${n.pages.length > 1 ? "s" : ""} ${n.pages.join(", ")}` : n.t ? `${n.t.map(num).join(" to ")} s` : "the whole file";
 const limit = (n) => `<li>${say(n.file)}, ${span(n)}: ${say(n.why)}</li>`;
 const docPage = (d, p) => `<figure class="docpage" id="${esc(d.id)}-p${p.n}"><header><span class="n">${say(documents.length > 1 ? `${d.file}, ` : "")}p. ${p.n}</span><a class="cite" href="${encodeURIComponent(d.file)}#page=${p.n}" data-look="${esc(p.look ?? [...(report.rows ?? []), ...report.findings].flatMap((x) => x.cites).find((c) => c.file === d.file && c.page === p.n)?.look ?? "")}">open at p. ${p.n}</a></header>${sheet({ ...p, alt: p.alt ?? `Page ${p.n} of ${d.file}` })}</figure>`;
@@ -391,7 +397,7 @@ h2{font-size:.78rem;letter-spacing:.1em;text-transform:uppercase;color:var(--mut
 .mark{position:absolute;border:3px solid var(--box);border-radius:.25rem;scroll-margin-top:6rem}.mark:target{outline:3px solid var(--accent)}
 .tag{position:absolute;left:-3px;bottom:100%;white-space:nowrap;background:var(--box);color:#fff;font:600 .7rem/1.5 system-ui,sans-serif;padding:0 .4rem;border-radius:.25rem .25rem .25rem 0;text-decoration:none}.right .tag{left:auto;right:-3px;border-radius:.25rem .25rem 0}
 .cites{margin:.2rem 0 0;display:flex;flex-wrap:wrap;gap:.4rem;align-items:center}.cite{font:.8rem/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--accent);border:1px solid var(--line);border-radius:999px;padding:.2rem .6rem;text-decoration:none}.jump{font-size:.85rem;color:var(--mute)}
-.rows{list-style:none;margin:1rem 0 0;padding:0}.row{display:flex;flex-wrap:wrap;gap:.3rem .8rem;align-items:baseline;border-top:1px solid var(--line);padding:.5rem 0}.thumb{width:6rem;height:auto;border:1px solid var(--line);border-radius:.3rem;flex:none}.when{font:700 .85rem ui-monospace,monospace;min-width:6rem}.what{flex:1 1 14rem}.row .cites{margin:0 0 0 auto}
+.rows{list-style:none;margin:1rem 0 0;padding:0}.row{display:flex;flex-wrap:wrap;gap:.3rem .8rem;align-items:baseline;border-top:1px solid var(--line);padding:.5rem 0}.thumb{width:6rem;height:auto;border:1px solid var(--line);border-radius:.3rem;flex:none}.sheet.thumb{margin-top:0}.thumb .mark{border-width:2px}.when{font:700 .85rem ui-monospace,monospace;min-width:6rem}.what{flex:1 1 14rem}.row .cites{margin:0 0 0 auto}
 .docpage{margin:0 0 1.2rem;scroll-margin-top:1rem}.docpage>header{display:flex;justify-content:space-between;align-items:center}.n{font:700 .85rem ui-monospace,monospace}ul.limits{color:var(--mute);padding-left:1.2rem}`;
 
 const renderPage = () => {   // the page is a pure function of `report`: the check renders it again and compares
@@ -429,6 +435,24 @@ const tags = page.match(/<[a-z!][^>]*>/gi) ?? [];   // text is escaped, so a `<`
 const style = (page.match(/<style>[\s\S]*?<\/style>/) ?? [""])[0];
 const banned = tags.some((tag) => /^<(?:script|link|iframe|object|embed|form|base)\b/i.test(tag) || /^<meta\b[^>]*http-equiv/i.test(tag) || /\son[a-z]+\s*=/i.test(tag));
 if (banned || /url\(|@import/i.test(style) || /https?:|\/\/[a-z0-9-]+\./i.test(page)) problems.push("the page runs code or loads from outside report/");
+// The page is made of an allowlist, the one the recording format uses: these elements, these attributes, nothing else.
+const ELEMENTS = new Set("html head body title meta style main section article header footer nav aside h1 h2 h3 h4 h5 h6 p div span ul ol li dl dt dd table caption thead tbody tfoot tr th td figure figcaption img picture source video track a em strong b i u s small sub sup code pre kbd samp blockquote q cite abbr time mark br hr details summary".split(" "));   // link is left out: the page has no stylesheet file
+const ATTRIBUTES = new Set("class id lang dir title alt src srcset sizes width height href rel type media controls poster preload loop muted playsinline colspan rowspan scope headers open datetime start reversed charset name content property style loading decoding role".split(" "));   // and every aria-* and data-*
+const refusedCss = (css) => /url\s*\(|@import|data:|javascript:|expression\s*\(|behavior|-moz-binding/.test(css.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\\([0-9a-f]{1,6})\s?/gi, (_, hex) => String.fromCodePoint(Math.min(parseInt(hex, 16), 0x10ffff))).replace(/\\([\s\S])/g, "$1").toLowerCase());   // read after its comments and escapes
+for (const tag of tags.filter((tag) => /^<[a-z]/i.test(tag))) {
+  const name = /^<([^\s>\/]+)/.exec(tag)[1].toLowerCase();
+  if (!ELEMENTS.has(name)) { problems.push(`<${name}> is not an element the page may use: the page is made of the allowlist the recording format uses (no svg, math, button, form, script, iframe or prefixed element)`); continue; }
+  const attributes = [...tag.slice(name.length + 1).matchAll(/([^\s"'<>\/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g)].map((m) => [m[1].toLowerCase(), m[2] ?? m[3] ?? m[4] ?? ""]);
+  for (const [attribute, value] of attributes) {
+    if (!(ATTRIBUTES.has(attribute) || /^aria-[\w-]+$/.test(attribute) || /^data-[\w.-]+$/.test(attribute))) problems.push(`${attribute} on <${name}> is not an attribute the page may use (no on* handler, srcdoc, formaction or xmlns:*)`);
+    if (attribute === "style" && (value.includes("&") || refusedCss(value))) problems.push(`the style attribute on <${name}> holds CSS the page may not use: no character reference (&#114; is r), no url(), @import, data:, javascript:, expression(, behavior or -moz-binding`);   // a browser reads a character reference before it reads the CSS
+  }
+  const keys = attributes.map(([attribute]) => attribute).sort().join(",");
+  if (name === "meta" && !(keys === "charset" || (keys === "content,name" && attributes.find(([attribute]) => attribute === "name")[1] === "viewport"))) problems.push('<meta> only as charset or name="viewport"');
+}
+if (refusedCss(style.replace(/<\/?style>/g, ""))) problems.push("the style element holds CSS the page may not use: no url(), @import, data:, javascript:, expression(, behavior or -moz-binding");
+if (/<!--|<!\[|<\?/.test(page) || /<(?![a-z\/]|!doctype )/i.test(page)) problems.push("the page holds a comment or a < that starts no element");
+if (page.replace(/<style>[\s\S]*?<\/style>/, "").replace(/<[a-z!\/][^>]*>/gi, "").includes(">")) problems.push("a > stands outside any tag: text is escaped, so something put a tag the check cannot read into the page");
 if ([...attr("src"), ...attr("href"), ...attr("poster")].some((v) => /^\s*data:/i.test(v))) problems.push("the page uses a data: URL: a picture is a file");
 if ([...attr("src"), ...attr("href"), ...attr("poster")].some((v) => /(^|[\/\\])\.\.([\/\\]|$)/.test(v))) problems.push("a path with ../ leaves report/: copy the file in with keep(), or name a film in outside; never write ../");
 if (report.outside.some((name) => /[\/\\:]|^\./.test(name))) problems.push("outside names bare file names, never a path");
