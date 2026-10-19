@@ -1,11 +1,12 @@
 // The vision panel: what the eyes read for a lead that is never shown an image, and the account that cites it. Three
-// lanes (a film read in windows, scanned pages, photographs), the cited account, the receipt of the look a citation
-// names, the meters, and the same pages through other eyes.
+// lanes (a film read in windows, scanned pages, photographs) and, when the run transcribed a file, a fourth (speech, its
+// rows), the cited account, the receipt of the look a citation names, the meters, and the same pages through other eyes.
 //
 // What it reads (RECORDING.md section 5, vision, pi and host):
 //   vision, durable: a `vision.*` document whose value is `{ looks: [{ receipt, record, item?, images?, miss? }] }`, each
 //     `record` a LookRecord as the package filed it, in filing order (one document per look key, or per filing). Every
-//     count and the cost fold from these alone (rule 1).
+//     count and the cost fold from these alone (rule 1). A transcription is filed the same way (draft 38): tool
+//     `transcribe`, kind `audio` or `video`, its body the transcript as rows `start<TAB>end<TAB>words` in seconds.
 //   pi, durable: the lead's assistant entries, for the model it ran.
 //   pi and vision, live: `tool_execution_start` and `_end` of `read`, `LookEvent`, `MissEvent`: what is in flight, never
 //     counted. `shown`: the images a read returned
@@ -33,6 +34,8 @@ export type VisionImage = { blob: string; at?: number; caption?: string; keyfram
 export type VisionLook = {
   /** The document that filed it (`(doc, key, conv, task)`), and its place in that document's list. */
   doc: string; at: number; receipt: string | null; key: string; status: 'ok' | 'failed'; native: boolean; kept: boolean;
+  /** The call that filed it: `look`, or `transcribe` for a transcription. `via`: the provider a transcription went through. */
+  tool: string; via?: string;
   model: string; ask?: string; body: string; kind: string; sha256: string; fragment: string; source: string; item?: string;
   page?: number; fromS?: number; toS?: number; tokensIn?: number; tokensOut?: number; cost: number | null;
   images: VisionImage[]; miss?: { code: string; reason?: string };
@@ -128,6 +131,7 @@ function visionLooksOf(line: Line, gen: number): { doc: string; length: number; 
     const toS = visionNum(args.to_s) ?? window.to;
     const page = visionNum(args.page) ?? visionPage(fragment);
     const ask = visionStr(args.ask);
+    const via = visionStr(args.via) ?? visionStr(facts.provider);
     const item = visionStr(filing.item);
     const miss = visionObj(filing.miss);
     const code = visionStr(miss?.code) ?? visionStr(facts.miss);
@@ -135,7 +139,7 @@ function visionLooksOf(line: Line, gen: number): { doc: string; length: number; 
     const tokensIn = visionNum(facts.tokens_in);
     const tokensOut = visionNum(facts.tokens_out);
     return [{
-      doc: id, at: index, receipt, key, status: record.status === 'ok' ? 'ok' : 'failed',
+      doc: id, at: index, receipt, key, status: record.status === 'ok' ? 'ok' : 'failed', tool: visionStr(record.tool) ?? 'look', ...(via !== undefined ? { via } : {}),
       native: args.native === true, kept: facts.kept === true, model: visionStr(args.model) ?? 'not recorded', body: visionStr(record.body) ?? '',
       kind: visionStr(facts.kind) ?? 'unknown', sha256: visionStr(facts.sha256) ?? '', fragment, source: visionStr(args.path) ?? '',
       ...(ask !== undefined ? { ask } : {}), ...(item !== undefined ? { item } : {}), ...(page !== undefined ? { page } : {}),
@@ -276,7 +280,7 @@ export function visionMeters(state: VisionState, ended = state.result !== undefi
     native: looks.native, possible,
     cost: looks.costs.some((usd) => usd === null) ? null : looks.costs.reduce<number>((sum, usd) => sum + (usd ?? 0), 0),
     misses: [...codes].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])), failed: failed.length,
-    eyes: [...new Set(state.looks.filter((look) => !look.native && look.model !== 'none').map((look) => look.model))],
+    eyes: [...new Set(state.looks.filter((look) => !look.native && look.model !== 'none' && visionLane(look) !== 'speech').map((look) => look.model))],
   };
 }
 
@@ -382,7 +386,25 @@ export function visionKeptChars(truth: string, read: string): boolean[] {
 const VISION_CELLS = 60;
 const visionMoney = (usd: number | null) => (usd === null ? 'unknown' : `$${usd.toFixed(4)}`);
 const visionShort = (sha: string) => (sha.length > 12 ? `${sha.slice(0, 6)}…${sha.slice(-4)}` : sha);
-const visionLane = (look: VisionLook): 'film' | 'pages' | 'photos' | undefined => (look.kind === 'video' ? 'film' : look.kind === 'pdf' ? 'pages' : look.kind === 'image' ? 'photos' : undefined);
+/** The lane a look is drawn in. A transcription is speech whatever the file was: a video transcribed is heard, not read in
+ *  windows. */
+const visionLane = (look: VisionLook): 'speech' | 'film' | 'pages' | 'photos' | undefined =>
+  (look.tool === 'transcribe' || look.kind === 'audio' ? 'speech' : look.kind === 'video' ? 'film' : look.kind === 'pdf' ? 'pages' : look.kind === 'image' ? 'photos' : undefined);
+/** A transcript's rows, from a body of lines `start<TAB>end<TAB>words` in seconds (blank lines skipped), or undefined when
+ *  the body is not one. */
+export const visionTranscript = (body: string): { start: number; end: number; words: string }[] | undefined => {
+  const rows = body.split('\n').filter((line) => line.trim() !== '').map((line) => {
+    const [start, end, ...words] = line.split('\t');
+    return words.length > 0 && start!.trim() !== '' && end!.trim() !== '' ? { start: Number(start), end: Number(end), words: words.join('\t') } : undefined;
+  });
+  return rows.length > 0 && rows.every((row) => row !== undefined && Number.isFinite(row.start) && Number.isFinite(row.end) && row.start <= row.end) ? rows as { start: number; end: number; words: string }[] : undefined;
+};
+/** A second of a recording as a clock: `m:ss`, or `h:mm:ss` from an hour. */
+const visionClock = (seconds: number): string => {
+  const whole = Math.max(0, Math.floor(seconds));
+  const [hours, minutes, rest] = [Math.floor(whole / 3600), Math.floor((whole % 3600) / 60), String(whole % 60).padStart(2, '0')];
+  return hours ? `${hours}:${String(minutes).padStart(2, '0')}:${rest}` : `${minutes}:${rest}`;
+};
 /** A citation chip's words: the page, the window, and a box when the fragment names one. */
 export const visionChipText = (fragment: string): string => {
   const page = visionPage(fragment);
@@ -482,6 +504,34 @@ function visionPhotos(looks: VisionLook[], chosen: VisionLook | undefined, accou
     })));
 }
 
+/** The rows a transcription is drawn with, at most: a window that starts three rows before the first cited one. */
+const VISION_ROWS = 12;
+
+/** What the run heard: the transcript of the chosen transcription, else of the latest (a missed one too: it is news), as its rows, with the row each
+ *  cited second of it falls in marked and each cited second that falls in no row said. No lane when nothing was
+ *  transcribed. `momentsOf` gives the fragments the result cites the look, or its file, at. */
+function visionSpeech(looks: VisionLook[], chosen: VisionLook | undefined, momentsOf: (look: VisionLook) => string[]): Node | false {
+  const heard = visionOnce(looks.filter((look) => visionLane(look) === 'speech'));
+  if (heard.length === 0) return false;
+  const shown = chosen && visionLane(chosen) === 'speech' ? chosen : heard.at(-1)!;
+  const rows = shown.status === 'ok' ? visionTranscript(shown.body) : undefined;
+  const moments = momentsOf(shown).map((fragment) => visionWindow(fragment)).filter((moment): moment is { from: number; to?: number } => moment.from !== undefined);
+  const falls = (row: { start: number; end: number }, moment: { from: number; to?: number }) => row.start <= (moment.to ?? moment.from) && moment.from <= row.end;
+  const cited = (row: { start: number; end: number }) => moments.some((moment) => falls(row, moment));
+  const first = rows?.findIndex(cited) ?? -1;
+  const from = rows && rows.length > VISION_ROWS && first >= 0 ? Math.min(Math.max(0, first - 3), rows.length - VISION_ROWS) : 0;
+  const window = rows?.slice(from, from + VISION_ROWS) ?? [];
+  const source = shown.item ?? shown.source;
+  return h('section', { class: 'vz-lane' },
+    h('h5', {}, `Speech · ${source} · ${heard.length} file${heard.length === 1 ? '' : 's'} transcribed`),
+    rows ? h('div', { class: 'vz-transcript' }, ...window.map((row) => h('div', { class: `vz-line${cited(row) ? ' cited' : ''}`, title: `${row.start.toFixed(2)} to ${row.end.toFixed(2)} s` },
+      h('span', { class: 'vz-time' }, `${visionClock(row.start)}–${visionClock(row.end)}`), ` ${row.words}`)))
+      : shown.status === 'failed' ? h('p', { class: 'vz-note' }, `missed: ${shown.miss?.code ?? 'code not recorded'}${shown.miss?.reason ? `, ${shown.miss.reason}` : ''}`)
+        : visionSaid('transcript', shown.body),
+    rows !== undefined && rows.length > VISION_ROWS && h('p', { class: 'vz-note' }, `rows ${from + 1} to ${from + window.length} of ${rows.length}`),
+    ...(rows ? moments.filter((moment) => !rows.some((row) => falls(row, moment))).map((moment) => h('p', { class: 'vz-note' }, `#t=${moment.from}${moment.to !== undefined ? `,${moment.to}` : ''} is in no row of this transcript.`)) : []));
+}
+
 /** A typed time and how the eyes read it: the typed one's digits the reading dropped are struck. */
 function visionStamp(miss: VisionTimes['misread'][number], cite: string | undefined): Node {
   const kept = miss.truth !== undefined ? visionKeptChars(miss.truth, miss.read) : [];
@@ -516,21 +566,24 @@ function visionAccountView(account: VisionAccount, cite: string | undefined, eye
 /** A cited result's rows, one a line: its label, its value, its note, and a chip per cite: a look's opens its receipt
  *  and moves its lane, a file's opens the file, a page known only by its address is linked. A row that cites nothing
  *  says so. */
-function visionCitedView(cited: VisionCitedResult, cite: string | undefined, isImage: (sha: string) => boolean): Node {
+function visionCitedView(cited: VisionCitedResult, cite: string | undefined, isImage: (sha: string) => boolean, heardOf: (sha: string) => string | undefined): Node {
+  // A cite of a file a transcription heard, with no look named, selects that transcription: the second it names is in its rows.
+  const lookOf = (each: VisionCitedRow['cites'][number]) => each.look ?? (each.blob && !isImage(each.blob) ? heardOf(each.blob) : undefined);
   const chip = (each: VisionCitedRow['cites'][number], label: string): Node[] => {
     const words = each.fragment ? visionChipText(each.fragment) : each.look ? 'look' : each.blob ? 'file' : 'page';
     const about = [each.note, each.url, each.at].filter(Boolean).join(' · ');
+    const look = lookOf(each);
     return [
-      ...(each.look ? [h('span', { class: `vz-cite${each.look === cite ? ' hot' : ''}`, cite: each.look, title: about || 'the look that read it' }, words)] : []),
+      ...(look ? [h('span', { class: `vz-cite${look === cite ? ' hot' : ''}`, cite: look, title: about || (each.look ? 'the look that read it' : 'the transcription of this file') }, words)] : []),
       // A picture in the recording is drawn small in its row; any other file is a link to it.
       ...(each.blob && isImage(each.blob) ? [h('span', { class: 'vz-keyframes', title: about || label }, { tag: 'img', blob: each.blob, alt: label, class: 'vz-keyframe' })] : []),
-      ...(each.blob && !isImage(each.blob) ? [h('span', { ...(about ? { title: about } : {}) }, { tag: 'a', blob: each.blob, text: each.look ? 'file' : words, class: 'vz-cite', ...(each.fragment ? { fragment: each.fragment } : {}) })] : []),
+      ...(each.blob && !isImage(each.blob) ? [h('span', { ...(about ? { title: about } : {}) }, { tag: 'a', blob: each.blob, text: look ? 'file' : words, class: 'vz-cite', ...(each.fragment ? { fragment: each.fragment } : {}) })] : []),
       // A page named only by its address was not kept in the recording: it is linked, and says so.
       ...(!each.look && !each.blob && each.url ? [h('span', { ...(about ? { title: about } : {}) }, { tag: 'a', href: each.url, text: words, class: 'vz-cite' }, h('span', { class: 'vz-note' }, ' not kept'))] : []),
     ];
   };
   return h('div', { class: 'vz-account' },
-    ...cited.rows.map((row) => h('p', { class: `vz-entry${row.cites.some((each) => each.look !== undefined && each.look === cite) ? ' cited' : ''}` },
+    ...cited.rows.map((row) => h('p', { class: `vz-entry${row.cites.some((each) => cite !== undefined && lookOf(each) === cite) ? ' cited' : ''}` },
       h('span', { class: 'vz-name' }, row.label), ' ', h('b', {}, row.value), row.note !== undefined && h('span', { class: 'vz-note' }, ` · ${row.note}`), ' ',
       ...(row.cites.length ? row.cites.flatMap((each) => chip(each, row.label)) : [h('span', { class: 'vz-note' }, 'cites nothing')]))));
 }
@@ -561,10 +614,15 @@ function visionAccuracyView(accuracy: NonNullable<VisionAccount['accuracy']>): N
 
 function visionReceipt(look: VisionLook, chosen: boolean): Node {
   const row = (name: string, value: string | undefined): Node | false => value !== undefined && value !== '' && h('div', { class: 'vz-row' }, h('span', { class: 'k' }, name), h('span', {}, value));
+  // A transcript's answer is its rows, drawn in the speech lane: the receipt says how many, and over which seconds.
+  const speech = visionLane(look) === 'speech';
+  const transcript = speech ? visionTranscript(look.body) : undefined;
+  const seconds = (value: number) => String(Number(value.toFixed(2)));
+  const answer = transcript ? `${transcript.length} row${transcript.length === 1 ? '' : 's'}, ${seconds(transcript[0]!.start)} to ${seconds(transcript.at(-1)!.end)} s` : look.body;
   return h('div', { class: `vz-receipt${look.status === 'failed' ? ' missed' : ''}` },
     h('h5', {}, `${chosen ? 'Receipt' : 'Latest look'} · ${look.item ?? look.source}${look.fragment ? ` #${look.fragment}` : ''}`),
-    row('sha256', visionShort(look.sha256)), row('ask', look.ask), row(look.status === 'ok' ? 'answer' : 'missed', look.status === 'ok' ? look.body : look.miss ? `${look.miss.code}${look.miss.reason ? `: ${look.miss.reason}` : ''}` : look.body || 'code not recorded'),
-    row('model', look.model), row('tokens', look.tokensIn !== undefined || look.tokensOut !== undefined ? `${look.tokensIn ?? '?'} in, ${look.tokensOut ?? '?'} out` : undefined),
+    row('sha256', visionShort(look.sha256)), row('ask', look.ask), row(look.status === 'ok' ? 'answer' : 'missed', look.status === 'ok' ? answer : look.miss ? `${look.miss.code}${look.miss.reason ? `: ${look.miss.reason}` : ''}` : look.body || 'code not recorded'),
+    row('heard by', speech ? look.via : undefined), row('model', look.model), row('tokens', look.tokensIn !== undefined || look.tokensOut !== undefined ? `${look.tokensIn ?? '?'} in, ${look.tokensOut ?? '?'} out` : undefined),
     row('price', look.native ? 'in the lead\'s usage' : look.kept ? `${visionMoney(look.cost)} paid once, before the kill; this filing paid $0` : visionMoney(look.cost)),
     row('kept', look.kept ? 'yes: read back from the memo after a kill' : undefined),
     row('filed', `${look.receipt ?? 'no receipt path'} · generation ${look.gen}${look.lost ? ' · lost branch' : ''}`));
@@ -614,6 +672,10 @@ function visionView(state: VisionState, context: ViewContext): Node {
   // The lanes draw the run's own eyes; a weaker model the account compares them with is drawn in its own scene.
   const lanes = state.looks.filter((look) => !look.native && look.model !== account?.weak?.model).map(pictured);
   const shown = chosen ?? lanes.at(-1);
+  // A cite of a transcription names its look, or the file it heard (a blob whose SHA-256 is the look's), at a second.
+  const momentsOf = (look: VisionLook) => [...(account?.entries.flatMap((entry) => entry.cites).filter((each) => each.receipt === look.key).map((each) => each.fragment) ?? []),
+    ...(cited?.rows.flatMap((row) => row.cites).filter((each) => each.look === look.key || (each.blob !== undefined && each.blob === look.sha256)).map((each) => each.fragment) ?? [])];
+  const ears = [...new Set(state.looks.filter((look) => visionLane(look) === 'speech' && look.model !== 'none').map((look) => look.model))];
   // A public replay leads each look with its answer and the rows that cite it, and keeps the meters and the look's receipt
   // under Receipts; `?debug=durability` draws them as they were (PANELS.md, "What a public replay shows").
   const publicView = !context.debug?.includes('durability');
@@ -629,15 +691,16 @@ function visionView(state: VisionState, context: ViewContext): Node {
       state.lead && h('span', { class: 'vz-badge' }, `lead: ${state.lead}`),
       meters.native === 0 && state.looks.length > 0 && h('span', { class: 'vz-badge' }, 'the lead never sees an image'),
       meters.eyes.length > 0 && h('span', { class: 'vz-badge' }, `eyes: ${meters.eyes.join(', ')}`),
+      ears.length > 0 && h('span', { class: 'vz-badge' }, `speech to text: ${ears.join(', ')}`),
       state.kills.length > 0 && h('span', { class: 'vz-badge red durability' }, `killed ${state.kills.length === 1 ? 'once' : `${state.kills.length} times`}${state.kills.at(-1)?.label ? `: ${state.kills.at(-1)!.label}` : ''}`),
       kept > 0 && h('span', { class: 'vz-badge ok durability' }, `resumed · ${kept} kept`)),
     h('div', { class: 'vz-grid' },
-      h('div', { class: 'vz-col' }, visionFilm(lanes, state, chosen, lead), visionPages(lanes, state, chosen, boxes, lead), visionPhotos(lanes, chosen, account, context.focus)),
+      h('div', { class: 'vz-col' }, visionFilm(lanes, state, chosen, lead), visionPages(lanes, state, chosen, boxes, lead), visionPhotos(lanes, chosen, account, context.focus), visionSpeech(lanes, chosen, momentsOf)),
       h('div', { class: 'vz-col' },
         h('h5', {}, cited ? cited.title ?? state.result?.title ?? 'The result' : 'The account'),
         !state.result ? h('p', { class: 'empty' }, 'Not delivered yet.')
           : account ? h('div', {}, ...visionAccountView(account, context.cite, meters.eyes.find((model) => model !== account.weak?.model)))
-            : cited ? visionCitedView(cited, context.cite, isImage)
+            : cited ? visionCitedView(cited, context.cite, isImage, (sha) => state.looks.find((look) => visionLane(look) === 'speech' && look.sha256 === sha)?.key)
               : h('p', { class: 'empty' }, typeof parsed === 'string' ? `${parsed}: ` : 'The account is in the result: ', { tag: 'a', blob: state.result.blob, text: state.result.title })),
       h('div', { class: 'vz-col' },
         ...(publicView ? [h('details', { class: 'vz-receipts' }, h('summary', {}, 'Receipts'), ...receipts)] : [h('h5', {}, 'Meters'), receipts[0]!]),
