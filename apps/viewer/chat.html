@@ -65,7 +65,7 @@ details.think summary em code{font-style:normal}
 .thought-tag::after{content:"";display:inline-block;width:5px;height:5px;margin-left:6px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:translateY(-2px) rotate(45deg);transition:transform .15s}
 .thought[open] .thought-tag::after{transform:translateY(1px) rotate(-135deg)}
 .thought-body{color:var(--muted);font-size:13.5px;margin-top:6px}
-.thought.redacted .thought-tag{margin-left:0}
+.thought.redacted .thought-tag,.thought.untitled .thought-tag{margin-left:0}
 div.thought .thought-tag::after{display:none}
 .thought-body p{margin:0 0 8px}
 details.think{border-left:2px solid var(--line);padding:2px 0 2px 12px;margin:4px 0 14px;min-width:0}
