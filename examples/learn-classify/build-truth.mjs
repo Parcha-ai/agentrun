@@ -9,7 +9,7 @@
 //
 //   node examples/learn-classify/build-truth.mjs [--via=sec|wayback] [--cache=DIR] [--recheck]
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -93,33 +93,50 @@ const rank = (salt, cik) => createHash('sha256').update(`learn-classify:${salt}:
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const ungzip = (buf) => (buf[0] === 0x1f && buf[1] === 0x8b ? gunzipSync(buf) : buf);
 
+// Where each input came from and when it was read, for the build report.
+const provenance = { secFiles: {}, wikidata: null };
+const snapshotTime = (ts) => `${ts.slice(0, 4)}-${ts.slice(4, 6)}-${ts.slice(6, 8)}T${ts.slice(8, 10)}:${ts.slice(10, 12)}:${ts.slice(12, 14)}Z`;
+const cachedAt = async (file) => (await stat(file)).mtime.toISOString();
+
 // The SEC asks for fewer than 10 requests per second; this stays under 4.
 let lastSec = 0;
 async function secFile(name) {
   const file = join(cache, `${via}-${name}`);
-  try {
-    return await readFile(file);
-  } catch {}
   const { url, wayback } = SEC_FILES[name];
   const from = via === 'wayback' ? `https://web.archive.org/web/${wayback}id_/${url}` : url;
+  const record = async () => {
+    provenance.secFiles[name] = { url, fetchedFrom: from, ...(via === 'wayback' ? { snapshot: snapshotTime(wayback) } : {}), retrievedAt: await cachedAt(file) };
+  };
+  try {
+    const body = await readFile(file);
+    await record();
+    return body;
+  } catch {}
   if (via === 'sec') await sleep(Math.max(0, lastSec + 300 - Date.now()));
   lastSec = Date.now();
   const res = await fetch(from, { headers: { 'user-agent': via === 'sec' ? SEC_UA : OPEN_UA, 'accept-encoding': 'gzip, deflate' } });
   if (!res.ok) throw new Error(`${from} answered ${res.status}${res.status === 403 && via === 'sec' ? '; sec.gov may refuse this network, try --via=wayback' : ''}`);
   const body = ungzip(Buffer.from(await res.arrayBuffer()));
   await writeFile(file, body);
+  await record();
   return body;
 }
 
 async function wikidata() {
   const file = join(cache, 'wikidata.json');
+  const record = async () => {
+    provenance.wikidata = { endpoint: WIKIDATA, query: SPARQL, retrievedAt: await cachedAt(file) };
+  };
   try {
-    return JSON.parse(await readFile(file, 'utf8'));
+    const json = JSON.parse(await readFile(file, 'utf8'));
+    await record();
+    return json;
   } catch {}
   const res = await fetch(`${WIKIDATA}?query=${encodeURIComponent(SPARQL)}`, { headers: { 'user-agent': OPEN_UA, accept: 'application/sparql-results+json' } });
   if (!res.ok) throw new Error(`Wikidata answered ${res.status}`);
   const json = await res.json();
   await writeFile(file, JSON.stringify(json));
+  await record();
   return json;
 }
 
@@ -367,7 +384,7 @@ async function main() {
   const byCik = new Map(candidates.map((c) => [c.cik, c]));
   const checked = Object.values(checks).filter((r) => byCik.has(r.cik) && r.website === byCik.get(r.cik).website).sort((a, b) => a.cik.localeCompare(b.cik));
   const report = {
-    builtWith: { via, secFiles: Object.fromEntries(Object.entries(SEC_FILES).map(([k, v]) => [k, via === 'wayback' ? `https://web.archive.org/web/${v.wayback}id_/${v.url}` : v.url])), wikidata: SPARQL },
+    builtWith: { via, ...provenance },
     rules: { total: TOTAL, run: RUN, sealed: SEALED, groupCap: GROUP_CAP, groupWeight: GROUP_WEIGHT, minText: MIN_TEXT, excludedSic: [...EXCLUDED_SIC] },
     sources,
     counts: {

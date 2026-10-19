@@ -162,6 +162,9 @@ test('other hosts, SEC, EDGAR and SIC listing sites are refused before any reque
   await refused('https://www.siccode.com/business/acme', /refused list \(siccode\.com/);
   await refused('https://www.naics.com/company/acme', /refused list \(naics\.com/);
   await refused('https://www.osha.gov/data/sic-manual', /refused list \(osha\.gov/);
+  await refused('https://web.archive.org/web/2026id_/https://data.sec.gov/submissions/CIK0000320193.json', /refused list \(archive\.org/);
+  await refused('https://archive.org/details/edgar', /refused list \(archive\.org/);
+  await refused('https://archive.ph/acme.example', /refused list \(archive\.ph/);
   await refused('ftp://www.acme.example/', /only http and https/);
   await refused('javascript:alert(1)', /only http and https/);
   await refused('https://user:pw@www.acme.example/', /credentials/);
@@ -175,6 +178,7 @@ test('other hosts, SEC, EDGAR and SIC listing sites are refused before any reque
 test('the refused list wins over allowDomain, which must name a real domain', () => {
   assert.throws(() => fetchPageTool({ allowDomain: 'sec.gov' }), /refused site/);
   assert.throws(() => fetchPageTool({ allowDomain: 'www.siccode.com' }), /refused site/);
+  assert.throws(() => fetchPageTool({ allowDomain: 'archive.org' }), /refused site/);
   assert.throws(() => fetchPageTool({ allowDomain: 'com' }), /allowDomain must be a domain/);
   assert.throws(() => fetchPageTool({}), /allowDomain must be a domain/);
   for (const domain of REFUSED_DOMAINS) assert.ok(refusedHost(`www.${domain}`), domain);

@@ -2,11 +2,30 @@
  "builtWith": {
   "via": "wayback",
   "secFiles": {
-   "tickers": "https://web.archive.org/web/20261018055724id_/https://www.sec.gov/files/company_tickers.json",
-   "fsds": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip",
-   "sicList": "https://web.archive.org/web/20261001145830id_/https://www.sec.gov/search-filings/standard-industrial-classification-sic-code-list"
+   "tickers": {
+    "url": "https://www.sec.gov/files/company_tickers.json",
+    "fetchedFrom": "https://web.archive.org/web/20261018055724id_/https://www.sec.gov/files/company_tickers.json",
+    "snapshot": "2026-10-18T05:57:24Z",
+    "retrievedAt": "2026-10-19T22:26:21.458Z"
+   },
+   "fsds": {
+    "url": "https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip",
+    "fetchedFrom": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip",
+    "snapshot": "2026-10-05T00:18:37Z",
+    "retrievedAt": "2026-10-19T22:26:27.780Z"
+   },
+   "sicList": {
+    "url": "https://www.sec.gov/search-filings/standard-industrial-classification-sic-code-list",
+    "fetchedFrom": "https://web.archive.org/web/20261001145830id_/https://www.sec.gov/search-filings/standard-industrial-classification-sic-code-list",
+    "snapshot": "2026-10-01T14:58:30Z",
+    "retrievedAt": "2026-10-19T22:26:23.205Z"
+   }
   },
-  "wikidata": "SELECT ?item ?cik ?website ?article WHERE {\n  ?item wdt:P5531 ?cik ; wdt:P856 ?website .\n  ?article schema:about ?item ; schema:isPartOf <https://en.wikipedia.org/> .\n}"
+  "wikidata": {
+   "endpoint": "https://query.wikidata.org/sparql",
+   "query": "SELECT ?item ?cik ?website ?article WHERE {\n  ?item wdt:P5531 ?cik ; wdt:P856 ?website .\n  ?article schema:about ?item ; schema:isPartOf <https://en.wikipedia.org/> .\n}",
+   "retrievedAt": "2026-10-19T22:32:49.777Z"
+  }
  },
  "rules": {
   "total": 130,

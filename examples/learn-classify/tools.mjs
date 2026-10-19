@@ -7,14 +7,16 @@ export const MAX_BYTES = 2 * 1024 * 1024;
 export const MAX_TEXT = 8_000;
 export const MAX_LINKS = 30;
 
-// Refused before any request, whatever allowDomain says: the SEC and EDGAR mirrors, and sites that publish a company's
-// SIC code or the SIC/NAICS manuals. A host matches an entry when it is that domain or a subdomain of it.
+// Refused before any request, whatever allowDomain says: the SEC and EDGAR mirrors, sites that publish a company's SIC
+// code or the SIC/NAICS manuals, and web archives (an archived SEC page holds the answer). A host matches an entry when
+// it is that domain or a subdomain of it.
 export const REFUSED_DOMAINS = Object.freeze([
   'sec.gov', 'sec.report', 'secdatabase.com', 'secinfo.com', 'last10k.com', 'edgar-online.com', 'bamsec.com', 'kscope.io',
   'siccode.com', 'sic-code.com', 'siccodes.org', 'naics.com', 'naicscode.com', 'naics.codes', 'osha.gov', 'census.gov',
   'dnb.com', 'zoominfo.com', 'opencorporates.com', 'bizapedia.com', 'manta.com', 'buzzfile.com', 'corporationwiki.com',
   'fintel.io', 'stockanalysis.com', 'companiesmarketcap.com', 'macroaxis.com', 'whalewisdom.com', 'annualreports.com',
   'craft.co', 'cbinsights.com', 'owler.com', 'datanyze.com',
+  'archive.org', 'archive.ph', 'archive.is', 'archive.today', 'webcache.googleusercontent.com',
 ]);
 // Any host with a label naming EDGAR is refused too (edgar.example.com, edgar-filings.net).
 const EDGAR_LABEL = /(^|[.-])edgar([.-]|$)/;
@@ -40,7 +42,7 @@ export function refusedHost(host) {
   const h = normalHost(host);
   if (EDGAR_LABEL.test(h)) return `${h} is EDGAR, which is never fetched`;
   const listed = REFUSED_DOMAINS.find((domain) => within(h, domain));
-  return listed ? `${h} is on the refused list (${listed}: SEC filings or SIC listings)` : null;
+  return listed ? `${h} is on the refused list (${listed}: SEC filings, SIC listings or web archives)` : null;
 }
 
 export function allowedHost(host, allowDomain) {
