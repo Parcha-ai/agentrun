@@ -32,6 +32,18 @@ async function go(tmp, argv, env = {}) {
 const statusOf = (run) => run.processes.at(-1)?.outcome?.status;
 const stderrOf = (run) => run.processes.map((process) => `${process.outcome?.message ?? ''}\n${process.stderr}`).join('\n');
 
+test('the lake-mead run is given its map key as a file: inputs.json lists map-key.md, and the job copies it into the workspace', () => {
+  const example = exampleAt('lake-mead');
+  const key = example.items.find((item) => item.path === 'map-key.md');
+  assert.ok(key, 'inputs.json lists map-key.md as a committed file');
+  assert.ok(inputOf(example).files.includes('map-key.md'), 'the run is told of it');
+  const bytes = readFileSync(join(example.dir, 'map-key.md'));
+  assert.deepEqual([bytes.length, sha256(bytes)], [key.bytes, key.sha256]);
+  assert.match(bytes.toString(), /\| Overton Arm \|/);
+  process.env.INPUT = JSON.stringify({ example: 'lake-mead' });
+  try { assert.deepEqual([...jobOf().files['map-key.md']], [...bytes], 'the job carries it as the run\'s own file'); } finally { delete process.env.INPUT; }
+});
+
 test('each example is a question, its files with their sources and checks, and a README; nothing in it is code', () => {
   const assets = readFileSync(join(import.meta.dirname, '..', 'ASSETS.md'), 'utf8');
   for (const name of EXAMPLES) {

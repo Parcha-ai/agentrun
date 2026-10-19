@@ -21,3 +21,5 @@ A `--live` run needs:
 One measured live run cost about $1.50 and took about 25 minutes; a run's cost and time vary. A run stops past $1 unless `--max-usd <n>` sets another cap, and this one went past it, so the command above passes `--max-usd 2`. A live run prints little until it ends.
 
 The agent (gemini-3.8-flash, thinking at medium; thinking is shown when the model returns it) runs shell commands with your user's rights on your machine: run it in a container or a VM.
+
+The run is also given [map-key.md](map-key.md): the named arms, basins, bays, washes and rivers inside the frame, as the National Park Service's map names them, with where each lies, in thirds.

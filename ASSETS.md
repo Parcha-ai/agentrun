@@ -60,3 +60,5 @@ lists it under "Vendored code".
 | `lake-mead-2018-06-30.jpg` | Landsat 8 OLI scene LC08_L2SP_039035_20180630_02_T1 (LC80390352018181LGN00), acquired 2018-06-30 | `e85df171b994df28cfea8ce8315a897ea58c0e01bec756201a07ba49e6c04571` |
 | `lake-mead-2022-07-03.jpg` | Landsat 9 OLI-2 scene LC09_L2SP_039035_20220703_02_T1 (LC90390352022184LGN00), acquired 2022-07-03 | `a9d4b50b01824fb6caed83fd3c251fe482eeebff4177a580b3c53a0f59cbba34` |
 | `lake-mead-2024-07-08.jpg` | Landsat 9 OLI-2 scene LC09_L2SP_039035_20240708_02_T1 (LC90390352024190LGN00), acquired 2024-07-08 | `04e9bb38db8ec90c4bde9db19f116a04b50899ab790393054db8b33c9026c8aa` |
+
+`map-key.md` (SHA-256 `320dda97c7dccc19ec3f5dc67b4b2943583876a8d1f975f56b411274ae03bb9e`) lists the named arms, basins, bays, washes and rivers inside the frame with where each lies, in thirds, taken by name only from the National Park Service's "Park Map - Lake Mead National Recreation Area" (https://www.nps.gov/npgallery/GetAsset/b74cc29c-79a5-4ab4-ac69-54982c8a4a3a), which its gallery page states is in the public domain; no image of the map is copied.
