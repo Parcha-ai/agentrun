@@ -168,13 +168,14 @@ group's, since a Jev pick holds at most 240 options), `primarySegment` (`{ name,
   browse, read_document and search_web results); a URL the run never read supports nothing.
 - `correct`, the curve's headline, is the code exact and the segment not wrong.
 
-The scorer's own Jev is metered apart from the run and kept in `progress/<run>.json`; it is not the agent's cost. A v2 row
-adds `set`, `categories`, `websiteGiven`, `sic4Answer`, `sic4Truth`, `sicCorrect4`, `sicCorrect2`, `segmentAnswer`,
-`segmentTruth`, `segmentCorrect`, `shareError`, `evidenceSupported`, `toolCalls` (`search`, `browse`, `fetch`,
-`read_document`), `browserMinutes`, `visionPages` and `browserCostUsd`; its `answer`, `truth` and `correct` are the 4-digit
-codes and the headline, and its `costUsd` includes what the browser, search and the document reader cost. The curve for v2
-shows the cost per job with its parts, the code, segment and headline accuracies, and the share of runs workflows did,
-for the answer and for each part.
+The scorer's own Jev is metered apart from the run: it is not the agent's cost, so it stays out of `costUsd`, but each
+row carries it as `scoreCostUsd` and the spend guard counts it. A v2 row adds `set`, `categories`, `websiteGiven`,
+`sic4Answer`, `sic4Truth`, `sicCorrect4`, `sicCorrect2`, `segmentAnswer`, `segmentTruth`, `segmentCorrect`,
+`shareError`, `evidenceSupported`, `toolCalls` (`search`, `browse`, `fetch`, `read_document`), `browserMinutes`,
+`visionPages`, `browserCostUsd` and `scoreCostUsd`; its `answer`, `truth` and `correct` are the 4-digit codes and the
+headline, and its `costUsd` includes what the browser, search and the document reader cost. The curve for v2 shows the
+cost per job with its parts, the code, segment and headline accuracies, and the share of runs workflows did, for the
+answer and for each part.
 
 The holding category is a name pattern (Holding(s), Enterprises, Diversified) or SIC 6799. It is used only to choose
 which companies are sampled and misses holding companies without such a name, e.g. Berkshire Hathaway; no answer is

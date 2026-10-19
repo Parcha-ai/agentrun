@@ -81,9 +81,10 @@ export function rowOf({ run, runId, job, seedSha, afterSha, offered, measure, fi
 
 /**
  * A v2 row: v1's fields, with `answer` and `truth` the 4-digit codes and `correct` the headline (the code exact, and the
- * segment not wrong), then the v2 fields of CLASSIFY-CONTRACT.md. `score` is `scoreV2`'s, `stats` `toolStats`'s.
+ * segment not wrong), then the v2 fields of CLASSIFY-CONTRACT.md. `score` is `scoreV2`'s, `stats` `toolStats`'s,
+ * `scoringJudge` the scorer's Jev meter.
  */
-export function rowOfV2({ score, stats, ...v1 }) {
+export function rowOfV2({ score, stats, scoringJudge, ...v1 }) {
   const row = rowOf({ ...v1, key: 'sic4', tools: [stats.browserCostUsd, stats.searchCostUsd, stats.documentCostUsd] });
   const { job } = v1;
   return {
@@ -106,5 +107,7 @@ export function rowOfV2({ score, stats, ...v1 }) {
     browserMinutes: stats.browserSeconds / 60,
     visionPages: stats.visionPages,
     browserCostUsd: stats.browserCostUsd,
+    // The scorer's own Jev: not the agent's cost, so not in costUsd, but spent all the same; the spend guard counts it.
+    scoreCostUsd: !scoringJudge || scoringJudge.unknown ? null : scoringJudge.costUsd,
   };
 }

@@ -92,7 +92,7 @@ test('a scripted v2 pass: by hand, then the whole-job workflow, every v2 field f
   const parts = scriptedParts({ set: SETS.v2 });
   const { rows } = await runLoop({ out, parts, jobs: 4, record: false });
   assert.equal(rows.length, 4);
-  const fields = ['set', 'categories', 'websiteGiven', 'sic4Answer', 'sic4Truth', 'sicCorrect4', 'sicCorrect2', 'segmentAnswer', 'segmentTruth', 'segmentCorrect', 'shareError', 'evidenceSupported', 'toolCalls', 'browserMinutes', 'visionPages', 'browserCostUsd'];
+  const fields = ['set', 'categories', 'websiteGiven', 'sic4Answer', 'sic4Truth', 'sicCorrect4', 'sicCorrect2', 'segmentAnswer', 'segmentTruth', 'segmentCorrect', 'shareError', 'evidenceSupported', 'toolCalls', 'browserMinutes', 'visionPages', 'browserCostUsd', 'scoreCostUsd'];
   for (const row of rows) for (const field of fields) assert.ok(field in row, `${field} in run ${row.run}`);
   assert.deepEqual(rows.map((r) => r.set), ['v2', 'v2', 'v2', 'v2']);
   assert.deepEqual(rows.map((r) => r.websiteGiven), [true, false, true, true]);
@@ -133,4 +133,17 @@ test('a v2 sealed pass scores the sealed companies at a commit and learns nothin
   assert.equal(rows.length, companies.length);
   assert.deepEqual(rows.map((r) => [r.set, r.split, r.correct]), [['v2', 'sealed', true], ['v2', 'sealed', true]]);
   await assert.rejects(runLoop({ out, parts: scriptedParts(), jobs: 1 }), /holds a v2 pass; a v1 pass needs its own --out/);
+}, { timeout: 120_000 });
+
+test('the scorer\'s Jev is in each row as scoreCostUsd, out of costUsd, and the spend guard counts it', async (t) => {
+  const out = join(await scratch(t), 'out');
+  const parts = scriptedParts({ set: SETS.v2 });
+  const judge = parts.judge;
+  // Only the scorer's questions cost anything here: 0.01 each (a segment question where the name is not the filed one, one per cite).
+  parts.judge = () => { const j = judge(); return async (params) => ({ ...(await j(params)), cost_usd: params.label?.startsWith('score/') ? 0.01 : 0 }); };
+  const { rows, stoppedBy } = await runLoop({ out, parts, jobs: 4, record: false, capUsd: 0.02 });
+  assert.equal(rows.length, 1, 'the guard stops once the scorer has spent the cap');
+  assert.match(stoppedBy, /cap/);
+  assert.equal(rows[0].scoreCostUsd, 0.02, 'two cites');
+  assert.equal(rows[0].costUsd, 0.001, 'the agent\'s cost: the document reader');
 }, { timeout: 120_000 });

@@ -155,13 +155,13 @@ function lineOfV2(row) {
     + `${row.workflowsSaved.length ? `, saved ${row.workflowsSaved.join(', ')}` : ''}; main ${short(row.seedSha)} -> ${short(row.afterSha)}`;
 }
 
-/** What the pass has spent, as far as it is known, from every job's progress file: each finished job's known parts and
- *  each abandoned attempt's model spend. A part whose price is unknown counts nothing here; the row says null for it. */
+/** What the pass has spent, as far as it is known, from every job's progress file: each finished job's known parts, the
+ *  scorer's Jev, and each abandoned attempt's model spend. A part whose price is unknown counts nothing here; the row says null for it. */
 function knownSpend(out) {
   const dir = join(out, 'progress');
   if (!existsSync(dir)) return 0;
   return readdirSync(dir).filter((f) => f.endsWith('.json')).map((f) => readJsonIf(join(dir, f)) ?? {})
-    .reduce((sum, p) => sum + (p.knownUsd ?? 0) + (p.abandoned ?? []).reduce((s, a) => s + a.costUsd, 0), 0);
+    .reduce((sum, p) => sum + (p.knownUsd ?? 0) + (p.scoringJudge?.costUsd ?? 0) + (p.abandoned ?? []).reduce((s, a) => s + a.costUsd, 0), 0);
 }
 
 /**
@@ -209,7 +209,7 @@ async function oneJob({ out, repo, home, parts, judge, job, runCapUsd, record, l
     ? await writeRecording({ into: join(out, 'recordings'), run, job, model: parts.modelName, providers: parts.providers, started: p.started, ended: p.ended, spend, modelUsd: p.measure.unpricedAnswers ? null : p.measure.usage.costUsd })
     : null;
   const v1 = { run: job.order, runId, job, seedSha: p.seedSha, afterSha: p.afterSha, offered: p.offered, measure: p.measure, finished: p.finished, curated: p.curated, curateJudge: p.curateJudge, recording, convention: parts.conventions?.[job.cik] };
-  return parts.set === SETS.v2 ? rowOfV2({ ...v1, score: p.score, stats: p.stats }) : rowOf(v1);
+  return parts.set === SETS.v2 ? rowOfV2({ ...v1, score: p.score, stats: p.stats, scoringJudge: p.scoringJudge }) : rowOf(v1);
 }
 
 /** The learning pass: the first `jobs` companies of split "run", in order, until the spend reaches `capUsd`. */
@@ -261,7 +261,7 @@ export async function runSealed({ out, parts, at = 'main', capUsd, runCapUsd, re
   const done = new Set(rows.map((r) => r.cik));
   const queue = parts.companies.filter((c) => c.split === 'sealed').sort((a, b) => a.cik.localeCompare(b.cik));
   const judge = parts.judge();
-  let spent = rows.reduce((sum, r) => sum + (r.costUsd ?? 0), 0);
+  let spent = rows.reduce((sum, r) => sum + (r.costUsd ?? 0) + (r.scoreCostUsd ?? 0), 0);
   let stoppedBy = null;
   log(`learn-classify: sealed pass at ${label}${sha === meta.seedSha ? ' (the seed: nothing learned)' : ''}, ${queue.length} companies`);
   for (const [i, job] of queue.entries()) {
@@ -285,8 +285,8 @@ export async function runSealed({ out, parts, at = 'main', capUsd, runCapUsd, re
       ? await writeRecording({ into: join(out, 'sealed', label, 'recordings'), run, job, model: parts.modelName, providers: parts.providers, started, ended: Date.now(), spend: spendOf(measure, undefined, tools), modelUsd: measure.unpricedAnswers ? null : measure.usage.costUsd })
       : null;
     const v1 = { run: i + 1, runId: prepared.runId, job, seedSha: sha, afterSha: sha, offered: prepared.workflows.loaded.map((w) => w.name), measure, finished, curated: null, recording, convention: parts.conventions?.[job.cik] };
-    const row = scored ? rowOfV2({ ...v1, score: scored.score, stats: scored.stats }) : rowOf(v1);
-    spent += spendOf(measure, undefined, tools).knownUsd;
+    const row = scored ? rowOfV2({ ...v1, score: scored.score, stats: scored.stats, scoringJudge: scored.scoringJudge }) : rowOf(v1);
+    spent += spendOf(measure, undefined, tools).knownUsd + (scored?.scoringJudge.costUsd ?? 0);
     appendFileSync(rowsPath, `${JSON.stringify(row)}\n`);
     rows.push(row);
     log(lineOf(row));
