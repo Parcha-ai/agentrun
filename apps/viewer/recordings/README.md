@@ -9,5 +9,5 @@ manifest names (`code.commit`), and nothing in it is edited by hand. The hand-cu
 | --- | --- | --- |
 | `reference-job` | The reference example's job (`examples/reference`) with scripted providers: no key, $0. One process. | `npm run demo:reference -- --record <dir>` |
 
-It was recorded at `79868e54`: one paid call, one judge ask, four model turns, nothing repeated or asked twice, cost
+It was recorded at `51c178bc`, after the recorder stopped keeping a browser session's live-view URL: one paid call, one judge ask, four model turns, nothing repeated or asked twice, cost
 $0. The same job killed ten times and resumed, `ten-kills-seed21`, is kept with the test fixtures (`test/fixtures/`).

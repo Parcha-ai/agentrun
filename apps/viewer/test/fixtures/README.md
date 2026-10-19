@@ -7,7 +7,7 @@ These serve the tests only and are never bundled into the gallery: a hand-cut fi
 A recording of a run, not cut by hand, kept for the tests that read a killed run beside the clean `reference-job`
 (the timeline's golden test, the gallery gate's tests): the reference job killed ten times, at the points seed 21 picks
 (a model turn, the judge, a browser read, receipt filings, the supervisor before and after an outside call applied),
-and resumed each time. Eleven processes. Recorded at `79868e54` with `npm run demo:kill -- --seed 21 --json --record
+and resumed each time. Eleven processes. Recorded at `51c178bc` (after the recorder stopped keeping a browser session's live-view URL) with `npm run demo:kill -- --seed 21 --json --record
 <dir>`, and nothing in it is edited.
 
 Its counters agree with `reference-job`'s: one paid call, one judge ask, four model turns, nothing repeated or asked
