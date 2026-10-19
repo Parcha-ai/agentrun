@@ -175,6 +175,7 @@ test("a request TypeSafe rate-limited to the end of the runner's retries (http, 
   assert.equal(said, "look_failed: Jev failed: rate limited, Jev returned HTTP 429.");
   assert.deepEqual(rows.misses.map((m) => [m.tool, m.code]), [["vision.judge", "look_failed"]]);
   assert.deepEqual(rows.filed.map((r) => [r.status, r.facts.cost_usd]), [["failed", 0]], "a rate-limited request cost nothing: its price is known");
+  assert.equal(typeof rows.filed[0].facts.startedAt, "number", "and it was sent, so it keeps its timing");
 });
 
 // The kill: judge-child.mjs is one process of a run whose script asks two judgments, one image each.

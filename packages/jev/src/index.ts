@@ -247,6 +247,8 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
         body = JSON.stringify({ ...JSON.parse(body), assets: assetDigests });
       }
       const headers = carriesImage || hasBox ? { [IMAGE_HEADER]: "true" } : undefined;
+      // The first attempt that failed in a way the server may have billed (a lost answer, a 408, a 5xx). A later 429 does not make the call free: the give-up reports this one.
+      let billable: { status?: number } | undefined;
       for (attempt = 1; ; attempt++) {
         if (signal.aborted) throw abortError();
         let result: unknown;
@@ -258,6 +260,7 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
           if (signal.aborted) throw abortError();
           const status = error instanceof APIError ? error.status : undefined;
           const retryable = status === 408 || status === 429 || (status !== undefined && status >= 500 && status <= 599) || error instanceof APIConnectionError;
+          if (retryable && status !== 429 && billable === undefined) billable = status === undefined ? {} : { status };
           if (retryable && attempt < maxAttempts) {
             const backoff = Math.min(retryMaxMs, retryBaseMs * 2 ** (attempt - 1));
             const asked = error instanceof APIError && (status === 429 || status === 503) ? retryAfterMs(error.headers) : undefined;
@@ -270,6 +273,8 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
               continue;
             }
           }
+          // HTTP 429 means every attempt was refused unanswered; after one that may have been billed, the give-up names that one instead.
+          if (status === 429 && billable) throw billable.status === undefined ? new JevError("connection", "Jev transport failed.", attempt) : new JevError("http", `Jev returned HTTP ${billable.status}.`, attempt, billable.status);
           if (status !== undefined) {
             const safeStatus = Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined;
             const capacity = error instanceof APIError && record(error.body) && record(error.body.detail)

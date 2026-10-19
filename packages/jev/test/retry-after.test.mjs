@@ -65,6 +65,24 @@ test('a Retry-After that fits, under a backoff that does not, gives up at once: 
   assert.equal(t.calls.length, 1, 'exactly one call');
 });
 
+test('a give-up reports 429 only when no earlier attempt may have been billed: after a 503 or a lost answer, it names that one', async () => {
+  const mixed = scripted([() => response({}, 503), () => response({}, 429), () => response({}, 429)]);
+  await assert.rejects(createJevRunner({ ...settings, maxAttempts: 3, fetch: mixed.fetch })(params), error => {
+    assert.ok(error instanceof JevError);
+    assert.deepEqual([error.code, error.status, error.attempts], ['http', 503, 3], 'a 503 may have been billed: the cost stays unknown');
+    return true;
+  });
+  let calls = 0;
+  const lost = async () => { calls += 1; if (calls === 1) throw new TypeError('socket hang up'); return response({}, 429); };
+  await assert.rejects(createJevRunner({ ...settings, maxAttempts: 2, fetch: lost })(params), error => {
+    assert.ok(error instanceof JevError);
+    assert.deepEqual([error.code, error.status, error.attempts], ['connection', undefined, 2], 'a lost answer may have been billed');
+    return true;
+  });
+  const only = scripted([() => response({}, 429)]);
+  await assert.rejects(createJevRunner({ ...settings, maxAttempts: 2, fetch: only.fetch })(params), error => error instanceof JevError && error.code === 'http' && error.status === 429, 'every attempt refused: 429');
+});
+
 test('a 503 with Retry-After as an HTTP date waits until that date', async () => {
   const t = scripted([() => response({}, 503, { 'retry-after': new Date(Date.now() + 2000).toUTCString() }), () => response({ answers })]);
   const result = await createJevRunner({ ...settings, fetch: t.fetch })(params);
