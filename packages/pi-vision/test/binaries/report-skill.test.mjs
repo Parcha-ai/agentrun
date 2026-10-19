@@ -46,6 +46,7 @@ let speech = { provider: "fake", model: "fake-stt", usdPerMinute: 0.008, async t
 let jev = null;
 let jevFails;
 const tokens = (text) => [...String(text).matchAll(/(?<![.!?]\s)(?<!^)\b[A-Z][a-z]+|\d+/g)].map((m) => m[0].toLowerCase());
+let noJudgeReceipt = false;   // a host that files no receipt for a judge look: vision.judge answers with receipts: []
 let jevCap = Infinity, jevAsked = 0;   // the fake judge's request cap: past it every request fails, as a host's cap does
 const asked = new WeakSet();
 const ABSENT = /\b(absent|missing|removed|blank|no seal|no stamp)\b/i;
@@ -77,6 +78,7 @@ async function run(codes) {
     transcriber: speech,
     scope: () => ({ label: "report", deriveDir: ".vision" }),
     evidence: { file: async (label, record) => {
+      if (noJudgeReceipt && record.args?.via === "jev") return null;
       (record.args?.via === "jev" ? judged : keys).push(record.facts.key);
       n += 1;
       const file = `evidence/${label}/${n}-look.${n % 2 ? "md" : "json"}`;
@@ -1134,7 +1136,7 @@ test("every finding, row and the answer names the judge look that judged its tex
   assert.deepEqual(Object.keys(grounds).sort(), ["answer", "f-chart", "f-contract", "f-site", "r-m1"]);
   for (const [id, value] of Object.entries(grounds)) {
     const entries = value.split(" ");
-    assert.ok(entries.length >= 1 && entries.every((entry, i) => /^[0-9a-f]{64}:t\d+$/.test(entry) && entry.endsWith(`:t${i}`)), `${id}: ${value}`);
+    assert.ok(entries.length >= 1 && entries.every((entry) => /^[0-9a-f]{64}:t\d+$/.test(entry) && Number(entry.split(":t")[1]) < entries.length), `${id}: ${value}`);   // a text said twice in a unit is one judgment, so one claim id may repeat
     assert.equal(new Set(entries.map((entry) => entry.split(":")[0])).size, 1, "one look judged a unit's texts");
     assert.ok(judged.includes(entries[0].split(":")[0]), `${id}'s look is a judge look the host filed`);
   }
@@ -1215,4 +1217,36 @@ test("boxed thumbnails are about 10rem wide with the row's second and text align
 test("the skill says only vision.judge sets a verdict, what it could not judge goes under Not checked by count and id, text stays text, and a detail nobody asked for is read twice", () => {
   const flat = SKILL.replace(/\s+/g, " ");
   for (const words of ["A verdict comes only from `vision.judge`'s answer, and the script never sets one itself", "`data-ground`", "If Jev cannot be asked (a cap, an error)", "exactly which units, by count and id", "never in one sentence that understates it", "Text stays text", "never a picture of words", "the page's text is selectable", "A detail nobody asked for is read twice", "only when a crop of it was read and agrees with the first reading"]) assert.ok(flat.includes(words), `the skill says ${words}`);
+});
+
+test("a judge look with no receipt declares its unit: the answers are valid, there is no look key to name, and the script goes on", async () => {
+  onDisk = "other";
+  noJudgeReceipt = true;
+  try {
+    const { result } = await run([helpers, assets, looking, data, ground, render, check]);
+    assert.ok(result.ok, result.ok ? "" : result.error.message);
+  } finally { noJudgeReceipt = false; }
+  const html = HTML();
+  assert.match(html, /<li>4 units: finding chart, finding contract, finding site, the answer: not judged: /);
+  assert.deepEqual(Object.values(groundOf(html)), ["", "", "", ""], "no look key to name");
+});
+
+test("a second grounding pass starts afresh: a unit declared before, or a verdict made before, does not outlive it", async () => {
+  onDisk = "other";
+  const stale = ground.replace("await ground();", 'await ground(); unjudged.set("finding chart", "stale"); report.notChecked.push({ units: ["finding chart"], why: "not judged: stale" }); verdicts.set("x", { yes: 1, look: "a".repeat(64), claim: "t0" }); await ground();');
+  assert.notEqual(stale, ground);
+  const { result } = await run([helpers, assets, looking, data, stale, render, check]);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  assert.ok(!HTML().includes("not judged"), "the stale declaration is gone, and so is the stale verdict");
+});
+
+test("data-ground follows each current text's own claim id: reversing the points or dropping one after the judgment changes the entries with the texts, never their ids", async () => {
+  onDisk = "other";
+  const { result, judged } = await run([helpers, assets, looking, data, ground, "report.points.reverse();", render, check]);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  const key = judged.at(-1);
+  assert.equal(groundOf(HTML()).answer, [0, 1, 2, 4, 3].map((n) => `${key}:t${n}`).join(" "), "the points swapped, each keeping the claim id it was judged under");
+  const dropped = await run([helpers, assets, looking, data, ground, "report.points.pop();", render, check]);
+  assert.ok(dropped.result.ok, dropped.result.ok ? "" : dropped.result.error.message);
+  assert.equal(groundOf(HTML()).answer.split(" ").length, 4, "a point dropped leaves no entry for it");
 });

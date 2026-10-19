@@ -325,7 +325,7 @@ read anything has no evidence and fails the same way.
 
 A verdict comes only from `vision.judge`'s answer, and the script never sets one itself. Each judged unit's look key is written
 into the page as `data-ground` on its finding, row and the answer (`<look key>:t0 <look key>:t1 ...`, one entry for each of
-its texts), so a reader can open the look that judged it. If Jev cannot be asked (a cap, an error), `ground()` gives that unit
+its texts, each with the claim id it was judged under), so a reader can open the look that judged it. If Jev cannot be asked (a cap, an error), `ground()` gives that unit
 no verdict and declares it under Not checked, exactly which units, by count and id ("49 units: rows r55 to r102 (48 rows), the
 answer: not judged: ..."), never in one sentence that understates it. The check refuses a unit that has neither a verdict with
 a look key nor a place in that list, and a unit in the list that was judged.
@@ -333,7 +333,6 @@ a look key nor a place in that list, and a unit in the list that was judged.
 ```js
 const GROUNDED = 0.5;   // noul is the probability of yes: 0.66 to 0.98 when the evidence gave the fact, 0.01 to 0.03 when it did not
 const verdicts = new Map();   // text -> { yes, look, claim }: only vision.judge's answer puts anything here
-const grounds = new Map();    // unit -> "<look key>:t0 <look key>:t1 ...": which judge look judged which of its texts, written into the page as data-ground
 const unjudged = new Map();   // unit -> why Jev could not be asked
 const claimsOf = (r) => {   // every text the page states, in units that each cite their own looks
   const cited = (x) => (x.cites ?? []).map((c) => c.look);
@@ -348,7 +347,13 @@ const claimsOf = (r) => {   // every text the page states, in units that each ci
 };
 const addressOf = (c) => [c.file, c.page && `page ${c.page}`, c.t && `seconds ${c.t.join(" to ")}`, c.xywh && `region ${c.xywh}`].filter(Boolean).join(", ");   // where the cite points: a fact of the run, not a claim
 const verdictKey = (unit, text) => `${unit.id}\n${[...new Set(unit.keys)].sort().join(",")}\n${[...new Set(unit.cites.map(addressOf))].sort().join("|")}\n${text}`;   // the unit, the looks and the addresses are the evidence: change any and the text is judged again
+const judgedUnit = (unit) => unit.texts.every((text) => { const v = verdicts.get(verdictKey(unit, text)); return Boolean(v) && /^[0-9a-f]{64}$/.test(v.look ?? "") && v.yes >= GROUNDED; });   // a verdict with no look key is not a judgment
+const groundsOf = (id) => {   // data-ground: for each current text of a judged unit, the look that judged it and the claim id it had there
+  const unit = claimsOf(report).find((u) => u.id === id);
+  return unit && judgedUnit(unit) ? unit.texts.map((text) => { const v = verdicts.get(verdictKey(unit, text)); return `${v.look}:${v.claim}`; }).join(" ") : "";
+};
 const ground = async () => {   // evidence: what each cited look read, and the address each cite names ("Cited: contract.pdf, page 3")
+  verdicts.clear(); unjudged.clear();   // every pass starts afresh: a unit that recovers is not left declared
   const failed = [];
   for (const unit of claimsOf(report)) {
     if (!unit.keys.length) continue;   // no look cited: the check refuses it as uncited
@@ -358,11 +363,11 @@ const ground = async () => {   // evidence: what each cited look read, and the a
     let answers = {}, look = "";
     if (read.length) {
       let judged;
-      try { judged = await vision.judge({ state: { claims: Object.fromEntries(unit.texts.map((text, i) => [`t${i}`, text])), evidence }, questions: Object.fromEntries(unit.texts.map((_, i) => [`t${i}`, ask(i)])) }); }
-      catch (error) { unjudged.set(unit.id, String(error?.message ?? error).split("\n")[0].slice(0, 120)); continue; }   // Jev could not be asked (a cap, an error): the unit is declared below, and no verdict is made up for it
+      try {
+        judged = await vision.judge({ state: { claims: Object.fromEntries(unit.texts.map((text, i) => [`t${i}`, text])), evidence }, questions: Object.fromEntries(unit.texts.map((_, i) => [`t${i}`, ask(i)])) });
+        look = (await receiptOf(judged.receipts[0])).key;   // the look that judged these texts (not a look the page cites, so it is not added to the looks)
+      } catch (error) { unjudged.set(unit.id, String(error?.message ?? error).split("\n")[0].slice(0, 120)); continue; }   // Jev could not be asked, or its look has no receipt: the unit is declared below, and no verdict is made up for it
       ({ answers } = judged);
-      look = (await receiptOf(judged.receipts[0])).key;   // the look that judged these texts (not a look the page cites, so it is not added to the looks)
-      grounds.set(unit.id, unit.texts.map((_, i) => `${look}:t${i}`).join(" "));
     }
     unit.texts.forEach((text, i) => {
       const yes = answers[`t${i}`]?.noul ?? 0;
@@ -404,9 +409,9 @@ const body = (f) => `<h3>${say(f.title)}</h3><p>${say(f.why)}</p>
 <div class="media">${(f.pics ?? []).map(pic).join("")}${f.clip ? movie(f.clip) : ""}</div>
 <p class="cites">${f.cites.map(cite).join(" ")} ${where(f.id)}</p>`;
 const finding = (f) => f.routine
-  ? `<details class="finding routine" id="f-${f.id}" data-ground="${esc(grounds.get(`finding ${f.id}`) ?? "")}"><summary>${say(f.title)}</summary>${body(f)}</details>`
-  : `<article class="finding" id="f-${f.id}" data-ground="${esc(grounds.get(`finding ${f.id}`) ?? "")}">${body(f)}</article>`;
-const rows = (list) => list.length ? `<ol class="rows">${list.map((r) => `<li class="row${r.boxes?.length ? " boxed" : ""}" id="r-${esc(r.id)}" data-ground="${esc(grounds.get(`row ${r.id}`) ?? "")}">${thumbOf(r)}<span class="when">${say(r.label)}</span><span class="what">${say(r.text)}</span><span class="cites">${r.cites.map(cite).join(" ")}</span></li>`).join("")}</ol>` : "";
+  ? `<details class="finding routine" id="f-${f.id}" data-ground="${esc(groundsOf(`finding ${f.id}`))}"><summary>${say(f.title)}</summary>${body(f)}</details>`
+  : `<article class="finding" id="f-${f.id}" data-ground="${esc(groundsOf(`finding ${f.id}`))}">${body(f)}</article>`;
+const rows = (list) => list.length ? `<ol class="rows">${list.map((r) => `<li class="row${r.boxes?.length ? " boxed" : ""}" id="r-${esc(r.id)}" data-ground="${esc(groundsOf(`row ${r.id}`))}">${thumbOf(r)}<span class="when">${say(r.label)}</span><span class="what">${say(r.text)}</span><span class="cites">${r.cites.map(cite).join(" ")}</span></li>`).join("")}</ol>` : "";
 const span = (n) => n.pages ? `page${n.pages.length > 1 ? "s" : ""} ${n.pages.join(", ")}` : n.t ? `${n.t.map(num).join(" to ")} s` : "the whole file";
 const unitsText = (ids) => {   // units not judged, by count and id: rows in a run are "rows r55 to r102 (48 rows)"
   const rowIds = (report.rows ?? []).map((r) => `row ${r.id}`), out = [];
@@ -447,7 +452,7 @@ return `<!doctype html>
 <title>${say(report.title)}</title><style>${css}</style></head>
 <body><main>
 <header><h1>${say(report.title)}</h1><p class="question">${say(report.question)}</p></header>
-<section id="answer" aria-label="Answer" data-ground="${esc(grounds.get("the answer") ?? "")}"><p>${say(report.answer)}</p><ul class="points">${report.points.map((p) => `<li><small>${say(p.label)}</small><a href="#${esc(p.to)}">${say(p.value)}</a></li>`).join("")}</ul>${rows(report.rows ?? [])}</section>
+<section id="answer" aria-label="Answer" data-ground="${esc(groundsOf("the answer"))}"><p>${say(report.answer)}</p><ul class="points">${report.points.map((p) => `<li><small>${say(p.label)}</small><a href="#${esc(p.to)}">${say(p.value)}</a></li>`).join("")}</ul>${rows(report.rows ?? [])}</section>
 ${keyFindings.length ? `<section id="evidence"><h2>Evidence</h2>${keyFindings.map(finding).join("\n")}</section>` : ""}
 ${documents.length ? `<section id="document"><h2>${documents.length > 1 ? "The documents" : "The document"}, with their marks</h2>${documents.flatMap((d) => d.pages.map((p) => docPage(d, p))).join("\n")}</section>` : ""}
 ${routine.length ? `<section id="routine"><h2>Checked, as expected</h2>${routine.map(finding).join("\n")}</section>` : ""}
@@ -503,7 +508,6 @@ const meets = (a, b) => a[0] <= b[1] && b[0] <= a[1];   // two closed spans shar
 const covers = (s, n) => s.file === n.file && (n.pages ? !s.pages && !s.t || (s.pages && n.pages.some((p) => meets(s.pages, [p, p])))
   : n.t ? !s.pages && !s.t || (s.t && (s.t[0] === s.t[1] ? s.t[0] >= n.t[0] && s.t[0] <= n.t[1] : Math.max(s.t[0], n.t[0]) < Math.min(s.t[1], n.t[1]))) : true);
 const whole = (v) => typeof v === "number" && Number.isFinite(v);
-const judgedUnit = (unit) => unit.texts.every((text) => { const v = verdicts.get(verdictKey(unit, text)); return Boolean(v) && /^[0-9a-f]{64}$/.test(v.look ?? "") && v.yes >= GROUNDED; });   // a verdict with no look key is not a judgment
 const declared = new Set(report.notChecked.flatMap((n) => (Array.isArray(n?.units) ? n.units : [])));
 for (const n of report.notChecked) {
   if (Array.isArray(n?.units)) {   // units Jev was not asked about: exactly those, by id, with the reason
