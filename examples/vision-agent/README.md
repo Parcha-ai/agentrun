@@ -29,7 +29,7 @@ On fakes a scripted lead runs one script whatever is asked (one look at the firs
 
 | Name | For |
 |---|---|
-| `GEMINI_API_KEY` (or `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or a gateway's `VIDEO_MODEL_BASE_URL` and `VIDEO_MODEL_API_KEY`) | the lead and the eyes; the defaults are one value each in `demo.json` |
+| `GEMINI_API_KEY` (or `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or a gateway's `VIDEO_MODEL_BASE_URL` and `VIDEO_MODEL_API_KEY`) | the lead and the eyes; the defaults are one value each in `demo.json`. A gateway serves an Anthropic model over its Anthropic Messages API at `/v1/messages` (the gateway's root), which returns the model's thinking; the other models go over its OpenAI-compatible `/v1` |
 | `TYPESAFE_API_KEY` (not needed with a gateway: its `VIDEO_MODEL_API_KEY` is Jev's key unless this is set) | Jev, which judges frames and pages and draws boxes (see below) |
 | `FAL_KEY` | Scribe v2 on fal, only for a question about speech (not needed when the gateway passes fal's queue through) |
 | `ffmpeg`, `ffprobe`, `pdftoppm`, `pdftotext`, `node` | the agent's code cuts frames, clips and audio, renders pages and reads a PDF's text layer |

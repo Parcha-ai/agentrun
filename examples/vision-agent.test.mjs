@@ -200,3 +200,55 @@ test('the report is report/index.html everywhere: the scripted lead writes and r
   assert.match(without, /\(`report\/index\.html`\)/);
   assert.doesNotMatch(without, /report\.html/);
 });
+
+// Through a gateway's chat completions an Anthropic model answers with thinking off, so its lead would have no thinking blocks;
+// Anthropic's own Messages API, which the gateway serves at its root, returns them.
+const catalogOf = (models, env = GATEWAY) => liveParts({ env, models }).host.models.catalog;
+
+test('through a gateway an Anthropic model goes over the Messages API at the gateway\'s root; the other providers stay OpenAI-compatible, and a provider\'s own key reaches Anthropic itself', () => {
+  const lead = catalogOf({ model: 'anthropic/claude-sonnet-5-5' }).getModel('anthropic', 'claude-sonnet-5-5');
+  assert.deepEqual([lead.api, lead.baseUrl], ['anthropic-messages', 'https://gateway.invalid'], 'the client adds /v1/messages to the root');
+  const slash = catalogOf({ model: 'anthropic/claude-haiku-5-5' }, { ...GATEWAY, VIDEO_MODEL_BASE_URL: 'https://gateway.invalid/v1/' }).getModel('anthropic', 'claude-haiku-5-5');
+  assert.equal(slash.baseUrl, 'https://gateway.invalid', 'a trailing slash too');
+  const openai = catalogOf({ model: 'openai/gpt-6-luna' }).getModel('openai', 'gpt-6-luna');
+  assert.ok(/^openai-(responses|completions)$/.test(openai.api) && openai.baseUrl === 'https://gateway.invalid/v1', 'OpenAI\'s models are unchanged');
+  const eyes = catalogOf({}).getModel('google', 'gemini-3.8-flash');
+  assert.ok(/^openai-(responses|completions)$/.test(eyes.api) && eyes.baseUrl === 'https://gateway.invalid/v1', 'so are Google\'s');
+  const own = liveParts({ env: { TYPESAFE_API_KEY: 'fake-test-key', ANTHROPIC_API_KEY: 'fake', GEMINI_API_KEY: 'fake' }, models: { model: 'anthropic/claude-sonnet-5-5' } }).host.models.catalog.getModel('anthropic', 'claude-sonnet-5-5');
+  assert.deepEqual([own.api, own.baseUrl], ['anthropic-messages', 'https://api.anthropic.com'], 'with no gateway the provider is pi-ai\'s own');
+});
+
+const SSE = [
+  ['message_start', { type: 'message_start', message: { id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-sonnet-5-5', content: [], stop_reason: null, usage: { input_tokens: 5, output_tokens: 1 } } }],
+  ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } }],
+  ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'seat one first' } }],
+  ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig' } }],
+  ['content_block_stop', { type: 'content_block_stop', index: 0 }],
+  ['content_block_start', { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } }],
+  ['content_block_delta', { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Ana' } }],
+  ['content_block_stop', { type: 'content_block_stop', index: 1 }],
+  ['message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 12 } }],
+  ['message_stop', { type: 'message_stop' }],
+].map(([name, data]) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`).join('');
+
+test('an Anthropic lead through a gateway sends Anthropic\'s thinking at the level asked, to /v1/messages under the gateway\'s key, and keeps the thinking blocks that come back', async () => {
+  const catalog = catalogOf({ model: 'anthropic/claude-sonnet-5-5' });
+  const model = catalog.getModel('anthropic', 'claude-sonnet-5-5');
+  const sent = [];
+  const fetch = async (url, init) => {
+    sent.push({ url: new URL(String(url)), key: new Headers(init.headers).get('x-api-key'), body: JSON.parse(init.body) });
+    return new Response(SSE, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  const ask = (reasoning) => catalog.streamSimple(model, { messages: [{ role: 'user', content: 'who sits first?', timestamp: 0 }] }, { reasoning, fetch }).result();
+  const reply = await ask('medium');
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].url.origin + sent[0].url.pathname, 'https://gateway.invalid/v1/messages');
+  assert.equal(sent[0].key, GATEWAY.VIDEO_MODEL_API_KEY, 'the gateway\'s key');
+  assert.deepEqual([sent[0].body.thinking.type, sent[0].body.thinking.display], ['adaptive', 'summarized'], 'Anthropic\'s thinking, summarized so its text comes back');
+  const effort = (body) => body.messages.filter((message) => message.role === 'system' && message.output_config).at(-1)?.output_config.effort;
+  assert.equal(effort(sent[0].body), 'medium', 'thinking medium is Anthropic\'s effort medium');
+  assert.equal(reply.stopReason, 'stop');
+  assert.deepEqual(reply.content.map((block) => [block.type, block.type === 'thinking' ? block.thinking : block.text]), [['thinking', 'seat one first'], ['text', 'Ana']]);
+  await ask('low');
+  assert.equal(effort(sent[1].body), 'low', 'and low is low');
+});
