@@ -1,0 +1,71 @@
+{
+  "scoring": [
+    "The primary segment is the truth as filed; the scorer matches leniently.",
+    "kind \"single\" with name null accepts one segment or the whole company."
+  ],
+  "companies": [
+    {
+      "cik": "0000900101",
+      "segments": [
+        {
+          "name": "Water Systems",
+          "member": "WaterSystemsMember",
+          "share": 0.61
+        },
+        {
+          "name": "Industrial Flow",
+          "member": "IndustrialFlowMember",
+          "share": 0.39
+        }
+      ]
+    },
+    {
+      "cik": "0000900102",
+      "segments": []
+    },
+    {
+      "cik": "0000900103",
+      "segments": [
+        {
+          "name": "Cloud",
+          "member": "CloudMember",
+          "share": 0.7
+        },
+        {
+          "name": "Licenses",
+          "member": "LicensesMember",
+          "share": 0.3
+        }
+      ]
+    },
+    {
+      "cik": "0000900104",
+      "segments": []
+    },
+    {
+      "cik": "0000900105",
+      "segments": [
+        {
+          "name": "Banking",
+          "member": "BankingMember",
+          "share": 1
+        }
+      ]
+    },
+    {
+      "cik": "0000900106",
+      "segments": [
+        {
+          "name": "Truckload",
+          "member": "TruckloadMember",
+          "share": 0.8
+        },
+        {
+          "name": "Logistics",
+          "member": "LogisticsMember",
+          "share": 0.2
+        }
+      ]
+    }
+  ]
+}

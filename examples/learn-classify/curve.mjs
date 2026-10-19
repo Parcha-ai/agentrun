@@ -143,20 +143,147 @@ function table(rows, conventions) {
   return `<table><thead><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr></thead><tbody>${cells.map((c, i) => `<tr class="${rows[i].correct ? '' : 'wrong'}">${c}</tr>`).join('')}</tbody></table>`;
 }
 
+// ---- v2: the hard job --------------------------------------------------------------------------------------------------
+
+const SERIES = ['s1', 's2', 's3', 's4'];
+const rate = (list) => (list.length ? list.filter(Boolean).length / list.length : null);
+
+/** Rolling rates over the last 10 runs of v2's three accuracies: the 4-digit code, the segment (of the runs it is scored
+ *  on) and the headline. */
+export function rollingV2(rows) {
+  return rows.map((row, i) => {
+    const window = rows.slice(Math.max(0, i - WINDOW + 1), i + 1);
+    const scored = window.filter((r) => r.segmentCorrect !== null);
+    return { run: row.run, sic4: rate(window.map((r) => r.sicCorrect4)), segment: scored.length ? rate(scored.map((r) => r.segmentCorrect)) : null, headline: rate(window.map((r) => r.correct)) };
+  });
+}
+
+/** Per window of 10: the share of runs whose answer came from a workflow, and per part workflow (by name, the three used
+ *  most), the share of runs in which a run of it completed. */
+export function partShares(rows) {
+  const counts = new Map();
+  for (const r of rows) for (const name of new Set(r.workflowsUsed.filter((u) => u.outcome === 'complete' && u.name).map((u) => u.name))) counts.set(name, (counts.get(name) ?? 0) + 1);
+  const parts = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 3).map(([name]) => name);
+  const windows = [];
+  for (let at = 0; at < rows.length; at += WINDOW) {
+    const window = rows.slice(at, at + WINDOW);
+    const done = (name) => window.filter((r) => r.workflowsUsed.some((u) => u.name === name && u.outcome === 'complete')).length / window.length;
+    windows.push({ from: window[0].run, to: window.at(-1).run, shares: [window.filter((r) => r.byWorkflow).length / window.length, ...parts.map(done)] });
+  }
+  return { series: ['the answer', ...parts], windows };
+}
+
+function legend(names) {
+  return `<p class="sub">${names.map((n, i) => `<span class="key ${SERIES[i]}"></span> ${esc(n)}`).join('&nbsp;&nbsp; ')}</p>`;
+}
+
+function costPartsChart(rows) {
+  const { x, step, xs } = runAxis(rows);
+  const yMax = niceMax(Math.max(...known(rows).map((r) => r.costUsd), 0));
+  const f = frame({ h: 260, yMax, yTicks: [0, yMax / 2, yMax], yFormat: (v) => usd(v, v === 0 ? 0 : 4), xs, label: 'Cost per job and its parts, by run' });
+  const bw = Math.max(2, Math.min(18, step - 2));
+  const bars = rows.map((r, i) => {
+    const tip = `run ${r.run}: ${usd(r.costUsd)}; Jev ${usd(r.judgeCostUsd)}, browser ${usd(r.browserCostUsd)}; ${r.byWorkflow ? 'by a workflow' : 'by hand'}`;
+    if (r.costUsd === null) return `<g class="hit" data-tip="${esc(`${tip}; a part of its cost is unknown`)}"><rect class="target" x="${x(i) - step / 2}" y="${PAD.t}" width="${step}" height="${f.plotH}"/><text class="unknown" x="${x(i)}" y="${f.y(0) - 4}" text-anchor="middle">?</text></g>`;
+    const jev = r.judgeCostUsd ?? 0;
+    const browser = r.browserCostUsd ?? 0;
+    const parts = [['s1', Math.max(0, r.costUsd - jev - browser)], ['s2', browser], ['s3', jev]];
+    let base = 0;
+    const rects = parts.map(([cls, v]) => {
+      const y0 = f.y(base);
+      base += v;
+      const y1 = f.y(base);
+      return y0 - y1 >= 1 ? `<rect class="fill ${cls}" x="${x(i) - bw / 2}" y="${y1}" width="${bw}" height="${Math.max(0, y0 - y1 - 1)}"/>` : '';
+    }).join('');
+    return `<g class="hit" data-tip="${esc(tip)}"><rect class="target" x="${x(i) - step / 2}" y="${PAD.t}" width="${step}" height="${f.plotH}"/>${rects}</g>`;
+  }).join('');
+  return f.svg(bars);
+}
+
+function accuracyV2Chart(rows) {
+  const { x, xs } = runAxis(rows);
+  const f = frame({ h: 240, yMax: 1, yTicks: [0, 0.5, 1], yFormat: pct, xs, label: 'Rolling accuracy over the last 10 runs: code, segment and headline' });
+  const points = rollingV2(rows);
+  const line = (key, cls) => {
+    const d = points.map((p, i) => [i, p[key]]).filter(([, v]) => v !== null).map(([i, v], k) => `${k ? 'L' : 'M'}${x(i)},${f.y(v)}`).join(' ');
+    return d ? `<path class="series ${cls}" d="${d}"/>` : '';
+  };
+  const dots = points.map((p, i) => `<g class="hit" data-tip="${esc(`run ${p.run}: code ${pct(p.sic4)}, segment ${p.segment === null ? 'not scored' : pct(p.segment)}, headline ${pct(p.headline)} of the last ${Math.min(i + 1, WINDOW)}`)}"><circle class="target" cx="${x(i)}" cy="${f.y(p.headline)}" r="10"/></g>`).join('');
+  return f.svg(`${line('sic4', 's1')}${line('segment', 's2')}${line('headline', 's3')}${dots}`);
+}
+
+function partsChart(rows) {
+  const { series, windows } = partShares(rows);
+  const step = (W - PAD.l - PAD.r) / Math.max(windows.length, 1);
+  const x = (i) => PAD.l + step * i + step / 2;
+  const f = frame({ h: 240, yMax: 1, yTicks: [0, 0.5, 1], yFormat: pct, xs: windows.map((w, i) => ({ x: x(i), text: w.from === w.to ? `${w.from}` : `${w.from}-${w.to}` })), label: 'Share of runs done by workflows, per window of 10, for the answer and each part' });
+  const bw = Math.max(4, Math.min(22, (step - 12) / series.length - 2));
+  const bars = windows.map((w, i) => w.shares.map((share, k) => {
+    const left = x(i) - (series.length * (bw + 2)) / 2 + k * (bw + 2);
+    const top = f.y(share);
+    return `<g class="hit" data-tip="${esc(`runs ${w.from}-${w.to}: ${series[k]} ${pct(share)}`)}"><rect class="fill ${SERIES[k]}" x="${left}" y="${top}" width="${bw}" height="${Math.max(0, f.y(0) - top)}"/></g>`;
+  }).join('')).join('');
+  return { svg: f.svg(bars), series };
+}
+
+function tilesV2(rows, sealed) {
+  const scored = rows.filter((r) => r.segmentCorrect !== null);
+  const cites = rows.filter((r) => r.evidenceSupported !== null);
+  const first = rows.slice(0, WINDOW);
+  const last = rows.slice(-WINDOW);
+  const unknown = rows.length - known(rows).length;
+  const out = [
+    ['runs', String(rows.length)],
+    ['headline', `${rows.filter((r) => r.correct).length} of ${rows.length}`],
+    ['4-digit code', `${rows.filter((r) => r.sicCorrect4).length} of ${rows.length}`],
+    ['segment', scored.length ? `${scored.filter((r) => r.segmentCorrect).length} of ${scored.length}` : '-'],
+    ['cites supported', cites.length ? pct(cites.reduce((s, r) => s + r.evidenceSupported, 0) / cites.length) : '-'],
+    [unknown ? `spent, ${unknown} run(s) unknown` : 'spent', usd(known(rows).reduce((s, r) => s + r.costUsd, 0), 2)],
+    [`a job, first ${first.length}`, usd(meanCost(first))],
+    [`a job, last ${last.length}`, usd(meanCost(last))],
+    ['browser minutes', rows.reduce((s, r) => s + (r.browserMinutes ?? 0), 0).toFixed(1)],
+    [`by a workflow, last ${last.length}`, last.length ? pct(last.filter((r) => r.byWorkflow).length / last.length) : '-'],
+    ...[...sealed].sort((a, b) => Number(b.seed) - Number(a.seed)).map((s) => [`sealed, ${s.seed ? 'before (the seed)' : `at ${s.label.slice(0, 7)}`}`, `${s.rows.filter((r) => r.correct).length} of ${s.rows.length}`]),
+  ];
+  return out.map(([k, v]) => `<div class="tile"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join('');
+}
+
+function tableV2(rows) {
+  const head = ['run', 'code', 'truth', 'segment', 'truth', 'right', 'cites', 'by', 'cost', 'Jev', 'browser', 'used', 'saved'];
+  const segment = (s) => (!s ? '-' : s.oneSegment ? 'one segment' : `${s.name}${typeof s.share === 'number' ? ` ${pct(s.share)}` : ''}`);
+  const cells = rows.map((r) => [
+    r.run, r.sic4Answer ?? '-', r.sic4Truth, segment(r.segmentAnswer), r.segmentTruth ? segment(r.segmentTruth) || r.segmentTruth.kind : '-',
+    `${r.sicCorrect4 ? 'code' : r.sicCorrect2 ? 'group' : 'no'}${r.segmentCorrect === null ? '' : r.segmentCorrect ? ', segment' : ', not segment'}`,
+    r.evidenceSupported === null ? '-' : pct(r.evidenceSupported), r.byWorkflow ? 'workflow' : 'hand', usd(r.costUsd), usd(r.judgeCostUsd), usd(r.browserCostUsd),
+    r.workflowsUsed.map((u) => `${u.name ?? 'draft'} ${u.outcome}`).join(', ') || '-', r.workflowsSaved.join(', ') || '-',
+  ].map((c) => `<td>${esc(c)}</td>`).join(''));
+  return `<table><thead><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr></thead><tbody>${cells.map((c, i) => `<tr class="${rows[i].correct ? '' : 'wrong'}">${c}</tr>`).join('')}</tbody></table>`;
+}
+
+function bodyV2(rows) {
+  const parts = partsChart(rows);
+  return `
+<section><h2>Cost per job</h2>${legend(['model calls and the rest', 'browser', 'Jev'])}<div class="chart">${costPartsChart(rows)}</div></section>
+<section><h2>Accuracy, last ${WINDOW} runs</h2>${legend(['4-digit code', 'segment (where scored)', 'headline: code and segment'])}<div class="chart">${accuracyV2Chart(rows)}</div></section>
+<section><h2>Done by workflows, per ${WINDOW} runs</h2><p class="sub">The answer: the run's answer is a completed workflow's output. A part: a run of that workflow completed in the run.</p>${legend(parts.series)}<div class="chart">${parts.svg}</div></section>
+<details><summary>Every run</summary>${tableV2(rows)}</details>`;
+}
+
 /** The page, from the rows, the sealed passes (`{ label, seed, rows }`) and the filing conventions (cik to text). */
 export function renderCurve({ rows, sealed = [], conventions = {}, title = 'Learn-classify curve' }) {
   const data = curveData(rows);
-  const body = rows.length ? `
+  const v2 = rows[0]?.set === 'v2';
+  const body = !rows.length ? '<p class="sub">No runs yet.</p>' : v2 ? bodyV2(data.rows) : `
 <section><h2>Cost per job</h2><p class="sub">Every model call of the run and its Jev, curate's included; ? where a part is unknown. Darker bars: a workflow finished the job alone. Marks: <span class="key born"></span> a workflow admitted as a trial, <span class="key promoted"></span> promoted, <span class="key demoted"></span> demoted.</p><div class="chart">${costChart(data)}</div></section>
 <section><h2>Accuracy, last ${WINDOW} runs</h2><p class="sub">Each dot is a run; hollow dots are wrong answers. Truth is the SEC's SIC code, as its 2-digit group.</p><div class="chart">${accuracyChart(data)}</div></section>
 <section><h2>Done by a workflow alone, per ${WINDOW} runs</h2><p class="sub">A run counts when its answer is the output of a workflow run that completed with no agent fallback.</p><div class="chart">${shareChart(data)}</div></section>
-<details><summary>Every run</summary>${table(data.rows, conventions)}</details>` : '<p class="sub">No runs yet.</p>';
+<details><summary>Every run</summary>${table(data.rows, conventions)}</details>`;
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(title)}</title>
 <style>
-:root { color-scheme: light; --surface:#fcfcfb; --text:#0b0b0b; --text2:#52514e; --muted:#8a8984; --grid:#e6e5e0; --bar:#86b6ef; --bar-wf:#2a78d6; --line:#2a78d6; --born:#eb6834; --promoted:#1baf7a; --demoted:#6250d6; --tip:#0b0b0b; --tip-text:#fcfcfb; }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { color-scheme: dark; --surface:#1a1a19; --text:#f0efec; --text2:#c3c2b7; --muted:#8f8e86; --grid:#33322f; --bar:#1c5cab; --bar-wf:#3987e5; --line:#3987e5; --born:#d95926; --promoted:#199e70; --demoted:#9085e9; --tip:#f0efec; --tip-text:#1a1a19; } }
-:root[data-theme="dark"] { color-scheme: dark; --surface:#1a1a19; --text:#f0efec; --text2:#c3c2b7; --muted:#8f8e86; --grid:#33322f; --bar:#1c5cab; --bar-wf:#3987e5; --line:#3987e5; --born:#d95926; --promoted:#199e70; --demoted:#9085e9; --tip:#f0efec; --tip-text:#1a1a19; }
+:root { color-scheme: light; --surface:#fcfcfb; --text:#0b0b0b; --text2:#52514e; --muted:#8a8984; --grid:#e6e5e0; --bar:#86b6ef; --bar-wf:#2a78d6; --line:#2a78d6; --born:#eb6834; --promoted:#1baf7a; --demoted:#6250d6; --tip:#0b0b0b; --tip-text:#fcfcfb; --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { color-scheme: dark; --surface:#1a1a19; --text:#f0efec; --text2:#c3c2b7; --muted:#8f8e86; --grid:#33322f; --bar:#1c5cab; --bar-wf:#3987e5; --line:#3987e5; --born:#d95926; --promoted:#199e70; --demoted:#9085e9; --tip:#f0efec; --tip-text:#1a1a19; --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; } }
+:root[data-theme="dark"] { color-scheme: dark; --surface:#1a1a19; --text:#f0efec; --text2:#c3c2b7; --muted:#8f8e86; --grid:#33322f; --bar:#1c5cab; --bar-wf:#3987e5; --line:#3987e5; --born:#d95926; --promoted:#199e70; --demoted:#9085e9; --tip:#f0efec; --tip-text:#1a1a19; --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; }
 body { margin:0; background:var(--surface); color:var(--text); font:15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
 main { max-width:1000px; margin:0 auto; padding:24px 16px 48px; }
 h1 { font-size:22px; margin:0 0 4px; } h2 { font-size:16px; margin:28px 0 2px; } .sub { color:var(--text2); margin:0 0 8px; font-size:13px; }
@@ -168,6 +295,8 @@ h1 { font-size:22px; margin:0 0 4px; } h2 { font-size:16px; margin:28px 0 2px; }
 .dot { fill:var(--line); stroke:var(--surface); stroke-width:2; } .dot.miss { fill:var(--surface); stroke:var(--line); stroke-width:2; }
 .mark { stroke:var(--surface); stroke-width:1; } .mark.born, .key.born { fill:var(--born); background:var(--born); } .mark.promoted, .key.promoted { fill:var(--promoted); background:var(--promoted); } .mark.demoted, .key.demoted { fill:var(--demoted); background:var(--demoted); }
 .key { display:inline-block; width:9px; height:9px; border-radius:2px; vertical-align:baseline; }
+.fill.s1, .key.s1 { fill:var(--s1); background:var(--s1); } .fill.s2, .key.s2 { fill:var(--s2); background:var(--s2); } .fill.s3, .key.s3 { fill:var(--s3); background:var(--s3); } .fill.s4, .key.s4 { fill:var(--s4); background:var(--s4); }
+.series { fill:none; stroke-width:2; } .series.s1 { stroke:var(--s1); } .series.s2 { stroke:var(--s2); } .series.s3 { stroke:var(--s3); }
 .target { fill:transparent; } .hit:hover .bar, .hit:hover .dot { opacity:.8; }
 #tip { position:fixed; pointer-events:none; background:var(--tip); color:var(--tip-text); font-size:12px; padding:6px 8px; border-radius:4px; max-width:320px; display:none; z-index:2; }
 details { margin-top:28px; } table { border-collapse:collapse; font-size:12px; width:100%; display:block; overflow-x:auto; } th, td { text-align:left; padding:4px 8px; border-bottom:1px solid var(--grid); white-space:nowrap; } tr.wrong td { color:var(--text2); }
@@ -175,7 +304,7 @@ details { margin-top:28px; } table { border-collapse:collapse; font-size:12px; w
 <body><main>
 <h1>${esc(title)}</h1>
 <p class="sub">One company per run, in order. After each run curate merges what it noted and saved; the next run starts from the new main.</p>
-<div class="tiles">${tiles(data, sealed, conventions)}</div>
+<div class="tiles">${v2 ? tilesV2(data.rows, sealed) : tiles(data, sealed, conventions)}</div>
 ${body}
 </main><div id="tip" role="tooltip"></div>
 <script>

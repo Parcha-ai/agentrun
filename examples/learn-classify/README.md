@@ -137,6 +137,49 @@ demotion after 2).
   `null`. The agent never sees that list; the runner marks those companies in its log and the curve counts how many of
   them each pass got right, to check whether the notes learned the conventions.
 
+## v2: the hard job
+
+`--set v2` runs the job of `CLASSIFY-CONTRACT.md` v2 on `data/companies-v2.json`: the company's 4-digit SIC code and its
+primary operating segment with that segment's share of revenue, each with cites, from search, a browser and a document
+reader beside fetch_page (lane C3's `search_web`, `browse` and `read_document` in `tools-v2.mjs`). The agent is given only
+the name, the ticker and the website, and the website for half the companies only. Its rules are `agent-v2/AGENTS.md`:
+workflows are written for the parts of the job that repeat (finding the official site, reading the segment table,
+following a holding company to its operating business, sending a site that needs JavaScript to the browser), and a
+whole-job `classify-company` runs the parts.
+
+```sh
+node examples/learn-classify/runner.mjs --set v2 --scripted --out /tmp/lc-v2-dry --jobs 4
+node examples/learn-classify/runner.mjs --set v2 --live --out /tmp/lc-v2 --jobs 10 --cap-usd 140 --run-cap-usd 1.5
+```
+
+The answer is the typed `answer` tool: `sic4` (one of `data/sic-codes.json`'s 429 codes; `sic_codes({ group })` lists one
+group's, since a Jev pick holds at most 240 options), `primarySegment` (`{ name, share }` or `{ oneSegment: true }`) and
+1 to 6 cites (`{ claim: "sic" | "segment", url, locator, quote }`).
+
+`score-v2.mjs` scores each run after it ends, from the run's own store; nothing is fetched again:
+
+- `sicCorrect4` is an exact match of the 4-digit code, `sicCorrect2` of its first two digits.
+- `segmentCorrect`: a name the filing uses matches at once; any other name is Jev's to judge against the filed segment
+  and the company's full member list (`build-report-v2.json` `companies[].segments`), under the report's scoring rules:
+  other words for the segment, the business an abbreviated member stands for, and a region as filed all count. The
+  share must be within 0.10 of the filed one. A company that reports one segment takes `oneSegment`, its name, or the
+  whole company. A company with no segment truth is not scored on the segment (`null`, out of the denominator).
+- `evidenceSupported`: the share of cites whose claim Jev finds in what the run read at the cite's URL (its fetch_page,
+  browse, read_document and search_web results); a URL the run never read supports nothing.
+- `correct`, the curve's headline, is the code exact and the segment not wrong.
+
+The scorer's own Jev is metered apart from the run and kept in `progress/<run>.json`; it is not the agent's cost. A v2 row
+adds `set`, `categories`, `websiteGiven`, `sic4Answer`, `sic4Truth`, `sicCorrect4`, `sicCorrect2`, `segmentAnswer`,
+`segmentTruth`, `segmentCorrect`, `shareError`, `evidenceSupported`, `toolCalls` (`search`, `browse`, `fetch`,
+`read_document`), `browserMinutes`, `visionPages` and `browserCostUsd`; its `answer`, `truth` and `correct` are the 4-digit
+codes and the headline, and its `costUsd` includes what the browser, search and the document reader cost. The curve for v2
+shows the cost per job with its parts, the code, segment and headline accuracies, and the share of runs workflows did,
+for the answer and for each part.
+
+The holding category is a name pattern (Holding(s), Enterprises, Diversified) or SIC 6799. It is used only to choose
+which companies are sampled and misses holding companies without such a name, e.g. Berkshire Hathaway; no answer is
+scored from it.
+
 ## Files
 
 | File | What |
@@ -149,7 +192,10 @@ demotion after 2).
 | `recording.mjs` | a run's store as an `agentrun.recording/1` directory |
 | `curve.mjs` | `curve.html` from the rows: static, no build step |
 | `models.mjs` | the live model and Jev, through the gateway |
-| `scripted.mjs` | the $0 doubles: the scripted agent and Jev, and the fixture web `fetch_page` reads |
+| `scripted.mjs` | the $0 doubles: the scripted agent and Jev, the fixture web `fetch_page` reads, and v2's fakes of search_web, browse and read_document |
+| `sets.mjs` | the two jobs, v1 and v2: what the agent is given, its label tools and its answer |
+| `score-v2.mjs` | the v2 scorer |
+| `agent-v2/`, `fixtures-v2/` | the v2 agent, and v2's made-up companies, pages, documents and answers for the scripted pass |
 | `fixtures/` | five made-up companies, their pages and ten groups, for the scripted pass and the tests |
 | `tools.mjs`, `data/` | `fetch_page` and the truth set (lane C1) |
 

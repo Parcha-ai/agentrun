@@ -1,0 +1,34 @@
+{
+  "https://www.harborvalve.example": {
+    "title": "Harbor Valve Works",
+    "text": "We design and manufacture centrifugal pumps and control valves for water utilities and refineries. Water Systems, our largest segment, brought in 61% of revenue last year.",
+    "links": [
+      "https://www.harborvalve.example/investors"
+    ]
+  },
+  "https://www.bluefinmarkets.example": {
+    "title": "Bluefin Markets",
+    "text": "Bluefin Markets runs 212 neighborhood grocery stores selling fresh produce, seafood and pantry staples. We report one segment.",
+    "links": []
+  },
+  "https://www.summitridge.example": {
+    "title": "Summit Ridge",
+    "text": "Summit Ridge builds accounting and payroll software that mid-size companies license by the seat. Cloud Software, our largest segment, was 70% of revenue.",
+    "links": []
+  },
+  "https://www.lanternhall.example": {
+    "title": "Lantern Hall",
+    "text": "Lantern Hall runs 38 family restaurants serving breakfast, lunch and dinner across the Midwest. Restaurants are 100% of revenue.",
+    "links": []
+  },
+  "https://www.cedarlanebank.example": {
+    "title": "Cedar Lane Bank",
+    "text": "Cedar Lane Bank takes deposits and makes home and small-business loans through 40 branches. Banking is our one segment, 100% of revenue.",
+    "links": []
+  },
+  "https://www.ironcladfreight.example": {
+    "title": "Ironclad Freight Lines",
+    "text": "Ironclad hauls full truckload freight across the lower 48 states with a fleet of 1,900 tractors. Truckload, our largest segment, was 80% of revenue.",
+    "links": []
+  }
+}

@@ -12,7 +12,7 @@ import { readTrial } from '@parcha/pi-agent-learn';
 import { validateRecording } from '../../scripts/recording/validate.mjs';
 import { renderCurve } from './curve.mjs';
 import { gatedAdmitter, LEAK_QUESTION } from './gates.mjs';
-import { agentHomeFor, groupsOf, jobInput, meteredJudge, prepareRun, runJob } from './host.mjs';
+import { agentHomeFor, answerV1, groupsOf, jobInput, meteredJudge, prepareRun, runJob, sic2GroupsTool } from './host.mjs';
 import { byWorkflowOf, rowOf, spendOf } from './row.mjs';
 import { liveParts, openOut, readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
 import { inspectWorkflow } from '@parcha/agentrun-dsl';
@@ -212,7 +212,7 @@ test('an agent node inside an in-run workflow is offered fetch_page; a node that
       return { submit: { ok: 'yes' } };
     },
   });
-  const measure = await runJob({ run, job, model, judge: meteredJudge(parts.judge()), fetchPage: fixtureFetch(pages, seen), labels });
+  const measure = await runJob({ run, job, model, judge: meteredJudge(parts.judge()), effects: [fixtureFetch(pages, seen), sic2GroupsTool(labels)], answer: answerV1(labels) });
   assert.deepEqual(seen, [job.website]);
   assert.equal(measure.workflowRuns[0].outcome, 'complete');
   assert.equal(measure.workflowRuns[0].output.url, job.website);
@@ -283,7 +283,7 @@ test('workflowsUsed in the DSL words: a draft never saved has no name, a saved o
     node: (state) => ({ submit: { ...extractAnswer(state), ...(state.by ? { classifiedBy: state.by } : {}) } }),
   });
   const fetchPage = { ...fixtureFetch(pages), run: async (args) => { if (args.url.startsWith('https://boom.example')) throw new Error('the network is down'); return fixtureFetch(pages).run(args); } };
-  const measure = await runJob({ run, job, model, judge: meteredJudge(parts.judge()), fetchPage, labels });
+  const measure = await runJob({ run, job, model, judge: meteredJudge(parts.judge()), effects: [fetchPage, sic2GroupsTool(labels)], answer: answerV1(labels) });
   const used = rowOf({ run: 1, runId: run.runId, job, seedSha: run.sha, afterSha: run.sha, offered: [], measure, finished: null, curated: null, recording: null }).workflowsUsed;
   const digest = (w) => inspectWorkflow(structuredClone(w)).sha256;
   assert.deepEqual(used, [
@@ -339,7 +339,7 @@ test('the live parts build from the gateway named in the environment, with no ca
   assert.ok(Object.keys(parts.conventions).length > 0);
   for (const cik of Object.keys(parts.conventions)) assert.ok(parts.companies.some((c) => c.cik === cik));
   const job = parts.companies.find((c) => c.order === 1);
-  assert.equal(parts.fetchFor(job).name, 'fetch_page');
+  assert.deepEqual((await parts.toolsFor(job, { dir: '/nonexistent' })).map((t) => t.name), ['fetch_page']);
   const model = parts.modelFor(job);
   assert.equal(model.agent.thinkingLevel, 'medium');
   assert.equal(model.agent.model.modelId, 'gpt-6-luna');

@@ -19,8 +19,6 @@ export { agentHomeFor, prepareRun, readAgentAt } from '../agent-learn/host.mjs';
 
 export const AGENT_DIR = join(import.meta.dirname, 'agent');
 const NODE_INSTRUCTIONS = 'You do one step of a workflow that classifies a company\'s industry. Do only what the task says, with only the tools you are given, then deliver its record.';
-/** The tools a workflow may call, and the ones an agent node inside a workflow is offered when it names none. */
-export const WORKFLOW_TOOL_NAMES = Object.freeze(['fetch_page', 'sic2_groups']);
 
 /** A meter around a `runJudge` port: what it was asked and what it cost, by Jev's own `cost_usd`. A null cost, and a
  *  request that threw (it may have been billed before it failed), make the meter's spend unknown. */
@@ -49,8 +47,8 @@ export const jobInput = (job) => ({ name: job.name, website: job.website });
  *  Only whole values: a bare word of a name ("Target") would refuse ordinary prose. A shorter name or a word of one is the
  *  leak gate's and the curator's to catch. The guard never matches a value under 4 characters, so a ticker is left out. */
 export function caseValuesOf(job) {
-  const values = [job.name, job.website, job.cik];
-  try {
+  const values = [job.name, job.website, job.cik, job.ticker];
+  if (job.website) try {
     const host = new URL(job.website).hostname.toLowerCase();
     values.push(host, host.replace(/^www\./, ''));
   } catch {}
@@ -67,22 +65,88 @@ export const jobText = (job) => [
 /** The groups, as sic2_groups returns them: code and name, in code order. */
 export const groupsOf = (labels) => Object.entries(labels).sort(([a], [b]) => a.localeCompare(b)).map(([code, name]) => ({ code, name }));
 
-/** The host's tools for one job. `fetchPage` is the job's fetch_page (lane C1's `fetchPageTool({ allowDomain })`, or a
- *  stub of the same shape): `{ name, description?, parameters, resultSchema, run(args, { signal }) }`. */
-export function classifyTools({ fetchPage, labels }) {
+const CODE_LIST = (key) => ({
+  type: 'object', additionalProperties: false, required: [key],
+  properties: { [key]: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['code', 'name'], properties: { code: { type: 'string' }, name: { type: 'string' } } } } },
+});
+
+/** sic2_groups: the 2-digit SIC major groups, code and name, in code order. */
+export function sic2GroupsTool(labels) {
   const groups = groupsOf(labels);
-  const sic2Groups = {
+  return {
     name: 'sic2_groups',
     description: 'The industry groups to classify into: every 2-digit SIC major group, its code and its name.',
     parameters: { type: 'object', additionalProperties: false, properties: {} },
-    resultSchema: {
-      type: 'object', additionalProperties: false, required: ['groups'],
-      properties: { groups: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['code', 'name'], properties: { code: { type: 'string' }, name: { type: 'string' } } } } },
-    },
+    resultSchema: CODE_LIST('groups'),
     run: async () => ({ groups }),
   };
-  const fetch = { description: 'Read one web page as text: the company\'s own site or Wikipedia, nothing else.', ...fetchPage };
-  const effects = [fetch, sic2Groups];
+}
+
+/** sic_codes: the SEC's 4-digit SIC codes, all of them or one 2-digit group's (a Jev pick holds at most 240 options). */
+export function sicCodesTool(codes) {
+  const all = groupsOf(codes);
+  return {
+    name: 'sic_codes',
+    description: 'The SEC\'s 4-digit SIC codes, code and name: all of them, or only those of one 2-digit group (`group`, such as "35").',
+    parameters: { type: 'object', additionalProperties: false, properties: { group: { type: 'string', pattern: '^[0-9]{2}$', description: 'A 2-digit group from sic2_groups.' } } },
+    resultSchema: CODE_LIST('codes'),
+    run: async ({ group } = {}) => ({ codes: group ? all.filter((c) => c.code.startsWith(group)) : all }),
+  };
+}
+
+/** The v1 answer: a 2-digit group, one sentence of evidence and its URL. */
+export function answerV1(labels) {
+  return {
+    description: 'Give the final answer, once: the industry group\'s code, one sentence of evidence from a page read in this run, and that page\'s URL.',
+    parameters: {
+      type: 'object', additionalProperties: false, required: ['sic2', 'evidence', 'url'],
+      properties: {
+        sic2: { type: 'string', enum: groupsOf(labels).map((g) => g.code), description: 'A code from sic2_groups.' },
+        evidence: { type: 'string', minLength: 1, maxLength: 600 },
+        url: { type: 'string', minLength: 1, maxLength: 600 },
+      },
+    },
+    recorded: (args) => args.sic2,
+  };
+}
+
+/** The v2 answer (CLASSIFY-CONTRACT.md v2): a 4-digit SIC code, the primary operating segment with its share of revenue or
+ *  that the company reports one segment, and 1 to 6 cites, each with the page, where on it, and the words. */
+export function answerV2(codes) {
+  return {
+    description: 'Give the final answer, once: the company\'s 4-digit SIC code as the SEC would file it, its primary operating segment with that segment\'s share of revenue from the company\'s own reporting (or that it reports one segment), and 1 to 6 cites from pages or documents read in this run.',
+    parameters: {
+      type: 'object', additionalProperties: false, required: ['sic4', 'primarySegment', 'evidence'],
+      properties: {
+        sic4: { type: 'string', enum: groupsOf(codes).map((c) => c.code), description: 'A code from sic_codes.' },
+        primarySegment: {
+          anyOf: [
+            { type: 'object', additionalProperties: false, required: ['name', 'share'], properties: { name: { type: 'string', minLength: 1, maxLength: 200 }, share: { type: ['number', 'null'], minimum: 0, maximum: 1, description: 'Its share of revenue, 0 to 1; null when the filing gives none.' } } },
+            { type: 'object', additionalProperties: false, required: ['oneSegment'], properties: { oneSegment: { const: true } } },
+          ],
+        },
+        evidence: {
+          type: 'array', minItems: 1, maxItems: 6,
+          items: {
+            type: 'object', additionalProperties: false, required: ['claim', 'url', 'locator', 'quote'],
+            properties: {
+              claim: { type: 'string', enum: ['sic', 'segment'] },
+              url: { type: 'string', minLength: 1, maxLength: 600, description: 'The page or document, as read in this run.' },
+              locator: { type: 'string', minLength: 1, maxLength: 200, description: 'Where on it: a section, or "pdf p. N".' },
+              quote: { type: 'string', minLength: 1, maxLength: 300 },
+            },
+          },
+        },
+      },
+    },
+    recorded: (args) => args.sic4,
+  };
+}
+
+/** The host's tools for one job: `effects` are the tools the root agent, a workflow's call nodes and its agent nodes may
+ *  use (fetch_page, the label tools, and in v2 lane C3's search_web, browse and read_document), each
+ *  `{ name, description?, parameters, resultSchema, run(args, { signal }) }`; `answer` is the root agent's final answer. */
+export function classifyTools({ effects, answer }) {
   const asTool = (effect) => defineTool({
     name: effect.name,
     description: effect.description,
@@ -93,23 +157,17 @@ export function classifyTools({ fetchPage, labels }) {
     },
   });
   const piTools = effects.map(asTool);
-  const answer = defineTool({
+  const answerTool = defineTool({
     name: 'answer',
-    description: 'Give the final answer, once: the industry group\'s code, one sentence of evidence from a page read in this run, and that page\'s URL.',
-    parameters: {
-      type: 'object', additionalProperties: false, required: ['sic2', 'evidence', 'url'],
-      properties: {
-        sic2: { type: 'string', enum: groups.map((g) => g.code), description: 'A code from sic2_groups.' },
-        evidence: { type: 'string', minLength: 1, maxLength: 600 },
-        url: { type: 'string', minLength: 1, maxLength: 600 },
-      },
-    },
+    description: answer.description,
+    parameters: answer.parameters,
     async execute(args) {
-      return toolResult([{ type: 'text', text: `Recorded ${args.sic2}.` }], { details: { sic2: args.sic2 } });
+      return toolResult([{ type: 'text', text: `Recorded ${answer.recorded(args)}.` }], { details: { recorded: answer.recorded(args) } });
     },
   });
+  const names = effects.map((e) => e.name);
   return {
-    extension: defineExtension({ name: 'learn-classify.tools', tools: [...piTools, answer] }),
+    extension: defineExtension({ name: 'learn-classify.tools', tools: [...piTools, answerTool] }),
     workflowTools: effects.map(({ name, description, parameters, resultSchema }) => ({ name, description, parameters, resultSchema })),
     /** A call node's tool, by its name; the driver journals each call before it is dispatched. */
     runEffect: async ({ node, input, signal }) => {
@@ -117,8 +175,8 @@ export function classifyTools({ fetchPage, labels }) {
       if (!effect) throw new Error(`call node "${node.label}" names the tool ${node.tool}, which this host does not run`);
       return effect.run(input, { signal });
     },
-    /** The tools an agent node is offered: the ones it names, else both workflow tools. Never answer, learn or agentrun. */
-    nodeTools: (names) => (names ?? WORKFLOW_TOOL_NAMES).filter((n) => n !== 'submit').map((name) => {
+    /** The tools an agent node is offered: the ones it names, else every workflow tool. Never answer, learn or agentrun. */
+    nodeTools: (wanted) => (wanted ?? names).filter((n) => n !== 'submit').map((name) => {
       const tool = piTools.find((t) => t.name === name);
       if (!tool) throw new Error(`a workflow node names the tool ${name}, which this host does not offer to nodes`);
       return tool;
@@ -212,14 +270,15 @@ export function usageTotals(usage) {
 
 /**
  * One run of the agent on one company, in the run's own store. `model` is `{ models, agent }` (pi-ai models and the
- * agent's model and thinking), `judge` the run's metered Jev (`meteredJudge`). `limitUsd` aborts the run once its model
- * and Jev spend pass it. Returns what the host measured; the run's store is closed when it returns.
+ * agent's model and thinking), `judge` the run's metered Jev (`meteredJudge`), `effects` the host tools (`classifyTools`),
+ * `answer` the final answer's tool and `text` the job's text. `limitUsd` aborts the run once its model and Jev spend pass
+ * it. Returns what the host measured; the run's store is closed when it returns.
  */
-export async function runJob({ run, job, model, judge, fetchPage, labels, limitUsd, nodeThinking = 'low' }) {
+export async function runJob({ run, job, model, judge, effects, answer, text = jobText, limitUsd, nodeThinking = 'low' }) {
   const started = Date.now();
   const caseValues = caseValuesOf(job);
   const learn = learnExtension({ caseValues });
-  const tools = classifyTools({ fetchPage, labels });
+  const tools = classifyTools({ effects, answer });
   // A node's conversation would otherwise take the root agent's rules, <learned> section and tools: it gets its own short
   // instructions, the host's tools extension only, and of it only the tools the node may use.
   const nodes = nodeRunner({
@@ -271,7 +330,7 @@ export async function runJob({ run, job, model, judge, fetchPage, labels, limitU
         }).catch(() => {}).finally(() => { checking = false; });
       });
     }
-    const submission = await root.submit({ type: 'input', content: jobText(job) }, ctx);
+    const submission = await root.submit({ type: 'input', content: text(job) }, ctx);
     const settled = await submission.wait(ctx);
     const { messages } = await root.context(ctx);
     const calls = messages.filter((m) => m.role === 'assistant').flatMap((m) => m.content.filter((c) => c.type === 'toolCall'));
@@ -324,18 +383,69 @@ export async function finishJob({ home, repo, run, job, measure, propose = true 
   });
 }
 
-/** The pages the run read, as text: every fetch_page result in any of its conversations, and every completed fetch_page
- *  call a workflow made. What `proposeLearning`'s `read` checks a saved workflow against. */
-export function pagesRead(storePath) {
-  const pages = new Set();
-  const add = (page) => { if (page && typeof page.text === 'string' && page.text) pages.add(`${page.title ?? ''}\n${page.text}`); };
-  for (const line of recordingLines(storePath).lines) {
-    const entry = line.data?.model?.[0];
-    if (line.kind === 'pi.tool-result' && entry?.toolName === 'fetch_page') add(json(textOf(entry.content)));
-    const effect = line.data?.value;
-    if (line.kind === 'agentrun.effects' && effect?.status === 'completed' && effect.intent?.tool === 'fetch_page') add(effect.result?.value);
+/** Every tool result the run's store holds, from any of its conversations and from its workflows' completed or failed
+ *  calls: `{ tool, args, value }`, `value` being what the tool returned (undefined when the call failed). */
+export function toolResultsOf(storePath) {
+  const out = [];
+  const calls = new Map();
+  const lines = recordingLines(storePath).lines;
+  for (const line of lines) {
+    if (line.kind !== 'pi.assistant') continue;
+    for (const part of line.data?.model?.[0]?.content ?? []) if (part.type === 'toolCall') calls.set(`${line.conv}:${part.id}`, part.arguments);
   }
-  return [...pages];
+  // An effect document has a line per revision: each call counts once, as its last revision left it.
+  const effects = new Map();
+  for (const line of lines) {
+    const entry = line.data?.model?.[0];
+    if (line.kind === 'pi.tool-result' && entry?.toolName) {
+      out.push({ tool: entry.toolName, args: calls.get(`${line.conv}:${entry.toolCallId}`) ?? {}, value: entry.isError ? undefined : json(textOf(entry.content)) });
+    }
+    const effect = line.data?.value;
+    if (line.kind === 'agentrun.effects' && effect?.intent?.tool) effects.set(line.data.key, effect);
+  }
+  for (const effect of effects.values()) {
+    if (!['completed', 'failed'].includes(effect.status)) continue;
+    out.push({ tool: effect.intent.tool, args: effect.args ?? {}, value: effect.status === 'completed' ? effect.result?.value : undefined });
+  }
+  return out;
+}
+
+/** What the run read, as `{ tool, url, text }`: each page fetch_page or browse returned, each document read_document read
+ *  (its text and what the looks at its pages answered), and each search result's title and snippet. */
+export function textsRead(results) {
+  const out = [];
+  for (const { tool, args, value } of results) {
+    if (!value) continue;
+    if ((tool === 'fetch_page' || tool === 'browse') && value.text) {
+      for (const url of new Set([value.url, args.url].filter(Boolean))) out.push({ tool, url, text: `${value.title ?? ''}\n${value.text}` });
+    }
+    if (tool === 'read_document' && (value.text || value.looks?.length)) {
+      const looks = (value.looks ?? []).map((l) => (typeof l === 'string' ? l : [l.page !== undefined ? `[page ${l.page}]` : '', l.answer ?? l.text ?? JSON.stringify(l)].join(' '))).join('\n');
+      for (const url of new Set([value.source, args.url, args.path].filter(Boolean))) out.push({ tool, url, text: [value.text ?? '', looks].filter(Boolean).join('\n') });
+    }
+    if (tool === 'search_web') for (const r of value.results ?? []) out.push({ tool, url: r.url, text: `${r.title ?? ''}\n${r.snippet ?? ''}` });
+  }
+  return out;
+}
+
+/** The pages the run read, as text: what `proposeLearning`'s `read` checks a saved workflow against. */
+export const pagesRead = (storePath) => [...new Set(textsRead(toolResultsOf(storePath)).map((r) => r.text))];
+
+const sumOrNull = (values) => (values.some((v) => typeof v !== 'number' || !Number.isFinite(v)) ? null : values.reduce((a, b) => a + b, 0));
+
+/** The v2 tool facts of a run: calls per tool, the browser's billed seconds and cost, the pages a vision model looked at,
+ *  and what search and the document reader cost. A cost a tool reported as null makes its sum null. */
+export function toolStats(results) {
+  const of = (tool) => results.filter((r) => r.tool === tool);
+  const done = (tool) => of(tool).filter((r) => r.value);
+  return {
+    toolCalls: { search: of('search_web').length, browse: of('browse').length, fetch: of('fetch_page').length, read_document: of('read_document').length },
+    browserSeconds: done('browse').reduce((sum, r) => sum + (typeof r.value.seconds === 'number' ? r.value.seconds : 0), 0),
+    browserCostUsd: sumOrNull(done('browse').map((r) => r.value.costUsd)),
+    visionPages: done('read_document').reduce((sum, r) => sum + (r.value.looks?.length ?? 0), 0),
+    searchCostUsd: sumOrNull(done('search_web').map((r) => r.value.costUsd)),
+    documentCostUsd: sumOrNull(done('read_document').map((r) => r.value.costUsd)),
+  };
 }
 
 /** What a run that never finished spent on models, read back from the latest `pi.usage` of each of its conversations. */

@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const FIXTURES = join(import.meta.dirname, 'fixtures');
+export const FIXTURES_V2 = join(import.meta.dirname, 'fixtures-v2');
 export const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'));
 
 /** fetch_page's result, per the C1/C2 contract. */
@@ -186,16 +187,24 @@ const CURATE = { general: 0.94, narrowsRules: 0.03, fromContent: 0.03, duplicate
  * A scripted Jev. Curate's and the leak gate's yes-or-no questions get the fixed answers above (or `overrides`); a pick
  * chooses the fixture's group for the company in its state (`truthByName`), or none for a company it has none for.
  */
-export function scriptedJev({ truthByName = {}, groups = [], overrides = {}, asked = [] } = {}) {
+export function scriptedJev({ truthByName = {}, groups = [], overrides = {}, segments = {}, asked = [] } = {}) {
   return async ({ kind, label, state, questions }) => {
     const answers = {};
     for (const [key, question] of Object.entries(questions)) {
-      if (question.type === 'noul') {
+      if (question.type === 'noul' && label === 'score/segment') {
+        answers[key] = { type: 'noul', noul: segments.segments?.[state.truth?.member] ?? 0.9 };
+      } else if (question.type === 'noul' && label === 'score/cite') {
+        answers[key] = { type: 'noul', noul: segments.cites?.[state.url] ?? 0.9 };
+      } else if (question.type === 'noul') {
         answers[key] = { type: 'noul', noul: overrides[key] ?? CURATE[key] ?? 0.5 };
       } else if (question.type === 'choice') {
+        // The option for the company's code, or for its 2-digit group: each option is described "<code> <name>".
         const options = Object.keys(question.criteria);
-        const index = groups.findIndex((g) => g.code === truthByName[state?.company]);
-        const choice = index >= 0 && options.includes(`item_${index}`) ? `item_${index}` : options.includes('none_of_these') ? 'none_of_these' : options[0];
+        const truth = String(truthByName[state?.company] ?? '');
+        const startsWith = (code) => code && options.find((o) => String(question.criteria[o] ?? '').startsWith(`${code} `));
+        const byIndex = groups.findIndex((g) => g.code === truth);
+        const choice = startsWith(truth) ?? startsWith(truth.slice(0, 2)) ?? (byIndex >= 0 && options.includes(`item_${byIndex}`) ? `item_${byIndex}` : undefined)
+          ?? (options.includes('none_of_these') ? 'none_of_these' : options[0]);
         const probabilities = Object.fromEntries(options.map((o) => [o, o === choice ? 0.9 : 0.1 / (options.length - 1)]));
         answers[key] = { type: 'choice', choice, probabilities, confidence: 0.9 };
       } else {
@@ -204,5 +213,153 @@ export function scriptedJev({ truthByName = {}, groups = [], overrides = {}, ask
       asked.push({ kind, label, question: key, answer: answers[key] });
     }
     return { answers, model: 'scripted', usage: null, cost_usd: 0 };
+  };
+}
+
+// ---- v2: the hard job --------------------------------------------------------------------------------------------------
+
+const V2_PAGE = FETCH_RESULT_SCHEMA;
+const SEARCH_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['ok', 'query', 'results', 'filtered', 'costUsd'],
+  properties: {
+    ok: { type: 'boolean' }, query: { type: 'string' }, filtered: { type: 'integer' }, costUsd: { type: ['number', 'null'] },
+    results: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['url', 'title', 'snippet'], properties: { url: { type: 'string' }, title: { type: 'string' }, snippet: { type: 'string' } } } },
+  },
+};
+const BROWSE_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['ok', 'url', 'status', 'title', 'text', 'links', 'costUsd'],
+  properties: { ...FETCH_RESULT_SCHEMA.properties, costUsd: { type: ['number', 'null'] }, seconds: { type: 'number' }, browser: { type: 'string' }, documents: { type: 'array', items: { type: 'string' } } },
+};
+const DOCUMENT_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['ok', 'source', 'kind', 'text', 'looks', 'costUsd'],
+  properties: {
+    ok: { type: 'boolean' }, source: { type: 'string' }, kind: { type: 'string', enum: ['pdf', 'image', 'unknown'] }, text: { type: 'string' }, pageCount: { type: 'integer' },
+    looks: { type: 'array', items: { type: 'object', properties: { page: { type: 'integer' }, answer: { type: 'string' } } } }, costUsd: { type: ['number', 'null'] },
+  },
+};
+
+/** Fakes of lane C3's search_web, browse and read_document over fixtures, with their names and result shapes: search
+ *  answers a query naming a fixture company with its results, browse a fixture page (30 billed seconds), read_document a
+ *  fixture document (one look). Every fake's call is collected in `calls`. */
+export function fakeHardTools({ pages = {}, documents = {}, search = {}, calls = [] } = {}) {
+  const page = (url) => pages[url] ?? pages[new URL(url).href] ?? Object.entries(pages).find(([u]) => new URL(u).href === new URL(url).href)?.[1];
+  return {
+    calls,
+    tools: () => [
+      {
+        name: 'search_web', description: 'Search the web.', resultSchema: SEARCH_SCHEMA,
+        parameters: { type: 'object', additionalProperties: false, required: ['query'], properties: { query: { type: 'string' } } },
+        run: async ({ query }) => {
+          calls.push({ tool: 'search_web', query });
+          const hit = Object.entries(search).find(([name]) => query.toLowerCase().includes(name.toLowerCase()));
+          return { ok: true, query, results: hit ? hit[1] : [], filtered: 0, costUsd: 0.001 };
+        },
+      },
+      {
+        name: 'browse', description: 'Open a page in a browser and read it after its scripts ran.', resultSchema: BROWSE_SCHEMA,
+        parameters: { type: 'object', additionalProperties: false, required: ['url'], properties: { url: { type: 'string' } } },
+        run: async ({ url }) => {
+          calls.push({ tool: 'browse', url });
+          const found = page(url);
+          return found ? { ok: true, url, status: 200, title: found.title, text: found.text, links: found.links ?? [], costUsd: 0.002, seconds: 30, browser: 'fake' }
+            : { ok: false, url, status: 404, title: '', text: '', links: [], costUsd: 0.002, seconds: 30, browser: 'fake' };
+        },
+      },
+      {
+        name: 'read_document', description: 'Read a PDF or image: its text, and what a vision model sees on the pages a question needs.', resultSchema: DOCUMENT_SCHEMA,
+        parameters: { type: 'object', additionalProperties: false, required: ['url'], properties: { url: { type: 'string' }, question: { type: 'string' } } },
+        run: async ({ url, question }) => {
+          calls.push({ tool: 'read_document', url, question });
+          const doc = documents[url];
+          return doc ? { ok: true, source: url, kind: 'pdf', text: doc.text, pageCount: doc.pages ?? 1, looks: [{ page: doc.page ?? 1, answer: doc.look ?? '' }], costUsd: 0.001 }
+            : { ok: false, source: url, kind: 'unknown', text: '', looks: [], costUsd: 0 };
+        },
+      },
+    ],
+  };
+}
+
+/** The whole-job v2 workflow the scripted agent writes: read the given site, pick the group, then the code within it, and
+ *  write the answer from the page. */
+export const CLASSIFY_WORKFLOW_V2 = Object.freeze({
+  v: 2, name: WORKFLOW,
+  schemas: {
+    Company: { type: 'object', additionalProperties: false, required: ['name', 'website'], properties: { name: { type: 'string' }, ticker: { type: 'string' }, website: { type: 'string' } } },
+    Page: V2_PAGE,
+    Groups: CLASSIFY_WORKFLOW.schemas.Groups,
+    Codes: { type: 'object', additionalProperties: false, required: ['codes'], properties: { codes: CLASSIFY_WORKFLOW.schemas.Groups.properties.groups } },
+    Answer: {
+      type: 'object', additionalProperties: false, required: ['sic4', 'primarySegment', 'evidence'],
+      properties: {
+        sic4: { type: 'string' },
+        primarySegment: { type: 'object', additionalProperties: false, required: ['name', 'share'], properties: { name: { type: 'string' }, share: { type: ['number', 'null'] } } },
+        evidence: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['claim', 'url', 'locator', 'quote'], properties: { claim: { type: 'string' }, url: { type: 'string' }, locator: { type: 'string' }, quote: { type: 'string' } } } },
+      },
+    },
+  },
+  input: { schemaId: 'Company' },
+  output: { schemaId: 'Answer', path: 'answer' },
+  root: {
+    node: 'chain',
+    steps: [
+      { node: 'call', label: 'read the site', via: 'tool', tool: 'fetch_page', args: { url: '{website}' }, out: 'Page', as: 'page', deadline_s: 30 },
+      { node: 'escalate', label: 'no page', when: { predicate: 'empty', path: 'page.text' }, kind: 'review', stage: 'research', summary: 'the site has no text to read' },
+      { node: 'call', label: 'the groups', via: 'tool', tool: 'sic2_groups', args: {}, out: 'Groups', as: 'groups', deadline_s: 10 },
+      { node: 'pick', label: 'the group', itemsPath: 'groups.groups', describe: '{item.code} {item.name}', allowNone: true, as: 'group', instructions: 'Which group holds the company\'s main business, as its own site describes it?', state: { company: '{name}', text: '{page.text}' } },
+      { node: 'escalate', label: 'no group', when: { predicate: 'field_equals', path: 'group.none', value: true }, kind: 'review', stage: 'classify', summary: 'no group fits' },
+      { node: 'call', label: 'the codes', via: 'tool', tool: 'sic_codes', args: { group: '{group.item.code}' }, out: 'Codes', as: 'codes', deadline_s: 10 },
+      { node: 'pick', label: 'the code', itemsPath: 'codes.codes', describe: '{item.code} {item.name}', allowNone: true, as: 'code', instructions: 'Which 4-digit code fits the company\'s main business?', state: { company: '{name}', text: '{page.text}' } },
+      { node: 'escalate', label: 'no code', when: { predicate: 'field_equals', path: 'code.none', value: true }, kind: 'review', stage: 'classify', summary: 'no code fits' },
+      { node: 'extract', label: 'write the answer', tools: [], out: 'Answer', as: 'answer', instructions: 'sic4 is the picked code. primarySegment is the largest segment the page states, with its share of revenue. evidence cites the page for both.', state: { company: '{name}', code: '{code.item}', text: '{page.text}', url: '{page.url}' } },
+    ],
+  },
+});
+
+/**
+ * The scripted v2 agent for one job: by hand (search for the site when none is given, read it, read the annual report,
+ * the group, the code, the answer with cites), then CLASSIFY_WORKFLOW_V2 saved; or, offered it, load, run and answer
+ * from it. `fixtures.truth[name]` is the case's answer (code, segment and the quotes the cites use).
+ */
+export function agentScriptV2({ job, offered, fixtures }) {
+  const truth = fixtures.truth[job.name];
+  const input = { name: job.name, ...(job.ticker ? { ticker: job.ticker } : {}), ...(job.website ? { website: job.website } : {}) };
+  const node = (state) => {
+    const t = fixtures.truth[state.company];
+    return { submit: { sic4: state.code?.code ?? '', primarySegment: t.segment, evidence: [{ claim: 'sic', url: state.url, locator: 'home page', quote: t.siteQuote }, { claim: 'segment', url: state.url, locator: 'home page', quote: t.siteSegmentQuote ?? t.siteQuote }] } };
+  };
+  const answer = (sic4, segment) => ({
+    sic4, primarySegment: segment,
+    evidence: [{ claim: 'sic', url: truth.site, locator: 'home page', quote: truth.siteQuote }, { claim: 'segment', url: truth.document, locator: `pdf p. ${truth.page ?? 1}`, quote: truth.segmentQuote }],
+  });
+  if (offered.includes(WORKFLOW) && job.website) {
+    return {
+      node,
+      root: [
+        { call: 'agentrun', args: { action: 'load', name: WORKFLOW, input } },
+        { call: 'agentrun', args: { action: 'run' } },
+        { call: 'answer', args: (context) => { const outcome = lastRunOutcome(context); return outcome?.status === 'complete' ? outcome.output : answer(truth.sic4, truth.segment); } },
+        { say: 'Answered with the workflow\'s result.' },
+      ],
+    };
+  }
+  const site = job.website ?? truth.site;
+  return {
+    node,
+    root: [
+      ...(job.website ? [] : [{ call: 'search_web', args: { query: `${job.name} ${job.ticker ?? ''} investor relations`.trim() } }]),
+      { call: job.website ? 'fetch_page' : 'browse', args: { url: site } },
+      { call: 'read_document', args: { url: truth.document, question: 'revenue by reportable segment' } },
+      { call: 'sic2_groups', args: {} },
+      { call: 'sic_codes', args: { group: truth.sic4.slice(0, 2) } },
+      { call: 'answer', args: answer(truth.sic4, truth.segment) },
+      ...(offered.includes(WORKFLOW) ? [] : [
+        { call: 'agentrun', args: { action: 'describe' } },
+        { call: 'agentrun', args: { action: 'inspect', workflow: CLASSIFY_WORKFLOW_V2, input: { name: job.name, website: site } } },
+        { call: 'agentrun', args: { action: 'dry-run' } },
+        { call: 'agentrun', args: { action: 'save', name: WORKFLOW } },
+        { call: 'learn', args: { type: 'workflow', id: WORKFLOW, text: 'Use it for any company whose website is given.' } },
+      ]),
+      { say: 'Answered by hand.' },
+    ],
   };
 }

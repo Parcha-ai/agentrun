@@ -1,0 +1,122 @@
+[
+  {
+    "cik": "0000900101",
+    "name": "Harbor Valve Works Inc.",
+    "ticker": "HVW",
+    "website": "https://www.harborvalve.example",
+    "split": "run",
+    "order": 1,
+    "categories": [
+      "multi-segment"
+    ],
+    "sic": "3561",
+    "sic2": "35",
+    "sicDescription": "PUMPS & PUMPING EQUIPMENT",
+    "segmentTruth": {
+      "kind": "largest",
+      "name": "Water Systems",
+      "member": "WaterSystemsMember",
+      "share": 0.61,
+      "segments": 2
+    }
+  },
+  {
+    "cik": "0000900102",
+    "name": "Bluefin Markets Inc.",
+    "ticker": "BFM",
+    "website": null,
+    "split": "run",
+    "order": 2,
+    "categories": [
+      "small-cap"
+    ],
+    "sic": "5411",
+    "sic2": "54",
+    "sicDescription": "RETAIL-GROCERY STORES",
+    "segmentTruth": {
+      "kind": "single",
+      "name": null,
+      "member": null,
+      "share": 1,
+      "segments": 1
+    }
+  },
+  {
+    "cik": "0000900103",
+    "name": "Summit Ridge Software Corp.",
+    "ticker": "SRS",
+    "website": "https://www.summitridge.example",
+    "split": "run",
+    "order": 3,
+    "categories": [
+      "multi-segment"
+    ],
+    "sic": "7372",
+    "sic2": "73",
+    "sicDescription": "SERVICES-PREPACKAGED SOFTWARE",
+    "segmentTruth": {
+      "kind": "largest",
+      "name": "Cloud",
+      "member": "CloudMember",
+      "share": 0.7,
+      "segments": 2
+    }
+  },
+  {
+    "cik": "0000900104",
+    "name": "Lantern Hall Restaurants Inc.",
+    "ticker": "LHR",
+    "website": "https://www.lanternhall.example",
+    "split": "run",
+    "order": 4,
+    "categories": [
+      "renamed"
+    ],
+    "sic": "5812",
+    "sic2": "58",
+    "sicDescription": "RETAIL-EATING PLACES",
+    "segmentTruth": null
+  },
+  {
+    "cik": "0000900105",
+    "name": "Cedar Lane Bancorp",
+    "ticker": "CLB",
+    "website": "https://www.cedarlanebank.example",
+    "split": "sealed",
+    "order": null,
+    "categories": [
+      "holding"
+    ],
+    "sic": "6022",
+    "sic2": "60",
+    "sicDescription": "STATE COMMERCIAL BANKS",
+    "segmentTruth": {
+      "kind": "single",
+      "name": "Banking",
+      "member": "BankingMember",
+      "share": 1,
+      "segments": 1
+    }
+  },
+  {
+    "cik": "0000900106",
+    "name": "Ironclad Freight Lines Inc.",
+    "ticker": "IFL",
+    "website": null,
+    "split": "sealed",
+    "order": null,
+    "categories": [
+      "foreign"
+    ],
+    "sic": "4213",
+    "sic2": "42",
+    "sicDescription": "TRUCKING (NO LOCAL)",
+    "segmentTruth": {
+      "kind": "largest",
+      "name": "Truckload",
+      "member": "TruckloadMember",
+      "share": 0.8,
+      "segments": 2
+    }
+  }
+]

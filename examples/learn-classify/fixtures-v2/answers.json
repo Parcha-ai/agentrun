@@ -1,0 +1,79 @@
+{
+  "Harbor Valve Works Inc.": {
+    "sic4": "3561",
+    "segment": {
+      "name": "Water Systems",
+      "share": 0.61
+    },
+    "site": "https://www.harborvalve.example",
+    "siteQuote": "We design and manufacture centrifugal pumps and control valves for water utilities and refineries",
+    "siteSegmentQuote": "Water Systems, our largest segment, brought in 61% of revenue last year",
+    "document": "https://www.harborvalve.example/ar-2025.pdf",
+    "segmentQuote": "Revenue by reportable segment: Water Systems $612 million (61%); Industrial Flow $390 million (39%).",
+    "page": 2
+  },
+  "Bluefin Markets Inc.": {
+    "sic4": "5411",
+    "segment": {
+      "oneSegment": true
+    },
+    "site": "https://www.bluefinmarkets.example",
+    "siteQuote": "Bluefin Markets runs 212 neighborhood grocery stores selling fresh produce, seafood and pantry staples",
+    "siteSegmentQuote": "We report one segment",
+    "document": "https://www.bluefinmarkets.example/ar-2025.pdf",
+    "segmentQuote": "The company operates in one reportable segment: retail grocery.",
+    "page": 1
+  },
+  "Summit Ridge Software Corp.": {
+    "sic4": "7372",
+    "segment": {
+      "name": "Cloud Software",
+      "share": 0.7
+    },
+    "site": "https://www.summitridge.example",
+    "siteQuote": "Summit Ridge builds accounting and payroll software that mid-size companies license by the seat",
+    "siteSegmentQuote": "Cloud Software, our largest segment, was 70% of revenue",
+    "document": "https://www.summitridge.example/ar-2025.pdf",
+    "segmentQuote": "Segment revenue: Cloud $70 million (70%); Licenses $30 million (30%).",
+    "page": 3
+  },
+  "Lantern Hall Restaurants Inc.": {
+    "sic4": "5812",
+    "segment": {
+      "name": "Restaurants",
+      "share": 1
+    },
+    "site": "https://www.lanternhall.example",
+    "siteQuote": "Lantern Hall runs 38 family restaurants serving breakfast, lunch and dinner across the Midwest",
+    "siteSegmentQuote": "Restaurants are 100% of revenue",
+    "document": "https://www.lanternhall.example/ar-2025.pdf",
+    "segmentQuote": "Restaurant sales were $412 million, all of revenue.",
+    "page": 1
+  },
+  "Cedar Lane Bancorp": {
+    "sic4": "6022",
+    "segment": {
+      "name": "Banking",
+      "share": 1
+    },
+    "site": "https://www.cedarlanebank.example",
+    "siteQuote": "Cedar Lane Bank takes deposits and makes home and small-business loans through 40 branches",
+    "siteSegmentQuote": "Banking is our one segment, 100% of revenue",
+    "document": "https://www.cedarlanebank.example/ar-2025.pdf",
+    "segmentQuote": "The company has one reportable segment, Banking.",
+    "page": 1
+  },
+  "Ironclad Freight Lines Inc.": {
+    "sic4": "4213",
+    "segment": {
+      "name": "Truckload",
+      "share": 0.8
+    },
+    "site": "https://www.ironcladfreight.example",
+    "siteQuote": "Ironclad hauls full truckload freight across the lower 48 states with a fleet of 1,900 tractors",
+    "siteSegmentQuote": "Truckload, our largest segment, was 80% of revenue",
+    "document": "https://www.ironcladfreight.example/ar-2025.pdf",
+    "segmentQuote": "Revenue by segment: Truckload $800 million (80%); Logistics $200 million (20%).",
+    "page": 2
+  }
+}

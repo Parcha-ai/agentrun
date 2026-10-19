@@ -1,0 +1,32 @@
+{
+  "https://www.harborvalve.example/ar-2025.pdf": {
+    "text": "[page 2] Revenue by reportable segment: Water Systems $612 million (61%); Industrial Flow $390 million (39%).",
+    "page": 2,
+    "look": "The segment table lists Water Systems first, at 61% of revenue."
+  },
+  "https://www.bluefinmarkets.example/ar-2025.pdf": {
+    "text": "[page 1] The company operates in one reportable segment: retail grocery.",
+    "page": 1,
+    "look": "One reportable segment."
+  },
+  "https://www.summitridge.example/ar-2025.pdf": {
+    "text": "[page 3] Segment revenue: Cloud $70 million (70%); Licenses $30 million (30%).",
+    "page": 3,
+    "look": "Cloud is the larger segment."
+  },
+  "https://www.lanternhall.example/ar-2025.pdf": {
+    "text": "[page 1] Restaurant sales were $412 million, all of revenue.",
+    "page": 1,
+    "look": "No segment table."
+  },
+  "https://www.cedarlanebank.example/ar-2025.pdf": {
+    "text": "[page 1] The company has one reportable segment, Banking.",
+    "page": 1,
+    "look": "One segment, Banking."
+  },
+  "https://www.ironcladfreight.example/ar-2025.pdf": {
+    "text": "[page 2] Revenue by segment: Truckload $800 million (80%); Logistics $200 million (20%).",
+    "page": 2,
+    "look": "Truckload is 80%."
+  }
+}

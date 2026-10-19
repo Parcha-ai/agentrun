@@ -1,0 +1,16 @@
+{
+  "Bluefin Markets": [
+    {
+      "url": "https://www.bluefinmarkets.example",
+      "title": "Bluefin Markets: investor relations",
+      "snippet": "Neighborhood grocery stores."
+    }
+  ],
+  "Ironclad Freight": [
+    {
+      "url": "https://www.ironcladfreight.example",
+      "title": "Ironclad Freight Lines",
+      "snippet": "Truckload freight across the lower 48."
+    }
+  ]
+}
