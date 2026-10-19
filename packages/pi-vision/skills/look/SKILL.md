@@ -221,7 +221,6 @@ When the images are one scene at many dates (a shoreline the water left, a build
 - Use the place names the run's own files give (a map key, if there is one), not names of your own.
 - For each place, bracket and then bisect the dates on that place's own crop: find the last image where the thing is present and the first where it is gone. Look at the crop at each candidate date. Do not infer a date from a whole-scene average such as "half of its lost water is dry".
 - A place is "dry" or "gone" in an image when its crop shows none of it, as the eyes say (`vision.see`) and Jev confirms with a typed question for each crop and each date (`noul`, such as "Is there open water in this crop?"). A pixel mask or a brightness threshold only points where to look and never answers: water can be dark, green, turbid or glinting, and a threshold set on one date misses it on another.
-- "Against the first image" means present in the first image and absent in some later one, even if it comes back later. Report the first date it is absent, and say when it returns.
 
 ## When pdftoppm or ffmpeg is missing
 

@@ -203,7 +203,7 @@ test("every page the skill renders is its crop box, the area a citation's percen
   }
 });
 
-test("the skill teaches a series of images over time place by place: a small box for each place, bracket and bisect on its own crop, absent only as the eyes and Jev say, the first absent date and its return", () => {
+test("the skill teaches a series of images over time place by place: a small box for each place, bracket and bisect on its own crop, absent only as the eyes and Jev say", () => {
   const section = /\n## A series of images of one scene over time\n([\s\S]*?)\n## /.exec(SKILL)?.[1] ?? "";
   assert.ok(section.length > 0, "the section is there, before the section on a missing tool");
   assert.doesNotMatch(section, /```/, "plain sentences: no example the ten-examples test would have to run");
@@ -213,6 +213,6 @@ test("the skill teaches a series of images over time place by place: a small box
     /bracket and then bisect the dates on that place's own crop: find the last image where the thing is present and the first where it is gone\. Look at the crop at each candidate date\. Do not infer a date from a whole-scene average/,
     /A place is "dry" or "gone" in an image when its crop shows none of it, as the eyes say \(`vision\.see`\) and Jev confirms with a typed question for each crop and each date \(`noul`/,
     /A pixel mask or a brightness threshold only points where to look and never answers: water can be dark, green, turbid or glinting/,
-    /"Against the first image" means present in the first image and absent in some later one, even if it comes back later\. Report the first date it is absent, and say when it returns\./,
   ]) assert.match(section, sentence);
+  assert.doesNotMatch(section, /Against the first image|comes back|returns/, "what a change against the first image means is the question's to say, not the skill's");
 });
