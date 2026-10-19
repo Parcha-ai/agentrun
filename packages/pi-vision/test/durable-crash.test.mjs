@@ -130,7 +130,7 @@ test("cut during the receipt: the answer is a memo by then, so the rerun asks no
   assert.equal(new Set(cut.filings).size, 1, "with the same key");
   assert.deepEqual(whole(cut.receipts), clean.receipts, "one receipt");
   assert.deepEqual(cut.derived, clean.derived);
-  assert.deepEqual(cut.kept, { first: clean.derived, second: [] }, "the rerun makes no derivation again: it reads the document and the page the cut process kept");
+  assert.deepEqual(cut.kept, { first: clean.derived, second: clean.derived }, "the rerun is another process: it makes the document and the page again, once, rather than take files it did not keep, and the eyes' answer is still not asked again");
   assert.equal(readUsd(cut), readUsd(clean), "the look is priced once, at the commit of its result");
   assert.deepEqual(cut.told.map((look) => [look.by, look.kept]), [["second", false]], "the cut attempt never told the host, so the rerun's event is the look's only one, and charged");
   assert.deepEqual(cut.filedKept, [false, true], "the rerun's record says no request was made: its answer was read back");
