@@ -55,7 +55,7 @@ export const workflowOf = (thinking: Thinking) => ({
     },
     Answer: {
       type: 'object', additionalProperties: false, required: ['answer', 'report'],
-      properties: { answer: { type: 'string', minLength: 1 }, report: { type: 'string', pattern: '^report/[\\w./-]+\\.html$' } },
+      properties: { answer: { type: 'string', minLength: 1 }, report: { type: 'string', pattern: '^report/(?:[\\w-][\\w.-]*/)*[\\w-][\\w.-]*\\.html$' } },
     },
   },
   input: { schemaId: 'Input' },
