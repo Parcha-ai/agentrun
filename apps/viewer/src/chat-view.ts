@@ -264,30 +264,30 @@ function sourceViewOf(recording: Recording, model: ChatModel, shown: SourceShown
   return pane;
 }
 
-/** How many characters of a thought's first line show as its title. */
-const THREAD_TITLE = 120;
-
-/** A thinking part as its title and its body: the title is its first line (a wholly bold line without its markers, as
- *  a model's thought summary writes it, else the line, clipped); the body is the rest. A clipped title is a preview
- *  only, so its body is the whole part from that line on. */
-export function threadThought(text: string): { title: string; body: string } {
+/** A thinking part as its title and its body. The title is the headline the model wrote (a first line wholly in bold,
+ *  without its markers, as a thought summary opens), and the body the rest; a part with no headline has no title, and
+ *  the whole part is its body: the view never makes a title from the model's words. */
+export function threadThought(text: string): { title?: string; body: string } {
   const lines = text.split('\n');
   const at = lines.findIndex((line) => line.trim() !== '');
-  if (at < 0) return { title: '', body: '' };
-  const line = lines[at]!.trim();
-  const bold = /^(\*\*|__)(?=\S)(.+?\S)\1$/.exec(line);
+  if (at < 0) return { body: '' };
+  const bold = /^(\*\*|__)(?=\S)(.+?\S)\1$/.exec(lines[at]!.trim());
   if (bold && !bold[2]!.includes(bold[1]!)) return { title: bold[2]!, body: lines.slice(at + 1).join('\n').trim() };
-  if (line.length > THREAD_TITLE) return { title: `${line.slice(0, THREAD_TITLE - 1).trimEnd()}…`, body: lines.slice(at).join('\n').trim() };
-  return { title: line, body: lines.slice(at + 1).join('\n').trim() };
+  return { body: lines.slice(at).join('\n').trim() };
 }
 
 /** A thought the provider redacted: its mark, and none of its words. */
 const threadRedacted = () => reportEl('div', { class: 'thought redacted' }, reportEl('span', { class: 'thought-tag', text: 'thinking · redacted' }));
 
-/** Thinking the run's own model wrote, in the agent's voice: its title as a line in the chat with its "thinking" tag,
- *  its body folded behind it (a thought of one line has no fold, and no chevron). */
+/** Thinking the run's own model wrote. With a headline, in the agent's voice: the headline as a line in the chat with
+ *  its "thinking" tag, its body folded behind it (a headline alone has no fold, and no chevron). With none, the whole
+ *  part folded under "Thought". */
 function threadThinking(text: string): HTMLElement {
   const { title, body } = threadThought(text);
+  if (title === undefined) {
+    return reportEl('details', { class: 'thought untitled' }, reportEl('summary', {}, reportEl('span', { class: 'thought-tag', text: 'Thought' })),
+      reportEl('div', { class: 'thought-body' }, ...reportParagraphs(body)));
+  }
   const line = reportEl('span', { class: 'thought-title' }, ...reportInline(title));
   if (body === '') return reportEl('div', { class: 'thought' }, line, reportEl('span', { class: 'thought-tag', text: 'thinking' }));
   return reportEl('details', { class: 'thought' },
@@ -380,15 +380,52 @@ const threadDecision = (decision: ChatDecision, named: boolean) => {
   return decision.kind === 'noul' ? `${name}${decision.score.toFixed(2)} ${decision.score >= 0.5 ? 'yes' : 'no'}` : `${named ? `${name.trim()}: ` : ''}${decision.choice}`;
 };
 
-/** A look's picture for its call's card (the first of its own), and the regions that picture carries. */
-function threadThumb(recording: Recording, source: ChatSource): { sha: string; regions: SourceRegion[] } | undefined {
+/** A look's pictures for its call's card, in its order, each with the regions it carries. */
+function threadThumbs(recording: Recording, source: ChatSource): { sha: string; regions: SourceRegion[] }[] {
   const regions = source.regions.flatMap((region) => sourceRegionOf(region.href, region.label) ?? []);
-  const first = source.pictures?.[0];
-  if (first) return { sha: first.sha, regions: regions.filter((region) => sourcePictureFor(source.pictures!, first, region.href) === first) };
+  if (source.pictures?.length) return source.pictures.map((picture) => ({ sha: picture.sha, regions: regions.filter((region) => sourcePictureFor(source.pictures!, picture, region.href) === picture) }));
   const frames = source.media.filter((sha) => recording.blobUrl(sha) && !sourceIsVideo(recording, sha));
-  if (!frames[0]) return undefined;
-  if (sourceKindOf(source.href) === 'video') return { sha: frames[0], regions: regions.filter((region) => sourceFrameAt(source.href, frames.length, region.t) === 0) };
-  return { sha: frames[0], regions: frames.length === 1 ? regions : [] };
+  if (sourceKindOf(source.href) === 'video') return frames.map((sha, index) => ({ sha, regions: regions.filter((region) => sourceFrameAt(source.href, frames.length, region.t) === index) }));
+  return frames.map((sha) => ({ sha, regions: frames.length === 1 ? regions : [] }));
+}
+
+/** The mean brightness (of 255) under which a picture is near-black: the report skill's dark-frame line. */
+const THREAD_DARK = 16;
+
+/** A loaded picture's mean brightness, of 255; undefined when the page may not read its pixels. */
+function threadBrightness(picture: HTMLImageElement): number | undefined {
+  try {
+    const canvas = Object.assign(document.createElement('canvas'), { width: 32, height: 24 });
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) return undefined;
+    context.drawImage(picture, 0, 0, 32, 24);
+    const { data } = context.getImageData(0, 0, 32, 24);
+    let sum = 0;
+    for (let at = 0; at < data.length; at += 4) sum += data[at]! + data[at + 1]! + data[at + 2]!;
+    return sum / (data.length / 4) / 3;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A card's picture that loads near-black gives way to the look's first picture that is not, with its own boxes; when
+ *  every one is dark, or the page may not read them, the first stays. */
+function threadLighter(recording: Recording, medium: HTMLElement, thumbs: { sha: string; regions: SourceRegion[] }[]): void {
+  const first = medium.querySelector('img');
+  if (!first || thumbs.length < 2) return;
+  first.addEventListener('load', async () => {
+    if ((threadBrightness(first) ?? THREAD_DARK) >= THREAD_DARK) return;
+    for (const candidate of thumbs.slice(1)) {
+      const url = recording.blobUrl(candidate.sha);
+      if (!url || sourceIsVideo(recording, candidate.sha)) continue;
+      const probe = Object.assign(new Image(), { src: url });
+      try { await probe.decode(); } catch { continue; }
+      if ((threadBrightness(probe) ?? 0) < THREAD_DARK) continue;
+      const lighter = sourceMedium(recording, candidate.sha, '', candidate.regions, 'thumb');
+      if (lighter && medium.isConnected) medium.replaceWith(lighter);
+      return;
+    }
+  }, { once: true });
 }
 
 /** The judge's mark at the start of a judge's label. */
@@ -399,14 +436,16 @@ const threadJudge = () => reportEl('span', { class: 'judge-chip', text: 'judge' 
  *  behind a click. */
 function threadCall(recording: Recording, model: ChatModel, call: ChatCall): HTMLElement {
   const found = call.look ? model.sources[call.look] : undefined;
-  const thumb = found && threadThumb(recording, found);
+  const thumbs = found ? threadThumbs(recording, found) : [];
+  const medium = thumbs[0] && sourceMedium(recording, thumbs[0].sha, '', thumbs[0].regions, 'thumb');
+  if (medium) threadLighter(recording, medium, thumbs);
   const addresses = found ? sourceAddresses(found) : [];
   const place = found ? threadPlace(addresses) : '';
   const scores = call.label.startsWith(call.name) ? call.label.slice(call.name.length).replace(/^\s*·\s*/, '') : call.label;
   const said = call.said ?? scores;
   return reportEl('div', { class: `call${found?.decisive ? ' decisive' : ''}${call.judge ? ' judge' : ''}`, 'data-call': call.id, 'data-look': found ? call.look : undefined, role: found ? 'button' : undefined,
     tabindex: found ? 0 : undefined, title: addresses.join(', ') || undefined, 'aria-label': [call.ask ?? call.name, said, place, addresses.join(', ')].filter(Boolean).join('; ') },
-  thumb && sourceMedium(recording, thumb.sha, '', thumb.regions, 'thumb'),
+  medium,
   reportEl('div', { class: 'call-body' },
     reportEl('span', { class: 'call-title', title: call.label }, call.judge && threadJudge(), ...reportInline(call.ask ?? call.name)),
     said !== '' && reportEl('span', { class: 'call-said' }, ...reportInline(said)),
@@ -740,14 +779,19 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     void target.offsetWidth;
     target.classList.add('flash');
     // Pictures above the card still to load would move it as they come in: they load now, and once they have, or after
-    // 1.5 s, the card is centred again, once, unless another jump came since.
+    // 1.5 s, the card is centred again; on a slow page, once more when the rest come in (up to 6 s); never after a newer
+    // jump.
     const waiting = [...thread.querySelectorAll<HTMLImageElement>('img')].filter((img) => !img.complete && img.getClientRects().length > 0
       && (target.contains(img) || (img.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0));
     if (waiting.length === 0) return;
     const loaded = waiting.map((img) => new Promise((done) => { img.addEventListener('load', done, { once: true }); img.addEventListener('error', done, { once: true }); }));
     for (const img of waiting) img.loading = 'eager';
-    void Promise.race([Promise.all(loaded), new Promise((done) => setTimeout(done, 1_500))]).then(() => {
-      if (jump === jumps) target.scrollIntoView({ block: 'center', behavior: motion() });
+    const all = Promise.all(loaded).then(() => true);
+    const after = (ms: number) => new Promise<false>((done) => setTimeout(() => done(false), ms));
+    const center = () => { if (jump === jumps) target.scrollIntoView({ block: 'center', behavior: motion() }); };
+    void Promise.race([all, after(1_500)]).then((done) => {
+      center();
+      if (!done) void Promise.race([all, after(6_000)]).then((late) => { if (late) center(); });
     });
   };
 

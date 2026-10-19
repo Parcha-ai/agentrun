@@ -19,7 +19,7 @@ import type { ChatSource } from '../src/chat-model.ts';
 import type { Line } from '../src/format.ts';
 import { reportFileOf, reportLinkOf } from '../src/chat-report.ts';
 import { sourceByHref, sourceFrameAt, sourceKindOf, sourcePageOf, sourcePictureFor, sourceRegionOf, threadPlace, threadThought } from '../src/chat-view.ts';
-import { CITED, K, lines, manifest as handManifest, PAGES, PHOTOS, SCANS, deliverInstead, png, writeRecording } from './vision-hand.ts';
+import { CITED, FILM, K, lines, manifest as handManifest, PAGES, PHOTOS, SCANS, deliverInstead, png, writeRecording } from './vision-hand.ts';
 import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
 
 const UNIT = { timeout: 5_000 };
@@ -66,14 +66,12 @@ test('a region comes from the citation\'s address alone, and lands on the page o
   assert.equal(sourceByHref(several, 'deck.pdf#page=9&xywh=percent:1,2,3,4'), 'spread');
 });
 
-test('a thought reads as its first line, a wholly bold line without its markers, and the rest as its body', UNIT, () => {
+test('a thought\'s title is the headline its model wrote (a wholly bold first line); with none it has no title and is all body', UNIT, () => {
   assert.deepEqual(threadThought('**Analyzing transcript data**\n\nI am reading page 2.'), { title: 'Analyzing transcript data', body: 'I am reading page 2.' });
   assert.deepEqual(threadThought('\n__Checking the pages__\nfirst, then second'), { title: 'Checking the pages', body: 'first, then second' });
-  assert.deepEqual(threadThought('**Page 2** holds the alarm; I will cite its `line`.'), { title: '**Page 2** holds the alarm; I will cite its `line`.', body: '' }, 'a line only partly bold keeps its marks for the inline render');
-  assert.deepEqual(threadThought('Plain first line\nand more'), { title: 'Plain first line', body: 'and more' });
-  const long = threadThought('x'.repeat(200));
-  assert.deepEqual([long.title.length, long.body], [120, 'x'.repeat(200)], 'a long first line is clipped as its title, and its fold holds the whole of it');
-  assert.deepEqual(threadThought(`${'y'.repeat(150)}\nthen more`), { title: `${'y'.repeat(119)}…`, body: `${'y'.repeat(150)}\nthen more` }, 'a clipped first line and the lines after it, all in the fold');
+  assert.deepEqual(threadThought('**Page 2** holds the alarm; I will cite its `line`.'), { body: '**Page 2** holds the alarm; I will cite its `line`.' }, 'a line only partly bold is no headline, and keeps its marks for the inline render');
+  assert.deepEqual(threadThought('Plain first line\nand more'), { body: 'Plain first line\nand more' }, 'a thought with no headline gets no title made from its words');
+  assert.deepEqual(threadThought('x'.repeat(200)), { body: 'x'.repeat(200) }, 'nor a clipped one');
 });
 
 test('a region is drawn on the picture whose address holds it; of several, the cited one; of none, the cited one', UNIT, () => {
@@ -155,7 +153,7 @@ const ENTRY = `<!doctype html><html><head><meta charset="utf-8"><title>Three pag
 </body></html>`;
 /** The cited answer with a row citing the third page of the look over three pages, a box on it. */
 const CITED_PAGES = { ...CITED, rows: [...CITED.rows, { label: 'Contact', value: 'on the third page', cites: [{ look: K.page3, fragment: '#page=3&xywh=percent:10,20,30,10' }] }] };
-const SHEET = 'body{background:#101012;color:#eee}.sheet{background-image:url(../media/page-2.png)}';
+const SHEET = 'body{background:#101012;color:#eee}#alarm{letter-spacing:1px}.sheet{background-image:url(../media/page-2.png)}';
 
 /** The recordings: the repository's chat fixtures and reference job (a submitted record), and the hand run as
  *  `hand-page` (an agent's page written to test the frame, thinking, two conversations), `hand-answer` (the cited answer
@@ -312,7 +310,7 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       cards: [...d.querySelectorAll('.thread > .msg .step')].map(titleOf), hidden: d.querySelectorAll('.step[hidden]').length,
       more: [...d.querySelectorAll('.more')].map((n) => n.textContent),
       folds: [...d.querySelectorAll('details.fold')].map((n) => ({ open: n.open, label: n.querySelector('summary .lab').textContent, cards: n.querySelectorAll('.step').length })),
-      thinking: [...d.querySelectorAll('.thought')].map((n) => ({ fold: n.tagName === 'DETAILS', title: n.querySelector('.thought-title').textContent, tag: n.querySelector('.thought-tag')?.textContent,
+      thinking: [...d.querySelectorAll('.thought')].map((n) => ({ fold: n.tagName === 'DETAILS', title: n.querySelector('.thought-title')?.textContent ?? null, tag: n.querySelector('.thought-tag')?.textContent,
         chevron: getComputedStyle(n.querySelector('.thought-tag'), '::after').display })),
       how: d.querySelector('a.how').getAttribute('href'),
       timeline: { body: shown(d.querySelector('.tl-body')), expanded: d.querySelector('.tl-toggle').getAttribute('aria-expanded'), dot: !!d.querySelector('.tl .dot') },
@@ -333,7 +331,7 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.deepEqual(wide.more, [], 'each read here made a look nothing leads into, so each speaks and none folds');
     assert.equal(wide.hidden, 0);
     assert.deepEqual(wide.folds, [{ open: false, label: 'conversation 2', cards: 3 }], 'the second conversation, folded');
-    assert.deepEqual(wide.thinking, [{ fold: false, title: 'Page 2 holds the alarm; I will cite its line.', tag: 'thinking', chevron: 'none' }], 'the run\'s own thought of one line: a line with its tag, no fold and no chevron');
+    assert.deepEqual(wide.thinking, [{ fold: true, title: null, tag: 'Thought', chevron: 'inline-block' }], 'the run\'s own thought with no headline: folded whole under "Thought", no title made from its words');
     assert.equal(wide.how, './?r=hand-page', 'the inspection viewer, with no other query parameter');
     assert.deepEqual(wide.timeline, { body: false, expanded: 'false', dot: true }, 'the timeline starts collapsed');
     assert.deepEqual(wide.flat, { page: 0, panes: 0 }, 'no horizontal scroll');
@@ -467,14 +465,18 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       ['Jev judge', 'here 0.60 · where 0.20 · box drawn', 't 0:27', true, false], ['Jev judge', 'here 0.95 · where 0.90 · box drawn', 't 0:28', false, true],
       ['Jev judge', 'here 0.95 · where 0.90 · box drawn', 't 0:29', true, false]],
       label: 'Jev judge · here 0.95 · where 0.90 · box drawn', more: '+ 5 more', raw: [[false, 'Raw output', '{']], pictures: 0, inReport: true, flat: { page: 0, panes: 0 } });
-    // The judge in its accent: a judge call's card and its span, its lane's dot, a chip at the start of its line whose text
-    // stays ink; a call that is no judge carries none.
+    // The judge in its accent: its span, its lane's dot, a chip at the start of its line whose text stays ink; its card is
+    // square with no bar of its own; a call that is no judge carries none.
     const PINK = 'rgb(229, 81, 186)';
     assert.deepEqual(await value(`(() => { const d = doc('hear'); const css = (n, p) => getComputedStyle(n)[p]; const judge = d.querySelector('.call[data-call="call-4"]'); const other = d.querySelector('.call[data-call="call-3"]');
       return { card: css(judge, 'borderLeftColor'), chip: [css(judge.querySelector('.judge-chip'), 'borderTopColor'), css(judge.querySelector('.judge-chip'), 'color'), judge.querySelector('.judge-chip').textContent, css(judge.querySelector('.judge-chip'), 'backgroundColor')],
         span: css(d.querySelector('.tbar[data-goto="call-4"]'), 'backgroundColor'), lane: [...d.querySelectorAll('.tl .lane')].filter((n) => n.querySelector('.judge-dot')).map((n) => n.querySelector('.ln').textContent),
         other: [css(other, 'borderLeftColor'), !!other.querySelector('.judge-chip'), css(d.querySelector('.tbar[data-goto="call-3"]'), 'backgroundColor')] }; })()`),
-      { card: PINK, chip: [PINK, 'rgb(242, 242, 242)', 'judge', 'rgba(0, 0, 0, 0)'], span: PINK, lane: ['Jev judge'], other: ['rgb(255, 135, 0)', false, 'rgb(90, 90, 98)'] });
+      { card: 'rgb(44, 44, 48)', chip: [PINK, 'rgb(242, 242, 242)', 'judge', 'rgba(0, 0, 0, 0)'], span: PINK, lane: ['Jev judge'], other: ['rgb(255, 135, 0)', false, 'rgb(90, 90, 98)'] });
+    // The agentrun.ai look: no rounded corner and no left bar anywhere, in the chat or in the agent's page.
+    assert.deepEqual(await value(`(() => { const bad = (d) => d ? [...d.querySelectorAll('*')].filter((n) => { const s = getComputedStyle(n); return parseFloat(s.borderTopLeftRadius) > 0
+      || (s.borderLeftStyle !== 'none' && parseFloat(s.borderLeftWidth) > parseFloat(s.borderRightWidth)); }).map((n) => String(n.className || n.tagName)) : [];
+      return PAGES.flatMap((id) => [...bad(doc(id)), ...bad(art(id))]); })()`), [], 'no rounded corner and no left bar, in the chat or the agent\'s page');
     // A timeline click on a folded call opens its group, scrolls to it and flashes it.
     await page.evaluate(`doc('hear').querySelector('.tl-toggle').click(); doc('hear').querySelector('.tbar[data-goto="call-11"]').click()`);
     await until(`(() => { const d = doc('hear'); const c = d.querySelector('.call[data-call="call-11"]'); return !c.hidden && c.classList.contains('flash') && inView(c, d.querySelector('.thread')); })()`, 'the folded call scrolled into view and flashed');
@@ -536,16 +538,16 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       host: [m.querySelector('.host-note .host-who').textContent, m.querySelector('.host-note .host-text').textContent, !!m.querySelector('.host-note').closest('.msg.user')],
       users: [...doc('narrated').querySelectorAll('.msg.user')].map((n) => n.textContent),
       redacted: [[...m.querySelectorAll('.thought.redacted')].map((n) => [n.textContent, n.tagName]), doc('narrated').body.textContent.includes('[Reasoning redacted]')],
-      thoughts: [...m.querySelectorAll('.thought:not(.redacted)')].map((n) => [n.querySelector('.thought-title').textContent, shown(n.querySelector('.thought-title')), n.tagName,
+      thoughts: [...m.querySelectorAll('.thought:not(.redacted)')].map((n) => [n.querySelector('.thought-title')?.textContent ?? null, shown(n.querySelector('.thought-title')), n.tagName,
         shown(n.querySelector('.thought-body')), n.querySelector('.thought-body')?.textContent ?? null, n.querySelector('.thought-tag').textContent, getComputedStyle(n.querySelector('.thought-tag'), '::after').display]) }; })()`);
     // Eight look steps of one tool in a row all show; the four searches after them, of one tool and no look, show three,
     // the fourth behind "+ 1 more". No step draws a voice line.
-    assert.deepEqual(narrated, { order: ['who', 'thought', 'said-text', 'steps', 'host-note', 'thought redacted', 'thought', 'thought', 'said-text', 'steps'], said: [['I will read each page in turn.', 0, false], ['All four pages agree.', 0, false]],
+    assert.deepEqual(narrated, { order: ['who', 'thought', 'said-text', 'steps', 'host-note', 'thought redacted', 'thought', 'thought untitled', 'said-text', 'steps'], said: [['I will read each page in turn.', 0, false], ['All four pages agree.', 0, false]],
       cards: [false, false, false, false, false, false, false, false, false, false, false, true], more: ['+ 1 more'],
       voices: [null, null, null, null, null, null, null, null, null, null, null, null], host: ['Host', 'You stopped without submitting. Call submit.', false], users: ['YouRead the four pages of notes.pdf.'],
       redacted: [[['thinking · redacted', 'DIV']], false],
       thoughts: [['Analyzing transcript data', true, 'DETAILS', false, 'I am reading page 2 before the others.', 'thinking', 'inline-block'],
-        ['Settling the answer', true, 'DIV', false, null, 'thinking', 'none'], ['Checking that the four agree', true, 'DETAILS', false, 'they do, line for line.', 'thinking', 'inline-block']] });
+        ['Settling the answer', true, 'DIV', false, null, 'thinking', 'none'], [null, false, 'DETAILS', false, 'Checking that the four agree\nthey do, line for line.', 'Thought', 'inline-block']] });
 
     // A card of a command of several lines opens with the whole command under what it found; a card with a look keeps
     // the look first and its command folded under it.
@@ -574,8 +576,8 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.deepEqual(await value(`(() => { const b = doc('answer').querySelector('.src .jbox'); return [getComputedStyle(b).borderTopColor, getComputedStyle(b.querySelector('span')).color]; })()`),
       ['rgb(229, 81, 186)', 'rgb(242, 242, 242)'], 'a judge\'s box in its accent, its label in ink');
 
-    // Opened by its URL (?src=), the agent's page keeps the stylesheet it links.
-    assert.equal(await value(`getComputedStyle(art('srcsheet').body).backgroundColor`), 'rgb(16, 16, 18)');
+    // Opened by its URL (?src=), the agent's page keeps the stylesheet it links; the site's palette is drawn over it.
+    assert.deepEqual(await value(`[getComputedStyle(art('srcsheet').getElementById('alarm')).letterSpacing, getComputedStyle(art('srcsheet').body).backgroundColor]`), ['1px', 'rgb(8, 8, 9)']);
 
     // Opened by its URL (?src=), "How this ran" opens the same URL in the inspection viewer, in the header and the report.
     assert.deepEqual(await value(`[doc('srcpage').querySelector('a.how').getAttribute('href'), doc('srcpage').querySelector('.report a').getAttribute('href')]`),
@@ -699,11 +701,12 @@ test('in Chrome: a timeline click to the last card of a long run lands on it, th
       const before = await value<{ waiting: number; heights: number[] }>(`(() => { const waiting = above('${id}').filter((img) => !img.complete);
         return { waiting: waiting.length, heights: [...new Set(waiting.map((img) => Math.round(img.getBoundingClientRect().height)))] }; })()`);
       assert.ok(before.waiting > 20, `${id}: most pictures above the last card are still to load (${before.waiting})`);
-      assert.ok(before.heights.length === 1 && before.heights[0]! > 0, `${id}: a picture still to load holds a box of its own (${before.heights})`);
+      // A picture still to load holds a box; one partly in may already have its own size, so no single size is asked.
+      assert.ok(before.heights.length > 0 && before.heights.every((height) => height > 0), `${id}: a picture still to load holds a box of its own (${before.heights})`);
       const target = await value<string>(`last('${id}').dataset.item`);
       await page.evaluate(`doc('${id}').querySelector('.tl-toggle').click(); doc('${id}').querySelector('.tbar[data-goto="${target}"]').click()`);
       // The jump loads the pictures above the card and centres it again once they are in: it ends on the card and stays.
-      await page.once(`above('${id}').every((img) => img.complete) && seen('${id}').inView`, 'true', 6_000, `${id}: the pictures above loaded and the last card in view`)
+      await page.once(`above('${id}').every((img) => img.complete) && seen('${id}').inView`, 'true', 12_000, `${id}: the pictures above loaded and the last card in view`)
         .catch(async (error: Error) => { throw new Error(`${error.message}: ${JSON.stringify(await value(`seen('${id}')`))}`); });
       await page.sleep(800);
       const after = await value<{ top: number; bottom: number; inView: boolean }>(`seen('${id}')`);
@@ -712,6 +715,74 @@ test('in Chrome: a timeline click to the last card of a long run lands on it, th
       const filled = await value<[number, number][]>(`above('${id}').slice(0, 3).map((img) => [Math.round(img.getBoundingClientRect().height), img.parentElement.clientHeight])`);
       assert.ok(filled.length === 3 && filled.every(([picture, frame]) => picture > 0 && picture === frame), `${id}: a loaded picture fills its frame (${JSON.stringify(filled)})`);
     }
+  } finally {
+    await page.close();
+  }
+});
+
+/** The hand run with the film look's pictures set to `images` (shas), and `extra` written beside the run's own blobs. */
+function writeFilmPictures(dir: string, images: string[], extra: Buffer[]) {
+  const run = handRun(true).map((line): Line => {
+    if (line.kind !== 'vision.looks') return line;
+    const data = line.data as { value: { looks: { record: { facts: { key: string } }; images: unknown[] }[] } };
+    if (!data.value.looks.some((look) => look.record.facts.key === K.film)) return line;
+    const looks = data.value.looks.map((look) => (look.record.facts.key === K.film ? { ...look, images } : look));
+    return { ...line, data: { ...data, value: { ...data.value, looks } } } as Line;
+  });
+  writeRecording(dir, run);
+  for (const bytes of extra) writeFileSync(join(dir, 'blobs', `${sha256(bytes)}.png`), bytes);
+}
+
+const THUMBS = `<!doctype html><body style="margin:0">
+<iframe id="lit" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=lit"></iframe>
+<iframe id="dark" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=dark"></iframe>
+<script>
+const doc = (id) => document.getElementById(id).contentDocument;
+const card = (id) => doc(id)?.querySelector('.call[data-look="${K.film}"]');
+const thumb = (id) => card(id)?.querySelector('.thumb img')?.getAttribute('src') ?? '';
+const loaded = (id) => { const img = card(id)?.querySelector('.thumb img'); return !!img && img.complete && img.naturalWidth > 0; };
+</script></body>`;
+
+test('in Chrome: a look card passes over a near-black first picture to the first lit one, keeps the first when all are dark, and the opened look shows every picture', IN_CHROME, async (t) => {
+  const out = mkdtempSync(join(tmpdir(), 'viewer-thumb-'));
+  const held: { page?: Awaited<ReturnType<typeof drivenPage>>; server?: ReturnType<typeof createServer> } = {};
+  t.after(() => closeAll(held.page ? [held.page] : [], () => {
+    held.server?.closeAllConnections();
+    held.server?.close();
+    rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }), { timeout: 20_000 });
+  // A film's leader: two near-black frames (mean brightness under 16 of 255).
+  const NIGHT = png(64, 40, () => [6, 6, 8]);
+  const DUSK = png(64, 40, () => [12, 10, 9]);
+  const night = sha256(NIGHT);
+  writeFilmPictures(join(out, 'recordings', 'lit'), [night, FILM[1]!, FILM[2]!], [NIGHT]);
+  writeFilmPictures(join(out, 'recordings', 'dark'), [night, sha256(DUSK)], [NIGHT, DUSK]);
+  build(join(out, 'dist'), join(out, 'recordings'), { files: true });
+  writeFileSync(join(out, 'dist', 'harness.html'), THUMBS);
+  const TYPES: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png', '.css': 'text/css' };
+  const server = createServer((request, response) => {
+    const file = join(out, 'dist', decodeURIComponent(new URL(request.url!, 'http://localhost').pathname));
+    if (!file.startsWith(join(out, 'dist')) || !existsSync(file) || !extname(file)) { response.writeHead(404).end(); return; }
+    response.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream' }).end(readFileSync(file));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  held.server = server;
+  const page = await drivenPage(`http://127.0.0.1:${(server.address() as AddressInfo).port}/harness.html`, join(out, 'profile'), { signal: t.signal });
+  held.page = page;
+  const value = async <T>(expression: string) => JSON.parse(String(await page.evaluate(`JSON.stringify(${expression})`))) as T;
+  try {
+    await page.once(`!!card('lit') && !!card('dark')`, 'true', 30_000, 'the film look\'s card in both runs');
+    for (const id of ['lit', 'dark']) await page.evaluate(`card('${id}').scrollIntoView({ block: 'center' })`);
+    // The lit look's card ends on its first lit picture (the frame after the leader); the dark look's keeps its first.
+    await page.once(`thumb('lit').includes('${FILM[1]}') && loaded('lit') && loaded('dark')`, 'true', 30_000, 'the lit look\'s card on its first lit picture');
+    await page.sleep(1500);
+    assert.deepEqual(await value(`[thumb('lit').includes('${FILM[1]}'), thumb('dark').includes('${night}')]`), [true, true],
+      'a near-black first picture gives way to the first lit one; when every picture is dark the first stays');
+    // Opened, the look's strip holds every frame, the leader first.
+    await page.evaluate(`card('lit').click()`);
+    await page.once(`doc('lit').querySelectorAll('.src .strip img').length >= 3`, 'true', 15_000, 'the opened look\'s frames');
+    const opened = await value<string[]>(`[...doc('lit').querySelectorAll('.src .strip img')].map((img) => img.getAttribute('src'))`);
+    assert.deepEqual([night, FILM[1]!, FILM[2]!].map((sha) => opened.findIndex((src) => src.includes(sha))), [0, 1, 2], 'the opened look keeps every picture in its order');
   } finally {
     await page.close();
   }
