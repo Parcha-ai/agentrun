@@ -322,7 +322,9 @@ export function validateRecording(dir) {
   }
   // Every file in blobs/ is a blob of the allowlist (draft 50), named by its own SHA-256, and read as text when it is not media, whether or not a line names it.
   const artifactNames = artifactBlobNames(manifest);
-  for (const name of existsSync(join(dir, 'blobs')) ? readdirSync(join(dir, 'blobs')) : []) {
+  for (const entry of existsSync(join(dir, 'blobs')) ? readdirSync(join(dir, 'blobs'), { withFileTypes: true }) : []) {
+    const name = entry.name;
+    if (!entry.isFile()) { add('blobs', `${name} is not a file`); continue; }
     const problem = blobNameProblem(name, artifactNames);
     if (problem) { add('blobs', `${name} ${problem}`); continue; }
     if (TEXT_FILE.test(name) && !checked.has(name.split('.')[0])) {
