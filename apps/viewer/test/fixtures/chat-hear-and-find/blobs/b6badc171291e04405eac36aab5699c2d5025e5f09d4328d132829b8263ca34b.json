@@ -1,0 +1,22 @@
+{
+  "tool": "look",
+  "args": {
+    "path": "eagle-heard-and-seen.webm#t=29",
+    "ask": "{\"here\":{\"type\":\"noul\",\"instructions\":\"Is a United States flag standing planted on the ground in `images[0].image`?\"},\"where\":{\"type\":\"box\",\"instructions\":\"the United States flag in `images[0].image`\"}}",
+    "model": "jev-1.14.0",
+    "native": false,
+    "via": "jev"
+  },
+  "status": "ok",
+  "body": "{\"here\":{\"type\":\"noul\",\"noul\":0.95},\"where\":{\"type\":\"box\",\"box\":{\"left\":0.303,\"top\":0.055999999999999994,\"right\":0.806,\"bottom\":0.6000000000000001},\"confidence\":0.9,\"fragment\":\"eagle-heard-and-seen.webm#t=29&xywh=percent:30.3,5.6,50.3,54.4\"}}",
+  "facts": {
+    "sha256": "4d759eedc5c01714398f23aaf9466fa6378564e3a7cc203ff4693dbf39b98028",
+    "kind": "image",
+    "fragment": "",
+    "key": "f057126343b8e362f699a9124ba323e552c3ed85105d2d4ca81b8d6592aa7f39",
+    "shown_blocks": 1,
+    "tokens_in": 0,
+    "tokens_out": 0,
+    "cost_usd": 0
+  }
+}

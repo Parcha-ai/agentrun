@@ -71,8 +71,8 @@ test('the published copy holds the report\'s page as plain text, <hash>.html.txt
   const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
   writeFileSync(join(blobs, `${sha(svg)}.svg`), svg);
   const refused = gateOf(dist);
-  assert.ok(refused.includes(`recordings/one/blobs/${page}.html: would open as a page: a .html blob is published as ${page}.html.txt`), refused.join('\n'));
-  assert.ok(refused.includes(`recordings/one/blobs/${sha(svg)}.svg: would open as a page: a .svg blob is published as ${sha(svg)}.svg.txt`), refused.join('\n'));
+  assert.ok(refused.includes(`recordings/one/blobs/${page}.html: would open as a page: an artifact page is published as ${page}.html.txt`), refused.join('\n'));
+  assert.ok(refused.some((each) => each.startsWith(`recordings/one/blobs/${sha(svg)}.svg: has the extension .svg, which a recording's blob may not have`)), refused.join('\n'));
 });
 
 test('a data-look that names no look the run filed is refused', (t) => {
@@ -213,8 +213,8 @@ test('what a browser reads is read here: an embedded tab in a scheme, escaped CS
   };
   for (const [what, [html, message]] of Object.entries(refused)) assert.throws(() => take(report(t, { 'index.html': html })), message, what);
   // image-set candidates are files; the type() beside one is a MIME string, not a file.
-  const { artifact: set } = take(report(t, { 'index.html': PAGE('<p style="background-image:image-set(\'a.avif\' type(\'image/avif\') 1x, \'a.png\' type(\'image/png\') 2x)">x</p>'), 'a.avif': PNG, 'a.png': Buffer.from('png') }));
-  assert.deepEqual(Object.keys(set.files).sort(), ['a.avif', 'a.png', 'index.html']);
+  const { artifact: set } = take(report(t, { 'index.html': PAGE('<p style="background-image:image-set(\'a.webp\' type(\'image/webp\') 1x, \'a.png\' type(\'image/png\') 2x)">x</p>'), 'a.webp': PNG, 'a.png': Buffer.from('png') }));
+  assert.deepEqual(Object.keys(set.files).sort(), ['a.png', 'a.webp', 'index.html']);
   // A local file named through an escaped url() is followed, not missed.
   const { artifact } = take(report(t, { 'index.html': PAGE('<p style="background:u\\72l(img/a.png)">x</p>'), 'img/a.png': PNG }));
   assert.deepEqual(Object.keys(artifact.files).sort(), ['img/a.png', 'index.html']);

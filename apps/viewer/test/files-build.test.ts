@@ -28,7 +28,8 @@ test('the index lists each recording with its manifest and blob paths, and galle
     assert.equal(entry.events, undefined, `${entry.id}: no lines in the index`);
     assert.ok(existsSync(join(out, 'recordings', entry.id, 'events.jsonl')), `${entry.id}: its lines beside it`);
     for (const [sha, path] of Object.entries(entry.blobs)) {
-      assert.match(path, new RegExp(`^blobs/${sha}\\.[a-z0-9]+$`), `${entry.id}: a blob path in its directory`);
+      // A page is published under its name with .txt after it (plain text when opened straight); every other blob as itself.
+      assert.match(path, new RegExp(`^blobs/${sha}\\.(?:[a-z0-9]+|html\\.txt)$`), `${entry.id}: a blob path in its directory`);
       assert.ok(existsSync(join(out, 'recordings', entry.id, path)), `${entry.id}: ${path} is there`);
     }
   }

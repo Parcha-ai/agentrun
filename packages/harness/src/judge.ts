@@ -1,7 +1,7 @@
-// The judge seam: what every demo's typed questions pass through. It carries Jev's caps and Jev's list price, so a demo that asks questions is held to the same limits and
-// priced the same way, whoever answers them (a script, or Jev).
+// The judge seam: what every demo's typed questions pass through. It carries the harness's caps on a run's Jev use and Jev's list price, so a demo that asks questions is
+// held to the same caps and priced the same way, whoever answers them (a script, or Jev).
 //
-// Caps: at most 50 requests and 40,000 tokens (in and out) over the run. The next request after a cap is reached is refused with `JEV_CAP_REACHED` and is never sent. A request
+// Caps: the harness's own guard, not a TypeSafe quota. By default at most 50 requests and 40,000 tokens (in and out) over the run; a demo sets its own in demo.json (demo-spec.ts). The next request after a cap is reached is refused with `JEV_CAP_REACHED` and is never sent. A request
 // that fails counts; a refused one does not. The count is kept in a file under the run's directory, so a resumed process continues the count and a kill does not reset it.
 //
 // Price: the list price of the Jev judge model, `jev-1.12`: $0.042 per million input tokens and nothing for output. Source: the TypeSafe cookbook, 2026-07.
@@ -37,7 +37,8 @@ export function capJudge(runJudge: RunJudge, file: string, caps: { requests: num
     mkdirSync(dirname(file), { recursive: true });
     const spent = read(file);
     if (spent.requests >= caps.requests || spent.tokens >= caps.tokens) {
-      throw Object.assign(new Error(`The judge's cap is reached (${spent.requests} of ${caps.requests} requests, ${spent.tokens} of ${caps.tokens} tokens): this request was not sent.`), { code: 'JEV_CAP_REACHED', retryable: false });
+      // Never sent, so it cost nothing: the request diagnostic says so to a caller that reads it (pi-vision files a refused request at $0, not as a price unknown).
+      throw Object.assign(new Error(`The judge's cap is reached (${spent.requests} of ${caps.requests} requests, ${spent.tokens} of ${caps.tokens} tokens): this request was not sent.`), { code: 'JEV_CAP_REACHED', retryable: false, requestDiagnostic: { reason: 'cap_reached' } });
     }
     appendFileSync(file, `${JSON.stringify({ requests: 1, tokens: 0 })}\n`);
     const answer = await runJudge(request);

@@ -1,0 +1,17 @@
+{
+ "format": "agentrun.recording/1",
+ "title": "A two-picture report",
+ "task": "chat-artifact",
+ "providers": "scripted",
+ "generations": 1,
+ "kills": 0,
+ "artifact": {
+  "title": "A two-picture report",
+  "entry": "index.html",
+  "files": {
+   "index.html": "0c1b0e529bdc77bc38dc62643769e746ffbbbc91384948e7d5e953ce5b4d2104",
+   "media/first.png": "bfa49a418a0a233e566d1945304f8b27c80517b1bc30d434841054de3368a652",
+   "media/second.png": "c242d94d1cb74195506737955c997c3d73ce0bc86e2959096ee59d367acaa650"
+  }
+ }
+}
