@@ -1,0 +1,10 @@
+---
+packages: @parcha/pi-vision
+kind: fix
+---
+What an untrusted file can make the host do is bounded: two new refusals and two new defaults, each from a file or an answer the host did not write.
+- A program that poppler runs (`pdftotext`, `pdfinfo`, `pdftoppm`) and that writes more than 64 MiB (the new `PROGRAM_OUTPUT_BYTES`, beside the other caps in `core/limits.ts`) is refused with an `over_budget` miss that names the cap, before its output, its error stream or its image is read. A program that fails with a longer error stream is a failure with its name and exit code.
+- A source path reaches poppler, ffprobe (the probe, and the length of a recording to transcribe) and ffmpeg as an absolute path or with `./` first, so a file named like an option (`-h`) or like an address (`a:b.mp4`) is read as a file. LibreOffice's working directory is resolved against the environment's directory when the call's is relative.
+- `falTranscriber` refuses a job address in fal's answer (`status_url`, `response_url`) that is not on the queue's own origin and under the model's job paths, or that carries credentials, before any request carries the key. The error names the origin and never the key. It is a new error path, thrown before the first poll.
+- LibreOffice converts every document in a profile seeded with `registrymodifications.xcu`: the highest macro security level, no macro of any language, no OLE or DDE content, no link from a document outside the trusted locations (so a picture linked at a web address is no longer requested on load), and no link update on load. A document that depended on a macro, a link or a linked picture converts without it.
+Where the system lets the user cut a process's network (`unshare -rn`, probed once per environment when the provider detects), LibreOffice converts inside such a namespace, with no network; where it does not (Ubuntu 24.04 by default, macOS, a default Docker container) it converts as before, and a conversion never fails for want of isolation. The README says which.

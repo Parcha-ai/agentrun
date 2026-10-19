@@ -371,6 +371,8 @@ other processes of its user. By default a program gets only what `inheritedEnv()
 (`LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`, `DYLD_FALLBACK_LIBRARY_PATH`) and, on Windows, `SystemRoot`, `windir`,
 `PATHEXT`, `ComSpec` and `USERPROFILE`.
 
+LibreOffice converts a document in a profile of its own with macros, active content, linked content and link updates off; where the system allows unprivileged network namespaces (many Linux distributions; not Ubuntu 24.04 by default, not macOS, not a default Docker container) it also converts with no network, and elsewhere it converts with the network on, so run it in a container without network if your documents are untrusted.
+
 In `programs.mjs`, which asks two environments whether a program started in them finds a name:
 
 ```js
