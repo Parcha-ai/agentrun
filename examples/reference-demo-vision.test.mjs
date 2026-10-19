@@ -11,8 +11,8 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
-import { effectiveBoxes } from '../packages/reference/dist/demo-spec.js';
-import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-reference';
+import { effectiveBoxes } from '../packages/harness/dist/demo-spec.js';
+import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
 import { ORIGINAL, FIXTURE, BASELINE, run, composeHost, destroyBoxes, meterKnown, RUN_LABEL, localBoxes, ctx, finish, lines, planFor, recordingPlace, specWith, SITES, signInHome, filesIn, killSpec, boxed } from './reference-demo-helpers.mjs';
 
 test('the vision option: each look is filed, whole, in a vision.looks document with the image the eyes saw as a blob, and the counters read the look and its cost', { timeout: 300_000 }, async (t) => {
@@ -77,7 +77,7 @@ test('the entry keeps every look and miss itself and calls a demo\'s own onLook 
 test('Fakes.extensions are installed on a no-key run, and Fakes.vision is called with the host and the running run (its harness undefined until the run is open)', { timeout: 300_000 }, async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-a2-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
-  const { localHost, placeAt } = await import('@parcha/agentrun-reference');
+  const { localHost, placeAt } = await import('@parcha/agentrun-harness');
   const place = await placeAt(join(tmp, 'run'));
   const probeExtension = { name: 'probe', tools: [] };
   const local = localHost(place, { model: () => { throw new Error('unused'); }, tools: {}, judge: async () => ({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }), pages: {}, start: 'about:blank', extensions: [probeExtension] });
@@ -90,7 +90,7 @@ test('Fakes.extensions are installed on a no-key run, and Fakes.vision is called
   assert.deepEqual(JSON.parse(readFileSync(join(given.result.dir, 'vision-called.json'), 'utf8')).input, { company: 'Gamma Ltd' });
 });
 test('a look is kept with the images of its own read: a read that produced no image finds none (not the previous read\'s), and a film window keeps only the frames inside it', async () => {
-  const { shownShots } = await import('@parcha/agentrun-reference');
+  const { shownShots } = await import('@parcha/agentrun-harness');
   const shown = shownShots();
   const afterTool = shown.extension.hooks[0].handlers.afterTool;
   const png = (text) => ({ type: 'image', data: Buffer.from(text).toString('base64'), mimeType: 'image/png' });
@@ -108,7 +108,7 @@ test('a look is kept with the images of its own read: a read that produced no im
   assert.equal(shown.of('7', record('a screenshot result'), 'screenshot').images.length, 1);
 });
 test('a screenshot look, which the evidence sink does not file, takes the vision.filing and vision.filed crossings around its own keeping, and a hold parks it; a look the sink filed has had them already', async () => {
-  const { aroundOwnFiling } = await import('../packages/reference/dist/crossings.js');
+  const { aroundOwnFiling } = await import('../packages/harness/dist/crossings.js');
   const events = [];
   const cross = Object.assign((point) => { events.push(point); return false; }, { park: (point) => { events.push(`park ${point}`); return undefined; } });
   await aroundOwnFiling(cross, { receipt: null }, async () => { events.push('keep'); });
@@ -160,7 +160,7 @@ test('code mode: a command\'s output is clipped while it streams (head kept, the
   await new Promise((resolve) => setTimeout(resolve, 6000));
   assert.ok(!existsSync(join(cut.result.dir, 'work', 'late.txt')), 'the command stopped with its script');
   // The declaration the model reads is in the tool\'s description.
-  const { codeModeExtension } = await import('../packages/reference/dist/code-mode.js');
+  const { codeModeExtension } = await import('../packages/harness/dist/code-mode.js');
   const tool = codeModeExtension({ see: () => ({ signature: '(request: { ask: string }): Promise<{ text: string }>', description: 'Ask the eyes about images.' }), judge: () => ({ signature: '(request: J): Promise<K>', description: 'Ask Jev.' }), transcribe: () => ({ signature: '(request: T): Promise<W>', description: 'Write what is said.' }) }, {}).tools[0];
   assert.match(tool.description, /vision\.see` is declared as `\(request: \{ ask: string \}\): Promise<\{ text: string \}>`: Ask the eyes about images\./);
 });
@@ -218,7 +218,7 @@ test('code mode: vision.judge answers through the host\'s judge seam (counted ag
   assert.equal(two[0].images.length, 2, 'both pictures');
   assert.ok(two[0].images.every((image) => /^[0-9a-f]{64}$/.test(image.blob)));
   // The description the model reads declares it.
-  const { codeModeExtension } = await import('../packages/reference/dist/code-mode.js');
+  const { codeModeExtension } = await import('../packages/harness/dist/code-mode.js');
   const tool = codeModeExtension({ see: () => ({ signature: '(request: S): Promise<A>', description: 'Ask the eyes.' }), judge: () => ({ signature: '(request: J): Promise<K>', description: 'Ask Jev.' }), transcribe: () => ({ signature: '(request: T): Promise<W>', description: 'Write what is said.' }) }, {}).tools[0];
   assert.match(tool.description, /vision\.judge` is declared as `\(request: J\): Promise<K>`: Ask Jev\./);
 });
@@ -246,7 +246,7 @@ test('code mode: vision.transcribe returns the words with times from the host\'s
   assert.ok(!readFileSync(join(recording, 'events.jsonl'), 'utf8').includes('made-up-stt-key'), 'nor in the recording');
 });
 test('the host chooses the speech-to-text model from the keys its demo declares: a pass-through first, then fal, ElevenLabs, OpenAI; none set is no transcriber', async () => {
-  const { transcriberFromEnv } = await import('../packages/reference/dist/transcriber.js');
+  const { transcriberFromEnv } = await import('../packages/harness/dist/transcriber.js');
   const pick = (env) => { const found = transcriberFromEnv(env); return found && `${found.provider}`; };
   assert.equal(pick({}), undefined);
   assert.match(pick({ FAL_KEY: 'k' }), /fal/);
@@ -256,7 +256,7 @@ test('the host chooses the speech-to-text model from the keys its demo declares:
 });
 
 test('every node thinks: its own level, else low, never off', { timeout: 120_000 }, async (t) => {
-  const { nodeAgent } = await import('../packages/reference/dist/assemble.js');
+  const { nodeAgent } = await import('../packages/harness/dist/assemble.js');
   const model = { id: 'lead' };
   assert.equal(nodeAgent(model, {}).thinkingLevel, 'low', 'a node with no thinking runs at low');
   assert.equal(nodeAgent(model, { thinking: 'high' }).thinkingLevel, 'high', 'a node\'s own level wins');

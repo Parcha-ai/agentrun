@@ -2,7 +2,7 @@
 // kill (agentrun's reference demo) is the same for every place; the place decides how. `localPlace` runs the instance on
 // a directory of this machine (`run --dir`, no disk and no key); `archilPlace` runs it on an Archil disk through a host
 // driver, mints each attempt's mount token itself and takes the run over after a kill. The types match the reference's
-// place seam (@parcha/agentrun-reference/place) structurally. The supervisor reads nothing under the run's directory: the
+// place seam (@parcha/agentrun-harness/place) structurally. The supervisor reads nothing under the run's directory: the
 // outcome, the run's record and its delegations come through the place.
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";

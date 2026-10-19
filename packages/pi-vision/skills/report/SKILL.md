@@ -1,6 +1,6 @@
 ---
 name: report
-description: End a run with your own report, one self-contained, script-free HTML page, report/index.html, that answers in the shape the question asks, states only what the run read, and shows the evidence for every finding and a thumbnail for every row (the document page with its mark boxed and a close crop, the film moment's frame and a short clip, the photo with what it shows boxed and captioned). Cite every claim as a link to the file's own address (file#page=N, file#t=a,b, file#xywh=percent:x,y,w,h). Use at the end of a run that looked at documents, images or video, so the person sees what you saw and not only your words.
+description: End a run with your own report, one self-contained, script-free HTML page, report/index.html, that answers in the shape the question asks, states only what the run read (every text is judged against what its cited looks read before the page is written), and shows the evidence for every finding and a thumbnail for every row (the document page with its mark boxed and a close crop, the film moment's frame and a short clip, the photo with what it shows boxed and captioned). Cite every claim as a link to the file's own address (file#page=N, file#t=a,b, file#xywh=percent:x,y,w,h). Use at the end of a run that looked at documents, images or video, so the person sees what you saw and not only your words.
 ---
 
 # End the run with a report
@@ -16,7 +16,13 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
   under a row, never the rows. A question that names no shape gets the sentence and the key points.
 - **Never state what the run did not read.** Every name, place, time and number on the page comes from a look's answer or from
   the file's own text, and carries its cite. A caption says what the look saw, not what you remember about the subject.
-  What the run did not read is left out, or goes under what you did not check.
+  What the run did not read is left out; a place it did not look at goes under what you did not check.
+- **Ground the page before you write it.** Before the page is written, every text it shows (a finding's words, a caption, a box
+  label, a row's text, the answer and its key points) is put to Jev as a text judgment: `vision.judge`, the text as `claims`
+  and the answers of the looks it cites as `evidence`, one noul question for each text: does the evidence state every name,
+  time and number in it? A text it does not is not kept as it is: rewrite it from what the looks read, cite the look that
+  states it, or drop it. What was heard is cited to the transcribe look (`hear()`): a name, a time or a number that was said
+  is evidence only in that look's text, not in a picture of the speaker. A presence or an absence ("the seal is on page 1", "the test copy has no stamp") is stated by a typed answer: ask Jev with `decide()` (a noul, "Is there a seal on this page?") and cite that look; Jev's answers reach the evidence as words (`Jev, asked "Is there a seal on contract.pdf#page=3?": no (0.02)`), so an absence is grounded by a cited no. The check refuses a text that was not judged as written.
 - **The text is yours, in plain sentences.** Every sentence on the page (a caption, an evidence paragraph, a row) is one plain
   sentence in your own words, drawn from the look's answer: never the answer pasted. The page is HTML, so markdown shows as raw
   symbols (`**`, `##`, a `* ` list mark, backticks); the check refuses them in any text outside `<code>` and `<pre>` and names
@@ -42,7 +48,10 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
   and the check refuses a page cite with no page entry.
 - **A film is shown by its moments.** A window of the film is one short clip, with a poster that is the window's opening
   frame. The same window is never a clip twice: later it is a frame, from `frame()`, with a box if it has one.
-- **What you did not check** is last: what you assumed, could not reach or did not look at.
+- **What you did not check** is last, and lists only what no look of the run covered: a page, a window of a film, a file the run
+  did not look at. It never states a finding, a presence or an absence ("page 2 has no seal"): those are findings, and need
+  their look and their cite. If the run looked at a page, that page is not in the list. Each item names its file, its pages
+  or seconds and one reason from a short list, and the check refuses an item that a look of the run covers.
 
 ## What the page is
 
@@ -73,7 +82,7 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
   number printed on it), `talk.mp4#t=21.5` or `#t=18,26`, a box on a page `contract.pdf#page=3&xywh=percent:7,6,70,4`, a
   box on a film `talk.mp4#t=21.5&xywh=percent:61,40,12,9`, a box on a photo `photo.jpg#xywh=percent:10,20,30,15`
   (`pixel:` for pixel boxes). Every cite carries `data-look`, the key of the look it rests on, so the viewer can open that
-  look at that fragment. A claim with no look behind it is not a finding: look first, or put it under what you did not check.
+  look at that fragment. A claim with no look behind it is not a finding: look first, or leave it out.
   A cite names a file of `report/` or a film in `outside`, as `keep()` and the page spell it, never with `../`.
 - **Boxes are the look's percentages**, placed on the picture with CSS `left`, `top`, `width` and `height` in `%`. Do no
   arithmetic; show the picture the look saw (or the same whole picture at another size: a crop moves the percentages). A
@@ -175,23 +184,63 @@ const keep = async (file) => {   // a document or photo the run was given, copie
 Look at the pictures you will show, if the run has not already, and take each look's key from its receipt. `vision.see`
 returns the receipts' paths, one for each request. A receipt is a JSON record (its key is `facts.key`) or a text file whose
 header has a `key:` line before the first `---`. A look the run made earlier is cited the same way: give `keyOf` its
-receipt's path.
+receipt's path, and say what it covered with `cover("file#page=2")` (`look()`, `decide()` and `hear()` do that for their own looks), since the list of what you did not check is what no look covered. `said` holds what each look read, by key, for the grounding step: a look you read yourself is put there by `look()` and `hear()`, and one you read from a receipt by `keyOf`.
 
 ```js
-const looks = new Set();
+const looks = new Set(), said = new Map(), covered = [];   // said: look key -> what the look read; covered: what the run looked at, as { file, pages?: [from, to], t?: [from, to] }
+const jevWords = (args, body) => {   // Jev's typed answers as words: a yes, a no, a choice, a score or a place is evidence of presence or absence
+  let asked, answers;
+  try { asked = JSON.parse(args.ask); answers = JSON.parse(body); } catch { return body; }
+  const sources = String(args.path ?? "").split(", ");
+  const about = (text) => String(text ?? "").replace(/`?images\[(\d+)\]\.image`?/g, (_, i) => sources[Number(i)] ?? "the picture");
+  return Object.entries(answers).map(([name, a]) => {
+    const said = a.type === "noul" ? `${a.noul >= 0.5 ? "yes" : "no"} (${a.noul})`
+      : a.type === "choice" ? `${a.choice}${a.confidence != null ? ` (${a.confidence})` : ""}`
+      : a.type === "score" ? `score ${a.score}${a.legend?.[a.score] ? ` (${a.legend[a.score]})` : ""}`
+      : a.type === "box" ? `located at ${a.fragment ?? "a region of the picture"}${a.confidence != null ? ` (confidence ${a.confidence})` : ""}` : JSON.stringify(a);
+    return `Jev, asked "${about(asked[name]?.instructions ?? name)}": ${said}`;
+  }).join("\n");
+};
 const keyOf = async (receipt) => {
   if (!receipt) throw new Error("no receipt: this host files none, so there is no look to cite");
   const text = await sh(`cat ${q(receipt)}`).catch(() => sh(`cat ${q(`../${receipt}`)}`));   // a host may file receipts in the folder above the workspace
-  let key, status;
-  try { ({ status, facts: { key } } = JSON.parse(text)); } catch { const header = text.split("\n---")[0].split("\n").map((line) => line.split(": ")); key = header.find(([name]) => name === "key")?.[1]; status = header.find(([name]) => name === "status")?.[1]; }
+  let key, status, args, body = "";
+  try { ({ status, args, body = "", facts: { key } } = JSON.parse(text)); } catch {
+    const header = text.split("\n---")[0].split("\n"), field = (name) => header.find((line) => line.startsWith(`${name}: `))?.slice(name.length + 2);
+    key = field("key"); status = field("status"); body = text.split("\n---\n").slice(1).join("\n---\n");
+    try { args = JSON.parse(field("args")); } catch { args = undefined; }
+  }
   if (!key) throw new Error(`${receipt} holds no look key`);
   if (status === "failed") throw new Error(`${receipt} is a look that failed: it is no evidence for a finding`);
   looks.add(key);
+  if (typeof body === "string" && body.trim() && !said.has(key)) said.set(key, args?.via === "jev" ? jevWords(args, body.trim()) : body.trim());
   return key;
+};
+const cover = (fragment) => {   // "file#page=3", "file#page=1-4", "file#t=18,26", "file#t=21.5&xywh=...", or a bare file: put a look made earlier here too
+  const [, file, frag = ""] = /^(.*)#((?:page|t|xywh)=[^#]*)$/.exec(fragment) ?? [, fragment];   // a `#` inside a file name is not a fragment
+  const page = /(?:^|&)page=(\d+)(?:-(\d+))?/.exec(frag), time = /(?:^|&)t=([\d.]+)(?:,([\d.]+))?/.exec(frag);
+  covered.push({ file, ...(page ? { pages: [Number(page[1]), Number(page[2] ?? page[1])] } : {}), ...(time ? { t: [Number(time[1]), Number(time[2] ?? time[1])] } : {}) });
 };
 const look = async (path, fragment, ask) => {
   const seen = await vision.see({ ask, paths: [path], fragments: [fragment] });
-  return { key: await keyOf(seen.receipts[0]), text: seen.text.trim() };
+  cover(fragment);
+  const key = await keyOf(seen.receipts[0]);
+  said.set(key, seen.text.trim());
+  return { key, text: seen.text.trim() };
+};
+const decide = async (path, fragment, questions) => {   // Jev's typed answers about a picture: cite this look for any presence or absence you state
+  const decided = await vision.judge({ paths: [path], fragments: [fragment], questions });
+  cover(fragment);
+  return { key: await keyOf(decided.receipts[0]), answers: decided.answers };
+};
+const hear = async (path, fragment) => {   // what was said in a recording: cite this look for any name, time or number that was heard
+  // The whole file at `path` is transcribed. For audio cut from a longer recording, `fragment` is the source address of the cut ("talk.mp4#t=30,36"), which is what was heard.
+  if (fragment !== undefined && !/^.+#(?:page|t|xywh)=/.test(fragment)) throw new Error(`${fragment} is not the source address of ${path}: cut the audio first, then pass its source as file#t=from,to`);
+  const heard = await vision.transcribe({ path, ...(fragment ? { fragment } : {}) });
+  cover(fragment ?? path);
+  const key = await keyOf(heard.receipts[0]);
+  said.set(key, heard.text.trim());
+  return { key, text: heard.text.trim() };
 };
 ```
 
@@ -202,6 +251,7 @@ looks you made (a `vision.judge` box answer carries its `fragment`; `find` and `
 key one (open) or `routine` (folded). A box belongs to a finding and links back to it; `points` are the three or four key
 points of the answer. When the question names a shape, add `rows` to the report, one for each unit it names:
 `rows: [{ id: "m1", label: "0:00 to 1:00", text: "what the look read there", thumb: await thumb("talk.mp4", "m1-thumb", { t: 30 }), cites: [{ file: "talk.mp4", t: [0, 60], look: lookTalk.key }] }]`.
+A claim about what was said cites the look of `hear()`, made in piece 3's way: `const said1 = await hear("talk.mp4")`, then `look: said1.key`.
 A mark on a document page gets `crop()` for its finding and its box on the embedded page; a film moment gets `frame()` and the window's `clip()`; a photo gets `photo()`.
 An embedded page takes its look from a cite of that page of that document, in a finding or a row, or from a `look` of its own.
 
@@ -239,11 +289,55 @@ const report = {
   ],
   documents: [{ id: "contract", file: await keep("contract.pdf"), pages: [{ n: 3, src: page3, boxes: [{ id: "mark-rule", finding: "contract", at: "7,6,70,4", label: "the rule", look: lookPage.key }] }] }],
   outside: ["talk.mp4"],   // a film is cited by its own name and not copied; every other cited file was kept above
-  notChecked: ["The talk's figures were read from the chart, not from a table."],
+  notChecked: [{ file: "talk.mp4", t: [30, 40], why: "not looked at" }, { file: "contract.pdf", pages: [1, 2, 4], why: "not looked at" }],   // only what no look covered; never a finding or an absence
 };
 ```
 
-### 5. The page
+### 5. Ground the claims
+
+Run after the data and before the page, and again whenever a text changes. Each finding, each row and the answer is one
+request to Jev with no image: `state` holds `claims` (each text it shows) and `evidence` (what the looks it cites read), and
+each text is one noul question, which Jev answers as the probability that the evidence states every name, time and number in
+it. A text whose answer is under `GROUNDED` stops the script, naming it. Fix the data (rewrite, re-cite or drop it) and run
+the pieces again; a judgment you already paid for in the call is read back, not paid twice. The usual failure is a finding that states what a look read but cites only another look: cite every look the text rests on. A text with no cited look that
+read anything has no evidence and fails the same way.
+
+```js
+const GROUNDED = 0.5;   // noul is the probability of yes: 0.66 to 0.98 when the evidence gave the fact, 0.01 to 0.03 when it did not
+const verdicts = new Map();
+const claimsOf = (r) => {   // every text the page states, in units that each cite their own looks
+  const cited = (x) => (x.cites ?? []).map((c) => c.look);
+  const labelsOf = (id) => (r.documents ?? []).flatMap((d) => d.pages.flatMap((p) => { const mine = (p.boxes ?? []).filter((b) => b.finding === id); return mine.length ? [p.alt, ...mine.map((b) => b.label)] : []; }));   // a page's own alt text goes with the finding its marks belong to
+  const picTexts = (p) => [p.caption, p.alt, ...(p.boxes ?? []).map((b) => b.label)];
+  const all = [...r.findings, ...(r.rows ?? [])];
+  return [
+    ...r.findings.map((f) => ({ id: `finding ${f.id}`, keys: cited(f), cites: f.cites ?? [], texts: [f.title, f.why, ...(f.pics ?? []).flatMap(picTexts), f.clip?.caption, ...labelsOf(f.id)].filter(Boolean) })),
+    ...(r.rows ?? []).map((x) => ({ id: `row ${x.id}`, keys: cited(x), cites: x.cites ?? [], texts: [x.label, x.text].filter(Boolean) })),
+    { id: "the answer", keys: all.flatMap(cited), cites: all.flatMap((x) => x.cites ?? []), texts: [r.title, r.question, r.answer, ...r.points.map((p) => `${p.label}: ${p.value}`)].filter(Boolean) },
+  ];
+};
+const addressOf = (c) => [c.file, c.page && `page ${c.page}`, c.t && `seconds ${c.t.join(" to ")}`, c.xywh && `region ${c.xywh}`].filter(Boolean).join(", ");   // where the cite points: a fact of the run, not a claim
+const verdictKey = (unit, text) => `${[...new Set(unit.keys)].sort().join(",")}\n${[...new Set(unit.cites.map(addressOf))].sort().join("|")}\n${text}`;   // the looks and the addresses are the evidence: change either and the text is judged again
+const ground = async () => {   // evidence: what each cited look read, and the address each cite names ("Cited: contract.pdf, page 3")
+  const failed = [];
+  for (const unit of claimsOf(report)) {
+    if (!unit.keys.length) continue;   // no look cited: the check refuses it as uncited
+    const read = [...new Set(unit.keys)].map((key) => said.get(key)).filter(Boolean);
+    const evidence = [...read, ...[...new Set(unit.cites.map(addressOf))].map((address) => `Cited: ${address}`)];
+    const ask = (i) => ({ type: "noul", instructions: `Does \`evidence\` state every name, time and number in \`claims.t${i}\`? Say yes only when each name, place, date, time, quantity and title in it is given by \`evidence\`, or is a plain restatement of something it gives; a name, date, number or title that \`evidence\` does not give is a no, even when it is true or well known.` });
+    const { answers } = read.length ? await vision.judge({ state: { claims: Object.fromEntries(unit.texts.map((text, i) => [`t${i}`, text])), evidence }, questions: Object.fromEntries(unit.texts.map((_, i) => [`t${i}`, ask(i)])) }) : { answers: {} };
+    unit.texts.forEach((text, i) => {
+      const yes = answers[`t${i}`]?.noul ?? 0;
+      verdicts.set(verdictKey(unit, text), yes);
+      if (yes < GROUNDED) failed.push(`${unit.id}: "${text.slice(0, 80)}" is not stated by what its cited looks read (${yes.toFixed(2)})`);
+    });
+  }
+  if (failed.length) throw new Error(`${failed.join("\n")}\nRewrite each from what the looks read, cite the look that states it, or drop it; then run the pieces again.`);
+};
+await ground();
+```
+
+### 6. The page
 
 One function for each part, so a finding with a clip and boxes, or with neither, is the same code. The page is written once, at
 the end.
@@ -251,7 +345,7 @@ the end.
 ```js
 const esc = (text) => String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const say = (text) => esc(String(text).replace(/\b(?:https?|ftp|file):(?:\/\/)?/gi, "").replace(/\bmailto:/gi, "").replace(/(^|[\s(])\/\/(?=[a-z0-9-]+\.)/gi, "$1"));
-const num = (n) => String(Number(n.toFixed(2)));
+const num = (n) => String(Number(Number(n).toFixed(2)));
 const part = (c) => [c.page && `page=${c.page}`, c.t && `t=${c.t.map(num).join(",")}`, c.xywh && `xywh=${c.xywh}`].filter(Boolean).join("&");
 const label = (c) => c.page ? `p. ${c.page}` : c.t ? `${c.t.map(num).join(" to ")} s` : c.xywh ? `box ${c.xywh.replace(/^percent:/, "").replace(/^pixel:/, "px ")}` : "file";
 const cite = (c) => `<a class="cite" href="${encodeURIComponent(c.file)}${part(c) ? `#${esc(part(c))}` : ""}" data-look="${esc(c.look)}">${esc(label(c))}</a>`;
@@ -270,6 +364,8 @@ const finding = (f) => f.routine
   ? `<details class="finding routine" id="f-${f.id}"><summary>${say(f.title)}</summary>${body(f)}</details>`
   : `<article class="finding" id="f-${f.id}">${body(f)}</article>`;
 const rows = (list) => list.length ? `<ol class="rows">${list.map((r) => `<li class="row" id="r-${esc(r.id)}"><img class="thumb" src="${esc(r.thumb)}" alt="${say(r.text)}" loading="lazy"><span class="when">${say(r.label)}</span><span class="what">${say(r.text)}</span><span class="cites">${r.cites.map(cite).join(" ")}</span></li>`).join("")}</ol>` : "";
+const span = (n) => n.pages ? `page${n.pages.length > 1 ? "s" : ""} ${n.pages.join(", ")}` : n.t ? `${n.t.map(num).join(" to ")} s` : "the whole file";
+const limit = (n) => `<li>${say(n.file)}, ${span(n)}: ${say(n.why)}</li>`;
 const docPage = (d, p) => `<figure class="docpage" id="${esc(d.id)}-p${p.n}"><header><span class="n">${say(documents.length > 1 ? `${d.file}, ` : "")}p. ${p.n}</span><a class="cite" href="${encodeURIComponent(d.file)}#page=${p.n}" data-look="${esc(p.look ?? [...(report.rows ?? []), ...report.findings].flatMap((x) => x.cites).find((c) => c.file === d.file && c.page === p.n)?.look ?? "")}">open at p. ${p.n}</a></header>${sheet({ ...p, alt: p.alt ?? `Page ${p.n} of ${d.file}` })}</figure>`;
 
 const css = `:root{color-scheme:light dark;--bg:#f7f6f2;--fg:#17181a;--mute:#5c6068;--card:#fff;--line:#e2e1db;--accent:#d96a00;--box:#6b4fd8}
@@ -289,8 +385,9 @@ h2{font-size:.78rem;letter-spacing:.1em;text-transform:uppercase;color:var(--mut
 .rows{list-style:none;margin:1rem 0 0;padding:0}.row{display:flex;flex-wrap:wrap;gap:.3rem .8rem;align-items:baseline;border-top:1px solid var(--line);padding:.5rem 0}.thumb{width:6rem;height:auto;border:1px solid var(--line);border-radius:.3rem;flex:none}.when{font:700 .85rem ui-monospace,monospace;min-width:6rem}.what{flex:1 1 14rem}.row .cites{margin:0 0 0 auto}
 .docpage{margin:0 0 1.2rem;scroll-margin-top:1rem}.docpage>header{display:flex;justify-content:space-between;align-items:center}.n{font:700 .85rem ui-monospace,monospace}ul.limits{color:var(--mute);padding-left:1.2rem}`;
 
+const renderPage = () => {   // the page is a pure function of `report`: the check renders it again and compares
 const keyFindings = report.findings.filter((f) => !f.routine), routine = report.findings.filter((f) => f.routine);
-const page = `<!doctype html>
+return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${say(report.title)}</title><style>${css}</style></head>
 <body><main>
@@ -299,19 +396,24 @@ const page = `<!doctype html>
 ${keyFindings.length ? `<section id="evidence"><h2>Evidence</h2>${keyFindings.map(finding).join("\n")}</section>` : ""}
 ${documents.length ? `<section id="document"><h2>${documents.length > 1 ? "The documents" : "The document"}, with their marks</h2>${documents.flatMap((d) => d.pages.map((p) => docPage(d, p))).join("\n")}</section>` : ""}
 ${routine.length ? `<section id="routine"><h2>Checked, as expected</h2>${routine.map(finding).join("\n")}</section>` : ""}
-<section id="not-checked"><h2>Not checked</h2><ul class="limits">${report.notChecked.map((line) => `<li>${say(line)}</li>`).join("")}</ul></section>
+${report.notChecked.length ? `<section id="not-checked"><h2>Not checked</h2><ul class="limits">${report.notChecked.map(limit).join("")}</ul></section>` : ""}
 </main></body></html>
 `;
+};
+const page = renderPage();
 await write("report/index.html", page);
 ```
 
-### 6. The check before you stop
+### 7. The check before you stop
 
 Run it after the page is written. It returns what is wrong, and the script stops if anything is: fix the data and write the page
 again.
 
 ```js
 const problems = [];
+const fresh = (await sh("mktemp -d")).trim();   // a directory of its own, removed after: the page is what the data renders, nothing more
+await write(`${fresh}/index.html`, renderPage());
+if ((await sh(`cmp -s report/index.html ${q(`${fresh}/index.html`)} && echo same || echo changed; rm -rf ${q(fresh)}`)).trim() !== "same") problems.push("report/index.html is not what the data renders: change the data (the texts are judged) and write the page again, never the page");
 const attr = (name) => [...page.matchAll(new RegExp(`\\s${name}="([^"]*)"`, "g"))].map((m) => m[1]);
 const has = async (file) => (await bytes(`report/${file}`).catch(() => 0)) > 0;
 const tags = page.match(/<[a-z!][^>]*>/gi) ?? [];   // text is escaped, so a `<` in the page starts a tag
@@ -321,7 +423,20 @@ if (banned || /url\(|@import/i.test(style) || /https?:|\/\/[a-z0-9-]+\./i.test(p
 if ([...attr("src"), ...attr("href"), ...attr("poster")].some((v) => /^\s*data:/i.test(v))) problems.push("the page uses a data: URL: a picture is a file");
 if ([...attr("src"), ...attr("href"), ...attr("poster")].some((v) => /(^|[\/\\])\.\.([\/\\]|$)/.test(v))) problems.push("a path with ../ leaves report/: copy the file in with keep(), or name a film in outside; never write ../");
 if (report.outside.some((name) => /[\/\\:]|^\./.test(name))) problems.push("outside names bare file names, never a path");
-if ([...(report.rows ?? []), ...report.findings].some((x) => !x.cites?.length)) problems.push("a row or a finding has no cite: leave out what no look read, or put it under what you did not check");
+if ([...(report.rows ?? []), ...report.findings].some((x) => !x.cites?.length)) problems.push("a row or a finding has no cite: leave out what no look read");
+const REASONS = ["not looked at", "out of budget", "could not be read"];
+const seen = [...covered, ...[...(report.rows ?? []), ...report.findings].flatMap((x) => x.cites).map((c) => ({ file: c.file, ...(c.page ? { pages: [c.page, c.page] } : {}), ...(c.t ? { t: [c.t[0], c.t.at(-1)] } : {}) }))];
+const meets = (a, b) => a[0] <= b[1] && b[0] <= a[1];   // two closed spans share a page or a second
+const covers = (s, n) => s.file === n.file && (n.pages ? !s.pages && !s.t || (s.pages && n.pages.some((p) => meets(s.pages, [p, p])))
+  : n.t ? !s.pages && !s.t || (s.t && (s.t[0] === s.t[1] ? s.t[0] >= n.t[0] && s.t[0] <= n.t[1] : Math.max(s.t[0], n.t[0]) < Math.min(s.t[1], n.t[1]))) : true);
+const whole = (v) => typeof v === "number" && Number.isFinite(v);
+for (const n of report.notChecked) {
+  const bad = typeof n !== "object" || !n || typeof n.file !== "string" || !n.file.trim() || !REASONS.includes(n.why) || (n.pages && n.t)
+    || (n.pages && !(Array.isArray(n.pages) && n.pages.length && n.pages.every((p) => Number.isInteger(p) && p >= 1)))
+    || (n.t && !(Array.isArray(n.t) && n.t.length === 2 && n.t.every((s) => whole(s) && s >= 0) && n.t[0] < n.t[1]));
+  if (bad) problems.push(`${JSON.stringify(n).slice(0, 80)} is not an item of notChecked: { file, pages or t: [from, to], why }, with why one of ${REASONS.join(", ")}; a finding or an absence is not listed here`);
+  else if (seen.some((s) => covers(s, n))) problems.push(`${n.file}, ${span(n)}: listed as not checked, but a look of this run covers it: take it out of the list`);
+}
 for (const ref of [...attr("src"), ...attr("poster")]) {
   if (/^([a-z][a-z0-9+.-]*:|\/|\.\.)/i.test(ref)) problems.push(`${ref} is not a file in report/`);
   else if (!(await has(ref))) problems.push(`${ref} is missing or empty`);
@@ -370,6 +485,7 @@ for (const part of page.replace(/<(style|code|pre)\b[\s\S]*?<\/\1>/gi, "").split
   const marker = /\*\*|##|`|(?:^|\n)\s*\* |(?:^|\n)\s*#{1,6}\s/.exec(part);
   if (marker) problems.push(`${named(owner)} carries markdown (${JSON.stringify(marker[0].trim() || marker[0])}): write your own plain sentence from the look's answer, never the answer pasted`);
 }
+for (const unit of claimsOf(report)) for (const text of unit.texts) if (!(verdicts.get(verdictKey(unit, text)) >= GROUNDED)) problems.push(`${unit.id}: "${text.slice(0, 60)}" was not judged as written against what its looks read: run the grounding step again`);
 if (problems.length) throw new Error(problems.join("\n"));
 return { report: "report/index.html", findings: report.findings.length, looks: looks.size, bytes: await bytes("report/index.html") };
 ```
