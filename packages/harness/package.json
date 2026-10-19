@@ -1,7 +1,6 @@
 {
-  "name": "@parcha/agentrun-reference",
+  "name": "@parcha/agentrun-harness",
   "version": "0.1.0-beta.17",
-  "private": true,
   "description": "The agentrun reference host: one pi-durable host that runs an agentrun job on this machine, with kill-anywhere, a recorder, a supervisor and fakes, so an example runs from an npm install.",
   "keywords": [
     "agentrun",
@@ -52,7 +51,7 @@
     "NOTICE"
   ],
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json && node scripts/rewrite-dts.mjs dist",
+    "build": "rm -rf dist && for p in dsl jev pi pi-browser pi-durable-disk pi-transport pi-vision; do test -f ../$p/dist/index.d.ts || npm --prefix ../$p run build || exit 1; done && tsc -p tsconfig.build.json && node scripts/rewrite-dts.mjs dist",
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit"
   },
@@ -88,7 +87,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Parcha-ai/agentrun.git",
-    "directory": "packages/reference"
+    "directory": "packages/harness"
   },
   "bugs": {
     "url": "https://github.com/Parcha-ai/agentrun/issues"

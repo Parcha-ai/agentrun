@@ -10,11 +10,11 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import * as validator from '../scripts/recording/validate.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
-import { placeAt, run } from '@parcha/agentrun-reference';
-import { localHost } from '@parcha/agentrun-reference';
+import { placeAt, run } from '@parcha/agentrun-harness';
+import { localHost } from '@parcha/agentrun-harness';
 import { fakes, job } from './reference/job.ts';
-import { codeOf, finishRecording, moveImages, openRecorder, openSupervisor } from '../packages/reference/dist/record.js';
-import * as scan from '../packages/reference/dist/scan.js';
+import { codeOf, finishRecording, moveImages, openRecorder, openSupervisor } from '../packages/harness/dist/record.js';
+import * as scan from '../packages/harness/dist/scan.js';
 
 const lines = (dir) => readFileSync(join(dir, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
 
@@ -210,7 +210,7 @@ test('a process killed while it writes a blob never leaves a torn file in blobs/
   const tmp = await mkdtemp(join(tmpdir(), 'reference-blob-kill-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const bytes = 'x'.repeat(200_000);
-  const record = new URL('../packages/reference/dist/record.js', import.meta.url).href;
+  const record = new URL('../packages/harness/dist/record.js', import.meta.url).href;
   // A child that keeps one blob and is SIGKILLed at a point of the write: part-way through the bytes, or after them and before the rename.
   const script = `
     import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
@@ -316,10 +316,10 @@ test('a JWT (a sign-in token) or a Browserbase key in a tool result, a blob or t
 
 test('one scanner: the validator and the gallery\'s gate use the recorder\'s own', async () => {
   // The validator and the gate read the scanner's source (the Pages job has no install); the recorder runs its build.
-  const source = await import('../packages/reference/src/scan.ts');
+  const source = await import('../packages/harness/src/scan.ts');
   assert.equal(validator.credentialIn, source.credentialIn);
   assert.equal(validator.credentialInValue, source.credentialInValue);
-  assert.match(readFileSync(new URL('../packages/reference/dist/record.js', import.meta.url), 'utf8'), /^import \{[^}]*\bcredentialInFile\b[^}]*\} from "\.\/scan\.js";$/m);
+  assert.match(readFileSync(new URL('../packages/harness/dist/record.js', import.meta.url), 'utf8'), /^import \{[^}]*\bcredentialInFile\b[^}]*\} from "\.\/scan\.js";$/m);
   const gate = readFileSync(new URL('../scripts/recording/gate.mjs', import.meta.url), 'utf8');
-  assert.match(gate, /^import \{[^}]*\bcredentialInFile\b[^}]*\} from '\.\.\/\.\.\/packages\/reference\/src\/scan\.ts';$/m);
+  assert.match(gate, /^import \{[^}]*\bcredentialInFile\b[^}]*\} from '\.\.\/\.\.\/packages\/harness\/src\/scan\.ts';$/m);
 });

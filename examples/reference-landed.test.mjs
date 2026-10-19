@@ -5,8 +5,8 @@ import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { crossings } from '@parcha/agentrun-reference';
-import { notLanded } from '../packages/reference/dist/demo.js';
+import { crossings } from '@parcha/agentrun-harness';
+import { notLanded } from '../packages/harness/dist/demo.js';
 
 test('two tool kills at one point with different where: the one that fired is credited, and the one that did not is reported as not landed', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'reference-landed-'));

@@ -1,4 +1,4 @@
-// Draft 41: the run's artifact. The recorder takes `report/index.html` and its closure (packages/reference/src/artifact.ts), the validator and the gate refuse a page that loads
+// Draft 41: the run's artifact. The recorder takes `report/index.html` and its closure (packages/harness/src/artifact.ts), the validator and the gate refuse a page that loads
 // outside its files or does what a page may not. The report folder is a real one (a take of the report skill, kept whole: a page, two frames, and links to a transcript the
 // report does not hold); the refusals are hand-made pages.
 import assert from 'node:assert/strict';
@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { artifactProblems, readFile, takeArtifact } from '../../packages/reference/src/artifact.ts';
+import { artifactProblems, readFile, takeArtifact } from '../../packages/harness/src/artifact.ts';
 import { gateProblems } from './gate.mjs';
 import { validateRecording } from './validate.mjs';
 

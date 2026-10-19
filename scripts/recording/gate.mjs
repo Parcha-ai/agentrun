@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { FORBIDDEN, credentialInFile } from '../../packages/reference/src/scan.ts';
+import { FORBIDDEN, credentialInFile } from '../../packages/harness/src/scan.ts';
 import { validateRecording } from './validate.mjs';
 
 const MACHINE_PATH = FORBIDDEN.find(([name]) => name === 'machine path')[1];

@@ -11,8 +11,8 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
-import { effectiveBoxes } from '../packages/reference/dist/demo-spec.js';
-import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-reference';
+import { effectiveBoxes } from '../packages/harness/dist/demo-spec.js';
+import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
 import { ORIGINAL, FIXTURE, BASELINE, run, composeHost, destroyBoxes, meterKnown, RUN_LABEL, localBoxes, ctx, finish, lines, planFor, recordingPlace, specWith, reap, SITES, signInHome, filesIn, killSpec, boxed } from './reference-demo-helpers.mjs';
 
 test('the place seam: the supervisor starts, kills and recovers through the place, writes the kill line BEFORE the place kills, and passes the token the place mints for each attempt on stdin', { timeout: 300_000 }, async (t) => {
@@ -155,11 +155,11 @@ test('the place\'s signals carry the kill request: a place with its own signals(
 
 test('askToBeKilled writes the request durably (whole, with the attempt\'s nonce), and the request written at requestFile(gen) is the one signals(gen) yields, for localPlace and a place with its own requestFile and signals', { timeout: 120_000 }, async (t) => {
   const { spawn } = await import('node:child_process');
-  const { localPlace } = await import('@parcha/agentrun-reference');
+  const { localPlace } = await import('@parcha/agentrun-harness');
   const tmp = await mkdtemp(join(tmpdir(), 'reference-request-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const asks = (file, nonce) => new Promise((resolve) => {
-    const child = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', '-e', 'import("./packages/reference/dist/crossings.js").then((m) => m.askToBeKilled(process.argv[1], process.argv[2])({ point: "vision.filing", n: 2, pid: process.pid }))', file, nonce], { cwd: new URL('..', import.meta.url).pathname, stdio: 'ignore' });
+    const child = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', '-e', 'import("./packages/harness/dist/crossings.js").then((m) => m.askToBeKilled(process.argv[1], process.argv[2])({ point: "vision.filing", n: 2, pid: process.pid }))', file, nonce], { cwd: new URL('..', import.meta.url).pathname, stdio: 'ignore' });
     const wait = setInterval(() => { if (existsSync(file)) { clearInterval(wait); resolve(child); } }, 20);
   });
   const first = async (iterable) => { const iterator = iterable[Symbol.asyncIterator](); const next = await iterator.next(); await iterator.return?.(); return next.value; };
@@ -210,7 +210,7 @@ test('the child reads KILL_NONCE once and removes it before anything starts: a c
   const { options } = await killSpec(t, { kills: [] });
   process.env.DEMO_LEAK_STEPS = 'envProbe';
   let nonce;
-  const { localPlace } = await import('@parcha/agentrun-reference');
+  const { localPlace } = await import('@parcha/agentrun-harness');
   const result = await demo({ ...options, argv: ['--json', '--record', join(await mkdtemp(join(tmpdir(), 'reference-probe-')), 'recording')], place: ({ paths, self, destroyBoxes, requestFile }) => {
     const inner = localPlace({ self, paths, destroyBoxes, requestFile });
     return { ...inner, start: (order) => { nonce = order.env.KILL_NONCE; return inner.start(order); } };
@@ -273,7 +273,7 @@ test('a kill request written in short pieces is whole when it is renamed into pl
   const tmp = await mkdtemp(join(tmpdir(), 'reference-request-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const file = join(tmp, 'kill-1.json');
-  const crossings_ = new URL('../packages/reference/dist/crossings.js', import.meta.url).href;
+  const crossings_ = new URL('../packages/harness/dist/crossings.js', import.meta.url).href;
   const script = `
     import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
     const writeSync = fs.writeSync;
@@ -304,7 +304,7 @@ test('the slow status tick does not queue a read behind one still running: a pla
   assert.ok(reads <= 5, `the status was read ${reads} times in ${Date.now() - started} ms`);
 });
 test('an operator kill carries to the next attempt only the tool kills that did not land, and a control that cannot be removed is a failed kill, not a crash', { timeout: 300_000 }, async (t) => {
-  const { notLanded } = await import('../packages/reference/dist/demo.js');
+  const { notLanded } = await import('../packages/harness/dist/demo.js');
   const dir = await mkdtemp(join(tmpdir(), 'reference-landed-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const log = join(dir, 'crossings.jsonl');

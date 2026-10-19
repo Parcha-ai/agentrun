@@ -8,17 +8,17 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { TEXT_FILE, credentialIn, credentialInFile, credentialInValue } from '../../packages/reference/src/scan.ts';
-import { artifactProblems, readFile, readsAs } from '../../packages/reference/src/artifact.ts';
+import { TEXT_FILE, credentialIn, credentialInFile, credentialInValue } from '../../packages/harness/src/scan.ts';
+import { artifactProblems, readFile, readsAs } from '../../packages/harness/src/artifact.ts';
 
 export const FORMAT = 'agentrun.recording/1';
 export const SOURCES = ['workflow', 'pi', 'browser', 'vision', 'transport', 'host'];
 const CHANNELS = ['durable', 'live'];
 const SHA256 = /^[0-9a-f]{64}$/;
 
-// The credential and machine-path scan is the reference example's own (packages/reference/src/scan.ts, the package's `./scan` export): one scanner, which its
+// The credential and machine-path scan is the reference example's own (packages/harness/src/scan.ts, the package's `./scan` export): one scanner, which its
 // recorder runs before it finishes a recording and which this validator and the gallery's gate import.
-export { credentialIn, credentialInValue } from '../../packages/reference/src/scan.ts';
+export { credentialIn, credentialInValue } from '../../packages/harness/src/scan.ts';
 
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const isInt = value => Number.isInteger(value);

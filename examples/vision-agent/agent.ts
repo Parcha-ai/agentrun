@@ -7,7 +7,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Workflow } from '@parcha/agentrun-dsl';
-import type { Job } from '@parcha/agentrun-reference';
+import type { Job } from '@parcha/agentrun-harness';
 
 const SKILLS = join(dirname(fileURLToPath(import.meta.resolve('@parcha/pi-vision'))), '..', 'skills');
 /** pi-vision's skills as the package ships them, each without its front matter, in name order. */
