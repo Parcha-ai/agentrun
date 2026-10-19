@@ -15,8 +15,9 @@ async function chatMain(): Promise<void> {
     if (id) {
       const entry = (await bundledRecordings()).find((each) => each.id === id);
       if (!entry) throw new Error(`this gallery has no recording named ${id}`);
-      recording = (await openBundled(entry)).recording;
-    } else if (src) recording = await fromUrl(src);
+      // The chat view reads no pi.live line, so it fetches only events.jsonl (draft 51).
+      recording = (await openBundled(entry, { live: false })).recording;
+    } else if (src) recording = await fromUrl(src, { live: false });
     else { location.replace('./'); return; }
     const readJson = async (sha: string): Promise<Json | undefined> => {
       const url = recording.blobUrl(sha);

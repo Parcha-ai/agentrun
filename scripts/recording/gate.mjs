@@ -16,7 +16,7 @@ import { artifactBlobNames, blobNameProblem, validateRecording } from './validat
 const MACHINE_PATH = FORBIDDEN.find(([name]) => name === 'machine path')[1];
 /** A blob's name: its SHA-256 and extension, and `.txt` after an artifact page's (the gallery publishes it as text). */
 const BLOB = /^([0-9a-f]{64})\.([A-Za-z0-9]+)(\.txt)?$/;
-const TEXT = /\.(?:html|js|css|json|jsonl|txt|md|csv|svg|xml|yaml|yml|log)$/i;
+const TEXT = /\.(?:html|js|css|json|jsonl|idx|txt|md|csv|svg|xml|yaml|yml|log)$/i;
 const GALLERY = 'window.AGENTRUN_GALLERY = ';
 /** gallery.js in a build that ships the recordings as files (`build.mjs --files`): it only points at the index. */
 const INDEX = "window.AGENTRUN_GALLERY_INDEX = 'recordings/index.json';\n";
@@ -41,7 +41,7 @@ export function gateProblems(dist) {
     const dir = join(recordings, entry.name);
     for (const problem of validateRecording(dir)) add(`${at}/${problem.where}${problem.line === undefined ? '' : `:${problem.line}`}`, problem.message);
     for (const file of readdirSync(dir, { withFileTypes: true })) {
-      if (file.isFile() && (file.name === 'manifest.json' || file.name === 'events.jsonl')) continue;
+      if (file.isFile() && ['manifest.json', 'events.jsonl', 'events.live.jsonl', 'events.live.idx'].includes(file.name)) continue;
       if (!file.isDirectory() || file.name !== 'blobs') { add(`${at}/${file.name}`, 'is not part of a recording: only its manifest, its lines and its blobs are published'); continue; }
       let manifestOf;
       try { manifestOf = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')); } catch { manifestOf = undefined; }

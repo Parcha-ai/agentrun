@@ -3,6 +3,7 @@
 import { parseLines, type Line, type Manifest, type Recording } from './format.ts';
 import { opensInPage, typeOfName } from './blobs.ts';
 import { sha256Paused } from './receipt-key.ts';
+import { LIVE_INDEX, LIVE_LINES, mergeLines } from './split.ts';
 
 /** A bundled recording: embedded in gallery.js (its lines, and each blob as a data: URL), or, in a build that ships
  *  recordings as files, listed in `recordings/index.json` (each blob as its path in the recording's directory). */
@@ -12,9 +13,29 @@ declare const window: Window & { AGENTRUN_GALLERY?: GalleryEntry[]; AGENTRUN_GAL
 
 const BLOB_TYPES = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'webm', 'mp4', 'json', 'html', 'html.txt', 'md', 'txt', 'pdf', 'sqlite', 'css'];
 
-/** A recording the index lists: its lines fetched from its directory, each blob at the path the index names. */
-export async function fromIndex(entry: IndexEntry, root: string): Promise<Recording> {
-  const lines = parseLines(await (await fetch(`${root}events.jsonl`)).text());
+/** A recording's lines at `root`: events.jsonl, and, unless `live` is false (a view that reads no pi.live line), the
+ *  pi.live lines merged back in when the recording is split (draft 51). It is split exactly when events.live.idx is
+ *  there: only a 404 means it is not, and any other failure is an error, never read as a run with no live lines. */
+async function linesAt(root: string, live = true): Promise<string> {
+  const read = async (name: string) => {
+    const response = await fetch(`${root}${name}`);
+    if (!response.ok) throw new Error(`${name} answered ${response.status}`);
+    return response.text();
+  };
+  const text = await read('events.jsonl');
+  if (!live) return text;
+  const index = await fetch(`${root}${LIVE_INDEX}`);
+  if (index.status === 404) return text;
+  if (!index.ok) throw new Error(`${LIVE_INDEX} answered ${index.status}, so the run's live lines could not be read`);
+  const merged = mergeLines(text, await read(LIVE_LINES), await index.text());
+  if ('problem' in merged) throw new Error(merged.problem);
+  return merged.text;
+}
+
+/** A recording the index lists: its lines fetched from its directory (`live`: and its pi.live lines, when split), each
+ *  blob at the path the index names. */
+export async function fromIndex(entry: IndexEntry, root: string, live = true): Promise<Recording> {
+  const lines = parseLines(await linesAt(root, live));
   const urls = Object.fromEntries(Object.entries(entry.blobs).map(([sha, path]) => [sha, new URL(path, root).href]));
   return { id: entry.id, manifest: entry.manifest, lines, blobUrl: (sha) => urls[sha], blobType: (sha) => (urls[sha] ? typeOfName(urls[sha]!) : undefined) };
 }
@@ -28,10 +49,11 @@ export const bundledRecordings = () => (bundled ??= window.AGENTRUN_GALLERY ? Pr
     return response.json() as Promise<IndexEntry[]>;
   }) : Promise.resolve([]));
 const isEmbedded = (each: GalleryEntry | IndexEntry): each is GalleryEntry => 'events' in each && typeof each.events === 'string';
-/** A bundled recording, opened from gallery.js or fetched from its directory beside the page, with that directory. */
-export async function openBundled(entry: GalleryEntry | IndexEntry): Promise<{ recording: Recording; dir: string }> {
+/** A bundled recording, opened from gallery.js or fetched from its directory beside the page, with that directory.
+ *  `live: false`: a view that reads no pi.live line fetches only events.jsonl. */
+export async function openBundled(entry: GalleryEntry | IndexEntry, { live = true }: { live?: boolean } = {}): Promise<{ recording: Recording; dir: string }> {
   const dir = new URL(`recordings/${entry.id}/`, location.href).href;
-  return { recording: isEmbedded(entry) ? fromGallery(entry) : await fromIndex(entry, dir), dir };
+  return { recording: isEmbedded(entry) ? fromGallery(entry) : await fromIndex(entry, dir, live), dir };
 }
 
 export function fromGallery(entry: GalleryEntry): Recording {
@@ -112,10 +134,10 @@ export function blobsAt(root: string, whole = false) {
   };
 }
 
-export async function fromUrl(base: string): Promise<Recording> {
+export async function fromUrl(base: string, { live = true }: { live?: boolean } = {}): Promise<Recording> {
   const root = base.endsWith('/') ? base : `${base}/`;
   const manifest = await (await fetch(`${root}manifest.json`)).json() as Manifest;
-  const lines = parseLines(await (await fetch(`${root}events.jsonl`)).text());
+  const lines = parseLines(await linesAt(root, live));
   const blobs = blobsAt(root);
   await blobs.find(blobsNamed(manifest, lines));
   return { id: root, manifest, lines, blobUrl: blobs.url, blobType: blobs.type, find: blobs.find, heldBytes: blobs.bytes };
@@ -127,6 +149,16 @@ export async function fromFiles(files: File[]): Promise<Recording> {
   const manifestFile = find('manifest.json');
   const eventsFile = find('events.jsonl');
   if (!manifestFile || !eventsFile) throw new Error('The folder needs manifest.json and events.jsonl.');
+  // A folder holding both live files is split (draft 51): its lines are the three merged.
+  const liveFile = find(LIVE_LINES);
+  const indexFile = find(LIVE_INDEX);
+  if (!liveFile !== !indexFile) throw new Error(`The folder holds ${liveFile ? LIVE_LINES : LIVE_INDEX} without ${liveFile ? LIVE_INDEX : LIVE_LINES}: the two come together or neither.`);
+  let text = await eventsFile.text();
+  if (liveFile && indexFile) {
+    const merged = mergeLines(text, await liveFile.text(), await indexFile.text());
+    if ('problem' in merged) throw new Error(merged.problem);
+    text = merged.text;
+  }
   const urls: Record<string, string> = {};
   const types: Record<string, string> = {};
   const dropped: Record<string, File> = {};
@@ -139,7 +171,7 @@ export async function fromFiles(files: File[]): Promise<Recording> {
     // A blob URL has the viewer's origin: a page in one must never render, so an active type becomes opaque bytes.
     urls[sha] = URL.createObjectURL(opensInPage(types[sha]) || types[sha]!.startsWith('image/') ? file : new Blob([file], { type: 'application/octet-stream' }));
   }
-  return { id: 'dropped', manifest: JSON.parse(await manifestFile.text()) as Manifest, lines: parseLines(await eventsFile.text()), blobUrl: (sha) => urls[sha], blobType: (sha) => types[sha],
+  return { id: 'dropped', manifest: JSON.parse(await manifestFile.text()) as Manifest, lines: parseLines(text), blobUrl: (sha) => urls[sha], blobType: (sha) => types[sha],
     // A dropped file is read as a file: a host whose policy fetches only from its own origin refuses its blob: URL.
     heldBytes: (sha) => (dropped[sha] ? dropped[sha]!.arrayBuffer().then((bytes) => new Uint8Array(bytes)) : undefined) };
 }

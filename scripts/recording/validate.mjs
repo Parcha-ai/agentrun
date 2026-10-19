@@ -9,6 +9,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { BLOB_EXTENSIONS, PAGE_EXTENSIONS, SHEET_EXTENSIONS, TEXT_FILE, credentialIn, credentialInFile, credentialInValue } from '../../packages/harness/src/scan.ts';
+import { LIVE_INDEX, LIVE_LINES, mergeLines } from '../../apps/viewer/src/split.ts';
 import { artifactProblems, readFile, readsAs } from '../../packages/harness/src/artifact.ts';
 
 export const FORMAT = 'agentrun.recording/1';
@@ -231,7 +232,18 @@ export function validateRecording(dir) {
   };
   if (manifest?.result?.blob) checkBlob(manifest.result.blob, 'manifest.json', undefined);
   if (!existsSync(eventsPath)) { add('events.jsonl', 'is missing'); return problems; }
-  const lines = readFileSync(eventsPath, 'utf8').split('\n');
+  // The lines may be in two files (draft 51): events.live.jsonl holds exactly the pi.live lines, placed back by
+  // events.live.idx. Both or neither; then every check runs on the merged list, as for one file.
+  let text = readFileSync(eventsPath, 'utf8');
+  const livePath = join(dir, LIVE_LINES);
+  const indexPath = join(dir, LIVE_INDEX);
+  if (existsSync(livePath) !== existsSync(indexPath)) { add(existsSync(livePath) ? LIVE_LINES : LIVE_INDEX, `is here without ${existsSync(livePath) ? LIVE_INDEX : LIVE_LINES}: the two come together or neither`); return problems; }
+  if (existsSync(livePath)) {
+    const merged = mergeLines(text, readFileSync(livePath, 'utf8'), readFileSync(indexPath, 'utf8'));
+    if ('problem' in merged) { add(merged.problem.startsWith(LIVE_INDEX) ? LIVE_INDEX : LIVE_LINES, merged.problem); return problems; }
+    text = merged.text;
+  }
+  const lines = text.split('\n');
   if (lines.at(-1) === '') lines.pop();
   let lastCommit = -Infinity;
   let lastGen = -Infinity;
