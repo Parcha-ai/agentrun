@@ -1,9 +1,18 @@
 {
   "asset": "recordings.tar",
-  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "sha256": "0b98c6be77b4fdb24206e5460120c4d9d93d7c9ada4e8abb74919b4b83f109bc",
   "ids": [
-    { "id": "document-check" },
-    { "id": "hear-and-find" },
-    { "id": "video-chapters" }
+    {
+      "id": "document-check",
+      "poster": "6b6ec9e4e4b3bd98a920d7402301726e4b7b82b7aea10873e7c81618f783bf8d"
+    },
+    {
+      "id": "market-street",
+      "poster": "ff151e129938624de0894c0d4ed8e70620bc5b7494281642ebe1646324cb8ea1"
+    },
+    {
+      "id": "fair-robot",
+      "poster": "3f24813b353167508d0fbb3c00e0cd511875b5c8e3f16ff3d45f958cbf6c048f"
+    }
   ]
 }
