@@ -1,8 +1,10 @@
 // fetch_page: how a learn-classify run reads the web. Text only (no script runs, no cookies), the company's own domain and
 // Wikipedia only, and never SEC/EDGAR or a site that lists SIC codes, so the label comes from what the company says it does.
 // With allowDomain ANY_HOST (truth set v2, where half the companies come without a website) any public host is allowed,
-// the refused list still applies, and a host that is or resolves to a private address is refused.
+// the refused list still applies, and a host on this machine or its network, by name or by what it resolves to, is
+// refused. That address policy (blockedAddress, refusedHostOf, refusedUrl, urlPolicy) is the one every v2 tool uses.
 import { lookup as dnsLookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 
 export const USER_AGENT = 'agentrun-learn-classify/1.0 (fetch_page; text only; +https://github.com/Parcha-ai/agentrun)';
 export const TIMEOUT_MS = 10_000;
@@ -28,13 +30,8 @@ const WIKIPEDIA = 'wikipedia.org';
 const TWO_LEVEL_SUFFIXES = new Set(['co.uk', 'org.uk', 'com.au', 'net.au', 'co.jp', 'com.br', 'co.in', 'com.cn', 'com.hk', 'co.nz', 'co.za', 'com.mx', 'com.sg', 'co.il', 'com.tw']);
 const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
 export const ANY_HOST = 'any';
-// Loopback, private, link-local, carrier-grade NAT (tailnets), multicast and reserved IPv4; loopback, unique-local,
-// link-local and mapped IPv6.
-const PRIVATE_V4 = /^(0|10|127|169\.254|172\.(1[6-9]|2\d|3[01])|192\.168|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])|22[4-9]|2[3-5]\d)\./;
-const PRIVATE_V6 = /^(::1?$|f[cd]|fe[89ab]|::ffff:)/;
-const LOCAL_NAME = /(^|\.)(localhost|local|internal|home\.arpa)$/;
 
-const normalHost = (host) => host.toLowerCase().replace(/\.$/, '').replace(/^\[|\]$/g, '');
+const normalHost = (host) => String(host).toLowerCase().replace(/\.$/, '').replace(/^\[|\]$/g, '');
 const within = (host, domain) => host === domain || host.endsWith(`.${domain}`);
 
 // The domain a company's website lives on, for `allowDomain`: its host without subdomains (www.apple.com and
@@ -54,22 +51,97 @@ export function refusedHost(host) {
   return listed ? `${h} is on the refused list (${listed}: SEC filings, SIC listings or web archives)` : null;
 }
 
-export function publicAddress(address) {
-  const a = normalHost(address);
-  return IPV4.test(a) ? !PRIVATE_V4.test(a) : a.includes(':') ? !PRIVATE_V6.test(a) : true;
+// Addresses on this machine or a network it sits on: unspecified, loopback, private, CGNAT (the tailnet), link-local,
+// benchmarking, multicast and reserved. IPv6 adds unique-local, link-local, multicast, and IPv4 mapped or translated.
+const V4_BLOCKED = [[0, 8], [10 << 24, 8], [100 << 24 | 64 << 16, 10], [127 << 24, 8], [169 << 24 | 254 << 16, 16], [172 << 24 | 16 << 16, 12],
+  [192 << 24, 24], [192 << 24 | 168 << 16, 16], [198 << 24 | 18 << 16, 15], [224 << 24, 3]].map(([net, bits]) => [net >>> 0, bits]);
+const v4Number = (address) => address.split('.').reduce((n, part) => (n * 256) + Number(part), 0);
+const v4Blocked = (n) => V4_BLOCKED.some(([net, bits]) => (n >>> (32 - bits)) === (net >>> (32 - bits)));
+
+function v6Words(address) {
+  let text = address.split('%')[0];
+  const dotted = /(\d+\.\d+\.\d+\.\d+)$/.exec(text);
+  if (dotted) {
+    const n = v4Number(dotted[1]);
+    text = `${text.slice(0, -dotted[1].length)}${(n >>> 16).toString(16)}:${(n & 0xffff).toString(16)}`;
+  }
+  const [head, tail] = text.split('::');
+  const part = (s) => (s ? s.split(':').map((w) => parseInt(w, 16)) : []);
+  const words = tail === undefined ? part(head) : [...part(head), ...Array(8 - part(head).length - part(tail).length).fill(0), ...part(tail)];
+  return words.length === 8 && words.every((w) => Number.isInteger(w) && w >= 0 && w <= 0xffff) ? words : null;
 }
 
-// A host name or address that could be public: no single-label or local names, no private address literal.
-export function publicHost(host) {
+/** True for an IP literal that names this machine or a network it sits on. */
+export function blockedAddress(address) {
+  const host = normalHost(address);
+  if (isIP(host) === 4) return v4Blocked(v4Number(host));
+  if (isIP(host) !== 6) return false;
+  const w = v6Words(host);
+  if (!w) return true;
+  if (w.slice(0, 7).every((x) => x === 0)) return true; // :: and ::1
+  if ((w[0] & 0xfe00) === 0xfc00 || (w[0] & 0xffc0) === 0xfe80 || (w[0] & 0xff00) === 0xff00) return true;
+  const mapped = w.slice(0, 5).every((x) => x === 0) && w[5] === 0xffff;
+  const nat64 = w[0] === 0x64 && w[1] === 0xff9b && w.slice(2, 6).every((x) => x === 0);
+  return (mapped || nat64) ? v4Blocked(((w[6] << 16) | w[7]) >>> 0) : false;
+}
+
+export const LOCAL_SUFFIXES = Object.freeze(['localhost', 'local', 'internal', 'home.arpa', 'ts.net', 'lan', 'intranet']);
+
+/** Why a host is never opened, judged on its name alone: a refused site, or this machine or its network. */
+export function refusedHostOf(host, { allowPrivate = false } = {}) {
   const h = normalHost(host);
-  if (IPV4.test(h) || h.includes(':')) return publicAddress(h);
-  return h.includes('.') && !LOCAL_NAME.test(h);
+  const refused = refusedHost(h);
+  if (refused) return refused;
+  if (allowPrivate) return null;
+  if (!h || blockedAddress(h)) return `${h || 'an empty host'} is on this machine or its network`;
+  if (isIP(h)) return null;
+  if (!h.includes('.')) return `${h} is a single-label name, which resolves only on a local network`;
+  if (LOCAL_SUFFIXES.some((suffix) => h === suffix || h.endsWith(`.${suffix}`))) return `${h} is a local network name`;
+  return null;
+}
+
+/** Why `raw` is never opened, judged on the URL alone, or null. */
+export function refusedUrl(raw, options = {}) {
+  let url;
+  try {
+    url = new URL(String(raw));
+  } catch {
+    return `${JSON.stringify(String(raw).slice(0, 200))} is not a URL`;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return `only http and https URLs are opened, not ${url.protocol}`;
+  if (url.username || url.password) return 'URLs with credentials are not opened';
+  return refusedHostOf(url.hostname, options);
+}
+
+/** The URL check every request of a tool goes through: the name, then what the name resolves to here (once per host per
+ *  policy). A name that does not resolve is left to the request to fail. A name whose answer changes between this
+ *  lookup and the connection is not caught. */
+export function urlPolicy({ allowPrivate = false, lookup = dnsLookup } = {}) {
+  const resolved = new Map();
+  const resolvesBlocked = (host) => {
+    if (!resolved.has(host)) {
+      resolved.set(host, lookup(host, { all: true, verbatim: true })
+        .then((answers) => answers.find((a) => blockedAddress(a.address)) ?? null, () => null)
+        .then((hit) => (hit ? `${host} resolves to ${hit.address}, on this machine or its network` : null)));
+    }
+    return resolved.get(host);
+  };
+  return {
+    allowPrivate,
+    lexical: (raw) => refusedUrl(raw, { allowPrivate }),
+    async check(raw) {
+      const why = refusedUrl(raw, { allowPrivate });
+      if (why || allowPrivate) return why;
+      const host = normalHost(new URL(raw).hostname);
+      return isIP(host) ? null : resolvesBlocked(host);
+    },
+  };
 }
 
 export function allowedHost(host, allowDomain) {
   const h = normalHost(host);
   if (refusedHost(h)) return false;
-  if (allowDomain === ANY_HOST) return publicHost(h);
+  if (allowDomain === ANY_HOST) return refusedHostOf(h) === null;
   return within(h, WIKIPEDIA) || (IPV4.test(allowDomain) || allowDomain.includes(':') ? h === allowDomain : within(h, allowDomain));
 }
 
@@ -105,7 +177,7 @@ const ANY_PARAMETERS = {
 
 const emptyPage = (url, status = 0) => ({ ok: false, url, status, title: '', text: '', links: [] });
 
-// `lookup` resolves a host name to its addresses, only in ANY_HOST mode; tests pass their own.
+// `lookup` resolves a host name to its addresses, only in ANY_HOST mode (through urlPolicy); tests pass their own.
 export function fetchPageTool({ allowDomain, fetch: fetchImpl = globalThis.fetch, timeoutMs = TIMEOUT_MS, maxBytes = MAX_BYTES, lookup = dnsLookup }) {
   const any = allowDomain === ANY_HOST;
   const domain = any ? ANY_HOST : normalHost(String(allowDomain ?? ''));
@@ -124,21 +196,16 @@ export function fetchPageTool({ allowDomain, fetch: fetchImpl = globalThis.fetch
     const host = normalHost(url.hostname);
     const refused = refusedHost(host);
     if (refused) return { url, refused };
-    if (!allowedHost(host, domain)) return { url, refused: any ? `${host} is not a public host` : `${host} is outside the allowed hosts (${domain} and its subdomains, *.wikipedia.org)` };
+    if (any) {
+      const local = refusedHostOf(host);
+      if (local) return { url, refused: local };
+    } else if (!allowedHost(host, domain)) return { url, refused: `${host} is outside the allowed hosts (${domain} and its subdomains, *.wikipedia.org)` };
     url.hash = '';
     return { url };
   };
 
-  // In ANY_HOST mode a name must not resolve to a private address. The check runs before each request; a name whose
-  // answer changes between this lookup and the connection is not caught.
-  const resolvesPublic = async (url) => {
-    if (!any) return null;
-    const host = normalHost(url.hostname);
-    if (IPV4.test(host) || host.includes(':')) return null;
-    const addresses = await lookup(host, { all: true });
-    const inside = addresses.find((a) => !publicAddress(a.address));
-    return inside ? `${host} resolves to a private address (${inside.address})` : null;
-  };
+  const policy = any ? urlPolicy({ lookup }) : null;
+  const resolves = async (url) => (policy ? policy.check(url.href) : null);
 
   async function run(args, { signal } = {}) {
     const raw = typeof args?.url === 'string' ? args.url.trim() : '';
@@ -154,7 +221,7 @@ export function fetchPageTool({ allowDomain, fetch: fetchImpl = globalThis.fetch
     });
     let url = first.url;
     try {
-      const firstPrivate = await resolvesPublic(url);
+      const firstPrivate = await resolves(url);
       if (firstPrivate) return { ...emptyPage(url.href), refused: firstPrivate };
       let res = await get(url);
       if (isRedirect(res.status)) {
@@ -163,7 +230,7 @@ export function fetchPageTool({ allowDomain, fetch: fetchImpl = globalThis.fetch
         if (!location) return { ...emptyPage(url.href, res.status), error: 'a redirect without a Location header' };
         const next = check(location, url);
         if (next.refused) return { ...emptyPage(url.href, res.status), refused: `redirect to ${next.url?.href ?? location}: ${next.refused}` };
-        const nextPrivate = await resolvesPublic(next.url);
+        const nextPrivate = await resolves(next.url);
         if (nextPrivate) return { ...emptyPage(url.href, res.status), refused: `redirect to ${next.url.href}: ${nextPrivate}` };
         url = next.url;
         res = await get(url);

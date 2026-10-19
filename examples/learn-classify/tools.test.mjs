@@ -3,7 +3,10 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { test } from 'node:test';
-import { ANY_HOST, domainOf, fetchPageTool, MAX_BYTES, MAX_LINKS, MAX_TEXT, publicHost, REFUSED_DOMAINS, refusedHost, TIMEOUT_MS, USER_AGENT } from './tools.mjs';
+import {
+  ANY_HOST, blockedAddress, domainOf, fetchPageTool, MAX_BYTES, MAX_LINKS, MAX_TEXT, REFUSED_DOMAINS, refusedHost, refusedHostOf, refusedUrl, TIMEOUT_MS,
+  urlPolicy, USER_AGENT,
+} from './tools.mjs';
 
 const HOME = `<!doctype html><html><head><title>Acme &amp; Sons — Valves</title>
 <meta name="description" content="Acme makes industrial valves &amp; pumps.">
@@ -330,9 +333,11 @@ test('ANY_HOST still refuses SEC, SIC sites, archives, EDGAR, bad schemes, crede
   await refused('https://edgar.random-company.example/', /EDGAR/);
   await refused('ftp://www.random-company.example/', /only http and https/);
   await refused('https://user:pw@www.random-company.example/', /credentials/);
-  for (const url of ['http://127.0.0.1:9222/json', 'http://localhost/', 'http://10.1.2.3/', 'http://192.168.1.1/', 'http://172.16.0.1/', 'http://100.64.0.1/', 'http://169.254.169.254/latest', 'http://[::1]/', 'http://[fd00::1]/', 'http://intranet/', 'http://printer.local/']) {
-    await refused(url, /is not a public host/);
+  for (const url of ['http://127.0.0.1:9222/json', 'http://10.1.2.3/', 'http://192.168.1.1/', 'http://172.16.0.1/', 'http://100.64.0.1/', 'http://169.254.169.254/latest', 'http://198.18.0.1/', 'http://192.0.0.8/', 'http://[::1]/', 'http://[fd00::1]/', 'http://[64:ff9b::a00:1]/']) {
+    await refused(url, /is on this machine or its network/);
   }
+  for (const url of ['http://localhost/', 'http://intranet/']) await refused(url, /single-label name/);
+  for (const url of ['http://printer.local/', 'http://box.tailnet.ts.net/', 'http://metadata.google.internal/', 'http://nas.lan/']) await refused(url, /local network name/);
   assert.deepEqual(s.seen.requests, []);
   assert.deepEqual(asked, []);
 });
@@ -342,7 +347,7 @@ test('ANY_HOST refuses a name that resolves to a private address, before any req
   const asked = [];
   const page = await anyTool(s, asked).run({ url: 'https://rebind.example/home' });
   assert.equal(page.ok, false);
-  assert.equal(page.refused, 'rebind.example resolves to a private address (127.0.0.1)');
+  assert.equal(page.refused, 'rebind.example resolves to 127.0.0.1, on this machine or its network');
   assert.deepEqual(asked, ['rebind.example']);
   assert.deepEqual(s.seen.requests, []);
 });
@@ -356,8 +361,8 @@ test('ANY_HOST applies the same rules to the redirect hop', async (t) => {
   assert.equal(other.refused, undefined);
   assert.match((await tool.run({ url: 'https://www.random-company.example/to-sec' })).refused, /^redirect to https:\/\/www\.sec\.gov\/.*refused list/);
   assert.match((await tool.run({ url: 'https://www.random-company.example/to-archive' })).refused, /^redirect to https:\/\/web\.archive\.org\/.*refused list \(archive\.org/);
-  assert.match((await tool.run({ url: 'https://www.random-company.example/to-loopback' })).refused, /^redirect to http:\/\/127\.0\.0\.1:9222\/json: 127\.0\.0\.1 is not a public host/);
-  assert.match((await tool.run({ url: 'https://www.random-company.example/to-rebind' })).refused, /^redirect to https:\/\/rebind\.example\/home: rebind\.example resolves to a private address/);
+  assert.match((await tool.run({ url: 'https://www.random-company.example/to-loopback' })).refused, /^redirect to http:\/\/127\.0\.0\.1:9222\/json: 127\.0\.0\.1 is on this machine or its network/);
+  assert.match((await tool.run({ url: 'https://www.random-company.example/to-rebind' })).refused, /^redirect to https:\/\/rebind\.example\/home: rebind\.example resolves to 127\.0\.0\.1/);
   assert.deepEqual(s.seen.requests, [
     'www.random-company.example/to-other', 'acme-holdings.example/', 'www.random-company.example/to-sec', 'www.random-company.example/to-archive',
     'www.random-company.example/to-loopback', 'www.random-company.example/to-rebind',
@@ -371,9 +376,40 @@ test('the domain-limited tool is unchanged by ANY_HOST', async (t) => {
   assert.deepEqual(s.seen.requests, []);
 });
 
-test('publicHost tells public names and addresses from private ones', () => {
-  for (const host of ['www.example.com', '8.8.8.8', '172.32.0.1', '100.128.0.1', '2001:4860:4860::8888']) assert.equal(publicHost(host), true, host);
-  for (const host of ['localhost', 'intranet', 'printer.local', 'db.internal', '127.0.0.1', '10.0.0.1', '100.64.0.1', '100.127.255.254', '172.31.0.1', '192.168.0.1', '169.254.169.254', '0.0.0.0', '224.0.0.1', '::1', 'fd12::1', 'fe80::1', '::ffff:127.0.0.1']) {
-    assert.equal(publicHost(host), false, host);
-  }
+test('one address policy: blockedAddress parses v4 and v6, including the ranges a prefix match misses', () => {
+  const blocked = [
+    '0.0.0.0', '10.0.0.1', '100.64.0.1', '100.127.255.254', '127.0.0.1', '169.254.169.254', '172.16.0.1', '172.31.255.255', '192.168.0.1',
+    '192.0.0.8', '198.18.0.1', '198.19.255.255', '224.0.0.1', '240.0.0.1', '255.255.255.255',
+    '::', '::1', 'fc00::1', 'fd12:3456::1', 'fe80::1', 'fe80::1%eth0', 'ff02::1', '::ffff:127.0.0.1', '::ffff:7f00:1', '::ffff:10.0.0.1',
+    '64:ff9b::a00:1', '64:ff9b::7f00:1', '64:ff9b::192.168.0.1', '[::1]',
+  ];
+  const open = ['8.8.8.8', '93.184.216.34', '100.128.0.1', '172.32.0.1', '192.0.2.1', '198.20.0.1', '2001:4860:4860::8888', '::ffff:93.184.216.34', '64:ff9b::5db8:d822'];
+  for (const address of blocked) assert.equal(blockedAddress(address), true, address);
+  for (const address of open) assert.equal(blockedAddress(address), false, address);
+  assert.equal(blockedAddress('www.example.com'), false);
+});
+
+test('refusedHostOf and refusedUrl judge names and URLs; allowPrivate lifts only the local rules', () => {
+  assert.equal(refusedHostOf('www.example.com'), null);
+  assert.match(refusedHostOf('www.sec.gov'), /refused list/);
+  assert.match(refusedHostOf('box.tailnet.ts.net'), /local network name/);
+  assert.match(refusedHostOf('fileserver'), /single-label name/);
+  assert.equal(refusedHostOf('127.0.0.1', { allowPrivate: true }), null);
+  assert.match(refusedHostOf('www.sec.gov', { allowPrivate: true }), /refused list/);
+  assert.match(refusedUrl('file:///etc/passwd'), /only http and https/);
+  assert.match(refusedUrl('https://user:pw@example.com/'), /credentials/);
+  assert.match(refusedUrl('not a url'), /is not a URL/);
+  assert.equal(refusedUrl('https://www.example.com/about'), null);
+});
+
+test('urlPolicy resolves each name once and refuses a name that lands on this network', async () => {
+  const asked = [];
+  const policy = urlPolicy({ lookup: fakeLookup(asked) });
+  assert.equal(await policy.check('https://www.example.com/'), null);
+  assert.equal(await policy.check('https://www.example.com/other'), null);
+  assert.equal(await policy.check('https://rebind.example/'), 'rebind.example resolves to 127.0.0.1, on this machine or its network');
+  assert.equal(await policy.check('http://93.184.216.34/'), null);
+  assert.deepEqual(asked, ['www.example.com', 'rebind.example']);
+  const unresolved = urlPolicy({ lookup: async () => { throw Object.assign(new Error('ENOTFOUND'), { code: 'ENOTFOUND' }); } });
+  assert.equal(await unresolved.check('https://nowhere.example/'), null);
 });
