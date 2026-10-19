@@ -289,7 +289,9 @@ An answer between the two cuts holds the candidate; nothing uncertain is accepte
 `DEFAULT_THRESHOLDS` are the defaults above. A `used` mark counts one use per run for an active learning and needs no
 judgment. A workflow is judged on itself, never on the agent's note: a `learn` call of type `workflow` is asked no
 question and its text reaches no file, so a run that read untrusted content puts none of its own words into a later
-prompt. Its records under `inbox/<run id>/workflows/<name>/` are read through the DSL's store, `workflowCase` is asked of
+prompt. `narrowsRules` is not asked of a workflow either: a workflow is by design a slice of the job (it reads what it
+reads and hands the rest back), so measured against rules written for the agent it always looks narrower, and it cannot
+change the rules that bind the agent that runs it. Its records under `inbox/<run id>/workflows/<name>/` are read through the DSL's store, `workflowCase` is asked of
 the document (one the store refuses, or one that runs code, goes straight to the hook, which refuses or holds it), and
 then the records go to the `admitWorkflow` hook, with no description, which answers `admitted`
 with the files to write under `.pi/agentrun/workflows/<name>/` and `.agents/skills/<name>/`, `unchanged`, `held` or
