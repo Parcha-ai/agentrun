@@ -332,12 +332,13 @@ test('a slow status read does not hold up supervision: the spend cap stops a run
   const recording = join(tmp, 'recording');
   await demo({ ...options, argv: ['--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => ({
     ...localPlace({ self, paths, destroyBoxes, requestFile }),
-    status: async () => { await new Promise((resolve) => setTimeout(resolve, 6000)); return { record: null }; },
+    status: async () => { await new Promise((resolve) => setTimeout(resolve, 20_000)); return { record: null }; },
   }) });
   const host = readEvents(recording).filter((line) => line.source === 'host');
   const started = host.find((line) => line.kind === 'process.started').t;
   const stopped = host.find((line) => line.kind === 'kill').t;
-  assert.ok(stopped - started < 4500, `the cap stopped the child ${stopped - started} ms after it started, not after the 6 s read`);
+  // The first read answers 20 s after it is asked, and it is asked once the child has started: a stop that waited for it would be 20 s or more after the start. The bound is far from both that and a loaded runner's slow start (4.6 s was seen on CI against the former 4.5 s bound).
+  assert.ok(stopped - started < 15_000, `the cap stopped the child ${stopped - started} ms after it started, not after the 20 s read`);
 });
 test('--operator-kill is refused by a place that cannot make a process kill, before anything starts', { timeout: 120_000 }, async (t) => {
   const { tmp, options } = await specWith(t, { name: 'reference' });

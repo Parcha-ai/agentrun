@@ -123,7 +123,7 @@ it with what it found and where, and the directory is left without a manifest, s
 | 4 | `decisions` | the workflow's `judge` (`runJudge`), the browser's page judge (`classifyPage`) | the job's scripted answers; a page judge only when the fakes give one. Each answer's receipt is a row in the run's store (`agentrun.decisions`) before it acts, and a resumed run replays it instead of asking again |
 | 5 | `status` | browser sessions and reconcile, vision looks and misses, workflow events | one JSON line per row in `<run>/events.jsonl` |
 | 6 | `deliver` | the workflow's output | `<run>/out/record.json` |
-| 7 | `credentials` | the browser's `redact`, the environment of a program vision starts | none; a started program sees only `PATH` |
+| 7 | `credentials` | the browser's `redact`, the environment of a program vision starts | none; a started program sees only `PATH`. A command the agent runs (its `bash` tool, code mode's `tools.bash`) sees only `PATH`, `HOME`, `TMPDIR` and `LANG`: a key stays in the host (`command-env.ts`) |
 
 Where the run lives (`RunPlace`) is the disk package's `AppContext`: `root`, `work`, `store` (`<root>/store`, holding
 `run.sqlite`, which the package's readers take as a file; a directory whose store is at `<root>/durable`, where the
@@ -283,7 +283,7 @@ The transport box lines are live lines of source `transport`: `box.created` `{ b
 
 ### The judge seam
 
-Every demo's typed questions pass through one seam that carries Jev's limits and Jev's price, whoever answers: at most 50 requests and 40,000 tokens (in and out) over the run. The next request after a cap is reached is refused with `JEV_CAP_REACHED` and is never sent; a failed request counts, a refused one does not. The count is kept in the run's directory, so a resumed process continues it. An answer that reports usage and no price of its own is priced at Jev's public list price, $0.042 per million input tokens and nothing for output (`jev-1.12`; source: the TypeSafe cookbook, 2026-07); a price the answer reports is kept.
+Every demo's typed questions pass through one seam that carries the harness's caps on a run's Jev use (our own guard, not a TypeSafe quota) and Jev's price, whoever answers: by default at most 50 requests and 40,000 tokens (in and out) over the run. The next request after a cap is reached is refused with `JEV_CAP_REACHED` and is never sent (its `requestDiagnostic.reason` is `cap_reached`, so a caller that reads it files the request at $0); a failed request counts, a refused one does not. The count is kept in the run's directory, so a resumed process continues it. An answer that reports usage and no price of its own is priced at Jev's public list price, $0.042 per million input tokens and nothing for output (`jev-1.12`; source: the TypeSafe cookbook, 2026-07); a price the answer reports is kept.
 
 ### The vision option
 
@@ -373,7 +373,7 @@ The judge and the model of a `--live` run have the crossings the fakes' have, by
 
 ### The demo's own Jev caps, and a model whose key is not declared
 
-`models.judge.caps` in demo.json (`{ requests, tokens }`) sets the demo's own Jev caps. The defaults are 50 requests and 40,000 tokens; each given value is a positive integer at most 4 times the default (200 and 160,000), and anything else is refused at load, before any process starts. The judge seam still refuses the request after a cap is reached (`JEV_CAP_REACHED`, never sent), and `--max-usd` still applies.
+`models.judge.caps` in demo.json (`{ requests, tokens }`) sets the demo's own Jev caps. The defaults are 50 requests and 40,000 tokens; each given value is a positive integer at most 800 requests and 2,560,000 tokens (about $0.11 at Jev's list price; a vision demo asks one request of about 10,000 tokens per item it boxes and one of about 2,000 per row it grounds), and anything else is refused at load, before any process starts. The judge seam still refuses the request after a cap is reached (`JEV_CAP_REACHED`, never sent), and `--max-usd` still applies.
 
 A model whose provider needs a key the demo does not declare is refused at load too, naming the group to add: no key is implied, and demo.json stays the one list the child's environment and the setup prompt read. The first case is `models.judge` (Jev): its demo needs a `keys` group with `TYPESAFE_API_KEY` or `OPENROUTER_API_KEY`.
 
