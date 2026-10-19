@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import { visionContext, type VisionResult } from "../core/env.js";
 import { OFFICE_LIMITS, OfficeMissError, inflateEntry, readSource, zipDirectory, type OfficeLimits } from "../core/office.js";
 import { detectOnce, type Detection, type Provider } from "../core/provider.js";
+import { messageLine } from "../core/primitives.js";
 
 /** A version probe is cut after this many seconds (2026-10-11). */
 const DETECT_TIMEOUT_S = 30;
@@ -53,7 +54,7 @@ export type SofficeOptions = {
 };
 
 const step = <T>(result: VisionResult<T, Error>, what: string): T => {
-  if (!result.ok) throw new OfficeMissError("unreadable", `${what}: ${result.error.message.split("\n")[0]}`);
+  if (!result.ok) throw new OfficeMissError("unreadable", `${what}: ${messageLine(result.error)}`);
   return result.value;
 };
 
@@ -73,11 +74,11 @@ export function sofficeProvider(options: SofficeOptions = {}): Provider {
       const context = visionContext(signal);
       try {
         const dir = await env.createTempDir("pi-vision-soffice-", context);
-        if (!dir.ok) return missing(`no temporary directory: ${dir.error.message.split("\n")[0]}`);
+        if (!dir.ok) return missing(`no temporary directory: ${messageLine(dir.error)}`);
         try {
           const printed = `${dir.value}/version.txt`;
           const ran = await env.exec(["sh", "-c", 'exec "$0" --version >"$1" 2>&1', command, printed], { timeout: DETECT_TIMEOUT_S }, context);
-          if (!ran.ok) return missing(ran.error.message.split("\n")[0]);
+          if (!ran.ok) return missing(messageLine(ran.error));
           if (ran.value.exitCode !== 0) return missing(`${command} --version exited ${ran.value.exitCode}`);
           const read = await env.readBinaryFile(printed, context);
           const version = read.ok ? new TextDecoder().decode(read.value).split("\n")[0]!.trim() : "";
@@ -89,7 +90,7 @@ export function sofficeProvider(options: SofficeOptions = {}): Provider {
           await env.remove(dir.value, { recursive: true, force: true }, visionContext());
         }
       } catch (error) {
-        return missing(String((error as Error)?.message ?? error).split("\n")[0]!);
+        return missing(messageLine(error));
       }
     },
     async office(source, _request, call) {
@@ -115,7 +116,7 @@ export function sofficeProvider(options: SofficeOptions = {}): Provider {
         const ran = await env.exec([...(isolated.get(env.id) ? ISOLATE : []), command, "--headless", "--invisible", "--norestore", "--nolockcheck", "--nodefault", "--nologo", `-env:UserInstallation=file://${`${work}/profile`.split("/").map(encodeURIComponent).join("/")}`, "--convert-to", "pdf", "--outdir", `${work}/out`, input], { timeout }, context);
         if (!ran.ok) {
           if (ran.error.code === "aborted") throw ran.error;
-          throw new OfficeMissError(ran.error.code === "timeout" ? "over_budget" : "needs", ran.error.code === "timeout" ? `LibreOffice did not finish within ${timeout} s; read the document's text instead` : `${NEEDS}: ${ran.error.message.split("\n")[0]}`);
+          throw new OfficeMissError(ran.error.code === "timeout" ? "over_budget" : "needs", ran.error.code === "timeout" ? `LibreOffice did not finish within ${timeout} s; read the document's text instead` : `${NEEDS}: ${messageLine(ran.error)}`);
         }
         const made = await env.fileInfo(produced, context);
         if (ran.value.exitCode !== 0 || !made.ok || made.value.size === 0) throw new OfficeMissError("unreadable", `LibreOffice could not convert it to a PDF (exit ${ran.value.exitCode})`);

@@ -7,6 +7,7 @@ import { visionContext } from "../core/env.js";
 import { PROGRAM_OUTPUT_BYTES } from "../core/limits.js";
 import { PDF_RENDER_MAX_PIXELS, PDF_TEXT_TIMEOUT_MS, PdfProviderError, type PdfInfo, type PdfProvider } from "../core/pdf.js";
 import { argvPath } from "../core/paths.js";
+import { messageLine, mib } from "../core/primitives.js";
 import type { ProviderCall } from "../core/provider.js";
 
 /** The programs' timeout in seconds and the cap on a page's pixels; the defaults hold when they are left out. */
@@ -25,7 +26,7 @@ async function readOutput(call: ProviderCall, path: string, program: string): Pr
   const c = visionContext(call.signal);
   const info = await call.env.fileInfo(path, c);
   if (!info.ok) throw info.error;
-  if (info.value.size > PROGRAM_OUTPUT_BYTES) throw new PdfProviderError("over_budget", `${program} wrote ${(info.value.size / MiB).toFixed(1)} MiB, over the ${PROGRAM_OUTPUT_BYTES / MiB} MiB this package reads back from a program; read the file with bash`);
+  if (info.value.size > PROGRAM_OUTPUT_BYTES) throw new PdfProviderError("over_budget", `${program} wrote ${mib(info.value.size)}, over the ${PROGRAM_OUTPUT_BYTES / MiB} MiB this package reads back from a program; read the file with bash`);
   const read = await call.env.readBinaryFile(path, c);
   if (!read.ok) throw read.error;
   return read.value;
@@ -76,13 +77,13 @@ export function popplerProvider(options: PopplerOptions = {}): PdfProvider {
     const needs = "poppler-utils (pdftotext, pdftoppm, pdfinfo)";
     const c = visionContext(signal);
     const dir = await env.createTempDir("pi-vision-poppler-", c);
-    if (!dir.ok) return { available: false, needs, reason: dir.error.message.split("\n")[0]! };
+    if (!dir.ok) return { available: false, needs, reason: messageLine(dir.error) };
     try {
       const out = `${dir.value}/versions`;
       const ran = await env.exec(["sh", "-c", 'for p in pdftotext pdftoppm pdfinfo; do "$p" -v 2>&1 | head -n 1; done >"$1"', "sh", out], { timeout: 30 }, c);
       const read = ran.ok ? await env.readBinaryFile(out, c) : null;
       const found = read?.ok ? [...utf8(read.value).matchAll(/version (\S+)/g)].map((m) => m[1]!) : [];
-      if (found.length < 3) return { available: false, needs, reason: ran.ok ? "one of the programs is not on the PATH" : ran.error.message.split("\n")[0]! };
+      if (found.length < 3) return { available: false, needs, reason: ran.ok ? "one of the programs is not on the PATH" : messageLine(ran.error) };
       versions.set(env.id, found[0]!);
       return { available: true, version: found[0]! };
     } finally {
