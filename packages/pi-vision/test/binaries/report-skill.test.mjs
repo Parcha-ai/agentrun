@@ -1033,3 +1033,44 @@ test("a page, a crop and a photo are the document's or the photo's own: a dark o
   const thumbed = await run([helpers, assets, looking, darkThumb, ground, render, check]);
   assert.ok(thumbed.result.ok, thumbed.result.ok ? "" : thumbed.result.error.message);
 });
+
+test("the page is made of the allowlist the recording format uses: an svg, a button, a math, a prefixed element, an on* handler, a srcdoc, a formaction, an xmlns attribute or a meta of another kind is refused, and the message names it", async () => {
+  const cases = [
+    ["<svg><circle r='1'/></svg>", /<svg> is not an element the page may use/],
+    ["<button>go</button>", /<button> is not an element the page may use/],
+    ["<math><mi>x</mi></math>", /<math> is not an element the page may use/],
+    ["<x:script>1</x:script>", /<x:script> is not an element the page may use/],
+    ['<noscript><p title="</noscript><img src=x onerror=alert(1)>"></noscript>', /<noscript> is not an element the page may use/],
+    ["<form action='x'></form>", /<form> is not an element the page may use/],
+    ['<p onclick="x()">hi</p>', /onclick on <p> is not an attribute the page may use/],
+    ["<p ONMOUSEOVER='x()'>hi</p>", /onmouseover on <p> is not an attribute the page may use/],
+    ['<p srcdoc="x">hi</p>', /srcdoc on <p> is not an attribute the page may use/],
+    ['<a formaction="x" href="photo.jpg">hi</a>', /formaction on <a> is not an attribute the page may use/],
+    ['<p xmlns:x="y">hi</p>', /xmlns:x on <p> is not an attribute the page may use/],
+    ['<meta name="description" content="x">', /<meta> only as charset or name="viewport"/],
+    ['<meta http-equiv="refresh" content="0">', /<meta> only as charset or name="viewport"/],
+    ['<meta charset="utf-8" content="x">', /<meta> only as charset or name="viewport"/],
+  ];
+  for (const [html, pattern] of cases) await refuses(swap("</main>", `${html}</main>`), pattern);
+  await refuses(swap("</main>", '<!-- <script>x()</script> --></main>'), /the page holds a comment or a < that starts no element/);
+  await refuses(swap("</main>", '<p title="a>b">hi</p></main>'), /a > stands outside any tag/);
+});
+
+test("a style attribute is read as CSS under the style element's rules, after its comments and escapes: url(), @import, data:, javascript:, expression(, behavior and -moz-binding are refused", async () => {
+  for (const css of ["background:url(frames/talk-chart.jpg)", "background:u\\72l(frames/talk-chart.jpg)", "background:url/**/(frames/talk-chart.jpg)", "width:expression(alert(1))", "behavior:url(x.htc)", "-moz-binding:url(x)", "background:javascript:x()", "background:data:image/png;base64,AAAA", "@import 'x'"]) {
+    await refuses(swap("</main>", `<div style="${css}">x</div></main>`), /the style attribute on <div> holds CSS the page may not use/);
+  }
+  await refuses(swap("</style>", "@import 'x.css';</style>"), /the style element holds CSS the page may not use|runs code or loads/);
+  await refuses(swap("</style>", "a{behavior:url(x.htc)}</style>"), /the style element holds CSS the page may not use/);
+});
+
+test("what the allowlist lets through is not refused: aria-*, data-*, loading, a mark's percentage style, the viewport meta and every element the skill's own page uses", async () => {
+  // The page is not the render once edited, so the only refusal is that; none of the allowlist's messages is among them.
+  const fine = await doctored(swap("</main>", '<p aria-hidden="true" data-note="x" lang="en" title="t">fine</p><div class="mark" data-xywh="percent:1,2,3,4" style="left:1%;top:2%;width:3%;height:4%"></div><details open><summary>s</summary><table><tr><td colspan="2">c</td></tr></table></details></main>'));
+  assert.ok(!fine.result.ok);
+  assert.ok(!/is not an element|is not an attribute|style attribute|style element|<meta>|stands outside/.test(fine.result.error.message), fine.result.error.message);
+  const { result } = await run(pieces);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  const html = HTML();
+  for (const needle of ['aria-label="Answer"', 'loading="lazy"', 'data-xywh="percent:', 'style="left:', '<meta name="viewport"', '<meta charset="utf-8">']) assert.ok(html.includes(needle), `the template page has ${needle}`);
+});

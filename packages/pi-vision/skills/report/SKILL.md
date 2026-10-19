@@ -68,7 +68,7 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
     listed in `outside`. Any other relative link is dead.
 - **No script, nothing from the network.** Inline CSS. No `<script>`, no `on...` attributes, no `data:` URLs (a picture is a
   file), no `<iframe>`, `<object>`, `<embed>`, `<form>`, `<base>`, `<link>` or `<meta http-equiv>`, no `url()`, no `@import`,
-  no remote font or image. A link out is allowed but loads nothing; a URL in text is written without its scheme
+  no remote font or image. The page is made of the same allowlist the recording format uses: only the elements and attributes of the check below (an `svg`, a `button`, an `on...` handler or a `srcdoc` is refused, and a `style` attribute is read as CSS under the same rules as the style element). A link out is allowed but loads nothing; a URL in text is written without its scheme
   (`example.com/terms`) so nothing in it can be mistaken for a load.
 - **Light and dark, phone width.** `color-scheme: light dark`, one `prefers-color-scheme` rule, one column that becomes two
   where there is room, system fonts.
@@ -429,6 +429,24 @@ const tags = page.match(/<[a-z!][^>]*>/gi) ?? [];   // text is escaped, so a `<`
 const style = (page.match(/<style>[\s\S]*?<\/style>/) ?? [""])[0];
 const banned = tags.some((tag) => /^<(?:script|link|iframe|object|embed|form|base)\b/i.test(tag) || /^<meta\b[^>]*http-equiv/i.test(tag) || /\son[a-z]+\s*=/i.test(tag));
 if (banned || /url\(|@import/i.test(style) || /https?:|\/\/[a-z0-9-]+\./i.test(page)) problems.push("the page runs code or loads from outside report/");
+// The page is made of an allowlist, the one the recording format uses: these elements, these attributes, nothing else.
+const ELEMENTS = new Set("html head body title meta style main section article header footer nav aside h1 h2 h3 h4 h5 h6 p div span ul ol li dl dt dd table caption thead tbody tfoot tr th td figure figcaption img picture source video track a em strong b i u s small sub sup code pre kbd samp blockquote q cite abbr time mark br hr details summary".split(" "));   // link is left out: the page has no stylesheet file
+const ATTRIBUTES = new Set("class id lang dir title alt src srcset sizes width height href rel type media controls poster preload loop muted playsinline colspan rowspan scope headers open datetime start reversed charset name content property style loading decoding role".split(" "));   // and every aria-* and data-*
+const refusedCss = (css) => /url\s*\(|@import|data:|javascript:|expression\s*\(|behavior|-moz-binding/.test(css.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\\([0-9a-f]{1,6})\s?/gi, (_, hex) => String.fromCodePoint(Math.min(parseInt(hex, 16), 0x10ffff))).replace(/\\([\s\S])/g, "$1").toLowerCase());   // read after its comments and escapes
+for (const tag of tags.filter((tag) => /^<[a-z]/i.test(tag))) {
+  const name = /^<([^\s>\/]+)/.exec(tag)[1].toLowerCase();
+  if (!ELEMENTS.has(name)) { problems.push(`<${name}> is not an element the page may use: the page is made of the allowlist the recording format uses (no svg, math, button, form, script, iframe or prefixed element)`); continue; }
+  const attributes = [...tag.slice(name.length + 1).matchAll(/([^\s"'<>\/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g)].map((m) => [m[1].toLowerCase(), m[2] ?? m[3] ?? m[4] ?? ""]);
+  for (const [attribute, value] of attributes) {
+    if (!(ATTRIBUTES.has(attribute) || /^aria-[\w-]+$/.test(attribute) || /^data-[\w.-]+$/.test(attribute))) problems.push(`${attribute} on <${name}> is not an attribute the page may use (no on* handler, srcdoc, formaction or xmlns:*)`);
+    if (attribute === "style" && refusedCss(value)) problems.push(`the style attribute on <${name}> holds CSS the page may not use: no url(), @import, data:, javascript:, expression(, behavior or -moz-binding`);
+  }
+  const keys = attributes.map(([attribute]) => attribute).sort().join(",");
+  if (name === "meta" && !(keys === "charset" || (keys === "content,name" && attributes.find(([attribute]) => attribute === "name")[1] === "viewport"))) problems.push('<meta> only as charset or name="viewport"');
+}
+if (refusedCss(style.replace(/<\/?style>/g, ""))) problems.push("the style element holds CSS the page may not use: no url(), @import, data:, javascript:, expression(, behavior or -moz-binding");
+if (/<!--|<!\[|<\?/.test(page) || /<(?![a-z\/]|!doctype )/i.test(page)) problems.push("the page holds a comment or a < that starts no element");
+if (page.replace(/<style>[\s\S]*?<\/style>/, "").replace(/<[a-z!\/][^>]*>/gi, "").includes(">")) problems.push("a > stands outside any tag: text is escaped, so something put a tag the check cannot read into the page");
 if ([...attr("src"), ...attr("href"), ...attr("poster")].some((v) => /^\s*data:/i.test(v))) problems.push("the page uses a data: URL: a picture is a file");
 if ([...attr("src"), ...attr("href"), ...attr("poster")].some((v) => /(^|[\/\\])\.\.([\/\\]|$)/.test(v))) problems.push("a path with ../ leaves report/: copy the file in with keep(), or name a film in outside; never write ../");
 if (report.outside.some((name) => /[\/\\:]|^\./.test(name))) problems.push("outside names bare file names, never a path");
