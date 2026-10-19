@@ -147,3 +147,16 @@ test('the scorer\'s Jev is in each row as scoreCostUsd, out of costUsd, and the 
   assert.equal(rows[0].scoreCostUsd, 0.02, 'two cites');
   assert.equal(rows[0].costUsd, 0.001, 'the agent\'s cost: the document reader');
 }, { timeout: 120_000 });
+
+test('v2\'s fetch_page reads any public host but the refused list; v1\'s stays on the company\'s domain and Wikipedia', async () => {
+  const v2 = scriptedParts({ set: SETS.v2 });
+  const bluefin = v2.companies.find((c) => c.name === 'Bluefin Markets Inc.');
+  const [fetch2] = await v2.toolsFor(bluefin, {});
+  assert.equal(fetch2.name, 'fetch_page');
+  assert.equal((await fetch2.run({ url: 'https://www.bluefinmarkets.example' })).ok, true, 'the official site a search found, with no website given');
+  assert.equal((await fetch2.run({ url: 'https://www.harborvalve.example' })).ok, true);
+  assert.match((await fetch2.run({ url: 'https://www.sec.gov/cgi-bin/browse-edgar' })).refused, /EDGAR|refused/);
+  const v1 = scriptedParts();
+  const [fetch1] = await v1.toolsFor(v1.companies[0], {});
+  assert.match((await fetch1.run({ url: 'https://bluefinmarkets.example' })).refused, /outside the allowed hosts/);
+});

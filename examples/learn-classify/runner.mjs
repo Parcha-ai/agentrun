@@ -23,7 +23,7 @@ import { rowOf, rowOfV2, spendOf } from './row.mjs';
 import { scoreV2 } from './score-v2.mjs';
 import { agentScript, agentScriptV2, FIXTURES, FIXTURES_V2, fakeHardTools, fixtureWeb, scriptedJev, scriptedModel } from './scripted.mjs';
 import { SETS } from './sets.mjs';
-import { domainOf, fetchPageTool } from './tools.mjs';
+import { ANY_HOST, domainOf, fetchPageTool } from './tools.mjs';
 
 export const DATA = join(import.meta.dirname, 'data');
 /** Where a pass writes when no --out is given, as the demo's contract names it. */
@@ -72,9 +72,11 @@ export async function openOut(out, { mode, set = SETS.v1 }) {
  *  agent; a row's company is marked when it is under one, to check what the notes learned. */
 const conventionsOf = (report) => Object.fromEntries((report?.conventions ?? []).flatMap((c) => c.companies.map((company) => [company.cik, c.convention])));
 
-/** v1's tool besides the labels: fetch_page on the company's domain and Wikipedia. v2's: fetch_page on the given website's
- *  domain (only Wikipedia when none is given), and lane C3's search_web, browse and read_document. */
-const allowedDomain = (job) => (job.website ? domainOf(job.website) : 'wikipedia.org');
+/** Where fetch_page may go: in v1 the company's domain and Wikipedia; in v2 any public host but the refused list, so a
+ *  workflow that has to find the official site reads it without the paid browser. */
+const allowedDomain = (job, set) => (set === SETS.v2 ? ANY_HOST : domainOf(job.website));
+/** The scripted pass's DNS: every fixture host is a public address, and nothing is looked up. */
+const fixtureLookup = async () => [{ address: '93.184.216.34', family: 4 }];
 
 /** The $0 parts: the scripted agent and Jev, lane C1's fetch_page reading fixture pages instead of the web, and in v2
  *  fakes of lane C3's tools over the fixtures. A data directory without pages.json gets 404s. */
@@ -87,7 +89,7 @@ export function scriptedParts({ set = SETS.v1, data = set === SETS.v2 ? FIXTURES
   return {
     mode: 'scripted', providers: 'scripted', modelName: 'faux/scripted', set, data: d, labels: d.labels, companies: d.companies, conventions: conventionsOf(d.report),
     judge: () => scriptedJev({ truthByName, groups: groupsOf(v2 ? d.codes : d.labels), segments: v2 ? readJsonIf(join(data, 'judge.json')) ?? {} : {} }),
-    toolsFor: async (job) => [fetchPageTool({ allowDomain: allowedDomain(job), fetch: fixtureWeb(pages) }), ...(fakes ? fakes.tools() : [])],
+    toolsFor: async (job) => [fetchPageTool({ allowDomain: allowedDomain(job, set), fetch: fixtureWeb(pages), lookup: fixtureLookup }), ...(fakes ? fakes.tools() : [])],
     modelFor: (job, run) => scriptedModel(v2
       ? agentScriptV2({ job, offered: run.workflows.loaded.map((w) => w.name), fixtures: { truth: readJsonIf(join(data, 'answers.json')) ?? {} } })
       : { root: agentScript({ job, offered: run.workflows.loaded.map((w) => w.name), truth: job.sic2, page: pages[job.website] }) }),
@@ -110,7 +112,7 @@ export async function liveParts({ set = SETS.v1, data = DATA, model = 'gpt-6-lun
     mode: 'live', providers: 'real', modelName: `gateway/${model}`, set, data: d, labels: d.labels, companies: d.companies, conventions: conventionsOf(d.report),
     judge: () => jev,
     toolsFor: async (job, run) => [
-      fetchPageTool({ allowDomain: allowedDomain(job) }),
+      fetchPageTool({ allowDomain: allowedDomain(job, set) }),
       ...(hard ? await hard.hardJobTools({ root: join(run.dir, 'evidence'), profileRoot: join(run.dir, 'chrome'), search: hard.searchFromEnv?.(env), eyes: await hard.gatewayEyes(gateway), env }) : []),
     ],
     modelFor: () => gatewayModel(gateway, { model, thinking }),
