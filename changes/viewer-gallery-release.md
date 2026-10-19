@@ -27,10 +27,3 @@ kind: feature
   refuses a published blob that would open as a page under its own name.
 - The viewer's page carries a Content-Security-Policy (only its own files run or load; data: and blob: pictures and
   videos), its styles in `viewer.css`; PDF.js opens every PDF with `isEvalSupported: false`.
-- A published recording's `pi.live` lines go to a file of their own (draft 51): the gallery's build writes
-  `events.live.jsonl` with exactly those lines and `events.live.idx` with each one's 0-based position in the unsplit
-  file, moving lines and never editing them. The chat view fetches only `events.jsonl`; the inspection view fetches all
-  three and merges them before it draws, so its stops, `?at=` links and re-asks are as before, and a failed read of the
-  live files is an error shown, never a count. The validator and the gate check the two live files come together or
-  neither, the positions, and that the live file holds only `pi.live` lines, then run every check on the merged list;
-  the gate publishes and scans both.

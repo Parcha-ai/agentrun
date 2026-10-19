@@ -9,7 +9,6 @@ import { stripTypeScriptTypes } from 'node:module';
 import { basename, dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inertName, MIME } from './src/blobs.ts';
-import { LIVE_INDEX, LIVE_LINES, mergeLines, splitLines } from './src/split.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const out = process.argv.slice(2).find((arg) => !arg.startsWith('--')) ?? join(here, 'dist');
@@ -76,16 +75,6 @@ export function build(target = out, recordingsDir = join(here, 'recordings'), { 
   // A recorder writes a blob as `.<sha>.<ext>.tmp-<pid>` and renames it once whole, so a copy of a recording taken while
   // it goes may hold such a name: it is not a blob yet, and is neither listed nor shipped.
   const unfinished = (name) => /^\..*\.tmp-\d+$/.test(name);
-  // A recording's lines whole: its one file, or, a recording split already (draft 51), its files merged.
-  const linesOfRecording = (dir) => {
-    const text = readFileSync(join(dir, 'events.jsonl'), 'utf8');
-    const live = existsSync(join(dir, LIVE_LINES));
-    if (live !== existsSync(join(dir, LIVE_INDEX))) throw new Error(`${dir}: ${LIVE_LINES} and ${LIVE_INDEX} come together or neither`);
-    if (!live) return text;
-    const merged = mergeLines(text, readFileSync(join(dir, LIVE_LINES), 'utf8'), readFileSync(join(dir, LIVE_INDEX), 'utf8'));
-    if ('problem' in merged) throw new Error(`${dir}: ${merged.problem}`);
-    return merged.text;
-  };
   const gallery = [];
   for (const id of existsSync(recordingsDir) ? readdirSync(recordingsDir).sort() : []) {
     const dir = join(recordingsDir, id);
@@ -97,19 +86,11 @@ export function build(target = out, recordingsDir = join(here, 'recordings'), { 
       blobs[file.slice(0, -ext.length - 1)] = files ? `blobs/${inertName(file)}` : `data:${MIME[ext] ?? 'application/octet-stream'};base64,${readFileSync(join(dir, 'blobs', file)).toString('base64')}`;
     }
     const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
-    const events = linesOfRecording(dir);
-    gallery.push(files ? { id, manifest, blobs } : { id, manifest, events, blobs });
+    gallery.push(files ? { id, manifest, blobs } : { id, manifest, events: readFileSync(join(dir, 'events.jsonl'), 'utf8'), blobs });
     // Beside the page, every blob is published under its inert name: a page, an SVG or a script in a recording (an agent's
     // report, draft 41) is plain text when opened straight, and the viewer reads it into its sandboxed frame.
     const copy = join(target, 'recordings', id);
-    const lineFiles = new Set(['events.jsonl', LIVE_LINES, LIVE_INDEX].map((name) => join(dir, name)));
-    cpSync(dir, copy, { recursive: true, filter: (source) => !unfinished(basename(source)) && dirname(source) !== join(dir, 'blobs') && !lineFiles.has(source) });
-    // Shipped as files, its pi.live lines go to a file of their own (draft 51), so a view that does not read them (the chat
-    // view) does not fetch them: the lines are moved, never edited, and the positions are in events.live.idx. Embedded,
-    // its lines stay one file, as gallery.js holds them.
-    const split = files ? splitLines(events) : { lines: events, live: '', idx: '' };
-    writeFileSync(join(copy, 'events.jsonl'), split.live ? split.lines : events);
-    if (split.live) { writeFileSync(join(copy, LIVE_LINES), split.live); writeFileSync(join(copy, LIVE_INDEX), split.idx); }
+    cpSync(dir, copy, { recursive: true, filter: (source) => !unfinished(basename(source)) && dirname(source) !== join(dir, 'blobs') });
     // Anything else in blobs/ (a directory) is copied as it is, for the gate to refuse.
     for (const entry of existsSync(join(dir, 'blobs')) ? readdirSync(join(dir, 'blobs'), { withFileTypes: true }).filter((each) => !unfinished(each.name)) : []) {
       if (entry.isFile()) copyFileSync(join(dir, 'blobs', entry.name), join(copy, 'blobs', inertName(entry.name)));

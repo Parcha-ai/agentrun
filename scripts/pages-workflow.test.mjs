@@ -73,8 +73,6 @@ const gate = (t, recordings) => {
   for (const name of ['gate.mjs', 'validate.mjs']) cpSync(join(root, 'scripts/recording', name), join(dir, 'scripts/recording', name));
   // Both import the one scanner, which lives in the harness package.
   cpSync(join(root, 'packages/harness/src/scan.ts'), join(dir, 'packages/harness/src/scan.ts'));
-  // The validator merges a recording's split lines (draft 51) with the viewer's own split module.
-  cpSync(join(root, 'apps/viewer/src/split.ts'), join(dir, 'apps/viewer/src/split.ts'));
   // The report page is read with an HTML parser, from node_modules (the workflow installs it before the gate).
   cpSync(join(root, 'packages/harness/src/artifact.ts'), join(dir, 'packages/harness/src/artifact.ts'));
   symlinkSync(join(root, 'node_modules'), join(dir, 'node_modules'));
