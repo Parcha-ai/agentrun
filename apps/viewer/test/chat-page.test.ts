@@ -699,7 +699,8 @@ test('in Chrome: a timeline click to the last card of a long run lands on it, th
       const before = await value<{ waiting: number; heights: number[] }>(`(() => { const waiting = above('${id}').filter((img) => !img.complete);
         return { waiting: waiting.length, heights: [...new Set(waiting.map((img) => Math.round(img.getBoundingClientRect().height)))] }; })()`);
       assert.ok(before.waiting > 20, `${id}: most pictures above the last card are still to load (${before.waiting})`);
-      assert.ok(before.heights.length === 1 && before.heights[0]! > 0, `${id}: a picture still to load holds a box of its own (${before.heights})`);
+      // A picture still to load holds a box; one partly in may already have its own size, so no single size is asked.
+      assert.ok(before.heights.length > 0 && before.heights.every((height) => height > 0), `${id}: a picture still to load holds a box of its own (${before.heights})`);
       const target = await value<string>(`last('${id}').dataset.item`);
       await page.evaluate(`doc('${id}').querySelector('.tl-toggle').click(); doc('${id}').querySelector('.tbar[data-goto="${target}"]').click()`);
       // The jump loads the pictures above the card and centres it again once they are in: it ends on the card and stays.
