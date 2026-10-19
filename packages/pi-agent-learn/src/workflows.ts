@@ -12,7 +12,7 @@ import type { Repo } from "@parcha/pi-git-remote";
 import { Type } from "typebox";
 import { Compile } from "typebox/compile";
 import { LearnError } from "./errors.js";
-import { CAPS, LAYOUT, RUN_ID } from "./layout.js";
+import { CAPS, LAYOUT, RUN_ID, WORKFLOW_NAME } from "./layout.js";
 import { type Admission, admitRevision, type Decision, foldUses, type IgnoredUse, promotionDecision, type Thresholds } from "./promotion.js";
 import type { UsesSource } from "./propose.js";
 import { MAX_WORKFLOW_HINTS, type WorkflowHint } from "./section.js";
@@ -454,8 +454,9 @@ export type AdmitInDirInput = {
   readonly dir: string;
   readonly runId: string;
   readonly name: string;
-  /** The `workflow` learning's text: when to use it. Without one the revision is admitted but stays out of `<learned>`. */
-  readonly description?: string;
+  /** When to use it: text, or a function of the revision's document (`schemaDescription` is one), which describes only a
+   *  revision this call admits. Without one the revision is admitted but stays out of `<learned>`. */
+  readonly description?: string | ((workflow: unknown) => string);
   /** The run's files for this name, as `collectWorkflows` made them: `<sha256>.json` and `latest`. Absent or empty: only the description is new. */
   readonly records?: Readonly<Record<string, string>>;
   /** The preconditions to try it under, a check on the run's input each, or a function of the workflow document. Default: none,
@@ -479,6 +480,95 @@ const refuse = (name: string, reason: AdmitRefusal, detail: string): AdmitInDirR
  *  input fields as its runs' inputs do. */
 export const schemaWhen = (workflow: unknown): Precondition[] => deriveWhen(workflow, (schema) => resolveSchemaForWorkflow(workflow as never, schema));
 
+/** A field name a skill's description may carry: an identifier, so no sentence can ride in one. */
+const FIELD_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+const FIELD_TYPES = new Set(["string", "number", "integer", "boolean", "array", "object"]);
+
+/** The top-level fields of one of the document's schemas, resolved: identifier names only, each with its JSON type. */
+function schemaFields(workflow: unknown, schemaId: unknown): { required: string[]; optional: string[] } {
+  const doc = workflow as { schemas?: Record<string, unknown> } | null;
+  const raw = typeof schemaId === "string" && doc?.schemas && Object.hasOwn(doc.schemas, schemaId) ? doc.schemas[schemaId] : undefined;
+  let schema: Record<string, unknown> = raw !== null && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  try {
+    schema = resolveSchemaForWorkflow(workflow as never, schema);
+  } catch {
+    return { required: [], optional: [] };
+  }
+  const properties = schema.properties !== null && typeof schema.properties === "object" ? (schema.properties as Record<string, unknown>) : {};
+  const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+  const field = (name: string) => {
+    const type = (properties[name] as { type?: unknown } | null)?.type;
+    return FIELD_TYPES.has(type as string) ? `${name} (${type as string})` : name;
+  };
+  const names = Object.keys(properties).filter((name) => FIELD_NAME.test(name)).sort();
+  return { required: names.filter((n) => required.has(n)).map(field), optional: names.filter((n) => !required.has(n)).map(field) };
+}
+
+const listed = (items: readonly string[]) => (items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`);
+
+/**
+ * A skill description written from the workflow's own schemas, with no text the agent wrote: the fields of its input and
+ * of its output, by name and type. What `workflowAdmitter` writes by default, so a run that read untrusted content puts
+ * no words of its own into a later prompt.
+ */
+export function schemaDescription(workflow: unknown): string {
+  const doc = workflow as { input?: { schemaId?: unknown }; output?: { schemaId?: unknown } } | null;
+  const input = schemaFields(workflow, doc?.input?.schemaId);
+  const output = schemaFields(workflow, doc?.output?.schemaId);
+  const takes = input.required.length || input.optional.length
+    ? `For an input with ${listed(input.required) || "no required field"}${input.optional.length ? ` (optionally ${listed(input.optional)})` : ""}.`
+    : "For any input.";
+  const outputs = [...output.required, ...output.optional].map((f) => f.split(" ")[0]!);
+  return `${takes}${outputs.length ? ` It returns ${listed(outputs)}.` : ""}`;
+}
+
+/** How long a run of a workflow's text must be, found in what the run read, to count as copied from it. */
+export const COPIED_TEXT = 40;
+
+const folded = (text: string) => text.toLowerCase().replace(/\s+/g, " ").trim();
+
+/** Every string in a document: values only, keys left out. */
+function stringsOf(value: unknown, out: string[] = []): string[] {
+  if (typeof value === "string") out.push(value);
+  else if (Array.isArray(value)) for (const item of value) stringsOf(item, out);
+  else if (value !== null && typeof value === "object") for (const item of Object.values(value)) stringsOf(item, out);
+  return out;
+}
+
+/** Whether any `COPIED_TEXT` characters of the document's strings (case and whitespace folded) appear in a text the run read. */
+export function copiesRead(workflow: unknown, read: Iterable<string>): boolean {
+  const windows = new Set<string>();
+  for (const text of read) {
+    const page = folded(String(text));
+    for (let at = 0; at + COPIED_TEXT <= page.length; at += 1) windows.add(page.slice(at, at + COPIED_TEXT));
+  }
+  if (!windows.size) return false;
+  for (const value of stringsOf(workflow)) {
+    const text = folded(value);
+    for (let at = 0; at + COPIED_TEXT <= text.length; at += 1) if (windows.has(text.slice(at, at + COPIED_TEXT))) return true;
+  }
+  return false;
+}
+
+/** The revision a run's records end on (`latest`), read back through the DSL's store in a scratch directory; undefined when
+ *  the records are not the store's. */
+export async function revisionOf(name: string, records: Readonly<Record<string, string>>): Promise<{ readonly workflow: unknown; readonly sha256: string } | undefined> {
+  const latest = records.latest;
+  if (typeof latest !== "string" || !/^[0-9a-f]{64}\n$/.test(latest)) return undefined;
+  const sha256 = latest.slice(0, 64);
+  const record = records[`${sha256}.json`];
+  if (typeof record !== "string" || !WORKFLOW_NAME.test(name)) return undefined;
+  try {
+    return await scratch(async (tmp) => {
+      await writeRegular(tmp, `${workflowDir(name)}/${sha256}.json`, record);
+      const stored = await new WorkflowStore(tmp).load(name, sha256);
+      return { workflow: stored.workflow, sha256 };
+    });
+  } catch {
+    return undefined;
+  }
+}
+
 export async function readTrialIn(dir: string, name: string): Promise<Trial | undefined> {
   const text = await readRegular(path.join(absolute(dir, "dir"), trialPath(name)));
   return text === undefined ? undefined : parseTrial(text, name);
@@ -499,8 +589,9 @@ export async function admitInDir(input: AdmitInDirInput): Promise<AdmitInDirResu
   if (typeof name !== "string" || !WORKFLOW_SKILL_NAME.test(name) || name.length > 64) {
     return refuse(String(name).slice(0, 64), "name", "a workflow name is lowercase letters and digits in words joined by single hyphens, at most 64 characters, so pi can load it as a skill");
   }
-  const description = typeof input.description === "string" ? input.description.trim() : undefined;
-  if (input.description !== undefined && (description === undefined || description === "" || bytes(description) > CAPS.text)) {
+  const describe = typeof input.description === "function" ? input.description : undefined;
+  let description = typeof input.description === "string" ? input.description.trim() : undefined;
+  if (input.description !== undefined && !describe && (description === undefined || description === "" || bytes(description) > CAPS.text)) {
     return refuse(name, "description", `a description is text of 1 to ${CAPS.text} bytes`);
   }
   const at = (input.now?.() ?? new Date()).toISOString();
@@ -533,6 +624,10 @@ export async function admitInDir(input: AdmitInDirInput): Promise<AdmitInDirResu
     }
     if (!input.allowExecutableCode && inspectWorkflow(stored.workflow).requires.executableCode) {
       return refuse(name, "code", "the workflow runs code (a code node, or a shell or executor call), and nothing a person reviewed admits it");
+    }
+    if (describe) {
+      description = describe(stored.workflow).trim();
+      if (description === "" || bytes(description) > CAPS.text) return refuse(name, "description", `a description is text of 1 to ${CAPS.text} bytes`);
     }
     const when = typeof input.when === "function" ? input.when(stored.workflow) : input.when ?? [];
     try {
@@ -791,13 +886,16 @@ export type WorkflowAdmitterOptions = {
   readonly when?: (workflow: unknown) => readonly Precondition[];
   /** Admit a workflow with a code node or a shell or executor call. Default: hold it. */
   readonly allowExecutableCode?: boolean;
+  /** The skill's description, from the revision's document, when the call hands over none (curate never does). Default:
+   *  `schemaDescription`, so no text from the run reaches a later prompt. */
+  readonly describe?: (workflow: unknown) => string;
   readonly now?: () => Date;
 };
 
 /**
  * The curator's `admitWorkflow` port, over `admitInDir`: it copies main's `trial.json` and skill for the name into a scratch
  * directory, validates the run's records through the DSL's store there, saves the revision the run ended on, and writes the
- * skill (from `description`, the agent's when-to-use text) and `trial.json`. `admitted` carries every path changed, text or
+ * skill (from `describe` of its document, unless the caller hands over a `description`) and `trial.json`. `admitted` carries every path changed, text or
  * null, for the one commit. A workflow with code in it, or one with no trial to describe, is `held`; a name pi cannot load, a
  * record the store refuses, a demoted revision and the limits are `refused`. The curator's judgments of the `untrusted` text
  * have already been made when the port is called, so the flag changes nothing here.
@@ -811,7 +909,7 @@ export function workflowAdmitter(options: WorkflowAdmitterOptions = {}): AdmitWo
     const name = workflow.name;
     const result = await staged(options.tmpRoot, input, async () => [trialPath(name), skillPath(name)], (dir) => admitInDir({
       dir, runId: workflow.run, name, records: workflow.records,
-      ...(workflow.description === undefined ? {} : { description: workflow.description }),
+      description: workflow.description ?? options.describe ?? schemaDescription,
       ...(options.when ? { when: options.when } : {}), ...(options.allowExecutableCode ? { allowExecutableCode: true } : {}), ...(options.now ? { now: options.now } : {}),
     }));
     if (result.status === "refused") return { status: result.reason === "code" || result.reason === "unknown" ? "held" : "refused", reason: `${result.reason}: ${result.detail}` };
