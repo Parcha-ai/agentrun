@@ -274,12 +274,15 @@ const dir = ".find/umbrella";
 const task = JSON.parse(await tools.bash({ command: `cat ${dir}/task.json` }));
 const q = (text) => `'${String(text).replaceAll("'", "'\\''")}'`;
 const paid = (answer) => (answer.kept ? 0 : answer.costUsd ?? 0);
-const checks = [];
+const times = [task.at - 1, task.at, task.at + 1].filter((t) => t >= 0 && t < task.duration);
+const checks = (task.checks ?? []).filter((c) => times.includes(c.t));   // the checks already made for these seconds are kept, and not asked again
 let spent = task.spentUsd, requests = task.requests;
-for (const t of [task.at - 1, task.at, task.at + 1].filter((t) => t >= 0 && t < task.duration)) {
+const save = (extra = {}) => tools.bash({ command: `cat > ${dir}/task.json <<'EOF'\n${JSON.stringify({ ...task, checks, ...extra, spentUsd: spent, requests })}\nEOF` });
+for (const t of times) {
+  if (checks.some((c) => c.t === t)) continue;
   if (spent >= task.budgetUsd || requests >= task.maxJudges) break;
   await tools.bash({ command: `ffmpeg -v error -y -ss ${t} -i ${q(task.best)} -frames:v 1 ${dir}/b${t}.png` });
-  requests += 1; await tools.bash({ command: `cat > ${dir}/task.json <<'EOF'\n${JSON.stringify({ ...task, spentUsd: spent, requests })}\nEOF` });   // counted before it is asked
+  requests += 1; await save();   // counted before it is asked
   const answer = await vision.judge({ paths: [`${dir}/b${t}.png`], fragments: [`${task.video}#t=${t}`], questions: {
     here: { type: "noul", instructions: `Is ${task.thing} in \`images[0].image\`?` },
     where: { type: "box", instructions: `${task.box} in \`images[0].image\`` },
@@ -287,11 +290,12 @@ for (const t of [task.at - 1, task.at, task.at + 1].filter((t) => t >= 0 && t < 
   checks.push({ t, noul: answer.answers.here.noul, confidence: answer.answers.where.confidence, cite: answer.answers.where.fragment });
   spent += paid(answer);
   if (answer.kept) requests -= 1;
+  await save();   // each completed check is kept, so a run cut short does not lose a match the earlier checks confirmed
 }
 const passed = checks.find((c) => c.noul >= 0.8);
 const found = passed ? { ...passed, cite: passed.cite ?? `${task.video}#t=${passed.t}`, loose: passed.confidence < 0.6, ...(passed.cite ? {} : { noBox: true }) } : null;
-await tools.bash({ command: `cat > ${dir}/task.json <<'EOF'\n${JSON.stringify({ ...task, checks, found, spentUsd: spent, requests })}\nEOF` });
-return { found: Boolean(found), ...(found ?? { checks }), spentUsd: spent, requests, ...((spent >= task.budgetUsd || requests >= task.maxJudges) && checks.length < 3 ? { stopped: "budget" } : {}) };
+await save({ found });
+return { found: Boolean(found), ...(found ?? { checks }), spentUsd: spent, requests, ...((spent >= task.budgetUsd || requests >= task.maxJudges) && checks.length < Math.max(times.length, 1) ? { stopped: "budget" } : {}) };
 ```
 
 Answer with the citation, the noul and the price: "first seen at `film.mp4#t=1024&xywh=percent:31,6,49,52` (Jev 0.88

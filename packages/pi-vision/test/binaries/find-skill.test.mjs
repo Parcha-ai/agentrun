@@ -416,3 +416,33 @@ test("a halving and a check that fail keep their count too: the request is saved
   assert.equal(task.requests, failing.sent + retry.sent, "what the retry asked is added to what the failed run had sent");
   assert.ok(task.requests <= task.maxJudges);
 });
+
+test("a check cut short after two confirmed frames keeps them: the retry asks nothing more and the match is not lost", async () => {
+  transcript();
+  // The scan and halving as usual, then the check on a Jev that fails on its third call.
+  const first = await steps([narrow, scan, halve, name]);
+  const failing = pixelJev({ failAt: 3 });
+  await assert.rejects(steps([check], { jev: failing }), /503/);
+  const kept = JSON.parse(fs.readFileSync(path.join(cwd, ".find", "umbrella", "task.json"), "utf8"));
+  assert.deepEqual([failing.sent, kept.checks.map((c) => c.t), kept.found], [3, [FIRST - 1, FIRST], undefined], "two checks completed and kept, the third sent and counted");
+  assert.equal(kept.requests, first.task.requests + 3);
+  const retry = pixelJev();
+  const { values: [checked], task } = await steps([check], { jev: retry });
+  assert.deepEqual([retry.sent, checked.found, checked.t], [1, true, FIRST], "only the third frame is asked, and the match the earlier checks confirmed is kept");
+  assert.equal(task.checks.length, 3);
+  // A match confirmed before the budget is spent stays found when the retry has no request left.
+  const { values: [none] } = await steps([check], { jev: pixelJev({ failAt: 1 }) });
+  assert.equal(none.found, true, "all three checks are kept: a retry asks nothing, and cannot fail");
+});
+
+test("the checks kept for another second are dropped: a new second is checked afresh", async () => {
+  transcript();
+  await steps([narrow, scan, halve, name, check]);
+  const kept = path.join(cwd, ".find", "umbrella", "task.json");
+  const task = JSON.parse(fs.readFileSync(kept, "utf8"));
+  fs.writeFileSync(kept, JSON.stringify({ ...task, at: FIRST + 40, found: null }));
+  const jev = pixelJev();
+  const { task: after } = await steps([check], { jev });
+  assert.equal(jev.sent, 3, "the three frames around the new second are asked");
+  assert.deepEqual(after.checks.map((c) => c.t), [FIRST + 39, FIRST + 40, FIRST + 41]);
+});
