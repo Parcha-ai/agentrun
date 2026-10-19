@@ -67,7 +67,8 @@ test('in Chrome: under the page\'s own policy every view draws and nothing is re
   };
   for (const build of ['files', 'embedded']) {
     const views: [string, string, (seen: { pictures: number }) => boolean][] = [
-      [`${build}/index.html`, `document.querySelector('ul.gallery li') !== null`, () => true],
+      // The gallery: its list, or a landing that features and lists only runs a real model made (these runs are scripted).
+      [`${build}/index.html`, `document.querySelector('ul.gallery li') !== null || document.body.textContent.includes('Open a recording')`, () => true],
       [`${build}/index.html?r=reference-killed`, `document.body.textContent.includes('paid calls made')`, () => true],
       [`${build}/index.html?r=reference-killed&debug=durability`, `document.body.textContent.includes('journal opens')`, () => true],
       [`${build}/index.html?r=vision`, `document.querySelector('.vz') !== null`, (seen) => seen.pictures > 0],

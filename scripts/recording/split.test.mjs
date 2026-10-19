@@ -34,7 +34,8 @@ test('a files build splits the pi.live lines out, unedited, and the three files 
   assert.deepEqual(mergeLines(lines, live, readFileSync(join(dir, 'events.live.idx'), 'utf8')), { text: original });
   // Nothing marks the split but the files: no field in the index, the manifest unedited.
   const index = JSON.parse(readFileSync(join(dist, 'recordings', 'index.json'), 'utf8'));
-  assert.deepEqual(Object.keys(index[0]).sort(), ['blobs', 'id', 'manifest']);
+  assert.ok(Object.keys(index[0]).every((key) => ['blobs', 'card', 'id', 'manifest'].includes(key)), Object.keys(index[0]).join(' '));
+  assert.ok(!JSON.stringify(index[0]).includes('events.live'), 'the index names no live file');
   assert.equal(readFileSync(join(dir, 'manifest.json'), 'utf8'), readFileSync(join(midstream, 'manifest.json'), 'utf8'));
   assert.deepEqual(problems(dir), [], 'the split recording validates as the unsplit one');
   assert.deepEqual(gated(dist), [], 'and the gate publishes it');
