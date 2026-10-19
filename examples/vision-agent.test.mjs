@@ -8,6 +8,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -16,6 +17,9 @@ import { argvFor, options } from './vision-agent/run.ts';
 import { scriptFor } from './vision-agent/fakes.ts';
 import { jevKeyOf, jevOptionsOf, liveParts, missingKeys, namedModels, preflight } from './vision-agent/live.ts';
 import { demo } from '@parcha/agentrun-harness';
+import { createVisionExtension } from '@parcha/pi-vision/durable';
+import { nodeVisionEnv } from '@parcha/pi-vision/node';
+import { pngBytes } from '@parcha/pi-vision/testing';
 
 const PROGRAMS = (() => { try { for (const cmd of ['ffmpeg', 'ffprobe', 'pdftoppm']) execFileSync(cmd, [cmd === 'pdftoppm' ? '-v' : '-version'], { stdio: 'ignore' }); return false; } catch { return 'ffmpeg, ffprobe and pdftoppm are needed'; } })();
 const EXAMPLES = ['video-chapters', 'hear-and-find', 'document-check', 'apollo-descent', 'boulder-chapters', 'fair-robot'];
@@ -68,6 +72,44 @@ test('Jev goes through the gateway\'s /typesafe when a gateway is set, else TYPE
   assert.equal('baseURL' in jevOptionsOf(key), false, 'no gateway and no base: the SDK\'s own address');
   assert.equal(jevOptionsOf(key).apiKey, 'not-a-secret');
   assert.ok(options.spec.keys.some((entry) => entry.env === 'TYPESAFE_BASE_URL'), 'declared, so a live child gets it');
+});
+
+// Every request Jev gets from a live run, as it reaches the wire: vision.judge through the live parts' runner, wired as the
+// host's judge seam wires it. A fake TypeSafe on 127.0.0.1 keeps each request's headers and model, and answers each
+// question in its own type. An image or a box carries TypeSafe's images header; a text-only judgment (the report skill's
+// grounding step) carries none; each asks jev-1.14.0, the Jev that answers a box.
+test('on a live run Jev is asked for jev-1.14.0 on every judgment, with the images header exactly when it carries an image or a box', async (t) => {
+  const seen = [];
+  const server = createServer((request, response) => {
+    const chunks = [];
+    request.on('data', (chunk) => chunks.push(chunk));
+    request.on('end', async () => {
+      const type = request.headers['content-type'] ?? '';
+      const body = Buffer.concat(chunks);
+      const part = type.startsWith('multipart/form-data') ? (await new Response(body, { headers: { 'content-type': type } }).formData()).get('request') : body.toString('utf8');
+      const sent = JSON.parse(typeof part === 'string' ? part : await part.text());
+      seen.push({ header: request.headers['typesafe-danger-zone-images'], model: sent.model, types: Object.values(sent.questions).map((question) => question.type) });
+      const answers = Object.fromEntries(Object.entries(sent.questions).map(([name, question]) => [name, question.type === 'box' ? { type: 'box', box: { top: 0.1, bottom: 0.5, left: 0.2, right: 0.6 }, confidence: 0.9 } : { type: 'noul', noul: 0.9 }]));
+      response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ answers, model: 'jev-1.14', usage: { input_tokens: 10, output_tokens: 1 } }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const env = { TYPESAFE_API_KEY: 'not-a-secret', GEMINI_API_KEY: 'not-a-secret', TYPESAFE_BASE_URL: `http://127.0.0.1:${server.address().port}` };
+  const runJudge = liveParts({ env, models: {} }).host.decisions.runJudge;
+  const tmp = await scratch(t);
+  writeFileSync(join(tmp, 'page.png'), pngBytes(400, 300));
+  const vision = createVisionExtension({ jev: { judge: (params) => runJudge(params) }, evidence: { file: async () => ({ path: 'evidence/judge.md' }) }, scope: () => ({ label: 'judge', deriveDir: '.vision' }) });
+  const judge = (request) => vision.judge(nodeVisionEnv({ cwd: tmp }), { conversationId: 'c', callId: String(seen.length) }).execute(request);
+  await judge({ paths: ['page.png'], questions: { seal: { type: 'noul', instructions: 'Is there a seal on `images[0].image`?' } } });
+  const boxed = await judge({ paths: ['page.png'], fragments: ['doc.pdf#page=1'], questions: { seal: { type: 'box', instructions: 'the seal on `images[0].image`' } } });
+  await judge({ state: { claims: { t0: 'The seal is on page 1.' }, evidence: { 'doc.pdf#page=1': 'A round seal at the foot of the page.' } }, questions: { t0: { type: 'noul', instructions: 'Does the evidence state every name, time and number in t0?' } } });
+  assert.deepEqual(seen, [
+    { header: 'true', model: 'jev-1.14.0', types: ['noul'] },
+    { header: 'true', model: 'jev-1.14.0', types: ['box'] },
+    { header: undefined, model: 'jev-1.14.0', types: ['noul'] },
+  ], 'an image and a box carry the header, a text-only judgment none; every one asks jev-1.14.0');
+  assert.match(boxed.answers.seal.fragment, /^doc\.pdf#page=1&xywh=percent:/, 'the box comes back as a region of the page it was asked about');
 });
 
 // A live run's keys, told before anything starts. Every value here is a made-up string: no network, no model.
