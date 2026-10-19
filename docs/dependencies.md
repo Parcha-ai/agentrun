@@ -141,7 +141,7 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | dunder-proto | 1.0.1 | MIT | harness, pi-browser | no | 1 |
 | ecdsa-sig-formatter | 1.0.11 | Apache-2.0 | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
 | entities | 4.5.0 | BSD-2-Clause | harness, pi-browser | no | 1 |
-| entities | 6.0.1 | BSD-2-Clause | harness | no | 1 |
+| entities | 8.1.0 | BSD-2-Clause | harness | no | 1 |
 | es-define-property | 1.0.1 | MIT | harness, pi-browser | no | 1 |
 | es-errors | 1.3.0 | MIT | harness, pi-browser | no | 1 |
 | es-object-atoms | 1.1.2 | MIT | harness, pi-browser | no | 1 |
@@ -178,7 +178,6 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | he | 1.2.0 | MIT | harness, pi-browser | no | 1 |
 | highlight.js | 10.7.3 | BSD-3-Clause | harness, pi, pi-agent-learn, pi-browser, pi-git-remote | no | 1 |
 | hosted-git-info | 9.0.3 | ISC | harness, pi, pi-agent-learn, pi-browser, pi-git-remote | no | 1 |
-| htmlparser2 | 10.0.0 | MIT | harness | no | 1 |
 | http-proxy-agent | 9.1.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
 | https-proxy-agent | 7.0.6 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
 | https-proxy-agent | 9.1.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
@@ -209,6 +208,7 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | openapi-fetch | 0.13.8 | MIT | harness, pi-durable-disk, serve | no | 1 |
 | openapi-typescript-helpers | 0.0.15 | MIT | harness, pi-durable-disk, serve | no | 1 |
 | p-retry | 4.6.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| parse5 | 8.0.1 | MIT | harness | no | 1 |
 | partial-json | 0.1.7 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
 | path-expression-matcher | 1.6.2 | MIT | harness, pi-durable-disk, serve | no | 1 |
 | path-key | 3.1.1 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-git-remote | no | 1 |

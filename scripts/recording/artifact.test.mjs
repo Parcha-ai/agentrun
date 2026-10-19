@@ -81,7 +81,7 @@ test('each thing a page may not do is refused by the recorder, and by the valida
     'an embed': [PAGE('<embed src="a.png">'), /has a <embed>/],
     'a form': [PAGE('<form action="a.html"><input></form>'), /has a <form>/],
     'a base': [PAGE('', '<base href="https://elsewhere.example/">'), /has a <base>/],
-    'a meta refresh': [PAGE('', '<meta http-equiv="Refresh" content="0; url=a.html">'), /has a meta refresh/],
+    'a meta refresh': [PAGE('', '<meta http-equiv="Refresh" content="0; url=a.html">'), /has the http-equiv attribute/],
     'a picture from a site': [PAGE('<img src="https://elsewhere.example/a.png">'), /loads https:\/\/elsewhere.example\/a.png from outside/],
     'a srcset candidate from a site': [PAGE('<img src="a.png" srcset="a.png 1x, //elsewhere.example/b.png 2x">'), /srcset loads \/\/elsewhere.example\/b.png/],
     'a stylesheet from a site': [PAGE('', '<link rel="stylesheet" href="https://elsewhere.example/a.css">'), /loads https:\/\/elsewhere.example\/a.css/],
@@ -179,9 +179,9 @@ test('what a browser reads is read here: an embedded tab in a scheme, escaped CS
     'an escaped url( in a style block': [PAGE('', '<style>p { background: \\75rl(https://elsewhere.example/p.png) }</style>'), /loads https:\/\/elsewhere.example\/p.png/],
     'a comment inside url': [PAGE('', '<style>p { background: url(https:/**/\n//elsewhere.example/p.png) }</style>'), /loads/],
     'an image-set from a site': [PAGE('<p style="background-image:image-set(\'https://elsewhere.example/p.png\' 1x)">x</p>'), /loads https:\/\/elsewhere.example\/p.png/],
-    'a body background': [PAGE('', '').replace('<body>', '<body background="https://elsewhere.example/p.png">'), /body background loads https:\/\/elsewhere.example\/p.png/],
-    'an imagesrcset on a preload': [PAGE('', '<link rel="preload" as="image" imagesrcset="https://elsewhere.example/p.png 1x">'), /imagesrcset loads https:\/\/elsewhere.example\/p.png/],
-    'a ping': [PAGE('<a href="#x" ping="https://elsewhere.example/p">x</a>'), /a ping loads https:\/\/elsewhere.example\/p/],
+    'a body background': [PAGE('', '').replace('<body>', '<body background="https://elsewhere.example/p.png">'), /has the background attribute/],
+    'an imagesrcset on a preload': [PAGE('', '<link rel="preload" as="image" imagesrcset="https://elsewhere.example/p.png 1x">'), /has the imagesrcset attribute/],
+    'a ping': [PAGE('<a href="#x" ping="https://elsewhere.example/p">x</a>'), /has the ping attribute/],
   };
   for (const [what, [html, message]] of Object.entries(refused)) assert.throws(() => take(report(t, { 'index.html': html })), message, what);
   // image-set candidates are files; the type() beside one is a MIME string, not a file.
@@ -212,4 +212,64 @@ test('two paths with one content and two extensions are two blobs, and both vali
   const dir = recordingWith(t, { artifact: { title: 'A page', entry: 'index.html', files }, kept });
   writeFileSync(join(dir, 'blobs', `${sha(a)}.jpeg`), a);
   assert.deepEqual(problems(dir), []);
+});
+
+// ---- draft 50: the report page by allowlist, read as a browser reads it (parse5) ----
+
+const AVEO = join(here, 'fixtures', 'report-aveo-attempt3');
+test('a real report from the skill (AVEO attempt 3, its marks drawn as div.mark with data-xywh, data-look and a percentage style) passes the page check, the recorder and the validator', (t) => {
+  const { artifact, kept } = take(AVEO);
+  assert.equal(artifact.entry, 'index.html');
+  assert.equal(Object.keys(artifact.files).length, 13, 'the page and the twelve pictures it loads; the two documents it links are not in the folder');
+  const reading = readFile('index.html', readFileSync(join(AVEO, 'index.html'), 'utf8'));
+  assert.deepEqual(reading.problems, []);
+  assert.ok(reading.documents.length > 0 && reading.documents.every((document) => document.look), 'every document link cites the look that read it');
+  // The looks the run filed read both documents (the links name them): the validator accepts the page.
+  const keys = [...new Set(reading.looks)];
+  const dir = recordingWith(t, { artifact, kept, looks: keys });
+  const lines = readFileSync(join(dir, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)).map((line) => (line.kind === 'LookEvent' ? { ...line, data: { record: { args: { path: 'aveo-ex3-1-pages-1-4.pdf, aveo-ex3-1-pages-1-4-TEST-COPY-marks-removed.pdf' }, facts: line.data.record.facts } } } : line));
+  writeFileSync(join(dir, 'events.jsonl'), lines.map((line) => JSON.stringify(line)).join('\n') + '\n');
+  assert.deepEqual(problems(dir), []);
+});
+
+test('the three bypasses of the review are refused: a raw-text element holding a closing tag in an attribute, a prefixed script in an svg, and the math, mglyph and style mutation', (t) => {
+  const bypasses = {
+    'noembed with a title holding its own closing tag': '<noembed><p title="</noembed><img src=x onerror=alert(1)>"></p></noembed>',
+    'noframes likewise': '<noframes><p title="</noframes><img src=x onerror=alert(1)>"></p></noframes>',
+    'noscript likewise': '<noscript><p title="</noscript><img src=x onerror=alert(1)>"></p></noscript>',
+    'xmp likewise': '<xmp><p title="</xmp><img src=x onerror=alert(1)>"></xmp>',
+    'a prefixed script in an svg': '<svg xmlns="http://www.w3.org/2000/svg"><x:script xmlns:x="http://www.w3.org/2000/svg">alert(1)</x:script></svg>',
+    'a prefixed element in html': '<x:script>alert(1)</x:script>',
+    'the math, mglyph and style mutation': '<math><mtext><table><mglyph><style><img src=x onerror=alert(1)>',
+    'an svg animate to javascript:': '<svg xmlns="http://www.w3.org/2000/svg"><a><animate attributeName="href" values="#;javascript:alert(1)"/><text y="20">x</text></a></svg>',
+  };
+  for (const [what, body] of Object.entries(bypasses)) {
+    const html = PAGE(body);
+    assert.throws(() => take(report(t, { 'index.html': html })), /the report is refused/, `the recorder refuses ${what}`);
+    assert.ok(readFile('index.html', html).problems.length > 0, `readFile flags ${what}`);
+    const bytes = Buffer.from(html);
+    const hash = sha(bytes);
+    const found = problems(recordingWith(t, { artifact: { title: 'A page', entry: 'index.html', files: { 'index.html': hash } }, kept: new Map([[hash, { bytes, extension: 'html' }]]) }));
+    assert.ok(found.some((each) => /artifact page index.html has/.test(each)), `the validator refuses ${what}: ${found.join(' | ')}`);
+  }
+});
+
+test('the allowlist: every attribute outside it is refused, data-*, aria-*, loading, decoding, role and style are allowed, and a style attribute is read as CSS', (t) => {
+  const ok = PAGE('<section aria-label="x" role="region" data-anything="1"><img src="a.png" alt="a" loading="lazy" decoding="async"><div class="mark" data-xywh="percent:1,2,3,4" style="left:1%;top:2%;width:3%"></div></section>');
+  assert.ok(take(report(t, { 'index.html': ok, 'a.png': PNG })).artifact);
+  for (const [what, body, message] of [
+    ['an srcdoc', '<p srcdoc="x">x</p>', /has the srcdoc attribute/],
+    ['a formaction', '<p formaction="x">x</p>', /has the formaction attribute/],
+    ['an xmlns attribute', '<p xmlns:x="y">x</p>', /has the xmlns:x attribute/],
+    ['an element outside the list', '<canvas></canvas>', /has a <canvas>/],
+    ['a style attribute with an expression', '<p style="width:expression(alert(1))">x</p>', /expression\(/],
+    ['a style attribute with behavior', '<p style="behavior:url(x.htc)">x</p>', /behavior/],
+    ['a style attribute with -moz-binding', '<p style="-moz-binding:url(x.xml#a)">x</p>', /-moz-binding/],
+    ['a style attribute with javascript:', '<p style="background:url(javascript:alert(1))">x</p>', /javascript/],
+    ['a style attribute with a data: url', '<p style="background:url(data:image/png;base64,AAAA)">x</p>', /data: URL/],
+    ['a meta that is not charset or viewport', '', /not a charset or the viewport/],
+  ]) {
+    const html = what.startsWith('a meta') ? PAGE('', '<meta name="description" content="x">') : PAGE(body);
+    assert.throws(() => take(report(t, { 'index.html': html })), message, what);
+  }
 });
