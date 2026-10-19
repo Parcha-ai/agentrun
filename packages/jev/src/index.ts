@@ -261,10 +261,12 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
           if (retryable && attempt < maxAttempts) {
             const backoff = Math.min(retryMaxMs, retryBaseMs * 2 ** (attempt - 1));
             const asked = error instanceof APIError && (status === 429 || status === 503) ? retryAfterMs(error.headers) : undefined;
-            // A server's wait is kept in full or the loop gives up now: it never runs past the deadline, or past the longest timer when there is none.
+            const delay = asked === undefined ? backoff : Math.max(asked, backoff);
+            // A server's wait is kept in full or the loop gives up now: it never runs past the deadline, or past the longest timer when there is none, so no
+            // retry is sent with no time left to answer (a request that times out has a cost no one knows).
             const left = timeoutMs === null ? 2_147_483_647 : timeoutMs - (Date.now() - started);
-            if (asked === undefined || asked < left) {
-              await wait(asked === undefined ? backoff : Math.max(asked, backoff), signal, abortError);
+            if (asked === undefined || delay < left) {
+              await wait(delay, signal, abortError);
               continue;
             }
           }

@@ -51,6 +51,20 @@ test('a Retry-After longer than the time left gives up at once without sleeping'
   assert.equal(t.calls.length, 1, 'no retry was sent after a wait that could not fit');
 });
 
+test('a Retry-After that fits, under a backoff that does not, gives up at once: no retry is sent with no time left', async () => {
+  const t = scripted([() => response({}, 429, { 'retry-after': '0' }), () => response({ answers })]);
+  const started = Date.now();
+  await assert.rejects(createJevRunner({ ...settings, timeoutMs: 900, retryBaseMs: 1000, retryMaxMs: 1000, fetch: t.fetch })(params), error => {
+    assert.ok(error instanceof JevError);
+    assert.equal(error.code, 'http');
+    assert.equal(error.status, 429);
+    assert.equal(error.attempts, 1);
+    return true;
+  });
+  assert.ok(Date.now() - started < 800, 'it did not sleep the backoff past the deadline');
+  assert.equal(t.calls.length, 1, 'exactly one call');
+});
+
 test('a 503 with Retry-After as an HTTP date waits until that date', async () => {
   const t = scripted([() => response({}, 503, { 'retry-after': new Date(Date.now() + 2000).toUTCString() }), () => response({ answers })]);
   const result = await createJevRunner({ ...settings, fetch: t.fetch })(params);
