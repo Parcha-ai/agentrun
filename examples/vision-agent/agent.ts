@@ -6,6 +6,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
 import type { Workflow } from '@parcha/agentrun-dsl';
 import type { Job } from '@parcha/agentrun-harness';
 
@@ -35,7 +36,11 @@ Say only what you read, saw or heard. Cite every claim with the file's own fragm
 End with the report${skillList.some((skill) => skill.name === 'report') ? ' the report skill describes' : ' (\`report/index.html\`)'}, then submit { answer, report }: answer is two or three sentences that point to the report, report the page's path in your workspace (under \`report/\`).${skillList.some((skill) => skill.name === 'report') ? '' : `\n\n${REPORT}`}
 ${skillList.map((skill) => `\nThe ${skill.name} skill:\n${skill.text}`).join('')}`;
 
-export const workflow = {
+/** The agent node's thinking levels a run may ask for (`--thinking`); a run that names none thinks at medium. */
+export const THINKING = ['low', 'medium', 'high'] as const;
+export type Thinking = (typeof THINKING)[number];
+
+export const workflowOf = (thinking: Thinking) => ({
   v: 2,
   name: 'vision-agent',
   schemas: {
@@ -45,6 +50,7 @@ export const workflow = {
         question: { type: 'string', minLength: 1, description: 'The question, in plain words.' },
         files: { type: 'array', items: { type: 'string', pattern: '^[\\w.-]+$' }, description: 'The files in the workspace the question is about.' },
         example: { type: 'string', description: 'The example folder the question and files came from, if any.' },
+        thinking: { enum: THINKING, description: 'The agent\'s thinking level for this run (--thinking); medium when absent.' },
       },
     },
     Answer: {
@@ -55,9 +61,10 @@ export const workflow = {
   input: { schemaId: 'Input' },
   output: { schemaId: 'Answer', path: 'answer' },
   root: { node: 'chain', steps: [
-    { node: 'agent', label: 'vision-agent', out: 'Answer', as: 'answer', tools: ['code'], thinking: 'medium', state: { question: '{question}', files: '{files}' }, instructions: INSTRUCTIONS() },
+    { node: 'agent', label: 'vision-agent', out: 'Answer', as: 'answer', tools: ['code'], thinking, state: { question: '{question}', files: '{files}' }, instructions: INSTRUCTIONS() },
   ] },
-} as const satisfies Workflow;
+} as const satisfies Workflow);
+export const workflow = workflowOf('medium');
 
 /** A file an example reads: fetched by URL (checked by size and SHA-256), or committed beside the example (`path`). */
 export type InputItem = { id: string; title?: string; url?: string; path?: string; bytes: number; sha256: string; license?: string; source?: string };
@@ -92,5 +99,29 @@ function filesOf(): Record<string, Uint8Array> {
   return out;
 }
 
-/** The job: the one agent; its default input asks nothing until an example or --input gives the question. */
-export const job = { workflow, input: { question: 'What is in these files?', files: [] }, files: filesOf() } satisfies Job;
+/** The job: the one agent, thinking as asked; its default input asks nothing until an example or --input gives the question. */
+export const jobOf = (thinking: Thinking = 'medium') => ({ workflow: workflowOf(thinking), input: { question: 'What is in these files?', files: [] }, files: filesOf() }) satisfies Job;
+export const job = jobOf();
+
+/** The run's own input: `--input` in the arguments (the supervisor has them), else `INPUT` (the one thing the supervisor gives the
+ *  child process, which is started with `--child` alone). */
+export function runInput(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): Record<string, unknown> | undefined {
+  const { values } = parseArgs({ args: [...argv], strict: false, options: { input: { type: 'string' } } });
+  try { return JSON.parse(typeof values.input === 'string' ? values.input : env.INPUT ?? '') as Record<string, unknown>; } catch { return undefined; }
+}
+
+/** The thinking level the run asks for: its input's `thinking`, medium when it names none, and none at all when it names one
+ *  that is not low, medium or high (the command line refuses that before anything starts). */
+export function thinkingOf(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): Thinking | undefined {
+  const named = runInput(argv, env)?.thinking;
+  if (named === undefined) return 'medium';
+  return (THINKING as readonly unknown[]).includes(named) ? (named as Thinking) : undefined;
+}
+
+/** The command line's refusal of a thinking level that is not low, medium or high, said before anything starts. */
+export function thinkingRefusal(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (thinkingOf(argv, env)) return undefined;
+  const named = runInput(argv, env)?.thinking;
+  const levels = `${THINKING.slice(0, -1).join(', ')} or ${THINKING.at(-1)}`;
+  return named === '' ? `--thinking needs a value: ${levels}` : `--thinking is ${levels}; ${String(named)} is not`;
+}

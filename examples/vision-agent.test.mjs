@@ -11,7 +11,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { exampleAt, fileName, inputOf, INSTRUCTIONS, skills } from './vision-agent/agent.ts';
+import { exampleAt, fileName, inputOf, INSTRUCTIONS, job, jobOf, skills, thinkingOf, thinkingRefusal } from './vision-agent/agent.ts';
 import { argvFor, options } from './vision-agent/run.ts';
 import { scriptFor } from './vision-agent/fakes.ts';
 import { jevKeyOf, jevOptionsOf, liveParts, missingKeys, namedModels, preflight } from './vision-agent/live.ts';
@@ -231,7 +231,8 @@ const SSE = [
   ['message_stop', { type: 'message_stop' }],
 ].map(([name, data]) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`).join('');
 
-test('an Anthropic lead through a gateway sends Anthropic\'s thinking at the level asked, to /v1/messages under the gateway\'s key, and keeps the thinking blocks that come back', async () => {
+// A lead through the gateway that records every request it sends, and answers with the stream above.
+function anthropicAsks() {
   const catalog = catalogOf({ model: 'anthropic/claude-sonnet-5-5' });
   const model = catalog.getModel('anthropic', 'claude-sonnet-5-5');
   const sent = [];
@@ -240,15 +241,91 @@ test('an Anthropic lead through a gateway sends Anthropic\'s thinking at the lev
     return new Response(SSE, { status: 200, headers: { 'content-type': 'text/event-stream' } });
   };
   const ask = (reasoning) => catalog.streamSimple(model, { messages: [{ role: 'user', content: 'who sits first?', timestamp: 0 }] }, { reasoning, fetch }).result();
+  return { ask, sent };
+}
+const effort = (body) => body.messages.filter((message) => message.role === 'system' && message.output_config).at(-1)?.output_config.effort;
+
+test('an Anthropic lead through a gateway sends Anthropic\'s thinking at the level asked, to /v1/messages under the gateway\'s key, and keeps the thinking blocks that come back', async () => {
+  const { ask, sent } = anthropicAsks();
   const reply = await ask('medium');
   assert.equal(sent.length, 1);
   assert.equal(sent[0].url.origin + sent[0].url.pathname, 'https://gateway.invalid/v1/messages');
   assert.equal(sent[0].key, GATEWAY.VIDEO_MODEL_API_KEY, 'the gateway\'s key');
   assert.deepEqual([sent[0].body.thinking.type, sent[0].body.thinking.display], ['adaptive', 'summarized'], 'Anthropic\'s thinking, summarized so its text comes back');
-  const effort = (body) => body.messages.filter((message) => message.role === 'system' && message.output_config).at(-1)?.output_config.effort;
   assert.equal(effort(sent[0].body), 'medium', 'thinking medium is Anthropic\'s effort medium');
   assert.equal(reply.stopReason, 'stop');
   assert.deepEqual(reply.content.map((block) => [block.type, block.type === 'thinking' ? block.thinking : block.text]), [['thinking', 'seat one first'], ['text', 'Ana']]);
   await ask('low');
   assert.equal(effort(sent[1].body), 'low', 'and low is low');
+});
+
+const levelOf = (flags) => jobOf(thinkingOf(argvFor(['examples/document-check', ...flags]), {})).workflow.root.steps[0].thinking;
+
+test('--thinking is the run\'s input, not a host flag: it sets the agent node\'s thinking, and a run that names none thinks at medium as before', () => {
+  const example = inputOf(exampleAt('document-check'));
+  const plain = argvFor(['examples/document-check', '--record', 'r']);
+  assert.deepEqual(JSON.parse(plain.at(-1)), example, 'no flag: the input is the example\'s, unchanged');
+  assert.equal(thinkingOf(plain, {}), 'medium');
+  for (const [flags, level] of [[['--thinking', 'high'], 'high'], [['--thinking=low'], 'low'], [['--thinking', 'medium'], 'medium']]) {
+    const argv = argvFor(['examples/document-check', ...flags, '--record', 'r']);
+    assert.ok(!argv.some((arg) => arg.startsWith('--thinking')), 'the host reads no such flag, so it is not passed on');
+    assert.deepEqual(JSON.parse(argv.at(-1)), { ...example, thinking: level });
+    assert.equal(thinkingOf(argv, {}), level);
+  }
+  assert.equal(thinkingOf(argvFor(['--thinking', 'high', 'examples/document-check']), {}), 'high', 'before the folder too');
+  const given = argvFor(['--thinking', 'high', '--input', JSON.stringify({ question: 'q', files: [] })]);
+  assert.deepEqual(JSON.parse(given[given.indexOf('--input') + 1]), { question: 'q', files: [], thinking: 'high' }, 'and on an input given directly');
+  assert.equal(thinkingOf(['--child'], { INPUT: JSON.stringify({ question: 'q', files: [], thinking: 'high' }) }), 'high', 'the child has only INPUT');
+  assert.equal(thinkingOf(['--child'], { INPUT: JSON.stringify({ question: 'q', files: [] }) }), 'medium');
+  const node = (each) => each.workflow.root.steps[0];
+  assert.deepEqual([node(job).thinking, node(jobOf()).thinking, node(jobOf('high')).thinking], ['medium', 'medium', 'high']);
+  const high = structuredClone(jobOf('high').workflow);
+  high.root.steps[0].thinking = 'medium';
+  assert.deepEqual(high, job.workflow, 'nothing else about the workflow changes');
+  assert.equal(job.workflow.schemas.Input.additionalProperties, false);
+  assert.deepEqual(job.workflow.schemas.Input.properties.thinking.enum, ['low', 'medium', 'high']);
+});
+
+test('a thinking level that is not low, medium or high is refused before anything starts, and a valid one is not', async (t) => {
+  const refusal = (...flags) => thinkingRefusal(argvFor(['examples/document-check', ...flags]), {});
+  assert.equal(refusal(), undefined);
+  for (const level of ['low', 'medium', 'high']) assert.equal(refusal('--thinking', level), undefined);
+  assert.equal(refusal('--thinking', 'max'), '--thinking is low, medium or high; max is not');
+  assert.equal(refusal('--thinking=off'), '--thinking is low, medium or high; off is not', 'thinking is never off');
+  assert.equal(refusal('--thinking'), '--thinking needs a value: low, medium or high');
+  assert.equal(refusal('--thinking', '--live'), '--thinking needs a value: low, medium or high', 'a flag is not its value');
+  const dir = await scratch(t);
+  const record = join(dir, 'recording');
+  const ran = command(dir, ['examples/document-check', '--thinking', 'max', '--record', record].map((arg) => (arg.startsWith('examples/') ? join(import.meta.dirname, '..', arg) : arg)), {});
+  assert.notEqual(ran.status, 0);
+  assert.equal(ran.stderr, '--thinking is low, medium or high; max is not\n');
+  assert.doesNotMatch(`${ran.stdout}${ran.stderr}`, /cost:|recording:|run directory:|stopped:/);
+  assert.deepEqual(readdirSync(dir), [], 'nothing was written');
+  assert.equal(existsSync(record), false);
+});
+
+test('--thinking high reaches the Anthropic request as adaptive thinking at effort high, and a run that names none still asks medium', async () => {
+  const { ask, sent } = anthropicAsks();
+  assert.deepEqual([levelOf([]), levelOf(['--thinking', 'high']), levelOf(['--thinking=low'])], ['medium', 'high', 'low']);
+  for (const flags of [[], ['--thinking', 'high'], ['--thinking', 'low']]) await ask(levelOf(flags));
+  assert.deepEqual(sent.map((each) => each.body.thinking.type), ['adaptive', 'adaptive', 'adaptive']);
+  assert.deepEqual(sent.map((each) => effort(each.body)), ['medium', 'high', 'low']);
+});
+
+test('on fakes the command with --thinking high carries it into the workflow the recording shows, and without the flag the run thinks at medium', { timeout: 300_000, skip: PROGRAMS }, async (t) => {
+  const tmp = await scratch(t);
+  const recorded = (name, flags) => {
+    const dir = join(tmp, name);
+    mkdirSync(dir);
+    const record = join(dir, 'recording');
+    const ran = command(dir, [join(import.meta.dirname, '..', 'examples', 'document-check'), ...flags, '--record', record], {});
+    assert.equal(ran.status, 0, `${ran.stdout}\n${ran.stderr}`);
+    return readFileSync(join(record, 'events.jsonl'), 'utf8');
+  };
+  const high = recorded('high', ['--thinking', 'high']);
+  assert.match(high, /"tools":\["code"\],"thinking":"high","state"/, 'the agent node the run\'s child ran thinks at high');
+  assert.match(high, /"example":"document-check","thinking":"high"/, 'and the input says so');
+  const plain = recorded('plain', []);
+  assert.match(plain, /"tools":\["code"\],"thinking":"medium","state"/);
+  assert.doesNotMatch(plain, /"thinking":"high"/);
 });
