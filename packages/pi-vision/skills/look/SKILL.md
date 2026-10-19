@@ -23,6 +23,8 @@ model's limits and sends as few requests as fit, so you never resize or count. I
 - A PDF with a text layer reads cheaper as text (`read`, or `pdftotext`). Look at scans, charts, stamps and layout.
 - Render into a folder of its own under `.look/` and empty it first, so a second run never mixes in pages or frames
   of an earlier file.
+- Scratch files (frames, crops, drawn checks) go in a folder under the workspace, such as `.look/`, never in `/tmp` or any
+  absolute path outside it: a file outside the workspace cannot be looked at.
 
 ## Many PDF pages
 
