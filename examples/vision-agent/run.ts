@@ -41,11 +41,20 @@ export function argvFor(argv: string[]): string[] {
   const out = at < 0 ? rest : [...rest.slice(0, at), ...rest.slice(at + 1), '--input', JSON.stringify(inputOf(exampleAt(rest[at]!)))];
   if (thinking === undefined) return out;
   const given = out.indexOf('--input');
-  const base = given >= 0 ? (() => { try { return JSON.parse(out[given + 1] ?? '') as Record<string, unknown>; } catch { return undefined; } })() : job.input;
-  if (!base) return out;
+  const base = given >= 0 ? inlineObject(out[given + 1]) : undefined;
+  // An input it cannot read inline (a file, a capture name, none, or JSON that is not an object) has nowhere to put the level: the flag
+  // stays in the arguments, and the command line refuses it rather than run at the wrong level.
+  if (!base) return [...out, `--thinking=${thinking}`];
   const input = JSON.stringify({ ...base, thinking });
-  return given >= 0 ? out.map((arg, i) => (i === given + 1 ? input : arg)) : [...out, '--input', input];
+  return out.map((arg, i) => (i === given + 1 ? input : arg));
 }
+
+const inlineObject = (text: string | undefined): Record<string, unknown> | undefined => {
+  try {
+    const parsed: unknown = JSON.parse(text ?? '');
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : undefined;
+  } catch { return undefined; }
+};
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const argv = argvFor(process.argv.slice(2));

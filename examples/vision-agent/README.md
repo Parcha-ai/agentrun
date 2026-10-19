@@ -20,7 +20,7 @@ An example folder holds `question.md` (the question), `inputs.json` (each file b
 | `--record <dir>` | keep the run as an `agentrun.recording/1` directory |
 | `--fetch-sources` | on fakes, fetch and check the example's files instead of reading committed ones |
 | `--max-usd <n>` | stop a run past n dollars |
-| `--thinking <low\|medium\|high>` | the agent's thinking level for the run (default `medium`); a Claude lead thinks reliably at `high`, while at `medium` it may answer without thinking |
+| `--thinking <low\|medium\|high>` | the agent's thinking level for the run (default `medium`); a Claude lead thinks reliably at `high`, while at `medium` it may answer without thinking; it goes with an example folder or an inline JSON `--input`, and is refused with an input file |
 
 `SETUP-PROMPT.md` sets up a live run for you.
 

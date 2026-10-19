@@ -304,6 +304,28 @@ test('a thinking level that is not low, medium or high is refused before anythin
   assert.equal(existsSync(record), false);
 });
 
+test('--thinking with an input it cannot place (a file or a capture name, none, one that is not an object) is refused before anything starts, not dropped', async (t) => {
+  const message = '--thinking needs an example folder or an inline JSON --input';
+  const refusal = (...args) => thinkingRefusal(argvFor(args), {});
+  assert.equal(refusal('--input', 'q.json', '--thinking', 'high'), message, 'a file');
+  assert.equal(refusal('--thinking=high', '--input', 'a-capture'), message, 'a capture name');
+  assert.equal(refusal('--thinking', 'high'), message, 'no input at all');
+  assert.equal(refusal('--thinking', 'high', '--input', '5'), message, 'JSON that is not an object');
+  assert.equal(refusal('--thinking', 'high', '--input', '[]'), message, 'nor an array');
+  assert.equal(refusal('--thinking', 'max', '--input', 'q.json'), '--thinking is low, medium or high; max is not', 'a bad level is told first');
+  assert.equal(refusal('--thinking', 'high', '--input', JSON.stringify({ question: 'q', files: [] })), undefined, 'an inline JSON object takes it');
+  assert.equal(refusal('--input', 'q.json'), undefined, 'and without the flag nothing is asked');
+  const dir = await scratch(t);
+  writeFileSync(join(dir, 'q.json'), JSON.stringify({ question: 'q', files: [] }));
+  const record = join(dir, 'recording');
+  const ran = command(dir, ['--input', join(dir, 'q.json'), '--thinking', 'high', '--record', record], {});
+  assert.notEqual(ran.status, 0);
+  assert.equal(ran.stderr, `${message}\n`);
+  assert.doesNotMatch(`${ran.stdout}${ran.stderr}`, /cost:|recording:|run directory:|stopped:/);
+  assert.deepEqual(readdirSync(dir), ['q.json'], 'nothing was written but the input the test made');
+  assert.equal(existsSync(record), false);
+});
+
 test('--thinking high reaches the Anthropic request as adaptive thinking at effort high, and a run that names none still asks medium', async () => {
   const { ask, sent } = anthropicAsks();
   assert.deepEqual([levelOf([]), levelOf(['--thinking', 'high']), levelOf(['--thinking=low'])], ['medium', 'high', 'low']);

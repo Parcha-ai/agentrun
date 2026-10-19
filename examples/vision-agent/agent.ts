@@ -118,10 +118,12 @@ export function thinkingOf(argv: readonly string[], env: NodeJS.ProcessEnv = pro
   return (THINKING as readonly unknown[]).includes(named) ? (named as Thinking) : undefined;
 }
 
-/** The command line's refusal of a thinking level that is not low, medium or high, said before anything starts. */
+/** The command line's refusal of a thinking level that is not low, medium or high, or that has no inline input to go in (the flag
+ *  `argvFor` could not place is still in the arguments), said before anything starts. */
 export function thinkingRefusal(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): string | undefined {
-  if (thinkingOf(argv, env)) return undefined;
-  const named = runInput(argv, env)?.thinking;
+  const unplaced = argv.find((arg) => arg.startsWith('--thinking='));
+  const named = unplaced === undefined ? runInput(argv, env)?.thinking : unplaced.slice('--thinking='.length);
   const levels = `${THINKING.slice(0, -1).join(', ')} or ${THINKING.at(-1)}`;
-  return named === '' ? `--thinking needs a value: ${levels}` : `--thinking is ${levels}; ${String(named)} is not`;
+  if (named !== undefined && !(THINKING as readonly unknown[]).includes(named)) return named === '' ? `--thinking needs a value: ${levels}` : `--thinking is ${levels}; ${String(named)} is not`;
+  return unplaced === undefined ? undefined : '--thinking needs an example folder or an inline JSON --input';
 }
