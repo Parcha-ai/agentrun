@@ -55,7 +55,7 @@ export function landingOf(entries: readonly LandingEntry[]): HTMLElement {
   const section = landingEl('section', { class: 'landing', 'aria-label': 'Featured runs' },
     landingEl('div', { class: 'ltop' }, brand, landingEl('nav', { class: 'llinks' }, ...LANDING_LINKS.map(([text, href]) => landingEl('a', { href, text })))),
     landingEl('p', { class: 'ldefine', text: LANDING_DEFINITION }), landingEl('h1', { class: 'lhero', text: LANDING_LINE }), landingEl('p', { class: 'lsub', text: LANDING_SUB }),
-    featured.length > 0 && landingEl('div', { class: 'lcards' }, ...featured.map(landingCard)));
+    featured.length > 0 && landingEl('div', { class: 'lcards', 'data-n': String(featured.length) }, ...featured.map(landingCard)));
   // Posters within a screen and a half of the top load at once; the rest when they come into view.
   requestAnimationFrame(() => {
     for (const img of section.querySelectorAll<HTMLImageElement>('img[loading="lazy"]')) {

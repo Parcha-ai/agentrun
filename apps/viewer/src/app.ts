@@ -18,7 +18,7 @@ import { pdfDrawer, type PdfDrawn } from './pdf.ts';
 import { transportPanel } from './transport.ts';
 import { visionPanel } from './vision.ts';
 import { documentPanel } from './document.ts';
-import { landingOf, landingPublic } from './landing.ts';
+import { landingFeatured, landingOf, landingPublic } from './landing.ts';
 
 const SPEEDS = [0.5, 1, 2, 4, 10];
 
@@ -770,9 +770,13 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
 
 function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entries: readonly (GalleryEntry | IndexEntry)[], unread?: string) {
   const shown = entries.filter(landingPublic);
-  const list = el('ul', { class: 'gallery' }, ...shown.map((entry) => {
+  // The featured runs are the landing's cards; the list holds the other public runs, each by its card's title.
+  const featured = new Set(landingFeatured(entries).map((entry) => entry.id));
+  const rest = shown.filter((entry) => !featured.has(entry.id));
+  const list = el('ul', { class: 'gallery' }, ...rest.map((entry) => {
     // A demo opens in the chat + report view; its inspection is ./?r=<id>, linked from there.
-    const link = Object.assign(el('a', { text: entry.manifest.title }), { href: `chat.html?r=${encodeURIComponent(entry.id)}` });
+    const title = (entry as { card?: { title?: string } }).card?.title ?? entry.manifest.title;
+    const link = Object.assign(el('a', { text: title }), { href: `chat.html?r=${encodeURIComponent(entry.id)}` });
     return el('li', {}, link);
   }));
   const picker = Object.assign(el('input'), { type: 'file', multiple: true }) as HTMLInputElement;
@@ -801,8 +805,10 @@ function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entr
   // The gallery is the site's landing: the chat view's look, its line and its featured runs head the page, above the list.
   document.documentElement.classList.add('landing-page');
   document.title = 'agent.run()';
-  root.replaceChildren(landingOf(entries), el('h2', { text: 'Recordings' }), unread !== undefined ? el('p', { class: 'problems', text: `The gallery could not be read (${unread}); a recording folder can still be opened below.` })
-      : shown.length ? list : el('p', { class: 'empty', text: 'No recordings yet.' }), el('details', { class: 'open-recording' }, el('summary', { text: 'Open a recording' }), drop));
+  const listed = unread !== undefined ? [el('h2', { text: 'Recordings' }), el('p', { class: 'problems', text: `The gallery could not be read (${unread}); a recording folder can still be opened below.` })]
+    : rest.length ? [el('h2', { text: featured.size ? 'More recordings' : 'Recordings' }), list]
+    : shown.length ? [] : [el('h2', { text: 'Recordings' }), el('p', { class: 'empty', text: 'No recordings yet.' })];
+  root.replaceChildren(landingOf(entries), ...listed, el('details', { class: 'open-recording' }, el('summary', { text: 'Open a recording' }), drop));
 }
 
 /** How often a followed run is asked for what is new. */
