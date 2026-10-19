@@ -768,30 +768,34 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     showSource({ ...(key ? { look: key } : {}), ...(item ? { item } : {}), ...(picture ? { picture } : {}), href, regions: region ? [region] : [] });
   });
 
-  let jumps = 0;
+  let settling: AbortController | undefined;
   const scrollToItem = (id: string) => {
     const target = id === 'answer' ? answerNode : nodes.get(id);
     if (!target) return;
-    const jump = ++jumps;
+    settling?.abort();
     reveal(target);
     target.scrollIntoView({ block: 'center', behavior: motion() });
     target.classList.remove('flash');
     void target.offsetWidth;
     target.classList.add('flash');
     // Pictures above the card still to load would move it as they come in: they load now, and once they have, or after
-    // 1.5 s, the card is centred again; on a slow page, once more when the rest come in (up to 6 s); never after a newer
-    // jump.
+    // 1.5 s, the card is centred again; on a slow page, once more when the rest come in (up to 6 s). A newer jump, or the
+    // reader's own wheel, touch, key or press, ends the wait: the page stays where the reader took it.
     const waiting = [...thread.querySelectorAll<HTMLImageElement>('img')].filter((img) => !img.complete && img.getClientRects().length > 0
       && (target.contains(img) || (img.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0));
     if (waiting.length === 0) return;
+    const settle = new AbortController();
+    settling = settle;
+    for (const type of ['wheel', 'touchmove', 'keydown', 'pointerdown']) addEventListener(type, () => settle.abort(), { capture: true, passive: true, signal: settle.signal });
     const loaded = waiting.map((img) => new Promise((done) => { img.addEventListener('load', done, { once: true }); img.addEventListener('error', done, { once: true }); }));
     for (const img of waiting) img.loading = 'eager';
     const all = Promise.all(loaded).then(() => true);
     const after = (ms: number) => new Promise<false>((done) => setTimeout(() => done(false), ms));
-    const center = () => { if (jump === jumps) target.scrollIntoView({ block: 'center', behavior: motion() }); };
+    const center = () => { if (!settle.signal.aborted) target.scrollIntoView({ block: 'center', behavior: motion() }); };
     void Promise.race([all, after(1_500)]).then((done) => {
       center();
-      if (!done) void Promise.race([all, after(6_000)]).then((late) => { if (late) center(); });
+      if (done) settle.abort();
+      else void Promise.race([all, after(6_000)]).then((late) => { if (late) center(); settle.abort(); });
     });
   };
 

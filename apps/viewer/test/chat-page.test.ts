@@ -720,6 +720,59 @@ test('in Chrome: a timeline click to the last card of a long run lands on it, th
   }
 });
 
+test('in Chrome: a reader who scrolls away while the pictures above a jumped-to card still load keeps their place, at 390 and 1440', IN_CHROME, async (t) => {
+  const out = mkdtempSync(join(tmpdir(), 'viewer-jump-away-'));
+  const held: { page?: Awaited<ReturnType<typeof drivenPage>>; server?: ReturnType<typeof createServer> } = {};
+  // While `holding`, every picture's response waits until `release()`.
+  let holding = false;
+  const pending: (() => void)[] = [];
+  const release = () => { holding = false; for (const send of pending.splice(0)) send(); };
+  t.after(() => closeAll(held.page ? [held.page] : [], () => {
+    release();
+    held.server?.closeAllConnections();
+    held.server?.close();
+    rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }), { timeout: 20_000 });
+  writeMany(join(out, 'recordings', 'many'));
+  build(join(out, 'dist'), join(out, 'recordings'), { files: true });
+  writeFileSync(join(out, 'dist', 'harness.html'), JUMP);
+  const TYPES: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png', '.css': 'text/css' };
+  const server = createServer((request, response) => {
+    const file = join(out, 'dist', decodeURIComponent(new URL(request.url!, 'http://localhost').pathname));
+    if (!file.startsWith(join(out, 'dist')) || !existsSync(file) || !extname(file)) { response.writeHead(404).end(); return; }
+    const send = () => response.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream' }).end(readFileSync(file));
+    if (holding && extname(file) === '.png') pending.push(send);
+    else send();
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  held.server = server;
+  const page = await drivenPage(`http://127.0.0.1:${(server.address() as AddressInfo).port}/harness.html`, join(out, 'profile'), { signal: t.signal });
+  held.page = page;
+  const value = async <T>(expression: string) => JSON.parse(String(await page.evaluate(`JSON.stringify(${expression})`))) as T;
+  // The element that scrolls the thread: the thread pane at 1440, the page at 390.
+  const scroller = (id: string) => `((d) => { for (let at = last('${id}').parentElement; at && at !== d.documentElement; at = at.parentElement) {
+    const y = d.defaultView.getComputedStyle(at).overflowY; if ((y === 'auto' || y === 'scroll') && at.scrollHeight > at.clientHeight) return at; } return d.scrollingElement; })(doc('${id}'))`;
+  try {
+    await page.once(`ready('wide') && ready('phone')`, 'true', 20_000, 'both pages drawn');
+    for (const id of ['phone', 'wide']) {
+      holding = true;
+      const target = await value<string>(`last('${id}').dataset.item`);
+      await page.evaluate(`doc('${id}').querySelector('.tl-toggle').click(); doc('${id}').querySelector('.tbar[data-goto="${target}"]').click()`);
+      await page.once(`seen('${id}').inView`, 'true', 8_000, `${id}: the jump lands on the last card`);
+      assert.ok(await value<boolean>(`above('${id}').some((img) => !img.complete)`), `${id}: pictures above the card are still to load when the reader moves`);
+      // The reader turns the wheel and goes back to the top while the pictures still load; then they all come in.
+      await page.evaluate(`(() => { const at = ${scroller(id)}; at.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -4000 })); at.scrollTop = 0; })()`);
+      release();
+      await page.once(`above('${id}').every((img) => img.complete)`, 'true', 12_000, `${id}: the pictures above the card loaded`);
+      await page.sleep(2_000);
+      const kept = await value<{ top: number; seen: { inView: boolean } }>(`({ top: Math.round(${scroller(id)}.scrollTop), seen: seen('${id}') })`);
+      assert.ok(kept.top < 40 && !kept.seen.inView, `${id}: the page stays where the reader took it (${JSON.stringify(kept)})`);
+    }
+  } finally {
+    await page.close();
+  }
+});
+
 /** The hand run with the film look's pictures set to `images` (shas), and `extra` written beside the run's own blobs. */
 function writeFilmPictures(dir: string, images: string[], extra: Buffer[]) {
   const run = handRun(true).map((line): Line => {
