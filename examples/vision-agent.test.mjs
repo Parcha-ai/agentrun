@@ -184,6 +184,21 @@ test('on fakes a film question runs over a film given beside it, and the report 
   assert.deepEqual(kept.rows[0].cites.map((cite) => [cite.fragment, cite.note]), [['#t=1', '1 s']]);
 });
 
+test('on fakes Lake Mead runs over its committed still images at $0 and ends with a report that cites the first image', { timeout: 300_000, skip: PROGRAMS }, async (t) => {
+  const tmp = await scratch(t);
+  const record = join(tmp, 'recording');
+  const run = await go(tmp, ['--record', record, ...argvFor(['examples/lake-mead']).filter((arg, i, all) => i >= all.indexOf('--input'))], {});
+  assert.equal(statusOf(run), 'complete', stderrOf(run));
+  assert.equal(run.usd, 0);
+  assert.match(run.record.answer, /^\(scripted\) One look at lake-mead-1984-05-15\.jpg/);
+  const manifest = JSON.parse(readFileSync(join(record, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.example, 'lake-mead');
+  const kept = JSON.parse(readFileSync(join(record, 'blobs', `${manifest.result.blob}.json`), 'utf8'));
+  assert.equal(kept.report.page, 'report/index.html');
+  assert.ok(existsSync(join(record, 'blobs', `${kept.report.files['frames/one.png']}.png`)), 'the picture the report shows is a blob too');
+  assert.deepEqual(kept.rows[0].cites.map((cite) => [cite.fragment, cite.note]), [['', 'the image']]);
+});
+
 // The report skill writes report/index.html, so the scripted lead and the fallback prompt do too: one name, fakes and live alike.
 test('the report is report/index.html everywhere: the scripted lead writes and returns it, and the instructions name it with or without the report skill', () => {
   const script = scriptFor({ question: 'q', files: ['a.pdf'] });
