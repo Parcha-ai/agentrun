@@ -122,27 +122,32 @@ export function readFile(path: string, text: string): Reading {
   const sheet = (css: string, what: string) => {
     for (const target of cssTargets(css)) load(target, what);
     const read = cssText(css);
-    if (/expression\s*\(|behavior\s*:|-moz-binding|javascript\s*:|vbscript\s*:/i.test(read)) problem(`${what} has expression(, behavior, -moz-binding or a javascript: value`);
+    if (/expression\s*\(|(?<![\w-])behavior\s*:|-moz-binding|javascript\s*:|vbscript\s*:/i.test(read)) problem(`${what} has expression(, behavior, -moz-binding or a javascript: value`);
   };
   if (readsAs(path) === 'sheet') { sheet(text, `${path}: a url()`); return reading; }
   // The page as a browser builds it (parse5, scripting off as in the viewer's frame): the checks read this tree, never the source text.
   const document = parse(text, { scriptingEnabled: false });
   let title = '';
-  const visit = (node: Node, inTitle: boolean): void => {
-    if (isElement(node)) {
-      const name = node.tagName;
-      if (node.namespaceURI !== HTML) problem(`has a <${name}> in the ${node.namespaceURI?.endsWith('svg') ? 'svg' : node.namespaceURI?.endsWith('MathML') ? 'math' : 'foreign'} namespace`);
-      else if (!ALLOWED_TAGS.has(name)) problem(`has a <${name}>`);
-      else elementRules(node, name);
-      const raw = node.childNodes.filter((child): child is TextNode => child.nodeName === '#text').map((child) => child.value).join('');
-      if (name === 'style') sheet(raw, 'a <style> block');
-      const content = (node as unknown as { content?: Node }).content;
-      for (const child of node.childNodes) visit(child, name === 'title');
-      if (content) visit(content, false);
-      return;
+  // An explicit work list, not recursion: a deeply nested page is a long list, never a stack overflow.
+  const visit = (root: Node): void => {
+    const work: { node: Node; inTitle: boolean }[] = [{ node: root, inTitle: false }];
+    while (work.length) {
+      const { node, inTitle } = work.pop()!;
+      const children = [...((node as { childNodes?: Node[] }).childNodes ?? [])];
+      if (isElement(node)) {
+        const name = node.tagName;
+        if (node.namespaceURI !== HTML) problem(`has a <${name}> in the ${node.namespaceURI?.endsWith('svg') ? 'svg' : node.namespaceURI?.endsWith('MathML') ? 'math' : 'foreign'} namespace`);
+        else if (!ALLOWED_TAGS.has(name)) problem(`has a <${name}>`);
+        else elementRules(node, name);
+        if (name === 'style') sheet(node.childNodes.filter((child): child is TextNode => child.nodeName === '#text').map((child) => child.value).join(''), 'a <style> block');
+        const content = (node as unknown as { content?: Node }).content;
+        if (content) children.push(content);
+        for (const child of children.reverse()) work.push({ node: child, inTitle: name === 'title' });
+        continue;
+      }
+      if (node.nodeName === '#text' && inTitle) title += (node as TextNode).value;
+      for (const child of children.reverse()) work.push({ node: child, inTitle });
     }
-    if (node.nodeName === '#text' && inTitle) title += (node as TextNode).value;
-    for (const child of (node as { childNodes?: Node[] }).childNodes ?? []) visit(child, inTitle);
   };
   const elementRules = (node: Element, name: string): void => {
     const attribs = new Map<string, string>();
@@ -163,7 +168,7 @@ export function readFile(path: string, text: string): Reading {
       else if (/^(?:javascript|vbscript|data):/i.test(normalized(value))) problem(`has a ${normalized(value).slice(0, normalized(value).indexOf(':'))}: value in ${attribute}`);
     }
   };
-  visit(document as unknown as Node, false);
+  visit(document as unknown as Node);
   if (title.trim()) reading.title = title.trim().slice(0, 200);
   return reading;
 }

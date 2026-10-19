@@ -273,3 +273,13 @@ test('the allowlist: every attribute outside it is refused, data-*, aria-*, load
     assert.throws(() => take(report(t, { 'index.html': html })), message, what);
   }
 });
+
+test('scroll-behavior is allowed, behavior is not; and a page nested a hundred thousand deep is a refusal or a pass, never a stack overflow', (t) => {
+  assert.ok(take(report(t, { 'index.html': PAGE('<p>x</p>', '<style>html { scroll-behavior: smooth } p { overscroll-behavior: contain }</style>') })).artifact);
+  assert.throws(() => take(report(t, { 'index.html': PAGE('<p style="behavior:url(x.htc)">x</p>') })), /behavior/);
+  assert.throws(() => take(report(t, { 'index.html': PAGE('<p style="width:1px;behavior:url(x.htc)">x</p>') })), /behavior/);
+  const deep = PAGE('<div>'.repeat(100_000) + 'x' + '</div>'.repeat(100_000));
+  assert.deepEqual(readFile('index.html', deep).problems, []);
+  const evil = PAGE('<div>'.repeat(100_000) + '<script>x</script>' + '</div>'.repeat(100_000));
+  assert.ok(readFile('index.html', evil).problems.some((each) => /has a <script>/.test(each)));
+});
