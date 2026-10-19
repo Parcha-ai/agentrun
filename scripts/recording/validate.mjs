@@ -5,7 +5,7 @@
 //
 // `node scripts/recording/validate.mjs <recording-dir>`
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { BLOB_EXTENSIONS, PAGE_EXTENSIONS, SHEET_EXTENSIONS, TEXT_FILE, credentialIn, credentialInFile, credentialInValue } from '../../packages/harness/src/scan.ts';
@@ -153,7 +153,10 @@ export const artifactBlobNames = manifest => new Set(isObject(manifest?.artifact
 const blobFiles = dir => {
   const folder = join(dir, 'blobs');
   const files = existsSync(folder) ? readdirSync(folder) : [];
-  return new Map(files.map(file => [file.split('.')[0], join(folder, file)]));
+  // A hash may be several files (one content, several extensions): every one is a blob to check.
+  const out = new Map();
+  for (const file of files) out.set(file.split('.')[0], [...(out.get(file.split('.')[0]) ?? []), join(folder, file)]);
+  return out;
 };
 
 /** Every problem in the recording at `dir`, in file order: `{ where, line?, message }`. */
@@ -205,14 +208,17 @@ export function validateRecording(dir) {
   const checkBlob = (hash, where, line) => {
     if (checked.has(hash)) return;
     checked.add(hash);
-    const file = blobs.get(hash);
-    if (!file) return add(where, `names blob ${hash}, which is not in blobs/`, line);
-    const bytes = readFileSync(file);
-    if (createHash('sha256').update(bytes).digest('hex') !== hash) add(where, `blob ${hash} does not hash to its name`, line);
-    // A blob is kept whole and shared with the recording, so its text is checked as the lines are: raw, and decoded when it is JSON.
-    if (TEXT_FILE.test(file)) {
-      const found = credentialInFile(file, bytes.toString('utf8'));
-      if (found) add(where, `blob ${hash} contains a ${found}`, line);
+    const held = blobs.get(hash);
+    if (!held) return add(where, `names blob ${hash}, which is not in blobs/`, line);
+    for (const file of held) {
+      if (!statSync(file).isFile()) continue;
+      const bytes = readFileSync(file);
+      if (createHash('sha256').update(bytes).digest('hex') !== hash) add(where, `blob ${hash} does not hash to its name`, line);
+      // A blob is kept whole and shared with the recording, so its text is checked as the lines are: raw, and decoded when it is JSON. Every file that is not media is text, whatever else shares its hash.
+      if (TEXT_FILE.test(file)) {
+        const found = credentialInFile(file, bytes.toString('utf8'));
+        if (found) add(where, `blob ${hash} contains a ${found}`, line);
+      }
     }
   };
   if (manifest?.result?.blob) checkBlob(manifest.result.blob, 'manifest.json', undefined);
