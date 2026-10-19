@@ -16,6 +16,7 @@ import { fitImage, type FitLimits, type PixelSize } from "./image.js";
 import { JEV_IMAGE_BYTES, JEV_MAX_EDGE, JEV_MIN_EDGE, JEV_MODEL, JEV_REQUEST_BYTES } from "./limits.js";
 import { aboutMedium, AS_IS, gatherMedia, namesMedia, once, requestedAbout, throwMiss, type About, type MediaMiss, type MediaRequest } from "./media.js";
 import { firstLine } from "./misses.js";
+import { base64Chars } from "./primitives.js";
 import { lookTiming } from "./timing.js";
 import type { CodeGlobal } from "./see.js";
 
@@ -50,7 +51,7 @@ export type JevPort = {
 
 const TYPES = ["choice", "noul", "score", "box"];
 /** Jev's limits as a fit: PNG or baseline JPEG, upright, each side 280 to 1,568 px, a file under 16 MiB. */
-const JEV_FIT: FitLimits = { maxWidth: JEV_MAX_EDGE, maxHeight: JEV_MAX_EDGE, maxBytes: Math.ceil(JEV_IMAGE_BYTES / 3) * 4, minEdge: JEV_MIN_EDGE, formats: ["image/png", "image/jpeg"], baseline: true };
+const JEV_FIT: FitLimits = { maxWidth: JEV_MAX_EDGE, maxHeight: JEV_MAX_EDGE, maxBytes: base64Chars(JEV_IMAGE_BYTES), minEdge: JEV_MIN_EDGE, formats: ["image/png", "image/jpeg"], baseline: true };
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
 function checked(input: unknown): JudgeRequest {
