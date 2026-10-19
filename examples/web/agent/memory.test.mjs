@@ -100,16 +100,17 @@ test('each run\'s Chrome saves downloads into that run\'s workspace without aski
   assert.equal(prefs().download.default_directory, join(tmp, 'run-2', 'work', 'downloads'), 'without a folder, the download settings are left alone');
 });
 
-test('"What I remember" sits beside the report: the sites by host and when they were checked, each memory file with its text, the runs; no ref, no script, nothing loaded', async (t) => {
+test('"What I remember" is the run\'s artifact: the sites by host and when they were checked, each memory file with its text, the runs; no ref, no script, nothing loaded', async (t) => {
   const { work } = await dirs(t);
   // A profile as the store holds it, ref included: the page takes its sites and time only.
   const signIns = [{ sites: ['https://bills.example', 'not a site'], verifiedAt: '2026-10-19T22:00:00.000Z', ref: 'ctx-secret-ref' }];
   const runs = [{ startedAt: '2026-10-19T21:00:00.000Z', outcome: 'completed' }, { startedAt: '2026-10-19T22:00:00.000Z', outcome: null }];
-  assert.equal(await writeRememberPage(work, { signIns, runs }), false, 'no report, no page');
-  await mkdir(join(work, 'report'));
+  // The page is the run's artifact whether or not the agent wrote a report; it links to the report only when there is one.
+  await writeRememberPage(work, { signIns, runs });
+  assert.doesNotMatch(readFileSync(join(work, 'report', REMEMBER_PAGE), 'utf8'), /href="index\.html"/);
   writeFileSync(join(work, 'report', 'index.html'), '<p>report</p>');
   await write(join(work, 'memory'), { 'preferences.md': '- Flag anything over 100 <b>\n', 'index.md': '- preferences.md\n', '.hidden': 'x' });
-  assert.equal(await writeRememberPage(work, { signIns, runs }), true);
+  await writeRememberPage(work, { signIns, runs });
   const page = readFileSync(join(work, 'report', REMEMBER_PAGE), 'utf8');
   assert.match(page, /<li>bills\.example, checked 2026-10-19T22:00:00\.000Z<\/li>/);
   assert.match(page, /<h3>index\.md<\/h3>\n<pre>- preferences\.md<\/pre>\n<h3>preferences\.md<\/h3>\n<pre>- Flag anything over 100 &lt;b&gt;<\/pre>/);

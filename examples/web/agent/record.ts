@@ -7,7 +7,8 @@
 // `[redacted]`, every `liveView` in a document null, and the run's own machine is scrubbed (#733). The ids are learned
 // where they arise, from the provider and the profile, before anything commits them. When the run lets go, each
 // session's frames become a WebM (`frame.track`); start-run.mjs finishes the recording once the run has exited
-// (`finishRunRecording`): the agent's `report/` as `manifest.artifact`, the manifest, and the scans.
+// (`finishRunRecording`): the run's `report/` as `manifest.artifact` (the host's "What I remember" page its entry), the
+// manifest, and the scans.
 import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { codeOf, cost, finishRecording, openRecorder, openSupervisor, packageCommitRecorder, redactorOf, runScrub, scanPlaced, scanRecording, type Secret, type Supervisor } from "@parcha/agentrun-reference";
@@ -16,6 +17,7 @@ import { exportFrameTracks, type FrameLine } from "@parcha/pi-browser/recorder";
 import { openAgentHome, readAgentHome } from "@parcha/pi-durable-agent";
 import type { BeforeResume } from "@parcha/pi-durable-disk";
 import { browserIds, idsRedaction, readBrowserIds, withoutLiveViews, type BrowserIds } from "./redact.ts";
+import { REMEMBER_PAGE } from "./remember.ts";
 
 /** Written beside the run when the run's own scan finds a value in what it placed; finishing then refuses the recording. */
 export const REFUSED_FILE = "recording-refused";
@@ -191,8 +193,9 @@ export async function finishRunRecording(options: { dir: string; run: string; en
   const redact = redactionOf(ids, scrubFor(env, dir, home));
   // Blobs only: every line of the recording is the run process's or its supervisor's.
   const recorder = openRecorder({ dir, redact });
+  // The artifact is the host's "What I remember" page, with the agent's own report beside it when it wrote one.
   const report = join(run, "work", "report");
-  const artifact = existsSync(join(report, "index.html")) ? { title: "Site report", entry: "index.html", files: reportFiles(report, (bytes, extension) => recorder.blob(bytes, extension)) } : undefined;
+  const artifact = existsSync(join(report, REMEMBER_PAGE)) ? { title: "What I remember", entry: REMEMBER_PAGE, files: reportFiles(report, (bytes, extension) => recorder.blob(bytes, extension)) } : undefined;
   const { definition } = await readAgentHome(await openAgentHome(home));
 
   const { lines } = finishRecording(dir, {

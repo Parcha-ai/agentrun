@@ -3,6 +3,7 @@
 // conversation is created the way the serve door creates it, after the app's `beforeResume`.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { chmod, cp, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
@@ -140,6 +141,49 @@ test('thinking is never off, and the model and the key come from the host', asyn
   await assert.rejects(createAgent(where, { ...ENV, AGENT_THINKING: 'off' }), /thinking is never off/);
   await assert.rejects(createAgent(where, { ...ENV, AGENT_MODEL: '' }), /AGENT_MODEL/);
   await assert.rejects(createAgent(where, { ...ENV, BROWSERBASE_API_KEY: '' }), /BROWSERBASE_API_KEY/);
+});
+
+test('the model\'s API: OpenAI Responses by default; an Anthropic model over the Messages API at the endpoint\'s root, with pi-ai\'s own entry and price, thinking adaptive and summarized at the effort asked', async (t) => {
+  const { home } = await agentHome(t);
+  const { where } = await started(home, 'run-1');
+  const responses = await createAgent(where, ENV, { makeContext: async () => 'ctx-1' });
+  assert.equal(responses.options.models.getModel('agent-model', 'test-model').api, 'openai-responses');
+  await assert.rejects(createAgent(where, { ...ENV, AGENT_MODEL_API: 'chat' }), /AGENT_MODEL_API is openai-responses or anthropic-messages/);
+  await assert.rejects(createAgent(where, { ...ENV, AGENT_MODEL_API: 'anthropic-messages', AGENT_MODEL: 'no-such-claude' }), /pi-ai has no Anthropic model no-such-claude/);
+
+  // A gateway that records what it is asked and answers one short message, as the Messages API streams it.
+  const asked = [];
+  const gateway = createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      asked.push({ path: req.url, key: req.headers['x-api-key'], body: JSON.parse(body) });
+      const events = [
+        ['message_start', { type: 'message_start', message: { id: 'm1', type: 'message', role: 'assistant', model: 'claude-sonnet-5-5', content: [], stop_reason: null, usage: { input_tokens: 3, output_tokens: 1 } } }],
+        ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }],
+        ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'ok' } }],
+        ['content_block_stop', { type: 'content_block_stop', index: 0 }],
+        ['message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } }],
+        ['message_stop', { type: 'message_stop' }],
+      ];
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(events.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join(''));
+    });
+  });
+  await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+  const env = { ...ENV, AGENT_MODEL_API: 'anthropic-messages', AGENT_MODEL: 'claude-sonnet-5-5', AGENT_MODEL_BASE_URL: `http://127.0.0.1:${gateway.address().port}/v1`, AGENT_MODEL_API_KEY: 'gw-key', AGENT_THINKING: 'high' };
+  const { options } = await createAgent(where, env, { makeContext: async () => 'ctx-1' });
+  const model = options.models.getModel('agent-model', 'claude-sonnet-5-5');
+  assert.deepEqual([model.api, model.baseUrl, model.cost.input, model.cost.output], ['anthropic-messages', `http://127.0.0.1:${gateway.address().port}`, 2, 10], 'the root, and pi-ai\'s own price');
+  assert.equal(options.root.agent.thinkingLevel, 'high');
+  const answer = await options.models.completeSimple(model, { messages: [{ role: 'user', content: 'hi', timestamp: Date.now() }] }, { reasoning: 'high' });
+  assert.equal(answer.content.find((part) => part.type === 'text')?.text, 'ok');
+  const [request] = asked;
+  assert.deepEqual([new URL(request.path, 'http://gateway').pathname, request.key], ['/v1/messages', 'gw-key']);
+  assert.deepEqual([request.body.model, request.body.thinking?.type, request.body.thinking?.display, request.body.output_config?.effort], ['claude-sonnet-5-5', 'adaptive', 'summarized', 'high']);
+  const priced = await createAgent(where, { ...env, AGENT_MODEL_PRICE: '1,5,0.1,1.25' }, { makeContext: async () => 'ctx-1' });
+  assert.equal(priced.options.models.getModel('agent-model', 'claude-sonnet-5-5').cost.output, 5, 'AGENT_MODEL_PRICE still names the price when set');
 });
 
 test('live.json shows the live view while the session is open and nothing once it is released', () => {

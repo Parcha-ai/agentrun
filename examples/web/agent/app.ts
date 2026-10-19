@@ -20,8 +20,10 @@ import type { Duplex } from "node:stream";
 import { join, resolve } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
+import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import type { ModelThinkingLevel, TSchema } from "@earendil-works/pi-ai";
 import { createRegistry, defineDocFamily, defineExtension, defineTool, wrapTool, type ConversationId, type Harness, type JsonObject, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import { DEFAULT_BROWSER_POLICY, type BrowserPolicy, type BrowserProvider, type EvidenceRecord, type SessionChange, type SessionRow } from "@parcha/pi-browser";
@@ -208,28 +210,47 @@ async function localLiveView(where: AppContext, env: NodeJS.ProcessEnv): Promise
 
 // ---- the model -----------------------------------------------------------------------------------------------------------
 
-/** An OpenAI Responses endpoint the host names in its environment. */
+/** The model the host names in its environment (`AGENT_MODEL` at `AGENT_MODEL_BASE_URL`), over the API `AGENT_MODEL_API`
+ *  names: `openai-responses` (the default), or `anthropic-messages` for an Anthropic model, which takes pi-ai's own entry
+ *  for it (its price, its limits, its adaptive thinking with summarized display) over the Messages API at the endpoint's
+ *  root (the base URL without `/v1`; the client adds `/v1/messages`). A gateway's Responses or chat completions bridge
+ *  does not return Claude's thinking; its Messages API does. */
 function modelsOf(env: NodeJS.ProcessEnv) {
   const baseUrl = env.AGENT_MODEL_BASE_URL?.replace(/\/+$/, "");
   const id = env.AGENT_MODEL;
   if (!baseUrl || !id) throw new Error("set AGENT_MODEL_BASE_URL (an OpenAI Responses endpoint) and AGENT_MODEL (its model id)");
+  const api = env.AGENT_MODEL_API || "openai-responses";
+  if (api !== "openai-responses" && api !== "anthropic-messages") throw new Error(`AGENT_MODEL_API is openai-responses or anthropic-messages, not ${api}`);
   // USD per million input, output, cache-read and cache-write tokens (cache writes default to the input rate), so the
-  // run's usage has a price; unset, it is $0.
+  // run's usage has a price; unset, it is $0, or pi-ai's own price for an Anthropic model.
   const [input = 0, output = 0, cacheRead = 0, cacheWrite = input] = (env.AGENT_MODEL_PRICE || "0").split(",").map(Number);
   if (![input, output, cacheRead, cacheWrite].every((rate) => rate >= 0)) throw new Error("AGENT_MODEL_PRICE is input,output,cacheRead[,cacheWrite] in USD per million tokens");
+  const auth = { apiKey: { name: "AGENT_MODEL_API_KEY", resolve: async () => ({ auth: { apiKey: env.AGENT_MODEL_API_KEY || "none" }, source: "AGENT_MODEL_API_KEY" }) } };
   const models = createModels();
-  models.setProvider(createProvider({
-    id: MODEL_PROVIDER,
-    baseUrl,
-    auth: { apiKey: { name: "AGENT_MODEL_API_KEY", resolve: async () => ({ auth: { apiKey: env.AGENT_MODEL_API_KEY || "none" }, source: "AGENT_MODEL_API_KEY" }) } },
-    models: [{
-      id, name: id, api: "openai-responses", provider: MODEL_PROVIDER, baseUrl, reasoning: true, input: ["text", "image"],
-      cost: { input, output, cacheRead, cacheWrite }, contextWindow: 128_000, maxTokens: 32_000,
-      // `system`, not `developer`: every Responses-compatible endpoint takes it.
-      compat: { supportsDeveloperRole: false },
-    }],
-    api: openAIResponsesApi(),
-  }));
+  if (api === "anthropic-messages") {
+    const entry = anthropicProvider().getModels().find((model) => model.id === id);
+    if (!entry) throw new Error(`pi-ai has no Anthropic model ${id}`);
+    const root = baseUrl.replace(/\/v1$/, "");
+    const cost = env.AGENT_MODEL_PRICE ? { cost: { input, output, cacheRead, cacheWrite } } : {};
+    models.setProvider(createProvider({
+      id: MODEL_PROVIDER, baseUrl: root, auth,
+      models: [{ ...entry, ...cost, api: "anthropic-messages", provider: MODEL_PROVIDER, baseUrl: root }],
+      api: anthropicMessagesApi(),
+    } as never));
+  } else {
+    models.setProvider(createProvider({
+      id: MODEL_PROVIDER,
+      baseUrl,
+      auth,
+      models: [{
+        id, name: id, api: "openai-responses", provider: MODEL_PROVIDER, baseUrl, reasoning: true, input: ["text", "image"],
+        cost: { input, output, cacheRead, cacheWrite }, contextWindow: 128_000, maxTokens: 32_000,
+        // `system`, not `developer`: every Responses-compatible endpoint takes it.
+        compat: { supportsDeveloperRole: false },
+      }],
+      api: openAIResponsesApi(),
+    }));
+  }
   const thinking = (env.AGENT_THINKING || "medium") as ModelThinkingLevel;
   if (!THINKING.includes(thinking)) throw new Error(`AGENT_THINKING must be one of ${THINKING.join(", ")}; thinking is never off`);
   return { models, model: { provider: MODEL_PROVIDER, modelId: id }, thinking };

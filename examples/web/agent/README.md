@@ -3,9 +3,9 @@
 An agent that signs in to a website through a person, then reads the pages behind the sign-in and writes what it found
 to files. A person asks it in a chat. It opens a real browser on Browserbase, opens the site's sign-in page and calls
 `request_sign_in`, which ends its turn. The person signs in in the browser's live view and replies "done". The agent goes
-on, writes `report.md`, `pages.csv` and `report/index.html` (the report as one script-free page) in its workspace, and
-releases the browser. The next run of the same agent starts signed in, because both runs use the agent's Browserbase
-context.
+on, answers in the chat (and writes `report.md`, `pages.csv` and `report/index.html` when the person asks for a report),
+keeps what the person said they want in its memory, and releases the browser. The next run of the same agent starts
+signed in, because both runs use the agent's Browserbase context, and reads its memory first.
 
 Use a test account on a practice site, such as https://the-internet.herokuapp.com/login. In this release the model's
 page code can still read what the person types into the page, so a real password must not go through the live view.
@@ -65,7 +65,8 @@ the definition's prompt and tools and the browser's configuration in the commit 
 | `CHROME_PATH` | with `chrome` | The Chrome executable start-run.mjs starts. `PI_BROWSER_NO_SANDBOX=1` starts it without its sandbox, only where Chrome cannot start one. |
 | `AGENT_PAGE_ORIGIN` | no | The origin people open the server's page at; the server sets it. A local Chrome's live view allows only that page to frame it. |
 | `AGENT_LIVE_VIEW_MODULE` | no | Where the local Chrome's live view comes from. Default: pi-browser's `./live-view`, when this pi-browser has it. |
-| `AGENT_MODEL_BASE_URL` | yes | An OpenAI Responses endpoint. |
+| `AGENT_MODEL_BASE_URL` | yes | An OpenAI Responses endpoint, or a gateway whose root serves Anthropic's Messages API. |
+| `AGENT_MODEL_API` | no | `openai-responses` (default), or `anthropic-messages` for an Anthropic model: pi-ai's own entry for it (price, limits, adaptive thinking with its summary shown) over the Messages API at `AGENT_MODEL_BASE_URL` without `/v1`. A gateway's Responses or chat completions bridge does not return Claude's thinking. |
 | `AGENT_MODEL` | yes | The model id at that endpoint. |
 | `AGENT_MODEL_API_KEY` | no | Its key, when it needs one. |
 | `AGENT_MODEL_PRICE` | no | `input,output,cacheRead[,cacheWrite]` in USD per million tokens, so the run's usage has a price. Unset, it is $0. |
@@ -150,9 +151,10 @@ With `AGENT_BROWSER=chrome`, each run's Chrome saves a file the page offers as a
 `work/downloads/` without asking: start-run.mjs sets the profile's download folder again for every run, since the
 profile is shared across runs. The agent's file tools read a downloaded file by its name, and cannot list a folder.
 
-When the run lets go of its browser, the app writes `report/remember.html` beside the agent's report: the sites the
-agent is signed in to and when that was last checked, each memory file with its text, and the agent's runs, never a
-profile's ref. The report links to it, and a recording carries both pages in `manifest.artifact`.
+When the run lets go of its browser, the app writes `report/remember.html`: the sites the agent is signed in to and when
+that was last checked, each memory file with its text, and the agent's runs, never a profile's ref. It is the run's
+`manifest.artifact` entry in a recording. The agent answers in the chat; it writes report files (`report.md`,
+`pages.csv`, `report/index.html`) only when the person asks for a report, and then the two pages link to each other.
 
 ## A local Chrome
 

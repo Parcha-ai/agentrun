@@ -1,9 +1,9 @@
-// "What I remember": a small page the host writes beside the agent's report when the run lets go, so the person sees
-// what the agent keeps for next time: the sites it is signed in to and when that was last checked, its memory files with
-// their text, and its runs. Never a profile's ref. Script-free, like the report, and nothing loaded from the network:
-// sites are written as text.
+// "What I remember": a small page the host writes in the run's `report/` when the run lets go, so the person sees what
+// the agent keeps for next time: the sites it is signed in to and when that was last checked, its memory files with their
+// text, and its runs. Never a profile's ref. It is the run's artifact (record.ts), and links to the agent's own report
+// when the agent wrote one. Script-free, and nothing loaded from the network: sites are written as text.
 import { existsSync } from 'node:fs';
-import { readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { MEMORY_DIR, MEMORY_NAME, type MemoryFile } from './memory.ts';
 
@@ -18,7 +18,7 @@ export type SignIn = { sites?: string[]; verifiedAt?: string | null };
 export type RunLine = { startedAt: string; outcome?: string | null };
 
 /** The page's HTML. A memory file's text is shown as it is, in a `<pre>`. */
-export function rememberHtml({ signIns, memory, runs }: { signIns: SignIn[]; memory: MemoryFile[]; runs: RunLine[] }): string {
+export function rememberHtml({ signIns, memory, runs, report = false }: { signIns: SignIn[]; memory: MemoryFile[]; runs: RunLine[]; report?: boolean }): string {
   const sites = signIns.flatMap((signIn) => (signIn.sites ?? []).map(hostOf).filter((host): host is string => Boolean(host)).map((host) => ({ host, verifiedAt: signIn.verifiedAt ?? null })));
   return `<!doctype html>
 <html lang="en">
@@ -36,20 +36,19 @@ ${sites.length ? `<ul>\n${sites.map((site) => `<li>${escape(site.host)}${site.ve
 ${memory.length ? memory.map((file) => `<h3>${escape(file.name)}</h3>\n<pre>${escape(file.text.trimEnd())}</pre>`).join('\n') : '<p class="none">Nothing yet.</p>'}
 <h2>Runs</h2>
 ${runs.length ? `<ul>\n${runs.map((run) => `<li>${escape(run.startedAt)}${run.outcome ? `, ${escape(run.outcome)}` : ', this run'}</li>`).join('\n')}\n</ul>` : '<p class="none">None.</p>'}
-<p><a href="index.html">Back to the report</a></p>
+${report ? '<p><a href="index.html">The report</a></p>' : ''}
 </body>
 </html>
 `;
 }
 
-/** Beside the agent's report, when there is one: `work/report/remember.html`, with the run's `work/memory/` files.
- *  Returns whether it wrote. */
-export async function writeRememberPage(workDir: string, { signIns, runs }: { signIns: SignIn[]; runs: RunLine[] }): Promise<boolean> {
+/** `work/report/remember.html`, with the run's `work/memory/` files, linked to the agent's `report/index.html` when it
+ *  wrote one. */
+export async function writeRememberPage(workDir: string, { signIns, runs }: { signIns: SignIn[]; runs: RunLine[] }): Promise<void> {
   const report = join(workDir, 'report');
-  if (!existsSync(join(report, 'index.html'))) return false;
+  await mkdir(report, { recursive: true });
   const dir = join(workDir, MEMORY_DIR);
   const names = existsSync(dir) ? (await readdir(dir)).filter((name) => MEMORY_NAME.test(name)).sort() : [];
   const memory = await Promise.all(names.map(async (name) => ({ name, text: await readFile(join(dir, name), 'utf8') })));
-  await writeFile(join(report, REMEMBER_PAGE), rememberHtml({ signIns, memory, runs }));
-  return true;
+  await writeFile(join(report, REMEMBER_PAGE), rememberHtml({ signIns, memory, runs, report: existsSync(join(report, 'index.html')) }));
 }
