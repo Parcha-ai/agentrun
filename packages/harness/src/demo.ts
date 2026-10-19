@@ -32,13 +32,13 @@ import type { CodeModeOptions } from './code-mode.ts';
 import { pathsAt, placeAt, run, type Job, type RunOptions } from './assemble.ts';
 import { RUN_LABEL, tapBox } from './boxes.ts';
 import type { Recorder, Redact } from './record.ts';
-import { capJudge, JEV_CAPS } from './judge.ts';
+import { priceJudge } from './judge.ts';
 import { askToBeKilled, aroundOwnFiling, crossings, tapFakes, tapHost, tapLive, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
 import { keepLooks, shownShots } from './looks.ts';
 import { transcriberFromEnv } from './transcriber.ts';
 import type { LookRecord } from '@parcha/pi-vision';
 import { localPlace, type Exit, type Place, type Runner } from './place.ts';
-import { checkModelKeys, judgeCapsOf, inputOf, declaredEnv, childPlansOf, chooseBrowser, effectiveBoxes, killsOf, maxUsdOf, plansOf, type ChildPlan, type DemoSpec } from './demo-spec.ts';
+import { checkModelKeys, refuseJudgeCaps, inputOf, declaredEnv, childPlansOf, chooseBrowser, effectiveBoxes, killsOf, maxUsdOf, plansOf, type ChildPlan, type DemoSpec } from './demo-spec.ts';
 import { cost } from './fold.ts';
 import { checkItems, fetchSources, missingCommitted, readSources, withSources } from './sources.ts';
 import { localHost, type BrowserPlane, type Fakes, type Host, type RunPlace } from './host.ts';
@@ -166,14 +166,14 @@ function noBrowser(): BrowserPlane {
   return { provider: refuse, driver: async () => refuse() };
 }
 
-/** The host a run uses, in the order that keeps every platform check on the final host: the live parts merged in, then the crossings put at its seams, then the judge seam's caps. */
-export function composeHost(host: Host, parts: Partial<Host> | undefined, cross: Cross, window: EffectWindow, spentFile: string, live = false, caps: { requests: number; tokens: number } = JEV_CAPS, fakesTapped = false): void {
+/** The host a run uses, in the order that keeps every platform check on the final host: the live parts merged in, then the crossings put at its seams, then the judge seam's price. */
+export function composeHost(host: Host, parts: Partial<Host> | undefined, cross: Cross, window: EffectWindow, live = false, fakesTapped = false): void {
   mergeParts(host, parts);
   // The fakes' judge and model have their crossings from `tapFakes`; a live host's get them here, so a kill at `judge.asked <label>` lands before a paid question. When the host's fallback judge and model are the fakes' and
   // are already tapped (`fakesTapped`), only the ones the live parts replaced are tapped here, so no crossing is counted twice.
   if (live) tapLive(host, cross, { judge: !fakesTapped || Boolean(parts?.decisions?.runJudge), model: !fakesTapped || Boolean(parts?.models) });
   tapHost(host, cross, window);
-  host.decisions = { ...host.decisions, runJudge: capJudge(host.decisions.runJudge, spentFile, caps) };
+  host.decisions = { ...host.decisions, runJudge: priceJudge(host.decisions.runJudge) };
 }
 
 /** The live parts merged into the host member by member: a part's `tools` or `decisions` adds to the host's, never replaces it wholesale (its extensions, `answered`, `rerun` and browser
@@ -257,8 +257,8 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   const local = localHost(place, live ? (fakesTapped ?? options.fakes) : tapFakes(options.fakes, cross), {
     ...(tapped ? { liveTools: tapped.tools, fakesDeclared: declaredFakes } : {}), browser: browserKind === 'none' ? noBrowser() : fakeBrowser(env.BACKEND!), live, deferLogs: true, ...(recorder ? { recorder } : {}), ...(boxes ? { boxes } : {}) });
   // The live parts are merged into the host member by member FIRST, then the platform wraps the final host: the crossings (so a live `status` or `tools` still has them) and the judge seam's
-  // caps (Jev's), which a live judge is held to too.
-  composeHost(local.host, parts.host, cross, window, join(place.root, 'judge-spent.jsonl'), live, judgeCapsOf(options.spec), fakesTapped !== undefined);
+  // price, which a live judge gets too.
+  composeHost(local.host, parts.host, cross, window, live, fakesTapped !== undefined);
   // A demo with `browser: false` has none, whatever the live parts supplied.
   if (browserKind === 'none') local.host.tools = { ...local.host.tools, browser: noBrowser() };
   // The checked files the job reads, fetched into work/ and verified: on --live and with --fetch-sources (a no-key run uses the files the demo commits). `sourcesFor(input)` names only the items this input needs;
@@ -380,7 +380,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const browser = spec.browser === false ? 'none' as const : chooseBrowser({ live, env: process.env, localChrome: values['local-chrome'] === true });
   // Refused at load, before any child starts: a model whose provider needs a key the demo does not declare, and a cap beyond its ceiling.
   checkModelKeys(spec);
-  judgeCapsOf(spec);
+  refuseJudgeCaps(spec);
   const plans = values.kill ? plansOf(killsOf(spec)) : [];
   const maxUsd = maxUsdOf(values['max-usd'], spec);
   // The operator's control file: a path the caller names (`--operator-kill`), which must not exist yet (a stale one would kill the first process).
