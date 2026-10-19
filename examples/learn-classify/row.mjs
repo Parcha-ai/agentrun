@@ -1,5 +1,6 @@
-// The per-run row (CLASSIFY-CONTRACT.md): one JSON line per run in out/runs.jsonl, every field a fact the host read from
-// the run's store, its tool calls, the proposal or curate's ports, never the model's claim.
+// The per-run row (CLASSIFY-CONTRACT.md, its field rules in the DSL's words): one JSON line per run in out/runs.jsonl,
+// every field a fact the host read from the run's store, its tool calls, the proposal or curate's ports, never the
+// model's claim.
 
 const NEW_TYPES = new Set(['lesson', 'fact', 'workflow']);
 
@@ -18,22 +19,30 @@ export function curateOf(curated, runId) {
   };
 }
 
-/**
- * byWorkflow: the answer is the `sic2` of a workflow run that completed (the use ended frozen) and whose revision the run's
- * store holds under a name, so the agent did not classify the company itself.
- */
-export function byWorkflowOf(measure, uses) {
+/** byWorkflow: the label is the `sic2` output of a workflow run whose outcome is complete, whatever node inside gave it. */
+export function byWorkflowOf(measure) {
   const answer = measure.answer?.sic2;
-  if (!answer) return false;
-  const frozen = new Set(uses.filter((u) => u.outcome === 'frozen').map((u) => u.sha256));
-  return measure.workflowRuns.some((r) => r.status === 'complete' && r.output?.sic2 === answer && frozen.has(r.digest));
+  return Boolean(answer) && measure.workflowRuns.some((r) => r.outcome === 'complete' && r.output?.sic2 === answer);
 }
 
-/** `run` is the job's place in the order (1 to 100; for a sealed pass, its place in that pass); `runId` the attempt's id. */
-export function rowOf({ run, runId, job, seedSha, afterSha, offered, measure, finished, curated, judgeCostUsd, recording }) {
+/**
+ * The run's spend: `judgeCostUsd` is its Jev part (the run's own decisions and curate's), `costUsd` the whole (every model
+ * call of the run, the workflow's nodes included, plus that Jev part). Either is null when any of its parts is unknown: a
+ * Jev request that threw or came back without a price, a model answer that ended in an error or an abort.
+ */
+export function spendOf(measure, curateJudge = { costUsd: 0, unknown: 0 }) {
+  const judgeKnown = measure.judge.costUsd + curateJudge.costUsd;
+  const judgeCostUsd = measure.judge.unknown || curateJudge.unknown ? null : judgeKnown;
+  const costUsd = judgeCostUsd === null || measure.unpricedAnswers ? null : measure.usage.costUsd + judgeKnown;
+  return { costUsd, judgeCostUsd, knownUsd: measure.usage.costUsd + judgeKnown };
+}
+
+/** `run` is the job's place in the order (1 to 100; for a sealed pass, its place in that pass); `runId` the attempt's id.
+ *  `curateJudge` is the curate call's Jev meter (none for a sealed run). */
+export function rowOf({ run, runId, job, seedSha, afterSha, offered, measure, finished, curated, curateJudge, recording }) {
   const answer = measure.answer?.sic2 ?? null;
   const candidates = finished?.candidates ?? [];
-  const uses = finished?.uses ?? [];
+  const { costUsd, judgeCostUsd } = spendOf(measure, curateJudge);
   return {
     run,
     cik: job.cik,
@@ -43,13 +52,13 @@ export function rowOf({ run, runId, job, seedSha, afterSha, offered, measure, fi
     answer,
     truth: job.sic2,
     correct: answer !== null && answer === job.sic2,
-    costUsd: measure.usage.costUsd + measure.judge.costUsd,
+    costUsd,
     tokensIn: measure.usage.tokensIn,
     tokensOut: measure.usage.tokensOut,
     durationMs: measure.durationMs,
     workflowsOffered: offered,
-    workflowsUsed: uses.map((u) => ({ name: u.name, revision: u.sha256, outcome: u.outcome })),
-    byWorkflow: byWorkflowOf(measure, uses),
+    workflowsUsed: measure.workflowRuns.map(({ name, revision, outcome, classifiedBy }) => ({ name, revision, outcome, ...(classifiedBy ? { classifiedBy } : {}) })),
+    byWorkflow: byWorkflowOf(measure),
     workflowsSaved: [...new Set((finished?.saved ?? []).map((w) => w.name))],
     notes: {
       new: candidates.filter((c) => NEW_TYPES.has(c.type)).length,

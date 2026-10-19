@@ -20,7 +20,8 @@ function codeCommit() {
 }
 
 /** Writes `<into>/<run id>/` and returns its name. */
-export async function writeRecording({ into, run, job, model, providers, started, ended, costUsd, judgeCostUsd }) {
+/** `spend` is the row's (`spendOf`); `modelUsd` the model part, null when unknown. */
+export async function writeRecording({ into, run, job, model, providers, started, ended, spend, modelUsd }) {
   const dir = join(into, run.runId);
   await mkdir(dir, { recursive: true });
   const { lines } = recordingLines(run.storePath);
@@ -37,7 +38,7 @@ export async function writeRecording({ into, run, job, model, providers, started
     model,
     generations: 1,
     kills: 0,
-    cost: { usd: costUsd + judgeCostUsd, parts: { model_and_jev_in_run: costUsd, curate_jev: judgeCostUsd } },
+    cost: { usd: spend.costUsd, parts: { model: modelUsd, jev: spend.judgeCostUsd } },
     source: { run: run.runId, store_sha256: storeSha },
     providers,
   };

@@ -5,6 +5,7 @@
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { createRegistry, createSession, defineExtension, defineTool, Harness } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
+import { inspectWorkflow } from '@parcha/agentrun-dsl';
 import { withRecovery, workspaceFiles } from '@parcha/agentrun-dsl/recovery';
 import { createWorkflowTool, decisionRecovery, nodeRunner, recordingLines, taskScope, toolResult } from '@parcha/agentrun-pi/durable';
 import { collectCandidates, collectUses, collectWorkflows, curate, proposeLearning, schemaWhen, usesSettler, workflowAdmitter } from '@parcha/pi-agent-learn';
@@ -21,12 +22,19 @@ const NODE_INSTRUCTIONS = 'You do one step of a workflow that classifies a compa
 /** The tools a workflow may call, and the ones an agent node inside a workflow is offered when it names none. */
 export const WORKFLOW_TOOL_NAMES = Object.freeze(['fetch_page', 'sic2_groups']);
 
-/** A meter around a `runJudge` port: what it was asked and what it cost, by Jev's own `cost_usd` (null counts as unknown). */
+/** A meter around a `runJudge` port: what it was asked and what it cost, by Jev's own `cost_usd`. A null cost, and a
+ *  request that threw (it may have been billed before it failed), make the meter's spend unknown. */
 export function meteredJudge(judge) {
   const meter = { calls: 0, costUsd: 0, unknown: 0 };
   const run = async (params) => {
-    const result = await judge(params);
     meter.calls += 1;
+    let result;
+    try {
+      result = await judge(params);
+    } catch (error) {
+      meter.unknown += 1;
+      throw error;
+    }
     if (typeof result?.cost_usd === 'number' && Number.isFinite(result.cost_usd)) meter.costUsd += result.cost_usd;
     else meter.unknown += 1;
     return result;
@@ -134,6 +142,59 @@ const json = (text) => { try { return JSON.parse(text); } catch { return undefin
 /** The agentrun tool's run key is `agentrun:<conversation>:<workflow sha256>:<input hash>[:<generation>]`. */
 const digestOfRunKey = (key) => (typeof key === 'string' ? key.split(':')[2] : undefined);
 
+const CLASSIFIED_BY = new Set(['pick', 'workflow-agent', 'agent']);
+
+/** A durable workflow task's terminal outcome, in the DSL's words. A task that never ended was cut off with its run. */
+function outcomeOfTask(task) {
+  if (task.state?.status !== 'terminal') return 'aborted';
+  const outcome = task.state.outcome;
+  if (outcome?.status === 'completed') return outcome.result?.status === 'escalated' ? 'escalated' : outcome.result?.status === 'complete' ? 'complete' : 'failed';
+  if (outcome?.status === 'failed' || outcome?.status === 'faulted') return 'failed';
+  return 'aborted';
+}
+
+/**
+ * Every workflow run the agent asked for, from the run's own records, never from text: each `agentrun.workflow` task in
+ * the store (its key names the revision, its terminal outcome is the outcome), and each `run` call the tool refused
+ * before a task started (`refused`, the revision being the draft's inspection digest). A run's name is the one the
+ * last `load` or `save` before its `run` call gave that revision; a draft never saved has none.
+ */
+export function readWorkflowRuns({ calls, results, lines }) {
+  const named = [];
+  const keyAt = new Map();
+  const refused = [];
+  let draft;
+  calls.forEach((call, at) => {
+    if (call.name !== 'agentrun') return;
+    const result = results.get(call.id);
+    const value = result && !result.isError ? json(textOf(result.content)) : undefined;
+    const action = call.arguments?.action;
+    if (action === 'inspect' && value) draft = inspectWorkflow(value.workflow).sha256;
+    if (action === 'load' && value?.saved) { draft = value.saved.digest; named.push({ at, ...value.saved }); }
+    if (action === 'save' && value?.digest) named.push({ at, name: value.name, digest: value.digest });
+    if (action === 'run' && value?.run?.key && !keyAt.has(value.run.key)) keyAt.set(value.run.key, at);
+    if (action === 'run' && result?.isError && draft) refused.push({ at, digest: draft });
+  });
+  const nameOf = (digest, at) => named.findLast((n) => n.digest === digest && n.at < at)?.name ?? null;
+  const tasks = lines.filter((line) => line.kind === 'agentrun.workflow' && line.data?.input?.key).map((line) => line.data);
+  const started = tasks.map((task) => {
+    const digest = digestOfRunKey(task.input.key);
+    const at = keyAt.get(task.input.key) ?? Infinity;
+    const outcome = outcomeOfTask(task);
+    const output = outcome === 'complete' ? task.state.outcome.result.output ?? null : null;
+    return { at, name: nameOf(digest, at), revision: digest, outcome, output };
+  });
+  const digests = new Set(started.map((r) => r.revision));
+  const before = refused.filter((r) => !digests.has(r.digest)).map((r) => ({ at: r.at, name: nameOf(r.digest, r.at), revision: r.digest, outcome: 'refused', output: null }));
+  return [...started, ...before].sort((a, b) => a.at - b.at).map(({ at, ...run }) => ({
+    ...run,
+    ...(CLASSIFIED_BY.has(run.output?.classifiedBy) ? { classifiedBy: run.output.classifiedBy } : {}),
+  }));
+}
+
+/** Model answers that ended in an error or an abort: a provider may have billed them, and pi recorded no price. */
+const unpricedAnswers = (lines) => lines.filter((line) => line.kind === 'pi.assistant' && ['error', 'aborted'].includes(line.data?.model?.[0]?.stopReason)).length;
+
 /** The usage pi recorded for every conversation of the run, the workflow's nodes included. */
 export function usageTotals(usage) {
   let costUsd = 0;
@@ -193,6 +254,7 @@ export async function runJob({ run, job, model, judge, fetchPage, labels, limitU
   const harness = await Harness.open(await openNodeSqliteStorage(run.storePath), { models: model.models, registry, onReport: (error) => reports.push(String(error?.message ?? error)) }, ctx);
   let stopped = null;
   let stop = () => {};
+  let measured;
   try {
     const root = await harness.root(ctx, { agent: { ...model.agent, extensions: [learn, tools.extension, workflowTool.extension], instructions: await promptOf(run) } });
     if (limitUsd !== undefined) {
@@ -215,22 +277,24 @@ export async function runJob({ run, job, model, judge, fetchPage, labels, limitU
     const calls = messages.filter((m) => m.role === 'assistant').flatMap((m) => m.content.filter((c) => c.type === 'toolCall'));
     const results = new Map(messages.filter((m) => m.role === 'toolResult').map((m) => [m.toolCallId, m]));
     const answers = calls.filter((c) => c.name === 'answer' && !results.get(c.id)?.isError);
-    const answer = answers.at(-1)?.arguments ?? null;
-    const workflowRuns = calls.filter((c) => c.name === 'agentrun' && c.arguments?.action === 'run').map((c) => {
-      const value = json(textOf(results.get(c.id)?.content));
-      return { digest: digestOfRunKey(value?.run?.key), status: value?.outcome?.status ?? 'error', output: value?.outcome?.output ?? null };
-    });
     const toolCalls = {};
     for (const call of calls) toolCalls[call.name] = (toolCalls[call.name] ?? 0) + 1;
-    return {
-      answer, answers: answers.length, workflowRuns, toolCalls, status: settled?.status ?? null, stopped,
-      usage: usageTotals(await harness.usage(ctx)), judge: { ...judge.meter }, durationMs: Date.now() - started, reports,
-      finalText: textOf(messages.findLast((m) => m.role === 'assistant')?.content).trim(),
+    measured = {
+      answer: answers.at(-1)?.arguments ?? null, answers: answers.length, toolCalls, status: settled?.status ?? null,
+      usage: usageTotals(await harness.usage(ctx)), finalText: textOf(messages.findLast((m) => m.role === 'assistant')?.content).trim(),
+      calls, results,
     };
   } finally {
     stop();
     await harness.close(ctx);
   }
+  // The task records are read once the store is closed: every task's final record, the cut-off ones included.
+  const { lines } = recordingLines(run.storePath);
+  const { calls, results, ...rest } = measured;
+  return {
+    ...rest, stopped, workflowRuns: readWorkflowRuns({ calls, results, lines }), unpricedAnswers: unpricedAnswers(lines),
+    judge: { ...judge.meter }, durationMs: Date.now() - started, reports,
+  };
 }
 
 async function inRunStore(run, step) {

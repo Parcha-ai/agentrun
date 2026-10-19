@@ -94,32 +94,45 @@ demotion after 2).
 
 ## The row
 
-`runs.jsonl` holds one JSON object per run (the contract between the demo's lanes):
+`runs.jsonl` holds one JSON object per run, the contract between the demo's lanes, in the DSL's own words:
 
 ```json
 { "run": 2, "cik": "0000320193", "split": "run", "seedSha": "<main the run started from>", "afterSha": "<main after curate>",
   "answer": "35", "truth": "35", "correct": true, "costUsd": 0.0031, "tokensIn": 17349, "tokensOut": 138, "durationMs": 9120,
   "workflowsOffered": ["classify-company"],
-  "workflowsUsed": [{ "name": "classify-company", "revision": "<sha256>", "outcome": "frozen" }],
+  "workflowsUsed": [{ "name": "classify-company", "revision": "<sha256>", "outcome": "complete", "classifiedBy": "pick" }],
   "byWorkflow": true, "workflowsSaved": [], "notes": { "new": 0, "used": 1, "corrected": 0 },
   "curate": { "admitted": [], "promoted": ["classify-company"], "demoted": [], "held": [], "refused": [] },
   "judgeCostUsd": 0.0004, "recording": "run-002" }
 ```
 
-- `costUsd`: every model call of the run (the root agent and the workflow's agent nodes, as pi recorded them) plus the
-  run's own Jev decisions. `judgeCostUsd`: curate's Jev, the leak gate included. Live, both are estimates from list
-  prices (`models.mjs`); the gateway's ledger is the bill. Scripted, both are 0 and the tokens are the faux provider's
-  estimate.
-- `workflowsUsed`: the run's `agentrun.workflow` tasks of a revision its store holds under a name, as the package reads
-  them for promotion: `frozen` (finished alone), `escalated` (handed back) or `failed`.
-- `byWorkflow`: the answer is the `sic2` output of a workflow run that completed, of a revision used `frozen`. The agent
-  did not classify the company itself. It is read from the tool's own answers, never from the model's prose.
+- `workflowsUsed`: one entry per workflow run the agent asked for, read from the run's records, never from text.
+  - `outcome` is the durable task's terminal outcome: `complete` or `escalated` (the task completed with that result),
+    `failed`, `aborted` (cancelled, or cut off with the run), or `refused` (the tool refused the run before a task
+    started, such as a code node on a host with no executor).
+  - `revision` is the run key's workflow digest (`agentrun:<conversation>:<sha256>:<input hash>`), which is the saved
+    digest for a saved revision. `name` is the name the last `load` or `save` before the `run` call gave that revision;
+    a draft never saved has `name: null`.
+  - `classifiedBy` (`pick`, `workflow-agent` or `agent`) is there only when the workflow's own output names it.
+- `byWorkflow`: the answer is the `sic2` output of a workflow run whose outcome is `complete`, whatever node inside gave
+  it. The agent did not classify the company itself.
+- `costUsd`: the run's whole cost: every model call (the root agent and the workflow's agent nodes, as pi recorded them),
+  the run's own Jev decisions and curate's Jev for it, the leak gate included. `judgeCostUsd` is the Jev part. Either is
+  `null` when any of its parts is unknown: a Jev request that threw or came back without a price, a model answer that
+  ended in an error or an abort. Never 0 for an unknown, never a guess. Live, prices are the list prices in `models.mjs`
+  and the Jev runner's configured pricing; the gateway's ledger is the bill. Scripted, both are 0: nothing was paid.
 - `notes`: the run's `learn` calls: `new` (lesson, fact, workflow), `used`, `corrected`.
 - `curate`: what curation did for this run. `admitted`, `promoted`, `demoted` are workflow names (from the admitter's and
   the settler's own answers); `held` and `refused` are items with a reason (`{ workflow | id | candidate, reason }`).
+  Promotion keeps pi-agent-learn's own words for a use (`frozen` when a run completed), in `trial.json`, not in the row.
 - `recording`: the run's `agentrun.recording/1` directory under `recordings/`, or `null`. Each passes
-  `scripts/recording/validate.mjs`.
+  `scripts/recording/validate.mjs`. A run's recording is about 100 to 130 KB scripted; live, with real pages and
+  thinking, expect a few hundred KB, so 100 runs keep tens of MB on disk, each far under the gallery's 40 MB cap.
 - A sealed row has `split: "sealed"`, `seedSha` = `afterSha` = the commit it was scored at, and an empty `curate`.
+
+The truth set's build report names companies whose SIC follows a filing convention (a REIT under 67, say). The agent
+never sees that list; the runner marks those companies in its log and the curve counts how many of them each pass got
+right, to check whether the notes learned the conventions.
 
 ## Files
 

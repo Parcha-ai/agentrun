@@ -10,7 +10,9 @@ import { pathToFileURL } from 'node:url';
 
 const readRows = (file) => (existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []);
 const esc = (text) => String(text).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-const usd = (n, digits = 4) => `$${n.toFixed(digits)}`;
+const usd = (n, digits = 4) => (n === null || n === undefined ? 'unknown' : `$${n.toFixed(digits)}`);
+const known = (rows) => rows.filter((r) => r.costUsd !== null);
+const meanCost = (rows) => (known(rows).length ? known(rows).reduce((s, r) => s + r.costUsd, 0) / known(rows).length : null);
 const pct = (n) => `${Math.round(n * 100)}%`;
 const WINDOW = 10;
 
@@ -24,7 +26,7 @@ export function curveData(rows) {
   const windows = [];
   for (let at = 0; at < sorted.length; at += WINDOW) {
     const window = sorted.slice(at, at + WINDOW);
-    windows.push({ from: window[0].run, to: window.at(-1).run, share: window.filter((r) => r.byWorkflow).length / window.length, size: window.length, costUsd: window.reduce((s, r) => s + r.costUsd + r.judgeCostUsd, 0) / window.length });
+    windows.push({ from: window[0].run, to: window.at(-1).run, share: window.filter((r) => r.byWorkflow).length / window.length, size: window.length, costUsd: meanCost(window) });
   }
   const marks = sorted.flatMap((row) => [
     ...row.curate.admitted.map((name) => ({ run: row.run, kind: 'born', name })),
@@ -62,16 +64,17 @@ function runAxis(rows) {
 
 function costChart(data) {
   const { rows, marks } = data;
-  const costs = rows.map((r) => r.costUsd + r.judgeCostUsd);
-  const yMax = niceMax(Math.max(...costs, 0));
+  const costs = rows.map((r) => r.costUsd);
+  const yMax = niceMax(Math.max(...known(rows).map((r) => r.costUsd), 0));
   const { x, step, xs } = runAxis(rows);
   const f = frame({ h: 260, yMax, yTicks: [0, yMax / 2, yMax], yFormat: (v) => usd(v, v === 0 ? 0 : 4), xs, label: 'Cost per job, by run' });
   const bw = Math.max(2, Math.min(18, step - 2));
   const bars = rows.map((r, i) => {
     const v = costs[i];
+    const tip = `run ${r.run}: ${usd(v)}, Jev ${usd(r.judgeCostUsd)}; ${r.byWorkflow ? 'by a workflow' : 'by hand'}; ${r.correct ? 'correct' : 'wrong'}`;
+    if (v === null) return `<g class="hit" data-tip="${esc(`${tip}; a part of its cost is unknown`)}"><rect class="target" x="${x(i) - step / 2}" y="${PAD.t}" width="${step}" height="${f.plotH}"/><text class="unknown" x="${x(i)}" y="${f.y(0) - 4}" text-anchor="middle">?</text></g>`;
     const top = f.y(v);
     const hgt = Math.max(0, f.y(0) - top);
-    const tip = `run ${r.run}: ${usd(v)} (model and in-run Jev ${usd(r.costUsd)}, curate ${usd(r.judgeCostUsd)}); ${r.byWorkflow ? 'by a workflow' : 'by hand'}; ${r.correct ? 'correct' : 'wrong'}`;
     const shape = hgt >= 4 ? `<path class="bar${r.byWorkflow ? ' wf' : ''}" d="M${x(i) - bw / 2},${f.y(0)} V${top + 4} q0,-4 4,-4 H${x(i) + bw / 2 - 4} q4,0 4,4 V${f.y(0)} Z"/>` : `<rect class="bar${r.byWorkflow ? ' wf' : ''}" x="${x(i) - bw / 2}" y="${top}" width="${bw}" height="${hgt}"/>`;
     return `<g class="hit" data-tip="${esc(tip)}"><rect class="target" x="${x(i) - step / 2}" y="${PAD.t}" width="${step}" height="${f.plotH}"/>${shape}</g>`;
   }).join('');
@@ -109,41 +112,45 @@ function shareChart(data) {
   return f.svg(bars);
 }
 
-function tiles(data, sealed) {
+function tiles(data, sealed, conventions) {
   const { rows } = data;
   const first = rows.slice(0, WINDOW);
   const last = rows.slice(-WINDOW);
-  const mean = (list) => (list.length ? list.reduce((s, r) => s + r.costUsd + r.judgeCostUsd, 0) / list.length : 0);
+  const unknown = rows.length - known(rows).length;
   const out = [
     ['runs', String(rows.length)],
     ['accuracy', rows.length ? `${rows.filter((r) => r.correct).length} of ${rows.length}` : '-'],
-    ['spent', usd(rows.reduce((s, r) => s + r.costUsd + r.judgeCostUsd, 0), 2)],
-    [`a job, first ${first.length}`, usd(mean(first))],
-    [`a job, last ${last.length}`, usd(mean(last))],
+    [unknown ? `spent, ${unknown} run(s) unknown` : 'spent', usd(known(rows).reduce((s, r) => s + r.costUsd, 0), 2)],
+    [`a job, first ${first.length}`, usd(meanCost(first))],
+    [`a job, last ${last.length}`, usd(meanCost(last))],
     [`by a workflow, last ${last.length}`, last.length ? pct(last.filter((r) => r.byWorkflow).length / last.length) : '-'],
+    ...(() => {
+      const under = rows.filter((r) => conventions[r.cik]);
+      return under.length ? [['under a filing convention', `${under.filter((r) => r.correct).length} of ${under.length}`]] : [];
+    })(),
     ...[...sealed].sort((a, b) => Number(b.seed) - Number(a.seed)).map((s) => [`sealed, ${s.seed ? 'before (the seed)' : `at ${s.label.slice(0, 7)}`}`, `${s.rows.filter((r) => r.correct).length} of ${s.rows.length}`]),
   ];
   return out.map(([k, v]) => `<div class="tile"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join('');
 }
 
-function table(rows) {
-  const head = ['run', 'answer', 'truth', 'by', 'cost', 'judge', 'offered', 'used', 'saved', 'curate'];
+function table(rows, conventions) {
+  const head = ['run', 'answer', 'truth', 'convention', 'by', 'cost', 'Jev', 'offered', 'used', 'saved', 'curate'];
   const cells = rows.map((r) => [
-    r.run, r.answer ?? '-', r.truth, r.byWorkflow ? 'workflow' : 'hand', usd(r.costUsd), usd(r.judgeCostUsd), r.workflowsOffered.join(', ') || '-',
-    r.workflowsUsed.map((u) => `${u.name} ${u.revision.slice(0, 7)} ${u.outcome}`).join(', ') || '-', r.workflowsSaved.join(', ') || '-',
+    r.run, r.answer ?? '-', r.truth, conventions[r.cik] ? 'yes' : '', r.byWorkflow ? 'workflow' : 'hand', usd(r.costUsd), usd(r.judgeCostUsd), r.workflowsOffered.join(', ') || '-',
+    r.workflowsUsed.map((u) => `${u.name ?? 'draft'} ${u.revision.slice(0, 7)} ${u.outcome}${u.classifiedBy ? ` (${u.classifiedBy})` : ''}`).join(', ') || '-', r.workflowsSaved.join(', ') || '-',
     [...r.curate.admitted.map((n) => `+${n}`), ...r.curate.promoted.map((n) => `^${n}`), ...r.curate.demoted.map((n) => `v${n}`), ...r.curate.held.map(() => 'held'), ...r.curate.refused.map(() => 'refused')].join(' ') || '-',
   ].map((c) => `<td>${esc(c)}</td>`).join(''));
   return `<table><thead><tr>${head.map((h) => `<th>${h}</th>`).join('')}</tr></thead><tbody>${cells.map((c, i) => `<tr class="${rows[i].correct ? '' : 'wrong'}">${c}</tr>`).join('')}</tbody></table>`;
 }
 
-/** The page, from the rows and the sealed passes (`{ label, seed, rows }`). */
-export function renderCurve({ rows, sealed = [], title = 'Learn-classify curve' }) {
+/** The page, from the rows, the sealed passes (`{ label, seed, rows }`) and the filing conventions (cik to text). */
+export function renderCurve({ rows, sealed = [], conventions = {}, title = 'Learn-classify curve' }) {
   const data = curveData(rows);
   const body = rows.length ? `
-<section><h2>Cost per job</h2><p class="sub">Model and in-run Jev, plus curate's Jev. Darker bars: a workflow finished the job alone. Marks: <span class="key born"></span> a workflow admitted as a trial, <span class="key promoted"></span> promoted, <span class="key demoted"></span> demoted.</p><div class="chart">${costChart(data)}</div></section>
+<section><h2>Cost per job</h2><p class="sub">Every model call of the run and its Jev, curate's included; ? where a part is unknown. Darker bars: a workflow finished the job alone. Marks: <span class="key born"></span> a workflow admitted as a trial, <span class="key promoted"></span> promoted, <span class="key demoted"></span> demoted.</p><div class="chart">${costChart(data)}</div></section>
 <section><h2>Accuracy, last ${WINDOW} runs</h2><p class="sub">Each dot is a run; hollow dots are wrong answers. Truth is the SEC's SIC code, as its 2-digit group.</p><div class="chart">${accuracyChart(data)}</div></section>
 <section><h2>Done by a workflow alone, per ${WINDOW} runs</h2><p class="sub">A run counts when its answer is the output of a workflow run that completed with no agent fallback.</p><div class="chart">${shareChart(data)}</div></section>
-<details><summary>Every run</summary>${table(data.rows)}</details>` : '<p class="sub">No runs yet.</p>';
+<details><summary>Every run</summary>${table(data.rows, conventions)}</details>` : '<p class="sub">No runs yet.</p>';
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(title)}</title>
 <style>
@@ -156,7 +163,7 @@ h1 { font-size:22px; margin:0 0 4px; } h2 { font-size:16px; margin:28px 0 2px; }
 .tiles { display:grid; grid-template-columns:repeat(auto-fill, minmax(140px, 1fr)); gap:8px; margin:16px 0; }
 .tile { border:1px solid var(--grid); border-radius:6px; padding:8px 10px; } .tile .k { color:var(--text2); font-size:12px; } .tile .v { font-size:20px; font-variant-numeric:tabular-nums; }
 .chart { overflow-x:auto; } svg { width:100%; min-width:640px; height:auto; display:block; overflow:visible; }
-.grid { stroke:var(--grid); stroke-width:1; } .axis { stroke:var(--muted); stroke-width:1; } .tick, .note, .value { fill:var(--text2); font-size:12px; } .value { fill:var(--text); }
+.grid { stroke:var(--grid); stroke-width:1; } .axis { stroke:var(--muted); stroke-width:1; } .tick, .note, .value, .unknown { fill:var(--text2); font-size:12px; } .value { fill:var(--text); }
 .bar { fill:var(--bar); } .bar.wf { fill:var(--bar-wf); } .line { fill:none; stroke:var(--line); stroke-width:2; }
 .dot { fill:var(--line); stroke:var(--surface); stroke-width:2; } .dot.miss { fill:var(--surface); stroke:var(--line); stroke-width:2; }
 .mark { stroke:var(--surface); stroke-width:1; } .mark.born, .key.born { fill:var(--born); background:var(--born); } .mark.promoted, .key.promoted { fill:var(--promoted); background:var(--promoted); } .mark.demoted, .key.demoted { fill:var(--demoted); background:var(--demoted); }
@@ -168,7 +175,7 @@ details { margin-top:28px; } table { border-collapse:collapse; font-size:12px; w
 <body><main>
 <h1>${esc(title)}</h1>
 <p class="sub">One company per run, in order. After each run curate merges what it noted and saved; the next run starts from the new main.</p>
-<div class="tiles">${tiles(data, sealed)}</div>
+<div class="tiles">${tiles(data, sealed, conventions)}</div>
 ${body}
 </main><div id="tip" role="tooltip"></div>
 <script>
@@ -188,8 +195,9 @@ export async function writeCurve(out) {
     const label = f.slice('sealed-'.length, -'.jsonl'.length);
     return { label, seed: meta.seedSha?.startsWith(label) ?? false, rows: readRows(join(out, f)) };
   });
+  const conventions = existsSync(join(out, 'conventions.json')) ? JSON.parse(readFileSync(join(out, 'conventions.json'), 'utf8')) : {};
   const file = join(out, 'curve.html');
-  await writeFile(file, renderCurve({ rows: readRows(join(out, 'runs.jsonl')), sealed }));
+  await writeFile(file, renderCurve({ rows: readRows(join(out, 'runs.jsonl')), sealed, conventions }));
   return file;
 }
 

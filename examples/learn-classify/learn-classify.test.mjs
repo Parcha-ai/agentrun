@@ -13,9 +13,10 @@ import { validateRecording } from '../../scripts/recording/validate.mjs';
 import { renderCurve } from './curve.mjs';
 import { gatedAdmitter, LEAK_QUESTION } from './gates.mjs';
 import { agentHomeFor, groupsOf, jobInput, meteredJudge, prepareRun, runJob } from './host.mjs';
-import { byWorkflowOf } from './row.mjs';
+import { byWorkflowOf, rowOf, spendOf } from './row.mjs';
 import { liveParts, openOut, readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
-import { CLASSIFY_WORKFLOW, FIXTURES, fixtureFetch, readJson, scriptedJev, scriptedModel, WORKFLOW } from './scripted.mjs';
+import { inspectWorkflow } from '@parcha/agentrun-dsl';
+import { CLASSIFY_WORKFLOW, extractAnswer, FIXTURES, fixtureFetch, readJson, scriptedJev, scriptedModel, WORKFLOW } from './scripted.mjs';
 
 async function scratch(t) {
   const dir = await mkdtemp(join(tmpdir(), 'learn-classify-test-'));
@@ -64,7 +65,7 @@ test('three scripted jobs: run 1 classifies by hand and saves a workflow, curate
   const saved = (await new WorkflowStore(join(out, 'home/runs/run-001/work')).list()).find((w) => w.name === WORKFLOW);
   for (const row of [second, third]) {
     assert.deepEqual(row.workflowsOffered, [WORKFLOW]);
-    assert.deepEqual(row.workflowsUsed, [{ name: WORKFLOW, revision: saved.digest, outcome: 'frozen' }]);
+    assert.deepEqual(row.workflowsUsed, [{ name: WORKFLOW, revision: saved.digest, outcome: 'complete' }]);
     assert.equal(row.byWorkflow, true);
     assert.deepEqual(row.workflowsSaved, []);
   }
@@ -118,6 +119,7 @@ test('the spend cap stops the pass before the next job once the rows reach it', 
   const { rows, stoppedBy } = await runLoop({ out, parts, jobs: 3, capUsd: 0.005 });
   assert.equal(rows.length, 1);
   assert.ok(rows[0].judgeCostUsd > 0.005);
+  assert.equal(rows[0].costUsd, rows[0].judgeCostUsd);
   assert.match(stoppedBy, /cap/);
 });
 
@@ -130,7 +132,8 @@ test('a run past its own spend limit is aborted where it is, answers nothing and
   const progress = JSON.parse(readFileSync(join(out, 'progress/run-002.json'), 'utf8'));
   assert.match(progress.measure.stopped, /limit of \$0\.005/);
   assert.equal(rows[1].answer, null);
-  assert.ok(rows[1].costUsd >= 0.01);
+  assert.ok(rows[1].judgeCostUsd >= 0.01);
+  assert.ok(rows[1].costUsd === null || rows[1].costUsd >= rows[1].judgeCostUsd);
   assert.equal(rows[1].afterSha, rows[1].seedSha);
 });
 
@@ -210,7 +213,7 @@ test('an agent node inside an in-run workflow is offered fetch_page; a node that
   });
   const measure = await runJob({ run, job, model, judge: meteredJudge(parts.judge()), fetchPage: fixtureFetch(pages, seen), labels });
   assert.deepEqual(seen, [job.website]);
-  assert.equal(measure.workflowRuns[0].status, 'complete');
+  assert.equal(measure.workflowRuns[0].outcome, 'complete');
   assert.equal(measure.workflowRuns[0].output.url, job.website);
   const offered = model.nodeRequests.map((r) => [...r.offered].sort().join(','));
   assert.ok(offered.includes('fetch_page,submit'), offered.join(' | '));
@@ -244,22 +247,79 @@ test('the sealed pass scores at a commit without learning: before (the seed) by 
   assert.equal((await runSealed({ out, parts: scriptedParts(), at: 'main' })).rows.length, 2);
 });
 
-test('byWorkflow is a fact: only a frozen use of the revision whose output is the answer', () => {
-  const runs = [{ digest: 'a', status: 'complete', output: { sic2: '35' } }];
-  assert.equal(byWorkflowOf({ answer: { sic2: '35' }, workflowRuns: runs }, [{ sha256: 'a', outcome: 'frozen' }]), true);
-  assert.equal(byWorkflowOf({ answer: { sic2: '36' }, workflowRuns: runs }, [{ sha256: 'a', outcome: 'frozen' }]), false);
-  assert.equal(byWorkflowOf({ answer: { sic2: '35' }, workflowRuns: runs }, [{ sha256: 'a', outcome: 'escalated' }]), false);
-  assert.equal(byWorkflowOf({ answer: { sic2: '35' }, workflowRuns: runs }, []), false);
-  assert.equal(byWorkflowOf({ answer: null, workflowRuns: runs }, [{ sha256: 'a', outcome: 'frozen' }]), false);
+test('workflowsUsed in the DSL words: a draft never saved has no name, a saved one its name; complete, escalated, refused and failed from the records', async (t) => {
+  const out = join(await scratch(t), 'out');
+  const parts = scriptedParts();
+  const { repo } = await openOut(out, { mode: 'scripted' });
+  const home = await agentHomeFor({ dir: join(out, 'home'), repo });
+  const job = companies[0];
+  const run = await prepareRun({ home, repo, host: 'test', runId: 'run-words', input: jobInput(job) });
+  const input = jobInput(job);
+  // A draft that names the node that classified: its extract writes classifiedBy.
+  const draft = structuredClone(CLASSIFY_WORKFLOW);
+  draft.name = 'draft-by-pick';
+  draft.schemas.Answer.properties.classifiedBy = { type: 'string' };
+  draft.root.steps.at(-1).state.by = 'pick';
+  const withCode = { v: 2, name: 'with-code', schemas: { Company: CLASSIFY_WORKFLOW.schemas.Company, Out: { type: 'object', properties: { x: { type: 'string' } } } }, input: { schemaId: 'Company' }, output: { schemaId: 'Out', path: 'out' }, root: { node: 'code', label: 'compute', code: 's => ({ x: s.name })', as: 'out' } };
+  const fetchOnly = { v: 2, name: 'fetch-only', schemas: { Company: CLASSIFY_WORKFLOW.schemas.Company, Page: CLASSIFY_WORKFLOW.schemas.Page }, input: { schemaId: 'Company' }, output: { schemaId: 'Page', path: 'page' }, root: CLASSIFY_WORKFLOW.root.steps[0] };
+  const boom = { name: job.name, website: 'https://boom.example' };
+  const missing = { name: job.name, website: 'https://www.harborvalve.example/missing' };
+  const model = scriptedModel({
+    root: [
+      { call: 'agentrun', args: { action: 'inspect', workflow: draft, input } },
+      { call: 'agentrun', args: { action: 'run' } },
+      { call: 'agentrun', args: { action: 'inspect', workflow: CLASSIFY_WORKFLOW, input } },
+      { call: 'agentrun', args: { action: 'save', name: WORKFLOW } },
+      { call: 'agentrun', args: { action: 'run' } },
+      { call: 'agentrun', args: { action: 'inspect', workflow: withCode, input } },
+      { call: 'agentrun', args: { action: 'run' } },
+      { call: 'agentrun', args: { action: 'load', name: WORKFLOW, input: missing } },
+      { call: 'agentrun', args: { action: 'run' } },
+      { call: 'agentrun', args: { action: 'inspect', workflow: fetchOnly, input: boom } },
+      { call: 'agentrun', args: { action: 'run' } },
+      { say: 'Done.' },
+    ],
+    node: (state) => ({ submit: { ...extractAnswer(state), ...(state.by ? { classifiedBy: state.by } : {}) } }),
+  });
+  const fetchPage = { ...fixtureFetch(pages), run: async (args) => { if (args.url.startsWith('https://boom.example')) throw new Error('the network is down'); return fixtureFetch(pages).run(args); } };
+  const measure = await runJob({ run, job, model, judge: meteredJudge(parts.judge()), fetchPage, labels });
+  const used = rowOf({ run: 1, runId: run.runId, job, seedSha: run.sha, afterSha: run.sha, offered: [], measure, finished: null, curated: null, recording: null }).workflowsUsed;
+  const digest = (w) => inspectWorkflow(structuredClone(w)).sha256;
+  assert.deepEqual(used, [
+    { name: null, revision: digest(draft), outcome: 'complete', classifiedBy: 'pick' },
+    { name: WORKFLOW, revision: digest(CLASSIFY_WORKFLOW), outcome: 'complete' },
+    { name: null, revision: digest(withCode), outcome: 'refused' },
+    { name: WORKFLOW, revision: digest(CLASSIFY_WORKFLOW), outcome: 'escalated' },
+    { name: null, revision: digest(fetchOnly), outcome: 'failed' },
+  ]);
+});
+
+test('byWorkflow is a fact: the answer is the output of a workflow run whose outcome is complete', () => {
+  const runs = (outcome, sic2) => ({ answer: { sic2: '35' }, workflowRuns: [{ name: null, revision: 'a', outcome, output: { sic2 } }] });
+  assert.equal(byWorkflowOf(runs('complete', '35')), true);
+  assert.equal(byWorkflowOf(runs('complete', '36')), false);
+  assert.equal(byWorkflowOf(runs('escalated', '35')), false);
+  assert.equal(byWorkflowOf({ answer: null, workflowRuns: runs('complete', '35').workflowRuns }), false);
+  assert.equal(byWorkflowOf({ answer: { sic2: '35' }, workflowRuns: [] }), false);
+});
+
+test('spend: the whole run with its Jev part; null, never 0, when a part is unknown', () => {
+  const measure = (extra = {}) => ({ usage: { costUsd: 0.02 }, judge: { costUsd: 0.003, unknown: 0 }, unpricedAnswers: 0, ...extra });
+  assert.deepEqual(spendOf(measure(), { costUsd: 0.001, unknown: 0 }), { costUsd: 0.024, judgeCostUsd: 0.004, knownUsd: 0.024 });
+  assert.deepEqual(spendOf(measure(), { costUsd: 0.001, unknown: 1 }), { costUsd: null, judgeCostUsd: null, knownUsd: 0.024 });
+  assert.deepEqual(spendOf(measure({ unpricedAnswers: 1 })), { costUsd: null, judgeCostUsd: 0.003, knownUsd: 0.023 });
 });
 
 test('the curve marks births and promotions and reads windows of 10', () => {
   const rows = Array.from({ length: 23 }, (_, i) => ({
-    run: i + 1, answer: '35', truth: i % 4 ? '35' : '20', correct: i % 4 !== 0, costUsd: 0.02 - i * 0.0005, judgeCostUsd: 0.001, byWorkflow: i > 5,
+    run: i + 1, cik: String(i), answer: '35', truth: i % 4 ? '35' : '20', correct: i % 4 !== 0, costUsd: i === 4 ? null : 0.02 - i * 0.0005, judgeCostUsd: 0.001, byWorkflow: i > 5,
     workflowsOffered: [], workflowsUsed: [], workflowsSaved: [],
     curate: { admitted: i === 1 ? ['classify-company'] : [], promoted: i === 6 ? ['classify-company'] : [], demoted: [], held: [], refused: [] },
   }));
-  const html = renderCurve({ rows, sealed: [{ label: 'abcdef012345', seed: true, rows: rows.slice(0, 3) }] });
+  const html = renderCurve({ rows, sealed: [{ label: 'abcdef012345', seed: true, rows: rows.slice(0, 3) }], conventions: { 1: 'a convention', 4: 'a convention' } });
+  assert.equal((html.match(/class="unknown"/g) ?? []).length, 1);
+  assert.match(html, /spent, 1 run\(s\) unknown/);
+  assert.match(html, /under a filing convention<\/div><div class="v">1 of 2/);
   assert.equal((html.match(/class="mark born"/g) ?? []).length, 1);
   assert.equal((html.match(/class="mark promoted"/g) ?? []).length, 1);
   assert.match(html, /runs 1-10: 40% by a workflow alone/);
@@ -274,6 +334,9 @@ test('the live parts build from the gateway named in the environment, with no ca
   assert.equal(parts.mode, 'live');
   assert.equal(parts.companies.filter((c) => c.split === 'run').length, 100);
   assert.equal(parts.companies.filter((c) => c.split === 'sealed').length, 30);
+  // The build report's filing conventions mark their companies for the log and the curve; the agent never sees them.
+  assert.ok(Object.keys(parts.conventions).length > 0);
+  for (const cik of Object.keys(parts.conventions)) assert.ok(parts.companies.some((c) => c.cik === cik));
   const job = parts.companies.find((c) => c.order === 1);
   assert.equal(parts.fetchFor(job).name, 'fetch_page');
   const model = parts.modelFor(job);

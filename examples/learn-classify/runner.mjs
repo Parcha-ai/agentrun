@@ -19,7 +19,7 @@ import {
   AGENT_DIR, agentHomeFor, curateJob, finishJob, groupsOf, jobInput, meteredJudge, prepareRun, readAgentAt, runJob, usageOfStore,
 } from './host.mjs';
 import { writeRecording } from './recording.mjs';
-import { rowOf } from './row.mjs';
+import { rowOf, spendOf } from './row.mjs';
 import { agentScript, FIXTURES, fixtureWeb, scriptedJev, scriptedModel } from './scripted.mjs';
 import { domainOf, fetchPageTool } from './tools.mjs';
 
@@ -65,19 +65,22 @@ export async function openOut(out, { mode }) {
   return { repo, bare, meta };
 }
 
+/** The label set, the companies, and the filing conventions the truth set's build report names (cik to convention): the
+ *  host never shows those to the agent; a row's company is marked when it is under one, to check what the notes learned. */
 const loadData = (data) => ({
   labels: JSON.parse(readFileSync(join(data, 'sic2.json'), 'utf8')),
   companies: JSON.parse(readFileSync(join(data, 'companies.json'), 'utf8')),
+  conventions: Object.fromEntries((readJsonIf(join(data, 'build-report.json'))?.conventions ?? []).flatMap((c) => c.companies.map((company) => [company.cik, c.convention]))),
 });
 
 /** The $0 parts: the scripted agent and Jev, and lane C1's fetch_page reading fixture pages instead of the web. A data
  *  directory without pages.json gets 404s. */
 export function scriptedParts({ data = FIXTURES } = {}) {
-  const { labels, companies } = loadData(data);
+  const { labels, companies, conventions } = loadData(data);
   const pages = readJsonIf(join(data, 'pages.json')) ?? {};
   const truthByName = Object.fromEntries(companies.map((c) => [c.name, c.sic2]));
   return {
-    mode: 'scripted', providers: 'scripted', modelName: 'faux/scripted', labels, companies,
+    mode: 'scripted', providers: 'scripted', modelName: 'faux/scripted', labels, companies, conventions,
     judge: () => scriptedJev({ truthByName, groups: groupsOf(labels) }),
     fetchFor: (job) => fetchPageTool({ allowDomain: domainOf(job.website), fetch: fixtureWeb(pages) }),
     modelFor: (job, run) => scriptedModel({ root: agentScript({ job, offered: run.workflows.loaded.map((w) => w.name), truth: job.sic2, page: pages[job.website] }) }),
@@ -88,10 +91,10 @@ export function scriptedParts({ data = FIXTURES } = {}) {
 export async function liveParts({ data = DATA, model = 'gpt-6-luna', thinking = 'medium', env = process.env } = {}) {
   const { gatewayJev, gatewayModel, gatewayOf } = await import('./models.mjs');
   const gateway = gatewayOf(env);
-  const { labels, companies } = loadData(data);
+  const { labels, companies, conventions } = loadData(data);
   const jev = gatewayJev(gateway);
   return {
-    mode: 'live', providers: 'real', modelName: `gateway/${model}`, labels, companies,
+    mode: 'live', providers: 'real', modelName: `gateway/${model}`, labels, companies, conventions,
     judge: () => jev,
     fetchFor: (job) => fetchPageTool({ allowDomain: domainOf(job.website) }),
     modelFor: () => gatewayModel(gateway, { model, thinking }),
@@ -99,22 +102,24 @@ export async function liveParts({ data = DATA, model = 'gpt-6-luna', thinking = 
 }
 
 const short = (sha) => (sha ? sha.slice(0, 7) : '-');
-const usd = (n) => `$${n.toFixed(4)}`;
-export function lineOf(row) {
-  const how = row.byWorkflow ? `by ${row.workflowsUsed.find((u) => u.outcome === 'frozen')?.name ?? 'a workflow'}` : 'by hand';
+const usd = (n) => (n === null ? 'unknown' : `$${n.toFixed(4)}`);
+export function lineOf(row, convention) {
+  const how = row.byWorkflow ? `by ${row.workflowsUsed.find((u) => u.outcome === 'complete' && u.name)?.name ?? 'a draft workflow'}` : 'by hand';
   const curated = [
     ...row.curate.admitted.map((n) => `admitted ${n}`), ...row.curate.promoted.map((n) => `promoted ${n}`), ...row.curate.demoted.map((n) => `demoted ${n}`),
     ...row.curate.held.map((h) => `held ${h.workflow ?? h.id ?? `note ${h.candidate}`}`), ...row.curate.refused.map((h) => `refused ${h.workflow ?? h.id ?? `note ${h.candidate}`}`),
   ];
-  return `run ${row.run} ${row.split === 'run' ? '' : `(${row.split}) `}${row.answer ?? 'no answer'} vs ${row.truth} ${row.correct ? 'correct' : 'wrong'}, ${how}, ${usd(row.costUsd)} + judge ${usd(row.judgeCostUsd)}`
+  return `run ${row.run} ${row.split === 'run' ? '' : `(${row.split}) `}${row.answer ?? 'no answer'} vs ${row.truth} ${row.correct ? 'correct' : 'wrong'}${convention ? ' (a filing convention)' : ''}, ${how}, ${usd(row.costUsd)} (Jev ${usd(row.judgeCostUsd)})`
     + `${row.workflowsSaved.length ? `, saved ${row.workflowsSaved.join(', ')}` : ''}${curated.length ? `; curate ${curated.join(', ')}` : ''}; main ${short(row.seedSha)} -> ${short(row.afterSha)}`;
 }
 
-/** What the attempts a stop abandoned spent, from every job's progress file. */
-function abandonedSpend(out) {
+/** What the pass has spent, as far as it is known, from every job's progress file: each finished job's known parts and
+ *  each abandoned attempt's model spend. A part whose price is unknown counts nothing here; the row says null for it. */
+function knownSpend(out) {
   const dir = join(out, 'progress');
   if (!existsSync(dir)) return 0;
-  return readdirSync(dir).filter((f) => f.endsWith('.json')).reduce((sum, f) => sum + (readJsonIf(join(dir, f))?.abandoned ?? []).reduce((s, a) => s + a.costUsd, 0), 0);
+  return readdirSync(dir).filter((f) => f.endsWith('.json')).map((f) => readJsonIf(join(dir, f)) ?? {})
+    .reduce((sum, p) => sum + (p.knownUsd ?? 0) + (p.abandoned ?? []).reduce((s, a) => s + a.costUsd, 0), 0);
 }
 
 /**
@@ -150,12 +155,14 @@ async function oneJob({ out, repo, home, parts, judge, job, runCapUsd, record, l
   if (p.phase === 'proposed') {
     const curateJudge = meteredJudge(judge);
     const curated = await curateJob({ repo, judge: curateJudge });
-    save({ ...p, phase: 'curated', curated, judgeCostUsd: curateJudge.meter.costUsd, afterSha: curated.report.main });
+    save({ ...p, phase: 'curated', curated, curateJudge: { ...curateJudge.meter }, afterSha: curated.report.main });
   }
+  const spend = spendOf(p.measure, p.curateJudge);
+  save({ ...p, knownUsd: spend.knownUsd });
   const recording = record
-    ? await writeRecording({ into: join(out, 'recordings'), run, job, model: parts.modelName, providers: parts.providers, started: p.started, ended: p.ended, costUsd: p.measure.usage.costUsd + p.measure.judge.costUsd, judgeCostUsd: p.judgeCostUsd })
+    ? await writeRecording({ into: join(out, 'recordings'), run, job, model: parts.modelName, providers: parts.providers, started: p.started, ended: p.ended, spend, modelUsd: p.measure.unpricedAnswers ? null : p.measure.usage.costUsd })
     : null;
-  return rowOf({ run: job.order, runId, job, seedSha: p.seedSha, afterSha: p.afterSha, offered: p.offered, measure: p.measure, finished: p.finished, curated: p.curated, judgeCostUsd: p.judgeCostUsd, recording });
+  return rowOf({ run: job.order, runId, job, seedSha: p.seedSha, afterSha: p.afterSha, offered: p.offered, measure: p.measure, finished: p.finished, curated: p.curated, curateJudge: p.curateJudge, recording });
 }
 
 /** The learning pass: the first `jobs` companies of split "run", in order, until the spend reaches `capUsd`. */
@@ -168,7 +175,8 @@ export async function runLoop({ out, parts, jobs, capUsd, runCapUsd, record = tr
   const done = new Set(rows.map((r) => r.run));
   const queue = parts.companies.filter((c) => c.split === 'run').sort((a, b) => a.order - b.order).slice(0, jobs ?? Infinity);
   const judge = parts.judge();
-  const spentNow = () => rows.reduce((sum, r) => sum + r.costUsd + r.judgeCostUsd, 0) + abandonedSpend(out);
+  const spentNow = () => knownSpend(out);
+  writeFileSync(join(out, 'conventions.json'), `${JSON.stringify(parts.conventions ?? {}, null, 2)}\n`);
   let stoppedBy = null;
   log(`learn-classify: ${parts.mode} pass in ${out}, seed ${short(meta.seedSha)}, ${queue.length} job(s)${capUsd === undefined ? '' : `, cap ${usd(capUsd)}`}`);
   for (const job of queue) {
@@ -177,7 +185,7 @@ export async function runLoop({ out, parts, jobs, capUsd, runCapUsd, record = tr
     const row = await oneJob({ out, repo, home, parts, judge, job, runCapUsd, record, log });
     appendFileSync(rowsPath, `${JSON.stringify(row)}\n`);
     rows.push(row);
-    log(lineOf(row));
+    log(lineOf(row, parts.conventions?.[job.cik]));
   }
   await writeCurve(out);
   if (stoppedBy) log(`stopped: ${stoppedBy}`);
@@ -206,11 +214,11 @@ export async function runSealed({ out, parts, at = 'main', capUsd, runCapUsd, re
   const done = new Set(rows.map((r) => r.cik));
   const queue = parts.companies.filter((c) => c.split === 'sealed').sort((a, b) => a.cik.localeCompare(b.cik));
   const judge = parts.judge();
+  let spent = rows.reduce((sum, r) => sum + (r.costUsd ?? 0), 0);
   let stoppedBy = null;
   log(`learn-classify: sealed pass at ${label}${sha === meta.seedSha ? ' (the seed: nothing learned)' : ''}, ${queue.length} companies`);
   for (const [i, job] of queue.entries()) {
     if (done.has(job.cik)) continue;
-    const spent = rows.reduce((sum, r) => sum + r.costUsd, 0);
     if (capUsd !== undefined && spent >= capUsd) { stoppedBy = `spent ${usd(spent)}, at or over the cap of ${usd(capUsd)}`; break; }
     let attempt = 1;
     const idOf = (n) => `sealed-${job.cik}${n === 1 ? '' : `-a${n}`}`;
@@ -225,12 +233,13 @@ export async function runSealed({ out, parts, at = 'main', capUsd, runCapUsd, re
     const run = { runId: prepared.runId, ...runPaths(home, prepared.runId) };
     const finished = await finishJob({ home, repo, run, job, measure, propose: false });
     const recording = record
-      ? await writeRecording({ into: join(out, 'sealed', label, 'recordings'), run, job, model: parts.modelName, providers: parts.providers, started, ended: Date.now(), costUsd: measure.usage.costUsd + measure.judge.costUsd, judgeCostUsd: 0 })
+      ? await writeRecording({ into: join(out, 'sealed', label, 'recordings'), run, job, model: parts.modelName, providers: parts.providers, started, ended: Date.now(), spend: spendOf(measure), modelUsd: measure.unpricedAnswers ? null : measure.usage.costUsd })
       : null;
-    const row = rowOf({ run: i + 1, runId: prepared.runId, job, seedSha: sha, afterSha: sha, offered: prepared.workflows.loaded.map((w) => w.name), measure, finished, curated: null, judgeCostUsd: 0, recording });
+    const row = rowOf({ run: i + 1, runId: prepared.runId, job, seedSha: sha, afterSha: sha, offered: prepared.workflows.loaded.map((w) => w.name), measure, finished, curated: null, recording });
+    spent += spendOf(measure).knownUsd;
     appendFileSync(rowsPath, `${JSON.stringify(row)}\n`);
     rows.push(row);
-    log(lineOf(row));
+    log(lineOf(row, parts.conventions?.[job.cik]));
   }
   const correct = rows.filter((r) => r.correct).length;
   log(`sealed at ${label}: ${correct} of ${rows.length} correct${stoppedBy ? `; stopped: ${stoppedBy}` : ''}`);
