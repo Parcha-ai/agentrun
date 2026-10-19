@@ -1,0 +1,9 @@
+# Lake Mead from Space, 40 Years
+
+The question in [question.md](question.md), asked of thirteen Landsat images of the same frame over Lake Mead, from Hoover Dam to the Overton Arm, 1984 to 2024 ([inputs.json](inputs.json), committed in [images/](images/)): when the water fell the most and where, every shoreline the water has left against 1984 boxed, and the first image each is dry in. The one vision agent ([../vision-agent](../vision-agent/README.md)) answers it; nothing here is code. ASSETS.md names each image's Landsat scene and what was done to it.
+
+```sh
+npm run demo:vision -- examples/lake-mead --live
+```
+
+The agent runs shell commands with your user's rights on your machine: run it in a container or a VM.
