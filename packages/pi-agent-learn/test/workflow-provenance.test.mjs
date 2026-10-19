@@ -171,3 +171,20 @@ test("workflowAdmitter describes from the document with its own describe, and a 
   assert.equal(skillOf(given), renderSkill("sku-quote", "Given text."));
   assert.ok(saved["sku-quote"]);
 }, { timeout: 60_000 });
+
+test("a wide schema's description names the first fields and counts the rest, within the text cap, and the workflow is still admitted", async () => {
+  const doc = workflowDoc({ name: "wide" });
+  const names = Array.from({ length: 30 }, (_, i) => `field_${String(i).padStart(2, "0")}_${"x".repeat(52)}`);
+  doc.schemas.In = { type: "object", additionalProperties: false, required: names, properties: Object.fromEntries(names.map((n) => [n, { type: "string" }])) };
+  const text = learn.schemaDescription(doc);
+  assert.ok(Buffer.byteLength(text) <= 1000, `${Buffer.byteLength(text)} bytes`);
+  assert.match(text, /^For an input with field_00_x+ \(string\), .* and \d+ more\. It returns price\.$/);
+  const root = await scratch();
+  const { repo } = await agentRepo(root);
+  const { dir } = await workDirWith({ wide: doc });
+  const records = (await collectWorkflows({ repo, workDir: dir, seedSha: await repo.resolve("main") })).records.wide.files;
+  const reader = { main: await repo.resolve("main"), read: (p, sha) => repo.read(p, sha), list: (p, sha) => repo.list(p, sha) };
+  const admitted = await learn.workflowAdmitter()({ ...reader, workflow: { run: "run-1", name: "wide", records, untrusted: true } });
+  assert.equal(admitted.status, "admitted", admitted.reason);
+  assert.equal(admitted.files[".agents/skills/wide/SKILL.md"], renderSkill("wide", text));
+}, { timeout: 60_000 });

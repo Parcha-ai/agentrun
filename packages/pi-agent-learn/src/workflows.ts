@@ -504,22 +504,35 @@ function schemaFields(workflow: unknown, schemaId: unknown): { required: string[
   return { required: names.filter((n) => required.has(n)).map(field), optional: names.filter((n) => !required.has(n)).map(field) };
 }
 
-const listed = (items: readonly string[]) => (items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`);
+/** The first `limit` items, then how many more there are. */
+const listed = (items: readonly string[], limit = Infinity) => {
+  if (items.length <= limit) return items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+  if (limit === 0) return `${items.length} field${items.length === 1 ? "" : "s"}`;
+  return `${items.slice(0, limit).join(", ")} and ${items.length - limit} more`;
+};
 
 /**
  * A skill description written from the workflow's own schemas, with no text the agent wrote: the fields of its input and
  * of its output, by name and type. What `workflowAdmitter` writes by default, so a run that read untrusted content puts
- * no words of its own into a later prompt.
+ * no words of its own into a later prompt. A schema with too many fields to name within `CAPS.text` names the first ones
+ * and counts the rest, so a wide schema never makes the description refuse the workflow.
  */
 export function schemaDescription(workflow: unknown): string {
   const doc = workflow as { input?: { schemaId?: unknown }; output?: { schemaId?: unknown } } | null;
   const input = schemaFields(workflow, doc?.input?.schemaId);
   const output = schemaFields(workflow, doc?.output?.schemaId);
-  const takes = input.required.length || input.optional.length
-    ? `For an input with ${listed(input.required) || "no required field"}${input.optional.length ? ` (optionally ${listed(input.optional)})` : ""}.`
-    : "For any input.";
   const outputs = [...output.required, ...output.optional].map((f) => f.split(" ")[0]!);
-  return `${takes}${outputs.length ? ` It returns ${listed(outputs)}.` : ""}`;
+  const within = (limit: number) => {
+    const takes = input.required.length || input.optional.length
+      ? `For an input with ${listed(input.required, limit) || "no required field"}${input.optional.length ? ` (optionally ${listed(input.optional, limit)})` : ""}.`
+      : "For any input.";
+    return `${takes}${outputs.length ? ` It returns ${listed(outputs, limit)}.` : ""}`;
+  };
+  for (let limit = Math.max(input.required.length, input.optional.length, outputs.length); limit > 0; limit -= 1) {
+    const text = within(limit);
+    if (bytes(text) <= CAPS.text) return text;
+  }
+  return within(0);
 }
 
 /** How long a run of a workflow's text must be, found in what the run read, to count as copied from it. */
@@ -537,15 +550,16 @@ function stringsOf(value: unknown, out: string[] = []): string[] {
 
 /** Whether any `COPIED_TEXT` characters of the document's strings (case and whitespace folded) appear in a text the run read. */
 export function copiesRead(workflow: unknown, read: Iterable<string>): boolean {
+  // The windows come from the workflow, whose record is bounded; the pages are only scanned.
   const windows = new Set<string>();
-  for (const text of read) {
-    const page = folded(String(text));
-    for (let at = 0; at + COPIED_TEXT <= page.length; at += 1) windows.add(page.slice(at, at + COPIED_TEXT));
-  }
-  if (!windows.size) return false;
   for (const value of stringsOf(workflow)) {
     const text = folded(value);
-    for (let at = 0; at + COPIED_TEXT <= text.length; at += 1) if (windows.has(text.slice(at, at + COPIED_TEXT))) return true;
+    for (let at = 0; at + COPIED_TEXT <= text.length; at += 1) windows.add(text.slice(at, at + COPIED_TEXT));
+  }
+  if (!windows.size) return false;
+  for (const raw of read) {
+    const page = folded(String(raw));
+    for (let at = 0; at + COPIED_TEXT <= page.length; at += 1) if (windows.has(page.slice(at, at + COPIED_TEXT))) return true;
   }
   return false;
 }
