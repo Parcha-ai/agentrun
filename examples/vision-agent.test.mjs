@@ -6,19 +6,19 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { exampleAt, fileName, inputOf, INSTRUCTIONS, skills } from './vision-agent/agent.ts';
+import { exampleAt, fileName, inputOf, INSTRUCTIONS, job, jobOf, skills, thinkingOf, thinkingRefusal } from './vision-agent/agent.ts';
 import { argvFor, options } from './vision-agent/run.ts';
 import { scriptFor } from './vision-agent/fakes.ts';
 import { jevKeyOf, jevOptionsOf, liveParts, missingKeys, namedModels, preflight } from './vision-agent/live.ts';
 import { demo } from '@parcha/agentrun-harness';
 
 const PROGRAMS = (() => { try { for (const cmd of ['ffmpeg', 'ffprobe', 'pdftoppm']) execFileSync(cmd, [cmd === 'pdftoppm' ? '-v' : '-version'], { stdio: 'ignore' }); return false; } catch { return 'ffmpeg, ffprobe and pdftoppm are needed'; } })();
-const EXAMPLES = ['video-chapters', 'hear-and-find', 'document-check', 'apollo-descent', 'boulder-chapters', 'fair-robot'];
+const EXAMPLES = ['video-chapters', 'hear-and-find', 'document-check', 'apollo-descent', 'boulder-chapters', 'fair-robot', 'lake-mead', 'market-street'];
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const scratch = async (t) => { const tmp = await mkdtemp(join(tmpdir(), 'vision-agent-')); t.after(() => rm(tmp, { recursive: true, force: true })); return tmp; };
 async function go(tmp, argv, env = {}) {
@@ -184,6 +184,21 @@ test('on fakes a film question runs over a film given beside it, and the report 
   assert.deepEqual(kept.rows[0].cites.map((cite) => [cite.fragment, cite.note]), [['#t=1', '1 s']]);
 });
 
+test('on fakes Lake Mead runs over its committed still images at $0 and ends with a report that cites the first image', { timeout: 300_000, skip: PROGRAMS }, async (t) => {
+  const tmp = await scratch(t);
+  const record = join(tmp, 'recording');
+  const run = await go(tmp, ['--record', record, ...argvFor(['examples/lake-mead']).filter((arg, i, all) => i >= all.indexOf('--input'))], {});
+  assert.equal(statusOf(run), 'complete', stderrOf(run));
+  assert.equal(run.usd, 0);
+  assert.match(run.record.answer, /^\(scripted\) One look at lake-mead-1984-05-15\.jpg/);
+  const manifest = JSON.parse(readFileSync(join(record, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.example, 'lake-mead');
+  const kept = JSON.parse(readFileSync(join(record, 'blobs', `${manifest.result.blob}.json`), 'utf8'));
+  assert.equal(kept.report.page, 'report/index.html');
+  assert.ok(existsSync(join(record, 'blobs', `${kept.report.files['frames/one.png']}.png`)), 'the picture the report shows is a blob too');
+  assert.deepEqual(kept.rows[0].cites.map((cite) => [cite.fragment, cite.note]), [['', 'the image']]);
+});
+
 // The report skill writes report/index.html, so the scripted lead and the fallback prompt do too: one name, fakes and live alike.
 test('the report is report/index.html everywhere: the scripted lead writes and returns it, and the instructions name it with or without the report skill', () => {
   const script = scriptFor({ question: 'q', files: ['a.pdf'] });
@@ -199,4 +214,250 @@ test('the report is report/index.html everywhere: the scripted lead writes and r
   assert.match(without, /Write the report as `report\/index\.html`/);
   assert.match(without, /\(`report\/index\.html`\)/);
   assert.doesNotMatch(without, /report\.html/);
+});
+
+// Through a gateway's chat completions an Anthropic model answers with thinking off, so its lead would have no thinking blocks;
+// Anthropic's own Messages API, which the gateway serves at its root, returns them.
+const catalogOf = (models, env = GATEWAY) => liveParts({ env, models }).host.models.catalog;
+
+test('through a gateway an Anthropic model goes over the Messages API at the gateway\'s root; the other providers stay OpenAI-compatible, and a provider\'s own key reaches Anthropic itself', () => {
+  const lead = catalogOf({ model: 'anthropic/claude-sonnet-5-5' }).getModel('anthropic', 'claude-sonnet-5-5');
+  assert.deepEqual([lead.api, lead.baseUrl], ['anthropic-messages', 'https://gateway.invalid'], 'the client adds /v1/messages to the root');
+  const slash = catalogOf({ model: 'anthropic/claude-haiku-5-5' }, { ...GATEWAY, VIDEO_MODEL_BASE_URL: 'https://gateway.invalid/v1/' }).getModel('anthropic', 'claude-haiku-5-5');
+  assert.equal(slash.baseUrl, 'https://gateway.invalid', 'a trailing slash too');
+  const openai = catalogOf({ model: 'openai/gpt-6-luna' }).getModel('openai', 'gpt-6-luna');
+  assert.ok(/^openai-(responses|completions)$/.test(openai.api) && openai.baseUrl === 'https://gateway.invalid/v1', 'OpenAI\'s models are unchanged');
+  const eyes = catalogOf({}).getModel('google', 'gemini-3.8-flash');
+  assert.ok(/^openai-(responses|completions)$/.test(eyes.api) && eyes.baseUrl === 'https://gateway.invalid/v1', 'so are Google\'s');
+  const own = liveParts({ env: { TYPESAFE_API_KEY: 'fake-test-key', ANTHROPIC_API_KEY: 'fake', GEMINI_API_KEY: 'fake' }, models: { model: 'anthropic/claude-sonnet-5-5' } }).host.models.catalog.getModel('anthropic', 'claude-sonnet-5-5');
+  assert.deepEqual([own.api, own.baseUrl], ['anthropic-messages', 'https://api.anthropic.com'], 'with no gateway the provider is pi-ai\'s own');
+});
+
+const SSE = [
+  ['message_start', { type: 'message_start', message: { id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-sonnet-5-5', content: [], stop_reason: null, usage: { input_tokens: 5, output_tokens: 1 } } }],
+  ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } }],
+  ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'seat one first' } }],
+  ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig' } }],
+  ['content_block_stop', { type: 'content_block_stop', index: 0 }],
+  ['content_block_start', { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } }],
+  ['content_block_delta', { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Ana' } }],
+  ['content_block_stop', { type: 'content_block_stop', index: 1 }],
+  ['message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 12 } }],
+  ['message_stop', { type: 'message_stop' }],
+].map(([name, data]) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`).join('');
+
+// A lead through the gateway that records every request it sends, and answers with the stream above.
+function anthropicAsks() {
+  const catalog = catalogOf({ model: 'anthropic/claude-sonnet-5-5' });
+  const model = catalog.getModel('anthropic', 'claude-sonnet-5-5');
+  const sent = [];
+  const fetch = async (url, init) => {
+    sent.push({ url: new URL(String(url)), key: new Headers(init.headers).get('x-api-key'), body: JSON.parse(init.body) });
+    return new Response(SSE, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  const ask = (reasoning) => catalog.streamSimple(model, { messages: [{ role: 'user', content: 'who sits first?', timestamp: 0 }] }, { reasoning, fetch }).result();
+  return { ask, sent };
+}
+const effort = (body) => body.messages.filter((message) => message.role === 'system' && message.output_config).at(-1)?.output_config.effort;
+
+test('an Anthropic lead through a gateway sends Anthropic\'s thinking at the level asked, to /v1/messages under the gateway\'s key, and keeps the thinking blocks that come back', async () => {
+  const { ask, sent } = anthropicAsks();
+  const reply = await ask('medium');
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].url.origin + sent[0].url.pathname, 'https://gateway.invalid/v1/messages');
+  assert.equal(sent[0].key, GATEWAY.VIDEO_MODEL_API_KEY, 'the gateway\'s key');
+  assert.deepEqual([sent[0].body.thinking.type, sent[0].body.thinking.display], ['adaptive', 'summarized'], 'Anthropic\'s thinking, summarized so its text comes back');
+  assert.equal(effort(sent[0].body), 'medium', 'thinking medium is Anthropic\'s effort medium');
+  assert.equal(reply.stopReason, 'stop');
+  assert.deepEqual(reply.content.map((block) => [block.type, block.type === 'thinking' ? block.thinking : block.text]), [['thinking', 'seat one first'], ['text', 'Ana']]);
+  await ask('low');
+  assert.equal(effort(sent[1].body), 'low', 'and low is low');
+});
+
+const levelOf = (flags) => jobOf(thinkingOf(argvFor(['examples/document-check', ...flags]), {})).workflow.root.steps[0].thinking;
+
+test('--thinking is the run\'s input, not a host flag: it sets the agent node\'s thinking, and a run that names none thinks at medium as before', () => {
+  const example = inputOf(exampleAt('document-check'));
+  const plain = argvFor(['examples/document-check', '--record', 'r']);
+  assert.deepEqual(JSON.parse(plain.at(-1)), example, 'no flag: the input is the example\'s, unchanged');
+  assert.equal(thinkingOf(plain, {}), 'medium');
+  for (const [flags, level] of [[['--thinking', 'high'], 'high'], [['--thinking=low'], 'low'], [['--thinking', 'medium'], 'medium']]) {
+    const argv = argvFor(['examples/document-check', ...flags, '--record', 'r']);
+    assert.ok(!argv.some((arg) => arg.startsWith('--thinking')), 'the host reads no such flag, so it is not passed on');
+    assert.deepEqual(JSON.parse(argv.at(-1)), { ...example, thinking: level });
+    assert.equal(thinkingOf(argv, {}), level);
+  }
+  assert.equal(thinkingOf(argvFor(['--thinking', 'high', 'examples/document-check']), {}), 'high', 'before the folder too');
+  const given = argvFor(['--thinking', 'high', '--input', JSON.stringify({ question: 'q', files: [] })]);
+  assert.deepEqual(JSON.parse(given[given.indexOf('--input') + 1]), { question: 'q', files: [], thinking: 'high' }, 'and on an input given directly');
+  assert.equal(thinkingOf(['--child'], { INPUT: JSON.stringify({ question: 'q', files: [], thinking: 'high' }) }), 'high', 'the child has only INPUT');
+  assert.equal(thinkingOf(['--child'], { INPUT: JSON.stringify({ question: 'q', files: [] }) }), 'medium');
+  const node = (each) => each.workflow.root.steps[0];
+  assert.deepEqual([node(job).thinking, node(jobOf()).thinking, node(jobOf('high')).thinking], ['medium', 'medium', 'high']);
+  const high = structuredClone(jobOf('high').workflow);
+  high.root.steps[0].thinking = 'medium';
+  assert.deepEqual(high, job.workflow, 'nothing else about the workflow changes');
+  assert.equal(job.workflow.schemas.Input.additionalProperties, false);
+  assert.deepEqual(job.workflow.schemas.Input.properties.thinking.enum, ['low', 'medium', 'high']);
+});
+
+test('a thinking level that is not low, medium or high is refused before anything starts, and a valid one is not', async (t) => {
+  const refusal = (...flags) => thinkingRefusal(argvFor(['examples/document-check', ...flags]), {});
+  assert.equal(refusal(), undefined);
+  for (const level of ['low', 'medium', 'high']) assert.equal(refusal('--thinking', level), undefined);
+  assert.equal(refusal('--thinking', 'max'), '--thinking is low, medium or high; max is not');
+  assert.equal(refusal('--thinking=off'), '--thinking is low, medium or high; off is not', 'thinking is never off');
+  assert.equal(refusal('--thinking'), '--thinking needs a value: low, medium or high');
+  assert.equal(refusal('--thinking', '--live'), '--thinking needs a value: low, medium or high', 'a flag is not its value');
+  const dir = await scratch(t);
+  const record = join(dir, 'recording');
+  const ran = command(dir, ['examples/document-check', '--thinking', 'max', '--record', record].map((arg) => (arg.startsWith('examples/') ? join(import.meta.dirname, '..', arg) : arg)), {});
+  assert.notEqual(ran.status, 0);
+  assert.equal(ran.stderr, '--thinking is low, medium or high; max is not\n');
+  assert.doesNotMatch(`${ran.stdout}${ran.stderr}`, /cost:|recording:|run directory:|stopped:/);
+  assert.deepEqual(readdirSync(dir), [], 'nothing was written');
+  assert.equal(existsSync(record), false);
+});
+
+test('--thinking with an input it cannot place (a file or a capture name, none, one that is not an object) is refused before anything starts, not dropped', async (t) => {
+  const message = '--thinking needs an example folder or an inline JSON --input';
+  const refusal = (...args) => thinkingRefusal(argvFor(args), {});
+  assert.equal(refusal('--input', 'q.json', '--thinking', 'high'), message, 'a file');
+  assert.equal(refusal('--thinking=high', '--input', 'a-capture'), message, 'a capture name');
+  assert.equal(refusal('--thinking', 'high'), message, 'no input at all');
+  assert.equal(refusal('--thinking', 'high', '--input', '5'), message, 'JSON that is not an object');
+  assert.equal(refusal('--thinking', 'high', '--input', '[]'), message, 'nor an array');
+  assert.equal(refusal('--thinking', 'max', '--input', 'q.json'), '--thinking is low, medium or high; max is not', 'a bad level is told first');
+  assert.equal(refusal('--thinking', 'high', '--input', JSON.stringify({ question: 'q', files: [] })), undefined, 'an inline JSON object takes it');
+  assert.equal(refusal('--input', 'q.json'), undefined, 'and without the flag nothing is asked');
+  const dir = await scratch(t);
+  writeFileSync(join(dir, 'q.json'), JSON.stringify({ question: 'q', files: [] }));
+  const record = join(dir, 'recording');
+  const ran = command(dir, ['--input', join(dir, 'q.json'), '--thinking', 'high', '--record', record], {});
+  assert.notEqual(ran.status, 0);
+  assert.equal(ran.stderr, `${message}\n`);
+  assert.doesNotMatch(`${ran.stdout}${ran.stderr}`, /cost:|recording:|run directory:|stopped:/);
+  assert.deepEqual(readdirSync(dir), ['q.json'], 'nothing was written but the input the test made');
+  assert.equal(existsSync(record), false);
+});
+
+test('--thinking high reaches the Anthropic request as adaptive thinking at effort high, and a run that names none still asks medium', async () => {
+  const { ask, sent } = anthropicAsks();
+  assert.deepEqual([levelOf([]), levelOf(['--thinking', 'high']), levelOf(['--thinking=low'])], ['medium', 'high', 'low']);
+  for (const flags of [[], ['--thinking', 'high'], ['--thinking', 'low']]) await ask(levelOf(flags));
+  assert.deepEqual(sent.map((each) => each.body.thinking.type), ['adaptive', 'adaptive', 'adaptive']);
+  assert.deepEqual(sent.map((each) => effort(each.body)), ['medium', 'high', 'low']);
+});
+
+test('on fakes the command with --thinking high carries it into the workflow the recording shows, and without the flag the run thinks at medium', { timeout: 300_000, skip: PROGRAMS }, async (t) => {
+  const tmp = await scratch(t);
+  const recorded = (name, flags) => {
+    const dir = join(tmp, name);
+    mkdirSync(dir);
+    const record = join(dir, 'recording');
+    const ran = command(dir, [join(import.meta.dirname, '..', 'examples', 'document-check'), ...flags, '--record', record], {});
+    assert.equal(ran.status, 0, `${ran.stdout}\n${ran.stderr}`);
+    return readFileSync(join(record, 'events.jsonl'), 'utf8');
+  };
+  const high = recorded('high', ['--thinking', 'high']);
+  assert.match(high, /"tools":\["code"\],"thinking":"high","state"/, 'the agent node the run\'s child ran thinks at high');
+  assert.match(high, /"example":"document-check","thinking":"high"/, 'and the input says so');
+  const plain = recorded('plain', []);
+  assert.match(plain, /"tools":\["code"\],"thinking":"medium","state"/);
+  assert.doesNotMatch(plain, /"thinking":"high"/);
+});
+
+// The example folder is the one token that is neither a flag nor a flag's value. A rule of "not after a --flag" took every flag for
+// one that takes a value, so a folder after a switch (--live) was silently skipped and the run asked the default question.
+const folderInput = (argv) => JSON.parse(argv.at(-1));
+
+test('the example folder is found wherever it sits among the flags: after a switch, after a flag and its value, or first', () => {
+  const doc = inputOf(exampleAt('document-check'));
+  const places = [
+    ['--live', 'examples/document-check'],
+    ['--max-usd', '3', 'examples/document-check'],
+    ['--max-usd=3', 'examples/document-check'],
+    ['--record', 'r', '--live', 'examples/document-check'],
+    ['--model', 'google/gemini-3.8-flash', '--fetch-sources', 'examples/document-check'],
+    ['--see-also', 'a', '--see-also', 'b', 'examples/document-check'],
+    ['--live', '--thinking', 'high', 'examples/document-check'],
+    ['--thinking', 'high', '--live', 'examples/document-check'],
+    ['examples/document-check', '--live', '--max-usd', '3'],
+  ];
+  for (const args of places) {
+    const argv = argvFor(args);
+    assert.deepEqual(folderInput(argv).example, 'document-check', `${args.join(' ')}: the folder is the example`);
+    assert.deepEqual(folderInput(argv).files, doc.files);
+    assert.ok(!argv.includes('examples/document-check'), `${args.join(' ')}: the folder is taken out of the arguments`);
+  }
+  assert.deepEqual(argvFor(['--live', 'examples/document-check']).slice(0, 1), ['--live'], 'a switch stays');
+  assert.deepEqual(folderInput(argvFor(['examples/document-check', '--live', '--thinking', 'high'])), { ...doc, thinking: 'high' }, 'the folder first, as before');
+  const same = argvFor(['--record', 'examples/document-check', 'examples/document-check']);
+  assert.deepEqual(same.slice(0, 2), ['--record', 'examples/document-check'], 'a value that spells the folder is still the flag\'s value');
+  assert.equal(folderInput(same).example, 'document-check');
+});
+
+test('the flags that take a value are the host\'s string options and --thinking: no flag the host reads is taken for the other kind', () => {
+  const host = readFileSync(join(import.meta.dirname, '..', 'packages', 'harness', 'src', 'demo.ts'), 'utf8');
+  const table = host.match(/const FLAGS = (\{.*?\}) as const;/s)?.[1];
+  assert.ok(table, 'demo.ts still declares its FLAGS table where this test reads it');
+  const flags = [...table.matchAll(/'?([a-z-]+)'?: \{ type: '(boolean|string)'/g)].map((match) => [match[1], match[2]]);
+  assert.ok(flags.length >= 15 && flags.some(([name]) => name === 'live') && flags.some(([name]) => name === 'max-usd'));
+  for (const [name, type] of [...flags, ['thinking', 'string']]) {
+    const args = type === 'string' ? [`--${name}`, name === 'thinking' ? 'high' : 'v', 'examples/document-check'] : [`--${name}`, 'examples/document-check'];
+    assert.equal(folderInput(argvFor(args)).example, 'document-check', `--${name} (${type}) then the folder: the folder is the example`);
+  }
+});
+
+test('a folder that cannot be placed is refused before anything starts, never ignored: a second folder, a stray token, a folder that is not an example', async (t) => {
+  assert.throws(() => argvFor(['examples/document-check', 'examples/video-chapters']), /^Error: one example folder at a time: examples\/document-check, examples\/video-chapters$/);
+  assert.throws(() => argvFor(['--live', 'examples/document-check', '--max-usd', '3', 'examples/video-chapters']), /one example folder at a time/);
+  assert.throws(() => argvFor(['--live', '3']), /^Error: 3: not an example folder/);
+  const missing = (() => { try { argvFor(['examples/nowhere']); } catch (error) { return error.message; } })();
+  assert.match(missing, /^examples\/nowhere: not an example folder/);
+  assert.doesNotMatch(missing, /\/home\/|ENOENT/, 'a message, not a stack or a path of this machine');
+  const dir = await scratch(t);
+  const record = join(dir, 'recording');
+  const ran = command(dir, ['examples/document-check', 'examples/video-chapters', '--record', record].map((arg) => (arg.startsWith('examples/') ? join(import.meta.dirname, '..', arg) : arg)), {});
+  assert.notEqual(ran.status, 0);
+  assert.match(ran.stderr, /^one example folder at a time: .*document-check, .*video-chapters\n$/);
+  assert.doesNotMatch(ran.stderr, /\n.+\n/, 'one line');
+  assert.doesNotMatch(`${ran.stdout}${ran.stderr}`, /cost:|recording:|run directory:|stopped:/);
+  assert.deepEqual(readdirSync(dir), [], 'nothing was written');
+  assert.equal(existsSync(record), false);
+});
+
+test('a folder outside examples/ that exists, and a partly made example, are refused in one line: no stack from the module\'s import, no raw ENOENT', async (t) => {
+  const dir = await scratch(t);
+  mkdirSync(join(dir, 'document-check'));
+  const outside = join(dir, 'document-check');
+  const ran = command(dir, ['--live', outside], {});
+  assert.notEqual(ran.status, 0);
+  assert.equal(ran.stderr, `${outside}: an example is a folder under examples/; for files elsewhere, give --input with the question and the files\n`);
+  assert.doesNotMatch(ran.stdout, /\S/);
+  assert.deepEqual(readdirSync(dir), ['document-check'], 'nothing was written');
+  // An example with a question and no inputs: the check names both files, so it asks for both.
+  const partial = join(import.meta.dirname, `zz-partial-${process.pid}`);
+  mkdirSync(partial);
+  try {
+    writeFileSync(join(partial, 'question.md'), 'What is in these files?');
+    const message = (() => { try { argvFor([partial]); } catch (error) { return error.message; } })();
+    assert.match(message, /: not an example folder \(an example is a folder under examples\/ with a question\.md and an inputs\.json\)$/);
+    assert.doesNotMatch(message, /ENOENT/);
+    const refused = command(dir, [partial], {});
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /^[^\n]*: not an example folder \(.*inputs\.json\)\n$/);
+  } finally { rmSync(partial, { recursive: true, force: true }); }
+});
+
+test('on fakes a folder after a switch is the run\'s example: the command asks the folder\'s question over its committed files', { timeout: 300_000, skip: PROGRAMS }, async (t) => {
+  const tmp = await scratch(t);
+  const dir = join(tmp, 'run');
+  mkdirSync(dir);
+  const record = join(dir, 'recording');
+  const ran = command(dir, ['--json', join(import.meta.dirname, '..', 'examples', 'document-check'), '--record', record], {});
+  assert.equal(ran.status, 0, `${ran.stdout}\n${ran.stderr}`);
+  const events = readFileSync(join(record, 'events.jsonl'), 'utf8');
+  assert.match(events, /"example":"document-check"/, 'the example reached the run\'s input');
+  assert.match(events, /aveo-ex3-1-pages-1-4\.pdf/, 'and its committed files reached the workspace');
 });

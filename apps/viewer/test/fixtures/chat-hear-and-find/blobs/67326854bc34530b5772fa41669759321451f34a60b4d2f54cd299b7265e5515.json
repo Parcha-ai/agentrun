@@ -1,0 +1,75 @@
+{
+  "format": "agentrun.cited/1",
+  "title": "eagle-heard-and-seen.webm: \"Contact light\" heard 1 time, a United States flag standing planted on the ground first seen at 0:28",
+  "rows": [
+    {
+      "label": "Heard, the moment of touchdown: \"Contact light\"",
+      "value": "0:10 (10.4 s)",
+      "note": "(scripted lead: it takes the last hit; a model picks by the rows around each) before it: We copy you down, Eagle. Houston, uh, Tranquility Base here. The Eagle has landed.",
+      "cites": [
+        {
+          "look": "98b971723aadca5b7de7c10f261f6bca98c2fa9ce5e67a345842fea014cf8f76",
+          "fragment": "#t=10.4",
+          "note": "eagle-heard-and-seen.webm"
+        }
+      ]
+    },
+    {
+      "label": "Seen, the planted flag, first seen: a United States flag standing planted on the ground",
+      "value": "0:28 (28 s)",
+      "note": "Jev: 0.95 that it is there, box confidence 0.9",
+      "cites": [
+        {
+          "blob": "049dfa77e286370003b1c0edefcc43202075f72e3f1078735d5b8705c90c7b9d",
+          "fragment": "#t=28&xywh=percent:30.3,5.6,50.3,54.4",
+          "note": "the frame, with the box Jev drew"
+        },
+        {
+          "look": "4ca88ba105746003882f2005149bae2b10f7c64580065826933785b1faa42007",
+          "fragment": "#t=28&xywh=percent:30.3,5.6,50.3,54.4",
+          "note": "eagle-heard-and-seen.webm"
+        }
+      ]
+    }
+  ],
+  "hear_and_find": {
+    "format": "hear-and-find/1",
+    "film": "eagle-heard-and-seen.webm",
+    "phrase": "Contact light",
+    "heard_question": "the moment of touchdown",
+    "thing": "a United States flag standing planted on the ground",
+    "seen_question": "the planted flag, first seen",
+    "heard": {
+      "hits": [
+        {
+          "at": 10.4,
+          "cite": "eagle-heard-and-seen.webm#t=10.40",
+          "said": "Contact light. Okay, engine stop. We copy you down, Eagle.",
+          "before": "We copy you down, Eagle. Houston, uh, Tranquility Base here. The Eagle has landed.",
+          "after": "Tranquility Base here. The Eagle has landed. An American flag is left behind on the Moon."
+        }
+      ],
+      "picked": 0,
+      "why": "(scripted lead: it takes the last hit; a model picks by the rows around each) before it: We copy you down, Eagle. Houston, uh, Tranquility Base here. The Eagle has landed.",
+      "receipts": [
+        "evidence/hear and find/transcribe-225efc8c0fd7.json"
+      ]
+    },
+    "seen": {
+      "found": true,
+      "at": 28,
+      "cite": "eagle-heard-and-seen.webm#t=28&xywh=percent:30.3,5.6,50.3,54.4",
+      "noul": 0.95,
+      "confidence": 0.9,
+      "spent_usd": 0,
+      "box": [
+        30.3,
+        5.6,
+        50.3,
+        54.4
+      ],
+      "frame": ".find/answer-frame.jpg",
+      "look": "4ca88ba105746003882f2005149bae2b10f7c64580065826933785b1faa42007"
+    }
+  }
+}

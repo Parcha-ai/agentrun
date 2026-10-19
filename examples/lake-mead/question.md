@@ -1,0 +1,1 @@
+Here is Lake Mead seen from space once every few years since 1984. When did the water fall the most, and where? Box every shoreline the water has left, against 1984, and say in which image it is first dry.
