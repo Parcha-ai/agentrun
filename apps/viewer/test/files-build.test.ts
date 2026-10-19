@@ -88,7 +88,7 @@ test('a blob still being written (.<sha>.<ext>.tmp-<pid>) is neither listed nor 
   t.after(() => rmSync(out, { recursive: true, force: true }));
   // A copy of a recording taken while a blob was being written: the temp name sits in blobs/ beside the finished ones.
   const recordings = join(out, 'recordings');
-  cpSync(new URL('../recordings/reference-job/', import.meta.url).pathname, join(recordings, 'reference-job'), { recursive: true });
+  cpSync(join(fixtures, 'reference-job'), join(recordings, 'reference-job'), { recursive: true });
   const unfinished = `.${'a'.repeat(64)}.png.tmp-4242`;
   writeFileSync(join(recordings, 'reference-job', 'blobs', unfinished), 'half a picture');
   // @ts-expect-error: the gate is plain JavaScript

@@ -18,3 +18,11 @@ kind: feature
 - The vision panel no longer says the eyes have not looked when live lines tell of a look no store document filed: it
   lists the look (a native one as the lead's own) under what live lines told, as never filed once the run delivered,
   and counts nothing from it.
+- The gallery shows agent runs only: the scripted reference job leaves `apps/viewer/recordings/` for the test fixtures
+  (`apps/viewer/test/fixtures/reference-job`), where every test that read it now finds it. In git, `recordings/` holds
+  only its README.
+- A page, an SVG or a script in a recording (an agent's report, draft 41) is published as `<name>.txt`: opened straight on
+  the gallery's site it is plain text and runs nothing, while the viewer reads it into its sandboxed frame. The gate
+  refuses a published blob that would open as a page under its own name.
+- The viewer's page carries a Content-Security-Policy (only its own files run or load; data: and blob: pictures and
+  videos), its styles in `viewer.css`; PDF.js opens every PDF with `isEvalSupported: false`.

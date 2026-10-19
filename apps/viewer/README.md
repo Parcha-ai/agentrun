@@ -88,9 +88,10 @@ job's own token, scoped to Pages, and names no secret. `scripts/pages-workflow.t
 
 `recordings/<id>/` holds the recordings bundled with the build, each a `manifest.json`, an `events.jsonl` and its
 `blobs/`. The build embeds them in `gallery.js` (so the gallery works from `file://`) and copies them beside the page.
-One is bundled: the reference example's job with scripted providers (`recordings/README.md` says how it was recorded).
-The same job killed ten times and resumed is kept, unedited, with the test fixtures (`test/fixtures/ten-kills-seed21`).
-A test holds both to the format and their manifests' cost to the counters' fold. The tests also play a fixture cut by
+None is in git: the Pages job unpacks the gallery's recordings into `recordings/` from the release asset its lock names
+(`recordings/README.md`), and each is an agent run of an example. The reference example's job with scripted providers,
+once uncut and once killed ten times and resumed, is kept, unedited, with the test fixtures (`test/fixtures/reference-job`
+and `test/fixtures/ten-kills-seed21`). A test holds both to the format and their manifests' cost to the counters' fold. The tests also play a fixture cut by
 hand from a real run; it lives in `test/fixtures/` and is never bundled (`test/fixtures/README.md` says how each fixture
 was made). A
 restore is tested on a recording built line by line (`test/restore-drill.ts`), and re-asks on a real 30-kill storm cut

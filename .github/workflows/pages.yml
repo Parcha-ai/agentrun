@@ -1,8 +1,8 @@
 name: Gallery
 
-# The hosted gallery: apps/viewer built with its bundled recordings and published to GitHub Pages. It is a replay
-# viewer: static files that play recorded runs, with no agent, no model and no key. The only credential is the job's
-# own GITHUB_TOKEN, scoped to Pages.
+# The hosted gallery: apps/viewer built with the recordings its lock names (fetched from the release tagged gallery) and
+# published to GitHub Pages. It is a replay viewer: static files that play recorded runs, with no agent, no model and no
+# key. The only credential is the job's own GITHUB_TOKEN, which reads the repository and writes Pages.
 
 on:
   push:

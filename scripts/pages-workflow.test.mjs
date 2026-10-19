@@ -83,12 +83,16 @@ const gate = (t, recordings) => {
 };
 
 test('the gate, as the step runs it, passes the build of the bundled recordings and fails the step on a problem', async (t) => {
-  const passed = await gate(t, join(root, 'apps/viewer/recordings'));
+  // In git, recordings/ holds no run (the Pages job unpacks the gallery into it): the step is tried on the reference job.
+  const gallery = mkdtempSync(join(tmpdir(), 'pages-gallery-'));
+  t.after(() => rmSync(gallery, { recursive: true, force: true }));
+  cpSync(join(root, 'apps/viewer/test/fixtures/reference-job'), join(gallery, 'reference-job'), { recursive: true });
+  const passed = await gate(t, gallery);
   assert.equal(passed.code, 0, passed.stderr);
   assert.match(passed.stdout, /apps\/viewer\/dist: 1 recording\(s\), every published file checked/);
   const copy = mkdtempSync(join(tmpdir(), 'pages-recordings-'));
   t.after(() => rmSync(copy, { recursive: true, force: true }));
-  cpSync(join(root, 'apps/viewer/recordings/reference-job'), join(copy, 'reference-job'), { recursive: true });
+  cpSync(join(root, 'apps/viewer/test/fixtures/reference-job'), join(copy, 'reference-job'), { recursive: true });
   writeFileSync(join(copy, 'reference-job', 'notes.txt'), `sk-${'a1'.repeat(20)}`);
   const refused = await gate(t, copy);
   assert.notEqual(refused.code, 0);
