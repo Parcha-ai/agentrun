@@ -48,6 +48,22 @@ test('the gate sits between the build and the upload, as the command run below a
   assert.match(workflow, /path: apps\/viewer\/dist\n/);
 });
 
+const FETCH = 'node scripts/recording/gallery.mjs fetch apps/viewer/recordings.lock.json apps/viewer/recordings';
+
+test('the recordings come from the lock\'s release asset, fetched after the install and before the build, with the job\'s own token', () => {
+  const lines = workflow.split('\n').map((line) => line.trim().replace(/^- /, ''));
+  const at = (match) => {
+    const index = lines.findIndex(match);
+    assert.ok(index > 0, String(match));
+    return index;
+  };
+  const order = [at((line) => line === 'run: npm ci --ignore-scripts'), at((line) => line === `run: ${FETCH}`), at((line) => line === 'run: node apps/viewer/build.mjs --files')];
+  assert.deepEqual(order, [...order].sort((a, b) => a - b));
+  const step = lines.slice(at((line) => line === "name: Fetch the gallery's recordings"), order[1] + 1);
+  assert.deepEqual(step, ["name: Fetch the gallery's recordings", 'env:', 'GH_TOKEN: ${{ github.token }}', `run: ${FETCH}`], 'its only credential is the job\'s token, which reads the repository');
+  assert.match(readFileSync(join(root, 'scripts/recording/gallery.mjs'), 'utf8'), /export const RELEASE = 'gallery';/, 'the release it reads is gallery, which no release workflow reads');
+});
+
 /** The gate's command run as the runner runs it (bash) in a directory laid out as the repository after the build step,
  *  with the gallery built from `recordings`; its exit code and output. */
 const gate = (t, recordings) => {
