@@ -96,9 +96,9 @@ export function scriptedParts({ set = SETS.v1, data = set === SETS.v2 ? FIXTURES
   };
 }
 
-/** The paid parts: the model and Jev through the gateway (models.mjs), fetch_page on the job's domain and Wikipedia, and in
- *  v2 lane C3's tools (tools-v2.mjs: the search provider and the browser from the environment, the eyes through the
- *  gateway), their evidence and the browser's profile under the run's own directory. */
+/** The paid parts: the model and Jev through the gateway (models.mjs), fetch_page, and in v2 lane C3's tools
+ *  (tools-v2.mjs: search and the browser on Browserbase with the key read at each call, else a local Chrome; the eyes
+ *  through the gateway), their evidence and the browser's profile under the run's own directory. */
 export async function liveParts({ set = SETS.v1, data = DATA, model = 'gpt-6-luna', thinking = 'medium', env = process.env } = {}) {
   const { gatewayJev, gatewayModel, gatewayOf } = await import('./models.mjs');
   const gateway = gatewayOf(env);
@@ -113,7 +113,7 @@ export async function liveParts({ set = SETS.v1, data = DATA, model = 'gpt-6-lun
     judge: () => jev,
     toolsFor: async (job, run) => [
       fetchPageTool({ allowDomain: allowedDomain(job, set) }),
-      ...(hard ? await hard.hardJobTools({ root: join(run.dir, 'evidence'), profileRoot: join(run.dir, 'chrome'), search: hard.searchFromEnv?.(env), eyes: await hard.gatewayEyes(gateway), env }) : []),
+      ...(hard ? await hard.hardJobTools({ root: join(run.dir, 'evidence'), profileRoot: join(run.dir, 'chrome'), eyes: await hard.gatewayEyes(gateway), env }) : []),
     ],
     modelFor: () => gatewayModel(gateway, { model, thinking }),
   };

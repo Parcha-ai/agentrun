@@ -446,16 +446,19 @@ export const pagesRead = (storePath) => [...new Set(textsRead(toolResultsOf(stor
 
 const sumOrNull = (values) => (values.some((v) => typeof v !== 'number' || !Number.isFinite(v)) ? null : values.reduce((a, b) => a + b, 0));
 
-/** The v2 tool facts of a run: calls per tool, the browser's billed seconds and cost, the pages a vision model looked at,
- *  and what search and the document reader cost. A cost a tool reported as null makes its sum null. */
+/** The v2 tool facts of a run: calls per tool, the browser's billed seconds and cost, the pages a vision model looked at
+ *  (a look that missed the model is not one), and what search and the document reader cost. A cost a tool reported as
+ *  null makes its sum null. */
 export function toolStats(results) {
   const of = (tool) => results.filter((r) => r.tool === tool);
   const done = (tool) => of(tool).filter((r) => r.value);
   return {
     toolCalls: { search: of('search_web').length, browse: of('browse').length, fetch: of('fetch_page').length, read_document: of('read_document').length },
-    browserSeconds: done('browse').reduce((sum, r) => sum + (typeof r.value.seconds === 'number' ? r.value.seconds : 0), 0),
+    // Billed seconds when the browser reports them (Browserbase bills a minimum), so the minutes match the cost.
+    browserSeconds: done('browse').reduce((sum, r) => sum + (typeof r.value.billedSeconds === 'number' ? r.value.billedSeconds : typeof r.value.seconds === 'number' ? r.value.seconds : 0), 0),
     browserCostUsd: sumOrNull(done('browse').map((r) => r.value.costUsd)),
-    visionPages: done('read_document').reduce((sum, r) => sum + (r.value.looks?.length ?? 0), 0),
+    // A look with `miss` never reached the vision model, so nobody paid for it.
+    visionPages: done('read_document').reduce((sum, r) => sum + (r.value.looks ?? []).filter((look) => !look?.miss).length, 0),
     searchCostUsd: sumOrNull(done('search_web').map((r) => r.value.costUsd)),
     documentCostUsd: sumOrNull(done('read_document').map((r) => r.value.costUsd)),
   };
