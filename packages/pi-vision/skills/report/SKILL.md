@@ -24,6 +24,11 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
   time and number in it? A text it does not is not kept as it is: rewrite it from what the looks read, cite the look that
   states it, or drop it. What was heard is cited to the transcribe look (`hear()`): a name, a time or a number that was said
   is evidence only in that look's text, not in a picture of the speaker. A presence or an absence ("the seal is on page 1", "the test copy has no stamp") is stated by a typed answer: ask Jev with `decide()` (a noul, "Is there a seal on this page?") and cite that look; Jev's answers reach the evidence as words (`Jev, asked "Is there a seal on contract.pdf#page=3?": no (0.02)`), so an absence is grounded by a cited no. The check refuses a text that was not judged as written.
+- **Text stays text.** A tally, a table, a caption and any other words are page text, never a picture of words: the page's text
+  is selectable, and it is what the grounding step judges.
+- **A detail nobody asked for is read twice.** A number painted on a vehicle, the words of a sign, any detail the question did
+  not ask for goes on the page only when a crop of it was read and agrees with the first reading; otherwise leave it out. Small
+  digits in a frame are easily misread.
 - **The text is yours, in plain sentences.** Every sentence on the page (a caption, an evidence paragraph, a row) is one plain
   sentence in your own words, drawn from the look's answer: never the answer pasted. The page is HTML, so markdown shows as raw
   symbols (`**`, `##`, a `* ` list mark, backticks); the check refuses them in any text outside `<code>` and `<pre>` and names
@@ -212,7 +217,7 @@ const jevWords = (args, body) => {   // Jev's typed answers as words: a yes, a n
     return `Jev, asked "${about(asked[name]?.instructions ?? name)}": ${said}`;
   }).join("\n");
 };
-const keyOf = async (receipt) => {
+const receiptOf = async (receipt) => {   // what a receipt holds: its look key, status, args and body
   if (!receipt) throw new Error("no receipt: this host files none, so there is no look to cite");
   const text = await sh(`cat ${q(receipt)}`).catch(() => sh(`cat ${q(`../${receipt}`)}`));   // a host may file receipts in the folder above the workspace
   let key, status, args, body = "";
@@ -222,6 +227,10 @@ const keyOf = async (receipt) => {
     try { args = JSON.parse(field("args")); } catch { args = undefined; }
   }
   if (!key) throw new Error(`${receipt} holds no look key`);
+  return { key, status, args, body };
+};
+const keyOf = async (receipt) => {
+  const { key, status, args, body } = await receiptOf(receipt);
   if (status === "failed") throw new Error(`${receipt} is a look that failed: it is no evidence for a finding`);
   looks.add(key);
   if (typeof body === "string" && body.trim() && !said.has(key)) said.set(key, args?.via === "jev" ? jevWords(args, body.trim()) : body.trim());
@@ -314,9 +323,17 @@ it. A text whose answer is under `GROUNDED` stops the script, naming it. Fix the
 the pieces again; a judgment you already paid for in the call is read back, not paid twice. The usual failure is a finding that states what a look read but cites only another look: cite every look the text rests on. A text with no cited look that
 read anything has no evidence and fails the same way.
 
+A verdict comes only from `vision.judge`'s answer, and the script never sets one itself. Each judged unit's look key is written
+into the page as `data-ground` on its finding, row and the answer (`<look key>:t0 <look key>:t1 ...`, one entry for each of
+its texts, each with the claim id it was judged under), so a reader can open the look that judged it. If Jev cannot be asked (a cap, an error), `ground()` gives that unit
+no verdict and declares it under Not checked, exactly which units, by count and id ("49 units: rows r55 to r102 (48 rows), the
+answer: not judged: ..."), never in one sentence that understates it. The check refuses a unit that has neither a verdict with
+a look key nor a place in that list, and a unit in the list that was judged.
+
 ```js
 const GROUNDED = 0.5;   // noul is the probability of yes: 0.66 to 0.98 when the evidence gave the fact, 0.01 to 0.03 when it did not
-const verdicts = new Map();
+const verdicts = new Map();   // text -> { yes, look, claim }: only vision.judge's answer puts anything here
+const unjudged = new Map();   // unit -> why Jev could not be asked
 const claimsOf = (r) => {   // every text the page states, in units that each cite their own looks
   const cited = (x) => (x.cites ?? []).map((c) => c.look);
   const labelsOf = (id) => (r.documents ?? []).flatMap((d) => d.pages.flatMap((p) => { const mine = (p.boxes ?? []).filter((b) => b.finding === id); return mine.length ? [p.alt, ...mine.map((b) => b.label)] : []; }));   // a page's own alt text goes with the finding its marks belong to
@@ -329,21 +346,37 @@ const claimsOf = (r) => {   // every text the page states, in units that each ci
   ];
 };
 const addressOf = (c) => [c.file, c.page && `page ${c.page}`, c.t && `seconds ${c.t.join(" to ")}`, c.xywh && `region ${c.xywh}`].filter(Boolean).join(", ");   // where the cite points: a fact of the run, not a claim
-const verdictKey = (unit, text) => `${[...new Set(unit.keys)].sort().join(",")}\n${[...new Set(unit.cites.map(addressOf))].sort().join("|")}\n${text}`;   // the looks and the addresses are the evidence: change either and the text is judged again
+const verdictKey = (unit, text) => `${unit.id}\n${[...new Set(unit.keys)].sort().join(",")}\n${[...new Set(unit.cites.map(addressOf))].sort().join("|")}\n${text}`;   // the unit, the looks and the addresses are the evidence: change any and the text is judged again
+const judgedUnit = (unit) => unit.texts.every((text) => { const v = verdicts.get(verdictKey(unit, text)); return Boolean(v) && /^[0-9a-f]{64}$/.test(v.look ?? "") && v.yes >= GROUNDED; });   // a verdict with no look key is not a judgment
+const groundsOf = (id) => {   // data-ground: for each current text of a judged unit, the look that judged it and the claim id it had there
+  const unit = claimsOf(report).find((u) => u.id === id);
+  return unit && judgedUnit(unit) ? unit.texts.map((text) => { const v = verdicts.get(verdictKey(unit, text)); return `${v.look}:${v.claim}`; }).join(" ") : "";
+};
 const ground = async () => {   // evidence: what each cited look read, and the address each cite names ("Cited: contract.pdf, page 3")
+  verdicts.clear(); unjudged.clear();   // every pass starts afresh: a unit that recovers is not left declared
   const failed = [];
   for (const unit of claimsOf(report)) {
     if (!unit.keys.length) continue;   // no look cited: the check refuses it as uncited
     const read = [...new Set(unit.keys)].map((key) => said.get(key)).filter(Boolean);
     const evidence = [...read, ...[...new Set(unit.cites.map(addressOf))].map((address) => `Cited: ${address}`)];
     const ask = (i) => ({ type: "noul", instructions: `Does \`evidence\` state every name, time and number in \`claims.t${i}\`? Say yes only when each name, place, date, time, quantity and title in it is given by \`evidence\`, or is a plain restatement of something it gives; a name, date, number or title that \`evidence\` does not give is a no, even when it is true or well known.` });
-    const { answers } = read.length ? await vision.judge({ state: { claims: Object.fromEntries(unit.texts.map((text, i) => [`t${i}`, text])), evidence }, questions: Object.fromEntries(unit.texts.map((_, i) => [`t${i}`, ask(i)])) }) : { answers: {} };
+    let answers = {}, look = "";
+    if (read.length) {
+      let judged;
+      try {
+        judged = await vision.judge({ state: { claims: Object.fromEntries(unit.texts.map((text, i) => [`t${i}`, text])), evidence }, questions: Object.fromEntries(unit.texts.map((_, i) => [`t${i}`, ask(i)])) });
+        look = (await receiptOf(judged.receipts[0])).key;   // the look that judged these texts (not a look the page cites, so it is not added to the looks)
+      } catch (error) { unjudged.set(unit.id, String(error?.message ?? error).split("\n")[0].slice(0, 120)); continue; }   // Jev could not be asked, or its look has no receipt: the unit is declared below, and no verdict is made up for it
+      ({ answers } = judged);
+    }
     unit.texts.forEach((text, i) => {
       const yes = answers[`t${i}`]?.noul ?? 0;
-      verdicts.set(verdictKey(unit, text), yes);
+      verdicts.set(verdictKey(unit, text), { yes, look, claim: `t${i}` });
       if (yes < GROUNDED) failed.push(`${unit.id}: "${text.slice(0, 80)}" is not stated by what its cited looks read (${yes.toFixed(2)})`);
     });
   }
+  report.notChecked = report.notChecked.filter((n) => !Array.isArray(n?.units));
+  if (unjudged.size) report.notChecked.push({ units: [...unjudged.keys()], why: `not judged: ${[...new Set(unjudged.values())].join("; ")}` });   // exactly the units Jev was not asked about, by id
   if (failed.length) throw new Error(`${failed.join("\n")}\nRewrite each from what the looks read, cite the look that states it, or drop it; then run the pieces again.`);
 };
 await ground();
@@ -376,11 +409,23 @@ const body = (f) => `<h3>${say(f.title)}</h3><p>${say(f.why)}</p>
 <div class="media">${(f.pics ?? []).map(pic).join("")}${f.clip ? movie(f.clip) : ""}</div>
 <p class="cites">${f.cites.map(cite).join(" ")} ${where(f.id)}</p>`;
 const finding = (f) => f.routine
-  ? `<details class="finding routine" id="f-${f.id}"><summary>${say(f.title)}</summary>${body(f)}</details>`
-  : `<article class="finding" id="f-${f.id}">${body(f)}</article>`;
-const rows = (list) => list.length ? `<ol class="rows">${list.map((r) => `<li class="row" id="r-${esc(r.id)}">${thumbOf(r)}<span class="when">${say(r.label)}</span><span class="what">${say(r.text)}</span><span class="cites">${r.cites.map(cite).join(" ")}</span></li>`).join("")}</ol>` : "";
+  ? `<details class="finding routine" id="f-${f.id}" data-ground="${esc(groundsOf(`finding ${f.id}`))}"><summary>${say(f.title)}</summary>${body(f)}</details>`
+  : `<article class="finding" id="f-${f.id}" data-ground="${esc(groundsOf(`finding ${f.id}`))}">${body(f)}</article>`;
+const rows = (list) => list.length ? `<ol class="rows">${list.map((r) => `<li class="row${r.boxes?.length ? " boxed" : ""}" id="r-${esc(r.id)}" data-ground="${esc(groundsOf(`row ${r.id}`))}">${thumbOf(r)}<span class="when">${say(r.label)}</span><span class="what">${say(r.text)}</span><span class="cites">${r.cites.map(cite).join(" ")}</span></li>`).join("")}</ol>` : "";
 const span = (n) => n.pages ? `page${n.pages.length > 1 ? "s" : ""} ${n.pages.join(", ")}` : n.t ? `${n.t.map(num).join(" to ")} s` : "the whole file";
-const limit = (n) => `<li>${say(n.file)}, ${span(n)}: ${say(n.why)}</li>`;
+const unitsText = (ids) => {   // units not judged, by count and id: rows in a run are "rows r55 to r102 (48 rows)"
+  const rowIds = (report.rows ?? []).map((r) => `row ${r.id}`), out = [];
+  let run = [];
+  const flush = () => { if (run.length >= 3) out.push(`rows ${run[0].slice(4)} to ${run.at(-1).slice(4)} (${run.length} rows)`); else out.push(...run); run = []; };
+  for (const id of ids) {
+    const at = rowIds.indexOf(id);
+    if (at >= 0 && run.length && rowIds.indexOf(run.at(-1)) === at - 1) run.push(id);
+    else { flush(); if (at >= 0) run = [id]; else out.push(id); }
+  }
+  flush();
+  return `${ids.length} unit${ids.length > 1 ? "s" : ""}: ${out.join(", ")}`;
+};
+const limit = (n) => Array.isArray(n.units) ? `<li>${say(unitsText(n.units))}: ${say(n.why)}</li>` : `<li>${say(n.file)}, ${span(n)}: ${say(n.why)}</li>`;
 const docPage = (d, p) => `<figure class="docpage" id="${esc(d.id)}-p${p.n}"><header><span class="n">${say(documents.length > 1 ? `${d.file}, ` : "")}p. ${p.n}</span><a class="cite" href="${encodeURIComponent(d.file)}#page=${p.n}" data-look="${esc(p.look ?? [...(report.rows ?? []), ...report.findings].flatMap((x) => x.cites).find((c) => c.file === d.file && c.page === p.n)?.look ?? "")}">open at p. ${p.n}</a></header>${sheet({ ...p, alt: p.alt ?? `Page ${p.n} of ${d.file}` })}</figure>`;
 
 const css = `:root{color-scheme:light dark;--bg:#f7f6f2;--fg:#17181a;--mute:#5c6068;--card:#fff;--line:#e2e1db;--accent:#d96a00;--box:#6b4fd8}
@@ -397,7 +442,7 @@ h2{font-size:.78rem;letter-spacing:.1em;text-transform:uppercase;color:var(--mut
 .mark{position:absolute;border:3px solid var(--box);border-radius:.25rem;scroll-margin-top:6rem}.mark:target{outline:3px solid var(--accent)}
 .tag{position:absolute;left:-3px;bottom:100%;white-space:nowrap;background:var(--box);color:#fff;font:600 .7rem/1.5 system-ui,sans-serif;padding:0 .4rem;border-radius:.25rem .25rem .25rem 0;text-decoration:none}.right .tag{left:auto;right:-3px;border-radius:.25rem .25rem 0}
 .cites{margin:.2rem 0 0;display:flex;flex-wrap:wrap;gap:.4rem;align-items:center}.cite{font:.8rem/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--accent);border:1px solid var(--line);border-radius:999px;padding:.2rem .6rem;text-decoration:none}.jump{font-size:.85rem;color:var(--mute)}
-.rows{list-style:none;margin:1rem 0 0;padding:0}.row{display:flex;flex-wrap:wrap;gap:.3rem .8rem;align-items:baseline;border-top:1px solid var(--line);padding:.5rem 0}.thumb{width:6rem;height:auto;border:1px solid var(--line);border-radius:.3rem;flex:none}.sheet.thumb{margin-top:0}.thumb .mark{border-width:2px}.when{font:700 .85rem ui-monospace,monospace;min-width:6rem}.what{flex:1 1 14rem}.row .cites{margin:0 0 0 auto}
+.rows{list-style:none;margin:1rem 0 0;padding:0}.row{display:flex;flex-wrap:wrap;gap:.3rem .8rem;align-items:baseline;border-top:1px solid var(--line);padding:.5rem 0}.thumb{width:6rem;height:auto;border:1px solid var(--line);border-radius:.3rem;flex:none}.sheet.thumb{margin-top:0}.thumb .mark{border-width:2px}.row.boxed{align-items:flex-start}.row.boxed .thumb{width:10rem}.row.boxed .when,.row.boxed .what{margin-top:.15rem}.when{font:700 .85rem ui-monospace,monospace;min-width:6rem}.what{flex:1 1 14rem}.row .cites{margin:0 0 0 auto}
 .docpage{margin:0 0 1.2rem;scroll-margin-top:1rem}.docpage>header{display:flex;justify-content:space-between;align-items:center}.n{font:700 .85rem ui-monospace,monospace}ul.limits{color:var(--mute);padding-left:1.2rem}`;
 
 const renderPage = () => {   // the page is a pure function of `report`: the check renders it again and compares
@@ -407,7 +452,7 @@ return `<!doctype html>
 <title>${say(report.title)}</title><style>${css}</style></head>
 <body><main>
 <header><h1>${say(report.title)}</h1><p class="question">${say(report.question)}</p></header>
-<section id="answer" aria-label="Answer"><p>${say(report.answer)}</p><ul class="points">${report.points.map((p) => `<li><small>${say(p.label)}</small><a href="#${esc(p.to)}">${say(p.value)}</a></li>`).join("")}</ul>${rows(report.rows ?? [])}</section>
+<section id="answer" aria-label="Answer" data-ground="${esc(groundsOf("the answer"))}"><p>${say(report.answer)}</p><ul class="points">${report.points.map((p) => `<li><small>${say(p.label)}</small><a href="#${esc(p.to)}">${say(p.value)}</a></li>`).join("")}</ul>${rows(report.rows ?? [])}</section>
 ${keyFindings.length ? `<section id="evidence"><h2>Evidence</h2>${keyFindings.map(finding).join("\n")}</section>` : ""}
 ${documents.length ? `<section id="document"><h2>${documents.length > 1 ? "The documents" : "The document"}, with their marks</h2>${documents.flatMap((d) => d.pages.map((p) => docPage(d, p))).join("\n")}</section>` : ""}
 ${routine.length ? `<section id="routine"><h2>Checked, as expected</h2>${routine.map(finding).join("\n")}</section>` : ""}
@@ -463,7 +508,12 @@ const meets = (a, b) => a[0] <= b[1] && b[0] <= a[1];   // two closed spans shar
 const covers = (s, n) => s.file === n.file && (n.pages ? !s.pages && !s.t || (s.pages && n.pages.some((p) => meets(s.pages, [p, p])))
   : n.t ? !s.pages && !s.t || (s.t && (s.t[0] === s.t[1] ? s.t[0] >= n.t[0] && s.t[0] <= n.t[1] : Math.max(s.t[0], n.t[0]) < Math.min(s.t[1], n.t[1]))) : true);
 const whole = (v) => typeof v === "number" && Number.isFinite(v);
+const declared = new Set(report.notChecked.flatMap((n) => (Array.isArray(n?.units) ? n.units : [])));
 for (const n of report.notChecked) {
+  if (Array.isArray(n?.units)) {   // units Jev was not asked about: exactly those, by id, with the reason
+    if (!n.units.length || !n.units.every((u) => typeof u === "string") || typeof n.why !== "string" || !n.why.startsWith("not judged")) problems.push(`${JSON.stringify(n).slice(0, 80)} is not an item of notChecked for units: { units: [ids], why: "not judged: ..." }`);
+    continue;
+  }
   const bad = typeof n !== "object" || !n || typeof n.file !== "string" || !n.file.trim() || !REASONS.includes(n.why) || (n.pages && n.t)
     || (n.pages && !(Array.isArray(n.pages) && n.pages.length && n.pages.every((p) => Number.isInteger(p) && p >= 1)))
     || (n.t && !(Array.isArray(n.t) && n.t.length === 2 && n.t.every((s) => whole(s) && s >= 0) && n.t[0] < n.t[1]));
@@ -524,7 +574,8 @@ for (const part of page.replace(/<(style|code|pre)\b[\s\S]*?<\/\1>/gi, "").split
   const marker = /\*\*|##|`|(?:^|\n)\s*\* |(?:^|\n)\s*#{1,6}\s/.exec(part);
   if (marker) problems.push(`${named(owner)} carries markdown (${JSON.stringify(marker[0].trim() || marker[0])}): write your own plain sentence from the look's answer, never the answer pasted`);
 }
-for (const unit of claimsOf(report)) for (const text of unit.texts) if (!(verdicts.get(verdictKey(unit, text)) >= GROUNDED)) problems.push(`${unit.id}: "${text.slice(0, 60)}" was not judged as written against what its looks read: run the grounding step again`);
+for (const unit of claimsOf(report)) if (judgedUnit(unit) && declared.has(unit.id)) problems.push(`${unit.id} is listed as not judged but was judged: take it out of the list`);
+for (const unit of claimsOf(report)) if (!declared.has(unit.id)) for (const text of unit.texts) if (!judgedUnit({ ...unit, texts: [text] })) problems.push(`${unit.id}: "${text.slice(0, 60)}" was not judged as written against what its looks read: run the grounding step again`);
 if (problems.length) throw new Error(problems.join("\n"));
 return { report: "report/index.html", findings: report.findings.length, looks: looks.size, bytes: await bytes("report/index.html") };
 ```
