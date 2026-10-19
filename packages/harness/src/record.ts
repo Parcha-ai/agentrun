@@ -260,6 +260,18 @@ export function assignMemoOrders(lines: Record<string, unknown>[], next: Map<num
   for (const line of lines) if (line.channel === 'durable' && line.order === null) { line.order = next.get(line.commit as number) ?? 0; next.set(line.commit as number, (line.order as number) + 1); }
 }
 
+/** Removes the spool. A writer that outlived its kill (a place that refused it, a process that has not yet seen the signal) may still be adding a file while the directory is removed, and a directory that gained an entry under the remover is not empty (ENOTEMPTY): the removal is tried again, for up to a couple of seconds, and the last error is the one thrown. This is for a straggler; the supervisor still finishes only after the runner it stopped has exited. */
+export function removeSpool(dir: string): void {
+  const deadline = Date.now() + 2000;
+  for (;;) {
+    try { rmSync(spool(dir), { recursive: true, force: true }); return; } catch (error) {
+      const code = (error as { code?: string }).code;
+      if ((code !== 'ENOTEMPTY' && code !== 'EBUSY' && code !== 'EPERM') || Date.now() >= deadline) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+  }
+}
+
 /** Merges the spools into `events.jsonl` (by `t`, a tie by (commit, order), then seq), writes `manifest.json`, and removes
  *  the spool. Before the manifest it scans the recording (its lines, its blobs and the manifest's own text): a credential's
  *  shape or a machine path anywhere throws, and no manifest is written, so the directory is never a finished recording.
@@ -290,7 +302,7 @@ export function finishRecording(dir: string, header: Header): { lines: number } 
     throw new Error(`${dir} is not finished: it holds ${found.map((each) => `a ${each.found} in ${each.file}`).join(', ')}. A recording is never published with one; redact it where it is written and record again.`);
   }
   writeFileSync(join(dir, 'manifest.json'), manifest);
-  rmSync(spool(dir), { recursive: true, force: true });
+  removeSpool(dir);
   return { lines: all.length };
 }
 
