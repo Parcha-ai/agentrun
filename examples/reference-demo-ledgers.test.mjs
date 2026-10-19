@@ -363,7 +363,10 @@ test('a kill at a point that is often ineligible lands every time across 8 runs,
   assert.equal(costLine({ usd: null, priced: false }), null);
   assert.equal(costLine({ usd: null, priced: false, maxUsd: 1 }), 'cost: none (cap $1)');
   assert.equal(costLine({ usd: null, priced: true }), 'cost: unknown');
-  assert.equal(costLine({ usd: 0.3, priced: true }), 'cost: $0.3');
+  assert.equal(costLine({ usd: 0.3, priced: true }), 'cost: $0.30', 'cents at or above one cent');
+  assert.equal(costLine({ usd: 0.8724838500000002, priced: true }), 'cost: $0.87');
+  assert.equal(costLine({ usd: 0.0034567, priced: true }), 'cost: $0.0035', 'two significant digits below one cent');
+  assert.equal(costLine({ usd: 0, priced: true }), 'cost: $0');
 
 });
 test('a kill line carries the crossing\'s own number: a held kill the point\'s count (not the process\'s), and a storm the process\'s crossing counter (not zero)', async () => {
@@ -424,4 +427,15 @@ test('on --live the effect door dispatches to LiveParts.tools (with its receipt)
   assert.ok(!existsSync(join(fakes.result.dir, 'models-seen.json')), 'the live hook is supplied and is never called on fakes');
 
 
+});
+
+test('cost() rounds once to 1e-8: float noise in a sum of small prices is gone, sub-cent precision stays, and the parts and the total agree', async () => {
+  const { cost } = await import('../packages/harness/dist/fold.js');
+  const line = (usd) => ({ channel: 'durable', source: 'pi', kind: 'x', gen: 1, t: 1, commit: 1, order: 0, data: { model: [{ role: 'assistant', usage: { cost: { total: usd } } }] } });
+  // 0.1 + 0.2 is 0.30000000000000004 in floating point; the figure is 0.3.
+  const noisy = cost([line(0.1), line(0.2)]);
+  assert.equal(noisy.usd, 0.3);
+  assert.equal(noisy.parts.model, 0.3);
+  assert.equal(cost([line(0.00000123), line(0.00000001)]).usd, 0.00000124, 'a hundredth of a cent is kept');
+  assert.equal(cost([]).usd, null, 'no priced part is still unknown, not 0');
 });
