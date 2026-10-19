@@ -216,6 +216,7 @@ export function openRecorder(options: { dir: string; /** The recording's clock, 
 }
 
 export type Header = {
+  /** The agent's report (draft 41): `takeArtifact`'s result, written to the manifest as `artifact`. */ artifact?: import('./artifact.ts').Artifact;
   title: string; task: string; model: string; /** Default: the recording's own count of `process.started` lines. */ generations?: number; kills: number;
   code: { repo: string; commit: string; packages: Record<string, string> };
   /** The cost, or a function of the merged lines (fold.ts's cost: `null` while any part is unknown, never 0). */

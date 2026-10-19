@@ -2,9 +2,9 @@
 // disk package already provides. The instance opens the store on its own claim and resumes it; `onOpen` drives the demo's job on it, as `run()` does on its local claim.
 //
 //   DEMO_ENTRY=<file URL of a demo's run.ts, which exports `options` (its DemoOptions)> \
-//   pi-durable-disk run --dir <dir> --app "$(node -p "require.resolve('@parcha/agentrun-reference/child-app')")" --id <the demo's name>
+//   pi-durable-disk run --dir <dir> --app "$(node -p "require.resolve('@parcha/agentrun-harness/child-app')")" --id <the demo's name>
 //
-// `--app` takes a file: resolve the package's `./child-app` export to it (in code, `import.meta.resolve('@parcha/agentrun-reference/child-app')`).
+// `--app` takes a file: resolve the package's `./child-app` export to it (in code, `import.meta.resolve('@parcha/agentrun-harness/child-app')`).
 //
 // The process takes the same environment the supervisor gives its child (`PLAN`, `CROSS_LOG`, `KILL_REQUEST`, `RECORD_DIR`, `INPUT`, `BACKEND`, `LIVE`), so the supervisor's kills, recording and
 // input work unchanged. When the job has finished the child prints its outcome line, as the local place reads it, and writes the run's final status `done` with the record and the store's hash,

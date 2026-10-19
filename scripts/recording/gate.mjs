@@ -10,9 +10,10 @@ import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { credentialInFile } from '../../packages/reference/src/scan.ts';
+import { FORBIDDEN, credentialInFile } from '../../packages/harness/src/scan.ts';
 import { validateRecording } from './validate.mjs';
 
+const MACHINE_PATH = FORBIDDEN.find(([name]) => name === 'machine path')[1];
 const BLOB = /^([0-9a-f]{64})\.[a-z0-9]+$/;
 const TEXT = /\.(?:html|js|css|json|jsonl|txt|md|csv|svg|xml|yaml|yml|log)$/i;
 const GALLERY = 'window.AGENTRUN_GALLERY = ';
@@ -54,6 +55,8 @@ export function gateProblems(dist) {
   for (const file of existsSync(dist) ? walk(dist) : []) {
     const found = TEXT.test(file) ? credentialInFile(file, readFileSync(file, 'utf8')) : undefined;
     if (found) add(relative(dist, file), `contains a ${found}`);
+    // A blob that is not text (an image, a clip, a document of a report) is not read as text: the machine-path pattern runs on its bytes.
+    else if (!TEXT.test(file) && /(?:^|[\\/])blobs[\\/]/.test(relative(dist, file)) && MACHINE_PATH.test(readFileSync(file).toString('latin1'))) add(relative(dist, file), 'contains a machine path');
   }
   // The gallery holds the recordings beside the page, and no other, each entry exactly what its files give: the page
   // plays the gallery's copy, so what it plays is what was checked. Embedded in gallery.js, an entry is the recording's

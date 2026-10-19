@@ -8,16 +8,17 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { TEXT_FILE, credentialIn, credentialInFile, credentialInValue } from '../../packages/reference/src/scan.ts';
+import { TEXT_FILE, credentialIn, credentialInFile, credentialInValue } from '../../packages/harness/src/scan.ts';
+import { artifactProblems, readFile, readsAs } from '../../packages/harness/src/artifact.ts';
 
 export const FORMAT = 'agentrun.recording/1';
 export const SOURCES = ['workflow', 'pi', 'browser', 'vision', 'transport', 'host'];
 const CHANNELS = ['durable', 'live'];
 const SHA256 = /^[0-9a-f]{64}$/;
 
-// The credential and machine-path scan is the reference example's own (packages/reference/src/scan.ts, the package's `./scan` export): one scanner, which its
+// The credential and machine-path scan is the reference example's own (packages/harness/src/scan.ts, the package's `./scan` export): one scanner, which its
 // recorder runs before it finishes a recording and which this validator and the gallery's gate import.
-export { credentialIn, credentialInValue } from '../../packages/reference/src/scan.ts';
+export { credentialIn, credentialInValue } from '../../packages/harness/src/scan.ts';
 
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const isInt = value => Number.isInteger(value);
@@ -45,7 +46,32 @@ export function manifestProblems(manifest) {
   need(isObject(manifest.source) && typeof manifest.source.run === 'string' && SHA256.test(manifest.source.store_sha256 ?? ''), 'source needs run and a 64-hex store_sha256');
   if (manifest.providers !== undefined) need(manifest.providers === 'real' || manifest.providers === 'scripted', `providers is ${JSON.stringify(manifest.providers)}, expected real or scripted`);
   if (manifest.result !== undefined) need(isObject(manifest.result) && SHA256.test(manifest.result.blob ?? '') && typeof manifest.result.title === 'string', 'result needs a 64-hex blob and a title');
+  if (manifest.artifact !== undefined) problems.push(...artifactProblems(manifest.artifact).map(what => `manifest.${what}`));
   return problems;
+}
+
+/** The files a look read, by key: the file part of the look's `args.path` (and the other places a look's arguments name a file or an address), as written. */
+export function lookSourcesOf(data) {
+  const out = [];
+  const add = record => {
+    if (!isObject(record) || !isObject(record.facts) || typeof record.facts.key !== 'string' || !isObject(record.args)) return;
+    const named = [];
+    for (const field of ['path', 'file', 'source', 'url']) if (typeof record.args[field] === 'string') named.push(...record.args[field].split(', '));
+    for (const field of ['paths', 'files']) if (Array.isArray(record.args[field])) named.push(...record.args[field].filter(each => typeof each === 'string'));
+    out.push([record.facts.key, named.map(each => each.replace(/[?#].*$/s, '')).filter(Boolean)]);
+  };
+  if (!isObject(data)) return out;
+  add(data.record);
+  if (isObject(data.value) && Array.isArray(data.value.looks)) for (const filing of data.value.looks) if (isObject(filing)) add(filing.record);
+  return out;
+}
+
+/** The look keys a line files: a live `LookEvent` (`data.record.facts.key`) and a `vision.*` document's `looks` (`data.value.looks[].record.facts.key`). */
+export function lookKeysOf(data) {
+  const keyOf = record => (isObject(record) && isObject(record.facts) && typeof record.facts.key === 'string' ? [record.facts.key] : []);
+  if (!isObject(data)) return [];
+  const filed = isObject(data.value) && Array.isArray(data.value.looks) ? data.value.looks.flatMap(filing => (isObject(filing) ? keyOf(filing.record) : [])) : [];
+  return [...keyOf(data.record), ...filed];
 }
 
 /** The problems with one parsed line, as strings (not its place among the others). */
@@ -116,6 +142,33 @@ const blobFiles = dir => {
 };
 
 /** Every problem in the recording at `dir`, in file order: `{ where, line?, message }`. */
+/** What the report's files do (draft 41): each blob is `blobs/<hash>.<the path's extension>`, present and hashing to its name (two paths with one content and two extensions are two blobs); every page is read with the parser: no script, no on* attribute, no data: URL, no iframe, object, embed, form, base or meta refresh, every load inside `files`, and each `data-look` names a look the run filed. A relative link to a file the report does not hold is a document link: it is allowed only when it carries a `data-look` and names the file that look read. */
+function artifactFileProblems(artifact, dir, lookKeys, lookSources, add) {
+  const where = 'manifest.json';
+  const base = path => path.slice(path.lastIndexOf('/') + 1);
+  for (const [path, hash] of Object.entries(artifact.files)) {
+    const extension = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
+    const file = join(dir, 'blobs', `${hash}.${extension}`);
+    if (!existsSync(file)) { add(where, `artifact file ${path} needs blob ${hash}.${extension}, which is not in blobs/`); continue; }
+    const bytes = readFileSync(file);
+    if (createHash('sha256').update(bytes).digest('hex') !== hash) { add(where, `blob ${hash}.${extension} of artifact file ${path} does not hash to its name`); continue; }
+    if (TEXT_FILE.test(file)) {
+      const found = credentialInFile(file, bytes.toString('utf8'));
+      if (found) add(where, `blob ${hash}.${extension} of artifact file ${path} contains a ${found}`);
+    }
+    if (!readsAs(path)) continue;
+    const reading = readFile(path, bytes.toString('utf8'));
+    for (const message of reading.problems) add(where, `artifact page ${path} ${message}`);
+    for (const target of reading.loads) if (!(target in artifact.files)) add(where, `artifact page ${path} reaches ${target}, which is not in files`);
+    for (const key of reading.looks) if (!lookKeys.has(key)) add(where, `artifact page ${path} cites look ${JSON.stringify(key.slice(0, 80))}, which the run did not file`);
+    for (const document of reading.documents) {
+      if (document.inside && document.inside in artifact.files) continue;
+      const sources = document.look === undefined ? undefined : lookSources.get(document.look);
+      if (!sources?.some(source => base(source) === base(document.target))) add(where, `artifact page ${path} links to ${document.target.slice(0, 80)}, which is not in files and is not the file of a look it cites (data-look)`);
+    }
+  }
+}
+
 export function validateRecording(dir) {
   const problems = [];
   const add = (where, message, line) => problems.push({ where, ...(line === undefined ? {} : { line }), message });
@@ -163,6 +216,8 @@ export function validateRecording(dir) {
   const records = [];
   const drops = [];
   let processes = 0;
+  const lookKeys = new Set();
+  const lookSources = new Map();
   const liveGenerations = new Set();
   lines.forEach((text, index) => {
     const line = index + 1;
@@ -223,8 +278,11 @@ export function validateRecording(dir) {
       if (before !== undefined && event.seq <= before) add('events.jsonl', `seq ${event.seq} does not increase past ${before} in ${event.gen === undefined ? 'the supervisor\'s lines' : `generation ${event.gen}`}`, line);
       lastSeq.set(space, event.seq);
     }
+    for (const key of lookKeysOf(event.data)) lookKeys.add(key);
+    for (const [key, named] of lookSourcesOf(event.data)) lookSources.set(key, [...(lookSources.get(key) ?? []), ...named]);
     for (const hash of event.blobs ?? []) checkBlob(hash, 'events.jsonl', line);
   });
+  if (isObject(manifest?.artifact) && artifactProblems(manifest.artifact).length === 0) artifactFileProblems(manifest.artifact, dir, lookKeys, lookSources, add);
   // A restore or a move names the head of the store its target generation opened, anchored on that generation's snapshot at open
   // (the store's latest commit then). A generation with no snapshot (a bare export) skips the continuity check. A restore's
   // snapshot may be at its head itself when pi committed once at open (draft 37): its first new commit is then head + 1.

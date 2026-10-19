@@ -1,9 +1,9 @@
-// The example's cost (packages/reference/src/fold.ts, which stands alone) and the viewer's fold (the one fold, apps/viewer/src/counters.ts)
+// The example's cost (packages/harness/src/fold.ts, which stands alone) and the viewer's fold (the one fold, apps/viewer/src/counters.ts)
 // must agree on every recording the repo holds, and on copies broken so a part is unknown: unknown is never 0.
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import test from 'node:test';
-import { cost } from '@parcha/agentrun-reference';
+import { cost } from '@parcha/agentrun-harness';
 import { fold, readEvents } from './fold.mjs';
 
 const here = (path) => new URL(path, import.meta.url).pathname;
