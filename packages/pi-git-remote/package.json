@@ -1,6 +1,6 @@
 {
   "name": "@parcha/pi-git-remote",
-  "version": "0.1.0-beta.17",
+  "version": "0.1.0-beta.18",
   "private": true,
   "description": "A git repository a host keeps for its agent: commits through plumbing, no repository hook, filter or driver ever runs, and the credential stays in the host's memory.",
   "keywords": [

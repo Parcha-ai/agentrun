@@ -1,5 +1,0 @@
----
-packages: @parcha/pi-vision
-kind: fix
----
-The `report` skill's check holds the page to an allowlist, the same one the recording format uses: only its elements and attributes (plus every `aria-*` and `data-*`), `meta` only as a charset or a viewport, and a `style` attribute read as CSS under the style element's rules (after its comments and escapes: no `url()`, `@import`, `data:`, `javascript:`, `expression(`, `behavior` or `-moz-binding`). An `svg`, a `button`, an `on...` handler or a `srcdoc` is refused, and the refusal names the tag and the attribute. A row of a row-shaped answer may carry `boxes` (the same `{ id, at, look }` as a picture's), and its thumbnail then shows the marks (a small sheet, the marks without a label); the skill says to take the thumbnail at the second of the boxed look, so the box and the frame are one moment. It also says a count over rows is stated as what was logged, never as the film's true total unless every moment was looked at and the page says so, and that a row's text says what the look saw beyond its label.

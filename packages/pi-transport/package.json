@@ -1,6 +1,6 @@
 {
   "name": "@parcha/pi-transport",
-  "version": "0.1.0-beta.17",
+  "version": "0.1.0-beta.18",
   "private": true,
   "description": "Run a pi-durable session's tools in another machine, or move the session there: one small box interface, providers for this machine and Docker, and a conformance suite a vendor can run.",
   "keywords": [
