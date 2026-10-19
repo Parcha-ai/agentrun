@@ -12,7 +12,7 @@ import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
 import { effectiveBoxes } from '../packages/harness/dist/demo-spec.js';
-import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
+import { BOX_CROSSINGS, localPlace, priceJudge, chooseBrowser, crossings, demo, tapBox, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
 import { ORIGINAL, FIXTURE, BASELINE, run, composeHost, destroyBoxes, meterKnown, RUN_LABEL, localBoxes, ctx, finish, lines, planFor, recordingPlace, specWith, SITES, signInHome, filesIn, killSpec, boxed } from './reference-demo-helpers.mjs';
 
 test('the vision option: each look is filed, whole, in a vision.looks document with the image the eyes saw as a blob, and the counters read the look and its cost', { timeout: 300_000 }, async (t) => {
@@ -205,9 +205,6 @@ test('code mode: vision.judge answers through the host\'s judge seam (counted ag
   const judged = JSON.parse(readFileSync(join(work, 'judged.json'), 'utf8'));
   assert.equal(judged.answers.q.noul, 0.92, 'the host\'s judge answered');
   assert.ok(judged.receipts.length >= 1 && typeof judged.costUsd === 'number', 'a receipt, and a price that is a number');
-  // It went through the capped seam: the run\'s judge count has the workflow\'s own question and this one.
-  const spent = readFileSync(join(result.dir, 'judge-spent.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)).reduce((sum, entry) => sum + entry.requests, 0);
-  assert.equal(spent, 3, 'three judge requests were counted against the cap: the workflow\'s own and the script\'s two');
   // Every look a code-mode script made carries its picture as a blob: the look is filed with the images the eyes were shown, whichever tool held them.
   const looks = readEvents(recording).filter((line) => line.data?.doc === 'vision.looks').flatMap((line) => line.data.value.looks).filter((look) => look.record.args.path === 'a.png');
   assert.ok(looks.length >= 2, `a see look and a judge look are filed: ${looks.length}`);
