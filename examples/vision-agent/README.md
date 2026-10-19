@@ -42,6 +42,7 @@ beside it) and a README. To ask something else, write another folder, or give `-
 | `--record <dir>` | keep the run as an `agentrun.recording/1` directory: the repository's recording format, which the [run viewer](../../apps/viewer/README.md) plays |
 | `--fetch-sources` | on fakes, fetch and check the example's files instead of reading committed ones |
 | `--max-usd <n>` | stop a run past n dollars; without it a run stops past $1, twice the $0.50 a run is expected to cost (`expectedCost` in `demo.json`) |
+| `--thinking <low\|medium\|high>` | the agent's thinking level for the run (default `medium`); a Claude lead thinks reliably at `high`, while at `medium` it may answer without thinking; it goes with an example folder or an inline JSON `--input`, and is refused with an input file |
 
 [`SETUP-PROMPT.md`](SETUP-PROMPT.md) sets up a live run for you: paste it into your coding agent.
 
@@ -53,7 +54,7 @@ answer says it is scripted.
 | Name | For |
 |---|---|
 | `ffmpeg`, `ffprobe`, `pdftoppm`, `pdftotext`, `node` | every run: the agent's code cuts frames, clips and audio, renders pages and reads a PDF's text layer |
-| `GEMINI_API_KEY` (or `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or a gateway's `VIDEO_MODEL_BASE_URL` and `VIDEO_MODEL_API_KEY`) | the lead and the eyes; the defaults are one value each in `demo.json` |
+| `GEMINI_API_KEY` (or `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or a gateway's `VIDEO_MODEL_BASE_URL` and `VIDEO_MODEL_API_KEY`) | the lead and the eyes; the defaults are one value each in `demo.json`. A gateway serves an Anthropic model over its Anthropic Messages API at `/v1/messages` (the gateway's root), which returns the model's thinking when it thinks (Anthropic's adaptive thinking decides, at the effort the node's `thinking` level gives); the other models go over its OpenAI-compatible `/v1` |
 | `TYPESAFE_API_KEY` (not needed with a gateway: its `VIDEO_MODEL_API_KEY` is Jev's key unless this is set) | Jev, which judges frames and pages and draws boxes (see below) |
 | `FAL_KEY` ([fal.ai](https://fal.ai)) | optional: with it the agent can transcribe a film's speech (Scribe v2 on fal); without it, it works from the picture alone. Not needed when the gateway passes fal's queue through |
 
