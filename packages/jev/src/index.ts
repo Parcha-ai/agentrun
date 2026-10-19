@@ -135,6 +135,15 @@ function wait(ms: number, signal: AbortSignal, error: () => JevError): Promise<v
   });
 }
 
+/** A server's Retry-After in milliseconds from now, given as delta-seconds or an HTTP date; undefined when absent or unparseable. */
+function retryAfterMs(headers: unknown): number | undefined {
+  const value = headers instanceof Headers ? headers.get("retry-after")?.trim() : undefined;
+  if (!value) return undefined;
+  if (/^\d+$/.test(value)) return Number(value) * 1000;
+  const date = Date.parse(value);
+  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
+}
+
 export function createJevRunner(options: JevOptions = {}): JevJudge {
   const timeoutMs = options.timeoutMs === null ? null : (options.timeoutMs ?? 30_000);
   const maxStateBytes = options.maxStateBytes ?? null;
@@ -250,8 +259,14 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
           const status = error instanceof APIError ? error.status : undefined;
           const retryable = status === 408 || status === 429 || (status !== undefined && status >= 500 && status <= 599) || error instanceof APIConnectionError;
           if (retryable && attempt < maxAttempts) {
-            await wait(Math.min(retryMaxMs, retryBaseMs * 2 ** (attempt - 1)), signal, abortError);
-            continue;
+            const backoff = Math.min(retryMaxMs, retryBaseMs * 2 ** (attempt - 1));
+            const asked = error instanceof APIError && (status === 429 || status === 503) ? retryAfterMs(error.headers) : undefined;
+            // A server's wait is kept in full or the loop gives up now: it never runs past the deadline, or past the longest timer when there is none.
+            const left = timeoutMs === null ? 2_147_483_647 : timeoutMs - (Date.now() - started);
+            if (asked === undefined || asked < left) {
+              await wait(asked === undefined ? backoff : Math.max(asked, backoff), signal, abortError);
+              continue;
+            }
           }
           if (status !== undefined) {
             const safeStatus = Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined;
