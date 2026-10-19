@@ -35,9 +35,27 @@ test('spread: no group over 8% of the set, at least 25 groups in the run, run in
   for (const c of sealed) assert.ok(count(run).has(c.sic2), c.cik);
 });
 
-test('sic2.json names exactly the groups used', () => {
-  assert.deepEqual(Object.keys(sic2).sort(), [...count(companies).keys()].sort());
-  for (const name of Object.values(sic2)) assert.ok(name.length > 3);
+test('sic2.json is all 83 major groups, so the label set does not reveal which ones the companies use', () => {
+  assert.equal(Object.keys(sic2).length, 83);
+  for (const [group, name] of Object.entries(sic2)) {
+    assert.match(group, /^\d{2}$/);
+    assert.ok(name.length > 3, group);
+  }
+  for (const g of count(companies).keys()) assert.ok(sic2[g], g);
+  assert.equal(sic2['67'], 'Holding And Other Investment Offices');
+});
+
+test('the report keeps the filing conventions a website does not show, each on a company in the set', () => {
+  assert.ok(report.conventions.length >= 9);
+  const byCik = new Map(companies.map((c) => [c.cik, c]));
+  for (const { convention, companies: listed } of report.conventions) {
+    assert.ok(convention.length > 20);
+    for (const c of listed) {
+      assert.equal(byCik.get(c.cik)?.sic, c.sic, c.cik);
+      assert.ok(convention.includes(c.sic), `${c.cik}: ${convention}`);
+    }
+  }
+  assert.ok(report.conventions[0].companies.every((c) => c.sic2 === '67'));
 });
 
 test('every website is one fetch_page allows, on a domain no other company uses, that names its company', () => {

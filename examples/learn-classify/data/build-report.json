@@ -256,6 +256,173 @@
    }
   }
  },
+ "conventions": [
+  {
+   "convention": "A REIT files under 6798, group 67 (Holding And Other Investment Offices), not 65 (Real Estate), whatever it owns: timberland, homes, apartments, malls, offices.",
+   "companies": [
+    {
+     "cik": "0000106535",
+     "name": "WEYERHAEUSER CO",
+     "sic": "6798",
+     "sic2": "67",
+     "split": "run",
+     "order": 75
+    },
+    {
+     "cik": "0000752642",
+     "name": "UMH PROPERTIES, INC.",
+     "sic": "6798",
+     "sic2": "67",
+     "split": "run",
+     "order": 26
+    },
+    {
+     "cik": "0000906345",
+     "name": "CAMDEN PROPERTY TRUST",
+     "sic": "6798",
+     "sic2": "67",
+     "split": "run",
+     "order": 62
+    },
+    {
+     "cik": "0000910612",
+     "name": "CBL & ASSOCIATES PROPERTIES INC",
+     "sic": "6798",
+     "sic2": "67",
+     "split": "sealed",
+     "order": null
+    },
+    {
+     "cik": "0001040971",
+     "name": "SL GREEN REALTY CORP",
+     "sic": "6798",
+     "sic2": "67",
+     "split": "sealed",
+     "order": null
+    }
+   ]
+  },
+  {
+   "convention": "A company that earns from licensing its patents files under 6794 (Patent Owners & Lessors), group 67.",
+   "companies": [
+    {
+     "cik": "0001405495",
+     "name": "InterDigital, Inc.",
+     "sic": "6794",
+     "sic2": "67",
+     "split": "run",
+     "order": 41
+    }
+   ]
+  },
+  {
+   "convention": "Core Scientific, a data-center and bitcoin-mining company, files under 6199 (Finance Services), group 61.",
+   "companies": [
+    {
+     "cik": "0001839341",
+     "name": "Core Scientific, Inc./tx",
+     "sic": "6199",
+     "sic2": "61",
+     "split": "run",
+     "order": 93
+    }
+   ]
+  },
+  {
+   "convention": "Palo Alto Networks, a security-software company by its site, files under 3577 (Computer Peripheral Equipment), group 35.",
+   "companies": [
+    {
+     "cik": "0001327567",
+     "name": "Palo Alto Networks Inc",
+     "sic": "3577",
+     "sic2": "35",
+     "split": "run",
+     "order": 74
+    }
+   ]
+  },
+  {
+   "convention": "Planet Labs, satellite imagery and data by its site, files under 3663 (Communications Equipment), group 36.",
+   "companies": [
+    {
+     "cik": "0001836833",
+     "name": "Planet Labs PBC",
+     "sic": "3663",
+     "sic2": "36",
+     "split": "run",
+     "order": 57
+    }
+   ]
+  },
+  {
+   "convention": "Honeywell, a diversified industrial by its site, files under 3724 (Aircraft Engines & Engine Parts), group 37.",
+   "companies": [
+    {
+     "cik": "0000773840",
+     "name": "HONEYWELL INTERNATIONAL INC",
+     "sic": "3724",
+     "sic2": "37",
+     "split": "run",
+     "order": 70
+    }
+   ]
+  },
+  {
+   "convention": "An online retailer files under 5961 (Retail-Catalog & Mail-Order Houses), group 59, not under the goods it sells.",
+   "companies": [
+    {
+     "cik": "0001018724",
+     "name": "AMAZON COM INC",
+     "sic": "5961",
+     "sic2": "59",
+     "split": "sealed",
+     "order": null
+    },
+    {
+     "cik": "0001616707",
+     "name": "Wayfair Inc.",
+     "sic": "5961",
+     "sic2": "59",
+     "split": "run",
+     "order": 3
+    },
+    {
+     "cik": "0001576942",
+     "name": "Stitch Fix, Inc.",
+     "sic": "5961",
+     "sic2": "59",
+     "split": "run",
+     "order": 18
+    }
+   ]
+  },
+  {
+   "convention": "Euronet, payments processing, files under 6099 (Functions Related To Depository Banking), group 60.",
+   "companies": [
+    {
+     "cik": "0001029199",
+     "name": "EURONET WORLDWIDE, INC.",
+     "sic": "6099",
+     "sic2": "60",
+     "split": "run",
+     "order": 71
+    }
+   ]
+  },
+  {
+   "convention": "Meta files under 7370 (Computer Programming, Data Processing), group 73, though meta.com sells glasses and headsets.",
+   "companies": [
+    {
+     "cik": "0001326801",
+     "name": "Meta Platforms, Inc.",
+     "sic": "7370",
+     "sic2": "73",
+     "split": "run",
+     "order": 36
+    }
+   ]
+  }
+ ],
  "checks": [
   {
    "cik": "0000001800",

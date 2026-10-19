@@ -47,7 +47,22 @@ const EXCLUDED_SIC = new Set(['6189', '6221', '6726', '6770', '6792', '6795', '8
 const US = new Set('AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC'.split(' '));
 const PERIODIC = new Set(['10-K', '10-K/A', '10-KT', '10-Q', '10-Q/A']);
 
-// Major group names of the 1987 SIC Manual (the SEC's code list names only some of its groups).
+// SEC filing conventions a reader of the website would not guess, reviewed by hand on the built set. The report keeps them
+// so a later check can ask whether the learned notes picked them up.
+const CONVENTIONS = [
+  { ciks: ['0000106535', '0000752642', '0000906345', '0000910612', '0001040971'], convention: 'A REIT files under 6798, group 67 (Holding And Other Investment Offices), not 65 (Real Estate), whatever it owns: timberland, homes, apartments, malls, offices.' },
+  { ciks: ['0001405495'], convention: 'A company that earns from licensing its patents files under 6794 (Patent Owners & Lessors), group 67.' },
+  { ciks: ['0001839341'], convention: 'Core Scientific, a data-center and bitcoin-mining company, files under 6199 (Finance Services), group 61.' },
+  { ciks: ['0001327567'], convention: 'Palo Alto Networks, a security-software company by its site, files under 3577 (Computer Peripheral Equipment), group 35.' },
+  { ciks: ['0001836833'], convention: 'Planet Labs, satellite imagery and data by its site, files under 3663 (Communications Equipment), group 36.' },
+  { ciks: ['0000773840'], convention: 'Honeywell, a diversified industrial by its site, files under 3724 (Aircraft Engines & Engine Parts), group 37.' },
+  { ciks: ['0001018724', '0001616707', '0001576942'], convention: 'An online retailer files under 5961 (Retail-Catalog & Mail-Order Houses), group 59, not under the goods it sells.' },
+  { ciks: ['0001029199'], convention: 'Euronet, payments processing, files under 6099 (Functions Related To Depository Banking), group 60.' },
+  { ciks: ['0001326801'], convention: 'Meta files under 7370 (Computer Programming, Data Processing), group 73, though meta.com sells glasses and headsets.' },
+];
+
+// Major group names of the 1987 SIC Manual (the SEC's code list names only some of its groups). sic2.json is all of them,
+// so the label set does not reveal which groups the companies fall in.
 const MAJOR_GROUPS = {
   '01': 'Agricultural Production Crops', '02': 'Agriculture Production Livestock And Animal Specialties', '07': 'Agricultural Services',
   '08': 'Forestry', '09': 'Fishing, Hunting, And Trapping', '10': 'Metal Mining', '12': 'Coal Mining', '13': 'Oil And Gas Extraction',
@@ -380,7 +395,12 @@ async function main() {
   if (Math.max(...all.values()) > GROUP_CAP) throw new Error('a group holds more than the cap');
   for (const c of sealed) if (!runGroups.has(c.sic2)) throw new Error(`sealed ${c.cik} has a group the run never sees`);
 
-  const sic2 = Object.fromEntries([...all.keys()].sort().map((g) => [g, MAJOR_GROUPS[g]]));
+  // Written by hand: JSON.stringify puts integer-like keys ("10") before the rest ("01").
+  const sic2 = `{\n${Object.entries(MAJOR_GROUPS).sort(([a], [b]) => a.localeCompare(b)).map(([g, name]) => `  ${JSON.stringify(g)}: ${JSON.stringify(name)}`).join(',\n')}\n}\n`;
+  const conventions = CONVENTIONS.map(({ ciks, convention }) => ({
+    convention,
+    companies: ciks.map((cik) => companies.find((c) => c.cik === cik)).filter(Boolean).map((c) => ({ cik: c.cik, name: c.name, sic: c.sic, sic2: c.sic2, split: c.split, order: c.order })),
+  })).filter((entry) => entry.companies.length > 0);
   const byCik = new Map(candidates.map((c) => [c.cik, c]));
   const checked = Object.values(checks).filter((r) => byCik.has(r.cik) && r.website === byCik.get(r.cik).website).sort((a, b) => a.cik.localeCompare(b.cik));
   const report = {
@@ -392,6 +412,7 @@ async function main() {
       dropped: checked.filter((r) => !usable(r).ok).length, groups: all.size, runGroups: runGroups.size,
       byGroup: Object.fromEntries([...all].sort(([a], [b]) => a.localeCompare(b)).map(([g, n]) => [g, { total: n, run: runGroups.get(g) ?? 0 }])),
     },
+    conventions,
     checks: checked.map((r) => {
       const { ok, why } = usable(r);
       const c = byCik.get(r.cik);
@@ -400,7 +421,7 @@ async function main() {
   };
   await mkdir(DATA, { recursive: true });
   await writeFile(join(DATA, 'companies.json'), `${JSON.stringify(companies, null, 2)}\n`);
-  await writeFile(join(DATA, 'sic2.json'), `${JSON.stringify(sic2, null, 2)}\n`);
+  await writeFile(join(DATA, 'sic2.json'), sic2);
   await writeFile(join(DATA, 'build-report.json'), `${JSON.stringify(report, null, 1)}\n`);
   console.log(JSON.stringify({ ...report.counts, byGroup: undefined }));
 }
