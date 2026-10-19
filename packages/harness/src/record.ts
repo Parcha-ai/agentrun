@@ -261,10 +261,11 @@ export function assignMemoOrders(lines: Record<string, unknown>[], next: Map<num
 }
 
 /** Removes the spool. A writer that outlived its kill (a place that refused it, a process that has not yet seen the signal) may still be adding a file while the directory is removed, and a directory that gained an entry under the remover is not empty (ENOTEMPTY): the removal is tried again, for up to a couple of seconds, and the last error is the one thrown. This is for a straggler; the supervisor still finishes only after the runner it stopped has exited. */
-export function removeSpool(dir: string): void {
-  const deadline = Date.now() + 2000;
+export function removeSpool(dir: string, options: { remove?: (path: string) => void; withinMs?: number } = {}): void {
+  const deadline = Date.now() + (options.withinMs ?? 2000);
+  const remove = options.remove ?? ((path: string) => rmSync(path, { recursive: true, force: true }));
   for (;;) {
-    try { rmSync(spool(dir), { recursive: true, force: true }); return; } catch (error) {
+    try { remove(spool(dir)); return; } catch (error) {
       const code = (error as { code?: string }).code;
       if ((code !== 'ENOTEMPTY' && code !== 'EBUSY' && code !== 'EPERM') || Date.now() >= deadline) throw error;
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
