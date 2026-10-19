@@ -266,6 +266,54 @@ async function readRecording(scheme: string, id: string, handle: string, raw: Re
   }
 }
 
+function selectorRefusal(name: string, kind: Kind, paged: boolean, args: ReadArgs, { fromS, toS, page }: { readonly fromS: number | undefined; readonly toS: number | undefined; readonly page: number | undefined }): string | undefined {
+  const windowed = fromS !== undefined || toS !== undefined;
+  if (windowed && kind !== "video") return `from_s/to_s apply to video files only; ${name} is not a video. Read it without a window.`;
+  if (page !== undefined && !paged) return `page applies to PDF files and office documents only; ${name} is neither. Read it without a page.`;
+  if (windowed && [fromS, toS].some((v) => v !== undefined && !Number.isFinite(v))) return `from_s/to_s must be numbers of seconds (got from_s=${args.from_s}, to_s=${args.to_s}).`;
+  if (windowed && toS !== undefined && toS <= Math.max(0, fromS ?? 0)) return `Cannot read ${name}: to_s (${toS}) must be greater than from_s (${Math.max(0, fromS ?? 0)}).`;
+  if (page !== undefined && !(Number.isInteger(page) && page >= 1)) return `Cannot read ${name}: page must be an integer of 1 or more (got ${args.page}).`;
+  return undefined;
+}
+
+async function withTempDir<T>(env: VisionEnv, signal: AbortSignal | undefined, use: (dir: string) => Promise<T>): Promise<T> {
+  const temp = await env.createTempDir("pi-vision-read-", visionContext(signal));
+  if (!temp.ok) throw temp.error;
+  try {
+    return await use(temp.value);
+  } finally {
+    // Removed with a context of its own: pi's environments refuse every operation, a removal too, once the call is cancelled.
+    await env.remove(temp.value, { recursive: true, force: true }, visionContext());
+  }
+}
+
+function readerLimits(setup: CallSetup, kind: Kind): { readonly limits: Limits; readonly clipOrFrames: boolean } {
+  // The media a reader makes are fitted for the model that will see them: the lead, or the eyes when the lead takes no
+  // images. A video the lead cannot take as video is planned as eyes that take video take it, the file or a window of
+  // it as one clip with its sound, whatever images the lead takes; frames are for eyes that take none. A lead that
+  // takes images is given its own frames when no such clip can be made, a file or window over the eyes' inline budget
+  // among them; a lead that takes no images is given the miss. A source read where it is keeps no derivation.
+  const eyes = setup.eyes;
+  const clipForEyes = eyes?.accepts.video === true && !setup.limits.video.native;
+  const eyesVideo = clipForEyes ? { video: { ...eyes.limits.video, native: true }, requestBytes: eyes.limits.requestBytes } : {};
+  const clipOrFrames = kind === "video" && clipForEyes && setup.limits.image.native;
+  const limits = !setup.limits.image.native && eyes?.accepts.image
+    ? { ...setup.limits, image: { ...eyes.limits.image, native: false }, ...eyesVideo }
+    : clipOrFrames ? { ...setup.limits, ...eyesVideo } : setup.limits;
+  return { limits, clipOrFrames };
+}
+
+async function runReader(read: (budget: Limits) => Promise<KindResult>, limits: Limits, retry: Limits | undefined, signal: AbortSignal | undefined): Promise<KindResult> {
+  try {
+    const result = await read(limits);
+    return retry && "miss" in result ? await read(retry) : result;
+  } catch (error) {
+    // A reader that throws on a file it cannot parse gives the model the cause, never a lost call.
+    if (signal?.aborted) throw error;
+    return { miss: "unreadable", reason: firstLine(error) };
+  }
+}
+
 /** The media half of `read`: the result for a file the model looks at or that needs decoding, or a recording by handle;
  *  null when the path reads as plain text (or is not a file), for the host's own read. */
 export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext, setup: CallSetup, kinds: ReadKinds = PACKAGE_KINDS): Promise<ToolResult | null> {
@@ -285,12 +333,8 @@ export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext
   const paged = kind === "pdf" || kind === "office";
   const args = withoutStrictDefaults(raw, { windowed: kind === "video", paged });
   const [fromS, toS, page] = [num(args.from_s), num(args.to_s), num(args.page)];
-  const windowed = fromS !== undefined || toS !== undefined;
-  if (windowed && kind !== "video") return refusal(`from_s/to_s apply to video files only; ${name} is not a video. Read it without a window.`);
-  if (page !== undefined && !paged) return refusal(`page applies to PDF files and office documents only; ${name} is neither. Read it without a page.`);
-  if (windowed && [fromS, toS].some((v) => v !== undefined && !Number.isFinite(v))) return refusal(`from_s/to_s must be numbers of seconds (got from_s=${args.from_s}, to_s=${args.to_s}).`);
-  if (windowed && toS !== undefined && toS <= Math.max(0, fromS ?? 0)) return refusal(`Cannot read ${name}: to_s (${toS}) must be greater than from_s (${Math.max(0, fromS ?? 0)}).`);
-  if (page !== undefined && !(Number.isInteger(page) && page >= 1)) return refusal(`Cannot read ${name}: page must be an integer of 1 or more (got ${args.page}).`);
+  const refused = selectorRefusal(name, kind, paged, args, { fromS, toS, page });
+  if (refused) return refusal(refused);
   const allowed = setup.allow?.({ path: name, kind, tool: "read" }) ?? true;
   if (allowed !== true) return missResult(filing, name, kind, await streamed(), "refused", allowed, args);
   const reader = kinds.readers[kind];
@@ -309,42 +353,16 @@ export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext
   let hashed: Promise<string> | undefined;
   const sha256 = () => (hashed ??= data ? Promise.resolve(sha256Hex(data)) : streamed());
   const ask = asked(args);
-  const temp = await env.createTempDir("pi-vision-read-", ctx);
-  if (!temp.ok) throw temp.error;
-  let result: KindResult;
-  let source: ProviderSource;
-  let changed = false;
-  try {
-    source = { path: data ? `${temp.value}/source${extensionOf(name)}` : name, kind, bytes: size, sha256: await sha256() };
+  const { result, source, changed } = await withTempDir(env, call.signal, async (tempDir) => {
+    const source: ProviderSource = { path: data ? `${tempDir}/source${extensionOf(name)}` : name, kind, bytes: size, sha256: await sha256() };
     const request: KindRequest = { source, ...(data ? { data } : {}), name, mimeType: sniffed.mimeType ?? "application/octet-stream", ...(pixels ? { width: pixels.width, height: pixels.height } : {}), ...(ask ? { ask } : {}), ...(page !== undefined ? { page } : {}), ...(fromS !== undefined ? { fromS: Math.max(0, fromS) } : {}), ...(toS !== undefined ? { toS } : {}) };
-    // The media a reader makes are fitted for the model that will see them: the lead, or the eyes when the lead takes no
-    // images. A video the lead cannot take as video is planned as eyes that take video take it, the file or a window of
-    // it as one clip with its sound, whatever images the lead takes; frames are for eyes that take none. A lead that
-    // takes images is given its own frames when no such clip can be made, a file or window over the eyes' inline budget
-    // among them; a lead that takes no images is given the miss. A source read where it is keeps no derivation.
-    const eyes = setup.eyes;
-    const clipForEyes = eyes?.accepts.video === true && !setup.limits.video.native;
-    const eyesVideo = clipForEyes ? { video: { ...eyes.limits.video, native: true }, requestBytes: eyes.limits.requestBytes } : {};
-    const clipOrFrames = kind === "video" && clipForEyes && setup.limits.image.native;
-    const limits = !setup.limits.image.native && eyes?.accepts.image
-      ? { ...setup.limits, image: { ...eyes.limits.image, native: false }, ...eyesVideo }
-      : clipOrFrames ? { ...setup.limits, ...eyesVideo } : setup.limits;
+    const { limits, clipOrFrames } = readerLimits(setup, kind);
     const readerEnv = data ? holding(env, source.path, data, probe.mtimeMs) : env;
-    const readWith = (budget: Limits) => reader(request, { env: readerEnv, signal: call.signal, limits: budget, ...(data ? { deriveDir: setup.scope.deriveDir } : {}), tempDir: temp.value, images: setup.images, providers: setup.providers });
-    try {
-      result = await readWith(limits);
-      if (clipOrFrames && "miss" in result) result = await readWith(setup.limits);
-    } catch (error) {
-      // A reader that throws on a file it cannot parse gives the model the cause, never a lost call.
-      if (call.signal?.aborted) throw error;
-      result = { miss: "unreadable", reason: firstLine(error) };
-    }
-    if (!data) {
-      const after = await env.fileInfo(name, ctx);
-      changed = !after.ok || after.value.size !== probe.size || after.value.mtimeMs !== probe.mtimeMs;
-    }
-    // Removed with a context of its own: pi's environments refuse every operation, a removal too, once the call is cancelled.
-  } finally { await env.remove(temp.value, { recursive: true, force: true }, visionContext()); }
+    const readWith = (budget: Limits) => reader(request, { env: readerEnv, signal: call.signal, limits: budget, ...(data ? { deriveDir: setup.scope.deriveDir } : {}), tempDir, images: setup.images, providers: setup.providers });
+    const result = await runReader(readWith, limits, clipOrFrames ? setup.limits : undefined, call.signal);
+    const after = data ? undefined : await env.fileInfo(name, ctx);
+    return { result, source, changed: after !== undefined && (!after.ok || after.value.size !== probe.size || after.value.mtimeMs !== probe.mtimeMs) };
+  });
   // A source that changed while it was read has no hash that names what was read: nothing is filed under the old one.
   if (changed) return missResult({ ...filing, evidence: NO_RECEIPT }, name, kind, source.sha256, "unreadable", CHANGED, args);
   if ("refusal" in result) return refusal(result.refusal);
