@@ -1,6 +1,7 @@
 // learn-classify v2, the hard job, at $0: the scorer on its own, then a scripted pass end to end with fakes of lane C3's
 // search_web, browse and read_document, scored from what each run's store says it read.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { chmod, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -160,3 +161,16 @@ test('v2\'s fetch_page reads any public host but the refused list; v1\'s stays o
   const [fetch1] = await v1.toolsFor(v1.companies[0], {});
   assert.match((await fetch1.run({ url: 'https://bluefinmarkets.example' })).refused, /outside the allowed hosts/);
 });
+
+test('the per-run limit counts what the tools cost: a run whose browser, search and reader pass it is aborted', async (t) => {
+  const out = join(await scratch(t), 'out');
+  const parts = scriptedParts({ set: SETS.v2 });
+  const toolsFor = parts.toolsFor;
+  // Each tool call costs $0.01 here; the scripted model and Jev cost nothing, so only the tools can pass the limit.
+  parts.toolsFor = async (job, run) => (await toolsFor(job, run)).map((tool) => ({ ...tool, run: async (args, options) => ({ ...(await tool.run(args, options)), costUsd: 0.01 }) }));
+  const { rows } = await runLoop({ out, parts, jobs: 2, runCapUsd: 0.015, record: false });
+  const progress = JSON.parse(readFileSync(join(out, 'progress/run-001.json'), 'utf8'));
+  assert.match(progress.measure.stopped, /limit of \$0\.015/);
+  assert.ok(progress.measure.toolSpend.costUsd >= 0.02, JSON.stringify(progress.measure.toolSpend));
+  assert.equal(rows[0].sic4Answer, null, 'it was stopped before it answered');
+}, { timeout: 120_000 });

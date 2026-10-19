@@ -271,14 +271,27 @@ export function usageTotals(usage) {
 /**
  * One run of the agent on one company, in the run's own store. `model` is `{ models, agent }` (pi-ai models and the
  * agent's model and thinking), `judge` the run's metered Jev (`meteredJudge`), `effects` the host tools (`classifyTools`),
- * `answer` the final answer's tool and `text` the job's text. `limitUsd` aborts the run once its model and Jev spend pass
- * it. Returns what the host measured; the run's store is closed when it returns.
+ * `answer` the final answer's tool and `text` the job's text. `limitUsd` aborts the run once its model, Jev and tool spend
+ * (each tool result's `costUsd`) pass it. Returns what the host measured; the run's store is closed when it returns.
  */
 export async function runJob({ run, job, model, judge, effects, answer, text = jobText, limitUsd, nodeThinking = 'low' }) {
   const started = Date.now();
   const caseValues = caseValuesOf(job);
   const learn = learnExtension({ caseValues });
-  const tools = classifyTools({ effects, answer });
+  // What the tools report they cost (the browser, search, the document reader's looks) counts toward the run's limit.
+  const toolSpend = { costUsd: 0, unknown: 0 };
+  const metered = effects.map((effect) => ({
+    ...effect,
+    run: async (args, options) => {
+      const result = await effect.run(args, options);
+      if (result && typeof result === 'object' && 'costUsd' in result) {
+        if (typeof result.costUsd === 'number' && Number.isFinite(result.costUsd)) toolSpend.costUsd += result.costUsd;
+        else toolSpend.unknown += 1;
+      }
+      return result;
+    },
+  }));
+  const tools = classifyTools({ effects: metered, answer });
   // A node's conversation would otherwise take the root agent's rules, <learned> section and tools: it gets its own short
   // instructions, the host's tools extension only, and of it only the tools the node may use.
   const nodes = nodeRunner({
@@ -322,7 +335,7 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
         if (checking || stopped) return;
         checking = true;
         harness.usage(ctx).then(async (usage) => {
-          const spent = usageTotals(usage).costUsd + judge.meter.costUsd;
+          const spent = usageTotals(usage).costUsd + judge.meter.costUsd + toolSpend.costUsd;
           if (spent > limitUsd && !stopped) {
             stopped = `the run passed its limit of $${limitUsd}`;
             await root.abort(ctx).catch(() => {});
@@ -352,7 +365,7 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
   const { calls, results, ...rest } = measured;
   return {
     ...rest, stopped, workflowRuns: readWorkflowRuns({ calls, results, lines }), unpricedAnswers: unpricedAnswers(lines),
-    judge: { ...judge.meter }, durationMs: Date.now() - started, reports,
+    judge: { ...judge.meter }, toolSpend: { ...toolSpend }, durationMs: Date.now() - started, reports,
   };
 }
 
