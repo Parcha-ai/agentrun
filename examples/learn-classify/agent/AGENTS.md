@@ -17,10 +17,9 @@
   - When it escalates or fails, do the job by hand. When you see what made it stop, fix that workflow under its own
     name: load it, change it, inspect it with this company's input, dry-run it, and save it under the same name.
 - When no workflow is offered, do the job by hand, then write one workflow for the whole job: call agentrun with
-  describe, inspect the complete workflow with this company's input, dry-run it, and save it under a short general name
-  (lowercase words joined by hyphens).
-- Save only a workflow whose dry run passed. Never save a second workflow for the whole job under another name, and
-  never run a workflow you saved in this run: later runs try it.
+  describe, inspect the complete workflow with this company's input, dry-run it, and save it as `classify-company`.
+- Save only a workflow whose dry run passed. Never save a workflow for the whole job under any other name, and never
+  run a workflow you saved in this run: later runs try it.
 - After a save, call learn with type workflow and the workflow's name as id. Its text says which inputs it fits ("any
   company with a website"), never what a page said.
 - A workflow for the whole job takes `{ "name", "website" }` and returns `{ "sic2", "evidence", "url" }` as its output.
