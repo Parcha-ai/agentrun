@@ -68,9 +68,11 @@ async function look(bytes) {
 }
 
 /** A Jev port that answers from the pixels of the one image it is sent: red is the thing, orange looks like it. */
-function pixelJev({ confidence = 0.9, flat = false } = {}) {
+function pixelJev({ confidence = 0.9, flat = false, failAt = 0 } = {}) {
   const requests = [];
+  let sent = 0;   // every call the port gets, the one that fails too
   const judge = async (params) => {
+    if (++sent === failAt) throw new Error("503 Service Unavailable");
     const { bytes } = params.assets[params.state.images[0].image];
     const { red, orange } = await look(bytes);
     requests.push({ source: params.state.images[0].source, size: imageHeader(bytes), questions: params.questions });
@@ -79,7 +81,7 @@ function pixelJev({ confidence = 0.9, flat = false } = {}) {
       : { type: "box", box: red && flat ? { top: red.top, bottom: red.top, left: red.left, right: red.left } : red ?? { top: 0, bottom: 1, left: 0, right: 1 }, confidence: red ? confidence : 0.2 }]));
     return { answers, model: params.model, usage: { input_tokens: 1000, output_tokens: 0 }, cost_usd: JEV_USD };
   };
-  return { judge, requests };
+  return { judge, requests, get sent() { return sent; } };
 }
 
 /** The first second of a clip with red, decoded as a decoder that ignores the edit list decodes it; null when none. */
@@ -388,4 +390,29 @@ test("a 47-minute film is searched in about fifty Jev requests, far under a host
   assert.deepEqual([named.at, checked.t, checked.found], [1500, 1500, true]);
   assert.deepEqual([checked.requests, jev.requests.length], [47, 47], "40 scanned, 4 halved, 3 checked");
   assert.ok(jev.requests.length < 60, "far under 200");
+});
+
+test("a scan cut short by a failed call keeps its count: the request that failed was sent and counted, and a retry adds only what it asks", async () => {
+  transcript();
+  const failing = pixelJev({ failAt: 5 });
+  await assert.rejects(steps([narrow, scan], { jev: failing }), /503/);
+  const kept = JSON.parse(fs.readFileSync(path.join(cwd, ".find", "umbrella", "task.json"), "utf8"));
+  assert.deepEqual([failing.sent, kept.requests, kept.scores.length], [5, 5, 4], "four answered and one that failed, all counted and saved as they happened");
+  const retry = pixelJev();
+  const { values: [again], task } = await steps([scan], { jev: retry });
+  assert.deepEqual([retry.sent, again.frames], [22, 26], "the four scored frames are not asked again");
+  assert.deepEqual([again.requests, task.requests, failing.sent + retry.sent], [27, 27, 27], "the count is every call either port got");
+});
+
+test("a halving and a check that fail keep their count too: the request is saved before it is asked", async () => {
+  transcript(null);
+  const small = narrowWith("scanFrames: 40", "scanFrames: 4");
+  const failing = pixelJev({ failAt: 7 });
+  await assert.rejects(steps([small, scan, halve], { jev: failing }), /503/);
+  const kept = JSON.parse(fs.readFileSync(path.join(cwd, ".find", "umbrella", "task.json"), "utf8"));
+  assert.deepEqual([failing.sent, kept.requests], [7, 7], "four scanned, then three halving requests, the seventh failing");
+  const retry = pixelJev();
+  const { task } = await steps([halve, name, check], { jev: retry });
+  assert.equal(task.requests, failing.sent + retry.sent, "what the retry asked is added to what the failed run had sent");
+  assert.ok(task.requests <= task.maxJudges);
 });
