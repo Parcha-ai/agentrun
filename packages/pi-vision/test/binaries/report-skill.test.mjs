@@ -47,11 +47,11 @@ let jev = null;
 let jevFails;
 const tokens = (text) => [...String(text).matchAll(/(?<![.!?]\s)(?<!^)\b[A-Z][a-z]+|\d+/g)].map((m) => m[0].toLowerCase());
 let noJudgeReceipt = false;   // a host that files no receipt for a judge look: vision.judge answers with receipts: []
-let jevCap = Infinity, jevAsked = 0;   // the fake judge's request cap: past it every request fails, as a host's cap does
+let jevCap = Infinity, jevAsked = 0;   // the fake judge's rate limit: past this many requests every request fails with a 429, as TypeSafe's does once the harness has retried
 const asked = new WeakSet();
 const ABSENT = /\b(absent|missing|removed|blank|no seal|no stamp)\b/i;
 const groundedBy = (question, { state }) => {
-  if (state.claims && !asked.has(state)) { asked.add(state); if (++jevAsked > jevCap) throw new Error("429 the request cap was reached"); }
+  if (state.claims && !asked.has(state)) { asked.add(state); if (++jevAsked > jevCap) throw new Error("429 rate limit after retries"); }
   if (!state.claims) return question.type === "noul" ? { type: "noul", noul: 0.02 } : ANSWERS[question.type](question);   // a picture put to Jev (decide()): the thing is not there
   const text = state.claims[/claims\.(t\d+)/.exec(question.instructions)[1]];
   // An absence is stated by a no of Jev's, as words in the evidence; any other text by its names and numbers being in the evidence.
@@ -1179,7 +1179,7 @@ test("when Jev cannot be asked, the unit gets no verdict and is declared under N
   assert.match(extra.result.error.message, /finding chart is listed as not judged but was judged: take it out of the list/);
 });
 
-test("a request cap reached part way declares exactly the units after it: rows r2 to r12 and the answer, with the units before it judged", async () => {
+test("a rate limit reached part way declares exactly the units after it: rows r2 to r12 and the answer, with the units before it judged", async () => {
   const many = data.replace("\nconst report = {", '\nconst manyRows = [];\nfor (let i = 1; i <= 12; i++) manyRows.push({ id: "r" + i, label: "Seconds 0 to 20", text: "The chart is on the screen.", thumb: await thumb("talk.mp4", "t" + i, { t: i }), cites: [{ file: "talk.mp4", t: [0, 20], look: lookTalk.key }] });\nconst report = {').replace("  notChecked:", "  rows: manyRows,\n  notChecked:");
   assert.notEqual(many, data);
   onDisk = "other";
@@ -1189,7 +1189,7 @@ test("a request cap reached part way declares exactly the units after it: rows r
     assert.ok(result.ok, result.ok ? "" : result.error.message);
   } finally { jevCap = Infinity; }
   const html = HTML();
-  assert.match(html, /<li>12 units: rows r2 to r12 \(11 rows\), the answer: not judged: look_failed: Jev failed: 429 the request cap was reached<\/li>/);
+  assert.match(html, /<li>12 units: rows r2 to r12 \(11 rows\), the answer: not judged: look_failed: Jev failed: 429 rate limit after retries<\/li>/);
   const grounds = groundOf(html);
   assert.ok(grounds["f-chart"] && grounds["f-contract"] && grounds["f-site"] && grounds["r-r1"], "the units before the cap are judged and name their look");
   assert.deepEqual([grounds["r-r2"], grounds["r-r12"], grounds.answer], ["", "", ""], "the units after it name none");
@@ -1216,7 +1216,7 @@ test("boxed thumbnails are about 10rem wide with the row's second and text align
 
 test("the skill says only vision.judge sets a verdict, what it could not judge goes under Not checked by count and id, text stays text, and a detail nobody asked for is read twice", () => {
   const flat = SKILL.replace(/\s+/g, " ");
-  for (const words of ["A verdict comes only from `vision.judge`'s answer, and the script never sets one itself", "`data-ground`", "If Jev cannot be asked (a cap, an error)", "exactly which units, by count and id", "never in one sentence that understates it", "Text stays text", "never a picture of words", "the page's text is selectable", "A detail nobody asked for is read twice", "only when a crop of it was read and agrees with the first reading"]) assert.ok(flat.includes(words), `the skill says ${words}`);
+  for (const words of ["A verdict comes only from `vision.judge`'s answer, and the script never sets one itself", "`data-ground`", "If Jev cannot be asked (an error, or TypeSafe's rate limit after its retries)", "exactly which units, by count and id", "never in one sentence that understates it", "Text stays text", "never a picture of words", "the page's text is selectable", "A detail nobody asked for is read twice", "only when a crop of it was read and agrees with the first reading"]) assert.ok(flat.includes(words), `the skill says ${words}`);
 });
 
 test("a judge look with no receipt declares its unit: the answers are valid, there is no look key to name, and the script goes on", async () => {

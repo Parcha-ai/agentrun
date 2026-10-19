@@ -325,7 +325,7 @@ read anything has no evidence and fails the same way.
 
 A verdict comes only from `vision.judge`'s answer, and the script never sets one itself. Each judged unit's look key is written
 into the page as `data-ground` on its finding, row and the answer (`<look key>:t0 <look key>:t1 ...`, one entry for each of
-its texts, each with the claim id it was judged under), so a reader can open the look that judged it. If Jev cannot be asked (a cap, an error), `ground()` gives that unit
+its texts, each with the claim id it was judged under), so a reader can open the look that judged it. If Jev cannot be asked (an error, or TypeSafe's rate limit after its retries), `ground()` gives that unit
 no verdict and declares it under Not checked, exactly which units, by count and id ("49 units: rows r55 to r102 (48 rows), the
 answer: not judged: ..."), never in one sentence that understates it. The check refuses a unit that has neither a verdict with
 a look key nor a place in that list, and a unit in the list that was judged.
