@@ -47,7 +47,10 @@ It is not a form to fill: the same page serves a film, a document or a photo, an
   `#page=N`. Every cite of a page of a document has that page embedded: a crop of a mark with no embedded page is not enough,
   and the check refuses a page cite with no page entry.
 - **A film is shown by its moments.** A window of the film is one short clip, with a poster that is the window's opening
-  frame. The same window is never a clip twice: later it is a frame, from `frame()`, with a box if it has one.
+  frame. The same window is never a clip twice: later it is a frame, from `frame()`, with a box if it has one. Never a black
+  one: a film opens, fades and cuts on black, so look at the frame you cut (its mean brightness is in the check's refusal) and
+  cut a moment a second or two on. The check measures every frame, poster and thumbnail of a film against `MIN_LUMA` and
+  refuses a near-black one; a page, a crop and a photo are the document's or the photo's own and are left alone.
 - **What you did not check** is last, and lists only what no look of the run covered: a page, a window of a film, a file the run
   did not look at. It never states a finding, a presence or an absence ("page 2 has no seal"): those are findings, and need
   their look and their cite. If the run looked at a page, that page is not in the list. Each item names its file, its pages
@@ -103,6 +106,7 @@ and takes no escapes, so the page lands byte for byte; a chunk never ends betwee
 
 ```js
 const BUDGET = { frame: 700_000, clip: 1_500_000, folder: 8_000_000, source: 3_000_000 };
+const MIN_LUMA = 16;   // the mean brightness (of 255) under which a frame, a poster or a thumbnail of a film is almost black, and is not shown
 const sh = (command) => tools.bash({ command });
 const q = (text) => `'${String(text).replaceAll("'", "'\\''")}'`;
 const write = async (path, text) => {
@@ -126,16 +130,19 @@ Each helper returns a path relative to `report/`, which is what the page uses.
 
 ```js
 const jpeg = "-map_metadata -1 -fflags +bitexact -q:v 4";
+const plain = new Set();   // the pictures that are a document's or a photo's own (a page, a crop, a photo): dark is what they show, so the dark check leaves them
 const frame = async (video, t, name) => {
   await sh(`mkdir -p report/frames && ffmpeg -v error -y -ss ${t} -i ${q(video)} -frames:v 1 -vf "scale='min(960,iw)':-2" ${jpeg} report/frames/${slug(name)}.jpg`);
   return `frames/${name}.jpg`;
 };
 const pdfPage = async (pdf, page, name) => {   // the crop box, as a viewer shows it, so a look's percentages fit
   await sh(`mkdir -p report/frames && pdftoppm -cropbox -f ${page} -l ${page} -scale-to-x 1600 -scale-to-y -1 -jpeg -jpegopt quality=78 -singlefile ${q(pdf)} report/frames/${slug(name)}`);
+  plain.add(`frames/${name}.jpg`);
   return `frames/${name}.jpg`;
 };
 const photo = async (file, name) => {
   await sh(`mkdir -p report/frames && ffmpeg -v error -y -i ${q(file)} -vf "scale='min(960,iw)':-2" ${jpeg} report/frames/${slug(name)}.jpg`);
+  plain.add(`frames/${name}.jpg`);
   return `frames/${name}.jpg`;
 };
 const around = (at) => {   // the crop that frames a mark (x,y,w,h in percent of its picture) with room around it, and the mark's box in the crop
@@ -148,10 +155,12 @@ const around = (at) => {   // the crop that frames a mark (x,y,w,h in percent of
 const crop = async (picture, at, name) => {   // a close crop of a mark on a picture of report/: { src, box } with the box inside the crop
   const { from: [cx, cy, cw, ch], box } = around(at);
   await sh(`ffmpeg -v error -y -i ${q(`report/${picture}`)} -vf "crop=iw*${cw}/100:ih*${ch}/100:iw*${cx}/100:ih*${cy}/100,scale='min(900,max(iw,480))':-2:flags=lanczos" ${jpeg} report/frames/${slug(name)}.jpg`);
+  plain.add(`frames/${name}.jpg`);
   return { src: `frames/${name}.jpg`, box };
 };
 const thumb = async (source, name, { t = 0 } = {}) => {   // a small picture of a row's evidence: a picture of report/, or a moment of a film
   await sh(`mkdir -p report/frames && ffmpeg -v error -y ${/\.(mp4|mov|webm|mkv)$/i.test(source) ? `-ss ${t} -i ${q(source)}` : `-i ${q(`report/${source}`)}`} -frames:v 1 -vf "scale=240:-2" -map_metadata -1 -fflags +bitexact -q:v 8 report/frames/${slug(name)}.jpg`);
+  if (!/\.(mp4|mov|webm|mkv)$/i.test(source)) plain.add(`frames/${name}.jpg`);   // a thumbnail of a picture is that picture's own; of a film, a frame
   return `frames/${name}.jpg`;
 };
 const windows = new Map();
@@ -473,6 +482,12 @@ for (const r of report.rows ?? []) if (!r.thumb) problems.push(`row ${r.id} has 
 for (const b of documents.flatMap((d) => d.pages.flatMap((p) => p.boxes ?? []))) if (!page.includes(`data-mark="${b.id}"`)) problems.push(`the mark ${b.id} has no close crop in its finding`);
 const embedded = documents.flatMap((d) => d.pages.map((p) => `${d.file}#${p.n}`));
 for (const c of [...(report.rows ?? []), ...report.findings].flatMap((x) => x.cites)) if (c.page && !embedded.includes(`${c.file}#${c.page}`)) problems.push(`${c.file} page ${c.page} is cited but no embedded page shows it: add it to documents with its marks, and a crop of each mark in its finding`);
+const luma = async (file) => Number((await sh(`ffmpeg -hide_banner -v error -i ${q(file)} -vf "signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-" -f null - | sed -n 's/.*YAVG=//p' | head -1`)).trim());
+for (const ref of new Set([...attr("src"), ...attr("poster")])) {   // a frame, a poster or a thumbnail of a film is never almost black: a film opens, fades and cuts on black
+  if (!ref.startsWith("frames/") || plain.has(ref) || !(await has(ref))) continue;
+  const y = await luma(`report/${ref}`);
+  if (!(y >= MIN_LUMA)) problems.push(`${ref} is almost black (mean brightness ${Number.isFinite(y) ? y : "unmeasured"} of 255, under ${MIN_LUMA}): cut another moment of the film, a second or two on`);
+}
 const shown = attr("src").filter((ref) => ref.startsWith("frames/"));
 if (new Set(shown).size !== shown.length) problems.push("a picture is shown twice: drop the duplicate");
 if (report.points.length < 1 || report.points.length > 4) problems.push("the answer has one to four key points");

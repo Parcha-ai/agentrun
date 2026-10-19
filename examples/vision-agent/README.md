@@ -20,6 +20,7 @@ An example folder holds `question.md` (the question), `inputs.json` (each file b
 | `--record <dir>` | keep the run as an `agentrun.recording/1` directory |
 | `--fetch-sources` | on fakes, fetch and check the example's files instead of reading committed ones |
 | `--max-usd <n>` | stop a run past n dollars |
+| `--thinking <low\|medium\|high>` | the agent's thinking level for the run (default `medium`); a Claude lead thinks reliably at `high`, while at `medium` it may answer without thinking; it goes with an example folder or an inline JSON `--input`, and is refused with an input file |
 
 `SETUP-PROMPT.md` sets up a live run for you.
 
@@ -29,7 +30,7 @@ On fakes a scripted lead runs one script whatever is asked (one look at the firs
 
 | Name | For |
 |---|---|
-| `GEMINI_API_KEY` (or `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or a gateway's `VIDEO_MODEL_BASE_URL` and `VIDEO_MODEL_API_KEY`) | the lead and the eyes; the defaults are one value each in `demo.json` |
+| `GEMINI_API_KEY` (or `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or a gateway's `VIDEO_MODEL_BASE_URL` and `VIDEO_MODEL_API_KEY`) | the lead and the eyes; the defaults are one value each in `demo.json`. A gateway serves an Anthropic model over its Anthropic Messages API at `/v1/messages` (the gateway's root), which returns the model's thinking when it thinks (Anthropic's adaptive thinking decides, at the effort the node's `thinking` level gives); the other models go over its OpenAI-compatible `/v1` |
 | `TYPESAFE_API_KEY` (not needed with a gateway: its `VIDEO_MODEL_API_KEY` is Jev's key unless this is set) | Jev, which judges frames and pages and draws boxes (see below) |
 | `FAL_KEY` | Scribe v2 on fal, only for a question about speech (not needed when the gateway passes fal's queue through) |
 | `ffmpeg`, `ffprobe`, `pdftoppm`, `pdftotext`, `node` | the agent's code cuts frames, clips and audio, renders pages and reads a PDF's text layer |
