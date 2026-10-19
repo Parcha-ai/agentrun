@@ -109,21 +109,51 @@ export function reportFileOf(files: Record<string, string>, from: string, ref: s
   return files[path] === undefined ? undefined : { path, fragment };
 }
 
-const REPORT_CSS_REF = /url\(\s*(?:"([^"]*)"|'([^']*)'|([^)"']*?))\s*\)|@import\s+(?:"([^"]*)"|'([^']*)')/gi;
+const REPORT_CSS_REF = /url\(\s*(?:"([^"]*)"|'([^']*)'|([^)"']*?))\s*\)|@import\s+(?:url\(\s*(?:"([^"]*)"|'([^']*)'|([^)"']*?))\s*\)|"([^"]*)"|'([^']*)')/gi;
 
-/** A style sheet with every url() and @import through the artifact's files: a local `#id` stays, anything else is dropped. */
-async function reportCss(css: string, from: string, resolve: (from: string, ref: string) => Promise<string | undefined>): Promise<string> {
-  const found = [...css.matchAll(REPORT_CSS_REF)].map((match) => match[1] ?? match[2] ?? match[3] ?? match[4] ?? match[5] ?? '');
-  const urls = await Promise.all(found.map((ref) => (ref.trim().startsWith('#') ? Promise.resolve(undefined) : resolve(from, ref))));
-  let at = 0;
-  return css.replace(REPORT_CSS_REF, (whole) => {
-    const ref = found[at]!;
-    const url = urls[at];
-    at += 1;
-    if (ref.trim().startsWith('#')) return whole;
-    if (whole.startsWith('@')) return url ? `@import url("${url}")` : '@import url("about:invalid")';
-    return url ? `url("${url}")` : 'none';
-  });
+/** A reference in the artifact, relative to the file `from`, as a URL the agent's page may load; undefined for none. */
+export type ReportResolve = (from: string, ref: string) => Promise<string | undefined>;
+
+/** The agent's style sheets through its files: `rewrite(css, from)` is the sheet at `from` with every url() through
+ *  `resolve` and every @import through a sheet of its own (a local `#id` stays, anything else is dropped). An imported
+ *  sheet is read (`read`, by its hash), rewritten the same way from its own path and served (`serve`), once; an import of
+ *  a sheet that imports it, directly or not, is dropped, so a loop of imports ends. */
+export function reportStyles(files: Record<string, string>, resolve: ReportResolve, read: (sha: string) => Promise<string | undefined>, serve: (css: string) => string) {
+  const served = new Map<string, string | undefined>();
+  const local = (ref: string) => ref.trim().startsWith('#');
+  const rewrite = async (css: string, from: string, chain: readonly string[] = [from]): Promise<string> => {
+    const found = [...css.matchAll(REPORT_CSS_REF)].map((match) => ({ ref: match.slice(1).find((part) => part !== undefined) ?? '', sheet: match[0].startsWith('@') }));
+    const urls = await Promise.all(found.map(({ ref, sheet }) => (sheet || local(ref) ? undefined : resolve(from, ref))));
+    // One import at a time, so a sheet still being read is one of `chain`, and any other is read once.
+    for (const [at, { ref, sheet }] of found.entries()) if (sheet && !local(ref)) urls[at] = await imported(from, ref, chain);
+    let at = 0;
+    return css.replace(REPORT_CSS_REF, (whole) => {
+      const { ref, sheet } = found[at]!;
+      const url = urls[at];
+      at += 1;
+      if (local(ref)) return whole;
+      if (sheet) return url ? `@import url("${url}")` : '@import url("about:invalid")';
+      return url ? `url("${url}")` : 'none';
+    });
+  };
+  const imported = async (from: string, ref: string, chain: readonly string[]): Promise<string | undefined> => {
+    const file = reportFileOf(files, from, ref);
+    if (!file || chain.includes(file.path)) return undefined;
+    if (served.has(file.path)) return served.get(file.path);
+    const css = await read(files[file.path]!);
+    const url = css === undefined ? undefined : serve(await rewrite(css, file.path, [...chain, file.path]));
+    served.set(file.path, url);
+    return url;
+  };
+  return rewrite;
+}
+
+/** A blob's text: as the recording holds it, else read from its URL. */
+function reportText(recording: Recording, sha: string): Promise<string | undefined> {
+  const held = recording.heldText?.(sha);
+  if (held !== undefined) return Promise.resolve(held);
+  const url = recording.blobUrl(sha);
+  return url ? fetch(url).then((response) => (response.ok ? response.text() : undefined)).catch(() => undefined) : Promise.resolve(undefined);
 }
 
 const REPORT_DROPPED = 'script, base, meta[http-equiv], iframe, frame, frameset, object, embed, applet, portal';
@@ -147,9 +177,7 @@ export async function reportPage(artifact: ChatArtifact, recording: Recording, p
   const entry = artifact.entry.replace(/^\.\//, '');
   const entrySha = files[entry];
   if (!entrySha) return undefined;
-  const held = recording.heldText?.(entrySha);
-  const entryUrl = recording.blobUrl(entrySha);
-  const text = held ?? (entryUrl ? await fetch(entryUrl).then((response) => (response.ok ? response.text() : undefined)).catch(() => undefined) : undefined);
+  const text = await reportText(recording, entrySha);
   if (text === undefined) return undefined;
   const origins = new Set<string>(['blob:']);
   const resolve = async (from: string, ref: string) => {
@@ -160,6 +188,7 @@ export async function reportPage(artifact: ChatArtifact, recording: Recording, p
     origins.add(parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.origin : parsed.protocol);
     return url + file.fragment;
   };
+  const styles = reportStyles(files, resolve, (sha) => reportText(recording, sha), (css) => URL.createObjectURL(new Blob([css], { type: 'text/css' })));
 
   const doc = parser.parseFromString(text, 'text/html');
   for (const node of doc.querySelectorAll(REPORT_DROPPED)) node.remove();
@@ -186,17 +215,16 @@ export async function reportPage(artifact: ChatArtifact, recording: Recording, p
       if (ref !== null && !ref.trim().startsWith('#')) through(node, name);
     }
   }
-  for (const node of doc.querySelectorAll('[style]')) jobs.push(reportCss(node.getAttribute('style')!, entry, resolve).then((css) => node.setAttribute('style', css)));
-  for (const node of doc.querySelectorAll('style')) jobs.push(reportCss(node.textContent ?? '', entry, resolve).then((css) => { node.textContent = css; }));
+  for (const node of doc.querySelectorAll('[style]')) jobs.push(styles(node.getAttribute('style')!, entry).then((css) => node.setAttribute('style', css)));
+  for (const node of doc.querySelectorAll('style')) jobs.push(styles(node.textContent ?? '', entry).then((css) => { node.textContent = css; }));
   for (const link of doc.querySelectorAll('link')) {
     if (!/(^|\s)stylesheet(\s|$)/i.test(link.getAttribute('rel') ?? '')) { link.remove(); continue; }
     const file = reportFileOf(files, entry, link.getAttribute('href') ?? '');
-    const url = file && recording.blobUrl(files[file.path]!);
     // A sheet is read and inlined, its own references resolved from its own path.
-    jobs.push((url ? fetch(url).then((response) => (response.ok ? response.text() : undefined)).catch(() => undefined) : Promise.resolve(undefined)).then(async (css) => {
+    jobs.push((file ? reportText(recording, files[file.path]!) : Promise.resolve(undefined)).then(async (css) => {
       if (css === undefined || !file) { link.remove(); return; }
       const style = doc.createElement('style');
-      style.textContent = await reportCss(css, file.path, resolve);
+      style.textContent = await styles(css, file.path);
       link.replaceWith(style);
     }));
   }

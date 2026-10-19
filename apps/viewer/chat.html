@@ -61,7 +61,7 @@ details.think summary em code{font-style:normal}
 .thought summary{display:block;list-style:none;cursor:pointer}
 .thought summary::-webkit-details-marker{display:none}
 .thought-title{font:400 14.5px/1.55 var(--sans);color:var(--ink);overflow-wrap:anywhere}
-.thought-tag,.voice-tag{font:400 10.5px var(--mono);color:var(--dim);margin-left:8px;white-space:nowrap}
+.thought-tag{font:400 10.5px var(--mono);color:var(--dim);margin-left:8px;white-space:nowrap}
 .thought-tag::after{content:"";display:inline-block;width:5px;height:5px;margin-left:6px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:translateY(-2px) rotate(45deg);transition:transform .15s}
 .thought[open] .thought-tag::after{transform:translateY(1px) rotate(-135deg)}
 .thought-body{color:var(--muted);font-size:13.5px;margin-top:6px}
@@ -89,8 +89,6 @@ details.fold>.fold-body{color:var(--ink);font-size:15px;margin-top:12px}
 .step[aria-current="true"]{border-color:var(--acc);background:#16130f}
 .step-main{display:grid;grid-template-columns:minmax(0,1fr) 44px;gap:12px;align-items:center;text-align:left;width:100%;padding:9px 10px 9px 12px}
 .step-main>div{min-width:0}
-.step .voice{margin:0;padding:8px 10px 0 12px;font:italic 400 13.5px/1.5 var(--sans);color:var(--muted);overflow-wrap:anywhere}
-.voice-tag{margin:0 8px 0 0}
 .step-main.bare{grid-template-columns:minmax(0,1fr)}
 .step .t{font:500 12px var(--mono);display:flex;align-items:center;gap:7px;min-width:0}
 .step .t span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -174,6 +172,7 @@ details.command summary{font:500 10.5px var(--mono);letter-spacing:.7px;text-tra
 a.addr[href]{color:var(--acc);text-decoration:underline dotted}
 .said{background:var(--panel);border:1px solid var(--line);padding:12px 14px;margin:0 0 16px}
 .said p{margin:4px 0 0;font-size:14.5px;overflow-wrap:anywhere}
+.said.failed{border-color:#5a2a24}.said.failed .kind{color:#ff6b5a}
 .decisions{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
 .decisions li{font:400 12px var(--mono);color:var(--ink);border:1px solid var(--line);background:var(--panel2);padding:2px 8px}
 .looks{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 16px}

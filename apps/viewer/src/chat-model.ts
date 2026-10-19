@@ -16,11 +16,8 @@ export type ChatItem =
     tool: string;
     /** The tool and its arguments in plain form: "read notes.pdf#page=2". */
     title: string;
-    /** Its one argument in full when that spans lines (a command, a script), shown where the card opens. */
+    /** Its one argument in full (a command, a script) when the title does not show it whole, shown where the card opens. */
     detail?: string;
-    /** With no thinking and no text of the agent's right before it, a step speaks for itself with what a look of it asked
-     *  in words; with no such ask it has no voice. */
-    voice?: string;
     /** The step only ran a command or a script: one string argument, no look made, no picture in its result. */
     plumbing?: true;
     /** The result's first line; empty when the result had no words. */

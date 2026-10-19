@@ -17,14 +17,14 @@ import { after, test } from 'node:test';
 import { build } from '../build.mjs';
 import type { ChatSource } from '../src/chat-model.ts';
 import type { Line } from '../src/format.ts';
-import { reportFileOf, reportLinkOf } from '../src/chat-report.ts';
+import { reportFileOf, reportLinkOf, reportStyles } from '../src/chat-report.ts';
 import { sourceByHref, sourceFrameAt, sourceKindOf, sourcePageOf, sourcePictureFor, sourceRegionOf, threadPlace, threadThought } from '../src/chat-view.ts';
 import { CITED, FILM, K, lines, manifest as handManifest, PAGES, PHOTOS, SCANS, deliverInstead, png, writeRecording } from './vision-hand.ts';
 import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
 
 const UNIT = { timeout: 5_000 };
 const here = new URL('.', import.meta.url).pathname;
-const ALL = ['wide', 'phone', 'answer', 'files', 'hear', 'none', 'pageonly', 'said', 'bare', 'plain', 'srcpage', 'srcsheet', 'narrated'];
+const ALL = ['wide', 'phone', 'answer', 'files', 'hear', 'none', 'pageonly', 'said', 'bare', 'plain', 'srcpage', 'srcsheet', 'narrated', 'linked'];
 const IN_CHROME = { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}`, timeout: 120_000 };
 after(async () => { assert.deepEqual(await closeLeftBrowsers(), [], 'every browser a test started was closed by that test'); });
 
@@ -42,6 +42,18 @@ test('a reference in the agent\'s page resolves only to a file it holds', UNIT, 
   assert.equal(reportLinkOf('photos/photo-001.png'), 'cite', 'a citation of a whole file has no fragment');
   assert.equal(reportLinkOf('https://example.org/'), 'web');
   for (const none of ['javascript:alert(1)', 'data:text/html,x', '//evil.example/', '']) assert.equal(reportLinkOf(none), 'none', none);
+});
+
+test('a sheet the agent\'s page imports is rewritten from its own path, served once, and a loop of imports ends', UNIT, async () => {
+  const files: Record<string, string> = { 'css/main.css': 'main', 'css/sub/more.css': 'more', 'media/p.png': 'png' };
+  const sheets: Record<string, string> = { main: '@import "sub/more.css" screen;body{background:url(../media/p.png)}', more: "@import url('../main.css');.x{background:url(../../media/p.png)}" };
+  const served: string[] = [];
+  const styles = reportStyles(files, async (from, ref) => { const file = reportFileOf(files, from, ref); return file && `held:${files[file.path]}`; },
+    async (sha) => sheets[sha], (css) => `served:${served.push(css)}`);
+  assert.equal(await styles(sheets.main!, 'css/main.css'), '@import url("served:1") screen;body{background:url("held:png")}');
+  assert.deepEqual(served, ['@import url("about:invalid");.x{background:url("held:png")}'], 'its picture from its own folder; its import of the sheet importing it dropped');
+  assert.equal(await styles('@import "css/sub/more.css";', 'index.html'), '@import url("served:1");', 'imported again, the same sheet');
+  assert.equal(served.length, 1);
 });
 
 test('a region comes from the citation\'s address alone, and lands on the page or frame it names', UNIT, () => {
@@ -153,7 +165,11 @@ const ENTRY = `<!doctype html><html><head><meta charset="utf-8"><title>Three pag
 </body></html>`;
 /** The cited answer with a row citing the third page of the look over three pages, a box on it. */
 const CITED_PAGES = { ...CITED, rows: [...CITED.rows, { label: 'Contact', value: 'on the third page', cites: [{ look: K.page3, fragment: '#page=3&xywh=percent:10,20,30,10' }] }] };
-const SHEET = 'body{background:#101012;color:#eee}#alarm{letter-spacing:1px}.sheet{background-image:url(../media/page-2.png)}';
+const SHEET = '@import "sub/more.css";body{background:#101012;color:#eee}#alarm{letter-spacing:1px}.sheet{background-image:url(../media/page-2.png)}';
+/** The sheet SHEET imports, in a folder of its own: a picture from there, and an import of SHEET back. */
+const SUB = '@import "../report.css";#alarm{word-spacing:3px}.sub{background-image:url(../../media/page-2.png)}';
+/** Why the hand run's read of page 2 failed, after its look. */
+const FAILED = 'read: the page did not come back in time';
 
 /** The recordings: the repository's chat fixtures and reference job (a submitted record), and the hand run as
  *  `hand-page` (an agent's page written to test the frame, thinking, two conversations), `hand-answer` (the cited answer
@@ -166,14 +182,23 @@ function writeFixtures(dir: string) {
   deliverInstead(page, CITED as never);
   const entry = sha256(ENTRY);
   const sheet = sha256(SHEET);
+  const sub = sha256(SUB);
   writeFileSync(join(page, 'blobs', `${entry}.html`), ENTRY);
   writeFileSync(join(page, 'blobs', `${sheet}.css`), SHEET);
+  writeFileSync(join(page, 'blobs', `${sub}.css`), SUB);
   const manifest = JSON.parse(readFileSync(join(page, 'manifest.json'), 'utf8'));
-  manifest.artifact = { title: 'Three pages, read', entry: 'index.html', files: { 'index.html': entry, 'css/report.css': sheet, 'media/page-2.png': PAGES[1], 'scans.pdf': SCANS } };
+  manifest.artifact = { title: 'Three pages, read', entry: 'index.html', files: { 'index.html': entry, 'css/report.css': sheet, 'css/sub/more.css': sub, 'media/page-2.png': PAGES[1], 'scans.pdf': SCANS } };
   writeFileSync(join(page, 'manifest.json'), JSON.stringify(manifest, null, 2));
   const answer = join(dir, 'hand-answer');
   writeRecording(answer, handRun(false));
   deliverInstead(answer, CITED_PAGES as never);
+  // The read of page 2 fails after its look.
+  const failed = join(dir, 'hand-failed');
+  writeRecording(failed, handRun(false).map((line) => {
+    const model = (line.data as { model?: { toolCallId?: string }[] }).model;
+    return line.kind === 'pi.tool-result' && model?.[0]?.toolCallId === 'c3' ? { ...line, data: { ...(line.data as object), model: [{ ...model[0], isError: true, content: [{ type: 'text', text: FAILED }] }] } } as Line : line;
+  }));
+  deliverInstead(failed, CITED as never);
   writeNarrated(join(dir, 'hand-narrated'));
   for (const [id, said] of [['hand-said', true], ['hand-bare', false]] as const) {
     writeRecording(join(dir, id), said ? handRun(said) : handRun(said, SIX_FILES));
@@ -245,6 +270,7 @@ const HARNESS = `<!doctype html><body style="margin:0">
 <iframe id="srcpage" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?src=recordings%2Fhand-bare%2F"></iframe>
 <iframe id="narrated" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=hand-narrated"></iframe>
 <iframe id="srcsheet" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?src=recordings%2Fhand-page%2F"></iframe>
+<iframe id="linked" style="position:absolute;top:0;left:0;width:390px;height:844px;border:0" src="chat.html?r=hand-failed#look=${K.page2}"></iframe>
 <script>
 const doc = (id) => document.getElementById(id).contentDocument;
 const art = (id) => doc(id)?.querySelector('.report-frame')?.contentDocument;
@@ -259,7 +285,7 @@ const opener = (c) => c.querySelector('.step-main, .made');
 const callTitle = (n) => { const t = n.querySelector('.call-title'); return t.textContent.slice(t.querySelector('.judge-chip')?.textContent.length ?? 0); };
 const inView = (node, box) => { const a = node.getBoundingClientRect(); const b = box.getBoundingClientRect(); return a.top >= b.top - 1 && a.bottom <= b.bottom + 1; };
 const shown = (node) => !!node && node.checkVisibility();
-const PAGES = ['wide', 'phone', 'answer', 'files', 'hear', 'none', 'pageonly', 'said', 'bare', 'plain', 'srcpage', 'srcsheet', 'narrated'];
+const PAGES = ['wide', 'phone', 'answer', 'files', 'hear', 'none', 'pageonly', 'said', 'bare', 'plain', 'srcpage', 'srcsheet', 'narrated', 'linked'];
 const narrow = () => { for (const id of PAGES) { const f = document.getElementById(id); f.style.width = '390px'; f.style.height = '844px'; } };
 const unfold = (id) => { for (const more of doc(id).querySelectorAll('.more')) if (/^\\+ \\d+ more$|^Show the whole message$/.test(more.textContent)) more.click(); };
 const wider = (id) => doc(id).documentElement.scrollWidth - doc(id).defaultView.innerWidth;
@@ -338,10 +364,9 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.equal(wide.split, true, 'the chat on the left, the report wider on the right');
     assert.deepEqual(wide.said, ['Done. The alarm is on page 2.'], 'its last words as recorded');
     assert.match(String(wide.last), /Three pages, read\s*The page the agent wrote/, 'the card that opens the page it wrote closes the chat, after every conversation');
-    // A step whose looks lead speaks through its first look's ask, once: no voice line repeats it above.
-    assert.deepEqual(await value(`(() => { const c = card('wide', 'read film.mp4 from_s=0 to_s=30'); return [!!c.querySelector('.voice'), callTitle(c.querySelector('.call')),
-      c.textContent.split('What changes in this window?').length - 1, doc('wide').querySelectorAll('.voice').length]; })()`),
-      [false, 'What changes in this window?', 1, 0]);
+    // A step whose looks lead speaks through its first look's ask, once.
+    assert.deepEqual(await value(`(() => { const c = card('wide', 'read film.mp4 from_s=0 to_s=30'); return [callTitle(c.querySelector('.call')), c.textContent.split('What changes in this window?').length - 1]; })()`),
+      ['What changes in this window?', 1]);
 
     // The agent's page runs nothing, keeps only its own files, and is held to the recording's blobs by its policy.
     const frame = await value<Record<string, unknown>>(`(() => { const f = doc('wide').querySelector('.report-frame'); const a = art('wide'); return {
@@ -363,6 +388,10 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.equal(frame.none, false, 'a picture it does not hold is dropped');
     assert.doesNotMatch(String(frame.styles), /evil\.example|url\((?!"blob:)/, 'every url() in its styles is a blob, or gone');
     assert.match(String(frame.styles), /\.sheet\{background-image:url\("blob:/, 'its sheet, inlined, with its own reference resolved from its own path');
+    // The sheet it imports, from a folder of its own, is served rewritten from its own path; its import back is dropped.
+    assert.deepEqual(await value(`(() => { const a = art('wide'); const sub = [...a.styleSheets].flatMap((s) => [...s.cssRules]).find((r) => r.styleSheet)?.styleSheet;
+      return [getComputedStyle(a.getElementById('alarm')).wordSpacing, sub?.href.slice(0, 5), [...sub.cssRules].map((r) => r.href ?? r.style.backgroundImage.slice(0, 10))]; })()`),
+      ['3px', 'blob:', ['about:invalid', '', 'url("blob:']]);
 
     // The timeline: a click on the bar of a step folded into "ran N commands" opens that line, scrolls the chat to the
     // step and flashes it.
@@ -425,6 +454,13 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     await until(`doc('phone').querySelector('.art').classList.contains('open') && shown(doc('phone').querySelector('.src .media img'))`, 'a card opens its source in the sheet');
     await page.evaluate(`doc('phone').querySelector('.shut').click(); card('phone', 'read scans.pdf page=2').querySelector('.inrep').click()`);
     await until(`doc('phone').querySelector('.art').classList.contains('open') && !shown(doc('phone').querySelector('.src')) && art('phone').querySelector('[data-look="${K.page2}"]').hasAttribute('data-chat-flash')`, '"In the report" opens the sheet at that spot');
+    // A look's link opens that look in the sheet. Its step failed after the look: the step's error, apart from what the
+    // look read.
+    await until(`(() => { const d = doc('linked'); return d.querySelector('.art').classList.contains('open') && Math.abs(d.querySelector('.art').getBoundingClientRect().bottom - 844) < 2
+      && shown(d.querySelector('.src .media img')); })()`, 'the linked look in the open sheet');
+    assert.deepEqual(await value(`(() => { const d = doc('linked'); return { hash: d.defaultView.location.hash, title: d.querySelector('.src .ptitle').textContent, current: titleOf(d.querySelector('.step[aria-current="true"]')),
+      said: [...d.querySelectorAll('.src .said')].map((n) => [n.className, n.querySelector('.kind').textContent, n.querySelector('p').textContent.slice(0, 20)]) }; })()`),
+      { hash: `#look=${K.page2}`, title: 'read scans.pdf page=2', current: 'read scans.pdf page=2', said: [['said failed', 'Failed', FAILED.slice(0, 20)], ['said', 'Read on the page', '{"time":"00 00 00 40']] });
 
     // No page from the agent: the run's answer, labelled as the run's, its chips opening their sources; no thinking fold.
     const answer = await value<Record<string, unknown>>(`(() => { const d = doc('answer'); return { kicker: d.querySelector('.kicker').textContent, title: d.querySelector('.atitle').textContent,
@@ -534,17 +570,16 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     const narrated = await value<Record<string, unknown>>(`(() => { const m = doc('narrated').querySelector('.thread > .msg:not(.user):not(.answer)'); return {
       order: [...m.children].map((n) => n.className), said: [...m.querySelectorAll('.said-text')].map((n) => [n.textContent, n.querySelectorAll('.more').length, n.classList.contains('clamped')]),
       cards: [...m.querySelectorAll('.steps > .step')].map((n) => n.hidden), more: [...m.querySelectorAll('.steps > .more')].map((n) => n.textContent),
-      voices: [...m.querySelectorAll('.steps > .step')].map((n) => n.querySelector('.voice')?.textContent ?? null),
       host: [m.querySelector('.host-note .host-who').textContent, m.querySelector('.host-note .host-text').textContent, !!m.querySelector('.host-note').closest('.msg.user')],
       users: [...doc('narrated').querySelectorAll('.msg.user')].map((n) => n.textContent),
       redacted: [[...m.querySelectorAll('.thought.redacted')].map((n) => [n.textContent, n.tagName]), doc('narrated').body.textContent.includes('[Reasoning redacted]')],
       thoughts: [...m.querySelectorAll('.thought:not(.redacted)')].map((n) => [n.querySelector('.thought-title')?.textContent ?? null, shown(n.querySelector('.thought-title')), n.tagName,
         shown(n.querySelector('.thought-body')), n.querySelector('.thought-body')?.textContent ?? null, n.querySelector('.thought-tag').textContent, getComputedStyle(n.querySelector('.thought-tag'), '::after').display]) }; })()`);
     // Eight look steps of one tool in a row all show; the four searches after them, of one tool and no look, show three,
-    // the fourth behind "+ 1 more". No step draws a voice line.
+    // the fourth behind "+ 1 more".
     assert.deepEqual(narrated, { order: ['who', 'thought', 'said-text', 'steps', 'host-note', 'thought redacted', 'thought', 'thought untitled', 'said-text', 'steps'], said: [['I will read each page in turn.', 0, false], ['All four pages agree.', 0, false]],
       cards: [false, false, false, false, false, false, false, false, false, false, false, true], more: ['+ 1 more'],
-      voices: [null, null, null, null, null, null, null, null, null, null, null, null], host: ['Host', 'You stopped without submitting. Call submit.', false], users: ['YouRead the four pages of notes.pdf.'],
+      host: ['Host', 'You stopped without submitting. Call submit.', false], users: ['YouRead the four pages of notes.pdf.'],
       redacted: [[['thinking · redacted', 'DIV']], false],
       thoughts: [['Analyzing transcript data', true, 'DETAILS', false, 'I am reading page 2 before the others.', 'thinking', 'inline-block'],
         ['Settling the answer', true, 'DIV', false, null, 'thinking', 'none'], [null, false, 'DETAILS', false, 'Checking that the four agree\nthey do, line for line.', 'Thought', 'inline-block']] });
@@ -576,8 +611,9 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.deepEqual(await value(`(() => { const b = doc('answer').querySelector('.src .jbox'); return [getComputedStyle(b).borderTopColor, getComputedStyle(b.querySelector('span')).color]; })()`),
       ['rgb(229, 81, 186)', 'rgb(242, 242, 242)'], 'a judge\'s box in its accent, its label in ink');
 
-    // Opened by its URL (?src=), the agent's page keeps the stylesheet it links; the site's palette is drawn over it.
-    assert.deepEqual(await value(`[getComputedStyle(art('srcsheet').getElementById('alarm')).letterSpacing, getComputedStyle(art('srcsheet').body).backgroundColor]`), ['1px', 'rgb(8, 8, 9)']);
+    // Opened by its URL (?src=), the agent's page keeps the stylesheet it links and the one that imports; the site's palette
+    // is drawn over them.
+    assert.deepEqual(await value(`[getComputedStyle(art('srcsheet').getElementById('alarm')).letterSpacing, getComputedStyle(art('srcsheet').getElementById('alarm')).wordSpacing, getComputedStyle(art('srcsheet').body).backgroundColor]`), ['1px', '3px', 'rgb(8, 8, 9)']);
 
     // Opened by its URL (?src=), "How this ran" opens the same URL in the inspection viewer, in the header and the report.
     assert.deepEqual(await value(`[doc('srcpage').querySelector('a.how').getAttribute('href'), doc('srcpage').querySelector('.report a').getAttribute('href')]`),

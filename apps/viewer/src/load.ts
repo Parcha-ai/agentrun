@@ -10,7 +10,7 @@ export type GalleryEntry = { id: string; manifest: Manifest; events: string; blo
 export type IndexEntry = { id: string; manifest: Manifest; blobs: Record<string, string> };
 declare const window: Window & { AGENTRUN_GALLERY?: GalleryEntry[]; AGENTRUN_GALLERY_INDEX?: string };
 
-const BLOB_TYPES = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'webm', 'json', 'html', 'md', 'txt', 'pdf', 'sqlite', 'css'];
+const BLOB_TYPES = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'webm', 'mp4', 'json', 'html', 'md', 'txt', 'pdf', 'sqlite', 'css'];
 
 /** A recording the index lists: its lines fetched from its directory, each blob at the path the index names. */
 export async function fromIndex(entry: IndexEntry, root: string): Promise<Recording> {

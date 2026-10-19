@@ -24,6 +24,13 @@ else a point at its time); and on the right the agent's artifact
 (`manifest.artifact`: its entry and files as blobs), in a frame that runs no script; else the run's cited answer; else
 the result record it submitted, its evidence paths as cites; else its final assistant text. The title is the
 artifact's, else the first line of the input's question, else the recording's title.
+A step whose call has one argument, a string (a command, a script), and that made no look and returned no picture is
+plumbing: such steps in a row fold into one line, "ran N commands" with how many failed, that a click lays out. A step
+that made looks leads with them, a card each titled by what its look asked in words (else the call's name); the step is
+a quiet line under them, its result and command a click away, and a failed one shows its error apart from what its look
+read. A look's card shows its answer's first sentence (`said`): the first line with words that is no heading and no
+lead-in ending in a colon, without its quote or list marker, cut at its first sentence's end; a typed answer shows its
+scores instead. `said` is for presentation only: the answer stays whole under "Raw output".
 Citations are the cited file's own address (`file.pdf#page=3&xywh=percent:...`, `film.webm#t=10`) and open that page
 or frame with its region boxed. "How this ran" opens the same recording in this replay viewer. `src/chat-extract.ts`
 makes the model, `src/chat-view.ts` and `src/chat-report.ts` draw it.
@@ -31,6 +38,9 @@ makes the model, `src/chat-view.ts` and `src/chat-report.ts` draw it.
 A few conventions the view reads beyond the format; any skill or tool can follow them, and a run that does not loses
 nothing but the touch each one adds:
 - The page's title is the input's `question` field (its first line) when the input has one.
+- An input record's `question` is the person's words, drawn as their message, and its `files` (a path or a list of
+  paths) are chips under it, each by its name, past four behind "+ N files"; its other fields sit behind a "details"
+  toggle.
 - In a Jev answer, a box decision named `<name>_at` is the place of the yes-or-no decision `<name>`; a box whose
   yes-or-no is no is not drawn.
 - A look's answer whose rows start `<start>\t<end>\t` (a transcript's times) is read without those times.

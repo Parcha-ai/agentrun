@@ -298,9 +298,12 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
             const name = chatStr(p.name) ?? 'tool';
             const times = toolTimes.get(callId);
             const said = Object.values(chatObj(p.arguments) ?? {});
-            const detail = said.length === 1 && typeof said[0] === 'string' && said[0].trim().includes('\n') ? said[0] : undefined;
-            if (said.length === 1 && typeof said[0] === 'string') commands.add(callId);
-            const item: Extract<ChatItem, { kind: 'tool' }> = { kind: 'tool', id: `item-${++counter}`, tool: name, title: chatToolTitle(name, p.arguments), ...(detail ? { detail } : {}), takeaway: '', media: [], looks: [], calls: [], ...(chatIsJudge(name) ? { judge: true as const } : {}),
+            const only = said.length === 1 && typeof said[0] === 'string' ? said[0] : undefined;
+            const title = chatToolTitle(name, p.arguments);
+            // Its one argument in full wherever its title does not show it whole: one of several lines, or one line clipped.
+            const detail = only?.trim() && title !== `${name} ${only.trim()}` ? only : undefined;
+            if (only !== undefined) commands.add(callId);
+            const item: Extract<ChatItem, { kind: 'tool' }> = { kind: 'tool', id: `item-${++counter}`, tool: name, title, ...(detail ? { detail } : {}), takeaway: '', media: [], looks: [], calls: [], ...(chatIsJudge(name) ? { judge: true as const } : {}),
               ...(times?.t0 !== undefined ? { t0: times.t0 } : {}), ...(times?.t1 !== undefined ? { t1: times.t1 } : {}) };
             thread.items.push(item);
             toolItems.set(callId, item);
@@ -450,23 +453,15 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     sources[key] = { href, ...(addresses.length > 1 ? { more: addresses.slice(1) } : {}), ...(pictures ? { pictures } : {}), takeaway: text, decisions, media, regions, ...(lookItem.has(key) ? { item: lookItem.get(key)! } : {}) };
   }
 
-  // A call that made exactly one look says what that look found; its own first line is the tool's framing.
+  // A call that made exactly one look says what that look found; its own first line is the tool's framing. A call that
+  // failed keeps its error: why it failed is not what its look found.
   for (const item of toolItems.values()) {
     const only = item.looks.length === 1 ? sources[item.looks[0]!] : undefined;
-    if (only?.takeaway) item.takeaway = only.takeaway;
+    if (only?.takeaway && !item.failed) item.takeaway = only.takeaway;
   }
 
   // A step that ran a command or a script and made no look and no picture is plumbing.
   for (const [callId, item] of toolItems) if (commands.has(callId) && !item.calls.some((call) => call.look) && item.media.length === 0) item.plumbing = true;
-
-  // A step that nothing the agent thought or wrote leads into speaks for itself with what a look of it asked in words;
-  // a step whose looks asked nothing in words has no voice (a look's line and a call's result are logs, never a voice).
-  for (const thread of ordered) thread.items.forEach((item, index) => {
-    const before = thread.items[index - 1];
-    if (item.kind !== 'tool' || before?.kind === 'thinking' || before?.kind === 'assistant') return;
-    const asked = item.calls.find((call) => call.look && call.ask)?.ask;
-    if (asked) item.voice = asked;
-  });
 
   // The run's answer: its cited result, each cite on the look (and the card) that made it; else the result record it
   // submitted, a field of evidence paths as its cites; else its final assistant text.
