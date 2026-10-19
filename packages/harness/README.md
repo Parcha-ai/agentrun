@@ -117,7 +117,7 @@ it with what it found and where, and the directory is left without a manifest, s
 | 4 | `decisions` | the workflow's `judge` (`runJudge`), the browser's page judge (`classifyPage`) | the job's scripted answers; a page judge only when the fakes give one. Each answer's receipt is a row in the run's store (`agentrun.decisions`) before it acts, and a later process of the run replays it instead of asking again |
 | 5 | `status` | browser sessions and reconcile, vision looks and misses, workflow events | one JSON line per row in `<run>/events.jsonl` |
 | 6 | `deliver` | the workflow's output | `<run>/out/record.json` |
-| 7 | `credentials` | the browser's `redact`, the environment of a program vision starts | none; a started program sees only `PATH` |
+| 7 | `credentials` | the browser's `redact`, the environment of a program vision starts | none; a started program sees only `PATH`. A command the agent runs (its `bash` tool, code mode's `tools.bash`) sees only `PATH`, `HOME`, `TMPDIR` and `LANG`: a key stays in the host (`command-env.ts`) |
 
 Where the run lives (`RunPlace`) is the disk package's `AppContext`: `root`, `work`, `store` (`<root>/store`, holding
 `run.sqlite`, which the package's readers take as a file; a directory whose store is at `<root>/durable`, where the
@@ -247,7 +247,7 @@ The parts of `demo.json` the entry acts on:
 
 ### The judge seam
 
-Every demo's typed questions pass through one seam that carries Jev's limits and Jev's price, whoever answers: at most 50 requests and 40,000 tokens (in and out) over the run. The next request after a cap is reached is refused with `JEV_CAP_REACHED` and is never sent; a failed request counts, a refused one does not. The count is kept in the run's directory, so a later process of the run continues it. An answer that reports usage and no price of its own is priced at Jev's public list price, $0.042 per million input tokens and nothing for output (`jev-1.12`; source: the TypeSafe cookbook, 2026-07); a price the answer reports is kept.
+Every demo's typed questions pass through one seam that carries Jev's price, whoever answers. There is no Jev cap: every question is sent, `--max-usd` is the run's dollar stop, and TypeSafe rate-limits. The Jev runner waits out a 429 (its `Retry-After`, within the request's timeout) and, after its retries, gives up with HTTP 429; pi-vision files that look as a typed miss that cost nothing, so the run's cost stays known. An answer that reports usage and no price of its own is priced at Jev's public list price, $0.042 per million input tokens and nothing for output (`jev-1.12`; source: the TypeSafe cookbook, 2026-07); a price the answer reports is kept.
 
 ### The vision option
 
@@ -311,9 +311,9 @@ What the sandbox can reach: the two functions above and nothing else. It has no 
 
 A place that has `status()` reports its reading of the run (`{ record }`, a disk place's `RunRecord`), and the supervisor writes it as a `run.json` host line: `gen` is the record's generation and the rest is the record verbatim, only when its `status`, `generation`, `holder` or `sealedSeq` changes (RECORDING.md's host row). It is read at the boundaries (a runner's start and exit, the supervisor ending a runner, a result) and on a 2 s tick while a runner runs; a place without `status()` writes none, and a reading that fails or is not a run record (it needs a `run` and an integer `generation`) writes none and never fails the run. The line is an allowlist (`run`, `status`, `generation`, `sealedSeq`, `wakeAt`, `holder { driver, host, bootId, pid, since }`, `heartbeatAt`, `updatedAt`): every other field (a sandbox id, a name, a mountpoint) is dropped, and a `detail` is kept only as text of at most 240 characters with every absolute path replaced by `<path>`. The recorder replaces `holder.host` and `holder.bootId` with labels (`host-1`, `host-2`, `boot-1`, ... in order of first appearance, the same label for the same value within one recording), so a takeover by a new box still shows a new holder; and this machine's own host name and boot id (`os.hostname()` and `/proc/sys/kernel/random/boot_id` where it exists) are in the recorder's exact-value redaction, wherever they would appear.
 
-### The demo's own Jev caps, and a model whose key is not declared
+### No Jev caps, and a model whose key is not declared
 
-`models.judge.caps` in demo.json (`{ requests, tokens }`) sets the demo's own Jev caps. The defaults are 50 requests and 40,000 tokens; each given value is a positive integer at most 4 times the default (200 and 160,000), and anything else is refused at load, before any process starts. The judge seam still refuses the request after a cap is reached (`JEV_CAP_REACHED`, never sent), and `--max-usd` still applies.
+No Jev cap: `--max-usd` governs spend, and TypeSafe rate-limits. A demo.json that still sets `models.judge.caps` is refused at load, before any process starts, so it never reads as capped.
 
 A model whose provider needs a key the demo does not declare is refused at load too, naming the group to add: no key is implied, and demo.json stays the one list the child's environment and the setup prompt read. The first case is `models.judge` (Jev): its demo needs a `keys` group with `TYPESAFE_API_KEY` or `OPENROUTER_API_KEY`.
 
