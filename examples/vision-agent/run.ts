@@ -4,7 +4,7 @@
 // those fetched by URL checked by size and SHA-256.
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { demo, type DemoOptions } from '@parcha/agentrun-reference';
+import { demo, type DemoOptions } from '@parcha/agentrun-harness';
 import { exampleAt, inputOf, job } from './agent.ts';
 import spec from './demo.json' with { type: 'json' };
 import { fakes } from './fakes.ts';

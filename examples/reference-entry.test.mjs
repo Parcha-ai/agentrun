@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import * as entry from '@parcha/agentrun-reference';
+import * as entry from '@parcha/agentrun-harness';
 import { fakes, job } from './reference/job.ts';
 
 test('the entry exports the names another example builds on, and nothing else', () => {
@@ -52,7 +52,7 @@ test('Fakes.responses sets how many model turns one process can take: one is too
 });
 
 test('reconcile reports an applied call exactly once, in the receipt the driver appends: from the kept answer when none is listed, never when one is, and the calls end [failed, applied]', async () => {
-  const { reconcileEffects, appliedOnce } = await import('../packages/reference/dist/assemble.js');
+  const { reconcileEffects, appliedOnce } = await import('../packages/harness/dist/assemble.js');
   const { fold } = await import('../scripts/recording/fold.mjs');
   const effect = (id, calls) => ({ id, argsHash: `h-${id}`, intent: { tool: 'search' }, ...(calls ? { calls } : {}) });
   const settle = async (unknown, tools) => {

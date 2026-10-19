@@ -59,7 +59,7 @@ export const pathsAt = (root: string, id: string = RUN_KEY): RunPlace => { const
 /** A place under `root`, or a fresh one under the temp directory. Its paths are absolute: the run's tools resolve a
  *  relative one against their own working directory, not this process's. */
 export async function placeAt(root?: string, id: string = RUN_KEY): Promise<RunPlace> {
-  const at = resolve(root ?? await mkdtemp(join(tmpdir(), 'agentrun-reference-')));
+  const at = resolve(root ?? await mkdtemp(join(tmpdir(), 'agentrun-harness-')));
   await mkdir(join(at, 'work'), { recursive: true });
   return { id, root: at, work: join(at, 'work'), store: join(at, 'store') };
 }

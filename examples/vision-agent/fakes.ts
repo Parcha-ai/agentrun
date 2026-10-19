@@ -6,7 +6,7 @@ import type { AssistantMessage, Message, ToolCall, ToolResultMessage } from '@ea
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { fakeEyes } from '@parcha/pi-vision/testing';
 import type { Transcriber } from '@parcha/pi-vision';
-import type { Fakes } from '@parcha/agentrun-reference';
+import type { Fakes } from '@parcha/agentrun-harness';
 
 const call = (name: string, args: ToolCall['arguments']) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: 'toolUse' });
 const textOf = (message: Message) => (typeof message.content === 'string' ? message.content : message.content.map((block) => (block.type === 'text' ? block.text : '')).join('\n'));

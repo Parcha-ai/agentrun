@@ -12,7 +12,7 @@ import { test } from 'node:test';
 import { FakeBackend } from '@parcha/pi-browser/testing';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
-import { codeOf, finishRecording, openSupervisor } from '@parcha/agentrun-reference';
+import { codeOf, finishRecording, openSupervisor } from '@parcha/agentrun-harness';
 import { fakes } from './reference/job.ts';
 
 const exported = await import('@parcha/agentrun-pi/durable').then((durable) => typeof durable.recordCommits === 'function' && typeof durable.snapshotLines === 'function', () => false);
@@ -22,11 +22,11 @@ const hook = readdirSync(diskDir).some((file) => file.endsWith('.js') && readFil
 const at = (path) => new URL(path, import.meta.url).href;
 const CHILD = `
 import { remoteDriver, remoteProvider } from '${import.meta.resolve('@parcha/pi-browser/testing')}';
-import { placeAt, run } from '${at('../packages/reference/dist/assemble.js')}';
-import { localHost } from '${at('../packages/reference/dist/host.js')}';
+import { placeAt, run } from '${at('../packages/harness/dist/assemble.js')}';
+import { localHost } from '${at('../packages/harness/dist/host.js')}';
 import { fakes, job } from '${at('./reference/job.ts')}';
-import { openRecorder } from '${at('../packages/reference/dist/record.js')}';
-import { packageCommitRecorder } from '${at('../packages/reference/dist/record-store.js')}';
+import { openRecorder } from '${at('../packages/harness/dist/record.js')}';
+import { packageCommitRecorder } from '${at('../packages/harness/dist/record-store.js')}';
 const place = await placeAt(process.env.DIR);
 const model = (messages) => {
   if (process.env.KILL_AFTER_MS && messages.filter((message) => message.role === 'toolResult').length === 0) setTimeout(() => process.kill(process.pid, 'SIGKILL'), Number(process.env.KILL_AFTER_MS));

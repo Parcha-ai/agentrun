@@ -3,7 +3,7 @@
 // the file's own fragment, labelled as the report labels it.
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, relative } from 'node:path';
-import type { DemoOptions } from '@parcha/agentrun-reference';
+import type { DemoOptions } from '@parcha/agentrun-harness';
 
 type Cite = { look?: string; blob?: string; fragment?: string; note?: string };
 

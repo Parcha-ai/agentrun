@@ -17,7 +17,7 @@ import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { createJevRunner } from '@parcha/agentrun-jev';
 import { modelsEyes } from '@parcha/pi-vision/durable';
 import { falTranscriber } from '@parcha/pi-vision/transcribers';
-import type { LiveParts } from '@parcha/agentrun-reference';
+import type { LiveParts } from '@parcha/agentrun-harness';
 import spec from './demo.json' with { type: 'json' };
 
 export type PublicModel = { provider: string; modelId: string };

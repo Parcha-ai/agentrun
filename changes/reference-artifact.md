@@ -1,5 +1,5 @@
 ---
-packages: @parcha/agentrun-reference
+packages: @parcha/agentrun-harness
 kind: feature
 ---
 

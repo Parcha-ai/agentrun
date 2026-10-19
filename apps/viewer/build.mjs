@@ -41,9 +41,10 @@ export function checkModule(file, code) {
 
 /** `recordingsDir`: the recordings bundled into the gallery (a test passes its fixture's directory). `files`: ship them as
  *  files with `recordings/index.json` instead of embedding them in gallery.js. */
-export function build(target = out, recordingsDir = join(here, 'recordings'), { files = false } = {}) {
+/** One page's script: its entry and the modules it imports, joined in import order into one classic script. */
+function bundle(entry) {
   const names = new Map();
-  const parts = ordered('app.ts').map((file) => {
+  return ordered(entry).map((file) => {
     const code = stripTypeScriptTypes(readFileSync(join(src, file), 'utf8'));
     checkModule(file, code);
     const body = code.replace(/^import [^;]*? from '\.\/[\w-]+\.ts';$/gm, '').replace(/^export (?=(?:async )?function |const |let |class )/gm, '');
@@ -53,10 +54,18 @@ export function build(target = out, recordingsDir = join(here, 'recordings'), { 
     }
     return `// ${file}\n${body}`;
   });
+}
+
+export function build(target = out, recordingsDir = join(here, 'recordings'), { files = false } = {}) {
+  const parts = bundle('app.ts');
+  // The chat + report page (chat.html): a second script over the same loader, beside the viewer.
+  const chatParts = bundle('chat.ts');
   rmSync(target, { recursive: true, force: true });
   mkdirSync(target, { recursive: true });
   writeFileSync(join(target, 'viewer.js'), `(() => {\n'use strict';\n${parts.join('\n')}\n})();\n`);
   writeFileSync(join(target, 'index.html'), readFileSync(join(here, 'index.html')));
+  writeFileSync(join(target, 'chat.js'), `(() => {\n'use strict';\n${chatParts.join('\n')}\n})();\n`);
+  writeFileSync(join(target, 'chat.html'), readFileSync(join(here, 'chat.html')));
   // A `.js` name: every static host serves it as JavaScript, which a module script must be.
   mkdirSync(join(target, 'pdfjs'));
   for (const [from, to] of [['pdf.min.mjs', 'pdf.min.js'], ['pdf.worker.min.mjs', 'pdf.worker.min.js'], ['LICENSE.txt', 'LICENSE.txt']]) cpSync(join(here, 'vendor', 'pdfjs', from), join(target, 'pdfjs', to));
@@ -84,7 +93,7 @@ export function build(target = out, recordingsDir = join(here, 'recordings'), { 
     writeFileSync(join(target, 'recordings', 'index.json'), `${JSON.stringify(gallery)}\n`);
     writeFileSync(join(target, 'gallery.js'), `window.AGENTRUN_GALLERY_INDEX = 'recordings/index.json';\n`);
   } else writeFileSync(join(target, 'gallery.js'), `window.AGENTRUN_GALLERY = ${JSON.stringify(gallery)};\n`);
-  return { target, modules: parts.length, recordings: gallery.map((entry) => entry.id) };
+  return { target, modules: parts.length, chatModules: chatParts.length, recordings: gallery.map((entry) => entry.id) };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) console.log(JSON.stringify(build(out, undefined, { files: process.argv.includes('--files') })));
