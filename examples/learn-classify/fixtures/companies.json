@@ -1,7 +1,8 @@
 [
-  { "cik": "0000900001", "name": "Harbor Valve Works Inc.", "ticker": "HVW", "website": "https://www.harborvalve.example", "sic": "3561", "sic2": "35", "sicDescription": "Pumps and Pumping Equipment", "split": "run", "order": 1 },
-  { "cik": "0000900002", "name": "Bluefin Markets Inc.", "ticker": "BFM", "website": "https://bluefinmarkets.example", "sic": "5411", "sic2": "54", "sicDescription": "Retail-Grocery Stores", "split": "run", "order": 2 },
-  { "cik": "0000900003", "name": "Summit Ridge Software Corp.", "ticker": "SRS", "website": "https://www.summitridge.example", "sic": "7372", "sic2": "73", "sicDescription": "Services-Prepackaged Software", "split": "run", "order": 3 },
-  { "cik": "0000900004", "name": "Cedar Lane Bancorp", "ticker": "CLB", "website": "https://www.cedarlanebank.example", "sic": "6022", "sic2": "60", "sicDescription": "State Commercial Banks", "split": "sealed", "order": null },
-  { "cik": "0000900005", "name": "Ironclad Freight Lines Inc.", "ticker": "IFL", "website": "https://ironcladfreight.example", "sic": "4213", "sic2": "42", "sicDescription": "Trucking (No Local)", "split": "sealed", "order": null }
+  {"cik": "0000900001", "name": "Harbor Valve Works Inc.", "ticker": "HVW", "website": "https://www.harborvalve.example", "sic": "3561", "sic2": "35", "sicDescription": "Pumps and Pumping Equipment", "split": "run", "order": 1},
+  {"cik": "0000900002", "name": "Bluefin Markets Inc.", "ticker": "BFM", "website": "https://bluefinmarkets.example", "sic": "5411", "sic2": "54", "sicDescription": "Retail-Grocery Stores", "split": "run", "order": 2},
+  {"cik": "0000900003", "name": "Summit Ridge Software Corp.", "ticker": "SRS", "website": "https://www.summitridge.example", "sic": "7372", "sic2": "73", "sicDescription": "Services-Prepackaged Software", "split": "run", "order": 3},
+  {"cik": "0000900006", "name": "Lantern Hall Restaurants Inc.", "ticker": "LHR", "website": "https://www.lanternhall.example", "sic": "5812", "sic2": "58", "sicDescription": "Retail-Eating Places", "split": "run", "order": 4},
+  {"cik": "0000900004", "name": "Cedar Lane Bancorp", "ticker": "CLB", "website": "https://www.cedarlanebank.example", "sic": "6022", "sic2": "60", "sicDescription": "State Commercial Banks", "split": "sealed", "order": null},
+  {"cik": "0000900005", "name": "Ironclad Freight Lines Inc.", "ticker": "IFL", "website": "https://ironcladfreight.example", "sic": "4213", "sic2": "42", "sicDescription": "Trucking (No Local)", "split": "sealed", "order": null}
 ]

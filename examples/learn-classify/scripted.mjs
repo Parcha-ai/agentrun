@@ -149,9 +149,9 @@ export function lastRunOutcome(context) {
   return json(textOf(result?.content))?.outcome;
 }
 
-/** The scripted agent's steps for one job: by hand, then a workflow saved, when no workflow is offered; else the offered
+/** The scripted agent's steps for one job: by hand, then `workflow` saved, when no workflow is offered; else the offered
  *  workflow, loaded and run, and the answer it returned. `truth` is the fixture's answer for this case. */
-export function agentScript({ job, offered, truth, page }) {
+export function agentScript({ job, offered, truth, page, workflow = CLASSIFY_WORKFLOW }) {
   const input = { name: job.name, website: job.website };
   if (offered.includes(WORKFLOW)) {
     return [
@@ -172,7 +172,7 @@ export function agentScript({ job, offered, truth, page }) {
     { call: 'fetch_page', args: { url: job.website } },
     { call: 'answer', args: { sic2: truth, evidence: firstSentence(page?.text), url: job.website } },
     { call: 'agentrun', args: { action: 'describe' } },
-    { call: 'agentrun', args: { action: 'inspect', workflow: CLASSIFY_WORKFLOW, input } },
+    { call: 'agentrun', args: { action: 'inspect', workflow, input } },
     { call: 'agentrun', args: { action: 'dry-run' } },
     { call: 'agentrun', args: { action: 'save', name: WORKFLOW } },
     { call: 'learn', args: { type: 'workflow', id: WORKFLOW, text: WORKFLOW_WHEN } },
@@ -180,7 +180,7 @@ export function agentScript({ job, offered, truth, page }) {
   ];
 }
 
-const CURATE = { general: 0.94, narrowsRules: 0.03, fromContent: 0.03, duplicate: 0.04, supersedes: 0.04, contradicts: 0.03, namesCase: 0.03 };
+const CURATE = { general: 0.94, narrowsRules: 0.03, fromContent: 0.03, duplicate: 0.04, supersedes: 0.04, contradicts: 0.03, namesCase: 0.03, workflowCase: 0.03 };
 
 /**
  * A scripted Jev. Curate's and the leak gate's yes-or-no questions get the fixed answers above (or `overrides`); a pick

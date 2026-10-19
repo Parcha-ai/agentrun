@@ -10,18 +10,23 @@
 
 ## Every run leaves the job cheaper
 
-- When `<learned>` offers a workflow for this job or a part of it, run it first with the agentrun tool: load it by name
-  with this company's input, then run it. When it completes, use what it returned. When it escalates or fails, do that
-  part yourself.
-- When you did the job, or a part of it, by hand, turn that part into a workflow before you finish: call agentrun with
+- When `<learned>` offers a workflow for the job, run it first with the agentrun tool: load it by name with this
+  company's input, then run it.
+  - When it completes, answer with what it returned and save nothing. Every clean run of the same revision counts
+    toward trusting it, and a new revision starts that count again.
+  - When it escalates or fails, do the job by hand. When you see what made it stop, fix that workflow under its own
+    name: load it, change it, inspect it with this company's input, dry-run it, and save it under the same name.
+- When no workflow is offered, do the job by hand, then write one workflow for the whole job: call agentrun with
   describe, inspect the complete workflow with this company's input, dry-run it, and save it under a short general name
-  (lowercase words joined by hyphens). Then call learn with type workflow, the workflow's name as id, and when to use it
-  as text. Save only a workflow whose dry run passed.
+  (lowercase words joined by hyphens).
+- Save only a workflow whose dry run passed. Never save a second workflow for the whole job under another name, and
+  never run a workflow you saved in this run: later runs try it.
+- After a save, call learn with type workflow and the workflow's name as id. Its text says which inputs it fits ("any
+  company with a website"), never what a page said.
 - A workflow for the whole job takes `{ "name", "website" }` and returns `{ "sic2", "evidence", "url" }` as its output.
-- A workflow works for any company. Never put a company's name, domain or answer in one. It reads pages with
-  fetch_page and the groups with sic2_groups, decides with pick, judge or route, and hands anything unsure back with
-  escalate.
-- When a workflow you ran escalated or failed and you see why, save a fixed revision under the same name.
+- A workflow works for any company. Never put a company's name, domain, answer or a page's words in one. It reads pages
+  with fetch_page and the groups with sic2_groups, decides with pick, judge or route, and hands anything unsure back
+  with escalate.
 
 ## Notes
 

@@ -4,9 +4,11 @@
 
 const NEW_TYPES = new Set(['lesson', 'fact', 'workflow']);
 
-/** What curate did for this run: workflow births and promotions by name, held and refused items with their reasons. */
-export function curateOf(curated, runId) {
-  if (!curated) return { admitted: [], promoted: [], demoted: [], held: [], refused: [] };
+/** What curate did for this run: workflow births and promotions by name, held and refused items with their reasons. A
+ *  workflow the propose step withheld (it copied a page the run read) is refused before curate saw it, and says so. */
+export function curateOf(curated, runId, withheld = []) {
+  const kept = withheld.map((w) => ({ workflow: w.name, reason: `withheld when proposed: ${w.reason}` }));
+  if (!curated) return { admitted: [], promoted: [], demoted: [], held: [], refused: kept };
   const report = curated.report.runs.find((r) => r.run === runId);
   const decisions = curated.settled.filter((s) => s.run === runId).flatMap((s) => s.decisions);
   const item = (i) => ({ ...(i.workflow ? { workflow: i.workflow } : {}), ...(i.id ? { id: i.id } : {}), ...(i.candidate ? { candidate: i.candidate } : {}), reason: i.reason });
@@ -15,7 +17,7 @@ export function curateOf(curated, runId) {
     promoted: decisions.filter((d) => d.action === 'promote').map((d) => d.name),
     demoted: decisions.filter((d) => d.action === 'demote').map((d) => d.name),
     held: (report?.held ?? []).map(item),
-    refused: (report?.refused ?? []).map(item),
+    refused: [...kept, ...(report?.refused ?? []).map(item)],
   };
 }
 
@@ -38,8 +40,9 @@ export function spendOf(measure, curateJudge = { costUsd: 0, unknown: 0 }) {
 }
 
 /** `run` is the job's place in the order (1 to 100; for a sealed pass, its place in that pass); `runId` the attempt's id.
- *  `curateJudge` is the curate call's Jev meter (none for a sealed run). */
-export function rowOf({ run, runId, job, seedSha, afterSha, offered, measure, finished, curated, curateJudge, recording }) {
+ *  `curateJudge` is the curate call's Jev meter (none for a sealed run). `convention` is the filing convention the truth
+ *  set's build report puts the company under, or null; the agent never sees it. */
+export function rowOf({ run, runId, job, seedSha, afterSha, offered, measure, finished, curated, curateJudge, recording, convention }) {
   const answer = measure.answer?.sic2 ?? null;
   const candidates = finished?.candidates ?? [];
   const { costUsd, judgeCostUsd } = spendOf(measure, curateJudge);
@@ -65,8 +68,9 @@ export function rowOf({ run, runId, job, seedSha, afterSha, offered, measure, fi
       used: candidates.filter((c) => c.type === 'used').length,
       corrected: candidates.filter((c) => c.type === 'correction').length,
     },
-    curate: curateOf(curated, runId),
+    curate: curateOf(curated, runId, finished?.proposal?.withheld),
     judgeCostUsd,
     recording: recording ?? null,
+    convention: convention ?? null,
   };
 }

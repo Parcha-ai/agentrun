@@ -69,8 +69,9 @@ The calls in order, per company. `host.mjs` is the whole of it.
    (`decisionRecovery`). Its agent nodes are offered the tools they name, or both workflow tools when they name none, and
    never `answer`, `learn` or `agentrun`; they get their own short instructions, not the root agent's rules.
 3. **Propose.** `finishJob(...)`: `carryBack`, then read the run's notes, the workflows it saved and its uses of saved
-   workflows, and `proposeLearning({ workDir, untrusted: true })` on `runs/<run id>`: the run read the web, so the curator
-   asks whether each note came from that content.
+   workflows, and `proposeLearning({ workDir, untrusted: true, read })` on `runs/<run id>`. The run read the web, so the
+   curator asks whether each note came from that content, and `read` (every page the run fetched, from its store) withholds
+   a saved workflow that copies one.
 4. **Curate.** `curateJob({ repo, judge })`: `curate` with Jev as the judge and this example's gates in front of the
    package's admitter (below). It is the only writer of `main`.
 5. **Row.** `rowOf(...)` appends one line to `runs.jsonl`; the next company starts at step 1 from the new `main`.
@@ -103,7 +104,7 @@ demotion after 2).
   "workflowsUsed": [{ "name": "classify-company", "revision": "<sha256>", "outcome": "complete", "classifiedBy": "pick" }],
   "byWorkflow": true, "workflowsSaved": [], "notes": { "new": 0, "used": 1, "corrected": 0 },
   "curate": { "admitted": [], "promoted": ["classify-company"], "demoted": [], "held": [], "refused": [] },
-  "judgeCostUsd": 0.0004, "recording": "run-002" }
+  "judgeCostUsd": 0.0004, "recording": "run-002", "convention": null }
 ```
 
 - `workflowsUsed`: one entry per workflow run the agent asked for, read from the run's records, never from text.
@@ -123,16 +124,18 @@ demotion after 2).
   and the Jev runner's configured pricing; the gateway's ledger is the bill. Scripted, both are 0: nothing was paid.
 - `notes`: the run's `learn` calls: `new` (lesson, fact, workflow), `used`, `corrected`.
 - `curate`: what curation did for this run. `admitted`, `promoted`, `demoted` are workflow names (from the admitter's and
-  the settler's own answers); `held` and `refused` are items with a reason (`{ workflow | id | candidate, reason }`).
+  the settler's own answers); `held` and `refused` are items with a reason (`{ workflow | id | candidate, reason }`). A
+  saved workflow that copies a page the run fetched is withheld when the run is proposed, and shows in `refused` with a
+  reason that starts `withheld when proposed:`.
   Promotion keeps pi-agent-learn's own words for a use (`frozen` when a run completed), in `trial.json`, not in the row.
 - `recording`: the run's `agentrun.recording/1` directory under `recordings/`, or `null`. Each passes
   `scripts/recording/validate.mjs`. A run's recording is about 100 to 130 KB scripted; live, with real pages and
   thinking, expect a few hundred KB, so 100 runs keep tens of MB on disk, each far under the gallery's 40 MB cap.
 - A sealed row has `split: "sealed"`, `seedSha` = `afterSha` = the commit it was scored at, and an empty `curate`.
 
-The truth set's build report names companies whose SIC follows a filing convention (a REIT under 67, say). The agent
-never sees that list; the runner marks those companies in its log and the curve counts how many of them each pass got
-right, to check whether the notes learned the conventions.
+- `convention`: the filing convention the truth set's build report puts the company under (a REIT under 67, say), or
+  `null`. The agent never sees that list; the runner marks those companies in its log and the curve counts how many of
+  them each pass got right, to check whether the notes learned the conventions.
 
 ## Files
 

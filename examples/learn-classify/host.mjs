@@ -318,9 +318,24 @@ export async function finishJob({ home, repo, run, job, measure, propose = true 
     const candidates = await collectCandidates(target);
     const uses = await collectUses({ target, workDir: run.workspace, run: run.runId });
     const saved = await collectWorkflows({ repo, workDir: run.workspace, target });
-    const proposal = propose ? await proposeLearning({ repo, runId: run.runId, target, workDir: run.workspace, caseValues, untrusted: true }) : { status: 'not proposed' };
+    // A saved workflow that copies a page the run read is withheld here; a package without `read` proposes it.
+    const proposal = propose ? await proposeLearning({ repo, runId: run.runId, target, workDir: run.workspace, caseValues, untrusted: true, read: pagesRead(run.storePath) }) : { status: 'not proposed' };
     return { candidates, uses: uses?.uses ?? [], saved: saved.found.map((w) => ({ name: w.name, sha256: w.sha256 })), proposal };
   });
+}
+
+/** The pages the run read, as text: every fetch_page result in any of its conversations, and every completed fetch_page
+ *  call a workflow made. What `proposeLearning`'s `read` checks a saved workflow against. */
+export function pagesRead(storePath) {
+  const pages = new Set();
+  const add = (page) => { if (page && typeof page.text === 'string' && page.text) pages.add(`${page.title ?? ''}\n${page.text}`); };
+  for (const line of recordingLines(storePath).lines) {
+    const entry = line.data?.model?.[0];
+    if (line.kind === 'pi.tool-result' && entry?.toolName === 'fetch_page') add(json(textOf(entry.content)));
+    const effect = line.data?.value;
+    if (line.kind === 'agentrun.effects' && effect?.status === 'completed' && effect.intent?.tool === 'fetch_page') add(effect.result?.value);
+  }
+  return [...pages];
 }
 
 /** What a run that never finished spent on models, read back from the latest `pi.usage` of each of its conversations. */

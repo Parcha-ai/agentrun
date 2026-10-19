@@ -103,7 +103,7 @@ export async function liveParts({ data = DATA, model = 'gpt-6-luna', thinking = 
 
 const short = (sha) => (sha ? sha.slice(0, 7) : '-');
 const usd = (n) => (n === null ? 'unknown' : `$${n.toFixed(4)}`);
-export function lineOf(row, convention) {
+export function lineOf(row, convention = row.convention) {
   const how = row.byWorkflow ? `by ${row.workflowsUsed.find((u) => u.outcome === 'complete' && u.name)?.name ?? 'a draft workflow'}` : 'by hand';
   const curated = [
     ...row.curate.admitted.map((n) => `admitted ${n}`), ...row.curate.promoted.map((n) => `promoted ${n}`), ...row.curate.demoted.map((n) => `demoted ${n}`),
@@ -162,7 +162,7 @@ async function oneJob({ out, repo, home, parts, judge, job, runCapUsd, record, l
   const recording = record
     ? await writeRecording({ into: join(out, 'recordings'), run, job, model: parts.modelName, providers: parts.providers, started: p.started, ended: p.ended, spend, modelUsd: p.measure.unpricedAnswers ? null : p.measure.usage.costUsd })
     : null;
-  return rowOf({ run: job.order, runId, job, seedSha: p.seedSha, afterSha: p.afterSha, offered: p.offered, measure: p.measure, finished: p.finished, curated: p.curated, curateJudge: p.curateJudge, recording });
+  return rowOf({ run: job.order, runId, job, seedSha: p.seedSha, afterSha: p.afterSha, offered: p.offered, measure: p.measure, finished: p.finished, curated: p.curated, curateJudge: p.curateJudge, recording, convention: parts.conventions?.[job.cik] });
 }
 
 /** The learning pass: the first `jobs` companies of split "run", in order, until the spend reaches `capUsd`. */
@@ -185,7 +185,7 @@ export async function runLoop({ out, parts, jobs, capUsd, runCapUsd, record = tr
     const row = await oneJob({ out, repo, home, parts, judge, job, runCapUsd, record, log });
     appendFileSync(rowsPath, `${JSON.stringify(row)}\n`);
     rows.push(row);
-    log(lineOf(row, parts.conventions?.[job.cik]));
+    log(lineOf(row));
   }
   await writeCurve(out);
   if (stoppedBy) log(`stopped: ${stoppedBy}`);
@@ -235,11 +235,11 @@ export async function runSealed({ out, parts, at = 'main', capUsd, runCapUsd, re
     const recording = record
       ? await writeRecording({ into: join(out, 'sealed', label, 'recordings'), run, job, model: parts.modelName, providers: parts.providers, started, ended: Date.now(), spend: spendOf(measure), modelUsd: measure.unpricedAnswers ? null : measure.usage.costUsd })
       : null;
-    const row = rowOf({ run: i + 1, runId: prepared.runId, job, seedSha: sha, afterSha: sha, offered: prepared.workflows.loaded.map((w) => w.name), measure, finished, curated: null, recording });
+    const row = rowOf({ run: i + 1, runId: prepared.runId, job, seedSha: sha, afterSha: sha, offered: prepared.workflows.loaded.map((w) => w.name), measure, finished, curated: null, recording, convention: parts.conventions?.[job.cik] });
     spent += spendOf(measure).knownUsd;
     appendFileSync(rowsPath, `${JSON.stringify(row)}\n`);
     rows.push(row);
-    log(lineOf(row, parts.conventions?.[job.cik]));
+    log(lineOf(row));
   }
   const correct = rows.filter((r) => r.correct).length;
   log(`sealed at ${label}: ${correct} of ${rows.length} correct${stoppedBy ? `; stopped: ${stoppedBy}` : ''}`);

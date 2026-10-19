@@ -16,7 +16,8 @@ import { agentHomeFor, groupsOf, jobInput, meteredJudge, prepareRun, runJob } fr
 import { byWorkflowOf, rowOf, spendOf } from './row.mjs';
 import { liveParts, openOut, readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
 import { inspectWorkflow } from '@parcha/agentrun-dsl';
-import { CLASSIFY_WORKFLOW, extractAnswer, FIXTURES, fixtureFetch, readJson, scriptedJev, scriptedModel, WORKFLOW } from './scripted.mjs';
+import * as learn from '@parcha/pi-agent-learn';
+import { agentScript, CLASSIFY_WORKFLOW, extractAnswer, FIXTURES, fixtureFetch, readJson, scriptedJev, scriptedModel, WORKFLOW } from './scripted.mjs';
 
 async function scratch(t) {
   const dir = await mkdtemp(join(tmpdir(), 'learn-classify-test-'));
@@ -43,7 +44,7 @@ test('three scripted jobs: run 1 classifies by hand and saves a workflow, curate
   assert.deepEqual(readRows(join(out, 'runs.jsonl')), rows);
 
   // Every field of the contract, on every row.
-  const fields = ['run', 'cik', 'split', 'seedSha', 'afterSha', 'answer', 'truth', 'correct', 'costUsd', 'tokensIn', 'tokensOut', 'durationMs', 'workflowsOffered', 'workflowsUsed', 'byWorkflow', 'workflowsSaved', 'notes', 'curate', 'judgeCostUsd', 'recording'];
+  const fields = ['run', 'cik', 'split', 'seedSha', 'afterSha', 'answer', 'truth', 'correct', 'costUsd', 'tokensIn', 'tokensOut', 'durationMs', 'workflowsOffered', 'workflowsUsed', 'byWorkflow', 'workflowsSaved', 'notes', 'curate', 'judgeCostUsd', 'recording', 'convention'];
   for (const row of rows) assert.deepEqual(Object.keys(row), fields);
   assert.deepEqual(rows.map((r) => r.run), [1, 2, 3]);
   assert.deepEqual(rows.map((r) => r.correct), [true, true, true]);
@@ -343,4 +344,35 @@ test('the live parts build from the gateway named in the environment, with no ca
   assert.equal(model.agent.thinkingLevel, 'medium');
   assert.equal(model.agent.model.modelId, 'gpt-6-luna');
   assert.equal(typeof parts.judge(), 'function');
+});
+
+// pi-agent-learn judges a saved workflow on itself, not on the agent's note, from the change that adds schemaDescription.
+const judgedOnItself = typeof learn.schemaDescription === 'function' ? false : 'waits for pi-agent-learn to judge a workflow on itself';
+
+test('the probe replayed: notes that sound like page content no longer hold the workflow; it is admitted, offered, run and promoted', { skip: judgedOnItself }, async (t) => {
+  const out = join(await scratch(t), 'out');
+  const parts = scriptedParts();
+  const groups = groupsOf(parts.labels);
+  // probe-1's numbers for every workflow note: narrows a rule 0.16, from content 0.46.
+  parts.judge = () => scriptedJev({ truthByName: Object.fromEntries(companies.map((c) => [c.name, c.sic2])), groups, overrides: { narrowsRules: 0.16, fromContent: 0.46 } });
+  const { rows } = await runLoop({ out, parts, jobs: 4, record: false });
+  assert.deepEqual(rows.map((r) => r.curate.admitted), [[WORKFLOW], [], [], []]);
+  assert.deepEqual(rows.map((r) => r.workflowsOffered), [[], [WORKFLOW], [WORKFLOW], [WORKFLOW]]);
+  assert.deepEqual(rows.map((r) => r.byWorkflow), [false, true, true, true]);
+  assert.deepEqual(rows.map((r) => r.curate.promoted), [[], [], [], [WORKFLOW]]);
+  assert.deepEqual(rows.map((r) => r.correct), [true, true, true, true]);
+});
+
+test('a workflow that copies a page the run fetched is withheld when proposed, and the row says so', { skip: judgedOnItself }, async (t) => {
+  const out = join(await scratch(t), 'out');
+  const parts = scriptedParts();
+  const sentence = pages['https://www.harborvalve.example'].text.split('. ')[0];
+  const copied = structuredClone(CLASSIFY_WORKFLOW);
+  copied.root.steps.find((s) => s.node === 'escalate').summary = sentence;
+  parts.modelFor = (job, run) => scriptedModel({ root: agentScript({ job, offered: run.workflows.loaded.map((w) => w.name), truth: job.sic2, page: pages[job.website], workflow: copied }) });
+  const { rows } = await runLoop({ out, parts, jobs: 2, record: false });
+  assert.deepEqual(rows[0].curate.admitted, []);
+  assert.deepEqual(rows[0].curate.refused.map((r) => r.workflow), [WORKFLOW]);
+  assert.match(rows[0].curate.refused[0].reason, /^withheld when proposed: /);
+  assert.deepEqual(rows[1].workflowsOffered, []);
 });
