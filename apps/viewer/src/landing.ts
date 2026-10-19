@@ -23,9 +23,12 @@ const landingEl = <K extends keyof HTMLElementTagNameMap>(tag: K, props: Record<
   return node;
 };
 
-/** The runs the lock features, in its order: a scripted run never, whatever the lock says. */
+/** The public gallery shows only runs a real model made: a scripted run is never a card or a list item. */
+export const landingPublic = (entry: { manifest: { providers?: 'real' | 'scripted' } }) => entry.manifest.providers === 'real';
+
+/** The runs the lock features, in its order, whatever else the lock names. */
 export const landingFeatured = <E extends LandingEntry>(entries: readonly E[]): E[] =>
-  entries.filter((entry) => typeof entry.card?.rank === 'number' && entry.manifest.providers === 'real').sort((a, b) => a.card!.rank! - b.card!.rank!);
+  entries.filter((entry) => typeof entry.card?.rank === 'number' && landingPublic(entry)).sort((a, b) => a.card!.rank! - b.card!.rank!);
 
 /** A blob of a bundled run as an address this page can load: embedded, a data: URL; shipped as files, its path in the
  *  run's directory beside the page. */

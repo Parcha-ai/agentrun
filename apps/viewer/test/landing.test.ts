@@ -1,6 +1,6 @@
 // The gallery's landing in a real Chrome, at 1440 and 390 px, over fixtures and a lock: the brand row with the
 // repository's links, what AgentRun is and the site's line as the page's header, then the runs the lock features as cards in its order, each linking to its chat view, with a poster only where
-// the lock names one the run holds and no card for a scripted run, then the list of titles and the folder drop behind
+// the lock names one the run holds and no card for a scripted run, then the list of the real runs' titles and the folder drop behind
 // "Open a recording"; no featured row with no lock; no sideways scroll on a phone; and nothing of a run's machinery
 // anywhere on the page outside the list's items.
 import assert from 'node:assert/strict';
@@ -101,6 +101,7 @@ test('in Chrome: the site\'s line, the featured runs in the lock\'s order with t
           eager: cards('${id}').filter((c) => c.querySelector('img')).map((c) => c.querySelector('img').loading),
           dark: getComputedStyle(d.body).backgroundColor, list: !!d.querySelector('ul.gallery'), drop: !!d.querySelector('.drop'),
           titlesOnly: [...d.querySelectorAll('ul.gallery li')].every((li) => li.textContent === li.querySelector('a').textContent),
+          listed: [...d.querySelectorAll('ul.gallery li a')].map((a) => a.getAttribute('href')).sort(),
           closed: [d.querySelector('details.open-recording > summary').textContent, d.querySelector('details.open-recording').open, d.querySelector('.drop').checkVisibility()] }; })()`);
         assert.deepEqual(shown, {
           parts: ['section.landing', 'h2', 'ul.gallery', 'details.open-recording'], header: false, h1: ['lhero'], brand: 'agent.run()by grep.ai',
@@ -110,13 +111,13 @@ test('in Chrome: the site\'s line, the featured runs in the lock\'s order with t
             ['reference-asked', 'chat.html?r=reference-asked', false, false, `${ASKED.slice(0, 139)}…`],
             ['chat-hear-and-find', 'chat.html?r=chat-hear-and-find', true, true, 'Hear and Find']],
           lines: [null, ASKED.replace(/\s+/g, ' ').length > 200 ? `${ASKED.replace(/\s+/g, ' ').slice(0, 199)}…` : ASKED, null], clamp: true,
-          columns: 3, eager: ['eager', 'eager'], dark: 'rgb(8, 8, 9)', list: true, drop: true, titlesOnly: true, closed: ['Open a recording', false, false],
+          columns: 3, eager: ['eager', 'eager'], dark: 'rgb(8, 8, 9)', list: true, drop: true, titlesOnly: true, listed: ['chat.html?r=chat-artifact', 'chat.html?r=chat-hear-and-find', 'chat.html?r=reference-asked'], closed: ['Open a recording', false, false],
         }, `${id}: the featured runs in the lock's order, each to its chat view, a poster only where the run holds it, its question clamped to three lines; the list holds titles only; the drop waits behind its link`);
       }
 
       // With no lock the landing has its line and no featured row; the list still holds every run.
       assert.deepEqual(await value(`[parts('bare'), !!doc('bare').querySelector('.lhero'), !!doc('bare').querySelector('.lcards'), doc('bare').querySelectorAll('ul.gallery li').length]`),
-        [['section.landing', 'h2', 'ul.gallery', 'details.open-recording'], true, false, 5]);
+        [['section.landing', 'h2', 'ul.gallery', 'details.open-recording'], true, false, 3]);
 
       // A phone: one column, no sideways scroll.
       assert.deepEqual(await value(`(() => { const d = doc('phone'); return [getComputedStyle(d.querySelector('.lcards')).gridTemplateColumns.split(' ').length, Math.max(0, d.documentElement.scrollWidth - d.defaultView.innerWidth)]; })()`), [1, 0]);

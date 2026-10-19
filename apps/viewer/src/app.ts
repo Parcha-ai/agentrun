@@ -18,7 +18,7 @@ import { pdfDrawer, type PdfDrawn } from './pdf.ts';
 import { transportPanel } from './transport.ts';
 import { visionPanel } from './vision.ts';
 import { documentPanel } from './document.ts';
-import { landingOf } from './landing.ts';
+import { landingOf, landingPublic } from './landing.ts';
 
 const SPEEDS = [0.5, 1, 2, 4, 10];
 
@@ -769,7 +769,8 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
 }
 
 function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entries: readonly (GalleryEntry | IndexEntry)[], unread?: string) {
-  const list = el('ul', { class: 'gallery' }, ...entries.map((entry) => {
+  const shown = entries.filter(landingPublic);
+  const list = el('ul', { class: 'gallery' }, ...shown.map((entry) => {
     // A demo opens in the chat + report view; its inspection is ./?r=<id>, linked from there.
     const link = Object.assign(el('a', { text: entry.manifest.title }), { href: `chat.html?r=${encodeURIComponent(entry.id)}` });
     return el('li', {}, link);
@@ -801,7 +802,7 @@ function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entr
   document.documentElement.classList.add('landing-page');
   document.title = 'agent.run()';
   root.replaceChildren(landingOf(entries), el('h2', { text: 'Recordings' }), unread !== undefined ? el('p', { class: 'problems', text: `The gallery could not be read (${unread}); a recording folder can still be opened below.` })
-      : entries.length ? list : el('p', { class: 'empty', text: 'No recordings yet.' }), el('details', { class: 'open-recording' }, el('summary', { text: 'Open a recording' }), drop));
+      : shown.length ? list : el('p', { class: 'empty', text: 'No recordings yet.' }), el('details', { class: 'open-recording' }, el('summary', { text: 'Open a recording' }), drop));
 }
 
 /** How often a followed run is asked for what is new. */

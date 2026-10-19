@@ -70,6 +70,8 @@ test('served over http: the gallery lists from the index, a run and its bundled 
   for (const id of ['uncut', 'killed']) cpSync(join(fixtures, 'reference-killed'), join(recordings, id), { recursive: true });
   const manifest = JSON.parse(readFileSync(join(recordings, 'killed', 'manifest.json'), 'utf8'));
   writeFileSync(join(recordings, 'killed', 'manifest.json'), JSON.stringify({ ...manifest, baseline: { recording: '../uncut', label: 'uncut' } }));
+  // The public list names only runs a real model made: the uncut copy stands for one.
+  writeFileSync(join(recordings, 'uncut', 'manifest.json'), JSON.stringify({ ...manifest, providers: 'real' }));
   build(join(out, 'dist'), recordings, { files: true });
   const asked: string[] = [];
   const server = createServer((request, response) => {
