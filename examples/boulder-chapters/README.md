@@ -4,7 +4,7 @@ The question in [question.md](question.md), asked of a Bureau of Reclamation fil
 
 ```sh
 npm run demo:vision -- examples/boulder-chapters --fetch-sources # on fakes: $0, no key; downloads the film (about 218 MB) first
-npm run demo:vision -- examples/boulder-chapters --live
+npm run demo:vision -- examples/boulder-chapters --live          # real models: about $0.74 and 8 minutes, measured once
 ```
 
 ## Programs, keys and cost
@@ -18,6 +18,6 @@ A `--live` run needs:
 - `FAL_KEY` ([fal.ai](https://fal.ai)): optional. With it the agent can transcribe the film's speech; without it, it works from the picture alone.
 - A download of about 218 MB: the film, fetched once and checked by size and SHA-256. On fakes, a run without `--fetch-sources` stops and says so.
 
-Its cost and time vary with the run and are not measured here. A live run prints little until it ends. A run stops past $1 unless `--max-usd <n>` sets another cap.
+One measured live run cost about $0.74 and took about 8 minutes; a run's cost and time vary. A live run prints little until it ends. A run stops past $1 unless `--max-usd <n>` sets another cap.
 
 The agent (gemini-3.8-flash, thinking at medium; thinking is shown when the model returns it) runs shell commands with your user's rights on your machine: run it in a container or a VM.

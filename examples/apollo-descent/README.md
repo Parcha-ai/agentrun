@@ -4,7 +4,7 @@ The question in [question.md](question.md), asked of NASA's own record of the la
 
 ```sh
 npm run demo:vision -- examples/apollo-descent --fetch-sources   # on fakes: $0, no key; downloads the files (about 211 MB) first
-npm run demo:vision -- examples/apollo-descent --live
+npm run demo:vision -- examples/apollo-descent --live --max-usd 2   # real models: about $1.07 and 14 minutes, measured once
 ```
 
 ## Programs, keys and cost
@@ -18,6 +18,6 @@ A `--live` run needs:
 - `FAL_KEY` ([fal.ai](https://fal.ai)): optional. With it the agent can transcribe the film's speech; without it, it works from the picture alone.
 - A download of about 211 MB: NASA's typed transcript (16 MB), twelve photographs and the descent film (192 MB), fetched once and checked by size and SHA-256. On fakes, a run without `--fetch-sources` stops and says so.
 
-Its cost and time vary with the run and are not measured here. A live run prints little until it ends. A run stops past $1 unless `--max-usd <n>` sets another cap.
+One measured live run cost about $1.07 and took about 14 minutes; a run's cost and time vary. A run stops past $1 unless `--max-usd <n>` sets another cap, and this one can cost more: pass `--max-usd 2`, as above. A live run prints little until it ends.
 
 The agent (gemini-3.8-flash, thinking at medium; thinking is shown when the model returns it) runs shell commands with your user's rights on your machine: run it in a container or a VM.
