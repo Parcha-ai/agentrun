@@ -57,6 +57,7 @@ export function build(target = out, recordingsDir = join(here, 'recordings'), { 
   mkdirSync(target, { recursive: true });
   writeFileSync(join(target, 'viewer.js'), `(() => {\n'use strict';\n${parts.join('\n')}\n})();\n`);
   writeFileSync(join(target, 'index.html'), readFileSync(join(here, 'index.html')));
+  writeFileSync(join(target, 'viewer.css'), readFileSync(join(here, 'viewer.css')));
   // A `.js` name: every static host serves it as JavaScript, which a module script must be.
   mkdirSync(join(target, 'pdfjs'));
   for (const [from, to] of [['pdf.min.mjs', 'pdf.min.js'], ['pdf.worker.min.mjs', 'pdf.worker.min.js'], ['LICENSE.txt', 'LICENSE.txt']]) cpSync(join(here, 'vendor', 'pdfjs', from), join(target, 'pdfjs', to));

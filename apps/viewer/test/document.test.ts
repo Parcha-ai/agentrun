@@ -240,7 +240,9 @@ after(async () => { assert.deepEqual(await closeLeftBrowsers(), [], 'every brows
 /** A strict static host's policy: scripts, workers and fetches from its own origin only, and no eval. */
 const POLICY = "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self'; frame-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'; object-src 'none'";
 /** Kept in the page before anything else runs: each request the policy refused. */
-const LISTEN = "<script>window.refused=[];document.addEventListener('securitypolicyviolation',(e)=>refused.push(e.violatedDirective+' '+e.blockedURI));</script>";
+/** The listener, a file of the page's own origin (its policy runs no inline script), loaded first in the page. */
+const LISTENER = "window.refused=[];document.addEventListener('securitypolicyviolation',(e)=>refused.push(e.violatedDirective+' '+e.blockedURI));";
+const LISTEN = '<script src="/listen.js"></script>';
 
 /** In the page: for each drawn sheet, each box's place in percent of its page, and the picture's shade inside each box,
  *  just outside its left edge, and at the page's top left corner (0 black, 255 white). */
@@ -274,10 +276,11 @@ test('in Chrome under a strict static host\'s policy, each cited page is drawn w
   const asked: string[] = [];
   const server = createServer((request, response) => {
     const path = new URL(request.url!, 'http://localhost').pathname;
+    if (path === '/listen.js') { response.writeHead(200, { 'content-type': 'text/javascript' }).end(LISTENER); return; }
     asked.push(path);
     const file = path.startsWith('/viewer/') ? join(out, 'dist', path.slice(8)) : path.startsWith('/site/') ? join(out, 'site', path.slice(6)) : path.startsWith('/rec/') ? join(dir, path.slice(5)) : '';
     if (!file || !existsSync(file) || statSync(file).isDirectory()) { response.writeHead(404).end(); return; }
-    const type = typeOfName(file) ?? (file.endsWith('.html') ? 'text/html' : file.endsWith('.js') ? 'text/javascript' : 'application/octet-stream');
+    const type = typeOfName(file) ?? (file.endsWith('.css') ? 'text/css' : file.endsWith('.html') ? 'text/html' : file.endsWith('.js') ? 'text/javascript' : 'application/octet-stream');
     const body = file.endsWith('index.html') ? Buffer.from(readFileSync(file, 'utf8').replace('<head>', `<head>${LISTEN}`)) : readFileSync(file);
     response.writeHead(200, { 'content-type': type, 'content-security-policy': POLICY, 'x-content-type-options': 'nosniff' }).end(request.method === 'HEAD' ? undefined : body);
   });
@@ -355,10 +358,11 @@ test('a document recording (DOCUMENT_RECORDING): the format holds, every page an
   cpSync(recorded!, join(out, 'recordings', 'recorded'), { recursive: true });
   build(join(out, 'site'), join(out, 'recordings'));
   const server = createServer((request, response) => {
+    if (new URL(request.url!, 'http://localhost').pathname === '/listen.js') { response.writeHead(200, { 'content-type': 'text/javascript' }).end(LISTENER); return; }
     const file = join(out, 'site', new URL(request.url!, 'http://localhost').pathname.slice(1));
     if (!existsSync(file) || statSync(file).isDirectory()) { response.writeHead(404).end(); return; }
     const body = file.endsWith('index.html') ? Buffer.from(readFileSync(file, 'utf8').replace('<head>', `<head>${LISTEN}`)) : readFileSync(file);
-    response.writeHead(200, { 'content-type': typeOfName(file) ?? (file.endsWith('.html') ? 'text/html' : 'text/javascript'), 'content-security-policy': POLICY, 'x-content-type-options': 'nosniff' }).end(body);
+    response.writeHead(200, { 'content-type': typeOfName(file) ?? (file.endsWith('.css') ? 'text/css' : file.endsWith('.html') ? 'text/html' : 'text/javascript'), 'content-security-policy': POLICY, 'x-content-type-options': 'nosniff' }).end(body);
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const pages: Awaited<ReturnType<typeof drivenPage>>[] = [];
