@@ -106,6 +106,7 @@ test('in Chrome: the site\'s line, the featured runs in the lock\'s order with t
           eager: cards('${id}').filter((c) => c.querySelector('img')).map((c) => c.querySelector('img').loading),
           dark: getComputedStyle(d.body).backgroundColor, list: !!d.querySelector('ul.gallery'), drop: !!d.querySelector('.drop'),
           heading: d.querySelector('#viewer > h2')?.textContent ?? null,
+          fits: cards('${id}').filter((c) => c.querySelector('img')).map((c) => [c.dataset.id, c.querySelector('.lposter').classList.contains('wide'), getComputedStyle(c.querySelector('.lposter img')).objectFit]),
           titlesOnly: [...d.querySelectorAll('ul.gallery li')].every((li) => li.textContent === li.querySelector('a').textContent),
           listed: [...d.querySelectorAll('ul.gallery li a')].map((a) => a.getAttribute('href')).sort(),
           closed: [d.querySelector('details.open-recording > summary').textContent, d.querySelector('details.open-recording').open, d.querySelector('.drop').checkVisibility()] }; })()`);
@@ -117,8 +118,8 @@ test('in Chrome: the site\'s line, the featured runs in the lock\'s order with t
             ['reference-asked', 'chat.html?r=reference-asked', false, false, `${ASKED.slice(0, 139)}…`],
             ['chat-hear-and-find', 'chat.html?r=chat-hear-and-find', true, true, 'Hear and Find']],
           lines: [null, ASKED.replace(/\s+/g, ' ').length > 200 ? `${ASKED.replace(/\s+/g, ' ').slice(0, 199)}…` : ASKED, null], clamp: true,
-          columns: 3, eager: ['eager', 'eager'], dark: 'rgb(8, 8, 9)', list: true, drop: true, heading: 'More recordings', titlesOnly: true, listed: ['chat.html?r=reference-job'], closed: ['Open a recording', false, false],
-        }, `${id}: the featured runs in the lock's order, each to its chat view, a poster only where the run holds it, its question clamped to three lines; the list holds titles only; the drop waits behind its link`);
+          columns: 3, eager: ['eager', 'eager'], dark: 'rgb(8, 8, 9)', list: true, drop: true, heading: 'More recordings', fits: [['chat-artifact', false, 'cover'], ['chat-hear-and-find', true, 'contain']], titlesOnly: true, listed: ['chat.html?r=reference-job'], closed: ['Open a recording', false, false],
+        }, `${id}: the featured runs in the lock's order, each to its chat view, a poster only where the run holds it, a poster wider than its box drawn whole (the 16:9 frame) and the others filling it, its question clamped to three lines; the list holds titles only; the drop waits behind its link`);
       }
 
       // With no lock the landing has its line and no featured row; the list holds every public run.

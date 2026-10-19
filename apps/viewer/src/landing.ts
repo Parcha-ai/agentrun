@@ -40,8 +40,17 @@ const landingBlobUrl = (entry: LandingEntry, sha: string): string | undefined =>
 function landingCard(entry: LandingEntry): HTMLElement {
   const card = entry.card!;
   const poster = card.poster ? landingBlobUrl(entry, card.poster) : undefined;
+  const picture = poster ? landingEl('img', { loading: 'lazy', src: poster, alt: '' }) : undefined;
+  const frame = picture && landingEl('span', { class: 'lposter' }, picture);
+  // A poster wider than its box is drawn whole on the card's background: a crop to fill would cut its sides.
+  if (picture && frame) {
+    picture.addEventListener('load', () => {
+      const box = frame.getBoundingClientRect();
+      if (box.height > 0 && picture.naturalWidth / picture.naturalHeight > (box.width / box.height) * 1.05) frame.classList.add('wide');
+    }, { once: true });
+  }
   return landingEl('a', { class: poster ? 'lcard' : 'lcard words', href: `chat.html?r=${encodeURIComponent(entry.id)}`, 'data-id': entry.id },
-    poster && landingEl('span', { class: 'lposter' }, landingEl('img', { loading: 'lazy', src: poster, alt: '' })),
+    frame,
     landingEl('span', { class: 'ltitle', text: card.title }),
     card.line && landingEl('span', { class: 'lline', text: card.line }));
 }
