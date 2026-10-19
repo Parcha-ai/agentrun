@@ -12,6 +12,8 @@ import { extname, join } from 'node:path';
 import { after, test } from 'node:test';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
+import { createHash } from 'node:crypto';
+import { png } from './vision-hand.ts';
 import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
 
 const here = new URL('.', import.meta.url).pathname;
@@ -25,8 +27,13 @@ const ASKED = `Which company is this, when was it incorporated, and what does th
  *  the killed run is scripted, so the lock names it and it is still no card; the reference job is a public run the lock
  *  does not feature, so it is the list's one run. */
 const LOCK = { ids: [{ id: 'chat-artifact', poster: ARTIFACT_PNG }, { id: 'ten-kills-seed21' }, { id: 'reference-asked', poster: 'f'.repeat(64) }, { id: 'chat-hear-and-find', poster: HEAR_JPG }] };
-/** Every public run featured: four cards and no list. */
-const LOCK_ALL = { ids: [...LOCK.ids, { id: 'reference-job' }] };
+/** Two posters wider than the box: a white page (its edges one colour) and one whose top edge is half black, half white. */
+const WHITE_PAGE = png(260, 100, (x, y) => (x > 110 && x < 150 && y > 35 && y < 65 ? [20, 20, 20] : [255, 255, 255]));
+const MIXED = png(260, 100, (x) => (x < 130 ? [0, 0, 0] : [255, 255, 255]));
+const sha = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+/** Every public run featured: four cards and no list; the hear-and-find run with the mixed poster, the reference job with
+ *  the white page. */
+const LOCK_ALL = { ids: [...LOCK.ids.map((each) => (each.id === 'chat-hear-and-find' ? { ...each, poster: sha(MIXED) } : each)), { id: 'reference-job', poster: sha(WHITE_PAGE) }] };
 
 test('the landing names no demo in its code', { timeout: 5_000 }, () => {
   const source = readFileSync(join(here, '..', 'src', 'landing.ts'), 'utf8').toLowerCase();
@@ -75,6 +82,8 @@ test('in Chrome: the site\'s line, the featured runs in the lock\'s order with t
     build(join(out, 'dist'), recordings, { lock: join(out, 'lock.json') });
     build(join(out, 'dist', 'files'), recordings, { files: true, lock: join(out, 'lock.json') });
     build(join(out, 'dist', 'bare'), recordings, { lock: join(out, 'none.json') });
+    writeFileSync(join(recordings, 'reference-job', 'blobs', `${sha(WHITE_PAGE)}.png`), WHITE_PAGE);
+    writeFileSync(join(recordings, 'chat-hear-and-find', 'blobs', `${sha(MIXED)}.png`), MIXED);
     writeFileSync(join(out, 'lock-all.json'), JSON.stringify(LOCK_ALL));
     build(join(out, 'dist', 'all'), recordings, { lock: join(out, 'lock-all.json') });
     writeFileSync(join(out, 'dist', 'harness.html'), HARNESS);
@@ -125,6 +134,11 @@ test('in Chrome: the site\'s line, the featured runs in the lock\'s order with t
       // With no lock the landing has its line and no featured row; the list holds every public run.
       assert.deepEqual(await value(`[parts('bare'), !!doc('bare').querySelector('.lhero'), !!doc('bare').querySelector('.lcards'), doc('bare').querySelectorAll('ul.gallery li').length, doc('bare').querySelector('#viewer > h2').textContent]`),
         [['section.landing', 'h2', 'ul.gallery', 'details.open-recording'], true, false, 4, 'Recordings']);
+      // Posters drawn whole: the white page's bands take its own white; the mixed one's stay the card's background.
+      await page.once(`cards('all').filter((c) => c.querySelector('img')).every((c) => c.querySelector('img').complete) && cards('all').filter((c) => c.querySelector('.lposter.wide')).length === 2`,
+        'true', 20_000, 'the all-featured page\'s posters loaded and measured');
+      assert.deepEqual(await value(`cards('all').filter((c) => c.querySelector('.lposter.wide')).map((c) => [c.dataset.id, getComputedStyle(c.querySelector('.lposter')).backgroundColor])`),
+        [['chat-hear-and-find', 'rgba(0, 0, 0, 0)'], ['reference-job', 'rgb(255, 255, 255)']]);
       // Every public run featured: no list and no heading; four cards in rows of two, at the header's edges.
       assert.deepEqual(await value(`(() => { const d = doc('all'); const edges = (s) => { const r = d.querySelector(s).getBoundingClientRect(); return [Math.round(r.left), Math.round(r.right)]; };
         return [parts('all'), cards('all').length, getComputedStyle(d.querySelector('.lcards')).gridTemplateColumns.split(' ').length, JSON.stringify(edges('.ltop')) === JSON.stringify(edges('.lcards'))]; })()`),

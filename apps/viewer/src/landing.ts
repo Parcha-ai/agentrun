@@ -37,16 +37,40 @@ const landingBlobUrl = (entry: LandingEntry, sha: string): string | undefined =>
   return at === undefined ? undefined : new URL(at, new URL(`recordings/${encodeURIComponent(entry.id)}/`, location.href)).href;
 };
 
+/** The colour of a picture's top and bottom rows when they are one colour (each pixel within 12 of their mean in every
+ *  channel), else undefined; also undefined when the page may not read its pixels. */
+function landingEdgeColour(picture: HTMLImageElement): string | undefined {
+  try {
+    const width = 64;
+    const height = Math.max(2, Math.round((width * picture.naturalHeight) / picture.naturalWidth));
+    const canvas = Object.assign(document.createElement('canvas'), { width, height });
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) return undefined;
+    context.drawImage(picture, 0, 0, width, height);
+    const rows = [context.getImageData(0, 0, width, 1).data, context.getImageData(0, height - 1, width, 1).data];
+    const pixels = rows.flatMap((row) => Array.from({ length: width }, (_, x) => [row[x * 4]!, row[x * 4 + 1]!, row[x * 4 + 2]!]));
+    const mean = [0, 1, 2].map((channel) => pixels.reduce((sum, pixel) => sum + pixel[channel]!, 0) / pixels.length);
+    if (pixels.some((pixel) => pixel.some((value, channel) => Math.abs(value - mean[channel]!) > 12))) return undefined;
+    return `rgb(${mean.map(Math.round).join(', ')})`;
+  } catch {
+    return undefined;
+  }
+}
+
 function landingCard(entry: LandingEntry): HTMLElement {
   const card = entry.card!;
   const poster = card.poster ? landingBlobUrl(entry, card.poster) : undefined;
   const picture = poster ? landingEl('img', { loading: 'lazy', src: poster, alt: '' }) : undefined;
   const frame = picture && landingEl('span', { class: 'lposter' }, picture);
-  // A poster wider than its box is drawn whole on the card's background: a crop to fill would cut its sides.
+  // A poster wider than its box is drawn whole: a crop to fill would cut its sides. Its bands take the colour of its own
+  // top and bottom edges when those are one colour, so a white page reads as one white card; else the card's background.
   if (picture && frame) {
     picture.addEventListener('load', () => {
       const box = frame.getBoundingClientRect();
-      if (box.height > 0 && picture.naturalWidth / picture.naturalHeight > (box.width / box.height) * 1.05) frame.classList.add('wide');
+      if (!(box.height > 0 && picture.naturalWidth / picture.naturalHeight > (box.width / box.height) * 1.05)) return;
+      frame.classList.add('wide');
+      const edge = landingEdgeColour(picture);
+      if (edge) frame.style.background = edge;
     }, { once: true });
   }
   return landingEl('a', { class: poster ? 'lcard' : 'lcard words', href: `chat.html?r=${encodeURIComponent(entry.id)}`, 'data-id': entry.id },
