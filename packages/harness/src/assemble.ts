@@ -14,13 +14,14 @@ import { withRecovery } from '@parcha/agentrun-dsl/recovery';
 import {
   createWorkflowExtension, decisionRecovery, nodeRunner, taskScope, type WorkflowOutcome,
 } from '@parcha/agentrun-pi/durable';
-import { ArchilCodingTools, archilEnv, openClaimDir, openDurableRun, type AppOptions, type Claim, type DurableRun, type OpenDurableRunOptions, type RunEnv, type RunRef } from '@parcha/pi-durable-disk';
+import { archilEnv, openClaimDir, openDurableRun, type AppOptions, type Claim, type DurableRun, type OpenDurableRunOptions, type RunEnv, type RunRef } from '@parcha/pi-durable-disk';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 type JsonValue = Parameters<DurableRun['setStatus']>[1] & {};
 import { DEFAULT_BROWSER_POLICY, localSites, type LocalSite } from '@parcha/pi-browser';
 import { createBrowserExtension } from '@parcha/pi-browser/durable';
 import { codeModeExtension, type CodeModeOptions } from './code-mode.ts';
+import { codingTools } from './command-env.ts';
 import { createVisionExtension, type VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import type { Host, RunPlace, StatusEvent } from './host.ts';
 
@@ -148,7 +149,9 @@ export async function compose(place: RunPlace, host: Host, job: Job, options: Ru
     ...(host.credentials.redact ? { redact: { values: host.credentials.redact } } : {}),
     ...(host.decisions.browser ? { decisions: host.decisions.browser } : {}),
     ...(host.tools.browser.createDeadlineMs ? { createDeadlineMs: host.tools.browser.createDeadlineMs } : {}),
-    onSession: (row, change) => status({ source: 'browser', change, row }),
+    // A session's live view is a full-control address: it never goes into the run's events or its recording, which anyone
+    // with the recording can read. This host shows no session to a person; one that does asks the provider (`liveView(ref)`).
+    onSession: (row, change) => status({ source: 'browser', change, row: { ...row, liveView: null } }),
   });
   const visionBase: VisionAdapterOptions = {
     evidence: host.evidence,
@@ -202,7 +205,7 @@ export async function compose(place: RunPlace, host: Host, job: Job, options: Ru
   const registry = createRegistry();
   // Code mode is built from the vision handle, so it is installed after it.
   const codeMode = options.codeMode ? [codeModeExtension(vision, options.codeMode === true ? {} : options.codeMode, options.codeImages ? { note: options.codeImages, workDir: place.work } : undefined)] : [];
-  const extensions = [ArchilCodingTools, ...host.tools.extensions, vision.extension, ...codeMode, ...(browser ? [browser.extension] : [])];
+  const extensions = [codingTools, ...host.tools.extensions, vision.extension, ...codeMode, ...(browser ? [browser.extension] : [])];
   offered = extensions.flatMap((extension) => extension.tools ?? []);
   for (const extension of [...extensions, nodes.extension, flow.extension]) registry.install(extension);
 

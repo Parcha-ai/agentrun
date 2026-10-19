@@ -13,6 +13,7 @@ import { callContext, piResult, type VisionHandle } from '@parcha/pi-vision/dura
 import { Type } from 'typebox';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { commandEnv } from './command-env.ts';
 
 /** Where a code-mode look's picture is noted (looks.ts `note`), and the directory the script's relative image paths are read from. */
 export type CodeModeImages = { note(conversationId: string, tool: string, path: string | undefined, bytes: Buffer, mimeType: string): void; workDir: string };
@@ -46,7 +47,8 @@ export function codeModeExtension(vision: VisionHandle, options: CodeModeOptions
             const keep = (chunk: string) => { const room = Math.max(0, outputChars - output.length); output += chunk.slice(0, room); dropped += chunk.length - Math.min(chunk.length, room); };
             // The command stops with the script: its deadline, a caller's abort and the sandbox closing end the command as they end the script, beside the tool call's own abort.
             const abortSignal = scripted.signal && context.abortSignal ? AbortSignal.any([scripted.signal, context.abortSignal]) : scripted.signal ?? context.abortSignal;
-            const ran = await api.env.exec(command, { onOutput: keep }, { ...context, abortSignal });
+            // The command gets only `commandEnv()`, never this process's keys (command-env.ts): the bash tool and this global run alike.
+            const ran = await api.env.exec(command, { onOutput: keep, inheritEnv: false, env: commandEnv() }, { ...context, abortSignal });
             if (!ran.ok) throw new Error(`the command could not run: ${ran.error.message}`);
             const shown = dropped ? `${output}\n[${dropped} more characters not shown]` : output;
             // The skills' contract: a command that exits 0 resolves its output (stdout and stderr together, clipped); one that exits non-zero rejects with an Error that carries its exitCode and its output, so nothing is lost. The sandbox hands a script a thrown error's message only, so the message names the exit code and holds the output (the Error also has `exitCode` and `output` for the host).

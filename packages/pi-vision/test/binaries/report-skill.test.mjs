@@ -30,6 +30,9 @@ const cwd = dir.path;
 // each frame says which second it is.
 execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=5:duration=40", "-f", "lavfi", "-i", "sine=frequency=440:duration=40",
   "-pix_fmt", "yuv420p", "-c:v", "libx264", "-c:a", "aac", "-shortest", path.join(cwd, "talk.mp4")]);
+// A film that is black for its first four seconds and then moves, and a photo that is black: what a dark frame is.
+execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=160x120:r=5:d=4", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=5:duration=4", "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0", "-pix_fmt", "yuv420p", "-c:v", "libx264", path.join(cwd, "opens-black.mp4")]);
+execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=160x120", "-frames:v", "1", path.join(cwd, "dark.jpg")]);
 fs.writeFileSync(path.join(cwd, "contract.pdf"), textPdf(4));
 // The photo carries a camera's metadata, as a real one does, so what a kept photo sheds can be told.
 fs.writeFileSync(path.join(cwd, "photo.jpg"), await sharp(await photoJpeg(sharp)).withMetadata({ exif: { IFD0: { Copyright: "origin-marker-9f3a" } } }).jpeg().toBuffer());
@@ -43,8 +46,12 @@ let speech = { provider: "fake", model: "fake-stt", usdPerMinute: 0.008, async t
 let jev = null;
 let jevFails;
 const tokens = (text) => [...String(text).matchAll(/(?<![.!?]\s)(?<!^)\b[A-Z][a-z]+|\d+/g)].map((m) => m[0].toLowerCase());
+let noJudgeReceipt = false;   // a host that files no receipt for a judge look: vision.judge answers with receipts: []
+let jevCap = Infinity, jevAsked = 0;   // the fake judge's rate limit: past this many requests every request fails with a 429, as TypeSafe's does once the harness has retried
+const asked = new WeakSet();
 const ABSENT = /\b(absent|missing|removed|blank|no seal|no stamp)\b/i;
 const groundedBy = (question, { state }) => {
+  if (state.claims && !asked.has(state)) { asked.add(state); if (++jevAsked > jevCap) throw new Error("429 rate limit after retries"); }
   if (!state.claims) return question.type === "noul" ? { type: "noul", noul: 0.02 } : ANSWERS[question.type](question);   // a picture put to Jev (decide()): the thing is not there
   const text = state.claims[/claims\.(t\d+)/.exec(question.instructions)[1]];
   // An absence is stated by a no of Jev's, as words in the evidence; any other text by its names and numbers being in the evidence.
@@ -71,6 +78,7 @@ async function run(codes) {
     transcriber: speech,
     scope: () => ({ label: "report", deriveDir: ".vision" }),
     evidence: { file: async (label, record) => {
+      if (noJudgeReceipt && record.args?.via === "jev") return null;
       (record.args?.via === "jev" ? judged : keys).push(record.facts.key);
       n += 1;
       const file = `evidence/${label}/${n}-look.${n % 2 ? "md" : "json"}`;
@@ -276,7 +284,7 @@ test("the answer comes first with its key points, the key findings are open, the
   assert.ok(order.every((at) => at >= 0), "every part is there");
   assert.deepEqual(order, [...order].sort((a, b) => a - b), "in that order");
   assert.equal((html.match(/<article class="finding"/g) ?? []).length, 2);
-  assert.match(html, /<details class="finding routine" id="f-site"><summary>The site<\/summary>/, "the routine detail is folded");
+  assert.match(html, /<details class="finding routine" id="f-site" data-ground="[^"]*"><summary>The site<\/summary>/, "the routine detail is folded");
   assert.doesNotMatch(html, /<details[^>]*id="f-(chart|contract)"/, "a key finding is open");
   const points = html.match(/<ul class="points">([\s\S]*?)<\/ul>/)[1];
   assert.deepEqual([...points.matchAll(/<a href="#([^"]*)">([^<]*)<\/a>/g)].map((m) => [m[1], m[2]]), [["f-chart", "second quarter"], ["f-contract", "page 3"]], "each key point links to its finding");
@@ -440,7 +448,7 @@ test("when the question names a shape, the answer section is that shape: one cit
   assert.ok(result.ok, result.ok ? "" : result.error.message);
   const html = HTML();
   const answer = html.slice(html.indexOf('id="answer"'), html.indexOf('id="evidence"'));
-  assert.equal((answer.match(/<li class="row" id="r-m\d">/g) ?? []).length, 2, "the rows are in the answer");
+  assert.equal((answer.match(/<li class="row" id="r-m\d" data-ground="[^"]*">/g) ?? []).length, 2, "the rows are in the answer");
   assert.equal((answer.match(/class="cite" href="[^"]*" data-look="[0-9a-f]{64}"/g) ?? []).length, 2, "each row is cited, with its look");
   assert.match(answer, /<span class="when">Seconds 0 to 20<\/span><span class="what">The chart is on the screen\.<\/span>/);
   const nocite = shaped.replace('cites: [{ file: "contract.pdf", page: 3, look: lookPage.key }] },\n  ]', "cites: [] },\n  ]");
@@ -505,7 +513,7 @@ test("a report whose findings are all routine passes: the answer is first and th
   const { result } = await run([helpers, assets, looking, calm, ground, render, check]);
   assert.ok(result.ok, result.ok ? "" : result.error.message);
   const html = HTML();
-  assert.ok(!html.includes('id="evidence"') && html.includes('<details class="finding routine" id="f-chart">'));
+  assert.ok(!html.includes('id="evidence"') && html.includes('<details class="finding routine" id="f-chart" data-ground="'));
   assert.ok(html.indexOf('id="answer"') < html.indexOf("finding routine"));
 });
 
@@ -625,11 +633,11 @@ test("a cite of a page of a document needs that page embedded: crops alone are r
 test("rich by default: every finding shows a picture or a clip, a document mark has a close crop whose box is the mark, and no picture is shown twice", async () => {
   await built();
   const html = HTML();
-  const findings = [...html.matchAll(/<(article|details) class="finding[^"]*" id="f-([a-z-]+)">([\s\S]*?)<\/\1>/g)].map((m) => ({ id: m[2], block: m[3] }));
+  const findings = [...html.matchAll(/<(article|details) class="finding[^"]*" id="f-([a-z-]+)"[^>]*>([\s\S]*?)<\/\1>/g)].map((m) => ({ id: m[2], block: m[3] }));
   assert.deepEqual(findings.map((f) => f.id).sort(), ["chart", "contract", "site"], "the routine finding too");
   for (const f of findings) assert.match(f.block, /<img src="frames\/|<video /, `finding ${f.id} shows its evidence`);
   assert.match(findings.find((f) => f.id === "chart").block, /<video controls[\s\S]*<img src="frames\/talk-chart\.jpg"|<img src="frames\/talk-chart\.jpg"[\s\S]*<video controls/, "a film: the frame and the clip");
-  assert.match(html, /<details class="finding routine" id="f-site">[\s\S]*<img src="frames\/site-photo\.jpg"[\s\S]*<figcaption>[^<]{12,}<\/figcaption>/, "a photo with its caption, inside the fold");
+  assert.match(html, /<details class="finding routine" id="f-site"[^>]*>[\s\S]*<img src="frames\/site-photo\.jpg"[\s\S]*<figcaption>[^<]{12,}<\/figcaption>/, "a photo with its caption, inside the fold");
   const shown = attrs(html, "src").filter((ref) => ref.startsWith("frames/"));
   assert.equal(new Set(shown).size, shown.length, "no picture twice");
   // The document mark: its finding holds a crop, tied to the mark by data-mark, with the mark's box in the crop.
@@ -866,15 +874,8 @@ test("what was heard is evidence only in the transcribe look: a said name passes
   assert.match(picture.result.error.message, /^row h1: "Steve Bales gave the go\." is not stated by what its cited looks read/);
 });
 
-test("a judge that fails stops the script and is no pass; a text edited after its judgment is refused by the check", async () => {
+test("a text edited after its judgment is refused by the check", async () => {
   onDisk = "other";
-  jevFails = Object.assign(new Error("503 Service Unavailable"), { status: 503 });
-  try {
-    const down = await run([helpers, assets, looking, data, ground, render, check]);
-    assert.ok(!down.result.ok);
-    assert.match(down.result.error.message, /^look_failed: Jev failed: 503 Service Unavailable/);
-    assert.ok(!fs.existsSync(path.join(cwd, "report", "index.html")));
-  } finally { jevFails = undefined; }
   await refuses('report.findings[0].why = "Edited after the judgment.";', /finding chart: "Edited after the judgment\." was not judged as written against what its looks read: run the grounding step again/);
   await refuses('report.answer = "The answer, changed.";', /the answer: "The answer, changed\." was not judged as written/);
 });
@@ -993,4 +994,259 @@ test("an absence claim is grounded by a cited Jev no-answer and refused when no 
   const unsupported = await run([helpers, assets, looking, absence("lookPage.key"), ground, render, check]);
   assert.ok(!unsupported.result.ok);
   assert.match(unsupported.result.error.message, /^row gone: "The seal is absent on page 3\." is not stated by what its cited looks read \(0\.03\)/, "cited only to a look that read the page, nothing states the absence");
+});
+
+test("a frame, a poster or a thumbnail of a film that is almost black is refused, with its mean brightness; the same film a second or two on passes", async () => {
+  const withFrame = (at) => data.replace(/\n      pics: \[\n        \{ src: talk,/, `\n      pics: [\n        { src: dark, alt: "A moment of the film", caption: "The film's opening moment, as it begins." },\n        { src: talk,`).replace("\nconst report = {", `\nconst dark = await frame("opens-black.mp4", ${at}, "opening");\nconst report = {`);
+  onDisk = "other";
+  const black = await run([helpers, assets, looking, withFrame(1), ground, render, check]);
+  assert.ok(!black.result.ok);
+  assert.match(black.result.error.message, /frames\/opening\.jpg is almost black \(mean brightness 0 of 255, under 16\): cut another moment of the film, a second or two on/);
+  const moving = await run([helpers, assets, looking, withFrame(6), ground, render, check]);
+  assert.ok(moving.result.ok, moving.result.ok ? "" : moving.result.error.message);
+});
+
+test("a poster and a thumbnail are measured too: a clip that opens on black has a black poster, and a row's thumbnail of a black moment is refused", async () => {
+  onDisk = "other";
+  const poster = await refuses('await sh("ffmpeg -v error -y -f lavfi -i color=c=black:s=160x120 -frames:v 1 report/frames/talk-chart-poster.jpg");', /frames\/talk-chart-poster\.jpg is almost black/);
+  const rows = data.replace("  notChecked:", '  rows: [{ id: "m1", label: "Seconds 0 to 20", text: "The film opens.", thumb: await thumb("opens-black.mp4", "m1-thumb", { t: 2 }), cites: [{ file: "talk.mp4", t: [0, 20], look: lookTalk.key }] }],\n  notChecked:');
+  assert.notEqual(rows, data);
+  const { result } = await run([helpers, assets, looking, rows, ground, render, check]);
+  assert.ok(!result.ok);
+  assert.match(result.error.message, /frames\/m1-thumb\.jpg is almost black/);
+  const clipped = data.replace('clip("talk.mp4", 18, 26, "talk-chart")', 'clip("opens-black.mp4", 0, 3, "talk-chart")');
+  assert.notEqual(clipped, data);
+  const opening = await run([helpers, assets, looking, clipped, ground, render, check]);
+  assert.ok(!opening.result.ok);
+  assert.match(opening.result.error.message, /frames\/talk-chart-poster\.jpg is almost black/, "the poster is the window's opening frame, and the film opens on black");
+});
+
+test("a page, a crop and a photo are the document's or the photo's own: a dark one is not refused", async () => {
+  onDisk = "other";
+  const darkPhoto = data.replace('const site = await photo("photo.jpg", "site-photo");', 'const site = await photo("dark.jpg", "site-photo");');
+  assert.notEqual(darkPhoto, data);
+  const { result } = await run([helpers, assets, looking, darkPhoto, ground, render, check]);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  const darkThumb = data.replace("  notChecked:", '  rows: [{ id: "m1", label: "Seconds 0 to 20", text: "The photo is dark.", thumb: await thumb(await photo("dark.jpg", "dark-photo"), "m1-thumb"), cites: [{ file: "talk.mp4", t: [0, 20], look: lookTalk.key }] }],\n  notChecked:');
+  const thumbed = await run([helpers, assets, looking, darkThumb, ground, render, check]);
+  assert.ok(thumbed.result.ok, thumbed.result.ok ? "" : thumbed.result.error.message);
+});
+
+test("the page is made of the allowlist the recording format uses: an svg, a button, a math, a prefixed element, an on* handler, a srcdoc, a formaction, an xmlns attribute or a meta of another kind is refused, and the message names it", async () => {
+  const cases = [
+    ["<svg><circle r='1'/></svg>", /<svg> is not an element the page may use/],
+    ["<button>go</button>", /<button> is not an element the page may use/],
+    ["<math><mi>x</mi></math>", /<math> is not an element the page may use/],
+    ["<x:script>1</x:script>", /<x:script> is not an element the page may use/],
+    ['<noscript><p title="</noscript><img src=x onerror=alert(1)>"></noscript>', /<noscript> is not an element the page may use/],
+    ["<form action='x'></form>", /<form> is not an element the page may use/],
+    ['<p onclick="x()">hi</p>', /onclick on <p> is not an attribute the page may use/],
+    ["<p ONMOUSEOVER='x()'>hi</p>", /onmouseover on <p> is not an attribute the page may use/],
+    ['<p srcdoc="x">hi</p>', /srcdoc on <p> is not an attribute the page may use/],
+    ['<a formaction="x" href="photo.jpg">hi</a>', /formaction on <a> is not an attribute the page may use/],
+    ['<p xmlns:x="y">hi</p>', /xmlns:x on <p> is not an attribute the page may use/],
+    ['<meta name="description" content="x">', /<meta> only as charset or name="viewport"/],
+    ['<meta http-equiv="refresh" content="0">', /<meta> only as charset or name="viewport"/],
+    ['<meta charset="utf-8" content="x">', /<meta> only as charset or name="viewport"/],
+  ];
+  for (const [html, pattern] of cases) await refuses(swap("</main>", `${html}</main>`), pattern);
+  await refuses(swap("</main>", '<!-- <script>x()</script> --></main>'), /the page holds a comment or a < that starts no element/);
+  await refuses(swap("</main>", '<p title="a>b">hi</p></main>'), /a > stands outside any tag/);
+});
+
+test("a style attribute is read as CSS under the style element's rules, after its comments and escapes: url(), @import, data:, javascript:, expression(, behavior and -moz-binding are refused", async () => {
+  for (const css of ["background:url(frames/talk-chart.jpg)", "background:u\\72l(frames/talk-chart.jpg)", "background:url/**/(frames/talk-chart.jpg)", "width:expression(alert(1))", "behavior:url(x.htc)", "-moz-binding:url(x)", "background:javascript:x()", "background:data:image/png;base64,AAAA", "@import 'x'"]) {
+    await refuses(swap("</main>", `<div style="${css}">x</div></main>`), /the style attribute on <div> holds CSS the page may not use/);
+  }
+  // A browser reads a character reference before the CSS: u&#114;l( is url(.
+  for (const css of ["background:u&#114;l(frames/talk-chart.jpg)", "background:&#x75;rl(frames/talk-chart.jpg)", "background:url&lpar;frames/talk-chart.jpg&rpar;", "background:url&#40;x&#41;", "width:1&percnt;"]) {
+    await refuses(swap("</main>", `<div style="${css}">x</div></main>`), /the style attribute on <div> holds CSS the page may not use: no character reference/);
+  }
+  await refuses(swap("</style>", "@import 'x.css';</style>"), /the style element holds CSS the page may not use|runs code or loads/);
+  await refuses(swap("</style>", "a{behavior:url(x.htc)}</style>"), /the style element holds CSS the page may not use/);
+});
+
+test("what the allowlist lets through is not refused: aria-*, data-*, loading, a mark's percentage style, the viewport meta and every element the skill's own page uses", async () => {
+  // The page is not the render once edited, so the only refusal is that; none of the allowlist's messages is among them.
+  const fine = await doctored(swap("</main>", '<p aria-hidden="true" data-note="x" lang="en" title="t">fine</p><div class="mark" data-xywh="percent:1,2,3,4" style="left:1%;top:2%;width:3%;height:4%"></div><details open><summary>s</summary><table><tr><td colspan="2">c</td></tr></table></details></main>'));
+  assert.ok(!fine.result.ok);
+  assert.ok(!/is not an element|is not an attribute|style attribute|style element|<meta>|stands outside/.test(fine.result.error.message), fine.result.error.message);
+  const { result } = await run(pieces);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  const html = HTML();
+  for (const needle of ['aria-label="Answer"', 'loading="lazy"', 'data-xywh="percent:', 'style="left:', '<meta name="viewport"', '<meta charset="utf-8">']) assert.ok(html.includes(needle), `the template page has ${needle}`);
+});
+
+/** The sketch with one row, its thumbnail taken at the second of the look it is boxed on. */
+const boxedRow = (boxes) => data.replace("  notChecked:", `  rows: [{ id: "m1", label: "Seconds 18 to 26", text: "The second bar is the tallest.", thumb: await thumb("talk.mp4", "m1-thumb", { t: 21.5 }), ${boxes === undefined ? "" : `boxes: ${boxes}, `}cites: [{ file: "talk.mp4", t: [18, 26], xywh: "percent:61.2,40,12,9", look: lookTalk.key }] }],\n  notChecked:`);
+
+test("a row's boxes are drawn on its thumbnail, as marks with no label, and the page passes the check, the allowlist included", async () => {
+  onDisk = "other";
+  const { result, keys } = await run([helpers, assets, looking, boxedRow('[{ id: "m1-box", at: "61.2,40,12,9", look: lookTalk.key }, { id: "m1-box2", at: "10,20,30,15", look: lookTalk.key }]'), ground, render, check]);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  const html = HTML();
+  const row = /<li class="row boxed" id="r-m1"[^>]*>([\s\S]*?)<\/li>/.exec(html)[1];
+  assert.match(row, new RegExp(`^<div class="sheet thumb"><img src="frames/m1-thumb\\.jpg" alt="The second bar is the tallest\\." loading="lazy"><div class="mark right" id="m1-box" data-xywh="percent:61\\.2,40,12,9" data-look="${keys[0]}" style="left:61\\.2%;top:40%;width:12%;height:9%"></div><div class="mark" id="m1-box2" data-xywh="percent:10,20,30,15" data-look="${keys[0]}" style="left:10%;top:20%;width:30%;height:15%"></div></div>`), "the thumbnail is a small sheet carrying both marks");
+  assert.ok(!/class="tag"/.test(row), "a mark on a thumbnail has no label link");
+  assert.ok(!/<img class="thumb"/.test(row), "the image is inside the sheet");
+  // The thumbnail is the film's frame at the boxed look's second.
+  const same = path.join(cwd, ".thumb-ref.jpg");
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-ss", "21.5", "-i", path.join(cwd, "talk.mp4"), "-frames:v", "1", "-vf", "scale=240:-2", "-q:v", "8", same]);
+  assert.ok(psnr(path.join(cwd, "report", "frames", "m1-thumb.jpg"), same) > 30, "taken at the second of the boxed look");
+  assert.match(html, /\.sheet\.thumb\{margin-top:0\}/, "the thumbnail's sheet is as small as the thumbnail");
+});
+
+test("a row without boxes renders as it did: an image with its class, no sheet, no mark", async () => {
+  onDisk = "other";
+  const { result } = await run([helpers, assets, looking, boxedRow(undefined), ground, render, check]);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  const row = /<li class="row" id="r-m1"[^>]*>([\s\S]*?)<\/li>/.exec(HTML())[1];
+  assert.match(row, /^<img class="thumb" src="frames\/m1-thumb\.jpg" alt="The second bar is the tallest\." loading="lazy"><span class="when">Seconds 18 to 26<\/span>/);
+  assert.ok(!/sheet|mark/.test(row));
+  const empty = await run([helpers, assets, looking, boxedRow("[]"), ground, render, check]);
+  assert.ok(empty.result.ok);
+  assert.match(/<li class="row" id="r-m1"[^>]*>([\s\S]*?)<\/li>/.exec(HTML())[1], /^<img class="thumb"/, "an empty list of boxes is no boxes");
+});
+
+test("a row's box is checked like any other: inside its picture, a look the run made, a unique id", async () => {
+  onDisk = "other";
+  const outside = await run([helpers, assets, looking, boxedRow('[{ id: "m1-box", at: "90,40,12,9", look: lookTalk.key }]'), ground, render, check]);
+  assert.ok(!outside.result.ok);
+  assert.match(outside.result.error.message, /percent:90,40,12,9 is not inside 0 to 100/);
+  const stranger = await run([helpers, assets, looking, boxedRow(`[{ id: "m1-box", at: "10,40,12,9", look: "${"f".repeat(64)}" }]`), ground, render, check]);
+  assert.ok(!stranger.result.ok);
+  assert.match(stranger.result.error.message, /is no look this run made/);
+  const twice = await run([helpers, assets, looking, boxedRow('[{ id: "mark-peak", at: "10,40,12,9", look: lookTalk.key }]'), ground, render, check]);
+  assert.ok(!twice.result.ok);
+  assert.match(twice.result.error.message, /two things on the page share an id/);
+});
+
+test("the skill teaches a boxed row (the thumbnail at the boxed look's second), a count as what was logged, and a row's text beyond its label", () => {
+  for (const words of ["A row may carry `boxes`", "Take the thumbnail at the second of the boxed look", "the box and the frame must be the same moment", "with no label on them", 'boxes: [{ id: "m1-box"', "A count over rows is stated as what was logged", "never as the film's true total, unless every moment was looked at and the page says so", "says what the look saw beyond its label, not the label again"]) assert.ok(SKILL.replace(/\s+/g, " ").includes(words), `the skill says ${words}`);
+});
+
+/** What `data-ground` holds for each finding, row and the answer of the page: its texts' judge look and claim ids. */
+const groundOf = (html) => Object.fromEntries([...html.matchAll(/<(?:article|details|li|section) [^>]*?\bid="([^"]*)"[^>]*?data-ground="([^"]*)"/g)].map((m) => [m[1], m[2]]));
+
+test("every finding, row and the answer names the judge look that judged its texts: data-ground holds <look key>:tN for each text, and the look is one the judge filed", async () => {
+  onDisk = "other";
+  const { result, judged } = await run([helpers, assets, looking, boxedRow('[{ id: "m1-box", at: "61.2,40,12,9", look: lookTalk.key }]'), ground, render, check]);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  const grounds = groundOf(HTML());
+  assert.deepEqual(Object.keys(grounds).sort(), ["answer", "f-chart", "f-contract", "f-site", "r-m1"]);
+  for (const [id, value] of Object.entries(grounds)) {
+    const entries = value.split(" ");
+    assert.ok(entries.length >= 1 && entries.every((entry) => /^[0-9a-f]{64}:t\d+$/.test(entry) && Number(entry.split(":t")[1]) < entries.length), `${id}: ${value}`);   // a text said twice in a unit is one judgment, so one claim id may repeat
+    assert.equal(new Set(entries.map((entry) => entry.split(":")[0])).size, 1, "one look judged a unit's texts");
+    assert.ok(judged.includes(entries[0].split(":")[0]), `${id}'s look is a judge look the host filed`);
+  }
+  assert.equal(grounds["r-m1"].split(" ").length, 2, "a row's label and its text");
+  assert.equal(grounds["f-chart"].split(" ").length, 8, "a finding's title, words, captions, alt texts, labels");
+});
+
+test("a verdict without a look key counts as not judged: a Map filled by the script, with bare numbers or no key, is refused", async () => {
+  onDisk = "other";
+  const made = (value) => `for (const unit of claimsOf(report)) for (const text of unit.texts) verdicts.set(verdictKey(unit, text), ${value});`;
+  for (const value of ["0.95", "{ yes: 0.95 }", '{ yes: 0.95, look: "", claim: "t0" }', '{ yes: 0.95, look: "not-a-key", claim: "t0" }', `{ yes: 0.95, look: "${"a".repeat(63)}", claim: "t0" }`]) {
+    const { result } = await run([helpers, assets, looking, data, ground.replace("await ground();", made(value)), render, check]);
+    assert.ok(!result.ok, value);
+    assert.match(result.error.message, /finding chart: "The chart shows the second quarter highest" was not judged as written against what its looks read: run the grounding step again/, value);
+    assert.match(result.error.message, /the answer: .* was not judged as written/, "every unit, the answer too");
+  }
+  const keyed = await run([helpers, assets, looking, data, ground.replace("await ground();", made(`{ yes: 0.95, look: "${"a".repeat(64)}", claim: "t0" }`)), render, check]);
+  assert.ok(keyed.result.ok, "a verdict with a look key is a judgment as far as the check can see; the take checker reads data-ground against the recording");
+});
+
+test("when Jev cannot be asked, the unit gets no verdict and is declared under Not checked, by count and id; it is never given one", async () => {
+  onDisk = "other";
+  jevFails = Object.assign(new Error("503 Service Unavailable"), { status: 503 });
+  try {
+    const { result } = await run([helpers, assets, looking, data, ground, render, check]);
+    assert.ok(result.ok, result.ok ? "" : result.error.message);
+  } finally { jevFails = undefined; }
+  const html = HTML();
+  assert.match(html, /<section id="not-checked"><h2>Not checked<\/h2><ul class="limits">[\s\S]*<li>4 units: finding chart, finding contract, finding site, the answer: not judged: look_failed: Jev failed: 503 Service Unavailable<\/li>/);
+  assert.deepEqual(Object.values(groundOf(html)), ["", "", "", ""], "no unit names a judge look");
+  // The list must be exactly the units: a unit left out of it, or a judged unit put in it, is refused.
+  jevFails = Object.assign(new Error("503 Service Unavailable"), { status: 503 });
+  try {
+    const left = await run([helpers, assets, looking, data, ground, 'report.notChecked = report.notChecked.map((n) => (n.units ? { ...n, units: n.units.filter((u) => u !== "finding site") } : n));', render, check]);
+    assert.ok(!left.result.ok);
+    assert.match(left.result.error.message, /finding site: "The site" was not judged as written/);
+  } finally { jevFails = undefined; }
+  const extra = await run([helpers, assets, looking, data, ground, 'report.notChecked.push({ units: ["finding chart"], why: "not judged: nothing" });', render, check]);
+  assert.ok(!extra.result.ok);
+  assert.match(extra.result.error.message, /finding chart is listed as not judged but was judged: take it out of the list/);
+});
+
+test("a rate limit reached part way declares exactly the units after it: rows r2 to r12 and the answer, with the units before it judged", async () => {
+  const many = data.replace("\nconst report = {", '\nconst manyRows = [];\nfor (let i = 1; i <= 12; i++) manyRows.push({ id: "r" + i, label: "Seconds 0 to 20", text: "The chart is on the screen.", thumb: await thumb("talk.mp4", "t" + i, { t: i }), cites: [{ file: "talk.mp4", t: [0, 20], look: lookTalk.key }] });\nconst report = {').replace("  notChecked:", "  rows: manyRows,\n  notChecked:");
+  assert.notEqual(many, data);
+  onDisk = "other";
+  jevCap = 4; jevAsked = 0;   // the three findings and the first row
+  try {
+    const { result } = await run([helpers, assets, looking, many, ground, render, check]);
+    assert.ok(result.ok, result.ok ? "" : result.error.message);
+  } finally { jevCap = Infinity; }
+  const html = HTML();
+  assert.match(html, /<li>12 units: rows r2 to r12 \(11 rows\), the answer: not judged: look_failed: Jev failed: 429 rate limit after retries<\/li>/);
+  const grounds = groundOf(html);
+  assert.ok(grounds["f-chart"] && grounds["f-contract"] && grounds["f-site"] && grounds["r-r1"], "the units before the cap are judged and name their look");
+  assert.deepEqual([grounds["r-r2"], grounds["r-r12"], grounds.answer], ["", "", ""], "the units after it name none");
+  jevCap = 4; jevAsked = 0;
+  try {
+    const short = await run([helpers, assets, looking, many, ground, 'report.notChecked = report.notChecked.map((n) => (n.units ? { ...n, units: n.units.slice(1) } : n));', render, check]);
+    assert.ok(!short.result.ok);
+    assert.match(short.result.error.message, /row r2: "Seconds 0 to 20" was not judged as written/, "a unit left out of the list is refused");
+  } finally { jevCap = Infinity; }
+});
+
+test("boxed thumbnails are about 10rem wide with the row's second and text aligned to the top beside them: the row says boxed, a row without boxes does not", async () => {
+  onDisk = "other";
+  const { result } = await run([helpers, assets, looking, boxedRow('[{ id: "m1-box", at: "61.2,40,12,9", look: lookTalk.key }]'), ground, render, check]);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  const html = HTML();
+  assert.match(html, /<li class="row boxed" id="r-m1" data-ground="[^"]*"><div class="sheet thumb">/);
+  assert.match(html, /\.row\.boxed\{align-items:flex-start\}\.row\.boxed \.thumb\{width:10rem\}/);
+  assert.match(html, /\.thumb\{width:6rem;/, "a row's plain thumbnail is as small as before");
+  const plain = await run([helpers, assets, looking, boxedRow(undefined), ground, render, check]);
+  assert.ok(plain.result.ok);
+  assert.match(HTML(), /<li class="row" id="r-m1" data-ground="[^"]*"><img class="thumb"/, "a row without boxes keeps its class");
+});
+
+test("the skill says only vision.judge sets a verdict, what it could not judge goes under Not checked by count and id, text stays text, and a detail nobody asked for is read twice", () => {
+  const flat = SKILL.replace(/\s+/g, " ");
+  for (const words of ["A verdict comes only from `vision.judge`'s answer, and the script never sets one itself", "`data-ground`", "If Jev cannot be asked (an error, or TypeSafe's rate limit after its retries)", "exactly which units, by count and id", "never in one sentence that understates it", "Text stays text", "never a picture of words", "the page's text is selectable", "A detail nobody asked for is read twice", "only when a crop of it was read and agrees with the first reading"]) assert.ok(flat.includes(words), `the skill says ${words}`);
+});
+
+test("a judge look with no receipt declares its unit: the answers are valid, there is no look key to name, and the script goes on", async () => {
+  onDisk = "other";
+  noJudgeReceipt = true;
+  try {
+    const { result } = await run([helpers, assets, looking, data, ground, render, check]);
+    assert.ok(result.ok, result.ok ? "" : result.error.message);
+  } finally { noJudgeReceipt = false; }
+  const html = HTML();
+  assert.match(html, /<li>4 units: finding chart, finding contract, finding site, the answer: not judged: /);
+  assert.deepEqual(Object.values(groundOf(html)), ["", "", "", ""], "no look key to name");
+});
+
+test("a second grounding pass starts afresh: a unit declared before, or a verdict made before, does not outlive it", async () => {
+  onDisk = "other";
+  const stale = ground.replace("await ground();", 'await ground(); unjudged.set("finding chart", "stale"); report.notChecked.push({ units: ["finding chart"], why: "not judged: stale" }); verdicts.set("x", { yes: 1, look: "a".repeat(64), claim: "t0" }); await ground();');
+  assert.notEqual(stale, ground);
+  const { result } = await run([helpers, assets, looking, data, stale, render, check]);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  assert.ok(!HTML().includes("not judged"), "the stale declaration is gone, and so is the stale verdict");
+});
+
+test("data-ground follows each current text's own claim id: reversing the points or dropping one after the judgment changes the entries with the texts, never their ids", async () => {
+  onDisk = "other";
+  const { result, judged } = await run([helpers, assets, looking, data, ground, "report.points.reverse();", render, check]);
+  assert.ok(result.ok, result.ok ? "" : result.error.message);
+  const key = judged.at(-1);
+  assert.equal(groundOf(HTML()).answer, [0, 1, 2, 4, 3].map((n) => `${key}:t${n}`).join(" "), "the points swapped, each keeping the claim id it was judged under");
+  const dropped = await run([helpers, assets, looking, data, ground, "report.points.pop();", render, check]);
+  assert.ok(dropped.result.ok, dropped.result.ok ? "" : dropped.result.error.message);
+  assert.equal(groundOf(HTML()).answer.split(" ").length, 4, "a point dropped leaves no entry for it");
 });

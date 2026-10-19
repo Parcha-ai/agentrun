@@ -2,7 +2,6 @@
 // the call's environment, each named by its fragment), the miss that is filed, told and thrown, and the work for one
 // look key done once at a time per call. Internal: the package's index does not export this module.
 
-import { createHash } from "node:crypto";
 import type { MissCode } from "./contract.js";
 import { visionContext, type VisionEnv } from "./env.js";
 import { blocksSha256, type Filing, type LookRecord } from "./evidence.js";
@@ -12,6 +11,7 @@ import type { ImageProcessor } from "./image.js";
 import { sniffKind, SNIFF_BYTES, type Kind } from "./kinds.js";
 import { SOURCE_BYTES_IN_PROCESS } from "./limits.js";
 import { firstLine, linkSafe, reportMiss, type Miss } from "./misses.js";
+import { sha256Hex } from "./primitives.js";
 import { pathSafe } from "./paths.js";
 
 /** A look `vision.see` or `vision.judge` could not make, thrown once it is filed and told; the message starts with the code. */
@@ -32,13 +32,12 @@ export type Medium = { readonly bytes: Uint8Array; readonly mimeType: string; re
 export type About = { readonly path: string; readonly kind: Kind; readonly sha256: string; readonly fragment: string };
 /** A miss on its way to being filed, with the medium it is about when it is about one. */
 export type MediaMiss = Miss & { readonly about?: About };
-const sha256Of = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 /** The window or page a medium's name cites (`clip.mp4#t=60,90`), "" when it cites none. */
 const citedFragment = (label: string) => {
   const cited = parseCitation(label).fragment;
   try { return cited ? formatFragment(cited) : ""; } catch { return ""; }
 };
-export const aboutMedium = (label: string, kind: Kind, bytes?: Uint8Array): About => ({ path: label, kind, sha256: bytes ? sha256Of(bytes) : "", fragment: citedFragment(label) });
+export const aboutMedium = (label: string, kind: Kind, bytes?: Uint8Array): About => ({ path: label, kind, sha256: bytes ? sha256Hex(bytes) : "", fragment: citedFragment(label) });
 /** Each medium's name: an image's fragment or `image <n>`, then a path's fragment or the path. */
 const labelsOf = (r: MediaRequest) => [...(r.images ?? []).map((_, i) => r.fragments?.[i] ?? `image ${i + 1}`), ...(r.paths ?? []).map((path, i) => r.fragments?.[(r.images?.length ?? 0) + i] ?? path)];
 /** Before any medium is read, a miss is about the request's media as named: their kind and bytes are known only when

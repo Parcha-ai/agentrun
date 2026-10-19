@@ -12,7 +12,7 @@ import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
 import { effectiveBoxes } from '../packages/harness/dist/demo-spec.js';
-import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
+import { BOX_CROSSINGS, localPlace, priceJudge, chooseBrowser, crossings, demo, tapBox, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
 import { ORIGINAL, FIXTURE, BASELINE, run, composeHost, destroyBoxes, meterKnown, RUN_LABEL, localBoxes, ctx, finish, lines, planFor, recordingPlace, specWith, reap, SITES, signInHome, filesIn, killSpec, boxed } from './reference-demo-helpers.mjs';
 
 test('the sign-in\'s secret strings are read from auth.json by key (access, refresh, id token and an API key), a missing file is fine, and an unreadable or non-JSON one fails without a value in the message', async (t) => {
@@ -498,4 +498,40 @@ test('the agent\'s report (draft 41): report/index.html and the files it reaches
   // A report with a script is refused: the recording is not finished.
   writeFileSync(join(folder, 'index.html'), page('<script>steal()</script>'));
   await assert.rejects(() => run(t, {}, ['--json'], { DEMO_REPORT: folder }), /the report is refused: index.html has a <script>/);
+});
+
+test('finishRecording removes the spool though a writer that outlived its kill is still adding files to it: no ENOTEMPTY, and the recording is finished', async (t) => {
+  const { startedAt, finishRecording } = await import('../packages/harness/dist/record.js');
+  const { spawn } = await import('node:child_process');
+  const failures = [];
+  for (let round = 0; round < 12; round += 1) {
+    const dir = await mkdtemp(join(tmpdir(), 'reference-spool-race-'));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    mkdirSync(join(dir, '.spool'), { recursive: true });
+    startedAt(dir);
+    writeFileSync(join(dir, '.spool', 'live-1.jsonl'), `${JSON.stringify({ channel: 'live', source: 'workflow', kind: 'x', gen: 1, seq: 0, t: 1, data: {} })}\n`);
+    // A process that was never stopped (the place refused the kill) keeps writing segments for a while: a file every few milliseconds for 250 ms.
+    const writer = spawn(process.execPath, ['-e', `const fs = require('node:fs'); const end = Date.now() + 400; let n = 0; const tick = () => { try { fs.mkdirSync(${JSON.stringify(join(dir, '.spool'))}, { recursive: true }); fs.writeFileSync(${JSON.stringify(join(dir, '.spool'))} + '/late-' + (n++) + '.jsonl', '{}\\n'); if (n === 1) process.stdout.write('writing\\n'); } catch {} if (Date.now() < end) setTimeout(tick, 2); }; tick();`], { stdio: ['ignore', 'pipe', 'ignore'] });
+    t.after(() => { try { writer.kill('SIGKILL'); } catch { /* gone */ } });
+    // The removal starts only once the child has written: the race is the one under test, whatever the machine's load.
+    await new Promise((resolve) => writer.stdout.once('data', resolve));
+    try { finishRecording(dir, { title: 't', task: 't', model: 'faux/faux-1', kills: 0, code: { repo: 'r', commit: 'c', packages: {} }, cost: { usd: 0, parts: {} }, source: { run: 'x', store_sha256: '0'.repeat(64) } }); } catch (error) { failures.push(String(error.code ?? error.message)); }
+    await new Promise((resolve) => writer.once('exit', resolve));
+    assert.ok(existsSync(join(dir, 'manifest.json')) || failures.length > 0, 'the manifest is written');
+  }
+  assert.deepEqual(failures, []);
+});
+
+test('removeSpool retries an ENOTEMPTY and throws the last error when it lasts, and another error at once', async () => {
+  const { removeSpool } = await import('../packages/harness/dist/record.js');
+  const fail = (code) => Object.assign(new Error(code), { code });
+  let calls = 0;
+  removeSpool('/x', { remove: () => { calls += 1; if (calls < 3) throw fail('ENOTEMPTY'); } });
+  assert.equal(calls, 3, 'two ENOTEMPTY, then it went through');
+  calls = 0;
+  assert.throws(() => removeSpool('/x', { withinMs: 100, remove: () => { calls += 1; throw fail('ENOTEMPTY'); } }), /ENOTEMPTY/);
+  assert.ok(calls > 1, 'it tried again before giving up');
+  calls = 0;
+  assert.throws(() => removeSpool('/x', { remove: () => { calls += 1; throw fail('EACCES'); } }), /EACCES/);
+  assert.equal(calls, 1, 'any other error is not retried');
 });

@@ -5,13 +5,13 @@
 // failure falls to the next, and every result names the provider and version that made it (`derive.ts`). The text of a
 // PDF held in memory is what a browser's fetch takes for a fetched document.
 
-import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { derivations, derivedName, ProviderMiss, viaProviders, type DeriveContext, type DeriveMiss, type DeriveOutcome } from "./derive.js";
 import { visionContext } from "./env.js";
 import { SOURCE_BYTES_IN_PROCESS } from "./limits.js";
+import { messageLine, sha256Hex } from "./primitives.js";
 import type { MadeBy, Provider, ProviderCall, ProviderSource, RenderedImage } from "./provider.js";
 
 /** Time for one document's text: the time hosts already give `pdftotext` (read 2026-10-11). */
@@ -98,7 +98,7 @@ export function runPdfWorker<T>(script: string, input: Record<string, unknown>, 
     const onAbort = () => end(() => reject(caps.signal!.reason));
     const timer = setTimeout(() => end(() => reject(new ProviderMiss("over_budget", `the PDF engine did not finish within ${Number((caps.timeoutMs / 1000).toFixed(2))} s`))), caps.timeoutMs);
     caps.signal?.addEventListener("abort", onAbort, { once: true });
-    child.once("error", (error) => end(() => reject(new ProviderMiss("needs", `the PDF engine could not be started (${error.message.split("\n")[0]})`))));
+    child.once("error", (error) => end(() => reject(new ProviderMiss("needs", `the PDF engine could not be started (${messageLine(error)})`))));
     child.once("message", (m: { value?: T; memory?: true; error?: { name?: string; message?: string } }) =>
       end(() => (m.memory ? reject(memory()) : m.error ? reject(Object.assign(new Error(m.error.message), { name: m.error.name })) : resolve(m.value as T))));
     child.once("exit", (code, signal) => end(() => reject(signal === "SIGABRT" ? memory() : new Error(`the PDF engine stopped (${signal ?? `exit ${code}`})`))));
@@ -238,7 +238,7 @@ export async function pdfText(bytes: Uint8Array, ctx: Omit<PdfContext, "deriveDi
   try {
     const path = `${dir.value}/fetched.pdf`;
     if (!(await ctx.env.writeFile(path, bytes, c)).ok) return null;
-    const read = await pdfDocument({ path, kind: "pdf", bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }, ctx);
+    const read = await pdfDocument({ path, kind: "pdf", bytes: bytes.length, sha256: sha256Hex(bytes) }, ctx);
     return read.ok && read.value.pages.some((text) => text.trim()) ? read.value.pages.map((text, i) => `[page ${i + 1}]\n${text}`).join("\n\n") : null;
   } catch (error) {
     if (ctx.signal?.aborted) return null;
