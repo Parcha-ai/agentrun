@@ -1,0 +1,5 @@
+---
+packages: repo
+kind: feature
+---
+New example, `examples/learn-classify`: an agent classifies companies into their 2-digit SIC industry group, one per run, and each run either runs a workflow it trusts or does the job by hand and saves a workflow for the part it did. The host wires `fetch_page`, the `agentrun` tool and `learn` on the root agent, Jev as `runJudge` for workflow decisions, and a node runner so agent nodes inside a workflow get the host's tools. Two gates sit in front of the package's admitter: a host dry run that must pass, and a Jev question that refuses a workflow naming a specific company. The runner writes one JSON row per run (cost, tokens, the workflows offered, used and saved, whether a workflow alone gave the answer, what curation did), resumes after a stop, stops at a spend cap, scores a sealed set at any commit without learning, keeps each run as an `agentrun.recording/1` directory, and draws a static curve. `node examples/learn-classify/runner.mjs --scripted --out <dir> --jobs 3` runs it with no key.

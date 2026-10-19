@@ -1,0 +1,150 @@
+# Learn-classify: an agent that makes its own job cheaper
+
+One agent classifies US public companies into their 2-digit SIC industry group, one company per run, in order. Its rules
+say that every run either runs a workflow it already trusts for the job (or a part of it), or does the job by hand and
+then drafts, dry-runs and saves a workflow for the part it did by hand. After each run the host proposes what the run
+noted and saved, curation merges it into the agent's git repository, and the next run starts from the new `main`. The
+truth is the SEC's own SIC code for each company. The proof is the curve: cost per job and accuracy run by run, the
+share of runs a workflow finished alone, and accuracy on 30 sealed companies before and after.
+
+It is built on [`@parcha/pi-agent-learn`](../../packages/pi-agent-learn/README.md) and the reference host loop in
+[`examples/agent-learn`](../agent-learn/README.md), whose `prepareRun` it reuses.
+
+## Run it
+
+Node 22.19 or later and git 2.40 or later, in a checkout with `npm ci --ignore-scripts && npm run build`.
+
+```sh
+# $0: a scripted model, a scripted Jev and fixture pages; three jobs end to end.
+node examples/learn-classify/runner.mjs --out /tmp/lc-dry --scripted --jobs 3
+
+# Live: gpt-6-luna and Jev through one gateway, fetch_page on the real web. --cap-usd is required.
+export LEARN_CLASSIFY_GATEWAY=<a gateway root: an OpenAI Responses endpoint at /v1, Jev at /typesafe>
+node examples/learn-classify/runner.mjs --out /tmp/lc-probe --live --jobs 10 --cap-usd 1 --run-cap-usd 0.15
+
+# The 30 sealed companies at a commit of the agent repository, with no learning: before and after.
+node examples/learn-classify/runner.mjs --out /tmp/lc-probe --live --cap-usd 1 --sealed --at seed
+node examples/learn-classify/runner.mjs --out /tmp/lc-probe --live --cap-usd 1 --sealed --at main
+
+# The curve, again, from the rows (the runner also writes it at the end of each pass).
+node examples/learn-classify/curve.mjs /tmp/lc-probe
+```
+
+| Flag | What |
+| --- | --- |
+| `--out <dir>` | the pass's directory (default `examples/learn-classify/out`, ignored by git): the agent's repository, the host's clone, the agent home, the rows, the recordings, the curve |
+| `--scripted` / `--live` | the $0 doubles (with `fetch_page` reading fixture pages), or the gateway (the model and Jev) and `fetch_page` on the web; one `--out` serves one mode |
+| `--data <dir>` | `companies.json` and `sic2.json` (and, scripted, `pages.json`); default `data/` live, `fixtures/` scripted |
+| `--jobs <n>` | the first `n` companies of split `run`, by `order` |
+| `--cap-usd <usd>` | the spend guard: no job starts once the rows' spend reaches it |
+| `--run-cap-usd <usd>` | a run whose model and Jev spend passes it is aborted where it is |
+| `--sealed --at seed\|main\|<sha>` | score the sealed companies at that commit; rows go to `sealed-<sha12>.jsonl` |
+| `--no-record` | keep no recording per run |
+| `--model`, `--thinking` | live only: the model id (default `gpt-6-luna`) and the agent's thinking level (default `medium`; never `off`) |
+
+Live, `LEARN_CLASSIFY_GATEWAY` names the gateway and `LEARN_CLASSIFY_GATEWAY_KEY` its key, when it wants one; a gateway
+that holds the provider keys needs none.
+
+A stopped pass is resumed by running the same command again. A finished job keeps its row. A job whose run was cut off is
+abandoned (carried back into the home, its spend kept in `progress/<run>.json` and counted by the guard) and runs again
+as the next attempt, `run-007-a2`. A run that finished is proposed and curated if it was not yet (both are idempotent).
+
+## How a host wires the loop
+
+The calls in order, per company. `host.mjs` is the whole of it.
+
+1. **Seed.** `prepareRun({ home, repo, host, runId, input })` (from `examples/agent-learn/host.mjs`): fetch `main`, keep
+   the agent home on it, start the run, seed its `<learned>` section, and put the workflows `workflowsToTry` offers for
+   this input into the run's own workflow store.
+2. **Run.** `runJob({ run, job, model, judge, fetchPage, labels })` opens the run's store with four extensions, all listed
+   on the root agent:
+   - `learn` (`agentLearn`, its guard seeing this company's name, website and domain),
+   - the host's tools: `fetch_page`, `sic2_groups` (the label set) and `answer` (the final answer, typed: a code from the
+     label set, one sentence of evidence and its URL),
+   - the DSL's `agentrun` tool (`createWorkflowTool`, `projectDir` = the run's workspace),
+   - the node runner (`nodeRunner`), so agent nodes inside a workflow run as pi conversations.
+
+   A workflow's `call` nodes reach `fetch_page` and `sic2_groups` through `runEffect`. Its `judge`, `pick`, `sift` and
+   `route` nodes reach Jev through `runJudge` (`createJevRunner`), each decision kept as a row in the run's store
+   (`decisionRecovery`). Its agent nodes are offered the tools they name, or both workflow tools when they name none, and
+   never `answer`, `learn` or `agentrun`; they get their own short instructions, not the root agent's rules.
+3. **Propose.** `finishJob(...)`: `carryBack`, then read the run's notes, the workflows it saved and its uses of saved
+   workflows, and `proposeLearning({ workDir, untrusted: true })` on `runs/<run id>`: the run read the web, so the curator
+   asks whether each note came from that content.
+4. **Curate.** `curateJob({ repo, judge })`: `curate` with Jev as the judge and this example's gates in front of the
+   package's admitter (below). It is the only writer of `main`.
+5. **Row.** `rowOf(...)` appends one line to `runs.jsonl`; the next company starts at step 1 from the new `main`.
+
+Nothing in the host decides a company's group. The agent's `AGENTS.md` (rules-locked) states the job and the learning
+rule, and its `classify` skill says how to do the job by hand and how that maps onto workflow nodes.
+
+### The gates
+
+`gates.mjs` puts back two checks the old tune loop had, before `workflowAdmitter`, so a learned workflow cannot memorize
+companies and fake the curve. Promotion stays the package's (3 clean uses from distinct runs, the author's run excluded;
+demotion after 2).
+
+- **Dry run.** The saved revision is read back through the DSL's store and dry-run by the host (`dryRunWorkflow`, no
+  model, Jev or tool call, no code run in-process). Anything but `passed` is refused. A dry run fills every tool result
+  with placeholders, so an `escalate` on a field that is false there always fires and the dry run reports `not_run`; the
+  skill says to check a page's text instead.
+- **Leak.** Jev is asked one yes-or-no question over the workflow document: does it name or single out a specific company,
+  brand, website, domain, ticker or filing, or carry a fixed answer for one? At 0.5 or above it is refused, at 0.2 or
+  below it goes on to the admitter, between it is held.
+
+## The row
+
+`runs.jsonl` holds one JSON object per run (the contract between the demo's lanes):
+
+```json
+{ "run": 2, "cik": "0000320193", "split": "run", "seedSha": "<main the run started from>", "afterSha": "<main after curate>",
+  "answer": "35", "truth": "35", "correct": true, "costUsd": 0.0031, "tokensIn": 17349, "tokensOut": 138, "durationMs": 9120,
+  "workflowsOffered": ["classify-company"],
+  "workflowsUsed": [{ "name": "classify-company", "revision": "<sha256>", "outcome": "frozen" }],
+  "byWorkflow": true, "workflowsSaved": [], "notes": { "new": 0, "used": 1, "corrected": 0 },
+  "curate": { "admitted": [], "promoted": ["classify-company"], "demoted": [], "held": [], "refused": [] },
+  "judgeCostUsd": 0.0004, "recording": "run-002" }
+```
+
+- `costUsd`: every model call of the run (the root agent and the workflow's agent nodes, as pi recorded them) plus the
+  run's own Jev decisions. `judgeCostUsd`: curate's Jev, the leak gate included. Live, both are estimates from list
+  prices (`models.mjs`); the gateway's ledger is the bill. Scripted, both are 0 and the tokens are the faux provider's
+  estimate.
+- `workflowsUsed`: the run's `agentrun.workflow` tasks of a revision its store holds under a name, as the package reads
+  them for promotion: `frozen` (finished alone), `escalated` (handed back) or `failed`.
+- `byWorkflow`: the answer is the `sic2` output of a workflow run that completed, of a revision used `frozen`. The agent
+  did not classify the company itself. It is read from the tool's own answers, never from the model's prose.
+- `notes`: the run's `learn` calls: `new` (lesson, fact, workflow), `used`, `corrected`.
+- `curate`: what curation did for this run. `admitted`, `promoted`, `demoted` are workflow names (from the admitter's and
+  the settler's own answers); `held` and `refused` are items with a reason (`{ workflow | id | candidate, reason }`).
+- `recording`: the run's `agentrun.recording/1` directory under `recordings/`, or `null`. Each passes
+  `scripts/recording/validate.mjs`.
+- A sealed row has `split: "sealed"`, `seedSha` = `afterSha` = the commit it was scored at, and an empty `curate`.
+
+## Files
+
+| File | What |
+| --- | --- |
+| `agent/` | the agent the repository starts with: `agent.json`, `AGENTS.md`, `skills/classify/SKILL.md` |
+| `host.mjs` | the host: the tools, `runJob`, `finishJob`, `curateJob`, the Jev meter |
+| `gates.mjs` | the dry-run and leak gates, as an `admitWorkflow` port |
+| `runner.mjs` | the pass: resume, the spend guard, the sealed pass, the CLI |
+| `row.mjs` | the per-run row |
+| `recording.mjs` | a run's store as an `agentrun.recording/1` directory |
+| `curve.mjs` | `curve.html` from the rows: static, no build step |
+| `models.mjs` | the live model and Jev, through the gateway |
+| `scripted.mjs` | the $0 doubles: the scripted agent and Jev, and the fixture web `fetch_page` reads |
+| `fixtures/` | five made-up companies, their pages and ten groups, for the scripted pass and the tests |
+| `tools.mjs`, `data/` | `fetch_page` and the truth set (lane C1) |
+
+`node --test examples/learn-classify/*.test.mjs` runs it all offline.
+
+## Limits
+
+- One company per run is a hard way to learn: promotion needs 3 clean runs after the author's, so a workflow has about 30
+  chances in 100 runs. If the probe shows workflows do not appear, the fallback is batches of companies per run.
+- A run that is cut off starts again from scratch as a new attempt; it is not resumed inside its own store.
+- `byWorkflow` counts a whole-job workflow only (its output carries `sic2`). A workflow for a part of the job shows in
+  `workflowsUsed` and in the cost, not in `byWorkflow`.
+- The leak gate asks about the document. A workflow could still lean on a pattern only one company has; the sealed
+  companies are the check for that.

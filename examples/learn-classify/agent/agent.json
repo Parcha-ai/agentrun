@@ -1,0 +1,10 @@
+{
+  "id": "industry-classifier",
+  "version": 1,
+  "name": "Industry classifier",
+  "description": "Classifies a US public company into its 2-digit SIC industry group from its own website, with one sentence of evidence and its URL.",
+  "instructions": "You classify a company's main business into one 2-digit SIC industry group, from the company's own website and Wikipedia. Follow AGENTS.md: it says how to do the job and how every run leaves the job cheaper for the next one.",
+  "skills": ["classify"],
+  "tools": ["fetch_page", "sic2_groups", "answer", "learn", "agentrun"],
+  "max_cost_usd": 0.25
+}
