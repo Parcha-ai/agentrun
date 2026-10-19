@@ -385,12 +385,14 @@ test('the slow tick does not queue a carry behind one still running: a place who
 test('a box charge that first appears in the last status read counts against the cap: the run is over budget', { timeout: 300_000 }, async (t) => {
   const { tmp, options } = await specWith(t, { name: 'reference', expectedCost: 0.05 });
   const recording = join(tmp, 'recording');
-  let reads = 0;
+  let exited = false;
   const result = await demo({ ...options, argv: ['--json', '--record', recording], place: ({ paths, self, destroyBoxes, requestFile }) => {
     const inner = localPlace({ self, paths, destroyBoxes, requestFile });
     const box = { provider: 'prov', kind: 'sandbox', from: '2026-10-16T10:00:00.000Z', usdPerSecond: 1, source: 'list', priced: true };
-    // The box's end is first reported by the third read, the last one the supervisor makes (start, exit, end): $60 against a cap of $0.10.
-    return { ...inner, status: async () => { reads += 1; return { record: null, boxes: [reads >= 3 ? { ...box, to: '2026-10-16T10:01:00.000Z' } : box] }; } };
+    // The box's end is first reported by a read made after the runner has exited (the supervisor's last), never by how many reads came before: the slow tick reads too, so a count can land mid-run. $60 against a cap of $0.10.
+    return { ...inner,
+      start: async (order) => { const runner = await inner.start(order); runner.exited.then(() => { exited = true; }, () => { exited = true; }); return runner; },
+      status: async () => ({ record: null, boxes: [exited ? { ...box, to: '2026-10-16T10:01:00.000Z' } : box] }) };
   } });
   assert.equal(result.processes.at(-1).outcome.status, 'complete');
   assert.equal(result.overBudget, true, 'the charge that arrived with the last read is over the cap');
