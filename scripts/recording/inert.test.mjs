@@ -134,3 +134,22 @@ test('live-follow scans every text blob a line names, whatever its extension', a
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.throws(() => follower.poll(), /a blob the run kept holds a provider secret/);
 });
+
+test('an image block of a type the recording cannot hold (avif, bmp) is recorded as text, so the recording still publishes', (t) => {
+  for (const mimeType of ['image/avif', 'image/bmp', 'image/tiff']) {
+    const kept = [];
+    moveImages({ content: [{ type: 'image', mimeType, data: Buffer.from('picture bytes').toString('base64') }] }, (bytes, extension) => { kept.push(extension); return sha(bytes); });
+    assert.deepEqual(kept, ['txt'], mimeType);
+  }
+  const png = [];
+  moveImages({ content: [{ type: 'image', mimeType: 'image/png', data: Buffer.from('p').toString('base64') }] }, (bytes, extension) => { png.push(extension); return sha(bytes); });
+  assert.deepEqual(png, ['png']);
+  void t;
+});
+
+test('a directory in blobs/ is a problem, not a crash, in the validator and the gate', (t) => {
+  const dir = recording(t, {});
+  mkdirSync(join(dir, 'blobs', `${'a'.repeat(64)}.txt`));
+  assert.ok(problems(dir).some((each) => /is not a file/.test(each)), problems(dir).join(' | '));
+  assert.ok(gated(t, dir).some((each) => /is not a file|is not a blob/.test(each)));
+});

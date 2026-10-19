@@ -66,7 +66,7 @@ export function moveImages(data: unknown, keep: (bytes: Buffer, extension: strin
     if (record.type === 'image' && typeof record.data === 'string') {
       const mimeType = typeof record.mimeType === 'string' ? record.mimeType : 'image/png';
       const { data: encoded, ...rest } = record;
-      const blob = keep(Buffer.from(encoded as string, 'base64'), EXTENSIONS[mimeType] ?? 'bin');
+      const blob = keep(Buffer.from(encoded as string, 'base64'), blobExtension(EXTENSIONS[mimeType] ?? 'bin'));
       blobs.push(blob);
       return { ...rest, mimeType, blob };
     }
