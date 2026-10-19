@@ -51,12 +51,12 @@ export function requestedAbout(r: MediaRequest): About {
   };
 }
 
-const strings = (value: unknown) => value === undefined || (Array.isArray(value) && value.every((s) => typeof s === "string"));
-const blocks = (value: unknown) => value === undefined || (Array.isArray(value) && value.every((b) => b?.type === "image" && typeof b.data === "string" && typeof b.mimeType === "string"));
+const isStringList = (value: unknown) => value === undefined || (Array.isArray(value) && value.every((s) => typeof s === "string"));
+const isImageBlocks = (value: unknown) => value === undefined || (Array.isArray(value) && value.every((b) => b?.type === "image" && typeof b.data === "string" && typeof b.mimeType === "string"));
 
 /** Whether `r` names at least one image block or path, each well formed. */
 export const namesMedia = (r: Record<string, unknown>): boolean =>
-  blocks(r.images) && strings(r.paths) && strings(r.fragments) && (Array.isArray(r.images) ? r.images.length : 0) + (Array.isArray(r.paths) ? r.paths.length : 0) > 0;
+  isImageBlocks(r.images) && isStringList(r.paths) && isStringList(r.fragments) && (Array.isArray(r.images) ? r.images.length : 0) + (Array.isArray(r.paths) ? r.paths.length : 0) > 0;
 
 /** A miss filed as a failed look and told, then thrown. A stopped call files none: what failed was the stop (a
  *  cancelled read, say), not the source or the model; it rejects with the stop's reason. */

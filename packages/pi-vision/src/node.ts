@@ -55,14 +55,14 @@ const failed = (error: unknown): Result<never> => {
   const code = (error as { code?: unknown } | undefined)?.code;
   return fail(typeof code === "string" ? (FILE_CODES[code] ?? "unknown") : "unknown", said(error));
 };
-const aborted = (context: VisionContext) => (context.abortSignal?.aborted ? fail("aborted", "aborted") : undefined);
+const abortedResult = (context: VisionContext) => (context.abortSignal?.aborted ? fail("aborted", "aborted") : undefined);
 
 async function attempt<T>(context: VisionContext, run: () => Promise<T>): Promise<Result<T>> {
-  const cut = aborted(context);
+  const cut = abortedResult(context);
   if (cut) return cut;
   try {
     const value = await run();
-    return aborted(context) ?? ok(value);
+    return abortedResult(context) ?? ok(value);
   } catch (error) {
     return failed(error);
   }
@@ -114,42 +114,42 @@ export type NodeVisionEnv = Omit<VisionEnv, "exec"> & {
 /** `env` is the whole environment of every program this environment starts; without it, `inheritedEnv()`. A call's own
  *  `env` is added over either, and is the whole of it when the call says `inheritEnv: false`. */
 export function nodeVisionEnv(options: { cwd: string; env?: ChildEnv }): NodeVisionEnv {
-  const at = (path: string) => (isAbsolute(path) ? resolve(path) : resolve(env.cwd, path));
+  const absolute = (path: string) => (isAbsolute(path) ? resolve(path) : resolve(env.cwd, path));
   const env: NodeVisionEnv = {
     id: "node:local",
     cwd: options.cwd,
-    readBinaryFile: (path, context) => attempt(context, async () => new Uint8Array(await readFile(at(path), { signal: context.abortSignal }))),
+    readBinaryFile: (path, context) => attempt(context, async () => new Uint8Array(await readFile(absolute(path), { signal: context.abortSignal }))),
     openBinaryReader: async (path, opened, context) => {
-      const cut = aborted(context);
+      const cut = abortedResult(context);
       if (cut) return cut;
       let file: FileHandle;
       try {
         // Nonblocking, so opening a FIFO never waits for a writer; anything but a regular file is refused below.
-        file = await open(at(path), constants.O_RDONLY | constants.O_NONBLOCK | (opened?.noFollow ? constants.O_NOFOLLOW : 0));
+        file = await open(absolute(path), constants.O_RDONLY | constants.O_NONBLOCK | (opened?.noFollow ? constants.O_NOFOLLOW : 0));
       } catch (error) {
         const refused = failed(error);
         return !refused.ok && refused.error.code === "invalid" && opened?.noFollow ? fail("invalid", `refusing to follow a symbolic link: ${path}`) : refused;
       }
       // Every way out but the reader closes the file, a cancellation after the open included.
       const stats = await file.stat().catch((error: unknown) => error as Error);
-      const refusal = stats instanceof Error ? failed(stats) : stats.isDirectory() ? fail("is_directory", `${path} is a directory`) : !stats.isFile() ? fail("invalid", `${path} is not a regular file`) : aborted(context);
+      const refusal = stats instanceof Error ? failed(stats) : stats.isDirectory() ? fail("is_directory", `${path} is a directory`) : !stats.isFile() ? fail("invalid", `${path} is not a regular file`) : abortedResult(context);
       if (refusal) {
         await file.close().catch(() => undefined);
         return refusal;
       }
-      return ok(binaryReader(file, at(path)));
+      return ok(binaryReader(file, absolute(path)));
     },
     writeFile: (path, content, context) => attempt(context, async () => {
-      await mkdir(dirname(at(path)), { recursive: true });
-      await writeFile(at(path), content, { signal: context.abortSignal });
+      await mkdir(dirname(absolute(path)), { recursive: true });
+      await writeFile(absolute(path), content, { signal: context.abortSignal });
     }),
-    renameFile: (from, to, context) => attempt(context, () => rename(at(from), at(to))),
-    createDir: (path, created, context) => attempt(context, async () => { await mkdir(at(path), { recursive: created?.recursive ?? true }); }),
+    renameFile: (from, to, context) => attempt(context, () => rename(absolute(from), absolute(to))),
+    createDir: (path, created, context) => attempt(context, async () => { await mkdir(absolute(path), { recursive: created?.recursive ?? true }); }),
     createTempDir: (prefix, context) => attempt(context, () => mkdtemp(join(tmpdir(), prefix ?? "tmp-"))),
-    fileInfo: (path, context) => attempt(context, async () => infoOf(at(path), await lstat(at(path)))),
-    remove: (path, removed, context) => attempt(context, () => rm(at(path), { recursive: removed?.recursive ?? false, force: removed?.force ?? false })),
+    fileInfo: (path, context) => attempt(context, async () => infoOf(absolute(path), await lstat(absolute(path)))),
+    remove: (path, removed, context) => attempt(context, () => rm(absolute(path), { recursive: removed?.recursive ?? false, force: removed?.force ?? false })),
     exec: async (command, run, context) => {
-      const cut = aborted(context);
+      const cut = abortedResult(context);
       if (cut) return cut;
       const argv = typeof command === "string" ? ["/bin/sh", "-c", command] : command;
       if (!argv[0]) return fail("spawn_error", "empty argv: no program to run");
@@ -158,7 +158,7 @@ export function nodeVisionEnv(options: { cwd: string; env?: ChildEnv }): NodeVis
       return new Promise<Result<{ exitCode: number }>>((settle) => {
         let child: ChildProcess;
         try {
-          child = spawn(argv[0]!, argv.slice(1), { cwd: run?.cwd ? at(run.cwd) : env.cwd, env: { ...(own ? {} : childEnvOf(options.env)), ...run?.env }, stdio: "ignore", detached: true });
+          child = spawn(argv[0]!, argv.slice(1), { cwd: run?.cwd ? absolute(run.cwd) : env.cwd, env: { ...(own ? {} : childEnvOf(options.env)), ...run?.env }, stdio: "ignore", detached: true });
         } catch (error) {
           // An argument spawn refuses outright (a NUL byte) is a failed result like any other.
           settle(fail("spawn_error", said(error)));

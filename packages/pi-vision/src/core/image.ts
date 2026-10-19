@@ -6,7 +6,7 @@
 
 import type { MissCode } from "./contract.js";
 import { exceedsDecodeGuard, imageHeader, SNIFF_BYTES } from "./kinds.js";
-import { base64Chars, toBase64 } from "./primitives.js";
+import { base64Chars, grouped, toBase64 } from "./primitives.js";
 import { DECODE_GUARD_PIXELS, DEFAULT_JPEG_QUALITY, FLOOR_EDGE, IMAGES_PER_CALL, TILE_ASPECT, TILE_KEEP_BELOW, TILE_MAX_EDGE, TILE_OVERLAP, type ImageLimits } from "./limits.js";
 
 /** An image the model can take: a supported format, within the limits, as base64. pi-durable's `PreparedImage`. */
@@ -88,8 +88,7 @@ const READERS: Readonly<Record<string, string>> = Object.freeze({
   "image/heic": "no decoder here reads it: not sharp's prebuilt binaries, Photon or ffmpeg 6.1",
 });
 
-const grouped = (n: number): string => n.toLocaleString("en-US");
-const firstLine = (error: unknown): string => String((error as Error)?.message || error).split("\n")[0]!.slice(0, 200);
+const causeLine = (error: unknown): string => String((error as Error)?.message || error).split("\n")[0]!.slice(0, 200);
 const upright = (size: PixelSize & { readonly orientation: number }): PixelSize => (size.orientation >= 5 ? { width: size.height, height: size.width } : { width: size.width, height: size.height });
 const withinEdges = (size: PixelSize, limits: FitLimits): boolean => size.width <= limits.maxWidth && size.height <= limits.maxHeight;
 const edgeText = (limits: FitLimits): string => `${limits.maxWidth === limits.maxHeight ? grouped(limits.maxWidth) : `${grouped(limits.maxWidth)}x${grouped(limits.maxHeight)}`} px`;
@@ -212,7 +211,7 @@ export async function fitImage(processor: ImageProcessor, bytes: Uint8Array, mim
     pixels = await raster(bytes, { size, orientation: stored.orientation, maxPixels: DECODE_GUARD_PIXELS });
   } catch (error) {
     // A processor that cannot run here says so with `code: "needs"`; any other failure is the image's.
-    return (error as { code?: unknown } | null)?.code === "needs" ? refuse("needs", original, firstLine(error)) : refuse("unreadable", original, `the image could not be decoded (${firstLine(error)})`);
+    return (error as { code?: unknown } | null)?.code === "needs" ? refuse("needs", original, causeLine(error)) : refuse("unreadable", original, `the image could not be decoded (${causeLine(error)})`);
   }
   if (pixels.width !== size.width || pixels.height !== size.height) return refuse("unreadable", original, "it decoded to a size its header does not state");
   const turned = stored.orientation !== 1;
@@ -230,7 +229,7 @@ export async function fitImage(processor: ImageProcessor, bytes: Uint8Array, mim
     const vertical = original.height >= original.width;
     return { fit: "tiled", original, blocks, scaled: layout.scaled, tile: { width: rects[0]!.width, height: rects[0]!.height }, starts: rects.map((rect) => (vertical ? rect.top : rect.left)), vertical, turned };
   } catch (error) {
-    return refuse("unreadable", original, `the image could not be encoded (${firstLine(error)})`);
+    return refuse("unreadable", original, `the image could not be encoded (${causeLine(error)})`);
   }
 }
 

@@ -6,6 +6,8 @@ export const toBase64 = (bytes: Uint8Array): string => Buffer.from(bytes.buffer,
 
 export const base64Chars = (rawBytes: number): number => Math.ceil(rawBytes / 3) * 4;
 
+export const grouped = (n: number): string => n.toLocaleString("en-US");
+
 export const mib = (bytes: number): string => `${(bytes / 1048576).toFixed(1)} MiB`;
 
 /** The first line of an error's message, as it stands: no redaction and no cut (`firstLine` in misses.ts does both). */
