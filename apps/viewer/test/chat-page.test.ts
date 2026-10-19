@@ -153,7 +153,7 @@ const ENTRY = `<!doctype html><html><head><meta charset="utf-8"><title>Three pag
 </body></html>`;
 /** The cited answer with a row citing the third page of the look over three pages, a box on it. */
 const CITED_PAGES = { ...CITED, rows: [...CITED.rows, { label: 'Contact', value: 'on the third page', cites: [{ look: K.page3, fragment: '#page=3&xywh=percent:10,20,30,10' }] }] };
-const SHEET = 'body{background:#101012;color:#eee}.sheet{background-image:url(../media/page-2.png)}';
+const SHEET = 'body{background:#101012;color:#eee}#alarm{letter-spacing:1px}.sheet{background-image:url(../media/page-2.png)}';
 
 /** The recordings: the repository's chat fixtures and reference job (a submitted record), and the hand run as
  *  `hand-page` (an agent's page written to test the frame, thinking, two conversations), `hand-answer` (the cited answer
@@ -465,14 +465,18 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
       ['Jev judge', 'here 0.60 · where 0.20 · box drawn', 't 0:27', true, false], ['Jev judge', 'here 0.95 · where 0.90 · box drawn', 't 0:28', false, true],
       ['Jev judge', 'here 0.95 · where 0.90 · box drawn', 't 0:29', true, false]],
       label: 'Jev judge · here 0.95 · where 0.90 · box drawn', more: '+ 5 more', raw: [[false, 'Raw output', '{']], pictures: 0, inReport: true, flat: { page: 0, panes: 0 } });
-    // The judge in its accent: a judge call's card and its span, its lane's dot, a chip at the start of its line whose text
-    // stays ink; a call that is no judge carries none.
+    // The judge in its accent: its span, its lane's dot, a chip at the start of its line whose text stays ink; its card is
+    // square with no bar of its own; a call that is no judge carries none.
     const PINK = 'rgb(229, 81, 186)';
     assert.deepEqual(await value(`(() => { const d = doc('hear'); const css = (n, p) => getComputedStyle(n)[p]; const judge = d.querySelector('.call[data-call="call-4"]'); const other = d.querySelector('.call[data-call="call-3"]');
       return { card: css(judge, 'borderLeftColor'), chip: [css(judge.querySelector('.judge-chip'), 'borderTopColor'), css(judge.querySelector('.judge-chip'), 'color'), judge.querySelector('.judge-chip').textContent, css(judge.querySelector('.judge-chip'), 'backgroundColor')],
         span: css(d.querySelector('.tbar[data-goto="call-4"]'), 'backgroundColor'), lane: [...d.querySelectorAll('.tl .lane')].filter((n) => n.querySelector('.judge-dot')).map((n) => n.querySelector('.ln').textContent),
         other: [css(other, 'borderLeftColor'), !!other.querySelector('.judge-chip'), css(d.querySelector('.tbar[data-goto="call-3"]'), 'backgroundColor')] }; })()`),
-      { card: PINK, chip: [PINK, 'rgb(242, 242, 242)', 'judge', 'rgba(0, 0, 0, 0)'], span: PINK, lane: ['Jev judge'], other: ['rgb(255, 135, 0)', false, 'rgb(90, 90, 98)'] });
+      { card: 'rgb(44, 44, 48)', chip: [PINK, 'rgb(242, 242, 242)', 'judge', 'rgba(0, 0, 0, 0)'], span: PINK, lane: ['Jev judge'], other: ['rgb(255, 135, 0)', false, 'rgb(90, 90, 98)'] });
+    // The agentrun.ai look: no rounded corner and no left bar anywhere, in the chat or in the agent's page.
+    assert.deepEqual(await value(`(() => { const bad = (d) => d ? [...d.querySelectorAll('*')].filter((n) => { const s = getComputedStyle(n); return parseFloat(s.borderTopLeftRadius) > 0
+      || (s.borderLeftStyle !== 'none' && parseFloat(s.borderLeftWidth) > parseFloat(s.borderRightWidth)); }).map((n) => String(n.className || n.tagName)) : [];
+      return PAGES.flatMap((id) => [...bad(doc(id)), ...bad(art(id))]); })()`), [], 'no rounded corner and no left bar, in the chat or the agent\'s page');
     // A timeline click on a folded call opens its group, scrolls to it and flashes it.
     await page.evaluate(`doc('hear').querySelector('.tl-toggle').click(); doc('hear').querySelector('.tbar[data-goto="call-11"]').click()`);
     await until(`(() => { const d = doc('hear'); const c = d.querySelector('.call[data-call="call-11"]'); return !c.hidden && c.classList.contains('flash') && inView(c, d.querySelector('.thread')); })()`, 'the folded call scrolled into view and flashed');
@@ -572,8 +576,8 @@ test('in Chrome: the chat beside the agent\'s page, its timeline, its citations 
     assert.deepEqual(await value(`(() => { const b = doc('answer').querySelector('.src .jbox'); return [getComputedStyle(b).borderTopColor, getComputedStyle(b.querySelector('span')).color]; })()`),
       ['rgb(229, 81, 186)', 'rgb(242, 242, 242)'], 'a judge\'s box in its accent, its label in ink');
 
-    // Opened by its URL (?src=), the agent's page keeps the stylesheet it links.
-    assert.equal(await value(`getComputedStyle(art('srcsheet').body).backgroundColor`), 'rgb(16, 16, 18)');
+    // Opened by its URL (?src=), the agent's page keeps the stylesheet it links; the site's palette is drawn over it.
+    assert.deepEqual(await value(`[getComputedStyle(art('srcsheet').getElementById('alarm')).letterSpacing, getComputedStyle(art('srcsheet').body).backgroundColor]`), ['1px', 'rgb(8, 8, 9)']);
 
     // Opened by its URL (?src=), "How this ran" opens the same URL in the inspection viewer, in the header and the report.
     assert.deepEqual(await value(`[doc('srcpage').querySelector('a.how').getAttribute('href'), doc('srcpage').querySelector('.report a').getAttribute('href')]`),
