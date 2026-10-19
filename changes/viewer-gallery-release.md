@@ -4,7 +4,8 @@ kind: feature
 ---
 **`apps/viewer`: the hosted gallery's recordings come from a release asset, and a public replay draws no dollar figure**
 - The gallery's recordings leave git. `apps/viewer/recordings.lock.json` names one tar on the release tagged `gallery`,
-  its SHA-256 and the gallery's ids in order, each `{ id, poster? }`. The Pages job fetches it before the build
+  its SHA-256 and the gallery's ids in order, each `{ id, poster?, looks? }` (`looks`: the keys of looks the run filed on
+  one image, which its card shows with their boxes). The Pages job fetches it before the build
   (`node scripts/recording/gallery.mjs fetch`, with the job's own token) and unpacks nothing unless the tar hashes to
   the lock, holds only those ids' manifests, lines and blobs as plain files, no recording is over 80 MB and the gallery
   not over 300 MB, raw, each poster is an image its recording holds, and each id, listed once, is the name of the example

@@ -40,7 +40,9 @@ const IMAGE = { png: [0x89, 0x50, 0x4e, 0x47], jpg: [0xff, 0xd8, 0xff], jpeg: [0
 const isObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
-/** The lock, read: `{ asset, sha256, ids: [{ id, poster? }] }` (a plain id reads as `{ id }`), or its problems. */
+/** The lock, read: `{ asset, sha256, ids: [{ id, poster?, looks? }] }` (a plain id reads as `{ id }`), or its problems.
+ *  `looks`: the keys of looks the run filed on one image, which its card shows with their boxes (the gate checks the run
+ *  filed them). */
 export function readLock(text) {
   let lock;
   try { lock = JSON.parse(text); } catch (error) { return { problems: [`the lock is not JSON: ${error.message}`] }; }
@@ -52,10 +54,11 @@ export function readLock(text) {
   const ids = (Array.isArray(lock.ids) ? lock.ids : []).map((each) => (typeof each === 'string' ? { id: each } : each));
   const seen = new Set();
   for (const each of ids) {
-    if (!isObject(each) || typeof each.id !== 'string' || !ID.test(each.id)) { problems.push(`${JSON.stringify(each)} is not { id, poster? } with a plain id`); continue; }
+    if (!isObject(each) || typeof each.id !== 'string' || !ID.test(each.id)) { problems.push(`${JSON.stringify(each)} is not { id, poster?, looks? } with a plain id`); continue; }
     if (seen.has(each.id)) problems.push(`${each.id} is listed twice`);
     seen.add(each.id);
-    if (Object.keys(each).some((key) => key !== 'id' && key !== 'poster')) problems.push(`${each.id} holds ${JSON.stringify(Object.keys(each))}, not id and poster`);
+    if (Object.keys(each).some((key) => !['id', 'poster', 'looks'].includes(key))) problems.push(`${each.id} holds ${JSON.stringify(Object.keys(each))}, not id, poster and looks`);
+    if (each.looks !== undefined && !(Array.isArray(each.looks) && each.looks.length > 0 && each.looks.every((key) => typeof key === 'string' && key !== '') && new Set(each.looks).size === each.looks.length)) problems.push(`${each.id}'s looks ${JSON.stringify(each.looks)} is not a list of distinct look keys`);
     if (each.poster !== undefined && (typeof each.poster !== 'string' || !SHA256.test(each.poster))) problems.push(`${each.id}'s poster ${JSON.stringify(each.poster)} is not a SHA-256`);
   }
   return problems.length ? { problems } : { lock: { asset: lock.asset, sha256: lock.sha256, ids } };

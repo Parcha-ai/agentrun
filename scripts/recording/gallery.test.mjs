@@ -57,7 +57,7 @@ test('the limits are 80 MB a recording and 300 MB the gallery, raw', () => {
   assert.equal(GALLERY_LIMIT, 300_000_000);
 });
 
-test('the lock reads plain ids and { id, poster }, and refuses every other shape', () => {
+test('the lock reads plain ids and { id, poster?, looks? }, and refuses every other shape', () => {
   const poster = sha256(PNG);
   assert.deepEqual(readLock(JSON.stringify({ asset: 'recordings.tar', sha256: poster, ids: ['a', { id: 'b', poster }] })),
     { lock: { asset: 'recordings.tar', sha256: poster, ids: [{ id: 'a' }, { id: 'b', poster }] } });
@@ -69,8 +69,10 @@ test('the lock reads plain ids and { id, poster }, and refuses every other shape
   assert.match(problems({ ...good, sha256: 'abc' })[0], /is not a SHA-256/);
   assert.match(problems({ ...good, ids: [] })[0], /ids is not a non-empty list/);
   assert.match(problems({ ...good, ids: ['a', 'a'] })[0], /a is listed twice/);
-  assert.match(problems({ ...good, ids: ['../a'] })[0], /is not \{ id, poster\? \} with a plain id/);
-  assert.match(problems({ ...good, ids: [{ id: 'a', rank: 1 }] })[0], /holds \["id","rank"\], not id and poster/);
+  assert.match(problems({ ...good, ids: ['../a'] })[0], /is not \{ id, poster\?, looks\? \} with a plain id/);
+  assert.match(problems({ ...good, ids: [{ id: 'a', rank: 1 }] })[0], /holds \["id","rank"\], not id, poster and looks/);
+  assert.deepEqual(readLock(JSON.stringify({ ...good, ids: [{ id: 'a', poster, looks: ['k1', 'k2'] }] })).lock?.ids, [{ id: 'a', poster, looks: ['k1', 'k2'] }], 'looks beside a poster');
+  for (const looks of [[], 'k1', [''], [7], ['k1', 'k1']]) assert.match(problems({ ...good, ids: [{ id: 'a', looks }] })[0], /looks .* is not a list of distinct look keys/, JSON.stringify(looks));
   assert.match(problems({ ...good, ids: [{ id: 'a', poster: 'cover.png' }] })[0], /poster "cover\.png" is not a SHA-256/);
 });
 
