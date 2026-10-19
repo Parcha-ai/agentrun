@@ -23,7 +23,9 @@ export const REFUSED_FILE = "recording-refused";
 const MIN_KEY = 12;
 const TEXT_FILE = /\.(?:html?|css|csv|md|txt|json|svg)$/i;
 /** The longest the frames' export may hold the run's last step (ffmpeg, per session). */
-const TRACK_MS = 60_000;
+const TRACK_MS = 120_000;
+/** The track's pace: the frame recorder's own (app.ts captures at most 2 a second), so a long session encodes few frames. */
+const TRACK_FPS = 2;
 
 /** The values a recording takes out: the key, live views and words as `[redacted]` (the reference's redactor), and the
  *  browser's ids by redact.ts's rules. */
@@ -118,7 +120,7 @@ export async function openRunRecording(options: { dir: string; root: string; hom
       if (existsSync(framesFile)) {
         const lines = readFileSync(framesFile, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(redact(line)) as FrameLine);
         try {
-          for (const track of await exportFrameTracks({ lines, readBlob: (sha) => readFileSync(join(root, "frames", "blobs", `${sha}.jpg`)), timeoutMs: TRACK_MS })) {
+          for (const track of await exportFrameTracks({ lines, readBlob: (sha) => readFileSync(join(root, "frames", "blobs", `${sha}.jpg`)), fps: TRACK_FPS, timeoutMs: TRACK_MS })) {
             for (const [sha, extension] of [[track.files.webm, "webm"], [track.files.index, "json"]] as const) recorder.blob(Buffer.from(track.blobs[sha]!), extension);
             recorder.live("browser", "frame.track", track.line.data, { conv: track.line.conv, blobs: track.line.blobs });
           }
