@@ -101,6 +101,13 @@ transcript, the photographs and the film), [`boulder-chapters`](https://github.c
 Published on npm under the `beta` tag, at the workspace version with this repository's other packages: install it with
 `@beta`. Everything this README describes is built; a part that is not throws `NotBuiltError`, never a half answer.
 
+## Known limits
+
+- A recording source a host passes without `owns()` is readable by every conversation in the run; give it `owns()`
+  when conversations must not share recordings. (A recording source, in `VisionOptions.sources`, lets `read` answer a
+  question about a recording by its handle, such as a browser session's; the host's `allow` still applies to every
+  read.)
+
 ## A first read, with no key
 
 A spreadsheet the test kit writes, read the way `read` reads it for a model: no eyes, no key, nothing optional
