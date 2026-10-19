@@ -1,5 +1,5 @@
 {
- "about": "Thirteen Landsat images of the same frame over Lake Mead, Hoover Dam to the Overton Arm, from 1984 to 2024, committed here and checked by size and SHA-256.",
+ "about": "Thirteen Landsat images of the same frame over Lake Mead, Hoover Dam to the Overton Arm, from 1984 to 2024, and a map key of the named places in that frame, committed here and checked by size and SHA-256.",
  "frame": {
   "crs": "WGS 84 / UTM zone 11N (EPSG:32611)",
   "pixel_m": 60.0,
@@ -328,6 +328,15 @@
     "render": "true colour from the surface-reflectance red, green and blue bands (reflectance = 0.0000275 x DN - 0.2), stretched the same way in every image: 0 to 0.30 reflectance mapped to 0 to 255 with gamma 1/1.8, saved as JPEG quality 88"
    },
    "license": "USGS Landsat: no restrictions on use or redistribution"
+  },
+  {
+   "id": "map-key",
+   "title": "Map key: the named arms, basins, bays, washes and rivers inside the frame, with where each lies in it, in thirds, from the National Park Service map of Lake Mead National Recreation Area",
+   "path": "map-key.md",
+   "bytes": 2169,
+   "sha256": "320dda97c7dccc19ec3f5dc67b4b2943583876a8d1f975f56b411274ae03bb9e",
+   "source": "Park Map - Lake Mead National Recreation Area, National Park Service, Harpers Ferry Center: https://www.nps.gov/npgallery/GetAsset/b74cc29c-79a5-4ab4-ac69-54982c8a4a3a (names only)",
+   "license": "NPS maps: public domain"
   }
  ],
  "mirror": {
