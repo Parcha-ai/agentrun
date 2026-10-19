@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AttachInput, CommitRecorder, DurableLine } from './record-store.ts';
-import { credentialInFile, scanRecording } from './scan.ts';
+import { MEDIA_FILE, blobExtension, credentialInFile, scanRecording } from './scan.ts';
 
 export const FORMAT = 'agentrun.recording/1';
 type Meta = { path?: string; conv?: number; blobs?: string[] };
@@ -53,7 +53,7 @@ export function lazyRecorder(open: () => Recorder): Recorder & { start(): void; 
   };
 }
 
-const EXTENSIONS: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg' };
+const EXTENSIONS: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'txt', 'video/mp4': 'mp4', 'video/webm': 'webm' };
 
 /** Moves every image block inside `data` into `blobs/`, leaving `{ type: 'image', mimeType, blob }`: the SHA-256 of the file. A
  *  block that already names a blob is left alone. Returns the data and the hashes it now points at. */
@@ -66,7 +66,7 @@ export function moveImages(data: unknown, keep: (bytes: Buffer, extension: strin
     if (record.type === 'image' && typeof record.data === 'string') {
       const mimeType = typeof record.mimeType === 'string' ? record.mimeType : 'image/png';
       const { data: encoded, ...rest } = record;
-      const blob = keep(Buffer.from(encoded as string, 'base64'), EXTENSIONS[mimeType] ?? 'bin');
+      const blob = keep(Buffer.from(encoded as string, 'base64'), blobExtension(EXTENSIONS[mimeType] ?? 'bin'));
       blobs.push(blob);
       return { ...rest, mimeType, blob };
     }
@@ -211,7 +211,7 @@ export function openRecorder(options: { dir: string; /** The recording's clock, 
     live: (source, kind, data, meta) => write(source, kind, data, meta),
     // The payoff (`result`) is the supervisor's line: a process with no supervisor writes none. The supervisor's lines have no event-level gen, so the process they are about goes in the data (a `result`: `{ gen, blob, title }`).
     host: (kind, data, meta) => (!options.supervisor && kind === 'result' ? undefined : options.supervisor ? options.supervisor.host(kind, data !== null && typeof data === 'object' && !Array.isArray(data) && !('gen' in data) ? { gen, ...data } : data, meta) : write('host', kind, data, meta)),
-    blob: (bytes, extension) => keepBlob(dir, typeof bytes === 'string' ? Buffer.from(redact(bytes)) : Buffer.from(bytes), extension),
+    blob: (bytes, extension) => keepBlob(dir, typeof bytes === 'string' ? Buffer.from(redact(bytes)) : Buffer.from(bytes), blobExtension(extension)),
   };
 }
 
@@ -374,7 +374,7 @@ export function followRecording(dir: string, options: { holdMs?: number | (() =>
         if (checkedBlobs.has(hash)) continue;
         names ??= existsSync(join(dir, 'blobs')) ? readdirSync(join(dir, 'blobs')) : [];
         for (const name of names.filter((entry) => entry.startsWith(`${hash}.`))) {
-          if (!/\.(?:txt|json|jsonl|md|html|csv|xml|yaml|yml|log)$/i.test(name)) continue;
+          if (MEDIA_FILE.test(name)) continue;
           const inBlob = credentialInFile(name, readFileSync(join(dir, 'blobs', name), 'utf8'));
           if (inBlob) throw new Error(`a blob the run kept holds a ${inBlob}: its lines are not published, and the recording is refused`);
         }
