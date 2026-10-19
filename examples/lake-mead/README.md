@@ -7,3 +7,5 @@ npm run demo:vision -- examples/lake-mead --live
 ```
 
 The agent runs shell commands with your user's rights on your machine: run it in a container or a VM.
+
+The run is also given [map-key.md](map-key.md): the named arms, basins, bays, washes and rivers inside the frame, as the National Park Service's map names them, with where each lies, in thirds.
