@@ -246,3 +246,9 @@ test("a run cut short leaves only temporary files, and the next run redoes them 
   assert.ok(lines[1][2] > 19, "the last chunk ends at the clip's end");
   assert.equal(fs.existsSync(at(cut, "chunks.tmp.csv")), false);
 });
+
+test("the skill states what a chunk costs and teaches no spend stop; the dollar stop is the run's, and over_budget stays a model's size limit", () => {
+  assert.match(SKILL, /\$0\.008 an audio minute,\nan hour is six chunks and about \$0\.48\. A call that cannot be made throws/);
+  assert.doesNotMatch(SKILL, /Stop when the task's budget/);
+  assert.match(SKILL, /`over_budget` naming the model's limit/);
+});

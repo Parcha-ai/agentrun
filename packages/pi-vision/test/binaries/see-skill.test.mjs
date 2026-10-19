@@ -202,3 +202,8 @@ test("every page the skill renders is its crop box, the area a citation's percen
     }
   }
 });
+
+test("the skill puts scratch files under the workspace and names no path outside it", () => {
+  assert.match(SKILL, /Scratch files \(frames, crops, drawn checks\) go in a folder under the workspace, such as `\.look\/`, never in `\/tmp` or any\n  absolute path outside it: a file outside the workspace cannot be looked at\./);
+  assert.equal([...SKILL.matchAll(/\/tmp/g)].length, 1, "the one mention of /tmp is the rule against it");
+});

@@ -54,10 +54,10 @@ keeps each answer it paid for, so a run cut short pays for nothing twice. Each w
 own; a pause of 0.8 s or more starts a new row. The rows reach the shell as a here-document: each starts with its time
 and has no newline inside, so no text a model returns can end it early, and a write that fails is never renamed into
 place. Each chunk is a paid call, and `costUsd` says what it cost: at Scribe v2's list price, $0.008 an audio minute,
-an hour is six chunks and about $0.48. Stop when the task's budget would be passed. A call that cannot be made throws
-an Error whose message starts with its code (`no_vision_route` when this run has no speech-to-text model, `over_budget`
-naming the model's limit, `unsupported` when the model gives no word times, `look_failed`); the chunks done so far stay
-done. For `over_budget`, run step 2 with a shorter `CHUNK`.
+an hour is six chunks and about $0.48. A call that cannot be made throws an Error whose message starts with its code
+(`no_vision_route` when this run has no speech-to-text model, `over_budget` naming the model's limit, `unsupported` when
+the model gives no word times, `look_failed`); the chunks done so far stay done. For `over_budget`, run step 2 with a
+shorter `CHUNK`.
 
 ```js
 const video = "talk.mp4", H = ".hear/1541da8e8c9bd056"; // the folder step 1 printed
