@@ -1,6 +1,7 @@
 // The chat + report page: open the recording ?r= names in the gallery (or the one at ?src=), make it into the chat
 // model, and draw it. The inspection viewer is the same recording at ./?r=<id>.
 import type { Json, Recording } from './format.ts';
+import { fetchBlob } from './blobs.ts';
 import { bundledRecordings, fromUrl, openBundled } from './load.ts';
 import { extractChat } from './chat-extract.ts';
 import { drawChat } from './chat-view.ts';
@@ -21,7 +22,7 @@ async function chatMain(): Promise<void> {
     const readJson = async (sha: string): Promise<Json | undefined> => {
       const url = recording.blobUrl(sha);
       if (!url) return undefined;
-      const response = await fetch(url).catch(() => undefined);
+      const response = await fetchBlob(url).catch(() => undefined);
       return response?.ok ? (await response.json().catch(() => undefined)) as Json | undefined : undefined;
     };
     // The Muse view (the agent's header, the browser card) is opt-in: `chat.html?r=<id>&muse`. Without it a run reads as before.

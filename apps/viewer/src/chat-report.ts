@@ -2,7 +2,7 @@
 // the recording's blobs, else the run's cited answer drawn here. A citation in either calls `open` with its address.
 import type { ChatArtifact, ChatModel } from './chat-model.ts';
 import type { Recording } from './format.ts';
-import { opensInPage } from './blobs.ts';
+import { fetchBlob, opensInPage } from './blobs.ts';
 
 type ReportChild = Node | string | undefined | false;
 
@@ -69,7 +69,7 @@ function reportBlobUrl(recording: Recording, sha: string): Promise<string | unde
   const key = `${recording.id}\n${sha}`;
   let held = reportObjectUrls.get(key);
   if (!held) {
-    held = fetch(url).then((response) => response.blob()).then((blob) => URL.createObjectURL(blob)).catch(() => undefined);
+    held = fetchBlob(url).then((response) => response.blob()).then((blob) => URL.createObjectURL(blob)).catch(() => undefined);
     reportObjectUrls.set(key, held);
   }
   return held;
@@ -149,7 +149,7 @@ export async function reportPage(artifact: ChatArtifact, recording: Recording, p
   if (!entrySha) return undefined;
   const held = recording.heldText?.(entrySha);
   const entryUrl = recording.blobUrl(entrySha);
-  const text = held ?? (entryUrl ? await fetch(entryUrl).then((response) => (response.ok ? response.text() : undefined)).catch(() => undefined) : undefined);
+  const text = held ?? (entryUrl ? await fetchBlob(entryUrl).then((response) => (response.ok ? response.text() : undefined)).catch(() => undefined) : undefined);
   if (text === undefined) return undefined;
   const origins = new Set<string>(['blob:']);
   const resolve = async (from: string, ref: string) => {
@@ -193,7 +193,7 @@ export async function reportPage(artifact: ChatArtifact, recording: Recording, p
     const file = reportFileOf(files, entry, link.getAttribute('href') ?? '');
     const url = file && recording.blobUrl(files[file.path]!);
     // A sheet is read and inlined, its own references resolved from its own path.
-    jobs.push((url ? fetch(url).then((response) => (response.ok ? response.text() : undefined)).catch(() => undefined) : Promise.resolve(undefined)).then(async (css) => {
+    jobs.push((url ? fetchBlob(url).then((response) => (response.ok ? response.text() : undefined)).catch(() => undefined) : Promise.resolve(undefined)).then(async (css) => {
       if (css === undefined || !file) { link.remove(); return; }
       const style = doc.createElement('style');
       style.textContent = await reportCss(css, file.path, resolve);

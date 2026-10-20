@@ -87,3 +87,33 @@ test('in Chrome: the Muse header and the browser card, from the recording\'s own
   // The same recording without the option reads as before: no agent header, no browser card, and the frame-bearing step stays folded as a command.
   assert.deepEqual(await value(`[!!doc('plain').querySelector('.agent'), doc('plain').querySelectorAll('.browser').length, !!doc('plain').querySelector('.top .title')]`), [false, 0, true], 'without &muse');
 });
+
+// The docs site and any host with `connect-src 'self'` may not fetch a data: URL, and the gallery embeds a recording's blobs as
+// data: URLs: the cited result must still be read, or the right side falls back to the run's last message.
+test('in Chrome: with connect-src \'self\' an embedded recording\'s cited answer is read, not replaced by the run\'s final message', IN_CHROME, async (t) => {
+  const out = mkdtempSync(join(tmpdir(), 'viewer-csp-'));
+  const held: { page?: Awaited<ReturnType<typeof drivenPage>>; server?: ReturnType<typeof createServer> } = {};
+  t.after(() => closeAll(held.page ? [held.page] : [], () => {
+    held.server?.closeAllConnections();
+    held.server?.close();
+    rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }), { timeout: 20_000 });
+  mkdirSync(join(out, 'recordings'));
+  cpSync(join(here, '..', 'recordings', 'reference-job'), join(out, 'recordings', 'reference-job'), { recursive: true });
+  build(join(out, 'dist'), join(out, 'recordings'));
+  const TYPES: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png', '.css': 'text/css' };
+  const POLICY = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self'; frame-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'; object-src 'none'";
+  const server = createServer((request, response) => {
+    const file = join(out, 'dist', decodeURIComponent(new URL(request.url!, 'http://localhost').pathname));
+    if (!file.startsWith(join(out, 'dist')) || !existsSync(file) || !extname(file)) { response.writeHead(404).end(); return; }
+    response.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream', 'content-security-policy': POLICY }).end(readFileSync(file));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  held.server = server;
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const page = await drivenPage(`${origin}/chat.html?r=reference-job`, join(out, 'profile'), { signal: t.signal });
+  held.page = page;
+  await page.once(`!!document.querySelector('main#chat-root > .app .thread') && !!document.querySelector('.kicker')`, 'true', 20_000, 'the chat page and the right side drawn');
+  assert.equal(JSON.parse(String(await page.evaluate(`JSON.stringify(document.querySelector('.kicker').textContent)`))), 'The run\'s answer', 'the cited result was read under connect-src \'self\'');
+});
+

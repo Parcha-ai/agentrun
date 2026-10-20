@@ -521,7 +521,8 @@ function threadCard(recording: Recording, model: ChatModel, item: ToolItem, fold
     voice,
     reportEl('button', { class: thumb && !item.browser ? 'step-main' : 'step-main bare', type: 'button', 'data-open': item.id },
       reportEl('div', {}, reportEl('div', { class: 't' }, threadIcon(sourceKindOf(source?.href ?? '')), item.judge && threadJudge(), reportEl('span', { text: item.title }), item.failed && reportEl('small', { class: 'tag', text: 'failed' })),
-        item.takeaway !== '' && reportEl('div', { class: 'k', text: item.takeaway })),
+        // A step the browser card draws a hold for is told by the card ("Handed the browser over: ... / Handed back · done"), not by its raw result.
+        item.takeaway !== '' && !item.browser?.holds.length && reportEl('div', { class: 'k', text: item.takeaway })),
       thumb && !item.browser && reportEl('img', { loading: 'lazy', src: recording.blobUrl(thumb), alt: '' })),
     item.browser && threadBrowser(recording, item.browser),
     calls.length > 0 && reportEl('div', { class: 'calls' }, ...calls, more));
