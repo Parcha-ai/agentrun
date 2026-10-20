@@ -1,0 +1,21 @@
+{
+  "tool": "look",
+  "args": {
+    "path": "eagle-heard-and-seen.webm#t=0,34",
+    "ask": "At which second is a United States flag standing planted on the ground first seen? First line: SECOND=<whole seconds from the start of this clip>",
+    "model": "scripted-eyes",
+    "native": false
+  },
+  "status": "ok",
+  "body": "SECOND=28\n(scripted eyes: no model looked at eagle-heard-and-seen.webm#t=0,34; clip.json says it is first seen at 28 s.)",
+  "facts": {
+    "sha256": "82b2b56d1a86b5854f35d3a941774d1a1e194726b46948da3612267dd9e370da",
+    "kind": "video",
+    "fragment": "",
+    "key": "9ef7f399bd1148758fa778fa80461f36d3de8358101755ebfe97d83f86d0c737",
+    "shown_blocks": 1,
+    "tokens_in": 1045,
+    "tokens_out": 30,
+    "cost_usd": 0
+  }
+}

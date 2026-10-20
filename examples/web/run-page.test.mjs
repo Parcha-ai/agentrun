@@ -288,7 +288,7 @@ test("a page unmounted while a run's timeline is still loading does no more work
 });
 
 test("writeReplay writes the static layout staticSource reads under any path: the reference job's rows, its files, and search", async (t) => {
-  const recording = (await readFile(new URL("../../apps/viewer/recordings/reference-job/events.jsonl", import.meta.url), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  const recording = (await readFile(new URL("../../apps/viewer/test/fixtures/reference-job/events.jsonl", import.meta.url), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
   const entries = recording.filter((l) => l.channel === "durable" && l.source === "pi" && Array.isArray(l.data?.model)).map((l) => l.data);
   const reference = timelineOf(entries, { settled: true });
   const out = join(tmp, "site", "data");
@@ -610,7 +610,7 @@ test("a replay never carries a sign-in or a frame: writeReplay drops what a run 
   assert.ok(!(await readdir(bundle, { recursive: true })).some((f) => /frames|\.jpg$/.test(f)), "the packed page holds no frame");
 });
 
-const RECORDING = new URL("../../apps/viewer/recordings/reference-job/", import.meta.url);
+const RECORDING = new URL("../../apps/viewer/test/fixtures/reference-job/", import.meta.url);
 const GOLDEN = new URL("../../packages/pi-durable-agent/test/fixtures/timeline-reference-job.txt", import.meta.url);
 
 /** A run store holding the reference-job recording's entries. The recording keeps no store blob, so its store is made

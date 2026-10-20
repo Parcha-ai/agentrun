@@ -6,7 +6,7 @@ import type { AssistantMessage, Message, ToolCall, ToolResultMessage } from '@ea
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { fakeEyes } from '@parcha/pi-vision/testing';
 import type { Transcriber } from '@parcha/pi-vision';
-import type { Fakes } from '@parcha/agentrun-reference';
+import type { Fakes } from '@parcha/agentrun-harness';
 
 const call = (name: string, args: ToolCall['arguments']) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: 'toolUse' });
 const textOf = (message: Message) => (typeof message.content === 'string' ? message.content : message.content.map((block) => (block.type === 'text' ? block.text : '')).join('\n'));
@@ -29,21 +29,23 @@ export function scriptFor(state: { question: string; files: string[] }): string 
     'if (!files.length) throw new Error("no files to look at");',
     'const file = files[0];',
     'const pdf = /\\.pdf$/i.test(file);',
+    'const image = /\\.(png|jpe?g|webp|gif)$/i.test(file);',
     'await tools.bash({ command: "mkdir -p .vision report/frames" });',
-    // A picture of the file: its first page, or its frame at second 1.
-    'const fragment = pdf ? "#page=1" : "#t=1";',
+    // A picture of the file: its first page, the still itself, or its frame at second 1.
+    'const fragment = pdf ? "#page=1" : image ? "" : "#t=1";',
     'if (pdf) await tools.bash({ command: `pdftoppm -cropbox -f 1 -l 1 -r 50 -png ${q(file)} .vision/p && mv .vision/p-1.png report/frames/one.png 2>/dev/null || mv .vision/p-01.png report/frames/one.png` });',
+    'else if (image) await tools.bash({ command: `ffmpeg -v error -y -i ${q(file)} -frames:v 1 report/frames/one.png` });',
     'else await tools.bash({ command: `ffmpeg -v error -y -ss 1 -i ${q(file)} -frames:v 1 report/frames/one.png` });',
     'const seen = await vision.see({ ask: "What does this show?", paths: ["report/frames/one.png"], fragments: [file + fragment] });',
     'const receipt = JSON.parse(await tools.bash({ command: `cat ${q("../" + seen.receipts[0])}` }));',
     'const key = receipt.facts.key;',
-    'const label = pdf ? "page 1" : "1 s";',
+    'const label = pdf ? "page 1" : image ? "the image" : "1 s";',
     'const html = `<!doctype html><meta charset="utf-8"><title>Report</title><style>body{font:16px system-ui;margin:1rem;max-width:48rem}img{max-width:100%}</style>'
       + '<section id="answer"><h1>Answer</h1><p>(scripted: no model read the question) One look at ${file}, ${label}.</p></section>'
       + '<article class="finding"><p>${seen.text.split("\\n")[0].replace(/[<>&]/g, "")}</p><img src="frames/one.png" alt="the look"><p><a class="cite" href="../${file}${fragment}" data-look="${key}">${label}</a></p></article>'
       + '<section id="not-checked"><p>Everything else.</p></section>`;',
-    'await tools.bash({ command: `cat > report/report.html <<\'HTML\'\\n${html}\\nHTML` });',
-    'return { answer: "(scripted) One look at " + file + ", in report/report.html.", report: "report/report.html" };',
+    'await tools.bash({ command: `cat > report/index.html <<\'HTML\'\\n${html}\\nHTML` });',
+    'return { answer: "(scripted) One look at " + file + ", in report/index.html.", report: "report/index.html" };',
   ].join('\n');
 }
 

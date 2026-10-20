@@ -15,7 +15,7 @@ import { sharpImages } from "@parcha/pi-vision/providers/sharp";
 import { pngBytes } from "@parcha/pi-vision/testing";
 import { codeTool } from "./durable/code-tool.mjs";
 import { drive, textOf, tmp } from "./durable/rig.mjs";
-import { fakeJev, USD_PER_MTOK } from "./support/jev.mjs";
+import { ANSWERS, fakeJev, USD_PER_MTOK } from "./support/jev.mjs";
 
 const workspace = (files) => {
   const dir = tmp("vision-judge-");
@@ -164,6 +164,20 @@ test("a look that cannot be made throws with its code and is filed and told: no 
   assert.deepEqual([rows.filed[0].args.path, rows.filed[0].facts.kind, rows.filed[0].facts.sha256.length], ["clip.mp4", "video", 64], "a miss about one medium names it, its kind and the hash of its bytes");
 });
 
+test("a request TypeSafe rate-limited to the end of the runner's retries (http, HTTP 429) is a look_failed miss that cost nothing, so the run's cost stays known", async () => {
+  const cwd = workspace({ "p1.png": pngBytes(400, 300) });
+  const asks = `const out = []; for (const request of input) { try { await vision.judge(request); out.push("judged"); } catch (error) { out.push(error.message); } } return out;`;
+  const rows = host();
+  // What the Jev runner throws when it gives up on a 429: code http, status 429, and no request diagnostic.
+  const limited = Object.assign(new Error("Jev returned HTTP 429."), { code: "http", status: 429, attempts: 3 });
+  const request = { paths: ["p1.png"], questions: { q: { type: "noul", instructions: "Is it a chart?" } } };
+  const [said] = (await ran(createVisionExtension({ jev: { judge: fakeJev({ fail: limited }).judge }, ...rows.options }), cwd, `const input = [${JSON.stringify(request)}]; ${asks}`)).value;
+  assert.equal(said, "look_failed: Jev failed: rate limited, Jev returned HTTP 429.");
+  assert.deepEqual(rows.misses.map((m) => [m.tool, m.code]), [["vision.judge", "look_failed"]]);
+  assert.deepEqual(rows.filed.map((r) => [r.status, r.facts.cost_usd]), [["failed", 0]], "a rate-limited request cost nothing: its price is known");
+  assert.equal(typeof rows.filed[0].facts.startedAt, "number", "and it was sent, so it keeps its timing");
+});
+
 // The kill: judge-child.mjs is one process of a run whose script asks two judgments, one image each.
 const CHILD = path.join(import.meta.dirname, "durable", "judge-child.mjs");
 const lines = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
@@ -224,4 +238,56 @@ test("killed between two judgments on a host that never reruns a cut call, the n
   const [first, ...rest] = cut.told;
   assert.deepEqual([[first.by, first.kept], ...rest.map((look) => [look.by, look.key === first.key, look.kept])], [["first", false], ["second", true, true], ["second", false, false]],
     "the first judgment told paid, then again as kept; the second, never answered before the cut, told paid once");
+});
+
+test("with no image a request is a text judgment: its text in the state, no images, filed as a text look, read back when asked again, and asked again when the text changes", async () => {
+  const cwd = workspace({});
+  const rows = host();
+  const jev = fakeJev({ answer: (q, { state }) => (q.type === "noul" ? { type: "noul", noul: state.evidence.includes(state.claim.split(" ").pop()) ? 0.9 : 0.1 } : ANSWERS[q.type](q)) });
+  const vision = createVisionExtension({ jev: { judge: jev.judge }, ...rows.options });
+  const ask = (claim, evidence) => `{ state: { claim: ${JSON.stringify(claim)}, evidence: ${JSON.stringify(evidence)} }, questions: { stated: { type: "noul", instructions: "Does \`evidence\` state every name in \`claim\`?" }, kind: { type: "choice", instructions: "Is \`claim\` a name or a number?", criteria: { name: "A name.", number: "A number." } }, size: { type: "score", instructions: "How long is \`claim\`?", criteria: ["short", "long"] } } }`;
+  const seen = await ran(vision, cwd, `const a = await vision.judge(${ask("Bales", "The flight director was Bales.")}); const b = await vision.judge(${ask("Bales", "The flight director was Bales.")}); const c = await vision.judge(${ask("Bales", "The flight director was not named.")}); return [a, b, c];`);
+  assert.equal(seen.ok, true, seen.error);
+  assert.equal(jev.requests.length, 2, "the same text asked once; changed evidence asked again");
+  const [{ params }] = jev.requests;
+  assert.deepEqual(params.state, { claim: "Bales", evidence: "The flight director was Bales." }, "the state as sent, and no images key");
+  assert.deepEqual(params.assets, {}, "no asset");
+  assert.deepEqual(Object.keys(params.questions), ["stated", "kind", "size"], "all three types a text can answer");
+  assert.deepEqual(seen.value.map((r) => [r.answers.stated.noul, r.kept]), [[0.9, undefined], [0.9, true], [0.1, undefined]]);
+  assert.deepEqual(seen.value[0].answers.kind.choice, "name");
+  assert.deepEqual(rows.looks.map((l) => l.kept), [undefined, true, undefined], "told again as kept, not charged; the changed text paid");
+  const [filed, , changed] = rows.filed;
+  assert.deepEqual([filed.facts.kind, filed.facts.shown_blocks, filed.args.path, filed.args.via, filed.status], ["text", 0, "", "jev", "ok"], "a look of text, with no blocks shown");
+  assert.match(filed.facts.key, /^[0-9a-f]{64}$/);
+  assert.notEqual(filed.facts.key, changed.facts.key, "the key follows the text, so another claim or evidence is another look");
+});
+
+test("a text judgment is only text: a box, an image index, no state, or media that is not well formed is refused before anything is sent", async () => {
+  const cwd = workspace({});
+  const rows = host();
+  const jev = fakeJev();
+  const vision = createVisionExtension({ jev: { judge: jev.judge }, ...rows.options });
+  const noul = { q: { type: "noul", instructions: "Is it so?" } };
+  const refusals = [
+    { state: { claim: "x" }, questions: { where: { type: "box", instructions: "the logo" } } },
+    { state: { claim: "x" }, questions: { q: { type: "noul", instructions: "Is it so?", image: 0 } } },
+    { questions: noul },
+    { state: {}, questions: noul },
+    { paths: [], state: {}, questions: noul },
+    { paths: "x.png", state: { claim: "x" }, questions: noul },
+    { images: {}, state: { claim: "x" }, questions: noul },
+    { paths: {}, state: { claim: "x" }, questions: noul },
+    { fragments: {}, state: { claim: "x" }, questions: noul },
+    { examples: [], state: { claim: "x" }, questions: noul },
+    { state: { claim: "x" }, examples: { "<a>": "a.png" }, questions: { q: { type: "noul", instructions: "Like <a>?" } } },
+    { state: { claim: "x", images: [] }, questions: noul },
+    { state: { claim: "x" }, questions: {} },
+  ];
+  const out = await ran(vision, cwd, `const out = []; for (const request of ${JSON.stringify(refusals)}) { try { await vision.judge(request); out.push("judged"); } catch (error) { out.push(error.message.slice(0, 40)); } } return out;`);
+  assert.equal(out.ok, true, out.error);
+  assert.deepEqual(out.value, refusals.map(() => "vision.judge takes { questions: { [name]"), "each is the argument error");
+  assert.equal(jev.requests.length, 0, "nothing was sent");
+  assert.equal(rows.filed.length, 0, "and nothing was filed");
+  const all = await ran(vision, cwd, `try { await vision.judge({ state: { claim: "x" }, questions: { where: { type: "box", instructions: "the logo" } } }); } catch (error) { return error.message; }`);
+  assert.match(all.value, /with at least one path or image, or, for a text judgment with none, a non-empty state and no box question$/);
 });

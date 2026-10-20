@@ -10,12 +10,12 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import type { FixturePage } from '@parcha/pi-browser/testing';
-import { placeAt, run, type RunResult } from '@parcha/agentrun-reference';
-import { localHost, type BrowserPlane, type LocalHost, type RunPlace, type StatusEvent } from '@parcha/agentrun-reference';
+import { placeAt, run, type RunResult } from '@parcha/agentrun-harness';
+import { localHost, type BrowserPlane, type LocalHost, type RunPlace, type StatusEvent } from '@parcha/agentrun-harness';
 import { fakes, job } from './job.ts';
-import { cost } from '@parcha/agentrun-reference';
-import { codeOf, finishRecording, openRecorder, openSupervisor } from '@parcha/agentrun-reference';
-import { packageCommitRecorder } from '@parcha/agentrun-reference';
+import { cost } from '@parcha/agentrun-harness';
+import { codeOf, finishRecording, openRecorder, openSupervisor } from '@parcha/agentrun-harness';
+import { packageCommitRecorder } from '@parcha/agentrun-harness';
 
 /** The run as one value: what the workflow returned, what each package did, what was spent, every fake call. */
 export function summary(place: RunPlace, result: RunResult, local: LocalHost) {
@@ -70,7 +70,7 @@ async function inBox(kind: string, place: RunPlace, files: Record<string, Uint8A
   const provider = kind === 'local' ? (await import('@parcha/pi-transport/box/local')).localBoxes({ root: join(place.root, 'boxes') })
     : kind === 'docker' ? (await import('@parcha/pi-transport/box/docker')).dockerBoxes() : undefined;
   if (!provider) throw new Error(`--box is local or docker, not ${kind}`);
-  const created = await provider.create({ maxLifetimeMs: 15 * 60_000, labels: { 'agentrun-reference': place.id }, ...(kind === 'local' ? { workspace: place.work } : {}) }, ctx);
+  const created = await provider.create({ maxLifetimeMs: 15 * 60_000, labels: { 'agentrun-harness': place.id }, ...(kind === 'local' ? { workspace: place.work } : {}) }, ctx);
   if (!created.ok) throw created.error;
   const box = created.value;
   if (kind === 'docker') {

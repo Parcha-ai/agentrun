@@ -1,15 +1,17 @@
-// The example's cost (packages/reference/src/fold.ts, which stands alone) and the viewer's fold (the one fold, apps/viewer/src/counters.ts)
+// The example's cost (packages/harness/src/fold.ts, which stands alone) and the viewer's fold (the one fold, apps/viewer/src/counters.ts)
 // must agree on every recording the repo holds, and on copies broken so a part is unknown: unknown is never 0.
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import test from 'node:test';
-import { cost } from '@parcha/agentrun-reference';
+import { cost } from '@parcha/agentrun-harness';
 import { fold, readEvents } from './fold.mjs';
 
 const here = (path) => new URL(path, import.meta.url).pathname;
 const recordings = {
   'midstream-kill': readEvents(here('./fixtures/midstream-kill')),
   'reference-killed': readEvents(here('../../apps/viewer/test/fixtures/reference-killed')),
+  'reference-job': readEvents(here('../../apps/viewer/test/fixtures/reference-job')),
+  'ten-kills-seed21': readEvents(here('../../apps/viewer/test/fixtures/ten-kills-seed21')),
   'spacedeck-asks': readFileSync(here('../../apps/viewer/test/fixtures/spacedeck-asks/events.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)),
   // and every recording the viewer's gallery bundles
   ...Object.fromEntries(readdirSync(here('../../apps/viewer/recordings/'), { withFileTypes: true }).filter((entry) => entry.isDirectory())
