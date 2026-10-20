@@ -145,7 +145,7 @@ The `validate` and `dry-run` commands remain separate and require `--trusted`, b
 
 Synthetic boolean answers default to probability `0.5`, which decodes as `true`. Supply explicit fixtures to test both branches; synthetic answers do not evaluate your question.
 
-Dry-run reports `skipped` when it cannot synthesize a schema, including string patterns and formats emitted by Zod. Check that field: `ok: true` with a skip does not mean the graph was exercised.
+Dry-run reports `status: "not_run"` with the reasons in `skipped` when it cannot synthesize a schema, including string patterns and formats emitted by Zod. Check `status`, not `ok`: `ok: true` with `not_run` does not mean the graph was exercised. `agentrun dry-run --strict` exits 3 on it.
 
 ## Evaluate the component before the system
 

@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import { CONTRACT_VERSION } from "./contract.js";
 import type { Kind } from "./kinds.js";
+import { sha256Hex } from "./primitives.js";
 import type { MissEvent } from "./misses.js";
 import type { Fit } from "./plan.js";
 import type { CallContext, Json, Usage } from "./host.js";
@@ -96,11 +97,9 @@ export type Filing = {
   readonly onMiss?: (miss: MissEvent) => void | Promise<void>;
 };
 
-const sha256 = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
-
 /** The memo key of a look: the same source, selector, question, eyes and plan under this contract give the same key. */
 export function lookKey(input: { readonly sha256: string; readonly fragment: string; readonly ask?: string; readonly model: string; readonly plan?: unknown }): string {
-  return sha256(JSON.stringify([CONTRACT_VERSION, input.sha256, input.fragment, input.ask ?? null, input.model, input.plan ?? null]));
+  return sha256Hex(JSON.stringify([CONTRACT_VERSION, input.sha256, input.fragment, input.ask ?? null, input.model, input.plan ?? null]));
 }
 
 /** The SHA-256 of the bytes a set of base64 blocks carries, in order: what a look at blocks with no source file saw. */

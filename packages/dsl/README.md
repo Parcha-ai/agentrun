@@ -2,7 +2,7 @@
 
 Composable, typed workflows for agents. The core provides the v2 workflow types, validator, interpreter, events, schema, and an offline CLI. Supply agent, judgment, and effect functions only when a workflow needs them.
 
-Beta: `0.1.0-beta.4`. Requires Node 22.19+; TypeScript consumers require TypeScript 5.4+.
+Beta, on npm under the `beta` dist-tag (`npm view @parcha/agentrun-dsl dist-tags`). Requires Node 22.19+; TypeScript consumers require TypeScript 5.4+.
 
 ```sh
 npm install @parcha/agentrun-dsl@beta
@@ -33,7 +33,7 @@ The package root exports a deliberate API. The beta retains agent, structured-ou
 | --- | --- |
 | Typed authoring | `defineWorkflow`, `runTypedWorkflow`, `WorkflowSchemaConversionError`; `StandardJSONSchema`, `AuthoringSchema`, `TypedWorkflow`, `WorkflowInput`, `WorkflowOutput`, `TypedWorkflowRunResult`. |
 | Structural inspection | `inspectWorkflow`, `formatWorkflowTree`; `WorkflowInspection`, `WorkflowInspectionNode`. Reads structure and capability requirements; does not perform semantic validation or run code probes. |
-| Run and inspect | `runWorkflow`, `validateWorkflow`, `workflowSha256`, `dryRunWorkflow`; core contracts `Workflow`, `WorkflowNode`, `WorkflowDeps`, `WorkflowRunResult`, plus the named node, predicate, effect, effort and result types. |
+| Run and inspect | `runWorkflow`, `validateWorkflow`, `workflowSha256`, `dryRunWorkflow`; core contracts `Workflow`, `WorkflowNode`, `WorkflowDeps`, `WorkflowRunResult`, `ValidationIssue` and `ValidationCode` (each validation error's JSON Pointer and rule), plus the named node, predicate, effect, effort and result types. |
 | Recognize outcomes | `WorkflowInvalidError`, `WorkflowInputInvalidError`, `WorkflowOutputInvalidError`, `WorkflowVerificationError`, `EffectFailure`, `EffectDeadlineExceededError`, `EffectOutcomeUnknownError`, `EscalationSignal`. A concurrent failure may contain typed outcomes in `AggregateError.errors`; inspect them before deciding whether an effect is safe to retry. |
 | Build judgment adapters | `compileQuestions`, `validateAnswers`, `answersToValue`, `answersSidecar`, `answerConfidence`, `SYSTEM_ONE_LIMITS`, `SystemOneError`; `SystemOneQuestion`, `SystemOneAnswer`, `SystemOneResult`, `SystemOneRetryClass`, `CompiledQuestions`, `AnswersSidecar`. |
 | Integrate a host | `runWorkflowSlice`, `assertWorkflowCapabilities`, `desugarWorkflow`, `resolveSchemaForWorkflow`, `stageSchemaForNode`, `submissionSchemaForNode`, `mergeStageDelta`, `REPORT_SCHEMA`, `SHELL_RESULT_SCHEMA`, `getPath`, `predicateMatches`, `deniedGlobalReferences`. |

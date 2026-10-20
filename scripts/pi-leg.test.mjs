@@ -63,9 +63,9 @@ test('a leg workspace that depends on a pi workspace outside the leg is refused:
 
 test('a leg builds its workspaces and those they use, in workspace order, and not a workspace outside it that uses one in it', () => {
   const dep = (name, dependencies) => ({ ...ws(name), manifest: { ...ws(name).manifest, dependencies } });
-  const workspaces = [ws('@parcha/agentrun-dsl'), dep('@parcha/agentrun-pi', { '@parcha/agentrun-dsl': '1' }), ws('@parcha/pi-durable-disk'), ws('@parcha/pi-vision'), dep('@parcha/agentrun-reference', { '@parcha/agentrun-pi': '1', '@parcha/pi-durable-disk': '1', '@parcha/pi-vision': '1' })];
+  const workspaces = [ws('@parcha/agentrun-dsl'), dep('@parcha/agentrun-pi', { '@parcha/agentrun-dsl': '1' }), ws('@parcha/pi-durable-disk'), ws('@parcha/pi-vision'), dep('@parcha/agentrun-harness', { '@parcha/agentrun-pi': '1', '@parcha/pi-durable-disk': '1', '@parcha/pi-vision': '1' })];
   assert.deepEqual(buildOf(workspaces, ['@parcha/pi-durable-disk', '@parcha/agentrun-pi']), ['@parcha/agentrun-dsl', '@parcha/agentrun-pi', '@parcha/pi-durable-disk']);
-  assert.deepEqual(buildOf(workspaces, ['@parcha/agentrun-reference']), workspaces.map((w) => w.name), 'a leg workspace that uses the others builds them all');
+  assert.deepEqual(buildOf(workspaces, ['@parcha/agentrun-harness']), workspaces.map((w) => w.name), 'a leg workspace that uses the others builds them all');
 });
 
 test('--only narrows the leg to named pi workspaces and refuses a name that is not one', () => {

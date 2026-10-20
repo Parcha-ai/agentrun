@@ -9,6 +9,46 @@ The hosted gallery is at https://parcha-ai.github.io/agentrun/. It is this repla
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Parcha-ai/agentrun/tree/main/apps/viewer)
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FParcha-ai%2Fagentrun&root-directory=apps%2Fviewer)
 
+## The chat + report view
+
+`chat.html?r=<id>` (or `?src=<url>`) opens a recording as a conversation and a report, the gallery's default view. It
+is made from the recording's own events, with nothing per recording: the run's input as given (the workflow's input
+record, its fields in plain form) as the user's message; each recorded conversation as a thread (its messages as
+recorded, without the prompt the host composed to open it; the assistant's text as bubbles between the cards; the
+run's own thinking folded; one card per tool call titled by the tool and its arguments, a failed call by its error's
+first line, consecutive calls of one tool showing the first three, the rest behind "+ N more"; under a tool's card,
+each model call it made as a card of its own, with its name, its scores, the boxes it drew and its raw output); a
+session timeline under the title, collapsed, of workflow nodes, LLM calls (by model), tool calls (by name) and the
+model calls a tool makes, nested under it and labelled as their cards (a span when the line names its call and start,
+else a point at its time); and on the right the agent's artifact
+(`manifest.artifact`: its entry and files as blobs), in a frame that runs no script; else the run's cited answer; else
+the result record it submitted, its evidence paths as cites; else its final assistant text. The title is the
+artifact's, else the first line of the input's question, else the recording's title.
+Citations are the cited file's own address (`file.pdf#page=3&xywh=percent:...`, `film.webm#t=10`) and open that page
+or frame with its region boxed. "How this ran" opens the same recording in this replay viewer. `src/chat-extract.ts`
+makes the model, `src/chat-view.ts` and `src/chat-report.ts` draw it.
+
+A few conventions the view reads beyond the format; any skill or tool can follow them, and a run that does not loses
+nothing but the touch each one adds:
+- The page's title is the input's `question` field (its first line) when the input has one.
+- In a Jev answer, a box decision named `<name>_at` is the place of the yes-or-no decision `<name>`; a box whose
+  yes-or-no is no is not drawn.
+- A look's answer whose rows start `<start>\t<end>\t` (a transcript's times) is read without those times.
+- A look over several addresses files them in its `path` joined by `, `; it opens at the first.
+- A call to `submit` (the node runner's delivery tool) shows no reply when it succeeds.
+- A tool result that is a `{ "ok": true, "value": ... }` record reads as its value: words by their first line, a
+  record's fields in plain form.
+- A recording with no times places each span at its line's position, and the timeline reads "in order".
+- A conversation a workflow node holds (its `agentrun.nodes` document) is the runner's: its first user entry is the
+  prompt composed from the node's input, and a later one is a message the runner added (a reminder to deliver), drawn
+  as a host's note. In a conversation no node holds a person may speak, so every user entry there is the person's, and
+  the run's input is shown only when nodes hold every conversation. A person's message in a conversation a node holds
+  reads as the runner's too, until the entry carries its author; the entry's own author field, once the format has
+  one, replaces this rule.
+- A model call inside a tool is named by who answered (its record's `args.via`, else its tool's namespace) and its
+  tool's verb: `vision.judge` via `jev` reads "Jev judge". A call whose tool's verb is `judge` carries the judge's
+  accent on its card and its span.
+
 ## Use it
 
 ```sh
@@ -48,7 +88,7 @@ names with `&parent=<origin>`, each checked.
   `aborted` entry), re-asks (from the store's `pi.live` asks, each ask a kill cut counted once: proven when it had
   committed a partial, possible when only its start, with the turns they fell on; only proven ones count; "not
   measured" when no ask start was committed or its version is unknown), processes, kills, cost (unknown when any part is unknown,
-  never $0; a scripted run, as its manifest's `providers` says, reads "scripted, $0" rather than $0.0000; "at least" when a look may have been paid that no durable line shows), the looks the eyes were paid for
+  never $0; a scripted run, as its manifest's `providers` says, reads "scripted, $0" rather than $0.0000; "at least" when a look may have been paid that no durable line shows; drawn only with `?debug=cost` or `?debug=durability`), the looks the eyes were paid for
   (per look key: a native look charges nothing, and a look read back after a kill is paid once), and the journal's
   opens. Counts come from durable lines and the supervisor's lines only. Repeated and
   asked twice are per call: an effect's outside calls the host reported as applied, in more than one process (repeated)
@@ -88,10 +128,12 @@ job's own token, scoped to Pages, and names no secret. `scripts/pages-workflow.t
 
 `recordings/<id>/` holds the recordings bundled with the build, each a `manifest.json`, an `events.jsonl` and its
 `blobs/`. The build embeds them in `gallery.js` (so the gallery works from `file://`) and copies them beside the page.
-Two are bundled: the reference example's job with scripted providers, once uncut and once killed ten times and resumed
-(`recordings/README.md` says how each was recorded). A test holds each to the format and its manifest's cost to the
-counters' fold. The tests play a fixture cut by hand from a
-real run; it lives in `test/fixtures/` and is never bundled (`test/fixtures/README.md` says how it was cut). A
+None is in git: the Pages job unpacks the gallery's recordings into `recordings/` from the release asset its lock names
+(`recordings/README.md`), and each is an agent run of an example. The reference example's job with scripted providers,
+once uncut and once killed ten times and resumed, is kept, unedited, with the test fixtures (`test/fixtures/reference-job`
+and `test/fixtures/ten-kills-seed21`). A test holds both to the format and their manifests' cost to the counters' fold. The tests also play a fixture cut by
+hand from a real run; it lives in `test/fixtures/` and is never bundled (`test/fixtures/README.md` says how each fixture
+was made). A
 restore is tested on a recording built line by line (`test/restore-drill.ts`), and re-asks on a real 30-kill storm cut
 down to the lines their fold reads (`test/fixtures/spacedeck-asks`).
 
