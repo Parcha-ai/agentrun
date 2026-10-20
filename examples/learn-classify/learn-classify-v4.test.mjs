@@ -17,7 +17,7 @@ import { rerow } from './rerow.mjs';
 import { rescore } from './rescore.mjs';
 import { lineOf, openOut, readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
 import { CITE_QUESTION_V4, countryCode, entityName, HQ_QUESTION, MAX_SUBSIDIARIES, scoreCites, scoreHq, scoreSegments, scoreSubsidiaries, scoreV4, SEGMENT_PICK } from './score-v4.mjs';
-import { agentScriptV4Compose, CLASSIFY_ROUTED_V4, CLASSIFY_WHOLE_V4, CLASSIFY_WORKFLOW_V4, FIXTURES_V2, FIXTURES_V4, PART_CODE, PART_FIND_REPORT, readJson, scriptedModel, WORKFLOW } from './scripted.mjs';
+import { agentScriptV4Compose, CLASSIFY_ROUTED_V4, CLASSIFY_WHOLE_V4, CLASSIFY_WORKFLOW_V4, FIXTURES_V2, FIXTURES_V4, PART_CODE, PART_FIND_REPORT, promptOf, readJson, scriptedModel, WORKFLOW } from './scripted.mjs';
 import { SETS } from './sets.mjs';
 
 async function scratch(t) {
@@ -667,7 +667,12 @@ test('trial first: the proven revision escalates and the agent runs the newer re
   const { proven, trial } = await commitCanary(repo, root, CLASSIFY_WHOLE_V4, CLASSIFY_ROUTED_V4);
   const parts = scriptedParts({ set: SETS.v4 });
   parts.companies = [{ ...parts.companies.find((c) => c.name === 'Garnet Peak Systems Inc.'), order: 1 }];
+  const models = [];
+  const modelFor = parts.modelFor;
+  parts.modelFor = (job, run) => { const model = modelFor(job, run); models.push(model); return model; };
   const [row] = (await runLoop({ out, parts, jobs: 1, record: false })).rows;
+  // The host's handoff names the trial and asks for it to run first; the scripted agent runs it because it says so.
+  assert.match(promptOf(models[0].requests[0]), new RegExp(`A newer revision of ${WORKFLOW}, ${trial.slice(0, 8)}, is on trial .*: load ${WORKFLOW} and run it first; do the job by hand only if it escalates too\\.`));
   assert.deepEqual([row.correct, row.dispatched, row.dispatch.canary, row.byWorkflow], [true, true, true, true]);
   assert.deepEqual(row.workflowsUsed.map((u) => [u.name, u.outcome, u.revision, u.classifiedBy ?? null]), [[WORKFLOW, 'escalated', proven, HOST_WORKFLOW], [WORKFLOW, 'complete', trial, null]]);
   // Nothing by hand: the root agent's own calls are agentrun and the answer.
