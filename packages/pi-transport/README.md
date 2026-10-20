@@ -2,7 +2,7 @@
 
 **Experimental.** The API changes without notice between releases.
 
-A run's tool calls go to Daytona and Modal sandboxes, and Jev places each one on the sandbox that fits it.
+A pi agent's tool calls go to Daytona and Modal sandboxes, and Jev places each one on the sandbox that fits it.
 
 `boxEnv(box)` gives a [pi](https://github.com/earendil-works/pi) agent's `read`, `write`, `edit` and `bash` a box: it
 is pi's `ExecutionEnv` over the box, for a pi-durable Harness. `transport(config, host)` does it for each conversation,
