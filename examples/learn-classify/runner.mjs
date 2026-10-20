@@ -27,6 +27,7 @@ import { scoreV2 } from './score-v2.mjs';
 import { agentScript, agentScriptV2, FIXTURES, FIXTURES_V2, fakeHardTools, fixtureWeb, scriptedJev, scriptedModel } from './scripted.mjs';
 import { SETS } from './sets.mjs';
 import { ANY_HOST, domainOf, fetchPageTool } from './tools.mjs';
+import { promotedFor } from './dispatch.mjs';
 import { passSelfTest } from './selftest.mjs';
 import { writeHosts } from './tools-v2.mjs';
 
@@ -135,10 +136,13 @@ async function selfTest({ out, repo, parts, log }) {
 }
 
 /** One run of the agent with the set's tools, answer and job text. */
-async function runSet({ parts, run, job, judge, limitUsd }) {
+async function runSet({ parts, repo, run, job, judge, limitUsd }) {
   const { set, data } = parts;
   const effects = [...(await parts.toolsFor(job, run)), ...set.labelTools(data)];
-  return runJob({ run, job, model: parts.modelFor(job, run), judge, effects, answer: set.answer(data), text: set.text, limitUsd });
+  const answer = set.answer(data);
+  // A promoted workflow that answers the whole job runs first, by the host (dispatch.mjs), unless the pass says not to.
+  const dispatch = parts.dispatch === false ? null : await promotedFor({ repo, run, answer, input: set.input(job) });
+  return runJob({ run, job, model: await parts.modelFor(job, run), judge, effects, answer, text: set.text, limitUsd, dispatch });
 }
 
 /** A v2 run's score and tool facts, read from its closed store; the scoring's own Jev is metered apart from the run. */
@@ -206,7 +210,7 @@ async function oneJob({ out, repo, home, parts, judge, job, runCapUsd, record, l
     const prepared = await prepareRun({ home, repo, host: HOST, runId, input: parts.set.input(job) });
     save({ ...p, phase: 'started', seedSha: prepared.sha, offered: prepared.workflows.loaded.map((w) => w.name), started: Date.now() });
     const runJudge = meteredJudge(judge);
-    const measure = await runSet({ parts, run: prepared, job, judge: runJudge, limitUsd: runCapUsd });
+    const measure = await runSet({ parts, repo, run: prepared, job, judge: runJudge, limitUsd: runCapUsd });
     save({ ...p, phase: 'ran', measure, ended: Date.now() });
     if (measure.stopped) log(`  ${runId} stopped: ${measure.stopped}`);
   }
@@ -300,7 +304,7 @@ export async function runSealed({ out, parts, at = 'main', capUsd, runCapUsd, re
     const prepared = await prepareRun({ home, repo, host: HOST, runId: idOf(attempt), input: parts.set.input(job), ref: sha });
     const started = Date.now();
     const runJudge = meteredJudge(judge);
-    const measure = await runSet({ parts, run: prepared, job, judge: runJudge, limitUsd: runCapUsd });
+    const measure = await runSet({ parts, repo, run: prepared, job, judge: runJudge, limitUsd: runCapUsd });
     const run = { runId: prepared.runId, ...runPaths(home, prepared.runId) };
     const finished = await finishJob({ home, repo, run, job, measure, propose: false });
     const scored = parts.set === SETS.v2 ? await scoreRun({ parts, run, job, measure, hostsDir: join(out, 'sealed', label, 'hosts') }) : undefined;
@@ -322,7 +326,7 @@ export async function runSealed({ out, parts, at = 'main', capUsd, runCapUsd, re
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--sealed --at seed|main|<sha>]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--sealed --at seed|main|<sha>]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -331,6 +335,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       options: {
         out: { type: 'string' }, scripted: { type: 'boolean' }, live: { type: 'boolean' }, data: { type: 'string' }, jobs: { type: 'string' },
         'cap-usd': { type: 'string' }, 'run-cap-usd': { type: 'string' }, 'no-record': { type: 'boolean' }, sealed: { type: 'boolean' }, at: { type: 'string' },
+        'no-dispatch': { type: 'boolean' },
         model: { type: 'string' }, thinking: { type: 'string' }, set: { type: 'string' },
       },
     }));
@@ -355,6 +360,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     const parts = values.live
       ? await liveParts({ set, ...(values.data ? { data: resolve(values.data) } : {}), ...(values.model ? { model: values.model } : {}), ...(values.thinking ? { thinking: values.thinking } : {}) })
       : scriptedParts({ set, ...(values.data ? { data: resolve(values.data) } : {}) });
+    if (values['no-dispatch']) parts.dispatch = false;
     const out = resolve(values.out ?? OUT);
     try {
       mkdirSync(out, { recursive: true });

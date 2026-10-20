@@ -226,6 +226,21 @@ The holding category is a name pattern (Holding(s), Enterprises, Diversified) or
 which companies are sampled and misses holding companies without such a name, e.g. Berkshire Hathaway; no answer is
 scored from it.
 
+## v4: the models and the host's dispatch
+
+The root agent runs `claude-opus-5-5` at high thinking: by-hand runs, notes, writing and fixing workflows, escalations.
+Every workflow agent node runs the host's model, `NODE` in `models.mjs` (`gpt-6-luna` at medium; one line switches it to
+`deepseek-v4.1-flash`), whatever the workflow asks for: a node's own `thinking` and `tier` are the host's to set. Each
+model's catalog entry carries its price (`PRICES`), so each conversation is priced by its own model in the rows, the
+executions and the guard. `--model` and `--thinking` name another root model.
+
+When the agent repository holds a promoted workflow (its live revision active) whose output is the whole answer, the
+host runs it first (`dispatch.mjs`), as a durable workflow task of the run, before the root agent says anything. A complete
+run with a valid answer is the run's answer, and Opus is never called; its row's `workflowsUsed` entry has `classifiedBy`
+`host-workflow`. A run that escalates or fails hands the job to the root agent with what the workflow returned. Either
+way the task is a use in pi-agent-learn's uses file, so promotion and demotion count it. A workflow on trial still runs
+through the agent. `--no-dispatch` turns it off.
+
 ## Files
 
 | File | What |
@@ -237,7 +252,8 @@ scored from it.
 | `row.mjs` | the per-run row |
 | `recording.mjs` | a run's store as an `agentrun.recording/1` directory |
 | `curve.mjs` | `curve.html` from the rows: static, no build step |
-| `models.mjs` | the live model and Jev, through the gateway |
+| `models.mjs` | the live models (the root's, the nodes', their prices) and Jev, through the gateway |
+| `dispatch.mjs` | the host runs a promoted workflow that answers the whole job before the root agent |
 | `scripted.mjs` | the $0 doubles: the scripted agent and Jev, the fixture web `fetch_page` reads, and v2's fakes of search_web, browse and read_document |
 | `sets.mjs` | the two jobs, v1 and v2: what the agent is given, its label tools and its answer |
 | `score-v2.mjs` | the v2 scorer |
