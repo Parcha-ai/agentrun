@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createRedactor, redactDeep, scrubPageUrl } from "../dist/index.js";
 import { fetchableUrl } from "../dist/core/uri.js";
+import { scrubFetchedUrl } from "../dist/core/redact.js";
 
 const R = "[redacted]";
 
@@ -104,4 +105,14 @@ test("redactDeep reaches every string, keys included, and leaves other values an
   assert.equal(input["deep-secret-1"][4].nested, "deep-secret-1");
   assert.equal(redactDeep("deep-secret-1", redact), R);
   assert.equal(redactDeep(42, redact), 42);
+});
+
+
+// A public query value (dosId on a state registry URL) is blanked in a browser receipt and kept in a web_fetch receipt. That is intended, and stated in the tools' contracts: pinned here side by side.
+test("one URL, two stated rules: a browser page URL shows every query value as the placeholder (the site chose where the browser went, so any value in it can be a credential), a fetched URL keeps a value that is in the URL the model asked for and redacts every other", () => {
+  const redact = createRedactor();
+  const final = "https://dos.example/CorpSearch?dosId=12345&sessionId=abc";
+  assert.equal(scrubPageUrl(final, redact), `https://dos.example/CorpSearch?dosId=${R}&sessionId=${R}`, "browser: every value goes");
+  assert.equal(scrubFetchedUrl(final, "https://dos.example/CorpSearch?dosId=12345", redact), `https://dos.example/CorpSearch?dosId=12345&sessionId=${R}`, "fetch: the value the model sent stays, the one the site added goes");
+  assert.equal(scrubFetchedUrl(final, "https://dos.example/CorpSearch", redact), `https://dos.example/CorpSearch?dosId=${R}&sessionId=${R}`, "fetch: a value the model did not send goes too");
 });

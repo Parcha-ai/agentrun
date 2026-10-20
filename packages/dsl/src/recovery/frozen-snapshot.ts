@@ -29,7 +29,10 @@ export type ItemRecord = {
   base: string;
   /** The journal revision of the commit that wrote this value. */
   revision: number;
+  /** `failed`: the item ended on its failure, which `outcome` holds; its map collects its items' failures. */
   status: "running" | "committed" | "failed";
+  /** Present exactly when `status` is `failed`. */
+  outcome?: ItemOutcome;
   frame: {
     done: string[];
     states: Record<string, StateDelta>;
@@ -105,7 +108,13 @@ export type PathFrame = {
   /** A map that ended on an item's failure: the finished items' results, keyed by the map's `as`, so
    *  the handoff carries the completed child work and a redispatch never loses it. */
   partial?: { path: string; as: string; results: unknown[] };
+  /** The map items that ended on their failure (`onItemFailure: "collect"`), by the item's path (`<map>/items/<i>`): an
+   *  item here is answered from its row and its body never runs again. Kept with the run, as committed paths are. */
+  failures?: Record<string, ItemOutcome>;
 };
+
+/** How a map item that ended on its failure ended: the failing node's label, the failure's code and its message. */
+export type ItemOutcome = { code: string; label: string; message: string };
 
 /** The recovery driver's durable state. It lives whole in the journal; each commit replaces it. No run
  *  clock: clocks exist only per effect. */
@@ -125,7 +134,10 @@ export type FrozenSnapshot = {
   escalation?: EscalationRow;
 };
 
-export type StepRecord = { label: string; attempt: number; attemptsAllowed: number; status: "running" | "closed" | "failed" | "submitted" };
+export type StepRecord = { label: string; attempt: number; attemptsAllowed: number; status: "running" | "closed" | "failed" | "submitted";
+  /** The failure that failed the step, when it was an item failure (`isItemFailure`) in an item of a map that collects
+   *  its items' failures: a later open refuses the step with it, so the item ends on the same failure in every process. */
+  failure?: { code: string; message: string } };
 
 export type EscalationRow = {
   kind: string; stage: string; summary: string;
@@ -156,6 +168,15 @@ type Fields = Record<string, unknown>;
 /** `value` as an object whose fields can be read, or null. */
 const fields = (value: unknown): Fields | null => record(value) ? value as Fields : null;
 const entriesOf = (value: unknown): Array<[string, unknown]> | null => { const object = fields(value); return object ? Object.entries(object) : null; };
+const isStepFailure = (value: unknown): boolean => {
+  const at = fields(value);
+  return Boolean(at && Object.keys(at).length === 2 && typeof at.code === "string" && typeof at.message === "string");
+};
+/** Whether a value is an item's committed failure: three strings, and nothing else. */
+export const isItemOutcome = (value: unknown): value is ItemOutcome => {
+  const at = fields(value);
+  return Boolean(at && Object.keys(at).length === 3 && typeof at.code === "string" && typeof at.label === "string" && typeof at.message === "string");
+};
 const nonNegativeInt = (value: unknown): boolean => Number.isSafeInteger(value) && (value as number) >= 0;
 
 /** Whether a saved frame is one the driver could have written for its document. */
@@ -168,7 +189,9 @@ function validFrame(value: unknown, resolves: (path: string) => boolean): boolea
   if (!(frame.input === null ? doneList.length === 0 : typeof frame.input === "string" && SHA256.test(frame.input))) return false;
   const [states, chains, loops, routes, inputs, steps] = [frame.states, frame.chains, frame.loops, frame.routes, frame.inputs, frame.steps].map(entriesOf);
   const partial = frame.partial === undefined ? undefined : fields(frame.partial);
+  const failures = frame.failures === undefined ? [] : entriesOf(frame.failures);
   return Boolean(states && states.every(([path, state]) => done.has(path) && record(state))
+    && failures && failures.every(([item, outcome]) => /\/items\/(?:0|[1-9]\d*)$/.test(item) && resolves(`${item}/body`) && isItemOutcome(outcome))
     && chains && chains.every(([, head]) => { const at = fields(head); return Boolean(at && nonNegativeInt(at.index) && typeof at.path === "string" && done.has(at.path)); })
     && loops && loops.every(([loop, count]) => resolves(loop) && nonNegativeInt(count))
     && routes && routes.every(([route, decision]) => {
@@ -182,7 +205,8 @@ function validFrame(value: unknown, resolves: (path: string) => boolean): boolea
       const at = fields(step);
       return Boolean(at && resolves(path) && typeof at.label === "string"
         && nonNegativeInt(at.attempt) && Number.isSafeInteger(at.attemptsAllowed) && (at.attemptsAllowed as number) >= 1
-        && ["running", "closed", "failed", "submitted"].includes(String(at.status)));
+        && ["running", "closed", "failed", "submitted"].includes(String(at.status))
+        && (at.failure === undefined || (at.status === "failed" && isStepFailure(at.failure))));
     })
     && (partial === undefined || (partial && typeof partial.path === "string" && resolves(partial.path) && typeof partial.as === "string" && Array.isArray(partial.results))));
 }
@@ -276,8 +300,9 @@ export function admitFrozenStep(steps: Record<string, StepRecord>, path: string,
 
 /** The current attempt ended without a submission: `closed` until a retry is admitted, or
  *  `failed` when the failure is final or no attempt remains. */
-export function closeFrozenStepAttempt(step: StepRecord, final: boolean): void {
+export function closeFrozenStepAttempt(step: StepRecord, final: boolean, failure?: StepRecord["failure"]): void {
   step.status = final || step.attempt + 1 >= step.attemptsAllowed ? "failed" : "closed";
+  if (step.status === "failed" && failure) step.failure = { code: failure.code, message: failure.message };
 }
 
 /** The run-wide stop the driver applies: the host's pause or cancel it was handed, or null when it keeps

@@ -1,12 +1,12 @@
 // A demo's `run.ts` as the reference entry's own test uses it: the reference job and its fakes, the spec from `DEMO_SPEC` (a JSON file), the standard flags.
 import type { Message } from '@earendil-works/pi-ai';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fakeEyes, fakeTranscriptionFetch } from '@parcha/pi-vision/testing';
 import { openAiTranscriber } from '@parcha/pi-vision/transcribers';
-import { demo } from '@parcha/agentrun-reference';
-import type { ToolContext } from '@parcha/agentrun-reference';
+import { demo } from '@parcha/agentrun-harness';
+import type { ToolContext } from '@parcha/agentrun-harness';
 import type { BoxProvider } from '@parcha/pi-transport';
 import { fakes, job, lead } from './job.ts';
 
@@ -63,6 +63,13 @@ const codeLead = (messages: readonly Message[]) => {
   const submitting = next.content.some((block) => block.type === 'toolCall' && block.name === 'submit');
   return submitting && !messages.some(isCode) ? fauxAssistantMessage([fauxToolCall('code', { code: process.env.DEMO_CODE! })], { stopReason: 'toolUse' }) : next;
 };
+// And the agent's own bash tool: before it submits, the lead makes one `bash` call with the command in DEMO_BASH (after its code call when DEMO_CODE is set). The lead never sees that exchange in its own history.
+const bashLead = (messages: readonly Message[]) => {
+  const isBash = (message: Message) => (message.role === 'toolResult' && message.toolName === 'bash') || (message.role === 'assistant' && message.content.some((block) => block.type === 'toolCall' && block.name === 'bash'));
+  const next = (process.env.DEMO_CODE ? codeLead : baseLead)(messages.filter((message) => !isBash(message)));
+  const submitting = next.content.some((block) => block.type === 'toolCall' && block.name === 'submit');
+  return submitting && !messages.some(isBash) ? fauxAssistantMessage([fauxToolCall('bash', { command: process.env.DEMO_BASH! })], { stopReason: 'toolUse' }) : next;
+};
 const withSites = process.env.DEMO_SITES ? { ...job, workflow: { ...job.workflow, root: { ...job.workflow.root, steps: [...(job.workflow.root as { steps: unknown[] }).steps.slice(0, 1), { ...((job.workflow.root as { steps: unknown[] }).steps[1] as object), instructions: 'Hand the registry check to the registry site with use_website, then cite its receipt.' }, ...(job.workflow.root as { steps: unknown[] }).steps.slice(2)] } } } as unknown as typeof job : undefined;
 // And scripted eyes for the lead's images: with them the lead takes text only, so the read of the filing scan goes to the eyes (a paid look).
 const eyes = process.env.DEMO_EYES ? fakeEyes({ model: 'scripted-eyes', price: { input: 1, output: 4 }, ...(process.env.DIR ? { ledgerPath: join(process.env.DIR, 'eyes.jsonl') } : {}), answers: [process.env.DEMO_EYES_FAIL ? { fail: 'the eyes are unavailable' } : 'A scanned certificate of incorporation. Incorporated on 2019-03-04.'] }) : undefined;
@@ -82,7 +89,7 @@ const withLeak = leaking ? { ...job, workflow: { ...job.workflow, schemas: { ...
 // And a fan-out (DEMO_FANOUT): six branches, four at a time, each a slow tool call. Crossings at the nodes' starts are often taken while another branch's call is in flight, so they are often not eligible kill points.
 const fanning = process.env.DEMO_FANOUT ? { slow: async () => { await new Promise((resolve) => setTimeout(resolve, 120)); return {}; } } : undefined;
 const withFan = fanning ? { ...job, workflow: { ...job.workflow, schemas: { ...job.workflow.schemas, Slow: { type: 'object' } }, root: { ...job.workflow.root, steps: [(job.workflow.root as { steps: unknown[] }).steps[0], { node: 'code', label: 'items', as: 'items', code: '(s) => [1, 2, 3, 4, 5, 6]' }, { node: 'map', label: 'fan', itemsPath: 'items', as: 'fanned', resultPath: 'row', maxConcurrency: 4, body: { node: 'call', label: 'slow', via: 'tool', tool: 'slow', args: {}, out: 'Slow', as: 'row', deadline_s: 30 } }, ...(job.workflow.root as { steps: unknown[] }).steps.slice(1)] } } } as unknown as typeof job : undefined;
-const scripted = { ...fakes, ...(fanning ? { tools: { ...fakes.tools, ...fanning } } : {}), ...(leaking ? { tools: { ...fakes.tools, ...leaking } } : {}), ...(process.env.DEMO_SITES ? { model: sitesLead as typeof fakes.model } : {}), ...(process.env.DEMO_CODE ? { model: codeLead as typeof fakes.model } : {}), ...(lingering ? { tools: { ...fakes.tools, ...lingering.tools } } : {}), ...(boxTool ? { tools: { ...fakes.tools, ...(lingering?.tools ?? {}), ...boxTool } } : {}), ...(judgeCost ? { judge: async (request: Parameters<typeof fakes.judge>[0]) => ({ ...(await fakes.judge(request)), cost_usd: judgeCost }) } : {}) };
+const scripted = { ...fakes, ...(fanning ? { tools: { ...fakes.tools, ...fanning } } : {}), ...(leaking ? { tools: { ...fakes.tools, ...leaking } } : {}), ...(process.env.DEMO_SITES ? { model: sitesLead as typeof fakes.model } : {}), ...(process.env.DEMO_BASH ? { model: bashLead as typeof fakes.model } : process.env.DEMO_CODE ? { model: codeLead as typeof fakes.model } : {}), ...(lingering ? { tools: { ...fakes.tools, ...lingering.tools } } : {}), ...(boxTool ? { tools: { ...fakes.tools, ...(lingering?.tools ?? {}), ...boxTool } } : {}), ...(judgeCost ? { judge: async (request: Parameters<typeof fakes.judge>[0]) => ({ ...(await fakes.judge(request)), cost_usd: judgeCost }) } : {}) };
 // A test knob: DEMO_OPERATOR_HOLD names the operator's control file. The first process holds the lead's first model call (blocking, in the child) until the control file has appeared and been consumed, then waits for the supervisor's kill: the run cannot
 // finish before the operator's kill lands. A marker beside it lets the process that resumes after the kill go on.
 const holdFile = process.env.DEMO_OPERATOR_HOLD;
@@ -130,5 +137,14 @@ const transcribing = process.env.DEMO_TRANSCRIBE ? (() => {
   const answer = fakeTranscriptionFetch('openai', { words: [{ text: 'hello', start: 0.1, end: 0.5 }, { text: 'world', start: 0.6, end: 1 }], durationS: 2 });
   return () => ({ transcriber: openAiTranscriber({ apiKey: () => `made-up-stt-key-${'k'.repeat(24)}`, fetch: answer.fetch, usdPerMinute: 0.6 }) });
 })() : undefined;
-export const options = { ...(process.env.DEMO_FOLLOW_HOLD_MS ? { followHoldMs: Number(process.env.DEMO_FOLLOW_HOLD_MS) } : {}), ...(process.env.DEMO_CODE_ON ? { codeMode: true } : {}), ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withBox ?? withFan ?? withLeak ?? withSites ?? lingering?.job ?? job, fakes: { ...scriptedHeld, ...(process.env.DEMO_FAKES_INPUT ? { input: { company: 'Beta Ltd' } } : {}), ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : transcribing ? { vision: transcribing } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}) };
+// A test knob: DEMO_REPORT is a directory the run finds as `report/` in its work directory (the agent's report folder, draft 41), however the run goes: the files are the job's, written before it starts.
+const reportFiles = (dir: string, base = '', out: Record<string, Uint8Array> = {}): Record<string, Uint8Array> => {
+  for (const entry of readdirSync(join(dir, base), { withFileTypes: true })) {
+    if (entry.isDirectory()) reportFiles(dir, `${base}${entry.name}/`, out);
+    else out[`report/${base}${entry.name}`] = readFileSync(join(dir, base, entry.name));
+  }
+  return out;
+};
+const withReport = (chosen: typeof job): typeof job => (process.env.DEMO_REPORT ? { ...chosen, files: { ...chosen.files, ...reportFiles(process.env.DEMO_REPORT) } } : chosen);
+export const options = { ...(process.env.DEMO_FOLLOW_HOLD_MS ? { followHoldMs: Number(process.env.DEMO_FOLLOW_HOLD_MS) } : {}), ...(process.env.DEMO_CODE_ON ? { codeMode: true } : {}), ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withReport(withBox ?? withFan ?? withLeak ?? withSites ?? lingering?.job ?? job), fakes: { ...scriptedHeld, ...(process.env.DEMO_FAKES_INPUT ? { input: { company: 'Beta Ltd' } } : {}), ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : transcribing ? { vision: transcribing } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}) };
 if (process.argv.includes('--child')) await demo(options);

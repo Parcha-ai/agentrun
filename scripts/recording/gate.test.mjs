@@ -1,4 +1,4 @@
-// The hosted gallery's gate (gate.mjs) on a built viewer: it passes what the build makes of the bundled recordings, and
+// The hosted gallery's gate (gate.mjs) on a built viewer: it passes what the build makes of a recorded run, and
 // refuses each way an unchecked byte could be published.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -8,22 +8,26 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { build } from '../../apps/viewer/build.mjs';
 import { gateProblems } from './gate.mjs';
+import { makeSentinels } from '../../packages/pi-browser/src/testing/sentinels.ts';
 
-const recordings = new URL('../../apps/viewer/recordings/', import.meta.url).pathname;
+/** A recorded run, the reference job kept with the viewer's test fixtures: the gallery the gate is tried on. */
+const referenceJob = new URL('../../apps/viewer/test/fixtures/reference-job/', import.meta.url).pathname;
+/** A second recording, a killed run, for a gallery of two: a test fixture, not bundled. */
+const killed = new URL('../../apps/viewer/test/fixtures/ten-kills-seed21/', import.meta.url).pathname;
+const withKilled = (dir) => cpSync(killed, join(dir, 'ten-kills-seed21'), { recursive: true });
 const secret = () => `sk-${'a1'.repeat(20)}`;
-/** A built viewer whose gallery is a copy of the bundled recordings, changed by `edit` before the build. */
+/** A built viewer whose gallery is a copy of the reference job, changed by `edit` before the build. */
 const built = (t, edit = () => {}, { files = false } = {}) => {
   const dir = mkdtempSync(join(tmpdir(), 'gallery-gate-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  cpSync(recordings, join(dir, 'recordings'), { recursive: true });
-  rmSync(join(dir, 'recordings', 'README.md'), { force: true });
+  cpSync(referenceJob, join(dir, 'recordings', 'reference-job'), { recursive: true });
   edit(join(dir, 'recordings'));
   build(join(dir, 'dist'), join(dir, 'recordings'), { files });
   return join(dir, 'dist');
 };
 const paths = (dist) => gateProblems(dist).map(({ path, message }) => `${path}: ${message}`);
 
-test('the build of the bundled recordings passes', (t) => {
+test('the build of a recorded run passes', (t) => {
   assert.deepEqual(paths(built(t)), []);
 });
 
@@ -82,8 +86,37 @@ test('a JWT (a sign-in token) or a Browserbase key in a tool result, a text blob
   }
 });
 
+test('a URL carrying a credential in its query is refused in a line (at its line), a blob, the manifest and a published file, naming the parameter and no value', (t) => {
+  const s = makeSentinels();
+  const kind = 'url with a token-bearing query parameter \\(token\\)';
+  const line = JSON.stringify({ channel: 'live', source: 'pi', kind: 'tool_execution_end', gen: 1, t: 1e9, seq: 1e6, data: { liveView: { url: s.bbLiveViewUrl } } });
+  const append = (dir) => {
+    const file = join(dir, 'reference-job', 'events.jsonl');
+    writeFileSync(file, `${readFileSync(file, 'utf8')}${line}\n`);
+  };
+  const blob = (dir) => writeFileSync(join(dir, 'reference-job', 'blobs', `${createHash('sha256').update(s.bbLiveViewUrl).digest('hex')}.txt`), s.bbLiveViewUrl);
+  const titled = (dir) => {
+    const manifest = join(dir, 'reference-job', 'manifest.json');
+    writeFileSync(manifest, JSON.stringify({ ...JSON.parse(readFileSync(manifest, 'utf8')), title: s.bbLiveViewUrl }));
+  };
+  const cases = [
+    ['a line', append, new RegExp(`^recordings/reference-job/events\\.jsonl:\\d+: contains a ${kind}$`)],
+    ['a text blob', blob, new RegExp(`^recordings/reference-job/blobs/[0-9a-f]{64}\\.txt: contains a ${kind}$`)],
+    ['the manifest', titled, new RegExp(`^recordings/reference-job/manifest\\.json: contains a ${kind}$`)],
+  ];
+  for (const [where, edit, expected] of cases) {
+    const found = paths(built(t, edit));
+    assert.ok(found.some((problem) => expected.test(problem)), `${where}\n${found.join('\n')}`);
+    for (const value of [s.bbLiveViewToken, s.bbSessionId]) assert.ok(!found.some((problem) => problem.includes(value)), `${where}: a problem repeats a value`);
+  }
+  const dist = built(t);
+  writeFileSync(join(dist, 'viewer.js'), `${readFileSync(join(dist, 'viewer.js'), 'utf8')}\n// ${s.bbConnectUrl.replace(s.bbApiKey, 'opaque-api-value')}\n`);
+  assert.ok(paths(dist).includes('viewer.js: contains a url with a token-bearing query parameter (apiKey)'), paths(dist).join('\n'));
+});
+
 test('a credential anywhere in a published text file is found: a manifest, the page\'s script', (t) => {
   const dist = built(t, (dir) => {
+    withKilled(dir);
     const manifest = join(dir, 'ten-kills-seed21', 'manifest.json');
     writeFileSync(manifest, JSON.stringify({ ...JSON.parse(readFileSync(manifest, 'utf8')), title: secret() }));
   });
@@ -151,7 +184,7 @@ test('each gallery entry is exactly what its files give: no swapped or missing b
 });
 
 test('the gallery embeds exactly the recordings beside it, and an empty gallery is refused', (t) => {
-  const dist = built(t);
+  const dist = built(t, withKilled);
   rmSync(join(dist, 'recordings', 'ten-kills-seed21'), { recursive: true });
   assert.ok(paths(dist).some((problem) => problem.startsWith('gallery.js: embeds')), paths(dist).join('\n'));
   writeFileSync(join(dist, 'gallery.js'), 'window.AGENTRUN_GALLERY = [');

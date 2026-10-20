@@ -3,6 +3,7 @@
 // would give it (its size in points times dpi over 72, rounded up), so the two agree to the pixel.
 import { PDF_RENDER_MAX_PIXELS, PDF_RENDER_TIMEOUT_MS, PDF_WORKER_MEMORY_MB, PdfProviderError, readPdfBytes, resolvePdfDependency, runPdfWorker } from "../core/pdf.js";
 import type { Provider, RenderedImage } from "../core/provider.js";
+import { messageLine } from "../core/primitives.js";
 
 /** The engine's script. PDFium's bitmap comes back as R, G, B, A bytes; the PNG is RGB with no filter. It takes its
  *  built-in modules from the process, so it runs the same whether the host's eval is CommonJS or ESM. PDFium's WASM memory
@@ -65,7 +66,7 @@ export function pdfiumProvider(options: PdfiumOptions = {}): Provider {
       try {
         return { available: true, version: (await resolvePdfDependency("@hyzyla/pdfium")).version };
       } catch (error) {
-        return { available: false, needs: "@hyzyla/pdfium", reason: String((error as Error)?.message ?? error).split("\n")[0]! };
+        return { available: false, needs: "@hyzyla/pdfium", reason: messageLine(error) };
       }
     },
     async render(source, request, call) {

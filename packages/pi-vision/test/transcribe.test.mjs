@@ -57,7 +57,7 @@ test("fal reads the key at each request, gives up on a job with no answer by its
 
   let polls = 0;
   const stalled = async (url) => {
-    if (!String(url).endsWith("/status")) return new Response(JSON.stringify({ request_id: "r1", status_url: "https://queue.fal.run/x/requests/r1/status", response_url: "https://queue.fal.run/x/requests/r1" }));
+    if (!String(url).endsWith("/status")) return new Response(JSON.stringify({ request_id: "r1", status_url: "https://queue.fal.run/fal-ai/elevenlabs/requests/r1/status", response_url: "https://queue.fal.run/fal-ai/elevenlabs/requests/r1" }));
     polls += 1;
     return new Response(JSON.stringify({ status: "IN_PROGRESS" }));
   };

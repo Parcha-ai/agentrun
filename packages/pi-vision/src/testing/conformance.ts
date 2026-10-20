@@ -8,9 +8,9 @@
 // document format of its own and proves the suite itself.
 
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { visionContext, type VisionEnv } from "../core/env.js";
+import { sha256Hex } from "../core/primitives.js";
 import { CAPABILITY_METHODS, type Capability, type Cell, type Detection, type MadeBy, type Provider, type ProviderCall, type ProviderSource } from "../core/provider.js";
 import { imageSize, pngBytes } from "./fixtures.js";
 
@@ -234,7 +234,7 @@ export function fakeProvider(options: FakeProviderOptions = {}): Provider {
   const load = async (source: ProviderSource, call: ProviderCall): Promise<FakeDocument> => {
     const read = await call.env.readBinaryFile(source.path, visionContext(call.signal));
     if (!read.ok) throw read.error;
-    assert.equal(createHash("sha256").update(read.value).digest("hex"), source.sha256, "the bytes read are the source's");
+    assert.equal(sha256Hex(read.value), source.sha256, "the bytes read are the source's");
     return JSON.parse(Buffer.from(read.value).toString("utf8")) as FakeDocument;
   };
   return {

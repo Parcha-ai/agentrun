@@ -11,7 +11,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { FakeBackend } from '@parcha/pi-browser/testing';
 import { readJournal } from '@parcha/agentrun-pi/durable';
-import { RUN_KEY } from '@parcha/agentrun-reference';
+import { RUN_KEY } from '@parcha/agentrun-harness';
 import { gates } from './reference/gates.ts';
 import { fakes, job } from './reference/job.ts';
 
@@ -67,8 +67,8 @@ test('a relative --dir with a trailing slash runs the same job and names the rec
 const at = (path) => new URL(path, import.meta.url).href;
 const CHILD = `
 import { remoteDriver, remoteProvider } from '${import.meta.resolve('@parcha/pi-browser/testing')}';
-import { placeAt, run } from '${at('../packages/reference/dist/assemble.js')}';
-import { localHost } from '${at('../packages/reference/dist/host.js')}';
+import { placeAt, run } from '${at('../packages/harness/dist/assemble.js')}';
+import { localHost } from '${at('../packages/harness/dist/host.js')}';
 import { fakes, job } from '${at('./reference/job.ts')}';
 import { summary } from '${at('./reference/run.ts')}';
 const place = await placeAt(process.env.DIR);

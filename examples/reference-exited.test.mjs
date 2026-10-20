@@ -5,7 +5,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { demo, localPlace } from '@parcha/agentrun-reference';
+import { demo, localPlace } from '@parcha/agentrun-harness';
 
 test('a runner whose exited rejects ends the attempt cleanly: no timer is left, the signals reader is closed, the place is released, and the error is the runner\'s', { timeout: 60_000 }, async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-exited-'));

@@ -182,10 +182,13 @@ public page sets.
   - the disk panel: a generation that ended without a holder.
 - **Receipts, one click away.** The strip's looks paid and cost sit under a disclosure, Receipts. So do the vision
   panel's meters and the receipt of its look.
+- **No dollar figure.** A part that draws one is marked `cost`, drawn only with `?debug=cost` or `?debug=durability`,
+  under Receipts too: the strip's cost, the vision panel's spend and a receipt's price, and the transport panel's cost.
 - **A look leads with its answer.** In the vision panel's film and pages lanes, a look shows what the eyes answered and
   the rows that cite it first. Its picture (the frames, the page with its boxes) is below, in a disclosure a click opens.
 
-A view reads the page's debug views from `ViewContext.debug` (`durability` among them in the debug view).
+A view reads the page's debug views from `ViewContext.debug` (`durability` among them in the debug view). The page hides
+every part marked `cost` itself, so a panel only marks it.
 
 ## A panel in full
 
