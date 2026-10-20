@@ -248,6 +248,14 @@ export interface DaytonaHostOptions {
   runArgs?: string[];
   /** Extra environment for the instance. The driver never copies its own environment (which holds the API keys). */
   env?: Record<string, string>;
+  /**
+   * Names the instance takes from the environment of the driver's exec into the box, where the box's runtime puts a secret
+   * (`modalHost`'s `secrets`). The launcher's start is told the names, and hands the values to `serve` and every incarnation
+   * in their environments: no file, argument or handle holds a value, and none passes through this process. A name missing
+   * there fails the start, naming it. With `sudo`, the start runs as `sudo -n --preserve-env=<names>`, which the box's
+   * sudoers must allow (it does for a user that may run any command). Not PATH, LANG, HOME, PDA_HOLDER, or a name `env` sets.
+   */
+  inheritEnv?: string[];
   /** Restart in place after a non-terminal exit (default true). */
   restart?: boolean;
   /**
@@ -286,6 +294,9 @@ const BOX_PATH = /^\/[A-Za-z0-9._@/-]+$/;
 const climbs = (path: string): boolean => path.split("/").includes("..");
 const ACCOUNT = /^(?:[a-z_][a-z0-9_-]{0,31}|\d{1,10})$/;
 const FLEET = /^[a-z0-9][a-z0-9-]{0,62}$/;
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** What the launcher sets on every incarnation: an inherited name never replaces one. */
+const LAUNCHER_KEYS = new Set(["PATH", "LANG", "HOME", "PDA_HOLDER"]);
 const UP = new Set(["creating", "pulling_snapshot", "pending_build", "building_snapshot", "starting", "restoring", "resuming", "resizing", "snapshotting", "forking", "stopping", "pausing", "paused"]);
 const DOWN = new Set(["stopped", "archived", "archiving", "destroying"]);
 const BROKEN = new Set(["error", "build_failed"]);
@@ -362,12 +373,20 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & Required<Pic
   if (user === "root" || user === "0") throw new DaytonaHostError("INVALID_ARGUMENT", "the instance and the agent's tools never run as root");
   if (!FLEET.test(fleet)) throw new DaytonaHostError("INVALID_ARGUMENT", `fleet ${JSON.stringify(fleet)} is not a lowercase label value`);
   if (!opts.snapshot) throw new DaytonaHostError("INVALID_ARGUMENT", "a snapshot is required");
+  const inheritEnv = [...(opts.inheritEnv ?? [])];
+  for (const name of inheritEnv) {
+    if (typeof name !== "string" || !ENV_NAME.test(name)) throw new DaytonaHostError("INVALID_ARGUMENT", `inheritEnv: ${JSON.stringify(name)} is not an environment variable name`);
+    if (LAUNCHER_KEYS.has(name)) throw new DaytonaHostError("INVALID_ARGUMENT", `inheritEnv: ${name} is the launcher's`);
+    if (opts.env && Object.hasOwn(opts.env, name)) throw new DaytonaHostError("INVALID_ARGUMENT", `inheritEnv: ${name} is also set by env`);
+  }
   const command = opts.command ?? [node, `${packageDir}/dist/cli.js`];
 
   const mine = (h: HostHandle) => h.driver === driver && h.fleet === fleet && typeof h.sandboxId === "string" && typeof h.name === "string";
   const ours = (box: SandboxInfo, runId: string) => box.labels?.[LABEL_FLEET] === fleet && box.labels?.[LABEL_RUN] === runId;
+  // sudo resets the environment: the start keeps the inherited names across it (names on its command line, never values).
+  const startS = S && inheritEnv.length > 0 ? `sudo -n --preserve-env=${inheritEnv.join(",")} ` : S;
   const launcher = (verb: "start" | "status" | "stop", name: string, timeoutMs?: number) =>
-    `${S}${node} ${launch} ${verb} ${name} --dir ${dir}${verb === "start" ? ` --stage ${stage}` : ""}${timeoutMs === undefined ? "" : ` --timeout-ms ${timeoutMs}`}${verb === "stop" && opts.reapOnStop ? " --reap-detached" : ""}`;
+    `${verb === "start" ? startS : S}${node} ${launch} ${verb} ${name} --dir ${dir}${verb === "start" ? ` --stage ${stage}${inheritEnv.length > 0 ? ` --inherit-env ${inheritEnv.join(",")}` : ""}` : ""}${timeoutMs === undefined ? "" : ` --timeout-ms ${timeoutMs}`}${verb === "stop" && opts.reapOnStop ? " --reap-detached" : ""}`;
 
   async function createOrAdopt(body: CreateSandboxBody, runId: string): Promise<SandboxInfo> {
     for (let attempt = 1; ; attempt++) {
@@ -425,6 +444,9 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & Required<Pic
       runPath(ref.id);
       if (!mountToken) throw new DaytonaHostError("INVALID_ARGUMENT", "no mount token");
       const extra = attemptEnv(attempt, (m) => new DaytonaHostError("INVALID_ARGUMENT", m));
+      // An inherited name would replace the start's own value in the instance: the start is refused, never overruled.
+      const both = inheritEnv.filter((n) => Object.hasOwn(extra, n));
+      if (both.length > 0) throw new DaytonaHostError("INVALID_ARGUMENT", `the start sets ${both.join(", ")}, which the instance inherits from the box (inheritEnv)`);
       const t0 = now();
       const name = sandboxName(prefix, ref.id, t0);
       const body: CreateSandboxBody = {

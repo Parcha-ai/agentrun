@@ -409,6 +409,32 @@ test("box: a receipt of each box the driver made: its size, when it was made and
   await g.host.stop(gh);
 });
 
+test("inheritEnv with sudo: the start keeps the names across sudo's reset of the environment (--preserve-env), and no command carries a value", async () => {
+  const w = world("hold", { sudo: true, inheritEnv: ["PDA_DUMMY_KEY", "PDA_DUMMY_OTHER"] });
+  // Nothing runs under sudo here: every command gets a canned answer, a launched state.
+  const launched: ExecResult = { exitCode: 0, result: JSON.stringify({ launcher: 1, launcherTicks: 1, phase: "running", instance: 2, instanceTicks: 2, spawned: 1, restarts: 0, exit: null, signal: null, reason: null, at: new Date().toISOString() }) };
+  for (let i = 0; i < 8; i++) w.faults.exec.push(launched);
+  mkdirSync(join(dirname(w.box), "stage"), { recursive: true, mode: 0o700 }); // what the canned directory command would have made
+  await w.host.start(REF, TOKEN);
+  const commands = w.execs.map((e) => e.command);
+  const start = commands.find((c) => / start /.test(c));
+  assert.ok(start, commands.join("\n"));
+  assert.match(start, /^sudo -n --preserve-env=PDA_DUMMY_KEY,PDA_DUMMY_OTHER \S+ \S+ start .* --inherit-env PDA_DUMMY_KEY,PDA_DUMMY_OTHER/);
+  assert.deepEqual(commands.filter((c) => c !== start && c.includes("--preserve-env")), [], "only the start keeps them");
+});
+
+test("inheritEnv: a start whose own environment sets an inherited name is refused before a box is made, never overruled by the box's value", async () => {
+  const w = world("hold", { inheritEnv: ["PDA_DUMMY_KEY"] });
+  await assert.rejects(w.host.start(REF, TOKEN, { attempt: 1, env: { PDA_DUMMY_KEY: "the start's own" } }), (e: unknown) => e instanceof DaytonaHostError && e.code === "INVALID_ARGUMENT" && /sets PDA_DUMMY_KEY, which the instance inherits from the box/.test(e.message));
+  assert.equal(w.creates.length, 0, "no box made");
+});
+
+test("inheritEnv: a name that is not a variable name, the launcher's own, or one env sets is refused before a box is made", () => {
+  for (const bad of [["1X"], ["A=B"], ["PATH"], ["HOME"], ["PDA_HOLDER"], ["PDA_TEST_OUT"]]) {
+    assert.throws(() => world("hold", { inheritEnv: bad }), (e: unknown) => e instanceof DaytonaHostError && e.code === "INVALID_ARGUMENT" && /inheritEnv/.test(e.message), JSON.stringify(bad));
+  }
+});
+
 test("box: a driver built on daytonaHost under another name (driver) names its own provider, and no box of it gets Daytona's list price", async () => {
   const w = world("hold", { driver: "other" }, { size: { cpu: 2, memory: 4, disk: 10, gpu: 0, createdAt: "2026-10-16T09:00:00.000Z" } });
   const h = await w.host.start(REF, TOKEN);

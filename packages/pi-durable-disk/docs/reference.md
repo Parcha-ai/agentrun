@@ -337,7 +337,11 @@ restart rules and the status contract are the same. Handles say `driver: "modal"
 Daytona snapshot does; Modal runs the driver's commands as root, so there is no `sudo`. `runtime: "vm"` (the default) gives
 the sandbox its own kernel, which has `/dev/fuse`, so the box mounts the disk like any FUSE client. `runtime: "gvisor"` (the
 only runtime Modal offers GPUs on) is refused without `command`, as `INVALID_ARGUMENT`: a disk mounted under gVisor kept none
-of ten acknowledged writes, measured. With a `command` it runs an agent started another way. Fleet and run are sandbox tags,
+of ten acknowledged writes, measured. With a `command` it runs an agent started another way. A key the agent needs on the box (a model's, Modal's own for the
+tools' sandboxes) comes from a Modal Secret, never through this process: `secrets: ["<name>"]` puts the Secret on the
+driver's commands in the sandbox, and `inheritEnv: ["ANTHROPIC_API_KEY"]` has the launcher hand those variables to the
+instance in memory, so no file, argument or handle on the box holds a value (a name missing there fails the start).
+Fleet and run are sandbox tags,
 set right after create (a lost create answer is finished by the retry's lookup), and the sandbox's timeout, at most 24 h,
 bounds a leak. `stop` drains the instance and terminates the sandbox; `kill` terminates it. A stop first ends whatever the
 agent left running under the run's mount (`reapOnStop`, on by default here, opt-in on `daytonaHost`), never pid 1: a

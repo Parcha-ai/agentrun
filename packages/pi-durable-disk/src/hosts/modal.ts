@@ -32,7 +32,7 @@ export interface ModalProcess {
 
 export interface ModalSandbox {
   readonly sandboxId: string;
-  exec(command: string[], params: { mode: "binary"; timeoutMs?: number }): Promise<ModalProcess>;
+  exec(command: string[], params: { mode: "binary"; timeoutMs?: number; secrets?: unknown[] }): Promise<ModalProcess>;
   /** null while it runs, its exit code once it has ended. */
   poll(): Promise<number | null>;
   terminate(): Promise<void>;
@@ -64,6 +64,8 @@ export interface ModalSdk {
     fromName(appName: string, name: string): Promise<ModalSandbox>;
     list(params: { appId: string; tags: Record<string, string> }): AsyncIterable<ModalSandbox>;
   };
+  /** Needed only for `secrets` given by name. */
+  secrets?: { fromName(name: string): Promise<unknown> };
 }
 
 export interface ModalSandboxesOptions {
@@ -82,6 +84,12 @@ export interface ModalSandboxesOptions {
   unencryptedPorts?: number[];
   /** Anything else `sandboxes.create` accepts, passed through unchanged. */
   create?: Record<string, unknown>;
+  /**
+   * Modal Secrets on every command this client runs in a sandbox (the launcher's start among them, and a `prepare`'s): a
+   * string is a Secret's name, looked up once with `sdk.secrets.fromName`; anything else is an SDK Secret, passed as is.
+   * With `inheritEnv`, the instance takes the variables it names from them, and no value passes through this process.
+   */
+  secrets?: (string | object)[];
 }
 
 const errorName = (err: unknown) => (err as { constructor?: { name?: string } })?.constructor?.name ?? "";
@@ -121,6 +129,9 @@ export function modalSandboxes(sdk: ModalSdk, options: ModalSandboxesOptions): D
   };
   const theApp = once(async () => sdk.apps.fromName(options.appName, { createIfMissing: true }));
   const theImage = once(async () => (typeof options.image === "function" ? options.image() : options.image.startsWith("im-") ? sdk.images.fromId(options.image) : sdk.images.fromRegistry(options.image)));
+  const secretsGiven = options.secrets ?? [];
+  if (secretsGiven.some((s) => typeof s === "string") && !sdk.secrets) throw new DaytonaHostError("INVALID_ARGUMENT", "secrets given by name need the SDK's secrets service");
+  const theSecrets = once(async () => Promise.all(secretsGiven.map((s) => (typeof s === "string" ? sdk.secrets!.fromName(s) : s))));
 
   const info = (box: ModalSandbox, labels: Record<string, string>, state: string, name?: string): SandboxInfo => ({
     id: box.sandboxId,
@@ -258,7 +269,8 @@ export function modalSandboxes(sdk: ModalSdk, options: ModalSandboxesOptions): D
       const sb = await handle(box.id);
       try {
         // The command is a script for a shell, with stderr in stdout as the toolbox answers.
-        const p = await sb.exec(["bash", "-c", `exec 2>&1\n${command}`], { mode: "binary", timeoutMs: Math.max(1, timeoutSec) * 1000 });
+        const secrets = secretsGiven.length > 0 ? await theSecrets() : [];
+        const p = await sb.exec(["bash", "-c", `exec 2>&1\n${command}`], { mode: "binary", timeoutMs: Math.max(1, timeoutSec) * 1000, ...(secrets.length > 0 ? { secrets } : {}) });
         await p.stdin.close().catch(() => {});
         const [out, , code] = await Promise.all([p.stdout.readBytes(), p.stderr.readBytes(), p.wait()]);
         return { exitCode: code, result: new TextDecoder().decode(out) };
@@ -302,10 +314,10 @@ export interface ModalHostOptions
  * and its `sandboxId` a Modal sandbox id. `prepare` receives the client (exec, upload) to install what the image lacks.
  */
 export function modalHost(opts: ModalHostOptions): HostDriver & Required<Pick<HostDriver, "kill" | "kills">> & { readonly fleet: string; readonly mountRoot: string } {
-  const { sdk, appName, image, runtime, gpu, cpu, memoryMiB, regions, encryptedPorts, unencryptedPorts, create, ttlMinutes, ...rest } = opts;
+  const { sdk, appName, image, runtime, gpu, cpu, memoryMiB, regions, encryptedPorts, unencryptedPorts, create, secrets, ttlMinutes, ...rest } = opts;
   // gvisor cannot mount the disk safely (measured: none of ten acknowledged writes survived), so it only runs an agent started another way.
   if (runtime === "gvisor" && !rest.command) throw new DaytonaHostError("INVALID_ARGUMENT", "runtime gvisor cannot mount the disk: pass `command` to run the agent some other way (through a pipe), or use the vm runtime");
-  const client = modalSandboxes(sdk, { appName, image, runtime: runtime ?? "vm", gpu, cpu, memoryMiB, regions, encryptedPorts, unencryptedPorts, create });
+  const client = modalSandboxes(sdk, { appName, image, runtime: runtime ?? "vm", gpu, cpu, memoryMiB, regions, encryptedPorts, unencryptedPorts, create, secrets });
   return daytonaHost({
     ...rest,
     client,
