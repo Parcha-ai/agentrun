@@ -31,7 +31,7 @@ const wider = (id) => doc(id).documentElement.scrollWidth - doc(id).documentElem
 
 test('the Muse layout shortens every web address to its host, and takes the files a text names out as chips', { timeout: 5_000 }, () => {
   assert.equal(museShorten('Check https://shop.example.test/account/secret-path?x=1 and (see http://a.example/b).'), 'Check shop.example.test and (see a.example).');
-  assert.equal(museShorten('no address here, just parcha-ai.github.io'), 'no address here, just parcha-ai.github.io');
+  assert.equal(museShorten('no address here, just shop.example.test'), 'no address here, just shop.example.test');
   assert.deepEqual(museFiles('Amount due: $1\nDownloaded bills:\n- statement-03.pdf\n- statement-02.pdf'), { text: 'Amount due: $1\nDownloaded bills:', files: ['statement-03.pdf', 'statement-02.pdf'] });
   assert.deepEqual(museFiles('The report is in summary.csv and it is final.'), { text: 'The report is in summary.csv and it is final.', files: ['summary.csv'] }, 'a file named inside a sentence is a chip too, the sentence kept');
   assert.deepEqual(museFiles('Nothing to attach.'), { text: 'Nothing to attach.', files: [] });
