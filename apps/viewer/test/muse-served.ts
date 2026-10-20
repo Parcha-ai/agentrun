@@ -104,7 +104,7 @@ export function png(w: number, h: number, pixel: (x: number, y: number) => [numb
 /** The chat-browser fixture made into a browser run with a recorded video: its frames (t 500, 1500, 2500, 2600, 2700, 4000, session s1), a frame track over them (a
  *  made-up film and its index), pages read at 1200 (Sign in), 3000 (Account summary) and 4200 (Your bills), and, with `gap`, a credential on the page after the frame at
  *  1500 (a `frame.gap` row), so the frames at 500 and 1500 are the sign-in's. `facts` is written as the recording's facts blob. */
-export function browserRun(dir: string, { gap = true, gapFrom = 1500, facts, remembered = false, blankAt, sameAs = {}, mergeRead = false }: { gap?: boolean; gapFrom?: number; facts?: (frames: Record<number, string>) => unknown; remembered?: boolean; blankAt?: number; sameAs?: Record<number, number>; mergeRead?: boolean } = {}) {
+export function browserRun(dir: string, { gap = true, gapFrom = 1500, facts, remembered = false, blankAt, sameAs = {}, nearAt = {}, mergeRead = false }: { gap?: boolean; gapFrom?: number; facts?: (frames: Record<number, string>) => unknown; remembered?: boolean; blankAt?: number; sameAs?: Record<number, number>; nearAt?: Record<number, number>; mergeRead?: boolean } = {}) {
   const lines = readEvents(dir);
   const frames: Record<number, string> = {};
   // Every frame is its own small picture (a flat one at `blankAt`, the same blob as another at `sameAs[t]`), so the filmstrip rules have something to judge.
@@ -112,7 +112,10 @@ export function browserRun(dir: string, { gap = true, gapFrom = 1500, facts, rem
     const t = line.t as number;
     if (!line.blobs?.[0]) continue;
     if (sameAs[t] !== undefined && frames[sameAs[t]!]) { line.blobs[0] = frames[sameAs[t]!]; frames[t] = line.blobs[0]; continue; }
-    line.blobs[0] = writeBlob(dir, png(64, 28, t === blankAt ? () => [255, 255, 255] : (x, y) => [(x * 4 + t / 20) % 256, (y * 9 + t / 7) % 256, (x * y + t) % 256]), 'png');
+    const page = (at: number) => (x: number, y: number): [number, number, number] => [(x * 4 + at / 20) % 256, (y * 9 + at / 7) % 256, (x * y + at) % 256];
+    // `nearAt[t]`: the picture of another frame with one pixel a little different (a button lit, a hover): the same page, a different hash.
+    const of = nearAt[t] === undefined ? page(t) : (x: number, y: number): [number, number, number] => (x === 3 && y === 3 ? [255, 255, 255] : page(nearAt[t]!)(x, y));
+    line.blobs[0] = writeBlob(dir, png(64, 28, t === blankAt ? () => [255, 255, 255] : of), 'png');
     line.data.mime = 'image/png';
     frames[t] = line.blobs[0];
   }

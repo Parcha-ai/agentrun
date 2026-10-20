@@ -40,7 +40,7 @@ test('the safety rule: in a session that had a credential on its page, every fra
   // The film: its first two held frames are the blurred ones; playback starts after them and runs the rest (each held frame plays at most 1.5 s).
   assert.deepEqual(visual.video!.segments, [[2, 4]], 'only the kept frames play, from the gap\'s end');
   assert.equal(visual.video!.poster, frames[2500], 'its poster is the first frame that is not blurred');
-  assert.deepEqual(visual.chapters.map((chapter) => [chapter.title, chapter.hidden, chapter.at]), [['Sign in', true, 0], ['Account summary', false, 2.5], ['Your bills', false, 3.7]], 'a page read while only a blurred frame was on screen is not shown, never inside the skipped span');
+  assert.deepEqual(visual.chapters.map((chapter) => [chapter.title, chapter.at]), [['Account summary', 2.5], ['Your bills', 3.7]], 'a page read while only a blurred frame was on screen has no seek point, so it is no chapter; the others never seek inside the skipped span');
 });
 
 test('a run with no credential gap blurs nothing and plays whole', async (t) => {
@@ -48,7 +48,7 @@ test('a run with no credential gap blurs nothing and plays whole', async (t) => 
   const visual = (await visualOf(recording))!;
   assert.deepEqual(visual.frames.filter((frame) => frame.sensitive), []);
   assert.deepEqual(visual.video!.segments, [[0, 4]]);
-  assert.deepEqual(visual.chapters.map((chapter) => chapter.hidden), [false, false, false]);
+  assert.deepEqual(visual.chapters.map((chapter) => chapter.title), ['Sign in', 'Account summary', 'Your bills']);
 });
 
 test('the facts a look boxed are read as the recording\'s facts blob says: a box in the frame\'s pixels, none where the look found none, the look\'s own label and receipt; a fact on a frame the run does not have is dropped', async (t) => {
@@ -76,12 +76,12 @@ test('the files an artifact holds as PDFs are the report\'s thumbnails; no brows
 test('in Chrome: the report holds the video, the chapters, the filmstrip; the sign-in frames are canvases (never the sharp picture) with no click, the others open enlarged', IN_CHROME, async (t) => {
   const { value, until } = await served(t, { query: '&muse&visual', height: 900, edit: (dir) => browserRun(dir) });
   await until(`!!d()?.querySelector('.mu-report .mu-shot-tile')`, 'the report drawn');
-  const report = await value<{ video: [boolean, boolean]; chapters: [string, boolean][]; tiles: [boolean, number, number, string][]; wider: number }>(`(() => { const r = d().querySelector('.mu-report'); const v = r.querySelector('video');
-    return { video: [v.muted, v.hasAttribute('controls')], chapters: [...r.querySelectorAll('.mu-chapter')].map((b) => [b.querySelector('.mu-ch-title').textContent, b.disabled]),
+  const report = await value<{ video: [boolean, boolean]; chapters: string[]; tiles: [boolean, number, number, string][]; wider: number }>(`(() => { const r = d().querySelector('.mu-report'); const v = r.querySelector('video');
+    return { video: [v.muted, v.hasAttribute('controls')], chapters: [...r.querySelectorAll('.mu-chapter')].map((b) => b.querySelector('.mu-ch-title').textContent + (b.disabled ? '(off)' : '')),
       tiles: [...r.querySelectorAll('.mu-shot-tile')].map((tile) => [tile.classList.contains('blurred'), tile.querySelectorAll('canvas').length, tile.querySelectorAll('img').length, tile.querySelector('.mu-cap').textContent]),
       wider: d().documentElement.scrollWidth - d().documentElement.clientWidth }; })()`);
   assert.deepEqual(report.video, [true, true], 'muted, scrubbable');
-  assert.deepEqual(report.chapters, [['Sign in', true], ['Account summary', false], ['Your bills', false]], 'the chapter read inside the blurred span cannot be sought');
+  assert.deepEqual(report.chapters, ['Account summary', 'Your bills'], 'a chapter that cannot be sought is not listed');
   assert.deepEqual(report.tiles.map(([blurred, canvases, images]) => [blurred, canvases, images]), [[true, 1, 0], [true, 1, 0], [false, 0, 1], [false, 0, 1], [false, 0, 1]], 'a blurred frame is a canvas and has no picture element at all');
   assert.equal(report.tiles[0]![3], 'Sign-in (blurred)');
   assert.equal(report.wider <= 1, true, 'nothing sideways');
@@ -124,7 +124,7 @@ test('in Chrome: without &visual the Muse layout draws no report', IN_CHROME, as
 
 test('chapters: one per distinct page visit; two that land at the same place in the video are the later page', async (t) => {
   const { recording } = openedRun(t, { mergeRead: true });
-  assert.deepEqual((await visualOf(recording))!.chapters.map((chapter) => [chapter.title, chapter.hidden]), [['Sign in', true], ['Bill March 2026', false], ['Your bills', false]], 'Account summary, opened and left within the same moment, is no chapter');
+  assert.deepEqual((await visualOf(recording))!.chapters.map((chapter) => chapter.title), ['Bill March 2026', 'Your bills'], 'Account summary, opened and left within the same moment, is no chapter, and Sign in (read inside the blurred span) has no seek point');
 });
 
 test('a crop holds its box with 24 px of air on every side (the frame\'s edge excepted), never a sliver; a box across a table row is the whole row with the lines above it', () => {
@@ -158,4 +158,12 @@ test('in Chrome: with &visual the chat\'s own browser card shows a sign-in frame
   const plain = await served(t, { edit: (dir) => browserRun(dir, { gapFrom: 4000 }) });
   await plain.until(`!!d()?.querySelector('.mu-browser .mu-shot')`, 'the plain card drawn');
   assert.deepEqual(await plain.value(`[d().querySelectorAll('.mu-browser .mu-shot canvas').length, d().querySelectorAll('.mu-browser .mu-shot img').length]`), [0, 1], 'the plain Muse card is as it was (on Wednesday\'s list)');
+});
+
+test('in Chrome: a blank frame is no tile even when it is a sign-in frame (judged on its original pixels), and a near-identical frame of the same page is no second tile while another page\'s is', IN_CHROME, async (t) => {
+  // The frame at 500 is blank and blurred; 2700 is the page of 2500 with one pixel lit (a different hash, the same page); 4000 is another page.
+  const { value, until } = await served(t, { query: '&muse&visual', height: 900, edit: (dir) => browserRun(dir, { blankAt: 500, nearAt: { 2700: 2500 } }) });
+  await until(`!!d()?.querySelector('.mu-report .mu-shot-tile')`, 'the report drawn');
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  assert.deepEqual(await value(`[...d().querySelectorAll('.mu-shot-tile')].map((tile) => tile.querySelector('.mu-cap').textContent)`), ['Sign-in (blurred)', 'Account summary', 'Your bills'], 'one blurred sign-in (the blank one is gone), one Account summary, one Your bills');
 });
