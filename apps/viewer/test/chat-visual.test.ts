@@ -43,7 +43,7 @@ test('the safety rule: in a session that had a credential on its page, every fra
   // Fail closed: the span is the video's prefix [0, skipEnd); every place the page ever sends the video to (a segment's start, a chapter) is at or after its end.
   assert.equal(visual.video!.skipEnd, 2);
   assert.ok(visual.video!.segments.every(([start]) => start >= visual.video!.skipEnd) && visual.chapters.every((chapter) => chapter.at >= visual.video!.skipEnd), 'no seek point inside the blurred span');
-  assert.deepEqual(visual.chapters.map((chapter) => [chapter.title, chapter.at]), [['Account summary', 2.5], ['Your bills', 3.7]], 'a page read while only a blurred frame was on screen has no seek point, so it is no chapter; the others never seek inside the skipped span');
+  assert.deepEqual(visual.chapters.map((chapter) => [chapter.title, chapter.at]), [['Account summary', 2.2], ['Your bills', 3.5]], 'a page read while only a blurred frame was on screen has no seek point, so it is no chapter; the others seek to the kept frame that shows their page (the latest at or before the read), never inside the skipped span and never on to the next page\'s');
 });
 
 test('a run with no credential gap blurs nothing and plays whole', async (t) => {
@@ -109,6 +109,11 @@ test('in Chrome: a crop is the frame around its box, the box is the look\'s, no 
     ['over $100', 1, ['Flagged: over $100 · boxed by a look after the run', 'The page shows the evidence, not the conclusion: this is the agent\'s own flag.']],
     ['Due', 0, ['Status · no box found', 'it was not visible']],
   ]);
+  // A whole frame is scaled into its card, not cut off at its natural size; the keyboard opens a fact picture as the pointer does.
+  assert.deepEqual(await value(`(() => { const crop = [...d().querySelectorAll('.mu-fact')].at(-1).querySelector('.mu-crop'); const img = crop.querySelector('img'); return [img.getBoundingClientRect().width <= crop.getBoundingClientRect().width + 1, crop.getAttribute('role'), crop.tabIndex]; })()`), [true, 'button', 0]);
+  await value(`(() => { d().querySelector('.mu-fact .mu-crop').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); return 0; })()`);
+  assert.equal(await value<number>(`d().querySelectorAll('.mu-lightbox').length`), 1, 'Enter enlarges it');
+  await value(`(() => { d().querySelector('.mu-lightbox').click(); return 0; })()`);
   await value(`(() => { d().querySelector('.mu-fact .mu-crop').click(); return 0; })()`);
   assert.equal(await value<number>(`d().querySelectorAll('.mu-lightbox .mu-box').length`), 1, 'the enlarged frame carries the same box');
 });
@@ -171,4 +176,37 @@ test('in Chrome: a blank frame is no tile even when it is a sign-in frame (judge
   await until(`!!d()?.querySelector('.mu-report .mu-shot-tile')`, 'the report drawn');
   await new Promise((resolve) => setTimeout(resolve, 1200));
   assert.deepEqual(await value(`[...d().querySelectorAll('.mu-shot-tile')].map((tile) => tile.querySelector('.mu-cap').textContent)`), ['Sign-in (blurred)', 'Account summary', 'Your bills'], 'one blurred sign-in (the blank one is gone), one Account summary, one Your bills');
+});
+
+test('a look\'s box that does not fit its frame is clamped into it, or dropped for the whole frame when nothing of it is left', async (t) => {
+  const { recording } = openedRun(t, { facts: (known) => [
+    { fact: 'below', claim: 'c', frame: known[2500], box: { x: 0, y: 500, w: 600, h: 20 }, label: 'l' },
+    { fact: 'flat', claim: 'c', frame: known[2500], box: { x: 10, y: 10, w: 0, h: 20 }, label: 'l' },
+    { fact: 'edge', claim: 'c', frame: known[2500], box: { x: 700, y: 300, w: 300, h: 100 }, label: 'l' },
+    { fact: 'negative', claim: 'c', frame: known[2500], box: { x: -50, y: 10, w: 80, h: 20 }, label: 'l' },
+  ] });
+  assert.deepEqual((await visualOf(recording))!.facts.map((fact) => [fact.fact, fact.box]), [['below', null], ['flat', null], ['edge', { x: 700, y: 300, w: 100, h: 53 }], ['negative', { x: 0, y: 10, w: 30, h: 20 }]], 'no invalid crop can be drawn');
+});
+
+test('with more than one browser session the report has one video of the first, and no chapter that could seek into the wrong session', async (t) => {
+  const { recording } = openedRun(t, { secondSession: true });
+  const visual = (await visualOf(recording))!;
+  assert.ok(visual.video, 'the first track\'s video');
+  assert.deepEqual(visual.chapters, [], 'chapters are tied to one session\'s clock: with two there is no honest place to seek');
+});
+
+test('in Chrome: the video plays only from the end of the blurred span, whatever the page does: nothing earlier is ever the current time, it loops back to the span\'s end, and a chapter seeks to its own frame', IN_CHROME, async (t) => {
+  const { value, until } = await served(t, { query: '&muse&visual', height: 900, edit: (dir) => browserRun(dir) });
+  await until(`!!d()?.querySelector('.mu-video')`, 'the report drawn');
+  // Watch the current time for 5 s: a 4 s film whose first 2 s are the blurred span.
+  await value(`(() => { const v = d().querySelector('.mu-video'); window.__seen = []; setInterval(() => window.__seen.push(v.currentTime), 40); return 0; })()`);
+  await new Promise((resolve) => setTimeout(resolve, 5200));
+  const seen = await value<number[]>(`window.__seen`);
+  assert.ok(Math.max(...seen) >= 3, `it played (max ${Math.max(...seen)})`);
+  assert.ok(Math.min(...seen) >= 1.95, `nothing before the span's end was ever the current time (min ${Math.min(...seen)})`);
+  assert.ok(seen.some((time, i) => i > 0 && seen[i - 1]! >= 3.4 && time <= 2.6), 'it looped back to the start of what is kept');
+  await value(`(() => { d().querySelector('.mu-chapter').click(); return 0; })()`);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const at = await value<number>(`d().querySelector('.mu-video').currentTime`);
+  assert.ok(at >= 2.1 && at <= 3.0, `the first chapter seeks to its own frame (at ${at})`);
 });
