@@ -747,8 +747,25 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       for (const key of branch.spread) spreadTaintedKeys.add(key);
       for (const file of branch.files) producedFiles.add(file);
     }
-    // The merged state depends on which branches ran how; later reachability checks stand down, as before.
-    if (reachability) reachability.unknowable = true;
+    // Every branch runs, so the state after holds what each one writes: the check goes on past the parallel, unless the state
+    // before it, or a branch's own, is not known (a code node's keys are probed, not known).
+    if (reachability) reachability.unknowable = before.unknowable || branches.some((branch) => branch.unknowable);
+  };
+  /** After a route node: one branch runs, so the state after holds what every branch leaves. A key some branch may not leave
+   *  is not known; a key's shape is kept only when every branch leaves the same one. A file any branch produces is counted, as
+   *  before. The check goes on past the route unless the state before it, or a branch's own, is not known. */
+  const routeKnowledge = (before: Knowledge, branches: Knowledge[]): void => {
+    restoreKnowledge(before);
+    if (!branches.length) return;
+    if (reachability && branches.every((branch) => branch.available)) {
+      reachability.available = new Set([...branches[0].available!].filter((key) => branches.every((branch) => branch.available!.has(key))));
+      reachability.unknowable = before.unknowable || branches.some((branch) => branch.unknowable);
+    }
+    typedOutputs.clear();
+    for (const [key, value] of branches[0].typed) if (branches.every((branch) => branch.typed.get(key) === value)) typedOutputs.set(key, value);
+    probedSubtrees.clear();
+    for (const key of branches[0].probed.keys()) if (branches.every((branch) => branch.probed.has(key))) probedSubtrees.set(key, [...new Set(branches.flatMap((branch) => branch.probed.get(key)!))]);
+    for (const branch of branches) { for (const key of branch.spread) spreadTaintedKeys.add(key); for (const file of branch.files) producedFiles.add(file); }
   };
   const checkPredicatePath = (when: { path?: string } | undefined, label: string, path: string): void => {
     if (!reachability || !when?.path) return;
@@ -988,7 +1005,6 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
             after.push(snapshotKnowledge());
           });
           if (after.length) mergeKnowledge(before, after);
-          if (reachability) reachability.unknowable = true;
         }
         return;
       case "loop":
@@ -1095,13 +1111,24 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
         if (containsReportNode(node)) errors.push(`${path} (${label}): a report node cannot live inside a route branch — the report is rendered once, after the record is final`);
         if (node.as !== undefined && (typeof node.as !== "string" || !node.as.trim())) errors.push(`${path} (${label}): as must be a state key when present`);
         checkRequires({ label, requires: node.requires }, path);
-        if (reachability) { if (typeof node.as === "string" && node.as.trim()) { reachability.available.add(node.as); if (!byValue) reachability.available.add(`${node.as}$answers`); } reachability.unknowable = true; }
-        for (const name of names) {
-          const branch = (raw.branches as Record<string, any>)[name];
-          if (!branch || typeof branch !== "object" || !branch.body) { errors.push(`${path} (${label}): branch "${name}" needs a body`); continue; }
-          if (byValue && branch.criteria !== undefined) errors.push(`${path} (${label}): branch "${name}" criteria are for Jev; a route by valuePath matches the branch name exactly`);
-          else if (branch.criteria !== undefined && typeof branch.criteria !== "string") errors.push(`${path} (${label}): branch "${name}" criteria must be a string`);
-          walk(branch.body, `${path}.branches.${name}`);
+        // The route writes its choice under `as` (and a judged route its answers under `<as>$answers`) before the branch runs.
+        if (typeof node.as === "string" && node.as.trim()) for (const key of byValue ? [node.as] : [node.as, `${node.as}$answers`]) {
+          reachability?.available.add(key); typedOutputs.delete(key); probedSubtrees.delete(key);
+        }
+        {
+          // Each branch starts from the state the route leaves it, never from a sibling's; the state after is what every branch leaves.
+          const before = snapshotKnowledge();
+          const after: Knowledge[] = [];
+          for (const name of names) {
+            const branch = (raw.branches as Record<string, any>)[name];
+            if (!branch || typeof branch !== "object" || !branch.body) { errors.push(`${path} (${label}): branch "${name}" needs a body`); continue; }
+            if (byValue && branch.criteria !== undefined) errors.push(`${path} (${label}): branch "${name}" criteria are for Jev; a route by valuePath matches the branch name exactly`);
+            else if (branch.criteria !== undefined && typeof branch.criteria !== "string") errors.push(`${path} (${label}): branch "${name}" criteria must be a string`);
+            restoreKnowledge(before);
+            walk(branch.body, `${path}.branches.${name}`);
+            after.push(snapshotKnowledge());
+          }
+          routeKnowledge(before, after);
         }
         return;
       }
