@@ -11,7 +11,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
-import { lstat, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { lstat, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { connect } from "node:net";
 import { basename, dirname, extname, join, resolve } from "node:path";
@@ -19,9 +19,11 @@ import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { AGENT_STORE_FILE, carryBack, readAgentHome, startRun } from "@parcha/pi-durable-agent";
+import { browserbaseProvider } from "@parcha/pi-browser/providers/browserbase";
 import { timelineOf, timelineReducer } from "@parcha/pi-durable-agent/timeline";
 import { ensureAgentHome } from "./agent/home.mjs";
 import { keepMemory, readMemory } from "./agent/memory.ts";
+import { judgeOf, lookups, promptForRun, searchLookup, wikipediaLookup } from "./agent/select.ts";
 import { costOf, lastRow, RUN_ID, stateOf } from "./page/source.js";
 import { readRunEntries } from "./replay.mjs";
 
@@ -125,9 +127,11 @@ function doorOf(record) {
 /**
  * `home` is an agent home (`ensureAgentHome`); `watchMs` is how often a run this server started is checked for its answer.
  * `origin` is the address people open the page at (default: the address it binds), which a local Chrome's live view
- * allows to frame it and checks its WebSockets against.
+ * allows to frame it and checks its WebSockets against. With `prompting` ({ question, judge, lookup }: the agent's Jev
+ * question, Jev and the lookup, agent/select.ts) and prompt variants in the home, each run's prompt is chosen before it
+ * starts: `startRun` records it, and `prompt.json` beside the run says how.
  */
-export async function startServer({ home, host = "127.0.0.1", port = 0, start = [], allowHosts = [], watchMs = 2_000, origin }) {
+export async function startServer({ home, host = "127.0.0.1", port = 0, start = [], allowHosts = [], watchMs = 2_000, origin, prompting }) {
   const root = join(home.dir, "runs");
   const children = new Map();
   const exits = new Map();
@@ -468,9 +472,17 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
     if (typeof content !== "string" || !content.trim()) throw new HttpError(400, "content must be a non-empty string");
     if (!start.length) throw new HttpError(501, "this server has no --start command, so it cannot start a run");
     const id = `r${Date.now().toString(36)}-${randomBytes(2).toString("hex")}`;
-    const { profiles } = await homeState();
-    const run = await startRun(home, { runId: id, host: HOST });
+    const state = await homeState();
+    const { profiles } = state;
+    // Before the run exists: Jev on the input, a lookup when it is unsure, and the variant it gets (null: no variants).
+    const chosen = prompting ? await promptForRun({ stored: state.prompts, question: prompting.question, input: content.trim(), judge: prompting.judge, lookup: prompting.lookup }) : null;
+    const run = await startRun(home, { runId: id, host: HOST, ...(chosen ? { prompt: chosen.prompt } : {}) });
     reread();
+    if (chosen) {
+      const file = join(run.dir, "prompt.json");
+      await writeFile(`${file}.tmp`, `${JSON.stringify(chosen.record, null, 2)}\n`, { mode: 0o600 });
+      await rename(`${file}.tmp`, file);
+    }
     // The saved sign-ins this run starts with: ready ones it holds the save lease for (the others reach it without a ref).
     const signedIn = run.leases.filter((key) => profiles[key]?.state === "ready").map((key) => ({ key, provider: profiles[key].provider, sites: signInOf(key, profiles[key], null, {}).sites }));
     await writeFile(join(run.dir, "web.json"), JSON.stringify({ title: clip(content.trim().replace(/\s+/g, " "), 80), createdAt: new Date().toISOString(), signedIn }));
@@ -741,14 +753,23 @@ async function main() {
       host: { type: "string", default: "127.0.0.1" },
       port: { type: "string", default: "8787" },
       start: { type: "string", default: process.env.AGENT_RUN_LAUNCHER ?? "" },
+      agent: { type: "string", default: join(HERE, "agent") },
       "allow-host": { type: "string", multiple: true, default: [] },
       origin: { type: "string" },
     },
   });
-  const home = await ensureAgentHome(values.home);
+  // The agent the home is made from (agent.json and skills/); its question.json, when it has one, is the Jev question
+  // that picks each run's prompt from the home's variants.
+  const agentDir = resolve(values.agent);
+  const home = await ensureAgentHome(values.home, agentDir);
+  const questionFile = join(agentDir, "question.json");
+  const search = process.env.BROWSERBASE_API_KEY ? browserbaseProvider({ env: process.env }) : null;
+  const prompting = existsSync(questionFile)
+    ? { question: JSON.parse(await readFile(questionFile, "utf8")), judge: judgeOf(process.env), lookup: lookups(...(search ? [searchLookup((request, signal) => search.search(request, signal))] : []), wikipediaLookup()) }
+    : undefined;
   const launcher = join(HERE, "agent", "start-run.mjs");
   const start = values.start.trim() ? values.start.split(/\s+/).filter(Boolean) : existsSync(launcher) ? [process.execPath, launcher] : [];
-  const server = await startServer({ home, host: values.host, port: Number(values.port), start, allowHosts: values["allow-host"], ...(values.origin ? { origin: values.origin } : {}) });
+  const server = await startServer({ home, host: values.host, port: Number(values.port), start, allowHosts: values["allow-host"], prompting, ...(values.origin ? { origin: values.origin } : {}) });
   if (!isLoopback(values.host)) console.error(`warning: ${values.host} is not loopback. This server has no sign-in: anyone who can reach it can read the runs' files and start agents.`);
   console.log(`runs app on ${server.url}/ (agent home ${home.dir})`);
   const stop = () => server.close().then(() => process.exit(0));

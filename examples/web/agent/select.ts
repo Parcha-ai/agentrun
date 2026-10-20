@@ -6,6 +6,7 @@ import { createJevRunner, type JevJudge } from "@parcha/agentrun-jev";
 import type { SearchRequest, SearchResult } from "@parcha/pi-browser";
 
 export type PromptVariant = {
+  id: string;
   role: "base" | "overlay" | "generic";
   label: string;
   text: string;
@@ -14,14 +15,15 @@ export type PromptVariant = {
 export type ChoiceQuestion = { id: string; instructions: string; criteria: Record<string, string> };
 export type PromptSet = { variants: readonly PromptVariant[]; question: ChoiceQuestion };
 
-/** One Jev answer: its top option, every option's probability, and Jev's own confidence. */
-export type Pass = { choice: string; probabilities: Record<string, number>; confidence: number };
+/** One Jev answer: its top option, every option's probability, Jev's own confidence, and what the call was. */
+export type Pass = { choice: string; probabilities: Record<string, number>; confidence: number; model: string | null; cost_usd: number | null; latency_ms: number };
 /** A page a lookup read, or a search result it listed. */
 export type LookupSource = { via: "browserbase_search" | "wikipedia"; url: string; title: string | null };
 export type Lookup = { text: string; sources: LookupSource[] };
 /** What `prompt.json` holds: the variant chosen, each pass, and whether a lookup ran and what it read. */
 export type Selection = { variant: string; passes: Pass[]; lookup: { used: boolean; sources: LookupSource[] }; reason: string };
 
+/** The generic prompt's id when the set has none of that role (a home's set always has one). */
 export const GENERIC = "generic";
 const LOOKUP_TEXT_MAX = 3_000;
 
@@ -40,10 +42,12 @@ const overlayFor = (prompts: PromptSet, option: string) =>
 /** One pass of the question on `state`. */
 async function ask(judge: JevJudge, prompts: PromptSet, state: Record<string, unknown>): Promise<Pass> {
   const { id, instructions, criteria } = prompts.question;
+  const started = Date.now();
   const result = await judge({ label: id, kind: "judge", state, questions: { [id]: { type: "choice", instructions, criteria } } } as never);
   const answer = (result.answers as Record<string, { type: string; choice: string; probabilities: Record<string, number>; confidence: number }>)[id];
   if (answer?.type !== "choice") throw new Error(`Jev answered ${id} with no choice`);
-  return { choice: answer.choice, probabilities: { ...answer.probabilities }, confidence: answer.confidence };
+  const { model = null, cost_usd = null } = result as { model?: string | null; cost_usd?: number | null };
+  return { choice: answer.choice, probabilities: { ...answer.probabilities }, confidence: answer.confidence, model, cost_usd, latency_ms: Date.now() - started };
 }
 
 function said(prompts: PromptSet, pass: Pass): string {
@@ -55,6 +59,7 @@ function said(prompts: PromptSet, pass: Pass): string {
  *  reason says why. */
 export async function selectPrompt(options: { input: string; prompts: PromptSet; judge: JevJudge; lookup: (name: string) => Promise<Lookup | null> }): Promise<Selection> {
   const { input, prompts, judge } = options;
+  const generic = prompts.variants.find((v) => v.role === "generic")?.id ?? GENERIC;
   const passes: Pass[] = [];
   const steps: string[] = [];
   const done = (variant: string, lookup: Selection["lookup"]) => ({ variant, passes, lookup, reason: steps.join("; ") });
@@ -63,10 +68,10 @@ export async function selectPrompt(options: { input: string; prompts: PromptSet;
     passes.push(first);
     steps.push(`Jev: ${said(prompts, first)}`);
     const sure = overlayOf(prompts, first);
-    if (sure) return done(sure.label, { used: false, sources: [] });
+    if (sure) return done(sure.id, { used: false, sources: [] });
   } catch (error) {
     steps.push(`Jev failed (${(error as Error).message}), so the generic prompt`);
-    return done(GENERIC, { used: false, sources: [] });
+    return done(generic, { used: false, sources: [] });
   }
   let found: Lookup | null = null;
   try {
@@ -77,28 +82,45 @@ export async function selectPrompt(options: { input: string; prompts: PromptSet;
   }
   if (!found) {
     steps.push("so the generic prompt");
-    return done(GENERIC, { used: true, sources: [] });
+    return done(generic, { used: true, sources: [] });
   }
   try {
     const second = await ask(judge, prompts, { input, lookup: found.text.slice(0, LOOKUP_TEXT_MAX) });
     passes.push(second);
     steps.push(`after the lookup, Jev: ${said(prompts, second)}`);
     const sure = overlayOf(prompts, second);
-    if (sure) return done(sure.label, { used: true, sources: found.sources });
+    if (sure) return done(sure.id, { used: true, sources: found.sources });
     steps.push("so the generic prompt");
   } catch (error) {
     steps.push(`Jev failed after the lookup (${(error as Error).message}), so the generic prompt`);
   }
-  return done(GENERIC, { used: true, sources: found.sources });
+  return done(generic, { used: true, sources: found.sources });
 }
 
-/** The run's guide: the base prompt, then the chosen variant (an overlay, or the generic prompt). */
-export function composePrompt(prompts: PromptSet, variant: string): string {
+/** The run's guide: the base prompt, then the chosen variant (an overlay, or the generic prompt), by id. */
+export function composePrompt(prompts: Pick<PromptSet, "variants">, variant: string): string {
   const base = prompts.variants.find((v) => v.role === "base");
-  const chosen = prompts.variants.find((v) => v.label === variant && v.role !== "base");
+  const chosen = prompts.variants.find((v) => v.id === variant && v.role !== "base");
   if (!base) throw new Error("the prompts have no base");
   if (!chosen) throw new Error(`the prompts have no variant ${variant}`);
   return `${base.text.trim()}\n\n${chosen.text.trim()}`;
+}
+
+/** The agent home's variants (`agent.prompts`, a record by id) as a list, each with its id. */
+export const variantsOf = (stored: Record<string, Omit<PromptVariant, "id">>): PromptVariant[] => Object.entries(stored).map(([id, variant]) => ({ id, ...variant }));
+
+/** `prompt.json` beside a run: the selection (the variant's id, each Jev pass, the lookup and the reason), with the
+ *  question it answered, the input and when. */
+export type PromptRecord = Selection & { version: 1; question: string; input: string; selected_at: string };
+
+/** The run's prompt, before it starts: what `startRun` records (`prompt: { id, reason }`) and what `prompt.json` holds.
+ *  Null when the home keeps no prompts or the agent asks Jev no question. */
+export async function promptForRun(options: { stored: Record<string, Omit<PromptVariant, "id">> | undefined; question: ChoiceQuestion | null; input: string; judge: JevJudge; lookup: (name: string) => Promise<Lookup | null>; now?: () => Date }): Promise<{ prompt: { id: string; reason: string }; record: PromptRecord } | null> {
+  if (!options.question || !options.stored || !Object.keys(options.stored).length) return null;
+  const prompts = { variants: variantsOf(options.stored), question: options.question };
+  const selection = await selectPrompt({ input: options.input, prompts, judge: options.judge, lookup: options.lookup });
+  const record: PromptRecord = { version: 1, question: options.question.id, input: options.input, ...selection, selected_at: (options.now?.() ?? new Date()).toISOString() };
+  return { prompt: { id: selection.variant, reason: selection.reason }, record };
 }
 
 const WIKIPEDIA = "https://en.wikipedia.org";

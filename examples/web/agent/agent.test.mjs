@@ -66,6 +66,18 @@ test('the home is made from agent.json and the skills: the definition names no m
   assert.throws(() => promptOf({ definition: { ...state.definition, skills: ['missing'] }, skills: {} }), /no missing\/SKILL\.md/);
 });
 
+test('a run the host chose a prompt for: its instructions, then the home\'s base and that variant, then the skills', () => {
+  const state = {
+    definition: { instructions: 'You are Desk.', skills: ['brief'] },
+    skills: { 'brief/SKILL.md': { content: 'Write brief.md.' } },
+    prompts: { base: { role: 'base', label: 'Base', text: 'Research it.' }, public: { role: 'overlay', label: 'Public', text: 'Start at EDGAR.', when: { question: 'kind', option: 'public', threshold: 0.8 } }, generic: { role: 'generic', label: 'Not sure', text: 'Start at its own site.' } },
+    runs: { 'run-1': { prompt: { id: 'public', reason: 'Jev: public at 100%' } }, 'run-2': {} },
+  };
+  assert.equal(promptOf(state, 'run-1'), 'You are Desk.\n\nResearch it.\n\nStart at EDGAR.\n\nYour skills follow. Use the one that fits the step you are on.\n\n<skill name="brief">\nWrite brief.md.\n</skill>');
+  assert.equal(promptOf(state, 'run-2'), promptOf({ definition: state.definition, skills: state.skills }), 'a run with no chosen prompt gets none');
+  assert.throws(() => promptOf({ ...state, runs: { 'run-1': { prompt: { id: 'gone' } } } }, 'run-1'), /no variant gone/);
+});
+
 test('the skills and the definition name no site: no address, domain or path of one, so no example in them reads as a step the run took', async () => {
   const skills = (await readdir(join(import.meta.dirname, 'skills'))).map((name) => `skills/${name}/SKILL.md`);
   for (const file of ['agent.json', ...skills]) {

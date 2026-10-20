@@ -2,15 +2,15 @@
 // when it stays unsure or anything fails. Offline: Jev and Wikipedia are fakes.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { composePrompt, GENERIC, jevOptionsOf, lookups, overlayOf, searchLookup, selectPrompt, wikipediaLookup } from './select.ts';
+import { composePrompt, GENERIC, jevOptionsOf, lookups, overlayOf, promptForRun, searchLookup, selectPrompt, wikipediaLookup } from './select.ts';
 
 const prompts = {
   question: { id: 'kind', instructions: 'What kind of organisation is it?', criteria: { public: 'listed', nonprofit: 'charity', other: 'anything else' } },
   variants: [
-    { role: 'base', label: 'base', text: 'Research it.' },
-    { role: 'overlay', label: 'public', text: 'Start at EDGAR.', when: { question: 'kind', option: 'public', threshold: 0.8 } },
-    { role: 'overlay', label: 'nonprofit', text: 'Start at the 990s.', when: { question: 'kind', option: 'nonprofit', threshold: 0.9 } },
-    { role: 'generic', label: 'generic', text: 'Start at its own site.' },
+    { id: 'base', role: 'base', label: 'Base', text: 'Research it.' },
+    { id: 'public', role: 'overlay', label: 'Public company', text: 'Start at EDGAR.', when: { question: 'kind', option: 'public', threshold: 0.8 } },
+    { id: 'nonprofit', role: 'overlay', label: 'Non-profit', text: 'Start at the 990s.', when: { question: 'kind', option: 'nonprofit', threshold: 0.9 } },
+    { id: 'generic', role: 'generic', label: 'Not sure', text: 'Start at its own site.' },
   ],
 };
 
@@ -44,7 +44,7 @@ test('a sure first pass picks its overlay, and no lookup runs', async () => {
 
 test('each overlay has its own threshold: the top option under it goes to the lookup', async () => {
   assert.equal(overlayOf(prompts, pass('nonprofit', 0.85)), null, '0.85 is under nonprofit\'s 0.9');
-  assert.equal(overlayOf(prompts, pass('public', 0.85)).label, 'public', '0.85 meets public\'s 0.8');
+  assert.equal(overlayOf(prompts, pass('public', 0.85)).id, 'public', '0.85 meets public\'s 0.8');
   assert.equal(overlayOf(prompts, pass('other', 0.99)), null, 'an option with no overlay never picks one');
 });
 
@@ -135,4 +135,32 @@ test('Jev through the model gateway\'s TypeSafe pass-through on the gateway\'s k
   assert.deepEqual(jevOptionsOf({ AGENT_MODEL_BASE_URL: 'http://gateway:9421/v1', AGENT_MODEL_API_KEY: 'gw' }), { apiKey: 'gw', pricing: { inputUsdPerMillionTokens: 0.042, outputUsdPerMillionTokens: 0 }, baseURL: 'http://gateway:9421/typesafe' });
   assert.equal(jevOptionsOf({ AGENT_MODEL_BASE_URL: 'http://gateway:9421/v1', AGENT_MODEL_API_KEY: 'gw', TYPESAFE_API_KEY: 'ts' }).apiKey, 'ts');
   assert.deepEqual(jevOptionsOf({ TYPESAFE_API_KEY: 'ts' }), { apiKey: 'ts', pricing: { inputUsdPerMillionTokens: 0.042, outputUsdPerMillionTokens: 0 } });
+});
+
+test('the run\'s prompt from the home\'s variants (a record by id): what startRun records and what prompt.json holds', async () => {
+  const stored = Object.fromEntries(prompts.variants.map(({ id, ...variant }) => [id, variant]));
+  const sources = [{ via: 'browserbase_search', url: 'https://www.habitat.org/', title: 'Habitat for Humanity' }];
+  const now = () => new Date('2026-10-20T04:00:00.000Z');
+  const { judge } = jev(pass('nonprofit', 0.53, 0.41), pass('nonprofit', 0.95));
+  const chosen = await promptForRun({ stored, question: prompts.question, input: 'Habitat', judge, lookup: async () => ({ text: 'A housing charity.', sources }), now });
+  assert.deepEqual(chosen.prompt, { id: 'nonprofit', reason: chosen.record.reason });
+  assert.deepEqual({ ...chosen.record, passes: chosen.record.passes.map(({ latency_ms, ...rest }) => (assert.equal(typeof latency_ms, 'number'), rest)) }, {
+    version: 1,
+    question: 'kind',
+    input: 'Habitat',
+    variant: 'nonprofit',
+    passes: [{ ...pass('nonprofit', 0.53, 0.41), model: 'jev-test', cost_usd: null }, { ...pass('nonprofit', 0.95), model: 'jev-test', cost_usd: null }],
+    lookup: { used: true, sources },
+    reason: 'Jev: nonprofit at 53%, under 90%; after the lookup, Jev: nonprofit at 95%',
+    selected_at: '2026-10-20T04:00:00.000Z',
+  });
+
+  const sure = await promptForRun({ stored, question: prompts.question, input: 'Caterpillar Inc.', judge: jev(pass('public', 1)).judge, lookup: async () => assert.fail('no lookup'), now });
+  assert.deepEqual([sure.prompt.id, sure.record.variant, sure.record.lookup.used, sure.record.passes.length], ['public', 'public', false, 1]);
+  const { generic: _, ...overlays } = stored;
+  const none = await promptForRun({ stored: { ...overlays, plain: { role: 'generic', label: 'Plain', text: 'Look around.' } }, question: prompts.question, input: 'Zzq', judge: jev(new Error('down')).judge, lookup: async () => null, now });
+  assert.deepEqual([none.prompt.id, none.record.variant, none.record.passes], ['plain', 'plain', []], 'the generic is the set\'s own, by its role');
+
+  assert.equal(await promptForRun({ stored: {}, question: prompts.question, input: 'x', judge, lookup: async () => null }), null, 'a home with no variants');
+  assert.equal(await promptForRun({ stored, question: null, input: 'x', judge, lookup: async () => null }), null, 'an agent with no question');
 });
