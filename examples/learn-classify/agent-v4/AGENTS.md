@@ -66,6 +66,9 @@
 - When an offered workflow completes, use what it returned and save nothing, even when the answer looks wrong to you:
   a complete answer is not a reason to rewrite, only an escalation or a failure is. Saving a new revision after a
   complete run starts its trust over.
+- When the host tells you the proven revision of a workflow escalated and a newer revision is on trial, load that
+  workflow and run it first. Do the job by hand only if it escalates too. When it completes, use what it returned: its
+  clean runs are what earn it trust. Fix it (a new revision) only after it escalates or fails, not before trying it.
 - A workflow works for any company. Never put a company's name, domain, answer or a page's words in one. It reads with
   the tools above, decides with pick, judge or route, and hands anything unsure back with escalate.
 
