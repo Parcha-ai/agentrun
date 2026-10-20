@@ -147,9 +147,9 @@ test('in Chrome: &muse is a phone chat over the same events, at 1440 and 390: th
     assert.match(chat.answer, /^Amount due: \$112\.40\s*Due date: April 15\s*Downloaded bills:\s*Details are at shop\.example\.test$/s, `${id}: the answer as a bubble, its address shortened, the file lines taken out`);
     assert.deepEqual(chat.files, ['statement-03.pdf', 'statement-02.pdf'], `${id}: the files as chips`);
     assert.deepEqual(chat.order.filter((each) => /^(person|agent|mu-)/.test(each)), ['person', 'mu-browser', 'mu-signin', 'agent', 'mu-memory'], `${id}: the conversation in order: request, the browser (two steps with nothing said between them: one card), the sign-in, the answer, what it remembers`);
-    // The browser inline: the site, its frame, who has it, and Take control, shown and disabled.
-    assert.deepEqual(await value(`[...doc('${id}').querySelectorAll('.mu-browser')].map((card) => [card.querySelector('.mu-card-title').textContent, card.querySelector('.mu-card-sub').textContent, [...card.querySelectorAll('.mu-label')].map((l) => l.textContent), card.querySelector('.mu-take').disabled, card.querySelector('.mu-take').title, !!card.querySelector('.mu-shot img')])`), [
-      ['Browser', 'Browsing shop.example.test', ['Handed the browser over: An option is picked', 'Handed back · done'], true, 'Replay: the run is over', true],
+    // The browser inline: the site, its frame, who has it as a status line; no button (pi-browser's viewer has none: the person drives whenever the agent is not acting).
+    assert.deepEqual(await value(`[...doc('${id}').querySelectorAll('.mu-browser')].map((card) => [card.querySelector('.mu-card-title').textContent, card.querySelector('.mu-card-sub').textContent, [...card.querySelectorAll('.mu-label')].map((l) => l.textContent), card.querySelectorAll('button, .mu-take').length, !!card.querySelector('.mu-shot img')])`), [
+      ['Browser', 'Browsing shop.example.test', ['Handed the browser over: An option is picked', 'Handed back · done'], 0, true],
     ], `${id}: the browser cards`);
     // The sign-in where the run waited, signed in once the browser's own profile says so.
     assert.deepEqual(await value(`[...doc('${id}').querySelectorAll('.mu-signin')].map((card) => [card.querySelector('.mu-card-title').textContent, card.querySelector('.mu-card-sub').textContent, card.querySelector('.mu-wide').textContent, card.querySelector('.mu-wide').disabled])`), [['Secure Store', 'Sign in to shop.example.test', 'Signed in', true]], `${id}: the sign-in card`);
