@@ -29,9 +29,12 @@ export default async function app(ctx: AppContext): Promise<AppOptions> {
   const opened = await appOf(prepared.place, prepared.host, prepared.job, prepared.runOptions, async ({ result, storeSha256 }) => {
     // The recorder is detached and the prepared parts released whether or not the result hook and the report succeed.
     try {
-      const made = await prepared.made(result);
-      prepared.boxesDone();
-      await prepared.recorder?.detach();
+      let made: Awaited<ReturnType<typeof prepared.made>>;
+      try { made = await prepared.made(result); } finally {
+        // The receipts of the boxes still open, then the detach, whether or not the result hook succeeds.
+        prepared.boxesDone();
+        await prepared.recorder?.detach();
+      }
       // Printed once the final status is written and the run released (the supervisor reads this line as how the run ended).
       // Written whole before the process exits: the outcome can be large, and a line still waiting to enter the pipe when the process ends is cut off.
       // The demo's shaped result is also the final status's detail: a place that reads only run.json (a box or Archil place) keeps it, so its recording has the cited result and not the raw record.

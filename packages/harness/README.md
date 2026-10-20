@@ -253,11 +253,13 @@ them to the tools as `context.providers`; every box a tool makes on one is on th
 
 - live lines with source `transport`, each naming the box by its label (`box-1`, `box-2` by first appearance), never by the provider's id: `box.created` `{ box, provider, facts: { isolation, cpus, gpu }, role? }`
   (`role` is the create call's `labels.role`), `box.exec` `{ box }` for each command the box took (never the command, its arguments or its environment), and `box.ended` `{ box }`;
-- a host `box.receipt` when the box ends, or when the process ends with it still open (`to` and `seconds` null). It names no rate (`usd_per_second`, `cost_usd`, `source` and `priced` null), so the run's cost
+- a host `box.receipt` when the box ends, or when the process ends with it still open (`to` and `seconds` null), also when the run or the result hook fails. It names no rate (`usd_per_second`, `cost_usd`, `source` and `priced` null), so the run's cost
   reads unknown, never 0.
 
-A box the tool made carries its label (`box.label`): a tool puts that in its result, so the result and the lines agree. The provider ids go only to `--box-ids` (`box-ids.internal.json` in the run's directory by
-default), where the next process of the run numbers on from them. `demo.json`'s `boxes` are named by label the same way. A demo with a place of its own cannot pass `providers` yet: the place's boxes and the
+A box the tool made carries its label (`box.label`): a tool puts that in its result, so the result and the lines agree. An agent's own tools (pi extension tools, not workflow call nodes) get the same
+tapped providers through `providerExtensions: ({ providers, live, place }) => [extension, ...]`, called once in each process right after the tap, on fakes and on `--live`; every other extension stays on
+`fakes.extensions` and the live parts' `host.tools.extensions`. `providerExtensions` without `providers` is refused. The provider ids go only to `--box-ids` (`box-ids.internal.json` in the run's
+directory by default), where the next process of the run numbers on from them; either path is refused when it resolves inside the recording. `demo.json`'s `boxes` are named by label the same way. A demo with a place of its own cannot pass `providers` yet: the place's boxes and the
 tools' would need one labeller, so such a run is refused.
 
 ### The judge seam
