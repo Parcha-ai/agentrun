@@ -423,6 +423,12 @@ test("inheritEnv with sudo: the start keeps the names across sudo's reset of the
   assert.deepEqual(commands.filter((c) => c !== start && c.includes("--preserve-env")), [], "only the start keeps them");
 });
 
+test("inheritEnv: a start whose own environment sets an inherited name is refused before a box is made, never overruled by the box's value", async () => {
+  const w = world("hold", { inheritEnv: ["PDA_DUMMY_KEY"] });
+  await assert.rejects(w.host.start(REF, TOKEN, { attempt: 1, env: { PDA_DUMMY_KEY: "the start's own" } }), (e: unknown) => e instanceof DaytonaHostError && e.code === "INVALID_ARGUMENT" && /sets PDA_DUMMY_KEY, which the instance inherits from the box/.test(e.message));
+  assert.equal(w.creates.length, 0, "no box made");
+});
+
 test("inheritEnv: a name that is not a variable name, the launcher's own, or one env sets is refused before a box is made", () => {
   for (const bad of [["1X"], ["A=B"], ["PATH"], ["HOME"], ["PDA_HOLDER"], ["PDA_TEST_OUT"]]) {
     assert.throws(() => world("hold", { inheritEnv: bad }), (e: unknown) => e instanceof DaytonaHostError && e.code === "INVALID_ARGUMENT" && /inheritEnv/.test(e.message), JSON.stringify(bad));

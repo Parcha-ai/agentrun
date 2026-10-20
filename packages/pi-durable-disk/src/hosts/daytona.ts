@@ -444,6 +444,9 @@ export function daytonaHost(opts: DaytonaHostOptions): HostDriver & Required<Pic
       runPath(ref.id);
       if (!mountToken) throw new DaytonaHostError("INVALID_ARGUMENT", "no mount token");
       const extra = attemptEnv(attempt, (m) => new DaytonaHostError("INVALID_ARGUMENT", m));
+      // An inherited name would replace the start's own value in the instance: the start is refused, never overruled.
+      const both = inheritEnv.filter((n) => Object.hasOwn(extra, n));
+      if (both.length > 0) throw new DaytonaHostError("INVALID_ARGUMENT", `the start sets ${both.join(", ")}, which the instance inherits from the box (inheritEnv)`);
       const t0 = now();
       const name = sandboxName(prefix, ref.id, t0);
       const body: CreateSandboxBody = {
