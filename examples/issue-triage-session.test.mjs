@@ -53,3 +53,9 @@ test('the job blob\'s workflow is what an inspect or a load ANSWERED, paired by 
   // With no run call at all, the last good one.
   assert.deepEqual(ranWorkflow([...first, call('7', 'inspect'), result('7', { preview: 'p', workflow: loaded, input: {} })]), { workflow: loaded, input: {} });
 });
+
+test('demo.json names no Jev cap (the harness refuses models.judge.caps) and the lead default is gemini-3.8-flash', () => {
+  const spec = JSON.parse(readFileSync(new URL('./issue-triage/demo.json', import.meta.url), 'utf8'));
+  assert.equal(spec.models.judge.caps, undefined);
+  assert.equal(spec.models.lead.default, 'google/gemini-3.8-flash');
+});

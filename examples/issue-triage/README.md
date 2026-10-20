@@ -80,7 +80,7 @@ An issue's title and body are third-party text written by a named person, and a 
 
 The live take triages fourteen issues, sized by two budgets: the GitHub API's 60 requests an hour without a token (two per issue plus two, so 30 for fourteen, and two attempts do not share an hour), and the recording's size (a published recording stays under 40 MB; each record of the run's driver carries the whole document at that commit, so size grows faster than the issue count).
 
-The three questions are asked in one Jev request per issue, not three: the entry caps a run at 40 judge requests and 80,000 tokens, and fourteen issues at three requests each would be 42. One request also sends the issue's text once. Jev answers each question of a request against the same state, independently.
+The three questions are asked in one Jev request per issue, not three: fourteen issues are 14 requests, not 42, and the issue's text is sent once. Jev answers each question of a request against the same state, independently.
 
 ## For developers
 

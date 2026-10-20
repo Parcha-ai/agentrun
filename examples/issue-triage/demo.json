@@ -11,11 +11,7 @@
       "default": "google/gemini-3.8-flash"
     },
     "judge": {
-      "jev": true,
-      "caps": {
-        "requests": 40,
-        "tokens": 80000
-      }
+      "jev": true
     }
   },
   "keys": [
