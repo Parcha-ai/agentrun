@@ -196,8 +196,9 @@ export function graphNodeOf(graph: WorkflowGraph, executionPath: string): GraphN
         if (first === "branches" && indexOf(second) !== undefined) { next = `${path}/branches/${second}`; i += 2; }
         break;
       case "route":
-        // The branch's name, pointer-escaped as in the graph, whatever it is: `items`, `iterations` and `0` included.
-        if (first === "branches" && second !== undefined && second !== "" && third === "body") { next = `${path}/branches/${second}/body`; i += 3; }
+        // The branch's name, pointer-escaped as in the graph, whatever it is: `items`, `iterations`, `0`, and the empty name a
+        // route Jev chooses may give a branch, included.
+        if (first === "branches" && second !== undefined && third === "body") { next = `${path}/branches/${second}/body`; i += 3; }
         break;
       case "workflow":
         if (first === "workflow" && second === "root") { next = `${path}/workflow/root`; i += 2; }

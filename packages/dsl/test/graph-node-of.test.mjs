@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { runWorkflow } from '@parcha/agentrun-dsl';
+import { runWorkflow, validateWorkflow } from '@parcha/agentrun-dsl';
 import { graphNodeOf, workflowGraph } from '@parcha/agentrun-dsl/graph';
 import { SHAPES } from './fixtures/graph/generate.mjs';
 
@@ -59,6 +59,10 @@ test('a route branch named items or iterations is a branch: the walk reads it at
   } }));
   assert.deepEqual(graphNodeOf(named, '/root/branches/items/body/branches/0/body'), { path: '/root/branches/items/body/branches/0/body', at: [] });
   assert.deepEqual(graphNodeOf(named, '/root/branches/a~1b/body'), { path: '/root/branches/a~1b/body', at: [] }, 'a branch name is pointer-escaped in both');
+  // A route Jev chooses may name a branch with the empty string (its unsure branch, here); its path has an empty segment.
+  const blank = flow('blank', { node: 'route', label: 'r', state: { q: 'x' }, instructions: 'Which one?', unsure: { branch: '', gte: 0.5 }, branches: { '': { body: code('blank') }, b: { body: code('bee') } } });
+  assert.equal(validateWorkflow(blank).ok, true, 'the empty name is a branch a judged route may run');
+  assert.deepEqual(graphNodeOf(workflowGraph(blank), '/root/branches//body'), { path: '/root/branches//body', at: [] });
 });
 
 test('a path the graph does not have, or one that is not an execution path, is undefined', () => {
