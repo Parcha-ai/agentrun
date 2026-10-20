@@ -64,3 +64,16 @@ test('the committed list, data/hc-20.json: 20 run-split companies, each once, as
   assert.equal(queue.length, 20);
   assert.deepEqual(queue.map((c) => c.cik), list.map((e) => e.cik));
 });
+
+test('the CLI: --promote-after sets the host\'s promotion threshold; anything but a whole number from 1 is refused', async (t) => {
+  const dir = await scratch(t);
+  const runner = join(import.meta.dirname, 'runner.mjs');
+  for (const bad of ['0', '1.5', 'two']) {
+    const run = spawnSync(process.execPath, [runner, '--set', 'v4', '--scripted', '--promote-after', bad, '--jobs', '1', '--out', join(dir, `bad-${bad}`)], { encoding: 'utf8' });
+    assert.equal(run.status, 2, `${bad}: ${run.stderr}`);
+    assert.match(run.stderr, /--promote-after is a whole number from 1/);
+  }
+  const run = spawnSync(process.execPath, [runner, '--set', 'v4', '--scripted', '--promote-after', '2', '--jobs', '1', '--no-record', '--out', join(dir, 'ok')], { encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /promotion after 2 clean uses/);
+}, { timeout: 180_000 });

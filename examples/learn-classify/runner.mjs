@@ -232,7 +232,7 @@ async function oneJob({ out, repo, home, parts, judge, job, runCapUsd, record, l
   }
   if (p.phase === 'proposed') {
     const curateJudge = meteredJudge(judge);
-    const curated = await curateJob({ repo, judge: curateJudge });
+    const curated = await curateJob({ repo, judge: curateJudge, ...(parts.thresholds ? { thresholds: parts.thresholds } : {}) });
     save({ ...p, phase: 'curated', curated, curateJudge: { ...curateJudge.meter }, afterSha: curated.report.main });
   }
   if (!p.lineage) {
@@ -359,7 +359,7 @@ export async function runSealed({ out, parts, at = 'main', capUsd, runCapUsd, re
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--sealed --at seed|main|<sha>]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--no-dispatch] [--list <file>] [--promote-after <n>] [--sealed --at seed|main|<sha>]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;
@@ -369,7 +369,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
         out: { type: 'string' }, scripted: { type: 'boolean' }, live: { type: 'boolean' }, data: { type: 'string' }, jobs: { type: 'string' },
         'cap-usd': { type: 'string' }, 'run-cap-usd': { type: 'string' }, 'no-record': { type: 'boolean' }, sealed: { type: 'boolean' }, at: { type: 'string' },
         'no-dispatch': { type: 'boolean' },
-        model: { type: 'string' }, thinking: { type: 'string' }, set: { type: 'string' }, list: { type: 'string' },
+        model: { type: 'string' }, thinking: { type: 'string' }, set: { type: 'string' }, list: { type: 'string' }, 'promote-after': { type: 'string' },
       },
     }));
   } catch (error) {
@@ -388,6 +388,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   }
   if (values.thinking === 'off') { console.error('--thinking off is not allowed: every model call thinks'); process.exit(2); }
   if (values.list !== undefined && values.sealed) { console.error(`--list runs a learning pass: a sealed pass takes the sealed split\n${USAGE}`); process.exit(2); }
+  const promoteAfter = values['promote-after'] === undefined ? undefined : Number(values['promote-after']);
+  if (promoteAfter !== undefined && !(Number.isInteger(promoteAfter) && promoteAfter >= 1)) { console.error(`--promote-after is a whole number from 1\n${USAGE}`); process.exit(2); }
   let list;
   if (values.list !== undefined) {
     try { list = JSON.parse(readFileSync(resolve(values.list), 'utf8')); } catch (error) { console.error(`--list ${values.list}: ${error.message}`); process.exit(2); }
@@ -399,6 +401,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       ? await liveParts({ set, ...(values.data ? { data: resolve(values.data) } : {}), ...(values.model ? { model: values.model } : {}), ...(values.thinking ? { thinking: values.thinking } : {}) })
       : scriptedParts({ set, ...(values.data ? { data: resolve(values.data) } : {}) });
     if (values['no-dispatch']) parts.dispatch = false;
+    if (promoteAfter !== undefined) {
+      parts.thresholds = { promoteAfter };
+      console.log(`learn-classify: promotion after ${promoteAfter} clean uses`);
+    }
     const out = resolve(values.out ?? OUT);
     try {
       mkdirSync(out, { recursive: true });

@@ -560,12 +560,14 @@ export function usageOfStore(storePath) {
 /**
  * The single writer of main, with this example's gates on every saved workflow. Returns curate's report and, per run,
  * what the two workflow ports decided (`gates`: the admitter's answers; `settled`: promote, demote or hold per name).
+ * `thresholds` is the host's promotion rule over pi-agent-learn's defaults (`{ promoteAfter, demoteAfter }`).
  */
-export async function curateJob({ repo, judge, tmpRoot }) {
+export async function curateJob({ repo, judge, tmpRoot, thresholds }) {
   const gates = [];
   const settled = [];
-  const admit = gatedAdmitter({ judge: judge.run, base: workflowAdmitter({ when: schemaWhen, ...(tmpRoot ? { tmpRoot } : {}) }), ...(tmpRoot ? { tmpRoot } : {}) });
-  const settle = usesSettler(tmpRoot ? { tmpRoot } : {});
+  const rules = { ...(tmpRoot ? { tmpRoot } : {}), ...(thresholds ? { thresholds } : {}) };
+  const admit = gatedAdmitter({ judge: judge.run, base: workflowAdmitter({ when: schemaWhen, ...rules }), ...(tmpRoot ? { tmpRoot } : {}) });
+  const settle = usesSettler(rules);
   const report = await curate({
     repo,
     judge: judge.run,

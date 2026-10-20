@@ -688,3 +688,13 @@ test('trial first: the proven revision escalates and the agent runs the newer re
   for (const words of [/When the host tells you the proven revision of a workflow escalated and a newer revision is on trial, load that workflow and run it first\./, /Do the job by hand only if it escalates too\./, /When it completes, use what it returned: its clean runs are what earn it trust\./, /Fix it \(a new revision\) only after it escalates or fails, not before trying it\./])
     assert.match(rules, words);
 }, { timeout: 180_000 });
+
+test('promotion after 2 clean uses, as the host sets it: the whole job is promoted a run sooner, and the host runs it from there', async (t) => {
+  const out = join(await scratch(t), 'out');
+  const parts = scriptedParts({ set: SETS.v4 });
+  parts.thresholds = { promoteAfter: 2 };
+  const { rows } = await runLoop({ out, parts, jobs: 5, record: false });
+  assert.ok(rows.every((r) => r.correct));
+  assert.deepEqual(rows.map((r) => r.curate.promoted), [[], [], [WORKFLOW], [], []]);
+  assert.deepEqual(rows.map((r) => [r.byWorkflow, r.dispatched]), [[false, false], [true, false], [true, false], [true, true], [true, true]]);
+}, { timeout: 300_000 });
