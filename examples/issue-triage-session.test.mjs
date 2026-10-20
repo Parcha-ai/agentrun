@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
-import { agreementOf, ranWorkflow, sentenceFor, session, spentOf, TOOLS } from './issue-triage/session.ts';
+import { agreementOf, ranWorkflow, rowsOf, sentenceFor, session, spentOf, TOOLS } from './issue-triage/session.ts';
 
 const workflow = JSON.parse(readFileSync(new URL('./issue-triage/workflow.json', import.meta.url), 'utf8'));
 const callTools = (node, found = new Set()) => {
@@ -117,4 +117,13 @@ test('--max-usd stops the session cleanly: a lead that keeps asking is ended onc
     assert.equal(faux.state.callCount, asked, 'the model is not asked again after the stop');
     assert.ok(Date.now() - started < 20_000);
   } finally { console.log = log; process.exitCode = 0; await rm(dir, { recursive: true, force: true }); }
+});
+
+test('the rows are the result itself when it is a list, else its rows (the agent chooses the output shape)', () => {
+  const rows = [{ type: 'bug', labels: ['bug'] }];
+  assert.equal(rowsOf(rows), rows);
+  assert.equal(rowsOf({ rows, other: 1 }), rows);
+  assert.equal(rowsOf({ nothing: 1 }), null);
+  assert.equal(rowsOf(null), null);
+  assert.equal(agreementOf(rowsOf(rows), { bug: 'bug' }).matched, 1);
 });
