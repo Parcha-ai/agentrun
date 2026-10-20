@@ -118,7 +118,10 @@ test('segments in other words are Jev\'s: one request, a choice per open segment
   assert.equal(request.label, 'score/segments');
   assert.deepEqual(Object.keys(request.questions), ['a0', 'a1', 'a2']);
   assert.deepEqual(Object.keys(request.questions.a0.criteria), ['t0', 't1', 'none_of_these']);
-  assert.equal(request.questions.a0.instructions, SEGMENT_PICK);
+  // Each question names its own answer segment: one shared question cannot tell Jev which segment it is about.
+  assert.deepEqual(Object.entries(request.questions).map(([id, q]) => q.instructions), ['a0', 'a1', 'a2'].map((id) => SEGMENT_PICK.replace('{id}', id)));
+  assert.match(SEGMENT_PICK, /the answer segment with id `\{id\}` in `answer`/);
+  assert.match(SEGMENT_PICK, /abbreviation, initials or short form/);
   assert.deepEqual(request.state.truth, [{ id: 't0', label: 'Water Systems', member: 'WaterSystemsMember' }, { id: 't1', label: 'Industrial Flow', member: 'IndustrialFlowMember' }]);
   // A filed segment taken by name is not offered again.
   const k = judge({ picks: { 'Flows': ['IndustrialFlowMember', 0.9] } });
@@ -199,10 +202,11 @@ test('the headquarters: the city folded and the country as its ISO code without 
   const kowloon = judge({ hq: { Kowloon: 0.9 } });
   assert.deepEqual(await scoreHq({ answer: { hq: { city: 'Kowloon', state: 'Hong Kong', country: 'Hong Kong' } }, truth: { city: 'HONG KONG', state: null, country: 'HK' }, judge: kowloon.run }), { hqCorrect: true });
   assert.equal(kowloon.asked[0].questions.q.instructions, HQ_QUESTION);
-  assert.match(HQ_QUESTION, /a district or area within it/);
+  assert.match(HQ_QUESTION, /a district, area or neighbourhood within the city/);
   // The place is judged on the city and the country together: Hong Kong filed under CN is the same place as Hong Kong, HK.
   assert.match(HQ_QUESTION, /city and the country together/);
   assert.match(HQ_QUESTION, /territory/);
+  assert.match(HQ_QUESTION, /merged into it or annexed by it/);
   assert.deepEqual([countryCode('U.S.A.'), countryCode('United Kingdom'), countryCode('gb'), countryCode('Atlantis')], ['US', 'GB', 'GB', 'atlantis']);
 });
 

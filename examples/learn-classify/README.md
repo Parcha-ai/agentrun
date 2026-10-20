@@ -246,8 +246,10 @@ company lists them in a 10-K's Exhibit 21 or a 20-F's Exhibit 8), `annualReport`
 
 - `sicCorrect4` and `sicCorrect2` as v2.
 - `segmentsF1`: the answer's segments matched one to one with the filed ones (`segments[]` of the truth row: `member`,
-  `label`, `share`). A label or member in the same words matches at once; the rest go to Jev in one request, a choice
-  per answer segment over the filed segments not yet taken, and the surest choices pair first. F1 is over both sides;
+  `label`, `share`). A label or member in the same words matches at once (a trailing "segment" word is a format, left
+  out on both sides); the rest go to Jev in one request, a choice per answer segment, each question naming its segment,
+  over the filed segments not yet taken (an abbreviation, initials or short form counts), and the surest choices pair
+  first. F1 is over both sides;
   `shareErrorMean` is the mean distance of the matched shares, in points, from the filed shares normalized to sum 1 (as
   filed a list can sum past 1 with intersegment revenue, or short of it; the row's `segmentsShareSum` is the raw sum). `oneSegment` scores 1 against one filed
   segment and 0 against more. A filer that reports one segment has the truth `{ oneSegment: true }` (from its own
@@ -256,8 +258,9 @@ company lists them in a 10-K's Exhibit 21 or a 20-F's Exhibit 8), `annualReport`
 - `hqCorrect`: against the business address as filed (`hq { city, state, country }`: the city in capitals, the country
   as its ISO code). The city (folded: case, accents, punctuation; a filed city without what follows a comma or sits in
   brackets) and the country (as its ISO code) match at once; anything else is Jev's, on the place, city and country
-  together: the same city by another name or spelling or a district within it (Kowloon for Hong Kong), and the same
-  country, a territory named by itself or by the country that holds it. No truth (no city or no country): `null`.
+  together: the same city by another name or spelling, a district within it (Kowloon for Hong Kong), or the
+  municipality the filed place was merged into, and the same country, a territory named by itself or by the country
+  that holds it. No truth (no city or no country): `null`.
 - `subsidiariesRecall` and `subsidiariesPrecision` against the exhibit (`subsidiaries { exhibit, url, count, items }`),
   one to one: a name the same as a listed one not yet taken matches it, word for word first, then once its legal form
   (Inc., GmbH, Ltd ...) is left out, so two entities named alike in two jurisdictions are two. A name whose listed

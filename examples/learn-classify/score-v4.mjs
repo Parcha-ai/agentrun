@@ -2,8 +2,9 @@
 // Nothing is fetched again: cites are checked against the text the run's own tools returned.
 import { sameUrl } from './score-v2.mjs';
 
-export const SEGMENT_PICK = 'Which of the company\'s reported segments (`truth`) is the same segment as `answer`, named in other words, by the business an abbreviated member stands for, or by a region as filed? Choose none when it is none of them.';
-export const HQ_QUESTION = 'Is the place `answer` names as the headquarters the place `truth` names, judged on the city and the country together: the same city by another name or spelling, or a district or area within it, and the same country, counting a territory named by itself or by the country that holds it (`truth` is the address as filed, `truth.country` an ISO code)?';
+/** One question per answer segment, `{id}` its id: a question shared by all of them cannot say which one it is about. */
+export const SEGMENT_PICK = 'Which of the filed segments (`truth`) is the same segment as the answer segment with id `{id}` in `answer`, named in other words? A name may be the filed name\'s abbreviation, initials or short form, the business an abbreviated member stands for, or a region as filed. Choose none when it is none of them.';
+export const HQ_QUESTION = 'Is the headquarters in `answer` the same place as the one in `truth`? Judge the city and the country together as places, not as words. The same place includes: another name or spelling of the city; a district, area or neighbourhood within the city; the municipality that now contains the filed place, when the filed place was merged into it or annexed by it; and a territory named by itself or by the country that holds it. `truth` is the address as filed, and `truth.country` an ISO code.';
 /** A cite is one piece of evidence: it need not carry the whole of its part (every segment, every share) alone. */
 export const CITE_QUESTION_V4 = 'Is `quote` on that page of `text` (the run read it at `url`; `locator` says where), and does it support at least part of `claim`?';
 export const SUBSIDIARY_QUESTION = 'Is `subsidiary` one of the companies in `listed` (the company\'s own list of its subsidiaries), the same entity perhaps named a little differently?';
@@ -84,7 +85,7 @@ export async function scoreSegments({ answer, truth, judge }) {
   const free = filed.map((t, k) => k).filter((k) => !taken.has(k));
   if (open.length && free.length) {
     const criteria = Object.fromEntries([...free.map((k) => [`t${k}`, `${filed[k].label ?? memberWords(filed[k].member)}${filed[k].member ? ` (${filed[k].member})` : ''}`]), ['none_of_these', 'none of these segments']]);
-    const questions = Object.fromEntries(open.map((i) => [`a${i}`, { type: 'choice', instructions: SEGMENT_PICK, criteria }]));
+    const questions = Object.fromEntries(open.map((i) => [`a${i}`, { type: 'choice', instructions: SEGMENT_PICK.replace('{id}', `a${i}`), criteria }]));
     const result = await judge({
       label: 'score/segments', kind: 'judge',
       state: { answer: open.map((i) => ({ id: `a${i}`, name: given[i].name })), truth: free.map((k) => ({ id: `t${k}`, label: filed[k].label ?? null, member: filed[k].member ?? null })) },
