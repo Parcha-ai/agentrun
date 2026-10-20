@@ -52,7 +52,8 @@ test('in Chrome: the gallery\'s list and the inspection view\'s header show each
     const m = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
     // The inspection view's header also reads when, with what code and on which model the run was recorded.
     const recorded = { recorded: { started: '2026-10-20T00:00:00.000Z', ended: '2026-10-20T00:01:00.000Z' }, code: { repo: 'agentrun', commit: '0123456789abcdef', packages: {} }, model: 'a model', cost: { usd: 0, parts: {} } };
-    writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ ...recorded, ...m, title: 'A Vision Agent', artifact: { ...m.artifact, title } }, null, 2));
+    // The gallery lists only runs a real model made.
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ ...recorded, ...m, providers: 'real', title: 'A Vision Agent', artifact: { ...m.artifact, title } }, null, 2));
   }
   build(join(out, 'dist'), join(out, 'recordings'), { files: true });
   const TYPES: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.jsonl': 'text/plain', '.png': 'image/png', '.css': 'text/css' };

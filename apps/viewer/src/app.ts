@@ -9,7 +9,7 @@ import { nextStop, playback, previousStop, reduceTo, snap, stopAt, stopsOf, link
 import { chatGivenInput, chatTitle } from './chat-extract.ts';
 import { citeStop } from './cite.ts';
 import { workflowMapPanel } from './workflow-map.ts';
-import { opensInPage } from './blobs.ts';
+import { opensInPage, textAt } from './blobs.ts';
 import { readAllEntries } from './folder.ts';
 import { blobsAt, blobsNamed, bundledRecordings, fromFiles, fromUrl, openBundled, type GalleryEntry, type IndexEntry } from './load.ts';
 import { finishedManifest, placeLines, tailOf } from './follow.ts';
@@ -19,6 +19,7 @@ import { pdfDrawer, type PdfDrawn } from './pdf.ts';
 import { transportPanel } from './transport.ts';
 import { visionPanel } from './vision.ts';
 import { documentPanel } from './document.ts';
+import { landingFeatured, landingOf, landingPublic } from './landing.ts';
 
 const SPEEDS = [0.5, 1, 2, 4, 10];
 
@@ -304,15 +305,6 @@ export function restorePlace(root: HTMLElement, place: ReturnType<typeof placeIn
     }
   }
   if (place.focus !== undefined) (all.find((node) => placeKey(node, root) === place.focus) as HTMLElement | undefined)?.focus({ preventScroll: true });
-}
-
-/** A blob's text. An embedded blob's data: URL is decoded in the page: a page served with `connect-src 'self'` may not
- *  fetch one. */
-async function textAt(url: string): Promise<string> {
-  const data = /^data:[^,]*?(;base64)?,/.exec(url);
-  if (!data) return (await fetch(url)).text();
-  const body = url.slice(data[0].length);
-  return data[1] ? new TextDecoder().decode(Uint8Array.from(atob(body), (each) => each.charCodeAt(0))) : decodeURIComponent(body);
 }
 
 /** The JSON blobs a recording's result names (the manifest's and each `result` line's), parsed. One that does not load
@@ -769,11 +761,16 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   };
 }
 
-function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entries: readonly { id: string; manifest: Manifest }[], unread?: string) {
-  const list = el('ul', { class: 'gallery' }, ...entries.map((entry) => {
+function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entries: readonly (GalleryEntry | IndexEntry)[], unread?: string) {
+  const shown = entries.filter(landingPublic);
+  // The featured runs are the landing's cards; the list holds the other public runs, each by its card's title.
+  const featured = new Set(landingFeatured(entries).map((entry) => entry.id));
+  const rest = shown.filter((entry) => !featured.has(entry.id));
+  const list = el('ul', { class: 'gallery' }, ...rest.map((entry) => {
     // A demo opens in the chat + report view; its inspection is ./?r=<id>, linked from there.
-    const link = Object.assign(el('a', { text: chatTitle(entry.manifest) }), { href: `chat.html?r=${encodeURIComponent(entry.id)}` });
-    return el('li', {}, link, el('span', { class: 'meta', text: ` ${entry.manifest.model}` }));
+    const title = (entry as { card?: { title?: string } }).card?.title ?? chatTitle(entry.manifest);
+    const link = Object.assign(el('a', { text: title }), { href: `chat.html?r=${encodeURIComponent(entry.id)}` });
+    return el('li', {}, link);
   }));
   const picker = Object.assign(el('input'), { type: 'file', multiple: true }) as HTMLInputElement;
   picker.setAttribute('webkitdirectory', '');
@@ -798,9 +795,13 @@ function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entr
     }
     onOpen(await fromFiles(files));
   });
-  root.replaceChildren(el('header', {}, el('h1', { text: 'agentrun run viewer' }), el('p', { class: 'meta', text: 'Replays a run recorded as agentrun.recording/1.' })),
-    el('h2', { text: 'Recordings' }), unread !== undefined ? el('p', { class: 'problems', text: `The gallery could not be read (${unread}); a recording folder can still be opened below.` })
-      : entries.length ? list : el('p', { class: 'empty', text: 'No recordings yet.' }), drop);
+  // The gallery is the site's landing: the chat view's look, its line and its featured runs head the page, above the list.
+  document.documentElement.classList.add('landing-page');
+  document.title = 'agent.run()';
+  const listed = unread !== undefined ? [el('h2', { text: 'Recordings' }), el('p', { class: 'problems', text: `The gallery could not be read (${unread}); a recording folder can still be opened below.` })]
+    : rest.length ? [el('h2', { text: featured.size ? 'More recordings' : 'Recordings' }), list]
+    : shown.length ? [] : [el('h2', { text: 'Recordings' }), el('p', { class: 'empty', text: 'No recordings yet.' })];
+  root.replaceChildren(landingOf(entries), ...listed, el('details', { class: 'open-recording' }, el('summary', { text: 'Open a recording' }), drop));
 }
 
 /** How often a followed run is asked for what is new. */

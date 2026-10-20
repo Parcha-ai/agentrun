@@ -75,6 +75,8 @@ const gate = (t, recordings) => {
   cpSync(join(root, 'packages/harness/src/scan.ts'), join(dir, 'packages/harness/src/scan.ts'));
   // The report page is read with an HTML parser, from node_modules (the workflow installs it before the gate).
   cpSync(join(root, 'packages/harness/src/artifact.ts'), join(dir, 'packages/harness/src/artifact.ts'));
+  // A card is checked against its run as the chat view reads it (apps/viewer/src).
+  cpSync(join(root, 'apps/viewer/src'), join(dir, 'apps/viewer/src'), { recursive: true });
   symlinkSync(join(root, 'node_modules'), join(dir, 'node_modules'));
   build(join(dir, 'apps/viewer/dist'), recordings);
   return new Promise((resolve) => execFile('bash', ['-c', GATE], { cwd: dir }, (error, stdout, stderr) => resolve({ code: error ? error.code : 0, stdout, stderr })));

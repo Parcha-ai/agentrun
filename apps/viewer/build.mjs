@@ -9,6 +9,8 @@ import { stripTypeScriptTypes } from 'node:module';
 import { basename, dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inertName, MIME } from './src/blobs.ts';
+import { chatCard, chatLooksShown } from './src/chat-extract.ts';
+import { parseLines } from './src/format.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const out = process.argv.slice(2).find((arg) => !arg.startsWith('--')) ?? join(here, 'dist');
@@ -56,7 +58,19 @@ function bundle(entry) {
   });
 }
 
-export function build(target = out, recordingsDir = join(here, 'recordings'), { files = false } = {}) {
+/** The gallery's order and posters, a maintainer's choice: `recordings.lock.json`'s ids, each `{ id, poster?, looks? }`
+ *  with `poster` the SHA-256 of an image the recording holds and `looks` the keys of looks the run filed on one image:
+ *  the card shows that image with the boxes the run's own report marked for them. None when the file is absent. */
+function lockOf(path) {
+  if (!existsSync(path)) return [];
+  const ids = JSON.parse(readFileSync(path, 'utf8')).ids;
+  return Array.isArray(ids) ? ids.map((each) => (typeof each === 'string' ? { id: each } : each)).filter((each) => typeof each?.id === 'string') : [];
+}
+
+const IMAGE = /^(png|jpe?g|webp|gif)$/i;
+
+export function build(target = out, recordingsDir = join(here, 'recordings'), { files = false, lock = join(here, 'recordings.lock.json') } = {}) {
+  const locked = lockOf(lock);
   const parts = bundle('app.ts');
   // The chat + report page (chat.html): a second script over the same loader, beside the viewer.
   const chatParts = bundle('chat.ts');
@@ -88,7 +102,19 @@ export function build(target = out, recordingsDir = join(here, 'recordings'), { 
       blobs[file.slice(0, -ext.length - 1)] = files ? `blobs/${inertName(file)}` : `data:${MIME[ext] ?? 'application/octet-stream'};base64,${readFileSync(join(dir, 'blobs', file)).toString('base64')}`;
     }
     const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
-    gallery.push(files ? { id, manifest, blobs } : { id, manifest, events: readFileSync(join(dir, 'events.jsonl'), 'utf8'), blobs });
+    const events = readFileSync(join(dir, 'events.jsonl'), 'utf8');
+    // Its card comes from the run alone (the same title and question the chat view reads); its place and poster from the
+    // lock, a poster only when it is an image this recording holds.
+    const rank = locked.findIndex((each) => each.id === id);
+    const poster = locked[rank]?.poster;
+    const held = poster ? readdirSync(join(dir, 'blobs')).find((name) => name.startsWith(`${poster}.`) && IMAGE.test(extname(name).slice(1))) : undefined;
+    const lines = parseLines(events);
+    // A card that names looks shows their image, with the boxes their answers found; else the lock's poster.
+    const named = Array.isArray(locked[rank]?.looks) ? locked[rank].looks.filter((key) => typeof key === 'string') : [];
+    const shown = named.length ? chatLooksShown(lines, named) : undefined;
+    const lookImage = shown && readdirSync(join(dir, 'blobs')).some((name) => name.startsWith(`${shown.image}.`) && IMAGE.test(extname(name).slice(1))) ? shown.image : undefined;
+    const card = { ...chatCard({ manifest, lines }), ...(lookImage ? { poster: lookImage, looks: shown.looks, boxes: shown.boxes } : held ? { poster } : {}), ...(rank >= 0 ? { rank } : {}) };
+    gallery.push(files ? { id, manifest, blobs, card } : { id, manifest, events, blobs, card });
     // Beside the page, every blob is published under its inert name: a page, an SVG or a script in a recording (an agent's
     // report, draft 41) is plain text when opened straight, and the viewer reads it into its sandboxed frame.
     const copy = join(target, 'recordings', id);

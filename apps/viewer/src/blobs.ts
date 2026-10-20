@@ -20,3 +20,12 @@ export const opensInPage = (type: string | undefined): boolean => type !== undef
 export const SHOWN_AS_DATA: ReadonlySet<string> = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'webm', 'mp4', 'pdf', 'json', 'jsonl', 'txt', 'md', 'csv', 'vtt', 'css']);
 /** The name a blob file is published under: its own when its extension is shown as data, else with `.txt` after it. */
 export const inertName = (name: string): string => (SHOWN_AS_DATA.has(name.split('.').at(-1)?.toLowerCase() ?? '') ? name : `${name}.txt`);
+
+/** A blob's text. An embedded blob's data: URL is decoded in the page: a page served with `connect-src 'self'` may not
+ *  fetch one. */
+export async function textAt(url: string): Promise<string> {
+  const data = /^data:[^,]*?(;base64)?,/.exec(url);
+  if (!data) return (await fetch(url)).text();
+  const body = url.slice(data[0].length);
+  return data[1] ? new TextDecoder().decode(Uint8Array.from(atob(body), (each) => each.charCodeAt(0))) : decodeURIComponent(body);
+}
