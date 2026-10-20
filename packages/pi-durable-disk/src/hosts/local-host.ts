@@ -166,6 +166,18 @@ const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * else is special there: systemd expands no `$` in this file). A name that is not a variable name, or a value with a newline,
  * a carriage return or a NUL, cannot be written faithfully, so it is refused rather than mangled.
  */
+/**
+ * The unit's own `ExecStopPost=` (`+`: as root, whatever `User=` is) that removes its environment file when the unit ends for
+ * good, so an instance that parks or finishes on its own leaves nothing behind. A restart in place loads the file again, so it
+ * stays after any exit systemd will restart: with `Restart=on-failure`, one that is not `success` and not in `TERMINAL_EXITS`.
+ * (`$$` is systemd's escape for `$`; it hands the script `SERVICE_RESULT` and `EXIT_STATUS`.)
+ */
+function environmentCleanup(path: string, restarts: boolean): string {
+  if (!restarts) return `+/bin/rm -f ${path}`;
+  const final = ["success:*", ...TERMINAL_EXITS.map((code) => `exit-code:${code}`)].join("|");
+  return `+/bin/sh -c 'case "$$SERVICE_RESULT:$$EXIT_STATUS" in ${final}) /bin/rm -f "$$1";; esac' sh ${path}`;
+}
+
 function environmentFile(env: Record<string, string>): string {
   const lines: string[] = [];
   for (const [name, value] of Object.entries(env)) {
@@ -263,6 +275,7 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
         "-p", `Group=${group}`,
         "-p", `StandardInput=file:${path}`,
         "-p", `EnvironmentFile=${envPath}`,
+        "-p", `ExecStopPost=${environmentCleanup(envPath, opts.restart !== false)}`,
         "--",
         ...command,
         ...runFlags(ref),
@@ -275,7 +288,8 @@ export function localHost(opts: LocalHostOptions = {}): HostDriver & Required<Pi
     } finally {
       // Type=exec: systemd-run returns after the exec, so the instance's stdin is already open on the token. The path
       // stays (empty) because a restart in place opens it again; stop removes it. The environment file stays whole: a
-      // restart in place loads it again, and stop removes it. A start that failed leaves neither.
+      // restart in place loads it again, and stop removes it. The unit's ExecStopPost removes the file when
+      // it ends for good (a park, a finish, a terminal exit). A start that failed leaves neither.
       if (started) await emptyTokenFile(path).catch(() => {});
       else await Promise.all([removeFile(path), removeFile(envPath)]).catch(() => {});
     }

@@ -526,7 +526,7 @@ and a takeover whose start was slowed 5 s before its first `run.json` write star
 - **The instance's environment is never on a command line.** `localHost`'s `env` and a start's own (`StartAttempt.env`) reach
   the unit through a root-only file (`EnvironmentFile=`, mode 0600, beside the mount token's), not through `systemd-run
   --setenv`: `sudo` logs a command line, and a unit's `Environment=` property is readable by every local user. The file is
-  removed with the unit. A value with a newline is refused rather than mangled.
+  removed when the unit stops or ends for good. A value with a newline is refused rather than mangled.
 - **No privilege for the agent.** The instance, pi's tools and the agent's commands run as an unprivileged user. Every
   command starts under `setpriv --no-new-privs` (on Linux; macOS has no equivalent, see [On macOS](#on-macos)), so a
   command cannot use the run user's sudo rule (sudo refuses: "The no new privileges flag is set"). An app that turns
