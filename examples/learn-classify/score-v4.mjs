@@ -99,33 +99,50 @@ export async function scoreSegments({ answer, truth, judge }) {
   return { segmentsF1, shareErrorMean: errors.length ? errors.reduce((a, b) => a + b, 0) / errors.length : null };
 }
 
-/** hqCorrect: the city and the country after folding (the country as its ISO code), else Jev on an alias. No truth: null. */
+/** A city as filed (sub.txt's cityba): the city alone, without a province or country after a comma or a district in brackets. */
+const filedCity = (city) => folded(String(city ?? '').split(',')[0].replace(/\(.*?\)/g, ' '));
+
+/** hqCorrect: the city and the country after folding (the country as its ISO code, the filed city without what follows a
+ *  comma or sits in brackets), else Jev on an alias. No truth (no city or no country): null. */
 export async function scoreHq({ answer, truth, judge }) {
   if (!truth?.city || !truth?.country) return { hqCorrect: null };
   const hq = answer?.hq;
   if (!hq?.city || !hq?.country) return { hqCorrect: false };
-  if (folded(hq.city) === folded(truth.city) && countryCode(hq.country) === countryCode(truth.country)) return { hqCorrect: true };
+  const city = folded(hq.city);
+  if ((city === folded(truth.city) || city === filedCity(truth.city)) && countryCode(hq.country) === countryCode(truth.country)) return { hqCorrect: true };
   const p = await noul(judge, 'score/hq', HQ_QUESTION, { answer: { city: hq.city, state: hq.state ?? null, country: hq.country }, truth: { city: truth.city, state: truth.state ?? null, country: truth.country } });
   return { hqCorrect: p >= 0.5 };
 }
 
 /**
- * subsidiariesRecall and subsidiariesPrecision against the company's own list (Exhibit 21 or 8): a name the same once its
- * legal form is left out matches at once, any other is Jev's against the whole list. Recall is over at most 15 of the
- * listed ones, the most an answer may give. No list: both null.
+ * subsidiariesRecall and subsidiariesPrecision against the company's own list (`{ exhibit, url, count, items }`, its
+ * Exhibit 21 or 8), one to one: a name the same as a listed one not yet taken matches it, first word for word, then once
+ * the legal form is left out (two entities named alike in two jurisdictions are two). A name whose listed namesakes are
+ * all taken is a repeat and matches nothing; any other name is Jev's against the whole list. Recall is over at most 15 of
+ * the listed ones (the exhibit's count), the most an answer may give. No list: both null.
  */
 export async function scoreSubsidiaries({ answer, truth, judge }) {
-  const listed = truth ?? null;
-  if (!Array.isArray(listed) || !listed.length) return { subsidiariesRecall: null, subsidiariesPrecision: null };
-  const given = [...new Map((answer?.subsidiaries ?? []).map((s) => [entityName(s.name), s])).values()];
+  const listed = Array.isArray(truth?.items) ? truth.items : null;
+  if (!listed?.length) return { subsidiariesRecall: null, subsidiariesPrecision: null };
+  const count = typeof truth.count === 'number' && truth.count >= listed.length ? truth.count : listed.length;
+  const given = [...new Map((answer?.subsidiaries ?? []).map((s) => [folded(s.name), s])).values()];
   if (!given.length) return { subsidiariesRecall: 0, subsidiariesPrecision: null };
-  const names = new Set(listed.map((s) => entityName(s.name ?? s)));
-  const text = listed.map((s) => s.name ?? s).join('; ').slice(0, MAX_LISTED_TEXT);
-  let found = 0;
-  for (const s of given) {
-    if (names.has(entityName(s.name)) || (await noul(judge, 'score/subsidiary', SUBSIDIARY_QUESTION, { subsidiary: s.name, listed: text })) >= 0.5) found += 1;
+  const taken = new Set();
+  const take = (same) => {
+    const k = listed.findIndex((item, i) => !taken.has(i) && same(item));
+    if (k >= 0) taken.add(k);
+    return k >= 0;
+  };
+  const matched = new Set();
+  for (const [i, s] of given.entries()) if (take((item) => folded(item.name) === folded(s.name))) matched.add(i);
+  for (const [i, s] of given.entries()) if (!matched.has(i) && take((item) => entityName(item.name) === entityName(s.name))) matched.add(i);
+  const text = listed.map((s) => s.name).join('; ').slice(0, MAX_LISTED_TEXT);
+  let found = matched.size;
+  for (const [i, s] of given.entries()) {
+    if (matched.has(i) || listed.some((item) => entityName(item.name) === entityName(s.name))) continue;
+    if ((await noul(judge, 'score/subsidiary', SUBSIDIARY_QUESTION, { subsidiary: s.name, listed: text })) >= 0.5) found += 1;
   }
-  return { subsidiariesRecall: Math.min(1, found / Math.min(listed.length, MAX_SUBSIDIARIES)), subsidiariesPrecision: found / given.length };
+  return { subsidiariesRecall: Math.min(1, found / Math.min(count, MAX_SUBSIDIARIES)), subsidiariesPrecision: found / given.length };
 }
 
 const claimOf = (cite, answer, codes) => {
@@ -157,7 +174,8 @@ export async function scoreCites({ answer, read, codes = {}, judge }) {
 const PDF_PAGE = /\bpdf p\.\s*\d+/i;
 
 /**
- * The v4 score of one run. `company` is the truth row (companies-v4.json: sic, segments, hq, latestAnnual, subsidiaries),
+ * The v4 score of one run. `company` is the truth row (companies-v4.json: sic, segments, hq, latestAnnual, subsidiaries;
+ * CLASSIFY-CONTRACT.md v4 "Truth"),
  * `read` what the run read (`textsRead`), `codes` the label set, `judge` a runJudge port. `correct` is every part with
  * truth right: the code always, the segments (F1 0.8 or better) and the headquarters when they have truth; `correctOver`
  * names the parts that counted.
@@ -171,7 +189,9 @@ export async function scoreV4({ answer, company, read, codes, judge }) {
   const subsidiaries = await scoreSubsidiaries({ answer, truth: company.subsidiaries, judge });
   const report = answer?.annualReport ?? null;
   const truthYear = company.latestAnnual?.fy ?? null;
-  const reportYearCorrect = truthYear === null ? null : report !== null && Number(report.fiscalYear) === Number(truthYear);
+  // A newer annual report may have been filed after the truth's pinned quarters: then the next fiscal year is right too.
+  const years = truthYear === null ? [] : [Number(truthYear), ...(company.latestAnnual.newerPossible ? [Number(truthYear) + 1] : [])];
+  const reportYearCorrect = truthYear === null ? null : report !== null && years.includes(Number(report.fiscalYear));
   const reportRead = report !== null && (answer?.cites ?? []).some((c) => sameUrl(c.url) === sameUrl(report.url) && PDF_PAGE.test(c.locator ?? ''));
   const cites = answer ? await scoreCites({ answer, read, codes, judge }) : { evidenceSupported: null };
   return {
@@ -181,7 +201,7 @@ export async function scoreV4({ answer, company, read, codes, judge }) {
       ? company.segments.map((s) => ({ label: s.label ?? null, member: s.member ?? null, share: typeof s.share === 'number' ? s.share : null })) : null,
     ...segments,
     hqAnswer: answer?.hq ?? null, hqTruth: company.hq ?? null, ...hq,
-    subsidiariesAnswer: answer?.subsidiaries ?? null, subsidiariesTruthCount: Array.isArray(company.subsidiaries) ? company.subsidiaries.length : null, ...subsidiaries,
+    subsidiariesAnswer: answer?.subsidiaries ?? null, subsidiariesTruthCount: Array.isArray(company.subsidiaries?.items) ? company.subsidiaries.count ?? company.subsidiaries.items.length : null, ...subsidiaries,
     reportAnswer: report, reportTruth: company.latestAnnual ?? null, reportYearCorrect, reportRead,
     ...cites,
     correct: sicCorrect4 && (segments.segmentsF1 === null || segments.segmentsF1 >= 0.8) && hq.hqCorrect !== false,

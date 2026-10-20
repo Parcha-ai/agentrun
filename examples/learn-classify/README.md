@@ -252,12 +252,17 @@ company lists them in a 10-K's Exhibit 21 or a 20-F's Exhibit 8), `annualReport`
   segment and 0 against more. A filer that reports one segment has the truth `{ oneSegment: true }` (from its own
   one-segment statement or a lone segment member): `oneSegment` or any one named segment scores 1 there, n segments
   2/(n+1). No segment truth (`null`): both `null`.
-- `hqCorrect`: the city (folded: case, accents, punctuation) and the country (as its ISO code) match at once; anything
-  else is Jev's, for another name of the same city or country. No truth: `null`.
-- `subsidiariesRecall` and `subsidiariesPrecision` against the exhibit list: a name the same once its legal form (Inc.,
-  GmbH, Ltd ...) is left out matches at once, any other is Jev's against the whole list. Recall is over at most 15 listed
-  names, the most an answer may give. No list: both `null`.
-- `reportYearCorrect`: the fiscal year against the latest annual filing's (`latestAnnual.fy`). `reportRead`: a cite on
+- `hqCorrect`: against the business address as filed (`hq { city, state, country }`: the city in capitals, the country
+  as its ISO code). The city (folded: case, accents, punctuation; a filed city without what follows a comma or sits in
+  brackets) and the country (as its ISO code) match at once; anything else is Jev's, for another name of the same city
+  or country. No truth (no city or no country): `null`.
+- `subsidiariesRecall` and `subsidiariesPrecision` against the exhibit (`subsidiaries { exhibit, url, count, items }`),
+  one to one: a name the same as a listed one not yet taken matches it, word for word first, then once its legal form
+  (Inc., GmbH, Ltd ...) is left out, so two entities named alike in two jurisdictions are two. A name whose listed
+  namesakes are taken is a repeat; any other name is Jev's against the whole list. Recall is over at most 15 of the
+  exhibit's `count`, the most an answer may give. No exhibit: both `null`.
+- `reportYearCorrect`: the fiscal year against the latest annual filing's (`latestAnnual.fy`), or the next one where
+  `newerPossible` says a newer report may have been filed after the truth's pinned quarters. `reportRead`: a cite on
   the report's URL locates a page of it as "pdf p. N".
 - `evidenceSupported` as v2, each cite's claim stated for its kind.
 - `correct`, the curve's headline: every part with truth right. The code always counts; `segmentsF1` 0.8 or better

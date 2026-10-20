@@ -156,26 +156,48 @@ test('the headquarters: the city folded and the country as its ISO code without 
   assert.deepEqual(await scoreHq({ answer: { hq: { city: 'London', country: 'Canada' } }, truth: { city: 'LONDON', country: 'GB' }, judge: j.run }), { hqCorrect: false }, 'the same city in another country');
   assert.deepEqual(await scoreHq({ answer: {}, truth: montreal, judge: j.run }), { hqCorrect: false });
   assert.deepEqual(await scoreHq({ answer: { hq: { city: 'Montreal', country: 'Canada' } }, truth: { city: 'MONTREAL', country: null }, judge: j.run }), { hqCorrect: null });
+  assert.deepEqual(await scoreHq({ answer: { hq: { city: 'Montreal', country: 'Canada' } }, truth: null, judge: j.run }), { hqCorrect: null });
+  // As filed: a city with its province or country after a comma, or a district in brackets, is that city.
+  const asked = j.asked.length;
+  assert.deepEqual(await scoreHq({ answer: { hq: { city: 'Toronto', country: 'Canada' } }, truth: { city: 'TORONTO, ONTARIO', state: 'A6', country: 'CA' }, judge: j.run }), { hqCorrect: true });
+  assert.deepEqual(await scoreHq({ answer: { hq: { city: 'Haifa', country: 'Israel' } }, truth: { city: 'HAIFA, ISRAEL', state: null, country: 'IL' }, judge: j.run }), { hqCorrect: true });
+  assert.deepEqual(await scoreHq({ answer: { hq: { city: 'Valdilana', country: 'Italy' } }, truth: { city: 'VALDILANA (BIELLA)', state: null, country: 'IT' }, judge: j.run }), { hqCorrect: true });
+  assert.equal(j.asked.length, asked, 'no question for any of them');
+  assert.deepEqual(await scoreHq({ answer: { hq: { city: 'Luxembourg', country: 'Luxembourg' } }, truth: { city: 'GRAND DUCHY OF LUXEMBOURG', state: null, country: 'LU' }, judge: j.run }), { hqCorrect: false }, 'not the same words: Jev\'s, and this judge says no');
+  assert.equal(j.asked.length, asked + 1);
   assert.deepEqual([countryCode('U.S.A.'), countryCode('United Kingdom'), countryCode('gb'), countryCode('Atlantis')], ['US', 'GB', 'GB', 'atlantis']);
 });
 
 test('subsidiaries: names match once the legal form is left out, the rest are Jev\'s; recall over at most 15 listed, no list not scored', async () => {
-  const listed = Array.from({ length: 20 }, (_, i) => ({ name: `Harbor Unit ${i} GmbH`, country: 'DE' }));
+  const items = Array.from({ length: 20 }, (_, i) => ({ name: `Harbor Unit ${i} GmbH`, jurisdiction: 'Germany' }));
+  const exhibit = (list, count = list.length) => ({ exhibit: 'EX-21.1', url: 'https://www.harborvalve.example/ex21.htm', count, items: list });
+  const listed = exhibit(items);
   const given = [
     ...Array.from({ length: 12 }, (_, i) => ({ name: `Harbor Unit ${i}` })),
     { name: 'Harbor Unit 12 GmbH' }, { name: 'Harbor Unit Twelve' }, { name: 'Harbor Holdings Ltd' }, { name: 'Harbor Unit 0, Inc.' },
   ];
   const j = judge({ subsidiaries: { 'Harbor Unit Twelve': 0.9 } });
   const result = await scoreSubsidiaries({ answer: { subsidiaries: given }, truth: listed, judge: j.run });
-  // 13 by name (Harbor Unit 0, Inc. is Harbor Unit 0 again), one by Jev, one not listed: 14 found of 15 given.
-  assert.deepEqual(result, { subsidiariesRecall: 14 / 15, subsidiariesPrecision: 14 / 15 });
+  // 13 by name, one by Jev, one not listed, and Harbor Unit 0, Inc. is Harbor Unit 0 again (its listed one is taken, so
+  // it is not asked about): 14 found of 16 given.
+  assert.deepEqual(result, { subsidiariesRecall: 14 / 15, subsidiariesPrecision: 14 / 16 });
   assert.deepEqual(j.asked.map((a) => a.state.subsidiary), ['Harbor Unit Twelve', 'Harbor Holdings Ltd']);
   assert.match(j.asked[0].state.listed, /^Harbor Unit 0 GmbH; Harbor Unit 1 GmbH;/);
-  const short = await scoreSubsidiaries({ answer: { subsidiaries: [{ name: 'Harbor Unit 0 GmbH' }] }, truth: listed.slice(0, 3), judge: j.run });
+  const short = await scoreSubsidiaries({ answer: { subsidiaries: [{ name: 'Harbor Unit 0 GmbH' }] }, truth: exhibit(items.slice(0, 3)), judge: j.run });
   assert.deepEqual(short, { subsidiariesRecall: 1 / 3, subsidiariesPrecision: 1 });
+  const counted = await scoreSubsidiaries({ answer: { subsidiaries: [{ name: 'Harbor Unit 0 GmbH' }] }, truth: exhibit(items.slice(0, 3), 4), judge: j.run });
+  assert.deepEqual(counted, { subsidiariesRecall: 1 / 4, subsidiariesPrecision: 1 }, 'over the exhibit\'s count when it lists more than its items');
   assert.deepEqual(await scoreSubsidiaries({ answer: { subsidiaries: given }, truth: null, judge: j.run }), { subsidiariesRecall: null, subsidiariesPrecision: null });
   assert.deepEqual(await scoreSubsidiaries({ answer: {}, truth: listed, judge: j.run }), { subsidiariesRecall: 0, subsidiariesPrecision: null });
+  assert.deepEqual(await scoreSubsidiaries({ answer: { subsidiaries: given }, truth: exhibit([], 0), judge: j.run }), { subsidiariesRecall: null, subsidiariesPrecision: null });
   assert.deepEqual([entityName('Summit Ridge Software (US) Inc.'), entityName('Cedar Lane Bank, N.A.')], ['summit ridge software us', 'cedar lane bank n a']);
+  // Two listed entities whose names differ only in their legal form (one per jurisdiction) are two subsidiaries, each
+  // matched once.
+  const twins = exhibit([{ name: 'Vale Therapeutics Limited', jurisdiction: 'India' }, { name: 'Vale Therapeutics, Inc.', jurisdiction: 'Delaware' }, { name: 'Vale Labs B.V.' }]);
+  const k = judge();
+  assert.deepEqual(await scoreSubsidiaries({ answer: { subsidiaries: [{ name: 'Vale Therapeutics Limited' }, { name: 'Vale Therapeutics, Inc.' }] }, truth: twins, judge: k.run }), { subsidiariesRecall: 2 / 3, subsidiariesPrecision: 1 });
+  assert.deepEqual(await scoreSubsidiaries({ answer: { subsidiaries: [{ name: 'Vale Therapeutics Ltd' }, { name: 'Vale Therapeutics Inc' }, { name: 'Vale Therapeutics' }] }, truth: twins, judge: k.run }), { subsidiariesRecall: 2 / 3, subsidiariesPrecision: 2 / 3 }, 'a third of the same name has none left');
+  assert.equal(k.asked.length, 0);
 });
 
 test('the report: the fiscal year against the latest annual filing, read when a cite names a PDF page of its URL; correct is every part with truth', async () => {
@@ -198,8 +220,13 @@ test('the report: the fiscal year against the latest annual filing, read when a 
   assert.deepEqual(score.segmentsTruth, [{ label: 'Water Systems', member: 'WaterSystemsMember', share: 0.61 }, { label: 'Industrial Flow', member: 'IndustrialFlowMember', share: 0.39 }]);
 
   const again = (patch, truth = company) => scoreV4({ answer: { ...answer, ...patch }, company: truth, read, codes: {}, judge: judge().run });
+  const withExhibit = await again({}, { ...company, subsidiaries: { exhibit: 'EX-21.1', url: 'https://x.example/ex21.htm', count: 2, items: [{ name: 'Harbor Valve Europe GmbH', jurisdiction: 'Germany' }, { name: 'Harbor Flow LLC' }] } });
+  assert.deepEqual([withExhibit.subsidiariesTruthCount, withExhibit.subsidiariesRecall, withExhibit.subsidiariesPrecision], [2, 0.5, 1]);
   assert.equal((await again({ annualReport: { url: report, fiscalYear: 2024 } })).reportYearCorrect, false);
   assert.equal((await again({}, { ...company, latestAnnual: null })).reportYearCorrect, null);
+  assert.equal((await again({ annualReport: { url: report, fiscalYear: 2026 } })).reportYearCorrect, false, 'a year past the latest filed');
+  const newer = { ...company, latestAnnual: { ...company.latestAnnual, newerPossible: true } };
+  assert.deepEqual(await Promise.all([2024, 2025, 2026, 2027].map(async (fiscalYear) => (await again({ annualReport: { url: report, fiscalYear } }, newer)).reportYearCorrect)), [false, true, true, false], 'newerPossible: the next year too');
   assert.equal((await again({ cites: [{ ...answer.cites[0], locator: 'page 1' }] })).reportRead, false, 'a page of the PDF, as "pdf p. N"');
   assert.equal((await again({ cites: [{ ...answer.cites[0], url: 'https://www.harborvalve.example/investors' }] })).reportRead, false, 'on the report itself');
   assert.equal((await again({ sic4: '3562' })).correct, false);

@@ -34,23 +34,29 @@
     "latestAnnual": {
       "form": "10-K",
       "fy": 2025,
-      "period": "20251231",
-      "adsh": "0000900100-25-000001"
+      "period": "2025-12-31",
+      "adsh": "0000900100-25-000001",
+      "filed": "2026-02-27"
     },
-    "subsidiaries": [
-      {
-        "name": "Harbor Valve Europe GmbH",
-        "country": "DE"
-      },
-      {
-        "name": "Harbor Flow Systems LLC",
-        "country": "US"
-      },
-      {
-        "name": "HVW Pumps Ltd",
-        "country": "GB"
-      }
-    ]
+    "subsidiaries": {
+      "exhibit": "EX-21.1",
+      "url": "https://www.sec.gov/Archives/edgar/data/900101/000090010025000001/ex21.htm",
+      "count": 3,
+      "items": [
+        {
+          "name": "Harbor Valve Europe GmbH",
+          "jurisdiction": "Germany"
+        },
+        {
+          "name": "Harbor Flow Systems LLC",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "HVW Pumps Ltd",
+          "jurisdiction": "England and Wales"
+        }
+      ]
+    }
   },
   {
     "cik": "0000900102",
@@ -81,8 +87,9 @@
     "latestAnnual": {
       "form": "10-K",
       "fy": 2025,
-      "period": "20251231",
-      "adsh": "0000900100-25-000001"
+      "period": "2025-12-31",
+      "adsh": "0000900100-25-000001",
+      "filed": "2026-02-27"
     },
     "subsidiaries": null
   },
@@ -115,26 +122,32 @@
       }
     ],
     "hq": {
-      "city": "TORONTO",
+      "city": "TORONTO, ONTARIO",
       "state": "A6",
       "country": "CA"
     },
     "latestAnnual": {
       "form": "20-F",
       "fy": 2025,
-      "period": "20251231",
-      "adsh": "0000900100-25-000001"
+      "period": "2025-12-31",
+      "adsh": "0000900100-25-000001",
+      "filed": "2026-02-27"
     },
-    "subsidiaries": [
-      {
-        "name": "Summit Ridge Software (US) Inc.",
-        "country": "US"
-      },
-      {
-        "name": "Summit Ridge Cloud Ltd",
-        "country": "IE"
-      }
-    ]
+    "subsidiaries": {
+      "exhibit": "EX-8.1",
+      "url": "https://www.sec.gov/Archives/edgar/data/900103/000090010025000001/ex21.htm",
+      "count": 2,
+      "items": [
+        {
+          "name": "Summit Ridge Software (US) Inc.",
+          "jurisdiction": "Delaware"
+        },
+        {
+          "name": "Summit Ridge Cloud Ltd",
+          "jurisdiction": "Ireland"
+        }
+      ]
+    }
   },
   {
     "cik": "0000900104",
@@ -158,15 +171,21 @@
     "latestAnnual": {
       "form": "10-K",
       "fy": 2025,
-      "period": "20251231",
-      "adsh": "0000900100-25-000001"
+      "period": "2025-12-31",
+      "adsh": "0000900100-25-000001",
+      "filed": "2026-02-27"
     },
-    "subsidiaries": [
-      {
-        "name": "Lantern Hall Kitchens LLC",
-        "country": "US"
-      }
-    ]
+    "subsidiaries": {
+      "exhibit": "EX-21.1",
+      "url": "https://www.sec.gov/Archives/edgar/data/900104/000090010025000001/ex21.htm",
+      "count": 1,
+      "items": [
+        {
+          "name": "Lantern Hall Kitchens LLC",
+          "jurisdiction": "Delaware"
+        }
+      ]
+    }
   },
   {
     "cik": "0000900105",
@@ -192,15 +211,21 @@
     "latestAnnual": {
       "form": "10-K",
       "fy": 2025,
-      "period": "20251231",
-      "adsh": "0000900100-25-000001"
+      "period": "2025-12-31",
+      "adsh": "0000900100-25-000001",
+      "filed": "2026-02-27"
     },
-    "subsidiaries": [
-      {
-        "name": "Cedar Lane Bank",
-        "country": "US"
-      }
-    ]
+    "subsidiaries": {
+      "exhibit": "EX-21.1",
+      "url": "https://www.sec.gov/Archives/edgar/data/900105/000090010025000001/ex21.htm",
+      "count": 1,
+      "items": [
+        {
+          "name": "Cedar Lane Bank",
+          "jurisdiction": "Delaware"
+        }
+      ]
+    }
   },
   {
     "cik": "0000900106",
@@ -237,8 +262,9 @@
     "latestAnnual": {
       "form": "40-F",
       "fy": 2025,
-      "period": "20251231",
-      "adsh": "0000900100-25-000001"
+      "period": "2025-12-31",
+      "adsh": "0000900100-25-000001",
+      "filed": "2026-02-27"
     },
     "subsidiaries": null
   }
