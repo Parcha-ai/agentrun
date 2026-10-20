@@ -102,6 +102,12 @@ test("serve refuses before any task what the agentrun tool would refuse: a code 
   const many = await at(planOf(wide), { input: { skus: ["A-1", "A-2"] } });
   assert.equal(many.outcome, "refused");
   assert.match(many.detail, /Map concurrency must not exceed 8/);
+  // The tool's candidate policy: an agent node with the legacy budget field, which the DSL accepts and never reads.
+  const legacy = workflowDoc({ name: "legacy-budget" });
+  legacy.root.steps.push({ node: "agent", label: "check the quote", instructions: "Check the quote in the JSON input.", state: { quote: "{quote}" }, out: "Quote", as: "checked", budget: 5 });
+  const budget = await at(planOf(legacy));
+  assert.equal(budget.outcome, "refused");
+  assert.match(budget.detail, /budget is not read; declare budget_usd/);
   await run.close();
   assert.deepEqual(tasksIn(run.store), [], "no task was written");
 });

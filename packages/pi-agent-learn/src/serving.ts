@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { inspectWorkflow, validateWorkflow, type Workflow } from "@parcha/agentrun-dsl";
+import { candidatePolicyErrors, inspectWorkflow, validateWorkflow, type Workflow } from "@parcha/agentrun-dsl";
 import type { createWorkflowExtension, WorkflowCaller } from "@parcha/agentrun-pi/durable";
 import { WorkflowStore } from "@parcha/agentrun-pi/workflows";
 import type { Repo } from "@parcha/pi-git-remote";
@@ -64,8 +64,8 @@ export type ServeOptions = {
 /**
  * Runs `plan` as a durable workflow task of the run, before the agent says anything. The checks the agentrun tool makes
  * come first, and a workflow that fails one is `refused` with no task: a code node, SOP text, a tool the host does not
- * register, an input the workflow does not take or a node that reads a key the input lacks, an artifact, and the tool's
- * workload limits (`SERVE_LIMITS`). A complete run whose output
+ * register, an input the workflow does not take or a node that reads a key the input lacks, an artifact, the tool's
+ * workload limits (`SERVE_LIMITS`) and its candidate policy (`candidatePolicyErrors`). A complete run whose output
  * `check` accepts is `complete`, the answer; one it refuses is `escalated`, with the problems.
  */
 export async function serve(options: ServeOptions): Promise<ServedRun> {
@@ -95,6 +95,8 @@ export async function serve(options: ServeOptions): Promise<ServedRun> {
     if (node?.node === "map" && (node.maxConcurrency ?? 4) > SERVE_LIMITS.maxMapConcurrency) limits.push(`Map concurrency must not exceed ${SERVE_LIMITS.maxMapConcurrency}.`);
     if (node?.node === "parallel" && Array.isArray(node.branches) && node.branches.length > SERVE_LIMITS.maxParallelBranches) limits.push(`Parallel nodes must not exceed ${SERVE_LIMITS.maxParallelBranches} branches.`);
   }
+  // The tool's candidate policy, as its preflight asks it (a legacy agent `budget`, which the DSL never reads, among it).
+  limits.push(...candidatePolicyErrors(plan.workflow, { allowExecutableCandidates: true, rubricSections: {}, allowedEffectTools: [...options.tools] }));
   if (limits.length) return refuse(`the agentrun tool would not start it: ${[...new Set(limits)].join(" ")}`);
   const key = hostKey(plan.name, plan.sha256, input);
   const run = await options.workflows.start(options.harness, { key, workflow: plan.workflow, input }, options.context, { background: true });
