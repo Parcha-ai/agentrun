@@ -148,13 +148,17 @@ function table(rows, conventions) {
 const SERIES = ['s1', 's2', 's3', 's4'];
 const rate = (list) => (list.length ? list.filter(Boolean).length / list.length : null);
 
-/** Rolling rates over the last 10 runs of v2's three accuracies: the 4-digit code, the segment (of the runs it is scored
- *  on) and the headline. */
+/** Whether a run's segment part is right: v2's primary segment, v4's segments matched at F1 0.8 or better; null where
+ *  there is no truth to score it on. */
+const segmentRight = (r) => (r.set === 'v4' ? (typeof r.segmentsF1 === 'number' ? r.segmentsF1 >= 0.8 : null) : r.segmentCorrect ?? null);
+
+/** Rolling rates over the last 10 runs of the hard jobs' three accuracies: the 4-digit code, the segment (of the runs it
+ *  is scored on) and the headline. */
 export function rollingV2(rows) {
   return rows.map((row, i) => {
     const window = rows.slice(Math.max(0, i - WINDOW + 1), i + 1);
-    const scored = window.filter((r) => r.segmentCorrect !== null);
-    return { run: row.run, sic4: rate(window.map((r) => r.sicCorrect4)), segment: scored.length ? rate(scored.map((r) => r.segmentCorrect)) : null, headline: rate(window.map((r) => r.correct)) };
+    const scored = window.filter((r) => segmentRight(r) !== null);
+    return { run: row.run, sic4: rate(window.map((r) => r.sicCorrect4)), segment: scored.length ? rate(scored.map(segmentRight)) : null, headline: rate(window.map((r) => r.correct)) };
   });
 }
 
@@ -227,7 +231,10 @@ function partsChart(rows) {
 }
 
 function tilesV2(rows, sealed) {
-  const scored = rows.filter((r) => r.segmentCorrect !== null);
+  const scored = rows.filter((r) => segmentRight(r) !== null);
+  const v4 = rows[0]?.set === 'v4';
+  const hq = rows.filter((r) => typeof r.hqCorrect === 'boolean');
+  const listed = rows.filter((r) => typeof r.subsidiariesRecall === 'number');
   const cites = rows.filter((r) => r.evidenceSupported !== null);
   const first = rows.slice(0, WINDOW);
   const last = rows.slice(-WINDOW);
@@ -236,7 +243,12 @@ function tilesV2(rows, sealed) {
     ['runs', String(rows.length)],
     ['headline', `${rows.filter((r) => r.correct).length} of ${rows.length}`],
     ['4-digit code', `${rows.filter((r) => r.sicCorrect4).length} of ${rows.length}`],
-    ['segment', scored.length ? `${scored.filter((r) => r.segmentCorrect).length} of ${scored.length}` : '-'],
+    [v4 ? 'segments, F1 0.8+' : 'segment', scored.length ? `${scored.filter(segmentRight).length} of ${scored.length}` : '-'],
+    ...(v4 ? [
+      ['headquarters', hq.length ? `${hq.filter((r) => r.hqCorrect).length} of ${hq.length}` : '-'],
+      ['subsidiaries found', listed.length ? pct(listed.reduce((s, r) => s + r.subsidiariesRecall, 0) / listed.length) : '-'],
+      ['report read', `${rows.filter((r) => r.reportRead).length} of ${rows.length}`],
+    ] : []),
     ['cites supported', cites.length ? pct(cites.reduce((s, r) => s + r.evidenceSupported, 0) / cites.length) : '-'],
     [unknown ? `spent, ${unknown} run(s) unknown` : 'spent', usd(known(rows).reduce((s, r) => s + r.costUsd, 0), 2)],
     [`a job, first ${first.length}`, usd(meanCost(first))],
@@ -251,9 +263,13 @@ function tilesV2(rows, sealed) {
 function tableV2(rows) {
   const head = ['run', 'code', 'truth', 'segment', 'truth', 'right', 'cites', 'by', 'cost', 'Jev', 'browser', 'used', 'saved'];
   const segment = (s) => (!s ? '-' : s.oneSegment ? 'one segment' : `${s.name}${typeof s.share === 'number' ? ` ${pct(s.share)}` : ''}`);
+  const segments = (s) => (!s ? '-' : Array.isArray(s) ? `${s.length} segment${s.length === 1 ? '' : 's'}` : 'one segment');
+  const v4 = (r) => r.set === 'v4';
   const cells = rows.map((r) => [
-    r.run, r.sic4Answer ?? '-', r.sic4Truth, segment(r.segmentAnswer), r.segmentTruth ? segment(r.segmentTruth) || r.segmentTruth.kind : '-',
-    `${r.sicCorrect4 ? 'code' : r.sicCorrect2 ? 'group' : 'no'}${r.segmentCorrect === null ? '' : r.segmentCorrect ? ', segment' : ', not segment'}`,
+    r.run, r.sic4Answer ?? '-', r.sic4Truth,
+    v4(r) ? `${segments(r.segmentsAnswer)}${typeof r.segmentsF1 === 'number' ? `, F1 ${r.segmentsF1.toFixed(2)}` : ''}` : segment(r.segmentAnswer),
+    v4(r) ? (r.segmentsTruth?.length ? `${r.segmentsTruth.length} filed` : '-') : r.segmentTruth ? segment(r.segmentTruth) || r.segmentTruth.kind : '-',
+    `${r.sicCorrect4 ? 'code' : r.sicCorrect2 ? 'group' : 'no'}${segmentRight(r) === null ? '' : segmentRight(r) ? ', segment' : ', not segment'}${v4(r) && typeof r.hqCorrect === 'boolean' ? (r.hqCorrect ? ', HQ' : ', not HQ') : ''}`,
     r.evidenceSupported === null ? '-' : pct(r.evidenceSupported), r.byWorkflow ? 'workflow' : 'hand', usd(r.costUsd), usd(r.judgeCostUsd), usd(r.browserCostUsd),
     r.workflowsUsed.map((u) => `${u.name ?? 'draft'} ${u.outcome}`).join(', ') || '-', r.workflowsSaved.join(', ') || '-',
   ].map((c) => `<td>${esc(c)}</td>`).join(''));
@@ -264,7 +280,7 @@ function bodyV2(rows) {
   const parts = partsChart(rows);
   return `
 <section><h2>Cost per job</h2>${legend(['model calls and the rest', 'browser', 'Jev'])}<div class="chart">${costPartsChart(rows)}</div></section>
-<section><h2>Accuracy, last ${WINDOW} runs</h2>${legend(['4-digit code', 'segment (where scored)', 'headline: code and segment'])}<div class="chart">${accuracyV2Chart(rows)}</div></section>
+<section><h2>Accuracy, last ${WINDOW} runs</h2>${legend(['4-digit code', rows[0]?.set === 'v4' ? 'segments, F1 0.8+ (where scored)' : 'segment (where scored)', rows[0]?.set === 'v4' ? 'headline: code, segments and HQ' : 'headline: code and segment'])}<div class="chart">${accuracyV2Chart(rows)}</div></section>
 <section><h2>Done by workflows, per ${WINDOW} runs</h2><p class="sub">The answer: the run's answer is a completed workflow's output. A part: a run of that workflow completed in the run.</p>${legend(parts.series)}<div class="chart">${parts.svg}</div></section>
 <details><summary>Every run</summary>${tableV2(rows)}</details>`;
 }
@@ -272,7 +288,7 @@ function bodyV2(rows) {
 /** The page, from the rows, the sealed passes (`{ label, seed, rows }`) and the filing conventions (cik to text). */
 export function renderCurve({ rows, sealed = [], conventions = {}, title = 'Learn-classify curve' }) {
   const data = curveData(rows);
-  const v2 = rows[0]?.set === 'v2';
+  const v2 = rows[0]?.set === 'v2' || rows[0]?.set === 'v4';
   const body = !rows.length ? '<p class="sub">No runs yet.</p>' : v2 ? bodyV2(data.rows) : `
 <section><h2>Cost per job</h2><p class="sub">Every model call of the run and its Jev, curate's included; ? where a part is unknown. Darker bars: a workflow finished the job alone. Marks: <span class="key born"></span> a workflow admitted as a trial, <span class="key promoted"></span> promoted, <span class="key demoted"></span> demoted.</p><div class="chart">${costChart(data)}</div></section>
 <section><h2>Accuracy, last ${WINDOW} runs</h2><p class="sub">Each dot is a run; hollow dots are wrong answers. Truth is the SEC's SIC code, as its 2-digit group.</p><div class="chart">${accuracyChart(data)}</div></section>

@@ -1,9 +1,10 @@
-// The two jobs the loop runs (CLASSIFY-CONTRACT.md): v1 classifies a company into its 2-digit SIC group from its own site;
+// The jobs the loop runs (CLASSIFY-CONTRACT.md): v1 classifies a company into its 2-digit SIC group from its own site;
 // v2 is the hard job, the 4-digit SIC code and the primary operating segment with cites, with search, a browser and a
-// document reader beside fetch_page. A set says what the agent is given and how it answers; nothing in it decides a class.
+// document reader beside fetch_page; v4, the dollar job, adds every segment, the headquarters, the subsidiaries and the
+// latest annual report read page by page. A set says what the agent is given and how it answers; nothing in it decides a class.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { answerV1, answerV2, jobInput, jobText, sic2GroupsTool, sicCodesTool } from './host.mjs';
+import { answerV1, answerV2, answerV4, jobInput, jobText, sic2GroupsTool, sicCodesTool } from './host.mjs';
 
 const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'));
 const readJsonIf = (file) => { try { return readJson(file); } catch { return undefined; } };
@@ -51,4 +52,22 @@ export const SETS = Object.freeze({
     answer: (d) => answerV2(d.codes),
     answerKey: 'sic4',
   }),
+  v4: Object.freeze({
+    name: 'v4',
+    agentDir: join(import.meta.dirname, 'agent-v4'),
+    load: (data) => ({
+      companies: readJson(join(data, 'companies-v4.json')),
+      labels: readJson(join(data, 'sic2.json')),
+      codes: readJson(join(data, 'sic-codes.json')),
+      report: readJsonIf(join(data, 'build-report-v4.json')),
+    }),
+    input: jobInputV2,
+    text: jobTextV2,
+    labelTools: (d) => [sic2GroupsTool(d.labels), sicCodesTool(d.codes)],
+    answer: (d) => answerV4(d.codes),
+    answerKey: 'sic4',
+  }),
 });
+
+/** The hard jobs, v2 and v4: search, a browser and the document reader beside fetch_page, and a score after each run. */
+export const isHard = (set) => set === SETS.v2 || set === SETS.v4;

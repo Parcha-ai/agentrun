@@ -1,0 +1,250 @@
+[
+  {
+    "cik": "0000900101",
+    "name": "Harbor Valve Works Inc.",
+    "ticker": "HVW",
+    "website": "https://www.harborvalve.example",
+    "split": "run",
+    "order": 1,
+    "categories": [
+      "multi-segment"
+    ],
+    "sic": "3561",
+    "sic2": "35",
+    "sicDescription": "PUMPS & PUMPING EQUIPMENT",
+    "segments": [
+      {
+        "member": "WaterSystemsMember",
+        "label": "Water Systems",
+        "revenue": 612000000,
+        "share": 0.61
+      },
+      {
+        "member": "IndustrialFlowMember",
+        "label": "Industrial Flow",
+        "revenue": 390000000,
+        "share": 0.39
+      }
+    ],
+    "hq": {
+      "city": "PITTSBURGH",
+      "state": "PA",
+      "country": "US"
+    },
+    "latestAnnual": {
+      "form": "10-K",
+      "fy": 2025,
+      "period": "20251231",
+      "adsh": "0000900100-25-000001"
+    },
+    "subsidiaries": [
+      {
+        "name": "Harbor Valve Europe GmbH",
+        "country": "DE"
+      },
+      {
+        "name": "Harbor Flow Systems LLC",
+        "country": "US"
+      },
+      {
+        "name": "HVW Pumps Ltd",
+        "country": "GB"
+      }
+    ]
+  },
+  {
+    "cik": "0000900102",
+    "name": "Bluefin Markets Inc.",
+    "ticker": "BFM",
+    "website": null,
+    "split": "run",
+    "order": 2,
+    "categories": [
+      "small-cap"
+    ],
+    "sic": "5411",
+    "sic2": "54",
+    "sicDescription": "RETAIL-GROCERY STORES",
+    "segments": [
+      {
+        "member": "RetailGroceryMember",
+        "label": "Retail Grocery",
+        "revenue": 2100000000,
+        "share": 1
+      }
+    ],
+    "hq": {
+      "city": "SEATTLE",
+      "state": "WA",
+      "country": "US"
+    },
+    "latestAnnual": {
+      "form": "10-K",
+      "fy": 2025,
+      "period": "20251231",
+      "adsh": "0000900100-25-000001"
+    },
+    "subsidiaries": null
+  },
+  {
+    "cik": "0000900103",
+    "name": "Summit Ridge Software Corp.",
+    "ticker": "SRS",
+    "website": "https://www.summitridge.example",
+    "split": "run",
+    "order": 3,
+    "categories": [
+      "multi-segment",
+      "foreign"
+    ],
+    "sic": "7372",
+    "sic2": "73",
+    "sicDescription": "SERVICES-PREPACKAGED SOFTWARE",
+    "segments": [
+      {
+        "member": "CloudMember",
+        "label": "Cloud",
+        "revenue": 70000000,
+        "share": 0.7
+      },
+      {
+        "member": "LicensesMember",
+        "label": "Licenses",
+        "revenue": 30000000,
+        "share": 0.3
+      }
+    ],
+    "hq": {
+      "city": "TORONTO",
+      "state": "A6",
+      "country": "CA"
+    },
+    "latestAnnual": {
+      "form": "20-F",
+      "fy": 2025,
+      "period": "20251231",
+      "adsh": "0000900100-25-000001"
+    },
+    "subsidiaries": [
+      {
+        "name": "Summit Ridge Software (US) Inc.",
+        "country": "US"
+      },
+      {
+        "name": "Summit Ridge Cloud Ltd",
+        "country": "IE"
+      }
+    ]
+  },
+  {
+    "cik": "0000900104",
+    "name": "Lantern Hall Restaurants Inc.",
+    "ticker": "LHR",
+    "website": "https://www.lanternhall.example",
+    "split": "run",
+    "order": 4,
+    "categories": [
+      "renamed"
+    ],
+    "sic": "5812",
+    "sic2": "58",
+    "sicDescription": "RETAIL-EATING PLACES",
+    "segments": [],
+    "hq": {
+      "city": "COLUMBUS",
+      "state": "OH",
+      "country": "US"
+    },
+    "latestAnnual": {
+      "form": "10-K",
+      "fy": 2025,
+      "period": "20251231",
+      "adsh": "0000900100-25-000001"
+    },
+    "subsidiaries": [
+      {
+        "name": "Lantern Hall Kitchens LLC",
+        "country": "US"
+      }
+    ]
+  },
+  {
+    "cik": "0000900105",
+    "name": "Cedar Lane Bancorp",
+    "ticker": "CLB",
+    "website": "https://www.cedarlanebank.example",
+    "split": "sealed",
+    "order": null,
+    "categories": [
+      "holding"
+    ],
+    "sic": "6022",
+    "sic2": "60",
+    "sicDescription": "STATE COMMERCIAL BANKS",
+    "segments": [
+      {
+        "member": "BankingMember",
+        "label": "Banking",
+        "revenue": 300000000,
+        "share": 1
+      }
+    ],
+    "hq": {
+      "city": "RICHMOND",
+      "state": "VA",
+      "country": "US"
+    },
+    "latestAnnual": {
+      "form": "10-K",
+      "fy": 2025,
+      "period": "20251231",
+      "adsh": "0000900100-25-000001"
+    },
+    "subsidiaries": [
+      {
+        "name": "Cedar Lane Bank",
+        "country": "US"
+      }
+    ]
+  },
+  {
+    "cik": "0000900106",
+    "name": "Ironclad Freight Lines Inc.",
+    "ticker": "IFL",
+    "website": null,
+    "split": "sealed",
+    "order": null,
+    "categories": [
+      "foreign"
+    ],
+    "sic": "4213",
+    "sic2": "42",
+    "sicDescription": "TRUCKING (NO LOCAL)",
+    "segments": [
+      {
+        "member": "TruckloadMember",
+        "label": "Truckload",
+        "revenue": 800000000,
+        "share": 0.8
+      },
+      {
+        "member": "LogisticsMember",
+        "label": "Logistics",
+        "revenue": 200000000,
+        "share": 0.2
+      }
+    ],
+    "hq": {
+      "city": "MONTREAL",
+      "state": "A8",
+      "country": "CA"
+    },
+    "latestAnnual": {
+      "form": "40-F",
+      "fy": 2025,
+      "period": "20251231",
+      "adsh": "0000900100-25-000001"
+    },
+    "subsidiaries": null
+  }
+]

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Backfills the v3 chart fields (CLASSIFY-CONTRACT.md v3) into a finished v2 pass, from the pass's own files: its rows, its
+// Backfills the v3 chart fields (CLASSIFY-CONTRACT.md v3) into a finished v2 or v4 pass, from the pass's own files: its rows, its
 // recordings (the workflow part, job-record.mjs), its agent repository and the truth set's companies. It writes <out>/runs.v3.jsonl and, per sealed pass, <out>/v3-sealed-
 // <sha12>.jsonl; it never rewrites runs.jsonl or a sealed file, never fetches anything and never calls a model.
 //   node examples/learn-classify/rerow.mjs <out> [--data <dir>]
@@ -11,6 +11,8 @@ import { jobRecordOf } from './job-record.mjs';
 import { bareRepoReader, lineageOf } from './lineage.mjs';
 
 const DATA = join(import.meta.dirname, 'data');
+/** The truth set a hard pass's companies come from, by its set. */
+const TRUTH = { v2: 'companies-v2.json', v4: 'companies-v4.json' };
 const readRows = (file) => (existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []);
 const writeRows = (file, rows) => writeFileSync(file, rows.map((row) => `${JSON.stringify(row)}\n`).join(''));
 
@@ -31,8 +33,9 @@ async function v3Of(row, { companies, reader, seedSha, recordings }) {
 /** Writes the v3 rows of the pass in `out`; returns how many rows each file holds. */
 export async function rerow({ out, data = DATA }) {
   const meta = JSON.parse(readFileSync(join(out, 'meta.json'), 'utf8'));
-  if (meta.set !== 'v2') throw new Error(`${out} holds a ${meta.set ?? 'v1'} pass; the v3 fields are v2's`);
-  const companies = new Map(JSON.parse(readFileSync(join(data, 'companies-v2.json'), 'utf8')).map((c) => [c.cik, c]));
+  const truthFile = TRUTH[meta.set];
+  if (!truthFile) throw new Error(`${out} holds a ${meta.set ?? 'v1'} pass; the v3 fields are the hard jobs' (v2 and v4)`);
+  const companies = new Map(JSON.parse(readFileSync(join(data, truthFile), 'utf8')).map((c) => [c.cik, c]));
   const context = { companies, reader: bareRepoReader(join(out, 'agent.git')), seedSha: meta.seedSha, recordings: join(out, 'recordings') };
   const runs = [];
   for (const row of readRows(join(out, 'runs.jsonl'))) runs.push(await v3Of(row, context));

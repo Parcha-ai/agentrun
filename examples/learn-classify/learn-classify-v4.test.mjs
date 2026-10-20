@@ -1,0 +1,280 @@
+// learn-classify v4, the dollar job, at $0: the answer's shape, the scorer on its own, the agent home, then scripted passes
+// end to end with fakes of lane C3's tools, scored from what each run's store says it read.
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { chmod, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import Ajv from 'ajv';
+import { renderCurve } from './curve.mjs';
+import { answerV4 } from './host.mjs';
+import { rerow } from './rerow.mjs';
+import { readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
+import { countryCode, entityName, MAX_SUBSIDIARIES, scoreHq, scoreSegments, scoreSubsidiaries, scoreV4, SEGMENT_PICK } from './score-v4.mjs';
+import { FIXTURES_V2, FIXTURES_V4, readJson, WORKFLOW } from './scripted.mjs';
+import { SETS } from './sets.mjs';
+
+async function scratch(t) {
+  const dir = await mkdtemp(join(tmpdir(), 'learn-classify-v4-test-'));
+  await chmod(dir, 0o755);
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+/** A judge that answers the scorer by case id: a segment choice by the answer segment's name (`picks[name]` is
+ *  `[truth member, probability]`), the headquarters by the answer's city, a subsidiary by its name, a cite by its URL. */
+function judge({ picks = {}, hq = {}, subsidiaries = {}, cites = {} } = {}) {
+  const asked = [];
+  const run = async ({ label, state, questions }) => {
+    asked.push({ label, state, questions });
+    const answers = {};
+    for (const [key, question] of Object.entries(questions)) {
+      if (question.type === 'choice') {
+        const [member, p] = picks[state.answer.find((a) => a.id === key).name] ?? [];
+        const choice = state.truth.find((t) => t.member === member)?.id ?? 'none_of_these';
+        answers[key] = { type: 'choice', choice, probabilities: { [choice]: p ?? 0.9 }, confidence: p ?? 0.9 };
+      } else {
+        const p = label === 'score/hq' ? hq[state.answer.city] : label === 'score/subsidiary' ? subsidiaries[state.subsidiary] : cites[state.url];
+        answers[key] = { type: 'noul', noul: p ?? 0.1 };
+      }
+    }
+    return { answers, cost_usd: 0.0001 };
+  };
+  return { run, asked };
+}
+
+const filed = [
+  { member: 'WaterSystemsMember', label: 'Water Systems', revenue: 612, share: 0.61 },
+  { member: 'IndustrialFlowMember', label: 'Industrial Flow', revenue: 390, share: 0.39 },
+];
+
+// ---- the answer ----------------------------------------------------------------------------------------------------------
+
+test('the v4 answer: the code from sic_codes, every segment or one, the headquarters, 1 to 15 subsidiaries, the report, 1 to 12 cites', () => {
+  const codes = readJson(join(FIXTURES_V4, 'sic-codes.json'));
+  const tool = answerV4(codes);
+  const validate = new Ajv({ strict: false, allErrors: true }).compile(tool.parameters);
+  const cite = { claim: 'report', url: 'https://www.harborvalve.example/annual-report-2025.pdf', locator: 'pdf p. 1', quote: 'Annual Report for fiscal year 2025.' };
+  const answer = {
+    sic4: '3561', segments: [{ name: 'Water Systems', share: 0.61 }, { name: 'Industrial Flow', share: 0.39 }], hq: { city: 'Pittsburgh', state: 'PA', country: 'United States' },
+    subsidiaries: [{ name: 'Harbor Valve Europe GmbH', country: 'Germany' }], annualReport: { url: cite.url, fiscalYear: 2025 }, cites: [cite],
+  };
+  const ok = (value) => { const valid = validate(value); return valid || validate.errors.map((e) => `${e.instancePath} ${e.message}`).join('; '); };
+  assert.equal(ok(answer), true);
+  assert.equal(ok({ ...answer, segments: { oneSegment: true } }), true);
+  assert.equal(ok({ ...answer, hq: { city: 'Toronto', country: 'Canada' } }), true, 'the state is optional');
+  for (const [why, wrong] of [
+    ['a code not in sic_codes', { ...answer, sic4: '9999' }],
+    ['no segments', { ...answer, segments: [] }],
+    ['oneSegment false', { ...answer, segments: { oneSegment: false } }],
+    ['a share above 1', { ...answer, segments: [{ name: 'Water Systems', share: 61 }] }],
+    ['no country', { ...answer, hq: { city: 'Pittsburgh' } }],
+    ['16 subsidiaries', { ...answer, subsidiaries: Array.from({ length: MAX_SUBSIDIARIES + 1 }, (_, i) => ({ name: `Subsidiary ${i}` })) }],
+    ['no subsidiaries', { ...answer, subsidiaries: [] }],
+    ['a year as text', { ...answer, annualReport: { url: cite.url, fiscalYear: '2025' } }],
+    ['13 cites', { ...answer, cites: Array.from({ length: 13 }, () => cite) }],
+    ['a claim of another kind', { ...answer, cites: [{ ...cite, claim: 'industry' }] }],
+    ['a quote over 300 characters', { ...answer, cites: [{ ...cite, quote: 'x'.repeat(301) }] }],
+    ['a part left out', (({ annualReport, ...rest }) => rest)(answer)],
+  ]) assert.notEqual(ok(wrong), true, why);
+  assert.equal(tool.recorded(answer), '3561');
+});
+
+// ---- the scorer ----------------------------------------------------------------------------------------------------------
+
+test('segments: a filed label or member matches without a question, F1 over both sides, share error in points', async () => {
+  const j = judge();
+  const exact = await scoreSegments({ answer: { segments: [{ name: 'water systems', share: 0.6 }, { name: 'Industrial Flow', share: 0.41 }] }, truth: filed, judge: j.run });
+  assert.equal(exact.segmentsF1, 1);
+  assert.ok(Math.abs(exact.shareErrorMean - 1.5) < 1e-9, String(exact.shareErrorMean), '1 and 2 points');
+  const byMember = await scoreSegments({ answer: { segments: [{ name: 'Aftermarket Services', share: 1 }] }, truth: [{ member: 'AftermarketServicesSegmentMember', label: null, share: 1 }], judge: j.run });
+  assert.deepEqual(byMember, { segmentsF1: 1, shareErrorMean: 0 });
+  assert.equal(j.asked.length, 0, 'same words need no question');
+  const half = await scoreSegments({ answer: { segments: [{ name: 'Water Systems', share: 0.61 }] }, truth: filed, judge: j.run });
+  assert.ok(Math.abs(half.segmentsF1 - 2 / 3) < 1e-12, String(half.segmentsF1), 'precision 1, recall 1/2');
+});
+
+test('segments in other words are Jev\'s: one request, a choice per open segment over the filed ones not yet taken', async () => {
+  const j = judge({ picks: { 'Water': ['WaterSystemsMember', 0.9], 'Flow control': ['IndustrialFlowMember', 0.8] } });
+  const result = await scoreSegments({ answer: { segments: [{ name: 'Water', share: 0.6 }, { name: 'Flow control', share: 0.3 }, { name: 'Corporate', share: 0.1 }] }, truth: filed, judge: j.run });
+  assert.ok(Math.abs(result.segmentsF1 - 0.8) < 1e-12, String(result.segmentsF1), 'two of three given, two of two filed');
+  assert.ok(Math.abs(result.shareErrorMean - 5) < 1e-9, String(result.shareErrorMean), '1 and 9 points');
+  assert.equal(j.asked.length, 1);
+  const [request] = j.asked;
+  assert.equal(request.label, 'score/segments');
+  assert.deepEqual(Object.keys(request.questions), ['a0', 'a1', 'a2']);
+  assert.deepEqual(Object.keys(request.questions.a0.criteria), ['t0', 't1', 'none_of_these']);
+  assert.equal(request.questions.a0.instructions, SEGMENT_PICK);
+  assert.deepEqual(request.state.truth, [{ id: 't0', label: 'Water Systems', member: 'WaterSystemsMember' }, { id: 't1', label: 'Industrial Flow', member: 'IndustrialFlowMember' }]);
+  // A filed segment taken by name is not offered again.
+  const k = judge({ picks: { 'Flows': ['IndustrialFlowMember', 0.9] } });
+  await scoreSegments({ answer: { segments: [{ name: 'Water Systems', share: 0.6 }, { name: 'Flows', share: 0.4 }] }, truth: filed, judge: k.run });
+  assert.deepEqual(k.asked[0].state.truth.map((t) => t.id), ['t1']);
+});
+
+test('segments match one to one: two answers that pick the same filed segment, only the surer one counts', async () => {
+  const j = judge({ picks: { 'Water A': ['WaterSystemsMember', 0.6], 'Water B': ['WaterSystemsMember', 0.9] } });
+  const result = await scoreSegments({ answer: { segments: [{ name: 'Water A', share: 0.5 }, { name: 'Water B', share: 0.61 }] }, truth: [filed[0]], judge: j.run });
+  assert.ok(Math.abs(result.segmentsF1 - 2 / 3) < 1e-12, String(result.segmentsF1));
+  assert.equal(result.shareErrorMean, 0, 'Water B, the surer, is the match');
+});
+
+test('one segment is right only against one filed segment; no filed segments is not scored', async () => {
+  const one = { segments: { oneSegment: true } };
+  assert.deepEqual(await scoreSegments({ answer: one, truth: [filed[0]], judge: judge().run }), { segmentsF1: 1, shareErrorMean: null });
+  assert.deepEqual(await scoreSegments({ answer: one, truth: filed, judge: judge().run }), { segmentsF1: 0, shareErrorMean: null });
+  assert.deepEqual(await scoreSegments({ answer: one, truth: [], judge: judge().run }), { segmentsF1: null, shareErrorMean: null });
+  assert.deepEqual(await scoreSegments({ answer: null, truth: filed, judge: judge().run }), { segmentsF1: 0, shareErrorMean: null });
+});
+
+test('the headquarters: the city folded and the country as its ISO code without a question, an alias by Jev, no truth not scored', async () => {
+  const j = judge({ hq: { 'New York City': 0.9 } });
+  const montreal = { city: 'MONTREAL', state: 'A8', country: 'CA' };
+  assert.deepEqual(await scoreHq({ answer: { hq: { city: 'Montréal', state: 'Quebec', country: 'Canada' } }, truth: montreal, judge: j.run }), { hqCorrect: true });
+  assert.deepEqual(await scoreHq({ answer: { hq: { city: 'Pittsburgh', country: 'United States of America' } }, truth: { city: 'PITTSBURGH', state: 'PA', country: 'US' }, judge: j.run }), { hqCorrect: true });
+  assert.equal(j.asked.length, 0);
+  assert.deepEqual(await scoreHq({ answer: { hq: { city: 'New York City', country: 'USA' } }, truth: { city: 'NEW YORK', state: 'NY', country: 'US' }, judge: j.run }), { hqCorrect: true });
+  assert.deepEqual(j.asked[0].state, { answer: { city: 'New York City', state: null, country: 'USA' }, truth: { city: 'NEW YORK', state: 'NY', country: 'US' } });
+  assert.deepEqual(await scoreHq({ answer: { hq: { city: 'London', country: 'Canada' } }, truth: { city: 'LONDON', country: 'GB' }, judge: j.run }), { hqCorrect: false }, 'the same city in another country');
+  assert.deepEqual(await scoreHq({ answer: {}, truth: montreal, judge: j.run }), { hqCorrect: false });
+  assert.deepEqual(await scoreHq({ answer: { hq: { city: 'Montreal', country: 'Canada' } }, truth: { city: 'MONTREAL', country: null }, judge: j.run }), { hqCorrect: null });
+  assert.deepEqual([countryCode('U.S.A.'), countryCode('United Kingdom'), countryCode('gb'), countryCode('Atlantis')], ['US', 'GB', 'GB', 'atlantis']);
+});
+
+test('subsidiaries: names match once the legal form is left out, the rest are Jev\'s; recall over at most 15 listed, no list not scored', async () => {
+  const listed = Array.from({ length: 20 }, (_, i) => ({ name: `Harbor Unit ${i} GmbH`, country: 'DE' }));
+  const given = [
+    ...Array.from({ length: 12 }, (_, i) => ({ name: `Harbor Unit ${i}` })),
+    { name: 'Harbor Unit 12 GmbH' }, { name: 'Harbor Unit Twelve' }, { name: 'Harbor Holdings Ltd' }, { name: 'Harbor Unit 0, Inc.' },
+  ];
+  const j = judge({ subsidiaries: { 'Harbor Unit Twelve': 0.9 } });
+  const result = await scoreSubsidiaries({ answer: { subsidiaries: given }, truth: listed, judge: j.run });
+  // 13 by name (Harbor Unit 0, Inc. is Harbor Unit 0 again), one by Jev, one not listed: 14 found of 15 given.
+  assert.deepEqual(result, { subsidiariesRecall: 14 / 15, subsidiariesPrecision: 14 / 15 });
+  assert.deepEqual(j.asked.map((a) => a.state.subsidiary), ['Harbor Unit Twelve', 'Harbor Holdings Ltd']);
+  assert.match(j.asked[0].state.listed, /^Harbor Unit 0 GmbH; Harbor Unit 1 GmbH;/);
+  const short = await scoreSubsidiaries({ answer: { subsidiaries: [{ name: 'Harbor Unit 0 GmbH' }] }, truth: listed.slice(0, 3), judge: j.run });
+  assert.deepEqual(short, { subsidiariesRecall: 1 / 3, subsidiariesPrecision: 1 });
+  assert.deepEqual(await scoreSubsidiaries({ answer: { subsidiaries: given }, truth: null, judge: j.run }), { subsidiariesRecall: null, subsidiariesPrecision: null });
+  assert.deepEqual(await scoreSubsidiaries({ answer: {}, truth: listed, judge: j.run }), { subsidiariesRecall: 0, subsidiariesPrecision: null });
+  assert.deepEqual([entityName('Summit Ridge Software (US) Inc.'), entityName('Cedar Lane Bank, N.A.')], ['summit ridge software us', 'cedar lane bank n a']);
+});
+
+test('the report: the fiscal year against the latest annual filing, read when a cite names a PDF page of its URL; correct is code, segments and HQ', async () => {
+  const report = 'https://www.harborvalve.example/annual-report-2025.pdf';
+  const company = { sic: '3561', segments: filed, hq: { city: 'PITTSBURGH', state: 'PA', country: 'US' }, latestAnnual: { form: '10-K', fy: 2025, period: '20251231', adsh: 'x' }, subsidiaries: null };
+  const answer = {
+    sic4: '3561', segments: [{ name: 'Water Systems', share: 0.61 }, { name: 'Industrial Flow', share: 0.39 }], hq: { city: 'Pittsburgh', country: 'US' },
+    subsidiaries: [{ name: 'Harbor Valve Europe GmbH' }], annualReport: { url: report, fiscalYear: 2025 },
+    cites: [
+      { claim: 'hq', url: 'https://harborvalve.example/annual-report-2025.pdf#page=1', locator: 'pdf p. 1', quote: 'Headquarters: Pittsburgh.' },
+      { claim: 'sic', url: 'https://elsewhere.example/', locator: 'home page', quote: 'pumps' },
+    ],
+  };
+  const read = [{ tool: 'read_document', url: report, text: '[page 1] Headquarters: Pittsburgh, United States.' }];
+  const j = judge({ cites: { 'https://harborvalve.example/annual-report-2025.pdf#page=1': 0.9 } });
+  const score = await scoreV4({ answer, company, read, codes: {}, judge: j.run });
+  assert.deepEqual([score.reportYearCorrect, score.reportRead, score.evidenceSupported, score.correct], [true, true, 0.5, true]);
+  assert.match(j.asked.find((a) => a.label === 'score/cite').state.claim, /headquarters are in Pittsburgh, US/);
+  assert.deepEqual([score.subsidiariesRecall, score.subsidiariesTruthCount], [null, null]);
+  assert.deepEqual(score.segmentsTruth, [{ label: 'Water Systems', member: 'WaterSystemsMember', share: 0.61 }, { label: 'Industrial Flow', member: 'IndustrialFlowMember', share: 0.39 }]);
+
+  const again = (patch, truth = company) => scoreV4({ answer: { ...answer, ...patch }, company: truth, read, codes: {}, judge: judge().run });
+  assert.equal((await again({ annualReport: { url: report, fiscalYear: 2024 } })).reportYearCorrect, false);
+  assert.equal((await again({}, { ...company, latestAnnual: null })).reportYearCorrect, null);
+  assert.equal((await again({ cites: [{ ...answer.cites[0], locator: 'page 1' }] })).reportRead, false, 'a page of the PDF, as "pdf p. N"');
+  assert.equal((await again({ cites: [{ ...answer.cites[0], url: 'https://www.harborvalve.example/investors' }] })).reportRead, false, 'on the report itself');
+  assert.equal((await again({ sic4: '3562' })).correct, false);
+  assert.equal((await again({ segments: [{ name: 'Water Systems', share: 1 }] })).correct, false, 'F1 2/3');
+  assert.equal((await again({ hq: { city: 'Boston', country: 'US' } })).correct, false);
+  // No filed segments: segmentsF1 is null and correct, read literally, is false.
+  const noSegments = await again({ segments: { oneSegment: true } }, { ...company, segments: [] });
+  assert.deepEqual([noSegments.segmentsF1, noSegments.correct], [null, false]);
+  const none = await scoreV4({ answer: null, company, read, codes: {}, judge: judge().run });
+  assert.deepEqual([none.sic4Answer, none.sicCorrect4, none.segmentsF1, none.hqCorrect, none.reportYearCorrect, none.reportRead, none.evidenceSupported, none.correct], [null, false, 0, false, false, false, null, false]);
+});
+
+// ---- the agent home ------------------------------------------------------------------------------------------------------
+
+test('the v4 home: the workflows skill and the learning rules as v2 has them, the job text and classify skill for six parts, no company named', () => {
+  const v2 = join(import.meta.dirname, 'agent-v2');
+  const v4 = join(import.meta.dirname, 'agent-v4');
+  const text = (dir, ...file) => readFileSync(join(dir, ...file), 'utf8');
+  assert.equal(text(v4, 'skills', 'workflows', 'SKILL.md'), text(v2, 'skills', 'workflows', 'SKILL.md'));
+  const definition = JSON.parse(text(v4, 'agent.json'));
+  assert.deepEqual(definition.skills, ['classify', 'workflows']);
+  assert.deepEqual(definition.tools, JSON.parse(text(v2, 'agent.json')).tools);
+  const after = (body, heading) => body.slice(body.indexOf(heading));
+  const shape = /`\{ "sic4", .*\}`/;
+  assert.equal(after(text(v4, 'AGENTS.md'), '## Every run').replace(shape, ''), after(text(v2, 'AGENTS.md'), '## Every run').replace(shape, ''));
+  assert.match(text(v4, 'AGENTS.md'), /`\{ "sic4", "segments", "hq", "subsidiaries", "annualReport", "cites" \}`, the answer's own shape/);
+  const parameters = Object.keys(answerV4({}).parameters.properties);
+  assert.deepEqual(parameters, ['sic4', 'segments', 'hq', 'subsidiaries', 'annualReport', 'cites']);
+  const job = `${text(v4, 'AGENTS.md')}\n${text(v4, 'skills', 'classify', 'SKILL.md')}`;
+  for (const words of [/Exhibit 21/, /Exhibit 8/, /read_document/, /pdf p\. N/, /principal executive offices/, /every reportable (operating )?segment/i]) assert.match(job, words);
+  const fixtures = [...readJson(join(FIXTURES_V4, 'companies-v4.json')), ...readJson(join(FIXTURES_V2, 'companies-v2.json'))];
+  for (const c of fixtures) for (const word of [c.name.split(' ')[0], c.ticker]) assert.doesNotMatch(job, new RegExp(`\\b${word}\\b`), word);
+});
+
+// ---- scripted passes -----------------------------------------------------------------------------------------------------
+
+const V4_FIELDS = ['segmentsAnswer', 'segmentsTruth', 'segmentsF1', 'shareErrorMean', 'hqAnswer', 'hqTruth', 'hqCorrect', 'subsidiariesAnswer', 'subsidiariesTruthCount',
+  'subsidiariesRecall', 'subsidiariesPrecision', 'reportAnswer', 'reportTruth', 'reportYearCorrect', 'reportRead'];
+const V3_FIELDS = ['company', 'ticker', 'born', 'rewritten', 'executions', 'workflowShare', 'agentFallback', 'scoreCostUsd'];
+const V2_TOOL_FIELDS = ['set', 'categories', 'websiteGiven', 'sic4Answer', 'sic4Truth', 'sicCorrect4', 'sicCorrect2', 'evidenceSupported', 'toolCalls', 'browserMinutes', 'visionPages', 'browserCostUsd'];
+
+test('a scripted v4 pass: by hand, then the whole-job workflow on site and report, every v4 field beside v3\'s', async (t) => {
+  const out = join(await scratch(t), 'out');
+  const parts = scriptedParts({ set: SETS.v4 });
+  const asked = [];
+  const judgeOf = parts.judge;
+  parts.judge = () => { const j = judgeOf(); return async (params) => { if (params.label?.startsWith('score/')) asked.push(params.label); return j(params); }; };
+  const { rows } = await runLoop({ out, parts, jobs: 4, record: false });
+  assert.equal(rows.length, 4);
+  for (const row of rows) for (const field of [...V2_TOOL_FIELDS, ...V3_FIELDS, ...V4_FIELDS]) assert.ok(field in row, `${field} in run ${row.run}`);
+  for (const row of rows) for (const field of ['segmentAnswer', 'segmentTruth', 'segmentCorrect', 'shareError']) assert.ok(!(field in row), `v2's ${field} is not a v4 field`);
+  assert.deepEqual(rows.map((r) => r.set), ['v4', 'v4', 'v4', 'v4']);
+  assert.deepEqual(rows.map((r) => [r.sic4Answer, r.sicCorrect4]), [['3561', true], ['5411', true], ['7372', true], ['5812', true]]);
+  // Bluefin reports one segment and answered so; Summit's "Cloud Software" is the filed "Cloud" by Jev; Lantern Hall has no filed segments.
+  assert.deepEqual(rows.map((r) => r.segmentsF1), [1, 1, 1, null]);
+  assert.deepEqual(rows.map((r) => r.hqCorrect), [true, true, true, true]);
+  assert.deepEqual(rows.map((r) => [r.subsidiariesTruthCount, r.subsidiariesRecall, r.subsidiariesPrecision]), [[3, 1, 1], [null, null, null], [2, 1, 1], [1, 1, 1]]);
+  assert.deepEqual(rows.map((r) => [r.reportYearCorrect, r.reportRead]), [[true, true], [true, true], [true, true], [true, true]]);
+  assert.ok(rows.every((r) => r.evidenceSupported === 1), JSON.stringify(rows.map((r) => r.evidenceSupported)));
+  assert.deepEqual(rows.map((r) => r.correct), [true, true, true, false], 'run 4: no filed segments, so not correct');
+  assert.equal(asked.filter((l) => l === 'score/segments').length, 1, 'only Summit\'s segment needed Jev');
+  assert.equal(asked.filter((l) => l === 'score/hq' || l === 'score/subsidiary').length, 0);
+
+  assert.deepEqual(rows.map((r) => r.byWorkflow), [false, false, true, true]);
+  assert.deepEqual(rows[0].workflowsSaved, [WORKFLOW]);
+  assert.deepEqual(rows[0].born.map((b) => b.name), [WORKFLOW]);
+  assert.deepEqual(rows[1].toolCalls, { search: 1, browse: 1, fetch: 0, read_document: 1 });
+  assert.deepEqual(rows[2].toolCalls, { search: 0, browse: 0, fetch: 1, read_document: 1 }, 'the workflow read the site and the report through its call nodes');
+  for (const r of rows.slice(2)) {
+    assert.deepEqual(r.executions.map((e) => [e.name, e.outcome, e.toolCalls]), [[WORKFLOW, 'complete', 4]], 'fetch_page, sic2_groups, sic_codes, read_document');
+    assert.deepEqual([r.workflowShare, r.agentFallback], [1, false]);
+  }
+  assert.deepEqual(readRows(join(out, 'runs.jsonl')), rows);
+
+  const html = renderCurve({ rows });
+  assert.match(html, /headline: code, segments and HQ/);
+  assert.match(html, /<div class="k">headquarters<\/div><div class="v">4 of 4/);
+  assert.match(html, /<div class="k">segments, F1 0\.8\+<\/div><div class="v">3 of 3/);
+}, { timeout: 180_000 });
+
+test('a v4 sealed pass scores the sealed companies at a commit, and rerow backfills a v4 pass from companies-v4.json', async (t) => {
+  const out = join(await scratch(t), 'out');
+  const { rows } = await runLoop({ out, parts: scriptedParts({ set: SETS.v4 }), jobs: 2 });
+  const sealed = await runSealed({ out, parts: scriptedParts({ set: SETS.v4 }), at: 'seed' });
+  const companies = readJson(join(FIXTURES_V4, 'companies-v4.json')).filter((c) => c.split === 'sealed');
+  assert.deepEqual(sealed.rows.map((r) => [r.set, r.split, r.phase, r.company, r.correct]), companies.map((c) => ['v4', 'sealed', 'before', c.name, true]));
+  assert.ok(sealed.rows.every((r) => V4_FIELDS.every((f) => f in r)));
+  assert.equal(sealed.rows[1].subsidiariesRecall, null, 'a 40-F filer with no exhibit list');
+  await assert.rejects(runLoop({ out, parts: scriptedParts({ set: SETS.v2 }), jobs: 1 }), /holds a v4 pass; a v2 pass needs its own --out/);
+
+  const written = await rerow({ out, data: FIXTURES_V4 });
+  assert.equal(written.runs, 2);
+  const v3 = readRows(join(out, 'runs.v3.jsonl'));
+  assert.deepEqual(v3.map((r) => [r.company, r.ticker, r.born, r.executions, r.workflowShare, r.agentFallback]), rows.map((r) => [r.company, r.ticker, r.born, r.executions, r.workflowShare, r.agentFallback]));
+}, { timeout: 240_000 });

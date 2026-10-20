@@ -220,7 +220,9 @@ const CURATE = { general: 0.94, narrowsRules: 0.03, fromContent: 0.03, duplicate
 
 /**
  * A scripted Jev. Curate's and the leak gate's yes-or-no questions get the fixed answers above (or `overrides`); a pick
- * chooses the fixture's group for the company in its state (`truthByName`), or none for a company it has none for.
+ * chooses the fixture's group for the company in its state (`truthByName`), or none for a company it has none for. The
+ * scorers' questions take `segments` (a fixture's judge.json): v2's segment and cite answers, and v4's segment matches,
+ * headquarters aliases and subsidiaries, each keyed by the exact value asked about; a v4 question it has no key for is no.
  */
 export function scriptedJev({ truthByName = {}, groups = [], overrides = {}, segments = {}, asked = [] } = {}) {
   return async ({ kind, label, state, questions }) => {
@@ -230,6 +232,17 @@ export function scriptedJev({ truthByName = {}, groups = [], overrides = {}, seg
         answers[key] = { type: 'noul', noul: segments.segments?.[state.truth?.member] ?? 0.9 };
       } else if (question.type === 'noul' && label === 'score/cite') {
         answers[key] = { type: 'noul', noul: segments.cites?.[state.url] ?? 0.9 };
+      } else if (question.type === 'noul' && label === 'score/hq') {
+        answers[key] = { type: 'noul', noul: segments.hq?.[state.answer?.city] ?? 0.1 };
+      } else if (question.type === 'noul' && label === 'score/subsidiary') {
+        answers[key] = { type: 'noul', noul: segments.subsidiaries?.[state.subsidiary] ?? 0.1 };
+      } else if (question.type === 'choice' && label === 'score/segments') {
+        // v4's segment match: the filed segment `segments.segmentMatch` names (by member) for this answer segment, else none.
+        const name = state.answer?.find((a) => a.id === key)?.name;
+        const member = segments.segmentMatch?.[name];
+        const choice = state.truth?.find((t) => member !== undefined && t.member === member)?.id ?? 'none_of_these';
+        const options = Object.keys(question.criteria);
+        answers[key] = { type: 'choice', choice, probabilities: Object.fromEntries(options.map((o) => [o, o === choice ? 0.9 : 0.1 / (options.length - 1)])), confidence: 0.9 };
       } else if (question.type === 'noul') {
         answers[key] = { type: 'noul', noul: overrides[key] ?? CURATE[key] ?? 0.5 };
       } else if (question.type === 'choice') {
@@ -390,6 +403,122 @@ export function agentScriptV2({ job, offered, fixtures }) {
       ...(offered.includes(WORKFLOW) ? [] : [
         { call: 'agentrun', args: { action: 'describe' } },
         { call: 'agentrun', args: { action: 'inspect', workflow: CLASSIFY_WORKFLOW_V2, input: { name: job.name, website: site } } },
+        { call: 'agentrun', args: { action: 'dry-run' } },
+        { call: 'agentrun', args: { action: 'save', name: WORKFLOW } },
+        { call: 'learn', args: { type: 'workflow', id: WORKFLOW, text: 'Use it for any company whose website is given.' } },
+      ]),
+      { say: 'Answered by hand.' },
+    ],
+  };
+}
+
+// ---- v4: the dollar job ------------------------------------------------------------------------------------------------
+
+export const FIXTURES_V4 = join(import.meta.dirname, 'fixtures-v4');
+
+const CITE_V4 = {
+  type: 'object', additionalProperties: false, required: ['claim', 'url', 'locator', 'quote'],
+  properties: { claim: { type: 'string', enum: ['sic', 'segment', 'hq', 'subsidiary', 'report'] }, url: { type: 'string' }, locator: { type: 'string' }, quote: { type: 'string' } },
+};
+
+/** The whole-job v4 workflow the scripted agent writes: read the given site, pick the group and the code, take the annual
+ *  report's link from the site, read the report, and write the answer from the site and the report. */
+export const CLASSIFY_WORKFLOW_V4 = Object.freeze({
+  v: 2, name: WORKFLOW,
+  schemas: {
+    Company: CLASSIFY_WORKFLOW_V2.schemas.Company,
+    Page: V2_PAGE,
+    Groups: CLASSIFY_WORKFLOW_V2.schemas.Groups,
+    Codes: CLASSIFY_WORKFLOW_V2.schemas.Codes,
+    Report: { type: 'object', additionalProperties: false, required: ['url'], properties: { url: { type: 'string' } } },
+    Document: DOCUMENT_SCHEMA,
+    Answer: {
+      type: 'object', additionalProperties: false, required: ['sic4', 'segments', 'hq', 'subsidiaries', 'annualReport', 'cites'],
+      properties: {
+        sic4: { type: 'string' },
+        segments: {
+          anyOf: [
+            { type: 'array', items: { type: 'object', additionalProperties: false, required: ['name', 'share'], properties: { name: { type: 'string' }, share: { type: 'number' } } } },
+            { type: 'object', additionalProperties: false, required: ['oneSegment'], properties: { oneSegment: { type: 'boolean' } } },
+          ],
+        },
+        hq: { type: 'object', additionalProperties: false, required: ['city', 'country'], properties: { city: { type: 'string' }, state: { type: 'string' }, country: { type: 'string' } } },
+        subsidiaries: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['name'], properties: { name: { type: 'string' }, country: { type: 'string' } } } },
+        annualReport: { type: 'object', additionalProperties: false, required: ['url', 'fiscalYear'], properties: { url: { type: 'string' }, fiscalYear: { type: 'integer' } } },
+        cites: { type: 'array', items: CITE_V4 },
+      },
+    },
+  },
+  input: { schemaId: 'Company' },
+  output: { schemaId: 'Answer', path: 'answer' },
+  root: {
+    node: 'chain',
+    steps: [
+      ...CLASSIFY_WORKFLOW_V2.root.steps.slice(0, -1),
+      { node: 'extract', label: 'the annual report', tools: [], out: 'Report', as: 'report', instructions: 'url is the link to the company\'s latest annual report among the site\'s links.', state: { company: '{name}', links: '{page.links}' } },
+      { node: 'call', label: 'read the report', via: 'tool', tool: 'read_document', args: { url: '{report.url}', question: 'revenue by reportable segment, the headquarters, and the list of subsidiaries' }, out: 'Document', as: 'document', deadline_s: 120 },
+      { node: 'escalate', label: 'no report', when: { predicate: 'empty', path: 'document.text' }, kind: 'review', stage: 'research', summary: 'the annual report has no text to read' },
+      {
+        node: 'extract', label: 'write the answer', tools: [], out: 'Answer', as: 'answer',
+        instructions: 'sic4 is the picked code. segments, hq and subsidiaries are as the report states them; annualReport is the report read, with its fiscal year. cites quote the site and the report pages for each part.',
+        state: { company: '{name}', code: '{code.item}', url: '{page.url}', report: '{report.url}', text: '{page.text}', document: '{document.text}' },
+      },
+    ],
+  },
+});
+
+/** The v4 answer for a fixture case, its cites on the site and the report as read in the run. */
+function answerOfV4(t, { sic4 = t.sic4, site = t.site, report = t.document } = {}) {
+  return {
+    sic4, segments: t.segments, hq: t.hq, subsidiaries: t.subsidiaries, annualReport: { ...t.annualReport, url: report },
+    cites: [
+      { claim: 'sic', url: site, locator: 'home page', quote: t.siteQuote },
+      { claim: 'segment', url: report, locator: 'pdf p. 4', quote: t.segmentQuote },
+      { claim: 'hq', url: report, locator: 'pdf p. 1', quote: t.hqQuote },
+      { claim: 'subsidiary', url: report, locator: 'pdf p. 9', quote: t.subsidiaryQuote },
+      { claim: 'report', url: report, locator: 'pdf p. 1', quote: t.reportQuote },
+    ],
+  };
+}
+
+/**
+ * The scripted v4 agent for one job: by hand (search for the site when none is given, read it, read the annual report,
+ * the group, the code, the six-part answer), then CLASSIFY_WORKFLOW_V4 saved; or, offered it, load, run and answer from
+ * it. `fixtures.truth[name]` is the case's answer and the quotes its cites use.
+ */
+export function agentScriptV4({ job, offered, fixtures }) {
+  const truth = fixtures.truth[job.name];
+  const input = { name: job.name, ...(job.ticker ? { ticker: job.ticker } : {}), ...(job.website ? { website: job.website } : {}) };
+  // The workflow's two extracts, told apart by their state: the report's link from the site's links, then the answer.
+  const node = (state) => {
+    const t = fixtures.truth[state.company];
+    if ('links' in state) return { submit: { url: t.document } };
+    return { submit: answerOfV4(t, { sic4: state.code?.code ?? '', site: state.url, report: state.report }) };
+  };
+  if (offered.includes(WORKFLOW) && job.website) {
+    return {
+      node,
+      root: [
+        { call: 'agentrun', args: { action: 'load', name: WORKFLOW, input } },
+        { call: 'agentrun', args: { action: 'run' } },
+        { call: 'answer', args: (context) => { const outcome = lastRunOutcome(context); return outcome?.status === 'complete' ? outcome.output : answerOfV4(truth); } },
+        { say: 'Answered with the workflow\'s result.' },
+      ],
+    };
+  }
+  const site = job.website ?? truth.site;
+  return {
+    node,
+    root: [
+      ...(job.website ? [] : [{ call: 'search_web', args: { query: `${job.name} ${job.ticker ?? ''} investor relations`.trim() } }]),
+      { call: job.website ? 'fetch_page' : 'browse', args: { url: site } },
+      { call: 'read_document', args: { url: truth.document, question: 'revenue by reportable segment, the headquarters, and the list of subsidiaries' } },
+      { call: 'sic2_groups', args: {} },
+      { call: 'sic_codes', args: { group: truth.sic4.slice(0, 2) } },
+      { call: 'answer', args: answerOfV4(truth) },
+      ...(offered.includes(WORKFLOW) ? [] : [
+        { call: 'agentrun', args: { action: 'describe' } },
+        { call: 'agentrun', args: { action: 'inspect', workflow: CLASSIFY_WORKFLOW_V4, input: { name: job.name, website: site } } },
         { call: 'agentrun', args: { action: 'dry-run' } },
         { call: 'agentrun', args: { action: 'save', name: WORKFLOW } },
         { call: 'learn', args: { type: 'workflow', id: WORKFLOW, text: 'Use it for any company whose website is given.' } },

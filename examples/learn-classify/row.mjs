@@ -119,3 +119,32 @@ export function rowOfV2({ score, stats, scoringJudge, lineage, phase, jobRecord,
     scoreCostUsd: !scoringJudge || scoringJudge.unknown ? null : scoringJudge.costUsd,
   };
 }
+
+/**
+ * A v4 row (CLASSIFY-CONTRACT.md v4, the dollar job): v1's and v3's fields as rowOfV2 gives them, the v2 tool facts, and
+ * the v4 score in place of v2's segment fields. `answer`, `truth` and `correct` are the 4-digit codes and the v4 headline
+ * (the code exact, segments F1 0.8 or better, the headquarters right).
+ */
+export function rowOfV4({ score, ...rest }) {
+  const { segmentAnswer, segmentTruth, segmentCorrect, shareError, ...row } = rowOfV2({ ...rest, score: { ...score, segmentAnswer: null, segmentTruth: null, segmentCorrect: null, shareError: null } });
+  return {
+    ...row,
+    set: 'v4',
+    correct: score.correct,
+    segmentsAnswer: score.segmentsAnswer,
+    segmentsTruth: score.segmentsTruth,
+    segmentsF1: score.segmentsF1,
+    shareErrorMean: score.shareErrorMean,
+    hqAnswer: score.hqAnswer,
+    hqTruth: score.hqTruth,
+    hqCorrect: score.hqCorrect,
+    subsidiariesAnswer: score.subsidiariesAnswer,
+    subsidiariesTruthCount: score.subsidiariesTruthCount,
+    subsidiariesRecall: score.subsidiariesRecall,
+    subsidiariesPrecision: score.subsidiariesPrecision,
+    reportAnswer: score.reportAnswer,
+    reportTruth: score.reportTruth,
+    reportYearCorrect: score.reportYearCorrect,
+    reportRead: score.reportRead,
+  };
+}
