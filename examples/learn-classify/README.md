@@ -248,7 +248,8 @@ company lists them in a 10-K's Exhibit 21 or a 20-F's Exhibit 8), `annualReport`
 - `segmentsF1`: the answer's segments matched one to one with the filed ones (`segments[]` of the truth row: `member`,
   `label`, `share`). A label or member in the same words matches at once; the rest go to Jev in one request, a choice
   per answer segment over the filed segments not yet taken, and the surest choices pair first. F1 is over both sides;
-  `shareErrorMean` is the mean distance of the matched shares, in points. `oneSegment` scores 1 against one filed
+  `shareErrorMean` is the mean distance of the matched shares, in points, from the filed shares normalized to sum 1 (as
+  filed a list can sum past 1 with intersegment revenue, or short of it; the row's `segmentsShareSum` is the raw sum). `oneSegment` scores 1 against one filed
   segment and 0 against more. A filer that reports one segment has the truth `{ oneSegment: true }` (from its own
   one-segment statement or a lone segment member): `oneSegment` or any one named segment scores 1 there, n segments
   2/(n+1). No segment truth (`null`): both `null`.
@@ -270,7 +271,7 @@ company lists them in a 10-K's Exhibit 21 or a 20-F's Exhibit 8), `annualReport`
   out, never failed, and `correctOver` names the parts that counted (`["sic4", "segments", "hq"]` at most).
 
 A v4 row is a v2 row (v3's chart fields included) with v2's four segment fields replaced by `correctOver`, `segmentsAnswer`,
-`segmentsTruth`, `segmentsF1`, `shareErrorMean`, `hqAnswer`, `hqTruth`, `hqCorrect`, `subsidiariesAnswer`,
+`segmentsTruth`, `segmentsShareSum`, `segmentsF1`, `shareErrorMean`, `hqAnswer`, `hqTruth`, `hqCorrect`, `subsidiariesAnswer`,
 `subsidiariesTruthCount`, `subsidiariesRecall`, `subsidiariesPrecision`, `reportAnswer`, `reportTruth`,
 `reportYearCorrect` and `reportRead`. `rerow.mjs` backfills a v4 pass as it does a v2 one.
 

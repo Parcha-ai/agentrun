@@ -116,9 +116,29 @@ test('segments in other words are Jev\'s: one request, a choice per open segment
   assert.deepEqual(k.asked[0].state.truth.map((t) => t.id), ['t1']);
 });
 
+test('shares are scored against the filed shares normalized to sum 1; the row carries the filed sum', async () => {
+  // As filed, the shares of these five sum to 1.1718 (intersegment revenue): an answer from the segment table's own total
+  // has every share right.
+  const filedShares = [['Gas', 0.5522], ['EnergyTransition', 0.2096], ['WindandSolar', 0.2079], ['Hydro', 0.1514], ['EnergyMarketing', 0.0507]];
+  const truth = filedShares.map(([member, share]) => ({ member, label: member, revenue: share * 1e9, share }));
+  const sum = 1.1718;
+  const fromTable = await scoreSegments({ answer: { segments: filedShares.map(([member, share]) => ({ name: member, share: share / sum })) }, truth, judge: judge().run });
+  assert.equal(fromTable.segmentsF1, 1);
+  assert.ok(fromTable.shareErrorMean < 1e-9, String(fromTable.shareErrorMean));
+  const asFiled = await scoreSegments({ answer: { segments: filedShares.map(([member, share]) => ({ name: member, share })) }, truth, judge: judge().run });
+  const expected = filedShares.reduce((total, [, share]) => total + Math.abs(share - share / sum) * 100, 0) / filedShares.length;
+  assert.ok(Math.abs(asFiled.shareErrorMean - expected) < 1e-9, `${asFiled.shareErrorMean} vs ${expected}`);
+  const company = { sic: '4911', segments: truth, hq: null, latestAnnual: null, subsidiaries: null };
+  const score = await scoreV4({ answer: { sic4: '4911', segments: { oneSegment: true } }, company, read: [], codes: {}, judge: judge().run });
+  assert.ok(Math.abs(score.segmentsShareSum - sum) < 1e-9, String(score.segmentsShareSum));
+  assert.deepEqual(score.segmentsTruth.map((t) => t.share), filedShares.map(([, share]) => share), 'the truth in the row stays as filed');
+  for (const segments of [{ oneSegment: true }, null]) assert.equal((await scoreV4({ answer: null, company: { ...company, segments }, read: [], codes: {}, judge: judge().run })).segmentsShareSum, null);
+});
+
 test('segments match one to one: two answers that pick the same filed segment, only the surer one counts', async () => {
   const j = judge({ picks: { 'Water A': ['WaterSystemsMember', 0.6], 'Water B': ['WaterSystemsMember', 0.9] } });
-  const result = await scoreSegments({ answer: { segments: [{ name: 'Water A', share: 0.5 }, { name: 'Water B', share: 0.61 }] }, truth: [filed[0]], judge: j.run });
+  // One filed segment: its share, normalized, is all of revenue.
+  const result = await scoreSegments({ answer: { segments: [{ name: 'Water A', share: 0.5 }, { name: 'Water B', share: 1 }] }, truth: [filed[0]], judge: j.run });
   assert.ok(Math.abs(result.segmentsF1 - 2 / 3) < 1e-12, String(result.segmentsF1));
   assert.equal(result.shareErrorMean, 0, 'Water B, the surer, is the match');
 });
@@ -268,7 +288,7 @@ test('the v4 home: the workflows skill and the learning rules as v2 has them, th
 
 // ---- scripted passes -----------------------------------------------------------------------------------------------------
 
-const V4_FIELDS = ['dispatched', 'correctOver', 'segmentsAnswer', 'segmentsTruth', 'segmentsF1', 'shareErrorMean', 'hqAnswer', 'hqTruth', 'hqCorrect', 'subsidiariesAnswer', 'subsidiariesTruthCount',
+const V4_FIELDS = ['dispatched', 'correctOver', 'segmentsAnswer', 'segmentsTruth', 'segmentsShareSum', 'segmentsF1', 'shareErrorMean', 'hqAnswer', 'hqTruth', 'hqCorrect', 'subsidiariesAnswer', 'subsidiariesTruthCount',
   'subsidiariesRecall', 'subsidiariesPrecision', 'reportAnswer', 'reportTruth', 'reportYearCorrect', 'reportRead'];
 const V3_FIELDS = ['company', 'ticker', 'born', 'rewritten', 'executions', 'workflowShare', 'agentFallback', 'scoreCostUsd'];
 const V2_TOOL_FIELDS = ['set', 'categories', 'websiteGiven', 'sic4Answer', 'sic4Truth', 'sicCorrect4', 'sicCorrect2', 'evidenceSupported', 'toolCalls', 'browserMinutes', 'visionPages', 'browserCostUsd'];

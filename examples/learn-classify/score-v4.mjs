@@ -9,6 +9,9 @@ export const SUBSIDIARY_QUESTION = 'Is `subsidiary` one of the companies in `lis
 export const MAX_SUBSIDIARIES = 15;
 const MAX_LISTED_TEXT = 24_000;
 
+/** The sum of a filed segment list's shares: as filed it can pass 1 (intersegment revenue) or fall short of it. */
+export const shareSum = (segments) => (Array.isArray(segments) && segments.some((s) => typeof s.share === 'number') ? segments.reduce((sum, s) => sum + (typeof s.share === 'number' ? s.share : 0), 0) : null);
+
 const folded = (text) => String(text ?? '').normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 /** An XBRL segment member as words: "WaterSystemsMember" is "water systems". */
@@ -49,7 +52,8 @@ async function noul(judge, label, question, state) {
 /**
  * segmentsF1: a one-to-one match of the answer's segments to the filed ones. A name or member that is the same words
  * matches at once; the rest are Jev's, one choice per answer segment over the filed segments not yet taken, the surest
- * first. shareErrorMean is the mean distance of the matched shares, in points. A filer that reports one segment
+ * first. shareErrorMean is the mean distance of the matched shares, in points, from the filed shares normalized to sum 1
+ * (an answer from a segment table divides by the segments' own total). A filer that reports one segment
  * (`{ oneSegment: true }`) has one segment by no name: oneSegment matches it, and so does any one answer segment. No
  * segment truth: both null.
  */
@@ -95,7 +99,8 @@ export async function scoreSegments({ answer, truth, judge }) {
   const precision = pairs.length / given.length;
   const recall = pairs.length / filed.length;
   const segmentsF1 = pairs.length ? (2 * precision * recall) / (precision + recall) : 0;
-  const errors = pairs.filter(([i, k]) => typeof given[i].share === 'number' && typeof filed[k].share === 'number').map(([i, k]) => Math.abs(given[i].share - filed[k].share) * 100);
+  const sum = shareSum(filed);
+  const errors = pairs.filter(([i, k]) => typeof given[i].share === 'number' && typeof filed[k].share === 'number' && sum > 0).map(([i, k]) => Math.abs(given[i].share - filed[k].share / sum) * 100);
   return { segmentsF1, shareErrorMean: errors.length ? errors.reduce((a, b) => a + b, 0) / errors.length : null };
 }
 
@@ -199,6 +204,7 @@ export async function scoreV4({ answer, company, read, codes, judge }) {
     segmentsAnswer: answer?.segments ?? null,
     segmentsTruth: company.segments?.oneSegment === true ? { oneSegment: true } : Array.isArray(company.segments) && company.segments.length
       ? company.segments.map((s) => ({ label: s.label ?? null, member: s.member ?? null, share: typeof s.share === 'number' ? s.share : null })) : null,
+    segmentsShareSum: shareSum(company.segments),
     ...segments,
     hqAnswer: answer?.hq ?? null, hqTruth: company.hq ?? null, ...hq,
     subsidiariesAnswer: answer?.subsidiaries ?? null, subsidiariesTruthCount: Array.isArray(company.subsidiaries?.items) ? company.subsidiaries.count ?? company.subsidiaries.items.length : null, ...subsidiaries,

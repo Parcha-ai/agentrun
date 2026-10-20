@@ -138,6 +138,7 @@ export function rowOfV4({ score, ...rest }) {
     correctOver: score.correctOver,
     segmentsAnswer: score.segmentsAnswer,
     segmentsTruth: score.segmentsTruth,
+    segmentsShareSum: score.segmentsShareSum,
     segmentsF1: score.segmentsF1,
     shareErrorMean: score.shareErrorMean,
     hqAnswer: score.hqAnswer,
