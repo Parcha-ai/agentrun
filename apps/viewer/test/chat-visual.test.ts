@@ -210,3 +210,14 @@ test('in Chrome: the video plays only from the end of the blurred span, whatever
   const at = await value<number>(`d().querySelector('.mu-video').currentTime`);
   assert.ok(at >= 2.1 && at <= 3.0, `the first chapter seeks to its own frame (at ${at})`);
 });
+
+test('fail closed by picture: a sign-in picture that comes back after the gap (a re-login\'s empty form) is blurred wherever it shows, and a video that would show it sharp is no video', async (t) => {
+  // The frame at 2700 is the very picture of the sign-in frame at 500 (the same blob), taken after the credential gap had ended.
+  const { recording, frames } = openedRun(t, { sameAs: { 2700: 500 } });
+  const visual = (await visualOf(recording))!;
+  assert.equal(frames[2700], frames[500], 'the same picture');
+  assert.deepEqual(visual.frames.map((frame) => [frame.t, frame.sensitive]), [[500, true], [1500, true], [2500, false], [2700, true], [4000, false]], 'blurred by picture too, not by time alone');
+  assert.equal(visual.video, undefined, 'the track would show that picture sharp after the span: no video at all');
+  assert.deepEqual(visual.chapters, [], 'and no chapter seeks into it');
+  assert.equal(visual.frames.find((frame) => !frame.sensitive)!.blob, frames[2500], 'the first frame that is not blurred is still a different picture');
+});
