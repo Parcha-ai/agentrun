@@ -490,6 +490,10 @@ test('read_document asks again through the browser when a host turns a plain req
 
   const plain = readDocumentTool({ root, vision: await visionFor({ root, eyes: fakeEyes() }), fetch: web.fetch, lookup: publicLookup });
   assert.equal((await plain.run({ url: 'https://ir.walled.example/ar.pdf' })).error, 'HTTP 403');
+  const nobrowser = readDocumentTool({ root, vision: await visionFor({ root, eyes: fakeEyes() }), browser: async () => { throw new Error('no Chrome here'); }, fetch: web.fetch, lookup: publicLookup });
+  const unopened = conforms(nobrowser, await nobrowser.run({ url: 'https://ir.walled.example/ar.pdf' }));
+  assert.equal(unopened.error, 'HTTP 403; through the browser: no browser: no Chrome here');
+  assert.equal(unopened.via, 'direct');
 });
 
 test('the eyes reach the model gateway: Google\'s model over its OpenAI-compatible chat completions at <gateway>/v1, with the gateway\'s key and thinking on', async (t) => {
