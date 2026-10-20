@@ -2,8 +2,10 @@
 // thread (its messages as recorded, the run's own thinking, one card per tool call), the session's spans (workflow
 // nodes, LLM calls, tool calls, the model calls made inside a tool), what each look read, the run's cited answer and
 // the agent's artifact. The same code for every run; pure but for reading a blob's JSON, which the caller passes.
-import type { Json, Recording } from './format.ts';
+import type { Json, Line, Recording } from './format.ts';
 import type { ChatCall, ChatDecision, ChatItem, ChatModel, ChatRow, ChatSource, ChatSpan, ChatThread } from './chat-model.ts';
+import { chatWorkflowsOf } from './chat-workflow.ts';
+import { graphNodeOf } from './graph-draw.ts';
 
 type Obj = { [key: string]: Json };
 const chatObj = (value: Json | undefined): Obj | undefined => (value && typeof value === 'object' && !Array.isArray(value) ? value : undefined);
@@ -200,15 +202,23 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   const lines = clocked ? recording.lines : recording.lines.map((line, index) => ({ ...line, t: index + 1, t0: undefined }));
   const live = (kind: string) => lines.filter((line) => line.channel === 'live' && line.kind === kind);
 
-  // Workflow nodes: each node's label and span, and the conversation each agent node ran.
-  const nodeAt = new Map<string, { label: string; t0?: number; t1?: number }>();
-  for (const line of live('node.start')) nodeAt.set(line.path ?? '', { label: chatStr(chatObj(line.data)?.label) ?? line.path ?? 'node', t0: line.t });
-  for (const line of live('node.end')) { const node = nodeAt.get(line.path ?? ''); if (node) node.t1 = line.t; }
+  // The workflow runs, one per task, and the task each line is; a task's line naming no workflow runs the job's.
+  const named = lines.some((line) => line.channel === 'durable' && line.kind === 'agentrun.workflow' && chatObj(line.data)?.doc === undefined && chatObj(chatObj(line.data)?.input)?.workflow === undefined);
+  const job = named && manifest.job?.blob ? chatObj(await readJson(manifest.job.blob))?.workflow : undefined;
+  const { runs: workflows, taskOf } = chatWorkflowsOf(lines, job);
+  // Workflow nodes, each keyed by (task, path): its label and span, and the conversation each agent node ran.
+  const nodeKey = (line: Line) => `${taskOf(line) ?? ''}\u0000${line.path ?? ''}`;
+  const nodeAt = new Map<string, { label: string; t0?: number; t1?: number; node?: { run: string; path: string } }>();
+  for (const line of live('node.start')) {
+    const run = workflows.find((each) => each.task === taskOf(line));
+    nodeAt.set(nodeKey(line), { label: chatStr(chatObj(line.data)?.label) ?? line.path ?? 'node', t0: line.t, ...(run && line.path ? { node: { run: run.id, path: graphNodeOf(line.path) } } : {}) });
+  }
+  for (const line of live('node.end')) { const node = nodeAt.get(nodeKey(line)); if (node) node.t1 = line.t; }
   const pathOfConversation = new Map<string, string>();
   for (const line of lines) {
     if (line.kind !== 'agentrun.nodes' || line.channel !== 'durable') continue;
     const conversation = chatId(chatObj(chatObj(line.data)?.value)?.conversation);
-    if (conversation && line.path) pathOfConversation.set(conversation, line.path);
+    if (conversation && line.path) pathOfConversation.set(conversation, nodeKey(line));
   }
 
   // The run's input as given, when the workflow's nodes hold every recorded conversation: the runner drives each one,
@@ -252,8 +262,8 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   const threadOf = (conversation: string, t: number): ChatThread => {
     let thread = threads.get(conversation);
     if (!thread) {
-      const path = pathOfConversation.get(conversation);
-      const node = path !== undefined ? nodeAt.get(path) : undefined;
+      const key = pathOfConversation.get(conversation);
+      const node = key !== undefined ? nodeAt.get(key) : undefined;
       thread = { id: `thread-${conversation}`, label: node?.label ?? `conversation ${conversation}`, items: [], t0: node?.t0 ?? t, ...(node?.t1 !== undefined ? { t1: node.t1 } : {}) };
       threads.set(conversation, thread);
     }
@@ -320,10 +330,11 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
 
   // The session's spans. Workflow nodes: start to end, each scrolling to its conversation.
   const spans: ChatSpan[] = [];
-  for (const [path, node] of nodeAt) {
+  for (const [key, node] of nodeAt) {
     if (node.t0 === undefined) continue;
-    const conversation = [...pathOfConversation].find(([, p]) => p === path)?.[0];
-    spans.push({ id: `span-${spans.length + 1}`, actor: 'node', lane: 'workflow', label: `node ${node.label}`, t0: node.t0, ...(node.t1 !== undefined ? { t1: node.t1 } : {}), ...(conversation ? { item: `thread-${conversation}` } : {}) });
+    const conversation = [...pathOfConversation].find(([, held]) => held === key)?.[0];
+    spans.push({ id: `span-${spans.length + 1}`, actor: 'node', lane: 'workflow', label: `node ${node.label}`, t0: node.t0, ...(node.t1 !== undefined ? { t1: node.t1 } : {}), ...(conversation ? { item: `thread-${conversation}` } : {}),
+      ...(node.node ? { node: node.node } : {}) });
   }
   // LLM calls: an assistant message's start to its end, in its conversation, labelled by the model that answered.
   const open = new Map<string, number>();
@@ -355,6 +366,14 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
       ...(chatIsJudge(name) ? { judge: true as const } : {}) };
     spans.push(span);
     toolSpans.push({ span, conversation: chatId(line.conv), callId });
+  }
+  // A workflow run a tool call started: the innermost call of the task's conversation whose span holds the task's first line.
+  for (const run of workflows) {
+    const conversation = chatId(lines.find((line) => taskOf(line) === run.task && line.kind === 'agentrun.workflow')?.conv);
+    const holder = toolSpans.filter((each) => conversation !== undefined && each.conversation === conversation && each.span.t0 <= run.t0 && (each.span.t1 ?? Infinity) >= run.t0)
+      .sort((a, b) => b.span.t0 - a.span.t0)[0];
+    const item = holder ? toolItems.get(holder.callId) : undefined;
+    if (item) { run.call = item.id; item.workflow = run.id; }
   }
   const lookItem = new Map<string, string>();
   // What a look filed about itself (its fragment, the image it was shown), by its key; and its key by its receipt.
@@ -456,8 +475,8 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     if (only?.takeaway) item.takeaway = only.takeaway;
   }
 
-  // A step that ran a command or a script and made no look and no picture is plumbing.
-  for (const [callId, item] of toolItems) if (commands.has(callId) && !item.calls.some((call) => call.look) && item.media.length === 0) item.plumbing = true;
+  // A step that ran a command or a script and made no look, no picture and no workflow run is plumbing.
+  for (const [callId, item] of toolItems) if (commands.has(callId) && !item.calls.some((call) => call.look) && item.media.length === 0 && item.workflow === undefined) item.plumbing = true;
 
   // A step that nothing the agent thought or wrote leads into speaks for itself with what a look of it asked in words;
   // a step whose looks asked nothing in words has no voice (a look's line and a call's result are logs, never a voice).
@@ -535,5 +554,6 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     ...(artifact && chatStr(artifact.entry) && chatObj(artifact.files) ? { artifact: { title: chatStr(artifact.title) ?? manifest.title, entry: chatStr(artifact.entry)!, files: chatObj(artifact.files) as Record<string, string> } } : {}),
     ...(times.length ? { durationMs: Math.max(...times) } : {}),
     ...(resultLine ? { answeredAt: resultLine.t } : {}),
+    ...(workflows.length ? { workflows } : {}),
   };
 }

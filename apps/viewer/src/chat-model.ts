@@ -1,5 +1,6 @@
 // The chat + report view's model of one run, made from a recording's own events by chat-extract.ts and drawn by
 // chat-view.ts and chat-report.ts. The same code for every run: nothing is typed by hand, per recording, or borrowed.
+import type { ChatWorkflow } from './chat-workflow.ts';
 
 /** One entry of a recorded conversation: a message as recorded, the run's own thinking, or one tool call. */
 export type ChatItem =
@@ -35,6 +36,8 @@ export type ChatItem =
     looks: string[];
     /** The model calls made inside this call, in the order they ended: each its own card under this one. */
     calls: ChatCall[];
+    /** The workflow run this call started (its id in `ChatModel.workflows`). */
+    workflow?: string;
     t0?: number;
     t1?: number;
   };
@@ -70,6 +73,8 @@ export type ChatSpan = {
   item?: string;
   /** A judge's call (its tool's verb is "judge"), drawn with the judge's accent. */
   judge?: true;
+  /** A workflow node's span: its run (the id in `ChatModel.workflows`) and the node's path in the run's graph. */
+  node?: { run: string; path: string };
 };
 
 /** One typed decision a look's answer carries (a Jev call): a yes-or-no with its score, or a choice. */
@@ -110,4 +115,6 @@ export type ChatModel = {
   artifact?: ChatArtifact;
   durationMs?: number;
   answeredAt?: number;
+  /** The workflow runs, in the order their tasks began (chat-workflow.ts); absent when the recording ran none. */
+  workflows?: ChatWorkflow[];
 };

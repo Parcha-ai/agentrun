@@ -5,6 +5,8 @@
 import type { ChatCall, ChatDecision, ChatItem, ChatModel, ChatSource, ChatSpan, ChatThread } from './chat-model.ts';
 import type { Recording } from './format.ts';
 import { drawReport, reportCiteLabel, reportClock, reportEl, reportFragmentOf, reportHeldFile, reportHowHref, reportInline, reportParagraphs } from './chat-report.ts';
+import { chatWorkflowStatusAt, type ChatWorkflow } from './chat-workflow.ts';
+import { GRAPH_STATUS_TEXT, graphTree, type GraphTree } from './graph-draw.ts';
 
 type ToolItem = Extract<ChatItem, { kind: 'tool' }>;
 type SourceKind = 'page' | 'image' | 'video' | 'other';
@@ -504,13 +506,19 @@ function threadCard(recording: Recording, model: ChatModel, item: ToolItem, fold
     calls.length > 0 && reportEl('div', { class: 'calls' }, ...calls, more));
 }
 
+/** The session timeline's length: the run's, or its last span's end. */
+export const timelineEndOf = (model: ChatModel) => Math.max(model.durationMs ?? 0, model.answeredAt ?? 0, ...model.spans.map((span) => span.t1 ?? span.t0)) || 1;
+/** A time on the session timeline in words: seconds under ten seconds, else minutes; a position in a recording with no times. */
+const timelineAt = (model: ChatModel, t: number, end: number) => (model.inOrder ? `${Math.round(t)} of ${Math.round(end)}` : end < 10_000 ? `${(t / 1000).toFixed(1)} s` : reportClock(t / 1000));
+
 /** The session timeline, collapsed under the title: a lane per span lane, a call made inside a tool on a lane under its
  *  tool's; each span at its recorded times (one time is a tick), spans at once on rows of their own; the answer a point
- *  at the time it was delivered. A click calls `go` with the span's card or thread, or 'answer'. */
-function timelineOf(model: ChatModel, go: (id: string) => void): HTMLElement | undefined {
+ *  at the time it was delivered. A click calls `go` with the span's card or thread, or 'answer'. With `replay`, a playhead
+ *  marks its time, and a press or a drag on the tracks sets it (a click on a span still jumps). */
+function timelineOf(model: ChatModel, go: (id: string) => void, replay?: { at: number; set: (t: number) => void }): HTMLElement | undefined {
   const spans = model.spans;
   if (spans.length === 0) return undefined;
-  const end = Math.max(model.durationMs ?? 0, model.answeredAt ?? 0, ...spans.map((span) => span.t1 ?? span.t0)) || 1;
+  const end = timelineEndOf(model);
   const pct = (value: number) => `${(Math.min(1, Math.max(0, value)) * 100).toFixed(2)}%`;
   // Lanes in the order they first begin; a nested lane right under its parent's, keyed by both.
   const lanes = new Map<string, { label: string; parent?: string; spans: ChatSpan[] }>();
@@ -538,11 +546,12 @@ function timelineOf(model: ChatModel, go: (id: string) => void): HTMLElement | u
     const { rows, count } = rowsOf(lane.spans);
     const track = reportEl('div', { class: 'track' }, ...rows.map(({ span, row }) => {
       const x = Math.min(1, Math.max(0, span.t0 / end));
-      const bar = reportEl('button', { class: `tbar${span.t1 === undefined ? ' tick' : ''}${span.judge ? ' judge' : ''}`, type: 'button', 'data-goto': span.item, title: span.label, 'aria-label': span.label, disabled: !span.item });
+      const bar = reportEl('button', { class: `tbar${span.t1 === undefined ? ' tick' : ''}${span.judge ? ' judge' : ''}`, type: 'button', 'data-goto': span.item, 'data-span': span.id, title: span.label, 'aria-label': span.label, disabled: !span.item });
       Object.assign(bar.style, { left: pct(x), top: `${row * 8 + 3}px`, ...(span.t1 === undefined ? {} : { width: pct(Math.min(Math.max(0, span.t1 - span.t0) / end, 1 - x)) }) });
       return bar;
     }));
     track.style.height = `${Math.max(14, count * 8 + 4)}px`;
+    if (replay) track.append(reportEl('i', { class: 'playhead', 'aria-hidden': 'true', style: `left:${pct(replay.at / end)}` }));
     return reportEl('div', { class: lane.parent ? 'lane inner' : 'lane' },
       reportEl('div', { class: 'ln', title: lane.label }, lane.spans.some((span) => span.judge) && reportEl('i', { class: 'judge-dot', 'aria-hidden': 'true' }), lane.label), track);
   });
@@ -553,7 +562,8 @@ function timelineOf(model: ChatModel, go: (id: string) => void): HTMLElement | u
   }
   const mini = reportEl('span', { class: 'mini', 'aria-hidden': 'true' },
     ...spans.filter((span) => span.actor === 'tool').map((span) => reportEl('i', { style: `left:${pct(span.t0 / end)}` })),
-    model.answeredAt !== undefined && reportEl('i', { class: 'rep', style: `left:calc(${pct(model.answeredAt / end)} - 2px)` }));
+    model.answeredAt !== undefined && reportEl('i', { class: 'rep', style: `left:calc(${pct(model.answeredAt / end)} - 2px)` }),
+    replay && reportEl('i', { class: 'playhead', style: `left:${pct(replay.at / end)}` }));
   const toggle = reportEl('button', { class: 'tl-toggle', type: 'button', 'aria-expanded': 'false' },
     reportEl('span', { class: 'lab', text: 'Timeline' }), mini, reportEl('span', { class: 'chev', 'aria-hidden': 'true' }));
   // A recording with no times places each span at its line's position: the axis is an order, never a clock.
@@ -567,14 +577,90 @@ function timelineOf(model: ChatModel, go: (id: string) => void): HTMLElement | u
     toggle.setAttribute('aria-expanded', String(open));
     body.hidden = !open;
   });
+  // A press on the tracks sets the replay's time; a drag moves it, and the click that ends a drag jumps nowhere.
+  let dragged = false;
+  if (replay) body.addEventListener('pointerdown', (event) => {
+    const track = body.querySelector<HTMLElement>('.track');
+    if (event.button !== 0 || !track || !(event.target as Element).closest('.track, .axis')) return;
+    const timeAt = (x: number) => { const box = track.getBoundingClientRect(); return Math.min(1, Math.max(0, (x - box.left) / (box.width || 1))) * end; };
+    const from = event.clientX;
+    dragged = false;
+    replay.set(timeAt(from));
+    const move = (next: PointerEvent) => { if (Math.abs(next.clientX - from) > 3) dragged = true; if (dragged) replay.set(timeAt(next.clientX)); };
+    const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); removeEventListener('pointercancel', up); };
+    addEventListener('pointermove', move);
+    addEventListener('pointerup', up);
+    addEventListener('pointercancel', up);
+  });
   body.addEventListener('click', (event) => {
+    if (dragged) { dragged = false; return; }
     const target = (event.target as Element).closest<HTMLElement>('[data-goto]');
     if (!target) return;
     for (const lit of body.querySelectorAll('.tbar.on')) lit.classList.remove('on');
     if (target.classList.contains('tbar')) target.classList.add('on');
     go(target.dataset.goto!);
   });
-  return reportEl('div', { class: 'tl' }, toggle, body);
+  return reportEl('div', { class: replay ? 'tl replay' : 'tl' }, toggle, body);
+}
+
+/** A graph tree as the page's elements: a node's path, on the part a reader clicks, as its `data-path`. */
+function graphDom(node: GraphTree): globalThis.Node {
+  if (typeof node === 'string') return document.createTextNode(node);
+  const out = document.createElement(node.tag);
+  if (node.class) out.className = node.class;
+  if (node.title) out.title = node.title;
+  if (node.path !== undefined) out.dataset.path = node.path;
+  if (out instanceof HTMLButtonElement) out.type = 'button';
+  for (const child of node.children ?? []) out.append(graphDom(child));
+  return out;
+}
+
+const WORKFLOW_ORDER = ['done', 'working', 'failed', 'not-run'] as const;
+
+/** The Workflow view: one graph per workflow run, in run order, each node marked with what the run had done there at the
+ *  replay's time (the run's end until the timeline sets one), above them the replay's time and a scrubber. `pick` gets a
+ *  node a reader clicked; `from` the call that started a run. */
+function workflowViewOf(model: ChatModel, runs: readonly ChatWorkflow[], callTitle: (id: string) => string | undefined, replay: { set: (t: number) => void },
+  pick: (run: ChatWorkflow, path: string) => void, from: (id: string) => void): { node: HTMLElement; draw: (t: number) => void } {
+  const end = timelineEndOf(model);
+  const scrub = reportEl('input', { class: 'scrub', type: 'range', min: 0, max: end, step: 'any', value: end, 'aria-label': 'Replay time' });
+  const at = reportEl('span', { class: 'wf-at' });
+  const last = reportEl('button', { class: 'wf-end', type: 'button', text: 'End' });
+  scrub.addEventListener('input', () => replay.set(Number(scrub.value)));
+  last.addEventListener('click', () => replay.set(end));
+  const drawn = runs.map((run, index) => {
+    const graph = reportEl('div', { class: 'wf-graph' });
+    const counts = reportEl('span', { class: 'wf-counts' });
+    const call = run.call ? callTitle(run.call) : undefined;
+    const started = run.call && call ? reportEl('button', { class: 'wf-from', type: 'button', text: call }) : undefined;
+    started?.addEventListener('click', () => from(run.call!));
+    graph.addEventListener('click', (event) => {
+      const row = (event.target as Element).closest<HTMLElement>('[data-path]');
+      if (row) pick(run, row.dataset.path!);
+    });
+    const section = reportEl('section', { class: 'wf-run', id: run.id, 'aria-label': run.title },
+      reportEl('div', { class: 'kicker', text: runs.length > 1 ? `Workflow ${index + 1} of ${runs.length}` : 'Workflow' }),
+      reportEl('h2', { class: 'wf-title', text: run.title }),
+      reportEl('div', { class: 'wf-meta' }, started && reportEl('span', {}, 'started by ', started), counts),
+      graph);
+    return { run, graph, counts, section };
+  });
+  const node = reportEl('div', { class: 'wf' },
+    reportEl('div', { class: 'wf-replay' }, reportEl('span', { class: 'lab', text: 'Replay' }), scrub, at, last),
+    ...drawn.map((each) => each.section));
+  const draw = (t: number) => {
+    const whole = t >= end;
+    scrub.value = String(Math.min(t, end));
+    at.textContent = whole ? `end · ${timelineAt(model, end, end)}` : `${timelineAt(model, t, end)} / ${timelineAt(model, end, end)}`;
+    last.disabled = whole;
+    for (const { run, graph, counts } of drawn) {
+      const statuses = chatWorkflowStatusAt(run, whole ? Infinity : t);
+      graph.replaceChildren(graphDom(graphTree(run.graph, statuses, { row: 'button' })));
+      const tally = WORKFLOW_ORDER.map((state) => [state, Object.values(statuses).filter((each) => each === state).length] as const).filter(([, count]) => count > 0);
+      counts.replaceChildren(...tally.map(([state, count]) => reportEl('span', { class: `wf-count ${state}`, text: `${count} ${GRAPH_STATUS_TEXT[state]}` })));
+    }
+  };
+  return { node, draw };
 }
 
 /** The whole page body: the chat on the left, the report or a source on the right (a bottom sheet on a phone). */
@@ -708,11 +794,24 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
 
   const reportButton = reportEl('button', { class: 'run report-btn', type: 'button', text: 'Open the report' });
   const composer = reportEl('div', { class: 'composer' }, reportEl('div', { class: 'bar' }, reportEl('span', { text: 'This is a replay of a recorded run.' }), reportButton));
-  const chat = reportEl('section', { class: 'chat', 'aria-label': 'Conversation' }, timelineOf(model, (id) => scrollToItem(id)), thread, composer);
+  // The replay's time, on the timeline and in the Workflow view: the run's end until the reader sets one.
+  const runs = model.workflows ?? [];
+  const end = timelineEndOf(model);
+  let replayAt = end;
+  const setReplay = (t: number) => {
+    replayAt = Math.min(end, Math.max(0, t));
+    for (const head of chat.querySelectorAll<HTMLElement>('.tl .playhead')) head.style.left = `${(replayAt / end * 100).toFixed(2)}%`;
+    workflowView?.draw(replayAt);
+  };
+  const chat = reportEl('section', { class: 'chat', 'aria-label': 'Conversation' }, timelineOf(model, (id) => scrollToItem(id), runs.length ? { at: replayAt, set: setReplay } : undefined), thread, composer);
   const reportPane = reportEl('div', { class: 'report-host' });
   const source = reportEl('div', { class: 'src', hidden: true });
   const shut = reportEl('button', { class: 'back shut', type: 'button', text: 'Close' });
-  const art = reportEl('aside', { class: 'art', 'aria-label': 'The report' }, reportEl('div', { class: 'grab' }, reportEl('i')), shut, reportPane, source);
+  // A run with a workflow switches the right pane between its report and its Workflow view; one with none has no switch.
+  const viewButtons = runs.length ? (['report', 'workflow'] as const).map((view) => reportEl('button', { class: 'view', type: 'button', 'data-view': view, text: view === 'report' ? 'Report' : 'Workflow' })) : [];
+  const views = runs.length ? reportEl('div', { class: 'views', role: 'group', 'aria-label': 'Show' }, ...viewButtons) : undefined;
+  const workflowHost = runs.length ? reportEl('div', { class: 'wf-host' }) : undefined;
+  const art = reportEl('aside', { class: runs.length ? 'art switched' : 'art', 'aria-label': 'The report' }, reportEl('div', { class: 'grab' }, reportEl('i')), shut, views, reportPane, source, workflowHost);
   const scrim = reportEl('div', { class: 'scrim' });
   root.replaceChildren(header, reportEl('div', { class: 'app' }, chat, art), scrim);
   // Pictures within a screen and a half of the top load at once; the rest wait until they come into view.
@@ -733,11 +832,18 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     for (const [id, card] of cards) card.setAttribute('aria-current', String(!source.hidden && id === shown?.item?.id));
     for (const call of thread.querySelectorAll<HTMLElement>('.call')) call.setAttribute('aria-current', String(!source.hidden && !!shown?.look && call.dataset.look === shown.look));
     doccard?.setAttribute('aria-current', String(source.hidden));
-    history.replaceState(null, '', `${location.pathname}${location.search}${!source.hidden && shown?.look ? `#look=${encodeURIComponent(shown.look)}` : ''}`);
+    const hash = art.dataset.view === 'workflow' ? '#workflow' : !source.hidden && shown?.look ? `#look=${encodeURIComponent(shown.look)}` : '';
+    history.replaceState(null, '', `${location.pathname}${location.search}${hash}`);
+  };
+  const setView = (view: 'report' | 'workflow') => {
+    if (!views) return;
+    art.dataset.view = view;
+    for (const button of viewButtons) button.setAttribute('aria-pressed', String(button.dataset.view === view));
+    mark();
   };
   const openSheet = () => { if (phone()) { art.classList.add('open'); scrim.classList.add('on'); } };
   const closeSheet = () => { art.classList.remove('open'); scrim.classList.remove('on'); };
-  const showReport = () => { source.hidden = true; source.replaceChildren(); shown = undefined; mark(); };
+  const showReport = () => { source.hidden = true; source.replaceChildren(); shown = undefined; setView('report'); mark(); };
   const toolOf = (id: string | undefined) => { const found = id ? items.get(id)?.item : undefined; return found?.kind === 'tool' ? found : undefined; };
   const showSource = (next: SourceShown, sheet = true) => {
     shown = next;
@@ -747,6 +853,7 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     source.replaceChildren(sourceView(recording, model, next, showReport, (look) => showLook(look, next.item)));
     source.hidden = false;
     source.scrollTop = 0;
+    setView('report');
     mark();
     if (sheet) openSheet();
   };
@@ -799,6 +906,37 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     });
   };
 
+  // The Workflow view: a node opens its conversation in the thread, else lights its span on the timeline.
+  const openWorkflow = (id?: string) => {
+    setView('workflow');
+    openSheet();
+    if (id) workflowHost?.querySelector(`#${CSS.escape(id)}`)?.scrollIntoView({ block: 'start', behavior: motion() });
+  };
+  const toThread = (id: string) => { if (phone()) closeSheet(); scrollToItem(id); };
+  const pickNode = (run: ChatWorkflow, path: string) => {
+    const conversation = (run.conversations[path] ?? []).map((each) => `thread-${each}`).find((id) => nodes.has(id));
+    if (conversation) { toThread(conversation); return; }
+    const span = model.spans.find((each) => each.node?.run === run.id && each.node.path === path);
+    const bar = span ? chat.querySelector<HTMLElement>(`.tbar[data-span="${CSS.escape(span.id)}"]`) : null;
+    if (!bar) return;
+    if (phone()) closeSheet();
+    const toggle = chat.querySelector<HTMLElement>('.tl-toggle');
+    if (toggle?.getAttribute('aria-expanded') !== 'true') toggle?.click();
+    for (const lit of chat.querySelectorAll('.tbar.on')) lit.classList.remove('on');
+    bar.classList.add('on');
+    bar.scrollIntoView({ block: 'nearest', behavior: motion() });
+  };
+  const workflowView = workflowHost ? workflowViewOf(model, runs, (id) => toolOf(id)?.title, { set: setReplay }, pickNode, toThread) : undefined;
+  if (workflowHost && workflowView) { workflowHost.append(workflowView.node); workflowView.draw(replayAt); }
+  for (const button of viewButtons) button.addEventListener('click', () => (button.dataset.view === 'workflow' ? openWorkflow() : showReport()));
+  for (const run of runs) {
+    const card = run.call ? cards.get(run.call) : undefined;
+    if (!card) continue;
+    const chip = reportEl('button', { class: 'inrep wf-chip', type: 'button', text: `Workflow ${run.title}` });
+    chip.addEventListener('click', () => openWorkflow(run.id));
+    card.append(reportEl('div', { class: 'step-foot' }, chip));
+  }
+
   // "In the report" on each card whose look the report cites: the report again, at that spot (a phone opens the sheet).
   void report.cited.then((cited) => {
     for (const [id, card] of cards) {
@@ -833,5 +971,6 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
   const linked = /^#look=(.+)$/.exec(location.hash);
   const look = linked ? decodeURIComponent(linked[1]!) : undefined;
   if (look && model.sources[look]) showLook(look, undefined, false);
-  else mark();
+  else if (workflowHost && location.hash === '#workflow') setView('workflow');
+  else setView('report');
 }

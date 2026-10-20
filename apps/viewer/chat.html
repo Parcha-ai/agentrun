@@ -6,7 +6,7 @@
 <title>Agent run</title>
 <meta name="description" content="A recorded agent run as a conversation, beside the report it wrote.">
 <style>
-:root{--bg:#080809;--panel:#111113;--panel2:#17171a;--line:#2c2c30;--ink:#f2f2f2;--muted:#a4a4ad;--dim:#6f6f78;--acc:#ff8700;--purple:#b4a0ff;--judge:#E551BA;
+:root{--bg:#080809;--panel:#111113;--panel2:#17171a;--line:#2c2c30;--ink:#f2f2f2;--muted:#a4a4ad;--dim:#6f6f78;--acc:#ff8700;--green:#8ec9ac;--red:#ff6b5a;--purple:#b4a0ff;--judge:#E551BA;
  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--sans:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--top:56px;--chat:clamp(380px,38vw,540px);color-scheme:dark}
 *{box-sizing:border-box}
 [hidden]{display:none!important}
@@ -232,6 +232,67 @@ a.addr[href]{color:var(--acc);text-decoration:underline dotted}
 .dot{position:absolute;top:1px;width:12px;height:12px;margin-left:-6px;transform:rotate(45deg);background:var(--acc)}
 .axis{display:grid;grid-template-columns:96px minmax(0,1fr);gap:10px;font:400 10px var(--mono);color:var(--dim);margin-top:2px}
 .axis div{display:flex;justify-content:space-between}
+.tl.replay .track{cursor:crosshair;touch-action:pan-y}
+.playhead{position:absolute;top:-4px;bottom:-4px;width:1px;margin-left:-.5px;background:var(--acc);pointer-events:none}
+.mini i.playhead{top:-1px;bottom:auto;width:2px;height:12px;margin-left:-1px;background:var(--acc)}
+
+/* the right pane's switch, and the Workflow view: one graph per workflow run, each node with what the run had done there */
+.views{display:none}
+.art.switched .views{display:flex;align-items:center;position:absolute;top:0;left:0;right:0;z-index:4;height:44px;padding:0 20px;border-bottom:1px solid var(--line);background:var(--bg)}
+.views .view{font:500 11px var(--mono);letter-spacing:.7px;text-transform:uppercase;color:var(--dim);padding:5px 12px;border:1px solid var(--line);background:var(--bg)}
+.views .view+.view{border-left:0}
+.views .view:hover{color:var(--muted)}
+.views .view[aria-pressed="true"]{color:var(--ink);background:var(--panel2)}
+.art.switched .report-host,.art.switched .src{top:44px}
+.wf-host{position:absolute;inset:44px 0 0;overflow-y:auto;background:var(--bg)}
+.art:not([data-view="workflow"]) .wf-host,.art[data-view="workflow"] .report-host,.art[data-view="workflow"] .src{display:none}
+.wf{max-width:880px;margin:0 auto;padding:0 32px 56px}
+.wf-replay{position:sticky;top:0;z-index:2;display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;align-items:center;gap:12px;margin:0 -32px 24px;padding:12px 32px;background:var(--bg);border-bottom:1px solid var(--line)}
+.wf-replay .lab{font:500 10.5px var(--mono);letter-spacing:.7px;text-transform:uppercase;color:var(--dim)}
+.wf-at{font:400 11.5px var(--mono);color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+.wf-end{font:400 11px var(--mono);color:var(--muted);border:1px solid var(--line);padding:2px 8px;background:var(--panel2)}
+.wf-end:hover{color:var(--ink)}
+.wf-end:disabled{opacity:.4;cursor:default;color:var(--muted)}
+.scrub{-webkit-appearance:none;appearance:none;display:block;width:100%;min-width:0;height:18px;margin:0;background:transparent;cursor:pointer}
+.scrub::-webkit-slider-runnable-track{height:2px;background:var(--line)}
+.scrub::-webkit-slider-thumb{-webkit-appearance:none;width:8px;height:16px;margin-top:-7px;border:0;border-radius:0;background:var(--acc)}
+.scrub::-moz-range-track{height:2px;background:var(--line)}
+.scrub::-moz-range-thumb{width:8px;height:16px;border:0;border-radius:0;background:var(--acc)}
+.wf-run{margin:0 0 34px;min-width:0}
+.wf-title{font:500 20px/1.3 var(--mono);margin:6px 0 6px;overflow-wrap:anywhere}
+.wf-meta{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 16px;margin:0 0 14px;font:400 11.5px var(--mono);color:var(--dim)}
+.wf-from{font:inherit;color:var(--muted);text-decoration:underline dotted;text-align:left;overflow-wrap:anywhere}
+.wf-from:hover{color:var(--ink)}
+.wf-counts{display:flex;flex-wrap:wrap;gap:4px 12px}
+.wf-count::before{content:"";display:inline-block;width:7px;height:7px;margin-right:6px;border:1px solid currentColor;vertical-align:0}
+.wf-count.done{color:var(--green)}.wf-count.working{color:var(--acc)}.wf-count.failed{color:var(--red)}.wf-count.not-run{color:var(--dim)}
+.wf-count.done::before,.wf-count.working::before,.wf-count.failed::before{background:currentColor}
+.wf-graph{overflow-x:auto;padding:16px;border:1px solid var(--line);background:var(--panel);background-image:radial-gradient(#1d1d21 1px,transparent 1px);background-size:22px 22px}
+.wf-graph ol{list-style:none;margin:0;padding:0}
+.wf-graph .wg-chain{min-width:280px}
+/* a node's kind is one of its classes, so the page's own classes (a model call's `.call`) are reset here */
+.wf-graph .wg-node{position:relative;display:block;margin:0;padding:0;border:0;background:none}
+.wf-graph .wg-node+.wg-node{margin-top:12px}
+.wf-graph .wg-node+.wg-node::before{content:"";position:absolute;left:16px;top:-12px;width:1px;height:12px;background:#3b3b41}
+.wf-graph .wg-row{display:grid;grid-template-columns:minmax(54px,max-content) minmax(0,1fr) auto;align-items:center;gap:2px 12px;width:100%;padding:8px 10px 8px 12px;text-align:left;background:var(--bg);border:1px solid var(--line)}
+.wf-graph .wg-row:hover{border-color:#4a4a52;background:#0d0d0f}
+.wf-graph .wg-kind{grid-column:1;grid-row:1;font:500 9.5px var(--mono);letter-spacing:.6px;text-transform:uppercase;color:var(--dim)}
+.wf-graph .wg-label{grid-column:2;grid-row:1;min-width:0;font:500 13px var(--mono);color:var(--ink);overflow-wrap:anywhere}
+.wf-graph .wg-via{grid-column:2;grid-row:2;font:400 10.5px var(--mono);color:var(--dim)}
+.wf-graph .wg-status{grid-column:3;grid-row:1;display:inline-flex;align-items:center;gap:6px;font:500 10px var(--mono);letter-spacing:.5px;text-transform:uppercase;color:var(--dim);white-space:nowrap}
+.wf-graph .wg-status::before{content:"";width:7px;height:7px;border:1px solid currentColor}
+.wf-graph .done>.wg-row .wg-status{color:var(--green)}
+.wf-graph .working>.wg-row .wg-status{color:var(--acc)}
+.wf-graph .failed>.wg-row .wg-status{color:var(--red)}
+.wf-graph .done>.wg-row .wg-status::before,.wf-graph .working>.wg-row .wg-status::before,.wf-graph .failed>.wg-row .wg-status::before{background:currentColor}
+.wf-graph .working>.wg-row{border-color:#6b4512}
+.wf-graph .failed>.wg-row{border-color:#5a2a24}
+.wf-graph .not-run>.wg-row .wg-label{color:var(--muted)}
+.wf-graph .working>.wg-row .wg-status::before{animation:wf-pulse 1.2s ease-in-out infinite}
+@keyframes wf-pulse{50%{opacity:.45}}
+.wf-graph .wg-into{position:relative;margin:10px 0 0 16px;padding-left:18px}
+.wf-graph .wg-into::before{content:"";position:absolute;left:0;top:-10px;bottom:0;width:1px;background:#3b3b41}
+.wf-graph .wg-edge{display:block;margin:0 0 6px;font:400 9.5px var(--mono);letter-spacing:.6px;text-transform:uppercase;color:var(--dim)}
 .step.flash,.msg.flash{animation:flash 1.4s ease-out}
 @keyframes flash{0%{background:#ff870033}100%{background:var(--panel)}}
 .msg.flash{animation-name:flash-msg}
@@ -255,6 +316,12 @@ a.addr[href]{color:var(--acc);text-decoration:underline dotted}
  .grab i{display:block;width:40px;height:3px;background:#3b3b41;margin:9px auto 0}
  .shut{display:inline-block;position:absolute;top:6px;right:12px;z-index:4}
  .report-host,.src{top:40px}
+ .art.switched .views{top:40px;height:44px;padding:0 16px}
+ .art.switched .report-host,.art.switched .src,.wf-host{top:84px}
+ .wf{padding:0 16px 40px}
+ .wf-replay{margin:0 -16px 18px;padding:10px 16px;gap:10px;grid-template-columns:minmax(0,1fr) auto auto}
+ .wf-replay .lab{display:none}
+ .wf-graph{padding:12px}
  .scrim{position:fixed;inset:0;z-index:25;background:#000a}.scrim.on{display:block}
  .pane{padding:12px 16px 40px}
  .arow{grid-template-columns:1fr;gap:4px}

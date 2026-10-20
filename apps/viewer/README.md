@@ -28,6 +28,16 @@ Citations are the cited file's own address (`file.pdf#page=3&xywh=percent:...`, 
 or frame with its region boxed. "How this ran" opens the same recording in this replay viewer. `src/chat-extract.ts`
 makes the model, `src/chat-view.ts` and `src/chat-report.ts` draw it.
 
+A run that ran a workflow has a Workflow view beside the report (a "Report | Workflow" switch at the top of the right
+pane, inside the bottom sheet on a phone; a run with none has no switch). It draws one graph per workflow run, in the
+order the runs began, each titled by its workflow's label or name, with the drawing the inspection view's workflow
+graph panel uses (`src/graph-draw.ts`). Every node is keyed by its task and its path (`src/chat-workflow.ts`), so two
+runs whose paths collide keep their own spans, conversations and records. A node shows what the run had done there at
+the replay's time: done or failed as the DSL's `nodeStatus` says of the driver's latest record at or before it, working
+while a live run of the node is open then, else not run. The time is the run's end until a press or a drag on the
+session timeline, or the view's scrubber, sets it. A node's click opens its conversation in the thread, else lights its
+span on the timeline; the call that started a run carries a chip to its graph.
+
 A few conventions the view reads beyond the format; any skill or tool can follow them, and a run that does not loses
 nothing but the touch each one adds:
 - The page's title is the input's `question` field (its first line) when the input has one.
