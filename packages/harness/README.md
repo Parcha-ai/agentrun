@@ -232,6 +232,7 @@ await demo({ self: import.meta.url, spec, job, fakes });
 | `--fetch-sources` | fetches the demo's `sources.json` into the run's `work/` before the job runs (always with `--live`) |
 | `--cache <dir>` | where fetched sources are kept by hash, so a re-run does not fetch them again (default `agentrun-sources` in the OS temp dir) |
 | `--dir <path>` | keeps the run's directory |
+| `--box-ids <file>` | where the provider ids of the run's boxes go, by label (default `box-ids.internal.json` in the run's directory); refused inside the recording |
 | `--json` | the result as one JSON object |
 
 ### The spec
@@ -244,6 +245,20 @@ The parts of `demo.json` the entry acts on:
 - `sources`: `true` (the demo's `sources.json`), or a path (relative to the demo's directory, to the repository when it starts with `examples/`, or absolute): `sources.json` has two kinds of entry. `pages` are visited live by the agent (each with its URL, what it shows and its hand-check date): the entry passes them through untouched, never fetching or refusing them. `files` (or `items`) are the checked files `{ id, url, bytes, sha256, license }` the job reads. They are fetched into `work/` as `<id><extension of the URL's path>`, verified by size and hash (a file already there with the right hash is kept; one that is not the checked bytes is refused, naming what was checked and what came), on `--live` and with `--fetch-sources`. A no-key run uses the files the demo commits (`job.files`). A demo whose files depend on the input gives `sourcesFor(input)` instead (the same item shape, without `license`): only those items are fetched, and a no-key run that lacks their files is refused in one line naming `--fetch-sources`.
 - `input`: `{ fixtures: { <name>: "examples/<demo>/fixtures/<file>.json" } }`: the demo's captures, each a name (`[a-z0-9-]`) and the JSON file that is the job's input for it. `--input <name>` runs the job on that capture. A path outside `examples/<demo>/fixtures/` is refused; on fakes a bare name that is not a capture (and not a file) is refused with the list of captures; `--live` reads the real thing.
 - `boxes`: `{ kind: "local" | "docker", image?, runIn? }`. Docker is used only with `--live`: a no-key run uses a local box and starts no container. The provider is handed to the demo's tools as `context.boxes` (their second argument), with the crossings and transport lines of [Crossings](#crossings) built in. A tool's `context` also carries `live` (false on a no-key run: one set of tools reads live or replays a capture) and the run's `place` (`{ root, work }`), where it reads the run's evidence files and the job's files. `runIn: true` also runs the job's own disk tools in a box of it.
+
+### Boxes the demo's tools make
+
+A demo whose tools make boxes on providers of its own (a Daytona and a Modal one, say) passes them as `providers: ({ live, env, root }) => ({ name: provider, ... })`. The entry taps each and hands
+them to the tools as `context.providers`; every box a tool makes on one is on the recording:
+
+- live lines with source `transport`, each naming the box by its label (`box-1`, `box-2` by first appearance), never by the provider's id: `box.created` `{ box, provider, facts: { isolation, cpus, gpu }, role? }`
+  (`role` is the create call's `labels.role`), `box.exec` `{ box }` for each command the box took (never the command, its arguments or its environment), and `box.ended` `{ box }`;
+- a host `box.receipt` when the box ends, or when the process ends with it still open (`to` and `seconds` null). It names no rate (`usd_per_second`, `cost_usd`, `source` and `priced` null), so the run's cost
+  reads unknown, never 0.
+
+A box the tool made carries its label (`box.label`): a tool puts that in its result, so the result and the lines agree. The provider ids go only to `--box-ids` (`box-ids.internal.json` in the run's directory by
+default), where the next process of the run numbers on from them. `demo.json`'s `boxes` are named by label the same way. A demo with a place of its own cannot pass `providers` yet: the place's boxes and the
+tools' would need one labeller, so such a run is refused.
 
 ### The judge seam
 

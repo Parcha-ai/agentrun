@@ -34,9 +34,12 @@ test('two boxes on two providers of the demo\'s own: box.created, a box.exec per
   assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
   assert.deepEqual(answered(result.dir), { alpha: 'box-1', beta: 'box-2' }, 'the tool\'s answer names each box by its label');
   const lines = transport(recording).map((line) => [line.kind, line.data]);
-  assert.deepEqual(lines.filter(([kind]) => kind === 'box.created'), [
-    ['box.created', { box: 'box-1', provider: 'alpha', facts: { isolation: 'none', cpus: null, gpu: null }, role: 'worker' }],
-    ['box.created', { box: 'box-2', provider: 'beta', facts: { isolation: 'none', cpus: null, gpu: null } }],
+  // A local box's facts are this machine's (its CPU count), so the cpus are read from the line and checked to be a count.
+  const created = lines.filter(([kind]) => kind === 'box.created').map(([, data]) => data);
+  for (const data of created) assert.ok(Number.isInteger(data.facts.cpus) && data.facts.cpus > 0, `cpus is a count: ${JSON.stringify(data.facts)}`);
+  assert.deepEqual(created, [
+    { box: 'box-1', provider: 'alpha', facts: { isolation: 'none', cpus: created[0].facts.cpus, gpu: null }, role: 'worker' },
+    { box: 'box-2', provider: 'beta', facts: { isolation: 'none', cpus: created[1].facts.cpus, gpu: null } },
   ]);
   assert.deepEqual(lines.filter(([kind]) => kind === 'box.exec').map(([, data]) => data), [{ box: 'box-1' }, { box: 'box-1' }, { box: 'box-2' }], 'one line per command, and never the command');
   assert.deepEqual(lines.filter(([kind]) => kind === 'box.ended').map(([, data]) => data.box), ['box-1', 'box-2']);

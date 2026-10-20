@@ -16,11 +16,11 @@
 // The supervisor serves the fake browser's backend on loopback so its sessions outlive a killed child, and writes the host lines (`process.started`, `kill`
 // with its `kind`, `result`) from outside every process.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
@@ -30,7 +30,7 @@ import type { BoxProvider } from '@parcha/pi-transport';
 import type { VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import type { CodeModeOptions } from './code-mode.ts';
 import { pathsAt, placeAt, run, type Job, type RunOptions } from './assemble.ts';
-import { RUN_LABEL, tapBox } from './boxes.ts';
+import { boxLedger, RUN_LABEL, tapBox, type Boxes } from './boxes.ts';
 import type { Recorder, Redact } from './record.ts';
 import { priceJudge } from './judge.ts';
 import { askToBeKilled, aroundOwnFiling, crossings, tapFakes, tapHost, tapLive, type Cross, type Crossing, type EffectWindow } from './crossings.ts';
@@ -82,6 +82,12 @@ export type DemoOptions = {
   layout?: 'v3' | 'v4';
   /** Keep the run's directory when neither `--dir` nor `--record` is given, and say where it is (`run directory: <path>`): a demo whose result is files there (the hero's `out/snapshot.html`) needs them to outlive the command. */
   keepRun?: boolean;
+  /** The providers the demo's tools make their own boxes on (a Daytona and a Modal one, say), by name: the entry taps each and hands them to the tools as `context.providers`, so every box a tool
+   *  makes is on the recording by its label (`box.created`, a `box.exec` per command, `box.ended`) with a receipt, and never by the provider's id. Called once in each process of the run. A demo
+   *  with a place of its own cannot have them yet: the place's boxes and these would need one labeller, so the run is refused. */
+  providers?: (context: { live: boolean; env: NodeJS.ProcessEnv; root: string }) => Record<string, Boxes> | Promise<Record<string, Boxes>>;
+  /** Where the provider ids of the run's boxes go, by label (`--box-ids` says the same): a file outside the recording, refused inside it. Default `box-ids.internal.json` in the run's directory. */
+  boxIds?: string;
 };
 
 export type DemoResult = {
@@ -109,7 +115,7 @@ export type DemoResult = {
   unlanded: string[];
 };
 
-const FLAGS = { child: { type: 'boolean' }, live: { type: 'boolean' }, kill: { type: 'boolean' }, debug: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, 'local-chrome': { type: 'boolean' }, 'fetch-sources': { type: 'boolean' }, cache: { type: 'string' }, dir: { type: 'string' }, json: { type: 'boolean' }, provider: { type: 'string' }, model: { type: 'string' }, 'eyes-model': { type: 'string' }, 'see-also': { type: 'string', multiple: true }, 'operator-kill': { type: 'string' } } as const;
+const FLAGS = { child: { type: 'boolean' }, 'box-ids': { type: 'string' }, live: { type: 'boolean' }, kill: { type: 'boolean' }, debug: { type: 'boolean' }, record: { type: 'string' }, input: { type: 'string' }, 'max-usd': { type: 'string' }, 'local-chrome': { type: 'boolean' }, 'fetch-sources': { type: 'boolean' }, cache: { type: 'string' }, dir: { type: 'string' }, json: { type: 'boolean' }, provider: { type: 'string' }, model: { type: 'string' }, 'eyes-model': { type: 'string' }, 'see-also': { type: 'string', multiple: true }, 'operator-kill': { type: 'string' } } as const;
 /** The repository a demo lives in: `options.root`, else the nearest folder above the demo's own file that holds a
  *  `package.json` or a `.git`. Never this package's own location, which is inside `node_modules` once installed. */
 function rootOf(options: { root?: string; self: string }): string {
@@ -221,7 +227,7 @@ async function inBox(provider: BoxProvider, kind: 'local' | 'docker', place: { i
 }
 
 /** What one process of the run is made of, before it opens the store: the place, the host (the demo's, the live parts merged, the crossings and the judge caps on it), the job with its input, and the run's options. `made` is the demo's result hook, run on the delivered result. */
-export type Prepared = { models: Record<string, string> | undefined; place: RunPlace; host: Host; job: Job; runOptions: RunOptions; recorder: Recorder | undefined; /** Takes every secret the process has seen out of a text (the sign-in's earlier tokens too): what the process prints for the supervisor passes through it. Absent when the recording redacts nothing. */ redact: Redact | undefined; /** Starts what writes under the run's directory: the recorder, the fetched sources, the box. Awaited once the claim is open (before `beforeResume`); `child()` has no claim to wait for and calls it at once. */ open(): Promise<void>; made(result: Awaited<ReturnType<typeof run>>): Promise<{ json: unknown; title: string } | undefined>; done(): Promise<void> };
+export type Prepared = { models: Record<string, string> | undefined; /** Writes the receipt of every box of the demo's providers still open: called before the recorder is detached. */ boxesDone(): void; place: RunPlace; host: Host; job: Job; runOptions: RunOptions; recorder: Recorder | undefined; /** Takes every secret the process has seen out of a text (the sign-in's earlier tokens too): what the process prints for the supervisor passes through it. Absent when the recording redacts nothing. */ redact: Redact | undefined; /** Starts what writes under the run's directory: the recorder, the fetched sources, the box. Awaited once the claim is open (before `beforeResume`); `child()` has no claim to wait for and calls it at once. */ open(): Promise<void>; made(result: Awaited<ReturnType<typeof run>>): Promise<{ json: unknown; title: string } | undefined>; done(): Promise<void> };
 
 /** The outcome line a process reports on its way out: how the run ended, the record it delivered, what the demo's result hook made of it, and the hash of its store. */
 export function outcomeOf(result: Awaited<ReturnType<typeof run>>, storeSha256: string | undefined, made?: { json: unknown; title: string }, models?: Record<string, string>) {
@@ -249,13 +255,19 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   // `pi-durable-disk run --app` opens the run's tools on the claim's own environment and cannot take another: a job that must run in a box is refused there, not run outside it.
   if (at && boxSpec?.runIn) throw new Error('boxes.runIn is not supported under pi-durable-disk run --app: the app opens its tools on the claim\'s own environment, not in a box. Run the demo through its own command, or drop runIn.');
   const provider = await boxProvider(boxSpec, place);
-  const boxes = provider ? (tapBox(provider, { cross, window, ...(env.RUN_LABEL ? { runLabel: env.RUN_LABEL } : {}), ...(recorder ? { recorder } : {}) }) as BoxProvider) : undefined;
+  // One labeller for every box this process's tools make (box-N), its ids in a file outside the recording that the next process numbers on from.
+  const ledger = boxLedger({ file: env.BOX_IDS || join(place.root, 'box-ids.internal.json'), ...(recorder ? { recorder } : {}) });
+  const tapping = { cross, window, ledger, ...(env.RUN_LABEL ? { runLabel: env.RUN_LABEL } : {}), ...(recorder ? { recorder } : {}) };
+  const boxes = provider ? (tapBox(provider, tapping) as BoxProvider) : undefined;
+  // The demo's own providers, each tapped: a box a tool makes on one is on the recording by its label, with a receipt.
+  const own = options.providers ? await options.providers({ live, env, root: place.root }) : undefined;
+  const providers = own ? Object.fromEntries(Object.entries(own).map(([name, made]) => [name, tapBox(made, { ...tapping, receipts: true })])) : undefined;
   // Live tools get the same crossings the fakes' do (a kill before or after a dispatch); the ones a demo declares `local: "fakes"` fall back to the fakes' own, tapped the same way.
   const tapped = live && parts.tools ? tapFakes({ ...options.fakes, tools: parts.tools }, cross) : undefined;
   const fakesTapped = live && parts.tools ? tapFakes(options.fakes, cross) : undefined;
   const declaredFakes = new Set((options.spec.tools ?? []).filter((entry) => entry.local === 'fakes').map((entry) => entry.name));
   const local = localHost(place, live ? (fakesTapped ?? options.fakes) : tapFakes(options.fakes, cross), {
-    ...(tapped ? { liveTools: tapped.tools, fakesDeclared: declaredFakes } : {}), browser: browserKind === 'none' ? noBrowser() : fakeBrowser(env.BACKEND!), live, deferLogs: true, ...(recorder ? { recorder } : {}), ...(boxes ? { boxes } : {}) });
+    ...(tapped ? { liveTools: tapped.tools, fakesDeclared: declaredFakes } : {}), browser: browserKind === 'none' ? noBrowser() : fakeBrowser(env.BACKEND!), live, deferLogs: true, ...(recorder ? { recorder } : {}), ...(boxes ? { boxes } : {}), ...(providers ? { providers } : {}) });
   // The live parts are merged into the host member by member FIRST, then the platform wraps the final host: the crossings (so a live `status` or `tools` still has them) and the judge seam's
   // price, which a live judge gets too.
   composeHost(local.host, parts.host, cross, window, live, fakesTapped !== undefined);
@@ -306,7 +318,7 @@ export async function prepareChild(options: DemoOptions, env: NodeJS.ProcessEnv,
   };
   const runOptions: RunOptions = { codeImages: shown.note, ...(browserKind === 'none' ? { browser: false } : {}), ...(boxes && boxSpec?.runIn ? { env: () => box!.env() } : {}), ...(options.spec.sites ? { sites: options.spec.sites } : {}), ...(options.codeMode ?? options.spec.codeMode ? { codeMode: options.codeMode ?? (options.spec.codeMode as CodeModeOptions | boolean) } : {}), vision, ...(options.layout ? { layout: options.layout } : {}) };
   const made = async (result: Awaited<ReturnType<typeof run>>) => (result.status === 'complete' && options.result ? options.result(result.output, { dir: place.root, keep: (bytes, extension) => (recorder ? recorder.blob(bytes, extension) : createHash('sha256').update(bytes).digest('hex')) }) : undefined);
-  return { models: parts.models, place, host: local.host, job: { ...options.job, input }, runOptions, recorder, redact, open, made, done: async () => { await box?.destroy(); } };
+  return { models: parts.models, boxesDone: () => ledger.finish(), place, host: local.host, job: { ...options.job, input }, runOptions, recorder, redact, open, made, done: async () => { await box?.destroy(); } };
 }
 
 const storeShaOf = (place: RunPlace) => {
@@ -324,6 +336,7 @@ async function child(options: DemoOptions) {
     await prepared.open();
     const result = await run(prepared.place, prepared.host, prepared.job, prepared.runOptions);
     const made = await prepared.made(result);
+    prepared.boxesDone();
     await prepared.recorder?.detach();
     // What the process tells the supervisor passes through the process's own redaction: it has seen every token the sign-in held over the run, which the supervisor's own list may not.
     const line = JSON.stringify({ outcome: outcomeOf(result, storeShaOf(prepared.place), made, prepared.models) });
@@ -375,6 +388,7 @@ export async function destroyBoxes(spec: DemoSpec, runLabel: string, root: strin
 async function supervise(options: DemoOptions, values: ReturnType<typeof parseArgs<{ options: typeof FLAGS }>>['values']): Promise<DemoResult> {
   const { spec, job } = options;
   const live = values.live === true;
+  if (options.providers && options.place) throw new Error(`${spec.name} has a place of its own and tool-made boxes (providers): their boxes would need one labeller, which they cannot share yet, so the run is refused rather than give two boxes one label`);
   if (live && !options.live) throw new Error(`--live: ${spec.name} supplies no live parts (no real models or services), so it runs on fakes only.`);
   // `browser: false` in demo.json: no browser is created, so no key or Chrome is asked for.
   const browser = spec.browser === false ? 'none' as const : chooseBrowser({ live, env: process.env, localChrome: values['local-chrome'] === true });
@@ -404,6 +418,14 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   const dir = values.dir ?? join(scratch, 'run');
   const recordDir = values.record ?? join(scratch, 'recording');
   mkdirSync(recordDir, { recursive: true });
+  // The provider ids of the run's boxes go to a file outside the recording, never inside it (a link that resolves into it included).
+  const boxIdsGiven = values['box-ids'] ?? options.boxIds;
+  const boxIds = boxIdsGiven === undefined ? undefined : resolve(boxIdsGiven);
+  if (boxIds !== undefined) {
+    const real = (path: string): string => { try { return realpathSync(path); } catch { return dirname(path) === path ? path : join(real(dirname(path)), basename(path)); } };
+    const from = relative(real(recordDir), real(boxIds));
+    if (from === '' || (!from.startsWith('..') && !isAbsolute(from))) throw new Error(`--box-ids ${boxIdsGiven} is inside the recording (${recordDir}): the provider ids of a run's boxes never go in a recording; name a file outside it`);
+  }
   // The fake browser's backend outlives a killed process: it is served here, and each child reaches it by URL.
   const backend = new FakeBackend({ start: options.fakes.start, pages: options.fakes.pages });
   options.fakes.backend?.(backend);
@@ -434,7 +456,7 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   }
   // A label no other run shares, on every box this run makes: cleanup finds these and no others.
   const runLabel = randomUUID();
-  const base: Record<string, string> = { ...(values.record ? { AGENTRUN_HOME: dirname(signInFile(process.env)) } : {}), DEMO_ENTRY: options.self, DEMO_NAME: spec.name, RUN_LABEL: runLabel, HOME: scratch, TMPDIR: scratch, DIR: dir, RECORD_DIR: recordDir, BACKEND: served.url, BROWSER: browser, ...(live ? { LIVE: '1' } : {}), ...(Object.keys(models).length ? { MODELS: JSON.stringify(models) } : {}), ...(values['fetch-sources'] ? { FETCH_SOURCES: '1' } : {}), CACHE_DIR: values.cache ?? join(tmpdir(), 'agentrun-sources'), ...(input ? { INPUT: JSON.stringify(input) } : {}) };
+  const base: Record<string, string> = { ...(values.record ? { AGENTRUN_HOME: dirname(signInFile(process.env)) } : {}), DEMO_ENTRY: options.self, DEMO_NAME: spec.name, RUN_LABEL: runLabel, ...(boxIds !== undefined ? { BOX_IDS: boxIds } : {}), HOME: scratch, TMPDIR: scratch, DIR: dir, RECORD_DIR: recordDir, BACKEND: served.url, BROWSER: browser, ...(live ? { LIVE: '1' } : {}), ...(Object.keys(models).length ? { MODELS: JSON.stringify(models) } : {}), ...(values['fetch-sources'] ? { FETCH_SOURCES: '1' } : {}), CACHE_DIR: values.cache ?? join(tmpdir(), 'agentrun-sources'), ...(input ? { INPUT: JSON.stringify(input) } : {}) };
   // A live child gets exactly the environment names the demo declares in demo.json (every key, the members of a `oneOf` group included, and the programs' env), plus the process basics above; nothing undeclared reaches it.
   // A no-key run passes the demo's own `DEMO_*` settings (no secret) so a test can steer it.
   const declared = declaredEnv(spec);
