@@ -13,6 +13,7 @@ import { carryBack } from '@parcha/pi-durable-agent';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { learnExtension } from '../agent-learn/host.mjs';
+import { HOST_WORKFLOW, handoffText, hostRunName, runPromoted } from './dispatch.mjs';
 import { gatedAdmitter } from './gates.mjs';
 
 export { agentHomeFor, prepareRun, readAgentAt } from '../agent-learn/host.mjs';
@@ -235,7 +236,8 @@ async function promptOf(run) {
 const textOf = (content) => (typeof content === 'string' ? content : (content ?? []).map((part) => part.text ?? '').join(''));
 const json = (text) => { try { return JSON.parse(text); } catch { return undefined; } };
 
-/** The agentrun tool's run key is `agentrun:<conversation>:<workflow sha256>:<input hash>[:<generation>]`. */
+/** The agentrun tool's run key is `agentrun:<conversation>:<workflow sha256>:<input hash>[:<generation>]`; the host's
+ *  dispatch's is `host:<name>:<workflow sha256>:<input hash>`. */
 const digestOfRunKey = (key) => (typeof key === 'string' ? key.split(':')[2] : undefined);
 
 const CLASSIFIED_BY = new Set(['pick', 'workflow-agent', 'agent']);
@@ -275,16 +277,18 @@ export function readWorkflowRuns({ calls, results, lines }) {
   const tasks = lines.filter((line) => line.kind === 'agentrun.workflow' && line.data?.input?.key).map((line) => line.data);
   const started = tasks.map((task) => {
     const digest = digestOfRunKey(task.input.key);
-    const at = keyAt.get(task.input.key) ?? Infinity;
+    // A run the host started (dispatch.mjs) came before the agent said anything, and its key names its workflow.
+    const host = hostRunName(task.input.key);
+    const at = host ? -1 : keyAt.get(task.input.key) ?? Infinity;
     const outcome = outcomeOfTask(task);
     const output = outcome === 'complete' ? task.state.outcome.result.output ?? null : null;
-    return { at, name: nameOf(digest, at), revision: digest, outcome, output };
+    return { at, name: host ?? nameOf(digest, at), revision: digest, outcome, output, ...(host ? { classifiedBy: HOST_WORKFLOW } : {}) };
   });
   const digests = new Set(started.map((r) => r.revision));
   const before = refused.filter((r) => !digests.has(r.digest)).map((r) => ({ at: r.at, name: nameOf(r.digest, r.at), revision: r.digest, outcome: 'refused', output: null }));
   return [...started, ...before].sort((a, b) => a.at - b.at).map(({ at, ...run }) => ({
     ...run,
-    ...(CLASSIFIED_BY.has(run.output?.classifiedBy) ? { classifiedBy: run.output.classifiedBy } : {}),
+    ...(!run.classifiedBy && CLASSIFIED_BY.has(run.output?.classifiedBy) ? { classifiedBy: run.output.classifiedBy } : {}),
   }));
 }
 
@@ -310,9 +314,10 @@ export function usageTotals(usage) {
  * One run of the agent on one company, in the run's own store. `model` is `{ models, agent, node? }` (pi-ai models, the
  * root agent's model and thinking, and the one every workflow agent node runs on), `judge` the run's metered Jev (`meteredJudge`), `effects` the host tools (`classifyTools`),
  * `answer` the final answer's tool and `text` the job's text. `limitUsd` aborts the run once its model, Jev and tool spend
- * (each tool result's `costUsd`) pass it. Returns what the host measured; the run's store is closed when it returns.
+ * (each tool result's `costUsd`) pass it. `dispatch` (dispatch.mjs `promotedFor`) is a promoted workflow the host runs
+ * first; `measure.dispatch` says how it ended. Returns what the host measured; the run's store is closed when it returns.
  */
-export async function runJob({ run, job, model, judge, effects, answer, text = jobText, limitUsd, nodeThinking = 'low' }) {
+export async function runJob({ run, job, model, judge, effects, answer, text = jobText, limitUsd, nodeThinking = 'low', dispatch = null }) {
   const started = Date.now();
   const caseValues = caseValuesOf(job);
   const learn = learnExtension({ caseValues });
@@ -383,19 +388,29 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
         }).catch(() => {}).finally(() => { checking = false; });
       });
     }
-    const submission = await root.submit({ type: 'input', content: text(job) }, ctx);
-    const settled = await submission.wait(ctx);
-    const { messages } = await root.context(ctx);
-    const calls = messages.filter((m) => m.role === 'assistant').flatMap((m) => m.content.filter((c) => c.type === 'toolCall'));
-    const results = new Map(messages.filter((m) => m.role === 'toolResult').map((m) => [m.toolCallId, m]));
-    const answers = calls.filter((c) => c.name === 'answer' && !results.get(c.id)?.isError);
-    const toolCalls = {};
-    for (const call of calls) toolCalls[call.name] = (toolCalls[call.name] ?? 0) + 1;
-    measured = {
-      answer: answers.at(-1)?.arguments ?? null, answers: answers.length, toolCalls, status: settled?.status ?? null,
-      usage: usageTotals(await harness.usage(ctx)), finalText: textOf(messages.findLast((m) => m.role === 'assistant')?.content).trim(),
-      calls, results,
-    };
+    // A promoted workflow that answers the whole job runs first, by the host (dispatch.mjs): a complete run with a valid
+    // answer is the run's answer and the root agent is never asked; any other ending is handed to it with the job.
+    const hostRun = dispatch ? await runPromoted({ harness, workflows: workflowTool.workflow, dispatch, toolNames: tools.workflowTools.map((t) => t.name), answer, context: ctx }) : null;
+    const byHost = hostRun?.outcome === 'complete' && !hostRun.invalid;
+    const dispatched = hostRun ? { dispatch: { name: hostRun.name, revision: hostRun.revision, outcome: hostRun.outcome, ...(hostRun.invalid ? { invalid: hostRun.invalid } : {}) } } : {};
+    if (byHost) {
+      measured = { answer: hostRun.output, answers: 1, toolCalls: {}, status: HOST_WORKFLOW, usage: usageTotals(await harness.usage(ctx)), finalText: '', calls: [], results: new Map(), ...dispatched };
+    } else {
+      const prompt = hostRun ? `${text(job)}\n\n${handoffText(hostRun)}` : text(job);
+      const submission = await root.submit({ type: 'input', content: prompt }, ctx);
+      const settled = await submission.wait(ctx);
+      const { messages } = await root.context(ctx);
+      const calls = messages.filter((m) => m.role === 'assistant').flatMap((m) => m.content.filter((c) => c.type === 'toolCall'));
+      const results = new Map(messages.filter((m) => m.role === 'toolResult').map((m) => [m.toolCallId, m]));
+      const answers = calls.filter((c) => c.name === 'answer' && !results.get(c.id)?.isError);
+      const toolCalls = {};
+      for (const call of calls) toolCalls[call.name] = (toolCalls[call.name] ?? 0) + 1;
+      measured = {
+        answer: answers.at(-1)?.arguments ?? null, answers: answers.length, toolCalls, status: settled?.status ?? null,
+        usage: usageTotals(await harness.usage(ctx)), finalText: textOf(messages.findLast((m) => m.role === 'assistant')?.content).trim(),
+        calls, results, ...dispatched,
+      };
+    }
   } finally {
     stop();
     await harness.close(ctx);

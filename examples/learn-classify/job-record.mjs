@@ -42,6 +42,8 @@ function agentrunCalls(events) {
  *  A `load` result names a saved workflow: its name and saved digest. An `inspect` that sent a workflow replaced the draft: a draft, name null and the inspection sha256 from the run key (agentrun:<conv>:<sha256>:<input hash>[:n]),
  *  as is a run with neither. (The contract's words are "the last load before the run"; a load followed by an inspect of another workflow ran the inspected one, which is no saved revision.) */
 function identityOf(key, calls) {
+  // A run the host started (dispatch.mjs) names its workflow in its key: host:<name>:<sha256>:<input hash>.
+  if (key.startsWith('host:')) return { name: key.split(':')[1] || null, revision: key.split(':')[2] ?? null };
   const at = calls.findIndex((call) => call.action === 'run' && call.result?.run?.key === key);
   const held = at < 0 ? undefined : calls.slice(0, at).findLast((call) => call.result && ((call.action === 'load' && call.result.saved?.digest) || (call.action === 'inspect' && call.sends)));
   if (held?.action === 'load') return { name: held.result.saved.name ?? null, revision: held.result.saved.digest };
