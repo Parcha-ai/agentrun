@@ -10,10 +10,9 @@ import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { FORBIDDEN, MEDIA_FILE, PAGE_EXTENSIONS, credentialInFile } from '../../packages/harness/src/scan.ts';
+import { MEDIA_FILE, PAGE_EXTENSIONS, credentialInFile, machinePathIn } from '../../packages/harness/src/scan.ts';
 import { artifactBlobNames, blobNameProblem, validateRecording } from './validate.mjs';
 
-const MACHINE_PATH = FORBIDDEN.find(([name]) => name === 'machine path')[1];
 /** A blob's name: its SHA-256 and extension, and `.txt` after an artifact page's (the gallery publishes it as text). */
 const BLOB = /^([0-9a-f]{64})\.([A-Za-z0-9]+)(\.txt)?$/;
 const TEXT = /\.(?:html|js|css|json|jsonl|txt|md|csv|svg|xml|yaml|yml|log)$/i;
@@ -65,7 +64,7 @@ export function gateProblems(dist) {
     const found = (inBlobs ? !MEDIA_FILE.test(file) : TEXT.test(file)) ? credentialInFile(file, readFileSync(file, 'utf8')) : undefined;
     if (found) add(relative(dist, file), `contains a ${found}`);
     // A blob that is not text (an image, a clip, a document of a report) is not read as text: the machine-path pattern runs on its bytes.
-    else if (inBlobs && MEDIA_FILE.test(file) && MACHINE_PATH.test(readFileSync(file).toString('latin1'))) add(relative(dist, file), 'contains a machine path');
+    else if (inBlobs && MEDIA_FILE.test(file) && machinePathIn(readFileSync(file).toString('latin1'))) add(relative(dist, file), 'contains a machine path');
   }
   // The gallery holds the recordings beside the page, and no other, each entry exactly what its files give: the page
   // plays the gallery's copy, so what it plays is what was checked. Embedded in gallery.js, an entry is the recording's
