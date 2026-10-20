@@ -5,6 +5,7 @@
 // every address is shortened to its host. Everything comes from the model made of the recording's own lines (extractChat with `muse`).
 import type { ChatBrowser, ChatItem, ChatModel } from './chat-model.ts';
 import { reportEl, reportParagraphs } from './chat-report.ts';
+import { drawVisual, type Visual } from './chat-visual.ts';
 import type { Recording } from './format.ts';
 
 type ToolItem = Extract<ChatItem, { kind: 'tool' }>;
@@ -208,7 +209,7 @@ export const MUSE_AVATAR: string = 'muse-avatar.webp';
 const STATE = { done: 'Done', waiting: 'Waiting for you', working: 'is working' } as const;
 
 /** The whole page. `root` takes the Muse layout; nothing of the analyst chat view is drawn. */
-export function drawMuse(root: HTMLElement, model: ChatModel, recording: Recording): void {
+export function drawMuse(root: HTMLElement, model: ChatModel, recording: Recording, visual?: Visual): void {
   root.replaceChildren();
   root.classList.add('muse');
   const name = model.agent?.name ?? model.title;
@@ -277,6 +278,8 @@ export function drawMuse(root: HTMLElement, model: ChatModel, recording: Recordi
     const { text, chips } = savedAnswer(model.answer);
     if (text !== '') column.append(agentBubble(text, name, chips));
   }
+  // The visual report (opt-in, `&visual`): what the run's own browser showed, below the answer.
+  if (visual) column.append(drawVisual(visual, model, recording, root));
   const memory = model.artifact ? rememberCard(recording, model.artifact) : undefined;
   if (memory) column.append(memory.card);
   // The end of the conversation: a marker after the last card, so "Done" waits for the card's END, not its top.
