@@ -41,11 +41,16 @@ first and third process on this machine and the second on a Modal VM (`modalHost
 by name. It ends every VM, sandbox, token user and the run's directory by exact id and searches what it left for the keys' values.
 
 ```sh
-npm install --no-save modal@0.11.0          # the Modal SDK is not a dependency of this repository
-# Two Modal Secrets, made by you and deleted by you: one holding ANTHROPIC_API_KEY, one holding MODAL_TOKEN_ID and MODAL_TOKEN_SECRET.
-# The runner reads the names only (MOVES_SECRET_ANTHROPIC, MOVES_SECRET_MODAL; default moves-take-anthropic and moves-take-modal).
+npm install --no-save modal@0.11.0          # the Modal SDK is not a dependency of this repository; the runner stops with this line if it is missing
 MOVES_LIVE=1 MOVES_LIVE_MAX_USD=8 node examples/moves/live.ts <record-dir>
 ```
 
-Its environment holds `ARCHIL_API_KEY`, `PDA_LIVE_DISK`, `PDA_LIVE_REGION`, `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` and `ANTHROPIC_API_KEY`; the runner takes the last three out of it before anything starts. It ends with
-`ok: one run moved from this machine to a Modal VM and back; ...` and exit 0, or lists what went wrong and exits 1. The Modal Secrets are yours to delete.
+Its environment holds `ARCHIL_API_KEY`, `PDA_LIVE_DISK`, `PDA_LIVE_REGION`, `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` and `ANTHROPIC_API_KEY`; the runner takes the last three out of it before anything starts. How the VM gets
+those three is `MOVES_LIVE_SECRETS`:
+
+- `named` (the default): two Modal Secrets you made, one holding `ANTHROPIC_API_KEY` and one holding `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, referenced by name only (`MOVES_SECRET_ANTHROPIC`,
+  `MOVES_SECRET_MODAL`; default `moves-take-anthropic` and `moves-take-modal`). No value passes through the runner on the way. Deleting the Secrets is yours.
+- `inline`: the Modal SDK has no call that creates a named Secret, so the runner builds one lazy Secret object from the values it holds. Nothing is created on Modal, so nothing outlives the run.
+
+`MOVES_LIVE_MAX_USD` is the model's spend cap (`--max-usd`). Modal's VM and GPU sandboxes carry no price in the recording's meter, so they are outside it: the last line reports the sandboxes' GPU time and an
+estimate of its cost as a field of its own. The run ends with `ok: one run moved from this machine to a Modal VM and back; ...` and exit 0, or lists what went wrong and exits 1.

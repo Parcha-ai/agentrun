@@ -8,14 +8,14 @@ import { localBoxes } from "@parcha/pi-transport/box/local";
 import type { Box, BoxProvider } from "@parcha/pi-transport";
 
 /** What a box was asked to be and what became of it, one JSON line each. */
-export type BoxEvent = { ev: "create" | "destroy"; id?: string; spec?: Record<string, unknown> };
+export type BoxEvent = { ev: "create" | "destroy"; id?: string; spec?: Record<string, unknown>; at?: string };
 
 /** The part of a box spec the ledger keeps. */
 const asked = (spec: Record<string, unknown>) => ({ image: spec.image, gpu: spec.gpu, isolation: spec.isolation, labels: spec.labels, maxLifetimeMs: spec.maxLifetimeMs });
 
 /** `box`, with its creation (as asked for in `spec`) and its destruction written to `ledger`. */
 function watched(box: Box, spec: Record<string, unknown>, ledger: string): Box {
-  const note = (event: BoxEvent) => appendFileSync(ledger, `${JSON.stringify(event)}\n`);
+  const note = (event: BoxEvent) => appendFileSync(ledger, `${JSON.stringify({ ...event, at: new Date().toISOString() })}\n`);
   note({ ev: "create", id: box.id, spec: asked(spec) });
   return new Proxy(box, {
     get(target, prop) {

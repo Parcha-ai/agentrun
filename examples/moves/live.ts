@@ -6,11 +6,15 @@
 //   run under the credential wrappers: ARCHIL_API_KEY, PDA_LIVE_DISK and PDA_LIVE_REGION (the disk), MODAL_TOKEN_ID and MODAL_TOKEN_SECRET (the VM and the sweep), and
 //   ANTHROPIC_API_KEY (the processes on this machine). `npm i --no-save modal@0.11.0` first: the SDK is not a dependency of the repository.
 //
-// The VM never holds a key this runner read: it takes ANTHROPIC_API_KEY, MODAL_TOKEN_ID and MODAL_TOKEN_SECRET from two Modal Secrets, named here and made by whoever runs
-// this (MOVES_SECRET_ANTHROPIC, default `moves-take-anthropic`; MOVES_SECRET_MODAL, default `moves-take-modal`). The launcher copies them into the instance's environment
-// by name (`inheritEnv`), so no value passes through this process on the way. This process holds its three values for one thing: to look for them, afterwards, in everything
-// the run left here. MOVES_LIVE_MAX_USD caps the model spend (`--max-usd`, default 8). The run is capped at 60 minutes, and ends by sweeping, by exact id: every VM and
-// thread sandbox terminated and confirmed gone, the run's directory and mount tokens removed. The Modal Secrets are not this runner's: the caller deletes them.
+// How the VM gets its three values (ANTHROPIC_API_KEY, MODAL_TOKEN_ID, MODAL_TOKEN_SECRET), by MOVES_LIVE_SECRETS:
+//   named (default): two Modal Secrets made by whoever runs this, referenced here by name only (MOVES_SECRET_ANTHROPIC, default `moves-take-anthropic`; MOVES_SECRET_MODAL, default
+//     `moves-take-modal`). The launcher copies them into the instance's environment by name (`inheritEnv`), so no value passes through this process. The caller deletes the Secrets.
+//   inline: the Modal SDK has no call that creates a named Secret, so this process builds one lazy Secret object from the three values it holds (`secrets.fromObject`). Nothing is
+//     created server side, so nothing outlives the run and there is nothing to delete; the values travel in the exec requests that start the VM's commands, over the SDK's own connection.
+// Either way the VM's instance takes the values from its environment by name, and this process keeps its three values for one more thing: to look for them, afterwards, in everything the
+// run left here. MOVES_LIVE_MAX_USD caps the model spend (`--max-usd`, default 8): neither Modal's VM nor its GPU sandboxes carry a price in the meter, so the cap is model-only, and the
+// last line reports the sandboxes' GPU time and an estimate of its cost as a field of its own. The run is capped at 60 minutes, and ends by sweeping, by exact id: every VM and thread
+// sandbox terminated and confirmed gone, the run's directory and mount tokens removed.
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -69,10 +73,13 @@ for (const dir of PACKS) { const packed = packTarball(join(root, 'packages', dir
 const extra = ['@earendil-works/pi-durable', '@earendil-works/chord', '@earendil-works/pi-ai', '@earendil-works/pi-codemode'].map((name) => `${name}@${versionOf(name)}`).concat('modal@0.11.0');
 
 // ---- Modal: one client; every sandbox it creates is in the ledger as it returns -----------------------------------------------------------------------------------
-type ModalClientLike = { secrets: { fromName(name: string): Promise<unknown> }; images: { fromRegistry(tag: string): { dockerfileCommands(commands: string[]): unknown } } } & ModalSdk;
-const { ModalClient } = (await import('modal' as string)) as { ModalClient: new (options?: unknown) => ModalClientLike };
+type ModalClientLike = { secrets: { fromName(name: string): Promise<unknown>; fromObject(entries: Record<string, string>): Promise<unknown> }; images: { fromRegistry(tag: string): { dockerfileCommands(commands: string[]): unknown } } } & ModalSdk;
+const { ModalClient } = (await import('modal' as string).catch(() => { throw new Error('the Modal SDK is not installed: run `npm install --no-save modal@0.11.0` in this checkout and try again'); })) as { ModalClient: new (options?: unknown) => ModalClientLike };
 const modal = new ModalClient({ tokenId: held.modalId, tokenSecret: held.modalSecret });
-for (const name of secretNames) await modal.secrets.fromName(name).catch((error: unknown) => { throw new Error(`the Modal Secret ${name} cannot be read: ${String((error as Error).message).slice(0, 160)}`); });
+const inline = process.env.MOVES_LIVE_SECRETS === 'inline';
+if (process.env.MOVES_LIVE_SECRETS !== undefined && !inline && process.env.MOVES_LIVE_SECRETS !== 'named') throw new Error('MOVES_LIVE_SECRETS is `named` (default) or `inline`');
+if (!inline) for (const name of secretNames) await modal.secrets.fromName(name).catch((error: unknown) => { throw new Error(`the Modal Secret ${name} cannot be read: ${String((error as Error).message).slice(0, 160)}`); });
+const vmSecrets: (string | object)[] = inline ? [(await modal.secrets.fromObject({ [KEY_ENV]: held.anthropic, MODAL_TOKEN_ID: held.modalId, MODAL_TOKEN_SECRET: held.modalSecret })) as object] : secretNames;
 const vmIds = new Set<string>();
 const sdk: ModalSdk = {
   apps: modal.apps,
@@ -106,7 +113,7 @@ const vm = modalHost({
   runtime: 'vm', regions: ['us-east'], cpu: 4, memoryMiB: 8192,
   fleet: FLEET, namePrefix: 'pda-moves-', labels: { 'pda-moves': stamp }, mountRoot: VM.mountRoot, node: VM.node, packageDir: VM.packageDir, archil: VM.archil, user: String(uid), group: String(gid),
   runArgs: [`--app=${VM.packageDir}/node_modules/@parcha/agentrun-harness/dist/child-app.js`, ...HEARTBEAT],
-  secrets: secretNames, inheritEnv: [KEY_ENV, 'MODAL_TOKEN_ID', 'MODAL_TOKEN_SECRET'],
+  secrets: vmSecrets, inheritEnv: [KEY_ENV, 'MODAL_TOKEN_ID', 'MODAL_TOKEN_SECRET'],
   prepare: prepareVm({ uid, gid, disk: diskPack.bytes, packs, app: appTarball(dirname(fileURLToPath(import.meta.url))), extra }) as never,
   startTimeoutMs: 900_000, stopTimeoutMs: 30_000, ttlMinutes: 120,
 });
@@ -234,6 +241,9 @@ clearTimeout(cap);
 const problems: string[] = [];
 const check = (ok: boolean, message: string) => { if (!ok) problems.push(message); };
 let report: Record<string, unknown> = {};
+let gpuSeconds: number | null = null;
+/** Modal's list price of one H100 per second as this file assumes it (an estimate to size a run by, not an invoice). */
+const H100_USD_PER_SECOND = 0.001097;
 try {
   if (existsSync(join(record, 'events.jsonl'))) {
     const valid = spawnSync(process.execPath, [join(root, 'scripts/recording/validate.mjs'), record], { encoding: 'utf8' });
@@ -250,10 +260,13 @@ try {
   } else problems.push('threads.json was not brought home');
   const boxFile = join(runDir, 'boxes.jsonl');
   if (existsSync(boxFile)) {
-    const events = readFileSync(boxFile, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as { ev: string; id?: string; spec?: { gpu?: string } });
+    const events = readFileSync(boxFile, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line) as { ev: string; id?: string; at?: string; spec?: { gpu?: string } });
     const created = events.filter((e) => e.ev === 'create');
     check(new Set(created.map((e) => e.id)).size === THREADS && created.every((e) => e.spec?.gpu === 'H100!'), `the sandbox ledger does not show ${THREADS} distinct H100 sandboxes`);
     check(created.every((e) => events.some((d) => d.ev === 'destroy' && d.id === e.id)), 'a thread sandbox was not destroyed by the session');
+    // Modal's GPU sandboxes are not priced in the meter, so their time is reported on its own, with an estimate at the list price this file assumes.
+    const at = (e: { at?: string }) => Date.parse(String(e.at));
+    gpuSeconds = Math.round(created.reduce((sum, e) => { const gone = events.find((d) => d.ev === 'destroy' && d.id === e.id); return gone ? sum + Math.max(0, (at(gone) - at(e)) / 1000) : sum; }, 0));
   } else problems.push('the sandbox ledger was not brought home');
 } catch (error) {
   problems.push(`the checks could not run: ${String((error as Error).message).slice(0, 200)}`);
@@ -285,6 +298,6 @@ const why = [
   ...(((report.disk as { error?: string } | undefined)?.error) ? ["the run's directory could not be removed from the disk"] : []),
   ...(((report.tokenUsers as { found: number; removed: number } | undefined)?.found ?? 0) !== ((report.tokenUsers as { removed: number } | undefined)?.removed ?? 0) ? ['a mount token is still on the disk'] : []),
 ];
-console.log(JSON.stringify({ run: runId, minutes: Math.round((Date.now() - startedAt) / 6000) / 10, handoffs: outcome?.handoffs ?? null, kills: outcome?.kills ?? null, processes: outcome?.processes.map((p) => ({ exit: p.exit, status: p.outcome?.status ?? null })) ?? null, usd: outcome?.usd ?? null, secretHits, ok: why.length === 0, ...(why.length ? { why } : {}), report }));
+console.log(JSON.stringify({ run: runId, minutes: Math.round((Date.now() - startedAt) / 6000) / 10, handoffs: outcome?.handoffs ?? null, kills: outcome?.kills ?? null, processes: outcome?.processes.map((p) => ({ exit: p.exit, status: p.outcome?.status ?? null })) ?? null, usd: outcome?.usd ?? null, modalGpu: { sandboxes: THREADS, seconds: gpuSeconds, estimateUsd: gpuSeconds === null ? null : Math.round(gpuSeconds * H100_USD_PER_SECOND * 100) / 100, assumedUsdPerSecond: H100_USD_PER_SECOND }, secrets: inline ? 'inline: none created' : { names: secretNames, ownedByCaller: true }, secretHits, ok: why.length === 0, ...(why.length ? { why } : {}), report }));
 if (why.length === 0) console.log(`ok: one run moved from this machine to a Modal VM and back; ${THREADS} threads ran in ${THREADS} H100 sandboxes; everything swept, 0 key values in what the run left`);
 process.exit(why.length ? 1 : 0);
