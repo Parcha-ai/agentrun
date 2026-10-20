@@ -12,6 +12,7 @@ import { after, test } from 'node:test';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
 import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
+import { CITED, K, deliverInstead, writeRecording } from './vision-hand.ts';
 
 const here = new URL('.', import.meta.url).pathname;
 const IN_CHROME = { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}`, timeout: 120_000 };
@@ -115,5 +116,65 @@ test('in Chrome: with connect-src \'self\' an embedded recording\'s cited answer
   held.page = page;
   await page.once(`!!document.querySelector('main#chat-root > .app .thread') && !!document.querySelector('.kicker')`, 'true', 20_000, 'the right side drew the run\'s answer (its cited result was read under connect-src \'self\')');
   assert.equal(JSON.parse(String(await page.evaluate(`JSON.stringify(document.querySelector('.kicker').textContent)`))), 'The run\'s answer', 'the cited result was read under connect-src \'self\'');
+});
+
+// The answer's right side draws its evidence: a card per cited look with the picture big and the boxes its cites name drawn at once, each
+// labelled with the cite's own words; and the answer once, never again as a row under its own heading.
+test('in Chrome: the answer draws one evidence card per cited look, its boxes visible at once and labelled by the cites\' words, and says the answer once', IN_CHROME, async (t) => {
+  const out = mkdtempSync(join(tmpdir(), 'viewer-evidence-'));
+  const held: { page?: Awaited<ReturnType<typeof drivenPage>>; server?: ReturnType<typeof createServer> } = {};
+  t.after(() => closeAll(held.page ? [held.page] : [], () => {
+    held.server?.closeAllConnections();
+    held.server?.close();
+    rmSync(out, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }), { timeout: 20_000 });
+  mkdirSync(join(out, 'recordings'));
+  const answer = join(out, 'recordings', 'hand-answer');
+  writeRecording(answer);
+  deliverInstead(answer, CITED as never);
+  // A run whose one row says only what its heading says, citing one look twice (the same picture, two boxes, one with words and one without).
+  const once = join(out, 'recordings', 'hand-once');
+  writeRecording(once);
+  deliverInstead(once, { format: 'agentrun.cited/1', title: 'Number nine', rows: [{ label: 'Answer', value: 'Number nine', cites: [
+    { look: K.page2, fragment: '#page=2&xywh=percent:6,8,80,6', note: 'the alarm line' },
+    { look: K.page2, fragment: '#page=2&xywh=percent:10,30,20,10', note: 'box 10,30,20,10' }] }] } as never);
+  build(join(out, 'dist'), join(out, 'recordings'));
+  writeFileSync(join(out, 'dist', 'harness.html'), `<!doctype html><body style="margin:0">
+<iframe id="cited" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=hand-answer"></iframe>
+<iframe id="once" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=hand-once"></iframe>
+<script>const doc = (id) => document.getElementById(id).contentDocument;
+const ready = (id) => !!doc(id)?.querySelector('main#chat-root > .app .thread') && !!doc(id)?.querySelector('.kicker');
+const loaded = (id) => [...doc(id).querySelectorAll('.ev-card img')].every((image) => image.complete && image.naturalWidth > 0);</script></body>`);
+  const TYPES: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png', '.css': 'text/css' };
+  const server = createServer((request, response) => {
+    const file = join(out, 'dist', decodeURIComponent(new URL(request.url!, 'http://localhost').pathname));
+    if (!file.startsWith(join(out, 'dist')) || !existsSync(file) || !extname(file)) { response.writeHead(404).end(); return; }
+    response.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream' }).end(readFileSync(file));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  held.server = server;
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const page = await drivenPage(`${origin}/harness.html`, join(out, 'profile'), { signal: t.signal });
+  held.page = page;
+  const value = async <T>(expression: string) => JSON.parse(String(await page.evaluate(`JSON.stringify(${expression})`))) as T;
+  const until = (expression: string, what: string) => page.once(expression, 'true', 20_000, what);
+  for (const id of ['cited', 'once']) await until(`ready('${id}')`, `${id}: the answer drawn`);
+  await until(`loaded('once')`, 'the evidence picture loaded');
+  // The same look cited twice is ONE card with both boxes, the picture first, the box with the cite's words labelled by them and the other "cited here".
+  const card = await value<{ cards: number; first: string; boxes: string[]; shown: boolean; width: number; pane: number }>(`(() => { const cards = [...doc('once').querySelectorAll('.ev-card')];
+    const media = cards[0].querySelector('.media'); const picture = media.querySelector('img');
+    return { cards: cards.length, first: cards[0].firstElementChild.className, boxes: [...cards[0].querySelectorAll('.jbox span')].map((span) => span.textContent),
+      shown: [...cards[0].querySelectorAll('.jbox')].every((box) => box.checkVisibility() && box.getBoundingClientRect().width > 4), width: picture.getBoundingClientRect().width, pane: doc('once').querySelector('.report .pane').getBoundingClientRect().width }; })()`);
+  assert.equal(card.cards, 1, 'one look, one card');
+  assert.match(card.first, /\bmedia\b/, 'the picture comes first');
+  assert.deepEqual(card.boxes, ['the alarm line', 'cited here'], 'a cite\'s own words label its box; a note that only restates its box does not');
+  assert.equal(card.shown, true, 'the boxes are visible without a click');
+  assert.ok(card.width > card.pane * 0.9, `the picture is as wide as the pane (${card.width} of ${card.pane})`);
+  // The answer is said once: the heading, and no row repeating it under it.
+  assert.deepEqual(await value(`[doc('once').querySelectorAll('.arow .alabel').length, (doc('once').querySelector('.report').textContent.match(/Number nine/g) ?? []).length]`), [0, 1], 'once');
+  // A run citing several looks and files: a card per look and per picture, a cite of a PDF stays a chip, and every chip still opens its look.
+  const many = await value<{ cards: number; chips: number; pdfChip: boolean }>(`({ cards: doc('cited').querySelectorAll('.ev-card').length, chips: doc('cited').querySelectorAll('.report .cite').length, pdfChip: [...doc('cited').querySelectorAll('.report .cite')].some((chip) => chip.closest('.ev-card') === null) })`);
+  assert.ok(many.cards >= 2, `a card for each cited look or picture, got ${many.cards}`);
+  assert.equal(many.pdfChip, true, 'a cite that names no picture (the scans PDF) stays a chip');
 });
 
