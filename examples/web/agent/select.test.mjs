@@ -1,0 +1,111 @@
+// The host's prompt choice before a run: Jev's pass on the input, the lookup when it is unsure, and the generic prompt
+// when it stays unsure or anything fails. Offline: Jev and Wikipedia are fakes.
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { composePrompt, GENERIC, overlayOf, selectPrompt, wikipediaLookup } from './select.ts';
+
+const prompts = {
+  question: { id: 'kind', instructions: 'What kind of organisation is it?', criteria: { public: 'listed', nonprofit: 'charity', other: 'anything else' } },
+  variants: [
+    { role: 'base', label: 'base', text: 'Research it.' },
+    { role: 'overlay', label: 'public', text: 'Start at EDGAR.', when: { question: 'kind', option: 'public', threshold: 0.8 } },
+    { role: 'overlay', label: 'nonprofit', text: 'Start at the 990s.', when: { question: 'kind', option: 'nonprofit', threshold: 0.9 } },
+    { role: 'generic', label: 'generic', text: 'Start at its own site.' },
+  ],
+};
+
+const pass = (choice, p, confidence = p) => ({ choice, probabilities: { public: 0, nonprofit: 0, other: 0, [choice]: p }, confidence });
+
+/** A fake Jev that answers each call with the next pass, and keeps the states it was asked about. */
+function jev(...answers) {
+  const asked = [];
+  const judge = async (params) => {
+    asked.push(params);
+    const next = answers.shift();
+    if (next instanceof Error) throw next;
+    return { answers: { kind: { type: 'choice', ...next } }, model: 'jev-test', usage: null, cost_usd: null, request_sha256: 'x' };
+  };
+  return { judge, asked };
+}
+
+test('a sure first pass picks its overlay, and no lookup runs', async () => {
+  const { judge, asked } = jev(pass('public', 0.97));
+  let looked = 0;
+  const chosen = await selectPrompt({ input: 'Caterpillar Inc.', prompts, judge, lookup: async () => (looked++, null) });
+  assert.equal(chosen.variant, 'public');
+  assert.deepEqual(chosen.lookup, { used: false, source: null });
+  assert.equal(chosen.passes.length, 1);
+  assert.equal(looked, 0);
+  assert.deepEqual(asked[0].state, { input: 'Caterpillar Inc.' });
+  assert.deepEqual(Object.keys(asked[0].questions), ['kind']);
+  assert.equal(asked[0].questions.kind.type, 'choice');
+  assert.match(chosen.reason, /public at 97%/);
+});
+
+test('each overlay has its own threshold: the top option under it goes to the lookup', async () => {
+  assert.equal(overlayOf(prompts, pass('nonprofit', 0.85)), null, '0.85 is under nonprofit\'s 0.9');
+  assert.equal(overlayOf(prompts, pass('public', 0.85)).label, 'public', '0.85 meets public\'s 0.8');
+  assert.equal(overlayOf(prompts, pass('other', 0.99)), null, 'an option with no overlay never picks one');
+});
+
+test('unsure, then sure after the lookup: the overlay, with the lookup and both passes recorded', async () => {
+  const { judge, asked } = jev(pass('nonprofit', 0.53, 0.41), pass('nonprofit', 0.95));
+  const chosen = await selectPrompt({ input: 'Habitat', prompts, judge, lookup: async () => ({ source: 'https://en.wikipedia.org/wiki/Habitat_for_Humanity', text: 'A housing charity.' }) });
+  assert.equal(chosen.variant, 'nonprofit');
+  assert.deepEqual(chosen.lookup, { used: true, source: 'https://en.wikipedia.org/wiki/Habitat_for_Humanity' });
+  assert.deepEqual(chosen.passes.map((p) => [p.choice, p.probabilities.nonprofit, p.confidence]), [['nonprofit', 0.53, 0.41], ['nonprofit', 0.95, 0.95]]);
+  assert.deepEqual(asked[1].state, { input: 'Habitat', lookup: { source: 'https://en.wikipedia.org/wiki/Habitat_for_Humanity', text: 'A housing charity.' } });
+  assert.match(chosen.reason, /nonprofit at 53%, under 90%.*after the lookup, Jev: nonprofit at 95%/);
+});
+
+test('a sure "other" (no overlay) still gets its lookup, and stays generic when Jev stays there', async () => {
+  const { judge } = jev(pass('other', 0.96), pass('other', 0.9));
+  const chosen = await selectPrompt({ input: 'Cargill', prompts, judge, lookup: async () => ({ source: 'https://en.wikipedia.org/wiki/Cargill', text: 'A private company.' }) });
+  assert.equal(chosen.variant, GENERIC);
+  assert.equal(chosen.passes.length, 2);
+  assert.deepEqual(chosen.lookup, { used: true, source: 'https://en.wikipedia.org/wiki/Cargill' });
+  assert.match(chosen.reason, /other at 96% \(no prompt for it\).*so the generic prompt$/);
+});
+
+test('a lookup that finds nothing or fails, or a Jev that fails, gives the generic prompt and says why', async () => {
+  const none = await selectPrompt({ input: 'Zzq', prompts, judge: jev(pass('other', 0.5)).judge, lookup: async () => null });
+  assert.deepEqual([none.variant, none.lookup, none.passes.length], [GENERIC, { used: true, source: null }, 1]);
+  assert.match(none.reason, /the lookup found nothing; so the generic prompt$/);
+
+  const broken = await selectPrompt({ input: 'Zzq', prompts, judge: jev(pass('other', 0.5)).judge, lookup: async () => { throw new Error('Wikipedia answered 503'); } });
+  assert.equal(broken.variant, GENERIC);
+  assert.match(broken.reason, /the lookup failed \(Wikipedia answered 503\); so the generic prompt$/);
+
+  const down = await selectPrompt({ input: 'Zzq', prompts, judge: jev(new Error('connection refused')).judge, lookup: async () => assert.fail('no lookup when Jev is down') });
+  assert.deepEqual([down.variant, down.passes, down.lookup.used], [GENERIC, [], false]);
+  assert.match(down.reason, /Jev failed \(connection refused\)/);
+
+  const second = await selectPrompt({ input: 'Zzq', prompts, judge: jev(pass('other', 0.5), new Error('timeout')).judge, lookup: async () => ({ source: 'https://en.wikipedia.org/wiki/Zzq', text: 'x' }) });
+  assert.deepEqual([second.variant, second.passes.length, second.lookup.source], [GENERIC, 1, 'https://en.wikipedia.org/wiki/Zzq']);
+  assert.match(second.reason, /Jev failed after the lookup \(timeout\)/);
+});
+
+test('the run\'s guide is the base and then the chosen variant', () => {
+  assert.equal(composePrompt(prompts, 'public'), 'Research it.\n\nStart at EDGAR.');
+  assert.equal(composePrompt(prompts, GENERIC), 'Research it.\n\nStart at its own site.');
+  assert.throws(() => composePrompt(prompts, 'base'), /no variant base/);
+  assert.throws(() => composePrompt(prompts, 'ecommerce'), /no variant ecommerce/);
+});
+
+test('the Wikipedia lookup reads the top pages and the first one\'s summary, keyless', async () => {
+  const urls = [];
+  const fake = async (url, init) => {
+    urls.push([url, init.headers['user-agent']]);
+    if (url.includes('/search/page')) return Response.json({ pages: [{ key: 'Habitat_for_Humanity', title: 'Habitat for Humanity', description: 'Housing charity' }, { key: 'Habitat', title: 'Habitat', description: null }] });
+    return Response.json({ type: 'standard', title: 'Habitat for Humanity', extract: 'Habitat for Humanity International is a <b>non-profit</b> housing organization.', content_urls: { desktop: { page: 'https://en.wikipedia.org/wiki/Habitat_for_Humanity' } } });
+  };
+  const found = await wikipediaLookup({ fetch: fake })('Habitat & Co');
+  assert.equal(urls[0][0], 'https://en.wikipedia.org/w/rest.php/v1/search/page?q=Habitat%20%26%20Co&limit=3');
+  assert.equal(urls[1][0], 'https://en.wikipedia.org/api/rest_v1/page/summary/Habitat_for_Humanity');
+  assert.match(urls[0][1], /agentrun/, 'Wikipedia asks callers to name themselves');
+  assert.equal(found.source, 'https://en.wikipedia.org/wiki/Habitat_for_Humanity');
+  assert.equal(found.text, 'Wikipedia\'s top pages for "Habitat & Co":\n- Habitat for Humanity: Housing charity\n- Habitat\nThe first, Habitat for Humanity: Habitat for Humanity International is a non-profit housing organization.');
+
+  assert.equal(await wikipediaLookup({ fetch: async () => Response.json({ pages: [] }) })('Zzq'), null);
+  await assert.rejects(wikipediaLookup({ fetch: async () => new Response('', { status: 503 }) })('Zzq'), /Wikipedia answered 503/);
+});
