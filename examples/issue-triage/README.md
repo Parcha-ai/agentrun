@@ -6,7 +6,7 @@ An agent writes the workflow. Asked to triage a public repository's newest open 
 npm ci --ignore-scripts && npm run build && npm run demo:issue-triage
 ```
 
-It runs on scripted fakes: no key, no network, $0. **The twenty issues are synthetic, written for the scripted run: they are not a real repository's issues** (they borrow the Express repository's type-label vocabulary and nothing else), so no real person's text is in the recording. The live takes use a real public repository's issues; see below. The flags are the reference entry's (`--record <dir>`, `--dir`, `--json`; see `examples/reference/README.md`).
+It runs on scripted fakes: no key, no network, $0. **The twenty issues are synthetic, written for the scripted run: they are not a real repository's issues** (they borrow the Express repository's type-label vocabulary and nothing else), so no real person's text is in the recording. The live takes use a real public repository's issues; see below. The flags are the reference entry's (`--record <dir>`, `--dir`, `--json`; see `packages/harness/README.md`).
 
 | File | What |
 |---|---|

@@ -10,7 +10,7 @@ import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic';
 import { googleProvider } from '@earendil-works/pi-ai/providers/google';
 import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { createJevRunner } from '@parcha/agentrun-jev';
-import type { LiveParts } from '@parcha/agentrun-reference';
+import type { LiveParts } from '@parcha/agentrun-harness';
 import spec from './demo.json' with { type: 'json' };
 import { githubTools } from './github.ts';
 

@@ -14,7 +14,7 @@ import { compileTransform } from '@parcha/agentrun-dsl';
 import { withRecovery, workspaceFiles } from '@parcha/agentrun-dsl/recovery';
 import { createWorkflowTool, decisionRecovery, nodeRunner, taskScope } from '@parcha/agentrun-pi/durable';
 import { ArchilCodingTools, archilEnv, openClaimDir, openDurableRun, type Claim, type RunEnv, type RunRef } from '@parcha/pi-durable-disk';
-import { codeOf, cost, finishRecording, localHost, openRecorder, openSupervisor, packageCommitRecorder, placeAt, type RunPlace } from '@parcha/agentrun-reference';
+import { codeOf, cost, finishRecording, localHost, openRecorder, openSupervisor, packageCommitRecorder, placeAt, type RunPlace } from '@parcha/agentrun-harness';
 import { githubTools } from './github.ts';
 import { live } from './live.ts';
 

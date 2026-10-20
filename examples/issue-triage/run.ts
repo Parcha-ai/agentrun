@@ -1,6 +1,6 @@
 // npm run demo:issue-triage [-- --record <dir>] [-- --kill] [-- --dir <path>] [-- --json]: the issue-triage job on the reference entry, on fakes ($0, no key).
-// The flags are the entry's own (`demo()`); see examples/reference/README.md.
-import { demo } from '@parcha/agentrun-reference';
+// The flags are the entry's own (`demo()`); see packages/harness/README.md.
+import { demo } from '@parcha/agentrun-harness';
 import demoSpec from './demo.json' with { type: 'json' };
 import { fakes, job } from './job.ts';
 import { live } from './live.ts';

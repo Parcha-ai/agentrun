@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import type { Message, ToolCall, ToolResultMessage } from '@earendil-works/pi-ai';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import type { Workflow } from '@parcha/agentrun-dsl';
-import type { Fakes, Job } from '@parcha/agentrun-reference';
+import type { Fakes, Job } from '@parcha/agentrun-harness';
 
 const fixtures = JSON.parse(readFileSync(new URL('./fixtures.json', import.meta.url), 'utf8')) as {
   issues: Array<{ number: number; title: string; body: string; labels: string[]; url: string; prs: Array<{ number: number; title: string; state: string; paths: string[] }>; paths: string[] }>;
