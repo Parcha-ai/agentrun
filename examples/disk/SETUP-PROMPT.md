@@ -39,7 +39,7 @@ Each process of the run is a Daytona sandbox, and the run's directory is on an A
 
 The Gemini key does not go into a sandbox. **You run this yourself:** in the Daytona dashboard, Secrets, create a
 secret that holds your Gemini key and allows only the host `generativelanguage.googleapis.com`. Pass its name to the
-runner, which attaches it to each sandbox as `GEMINI_API_KEY`: the sandbox sees Daytona's placeholder, and Daytona puts
+runner in `DISK_LIVE_SECRET` (the name, never the key), which attaches it to each sandbox as `GEMINI_API_KEY`: the sandbox sees Daytona's placeholder, and Daytona puts
 the key into the request when the agent calls Google. Delete the secret when you are done.
 
 ### Programs

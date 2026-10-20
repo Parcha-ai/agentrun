@@ -46,6 +46,13 @@
       "where": "the Daytona dashboard: Keys, for an organisation on Tier 3 or 4 (the archil client needs full egress)",
       "required": true,
       "for": "kill"
+    },
+    {
+      "env": "DISK_LIVE_SECRET",
+      "why": "live.ts only: the NAME of the Daytona secret that holds the Gemini key (never the key), attached to each sandbox as GEMINI_API_KEY; without it the lead is scripted",
+      "where": "the Daytona dashboard: Secrets, a secret allowed for generativelanguage.googleapis.com only",
+      "required": false,
+      "for": "live"
     }
   ],
   "programs": [

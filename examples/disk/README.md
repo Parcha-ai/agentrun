@@ -59,6 +59,7 @@ On fakes: `node` 22.19 or later, and nothing else. `SETUP-PROMPT.md` does the re
 | `PDA_LIVE_DISK` | The disk the run lives on (`dsk-...`) | live.ts |
 | `PDA_LIVE_REGION` | The disk's region, `aws-us-east-1` when unset (optional) | live.ts |
 | `DAYTONA_API_KEY` | The sandboxes each process runs in | live.ts |
+| `DISK_LIVE_SECRET` | The name of the Daytona secret that holds the Gemini key (optional: without it the lead is scripted) | live.ts |
 | `node` | Runs the demo | all |
 | `archil` | The Archil client, 0.8.42 or later (Linux; in the sandbox) | live.ts |
 | `fusermount` | FUSE, from `fuse3` (Linux; in the sandbox) | live.ts |
