@@ -599,6 +599,17 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
     run.more.textContent = open ? 'Show less' : `+ ${run.extras.length} more`;
   };
   const agentMessage = (className = 'msg') => reportEl('div', { class: className }, reportEl('div', { class: 'who' }, threadIcon('brand'), 'Agent'));
+  const threadById = new Map(model.threads.map((each) => [each.id, each]));
+  // A conversation other than the first, folded under its label and its opening line.
+  const fold = (each: ChatThread): HTMLElement => {
+    const first = each.items.find((item) => item.kind === 'user' || item.kind === 'host' || item.kind === 'tool');
+    const preview = first?.kind === 'tool' ? first.title : first?.text ?? '';
+    const node = reportEl('details', { class: 'think fold', 'data-item': each.id },
+      reportEl('summary', {}, reportEl('span', { class: 'lab', text: each.label }), reportEl('em', { text: preview.split('\n')[0] ?? '' })),
+      reportEl('div', { class: 'fold-body' }, ...drawThread(each)));
+    nodes.set(each.id, node);
+    return node;
+  };
   const drawThread = (thread: ChatThread): HTMLElement[] => {
     const out: HTMLElement[] = [];
     let agent: HTMLElement | undefined;
@@ -642,7 +653,7 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
         // A message the host added sits where it was recorded, inside the agent's turn, as the host's.
         endPlumbing();
         steps = undefined;
-        const node = reportEl('div', { class: 'host-note', 'data-item': item.id }, reportEl('span', { class: 'host-who', text: 'Host' }), reportEl('span', { class: 'host-text', text: item.text }));
+        const node = reportEl('div', { class: 'host-note', 'data-item': item.id }, reportEl('span', { class: 'host-who', text: item.by ?? 'Host' }), reportEl('span', { class: 'host-text', text: item.text }));
         nodes.set(item.id, node);
         if (agent) agent.append(node); else out.push(node);
         continue;
@@ -663,6 +674,8 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
           continue;
         }
         if (plumbing || item.looks.length > 0 || (run && run.tool !== item.tool)) endPlumbing();
+        // The conversations the call made, under its card (they fold with it).
+        if (item.forks?.length) card.append(reportEl('div', { class: 'forks' }, ...item.forks.flatMap((id) => { const made = threadById.get(id); return made ? [fold(made)] : []; })));
         steps.append(card);
         if (item.looks.length === 0) {
           run ??= { tool: item.tool, cards: [] };
@@ -681,20 +694,14 @@ export function drawChat(root: HTMLElement, model: ChatModel, recording: Recordi
   };
   const input = model.input && threadInput(model.input);
   const thread = reportEl('div', { class: 'thread' }, input);
-  model.threads.forEach((each, index) => {
+  model.threads.filter((each) => !each.under).forEach((each, index) => {
     if (index === 0) {
       const drawn = drawThread(each);
       if (drawn[0]) nodes.set(each.id, drawn[0]);
       thread.append(...drawn);
       return;
     }
-    const first = each.items.find((item) => item.kind === 'user' || item.kind === 'tool');
-    const preview = first?.kind === 'user' ? first.text : first?.kind === 'tool' ? first.title : '';
-    const fold = reportEl('details', { class: 'think fold', 'data-item': each.id },
-      reportEl('summary', {}, reportEl('span', { class: 'lab', text: each.label }), reportEl('em', { text: preview.split('\n')[0] ?? '' })),
-      reportEl('div', { class: 'fold-body' }, ...drawThread(each)));
-    nodes.set(each.id, fold);
-    thread.append(fold);
+    thread.append(fold(each));
   });
   if (model.threads.length === 0) thread.append(reportEl('p', { class: 'none', text: 'This run recorded no conversation.' }));
   // The card that opens the report closes the chat, after every conversation.

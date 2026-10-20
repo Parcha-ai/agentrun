@@ -1,0 +1,23 @@
+{"channel":"durable","source":"host","kind":"reference.label","conv":1,"t":100,"data":{"doc":"reference.label","value":{"label":"threads"},"version":1}}
+{"channel":"durable","source":"pi","kind":"pi.conversation","conv":1,"t":110,"data":{"id":1}}
+{"channel":"durable","source":"pi","kind":"pi.user","conv":1,"t":200,"data":{"model":[{"role":"user","content":"Train a tiny regression three ways and report the best loss."}],"conversationId":1,"id":1}}
+{"channel":"durable","source":"pi","kind":"pi.assistant","conv":1,"t":300,"data":{"model":[{"role":"assistant","content":[{"type":"toolCall","id":"fork-1","name":"fork_threads","arguments":{"job":"Train a tiny regression and report its final loss."}}]}],"conversationId":1,"id":2}}
+{"channel":"durable","source":"pi","kind":"pi.tool","conv":1,"t":310,"data":{"id":3,"conversationId":1,"kind":"pi.tool","version":1,"input":{"assistant":2,"callId":"fork-1"},"background":false,"abortRequested":false,"state":{"status":"running","checkpoint":{"phase":"call"}}}}
+{"channel":"live","source":"pi","kind":"tool_execution_start","conv":1,"t":320,"data":{"type":"tool_execution_start","toolCallId":"fork-1","toolName":"fork_threads"}}
+{"channel":"durable","source":"pi","kind":"pi.conversation","conv":10,"t":401,"data":{"id":10,"parent":{"conversationId":1,"at":2},"owner":{"conversationId":1,"taskId":3}}}
+{"channel":"durable","source":"host","kind":"reference.label","conv":10,"t":411,"data":{"doc":"reference.label","value":{"label":"threads"},"version":1}}
+{"channel":"durable","source":"pi","kind":"pi.user","conv":10,"t":501,"data":{"model":[{"role":"user","content":"Thread 1 of 3. Train a tiny regression and report its final loss."}],"conversationId":10,"id":1}}
+{"channel":"durable","source":"pi","kind":"pi.conversation","conv":11,"t":402,"data":{"id":11,"parent":{"conversationId":1,"at":2},"owner":{"conversationId":1,"taskId":3}}}
+{"channel":"durable","source":"host","kind":"reference.label","conv":11,"t":412,"data":{"doc":"reference.label","value":{"label":"threads"},"version":1}}
+{"channel":"durable","source":"pi","kind":"pi.user","conv":11,"t":502,"data":{"model":[{"role":"user","content":"Thread 2 of 3. Train a tiny regression and report its final loss."}],"conversationId":11,"id":1}}
+{"channel":"durable","source":"pi","kind":"pi.conversation","conv":12,"t":403,"data":{"id":12,"parent":{"conversationId":1,"at":2},"owner":{"conversationId":1,"taskId":3}}}
+{"channel":"durable","source":"host","kind":"reference.label","conv":12,"t":413,"data":{"doc":"reference.label","value":{"label":"warm start"},"version":1}}
+{"channel":"durable","source":"pi","kind":"pi.user","conv":12,"t":503,"data":{"model":[{"role":"user","content":"Thread 3 of 3. Train a tiny regression and report its final loss."}],"conversationId":12,"id":1}}
+{"channel":"durable","source":"pi","kind":"pi.user","conv":11,"t":560,"data":{"model":[{"role":"user","content":"Use a smaller learning rate."}],"conversationId":11,"id":2}}
+{"channel":"durable","source":"pi","kind":"pi.submission","conv":11,"t":561,"data":{"id":"s-1","conversationId":11,"type":"input","requestId":"steer-1","status":"placed","entry":2}}
+{"channel":"durable","source":"pi","kind":"pi.assistant","conv":10,"t":601,"data":{"model":[{"role":"assistant","content":[{"type":"text","text":"Thread 1 done: final loss 0.12."}]}],"conversationId":10,"id":3}}
+{"channel":"durable","source":"pi","kind":"pi.assistant","conv":11,"t":602,"data":{"model":[{"role":"assistant","content":[{"type":"text","text":"Thread 2 done: final loss 0.22."}]}],"conversationId":11,"id":3}}
+{"channel":"durable","source":"pi","kind":"pi.assistant","conv":12,"t":603,"data":{"model":[{"role":"assistant","content":[{"type":"text","text":"Thread 3 done: final loss 0.32."}]}],"conversationId":12,"id":3}}
+{"channel":"live","source":"pi","kind":"tool_execution_end","conv":1,"t":700,"data":{"type":"tool_execution_end","toolCallId":"fork-1","toolName":"fork_threads"}}
+{"channel":"durable","source":"pi","kind":"pi.tool-result","conv":1,"t":710,"data":{"model":[{"role":"toolResult","toolCallId":"fork-1","toolName":"fork_threads","content":[{"type":"text","text":"3 threads finished."}],"isError":false}],"conversationId":1,"id":4}}
+{"channel":"durable","source":"pi","kind":"pi.assistant","conv":1,"t":800,"data":{"model":[{"role":"assistant","content":[{"type":"text","text":"All three threads finished; the best final loss is 0.12."}]}],"conversationId":1,"id":5}}
