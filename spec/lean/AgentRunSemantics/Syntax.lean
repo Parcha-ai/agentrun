@@ -81,8 +81,9 @@ inductive Node where
   /-- A prose artifact (`type` "markdown" or "report") is sugar for `report`. -/
   | artifact (label : String) (type : String) (path : Option String)
       (requires : List Path) (state : Option Tmpl)
+  /-- `onItemFailure` and `failedAs` as written; `Node.collectKey` reads them. -/
   | map (label : String) (itemsPath : Path) (body : Node) (as : String)
-      (resultPath : Option Path)
+      (resultPath : Option Path) (onItemFailure : Option String) (failedAs : Option String)
   | parallel (label : String) (branches : List Node)
   | loop (label : String) (body : Node) («until» : Pred) (maxIters : Nat)
   | escalate (label : String) (when : Pred) (kind stage summary : String)
@@ -116,7 +117,7 @@ def artifactIsProse (type : String) : Bool := type == "markdown" || type == "rep
 def Node.asField : Node → Option String
   | .code _ as => as
   | .gen _ _ _ as _ _ _ => as
-  | .map _ _ _ as _ => some as
+  | .map _ _ _ as _ _ _ => some as
   | .judge _ _ _ as _ => some as
   | .pick _ _ _ _ _ as _ => some as
   | .sift _ _ _ _ _ _ as _ => some as
@@ -124,5 +125,11 @@ def Node.asField : Node → Option String
   | .call _ _ _ _ as _ _ => some as
   | .workflow _ _ _ _ _ as => some as
   | _ => none
+
+/-- The key a map that collects its items' failures writes them under: `failedAs` when `onItemFailure` is
+`"collect"`; `none` for a map that stops on its first failing item (`"stop"`, the default). -/
+def collectKey : Option String → Option String → Option String
+  | some "collect", some k => some k
+  | _, _ => none
 
 end AgentRun
