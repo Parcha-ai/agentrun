@@ -56,6 +56,16 @@ test('a sheet the agent\'s page imports is rewritten from its own path, served o
   assert.equal(served.length, 1);
 });
 
+test('two sheets that start together and import one sheet read it once and share it', UNIT, async () => {
+  const files: Record<string, string> = { 'css/shared.css': 'shared' };
+  const reads: string[] = [];
+  const styles = reportStyles(files, async () => undefined, async (sha) => { reads.push(sha); await new Promise((done) => setTimeout(done, 10)); return '.s{color:red}'; }, (css) => `served:${css.length}`);
+  const [first, second] = await Promise.all([styles('@import "css/shared.css";.a{}', 'index.html'), styles('@import "css/shared.css";.b{}', 'index.html')]);
+  assert.deepEqual(reads, ['shared'], 'the shared sheet is read once');
+  assert.equal(first, '@import url("served:13");.a{}');
+  assert.equal(second, '@import url("served:13");.b{}');
+});
+
 test('an answer row that only says the title again is not drawn twice: its cites and note stay, its text goes', UNIT, () => {
   const title = 'Option 2 is selected and both boxes are ticked.';
   const cites = [{ href: 'evidence/read.json' }];

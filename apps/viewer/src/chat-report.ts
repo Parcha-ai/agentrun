@@ -145,7 +145,13 @@ export function reportStyles(files: Record<string, string>, resolve: ReportResol
     served.set(file.path, url);
     return url;
   };
-  return rewrite;
+  // Sheets are rewritten one at a time, however many start together, so an imported sheet is read and served once.
+  let queue: Promise<unknown> = Promise.resolve();
+  return (css: string, from: string): Promise<string> => {
+    const next = queue.then(() => rewrite(css, from));
+    queue = next.catch(() => undefined);
+    return next;
+  };
 }
 
 /** A blob's text: as the recording holds it, else read from its URL. */
