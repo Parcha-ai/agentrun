@@ -109,9 +109,11 @@ export function scriptedParts({ set = SETS.v1, data = set === SETS.v4 ? FIXTURES
 /** The paid parts: the model and Jev through the gateway (models.mjs), fetch_page, and in v2 lane C3's tools
  *  (tools-v2.mjs: search and the browser on Browserbase with the key read at each call, else a local Chrome; the eyes
  *  through the gateway), their evidence and the browser's profile under the run's own directory. */
-export async function liveParts({ set = SETS.v1, data = DATA, model = 'gpt-6-luna', thinking = 'medium', env = process.env } = {}) {
-  const { gatewayJev, gatewayModel, gatewayOf } = await import('./models.mjs');
+export async function liveParts({ set = SETS.v1, data = DATA, model, thinking, env = process.env } = {}) {
+  const { gatewayJev, gatewayModels, gatewayOf, ROOT } = await import('./models.mjs');
   const gateway = gatewayOf(env);
+  // The root agent on Opus at high thinking unless --model / --thinking name another; the nodes on the host's NODE.
+  const models = await gatewayModels(gateway, { root: { model: model ?? ROOT.model, thinking: thinking ?? ROOT.thinking } });
   const d = set.load(data);
   const jev = gatewayJev(gateway);
   let hard;
@@ -119,13 +121,13 @@ export async function liveParts({ set = SETS.v1, data = DATA, model = 'gpt-6-lun
     try { hard = await import('./tools-v2.mjs'); } catch (error) { throw new Error(`--set ${set.name} --live needs lane C3's tools-v2.mjs: ${error.message}`); }
   }
   return {
-    mode: 'live', providers: 'real', modelName: `gateway/${model}`, set, data: d, labels: d.labels, companies: d.companies, conventions: conventionsOf(d.report),
+    mode: 'live', providers: 'real', modelName: `gateway/${models.agent.model.modelId}`, set, data: d, labels: d.labels, companies: d.companies, conventions: conventionsOf(d.report),
     judge: () => jev,
     toolsFor: async (job, run) => [
       fetchPageTool({ allowDomain: allowedDomain(job, set) }),
       ...(hard ? await hard.hardJobTools({ root: join(run.dir, 'evidence'), profileRoot: join(run.dir, 'chrome'), eyes: await hard.gatewayEyes(gateway), env }) : []),
     ],
-    modelFor: () => gatewayModel(gateway, { model, thinking }),
+    modelFor: () => models,
     // The browser's guard on the browser the pass will use, checked by the pass's self-test.
     ...(hard ? { browserCheck: (dir) => hard.guardSelfTest({ root: dir, profileRoot: join(dir, 'chrome'), env }) } : {}),
   };
@@ -328,7 +330,7 @@ export async function runSealed({ out, parts, at = 'main', capUsd, runCapUsd, re
   return { rows, sha, label, correct, stoppedBy };
 }
 
-const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <id>] [--thinking <level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--sealed --at seed|main|<sha>]';
+const USAGE = 'usage: node examples/learn-classify/runner.mjs [--out <dir>] [--set v1|v2|v4] (--scripted [--data <dir>] | --live --cap-usd <usd> [--model <root model id>] [--thinking <root level>]) [--jobs <n>] [--run-cap-usd <usd>] [--no-record] [--sealed --at seed|main|<sha>]';
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   let values;

@@ -307,8 +307,8 @@ export function usageTotals(usage) {
 }
 
 /**
- * One run of the agent on one company, in the run's own store. `model` is `{ models, agent }` (pi-ai models and the
- * agent's model and thinking), `judge` the run's metered Jev (`meteredJudge`), `effects` the host tools (`classifyTools`),
+ * One run of the agent on one company, in the run's own store. `model` is `{ models, agent, node? }` (pi-ai models, the
+ * root agent's model and thinking, and the one every workflow agent node runs on), `judge` the run's metered Jev (`meteredJudge`), `effects` the host tools (`classifyTools`),
  * `answer` the final answer's tool and `text` the job's text. `limitUsd` aborts the run once its model, Jev and tool spend
  * (each tool result's `costUsd`) pass it. Returns what the host measured; the run's store is closed when it returns.
  */
@@ -331,11 +331,13 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
   }));
   const tools = classifyTools({ effects: metered, answer });
   // A node's conversation would otherwise take the root agent's rules, <learned> section and tools: it gets its own short
-  // instructions, the host's tools extension only, and of it only the tools the node may use.
+  // instructions, the host's tools extension only, and of it only the tools the node may use. Its model and thinking are
+  // the host's (`model.node`), whatever the workflow asks for.
+  const nodeAgent = model.node ?? { ...model.agent, thinkingLevel: nodeThinking };
   const nodes = nodeRunner({
     agent: (node) => ({
       ...model.agent,
-      thinkingLevel: node.thinking && node.thinking !== 'off' ? node.thinking : nodeThinking,
+      ...nodeAgent,
       instructions: NODE_INSTRUCTIONS,
       extensions: [tools.extension],
       tools: tools.nodeTools(node.tools),

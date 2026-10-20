@@ -111,15 +111,21 @@ export const extractAnswer = (state) => ({ sic2: state.group?.code ?? '', eviden
  * A scripted model for one run. `root` is the root agent's responses in order (each `{ call, args }` or `{ say }`, `args`
  * may be a function of the request); a request whose tools include `submit` is a workflow node's, answered by `node`.
  */
-export function scriptedModel({ root, node = (state) => ({ submit: extractAnswer(state) }) }) {
+export function scriptedModel({ root, node = (state) => ({ submit: extractAnswer(state) }), models: chosen }) {
   const requests = [];
   const nodeRequests = [];
-  const faux = fauxProvider({ models: [{ id: 'scripted', reasoning: true }] });
+  // `models` names the root's and the nodes' models ({ root: { id, thinking, cost? }, node: { id, thinking, cost? } }), as
+  // a live pass's two are; `seen` says which model and thinking level each request was sent with.
+  const ids = chosen ? [...new Set([chosen.root.id, chosen.node.id])] : ['scripted'];
+  const costOf = (id) => [chosen?.root, chosen?.node].find((m) => m?.id === id)?.cost;
+  const seen = [];
+  const faux = fauxProvider({ models: ids.map((id) => ({ id, reasoning: true, ...(costOf(id) ? { cost: costOf(id) } : {}) })) });
   let step = 0;
   let id = 0;
   const call = (name, args) => fauxAssistantMessage([fauxToolCall(name, args, { id: `call-${++id}` })], { stopReason: 'toolUse' });
-  const respond = (context) => {
+  const respond = (context, options, _state, requestModel) => {
     const offered = offeredTools(context);
+    seen.push({ who: offered.includes('submit') ? 'node' : 'root', model: requestModel?.id, thinking: options?.reasoning ?? null });
     if (offered.includes('submit')) {
       nodeRequests.push({ context, offered });
       const last = context.messages.at(-1);
@@ -140,7 +146,36 @@ export function scriptedModel({ root, node = (state) => ({ submit: extractAnswer
   faux.setResponses(Array.from({ length: 400 }, () => respond));
   const models = createModels();
   models.setProvider(faux.provider);
-  return { models, agent: { model: { provider: 'faux', modelId: 'scripted' }, thinkingLevel: 'low' }, requests, nodeRequests };
+  if (!chosen) return { models, agent: { model: { provider: 'faux', modelId: 'scripted' }, thinkingLevel: 'low' }, requests, nodeRequests, seen };
+  const ref = (pick) => ({ model: { provider: 'faux', modelId: pick.id }, thinkingLevel: pick.thinking });
+  return { models: pricedModels(models), agent: ref(chosen.root), node: ref(chosen.node), requests, nodeRequests, seen };
+}
+
+/** `models` with each answer priced by its own model's catalog entry, as a live provider prices it (the faux provider
+ *  prices nothing): what the guard, the rows and the executions read. */
+export function pricedModels(models) {
+  return new Proxy(models, {
+    get(target, property, receiver) {
+      if (property !== 'streamSimple') {
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      }
+      return (model, context, options) => {
+        const inner = target.streamSimple(model, context, options);
+        return {
+          [Symbol.asyncIterator]: () => inner[Symbol.asyncIterator](),
+          result: async () => {
+            const message = await inner.result();
+            const per = model.cost ?? {};
+            const u = message.usage;
+            const part = (tokens, price) => ((tokens ?? 0) * (price ?? 0)) / 1e6;
+            const cost = { input: part(u.input, per.input), output: part(u.output, per.output), cacheRead: part(u.cacheRead, per.cacheRead), cacheWrite: part(u.cacheWrite, per.cacheWrite) };
+            return { ...message, usage: { ...u, cost: { ...cost, total: cost.input + cost.output + cost.cacheRead + cost.cacheWrite } } };
+          },
+        };
+      };
+    },
+  });
 }
 
 /** The last agentrun run's outcome in a request, from the tool's own JSON answer. */

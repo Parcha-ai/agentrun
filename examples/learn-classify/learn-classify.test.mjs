@@ -340,9 +340,11 @@ test('the live parts build from the gateway named in the environment, with no ca
   for (const cik of Object.keys(parts.conventions)) assert.ok(parts.companies.some((c) => c.cik === cik));
   const job = parts.companies.find((c) => c.order === 1);
   assert.deepEqual((await parts.toolsFor(job, { dir: '/nonexistent' })).map((t) => t.name), ['fetch_page']);
+  // v4 (CLASSIFY-CONTRACT.md "Models"): the root agent on Opus at high thinking, every workflow agent node on the host's Luna.
   const model = parts.modelFor(job);
-  assert.equal(model.agent.thinkingLevel, 'medium');
-  assert.equal(model.agent.model.modelId, 'gpt-6-luna');
+  assert.equal(model.agent.thinkingLevel, 'high');
+  assert.equal(model.agent.model.modelId, 'claude-opus-5-5');
+  assert.deepEqual(model.node, { model: { provider: 'gateway', modelId: 'gpt-6-luna' }, thinkingLevel: 'medium' });
   assert.equal(typeof parts.judge(), 'function');
 });
 

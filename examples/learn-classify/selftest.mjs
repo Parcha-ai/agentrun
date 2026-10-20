@@ -2,8 +2,10 @@
 // cannot hand that key to a command. It runs the pass's own host once, on a scripted model at $0, in a home of its own
 // under <out>/self-test: it records the tools the root agent is offered, the tools a workflow's call nodes can reach and
 // the tools an agent node is offered, refuses any tool not known to run neither a command nor code, and runs a workflow
-// with a code node, which must be refused (no code executor is wired). With the pass's browser, it also checks the
-// request guard (tools-v2.mjs `guardSelfTest`). What it found is written to <out>/selftest.json; a failure throws.
+// with a code node, which must be refused (no code executor is wired). It records the root's model and the one the host
+// sets for every workflow agent node, refuses a node model that is Opus, and checks the scripted run's node requests went
+// out on it. With the pass's browser, it also checks the request guard (tools-v2.mjs `guardSelfTest`). What it found is
+// written to <out>/selftest.json; a failure throws.
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { agentHomeFor, meteredJudge, prepareRun, runJob } from './host.mjs';
@@ -28,7 +30,8 @@ const toolsWorkflow = (call) => ({
     node: 'chain',
     steps: [
       { node: 'call', label: 'a host tool', via: 'tool', tool: call.name, args: {}, out: 'Called', as: 'called', deadline_s: 30 },
-      { node: 'agent', label: 'an agent node', instructions: 'Deliver ok.', state: { check: 'tools' }, out: 'Done', as: 'done' },
+      // It asks for the strong tier at low thinking: the host's node model and level must win.
+      { node: 'agent', label: 'an agent node', tier: 'strong', thinking: 'low', instructions: 'Deliver ok.', state: { check: 'tools' }, out: 'Done', as: 'done' },
     ],
   },
 });
@@ -55,7 +58,12 @@ export async function passSelfTest({ out, repo, parts, log = () => {} }) {
   const effects = [...(await parts.toolsFor(job, run)), ...parts.set.labelTools(parts.data)];
   const label = effects.find((e) => e.name === 'sic2_groups') ?? effects.at(-1);
   const input = parts.set.input(job);
+  // The pass's own models: the root's, and the one the host puts every workflow agent node on.
+  const live = await parts.modelFor(job, run);
+  const pick = (ref) => (ref?.model ? { model: ref.model.modelId, thinking: ref.thinkingLevel ?? null } : null);
+  const models = { root: pick(live?.agent), node: pick(live?.node) };
   const model = scriptedModel({
+    models: { root: { id: models.root?.model ?? 'root', thinking: models.root?.thinking ?? 'low' }, node: { id: models.node?.model ?? 'node', thinking: models.node?.thinking ?? 'low' } },
     root: [
       { call: 'agentrun', args: { action: 'inspect', workflow: toolsWorkflow(label), input } },
       { call: 'agentrun', args: { action: 'run' } },
@@ -75,6 +83,17 @@ export async function passSelfTest({ out, repo, parts, log = () => {} }) {
   };
   const [toolsRun, codeRun] = measure.workflowRuns;
   const problems = [];
+  // The models: the root and the nodes are named and think; no workflow agent node runs Opus; and in the scripted run every
+  // node request went out on the host's node model and level, though the workflow asked for the strong tier at low.
+  if (!models.root) problems.push('the pass names no root model');
+  if (!models.node) problems.push('the pass names no model for workflow agent nodes, so they would run the root\'s');
+  for (const [who, m] of Object.entries(models)) if (m && (!m.thinking || m.thinking === 'off')) problems.push(`the ${who} model does not think`);
+  if (models.node && /opus/i.test(models.node.model)) problems.push(`workflow agent nodes would run ${models.node.model}`);
+  const nodeSeen = model.seen.filter((r) => r.who === 'node');
+  const offModel = nodeSeen.filter((r) => r.model !== (models.node?.model ?? 'node') || r.thinking !== (models.node?.thinking ?? 'low'));
+  if (offModel.length) problems.push(`a workflow agent node ran on ${offModel[0].model} at ${offModel[0].thinking}, not the host's node model`);
+  models.nodeRequests = sorted(nodeSeen.map((r) => `${r.model} ${r.thinking}`));
+  models.rootRequests = sorted(model.seen.filter((r) => r.who === 'root').map((r) => `${r.model} ${r.thinking}`));
   for (const [where, names] of Object.entries(tools)) {
     const unknown = names.filter((name) => !KNOWN_TOOLS.includes(name));
     if (unknown.length) problems.push(`${where} offers ${unknown.join(', ')}, not known to run neither a command nor code`);
@@ -97,13 +116,13 @@ export async function passSelfTest({ out, repo, parts, log = () => {} }) {
     }
   }
   const report = {
-    at: new Date().toISOString(), ok: problems.length === 0, problems, tools,
+    at: new Date().toISOString(), ok: problems.length === 0, problems, models, tools,
     codeNode: { outcome: codeRun?.outcome ?? null, revision: codeRun?.revision ?? null }, browser,
   };
   await mkdir(out, { recursive: true });
   await writeFile(join(out, 'selftest.json'), `${JSON.stringify(report, null, 2)}\n`);
   await writeFile(join(dir, 'selftest.json'), `${JSON.stringify(report, null, 2)}\n`);
   if (!report.ok) throw new Error(`the pass's self-test failed, so no job ran: ${problems.join('; ')}`);
-  log(`self-test: no tool runs a command or code (root ${tools.root.length}, call nodes ${tools.callNode.length}, agent nodes ${tools.agentNode.length}); a code node is refused${browser ? `; the browser's guard refused ${browser.blocked.join(', ')}` : ''}`);
+  log(`self-test: root ${models.root.model} at ${models.root.thinking}, workflow agent nodes ${models.node.model} at ${models.node.thinking}; no tool runs a command or code (root ${tools.root.length}, call nodes ${tools.callNode.length}, agent nodes ${tools.agentNode.length}); a code node is refused${browser ? `; the browser's guard refused ${browser.blocked.join(', ')}` : ''}`);
   return report;
 }
