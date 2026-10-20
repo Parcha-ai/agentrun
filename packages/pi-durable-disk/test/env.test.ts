@@ -24,7 +24,7 @@ import {
   replaySafe,
   WRITING_TOOLS,
 } from "../src/env.ts";
-import { registerEnvCases } from "./_env-conformance.ts";
+import { LOCAL_WATCH, registerEnvCases, runEnvCase } from "./_env-conformance.ts";
 import { onPlatform } from "./_macos.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -41,7 +41,38 @@ async function withRun<T>(use: (run: { root: string; work: string }) => Promise<
 }
 
 describe("archilEnv on local disk passes pi's env conformance", () => {
-  registerEnvCases("archilEnv", (use) => withRun(({ root, work }) => use(archilEnv({ root, work, disk: "dsk-local" })({}))));
+  registerEnvCases("archilEnv", (use) => withRun(({ root, work }) => use(archilEnv({ root, work, disk: "dsk-local" }, { watch: LOCAL_WATCH })({}))));
+
+  // A starved runner delays the poll chain: the cases must keep slack. The loop is blocked for 2.2 s, starting a second after
+  // the first report, which is when a 1 s poll would be due; at the suite's interval the case has finished long before.
+  it("the watch case that renames and recreates a parent survives the event loop being starved a second after its first report", { timeout: 30_000 }, async () => {
+    const block = (ms: number) => {
+      for (const end = Date.now() + ms; Date.now() < end; );
+    };
+    let reports = 0;
+    let starve: NodeJS.Timeout | undefined;
+    try {
+      await runEnvCase("watch keeps watching a path whose parent is renamed and recreated", (use) =>
+        withRun(({ root, work }) => {
+          const env = archilEnv({ root, work, disk: "dsk-local" }, { watch: LOCAL_WATCH })({});
+          const watch = env.watch!.bind(env);
+          env.watch = (targets, onChange, ctx) =>
+            watch(
+              targets,
+              (change) => {
+                if (++reports === 1) starve = setTimeout(() => block(2_200), 980);
+                onChange(change);
+              },
+              ctx,
+            );
+          return use(env);
+        }),
+      );
+    } finally {
+      clearTimeout(starve);
+    }
+    assert.ok(reports >= 3, `the case saw its reports (${reports})`);
+  });
 });
 
 describe("the environment", () => {

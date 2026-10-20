@@ -9,6 +9,8 @@ export type PageSpan = { readonly from: number; readonly to: number };
 export type TimeSpan = { readonly from: number; readonly to?: number };
 /** A rectangle in percent of the whole: left, top, width, height. */
 export type Region = { readonly x: number; readonly y: number; readonly w: number; readonly h: number };
+/** Where in a source a look was: a page span, a time span, a region of the picture, or several together. `formatFragment` and
+ *  `parseFragment` write and read the `#page=`, `#t=` and `#xywh=` forms of a citation. */
 export type Fragment = { readonly page?: PageSpan; readonly t?: TimeSpan; readonly xywh?: Region };
 
 /** Seconds and percent are written to the thousandth. */

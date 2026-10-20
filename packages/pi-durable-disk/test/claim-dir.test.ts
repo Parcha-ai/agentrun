@@ -2,10 +2,12 @@
 // names now, and the checks that the root's path (and the owner lock's) are still the claim's.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { exitCodeFor, FencedError } from "../src/errors.ts";
-import { CLAIM_UNMOUNTED, deviceName, openClaimDir, persistRecord, readRunRecord, RUN_JSON, writeRunRecord, type RunRecord } from "../src/status.ts";
+import { CLAIM_UNMOUNTED, deviceName, openClaimDir, persistRecord, readRunRecord, RUN_JSON, writeRunRecord, type ClaimDir, type RunRecord } from "../src/status.ts";
 import { onPlatform } from "./_macos.ts";
 import { removeWhileWritten, scratchRoot } from "./_run-support.ts";
 
@@ -85,6 +87,25 @@ describe("the claim directory", () => {
       const fstype = readFileSync("/proc/self/mountinfo", "utf8").split("\n").findLast((l) => l.split(" ")[4] === "/")!.split(" - ")[1]!.split(" ")[0]!;
       const slash = await openClaimDir("/", { fstype });
       await slash.close();
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("its descriptor is closed by close() only, never by a collection: a run that waits reaches it only through a pending open (GRE-3853)", { skip: process.platform === "darwin" ? "by path on macOS: no descriptor path" : false }, async () => {
+    const dir = scratchRoot("claimdir-held");
+    try {
+      setFlagsFromString("--expose-gc");
+      const gc = runInNewContext("gc") as () => void;
+      let claim: ClaimDir | undefined = await openClaimDir(dir.root, { fstype: null, byPath: false });
+      const at = claim.at;
+      claim = undefined; // nothing reaches the claim directory now but `at`, a string, as during a seed that waits
+      for (let i = 0; i < 5; i++) {
+        gc();
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      // Never closed, the descriptor stays this process's until it exits, as one a run drops without close() does.
+      assert.equal(readlinkSync(at), dir.root, `${at} still names the claim's root after collections`);
     } finally {
       dir.remove();
     }

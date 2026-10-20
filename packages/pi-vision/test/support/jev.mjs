@@ -18,12 +18,12 @@ export const USD_PER_MTOK = 0.042;
 export function fakeJev({ answer = (q) => ANSWERS[q.type](q), fail, ledgerPath, priced = true } = {}) {
   const requests = [];
   const judge = async (params) => {
-    const sizes = params.state.images.map(({ image }) => imageHeader(params.assets[image].bytes));
+    const sizes = (params.state.images ?? []).map(({ image }) => imageHeader(params.assets[image].bytes));
     requests.push({ params, sizes });
-    if (ledgerPath) appendFileSync(ledgerPath, `${JSON.stringify({ n: requests.length, sources: params.state.images.map((i) => i.source) })}\n`);
+    if (ledgerPath) appendFileSync(ledgerPath, `${JSON.stringify({ n: requests.length, sources: (params.state.images ?? []).map((i) => i.source) })}\n`);
     if (params.signal?.aborted) throw params.signal.reason;
     if (fail) throw fail;
-    const input = 1000 * Object.keys(params.assets).length;
+    const input = 1000 * Object.keys(params.assets ?? {}).length;
     const answers = Object.fromEntries(Object.entries(params.questions).map(([name, q]) => [name, answer(q, params)]));
     return { answers, model: params.model, usage: { input_tokens: input, output_tokens: 0 }, cost_usd: priced ? (input * USD_PER_MTOK) / 1e6 : null };
   };

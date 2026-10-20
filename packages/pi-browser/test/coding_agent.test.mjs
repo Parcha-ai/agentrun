@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { getEventListeners } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { FakeBackend, fakeDriver } from "@parcha/pi-browser/testing";
-import { BROWSER_TOOLS, WEB_TOOLS, browserSection } from "../dist/index.js";
+import { LocalCustody } from "@parcha/pi-browser/coding-agent";
+import { BROWSER_TOOLS, WEB_TOOLS, browserSection, workspaceFiles } from "../dist/index.js";
+import { pageDriver } from "../dist/driver/page-driver.js";
+import { fakeStagehand, unanswered } from "./fixtures/fake-stagehand.mjs";
 import { done, startAgent, turn } from "./coding-agent/rig.mjs";
 
 const START = "https://example.test/start";
@@ -20,21 +24,21 @@ test("the coding agent lists the browser and web tools with the package's contra
   const backend = fake();
   const agent = await startAgent(t, { extension: extensionOf(backend) });
   const listed = new Map(agent.session.getAllTools().map((tool) => [tool.name, tool]));
-  const expected = [...BROWSER_TOOLS.filter((tool) => tool.listedWhen === "always"), ...WEB_TOOLS];
+  // browser_request_handoff is listed only when the host gives a handoff port (its own row); every other tool is listed by default.
+  const expected = [...BROWSER_TOOLS.filter((tool) => tool.listedWhen !== "handoff"), ...WEB_TOOLS];
   for (const contract of expected) {
     const tool = listed.get(contract.name);
     assert.ok(tool, `${contract.name} is registered`);
     assert.equal(tool.description, contract.description, `${contract.name}: the description is the contract's`);
     assert.deepEqual(JSON.parse(JSON.stringify(tool.parameters)), JSON.parse(JSON.stringify(contract.parameters)), `${contract.name}: the schema is the contract's`);
   }
-  assert.ok(!listed.has("browser_downloads"), "downloads need a provider that serves them, and this adapter has no such tool yet");
 });
 
 test("the static browser section is in the system prompt of every request", async (t) => {
   const agent = await startAgent(t, { extension: extensionOf(fake()) });
   await agent.run(turn(["snapshot"]));
   assert.ok(agent.prompts.length >= 2);
-  const section = browserSection({ idleReleaseS: 180 });
+  const section = browserSection({ idleReleaseS: 180 }, { downloads: true, upload: true });
   for (const context of agent.prompts) assert.ok(JSON.stringify(context.systemPrompt ?? context).includes(JSON.stringify(section).slice(1, -1)), "the section reaches the model unchanged");
 });
 
@@ -63,6 +67,9 @@ test("a screenshot returns the image to the model and files a receipt with the c
   const files = fs.readdirSync(dir).sort();
   assert.deepEqual(files.map((f) => f.replace(/^\d+-/, "")), ["screenshot.jpg", "screenshot.md"]);
   assert.match(fs.readFileSync(path.join(dir, files.find((f) => f.endsWith(".md"))), "utf8"), new RegExp(`\\nsha256: ${sha(fs.readFileSync(path.join(dir, files.find((f) => f.endsWith(".jpg")))))}\\n`));
+  const { media } = shot.result.details;
+  assert.equal(media.path, `.pi/browser/evidence/browser/${files.find((f) => f.endsWith(".jpg"))}`, "the media path is the capture, relative to the project");
+  assert.deepEqual([media.kind, media.mime, media.bytes], ["screenshot", image.mimeType, fs.statSync(path.join(agent.work, media.path)).size]);
 });
 
 test("a failed call is an error result with the typed envelope; an argument the schema refuses never reaches the tool", async (t) => {
@@ -99,16 +106,99 @@ test("browser_relaunch replaces the session and keeps the new one's settings", a
   assert.ok(agent.custom("browser.session").some(({ reason }) => reason === "relaunch"));
 });
 
-test("a browser_relaunch that names no verified keeps the policy's: a Verified run is never downgraded; an explicit false is", async (t) => {
+test("browser_relaunch on a session the host assigned is refused, nothing is released, and the session goes on serving", async (t) => {
+  const backend = fake();
+  const made = await backend.provider.create({ tag: "host-made", maxLifetimeS: 600, idleTimeoutS: 0, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} }, new AbortController().signal);
+  const { assignedSessionProvider } = await import("../dist/providers/assigned.js");
+  let handedBack = 0;
+  const provider = assignedSessionProvider({ name: "host-site", session: { id: made.id, attach: () => backend.provider.attach(made), status: async () => "running", release: async () => { handedBack += 1; }, failure: () => null } });
+  const agent = await startAgent(t, { extension: { provider: () => provider, driver: fakeDriver(backend) } });
+  const [, relaunched, after] = await agent.run(turn(["snapshot"]), turn(["browser_relaunch", {}]), turn(["snapshot"]));
+  const answer = failure(relaunched.text);
+  assert.deepEqual([answer.ok, answer.code], [false, "refused"]);
+  assert.match(answer.message, /unchanged/);
+  assert.match(after.text, /Acme Corp/);
+  assert.equal(handedBack, 0, "the task's only browser was not handed back");
+});
+
+/** A session the host assigned over the fake backend's own session; `attach` may fail, and every call is counted. */
+async function hostAssigned(backend, { failAttaches = 0 } = {}) {
+  const made = await backend.provider.create({ tag: "host-made", maxLifetimeS: 600, idleTimeoutS: 0, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} }, new AbortController().signal);
+  const { assignedSessionProvider } = await import("../dist/providers/assigned.js");
+  const counts = { creates: 0, attaches: 0, handedBack: 0 };
+  const outage = { ok: false, code: "browser_unavailable", retryable: true, effect: "none", message: "The host's broker did not answer; try again." };
+  const session = {
+    id: made.id,
+    attach: async () => { counts.attaches += 1; if (counts.attaches <= failAttaches) throw Object.assign(new Error("broker outage"), { failure: outage }); return backend.provider.attach(made); },
+    status: async () => "running",
+    release: async () => { counts.handedBack += 1; },
+    failure: () => null,
+  };
+  const provider = () => {
+    const assigned = assignedSessionProvider({ name: "host-site", session });
+    return { ...assigned, create: (spec, signal) => { counts.creates += 1; return assigned.create(spec, signal); } };
+  };
+  return { counts, provider };
+}
+
+test("a session the host assigned survives a failed first attach: the next call attaches it again with no second create, and the host is never asked to take it back", async (t) => {
+  const backend = fake();
+  const { counts, provider } = await hostAssigned(backend, { failAttaches: 1 });
+  const held = provider();
+  const agent = await startAgent(t, { extension: { provider: () => held, driver: fakeDriver(backend) } });
+  const [failed, after] = await agent.run(turn(["snapshot"]), turn(["snapshot"]));
+  assert.equal(failed.isError, true, "the first attach failed");
+  assert.equal(failure(failed.text).code, "browser_unavailable");
+  assert.equal(after.isError, false, `the next call browses the assigned session: ${after.text}`);
+  assert.match(after.text, /Acme Corp/);
+  assert.deepEqual([counts.creates, counts.attaches, counts.handedBack], [1, 2, 0]);
+  assert.deepEqual(agent.custom("browser.session").map((e) => e.state), ["creating", "live"], "one session record, still live");
+});
+
+test("a resumed session never hands back a session the host assigned: the orphan pass lets go of the old hold, and the next call is served the same session", async (t) => {
+  const backend = fake();
+  const { counts, provider } = await hostAssigned(backend);
+  const first = await startAgent(t, { extension: { provider: (() => { const p = provider(); return () => p; })(), driver: fakeDriver(backend) } });
+  await first.run(turn(["snapshot"]));
+  // The first process dies without a shutdown; a new one opens the same session file over the same host session.
+  const second = await startAgent(t, { extension: { provider: (() => { const p = provider(); return () => p; })(), driver: fakeDriver(backend) }, sessionFile: first.sessionFile(), dir: first.root, cwd: first.work });
+  const [resumed] = await second.run(turn(["snapshot"]));
+  assert.equal(resumed.isError, false, `the resumed task browses its assigned session: ${resumed.text}`);
+  assert.match(resumed.text, /Acme Corp/);
+  assert.equal(counts.handedBack, 0, "the task's only browser was never handed back");
+});
+
+test("a browser_relaunch keeps a Verified run Verified: no verified and verified: false both keep it, and the false one is told so", async (t) => {
   const backend = fake();
   const agent = await startAgent(t, { extension: extensionOf(backend, { policy: { proxies: true, verified: true } }) });
   const [, bare, off] = await agent.run(turn(["snapshot"]), turn(["browser_relaunch", {}]), turn(["browser_relaunch", { verified: false }]));
-  assert.deepEqual([failure(bare.text).ok, failure(bare.text).verified], [true, true], "a bare relaunch stays Verified");
-  assert.deepEqual([failure(off.text).ok, failure(off.text).verified], [true, false], "an explicit verified: false is honoured");
+  assert.deepEqual([failure(bare.text).ok, failure(bare.text).verified, failure(bare.text).note], [true, true, undefined], "a bare relaunch stays Verified");
+  assert.deepEqual([failure(off.text).ok, failure(off.text).verified], [true, true], "verified: false cannot lower the run's Verified policy");
+  assert.match(failure(off.text).note, /Verified/, "and the answer says the false was not followed");
   // The schema the agent reads says the same.
   const relaunch = BROWSER_TOOLS.find((tool) => tool.name === "browser_relaunch");
-  assert.match(relaunch.parameters.properties.verified.description, /Omitted, the new session keeps the run's setting/);
-  assert.match(relaunch.description, /keeps the run's Verified setting unless `verified` names one/);
+  assert.match(relaunch.parameters.properties.verified.description, /false, or leaving it out, keeps the run's setting/);
+  assert.match(relaunch.description, /a relaunch never lowers that/);
+});
+
+test("through the coding agent, an upload whose file input never answers is possibly applied, and its identical retry is refused until a look", { timeout: 20_000 }, async (t) => {
+  const workspace = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), "upload-deadline-"));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(workspace, "a.txt"), "a");
+  const hung = unanswered();
+  t.after(() => hung.answer(undefined));
+  const set = [];
+  const stagehands = [fakeStagehand({ url: START, setInputFiles: (_s, file) => { set.push(["first", file.name]); return hung.reply; } }), fakeStagehand({ url: START, setInputFiles: async (_s, file) => { set.push(["second", file.name]); } })];
+  let attaches = 0;
+  const driver = async () => pageDriver(stagehands[Math.min(attaches++, 1)], { batchMs: 60_000, uploadMs: 200 });
+  const agent = await startAgent(t, { extension: extensionOf(fake(), { driver, files: workspaceFiles(workspace) }) });
+  const upload = ["browser_upload", { path: "a.txt", selector: "#f" }];
+  const [cut, refused, , after] = await agent.run(turn(upload), turn(upload), turn(["snapshot"]), turn(upload));
+  assert.deepEqual([failure(cut.text).code, failure(cut.text).effect, failure(cut.text).retryable], ["browser_unavailable", "possibly_effected", true], cut.text);
+  assert.match(failure(cut.text).message, /did not answer your browser_upload/);
+  assert.deepEqual([failure(refused.text).code, failure(refused.text).effect], ["effect_unknown", "possibly_effected"], refused.text);
+  assert.equal(failure(after.text).ok, true, after.text);
+  assert.deepEqual(set, [["first", "a.txt"], ["second", "a.txt"]], "set once before the deadline, never on the refused retry, once after the look");
 });
 
 test("session_shutdown releases the browser for every way a session ends, and a second shutdown does nothing", async (t) => {
@@ -210,6 +300,119 @@ test("a fork never shares a live browser", async (t) => {
   assert.equal(backend.tally().creates, 2, "the fork opened its own browser");
 });
 
+const pollSpy = () => {
+  const made = new Map(), realSet = globalThis.setInterval, realClear = globalThis.clearInterval;
+  globalThis.setInterval = (fn, ms, ...rest) => { const handle = realSet(fn, ms, ...rest); made.set(handle, ms); return handle; };
+  globalThis.clearInterval = (handle) => { made.delete(handle); return realClear(handle); };
+  return { pending: () => made.size, restore: () => { globalThis.setInterval = realSet; globalThis.clearInterval = realClear; } };
+};
+
+test("#1098, the coding agent: the idle check leaves no gate behind: after an idle release with nobody on the session, the registry no longer holds the gate the check looked up", async () => {
+  const { createDrivingGates } = await import("@parcha/pi-browser/live-view");
+  const registry = createDrivingGates();
+  const looked = [];
+  const backend = fake();
+  const custody = new LocalCustody({
+    config: { label: "", run: "run-no-gate-left", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0.05, batchTimeoutMs: 60_000 } },
+    gates: (tag) => { const gate = registry(tag); looked.push([tag, gate]); return gate; },
+    provider: async () => backend.provider, driver: fakeDriver(backend), keep: () => {}, redact: (text) => text, signal: new AbortController().signal,
+  });
+  await custody.session();
+  custody.activity(1);
+  custody.activity(-1);
+  await until(() => backend.tally().releases === 1);
+  const [tag, gate] = looked[0] ?? [];
+  assert.ok(tag, "the idle check looked the gate up");
+  const again = registry(tag);
+  assert.notEqual(again, gate, "a lookup now makes a new gate: the one the check made was let go");
+  again.onChange(() => {})();
+  await custody.close("close");
+});
+
+test("#1098, the coding agent: no poll survives the session's release: a release or the close stops it at once", async () => {
+  for (const how of ["release", "close"]) {
+    const spy = pollSpy();
+    try {
+      const backend = fake();
+      const gates = () => ({ state: () => "idle", input: () => "driving", model: () => ({ release() {} }), onChange: () => () => {}, viewing: () => true, setViewing() {}, end() {} });
+      const custody = new LocalCustody({
+        config: { label: "", run: `run-poll-${how}`, policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0.1, batchTimeoutMs: 60_000 } },
+        gates, provider: async () => backend.provider, driver: fakeDriver(backend), keep: () => {}, redact: (text) => text, signal: new AbortController().signal,
+      });
+      await custody.session();
+      custody.activity(1);
+      custody.activity(-1);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      assert.ok(spy.pending() >= 1, `${how}: the kept session was being watched`);
+      if (how === "release") await custody.release(); else await custody.close("close");
+      assert.equal(spy.pending(), 0, `${how}: no poll left after it`);
+      await custody.close("close");
+    } finally { spy.restore(); }
+  }
+});
+
+test("#1098, the coding agent: a process restart while a person watches the live view: the new process releases the old browser as it starts (it never adopts a crashed process's browser, person or not)", async (t) => {
+  const backend = fake();
+  const watching = () => ({ state: () => "idle", input: () => "driving", model: () => ({ release() {} }), onChange: () => () => {}, viewing: () => true, setViewing() {}, end() {} });
+  const first = await startAgent(t, { extension: extensionOf(backend, { gates: watching }) });
+  await first.run(turn(["snapshot"]));
+  const orphan = first.custom("browser.session").find((e) => e.state === "live").resourceId;
+  // The first process dies with the person watching; its viewer and gates go with it.
+  const second = await startAgent(t, { extension: extensionOf(backend), sessionFile: first.sessionFile(), dir: first.root, cwd: first.work });
+  assert.equal(backend.liveCount(), 0, "the old browser is released as the new session starts");
+  assert.ok(backend.ledger.some((row) => row.op === "release" && row.id === orphan));
+  const [fresh] = await second.run(turn(["snapshot"]));
+  assert.equal(fresh.isError, false);
+  assert.equal(backend.tally().creates, 2, "the next call opens a fresh browser");
+});
+
+test("#1098, the coding agent: a person who leaves mid-window: the session is released one idle window after they leave, not at once and not never", async () => {
+  for (const mode of ["driving", "watching"]) {
+    const backend = fake();
+    const on = { state: mode === "driving" ? "person" : "idle", viewing: mode === "watching" };
+    const gates = () => ({ state: () => on.state, input: () => "driving", model: () => ({ release() {} }), onChange: () => () => {}, viewing: () => on.viewing, setViewing() {}, end() {} });
+    const custody = new LocalCustody({
+      config: { label: "", run: `run-leave-${mode}`, policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0.3, batchTimeoutMs: 60_000 } },
+      gates, provider: async () => backend.provider, driver: fakeDriver(backend), keep: () => {}, redact: (text) => text, signal: new AbortController().signal,
+    });
+    await custody.session();
+    custody.activity(1);
+    custody.activity(-1);
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    assert.equal(backend.tally().releases, 0, `${mode}: kept while the person is on it`);
+    on.state = "idle";
+    on.viewing = false;
+    const left = Date.now();
+    await until(() => backend.tally().releases === 1);
+    const after = Date.now() - left;
+    assert.ok(after >= 250 && after <= 300 + 400, `${mode}: released one idle window (300 ms) after the person left, not at once: ${after} ms`);
+    await custody.close("close");
+  }
+});
+
+test("#1098, the coding agent: an idle window releases nothing while a person drives or watches the live view; the next window after they leave releases it; with nobody on the session, idle releases as before", async () => {
+  for (const mode of ["driving", "watching", "nobody"]) {
+    const backend = fake();
+    const on = { state: mode === "driving" ? "person" : "idle", viewing: mode === "watching" };
+    const gates = () => ({ state: () => on.state, input: () => "driving", model: () => ({ release() {} }), onChange: () => () => {}, viewing: () => on.viewing, setViewing() {}, end() {} });
+    const custody = new LocalCustody({
+      config: { label: "", run: `run-idle-${mode}`, policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0.05, batchTimeoutMs: 60_000 } },
+      gates, provider: async () => backend.provider, driver: fakeDriver(backend), keep: () => {}, redact: (text) => text, signal: new AbortController().signal,
+    });
+    await custody.session();
+    custody.activity(1);
+    custody.activity(-1);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(backend.tally().releases, mode === "nobody" ? 1 : 0, `${mode}: past the idle window`);
+    if (mode !== "nobody") {
+      on.state = "idle";
+      on.viewing = false;
+      await until(() => backend.tally().releases === 1);
+    }
+    await custody.close("close");
+  }
+});
+
 test("an idle session is released after the policy's idle spell, and the record says why", async (t) => {
   const backend = fake();
   const agent = await startAgent(t, { extension: extensionOf(backend, { policy: { idleReleaseS: 0.05 } }) });
@@ -219,6 +422,140 @@ test("an idle session is released after the policy's idle spell, and the record 
   const [next] = await agent.run(turn(["snapshot"]));
   assert.equal(next.isError, false);
   assert.equal(backend.tally().creates, 2);
+});
+
+test("the coding agent: a dropped connection that will not come back is retried 1 s then 3 s, then released as lost; the next call opens a fresh browser and says why", { timeout: 60_000 }, async (t) => {
+  const LOST = "Stagehand loopback CDP is disconnected";
+  const backend = fake();
+  const snapshot = backend.driverFace.snapshot.bind(backend.driverFace);
+  let drops = 0;
+  backend.driverFace.snapshot = async (id) => { if (drops > 0) { drops -= 1; throw new Error(LOST, { cause: { code: -32603, message: LOST, data: { name: "Error" } } }); } return snapshot(id); };
+  const agent = await startAgent(t, { extension: extensionOf(backend) });
+  await agent.run(turn(["run", { code: "await page.click('a')" }]));
+  drops = 1;
+  backend.fail("attach", 3);
+  const [dropped] = await agent.run(turn(["snapshot"]));
+  const answer = failure(dropped.text);
+  assert.deepEqual([dropped.isError, answer.code, answer.retryable, answer.next?.action], [true, "browser_unavailable", false, "browser_relaunch"], dropped.text);
+  assert.equal(backend.ledger.filter((row) => row.op === "attach-failed").length, 3, "the first reconnect and two retries");
+  const ended = agent.custom("browser.session").at(-1);
+  assert.deepEqual([ended.state, ended.reason], ["released", "lost"]);
+  assert.equal(backend.tally().releases, 1, "the provider released it once");
+  const [next] = await agent.run(turn(["snapshot"]));
+  assert.match(next.text, /^Your previous browser session could not be reconnected and was released/);
+  assert.deepEqual(next.result.details?.previous_session, { released: true, reason: "lost", at: ended.endedAt });
+});
+
+/** A driver factory whose reconnect meets an earlier init still running in the extension and waits for it, as
+ *  stagehandDriver does (up to its 60 s in-flight wait, here `waitMs`), honouring the attach's signal; a wait that ends
+ *  starts a second init. */
+function initStillRunning(base, waitMs) {
+  const seen = { attaches: 0, secondInits: 0, waitAborted: false };
+  const factory = async (target, signal, options) => {
+    seen.attaches += 1;
+    if (seen.attaches === 1) return base(target, signal, options);
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, waitMs);
+      signal?.addEventListener("abort", () => { clearTimeout(timer); seen.waitAborted = true; reject(signal.reason ?? new Error("aborted")); }, { once: true });
+    });
+    seen.secondInits += 1;
+    return base(target, signal, options);
+  };
+  return { factory, seen };
+}
+
+test("the coding agent: an attach given a deadline stops waiting on an earlier init at that deadline, starts no second init, and the session is then released as lost", async () => {
+  const backend = fake();
+  const stuck = initStillRunning(fakeDriver(backend), 3_000);
+  const custody = new LocalCustody({
+    config: { label: "", run: "run-deadline", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 180, batchTimeoutMs: 60_000 } },
+    provider: async () => backend.provider, driver: stuck.factory, keep: () => {}, redact: (text) => text, signal: new AbortController().signal,
+  });
+  await custody.session();
+  await custody.dropped();
+  const started = Date.now();
+  await assert.rejects(custody.session(AbortSignal.timeout(300)), "the reconnect's attach ends at its deadline");
+  assert.ok(Date.now() - started < 300 + 1_000, `it ended near the deadline, not after the attach's wait (${Date.now() - started} ms)`);
+  assert.equal(stuck.seen.secondInits, 0, "no second init started");
+  assert.ok(stuck.seen.waitAborted, "the wait for the earlier init was cut by the deadline");
+  assert.equal((await custody.unreachable()).released, true, "then released as lost");
+  assert.equal(backend.tally().releases, 1, "the provider released it once: nothing keeps billing");
+  await custody.close("close");
+});
+
+test("the coding agent: a session held for a person is kept when it cannot be reconnected: a typed answer, and it stays held", async () => {
+  const backend = fake();
+  const custody = new LocalCustody({
+    config: { label: "", run: "run-held-unreachable", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 180, batchTimeoutMs: 60_000 } },
+    provider: async () => backend.provider, driver: fakeDriver(backend), keep: () => {}, redact: (text) => text, signal: new AbortController().signal,
+  });
+  const session = await custody.session();
+  await custody.hold("handoff-3725");
+  assert.deepEqual(await custody.unreachable(), { released: false, lastUrl: session.record.lastUrl, kept: "held" });
+  assert.equal(backend.tally().releases, 0, "nothing released");
+  await custody.resume(null);
+  assert.equal((await custody.session()).tag, session.tag, "the same session, handed back");
+  await custody.close("close");
+});
+
+test("the coding agent: a session a person views or drives through the live view is kept when it cannot be reconnected, never released", async () => {
+  for (const [gate, kept] of [[{ viewing: true }, "viewing"], [{ state: "person" }, "person_driving"]]) {
+    const backend = fake();
+    const gates = () => ({ state: () => gate.state ?? "idle", input: () => "driving", model: () => ({ release() {} }), onChange: () => () => {}, viewing: () => gate.viewing ?? false, setViewing() {}, end() {} });
+    const custody = new LocalCustody({
+      config: { label: "", run: "run-kept", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 180, batchTimeoutMs: 60_000 } },
+      gates, provider: async () => backend.provider, driver: fakeDriver(backend), keep: () => {}, redact: (text) => text, signal: new AbortController().signal,
+    });
+    const session = await custody.session();
+    assert.deepEqual(await custody.unreachable(), { released: false, lastUrl: session.record.lastUrl, kept }, JSON.stringify(gate));
+    assert.deepEqual([backend.tally().releases, (await custody.session()).tag], [0, session.tag], "the same session, not released");
+    await custody.close("close");
+  }
+});
+
+test("the coding agent: an unreachable session nobody is on leaves no gate behind: the gate custody's check looked up is let go when the session is released", async () => {
+  const { createDrivingGates } = await import("@parcha/pi-browser/live-view");
+  const registry = createDrivingGates();
+  const looked = [];
+  const gates = (tag) => { const gate = registry(tag); looked.push([tag, gate]); return gate; };
+  const backend = fake();
+  const custody = new LocalCustody({
+    config: { label: "", run: "run-gone", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 180, batchTimeoutMs: 60_000 } },
+    gates, provider: async () => backend.provider, driver: fakeDriver(backend), keep: () => {}, redact: (text) => text, signal: new AbortController().signal,
+  });
+  await custody.session();
+  const from = looked.length;
+  assert.equal((await custody.unreachable()).released, true, "released as lost: nobody was on it");
+  const [tag, gate] = looked.slice(from)[0] ?? [];
+  assert.ok(tag, "the check looked the session's gate up");
+  const again = registry(tag);
+  assert.notEqual(again, gate, "a lookup now makes a new gate: the one the check made was let go");
+  again.onChange(() => {})();
+  await custody.close("close");
+});
+
+test("the coding agent's first call after an idle release says so first, with previous_session: an idle release is never silent", async (t) => {
+  const backend = fake();
+  const agent = await startAgent(t, { extension: extensionOf(backend, { policy: { idleReleaseS: 0.05 } }) });
+  await agent.run(turn(["snapshot"]));
+  await until(() => backend.liveCount() === 0);
+  const ended = agent.custom("browser.session").at(-1);
+  const [next, after] = await agent.run(turn(["snapshot"]), turn(["snapshot"]));
+  assert.equal(next.isError, false, next.text);
+  assert.match(next.text, /^Your previous browser session was released/, "the release is the first thing the call says");
+  assert.deepEqual(next.result.details?.previous_session, { released: true, reason: "idle", at: ended.endedAt });
+  assert.equal(after.result.details?.previous_session, undefined, "only the first call after the release says it");
+  // A replacement launch that fails in between does not take the release's place.
+  const flaky = fake();
+  const other = await startAgent(t, { extension: extensionOf(flaky, { policy: { idleReleaseS: 0.05 } }) });
+  await other.run(turn(["snapshot"]));
+  await until(() => flaky.liveCount() === 0);
+  const idle = other.custom("browser.session").at(-1);
+  flaky.fail("attach", 1);
+  const [failed, told] = await other.run(turn(["snapshot"]), turn(["snapshot"]));
+  assert.equal(failed.isError, true, "the replacement launch failed");
+  assert.match(told.text, /^Your previous browser session was released/);
+  assert.deepEqual(told.result.details?.previous_session, { released: true, reason: "idle", at: idle.endedAt });
 });
 
 test("the coding agent's browser_release after an idle release says the session was already released, as data", async (t) => {
@@ -346,6 +683,101 @@ test("a driver whose close never comes back does not hold the release: the provi
   const [, released] = await agent.run(turn(["snapshot"]), turn(["browser_release"]));
   assert.equal(failure(released.text).released, true);
   assert.equal(backend.tally().releases, 1, "the provider released the session");
+});
+
+test("the coding agent's custody: a hold refuses every call until the session is handed back, and a driver from before it cannot act", async () => {
+  const backend = fake();
+  const kept = [];
+  const custody = new LocalCustody({
+    config: { label: "", run: "run-held", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0.05, batchTimeoutMs: 60_000 } },
+    provider: async () => backend.provider, driver: fakeDriver(backend), keep: (_type, data) => kept.push(data.state), redact: (text) => text, signal: new AbortController().signal,
+  });
+  const codeOf = (promise) => promise.then(() => "acted", (error) => error.failure?.code ?? String(error));
+  assert.equal(await codeOf(custody.hold("handoff-1")), "refused", "no session to hand over");
+  const before = await custody.session();
+  custody.activity(1);
+  custody.activity(-1);
+  const held = await custody.hold("handoff-1");
+  assert.deepEqual(held, { tag: before.tag, sessionId: before.sessionId });
+  assert.deepEqual(await Promise.all([codeOf(before.driver.page()), codeOf(custody.session()), codeOf(custody.relaunch({})), codeOf(custody.hold("handoff-2"))]), ["waiting_for_human", "waiting_for_human", "waiting_for_human", "waiting_for_human"]);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual([await codeOf(custody.session()), backend.tally().releases], ["waiting_for_human", 0], "an idle spell never releases a held session, even one armed before the hold");
+  await custody.resume("A person finished your handoff (done).");
+  const after = await custody.session();
+  assert.deepEqual([after.fence, after.notice, await codeOf(before.driver.page())], [2, "A person finished your handoff (done).", "stale_snapshot"]);
+  assert.equal(backend.dispatched.filter((row) => row.op === "read").length, 0);
+  assert.deepEqual([backend.tally().creates, backend.tally().attaches], [1, 2]);
+  await custody.hold("handoff-3");
+  assert.deepEqual(await custody.release(), { released: true, sessionId: before.sessionId });
+  assert.deepEqual(kept, ["creating", "live", "held", "live", "held", "released"]);
+  assert.equal(backend.liveCount(), 0);
+});
+
+test("the coding agent's custody: a held session the host assigned answers a relaunch with the hold, not the fixed-session refusal", async () => {
+  const backend = fake();
+  const made = await backend.provider.create({ tag: "host-made", maxLifetimeS: 600, idleTimeoutS: 0, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} }, new AbortController().signal);
+  const { assignedSessionProvider } = await import("../dist/providers/assigned.js");
+  const provider = assignedSessionProvider({ name: "host-site", session: { id: made.id, attach: () => backend.provider.attach(made), status: async () => "running", release: async () => {}, failure: () => null } });
+  const custody = new LocalCustody({
+    config: { label: "", run: "run-held-fixed", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 180, batchTimeoutMs: 60_000 } },
+    provider: async () => provider, driver: fakeDriver(backend), keep: () => {}, redact: (text) => text, signal: new AbortController().signal,
+  });
+  await custody.session();
+  await custody.hold("handoff-1");
+  const code = await custody.relaunch({}).then(() => "acted", (error) => error.failure?.code ?? String(error));
+  assert.equal(code, "waiting_for_human");
+  assert.deepEqual([backend.tally().creates, backend.tally().releases], [1, 0], "nothing launched or released");
+  await custody.close("close");
+});
+
+test("the coding agent's custody: a held session the provider ended stops the wait, and the next call opens a fresh one", async () => {
+  const backend = fake();
+  const custody = new LocalCustody({
+    config: { label: "", run: "run-held-ended", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 180, batchTimeoutMs: 60_000 } },
+    provider: async () => backend.provider, driver: fakeDriver(backend), keep: () => {}, redact: (text) => text, signal: new AbortController().signal,
+  });
+  await custody.session();
+  await custody.hold("handoff-1");
+  backend.endAll();
+  const next = await custody.session();
+  assert.match(next.notice ?? "", /had ended \(the provider closed it\)/);
+  assert.equal(backend.tally().creates, 2);
+  await custody.close("close");
+});
+
+test("the coding agent's idle release after #1001 and #1068 compose: a held session past the idle window stays and is told nothing; an unheld one is released, and the next session says so", async () => {
+  const policy = { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 0.05, batchTimeoutMs: 60_000 };
+  const custodyOf = (backend, run) => new LocalCustody({
+    config: { label: "", run, policy },
+    provider: async () => backend.provider, driver: fakeDriver(backend), keep: () => {}, redact: (text) => text, signal: new AbortController().signal,
+  });
+  // Held (#1001's guard): the idle window passes and nothing is released, so nothing is told; handed back, it is the same session.
+  const heldBackend = fake();
+  const held = custodyOf(heldBackend, "run-idle-held");
+  const first = await held.session();
+  held.activity(1);
+  held.activity(-1);
+  await held.hold("handoff-1");
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(heldBackend.tally().releases, 0, "a held session is never idle-released");
+  await held.resume("A person finished your handoff (done).");
+  const back = await held.session();
+  assert.equal(back.tag, first.tag, "the same session after the hand-back");
+  assert.doesNotMatch(back.notice ?? "", /released/, "nothing was released, so there is no release notice");
+  assert.equal(back.replaced ?? null, null, "and no replaced session");
+  await held.close("close");
+  // Unheld (#1068's notice): the same window releases it, and the next session leads with the release and names what it replaced.
+  const openBackend = fake();
+  const open = custodyOf(openBackend, "run-idle-open");
+  const before = await open.session();
+  open.activity(1);
+  open.activity(-1);
+  await until(() => openBackend.tally().releases === 1);
+  const next = await open.session();
+  assert.notEqual(next.tag, before.tag, "a fresh session");
+  assert.match(next.notice ?? "", /^Your previous browser session was released/, "the release is told to the next session");
+  assert.equal(next.replaced?.reason, "idle");
+  await open.close("close");
 });
 
 /** A provider whose release really releases and then, `times` times, says a directory is left behind: what the cdp provider does when a profile cannot be removed (EACCES, EBUSY). */
@@ -501,4 +933,65 @@ test("a profile the provider cannot keep, or beside a context id, is refused wit
     assert.deepEqual([failure(refused.text).code, failure(refused.text).effect], ["refused", "none"]);
     assert.equal(backend.tally().creates, 0);
   }
+});
+
+const REQUEST = "7d3f2a9c-1b4e-4c8a-9f21-0a6b5c4d3e21";
+const ASK = { request_id: REQUEST, instruction: "Solve the captcha on the page.", completion_condition: "the search results show" };
+const handoffPort = (answers) => {
+  const asked = [], polled = [];
+  return { asked, polled, port: {
+    request: async (ask) => { asked.push(ask); return ask.instruction.startsWith("Refuse") ? { refused: "nobody is at the desk" } : { interactionId: `int-${ask.requestId}` }; },
+    outcome: async (id) => { polled.push(id); return answers.length > 1 ? answers.shift() : answers[0]; },
+  } };
+};
+
+test("the coding agent's browser_request_handoff blocks on the port until the person answers, then the session comes back", async (t) => {
+  const backend = fake();
+  const h = handoffPort(["pending", "done"]);
+  const agent = await startAgent(t, { extension: extensionOf(backend, { handoff: h.port }) });
+  assert.ok(agent.session.getAllTools().some((tool) => tool.name === "browser_request_handoff"), "listed with a handoff port");
+  const [, handed, next] = await agent.run(turn(["snapshot"]), turn(["browser_request_handoff", ASK]), turn(["snapshot"]));
+  const answer = failure(handed.text);
+  assert.deepEqual([answer.ok, answer.outcome, answer.completion_condition], [true, "done", ASK.completion_condition], handed.text);
+  assert.deepEqual([h.asked.length, h.polled.length], [1, 2]);
+  assert.deepEqual(h.asked.map((ask) => ask.sessionId), [...backend.sessions.keys()], "the ask names the provider's session id");
+  assert.equal(next.isError, false, next.text);
+  assert.doesNotMatch(next.text, /handoff/);
+  assert.deepEqual([backend.tally().creates, backend.tally().attaches], [1, 2]);
+  const refusing = handoffPort(["done"]);
+  const other = await startAgent(t, { extension: extensionOf(fake(), { handoff: refusing.port }) });
+  const [, refused] = await other.run(turn(["snapshot"]), turn(["browser_request_handoff", { ...ASK, instruction: "Refuse this one." }]));
+  assert.deepEqual([failure(refused.text).code, refusing.polled.length], ["refused", 0], refused.text);
+  const without = await startAgent(t, { extension: extensionOf(fake()) });
+  assert.ok(!without.session.getAllTools().some((tool) => tool.name === "browser_request_handoff"), "not listed without one");
+});
+
+test("the coding agent's custody: a handoff wait the caller aborts gives the session back at once", async () => {
+  const backend = fake();
+  const custody = new LocalCustody({
+    config: { label: "", run: "run-handoff", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 180, batchTimeoutMs: 60_000 } },
+    provider: async () => backend.provider, driver: fakeDriver(backend), keep: () => {}, redact: (text) => text, signal: new AbortController().signal, handoff: handoffPort(["pending"]).port,
+  });
+  await custody.session();
+  const stop = new AbortController();
+  setTimeout(() => stop.abort(), 100);
+  const code = await custody.handoff({ requestId: REQUEST, instruction: ASK.instruction, completionCondition: ASK.completion_condition }, stop.signal).then(() => "answered", (error) => error.failure?.code ?? String(error));
+  assert.equal(code, "aborted");
+  const after = await custody.session();
+  assert.deepEqual([after.record.state, after.fence], ["live", 2]);
+  await custody.close("close");
+});
+
+test("the coding agent's handoff wait leaves no abort listener behind on the session's signal", async () => {
+  const backend = fake();
+  const life = new AbortController();
+  const custody = new LocalCustody({
+    config: { label: "", run: "run-handoff-listeners", policy: { proxies: false, verified: false, captcha: false, geolocation: null, region: null, contextId: null, sessionTimeoutS: 1800, idleReleaseS: 180, batchTimeoutMs: 60_000 } },
+    provider: async () => backend.provider, driver: fakeDriver(backend), keep: () => {}, redact: (text) => text, signal: life.signal, handoff: handoffPort(["pending", "pending", "done"]).port,
+  });
+  await custody.session();
+  const before = getEventListeners(life.signal, "abort").length;
+  assert.deepEqual(await custody.handoff({ requestId: REQUEST, instruction: ASK.instruction, completionCondition: ASK.completion_condition }), { outcome: "done" });
+  assert.equal(getEventListeners(life.signal, "abort").length, before);
+  await custody.close("close");
 });

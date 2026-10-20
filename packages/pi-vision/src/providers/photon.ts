@@ -55,8 +55,11 @@ parentPort.on("message", ({ id, op, args }) => {
   catch (error) { parentPort.postMessage({ id, error: String((error && error.message) || error) }); }
 });`;
 
+/** What `photonImages` takes. */
 export type PhotonOptions = { /** Cut one operation after this many milliseconds. */ readonly timeoutMs?: number };
 
+/** The default image processor: Photon in a worker thread, when `@silvia-odwyer/photon-node` is installed. The worker is stopped
+ *  when idle, after an error and after `timeoutMs`. */
 export function photonImages(options: PhotonOptions = {}): ImageProcessor & Provider {
   const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
   /** The path of Photon's entry, found from this package and then from the working directory; throws a `needs` error. */

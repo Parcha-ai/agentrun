@@ -875,17 +875,31 @@ describe("archilPlace", () => {
     const at = makePlace({ ...REF, control, host, signalPollMs: 0 });
     const it = at.signals!(9)[Symbol.asyncIterator]();
     const pending = it.next();
+    // The heap after `polls` more polls, every collectable thing collected: a GC, a turn for what it freed to settle, and
+    // a GC again.
     const heapAfter = async (polls: number) => {
       const until = control.gets + polls;
       while (control.gets < until) await sleep(50);
-      gc();
+      for (let i = 0; i < 3; i++) {
+        gc();
+        await new Promise((resolve) => setImmediate(resolve));
+      }
       return process.memoryUsage().heapUsed;
     };
-    const before = await heapAfter(300);
-    const after = await heapAfter(3_000);
+    // What the test guards against (each wait raced against one promise that lives as long as the iterator) keeps about
+    // 1.2 KB a poll, so it grows every window by megabytes. One sample against an absolute bound could not tell that from
+    // a run's noise: a CI leg once read 1.01 MB over 3000 polls with nothing retained. So, after a warm-up (the JIT and the
+    // lazily compiled paths settle first), two windows, and the smaller one's growth must stay under 400 bytes a poll: a
+    // leak grows both, a one-off allocation lands in one.
+    const WINDOW = 2_500;
+    const BOUND = 400 * WINDOW;
+    const warm = await heapAfter(1_000);
+    const first = await heapAfter(WINDOW);
+    const second = await heapAfter(WINDOW);
     await it.return!();
     assert.deepEqual(await pending, { done: true, value: undefined });
-    assert.ok(after - before < 1_000_000, `the heap grew ${after - before} bytes over 3000 polls`);
+    const grew = [first - warm, second - first];
+    assert.ok(Math.min(...grew) < BOUND, `the heap grew ${grew.join(" and ")} bytes over two windows of ${WINDOW} polls (bound ${BOUND} each)`);
   });
 
   it("signals never reject: a lasting read failure is one signals-failed and then done; a short one is retried; a missing request is waited for", async () => {

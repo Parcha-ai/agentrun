@@ -71,7 +71,11 @@ export function withRecovery(driver: RecoveryDriver, deps: RecoveryAdapters, opt
         // An attempt that delivered a submission is asked for again only when its node never committed. A runner that
         // keeps what it delivered answers it again below, as the same attempt; with any other runner it is spent.
         if (admission.status === "submitted" && !options.durableNodes) { driver.stepAttemptFailed(params.executionPath); admission = admit(); }
-        if (admission.status === "failed") throw new Error(`${params.label} failed after ${admission.attemptsAllowed} attempts`);
+        // A step that failed on an item failure is refused with it, so the item it lies in ends on the same failure.
+        if (admission.status === "failed") {
+          throw admission.failure ? Object.assign(new Error(admission.failure.message), { code: admission.failure.code, itemFailure: true })
+            : new Error(`${params.label} failed after ${admission.attemptsAllowed} attempts`);
+        }
         // The step's record is durable before the attempt runs. A stop or a caller's cancellation that landed
         // meanwhile ends the step here: the runner is not called, and no attempt is spent. A pause waiting for an
         // effect in flight holds the step here until it is taken.
@@ -88,7 +92,7 @@ export function withRecovery(driver: RecoveryDriver, deps: RecoveryAdapters, opt
           // A failure the runner marked final (an attempt that ended on a bound of its own) gets no second attempt: it
           // would spend the same again.
           const final = (error as { final?: unknown } | null)?.final === true;
-          driver.stepAttemptFailed(params.executionPath, final);
+          driver.stepAttemptFailed(params.executionPath, final, error);
           if (final) throw error;
           admission = admit();
           if (admission.status !== "running") throw error;

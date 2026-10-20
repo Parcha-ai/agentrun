@@ -5,6 +5,7 @@
 
 /** A word as the fake answers it, in seconds. */
 export type FakeWord = { readonly text: string; readonly start: number; readonly end: number };
+/** One request the fake provider received: its address, method, headers and fields. */
 export type FakeTranscriptionRequest = {
   readonly url: string;
   readonly method: string;

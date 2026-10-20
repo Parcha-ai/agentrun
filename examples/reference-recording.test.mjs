@@ -12,7 +12,7 @@ import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { apply } from '@earendil-works/chord/delta';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import { durableDoc, readJournal, recordingLines, snapshotLines } from '@parcha/agentrun-pi/durable';
-import { placeAt, RUN_KEY } from './reference/assemble.ts';
+import { placeAt, RUN_KEY } from '@parcha/agentrun-harness';
 import { killAnywhere } from './reference/kill-anywhere.ts';
 
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');

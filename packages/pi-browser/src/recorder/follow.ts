@@ -13,6 +13,9 @@ export type FollowHandlers = {
 export type Follower = {
   /** Runs an expression in the followed page and gives its value; rejects when there is no page, the page errors or nothing answers in `ms`. */
   evaluate(expression: string, ms?: number): Promise<unknown>;
+  /** One screenshot of the followed page as it is now, sized like a screencast frame (JPEG, at most the options' width and height), with the page's own CSS size; rejects when there is no page, the browser refuses, nothing answers
+   *  in `ms`, or the capture moved to another page meanwhile. For a page that does not repaint, so the screencast sends nothing. */
+  capture(ms?: number): Promise<{ bytes: Buffer; page: { deviceWidth: number; deviceHeight: number; epoch: number } }>;
   /** Which page, at which moment of its life, the capture is on: it changes when the capture moves to another page and at every main-frame
    *  navigation, so a frame held across a change can be told from one of the page now shown. */
   epoch(): number;
@@ -30,7 +33,7 @@ export function followPage(url: string, handlers: FollowHandlers, options: Follo
   /** Every page the browser has: its address, and when it was last opened or moved (an arrival counter, not a clock). */
   const pages = new Map<string, { url: string; moved: number }>();
   let moves = 0;
-  const waiting = new Map<number, { resolve(value: unknown): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
+  const waiting = new Map<number, { resolve(value: unknown): void; reject(error: Error): void; timer: NodeJS.Timeout; raw?: boolean }>();
 
   const send = (method: string, params: object = {}, sessionId?: string | null): number => {
     const id = ++seq;
@@ -65,8 +68,8 @@ export function followPage(url: string, handlers: FollowHandlers, options: Follo
       waiting.delete(message.id);
       clearTimeout(entry.timer);
       if (message.error) entry.reject(new Error(message.error.message ?? "the browser refused"));
-      else if (message.result?.exceptionDetails) entry.reject(new Error("the page threw"));
-      else entry.resolve(message.result?.result?.value);
+      else if (!entry.raw && message.result?.exceptionDetails) entry.reject(new Error("the page threw"));
+      else entry.resolve(entry.raw ? message.result : message.result?.result?.value);
       return;
     }
     const { method, params, sessionId } = message;
@@ -107,6 +110,27 @@ export function followPage(url: string, handlers: FollowHandlers, options: Follo
         timer.unref?.();
         waiting.set(id, { resolve, reject, timer });
       });
+    },
+    capture(ms = 4_000) {
+      const sessionId = current?.sessionId;
+      if (!sessionId || socket.readyState !== 1) return Promise.reject(new Error("no page to capture"));
+      const at = epoch;
+      const ask = (method: string, params: object): Promise<any> => new Promise((resolve, reject) => {
+        const id = send(method, params, sessionId);
+        const timer = setTimeout(() => { waiting.delete(id); reject(new Error("the page did not answer")); }, ms);
+        timer.unref?.();
+        waiting.set(id, { resolve, reject, timer, raw: true });
+      });
+      return (async () => {
+        const view = (await ask("Page.getLayoutMetrics", {}))?.cssVisualViewport;
+        const w = Number(view?.clientWidth) || 0;
+        const h = Number(view?.clientHeight) || 0;
+        if (!(w > 0 && h > 0)) throw new Error("the page has no size");
+        const shot = await ask("Page.captureScreenshot", { format: "jpeg", quality: options.quality, clip: { x: Number(view.pageX) || 0, y: Number(view.pageY) || 0, width: w, height: h, scale: Math.min(1, options.maxWidth / w, options.maxHeight / h) } });
+        if (typeof shot?.data !== "string") throw new Error("the browser sent no capture");
+        if (epoch !== at || current?.sessionId !== sessionId) throw new Error("the capture moved to another page");
+        return { bytes: Buffer.from(shot.data, "base64"), page: { deviceWidth: w, deviceHeight: h, epoch: at } };
+      })();
     },
     epoch: () => epoch,
     close() { closing = true; for (const entry of waiting.values()) { clearTimeout(entry.timer); entry.reject(new Error("closed")); } waiting.clear(); try { socket.close(); } catch { /* already closed */ } },

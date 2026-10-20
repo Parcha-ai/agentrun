@@ -5,6 +5,7 @@
 
 import { DECODE_GUARD_PIXELS } from "./limits.js";
 
+/** The kinds a path is read as. */
 export const KINDS = Object.freeze(["image", "pdf", "office", "sheet", "video", "audio", "recording", "text", "unknown"] as const);
 /** `office` is a word processor or slide document, `sheet` a spreadsheet, `recording` a handle such as `session:<id>`,
  *  `text` a file the host's own text read serves. */
@@ -38,6 +39,7 @@ const FORMATS = {
   zip: ["a zip archive", "unknown", null], ole2: ["an OLE2 container (a legacy Office file)", "unknown", null],
   empty: ["an empty file", "text", null], text: ["text", "text", null], binary: ["binary data in no format this package reads", "unknown", null],
 } as const satisfies Record<string, readonly [string, Kind, string | null]>;
+/** A format a file's first bytes name; `FORMATS` gives each its words and the kind it reads as. */
 export type SniffedFormat = keyof typeof FORMATS;
 
 /** The kind a file name's extension claims. Text has no entry: any content can be named anything. */

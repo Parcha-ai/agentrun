@@ -195,6 +195,49 @@ const sectionEnd = (lines, heading) => {
   return end;
 };
 
+/** What one fold does to a published changelog with no section for `version` yet, in place: `bullets` join the Unreleased section's
+ *  own entries, the section is renamed `## <version> (<date>)`, and an empty Unreleased opens above it. */
+function datedSection(lines, version, date, bullets) {
+  const unreleased = lines.findIndex(unreleasedHeading);
+  const held = lines.slice(unreleased + 1, sectionEnd(lines, unreleased)).some(line => line.trim());
+  lines.splice(sectionEnd(lines, unreleased), 0, ...(held ? [] : ['']), ...bullets);
+  const heading = lines[unreleased];
+  lines.splice(unreleased, 1, heading, '', `## ${version} (${date})`);
+}
+
+/**
+ * What an earlier fold of this release left in the published changelog at `file`, when it is exactly that: the version's section
+ * that one fold of the fragments it deleted (gone from the tree, present at the merge base with `base`) writes over the merge base's
+ * text, under the date it wrote. A release that folds, merges main and folds a late fragment again must write what one fold of all of
+ * them writes, which groups the section by kind, so the section is rebuilt from the merge base's text with the earlier and the new
+ * fragments together in fold order. Undefined when there is nothing to rebuild: no earlier fold, no base to compare with, or a section
+ * that is not that fold's exact output (a hand edit stays, and the new bullets go at the end of the section as before).
+ */
+async function earlierDatedFold(root, file, base, current, version, fragments, directories) {
+  let mergeBase;
+  try { mergeBase = (await git(root, ['merge-base', base, 'HEAD'])).trim(); } catch { return undefined; }
+  const was = await gitShow(root, mergeBase, file);
+  if (was === null || !was.split('\n').some(unreleasedHeading) || was.split('\n').some(line => isVersionHeading(line, version))) return undefined;
+  const lines = current.split('\n');
+  const at = lines.findIndex(line => isVersionHeading(line, version));
+  const date = at < 0 ? undefined : /\((\d{4}-\d{2}-\d{2})\)\s*$/.exec(lines[at])?.[1];
+  if (date === undefined) return undefined;
+  const prior = [];
+  for (const fragment of await removedFragments(root, mergeBase, new Set(directories.values()))) {
+    const files = await Promise.all(fragment.packages.map(name => changelogFor(root, directories, name)));
+    if (files.includes(file)) prior.push(fragment);
+  }
+  if (prior.length === 0) return undefined;
+  const written = fragmentsOf => {
+    const text = was.split('\n');
+    datedSection(text, version, date, [...fragmentsOf].sort(foldOrder).map(fragment => bulletOf(fragment.body)));
+    const start = text.findIndex(line => isVersionHeading(line, version));
+    return text.slice(start, sectionEnd(text, start));
+  };
+  if (written(prior).join('\n') !== lines.slice(at, sectionEnd(lines, at)).join('\n')) return undefined;
+  return { at, end: sectionEnd(lines, at), section: written([...prior, ...fragments]) };
+}
+
 /**
  * Folds the release into the changelogs. Every changelog is visited: one whose Unreleased section holds bullets or that gets
  * fragments has that section renamed `## <version> (<date>)`, with the fragments' bullets after its own, and a new empty
@@ -204,7 +247,7 @@ const sectionEnd = (lines, heading) => {
  * `"private": true`) ships nothing in this release, so its changelog is never dated: its fragments' bullets are appended to its
  * Unreleased section, which keeps its name and its entries. With `base` (a ref the release merges main from), a held changelog whose
  * Unreleased section is the output of an earlier fold of this release is rebuilt from the merge base's text with the earlier and the
- * new fragments together in fold order, so folding in two commits gives what folding once gives (see `earlierFold`).
+ * new fragments together in fold order, so folding in two commits gives what folding once gives (see `earlierFold`). The same holds for a published package's dated section (see `earlierDatedFold`).
  */
 export async function fold(root, version, date, base) {
   assert.match(version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/, 'The version is like 0.1.0-beta.13');
@@ -238,7 +281,9 @@ export async function fold(root, version, date, base) {
       appendToUnreleased(lines, earlier ? earlier.bullets : bullets);
     } else if (existing >= 0) {
       if (bullets.length === 0) continue;
-      lines.splice(sectionEnd(lines, existing), 0, ...bullets);
+      const earlier = base ? await earlierDatedFold(root, file, base, original, version, owners.get(file), directories) : undefined;
+      if (earlier) lines.splice(earlier.at, earlier.end - earlier.at, ...earlier.section);
+      else lines.splice(sectionEnd(lines, existing), 0, ...bullets);
     } else {
       if (unreleased < 0 && bullets.length === 0) continue;
       assert.ok(unreleased >= 0, `${file} has no Unreleased heading to fold`);
@@ -246,9 +291,7 @@ export async function fold(root, version, date, base) {
       // The root always gets the version's section (the release preflight requires it), also when every change is a package's.
       if (file === 'CHANGELOG.md' && !held && bullets.length === 0 && fragments.length > 0) bullets = ['- Package changes only; see the package changelogs.'];
       if (!held && bullets.length === 0) continue;
-      lines.splice(sectionEnd(lines, unreleased), 0, ...(held ? [] : ['']), ...bullets);
-      const heading = lines[unreleased];
-      lines.splice(unreleased, 1, heading, '', `## ${version} (${date})`);
+      datedSection(lines, version, date, bullets);
     }
     while (lines.at(-1) === '') lines.pop();
     writes.push({ file, original, text: `${lines.join('\n')}\n` });

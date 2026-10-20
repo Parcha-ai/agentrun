@@ -142,7 +142,7 @@ call id, inside the tool's commit. It is replay-safe: a call rerun after a crash
 new. It makes no model call. A `used` mark names the learning that helped by its id, which must be a learning this run
 was given (listed in its section, or over the cap), or the mark is refused at the call. A `workflow` note names a workflow
 the run saved (its name, by the DSL's rule: 1 to 64 lowercase letters, digits, dashes or underscores) and says in its
-text when to use it. A lesson, fact or correction keeps an id only when it names a learning this run was given; any other
+text when to use it; curation judges the workflow itself and writes the note's text nowhere (below). A lesson, fact or correction keeps an id only when it names a learning this run was given; any other
 id, a blank one included, is dropped and the note kept without it. Text is at most 1,000 bytes and
 evidence 1,000 bytes in all; a run makes at most 8 notes of every type but `used`, and 32 `used` marks. Evidence stays with the run and is
 never part of a learning. `agentLearn({ guard, secrets, caseValues })` checks every call with the host's guard first,
@@ -238,6 +238,11 @@ sha. The result is one of:
 - `{ status: "refused", refusals }`: any guard hit refuses all of it, and nothing is committed or pushed, so no ref or
   object holds the refused value.
 
+`read` is the untrusted text the run read (the pages its tools fetched, say). A saved workflow any `COPIED_TEXT` (40)
+characters of whose strings, case and whitespace folded, appear in one is withheld: its records stay out of the proposal,
+the rest is proposed as usual, and a `proposed`, `already` or `empty` result names it in `withheld: [{ name, reason }]`,
+with a reason that names nothing the run read. `copiesRead(workflow, read)` is that check.
+
 A push the remote refuses throws a `GitRemoteError`. `proposeFiles` is the same guard-commit-push for files the caller
 has already rendered. `renderInbox` and `parseInbox` are the inbox's format: front matter (the run, and `seed`, the commit the run was seeded from,
 read from its `learn.seed` record, so a curator can stamp a learning with what the run actually saw; a run that was not
@@ -267,12 +272,13 @@ probability, over the candidate's own text, never a paraphrase (`QUESTIONS` hold
 
 | Question | Asked of | Yes at or above, no at or below | A yes |
 | --- | --- | --- | --- |
-| `general` | every new lesson, fact, correction and workflow "when" | 0.8, 0.2 | passes; a no refuses it as about this case |
+| `general` | every new lesson, fact and correction | 0.8, 0.2 | passes; a no refuses it as about this case |
 | `narrowsRules` | the same, with `rules` (AGENTS.md at main, or the `rules` option) | 0.5, 0.1 | refuses it |
 | `fromContent` | the same, when the candidate is marked `untrusted` | 0.5, 0.1 | refuses it |
 | `duplicate` | it and each active learning of its type, and the one a correction names | 0.8, 0.2 | the existing one counts a use and the run joins its provenance |
 | `supersedes` | the same pairs | 0.8, 0.2 | it is written and the existing one becomes `superseded`, naming it in `supersededBy` |
 | `contradicts` | the same pairs | 0.5, 0.2 | it is held |
+| `workflowCase` | each saved workflow a run proposes, its document as the DSL's store reads it, with `rules` | 0.5, 0.2 | refuses it |
 
 A judge on a general model rather than Jev does best asking it for `{ answer: "yes" | "no", confidence }`, with
 `confidence` from 0.5 to 1, and deriving the yes-probability itself: `{ type: "noul", noul }`, where `noul` is the
@@ -281,8 +287,13 @@ answer, so a sure no comes back as a likely yes.
 
 An answer between the two cuts holds the candidate; nothing uncertain is accepted. `thresholds` overrides any cut,
 `DEFAULT_THRESHOLDS` are the defaults above. A `used` mark counts one use per run for an active learning and needs no
-judgment. A workflow (its records under `inbox/<run id>/workflows/<name>/` and the `description`, the agent's
-when-to-use text from a `learn` call of type `workflow`) goes to the `admitWorkflow` hook, which answers `admitted`
+judgment. A workflow is judged on itself, never on the agent's note: a `learn` call of type `workflow` is asked no
+question and its text reaches no file, so a run that read untrusted content puts none of its own words into a later
+prompt. `narrowsRules` is not asked of a workflow either: a workflow is by design a slice of the job (it reads what it
+reads and hands the rest back), so measured against rules written for the agent it always looks narrower, and it cannot
+change the rules that bind the agent that runs it. Its records under `inbox/<run id>/workflows/<name>/` are read through the DSL's store, `workflowCase` is asked of
+the document (one the store refuses, or one that runs code, goes straight to the hook, which refuses or holds it), and
+then the records go to the `admitWorkflow` hook, with no description, which answers `admitted`
 with the files to write under `.pi/agentrun/workflows/<name>/` and `.agents/skills/<name>/`, `unchanged`, `held` or
 `refused`. A run's `uses/<run id>.json` goes to the `settleUses` hook, which folds the uses into the workflows' trials
 and answers the files to write and one decision per workflow (`promote`, `demote` or `hold`). Curation guards what
@@ -331,7 +342,8 @@ await seedWorkflows({ repo, sha: seeded.sha, into: workDir, workflows: seeded.wo
 
 // At the run's terminal: with the working directory, the step collects what the run saved that the repository did not
 // hold, and how it used what it had, and proposes them with the run's candidates. Explicit `workflows` or `uses` win.
-await proposeLearning({ repo, runId, target: harness, workDir });
+// `read`, the untrusted text the run read, withholds a saved workflow that copies any of it.
+await proposeLearning({ repo, runId, target: harness, workDir, untrusted: true, read: pages });
 
 // In curate: the two ports are the defaults, so there is nothing to pass.
 await curate({ repo, judge });
@@ -348,8 +360,10 @@ main.
 **Admitting.** `workflowAdmitter` is the curator's `AdmitWorkflow` port. It copies main's `trial.json` and skill for the name
 into a scratch directory, loads the run's records through the DSL's store there, which refuses a record whose name, metadata
 or SHA-256 does not match, then saves the revision the run ended on (what `latest` names) through the store. It writes
-`.agents/skills/<name>/SKILL.md` (the `description`, the agent's when-to-use text, is its description; the body says to run
-the workflow with the agentrun tool and to continue the task itself if it escalates) and `trial.json`, and returns every
+`.agents/skills/<name>/SKILL.md` (its description is `describe` of the revision's document, by default `schemaDescription`:
+the fields of its input and output, by name and type, with no text the agent wrote; a caller that hands over a
+`description` gets that instead, and curate never does; the body says to run the workflow with the agentrun tool and to
+continue the task itself if it escalates) and `trial.json`, and returns every
 path changed, as text, or `null` where one was deleted, for the curator's one commit. The name must be a skill name:
 lowercase letters and digits in words joined by single hyphens, because the skill folder carries it and pi refuses other
 names (`refused`). A workflow with a code node, or a shell or executor call, is `held` unless the host passes

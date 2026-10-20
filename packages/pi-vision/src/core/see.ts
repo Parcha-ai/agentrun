@@ -12,6 +12,8 @@ import type { CallContext, CallSetup, EyesAnswer } from "./host.js";
 import { fitImage } from "./image.js";
 import { aboutMedium, AS_IS, gatherMedia, namesMedia, once, requestedAbout, throwMiss, type About, type MediaMiss, type MediaRequest } from "./media.js";
 import { firstLine } from "./misses.js";
+import { base64Chars, toBase64 } from "./primitives.js";
+import { lookTiming } from "./timing.js";
 import { packRequests, type Part } from "./plan.js";
 
 export { SeeMiss } from "./media.js";
@@ -25,6 +27,7 @@ export type SeeAnswer = { readonly text: string; readonly model: string; readonl
 
 /** A code-mode global as pi-codemode's `globals` take it: the contract's name and words, and `execute`. */
 export type CodeGlobal<C, A> = C & { execute(request: unknown, context?: { readonly signal?: AbortSignal }): Promise<A> };
+/** `vision.see` as a code-mode global: the contract's words and `execute`, which puts a question about images to the eyes. */
 export type SeeGlobal = CodeGlobal<typeof VISION_SEE, SeeAnswer>;
 
 /** A fitted block on its way to the eyes, with the fragment it came from and the line the eyes are told beside it. */
@@ -52,7 +55,7 @@ export async function see(input: unknown, env: VisionEnv | undefined, call: Call
     if (!items.length && about) {
       return {
         tool: "look", args: { path: about.path, ask, model, native: false }, status: "ok", body,
-        facts: { sha256: about.sha256, kind: about.kind, fragment: about.fragment, key: lookKey({ sha256: about.sha256, fragment: about.fragment, ask, model }), shown_blocks: 0, ...facts },
+        facts: { sha256: about.sha256, kind: about.kind, fragment: about.fragment, key: lookKey({ sha256: about.sha256, fragment: about.fragment, ask, model }), shown_blocks: 0, ...lookTiming(call), ...facts },
       };
     }
     const fragment = [...new Set(items.map((item) => item.fragment))].join(", ");
@@ -60,7 +63,7 @@ export async function see(input: unknown, env: VisionEnv | undefined, call: Call
     return {
       tool: "look", args: { path: fragment, ask, model, native: false }, status: "ok", body,
       // The key names each block's own line in order, so the same images named otherwise are another look.
-      facts: { sha256, kind: items.some(isVideo) ? "video" : "image", fragment: "", key: lookKey({ sha256, fragment: items.map((item) => item.caption).join("\n"), ask, model }), shown_blocks: items.length, ...facts },
+      facts: { sha256, kind: items.some(isVideo) ? "video" : "image", fragment: "", key: lookKey({ sha256, fragment: items.map((item) => item.caption).join("\n"), ask, model }), shown_blocks: items.length, ...lookTiming(call), ...facts },
     };
   };
   // A miss before any request cost nothing; one after a request says what it knows of that request.
@@ -72,11 +75,11 @@ export async function see(input: unknown, env: VisionEnv | undefined, call: Call
 
   // Each image within the eyes' own limits and what one request to them carries; a video clip as it is, when they take it.
   const box = { ...eyes.limits.image, maxBytes: Math.min(eyes.limits.image.maxBytes, eyes.limits.requestBytes), imagesPerCall: eyes.limits.imagesPerCall };
-  const clipChars = Math.min(Math.ceil(eyes.limits.video.inlineBytes / 3) * 4, eyes.limits.requestBytes);
+  const clipChars = Math.min(base64Chars(eyes.limits.video.inlineBytes), eyes.limits.requestBytes);
   const items: Item[] = [];
   for (const { bytes, mimeType, fragment } of media) {
     if (isVideo({ mimeType })) {
-      const data = Buffer.from(bytes).toString("base64");
+      const data = toBase64(bytes);
       if (!eyes.accepts.video) return fail({ code: "video_unseeable", reason: `${fragment}: the vision route ${eyes.model} does not take video; cut frames with ffmpeg and pass them as images`, model: eyes.model, about: aboutMedium(fragment, "video", bytes) });
       if (data.length > clipChars) return fail({ code: "over_budget", reason: `${fragment} is ${data.length} base64 characters, over the ${clipChars} one request to ${eyes.model} carries; cut a shorter window`, model: eyes.model, about: aboutMedium(fragment, "video", bytes) });
       items.push({ data, mimeType, fragment, caption: fragment });
@@ -93,14 +96,16 @@ export async function see(input: unknown, env: VisionEnv | undefined, call: Call
       isVideo(item) ? { type: "video", data: item.data, mimeType: item.mimeType, fragment: item.fragment }
         : { type: "image", data: item.data, mimeType: item.mimeType, width: item.width!, height: item.height!, fragment: item.fragment }]);
     let look: EyesAnswer, readBack: boolean;
+    // When this call's request began; none when the answer is read back, and a request that threw is timed all the same.
+    let startedAt: number | undefined;
     try {
-      ({ answer: look, readBack } = await keptAnswer<EyesAnswer>(call.memo, at.facts.key, () => eyes.see({ parts, ask }, call.signal ?? new AbortController().signal)));
+      ({ answer: look, readBack } = await keptAnswer<EyesAnswer>(call.memo, at.facts.key, () => { startedAt = Date.now(); return eyes.see({ parts, ask }, call.signal ?? new AbortController().signal); }));
     } catch (error) {
       if (call.signal?.aborted) throw error;
       // A request that threw may still have been billed: its price is not known, so none is filed.
-      return fail({ code: "look_failed", reason: `the vision route ${eyes.model} failed: ${firstLine(error)}`, model: eyes.model }, items, {});
+      return fail({ code: "look_failed", reason: `the vision route ${eyes.model} failed: ${firstLine(error)}`, model: eyes.model }, items, lookTiming(call, startedAt));
     }
-    const facts = { tokens_in: look.usage.input + look.usage.cacheRead + look.usage.cacheWrite, tokens_out: look.usage.output, cost_usd: look.costUsd, ...(look.billedBy ? { provider: look.billedBy } : {}), ...(readBack ? { kept: true as const } : {}) };
+    const facts = { tokens_in: look.usage.input + look.usage.cacheRead + look.usage.cacheWrite, tokens_out: look.usage.output, cost_usd: look.costUsd, ...(look.billedBy ? { provider: look.billedBy } : {}), ...(readBack ? { kept: true as const } : {}), ...lookTiming(call, startedAt) };
     if (!look.text.trim()) return fail({ code: "look_failed", reason: `the vision route ${look.model} returned no text`, model: look.model }, items, facts);
     const filed = { ...at, args: { ...at.args, model: look.model }, body: look.text.trim(), facts: { ...at.facts, ...facts } };
     const receipt = await fileTold(call.memo, at.facts.key, filing, (to, told) => fileLook(to, VISION_SEE.name, filed, told ? { ...look, kept: true } : look));

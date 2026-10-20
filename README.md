@@ -1,8 +1,10 @@
-# agent.run()
+# AgentRun
 
-**Add Jev-powered workflows to your agents.**
+Open-source packages for your pi agent. Install the ones you need.
 
-AgentRun is a workflow language for the agents you already run. Define repeatable steps, use [Jev](https://docs.typesafe.ai/) for focused decisions, and call an agent when the work needs investigation. Your application keeps its tools, model access, permissions, and budgets.
+This repository holds the AgentRun harness: the workflow DSL and the pi extensions around it.
+
+**pi-vision** lets a pi agent answer questions about documents, images and video, and show the page, second or region each answer rests on. Try it free, with no key (the models are scripted): `npm run demo:vision -- examples/document-check`. It needs ffmpeg, ffprobe, pdftoppm and pdftotext (`brew install ffmpeg poppler`, or `sudo apt-get install ffmpeg poppler-utils`). See [pi-vision](packages/pi-vision/README.md).
 
 [Quickstart](#quickstart) · [Packages](#use-one-piece-or-all-of-it) · [Documentation](docs/guide.md) · [Examples](docs/examples.md) · [Pi extension](#use-it-in-pi) · [Agent instructions](docs/agent-instructions.md)
 
@@ -14,11 +16,13 @@ The support example below follows this workflow with scripted tools and model re
 
 ## Quickstart
 
+The DSL defines repeatable steps, uses [Jev](https://docs.typesafe.ai/) for focused decisions, and calls an agent when the work needs investigation. Your application keeps its tools, model access, permissions and budgets.
+
 Requires Node 22.19+ and npm. In your project:
 
 ```sh
 npm install @parcha/agentrun-dsl@beta
-npx agentrun demo
+npx @parcha/agentrun-dsl@beta demo
 ```
 
 This ticket-routing demo uses scripted decisions and needs no API key. Next, [run and change a workflow in your own app](examples/starter/README.md). To run the support workflow shown above, use the checkout below. To build workflows with your agent, [install the Pi extension](#use-it-in-pi).
@@ -60,17 +64,21 @@ Try `npm run demo:support -- unresolved` to see an escalation. It exits with cod
 
 ### Use one piece
 
-Each package works on its own. Install the ones you need.
+Each package works on its own. [Pi](https://pi.dev) is an open-source coding agent; pi-durable is
+Pi's runtime that commits each turn and tool call to storage; chord is the plugin and service runtime pi-durable is built
+on; [Archil](https://archil.com) is a network disk you mount on any Linux host.
 
 | Package | What it does | What it needs | First command with no key | Status |
 | --- | --- | --- | --- | --- |
-| [`@parcha/agentrun-dsl`](packages/dsl/README.md) | Define, validate, inspect and run workflows | Node 22.19+ | `npx agentrun demo` | published (`@beta`) |
+| [`@parcha/agentrun-dsl`](packages/dsl/README.md) | Define, validate, inspect and run workflows | Node 22.19+ | `npx @parcha/agentrun-dsl@beta demo` | published (`@beta`) |
 | [`@parcha/agentrun-jev`](packages/jev/README.md) | Jev typed decisions as a workflow's `runJudge` | the DSL; `TYPESAFE_API_KEY` for live calls | its README's [offline test](packages/jev/README.md#offline-tests) | published (`@beta`) |
-| [`@parcha/agentrun-pi`](packages/pi/README.md) | The `/agentrun` Pi extension and a Pi-backed node runner | Pi 1.1.0; a model for live runs; pi-durable for its `./durable` entry | `/agentrun demo` in Pi (scripted, no model calls) | published (`@beta`); the `./durable` entry is in this repository, not yet in the published beta |
+| [`@parcha/agentrun-pi`](packages/pi/README.md) | The `/agentrun` Pi extension and a Pi-backed node runner | Pi 1.0.4 to below 1.4 (CI tests 1.0.4, 1.1.0, 1.2.0 and 1.3.0); a model for live runs; pi-durable for its `./durable` entry | `/agentrun demo` in Pi (scripted, no model calls) | published (`@beta`) |
 | [`@parcha/pi-durable-disk`](packages/pi-durable-disk/README.md) | Run a pi-durable agent on a network disk: one owner per run, a fence, a supervisor | pi-durable and chord; an Archil account, a disk and an API key | none yet | published (`@beta`) |
-| [`@parcha/pi-browser`](packages/pi-browser/README.md) | A browser for pi agents: crash-safe session custody, evidence with SHA-256, typed failures | pi-durable and chord; a provider (a local Chrome needs no key, Browserbase needs its key) | its README's [no-key command](packages/pi-browser/README.md#try-it-without-a-key-or-a-chrome) | not yet published; a release publishes it |
-| [`@parcha/pi-vision`](packages/pi-vision/README.md) | Eyes for pi agents: documents, images, scans and video within the model's limits, a receipt for every look | nothing for a document's text; Photon or sharp for images; pi-durable, chord and pi-ai in pi; a model that looks, for questions about a file | its README's [first read](packages/pi-vision/README.md#a-first-read-with-no-key) | not yet published; a release publishes it |
-| [`@parcha/pi-transport`](packages/pi-transport/README.md) | Boxes for pi agents: one interface over a directory, a container, a sandbox or a VM | pi-durable and chord; Docker for the Docker provider | the "A box" example in its README (needs Docker) | held, not published |
+| [`@parcha/pi-browser`](packages/pi-browser/README.md) | Your agent gets its own browser, and you can take over and hand it back. Pages it reads are filed as evidence, and failures have typed codes | Pi; a provider (a local Chrome needs no key; Browserbase and Kernel need their keys); pi-durable and chord for its `./durable` entry | its README's [no-key command](packages/pi-browser/README.md#try-it-without-a-key-or-a-chrome) | published (`@beta`) |
+| [`@parcha/pi-vision`](packages/pi-vision/README.md) | Lets a pi agent read documents, images, scans and video within the model's limits, and keeps a priced record of every look | nothing for a document's text; Photon or sharp for images; a pi-durable host (pi-durable, chord and pi-ai); a model that looks, for questions about a file | [`examples/vision-agent`](examples/vision-agent/README.md) (one agent that answers questions about files: `npm run demo:vision -- examples/document-check` runs on fakes, no key; it needs ffmpeg and poppler), then its README's [first read](packages/pi-vision/README.md#a-first-read-with-no-key) | published (`@beta`) |
+| [`@parcha/pi-transport`](packages/pi-transport/README.md) | A pi agent's tools on the machine each step needs: this machine, Docker, or a Daytona or Modal sandbox, behind one `Box` interface; Jev places each step | pi-durable and chord; Docker for the Docker provider; a Daytona key or a Modal client for those; a TypeSafe key for Jev's placement | the "A box" example in its README (needs Docker) | published (`@beta`) |
+| [`@parcha/pi-durable-agent`](packages/pi-durable-agent/README.md) | An agent home for pi agents: its definition, skills, saved sign-ins and runs in one directory that also moves as one file, a pack. An agent's sign-ins are saved in its home, so its next run starts signed in | pi-durable and chord; nothing else for its quickstart (a browser provider such as pi-browser makes the sign-ins) | its README's [quickstart](packages/pi-durable-agent/README.md#quickstart-no-key-no-network) | held, not published |
+| [`@parcha/agentrun-harness`](packages/harness/README.md) | A reference harness: the host we use to run AgentRun demos and tests, meant to be read and forked | pi-durable, chord, pi-ai, pi-codemode and typebox; pi-transport only for a demo with boxes | its README's [first demo](packages/harness/README.md#run-a-demo-from-an-install-with-no-key) | held, not published |
 
 A held package is built, tested and verified with the others, and its manifest says `"private": true`; it installs from
 a packed tarball, not from npm.
@@ -87,7 +95,7 @@ npm run build
 npm run demo:reference
 ```
 
-[`examples/reference/`](examples/reference/README.md) has the job and the code. [What a host supplies](docs/reference-host.md)
+[`examples/reference/`](examples/reference/) has the job; the host is the package [`@parcha/agentrun-harness`](packages/harness/README.md). [What a host supplies](docs/reference-host.md)
 lists the seven functions the packages ask a host for, the install order and why, and what the example does not do yet.
 
 ## What a workflow looks like
@@ -125,7 +133,7 @@ The [support integration guide](docs/support-quickstart.md) has a config templat
 
 ## Use it in Pi
 
-With [Pi 1.1.0 installed](packages/pi/README.md#install), run these commands in your project:
+With [Pi installed](packages/pi/README.md#install) (1.0.4 to below 1.4; CI tests 1.0.4, 1.1.0, 1.2.0 and 1.3.0), run these commands in your project:
 
 ```sh
 pi install npm:@parcha/agentrun-pi@beta -l
@@ -176,11 +184,13 @@ It plans subquestions, researches them in parallel, screens evidence, and writes
 | [`@parcha/agentrun-jev`](packages/jev/README.md) | Connect Jev typed decisions |
 | [`@parcha/agentrun-pi`](packages/pi/README.md) | Pi extension and agent runner |
 | [`@parcha/pi-durable-disk`](packages/pi-durable-disk/README.md) | Run pi-durable agents on a network disk (Archil): one owner per run, a fence, and a supervisor |
-| [`@parcha/pi-browser`](packages/pi-browser/README.md) | A browser for pi agents: crash-safe session custody, evidence with SHA-256, typed failures (not yet published) |
-| [`@parcha/pi-vision`](packages/pi-vision/README.md) | Eyes for pi agents: documents, images, scans and video within the model's limits, typed misses, a priced receipt for every look (not yet published) |
-| [`@parcha/pi-transport`](packages/pi-transport/README.md) | Boxes for pi agents: one small interface over a directory, a container, a sandbox or a VM, providers for this machine and Docker, a strict config, and a conformance suite a vendor can run (not yet published) |
+| [`@parcha/pi-browser`](packages/pi-browser/README.md) | Your agent gets its own browser (a local Chrome, Browserbase or Kernel), and you can take over and hand it back. Pages it reads are filed as evidence, and failures have typed codes |
+| [`@parcha/pi-vision`](packages/pi-vision/README.md) | Lets a pi agent read documents, images, scans and video within the model's limits; it says when it cannot read something, and keeps a priced record of every look; start at [`examples/vision-agent`](examples/vision-agent/README.md) (`npm run demo:vision -- examples/document-check`, free, no key) |
+| [`@parcha/pi-transport`](packages/pi-transport/README.md) | A pi agent's tools on the machine each step needs: this machine, Docker, or a Daytona or Modal sandbox, behind one `Box` interface; Jev places each step; a strict config, and a conformance suite a vendor can run |
+| [`@parcha/pi-durable-agent`](packages/pi-durable-agent/README.md) | An agent home for pi agents: its definition, skills, saved sign-ins and runs in one directory that also moves as one pack. An agent's sign-ins are saved in its home, so its next run starts signed in |
+| [`@parcha/agentrun-harness`](packages/harness/README.md) | A reference harness: the host we use to run AgentRun demos and tests, meant to be read and forked |
 
-This release is `0.1.0-beta.4`. See the [changelog](CHANGELOG.md) and [contracts and limits](docs/guide.md#limits).
+Every published package is at one version under npm's `beta` dist-tag; `npm view @parcha/agentrun-dsl dist-tags` prints it. The status column of [Use one piece](#use-one-piece) says which packages are published. See the [changelog](CHANGELOG.md) and [contracts and limits](docs/guide.md#contracts-and-limits).
 
 Ordinary functions may be enough for a fixed sequence. AgentRun stores the steps in a workflow document that you can inspect, rerun, or call from an agent. Code nodes execute JavaScript with process privileges; untrusted workflow authors require a host-controlled sandbox. Typed decisions and validated output shapes do not prove that an answer is factually correct.
 

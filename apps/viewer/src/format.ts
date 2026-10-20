@@ -57,7 +57,10 @@ export type Recording = { id: string; manifest: Manifest; lines: Line[]; blobUrl
   /** Read from a server, whose `blobs/` cannot be listed: finds blobs by their names there, and says how many it found. */
   find?(shas: readonly string[]): Promise<number>;
   /** The text of a blob the shell already read whole (a followed run's JSON), undefined for any other. */
-  heldText?(sha: string): string | undefined };
+  heldText?(sha: string): string | undefined;
+  /** The bytes of a blob the page holds without fetching it (a dropped folder's file, a followed run's PDF), undefined
+   *  for any other. */
+  heldBytes?(sha: string): Promise<Uint8Array> | undefined };
 
 const SOURCES = new Set(['workflow', 'pi', 'browser', 'vision', 'transport', 'host']);
 const isInt = (value: unknown, min = 0) => Number.isInteger(value) && (value as number) >= min;

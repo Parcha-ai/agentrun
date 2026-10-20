@@ -47,7 +47,8 @@ export type VisionState = {
   counters: CounterState;
   /** Live: looks the eyes answered and misses told, by key or receipt, that no durable line has filed yet; a miss with
    *  no receipt is never filed. */
-  told: Record<string, { what: 'look' | 'miss'; source: string; fragment?: string; code?: string; receipt: boolean; t: number }>;
+  /** Looks and misses only live lines tell of: `native` when the lead looked at the image itself. */
+  told: Record<string, { what: 'look' | 'miss'; source: string; fragment?: string; code?: string; native?: true; receipt: boolean; t: number }>;
   /** Live: the pictures each read showed, by `visionShownKey`. */
   shown: Record<string, VisionImage[]>;
   processes: number;
@@ -96,7 +97,7 @@ const visionWindow = (fragment: string): { from?: number; to?: number } => {
   const [from, to] = (t?.slice(2) ?? '').split(',').map((value) => (value === '' ? undefined : Number(value)));
   return { ...(from !== undefined && Number.isFinite(from) ? { from } : {}), ...(to !== undefined && Number.isFinite(to) ? { to } : {}) };
 };
-const visionPage = (fragment: string): number | undefined => {
+export const visionPage = (fragment: string): number | undefined => {
   const page = fragment.replace(/^#/, '').split('&').find((part) => part.startsWith('page='));
   const value = page ? Number(page.slice(5).split('-')[0]) : NaN;
   return Number.isInteger(value) && value >= 1 ? value : undefined;
@@ -236,7 +237,8 @@ function visionReduce(start: VisionState, line: Line): VisionState {
     const key = visionStr(visionObj(record?.facts)?.key);
     if (key === undefined || before.looks.some((look) => look.key === key)) return before;
     const fragment = visionStr(data.fragment);
-    return { ...before, told: { ...before.told, [key]: { what: 'look', source: visionStr(data.source) ?? '', ...(fragment ? { fragment } : {}), receipt: typeof data.receipt === 'string', t: line.t } } };
+    const native = visionObj(record?.args)?.native === true ? { native: true as const } : {};
+    return { ...before, told: { ...before.told, [key]: { what: 'look', source: visionStr(data.source) ?? '', ...(fragment ? { fragment } : {}), ...native, receipt: typeof data.receipt === 'string', t: line.t } } };
   }
   const receipt = visionStr(data.receipt);
   const id = receipt ?? `miss ${line.gen ?? 0} ${line.seq ?? 0}`;
@@ -416,7 +418,14 @@ const visionOnce = (looks: VisionLook[]): VisionLook[] => {
   return [...chosen.values()];
 };
 
-function visionFilm(looks: VisionLook[], state: VisionState, chosen: VisionLook | undefined): Node {
+/** How a lane draws its look. A public replay leads with what the eyes answered and the rows that cite it, the picture
+ *  below it, closed until a click opens it; the debug view (`?debug=durability`) draws the picture first, as it was. */
+type VisionLead = { publicView: boolean; citedOf: (look: VisionLook) => Node | false };
+const visionLead = (lead: VisionLead, look: VisionLook, said: Node, picture: Node[], label: string): Node[] => (lead.publicView
+  ? [said, lead.citedOf(look), h('details', { class: 'vz-picture' }, h('summary', {}, label), ...picture)].filter((node): node is Node => node !== false)
+  : [...picture, said]);
+
+function visionFilm(looks: VisionLook[], state: VisionState, chosen: VisionLook | undefined, lead: VisionLead): Node {
   const film = visionOnce(looks.filter((look) => visionLane(look) === 'film'));
   const running = Object.values(state.running).filter((read) => read.fromS !== undefined || read.toS !== undefined);
   if (film.length === 0 && running.length === 0) return h('section', { class: 'vz-lane' }, h('h5', {}, 'Film'), h('p', { class: 'empty' }, 'No window of film read yet.'));
@@ -432,14 +441,15 @@ function visionFilm(looks: VisionLook[], state: VisionState, chosen: VisionLook 
   return h('section', { class: 'vz-lane' },
     h('h5', {}, `Film · ${source} · ${film.length} window${film.length === 1 ? '' : 's'} read`),
     h('div', { class: 'vz-cells', title: `0 to ${end} s; shaded: read; hatched: reading now` }, ...cells.map((flags) => h('span', { class: `vz-cell ${[...flags].join(' ')}`.trim() }))),
-    shown !== undefined && shown.images.length > 0 && shown.images.every((image) => image.keyframe !== undefined) && h('p', { class: 'vz-note' }, 'The chapter\'s keyframe, not what the eyes saw: they looked at the window itself.'),
-    shown && h('div', { class: 'vz-strip' }, ...(shown.images.length ? shown.images : [undefined]).map((image, at) => h('figure', {},
-      visionPicture(image, `${source} ${shown.fragment}`, 'vz-frame'),
-      h('figcaption', {}, image?.keyframe !== undefined ? `keyframe: ${image.keyframe}` : image?.at !== undefined ? `${image.at} s` : image?.caption ?? (at === 0 ? `#${shown.fragment}` : ''))))),
-    shown && visionSaid(`#${shown.fragment}`, shown.body));
+    ...(shown ? visionLead(lead, shown, visionSaid(`#${shown.fragment}`, shown.body), [
+      ...(shown.images.length > 0 && shown.images.every((image) => image.keyframe !== undefined) ? [h('p', { class: 'vz-note' }, 'The chapter\'s keyframe, not what the eyes saw: they looked at the window itself.')] : []),
+      h('div', { class: 'vz-strip' }, ...(shown.images.length ? shown.images : [undefined]).map((image, at) => h('figure', {},
+        visionPicture(image, `${source} ${shown.fragment}`, 'vz-frame'),
+        h('figcaption', {}, image?.keyframe !== undefined ? `keyframe: ${image.keyframe}` : image?.at !== undefined ? `${image.at} s` : image?.caption ?? (at === 0 ? `#${shown.fragment}` : ''))))),
+    ], 'The frames') : []));
 }
 
-function visionPages(looks: VisionLook[], state: VisionState, chosen: VisionLook | undefined, boxes: { x: number; y: number; w: number; h: number }[]): Node {
+function visionPages(looks: VisionLook[], state: VisionState, chosen: VisionLook | undefined, boxes: { x: number; y: number; w: number; h: number }[], lead: VisionLead): Node {
   const pages = visionOnce(looks.filter((look) => visionLane(look) === 'pages'));
   const running = Object.values(state.running).filter((read) => read.page !== undefined);
   if (pages.length === 0 && running.length === 0) return h('section', { class: 'vz-lane' }, h('h5', {}, 'Pages'), h('p', { class: 'empty' }, 'No page read yet.'));
@@ -448,11 +458,10 @@ function visionPages(looks: VisionLook[], state: VisionState, chosen: VisionLook
   const source = shown?.item ?? shown?.source ?? 'the scans';
   return h('section', { class: 'vz-lane' },
     h('h5', {}, `Pages · ${source} · ${read.size} page${read.size === 1 ? '' : 's'} read${running.length ? ` · reading p.${running.map((each) => each.page).join(', p.')}` : ''}`),
-    shown && h('div', { class: 'vz-page' },
+    ...(shown ? visionLead(lead, shown, visionSaid(`p.${shown.page ?? '?'}${shown.status === 'failed' ? ' (missed)' : ''}`, shown.body), [h('div', { class: 'vz-page' },
       visionPicture(shown.images[0], `${source} page ${shown.page ?? ''}`, 'vz-scan'),
       // A box is where the account says the line stands: the eyes' estimate, so it is drawn dashed.
-      ...boxes.map((box) => h('span', { class: 'vz-box', title: `xywh=percent:${box.x},${box.y},${box.w},${box.h}`, box }))),
-    shown && visionSaid(`p.${shown.page ?? '?'}${shown.status === 'failed' ? ' (missed)' : ''}`, shown.body));
+      ...boxes.map((box) => h('span', { class: 'vz-box', title: `xywh=percent:${box.x},${box.y},${box.w},${box.h}`, box })))], 'The page') : []));
 }
 
 function visionPhotos(looks: VisionLook[], chosen: VisionLook | undefined, account: VisionAccount | undefined, focus: string | undefined): Node {
@@ -553,12 +562,12 @@ function visionAccuracyView(accuracy: NonNullable<VisionAccount['accuracy']>): N
 }
 
 function visionReceipt(look: VisionLook, chosen: boolean): Node {
-  const row = (name: string, value: string | undefined): Node | false => value !== undefined && value !== '' && h('div', { class: 'vz-row' }, h('span', { class: 'k' }, name), h('span', {}, value));
+  const row = (name: string, value: string | undefined, extra = ''): Node | false => value !== undefined && value !== '' && h('div', { class: `vz-row${extra}` }, h('span', { class: 'k' }, name), h('span', {}, value));
   return h('div', { class: `vz-receipt${look.status === 'failed' ? ' missed' : ''}` },
     h('h5', {}, `${chosen ? 'Receipt' : 'Latest look'} · ${look.item ?? look.source}${look.fragment ? ` #${look.fragment}` : ''}`),
     row('sha256', visionShort(look.sha256)), row('ask', look.ask), row(look.status === 'ok' ? 'answer' : 'missed', look.status === 'ok' ? look.body : look.miss ? `${look.miss.code}${look.miss.reason ? `: ${look.miss.reason}` : ''}` : look.body || 'code not recorded'),
     row('model', look.model), row('tokens', look.tokensIn !== undefined || look.tokensOut !== undefined ? `${look.tokensIn ?? '?'} in, ${look.tokensOut ?? '?'} out` : undefined),
-    row('price', look.native ? 'in the lead\'s usage' : look.kept ? `${visionMoney(look.cost)} paid once, before the kill; this filing paid $0` : visionMoney(look.cost)),
+    row('price', look.native ? 'in the lead\'s usage' : look.kept ? `${visionMoney(look.cost)} paid once, before the kill; this filing paid $0` : visionMoney(look.cost), ' cost'),
     row('kept', look.kept ? 'yes: read back from the memo after a kill' : undefined),
     row('filed', `${look.receipt ?? 'no receipt path'} · generation ${look.gen}${look.lost ? ' · lost branch' : ''}`));
 }
@@ -569,13 +578,14 @@ function visionMetersView(state: VisionState, meters: VisionMeters, following = 
   const stored = (name: string, value: string, title: string, extra = '') => row(name, measured ? value : 'not measured', measured ? title : 'No vision document line in this recording: nothing here can be counted.', extra);
   return h('div', { class: 'vz-meters' },
     stored('looks paid', String(meters.paid), 'Per look key: each answer the eyes filed that is not kept, and once a key whose first answer is kept (paid by a process that died before filing it).'),
-    stored('kept after a kill', String(meters.kept), 'Answers read back from the call\'s memo in a later attempt: no new payment.'),
-    stored('repeated', String(meters.repeated), 'A look key paid again in a later generation.', meters.repeated > 0 ? ' alarm' : ' zero'),
-    meters.askedTwice > 0 && stored('asked twice', String(meters.askedTwice), 'A look key paid twice in one generation.', ' alarm'),
-    row('possible extra payments', `${meters.possible} (observed)`, 'From live lines: a look started in a process that ended without filing it. Its eyes may have answered and been paid; no durable line says.', meters.possible > 0 ? ' alarm' : ''),
+    // What a kill and a resume did is marked `durability`: an embed with `&hide=durability` hides it (PANELS.md, "Embedding").
+    stored('kept after a kill', String(meters.kept), 'Answers read back from the call\'s memo in a later attempt: no new payment.', ' durability'),
+    stored('repeated', String(meters.repeated), 'A look key paid again in a later generation.', meters.repeated > 0 ? ' alarm durability' : ' zero durability'),
+    meters.askedTwice > 0 && stored('asked twice', String(meters.askedTwice), 'A look key paid twice in one generation.', ' alarm durability'),
+    row('possible extra payments', `${meters.possible} (observed)`, 'From live lines: a look started in a process that ended without filing it. Its eyes may have answered and been paid; no durable line says.', meters.possible > 0 ? ' alarm durability' : ' durability'),
     stored('spend', measured ? `${meters.possible > 0 && meters.cost !== null ? 'at least ' : ''}${visionMoney(meters.cost)}` : 'unknown',
       following ? 'A run followed while it goes: its spend is known once it finishes.'
-        : `Once per payment, with each failed look's own price; unknown when any is unknown.${meters.possible > 0 ? ' A lower bound: a possible payment is not in it.' : ''}`),
+        : `Once per payment, with each failed look's own price; unknown when any is unknown.${meters.possible > 0 ? ' A lower bound: a possible payment is not in it.' : ''}`, ' cost'),
     stored('typed misses', meters.failed === 0 ? '0' : `${meters.failed}: ${meters.misses.map(([code, n]) => `${code} ${n}`).join(', ')}`, 'Failed LookRecords, by miss code.'));
 }
 
@@ -585,8 +595,9 @@ function visionView(state: VisionState, context: ViewContext): Node {
   const parsed = state.result && resultValue !== undefined ? visionAccountOf(resultValue) : undefined;
   const account = typeof parsed === 'object' ? parsed : undefined;
   const cited = account ? undefined : visionCitedOf(resultValue);
-  // A cited result shows with no look at all: its rows may cite only files, or nothing.
-  const looked = state.looks.length > 0 || Object.keys(state.running).length > 0;
+  // A cited result shows with no look at all: its rows may cite only files, or nothing. A look only live lines tell of is
+  // a look too: the panel lists it, and counts nothing from it.
+  const looked = state.looks.length > 0 || Object.keys(state.running).length > 0 || Object.keys(state.told).length > 0;
   if (!looked && !cited) return h('div', { class: 'vz' }, h('p', { class: 'empty' }, 'The eyes have not looked at anything yet.'));
   const kept = meters.kept;
   // A look's pictures: those its filing names, else those its read showed, else, for a window of film, the keyframes a
@@ -606,15 +617,25 @@ function visionView(state: VisionState, context: ViewContext): Node {
   // The lanes draw the run's own eyes; a weaker model the account compares them with is drawn in its own scene.
   const lanes = state.looks.filter((look) => !look.native && look.model !== account?.weak?.model).map(pictured);
   const shown = chosen ?? lanes.at(-1);
+  // A public replay leads each look with its answer and the rows that cite it, and keeps the meters and the look's receipt
+  // under Receipts; `?debug=durability` draws them as they were (PANELS.md, "What a public replay shows").
+  const publicView = !context.debug?.includes('durability');
+  const citedOf = (look: VisionLook): Node | false => {
+    const rows = [...(account?.entries.filter((entry) => entry.cites.some((each) => each.receipt === look.key)).map((entry) => entry.time || entry.text.slice(0, 40)) ?? []),
+      ...(cited?.rows.filter((row) => row.cites.some((each) => each.look === look.key)).map((row) => row.label) ?? [])];
+    return rows.length > 0 && h('p', { class: 'vz-cited' }, 'Cited in ', ...rows.flatMap((label, at) => [...(at ? [', '] : []), h('span', { class: 'vz-cite', cite: look.key, title: label }, label)]));
+  };
+  const lead: VisionLead = { publicView, citedOf };
+  const receipts: Node[] = [visionMetersView(state, context.following ? { ...meters, cost: null } : meters, context.following === true), ...(shown ? [visionReceipt(shown, chosen !== undefined)] : [])];
   return h('div', { class: 'vz' },
     h('div', { class: 'vz-top' },
       state.lead && h('span', { class: 'vz-badge' }, `lead: ${state.lead}`),
       meters.native === 0 && state.looks.length > 0 && h('span', { class: 'vz-badge' }, 'the lead never sees an image'),
       meters.eyes.length > 0 && h('span', { class: 'vz-badge' }, `eyes: ${meters.eyes.join(', ')}`),
-      state.kills.length > 0 && h('span', { class: 'vz-badge red' }, `killed ${state.kills.length === 1 ? 'once' : `${state.kills.length} times`}${state.kills.at(-1)?.label ? `: ${state.kills.at(-1)!.label}` : ''}`),
-      kept > 0 && h('span', { class: 'vz-badge ok' }, `resumed · ${kept} kept`)),
+      state.kills.length > 0 && h('span', { class: 'vz-badge red durability' }, `killed ${state.kills.length === 1 ? 'once' : `${state.kills.length} times`}${state.kills.at(-1)?.label ? `: ${state.kills.at(-1)!.label}` : ''}`),
+      kept > 0 && h('span', { class: 'vz-badge ok durability' }, `resumed · ${kept} kept`)),
     h('div', { class: 'vz-grid' },
-      h('div', { class: 'vz-col' }, visionFilm(lanes, state, chosen), visionPages(lanes, state, chosen, boxes), visionPhotos(lanes, chosen, account, context.focus)),
+      h('div', { class: 'vz-col' }, visionFilm(lanes, state, chosen, lead), visionPages(lanes, state, chosen, boxes, lead), visionPhotos(lanes, chosen, account, context.focus)),
       h('div', { class: 'vz-col' },
         h('h5', {}, cited ? cited.title ?? state.result?.title ?? 'The result' : 'The account'),
         !state.result ? h('p', { class: 'empty' }, 'Not delivered yet.')
@@ -622,14 +643,15 @@ function visionView(state: VisionState, context: ViewContext): Node {
             : cited ? visionCitedView(cited, context.cite, isImage)
               : h('p', { class: 'empty' }, typeof parsed === 'string' ? `${parsed}: ` : 'The account is in the result: ', { tag: 'a', blob: state.result.blob, text: state.result.title })),
       h('div', { class: 'vz-col' },
-        h('h5', {}, 'Meters'), visionMetersView(state, context.following ? { ...meters, cost: null } : meters, context.following === true),
+        ...(publicView ? [h('details', { class: 'vz-receipts' }, h('summary', {}, 'Receipts'), ...receipts)] : [h('h5', {}, 'Meters'), receipts[0]!]),
         account?.accuracy && visionAccuracyView(account.accuracy),
-        shown && visionReceipt(shown, chosen !== undefined),
+        !publicView && receipts[1],
         context.cite !== undefined && !chosen && h('p', { class: 'empty' }, 'The look this citation names is not filed at this point.'),
+        // Once the run delivered its result no process is left to file what live lines told of: it is never filed.
         (Object.keys(state.running).length > 0 || Object.keys(state.told).length > 0) && h('div', { class: 'vz-flight' },
-          h('h5', {}, 'In flight (live lines)'),
+          h('h5', {}, state.result ? 'Told by live lines only' : 'In flight (live lines)'),
           h('ul', {}, ...Object.values(state.running).map((read) => h('li', {}, `reading ${read.source}${read.page !== undefined ? ` p.${read.page}` : ''}${read.fromS !== undefined ? ` ${read.fromS}-${read.toS ?? ''} s` : ''}`)),
-            ...Object.values(state.told).map((told) => h('li', {}, `${told.what === 'look' ? `the eyes answered for ${told.source}${told.fragment ? ` #${told.fragment}` : ''}` : `a miss (${told.code}) on ${told.source}`}${told.receipt ? ', not filed yet' : ', with no receipt'}`)))))));
+            ...Object.values(state.told).map((told) => h('li', {}, `${told.what === 'look' ? `${told.native ? 'the lead looked at' : 'the eyes answered for'} ${told.source}${told.native ? ' itself' : ''}${told.fragment ? ` #${told.fragment}` : ''}` : `a miss (${told.code}) on ${told.source}`}${!told.receipt ? ', with no receipt' : state.result ? ', never filed in the store' : ', not filed yet'}`)))))));
 }
 
 export const visionPanel: Panel<VisionState> = {

@@ -28,6 +28,8 @@ import { photonImages } from "./providers/photon.js";
 export { modelsEyes, modelsOf, type ModelsDoor, type ModelsEyesOptions } from "./eyes/models.js";
 export { packageProviders } from "./providers/defaults.js";
 
+/** What `createVisionExtension` gives: the extension to install, and the same reading and fitting as functions for a host that
+ *  shapes results itself, with the code-mode globals. */
 export type VisionHandle = {
   /** Install once per Harness; select per conversation. */
   readonly extension: Extension;
@@ -117,7 +119,7 @@ const piCalls = new WeakMap<CallContext, { readonly id: ConversationId; readonly
 
 function contextOf(api: Pick<HookApi, "conversationId" | "memo">, callId: string, ref: ModelRef | undefined, context: Context, tool?: string, store?: Pick<ToolExecutionApi, "commit" | "snapshot">): CallContext {
   const models = modelsOf(api);
-  const call: CallContext = { conversationId: String(api.conversationId), callId, ...(tool ? { tool } : {}), model: modelFrom(ref, models), signal: context.abortSignal, memo: memoOf(api, context, store) };
+  const call: CallContext = { conversationId: String(api.conversationId), callId, toolCallId: callId, ...(tool ? { tool } : {}), model: modelFrom(ref, models), signal: context.abortSignal, memo: memoOf(api, context, store) };
   piCalls.set(call, { id: api.conversationId, models });
   return call;
 }
@@ -179,6 +181,9 @@ export type VisionAdapterOptions = Omit<VisionOptions, "scope"> & {
   readonly env?: ChildEnv;
 };
 
+/** The pi-durable adapter. The extension it makes wraps `read` with the media half and guards the image blocks of every tool's
+ *  result (`options.install` turns either off); the handle gives the same as functions and builds `vision.see`, `vision.judge`
+ *  and `vision.transcribe` for a call. Nothing here loads a dependency until a call needs it. */
 export function createVisionExtension(options: VisionAdapterOptions): VisionHandle {
   const childEnv = () => childEnvOf(options.env);
   // The host's converters first, then the package's own; Photon fits images when the host gives no processor and this
@@ -210,22 +215,26 @@ export function createVisionExtension(options: VisionAdapterOptions): VisionHand
     ...(options.onLook ? { onLook: options.onLook } : {}),
     ...(onMiss ? { onMiss } : {}),
   });
-  /** A code-mode global for one call: the script's signal joins the call's, and a setup the host's own callbacks fail
-   *  to make is a typed miss that `onMiss` hears of, never their error. */
+  /** A code-mode global for one call: the script's signal joins the call's, a setup the host's own callbacks fail to
+   *  make is a typed miss that `onMiss` hears of, never their error, and a program it starts gets the child
+   *  environment `read`'s programs get. */
   const codeGlobal = <C extends { readonly name: string }, A>(contract: C, run: (request: unknown, env: VisionEnv | undefined, call: CallContext, made: CallSetup) => Promise<A>) =>
-    (env: VisionEnv | undefined, call: CallContext): CodeGlobal<C, A> => ({
-      ...contract,
-      execute: async (request, script) => {
-        const signal = script?.signal && call.signal ? AbortSignal.any([script.signal, call.signal]) : script?.signal ?? call.signal;
-        const made = await setup(call).catch(async (error: unknown) => {
-          if (signal?.aborted) throw error;
-          const reason = `this host could not set the look up: ${firstLine(error)}`;
-          await onMiss?.({ conversationId: call.conversationId, tool: contract.name, source: contract.name, code: "look_failed", reason, receipt: null });
-          throw new SeeMiss("look_failed", reason);
-        });
-        return run(request, env, { ...call, signal }, made);
-      },
-    });
+    (given: VisionEnv | undefined, call: CallContext): CodeGlobal<C, A> => {
+      const env = given && withChildEnv(given, childEnv);
+      return {
+        ...contract,
+        execute: async (request, script) => {
+          const signal = script?.signal && call.signal ? AbortSignal.any([script.signal, call.signal]) : script?.signal ?? call.signal;
+          const made = await setup(call).catch(async (error: unknown) => {
+            if (signal?.aborted) throw error;
+            const reason = `this host could not set the look up: ${firstLine(error)}`;
+            await onMiss?.({ conversationId: call.conversationId, tool: contract.name, source: contract.name, code: "look_failed", reason, receipt: null });
+            throw new SeeMiss("look_failed", reason);
+          });
+          return run(request, env, { ...call, signal }, made);
+        },
+      };
+    };
   // A setup the host's own callbacks fail to make is a typed miss for the model and the host's `onMiss`, never their error.
   const readFor = async (env: VisionEnv, args: ReadArgs, call: CallContext): Promise<ToolResult | null> => {
     const port = withChildEnv(env, childEnv);

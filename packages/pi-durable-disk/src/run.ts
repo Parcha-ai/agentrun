@@ -345,6 +345,8 @@ export interface DurableRun {
   /** `run.json` as last written. */
   readonly record: RunRecord;
   readonly fenced: boolean;
+  /** True once `release()` began: the Harness is closed, the status is final, and the instance has nothing left to serve. */
+  readonly releasing: boolean;
   /** Write a status transition. `done` and `failed` run the barrier first, so a terminal status never names workspace files that are not durable. */
   setStatus(status: RunStatus, detail?: JsonValue | null, options?: { readonly wakeAt?: string | null }): Promise<void>;
   /**
@@ -672,7 +674,7 @@ class Lease implements RunLease {
         // While a new run seeds it has no `run.json` heartbeat, and a supervisor keeps a start in its grace only while its
         // start mark is younger than the grace: the mark is kept fresh until the seed ends, through the held claim directory.
         // A seeder that dies stops, and the grace runs out as for any start.
-        const stop = keepStartMark(this.#dir!.at, this.#lease.heartbeatMs);
+        const stop = keepStartMark(this.#dir!.at, this.#lease.heartbeatMs, claim.root);
         try {
           await seed({ root: claim.root, storePath: join(claim.store, STORE_FILE), workDir: claim.work });
         } finally {
@@ -1065,6 +1067,10 @@ class Run implements DurableRun {
       if (this.#harness) await this.#harness.close(this.#context);
       else if (this.#store) await this.#store.storage.close(this.#context);
     });
+  }
+
+  get releasing(): boolean {
+    return this.#releasing !== undefined || this.#released;
   }
 
   async setStatus(status: RunStatus, detail: JsonValue | null = null, options: { readonly wakeAt?: string | null } = {}): Promise<void> {
