@@ -396,7 +396,7 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
     if (hostRun?.outcome === 'complete') {
       measured = { answer: hostRun.output, answers: 1, toolCalls: {}, status: HOST_WORKFLOW, usage: usageTotals(await harness.usage(ctx)), finalText: '', calls: [], results: new Map(), ...dispatched };
     } else {
-      const prompt = hostRun && hostRun.outcome !== 'refused' ? `${text(job)}\n\n${handoffText(hostRun)}` : text(job);
+      const prompt = hostRun && hostRun.outcome !== 'refused' ? `${text(job)}\n\n${handoffText(hostRun, dispatch)}` : text(job);
       const submission = await root.submit({ type: 'input', content: prompt }, ctx);
       const settled = await submission.wait(ctx);
       const { messages } = await root.context(ctx);

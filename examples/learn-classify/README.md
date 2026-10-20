@@ -307,7 +307,9 @@ refusal included.
 A workflow on trial still runs through the agent, and while it is on trial the host serves the revision it superseded,
 the last one proven, as a canary: read from the agent repository at the run's commit, with the same checks. A valid
 answer is the run's, with no root request; anything else hands the job to the root agent, which is offered the trial as
-before, so the trial earns its uses on the jobs the proven revision cannot do. The canary's use is recorded under its
+before, so the trial earns its uses on the jobs the proven revision cannot do. The handoff names the proven revision and
+the trial by their digests and asks for the trial to be loaded and run first, the job done by hand only if it escalates
+too (with no trial live, the handoff is as for a promoted workflow). The canary's use is recorded under its
 own digest (the host adds it to the run's uses: the revision is not in the run's workflow store), which pi-agent-learn
 never counts toward the trial's promotion. Once the trial is promoted the host runs it. The row's `dispatch` has
 `canary: true` and the superseded digest as its `revision`.
