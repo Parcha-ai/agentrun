@@ -90,12 +90,14 @@ passes the claim as a `HomeAccess` and the lock is taken inside it ([An agent ho
 
 ## A run
 
-1. `startRun(home, { host, runId?, now?, leaseMs? })` creates `runs/<runId>/` (the id defaults to a UUIDv7), writes the
+1. `startRun(home, { host, runId?, prompt?, now?, leaseMs? })` creates `runs/<runId>/` (the id defaults to a UUIDv7), writes the
    skills into the workspace (each checked against its SHA-256), takes the save lease for each profile no live run
    holds, copies the agent's `browser.profiles` into the run store, and records the run in `agent.runs`. A profile
    another run holds the lease for is copied without its `ref` (`state: "held"`, `heldBy` naming that run). It returns
    `{ runId, dir, storePath, workspace, agent: { instructions, tools }, leases }`, where `leases` lists the profiles
    this run can write to. Seeding is this host step; nothing here is a tool, and the model never sees a sign-in.
+   `prompt` is the [prompt variant](#prompt-variants) the host chose for the run, `{ id, reason }`, recorded on its
+   entry; an id that is not one of the agent's variants is refused.
 2. The host opens its own Harness on `storePath`, itself or through pi-durable-disk on `dir`, and creates the root
    conversation with `agent.instructions`, its chosen model and thinking level, and its tools for the names in
    `agent.tools`.
@@ -139,6 +141,31 @@ lowercase hex digits, a SHA-1 or a SHA-256 commit).
 
 A home with no `agent.source` (every home made before this) is not tied to a repo, and its runs record no sha.
 
+## Prompt variants
+
+An agent can keep prompt variants in its home: one `base`, one `generic`, and `overlay`s, each with a `when`, the rule a
+host applies to pick it. A rule is a Jev choice question, the option the overlay needs, and the least probability for
+that option. The package stores the set and records the choice; picking one is the host's. A host asks the question
+about the run's input, takes the overlay whose option comes back at or above its threshold (`generic` when none does),
+gives the run `base` with that variant's text, and passes `prompt: { id, reason }` to `startRun`, so the run's entry
+says which variant it got and why.
+
+```js
+await setPrompts(home, [
+  { id: "base", role: "base", label: "Company research", text: "Research the company in the input. Cite every claim." },
+  { id: "public", role: "overlay", label: "Public company", text: "Start from its latest annual report.",
+    when: { question: "What kind of organization is this?", option: "public_company", threshold: 0.9 } },
+  { id: "generic", role: "generic", label: "Not sure", text: "Say what kind of organization it seems to be, and why." },
+]);
+const { prompts } = await readAgentHome(home); // keyed by id
+await startRun(home, { host: "laptop", prompt: { id: "public", reason: "public_company at 0.93" } });
+```
+
+`setPrompts` replaces the whole set in one commit and refuses one that is not exactly one base and one generic, with
+ids that are one URL segment and given once, a label of at most 200 characters, a text of at most 64 KiB and a threshold
+from 0 to 1 (`invalid`); `ifRevision` makes it a compare-and-swap on `homeRevision` (`stale`). Prompts are exported and
+packed with the agent; they are not secrets.
+
 ## Stored kinds
 
 Every document is session-scoped, version 1, in the store named. Times are ISO 8601 strings in UTC. The kinds and their
@@ -150,9 +177,10 @@ fields are the stored format.
 | `agent.source` | agent | | `{ sha, refreshedAt }`: the repo commit the definition and skills were read from, written in their commit; absent for a home not tied to a repo |
 | `agent.definition` | agent | | `{ id, version, name, description?, instructions, skills, tools, input_schema?, output_schema?, workflow?, max_cost_usd? }`. `skills` and `tools` are names; `workflow` is an AgentRun workflow document. No model, no thinking level |
 | `agent.skills` | agent | path under `.agents/skills/` | `{ content, sha256 }` |
+| `agent.prompts` | agent | variant id | `{ role, label, text, when? }`: `role` is `base`, `overlay` or `generic`, one base and one generic per set; `when` (an overlay's only) is `{ question, option, threshold }`, the Jev choice question, the option the variant needs and its least probability, 0 to 1 |
 | `agent.aliases` | agent | host | `{ externalId }`: the agent's id in that host |
 | `agent.bindings` | agent | host | `{ [tool]: target }`: where each tool runs in that host |
-| `agent.runs` | agent | run id | `{ path, host, startedAt, sha?, endedAt?, outcome?, finalAnswer?, cost? }`; `path` is relative to the home; `sha` is the home's `agent.source` when the run started |
+| `agent.runs` | agent | run id | `{ path, host, startedAt, sha?, prompt?, endedAt?, outcome?, finalAnswer?, cost? }`; `path` is relative to the home; `sha` is the home's `agent.source` when the run started; `prompt` is `{ id, reason }`, the variant the host chose |
 | `agent.leases` | agent | profile key | `{ runId, expiresAt }` |
 | `browser.profiles` | agent and run | profile key | `{ provider, ref, state, startUrl?, allowedOrigins?, verifiedAt?, heldBy? }`; `ref` is the provider's saved sign-in, `state` is `ready` once it names one, or `held` in a run store whose run has no lease on it (`ref` empty, `heldBy` the run that has) |
 
@@ -162,7 +190,7 @@ through the host, and no tool reads or returns a profile.
 ## Exporting a home
 
 An exporter (a copy of a home for a viewer, or for someone else to run) copies only the kinds on `EXPORTABLE_KINDS`:
-`agent.identity`, `agent.definition`, `agent.source`, `agent.skills` and `agent.runs`. Every other kind is dropped, a kind this release
+`agent.identity`, `agent.definition`, `agent.source`, `agent.skills`, `agent.prompts` and `agent.runs`. Every other kind is dropped, a kind this release
 does not know included. `SECRET_KINDS` names what never leaves the home: `browser.profiles` (saved sign-ins),
 `agent.leases`, and `agent.bindings` and `agent.aliases` (each host's own names for where the tools run and for the
 agent). Every kind this package defines is on exactly one of the two lists, and a test fails on a kind added to
@@ -282,6 +310,7 @@ origin, path and query keys but drops its query values, fragment and userinfo. `
 | `readAgentHome(home, { access? })` | Everything the home holds, read in one pass |
 | `homeRevision(home, { access? })` | The agent store's head commit number: every write that changes the home moves it, reads do not. With the identity's id it is the home's version, an ETag |
 | `setAlias(home, host, externalId)`, `setBindings(home, host, bindings)` | A host's id for the agent, and where its tools run there |
+| `setPrompts(home, variants, { ifRevision?, access? })` | The agent's prompt variants replaced by `variants`, one commit ([Prompt variants](#prompt-variants)); returns `{ changed }` |
 | `startRun`, `carryBack` | A run's start and end, above; `carryBack` takes `{ access? }` |
 | `prepareRun`, `seedRun`, `undoPrepare`, `HomeAccess`, `localAccess` | A start as its home and run halves, and how a host reaches a home on a disk ([An agent home on a disk](#an-agent-home-on-a-disk)) |
 | `refreshAgentHome(home, { sha, from?, ifRevision?, definition, skills })` | The cached definition and skills replaced by the ones at `sha` ([Following the agent's repo](#following-the-agents-repo)) |

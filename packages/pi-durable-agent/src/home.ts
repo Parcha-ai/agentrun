@@ -5,9 +5,9 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
-  type AgentAlias, type AgentDefinition, type AgentIdentity, type AgentSource, AliasesDoc, BindingsDoc, type BrowserProfile,
-  DefinitionDoc, FORMAT_VERSION, IdentityDoc, LeasesDoc, type ProfileLease, ProfilesDoc, put, type RunRecord, RunsDoc,
-  type SkillFile, SkillsDoc, SourceDoc, type ToolBindings,
+  type AgentAlias, type AgentDefinition, type AgentIdentity, type AgentSource, AliasesDoc, BindingsDoc, type BrowserProfile, canonical,
+  DefinitionDoc, FORMAT_VERSION, IdentityDoc, LeasesDoc, type ProfileLease, ProfilesDoc, type PromptRule, PromptsDoc, type PromptVariant, put,
+  type RunRecord, RunsDoc, type SkillFile, SkillsDoc, SourceDoc, type ToolBindings,
 } from "./kinds.js";
 import { AgentHomeError, HEAD_SQL, openStore, readFamily, readHead, type Store, withHome } from "./store.js";
 
@@ -27,6 +27,8 @@ export type AgentHomeState = {
   /** The repo commit the definition and skills were read from; absent for a home not tied to a repo. */
   source?: AgentSource;
   skills: Record<string, SkillFile>;
+  /** The prompt variants, keyed by id. */
+  prompts: Record<string, PromptVariant>;
   aliases: Record<string, AgentAlias>;
   bindings: Record<string, ToolBindings>;
   runs: Record<string, RunRecord>;
@@ -107,6 +109,7 @@ export async function readState(store: Store): Promise<AgentHomeState> {
     definition: structuredClone(definition) as AgentDefinition,
     ...(source ? { source: structuredClone(source) as AgentSource } : {}),
     skills: await readFamily(store, SkillsDoc),
+    prompts: await readFamily(store, PromptsDoc),
     aliases: await readFamily(store, AliasesDoc),
     bindings: await readFamily(store, BindingsDoc),
     runs: await readFamily(store, RunsDoc),
@@ -199,8 +202,7 @@ export async function createAgentHome(dir: string, options: { definition: AgentD
 export async function refreshAgentHome(home: AgentHome, options: { sha: string; from?: string | null; ifRevision?: number; definition: AgentDefinitionInput; skills: Record<string, string>; now?: number }): Promise<{ changed: boolean }> {
   const sha = checkSha(options?.sha);
   const from = options.from === undefined || options.from === null ? options.from : checkSha(options.from);
-  const ifRevision = options.ifRevision;
-  if (ifRevision !== undefined && !(Number.isSafeInteger(ifRevision) && ifRevision >= 0)) throw invalid(`ifRevision ${JSON.stringify(ifRevision)} is not a home revision (a non-negative integer)`);
+  const ifRevision = checkRevision(options.ifRevision);
   const given = options.definition?.id;
   if (given !== undefined && (typeof given !== "string" || given === "")) throw invalid("the definition's id is not a non-empty string");
   if (options.skills === undefined) throw invalid("a refresh names its skills: the set replaces the cached one");
@@ -225,6 +227,85 @@ export async function refreshAgentHome(home: AgentHome, options: { sha: string; 
       for (const file of Object.keys(state.skills)) if (!kept.has(file)) await tx.retireDoc(SkillsDoc, file);
       for (const [file, content] of skills) put(await tx.doc(SkillsDoc, file, null), { content, sha256: sha256(content) });
       put(await tx.doc(SourceDoc), { sha, refreshedAt: new Date(options.now ?? Date.now()).toISOString() });
+    }, BACKGROUND_CONTEXT);
+    return { changed: true };
+  });
+}
+
+/** A compare-and-swap's expected `homeRevision`, when given. */
+function checkRevision(ifRevision: unknown): number | undefined {
+  if (ifRevision !== undefined && !(Number.isSafeInteger(ifRevision) && (ifRevision as number) >= 0)) throw invalid(`ifRevision ${JSON.stringify(ifRevision)} is not a home revision (a non-negative integer)`);
+  return ifRevision as number | undefined;
+}
+
+/** A prompt variant as `setPrompts` takes it: with its `id`. */
+export type PromptVariantInput = PromptVariant & { id: string };
+
+const ROLES = new Set(["base", "overlay", "generic"]);
+const VARIANT_FIELDS = new Set(["id", "role", "label", "text", "when"]);
+const RULE_FIELDS = new Set(["question", "option", "threshold"]);
+const MAX_VARIANTS = 64;
+const MAX_LABEL = 200;
+const MAX_QUESTION = 2_000;
+const MAX_TEXT_BYTES = 64 * 1024;
+const isText = (value: unknown, max: number): value is string => typeof value === "string" && value.trim() !== "" && value.length <= max;
+const extraField = (value: Record<string, unknown>, fields: Set<string>) => Object.keys(value).find((key) => !fields.has(key));
+
+function checkRule(id: string, when: unknown): PromptRule {
+  if (!isObject(when)) throw invalid(`the prompt ${id}'s when is not an object`);
+  const extra = extraField(when, RULE_FIELDS);
+  if (extra !== undefined) throw invalid(`the prompt ${id}'s when has a field a rule does not keep: ${extra}`);
+  const { question, option, threshold } = when;
+  if (!isText(question, MAX_QUESTION)) throw invalid(`the prompt ${id}'s question is not a non-empty string of at most ${MAX_QUESTION} characters`);
+  if (!isText(option, MAX_LABEL)) throw invalid(`the prompt ${id}'s option is not a non-empty string of at most ${MAX_LABEL} characters`);
+  if (typeof threshold !== "number" || !(threshold >= 0 && threshold <= 1)) throw invalid(`the prompt ${id}'s threshold ${String(threshold)} is not a number from 0 to 1`);
+  return { question, option, threshold };
+}
+
+/** A prompt set as stored, in the given order, or a refusal naming the first thing that is wrong: one `base`, one
+ *  `generic`, any number of `overlay`s, each id one URL segment and given once, and the stated sizes. */
+function checkPrompts(variants: unknown): [string, PromptVariant][] {
+  if (!Array.isArray(variants)) throw invalid("the prompts are not a list of variants");
+  if (variants.length > MAX_VARIANTS) throw invalid(`the prompts are ${variants.length} variants; a set has at most ${MAX_VARIANTS}`);
+  const checked: [string, PromptVariant][] = [];
+  for (const [index, variant] of variants.entries()) {
+    if (!isObject(variant)) throw invalid(`prompt ${index} is not an object`);
+    const { id, role, label, text, when } = variant;
+    if (typeof id !== "string" || !ID_PATTERN.test(id)) throw invalid(`prompt ${index}'s id ${JSON.stringify(id)} does not match ${ID_PATTERN.source}`);
+    if (checked.some(([seen]) => seen === id)) throw invalid(`the prompt id ${id} is given twice`);
+    const extra = extraField(variant, VARIANT_FIELDS);
+    if (extra !== undefined) throw invalid(`the prompt ${id} has a field a variant does not keep: ${extra}`);
+    if (typeof role !== "string" || !ROLES.has(role)) throw invalid(`the prompt ${id}'s role ${JSON.stringify(role)} is not base, overlay or generic`);
+    if (!isText(label, MAX_LABEL)) throw invalid(`the prompt ${id}'s label is not a non-empty string of at most ${MAX_LABEL} characters`);
+    if (typeof text !== "string" || text.trim() === "" || Buffer.byteLength(text, "utf8") > MAX_TEXT_BYTES) throw invalid(`the prompt ${id}'s text is not a non-empty string of at most ${MAX_TEXT_BYTES} bytes`);
+    if (when !== undefined && role !== "overlay") throw invalid(`the prompt ${id} is the ${role}; only an overlay has a when`);
+    checked.push([id, { role: role as PromptVariant["role"], label, text, ...(when === undefined ? {} : { when: checkRule(id, when) }) }]);
+  }
+  for (const role of ["base", "generic"]) {
+    const count = checked.filter(([, variant]) => variant.role === role).length;
+    if (count !== 1) throw invalid(`the prompts have ${count} ${role} variants; a set has exactly one`);
+  }
+  return checked;
+}
+
+/** Replace the agent's prompt variants with `variants`, in one commit under the home's lock: an id absent from them is
+ *  removed. A set the checks refuse (`invalid`) touches nothing. With `ifRevision`, a compare-and-swap on
+ *  `homeRevision`: a home whose head commit moved since the caller read it is refused (`stale`) and nothing is written.
+ *  A set equal to the stored one writes nothing (`changed` false). */
+export async function setPrompts(home: AgentHome, variants: PromptVariantInput[], options: { ifRevision?: number; access?: HomeAccess } = {}): Promise<{ changed: boolean }> {
+  const prompts = checkPrompts(variants);
+  const ifRevision = checkRevision(options.ifRevision);
+  return inClaimedHome(home, options.access, async (store) => {
+    if (ifRevision !== undefined) {
+      const revision = await store.head();
+      if (revision !== ifRevision) throw new AgentHomeError("stale", `the agent home is at revision ${revision}, not ${ifRevision} as the prompts' writer expected; nothing was written`);
+    }
+    const stored = await readFamily<PromptVariant>(store, PromptsDoc);
+    const next = Object.fromEntries(prompts);
+    if (canonical(stored) === canonical(next)) return { changed: false };
+    await store.session.commit(async (tx) => {
+      for (const id of Object.keys(stored)) if (!Object.hasOwn(next, id)) await tx.retireDoc(PromptsDoc, id);
+      for (const [id, variant] of prompts) put(await tx.doc(PromptsDoc, id, null), variant);
     }, BACKGROUND_CONTEXT);
     return { changed: true };
   });
