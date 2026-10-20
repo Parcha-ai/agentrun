@@ -5,7 +5,7 @@
 // every address is shortened to its host. Everything comes from the model made of the recording's own lines (extractChat with `muse`).
 import type { ChatBrowser, ChatItem, ChatModel } from './chat-model.ts';
 import { reportEl, reportParagraphs } from './chat-report.ts';
-import { drawVisual, type Visual } from './chat-visual.ts';
+import { blurredCanvas, drawVisual, type Visual } from './chat-visual.ts';
 import type { Recording } from './format.ts';
 
 type ToolItem = Extract<ChatItem, { kind: 'tool' }>;
@@ -72,7 +72,7 @@ const card = (kind: string, glyph: 'globe' | 'shield' | 'brain', title: string, 
   reportEl('div', { class: 'mu-card-head' }, icon(glyph), reportEl('div', {}, reportEl('div', { class: 'mu-card-title', text: title }), sub !== '' && reportEl('div', { class: 'mu-card-sub', text: sub }))), ...rest);
 
 /** The browser as one card: the latest frame the steps held and who has it, as a status line (pi-browser's viewer has no Take control button: the person drives whenever the agent is not acting). */
-function browserCard(recording: Recording, steps: ToolItem[]): HTMLElement {
+function browserCard(recording: Recording, steps: ToolItem[], blurred: Set<string> = new Set()): HTMLElement {
   const browsers = steps.flatMap((step) => (step.browser ? [step.browser] : []));
   const last = browsers.flatMap((browser) => browser.frames).sort((a, b) => a.t - b.t).at(-1);
   const src = last ? recording.blobUrl(last.blob) : undefined;
@@ -83,7 +83,7 @@ function browserCard(recording: Recording, steps: ToolItem[]): HTMLElement {
     ...(hold.t1 !== undefined ? [{ text: hold.outcome ? `Handed back · ${hold.outcome}` : 'Handed back', held: false }] : []),
   ]);
   return card('mu-browser', 'globe', 'Browser', site ? `Browsing ${site}` : 'Browsing',
-    reportEl('div', { class: 'mu-shot' }, src ? reportEl('img', { loading: 'lazy', src, alt: site ? `The browser on ${site}` : 'The browser' }) : reportEl('span', { class: 'mu-shot-none', text: 'No picture was recorded here' })),
+    reportEl('div', { class: 'mu-shot' }, src && last && blurred.has(last.blob) ? blurredCanvas(src, last.w, last.h) : src ? reportEl('img', { loading: 'lazy', src, alt: site ? `The browser on ${site}` : 'The browser' }) : reportEl('span', { class: 'mu-shot-none', text: 'No picture was recorded here' })),
     reportEl('div', { class: 'mu-strip' }, reportEl('div', { class: 'mu-labels' }, ...labels.map((label) => reportEl('span', { class: `mu-label${label.held ? ' held' : ''}`, text: label.text })))));
 }
 
@@ -247,7 +247,10 @@ export function drawMuse(root: HTMLElement, model: ChatModel, recording: Recordi
   let thoughts: string[] = [];
   let hidden = false;
   let quiet: ToolItem[] = [];
-  const flushBrowser = () => { if (browsing.length) column.append(browserCard(recording, browsing)); browsing = []; };
+  // With the visual report, a frame taken while a sign-in was on the page is blurred here too (never shown sharp).
+  const blurred = new Set((visual?.frames ?? []).filter((frame) => frame.sensitive).map((frame) => frame.blob));
+  if (visual) root.classList.add('mu-visual');
+  const flushBrowser = () => { if (browsing.length) column.append(browserCard(recording, browsing, blurred)); browsing = []; };
   const flushQuiet = () => {
     if (!hidden && quiet.length === 0 && thoughts.length === 0) return;
     const named = thoughts.length > 0 || hidden ? 'Thought' : 'Worked';

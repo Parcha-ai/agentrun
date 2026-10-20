@@ -33,6 +33,11 @@ const num = (value: Json | undefined): number | undefined => (typeof value === '
 const HOLD_MS = 1500;
 /** A frame at or before a gap's start was taken before it; the first one after is the gap's end. */
 const GAP_SLACK_MS = 100;
+/** Chapters closer than this in the video are one visit. */
+const MERGE_S = 0.75;
+/** Air around a boxed fact in its crop, in the frame's own pixels, and what the drawn box stands out by (the look's box is a little tight on its word at times). */
+const CROP_PAD = 24;
+const BOX_PAD = 4;
 
 /** The page a read result names: a snapshot's `RootWebArea: <title>` or a read's `title: <title>` line. */
 const titleOf = (text: string): string | undefined => {
@@ -122,12 +127,18 @@ export async function visualOf(recording: Recording): Promise<Visual | undefined
     const poster = frames.find((frame) => !frame.sensitive)?.blob;
     if (segments.length > 0) video = { blob: videoBlob, ...(poster ? { poster } : {}), duration: (to - from) / 1000, segments };
   }
-  const chapters: VisualChapter[] = pages.map((page) => {
+  const everyPage: VisualChapter[] = pages.map((page) => {
     const raw = from !== undefined ? (page.t - from) / 1000 : 0;
     const hidden = raw < skipEnd && frames.some((frame) => frame.sensitive && frame.t <= page.t + 12_000 && page.t - 12_000 <= frame.t) && raw < skipEnd - 0.001 && reads.length > 0 && blurredRead(page.t, frames);
     return { title: page.title, t: page.t, at: hidden ? 0 : segmentAt(video?.segments ?? [], Math.max(raw, skipEnd)), hidden };
   });
 
+  // One chapter per distinct page visit: two that land at the same place in the video (a page opened, then the next straight after) are the later one; a place not shown keeps its own.
+  const chapters: VisualChapter[] = [];
+  for (const chapter of everyPage) {
+    const last = chapters.at(-1);
+    if (last && !last.hidden && !chapter.hidden && chapter.at - last.at < MERGE_S) chapters[chapters.length - 1] = chapter; else chapters.push(chapter);
+  }
   const manifest = obj(recording.manifest as unknown as Json);
   const files = Object.entries(obj(obj(manifest?.artifact)?.files) ?? {}).filter(([name, sha]) => /\.pdf$/i.test(name) && typeof sha === 'string').map(([name, sha]) => ({ name, sha: sha as string }));
   const facts: VisualFact[] = [];
@@ -162,8 +173,25 @@ function segmentAt(segments: [number, number][], seconds: number): number {
   return segments.at(-1)?.[0] ?? seconds;
 }
 
+/** The part of a frame a boxed fact is shown in, in the frame's pixels: the box with CROP_PAD of air on every side (clamped to the frame, never a sliver); a box across
+ *  most of the frame's width (a table row) is the whole row at full width with the lines above it, so its table header comes with it. */
+export function cropOf(frame: { w: number; h: number }, box: { x: number; y: number; w: number; h: number }): { x: number; y: number; w: number; h: number } {
+  if (box.w >= frame.w * 0.5) {
+    const top = Math.max(0, box.y - Math.max(3 * box.h, 70));
+    const bottom = Math.min(frame.h, box.y + box.h + CROP_PAD);
+    return { x: 0, y: top, w: frame.w, h: bottom - top };
+  }
+  const w = Math.min(frame.w, Math.max(box.w + 2 * CROP_PAD, 240));
+  const h = Math.min(frame.h, Math.max(box.h + 2 * CROP_PAD, 110));
+  return { x: Math.max(0, Math.min(frame.w - w, box.x + box.w / 2 - w / 2)), y: Math.max(0, Math.min(frame.h - h, box.y + box.h / 2 - h / 2)), w, h };
+}
+
+/** A rectangle in a frame as the percentages of a crop it sits at, grown by `grow` pixels each way. */
+const placed = (box: { x: number; y: number; w: number; h: number }, crop: { x: number; y: number; w: number; h: number }, grow = 0) =>
+  `left:${((box.x - grow - crop.x) / crop.w) * 100}%;top:${((box.y - grow - crop.y) / crop.h) * 100}%;width:${((box.w + 2 * grow) / crop.w) * 100}%;height:${((box.h + 2 * grow) / crop.h) * 100}%`;
+
 /** A picture drawn blurred, as pixels: the sharp picture is never put on screen. */
-function blurredCanvas(url: string, w: number, h: number): HTMLCanvasElement {
+export function blurredCanvas(url: string, w: number, h: number): HTMLCanvasElement {
   const canvas = Object.assign(document.createElement('canvas'), { width: w, height: h });
   canvas.className = 'mu-blurred';
   canvas.setAttribute('role', 'img');
@@ -184,7 +212,7 @@ function blurredCanvas(url: string, w: number, h: number): HTMLCanvasElement {
 function lightbox(host: HTMLElement, url: string, alt: string, box?: VisualFact['box'], size?: { w: number; h: number }): void {
   const overlay = reportEl('div', { class: 'mu-lightbox', role: 'dialog', 'aria-label': alt });
   const stage = reportEl('div', { class: 'mu-lb-stage' }, reportEl('img', { src: url, alt }));
-  if (box && size) stage.append(styled(reportEl('span', { class: 'mu-box' }), `left:${(box.x / size.w) * 100}%;top:${(box.y / size.h) * 100}%;width:${(box.w / size.w) * 100}%;height:${(box.h / size.h) * 100}%`));
+  if (box && size) stage.append(styled(reportEl('span', { class: 'mu-box' }), placed(box, { x: 0, y: 0, w: size.w, h: size.h }, BOX_PAD)));
   overlay.append(stage);
   const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
   const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') close(); };
@@ -195,6 +223,20 @@ function lightbox(host: HTMLElement, url: string, alt: string, box?: VisualFact[
 
 /** Sets an element's style through the CSSOM: a host whose policy allows no inline style still lets this. */
 const styled = <T extends HTMLElement>(element: T, cssText: string): T => { element.style.cssText = cssText; return element; };
+
+/** A picture of one flat colour, within a few levels, sampled on a small grid. */
+function isBlank(image: HTMLImageElement): boolean {
+  if (!image.naturalWidth) return false;
+  const canvas = Object.assign(document.createElement('canvas'), { width: 32, height: 16 });
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) return false;
+  context.drawImage(image, 0, 0, 32, 16);
+  const data = context.getImageData(0, 0, 32, 16).data;
+  let low = [255, 255, 255];
+  let high = [0, 0, 0];
+  for (let i = 0; i < data.length; i += 4) for (let c = 0; c < 3; c += 1) { low[c] = Math.min(low[c]!, data[i + c]!); high[c] = Math.max(high[c]!, data[i + c]!); }
+  return high.every((value, c) => value - low[c]! < 12);
+}
 
 const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
 
@@ -227,7 +269,7 @@ export function drawVisual(visual: Visual, model: ChatModel, recording: Recordin
       if (!chapter.hidden) button.addEventListener('click', () => { video.currentTime = chapter.at; void video.play().catch(() => undefined); });
       return button;
     }));
-    report.append(reportEl('div', { class: 'mu-stage' }, video, reportEl('div', { class: 'mu-stage-note', text: `Waits skipped · ${segments.length > 1 ? `${clock(duration)} of browsing in ${clock(segments.reduce((sum, [a, b]) => sum + (b - a), 0))}` : 'recorded browser'}` })), ...(chapters ? [chapters] : []));
+    report.append(reportEl('div', { class: 'mu-stage' }, video, reportEl('div', { class: 'mu-stage-note', text: `Frames the recorder kept · waits skipped${segments.length > 1 ? ` (${clock(duration)} of browsing in ${clock(segments.reduce((sum, [a, b]) => sum + (b - a), 0))})` : ''}` })), ...(chapters ? [chapters] : []));
     // Autoplay muted once it can; a page that forbids it stays paused on its poster.
     video.addEventListener('canplay', () => { void video.play().catch(() => undefined); }, { once: true });
   }
@@ -236,11 +278,17 @@ export function drawVisual(visual: Visual, model: ChatModel, recording: Recordin
   if (visual.frames.length > 0 || remembered) {
     const strip = reportEl('div', { class: 'mu-film', role: 'list', 'aria-label': 'Screenshots, in order' });
     if (remembered) strip.append(reportEl('div', { class: 'mu-skip', role: 'listitem' }, reportEl('div', { class: 'mu-skip-body' }, reportEl('span', { class: 'mu-skip-title', text: 'Skipped' }), reportEl('span', { class: 'mu-skip-sub', text: 'sign-in, remembered' })), reportEl('div', { class: 'mu-cap', text: 'Opened straight on the account' })));
+    const seen = new Set<string>();
     for (const frame of visual.frames) {
+      // The same picture twice is one tile.
+      if (seen.has(frame.blob)) continue;
+      seen.add(frame.blob);
       const url = urlOf(frame.blob);
       const picture = frame.sensitive ? blurredCanvas(url, frame.w, frame.h) : reportEl('img', { loading: 'lazy', src: url, alt: frame.title ? `The browser on ${frame.title}` : 'The browser' });
       const tile = reportEl('figure', { class: `mu-shot-tile${frame.sensitive ? ' blurred' : ''}`, role: 'listitem' }, styled(reportEl('div', { class: 'mu-tile-pic' }, picture), `aspect-ratio:${frame.w}/${frame.h}`), reportEl('figcaption', { class: 'mu-cap', text: frame.sensitive ? 'Sign-in (blurred)' : frame.title ?? clock((frame.t - (visual.frames[0]?.t ?? frame.t)) / 1000) }));
       if (!frame.sensitive) { tile.tabIndex = 0; tile.addEventListener('click', () => lightbox(host, url, frame.title ?? 'The browser')); tile.addEventListener('keydown', (event) => { if (event.key === 'Enter') lightbox(host, url, frame.title ?? 'The browser'); }); }
+      // A blank frame (one flat colour: a page not yet drawn) tells nothing: its tile goes once its picture is known to be blank.
+      if (!frame.sensitive) { const image = tile.querySelector('img'); if (image) { const check = () => { if (isBlank(image)) tile.remove(); }; if (image.complete) check(); else image.addEventListener('load', check, { once: true }); } }
       strip.append(tile);
     }
     report.append(strip);
@@ -274,17 +322,13 @@ export function drawVisual(visual: Visual, model: ChatModel, recording: Recordin
       // A crop of the frame around the box (with some page around it); no box, the whole frame, said so.
       if (frame.sensitive) pic.append(blurredCanvas(url, frame.w, frame.h));
       else if (fact.box) {
-        const pad = 0.6;
-        const cw = Math.min(frame.w, fact.box.w * (1 + 2 * pad) + 120);
-        const ch = Math.min(frame.h, fact.box.h * (1 + 2 * pad) + 40);
-        const cx = Math.max(0, Math.min(frame.w - cw, fact.box.x + fact.box.w / 2 - cw / 2));
-        const cy = Math.max(0, Math.min(frame.h - ch, fact.box.y + fact.box.h / 2 - ch / 2));
-        pic.style.cssText = `aspect-ratio:${cw}/${ch}`;
-        pic.append(styled(reportEl('img', { src: url, alt: fact.claim || fact.fact }), `position:absolute;width:${(frame.w / cw) * 100}%;max-width:none;height:auto;left:${-(cx / cw) * 100}%;top:${-(cy / ch) * 100}%`),
-          styled(reportEl('span', { class: 'mu-box' }), `left:${((fact.box.x - cx) / cw) * 100}%;top:${((fact.box.y - cy) / ch) * 100}%;width:${(fact.box.w / cw) * 100}%;height:${(fact.box.h / ch) * 100}%`));
+        const crop = cropOf(frame, fact.box);
+        pic.style.cssText = `aspect-ratio:${crop.w}/${crop.h}`;
+        pic.append(styled(reportEl('img', { src: url, alt: fact.claim || fact.fact }), `position:absolute;width:${(frame.w / crop.w) * 100}%;max-width:none;height:auto;left:${-(crop.x / crop.w) * 100}%;top:${-(crop.y / crop.h) * 100}%`),
+          styled(reportEl('span', { class: 'mu-box' }), placed(fact.box, crop, BOX_PAD)));
       } else pic.append(reportEl('img', { src: url, alt: fact.claim || fact.fact }));
       if (!frame.sensitive) { pic.tabIndex = 0; pic.addEventListener('click', () => lightbox(host, url, fact.claim || fact.fact, fact.box, { w: frame.w, h: frame.h })); }
-      facts.append(reportEl('figure', { class: 'mu-fact' }, pic, reportEl('figcaption', fact.receipt ? { title: [fact.receipt.model, fact.receipt.usd !== undefined ? `$${fact.receipt.usd}` : ''].filter((each) => each !== '').join(' · ') } : {}, reportEl('span', { class: 'mu-fact-value', text: fact.fact }), reportEl('span', { class: 'mu-cap', text: [fact.claim, fact.label].filter((each) => each !== '').join(' · ') }), fact.inferred ? reportEl('span', { class: 'mu-cap', text: 'The page shows the evidence, not the conclusion: this is the agent\'s own flag.' }) : false, fact.why && !fact.box ? reportEl('span', { class: 'mu-cap', text: fact.why }) : false)));
+      facts.append(reportEl('figure', { class: `mu-fact${fact.box && !frame.sensitive && fact.box.w >= frame.w * 0.5 ? ' wide' : ''}` }, pic, reportEl('figcaption', fact.receipt ? { title: [fact.receipt.model, fact.receipt.usd !== undefined ? `$${fact.receipt.usd}` : ''].filter((each) => each !== '').join(' · ') } : {}, reportEl('span', { class: 'mu-fact-value', text: fact.fact }), reportEl('span', { class: 'mu-cap', text: [fact.claim, fact.label].filter((each) => each !== '').join(' · ') }), fact.inferred ? reportEl('span', { class: 'mu-cap', text: 'The page shows the evidence, not the conclusion: this is the agent\'s own flag.' }) : false, fact.why && !fact.box ? reportEl('span', { class: 'mu-cap', text: fact.why }) : false)));
     }
     report.append(facts);
   }

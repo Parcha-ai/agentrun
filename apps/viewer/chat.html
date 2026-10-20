@@ -342,6 +342,11 @@ a.addr[href]{color:var(--acc);text-decoration:underline dotted}
 .mu-lightbox{position:absolute;inset:0;z-index:9;display:grid;place-items:center;padding:16px;background:rgba(8,8,9,.92);cursor:zoom-out}
 .mu-lb-stage{position:relative;max-width:100%}
 .mu-lb-stage img{display:block;max-width:100%;max-height:calc(100dvh - 32px);height:auto}
+.muse.mu-visual{max-width:none}
+.mu-visual .mu-chat>*{width:100%;max-width:608px;align-self:center}
+.mu-visual .mu-chat>.mu-report{max-width:1100px}
+.mu-visual .mu-input{max-width:608px;margin-inline:auto}
+@media (min-width:900px){.mu-facts{grid-template-columns:repeat(3,minmax(0,1fr))}.mu-fact.wide{grid-column:span 2}.mu-film{grid-template-columns:repeat(auto-fill,minmax(210px,1fr))}.mu-docs{grid-template-columns:repeat(auto-fill,minmax(190px,1fr))}}
 </style>
 </head>
 <body>
