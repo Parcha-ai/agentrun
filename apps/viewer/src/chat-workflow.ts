@@ -3,8 +3,9 @@
 // `data.input.key`, and its graph is the DSL's `workflowGraph` of the task's `data.input.workflow`. Each document of the
 // execution joins on the run key (RECORDING.md section 5): the driver's and `agentrun.task`'s key is it, items, states and
 // effects are keyed `<run key>\u0000...`, a node attempt `<run key>:<name>:step:<path>:a<n>`. A live node line names no
-// run: it is the latest begun of the executions begun by its place whose graph holds its node. An execution path is
-// mapped to its graph node by the DSL's walk (`graphNodeOf`), never by its text. Status is the DSL's `nodeStatus`. Pure.
+// run: it is an execution's only when that execution is the one open at its place (begun, not ended) whose graph holds
+// its node; else no execution takes it. An execution path is mapped to its graph node by the DSL's walk (`graphNodeOf`),
+// never by its text. Status is the DSL's `nodeStatus`. Pure.
 import { graphNodeOf, nodeStatus, workflowGraph, type NodeState, type WorkflowGraph } from '../../../packages/dsl/src/graph.ts';
 import { under, type Json, type Line } from './format.ts';
 import { docOf } from './durable.ts';
@@ -50,20 +51,25 @@ export const chatNodeOf = (graph: WorkflowGraph, path: string): string | undefin
 
 /** The executions in `lines`, in the order their first lines come, and the run key each line is (undefined: none). */
 export function chatWorkflowsOf(lines: readonly Line[]): { runs: ChatWorkflow[]; runOf: (line: Line) => string | undefined } {
-  // The latest line of each task names its run key and its workflow.
+  // The latest line of each task names its run key and its workflow; its first terminal line is where it ended.
   const tasks = new Map<string, CwObj>();
+  const endedAt = new Map<string, number>();
   for (const line of lines) {
     const data = cwTaskLine(line) ? cwObj(line.data)! : undefined;
     const id = data ? cwId(data.id) : undefined;
-    if (id !== undefined) tasks.set(id, data!);
+    if (id === undefined) continue;
+    tasks.set(id, data!);
+    if (!endedAt.has(id) && cwOutcomeOf(cwObj(data!.state))) endedAt.set(id, line.t);
   }
   const keyOfTask = new Map<string, string>();
   const begun = new Map<string, { workflow: Json | undefined; conversation?: string }>();
+  const ended = new Map<string, number>();
   for (const [id, data] of tasks) {
     const input = cwObj(data.input);
     const key = cwId(input?.key);
     if (key === undefined) continue;
     keyOfTask.set(id, key);
+    if (endedAt.has(id)) ended.set(key, Math.min(endedAt.get(id)!, ended.get(key) ?? Infinity));
     const conversation = cwId(data.conversationId);
     if (!begun.has(key)) begun.set(key, { workflow: input?.workflow, ...(conversation !== undefined ? { conversation } : {}) });
   }
@@ -94,7 +100,8 @@ export function chatWorkflowsOf(lines: readonly Line[]): { runs: ChatWorkflow[];
   const order = [...graphs.keys()].filter((key) => first.has(key)).sort((a, b) => first.get(a)! - first.get(b)!);
   const runOf = (line: Line): string | undefined => {
     if (!live(line)) return durableRunOf(line);
-    return order.filter((key) => first.get(key)! <= line.t && chatNodeOf(graphs.get(key)!, line.path!) !== undefined).at(-1);
+    const open = order.filter((key) => first.get(key)! <= line.t && (ended.get(key) ?? Infinity) > line.t && chatNodeOf(graphs.get(key)!, line.path!) !== undefined);
+    return open.length === 1 ? open[0] : undefined;
   };
 
   const runs: ChatWorkflow[] = order.map((key, index) => {

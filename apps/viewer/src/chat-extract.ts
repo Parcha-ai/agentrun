@@ -243,11 +243,13 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   // Workflow nodes, each keyed by (run key, execution path): its label and span, and the conversation each agent node ran.
   const nodeKey = (line: Line) => `${runOf(line) ?? ''}\u0000${line.path ?? ''}`;
   const nodeAt = new Map<string, { label: string; t0?: number; t1?: number; node?: { run: string; path: string } }>();
-  for (const line of live('node.start')) {
+  // A live node line no execution takes (two open at once hold its node) draws no span.
+  const taken = (line: Line) => workflows.length === 0 || runOf(line) !== undefined;
+  for (const line of live('node.start').filter(taken)) {
     const place = graphPlace(line);
     nodeAt.set(nodeKey(line), { label: chatStr(chatObj(line.data)?.label) ?? line.path ?? 'node', t0: line.t, ...(place ? { node: { run: place.run.id, path: place.path } } : {}) });
   }
-  for (const line of live('node.end')) { const node = nodeAt.get(nodeKey(line)); if (node) node.t1 = line.t; }
+  for (const line of live('node.end').filter(taken)) { const node = nodeAt.get(nodeKey(line)); if (node) node.t1 = line.t; }
   // A recording with no times has no live node line: a node attempt spans its index line to its conversation's last line.
   if (!clocked) {
     for (const line of lines) {

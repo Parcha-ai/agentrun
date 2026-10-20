@@ -11,8 +11,9 @@ kind: feature
 - Every workflow node in the chat view is keyed by the execution's run key (`data.input.key`, which its documents join
   on) and its execution path, mapped to its graph node by the DSL's `graphNodeOf`. Before, nodes were keyed by path
   alone, so in a recording with two executions whose paths collide the second one's node took the first one's
-  conversation label and span. The call that started an execution is the call of its conversation made before its
-  first line and answered after it.
+  conversation label and span. A live node line names no execution: it is taken only when one execution open at its
+  place (begun, not ended) holds its node, else it draws no span and the driver's record alone marks the node. The call
+  that started an execution is the call of its conversation made before its first line and answered after it.
 - In a recording with no times (an export from a store), the replay's place is a line of the file, a tool call spans its
   entry to its result and a node attempt its conversation, so such a recording has a timeline.
 - The replay's place is the run's end until a press or a drag on the session timeline (a playhead marks it) or the

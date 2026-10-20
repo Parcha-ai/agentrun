@@ -26,8 +26,9 @@ const result = (id: string, text: string) => entry('pi.tool-result', 1, { role: 
 const task = (key: string, id: number) => durable('agentrun.task', { doc: 'agentrun.task', key, value: { task: id, stop: null }, version: 1 });
 const driver = (key: string, pin: { done: string[]; steps?: Record<string, unknown>; inputs?: Record<string, unknown> }) =>
   durable('agentrun.driver', { doc: 'agentrun.driver', key, value: { generation: 1, state: { schema: 'agentrun.frozen_run.v3', pin: { steps: {}, inputs: {}, ...pin } } }, version: 1 });
-const nodes = (key: string, name: string, path: string, conversation: number) =>
-  durable('agentrun.nodes', { doc: 'agentrun.nodes', key: `${key}:${name}:step:${path}:a0`, value: { conversation, closed: false }, version: 1 }, { path });
+// A node attempt's key names the step's label (`frozenStepSessionId`).
+const nodes = (key: string, label: string, path: string, conversation: number) =>
+  durable('agentrun.nodes', { doc: 'agentrun.nodes', key: `${key}:${label}:step:${path}:a0`, value: { conversation, closed: false }, version: 1 }, { path });
 const workflow = (id: number, key: string, definition: unknown, outcome: unknown) =>
   durable('agentrun.workflow', { id, conversationId: 1, kind: 'agentrun.workflow', version: 1, input: { key, workflow: definition, input: {} }, state: { status: 'terminal', outcome } }, { conv: 1 });
 
@@ -37,7 +38,7 @@ export const lines: Line[] = [
   task(KEY_A, 5),
   driver(KEY_A, { done: [] }),
   driver(KEY_A, { done: [], steps: { '/root/steps/0': {} }, inputs: { '/root/steps/0': {} } }),
-  nodes(KEY_A, 'gather-and-tally', '/root/steps/0', 2),
+  nodes(KEY_A, 'gather', '/root/steps/0', 2),
   entry('pi.user', 2, { role: 'user', content: 'The runner\'s prompt for gather.' }, '/root/steps/0'),
   entry('pi.assistant', 2, said('Gathered three names.'), '/root/steps/0'),
   driver(KEY_A, { done: ['/root/steps/0'], steps: { '/root/steps/1': {} }, inputs: { '/root/steps/1': {} } }),
@@ -46,7 +47,7 @@ export const lines: Line[] = [
   call('call-b', 'check-and-judge'),
   task(KEY_B, 9),
   driver(KEY_B, { done: [], steps: { '/root/steps/0': {} }, inputs: { '/root/steps/0': {} } }),
-  nodes(KEY_B, 'check-and-judge', '/root/steps/0', 3),
+  nodes(KEY_B, 'check', '/root/steps/0', 3),
   entry('pi.user', 3, { role: 'user', content: 'The runner\'s prompt for check.' }, '/root/steps/0'),
   entry('pi.assistant', 3, said('Checked: one name is misspelt.'), '/root/steps/0'),
   driver(KEY_B, { done: ['/root/steps/0'], inputs: { '/root/steps/1': {} } }),

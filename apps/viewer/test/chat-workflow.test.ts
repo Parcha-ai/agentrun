@@ -83,6 +83,30 @@ test('with live node lines (a recording with times), a node is working while its
   assert.deepEqual(Object.values(chatWorkflowStatusAt(run!, Infinity)), ['done', 'done', 'done', 'done', 'done']);
 });
 
+test('a live node line is taken only when one execution open at its place holds its node; else the record alone decides', async () => {
+  const workflow = { v: 2, name: 'w', root: { node: 'chain', steps: [{ node: 'agent', label: 'a' }] } };
+  const doc = (t: number, kind: string, key: string, value: Json): Line => ({ channel: 'durable', source: 'workflow', kind, t, commit: t, data: { doc: kind, key, value } });
+  const task = (t: number, id: number, key: string, state?: Json): Line => ({ channel: 'durable', source: 'workflow', kind: 'agentrun.workflow', t, commit: t, data: { id, conversationId: 1, kind: 'agentrun.workflow', input: { key, workflow }, ...(state ? { state } : {}) } });
+  const node = (t: number, kind: 'node.start' | 'node.end'): Line => ({ channel: 'live', source: 'workflow', kind, t, path: '/root/steps/0', data: { type: kind, label: 'a' } });
+  const pin = (done: string[]) => ({ state: { pin: { done, steps: {}, inputs: {} } } });
+  // A begins at 10, B at 20; the node.start at 30 is A's, but nothing on it says so.
+  const both = [doc(10, 'agentrun.task', 'A', { task: 1 }), doc(20, 'agentrun.task', 'B', { task: 2 }), node(30, 'node.start'), node(40, 'node.end'),
+    doc(50, 'agentrun.driver', 'A', pin(['/root/steps/0'])), task(60, 1, 'A', { status: 'terminal', outcome: { status: 'completed', result: { status: 'complete' } } }), task(61, 2, 'B'),
+    node(70, 'node.start'), node(80, 'node.end')];
+  const { runs, runOf } = chatWorkflowsOf(both);
+  const [a, b] = runs;
+  assert.deepEqual([runOf(both[2]!), runOf(both[3]!)], [undefined, undefined], 'two executions open hold the node: no execution takes the line');
+  assert.deepEqual([a!.spans, b!.spans.filter((span) => span.t0 < 60)], [[], []], 'no live span on either');
+  assert.equal(chatWorkflowStatusAt(a!, 35)['/root/steps/0'], 'not-run', 'A is not working from the line');
+  assert.equal(chatWorkflowStatusAt(b!, 35)['/root/steps/0'], 'not-run', 'nor is B');
+  assert.equal(chatWorkflowStatusAt(a!, 55)['/root/steps/0'], 'done', 'the driver\'s record still decides');
+  // A has ended at 60: B is the one execution open, and takes the line at 70.
+  assert.deepEqual([runOf(both[7]!), b!.spans], ['B', [{ path: '/root/steps/0', t0: 70, t1: 80 }]]);
+  assert.equal(chatWorkflowStatusAt(b!, 75)['/root/steps/0'], 'working');
+  const timeline = (await model(both)).spans.filter((span) => span.actor === 'node').map((span) => [span.t0, span.node?.run]);
+  assert.deepEqual(timeline, [[70, b!.id]], 'the timeline draws no span for the line no execution takes');
+});
+
 test('a line is its execution\'s by the run key its document carries, the longest that a node attempt\'s key starts with', () => {
   let place = 0;
   const at = (data: Json, extra: Partial<Line> = {}): Line => ({ channel: 'durable', source: 'workflow', kind: String((data as { doc?: string; kind?: string }).doc ?? (data as { kind: string }).kind), t: (place += 1), data, ...extra });
