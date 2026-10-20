@@ -43,6 +43,14 @@ test("the executable runs through its bin path and prints usage", () => {
   assert.match(r.stderr, /usage:\n {2}pi-durable-disk run/);
 });
 
+test("--help (alone, or after a command) prints the usage on stdout and exits 0", () => {
+  for (const args of [["--help"], ["supervise", "--help"], ["help"]]) {
+    const r = spawnSync(process.execPath, [CLI, ...args], { encoding: "utf8" });
+    assert.equal(r.status, 0, `${args.join(" ")}: ${r.stderr}`);
+    assert.match(r.stdout, /usage:\n {2}pi-durable-disk run/);
+  }
+});
+
 test("the watchdog owns the cgroup only when /proc confirms the unit the holder names, and its parent is elsewhere", () => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pda-cgroup-"));
   try {

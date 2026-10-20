@@ -91,6 +91,22 @@ describe("the CLI on a local directory", () => {
     }
   });
 
+  it("an app that releases the run in onOpen and returns ends the instance by itself: exit 0, the run sealed done", { timeout: 60_000 }, async () => {
+    const dir = scratchRoot("cli-local-released");
+    try {
+      const root = join(dir.root, "run");
+      const app = fileURLToPath(new URL("./fixtures/release-in-onopen-app.ts", import.meta.url));
+      const run = await cli(["run", "--dir", root, "--app", app], { timeoutMs: 20_000 });
+      assert.equal(run.code, 0, `the instance ended by itself (signal ${run.signal}): ${run.stderr}`);
+      const status = await cli(["status", "--dir", root]);
+      const report = status.events.at(-1) as { runJson: { status: string; sealedSeq: number | null } };
+      assert.equal(report.runJson.status, "done");
+      assert.equal(typeof report.runJson.sealedSeq, "number", "released and sealed");
+    } finally {
+      dir.remove();
+    }
+  });
+
   it("a kill -9 in the middle, then the same command again: the run resumes and every message is answered once", { timeout: 120_000 }, async () => {
     const dir = scratchRoot("cli-local-kill");
     try {

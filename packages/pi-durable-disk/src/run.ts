@@ -345,6 +345,8 @@ export interface DurableRun {
   /** `run.json` as last written. */
   readonly record: RunRecord;
   readonly fenced: boolean;
+  /** True once `release()` began: the Harness is closed, the status is final, and the instance has nothing left to serve. */
+  readonly releasing: boolean;
   /** Write a status transition. `done` and `failed` run the barrier first, so a terminal status never names workspace files that are not durable. */
   setStatus(status: RunStatus, detail?: JsonValue | null, options?: { readonly wakeAt?: string | null }): Promise<void>;
   /**
@@ -1065,6 +1067,10 @@ class Run implements DurableRun {
       if (this.#harness) await this.#harness.close(this.#context);
       else if (this.#store) await this.#store.storage.close(this.#context);
     });
+  }
+
+  get releasing(): boolean {
+    return this.#releasing !== undefined || this.#released;
   }
 
   async setStatus(status: RunStatus, detail: JsonValue | null = null, options: { readonly wakeAt?: string | null } = {}): Promise<void> {
