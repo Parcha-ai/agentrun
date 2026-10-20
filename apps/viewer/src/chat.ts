@@ -4,6 +4,7 @@ import type { Json, Recording } from './format.ts';
 import { fetchBlob } from './blobs.ts';
 import { bundledRecordings, fromUrl, openBundled } from './load.ts';
 import { extractChat } from './chat-extract.ts';
+import { drawMuse } from './chat-muse.ts';
 import { drawChat } from './chat-view.ts';
 
 async function chatMain(): Promise<void> {
@@ -25,8 +26,10 @@ async function chatMain(): Promise<void> {
       const response = await fetchBlob(url).catch(() => undefined);
       return response?.ok ? (await response.json().catch(() => undefined)) as Json | undefined : undefined;
     };
-    // The Muse view (the agent's header, the browser card) is opt-in: `chat.html?r=<id>&muse`. Without it a run reads as before.
-    drawChat(root, await extractChat(recording, readJson, { muse: params.has('muse') }), recording);
+    // The Muse layout (a phone chat over the same events) is opt-in: `chat.html?r=<id>&muse`. Without it a run reads as before.
+    const muse = params.has('muse');
+    const model = await extractChat(recording, readJson, { muse });
+    if (muse) drawMuse(root, model, recording); else drawChat(root, model, recording);
   } catch (error) {
     const note = document.createElement('p');
     note.className = 'chat-error';

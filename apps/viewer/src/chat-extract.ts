@@ -502,6 +502,35 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     }
   }
   for (const tag of [...opened.keys()]) closeHold(tag, undefined);
+  // The host each session was on, row by row: a step's browser says where it was at its last frame.
+  const hostOf = (address: string | undefined): string | undefined => { try { return address ? new URL(address).host || undefined : undefined; } catch { return undefined; } };
+  const sitesAt: { t: number; host: string }[] = [];
+  if (options.muse) {
+    for (const line of lines.filter((each) => each.channel === 'durable' && each.kind === 'browser.sessions')) {
+      for (const each of chatList(chatObj(chatObj(line.data)?.value)?.sessions)) {
+        const host = hostOf(chatStr(chatObj(each)?.lastUrl));
+        if (host) sitesAt.push({ t: line.t, host });
+      }
+    }
+    for (const item of toolItems.values()) {
+      const last = item.browser?.frames.at(-1);
+      const seen = last ? sitesAt.filter((site) => site.t <= last.t + 2000).at(-1) : undefined;
+      if (item.browser && seen) item.browser.site = seen.host;
+    }
+  }
+  // The sign-in waits, from the browser's profile documents: asked when one gains the address it signs in to, signed in when it is verified.
+  const waits: NonNullable<ChatModel['waits']> = [];
+  if (options.muse) {
+    const open = new Map<string, { t0: number; site: string }>();
+    for (const line of lines.filter((each) => each.channel === 'durable' && each.kind === 'browser.profiles')) {
+      const key = chatStr(chatObj(line.data)?.key) ?? chatStr(chatObj(chatObj(line.data)?.value)?.ref) ?? 'profile';
+      const value = chatObj(chatObj(line.data)?.value);
+      const site = hostOf(chatStr(value?.startUrl)) ?? chatStr(chatList(value?.allowedOrigins)[0] as Json | undefined)?.replace(/^https?:\/\//, '');
+      if (site && !open.has(key) && !value?.verifiedAt) open.set(key, { t0: line.t, site });
+      else if (value?.verifiedAt && open.has(key)) { const asked = open.get(key)!; open.delete(key); waits.push({ ...asked, t1: line.t }); }
+    }
+    for (const asked of open.values()) waits.push(asked);
+  }
   for (const item of toolItems.values()) if (item.browser) item.browser.frames.sort((a, b) => a.t - b.t);
 
   // A step that ran a command or a script and made no look and no picture is plumbing; a step that drove a browser is never.
@@ -591,5 +620,6 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     ...(times.length ? { durationMs: Math.max(...times) } : {}),
     ...(resultLine ? { answeredAt: resultLine.t } : {}),
     ...(agent ? { agent } : {}),
+    ...(waits.length ? { waits } : {}),
   };
 }

@@ -218,6 +218,49 @@ a.addr[href]{color:var(--acc);text-decoration:underline dotted}
 .arow p{margin:0 0 8px;overflow-wrap:anywhere}
 .arow p.anote{font-size:13px;color:var(--muted)}
 .cites{display:flex;flex-wrap:wrap;gap:6px}
+
+/* The Muse layout (chat.html?r=<id>&muse): one phone-width chat column over the same events. */
+.muse{display:flex;flex-direction:column;height:100vh;height:100dvh;max-width:640px;margin:0 auto;background:var(--bg)}
+.mu-top{flex:none;display:flex;flex-direction:column;align-items:center;gap:2px;padding:20px 16px 12px;background:var(--bg);border-bottom:1px solid var(--line);text-align:center}
+.mu-avatar{display:grid;place-items:center;width:68px;height:68px;border-radius:50%;background:radial-gradient(circle at 32% 28%,#f1e6d6,#b9a58b 70%);color:#3a2f22;font:600 28px var(--sans);box-shadow:0 0 0 3px var(--bg),0 0 0 4px var(--line)}
+.mu-name{margin-top:8px;font:600 16px var(--sans)}
+.mu-state{font:400 14px var(--sans);color:var(--muted)}
+.mu-state.working{color:var(--acc)}.mu-state.waiting{color:var(--purple)}
+.mu-chat{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;gap:14px;padding:16px 16px 28px}
+.mu-row{display:flex;flex-direction:column;gap:8px;min-width:0}
+.mu-row.person{align-items:flex-end}.mu-row.agent{align-items:flex-start}
+.mu-bubble{background:#1c1c1e;border-radius:22px 22px 22px 6px;padding:14px 18px;font:16px/1.5 var(--sans);overflow-wrap:anywhere;max-width:92%}
+.mu-row.person .mu-bubble{background:#2f6fe0;color:#fff;border-radius:22px 22px 6px 22px;max-width:82%}
+.mu-bubble p{margin:0 0 10px;white-space:pre-wrap}.mu-bubble p:last-child{margin:0}
+.mu-files{display:flex;flex-wrap:wrap;gap:8px}
+.mu-file{background:#1c1c1e;border:1px solid var(--line);border-radius:14px;padding:8px 12px;font:500 13px var(--sans);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mu-card{display:flex;flex-direction:column;gap:12px;min-width:0;background:#1c1c1e;border-radius:24px;padding:14px}
+.mu-card-head{display:flex;align-items:center;gap:14px}
+.mu-icon{flex:none;display:grid;place-items:center;width:52px;height:52px;border-radius:14px;background:#26262a;color:var(--muted)}
+.mu-browser .mu-icon{color:#4c8dff}
+.mu-card-title{font:600 17px var(--sans)}.mu-card-sub{font:400 15px/1.35 var(--sans);color:var(--muted);overflow-wrap:anywhere}
+.mu-shot{display:grid;place-items:center;aspect-ratio:16/10;border-radius:14px;overflow:hidden;background:#0b0b0d}
+.mu-shot img{display:block;width:100%;height:100%;object-fit:contain}
+.mu-shot-none{font:400 13px var(--sans);color:var(--dim);padding:0 16px;text-align:center}
+.mu-strip{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.mu-labels{min-width:0;display:flex;flex-direction:column;gap:2px}
+.mu-label{font:400 14px/1.4 var(--sans);color:var(--muted);overflow-wrap:anywhere}.mu-label.held{color:var(--ink)}
+.mu-take{flex:none;font:500 13px var(--sans);padding:7px 14px;border-radius:999px;border:1px solid var(--line);color:var(--dim);background:transparent}
+.mu-take:disabled,.mu-wide:disabled{cursor:not-allowed;opacity:.7}
+.mu-wide{width:100%;padding:14px;border-radius:999px;background:#26262a;color:var(--ink);font:500 16px var(--sans);text-align:center}
+.mu-quiet-group{font:400 13px var(--sans);color:var(--dim)}
+.mu-quiet-group summary{cursor:pointer;padding:2px 4px}
+.mu-thought-body{padding:6px 4px 2px;color:var(--muted);font:400 14px/1.5 var(--sans)}
+.mu-thought-body p{margin:0 0 8px}
+.mu-steps-list{margin:6px 0 0;padding-left:20px;color:var(--muted)}.mu-steps-list li{margin:2px 0;overflow-wrap:anywhere}
+.mu-quiet{margin:0;color:var(--dim);font:400 14px var(--sans)}
+.mu-remember{display:flex;flex-direction:column;gap:8px}
+.mu-rh{margin:8px 0 0;font:600 15px var(--sans)}.mu-rsub{font:500 12px var(--mono);color:var(--dim)}
+.mu-rlist{margin:0;padding-left:20px;font:400 15px/1.5 var(--sans);color:var(--muted)}.mu-rlist li{overflow-wrap:anywhere}
+.mu-rp{margin:0;font:400 15px/1.5 var(--sans);color:var(--muted);overflow-wrap:anywhere}
+.mu-rpre{margin:0;padding:10px 12px;border-radius:12px;background:#26262a;font:400 13px/1.5 var(--mono);color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
+.mu-composer{flex:none;padding:10px 16px 18px;background:var(--bg)}
+.mu-input{padding:14px 18px;border:1px solid var(--line);border-radius:999px;color:var(--dim);font:400 15px var(--sans)}
 .evidence{display:flex;flex-direction:column;gap:26px;margin-top:22px}
 .ev-card{margin:0;min-width:0}
 .ev-card .media img{width:100%;height:auto}

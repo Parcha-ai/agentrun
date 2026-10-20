@@ -47,6 +47,8 @@ export type ChatItem =
  *  says it is not (t1, none while the run ends held), with the condition the run asked and, once answered, its outcome
  *  (done, cancelled or expired). Nothing records who acted during a hold, so none is named. */
 export type ChatBrowser = {
+  /** The host the browser was on at the step's last frame (from the session rows' last address), when the rows say. */
+  site?: string;
   frames: { t: number; blob: string; w: number; h: number }[];
   holds: { t0: number; t1?: number; condition: string; outcome?: string }[];
 };
@@ -125,4 +127,7 @@ export type ChatModel = {
   /** The agent the header names: its name (the host's `reference.label`, else the recording's task) and its state from the events:
    *  done (the manifest names a result), waiting (the run ends held), else working. */
   agent?: { name: string; status: 'working' | 'waiting' | 'done' };
+  /** The times the run waited for a person to sign in, from the browser's own sign-in document (`browser.profiles`): asked when the profile
+   *  gains the address it signs in to (t0), signed in when it is verified (t1; none when the run ends waiting). `site` is that address's host. */
+  waits?: { t0: number; t1?: number; site: string }[];
 };
