@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
-import { agreementOf, ranWorkflow, rowsOf, sentenceFor, session, spentOf, TOOLS } from './issue-triage/session.ts';
+import { agreementOf, ranWorkflow, resultOf, rowsOf, sentenceFor, session, spentOf, TOOLS } from './issue-triage/session.ts';
 
 const workflow = JSON.parse(readFileSync(new URL('./issue-triage/workflow.json', import.meta.url), 'utf8'));
 const callTools = (node, found = new Set()) => {
@@ -126,4 +126,39 @@ test('the rows are the result itself when it is a list, else its rows (the agent
   assert.equal(rowsOf({ nothing: 1 }), null);
   assert.equal(rowsOf(null), null);
   assert.equal(agreementOf(rowsOf(rows), { bug: 'bug' }).matched, 1);
+});
+
+test('the recording keeps the rows and the host\'s agreement for a result that is a list and for one that holds rows, never numbered keys', () => {
+  const rows = [{ type: 'bug', labels: ['bug'] }, { type: 'docs', labels: ['bug'] }];
+  const agreement = agreementOf(rows, { bug: 'bug' });
+  assert.deepEqual(resultOf(rows, agreement), { rows, agreement });
+  assert.deepEqual(resultOf({ rows, note: 'n', agreement: { matched: 99 } }, agreement), { rows, note: 'n', agreement });
+  assert.deepEqual(Object.keys(resultOf(rows, agreement)), ['rows', 'agreement']);
+  assert.equal(resultOf(null, null), null);
+  assert.deepEqual(resultOf('text', null), { result: 'text', agreement: null });
+});
+
+test('a recorded run reads its spend before the recording is finished: the summary carries a nonzero spend and the manifest is written', { timeout: 30_000 }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'triage-rec-'));
+  const lines = [];
+  const log = console.log; console.log = (line) => lines.push(String(line));
+  try {
+    const faux = fauxProvider({ models: [{ id: 'faux-1' }], tokensPerSecond: 20, tokenSize: { min: 1, max: 2 } });
+    faux.setResponses(Array.from({ length: 400 }, () => fauxAssistantMessage([fauxToolCall('agentrun', { action: 'describe' })], { stopReason: 'toolUse' })));
+    const catalog = createModels(); catalog.setProvider(faux.provider);
+    const parts = { host: { models: { catalog, lead: { provider: faux.provider.id, modelId: 'faux-1' } }, decisions: { runJudge: async () => { throw new Error('no judge here'); } } }, tools: {}, models: {} };
+    const recording = join(dir, 'recording');
+    const spool = join(recording, '.spool');
+    let commit = 0;
+    const bill = setInterval(() => {
+      if (!existsSync(spool)) return;
+      appendFileSync(join(spool, 'stub-usage.jsonl'), `${JSON.stringify({ channel: 'durable', source: 'pi', kind: 'pi.assistant', commit: ++commit, conv: 1, data: { model: [{ role: 'assistant', usage: { cost: { total: 0.0004 } } }] } })}\n`);
+    }, 300);
+    await session({ dir: join(dir, 'run'), input: { repo: 'o/r', sha: 'a'.repeat(40), numbers: [1], label_map: {} }, plain: true, maxUsd: 0.0009, record: recording, parts }).finally(() => clearInterval(bill));
+    const summary = JSON.parse(lines.at(-1));
+    assert.equal(summary.outcome, 'over_budget');
+    assert.ok(summary.spentUsd > 0, `the spend is read before the spool goes: ${summary.spentUsd}`);
+    assert.equal(summary.recording, recording);
+    assert.ok(existsSync(join(recording, 'manifest.json')) && !existsSync(spool), 'the recording is finished and its spool is gone');
+  } finally { console.log = log; process.exitCode = 0; await rm(dir, { recursive: true, force: true }); }
 });
