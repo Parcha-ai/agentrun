@@ -288,7 +288,7 @@ a.addr[href]{color:var(--acc);text-decoration:underline dotted}
 .wf-graph .working>.wg-row{border-color:#6b4512}
 .wf-graph .failed>.wg-row{border-color:#5a2a24}
 .wf-graph .not-run>.wg-row .wg-label{color:var(--muted)}
-.wf-graph .working>.wg-row .wg-status::before{animation:wf-pulse 1.2s ease-in-out infinite}
+@media (prefers-reduced-motion:no-preference){.wf-graph .working>.wg-row .wg-status::before{animation:wf-pulse 1.2s ease-in-out infinite}}
 @keyframes wf-pulse{50%{opacity:.45}}
 .wf-graph .wg-into{position:relative;margin:10px 0 0 16px;padding-left:18px}
 .wf-graph .wg-into::before{content:"";position:absolute;left:0;top:-10px;bottom:0;width:1px;background:#3b3b41}
