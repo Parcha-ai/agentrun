@@ -2,17 +2,20 @@
 // end to end with fakes of lane C3's tools, scored from what each run's store says it read.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { chmod, mkdtemp, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import Ajv from 'ajv';
+import { WorkflowStore } from '@parcha/agentrun-pi/workflows';
+import { renderSkill, renderTrial, skillPath, trialPath } from '@parcha/pi-agent-learn';
 import { renderCurve } from './curve.mjs';
+import { HOST_WORKFLOW } from './dispatch.mjs';
 import { answerV4 } from './host.mjs';
 import { rerow } from './rerow.mjs';
-import { readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
+import { openOut, readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
 import { countryCode, entityName, MAX_SUBSIDIARIES, scoreHq, scoreSegments, scoreSubsidiaries, scoreV4, SEGMENT_PICK } from './score-v4.mjs';
-import { FIXTURES_V2, FIXTURES_V4, readJson, WORKFLOW } from './scripted.mjs';
+import { CLASSIFY_WORKFLOW_V4, FIXTURES_V2, FIXTURES_V4, readJson, WORKFLOW } from './scripted.mjs';
 import { SETS } from './sets.mjs';
 
 async function scratch(t) {
@@ -238,7 +241,7 @@ test('the v4 home: the workflows skill and the learning rules as v2 has them, th
 
 // ---- scripted passes -----------------------------------------------------------------------------------------------------
 
-const V4_FIELDS = ['correctOver', 'segmentsAnswer', 'segmentsTruth', 'segmentsF1', 'shareErrorMean', 'hqAnswer', 'hqTruth', 'hqCorrect', 'subsidiariesAnswer', 'subsidiariesTruthCount',
+const V4_FIELDS = ['dispatched', 'correctOver', 'segmentsAnswer', 'segmentsTruth', 'segmentsF1', 'shareErrorMean', 'hqAnswer', 'hqTruth', 'hqCorrect', 'subsidiariesAnswer', 'subsidiariesTruthCount',
   'subsidiariesRecall', 'subsidiariesPrecision', 'reportAnswer', 'reportTruth', 'reportYearCorrect', 'reportRead'];
 const V3_FIELDS = ['company', 'ticker', 'born', 'rewritten', 'executions', 'workflowShare', 'agentFallback', 'scoreCostUsd'];
 const V2_TOOL_FIELDS = ['set', 'categories', 'websiteGiven', 'sic4Answer', 'sic4Truth', 'sicCorrect4', 'sicCorrect2', 'evidenceSupported', 'toolCalls', 'browserMinutes', 'visionPages', 'browserCostUsd'];
@@ -267,6 +270,7 @@ test('a scripted v4 pass: by hand, then the whole-job workflow on site and repor
   assert.equal(asked.filter((l) => l === 'score/hq' || l === 'score/subsidiary').length, 0);
 
   assert.deepEqual(rows.map((r) => r.byWorkflow), [false, false, true, true]);
+  assert.deepEqual(rows.map((r) => r.dispatched), [false, false, false, false], 'a workflow on trial runs through the agent');
   assert.deepEqual(rows[0].workflowsSaved, [WORKFLOW]);
   assert.deepEqual(rows[0].born.map((b) => b.name), [WORKFLOW]);
   assert.deepEqual(rows[1].toolCalls, { search: 1, browse: 1, fetch: 0, read_document: 1 });
@@ -299,3 +303,36 @@ test('a v4 sealed pass scores the sealed companies at a commit, and rerow backfi
   const v3 = readRows(join(out, 'runs.v3.jsonl'));
   assert.deepEqual(v3.map((r) => [r.company, r.ticker, r.born, r.executions, r.workflowShare, r.agentFallback]), rows.map((r) => [r.company, r.ticker, r.born, r.executions, r.workflowShare, r.agentFallback]));
 }, { timeout: 240_000 });
+
+test('the host dispatches a promoted v4 workflow: its output passes the v4 answer and is the run\'s; a company without a website goes to the agent', async (t) => {
+  const root = await scratch(t);
+  const out = join(root, 'out');
+  const { repo } = await openOut(out, { mode: 'scripted', set: SETS.v4 });
+  // CLASSIFY_WORKFLOW_V4 on main, promoted: its live revision active.
+  const store = join(root, 'store');
+  await mkdir(store, { recursive: true });
+  const saved = await new WorkflowStore(store).save(WORKFLOW, CLASSIFY_WORKFLOW_V4);
+  const trial = { name: WORKFLOW, status: 'active', when: [], revisions: [{ sha256: saved.digest, status: 'active', since: '2026-10-20T00:00:00.000Z', run: 'run-000', after: 0 }], uses: [] };
+  const commit = await repo.commitTo('main', {
+    files: {
+      [`.pi/agentrun/workflows/${WORKFLOW}/${saved.digest}.json`]: await readFile(join(store, '.pi/agentrun/workflows', WORKFLOW, `${saved.digest}.json`), 'utf8'),
+      [`.pi/agentrun/workflows/${WORKFLOW}/latest`]: `${saved.digest}\n`,
+      [skillPath(WORKFLOW)]: renderSkill(WORKFLOW, 'Use it for any company whose website is given.'),
+      [trialPath(WORKFLOW)]: renderTrial(trial),
+    },
+    message: 'test: classify-company promoted',
+  });
+  await repo.push(commit.sha, 'main');
+
+  const { rows } = await runLoop({ out, parts: scriptedParts({ set: SETS.v4 }), jobs: 2, record: false });
+  assert.deepEqual(rows.map((r) => r.dispatched), [true, true]);
+  // Harbor Valve: the host's run answered, with no root-agent call and no tool call of the agent's own.
+  assert.deepEqual([rows[0].byWorkflow, rows[0].correct, rows[0].correctOver], [true, true, ['sic4', 'segments', 'hq']]);
+  assert.deepEqual(rows[0].workflowsUsed.map((u) => [u.name, u.outcome, u.classifiedBy ?? null]), [[WORKFLOW, 'complete', HOST_WORKFLOW]]);
+  assert.deepEqual([rows[0].reportRead, rows[0].evidenceSupported, rows[0].subsidiariesRecall], [true, 1, 1]);
+  assert.deepEqual(rows[0].toolCalls, { search: 0, browse: 0, fetch: 1, read_document: 1 }, 'the workflow\'s call nodes');
+  assert.deepEqual([rows[0].workflowShare, rows[0].agentFallback], [1, null]);
+  // Bluefin has no website: the workflow cannot take its input, and the agent does the job by hand.
+  assert.deepEqual([rows[1].byWorkflow, rows[1].correct], [false, true]);
+  assert.deepEqual(rows[1].toolCalls, { search: 1, browse: 1, fetch: 0, read_document: 1 });
+}, { timeout: 180_000 });

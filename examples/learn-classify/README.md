@@ -282,7 +282,8 @@ host runs it first (`dispatch.mjs`), as a durable workflow task of the run, befo
 run with a valid answer is the run's answer, and Opus is never called; its row's `workflowsUsed` entry has `classifiedBy`
 `host-workflow`. A run that escalates or fails hands the job to the root agent with what the workflow returned. Either
 way the task is a use in pi-agent-learn's uses file, so promotion and demotion count it. A workflow on trial still runs
-through the agent. `--no-dispatch` turns it off.
+through the agent. `--no-dispatch` turns it off. A v2 or v4 row's `dispatched` says whether the host ran a promoted
+workflow first, however it ended.
 
 ## Files
 

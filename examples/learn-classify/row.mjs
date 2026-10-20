@@ -97,6 +97,8 @@ export function rowOfV2({ score, stats, scoringJudge, lineage, phase, jobRecord,
     rewritten: lineage?.rewritten ?? [],
     // As job-record.mjs returns them from the run's recording lines, never recomputed here.
     ...(jobRecord ? { executions: jobRecord.executions, workflowShare: jobRecord.workflowShare, agentFallback: jobRecord.agentFallback } : {}),
+    // Whether the host ran a promoted workflow before the root agent (dispatch.mjs), however it ended.
+    dispatched: Boolean(v1.measure?.dispatch),
     correct: score.correct,
     convention: null,
     set: 'v2',
