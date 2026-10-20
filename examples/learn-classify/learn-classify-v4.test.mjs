@@ -17,7 +17,7 @@ import { rerow } from './rerow.mjs';
 import { rescore } from './rescore.mjs';
 import { lineOf, openOut, readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
 import { CITE_QUESTION_V4, countryCode, entityName, HQ_QUESTION, MAX_SUBSIDIARIES, scoreCites, scoreHq, scoreSegments, scoreSubsidiaries, scoreV4, SEGMENT_PICK } from './score-v4.mjs';
-import { agentScriptV4Compose, CLASSIFY_ROUTED_V4, CLASSIFY_WHOLE_V4, CLASSIFY_WORKFLOW_V4, FIXTURES_V2, FIXTURES_V4, PART_CODE, PART_FIND_REPORT, readJson, scriptedModel, WORKFLOW } from './scripted.mjs';
+import { agentScriptV4Compose, CLASSIFY_ROUTED_V4, CLASSIFY_WHOLE_V4, CLASSIFY_WORKFLOW_V4, FIXTURES_V2, FIXTURES_V4, PART_CODE, PART_FIND_REPORT, promptOf, readJson, scriptedModel, WORKFLOW } from './scripted.mjs';
 import { SETS } from './sets.mjs';
 
 async function scratch(t) {
@@ -630,3 +630,61 @@ test('a new kind of company: the promoted whole job escalates, the agent grows i
   assert.deepEqual(rows[3].workflowsUsed.map((u) => [u.name, u.outcome, u.revision, u.classifiedBy ?? null]), [[WORKFLOW, 'escalated', proven, HOST_WORKFLOW], [WORKFLOW, 'complete', routed, null]]);
   assert.deepEqual([rows[3].workflowsSaved, rows[3].curate.admitted, rows[3].born, rows[3].rewritten], [[], [], [], []]);
 }, { timeout: 300_000 });
+
+/** Commits `proven` and `trial` to main as classify-company: `proven` superseded by `trial`, which is on trial (canary). */
+async function commitCanary(repo, root, proven, trial) {
+  const store = join(root, 'store');
+  await mkdir(store, { recursive: true });
+  const workflows = new WorkflowStore(store);
+  const [a, b] = [await workflows.save(WORKFLOW, proven), await workflows.save(WORKFLOW, trial)];
+  const record = (digest) => readFile(join(store, '.pi/agentrun/workflows', WORKFLOW, `${digest}.json`), 'utf8');
+  const file = {
+    name: WORKFLOW, status: 'trial', when: [],
+    revisions: [
+      { sha256: a.digest, status: 'superseded', since: '2026-10-20T00:00:00.000Z', run: 'run-000', after: 0, when: [], description: 'Use it for any company.' },
+      { sha256: b.digest, status: 'trial', since: '2026-10-20T00:00:01.000Z', run: 'run-000', after: 0 },
+    ],
+    uses: [],
+  };
+  const commit = await repo.commitTo('main', {
+    files: {
+      [`.pi/agentrun/workflows/${WORKFLOW}/${a.digest}.json`]: await record(a.digest),
+      [`.pi/agentrun/workflows/${WORKFLOW}/${b.digest}.json`]: await record(b.digest),
+      [`.pi/agentrun/workflows/${WORKFLOW}/latest`]: `${b.digest}\n`,
+      [skillPath(WORKFLOW)]: renderSkill(WORKFLOW, 'Use it for any company.'),
+      [trialPath(WORKFLOW)]: renderTrial(file),
+    },
+    message: 'test: classify-company on trial over its proven revision',
+  });
+  await repo.push(commit.sha, 'main');
+  return { proven: a.digest, trial: b.digest };
+}
+
+test('trial first: the proven revision escalates and the agent runs the newer revision on trial before anything by hand; it completes, nothing is saved, and the trial gets a clean use', async (t) => {
+  const root = await scratch(t);
+  const out = join(root, 'out');
+  const { repo } = await openOut(out, { mode: 'scripted', set: SETS.v4 });
+  const { proven, trial } = await commitCanary(repo, root, CLASSIFY_WHOLE_V4, CLASSIFY_ROUTED_V4);
+  const parts = scriptedParts({ set: SETS.v4 });
+  parts.companies = [{ ...parts.companies.find((c) => c.name === 'Garnet Peak Systems Inc.'), order: 1 }];
+  const models = [];
+  const modelFor = parts.modelFor;
+  parts.modelFor = (job, run) => { const model = modelFor(job, run); models.push(model); return model; };
+  const [row] = (await runLoop({ out, parts, jobs: 1, record: false })).rows;
+  // The host's handoff names the trial and asks for it to run first; the scripted agent runs it because it says so.
+  assert.match(promptOf(models[0].requests[0]), new RegExp(`A newer revision of ${WORKFLOW}, ${trial.slice(0, 8)}, is on trial .*: load ${WORKFLOW} and run it first; do the job by hand only if it escalates too\\.`));
+  assert.deepEqual([row.correct, row.dispatched, row.dispatch.canary, row.byWorkflow], [true, true, true, true]);
+  assert.deepEqual(row.workflowsUsed.map((u) => [u.name, u.outcome, u.revision, u.classifiedBy ?? null]), [[WORKFLOW, 'escalated', proven, HOST_WORKFLOW], [WORKFLOW, 'complete', trial, null]]);
+  // Nothing by hand: the root agent's own calls are agentrun and the answer.
+  const measure = JSON.parse(readFileSync(join(out, 'progress', 'run-001.json'), 'utf8')).measure;
+  assert.deepEqual(Object.keys(measure.toolCalls).sort(), ['agentrun', 'answer']);
+  assert.equal(row.agentFallback, false);
+  assert.deepEqual([row.workflowsSaved, row.curate.admitted, row.rewritten], [[], [], []]);
+  // The trial's clean run is a use of its own; the proven revision's escalation is the proven one's.
+  const file = JSON.parse(execFileSync('git', ['--git-dir', join(out, 'agent.git'), 'show', `main:${trialPath(WORKFLOW)}`], { encoding: 'utf8' }));
+  assert.deepEqual(file.uses.map((u) => [u.run, u.sha256, u.outcome]).sort(), [['run-001', proven, 'escalated'], ['run-001', trial, 'frozen']].sort());
+  // The job text says so.
+  const rules = readFileSync(join(import.meta.dirname, 'agent-v4', 'AGENTS.md'), 'utf8').replace(/\s+/g, ' ');
+  for (const words of [/When the host tells you the proven revision of a workflow escalated and a newer revision is on trial, load that workflow and run it first\./, /Do the job by hand only if it escalates too\./, /When it completes, use what it returned: its clean runs are what earn it trust\./, /Fix it \(a new revision\) only after it escalates or fails, not before trying it\./])
+    assert.match(rules, words);
+}, { timeout: 180_000 });
