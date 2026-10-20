@@ -1,0 +1,3363 @@
+{
+ "builtWith": {
+  "via": "wayback",
+  "asOf": "2026-10-20",
+  "secFiles": {
+   "fsds2025q3": {
+    "url": "https://www.sec.gov/files/dera/data/financial-statement-data-sets/2025q3.zip",
+    "fetchedFrom": "https://web.archive.org/web/20261005001838id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2025q3.zip",
+    "snapshot": "2026-10-05T00:18:38Z",
+    "retrievedAt": "2026-10-20T01:55:48.672Z"
+   },
+   "fsds2025q4": {
+    "url": "https://www.sec.gov/files/dera/data/financial-statement-data-sets/2025q4.zip",
+    "fetchedFrom": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2025q4.zip",
+    "snapshot": "2026-10-05T00:18:37Z",
+    "retrievedAt": "2026-10-20T01:48:31.731Z"
+   },
+   "fsds": {
+    "url": "https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip",
+    "fetchedFrom": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip",
+    "snapshot": "2026-10-05T00:18:37Z",
+    "retrievedAt": "2026-10-19T22:26:27.780Z"
+   },
+   "fsds2026q2": {
+    "url": "https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q2.zip",
+    "fetchedFrom": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q2.zip",
+    "snapshot": "2026-10-05T00:18:37Z",
+    "retrievedAt": "2026-10-20T01:48:37.814Z"
+   }
+  },
+  "edgar": "each file from https://web.archive.org/web/2026id_/<sec.gov url>, the capture in companies[].subsidiaries"
+ },
+ "rules": {
+  "quarters": [
+   "fsds2025q3",
+   "fsds2025q4",
+   "fsds",
+   "fsds2026q2"
+  ],
+  "annualForms": [
+   "10-K",
+   "10-KT",
+   "20-F",
+   "40-F"
+  ],
+  "exhibits": {
+   "10-K": "^EX-21(\\.\\d+)?$",
+   "10-KT": "^EX-21(\\.\\d+)?$",
+   "20-F": "^EX-8(\\.\\d+)?$"
+  },
+  "segments": "build-truth-v2.mjs segmentTruth on the latest annual report: every member of the business-segment axis; a single-segment report is { oneSegment }",
+  "newerPossible": "the next fiscal year ended 60 days or more before asOf, so a newer annual report may exist beyond the pinned quarters"
+ },
+ "coverage": {
+  "total": 130,
+  "latestAnnual": {
+   "truth": 130,
+   "null": 0,
+   "newerPossible": 5
+  },
+  "hqCity": {
+   "truth": 130,
+   "null": 0
+  },
+  "hqState": {
+   "truth": 100,
+   "null": 30
+  },
+  "hqCountry": {
+   "truth": 127,
+   "null": 3
+  },
+  "segments": {
+   "truth": 93,
+   "oneSegment": 29,
+   "null": 8
+  },
+  "subsidiaries": {
+   "truth": 81,
+   "null": 49,
+   "byForm": {
+    "10-K": {
+     "of": 87,
+     "with": 68
+    },
+    "20-F": {
+     "of": 31,
+     "with": 13
+    },
+    "40-F": {
+     "of": 12,
+     "with": 0
+    }
+   },
+   "nullReasons": {
+    "a 40-F files no subsidiaries exhibit": 12,
+    "the filing index lists no EX-21 / EX-8": 26,
+    "the archive holds no copy of the exhibit": 9,
+    "the exhibit could not be fetched": 1,
+    "the reader found no subsidiaries in the exhibit": 1
+   }
+  }
+ },
+ "companies": [
+  {
+   "cik": "0001144800",
+   "name": "TRANSALTA CORP",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenue",
+    "uom": "CAD",
+    "total": 2405000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1.1717
+   },
+   "subsidiaries": {
+    "why": "a 40-F files no subsidiaries exhibit"
+   }
+  },
+  {
+   "cik": "0001283699",
+   "name": "T-MOBILE US, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 88309000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1,
+    "oneSegmentFrom": {
+     "member": "Wireless",
+     "label": "Wireless",
+     "revenue": 88309000000
+    }
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1283699/000128369926000010/0001283699-26-000010-index.htm",
+     "copy": "https://web.archive.org/web/20260912082755id_/https://www.sec.gov/Archives/edgar/data/1283699/000128369926000010/0001283699-26-000010-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1283699/000128369926000010/tmus12312025ex211.htm",
+     "copy": "https://web.archive.org/web/20260922081759id_/https://www.sec.gov/Archives/edgar/data/1283699/000128369926000010/tmus12312025ex211.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001973266",
+   "name": "TKO GROUP HOLDINGS, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 4735151000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 0.967
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1973266/000119312526071651/0001193125-26-071651-index.htm",
+     "copy": "https://web.archive.org/web/20260225214633id_/https://www.sec.gov/Archives/edgar/data/1973266/000119312526071651/0001193125-26-071651-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1973266/000119312526071651/tko-ex21_1.htm",
+     "copy": "https://web.archive.org/web/20260225214402id_/https://www.sec.gov/Archives/edgar/data/1973266/000119312526071651/tko-ex21_1.htm"
+    }
+   }
+  },
+  {
+   "cik": "0002046656",
+   "name": "HAPPY CITY HOLDINGS LTD",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segments": "no revenue on the business-segment axis for the filing period",
+   "subsidiaries": {
+    "why": "the filing index lists no EX-8",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/2046656/000121390026004364/0001213900-26-004364-index.htm",
+     "copy": "https://web.archive.org/web/20260909002629id_/https://www.sec.gov/Archives/edgar/data/2046656/000121390026004364/0001213900-26-004364-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001968043",
+   "name": "NEW CENTURY LOGISTICS (BVI) LTD",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 44083731,
+    "totalFrom": "tag",
+    "period": "20250930",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1968043/000149315226006875/0001493152-26-006875-index.htm",
+     "copy": "https://web.archive.org/web/20260908191137id_/https://www.sec.gov/Archives/edgar/data/1968043/000149315226006875/0001493152-26-006875-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1968043/000149315226006875/ex8-1.htm",
+     "copy": "https://web.archive.org/web/20260222002806id_/https://www.sec.gov/Archives/edgar/data/1968043/000149315226006875/ex8-1.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000311337",
+   "name": "SUNCOR ENERGY INC",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractsWithCustomers",
+    "uom": "CAD",
+    "total": 52377000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1.1552
+   },
+   "subsidiaries": {
+    "why": "a 40-F files no subsidiaries exhibit"
+   }
+  },
+  {
+   "cik": "0001427570",
+   "name": "VYOME HOLDINGS, INC",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 319714,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1427570/000121390026029500/0001213900-26-029500-index.htm",
+     "copy": "https://web.archive.org/web/20260318104925id_/https://www.sec.gov/Archives/edgar/data/1427570/000121390026029500/0001213900-26-029500-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1427570/000121390026029500/ea028082101ex21-1.htm",
+     "copy": "https://web.archive.org/web/20260318110518id_/https://www.sec.gov/Archives/edgar/data/1427570/000121390026029500/ea028082101ex21-1.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001165002",
+   "name": "WESTWOOD HOLDINGS GROUP INC",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 97762000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1,
+    "offsets": [
+     {
+      "member": "OtherReportingSegment",
+      "revenue": -8345000
+     }
+    ]
+   },
+   "subsidiaries": {
+    "why": "the filing index lists no EX-21",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1165002/000116500226000020/0001165002-26-000020-index.htm",
+     "copy": "https://web.archive.org/web/20260907045454id_/https://www.sec.gov/Archives/edgar/data/1165002/000116500226000020/0001165002-26-000020-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001985139",
+   "name": "LEISHEN ENERGY HOLDING CO., LTD.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 48335553,
+    "totalFrom": "tag",
+    "period": "20250930",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "why": "the filing index lists no EX-8",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1985139/000149315226004368/0001493152-26-004368-index.htm",
+     "copy": "https://web.archive.org/web/20260908223004id_/https://www.sec.gov/Archives/edgar/data/1985139/000149315226004368/0001493152-26-004368-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001877787",
+   "name": "ERMENEGILDO ZEGNA N.V.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenue",
+    "uom": "EUR",
+    "total": 1916947000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1.0168
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1877787/000187778726000015/0001877787-26-000015-index.htm",
+     "copy": "https://web.archive.org/web/20260907084402id_/https://www.sec.gov/Archives/edgar/data/1877787/000187778726000015/0001877787-26-000015-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1877787/000187778726000015/exhibit812025.htm",
+     "copy": "https://web.archive.org/web/20261012073615id_/https://www.sec.gov/Archives/edgar/data/1877787/000187778726000015/exhibit812025.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000720005",
+   "name": "RAYMOND JAMES FINANCIAL INC",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2025q4.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenuesNetOfInterestExpense",
+    "uom": "USD",
+    "total": 14065000000,
+    "totalFrom": "tag",
+    "period": "20250930",
+    "qtrs": 4,
+    "sumShare": 1.1868
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/720005/000072000525000093/0000720005-25-000093-index.htm",
+     "copy": "https://web.archive.org/web/20260914011023id_/https://www.sec.gov/Archives/edgar/data/720005/000072000525000093/0000720005-25-000093-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/720005/000072000525000093/ex212025093010k.htm",
+     "copy": "https://web.archive.org/web/20260130224947id_/https://www.sec.gov/Archives/edgar/data/720005/000072000525000093/ex212025093010k.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000827054",
+   "name": "MICROCHIP TECHNOLOGY INC",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q2.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 4713100000,
+    "totalFrom": "tag",
+    "period": "20260331",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "why": "no copy of ex211q4fy26.htm (404)",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/827054/000082705426000016/0000827054-26-000016-index.htm",
+     "copy": "https://web.archive.org/web/20260908184313id_/https://www.sec.gov/Archives/edgar/data/827054/000082705426000016/0000827054-26-000016-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001674930",
+   "name": "FULGENT GENETICS, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 322671000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1674930/000119312526079169/0001193125-26-079169-index.htm",
+     "copy": "https://web.archive.org/web/20260909041011id_/https://www.sec.gov/Archives/edgar/data/1674930/000119312526079169/0001193125-26-079169-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1674930/000119312526079169/flgt-ex21_1.htm",
+     "copy": "https://web.archive.org/web/20260227123156id_/https://www.sec.gov/Archives/edgar/data/1674930/000119312526079169/flgt-ex21_1.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001579684",
+   "name": "USA TODAY CO., INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 2302226000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1.0556
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1579684/000157968426000010/0001579684-26-000010-index.htm",
+     "copy": "https://web.archive.org/web/20260907053838id_/https://www.sec.gov/Archives/edgar/data/1579684/000157968426000010/0001579684-26-000010-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1579684/000157968426000010/tday-20251231xex211.htm",
+     "copy": "https://web.archive.org/web/20260924000844id_/https://www.sec.gov/Archives/edgar/data/1579684/000157968426000010/tday-20251231xex211.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001464790",
+   "name": "BRC GROUP HOLDINGS, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 967599000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 0.901
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1464790/000146479026000024/0001464790-26-000024-index.htm",
+     "copy": "https://web.archive.org/web/20260907194036id_/https://www.sec.gov/Archives/edgar/data/1464790/000146479026000024/0001464790-26-000024-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1464790/000146479026000024/exhibit211subsidiarylist1.htm",
+     "copy": "https://web.archive.org/web/20260331221524id_/https://www.sec.gov/Archives/edgar/data/1464790/000146479026000024/exhibit211subsidiarylist1.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000104889",
+   "name": "GRAHAM HOLDINGS CO",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 4911563000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 0.9272
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/104889/000162828026011405/0001628280-26-011405-index.htm",
+     "copy": "https://web.archive.org/web/20260909063358id_/https://www.sec.gov/Archives/edgar/data/104889/000162828026011405/0001628280-26-011405-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/104889/000162828026011405/a2025q410-kex21.htm",
+     "copy": "https://web.archive.org/web/20260225134717id_/https://www.sec.gov/Archives/edgar/data/104889/000162828026011405/a2025q410-kex21.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001691221",
+   "name": "FORESIGHT AUTONOMOUS HOLDINGS LTD.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segments": "no revenue on the business-segment axis for the filing period",
+   "subsidiaries": {
+    "why": "the filing index lists no EX-8",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1691221/000149315226012661/0001493152-26-012661-index.htm",
+     "copy": "https://web.archive.org/web/20260909063441id_/https://www.sec.gov/Archives/edgar/data/1691221/000149315226012661/0001493152-26-012661-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000844551",
+   "name": "WOODSIDE ENERGY GROUP LTD",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenue",
+    "uom": "USD",
+    "total": 12984000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/844551/000162828026010858/0001628280-26-010858-index.htm",
+     "copy": "https://web.archive.org/web/20260907045749id_/https://www.sec.gov/Archives/edgar/data/844551/000162828026010858/0001628280-26-010858-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/844551/000162828026010858/exhibit81-significantsubsi.htm",
+     "copy": "https://web.archive.org/web/20260224114504id_/https://www.sec.gov/Archives/edgar/data/844551/000162828026010858/exhibit81-significantsubsi.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000109198",
+   "name": "TJX COMPANIES INC /DE/",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+    "uom": "USD",
+    "total": 60372000000,
+    "totalFrom": "tag",
+    "period": "20260131",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/109198/000010919826000008/0000109198-26-000008-index.htm",
+     "copy": "https://web.archive.org/web/20260907082953id_/https://www.sec.gov/Archives/edgar/data/109198/000010919826000008/0000109198-26-000008-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/109198/000010919826000008/tjx-20260131exhibit21.htm",
+     "copy": "https://web.archive.org/web/20260415131801id_/https://www.sec.gov/Archives/edgar/data/109198/000010919826000008/tjx-20260131exhibit21.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001900304",
+   "name": "HALEON PLC",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenue",
+    "uom": "GBP",
+    "total": 11030000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "why": "the filing index lists no EX-8",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1900304/000110465926027443/0001104659-26-027443-index.htm",
+     "copy": "https://web.archive.org/web/20260909004754id_/https://www.sec.gov/Archives/edgar/data/1900304/000110465926027443/0001104659-26-027443-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000057131",
+   "name": "LA-Z-BOY INC",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q2.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 2126635000,
+    "totalFrom": "tag",
+    "period": "20260430",
+    "qtrs": 4,
+    "sumShare": 1.144
+   },
+   "subsidiaries": {
+    "why": "no copy of lzb-2026425xxexx2110xkonly.htm (404)",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/57131/000005713126000019/0000057131-26-000019-index.htm",
+     "copy": "https://web.archive.org/web/20260909004222id_/https://www.sec.gov/Archives/edgar/data/57131/000005713126000019/0000057131-26-000019-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001627282",
+   "name": "CALIBERCOS INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 20097000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "oneSegmentFrom": {
+     "member": "ReportableSegment",
+     "label": null,
+     "revenue": 20097000
+    }
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1627282/000162728226000015/0001627282-26-000015-index.htm",
+     "copy": "https://web.archive.org/web/20260408185012id_/https://www.sec.gov/Archives/edgar/data/1627282/000162728226000015/0001627282-26-000015-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1627282/000162728226000015/exhibit211-listofsubsidiar.htm",
+     "copy": "https://web.archive.org/web/20260326162859id_/https://www.sec.gov/Archives/edgar/data/1627282/000162728226000015/exhibit211-listofsubsidiar.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000063908",
+   "name": "MCDONALDS CORP",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 26885000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 0.9097
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/63908/000006390826000035/0000063908-26-000035-index.htm",
+     "copy": "https://web.archive.org/web/20260917060530id_/https://www.sec.gov/Archives/edgar/data/63908/000006390826000035/0000063908-26-000035-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/63908/000006390826000035/mcd-ex2110xk.htm",
+     "copy": "https://web.archive.org/web/20260224163741id_/https://www.sec.gov/Archives/edgar/data/63908/000006390826000035/mcd-ex2110xk.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000065770",
+   "name": "MICROVISION, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 1208000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/65770/000149315226008898/0001493152-26-008898-index.htm",
+     "copy": "https://web.archive.org/web/20260917234255id_/https://www.sec.gov/Archives/edgar/data/65770/000149315226008898/0001493152-26-008898-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/65770/000149315226008898/ex21-1.htm",
+     "copy": "https://web.archive.org/web/20260304224426id_/https://www.sec.gov/Archives/edgar/data/65770/000149315226008898/ex21-1.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001468174",
+   "name": "HYATT HOTELS CORP",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 7101000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1.0103
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1468174/000146817426000007/0001468174-26-000007-index.htm",
+     "copy": "https://web.archive.org/web/20260926044351id_/https://www.sec.gov/Archives/edgar/data/1468174/000146817426000007/0001468174-26-000007-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1468174/000146817426000007/a123125exhibit211.htm",
+     "copy": "https://web.archive.org/web/20260213111548id_/https://www.sec.gov/Archives/edgar/data/1468174/000146817426000007/a123125exhibit211.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001402057",
+   "name": "CDW CORP",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segments": "the segment members add up to 0.4576 of revenue, so they overlap or leave segments out",
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1402057/000140205726000011/0001402057-26-000011-index.htm",
+     "copy": "https://web.archive.org/web/20260908134508id_/https://www.sec.gov/Archives/edgar/data/1402057/000140205726000011/0001402057-26-000011-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1402057/000140205726000011/cdw-20251231x10kxex21.htm",
+     "copy": "https://web.archive.org/web/20260224123351id_/https://www.sec.gov/Archives/edgar/data/1402057/000140205726000011/cdw-20251231x10kxex21.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000926282",
+   "name": "ADTRAN HOLDINGS, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 1083807000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/926282/000119312526073878/0001193125-26-073878-index.htm",
+     "copy": "https://web.archive.org/web/20260908094231id_/https://www.sec.gov/Archives/edgar/data/926282/000119312526073878/0001193125-26-073878-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/926282/000119312526073878/adtn-ex21.htm",
+     "copy": "https://web.archive.org/web/20260226144838id_/https://www.sec.gov/Archives/edgar/data/926282/000119312526073878/adtn-ex21.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000913353",
+   "name": "COLLIERS INTERNATIONAL GROUP INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 5558462000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 0.9999
+   },
+   "subsidiaries": {
+    "why": "a 40-F files no subsidiaries exhibit"
+   }
+  },
+  {
+   "cik": "0000880984",
+   "name": "ACORN ENERGY, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 11478000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/880984/000149315226008937/0001493152-26-008937-index.htm",
+     "copy": "https://web.archive.org/web/20260908093719id_/https://www.sec.gov/Archives/edgar/data/880984/000149315226008937/0001493152-26-008937-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/880984/000149315226008937/ex21-1.htm",
+     "copy": "https://web.archive.org/web/20260305133408id_/https://www.sec.gov/Archives/edgar/data/880984/000149315226008937/ex21-1.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001219601",
+   "name": "CROWN HOLDINGS, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 12365000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 0.8946
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1219601/000162828026012904/0001628280-26-012904-index.htm",
+     "copy": "https://web.archive.org/web/20260915165443id_/https://www.sec.gov/Archives/edgar/data/1219601/000162828026012904/0001628280-26-012904-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1219601/000162828026012904/ex21-12312025.htm",
+     "copy": "https://web.archive.org/web/20260227221934id_/https://www.sec.gov/Archives/edgar/data/1219601/000162828026012904/ex21-12312025.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001637810",
+   "name": "FIRSTSERVICE CORP",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+    "uom": "USD",
+    "total": 5497500000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "why": "a 40-F files no subsidiaries exhibit"
+   }
+  },
+  {
+   "cik": "0000082811",
+   "name": "REGAL REXNORD CORP",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+    "uom": "USD",
+    "total": 5934500000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/82811/000008281126000054/0000082811-26-000054-index.htm",
+     "copy": "https://web.archive.org/web/20260907233042id_/https://www.sec.gov/Archives/edgar/data/82811/000008281126000054/0000082811-26-000054-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/82811/000008281126000054/exhibit212025.htm",
+     "copy": "https://web.archive.org/web/20260221032341id_/https://www.sec.gov/Archives/edgar/data/82811/000008281126000054/exhibit212025.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000746598",
+   "name": "BRADY CORP",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001838id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2025q3.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 1513605000,
+    "totalFrom": "tag",
+    "period": "20250731",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "why": "no copy of brc-20250731xex21.htm (404)",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/746598/000074659825000045/0000746598-25-000045-index.htm",
+     "copy": "https://web.archive.org/web/20260916071659id_/https://www.sec.gov/Archives/edgar/data/746598/000074659825000045/0000746598-25-000045-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001837429",
+   "name": "BROOKFIELD WEALTH SOLUTIONS LTD.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 11635000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 0.9782
+   },
+   "subsidiaries": {
+    "why": "the filing index lists no EX-8",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1837429/000183742926000008/0001837429-26-000008-index.htm",
+     "copy": "https://web.archive.org/web/20260908111444id_/https://www.sec.gov/Archives/edgar/data/1837429/000183742926000008/0001837429-26-000008-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000879764",
+   "name": "TOTALENERGIES SE",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractsWithCustomers",
+    "uom": "USD",
+    "total": 201196000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "why": "the filing index lists no EX-8",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/879764/000110465926035876/0001104659-26-035876-index.htm",
+     "copy": "https://web.archive.org/web/20260907105022id_/https://www.sec.gov/Archives/edgar/data/879764/000110465926035876/0001104659-26-035876-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001478242",
+   "name": "IQVIA HOLDINGS INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 16310000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "why": "no copy of ex-2111231202510xk.htm (404)",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1478242/000162828026008322/0001628280-26-008322-index.htm",
+     "copy": "https://web.archive.org/web/20260908195006id_/https://www.sec.gov/Archives/edgar/data/1478242/000162828026008322/0001628280-26-008322-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001616262",
+   "name": "ROCKY MOUNTAIN CHOCOLATE FACTORY, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q2.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 27497000,
+    "totalFrom": "tag",
+    "period": "20260228",
+    "qtrs": 4,
+    "sumShare": 1.0232
+   },
+   "subsidiaries": {
+    "why": "no copy of rmcf-ex21_1.htm (404)",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1616262/000119312526248296/0001193125-26-248296-index.htm",
+     "copy": "https://web.archive.org/web/20260907180740id_/https://www.sec.gov/Archives/edgar/data/1616262/000119312526248296/0001193125-26-248296-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001873093",
+   "name": "CYTOMED THERAPEUTICS LTD",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenue",
+    "uom": "SGD",
+    "total": 324387,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "why": "the filing index lists no EX-8",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1873093/000149315226013813/0001493152-26-013813-index.htm",
+     "copy": "https://web.archive.org/web/20260909071037id_/https://www.sec.gov/Archives/edgar/data/1873093/000149315226013813/0001493152-26-013813-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001900720",
+   "name": "EPWK HOLDINGS LTD.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 27841607,
+    "totalFrom": "tag",
+    "period": "20250630",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "why": "the filing index lists no EX-8",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1900720/000121390026004153/0001213900-26-004153-index.htm",
+     "copy": "https://web.archive.org/web/20260516051044id_/https://www.sec.gov/Archives/edgar/data/1900720/000121390026004153/0001213900-26-004153-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000733099",
+   "name": "ROGERS COMMUNICATIONS INC",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractsWithCustomers",
+    "uom": "CAD",
+    "total": 21712000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1.0073
+   },
+   "subsidiaries": {
+    "why": "a 40-F files no subsidiaries exhibit"
+   }
+  },
+  {
+   "cik": "0001665300",
+   "name": "PHUNWARE, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 2553000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1665300/000119312526126850/0001193125-26-126850-index.htm",
+     "copy": "https://web.archive.org/web/20260908013931id_/https://www.sec.gov/Archives/edgar/data/1665300/000119312526126850/0001193125-26-126850-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1665300/000119312526126850/phun-ex21_1.htm",
+     "copy": "https://web.archive.org/web/20260409195137id_/https://www.sec.gov/Archives/edgar/data/1665300/000119312526126850/phun-ex21_1.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001020859",
+   "name": "UNITED NATURAL FOODS INC",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2025q4.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 31784000000,
+    "totalFrom": "tag",
+    "period": "20250731",
+    "qtrs": 4,
+    "sumShare": 1.0391
+   },
+   "subsidiaries": {
+    "why": "no copy of exhibit21subsidiarylisting.htm (404)",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1020859/000102085925000054/0001020859-25-000054-index.htm",
+     "copy": "https://web.archive.org/web/20260907065659id_/https://www.sec.gov/Archives/edgar/data/1020859/000102085925000054/0001020859-25-000054-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001456346",
+   "name": "FRANCO NEVADA CORP",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractsWithCustomers",
+    "uom": "USD",
+    "total": 1822800000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "why": "a 40-F files no subsidiaries exhibit"
+   }
+  },
+  {
+   "cik": "0001334036",
+   "name": "CROCS, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 4040647000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1334036/000133403626000006/0001334036-26-000006-index.htm",
+     "copy": "https://web.archive.org/web/20260909055156id_/https://www.sec.gov/Archives/edgar/data/1334036/000133403626000006/0001334036-26-000006-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1334036/000133403626000006/crox123125ex21.htm",
+     "copy": "https://web.archive.org/web/20260212201511id_/https://www.sec.gov/Archives/edgar/data/1334036/000133403626000006/crox123125ex21.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001599407",
+   "name": "1847 HOLDINGS LLC",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 48272312,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "why": "the filing index lists no EX-21",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1599407/000121390026036917/0001213900-26-036917-index.htm",
+     "copy": "https://web.archive.org/web/20260415091127id_/https://www.sec.gov/Archives/edgar/data/1599407/000121390026036917/0001213900-26-036917-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001951222",
+   "name": "SEALSQ CORP",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 18252000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "oneSegmentFrom": {
+     "member": "ReportableSegmentAggregationBeforeOtherOperatingSegment",
+     "label": null,
+     "revenue": 18735000
+    }
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1951222/000110465926037706/0001104659-26-037706-index.htm",
+     "copy": "https://web.archive.org/web/20260909013758id_/https://www.sec.gov/Archives/edgar/data/1951222/000110465926037706/0001104659-26-037706-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1951222/000110465926037706/laes-20251231xex8d1.htm",
+     "copy": "https://web.archive.org/web/20260331210641id_/https://www.sec.gov/Archives/edgar/data/1951222/000110465926037706/laes-20251231xex8d1.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001355444",
+   "name": "EMBRAER S.A.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenue",
+    "uom": "USD",
+    "total": 7577500000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 0.9877
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1355444/000162828026021824/0001628280-26-021824-index.htm",
+     "copy": "https://web.archive.org/web/20260330103851id_/https://www.sec.gov/Archives/edgar/data/1355444/000162828026021824/0001628280-26-021824-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1355444/000162828026021824/embj-20251231xex8.htm",
+     "copy": "https://web.archive.org/web/20260330190655id_/https://www.sec.gov/Archives/edgar/data/1355444/000162828026021824/embj-20251231xex8.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001826011",
+   "name": "BANZAI INTERNATIONAL, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 12161419,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1826011/000119312526134714/0001193125-26-134714-index.htm",
+     "copy": "https://web.archive.org/web/20260908014530id_/https://www.sec.gov/Archives/edgar/data/1826011/000119312526134714/0001193125-26-134714-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1826011/000119312526134714/bnzi-ex21_1.htm",
+     "copy": "https://web.archive.org/web/20260416032211id_/https://www.sec.gov/Archives/edgar/data/1826011/000119312526134714/bnzi-ex21_1.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000726958",
+   "name": "CASEYS GENERAL STORES INC",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q2.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 17561101000,
+    "totalFrom": "tag",
+    "period": "20260430",
+    "qtrs": 4,
+    "oneSegmentFrom": {
+     "member": "ReportableSegment",
+     "label": null,
+     "revenue": 17561101000
+    }
+   },
+   "subsidiaries": {
+    "why": "no copy of casy-ex211_2026430xq4.htm (404)",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/726958/000072695826000046/0000726958-26-000046-index.htm",
+     "copy": "https://web.archive.org/web/20260908100022id_/https://www.sec.gov/Archives/edgar/data/726958/000072695826000046/0000726958-26-000046-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001823239",
+   "name": "MARAVAI LIFESCIENCES HOLDINGS, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 185743000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1823239/000182323926000011/0001823239-26-000011-index.htm",
+     "copy": "https://web.archive.org/web/20260909015021id_/https://www.sec.gov/Archives/edgar/data/1823239/000182323926000011/0001823239-26-000011-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1823239/000182323926000011/mrvi-2025form10xkxex211xli.htm",
+     "copy": "https://web.archive.org/web/20260226211717id_/https://www.sec.gov/Archives/edgar/data/1823239/000182323926000011/mrvi-2025form10xkxex211xli.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000935703",
+   "name": "DOLLAR TREE, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 19395700000,
+    "totalFrom": "tag",
+    "period": "20260131",
+    "qtrs": 4,
+    "sumShare": 1,
+    "oneSegmentFrom": {
+     "member": "DollarTree",
+     "label": "Dollar Tree",
+     "revenue": 19395700000
+    }
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/935703/000093570326000025/0000935703-26-000025-index.htm",
+     "copy": "https://web.archive.org/web/20260909052157id_/https://www.sec.gov/Archives/edgar/data/935703/000093570326000025/0000935703-26-000025-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/935703/000093570326000025/dltr-2026x01x31x10kxex211.htm",
+     "copy": "https://web.archive.org/web/20260316104517id_/https://www.sec.gov/Archives/edgar/data/935703/000093570326000025/dltr-2026x01x31x10kxex211.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001286973",
+   "name": "AMERICAS GOLD & SILVER CORP",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenue",
+    "uom": "USD",
+    "total": 117934000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "why": "a 40-F files no subsidiaries exhibit"
+   }
+  },
+  {
+   "cik": "0001581990",
+   "name": "PLAINS GP HOLDINGS LP",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 44262000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1.0005
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1581990/000158199026000012/0001581990-26-000012-index.htm",
+     "copy": "https://web.archive.org/web/20260227221627id_/https://www.sec.gov/Archives/edgar/data/1581990/000158199026000012/0001581990-26-000012-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1581990/000158199026000012/pagp202510-kexhibit211.htm",
+     "copy": "https://web.archive.org/web/20260227221555id_/https://www.sec.gov/Archives/edgar/data/1581990/000158199026000012/pagp202510-kexhibit211.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001828108",
+   "name": "AURORA INNOVATION, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 3000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "oneSegmentFrom": {
+     "member": "ReportableSegment",
+     "label": null,
+     "revenue": 3000000
+    }
+   },
+   "subsidiaries": {
+    "why": "no copy of a25q4ex211.htm (403)",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1828108/000182810826000016/0001828108-26-000016-index.htm",
+     "copy": "https://web.archive.org/web/20260916033516id_/https://www.sec.gov/Archives/edgar/data/1828108/000182810826000016/0001828108-26-000016-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001648087",
+   "name": "AMERICAN REBEL HOLDINGS INC",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 9522109,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "oneSegmentFrom": {
+     "member": "ReportableSegmentAggregationBeforeOtherOperatingSegment",
+     "label": null,
+     "revenue": 9522109
+    }
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1648087/000149315226014291/0001493152-26-014291-index.htm",
+     "copy": "https://web.archive.org/web/20260922023556id_/https://www.sec.gov/Archives/edgar/data/1648087/000149315226014291/0001493152-26-014291-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1648087/000149315226014291/ex21-1.htm",
+     "copy": "https://web.archive.org/web/20260331212803id_/https://www.sec.gov/Archives/edgar/data/1648087/000149315226014291/ex21-1.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000793733",
+   "name": "SKYWEST INC",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+    "uom": "USD",
+    "total": 4058202000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/793733/000110465926016358/0001104659-26-016358-index.htm",
+     "copy": "https://web.archive.org/web/20260907223754id_/https://www.sec.gov/Archives/edgar/data/793733/000110465926016358/0001104659-26-016358-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/793733/000110465926016358/skyw-20251231xex21d1.htm",
+     "copy": "https://web.archive.org/web/20260217225811id_/https://www.sec.gov/Archives/edgar/data/793733/000110465926016358/skyw-20251231xex21d1.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001611005",
+   "name": "KENON HOLDINGS LTD.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenue",
+    "uom": "USD",
+    "total": 871929000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1611005/000117891326001842/0001178913-26-001842-index.htm",
+     "copy": "https://web.archive.org/web/20260909003452id_/https://www.sec.gov/Archives/edgar/data/1611005/000117891326001842/0001178913-26-001842-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1611005/000117891326001842/exhibit_8-1.htm",
+     "copy": "https://web.archive.org/web/20260330152348id_/https://www.sec.gov/Archives/edgar/data/1611005/000117891326001842/exhibit_8-1.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001333141",
+   "name": "FRESENIUS MEDICAL CARE AG",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenue",
+    "uom": "EUR",
+    "total": 19627602000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1.0933
+   },
+   "subsidiaries": {
+    "why": "the filing index lists no EX-8",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1333141/000110465926019005/0001104659-26-019005-index.htm",
+     "copy": "https://web.archive.org/web/20260909041311id_/https://www.sec.gov/Archives/edgar/data/1333141/000110465926019005/0001104659-26-019005-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000056701",
+   "name": "KOSS CORP",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001838id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2025q3.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+    "uom": "USD",
+    "total": 12624170,
+    "totalFrom": "tag",
+    "period": "20250630",
+    "qtrs": 4,
+    "sumShare": 1,
+    "oneSegmentFrom": {
+     "member": "HeadphonesAndRelatedAccessories",
+     "label": "Headphones And Related Accessories",
+     "revenue": 12624170
+    }
+   },
+   "subsidiaries": {
+    "why": "the filing index lists no EX-21",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/56701/000005670125000044/0000056701-25-000044-index.htm",
+     "copy": "https://web.archive.org/web/20260909024333id_/https://www.sec.gov/Archives/edgar/data/56701/000005670125000044/0000056701-25-000044-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001050446",
+   "name": "STRATEGY INC",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 477233000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1,
+    "oneSegmentFrom": {
+     "member": "SoftwareBusiness",
+     "label": "Software Business",
+     "revenue": 477233000
+    }
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1050446/000105044626000020/0001050446-26-000020-index.htm",
+     "copy": "https://web.archive.org/web/20261006103725id_/https://www.sec.gov/Archives/edgar/data/1050446/000105044626000020/0001050446-26-000020-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1050446/000105044626000020/ex211subsidiaries-fy2510kx.htm",
+     "copy": "https://web.archive.org/web/20260219231607id_/https://www.sec.gov/Archives/edgar/data/1050446/000105044626000020/ex211subsidiaries-fy2510kx.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000009389",
+   "name": "BALL CORP",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+    "uom": "USD",
+    "total": 13161000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 0.9445
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/9389/000110465926017410/0001104659-26-017410-index.htm",
+     "copy": "https://web.archive.org/web/20260908163921id_/https://www.sec.gov/Archives/edgar/data/9389/000110465926017410/0001104659-26-017410-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/9389/000110465926017410/ball-20251231xex21.htm",
+     "copy": "https://web.archive.org/web/20260307111905id_/https://www.sec.gov/Archives/edgar/data/9389/000110465926017410/ball-20251231xex21.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000849399",
+   "name": "GEN DIGITAL INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q2.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 5000000000,
+    "totalFrom": "tag",
+    "period": "20260331",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "why": "no copy of fy26exhibit2101.htm (404)",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/849399/000084939926000017/0000849399-26-000017-index.htm",
+     "copy": "https://web.archive.org/web/20260523015459id_/https://www.sec.gov/Archives/edgar/data/849399/000084939926000017/0000849399-26-000017-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001474735",
+   "name": "GENERAC HOLDINGS INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 4209147000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1.0148
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1474735/000143774926004568/0001437749-26-004568-index.htm",
+     "copy": "https://web.archive.org/web/20260918230612id_/https://www.sec.gov/Archives/edgar/data/1474735/000143774926004568/0001437749-26-004568-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1474735/000143774926004568/ex_873991.htm",
+     "copy": "https://web.archive.org/web/20260227073757id_/https://www.sec.gov/Archives/edgar/data/1474735/000143774926004568/ex_873991.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001630805",
+   "name": "BABCOCK & WILCOX ENTERPRISES, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 587676000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1,
+    "oneSegmentFrom": {
+     "member": "BW",
+     "label": "BW",
+     "revenue": 587676000
+    }
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1630805/000163080526000018/0001630805-26-000018-index.htm",
+     "copy": "https://web.archive.org/web/20260908100138id_/https://www.sec.gov/Archives/edgar/data/1630805/000163080526000018/0001630805-26-000018-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1630805/000163080526000018/c-exhibit211q4x25only.htm",
+     "copy": "https://web.archive.org/web/20260316201334id_/https://www.sec.gov/Archives/edgar/data/1630805/000163080526000018/c-exhibit211q4x25only.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000749251",
+   "name": "GARTNER INC",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 6497226000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/749251/000074925126000112/0000749251-26-000112-index.htm",
+     "copy": "https://web.archive.org/web/20260424162829id_/https://www.sec.gov/Archives/edgar/data/749251/000074925126000112/0000749251-26-000112-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/749251/000074925126000112/a20251231-gartnerincsubsid.htm",
+     "copy": "https://web.archive.org/web/20260212214543id_/https://www.sec.gov/Archives/edgar/data/749251/000074925126000112/a20251231-gartnerincsubsid.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001759186",
+   "name": "COEPTIS THERAPEUTICS HOLDINGS, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 1363045,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1759186/000168316826002026/0001683168-26-002026-index.htm",
+     "copy": "https://web.archive.org/web/20260922021644id_/https://www.sec.gov/Archives/edgar/data/1759186/000168316826002026/0001683168-26-002026-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1759186/000168316826002026/coeptis_ex2101.htm",
+     "copy": "https://web.archive.org/web/20260319221446id_/https://www.sec.gov/Archives/edgar/data/1759186/000168316826002026/coeptis_ex2101.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000078239",
+   "name": "PVH CORP. /DE/",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 8950200000,
+    "totalFrom": "tag",
+    "period": "20260131",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/78239/000007823926000021/0000078239-26-000021-index.htm",
+     "copy": "https://web.archive.org/web/20260907221823id_/https://www.sec.gov/Archives/edgar/data/78239/000007823926000021/0000078239-26-000021-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/78239/000007823926000021/pvh10k2025ex21.htm",
+     "copy": "https://web.archive.org/web/20260915184813id_/https://www.sec.gov/Archives/edgar/data/78239/000007823926000021/pvh10k2025ex21.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000744452",
+   "name": "BNB PLUS CORP.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2025q4.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+    "uom": "USD",
+    "total": 2136935,
+    "totalFrom": "tag",
+    "period": "20250930",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/744452/000110465925123342/0001104659-25-123342-index.htm",
+     "copy": "https://web.archive.org/web/20260125071303id_/https://www.sec.gov/Archives/edgar/data/744452/000110465925123342/0001104659-25-123342-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/744452/000110465925123342/tmb-20250930xex21d1.htm",
+     "copy": "https://web.archive.org/web/20251222112426id_/https://www.sec.gov/Archives/edgar/data/744452/000110465925123342/tmb-20250930xex21d1.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001593984",
+   "name": "MEDIWOUND LTD.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenue",
+    "uom": "USD",
+    "total": 16959000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "why": "the filing index lists no EX-8",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1593984/000117891326000749/0001178913-26-000749-index.htm",
+     "copy": "https://web.archive.org/web/20260908193305id_/https://www.sec.gov/Archives/edgar/data/1593984/000117891326000749/0001178913-26-000749-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001847409",
+   "name": "HIGH TIDE INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractsWithCustomers",
+    "uom": "CAD",
+    "total": 593986000,
+    "totalFrom": "tag",
+    "period": "20251031",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "why": "a 40-F files no subsidiaries exhibit"
+   }
+  },
+  {
+   "cik": "0001027664",
+   "name": "ELBIT SYSTEMS LTD",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 7938627000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1.0753
+   },
+   "subsidiaries": {
+    "why": "the filing index lists no EX-8",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1027664/000102766426000005/0001027664-26-000005-index.htm",
+     "copy": "https://web.archive.org/web/20260909060908id_/https://www.sec.gov/Archives/edgar/data/1027664/000102766426000005/0001027664-26-000005-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001298675",
+   "name": "CUBESMART",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 1123110000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1,
+    "oneSegmentFrom": {
+     "member": "SelfStorageSegment",
+     "label": "Self Storage",
+     "revenue": 1123110000
+    }
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1298675/000129867526000010/0001298675-26-000010-index.htm",
+     "copy": "https://web.archive.org/web/20260909102011id_/https://www.sec.gov/Archives/edgar/data/1298675/000129867526000010/0001298675-26-000010-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1298675/000129867526000010/cube-20251231xex21d1.htm",
+     "copy": "https://web.archive.org/web/20260227214439id_/https://www.sec.gov/Archives/edgar/data/1298675/000129867526000010/cube-20251231xex21d1.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001403568",
+   "name": "ULTA BEAUTY, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 12392820000,
+    "totalFrom": "tag",
+    "period": "20260131",
+    "qtrs": 4,
+    "oneSegmentFrom": {
+     "member": "ReportableSegmentAggregationBeforeOtherOperatingSegment",
+     "label": null,
+     "revenue": 12392820000
+    }
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1403568/000110465926035243/0001104659-26-035243-index.htm",
+     "copy": "https://web.archive.org/web/20260907100058id_/https://www.sec.gov/Archives/edgar/data/1403568/000110465926035243/0001104659-26-035243-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1403568/000110465926035243/ulta-20260131xex21.htm",
+     "copy": "https://web.archive.org/web/20260327000238id_/https://www.sec.gov/Archives/edgar/data/1403568/000110465926035243/ulta-20260131xex21.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000059478",
+   "name": "ELI LILLY & CO",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 65179000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "oneSegmentFrom": {
+     "member": "ReportableSegment",
+     "label": null,
+     "revenue": 65179000000
+    }
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/59478/000005947826000013/0000059478-26-000013-index.htm",
+     "copy": "https://web.archive.org/web/20260917220152id_/https://www.sec.gov/Archives/edgar/data/59478/000005947826000013/0000059478-26-000013-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/59478/000005947826000013/lly-12312025x10kexhibit21.htm",
+     "copy": "https://web.archive.org/web/20260424154552id_/https://www.sec.gov/Archives/edgar/data/59478/000005947826000013/lly-12312025x10kexhibit21.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001545772",
+   "name": "BROOKFIELD PROPERTY PARTNERS L.P.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenue",
+    "uom": "USD",
+    "total": 7147000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 0.9785
+   },
+   "subsidiaries": {
+    "why": "the filing index lists no EX-8",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1545772/000154577226000006/0001545772-26-000006-index.htm",
+     "copy": "https://web.archive.org/web/20260227225354id_/https://www.sec.gov/Archives/edgar/data/1545772/000154577226000006/0001545772-26-000006-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001674101",
+   "name": "VERTIV HOLDINGS CO",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 10229900000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1.0832
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1674101/000167410126000008/0001674101-26-000008-index.htm",
+     "copy": "https://web.archive.org/web/20261007014151id_/https://www.sec.gov/Archives/edgar/data/1674101/000167410126000008/0001674101-26-000008-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1674101/000167410126000008/exhibitno211vrt02132026.htm",
+     "copy": "https://web.archive.org/web/20260213211352id_/https://www.sec.gov/Archives/edgar/data/1674101/000167410126000008/exhibitno211vrt02132026.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000018498",
+   "name": "GENESCO INC",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 2436096000,
+    "totalFrom": "tag",
+    "period": "20260131",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/18498/000119312526123492/0001193125-26-123492-index.htm",
+     "copy": "https://web.archive.org/web/20260909064854id_/https://www.sec.gov/Archives/edgar/data/18498/000119312526123492/0001193125-26-123492-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/18498/000119312526123492/gco-ex21.htm",
+     "copy": "https://web.archive.org/web/20260325200535id_/https://www.sec.gov/Archives/edgar/data/18498/000119312526123492/gco-ex21.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001493594",
+   "name": "MACOM TECHNOLOGY SOLUTIONS HOLDINGS, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2025q4.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 967258000,
+    "totalFrom": "tag",
+    "period": "20250930",
+    "qtrs": 4,
+    "oneSegmentFrom": {
+     "member": "ReportableSegment",
+     "label": null,
+     "revenue": 967258000
+    }
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1493594/000149359425000054/0001493594-25-000054-index.htm",
+     "copy": "https://web.archive.org/web/20260926021551id_/https://www.sec.gov/Archives/edgar/data/1493594/000149359425000054/0001493594-25-000054-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1493594/000149359425000054/ex21110-k2025.htm",
+     "copy": "https://web.archive.org/web/20251203041640id_/https://www.sec.gov/Archives/edgar/data/1493594/000149359425000054/ex21110-k2025.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001870144",
+   "name": "CARDIO DIAGNOSTICS HOLDINGS, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 14825,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "oneSegmentFrom": {
+     "member": "ReportableSegments",
+     "label": null,
+     "revenue": 14825
+    }
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1870144/000155335026000023/0001553350-26-000023-index.htm",
+     "copy": "https://web.archive.org/web/20260908093949id_/https://www.sec.gov/Archives/edgar/data/1870144/000155335026000023/0001553350-26-000023-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1870144/000155335026000023/ex21x1.htm",
+     "copy": "https://web.archive.org/web/20260314022731id_/https://www.sec.gov/Archives/edgar/data/1870144/000155335026000023/ex21x1.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001243429",
+   "name": "ARCELORMITTAL",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractsWithCustomers",
+    "uom": "USD",
+    "total": 61352000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 0.9457
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1243429/000124342926000020/0001243429-26-000020-index.htm",
+     "copy": "https://web.archive.org/web/20260909012226id_/https://www.sec.gov/Archives/edgar/data/1243429/000124342926000020/0001243429-26-000020-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1243429/000124342926000020/a2025exhibit81.htm",
+     "copy": "https://web.archive.org/web/20260306182435id_/https://www.sec.gov/Archives/edgar/data/1243429/000124342926000020/a2025exhibit81.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001835856",
+   "name": "BETTER HOME & FINANCE HOLDING CO",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+    "uom": "USD",
+    "total": 11299000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1835856/000162828026017747/0001628280-26-017747-index.htm",
+     "copy": "https://web.archive.org/web/20260915103643id_/https://www.sec.gov/Archives/edgar/data/1835856/000162828026017747/0001628280-26-017747-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1835856/000162828026017747/betterhomefinance_2025xex2.htm",
+     "copy": "https://web.archive.org/web/20260314084201id_/https://www.sec.gov/Archives/edgar/data/1835856/000162828026017747/betterhomefinance_2025xex2.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001293135",
+   "name": "VERMILION ENERGY INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenue",
+    "uom": "CAD",
+    "total": 1765141000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "oneSegmentFrom": {
+     "member": "ReportableSegments",
+     "label": null,
+     "revenue": 1765141000
+    }
+   },
+   "subsidiaries": {
+    "why": "a 40-F files no subsidiaries exhibit"
+   }
+  },
+  {
+   "cik": "0001048268",
+   "name": "IES HOLDINGS, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2025q4.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 3371468000,
+    "totalFrom": "tag",
+    "period": "20250930",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1048268/000104826825000174/0001048268-25-000174-index.htm",
+     "copy": "https://web.archive.org/web/20260918021729id_/https://www.sec.gov/Archives/edgar/data/1048268/000104826825000174/0001048268-25-000174-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1048268/000104826825000174/q42025ex211-sep.htm",
+     "copy": "https://web.archive.org/web/20251121165658id_/https://www.sec.gov/Archives/edgar/data/1048268/000104826825000174/q42025ex211-sep.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001759631",
+   "name": "HYLIION HOLDINGS CORP.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 3475000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "oneSegmentFrom": {
+     "member": "ReportableSegment",
+     "label": null,
+     "revenue": 3500000
+    }
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1759631/000162828026011278/0001628280-26-011278-index.htm",
+     "copy": "https://web.archive.org/web/20260908194608id_/https://www.sec.gov/Archives/edgar/data/1759631/000162828026011278/0001628280-26-011278-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1759631/000162828026011278/hyln-20251231xex211.htm",
+     "copy": "https://web.archive.org/web/20260225111836id_/https://www.sec.gov/Archives/edgar/data/1759631/000162828026011278/hyln-20251231xex211.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001818502",
+   "name": "OPPFI INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenuesNetOfInterestExpense",
+    "uom": "USD",
+    "total": 381182000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "oneSegmentFrom": {
+     "member": "ReportableSegment",
+     "label": null,
+     "revenue": 381182000
+    }
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1818502/000181850226000019/0001818502-26-000019-index.htm",
+     "copy": "https://web.archive.org/web/20260312225031id_/https://www.sec.gov/Archives/edgar/data/1818502/000181850226000019/0001818502-26-000019-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1818502/000181850226000019/opfi-20251231x10xkex211xsu.htm",
+     "copy": "https://web.archive.org/web/20260312220557id_/https://www.sec.gov/Archives/edgar/data/1818502/000181850226000019/opfi-20251231x10xkex211xsu.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001847986",
+   "name": "DRAGONFLY ENERGY HOLDINGS CORP.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 58630000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 0.9832
+   },
+   "subsidiaries": {
+    "why": "the filing index lists no EX-21",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1847986/000149315226013635/0001493152-26-013635-index.htm",
+     "copy": "https://web.archive.org/web/20260909055356id_/https://www.sec.gov/Archives/edgar/data/1847986/000149315226013635/0001493152-26-013635-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001843586",
+   "name": "OATLY GROUP AB",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenue",
+    "uom": "USD",
+    "total": 862459000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1.0019
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1843586/000184358626000004/0001843586-26-000004-index.htm",
+     "copy": "https://web.archive.org/web/20260907235815id_/https://www.sec.gov/Archives/edgar/data/1843586/000184358626000004/0001843586-26-000004-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1843586/000184358626000004/otly-ex8_1.htm",
+     "copy": "https://web.archive.org/web/20260314004320id_/https://www.sec.gov/Archives/edgar/data/1843586/000184358626000004/otly-ex8_1.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001379041",
+   "name": "EMPLOYERS HOLDINGS, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 858700000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1,
+    "oneSegmentFrom": {
+     "member": "InsuranceOperations",
+     "label": "Insurance Operations",
+     "revenue": 858700000
+    }
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1379041/000137904126000011/0001379041-26-000011-index.htm",
+     "copy": "https://web.archive.org/web/20260909050431id_/https://www.sec.gov/Archives/edgar/data/1379041/000137904126000011/0001379041-26-000011-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1379041/000137904126000011/exhibit211_2025.htm",
+     "copy": "https://web.archive.org/web/20260226221824id_/https://www.sec.gov/Archives/edgar/data/1379041/000137904126000011/exhibit211_2025.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001836875",
+   "name": "NUVVE HOLDING CORP.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 4793942,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "oneSegmentFrom": {
+     "member": "ReportableSegment",
+     "label": null,
+     "revenue": 4793942
+    }
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1836875/000183687526000026/0001836875-26-000026-index.htm",
+     "copy": "https://web.archive.org/web/20260929021207id_/https://www.sec.gov/Archives/edgar/data/1836875/000183687526000026/0001836875-26-000026-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1836875/000183687526000026/nuvveholdingcorp-listofsub.htm",
+     "copy": "https://web.archive.org/web/20260331214130id_/https://www.sec.gov/Archives/edgar/data/1836875/000183687526000026/nuvveholdingcorp-listofsub.htm"
+    }
+   }
+  },
+  {
+   "cik": "0002007846",
+   "name": "JULONG HOLDING LTD",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segments": "no revenue on the business-segment axis for the filing period",
+   "subsidiaries": {
+    "why": "the filing index lists no EX-8",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/2007846/000149315226006699/0001493152-26-006699-index.htm",
+     "copy": "https://web.archive.org/web/20260909021138id_/https://www.sec.gov/Archives/edgar/data/2007846/000149315226006699/0001493152-26-006699-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001408075",
+   "name": "GRAPHIC PACKAGING HOLDING CO",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 8617000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 0.9397
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1408075/000140807526000009/0001408075-26-000009-index.htm",
+     "copy": "https://web.archive.org/web/20260302223454id_/https://www.sec.gov/Archives/edgar/data/1408075/000140807526000009/0001408075-26-000009-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1408075/000140807526000009/gpkexhibit211-202510xk.htm",
+     "copy": "https://web.archive.org/web/20260302215205id_/https://www.sec.gov/Archives/edgar/data/1408075/000140807526000009/gpkexhibit211-202510xk.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001017303",
+   "name": "TRANSACT TECHNOLOGIES INC",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 51480000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1,
+    "oneSegmentFrom": {
+     "member": "Transact",
+     "label": "Transact",
+     "revenue": 51480000
+    }
+   },
+   "subsidiaries": {
+    "why": "the filing index lists no EX-21",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1017303/000114036126009238/0001140361-26-009238-index.htm",
+     "copy": "https://web.archive.org/web/20260907105908id_/https://www.sec.gov/Archives/edgar/data/1017303/000114036126009238/0001140361-26-009238-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001668717",
+   "name": "ANHEUSER-BUSCH INBEV SA/NV",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenue",
+    "uom": "USD",
+    "total": 59320000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "why": "the filing index lists no EX-8",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1668717/000119312526088105/0001193125-26-088105-index.htm",
+     "copy": "https://web.archive.org/web/20260908104905id_/https://www.sec.gov/Archives/edgar/data/1668717/000119312526088105/0001193125-26-088105-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001574565",
+   "name": "EVOGENE LTD.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenue",
+    "uom": "USD",
+    "total": 3853000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 0.9193
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1574565/000117891326001767/0001178913-26-001767-index.htm",
+     "copy": "https://web.archive.org/web/20260909044510id_/https://www.sec.gov/Archives/edgar/data/1574565/000117891326001767/0001178913-26-001767-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1574565/000117891326001767/exhibit_8-1.htm",
+     "copy": "https://web.archive.org/web/20260326220344id_/https://www.sec.gov/Archives/edgar/data/1574565/000117891326001767/exhibit_8-1.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001958133",
+   "name": "DECENT HOLDING INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segments": "no revenue on the business-segment axis for the filing period",
+   "subsidiaries": {
+    "why": "the filing index lists no EX-8",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1958133/000118518526000710/0001185185-26-000710-index.htm",
+     "copy": "https://web.archive.org/web/20260909054944id_/https://www.sec.gov/Archives/edgar/data/1958133/000118518526000710/0001185185-26-000710-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001844505",
+   "name": "QT IMAGING HOLDINGS, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 18925000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "oneSegmentFrom": {
+     "member": "ReportableSegment",
+     "label": null,
+     "revenue": 18925000
+    }
+   },
+   "subsidiaries": {
+    "why": "the filing index lists no EX-21",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1844505/000162828026020909/0001628280-26-020909-index.htm",
+     "copy": "https://web.archive.org/web/20260908000333id_/https://www.sec.gov/Archives/edgar/data/1844505/000162828026020909/0001628280-26-020909-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000105418",
+   "name": "WEIS MARKETS INC",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 4957709000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1,
+    "oneSegmentFrom": {
+     "member": "RetailSegment",
+     "label": "Retail",
+     "revenue": 4957709000
+    }
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/105418/000010541826000024/0000105418-26-000024-index.htm",
+     "copy": "https://web.archive.org/web/20260907090009id_/https://www.sec.gov/Archives/edgar/data/105418/000010541826000024/0000105418-26-000024-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/105418/000010541826000024/wmk-20251227xex21.htm",
+     "copy": "https://web.archive.org/web/20260312212357id_/https://www.sec.gov/Archives/edgar/data/105418/000010541826000024/wmk-20251227xex21.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000932696",
+   "name": "INSIGHT ENTERPRISES INC",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 8247180000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "why": "exhibit211.htm lists nothing this reader can read",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/932696/000093269626000007/0000932696-26-000007-index.htm",
+     "copy": "https://web.archive.org/web/20260907235148id_/https://www.sec.gov/Archives/edgar/data/932696/000093269626000007/0000932696-26-000007-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/932696/000093269626000007/exhibit211.htm",
+     "copy": "https://web.archive.org/web/20260212185935id_/https://www.sec.gov/Archives/edgar/data/932696/000093269626000007/exhibit211.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001100682",
+   "name": "CHARLES RIVER LABORATORIES INTERNATIONAL, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 4015382000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1100682/000110068226000022/0001100682-26-000022-index.htm",
+     "copy": "https://web.archive.org/web/20260919174901id_/https://www.sec.gov/Archives/edgar/data/1100682/000110068226000022/0001100682-26-000022-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1100682/000110068226000022/crl1227202510-kex211.htm",
+     "copy": "https://web.archive.org/web/20260222214515id_/https://www.sec.gov/Archives/edgar/data/1100682/000110068226000022/crl1227202510-kex211.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001075531",
+   "name": "BOOKING HOLDINGS INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 26917000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "oneSegmentFrom": {
+     "member": "ReportableSegment",
+     "label": null,
+     "revenue": 26917000000
+    }
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1075531/000107553126000009/0001075531-26-000009-index.htm",
+     "copy": "https://web.archive.org/web/20260916032121id_/https://www.sec.gov/Archives/edgar/data/1075531/000107553126000009/0001075531-26-000009-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1075531/000107553126000009/bkng12312510kex21.htm",
+     "copy": "https://web.archive.org/web/20260413232324id_/https://www.sec.gov/Archives/edgar/data/1075531/000107553126000009/bkng12312510kex21.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000018255",
+   "name": "CATO CORP",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 653812000,
+    "totalFrom": "tag",
+    "period": "20260131",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/18255/000156276226000041/0001562762-26-000041-index.htm",
+     "copy": "https://web.archive.org/web/20260908104814id_/https://www.sec.gov/Archives/edgar/data/18255/000156276226000041/0001562762-26-000041-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/18255/000156276226000041/exhibit211.htm",
+     "copy": "https://web.archive.org/web/20260325213631id_/https://www.sec.gov/Archives/edgar/data/18255/000156276226000041/exhibit211.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000031462",
+   "name": "ECOLAB INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 16081200000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 0.9225
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/31462/000110465926018357/0001104659-26-018357-index.htm",
+     "copy": "https://web.archive.org/web/20260918101213id_/https://www.sec.gov/Archives/edgar/data/31462/000110465926018357/0001104659-26-018357-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/31462/000110465926018357/ecl-20251231xex21d1.htm",
+     "copy": "https://web.archive.org/web/20260223150758id_/https://www.sec.gov/Archives/edgar/data/31462/000110465926018357/ecl-20251231xex21d1.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000048287",
+   "name": "HNI CORP",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 2839000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/48287/000004828726000084/0000048287-26-000084-index.htm",
+     "copy": "https://web.archive.org/web/20260909015131id_/https://www.sec.gov/Archives/edgar/data/48287/000004828726000084/0000048287-26-000084-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/48287/000004828726000084/ex2110-k2025.htm",
+     "copy": "https://web.archive.org/web/20260303161143id_/https://www.sec.gov/Archives/edgar/data/48287/000004828726000084/ex2110-k2025.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000746210",
+   "name": "TAOWEAVE, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerIncludingAssessedTax",
+    "uom": "USD",
+    "total": 2437000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/746210/000143774926009237/0001437749-26-009237-index.htm",
+     "copy": "https://web.archive.org/web/20260907055618id_/https://www.sec.gov/Archives/edgar/data/746210/000143774926009237/0001437749-26-009237-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/746210/000143774926009237/ex_893083.htm",
+     "copy": "https://web.archive.org/web/20260320210409id_/https://www.sec.gov/Archives/edgar/data/746210/000143774926009237/ex_893083.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000749098",
+   "name": "MAGNA INTERNATIONAL INC",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 42010000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1.0131
+   },
+   "subsidiaries": {
+    "why": "a 40-F files no subsidiaries exhibit"
+   }
+  },
+  {
+   "cik": "0000761648",
+   "name": "CEDAR REALTY TRUST, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 29662000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "oneSegmentFrom": {
+     "member": "ReportableSegment",
+     "label": null,
+     "revenue": 29662000
+    }
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/761648/000076164826000008/0000761648-26-000008-index.htm",
+     "copy": "https://web.archive.org/web/20260305212624id_/https://www.sec.gov/Archives/edgar/data/761648/000076164826000008/0000761648-26-000008-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/761648/000076164826000008/cdr-20251231xexx211subsofr.htm",
+     "copy": "https://web.archive.org/web/20260305213257id_/https://www.sec.gov/Archives/edgar/data/761648/000076164826000008/cdr-20251231xexx211subsofr.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000771999",
+   "name": "DSS, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 20757000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1.1256
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/771999/000149315226014231/0001493152-26-014231-index.htm",
+     "copy": "https://web.archive.org/web/20260909051541id_/https://www.sec.gov/Archives/edgar/data/771999/000149315226014231/0001493152-26-014231-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/771999/000149315226014231/ex21-1.htm",
+     "copy": "https://web.archive.org/web/20260415232201id_/https://www.sec.gov/Archives/edgar/data/771999/000149315226014231/ex21-1.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000837465",
+   "name": "CALLAWAY GOLF CO",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 2060100000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "why": "the filing index lists no EX-21",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/837465/000083746526000010/0000837465-26-000010-index.htm",
+     "copy": "https://web.archive.org/web/20260908105051id_/https://www.sec.gov/Archives/edgar/data/837465/000083746526000010/0000837465-26-000010-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000838875",
+   "name": "WILLAMETTE VALLEY VINEYARDS INC",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 37197122,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "why": "the filing index lists no EX-21",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/838875/000119983526000061/0001199835-26-000061-index.htm",
+     "copy": "https://web.archive.org/web/20260907081135id_/https://www.sec.gov/Archives/edgar/data/838875/000119983526000061/0001199835-26-000061-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000868675",
+   "name": "TELUS CORP",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segments": "the segment members add up to 1.7591 of revenue, so they overlap or leave segments out",
+   "subsidiaries": {
+    "why": "a 40-F files no subsidiaries exhibit"
+   }
+  },
+  {
+   "cik": "0000894871",
+   "name": "ARENA GROUP HOLDINGS, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 134828000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/894871/000162828026018153/0001628280-26-018153-index.htm",
+     "copy": "https://web.archive.org/web/20260921190317id_/https://www.sec.gov/Archives/edgar/data/894871/000162828026018153/0001628280-26-018153-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/894871/000162828026018153/aren-20251231xexx211.htm",
+     "copy": "https://web.archive.org/web/20260316201526id_/https://www.sec.gov/Archives/edgar/data/894871/000162828026018153/aren-20251231xexx211.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000899715",
+   "name": "TANGER INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 571790000,
+    "totalFrom": "sum",
+    "period": "20251231",
+    "qtrs": 4,
+    "oneSegmentFrom": {
+     "member": "TangerSingleReportingSegment",
+     "label": null,
+     "revenue": 571790000
+    }
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/899715/000162828026012252/0001628280-26-012252-index.htm",
+     "copy": "https://web.archive.org/web/20260907203343id_/https://www.sec.gov/Archives/edgar/data/899715/000162828026012252/0001628280-26-012252-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/899715/000162828026012252/skt10k12312025ex211.htm",
+     "copy": "https://web.archive.org/web/20260226213105id_/https://www.sec.gov/Archives/edgar/data/899715/000162828026012252/skt10k12312025ex211.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000935419",
+   "name": "RCI HOSPITALITY HOLDINGS, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segments": "the largest member is 282921000 of 279434000",
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/935419/000162828026019804/0001628280-26-019804-index.htm",
+     "copy": "https://web.archive.org/web/20260908004939id_/https://www.sec.gov/Archives/edgar/data/935419/000162828026019804/0001628280-26-019804-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/935419/000162828026019804/rick-20250930x10kxex211.htm",
+     "copy": "https://web.archive.org/web/20260319234523id_/https://www.sec.gov/Archives/edgar/data/935419/000162828026019804/rick-20250930x10kxex211.htm"
+    }
+   }
+  },
+  {
+   "cik": "0000938323",
+   "name": "PEARSON PLC",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenue",
+    "uom": "GBP",
+    "total": 3577000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/938323/000119312526104945/0001193125-26-104945-index.htm",
+     "copy": "https://web.archive.org/web/20260907200058id_/https://www.sec.gov/Archives/edgar/data/938323/000119312526104945/0001193125-26-104945-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/938323/000119312526104945/d33885dex81.htm",
+     "copy": "https://web.archive.org/web/20260313111737id_/https://www.sec.gov/Archives/edgar/data/938323/000119312526104945/d33885dex81.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001048286",
+   "name": "MARRIOTT INTERNATIONAL INC /MD/",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 26186000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 0.8943
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1048286/000104828626000007/0001048286-26-000007-index.htm",
+     "copy": "https://web.archive.org/web/20260918012905id_/https://www.sec.gov/Archives/edgar/data/1048286/000104828626000007/0001048286-26-000007-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1048286/000104828626000007/mar-2025q4xexx21.htm",
+     "copy": "https://web.archive.org/web/20260210185641id_/https://www.sec.gov/Archives/edgar/data/1048286/000104828626000007/mar-2025q4xexx21.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001094366",
+   "name": "RADWARE LTD",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 301850000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1094366/000117891326001923/0001178913-26-001923-index.htm",
+     "copy": "https://web.archive.org/web/20260907181322id_/https://www.sec.gov/Archives/edgar/data/1094366/000117891326001923/0001178913-26-001923-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1094366/000117891326001923/exhibit_8-1.htm",
+     "copy": "https://web.archive.org/web/20260331132353id_/https://www.sec.gov/Archives/edgar/data/1094366/000117891326001923/exhibit_8-1.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001119083",
+   "name": "MIND CTI LTD",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 19457000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1119083/000117891326001091/0001178913-26-001091-index.htm",
+     "copy": "https://web.archive.org/web/20260318132725id_/https://www.sec.gov/Archives/edgar/data/1119083/000117891326001091/0001178913-26-001091-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1119083/000117891326001091/exhibit_8.htm",
+     "copy": "https://web.archive.org/web/20260318123917id_/https://www.sec.gov/Archives/edgar/data/1119083/000117891326001091/exhibit_8.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001130464",
+   "name": "BLACK HILLS CORP /SD/",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 2310000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1.0068
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1130464/000119312526046028/0001193125-26-046028-index.htm",
+     "copy": "https://web.archive.org/web/20260908100410id_/https://www.sec.gov/Archives/edgar/data/1130464/000119312526046028/0001193125-26-046028-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1130464/000119312526046028/bkh-ex21.htm",
+     "copy": "https://web.archive.org/web/20260508092331id_/https://www.sec.gov/Archives/edgar/data/1130464/000119312526046028/bkh-ex21.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001262823",
+   "name": "WESTLAKE CORP",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 11170000000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1262823/000126282326000016/0001262823-26-000016-index.htm",
+     "copy": "https://web.archive.org/web/20260907113320id_/https://www.sec.gov/Archives/edgar/data/1262823/000126282326000016/0001262823-26-000016-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1262823/000126282326000016/exhibit2112312510-k.htm",
+     "copy": "https://web.archive.org/web/20260226190514id_/https://www.sec.gov/Archives/edgar/data/1262823/000126282326000016/exhibit2112312510-k.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001287098",
+   "name": "MAXCYTE, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 33026000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1,
+    "oneSegmentFrom": {
+     "member": "CellEngineeringTechnologySegment",
+     "label": "Cell Engineering Technology",
+     "revenue": 33026000
+    }
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1287098/000110465926034557/0001104659-26-034557-index.htm",
+     "copy": "https://web.archive.org/web/20260909013017id_/https://www.sec.gov/Archives/edgar/data/1287098/000110465926034557/0001104659-26-034557-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1287098/000110465926034557/mxct-20251231xex21d1.htm",
+     "copy": "https://web.archive.org/web/20260325231536id_/https://www.sec.gov/Archives/edgar/data/1287098/000110465926034557/mxct-20251231xex21d1.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001368458",
+   "name": "SALLY BEAUTY HOLDINGS, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2025q4.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 3701424000,
+    "totalFrom": "tag",
+    "period": "20250930",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "why": "no copy of sbh-ex21_1.htm (404)",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1368458/000119312525280122/0001193125-25-280122-index.htm",
+     "copy": "https://web.archive.org/web/20251205061352id_/https://www.sec.gov/Archives/edgar/data/1368458/000119312525280122/0001193125-25-280122-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001546417",
+   "name": "BLOOMIN' BRANDS, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 3955996000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 0.9903
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1546417/000154641726000009/0001546417-26-000009-index.htm",
+     "copy": "https://web.archive.org/web/20260225212946id_/https://www.sec.gov/Archives/edgar/data/1546417/000154641726000009/0001546417-26-000009-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1546417/000154641726000009/blmn-122825_ex211.htm",
+     "copy": "https://web.archive.org/web/20260225212917id_/https://www.sec.gov/Archives/edgar/data/1546417/000154641726000009/blmn-122825_ex211.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001679688",
+   "name": "DIGITALBRIDGE GROUP, INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 93959000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "oneSegmentFrom": {
+     "member": "ReportableSegment",
+     "label": null,
+     "revenue": 93959000
+    }
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1679688/000167968826000021/0001679688-26-000021-index.htm",
+     "copy": "https://web.archive.org/web/20260909093012id_/https://www.sec.gov/Archives/edgar/data/1679688/000167968826000021/0001679688-26-000021-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1679688/000167968826000021/exhibit211dbrg2025q4.htm",
+     "copy": "https://web.archive.org/web/20260226214910id_/https://www.sec.gov/Archives/edgar/data/1679688/000167968826000021/exhibit211dbrg2025q4.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001722387",
+   "name": "INTEGRA RESOURCES CORP.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractsWithCustomers",
+    "uom": "USD",
+    "total": 243926000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "why": "a 40-F files no subsidiaries exhibit"
+   }
+  },
+  {
+   "cik": "0001747079",
+   "name": "BALLY'S CORP",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "USD",
+    "total": 2436189000,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 0.9971
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1747079/000174707926000019/0001747079-26-000019-index.htm",
+     "copy": "https://web.archive.org/web/20260908150140id_/https://www.sec.gov/Archives/edgar/data/1747079/000174707926000019/0001747079-26-000019-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1747079/000174707926000019/ex211-2025subsidiaries.htm",
+     "copy": "https://web.archive.org/web/20260330001950id_/https://www.sec.gov/Archives/edgar/data/1747079/000174707926000019/ex211-2025subsidiaries.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001809691",
+   "name": "AMTD DIGITAL INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 136099000,
+    "totalFrom": "tag",
+    "period": "20251031",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1809691/000121390026021555/0001213900-26-021555-index.htm",
+     "copy": "https://web.archive.org/web/20260908234245id_/https://www.sec.gov/Archives/edgar/data/1809691/000121390026021555/0001213900-26-021555-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1809691/000121390026021555/ea027678601ex8-1.htm",
+     "copy": "https://web.archive.org/web/20260227211956id_/https://www.sec.gov/Archives/edgar/data/1809691/000121390026021555/ea027678601ex8-1.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001843656",
+   "name": "ROYALTY MANAGEMENT HOLDING CORP",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenues",
+    "uom": "USD",
+    "total": 4949916,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1.0121
+   },
+   "subsidiaries": {
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1843656/000147793226001737/0001477932-26-001737-index.htm",
+     "copy": "https://web.archive.org/web/20260401150319id_/https://www.sec.gov/Archives/edgar/data/1843656/000147793226001737/0001477932-26-001737-index.htm"
+    },
+    "exhibit": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1843656/000147793226001737/rmco_ex211.htm",
+     "copy": "https://web.archive.org/web/20260331111151id_/https://www.sec.gov/Archives/edgar/data/1843656/000147793226001737/rmco_ex211.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001847806",
+   "name": "GENIUS GROUP LTD",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "Revenue",
+    "uom": "USD",
+    "total": 8387222,
+    "totalFrom": "tag",
+    "period": "20251231",
+    "qtrs": 4,
+    "sumShare": 1
+   },
+   "subsidiaries": {
+    "why": "the filing index lists no EX-8",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1847806/000149315226009371/0001493152-26-009371-index.htm",
+     "copy": "https://web.archive.org/web/20260309233534id_/https://www.sec.gov/Archives/edgar/data/1847806/000149315226009371/0001493152-26-009371-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0001892274",
+   "name": "VISIONARY HOLDINGS INC.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segments": "no revenue on the business-segment axis for the filing period",
+   "subsidiaries": {
+    "why": "the filing index lists no EX-8",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1892274/000157587226000048/0001575872-26-000048-index.htm",
+     "copy": "https://web.archive.org/web/20260128224846id_/https://www.sec.gov/Archives/edgar/data/1892274/000157587226000048/0001575872-26-000048-index.htm"
+    }
+   }
+  },
+  {
+   "cik": "0002018222",
+   "name": "707 CAYMAN HOLDINGS LTD.",
+   "source": {
+    "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
+   },
+   "segmentFacts": {
+    "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "uom": "HKD",
+    "total": 106909244,
+    "totalFrom": "tag",
+    "period": "20250930",
+    "qtrs": 4,
+    "oneSegmentFrom": {
+     "member": "ReportableSegmentAggregationBeforeOtherOperatingSegment",
+     "label": null,
+     "revenue": 106909244
+    }
+   },
+   "subsidiaries": {
+    "why": "the filing index lists no EX-8",
+    "index": {
+     "url": "https://www.sec.gov/Archives/edgar/data/2018222/000149315226002647/0001493152-26-002647-index.htm",
+     "copy": "https://web.archive.org/web/20260909030725id_/https://www.sec.gov/Archives/edgar/data/2018222/000149315226002647/0001493152-26-002647-index.htm"
+    }
+   }
+  }
+ ]
+}

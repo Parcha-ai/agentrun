@@ -34,6 +34,10 @@ const SEC_FILES = {
   tickers: { url: 'https://www.sec.gov/files/company_tickers.json', wayback: '20261018055724' },
   fsds: { url: 'https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip', wayback: '20261005001837' },
   sicList: { url: 'https://www.sec.gov/search-filings/standard-industrial-classification-sic-code-list', wayback: '20261001145830' },
+  // Earlier and later quarters, for truth v4's latest annual report.
+  fsds2025q3: { url: 'https://www.sec.gov/files/dera/data/financial-statement-data-sets/2025q3.zip', wayback: '20261005001838' },
+  fsds2025q4: { url: 'https://www.sec.gov/files/dera/data/financial-statement-data-sets/2025q4.zip', wayback: '20261005001837' },
+  fsds2026q2: { url: 'https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q2.zip', wayback: '20261005001837' },
 };
 const WIKIDATA = 'https://query.wikidata.org/sparql';
 const SPARQL = `SELECT ?item ?cik ?website ?article WHERE {

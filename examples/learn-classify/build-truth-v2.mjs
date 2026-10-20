@@ -83,7 +83,7 @@ export const segmentName = (member) =>
   member.replace(/Member$/, '').replace(/(Reportable)?(Operating)?(Business)?Segment$/, '').replace(/ReportableSegments?/g, '')
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2').trim() || member;
 
-async function* numRows(zip, adshs) {
+export async function* numRows(zip, adshs) {
   const { data, method } = zipEntry(zip, 'num.txt');
   if (method !== 8) throw new Error('num.txt is not deflated');
   const lines = createInterface({ input: Readable.from([data]).pipe(createInflateRaw()), crlfDelay: Infinity });
