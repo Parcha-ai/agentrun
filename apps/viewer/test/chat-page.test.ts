@@ -798,13 +798,19 @@ test('in Chrome: a reader who scrolls away while the pictures above a jumped-to 
   // The element that scrolls the thread: the thread pane at 1440, the page at 390.
   const scroller = (id: string) => `((d) => { for (let at = last('${id}').parentElement; at && at !== d.documentElement; at = at.parentElement) {
     const y = d.defaultView.getComputedStyle(at).overflowY; if ((y === 'auto' || y === 'scroll') && at.scrollHeight > at.clientHeight) return at; } return d.scrollingElement; })(doc('${id}'))`;
+  // Past the jump's 1.5 s re-centre, and its scroller still for 400 ms: no scroll of the jump is animating any more.
+  const still = (id: string) => `((at, w) => { const now = w.performance.now(); if (!w.still || Math.abs(at.scrollTop - w.still.top) > 0.5) w.still = { top: at.scrollTop, since: now };
+    return now - w.jumpedAt > 1_600 && now - w.still.since > 400; })(${scroller(id)}, doc('${id}').defaultView)`;
   try {
     await page.once(`ready('wide') && ready('phone')`, 'true', 20_000, 'both pages drawn');
     for (const id of ['phone', 'wide']) {
       holding = true;
       const target = await value<string>(`last('${id}').dataset.item`);
-      await page.evaluate(`doc('${id}').querySelector('.tl-toggle').click(); doc('${id}').querySelector('.tbar[data-goto="${target}"]').click()`);
+      await page.evaluate(`(() => { const w = doc('${id}').defaultView; w.jumpedAt = w.performance.now(); doc('${id}').querySelector('.tl-toggle').click(); doc('${id}').querySelector('.tbar[data-goto="${target}"]').click(); })()`);
       await page.once(`seen('${id}').inView`, 'true', 8_000, `${id}: the jump lands on the last card`);
+      // The reader moves only now, so the pictures' release below leaves the late re-centre alone to cancel: a scroll
+      // already animating is not one a reader's move can stop.
+      await page.once(still(id), 'true', 8_000, `${id}: the jump's own scrolls have ended`);
       assert.ok(await value<boolean>(`above('${id}').some((img) => !img.complete)`), `${id}: pictures above the card are still to load when the reader moves`);
       // The reader turns the wheel and goes back to the top while the pictures still load; then they all come in.
       await page.evaluate(`(() => { const at = ${scroller(id)}; at.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -4000 })); at.scrollTop = 0; })()`);
