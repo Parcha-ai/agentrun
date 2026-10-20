@@ -104,7 +104,7 @@ export function png(w: number, h: number, pixel: (x: number, y: number) => [numb
 /** The chat-browser fixture made into a browser run with a recorded video: its frames (t 500, 1500, 2500, 2600, 2700, 4000, session s1), a frame track over them (a
  *  made-up film and its index), pages read at 1200 (Sign in), 3000 (Account summary) and 4200 (Your bills), and, with `gap`, a credential on the page after the frame at
  *  1500 (a `frame.gap` row), so the frames at 500 and 1500 are the sign-in's. `facts` is written as the recording's facts blob. */
-export function browserRun(dir: string, { gap = true, gapFrom = 1500, facts, remembered = false, blankAt, sameAs = {}, nearAt = {}, mergeRead = false, secondSession = false, reads = [] }: { gap?: boolean; gapFrom?: number; facts?: (frames: Record<number, string>) => unknown; remembered?: boolean; blankAt?: number; sameAs?: Record<number, number>; nearAt?: Record<number, number>; mergeRead?: boolean; secondSession?: boolean; reads?: [number, string][] } = {}) {
+export function browserRun(dir: string, { gap = true, gapFrom = 1500, facts, remembered = false, blankAt, sameAs = {}, nearAt = {}, mergeRead = false, secondSession = false, reads = [], onlyReads = false }: { gap?: boolean; gapFrom?: number; facts?: (frames: Record<number, string>) => unknown; remembered?: boolean; blankAt?: number; sameAs?: Record<number, number>; nearAt?: Record<number, number>; mergeRead?: boolean; secondSession?: boolean; reads?: [number, string][]; onlyReads?: boolean } = {}) {
   const lines = readEvents(dir);
   const frames: Record<number, string> = {};
   // Every frame is its own small picture (a flat one at `blankAt`, the same blob as another at `sameAs[t]`), so the filmstrip rules have something to judge.
@@ -126,7 +126,7 @@ export function browserRun(dir: string, { gap = true, gapFrom = 1500, facts, rem
   const read = (t: number, text: string) => ({ channel: 'durable', source: 'pi', kind: 'pi.tool-result', conv: 1, t, data: { model: [{ role: 'toolResult', toolName: 'snapshot', content: [{ type: 'text', text }] }] } });
   lines.push(
     { channel: 'live', source: 'browser', kind: 'frame.track', conv: 1, t: 4600, data: { session: 's1', fps: 2, from: 500, to: 4500 }, blobs: [film, index] },
-    read(1200, '[0-7] RootWebArea: Sign in\n  [0-9] body'), read(3000, '[0-111] RootWebArea: Account summary\n  [0-112] body'), ...(mergeRead ? [read(3100, '[0-120] RootWebArea: Bill March 2026')] : []), ...reads.map(([at, title]) => read(at, `[0-1] RootWebArea: ${title}`)), read(4200, 'url: x\ntitle: Your bills\n---\n# Your bills'));
+    ...(reads.length > 0 && onlyReads ? [] : [read(1200, '[0-7] RootWebArea: Sign in\n  [0-9] body'), read(3000, '[0-111] RootWebArea: Account summary\n  [0-112] body'), ...(mergeRead ? [read(3100, '[0-120] RootWebArea: Bill March 2026')] : []), read(4200, 'url: x\ntitle: Your bills\n---\n# Your bills')]), ...reads.map(([at, title]) => read(at, `[0-1] RootWebArea: ${title}`)));
   // A second browser session has its own track (the recorder writes one per session).
   if (secondSession) lines.push({ channel: 'live', source: 'browser', kind: 'frame.track', conv: 1, t: 4700, data: { session: 's2', fps: 2, from: 500, to: 4500 }, blobs: [film, index] });
   if (gap) lines.push({ channel: 'live', source: 'browser', kind: 'frame.gap', conv: 1, t: gapFrom + 100, data: { session: 's1', from: gapFrom, reason: 'credential_on_page', detail: 'host' } });

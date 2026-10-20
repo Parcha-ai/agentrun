@@ -145,12 +145,16 @@ export async function visualOf(recording: Recording): Promise<Visual | undefined
   // A chapter seeks to the kept frame that shows its page: the latest frame at or before the read (the page the run was looking at). A read made while only a blurred frame
   // was on screen has none, so it is no chapter; with more than one session's track there is no honest place to seek, so none either. One chapter per distinct page
   // visit: two that land on the same frame are the later page.
-  const heldMs = new Map<string, number>(list(index?.frames).flatMap((each) => { const f = obj(each); return str(f?.sha256) && num(f?.ms) !== undefined ? [[str(f!.sha256)!, num(f!.ms)!] as [string, number]] : []; }));
+  // The track's held frames, each with its own time: a chapter's frame is found by its time and its picture, never by the picture alone (the recorder can keep one picture at
+  // several times).
+  const heldFrames = list(index?.frames).flatMap((each) => { const f = obj(each); return str(f?.sha256) && num(f?.ms) !== undefined && num(f?.t) !== undefined ? [{ sha: str(f!.sha256)!, t: num(f!.t)!, ms: num(f!.ms)! }] : []; });
+  const heldAt = (frame: VisualFrame) => heldFrames.filter((held) => held.sha === frame.blob).sort((a, b) => Math.abs(a.t - frame.t) - Math.abs(b.t - frame.t))[0];
   const chapters: VisualChapter[] = [];
   for (const page of video && tracks.length === 1 ? pages : []) {
     const shown = [...frames].reverse().find((frame) => frame.t <= page.t);
-    if (!shown || shown.sensitive || !heldMs.has(shown.blob)) continue;
-    const chapter = { title: page.title, t: page.t, at: heldMs.get(shown.blob)! / 1000 };
+    const held = shown && !shown.sensitive ? heldAt(shown) : undefined;
+    if (!shown || !held) continue;
+    const chapter = { title: page.title, t: page.t, at: held.ms / 1000 };
     const last = chapters.at(-1);
     if (last && chapter.at - last.at < MERGE_S) chapters[chapters.length - 1] = chapter; else chapters.push(chapter);
   }
@@ -289,7 +293,14 @@ export function drawVisual(visual: Visual, model: ChatModel, recording: Recordin
       button.addEventListener('click', () => { video.currentTime = chapter.at; void video.play().catch(() => undefined); });
       return button;
     }));
-    report.append(reportEl('div', { class: 'mu-stage' }, video, reportEl('div', { class: 'mu-stage-note', text: `Frames the recorder kept · waits skipped${segments.length > 1 ? ` (${clock(duration)} of browsing in ${clock(segments.reduce((sum, [a, b]) => sum + (b - a), 0))})` : ''}` })), ...(chapters ? [chapters] : []));
+    // With no native controls (the scrub bar is what is withheld), a button of its own pauses and plays: playback only ever goes to kept segments.
+    const play = skipEnd > 0 ? reportEl('button', { class: 'mu-play', type: 'button', 'aria-label': 'Pause the browser video', text: 'Pause' }) : undefined;
+    if (play) {
+      play.addEventListener('click', () => { if (video.paused) void video.play().catch(() => undefined); else video.pause(); });
+      video.addEventListener('play', () => { play.textContent = 'Pause'; play.setAttribute('aria-label', 'Pause the browser video'); });
+      video.addEventListener('pause', () => { play.textContent = 'Play'; play.setAttribute('aria-label', 'Play the browser video'); });
+    }
+    report.append(reportEl('div', { class: 'mu-stage' }, video, ...(play ? [play] : []), reportEl('div', { class: 'mu-stage-note', text: `Frames the recorder kept · waits skipped${segments.length > 1 ? ` (${clock(duration)} of browsing in ${clock(segments.reduce((sum, [a, b]) => sum + (b - a), 0))})` : ''}` })), ...(chapters ? [chapters] : []));
     // Autoplay muted once it can; a page that forbids it stays paused on its poster.
     video.addEventListener('canplay', () => { void video.play().catch(() => undefined); }, { once: true });
   }

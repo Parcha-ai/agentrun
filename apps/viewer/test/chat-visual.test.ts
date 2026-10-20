@@ -235,7 +235,7 @@ test('fail closed by picture: a sign-in picture that comes back after the gap (a
 
 test('a chapter seeks to the frame it was read on by its time, not to the last appearance of that picture: the same picture kept at several times keeps each chapter at its own', async (t) => {
   // The frame at 4000 is the very picture of the frame at 2500; a page read at 2600 was on the first, so its chapter is at that frame's place (2.0 s), not at 3.5 s.
-  const { recording } = openedRun(t, { sameAs: { 4000: 2500 }, reads: [[2600, 'Early page']] });
+  const { recording } = openedRun(t, { sameAs: { 4000: 2500 }, reads: [[2600, 'Early page'], [4200, 'Late page']], onlyReads: true });
   const chapters = (await visualOf(recording))!.chapters.map((chapter) => [chapter.title, chapter.at]);
-  assert.deepEqual(chapters, [['Early page', 2], ['Account summary', 2.2], ['Your bills', 3.5]], 'each at its own frame, in order');
+  assert.deepEqual(chapters, [['Early page', 2], ['Late page', 3.5]], 'each at its own frame, in order (by the picture alone the early one would sit at the picture\'s last time, 3.5 s, on top of the late one)');
 });
