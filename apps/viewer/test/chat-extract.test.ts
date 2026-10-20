@@ -2,12 +2,16 @@
 // tool cards and timeline, every label comes from an event field, and nothing is borrowed from another run.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseLines, type Json, type Recording } from '../src/format.ts';
 import { chatCiteHref, chatCommandLine, chatSaid, chatToolTitle, extractChat } from '../src/chat-extract.ts';
-import { blobsNamed } from '../src/load.ts';
+import { blobsNamed, fromUrl } from '../src/load.ts';
 import type { ChatItem, ChatModel } from '../src/chat-model.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
@@ -100,6 +104,17 @@ test("a failed call's line is its error's first line, not the markup around it",
   assert.equal(tools(wrapped)[0]?.takeaway, '[error] Command exited with code 1');
   const record = await model(referenceJob, failed(JSON.stringify({ ok: false, error: { kind: 'script', message: 'not a function\nat line 3' } })));
   assert.equal(tools(record)[0]?.takeaway, 'not a function');
+  // A call that made one look says what the look found; one that then failed keeps why, the look its own answer.
+  const { recording } = opened(referenceJob);
+  const start = recording.lines.find((line) => line.kind === 'tool_execution_start')!;
+  const seen = { tool: 'see', args: { path: 'a.png' }, body: 'A round seal at the foot of the page.', facts: { key: 'k1' } };
+  const looked = (events: string) => `${events.trimEnd()}\n${[
+    { channel: 'live', source: 'vision', kind: 'LookEvent', t: start.t + 1, conv: start.conv, data: { tool: 'see', parentToolCallId: (start.data as { toolCallId: string }).toolCallId, record: seen } },
+    { channel: 'durable', source: 'vision', kind: 'vision.looks', t: start.t + 1, data: { doc: 'vision.looks', key: 'k1', value: { looks: [{ record: seen, images: [] }] }, version: 1 } },
+  ].map((line) => JSON.stringify(line)).join('\n')}\n`;
+  assert.equal(tools(await model(referenceJob, looked))[0]?.takeaway, 'A round seal at the foot of the page.');
+  const after = await model(referenceJob, (events) => looked(failed('Timed out after the look.')(events)));
+  assert.deepEqual([tools(after)[0]?.failed, tools(after)[0]?.takeaway, after.sources.k1?.takeaway], [true, 'Timed out after the look.', 'A round seal at the foot of the page.']);
 });
 
 test("the title is the artifact's, else the first line of the input's question", async () => {
@@ -186,26 +201,21 @@ test('a command that opens a quote or a here-document on its first line is title
   assert.equal(chatCommandLine('echo "done"\nls'), 'echo "done"');
 });
 
-test('a step that nothing the agent thought or wrote leads into speaks with what a look of it asked in words, never a line or a result', async () => {
-  const m = await model(hearAndFind);
-  for (const thread of m.threads) thread.items.forEach((item, index) => {
-    if (item.kind !== 'tool') return;
-    const led = ['thinking', 'assistant'].includes(thread.items[index - 1]?.kind ?? '');
-    const asked = item.calls.find((call) => call.look && call.ask)?.ask;
-    assert.equal(item.voice, led ? undefined : asked, item.title);
-  });
-  const code = tools(m).find((item) => item.calls.length > 0)!;
+test("a call whose title clips its one argument keeps it whole where its card opens; one its title shows whole needs no more", async () => {
+  const command = `grep -n "incorporated" ${Array.from({ length: 12 }, (_, n) => `filings/part-${n}.txt`).join(' ')}`;
+  const clipped = tools(await model(referenceJob, editFirst('pi.assistant', (data) => { ((data.model[0]!.content as Json[])[0] as Record<string, Json>).arguments = { command }; })))[0]!;
+  assert.ok(!command.includes('\n') && clipped.title.endsWith('…'), clipped.title);
+  assert.equal(clipped.detail, command, 'a command of one line its title clips');
+  const whole = tools(await model(referenceJob))[0]!;
+  assert.ok(whole.title.length < 90 && whole.detail === undefined, whole.title);
+});
+
+test('a look keeps what it asked in words, never a typed request', async () => {
+  const code = tools(await model(hearAndFind)).find((item) => item.calls.length > 0)!;
   assert.equal(code.calls[0]!.ask, undefined, 'a transcription asks nothing');
   assert.equal(code.calls.find((call) => call.judge)!.ask, undefined, "a judge's typed request is no words");
   const asked = code.calls.find((call) => call.ask);
   assert.ok(asked && !asked.ask!.startsWith('{'), 'a look asked in words keeps its ask');
-  assert.equal(code.voice, asked.ask, 'the step speaks with that ask, not with the first look\'s line');
-  for (const item of tools(m)) if (item.voice) assert.ok(!item.calls.some((call) => call.label === item.voice), `${item.title}: a look's line is never a voice`);
-  assert.ok(tools(m).filter((item) => !item.calls.some((call) => call.look && call.ask)).every((item) => item.voice === undefined), 'a step whose looks asked nothing in words has no voice');
-  const thought = await model(hearAndFind, editFirst('pi.assistant', (data) => { (data.model[0]!.content as Json[]).unshift({ type: 'thinking', thinking: '**Planning**' }); }));
-  const first = thought.threads[0]!.items.findIndex((item) => item.kind === 'thinking');
-  const next = thought.threads[0]!.items[first + 1];
-  assert.ok(next?.kind !== 'tool' || next.voice === undefined, 'a step its thinking leads into has no voice of its own');
 });
 
 test("a redacted thought keeps its mark and none of the provider's placeholder", async () => {
@@ -347,8 +357,27 @@ test("a takeaway is the result's first line with words, and an artifact's files 
   for (const sha of files) assert.ok(blobsNamed(recording.manifest, recording.lines).includes(sha));
 });
 
-test('an .mp4 blob is a video, and opens in place like a .webm', async () => {
+test('an .mp4 blob is a video, opens in place like a .webm, and is found in a recording opened by its URL (?src=)', async (t) => {
   const { typeOfName, opensInPage } = await import('../src/blobs.ts');
   assert.equal(typeOfName('film-descent.mp4'), 'video/mp4');
   assert.ok(opensInPage(typeOfName('film-descent.mp4')));
+  // The reference job served over http, its agent's page holding a film.
+  const dir = mkdtempSync(join(tmpdir(), 'viewer-src-mp4-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  cpSync(referenceJob, dir, { recursive: true });
+  const film = Buffer.from('a made-up film');
+  const sha = createHash('sha256').update(film).digest('hex');
+  writeFileSync(join(dir, 'blobs', `${sha}.mp4`), film);
+  const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
+  writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ ...manifest, artifact: { title: 'A film', entry: 'index.html', files: { 'film.mp4': sha } } }));
+  const server = createServer((request, response) => {
+    const file = join(dir, decodeURIComponent(new URL(request.url!, 'http://localhost').pathname));
+    if (!file.startsWith(dir) || !existsSync(file)) { response.writeHead(404).end(); return; }
+    response.writeHead(200).end(request.method === 'HEAD' ? undefined : readFileSync(file));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const recording = await fromUrl(`http://127.0.0.1:${(server.address() as AddressInfo).port}/`);
+  assert.match(recording.blobUrl(sha) ?? '', new RegExp(`/blobs/${sha}\\.mp4$`));
+  assert.equal(recording.blobType(sha), 'video/mp4');
 });
