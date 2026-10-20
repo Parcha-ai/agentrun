@@ -2,6 +2,14 @@
 
 These serve the tests only and are never bundled into the gallery: a hand-cut fixture is not a recording of a run.
 
+## reference-job
+
+A recording of a run, not cut by hand: the reference job (`examples/reference`) with scripted providers, no key, $0, one
+process. Recorded at `79868e54` with `npm run demo:reference -- --record <dir>`, and nothing in it is edited: one paid
+call, one judge ask, four model turns, nothing repeated or asked twice, cost $0. It left the gallery, which shows agent
+runs only; the tests read it as a clean run (the chat view's, the gate's and the Pages step's tests, the timeline's
+golden test, the cost comparison).
+
 ## ten-kills-seed21
 
 A recording of a run, not cut by hand, kept for the tests that read a killed run beside the clean `reference-job`

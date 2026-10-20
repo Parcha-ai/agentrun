@@ -14,7 +14,7 @@ test('empty-only output contracts dry-run like valid real submissions', async ()
     for (const schema of [base, { ...base, [minimum]: 0 }]) {
       const candidate = workflow(schema, { node: 'extract', label: 'empty', instructions: 'Return an empty value.', out: 'Result', as: 'result' });
       assert.deepEqual((await runWorkflow(candidate, {}, { runNode: async () => empty })).output, empty);
-      assert.deepEqual(await dryRunWorkflow(candidate), { ok: true }, JSON.stringify(schema));
+      assert.deepEqual(await dryRunWorkflow(candidate), { ok: true, status: 'passed' }, JSON.stringify(schema));
     }
   }
 });
@@ -50,7 +50,7 @@ test('numeric synthesis intersects inclusive and exclusive bounds on both sides'
       const value = synthesizeInstance(field);
       assert.equal(Compile(field).Check(value), true, `${JSON.stringify(field)} synthesized invalid ${value}`);
       const candidate = workflow(object({ value: field }), { node: 'extract', label: 'extract', instructions: 'Return a bounded value', out: 'Result', as: 'result' });
-      assert.deepEqual(await dryRunWorkflow(candidate), { ok: true }, JSON.stringify(field));
+      assert.deepEqual(await dryRunWorkflow(candidate), { ok: true, status: 'passed' }, JSON.stringify(field));
     }
   }
 });
@@ -94,4 +94,5 @@ test('dry run discovers unsupported synthesis constraints inside a mapped child'
   const result = await dryRunWorkflow(candidate, { input: { records: [{}] } });
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.ok(result.skipped.some(reason => /Result\/properties\/code: pattern/.test(reason)), JSON.stringify(result));
+  assert.equal(result.status, 'not_run');
 });

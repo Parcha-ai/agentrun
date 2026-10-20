@@ -9,6 +9,8 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { credentialIn } from '../../packages/harness/src/scan.ts';
 import { moveImages } from '../../packages/harness/src/record.ts';
+import { readdirSync as readdirSyncOf } from 'node:fs';
+import { build } from '../../apps/viewer/build.mjs';
 import { gateProblems } from './gate.mjs';
 import { validateRecording } from './validate.mjs';
 
@@ -28,16 +30,14 @@ const recording = (t, blobs, manifestOver = {}) => {
 };
 const named = (text, extension) => `${sha(text)}.${extension}`;
 const problems = (dir) => validateRecording(dir).map((each) => `${each.where}: ${each.message}`);
-/** The gate over a one-recording gallery built from `dir` (the index form). */
+/** The gate over a one-recording gallery from `dir`, published as the Pages job builds it (`build.mjs --files`). */
 const gated = (t, dir) => {
-  const dist = scratch(t, 'inert-gate-');
-  cpSync(dir, join(dist, 'recordings', 'one'), { recursive: true });
-  writeFileSync(join(dist, 'gallery.js'), "window.AGENTRUN_GALLERY_INDEX = 'recordings/index.json';\n");
-  const held = Object.fromEntries(readdirSyncOf(join(dir, 'blobs')).map((name) => [name.split('.')[0], `blobs/${name}`]));
-  writeFileSync(join(dist, 'recordings', 'index.json'), JSON.stringify([{ id: 'one', manifest: JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')), blobs: held }]));
+  const recordings = scratch(t, 'inert-recordings-');
+  cpSync(dir, join(recordings, 'one'), { recursive: true });
+  const dist = join(scratch(t, 'inert-gate-'), 'dist');
+  build(dist, recordings, { files: true });
   return gateProblems(dist).map((each) => `${each.path}: ${each.message}`);
 };
-import { readdirSync as readdirSyncOf } from 'node:fs';
 
 test('a blob that is html, svg, xml, js or of an unknown extension is refused by the validator and the gate, with its script in it', (t) => {
   for (const [extension, text] of [['html', SCRIPT], ['htm', SCRIPT], ['svg', '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'], ['xml', '<x/>'], ['xhtml', SCRIPT], ['js', 'alert(1)'], ['css', 'p{}'], ['bin', 'x']]) {

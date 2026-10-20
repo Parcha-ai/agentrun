@@ -12,7 +12,9 @@ for (const file of process.argv.slice(2)) {
   const path = resolve(file);
   const c = JSON.parse(readFileSync(path, "utf8"));
   const { expected, codeReturns } = await runCase(c);
-  if (Object.keys(codeReturns).length) c.script = { ...(c.script ?? {}), code: codeReturns };
+  // A code node the case scripts to throw records no return: its scripted throw is kept beside the recorded returns.
+  const thrown = Object.fromEntries(Object.entries(c.script?.code ?? {}).filter(([, entry]) => entry.throw !== undefined));
+  if (Object.keys(codeReturns).length || Object.keys(thrown).length) c.script = { ...(c.script ?? {}), code: { ...thrown, ...codeReturns } };
   c.expected = expected;
   writeFileSync(path, JSON.stringify(c, null, 2) + "\n");
   console.log(`${file}: ${expected.valid === false ? "invalid" : expected.outcome}`);

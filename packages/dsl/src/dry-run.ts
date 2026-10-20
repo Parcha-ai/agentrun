@@ -3,9 +3,11 @@ import { runWorkflow, validateWorkflow, WorkflowInvalidError, WorkflowInputInval
 import { resolveSchemaForWorkflow } from "./schema-references.js";
 import { synthesizeAnswers } from "./system-one.js";
 
+/** `ok` keeps its meaning: false only when a check failed. `status` says whether every check ran: `passed`, `not_run`
+ *  (a check stood down; `skipped` says which and why, so this is not proof the graph was exercised) or `failed`. */
 export type DryRunResult =
-  | { ok: true; skipped?: string[] }
-  | { ok: false; problems: string[]; stage?: string };
+  | { ok: true; status: "passed" | "not_run"; skipped?: string[] }
+  | { ok: false; status: "failed"; problems: string[]; stage?: string };
 
 export function synthesizeInstance(schema: unknown, definitions: Record<string, unknown> = {}, depth = 0): unknown {
   if (depth > 12 || !schema || typeof schema !== "object") return null;
@@ -130,7 +132,7 @@ export type DryRunOptions = {
 
 export async function dryRunWorkflow(workflow: Workflow, opts: DryRunOptions = {}): Promise<DryRunResult> {
   const valid = validateWorkflow(workflow, { ...(opts.input === undefined ? {} : { input: opts.input }), ...(opts.runCode ? { executeCode: false } : {}) });
-  if (!valid.ok) return { ok: false, problems: [new WorkflowInvalidError(String(workflow?.name), valid.errors).message] };
+  if (!valid.ok) return { ok: false, status: "failed", problems: [new WorkflowInvalidError(String(workflow?.name), valid.errors, valid.issues).message] };
   const skipped: string[] = [];
   const scanSchemas = (plan: Workflow): void => {
     for (const [id, schema] of Object.entries(plan.schemas || {})) unsupportedConstructs(schema, id, skipped);
@@ -144,14 +146,14 @@ export async function dryRunWorkflow(workflow: Workflow, opts: DryRunOptions = {
     visit(plan.root);
   };
   scanSchemas(workflow);
-  if (skipped.length) return { ok: true, skipped };
+  if (skipped.length) return { ok: true, status: "not_run", skipped };
 
   let input: Record<string, unknown> = opts.input ?? {};
   if (opts.input === undefined && workflow.input) {
     const schema = resolveSchemaForWorkflow(workflow, workflow.schemas[workflow.input.schemaId]);
     const generated = synthesizeInstance(schema, (schema.definitions as Record<string, unknown> | undefined) ?? workflow.schemas);
     if (!generated || typeof generated !== "object" || Array.isArray(generated) || !Compile(schema as never).Check(generated)) {
-      return { ok: true, skipped: ["Could not synthesize a valid input object. Supply input explicitly to dryRunWorkflow or the dry-run CLI."] };
+      return { ok: true, status: "not_run", skipped: ["Could not synthesize a valid input object. Supply input explicitly to dryRunWorkflow or the dry-run CLI."] };
     }
     input = generated as Record<string, unknown>;
   }
@@ -197,16 +199,16 @@ export async function dryRunWorkflow(workflow: Workflow, opts: DryRunOptions = {
     });
     if (result.status === "escalated") {
       // Synthetic values tripping an escalate predicate proves nothing about real cases.
-      return { ok: true, skipped: [`escalated:${result.escalation.kind}@${result.escalation.stage} on synthetic values`] };
+      return { ok: true, status: "not_run", skipped: [`escalated:${result.escalation.kind}@${result.escalation.stage} on synthetic values`] };
     }
-    return { ok: true };
+    return { ok: true, status: "passed" };
   } catch (error) {
-    if (stopped) return { ok: true, skipped: [stopped] };
+    if (stopped) return { ok: true, status: "not_run", skipped: [stopped] };
     if (error instanceof WorkflowOutputInvalidError) {
-      return { ok: false, problems: error.problems, stage: error.stage };
+      return { ok: false, status: "failed", problems: error.problems, stage: error.stage };
     }
-    if (error instanceof WorkflowInputInvalidError) return { ok: false, problems: [error.message] };
+    if (error instanceof WorkflowInputInvalidError) return { ok: false, status: "failed", problems: [error.message] };
     const message = error instanceof Error ? error.message : String(error);
-    return { ok: false, problems: [`deterministic path threw over schema-conforming inputs${currentLabel ? ` (at "${currentLabel}")` : ""}: ${message.slice(0, 1200)}`], stage: currentLabel || undefined };
+    return { ok: false, status: "failed", problems: [`deterministic path threw over schema-conforming inputs${currentLabel ? ` (at "${currentLabel}")` : ""}: ${message.slice(0, 1200)}`], stage: currentLabel || undefined };
   }
 }

@@ -121,7 +121,7 @@ test('a row reads as words: its kind, label, way and status apart, in its text a
   assert.ok(items.length > 3);
   for (const item of items) assert.match(own(item), /^\S+ \S.* (done|working|failed|not run)$/, own(item));
   assert.ok(items.some((item) => / via \S+ /.test(own(item))), 'a call names its way between its label and its status');
-  const page = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const page = readFileSync(new URL('../viewer.css', import.meta.url), 'utf8');
   assert.match(page, /\.wg-node > span \{[^}]*margin-right/, 'the parts are set apart on the page');
   for (const status of ['done', 'working', 'failed', 'not-run']) assert.match(page, new RegExp(`\\.wg-node\\.${status} > \\.wg-status`), `a ${status} row's status is marked`);
 });

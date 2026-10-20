@@ -73,7 +73,7 @@ test('from its terminal line on, an execution has nothing working: where it esca
 });
 
 test('with live node lines (a recording with times), a node is working while its live run is open', async () => {
-  const dir = join(here, '..', 'recordings', 'reference-job');
+  const dir = join(here, 'fixtures', 'reference-job');
   const recording: Recording = { id: 'reference-job', manifest: JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')), lines: parseLines(readFileSync(join(dir, 'events.jsonl'), 'utf8')), blobUrl: () => undefined, blobType: () => undefined };
   const [run] = (await extractChat(recording, async () => undefined)).workflows!;
   const start = (label: string) => recording.lines.find((line) => line.kind === 'node.start' && (line.data as { label: string }).label === label)!.t;

@@ -29,10 +29,10 @@ export type Job = { workflow: Workflow; input: Record<string, unknown>; files?: 
 /** How the workflow's task ended, as the task reports it, with the run's generation and what it spent. */
 export type RunResult = WorkflowOutcome & { generation: number; usage: Awaited<ReturnType<Harness['usage']>> };
 
-/** What the host says of the agent a node runs: the lead model, and the node's own thinking level, else `low` (the DSL runner's default). Thinking is never off: the DSL refuses `off` at authoring, and the host never honors it
- *  either, so a node that somehow carries `off` runs at `low`. */
+/** What the host says of the agent a node runs: the lead model, and the node's own thinking level, else `medium` (the DSL runner's default). Thinking is never off: the DSL refuses `off` at authoring, and the host never honors it
+ *  either, so a node that somehow carries `off` runs at `medium`. */
 export function nodeAgent(model: Host['models']['lead'], node: { thinking?: string | undefined }) {
-  const thinkingLevel = node.thinking && node.thinking !== 'off' ? node.thinking : 'low';
+  const thinkingLevel = node.thinking && node.thinking !== 'off' ? node.thinking : 'medium';
   return { model, thinkingLevel } as { model: Host['models']['lead']; thinkingLevel: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' };
 }
 

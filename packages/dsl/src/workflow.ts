@@ -7,10 +7,11 @@ import { validateAnswers, answerConfidence, answersSidecar, answersToValue, comp
 import { DECISION_RECEIPT_VERSION, type DecisionKind, type DecisionReceipt, type DecisionRule } from "./decision-receipts.js";
 import { Compile } from "typebox/compile";
 import { compileTransform, compileTransformSyntax } from "./code-exec.js";
-import { workflowShapeErrors } from "./workflow-shape.js";
+import { workflowShapeIssues } from "./workflow-shape.js";
 import { resolveSchemaForWorkflow } from "./schema-references.js";
 export { resolveSchemaForWorkflow } from "./schema-references.js";
 import { setLongTimeout, type LongTimer } from "./long-timer.js";
+import { isRecoveryError } from "./recovery/errors.js";
 
 /** The model tier a node asks for: `fast` (the cheap tier), `strong` (the host's stronger model),
  *  or the kind's default. A router that sends the few thin cases to `strong` buys depth only where the
@@ -43,7 +44,13 @@ export type WorkflowNode =
   | { node: "extract"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; out: string; as?: string; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; verify?: VerifyClause; tier?: ModelTier; metadata?: NodeMetadata }
   | { node: "report"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; metadata?: NodeMetadata }
   | ArtifactNode
-  | { node: "map"; label: string; itemsPath: string; body: WorkflowNode; as: string; resultPath?: string; maxConcurrency?: number; metadata?: NodeMetadata }
+  | { node: "map"; label: string; itemsPath: string; body: WorkflowNode; as: string; resultPath?: string; maxConcurrency?: number;
+      /** What an item's failure does: `stop` (the default) stops the map and the run; `collect` ends the item as a row
+       *  of `failedAs` when its failure is an item failure (`isItemFailure`), and the other items finish. */
+      onItemFailure?: "stop" | "collect";
+      /** With `onItemFailure: "collect"`, the state key the map writes its failed items under, one row each in item order:
+       *  `{ item_index, label, code, message }`. `as` stays aligned with the items, `null` in a failed item's slot. */
+      failedAs?: string; metadata?: NodeMetadata }
   | { node: "parallel"; label: string; branches: WorkflowNode[]; metadata?: NodeMetadata }
   | { node: "loop"; label: string; body: WorkflowNode; until: Predicate; maxIters: number; expect_iters?: number; metadata?: NodeMetadata }
   | { node: "escalate"; label: string; when: Predicate; kind: string; stage: string; summary: string; metadata?: NodeMetadata }
@@ -341,6 +348,13 @@ export type WorkflowDeps = {
     pollStartedAt: (node: CallNode, item?: MapItem, executionPath?: string) => number;
     wait: (node: CallNode, ms: number, item?: MapItem, executionPath?: string) => Promise<void>;
     fail?: (node: WorkflowNode, results: unknown[], error: unknown, executionPath?: string) => Promise<void>;
+    /** A map with `onItemFailure: "collect"` commits an item that ended on its failure here, at the item's body path,
+     *  once, before the map goes on; `node` is the map. A store without both hooks cannot hold such a map: it is refused
+     *  before any step runs. */
+    failItem?: (node: WorkflowNode, failure: MapItemFailure, executionPath?: string) => Promise<void>;
+    /** The failure an earlier process committed for the item whose body path this is, if any: the item ends on it again,
+     *  and its body never runs again. */
+    itemFailure?: (node: WorkflowNode, executionPath?: string) => Promise<MapItemFailure | undefined>;
     /** The receipt an earlier run recorded under this id, if any. An `answered` one answers the request:
      *  the judge is not asked again, so a resumed run decides what the interrupted run decided. Any
      *  other receipt, or none, means the request is asked. */
@@ -378,7 +392,7 @@ export const declaredWrites = (node: WorkflowNode | undefined): Set<string> => {
     if (!n || typeof n !== "object") return;
     if (n.node === "report") out.add("report_markdown");
     else if (typeof n.as === "string" && n.as.trim()) out.add(n.as);
-    if (n.node === "map") return;
+    if (n.node === "map") { if (typeof n.failedAs === "string" && n.failedAs.trim()) out.add(n.failedAs); return; }
     if (Array.isArray(n.steps)) n.steps.forEach(visit);
     if (Array.isArray(n.branches)) n.branches.forEach(visit);
     else if (n.node === "route" && n.branches && typeof n.branches === "object") Object.values(n.branches).forEach((b: any) => visit(b?.body));
@@ -397,6 +411,7 @@ const loopBodyWrites = (body: WorkflowNode | undefined): Set<string> | null => {
     if (n.node === "report") out.add("report_markdown");
     else if (typeof n.as === "string" && n.as.trim()) out.add(n.as);
     else if (["agent", "decide", "extract"].includes(n.node) && typeof n.label === "string") out.add(n.label);
+    if (n.node === "map" && typeof n.failedAs === "string" && n.failedAs.trim()) out.add(n.failedAs);
     if (n.node === "map" || n.node === "workflow") return;
     if (Array.isArray(n.steps)) n.steps.forEach(visit);
     if (Array.isArray(n.branches)) n.branches.forEach(visit);
@@ -575,6 +590,21 @@ export function workflowDocumentError(value: unknown): string | undefined {
   return undefined;
 }
 
+/** The rule a validation issue breaks. A closed set: a new code widens it, so a consumer keeps a default branch; renaming
+ *  one is a breaking change. `docs/guide.md` lists each with an example. */
+export type ValidationCode =
+  | "DOCUMENT_INVALID" | "SHAPE_INVALID" | "WORKFLOW_FIELD_INVALID" | "SCHEMA_INVALID" | "SCHEMA_UNKNOWN" | "INPUT_INVALID"
+  | "NODE_KIND_UNKNOWN" | "NODE_KEY_UNKNOWN" | "NODE_FIELD_INVALID" | "STATE_KEY_RESERVED" | "STATE_PATH_UNPRODUCED"
+  | "STATE_PATH_EXCLUDED" | "PARALLEL_WRITE_CONFLICT" | "STRUCTURE_INVALID" | "PREDICATE_INVALID" | "CODE_INVALID";
+
+/** One validation error. `message` is the matching entry of `errors`, unchanged. `path` is a JSON Pointer (RFC 6901)
+ *  into the workflow as written, naming what the rule is about: a node (the same path `inspectWorkflow` gives it), a
+ *  schema (`/schemas/<id>`), a value the shape check refused, or `""` for the document's own fields and for the input
+ *  supplied to validation. It never names a key that is missing. */
+export type ValidationIssue = { path: string; code: ValidationCode; message: string };
+
+const pointerKey = (key: string): string => key.replace(/~/g, "~0").replace(/\//g, "~1");
+
 /** Set executeCode:false for untrusted author feedback: check syntax and mechanical contracts
  * without evaluating authored expressions or probing transforms. This is not execution admission;
  * trusted/default validation and runtime output checks remain authoritative. */
@@ -608,13 +638,19 @@ function workflowWarnings(workflow: Workflow): string[] {
 }
 
 /** Whether a workflow can run, checked without running it: `errors` refuse it, `warnings` advise and never refuse. */
-export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: boolean; input?: Record<string, unknown>; inputKeys?: string[]; probeContext?: { references?: Record<string, string>; references_parsed?: Record<string, { header: string[]; rows: string[][] }> } }): { ok: true; warnings?: string[] } | { ok: false; errors: string[]; warnings?: string[] } {
+export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: boolean; input?: Record<string, unknown>; inputKeys?: string[]; probeContext?: { references?: Record<string, string>; references_parsed?: Record<string, { header: string[]; rows: string[][] }> } }): { ok: true; warnings?: string[] } | { ok: false; errors: string[]; issues: ValidationIssue[]; warnings?: string[] } {
   const bounded = workflowDocumentError(workflow);
-  if (bounded) return { ok: false, errors: [bounded] };
-  const shapeErrors = workflowShapeErrors(workflow);
-  if (shapeErrors.length) return { ok: false, errors: shapeErrors };
+  if (bounded) return { ok: false, errors: [bounded], issues: [{ path: "", code: "DOCUMENT_INVALID", message: bounded }] };
+  const shapeIssues = workflowShapeIssues(workflow);
+  if (shapeIssues.length) return { ok: false, errors: shapeIssues.map(issue => issue.message), issues: shapeIssues.map(issue => ({ path: issue.path, code: "SHAPE_INVALID", message: issue.message })) };
   workflow = desugarWorkflow(workflow);
   const errors: string[] = [];
+  const issues: ValidationIssue[] = [];
+  const fail = (code: ValidationCode, path: string, message: string): void => { errors.push(message); issues.push({ path, code, message }); };
+  // Each node's walk path (the text its messages begin with) to its JSON Pointer. Desugaring replaces nodes in place, so
+  // the pointer names the same node in the document as written.
+  const pointers = new Map<string, string>();
+  const ptrOf = (path: string): string => pointers.get(path) ?? "";
   const declaredInput = workflow.input && Object.hasOwn(workflow.schemas, workflow.input.schemaId)
     ? resolveSchemaForWorkflow(workflow, workflow.schemas[workflow.input.schemaId]) : undefined;
   const inputKeys = opts?.input !== undefined ? Object.keys(opts.input ?? {}) : opts?.inputKeys;
@@ -628,7 +664,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
     if (schema && typeof schema === "object" && !Array.isArray(schema)) typedOutputs.set(key, schema as Record<string, unknown>);
   };
   for (const [key, schema] of Object.entries((declaredInput?.properties ?? {}) as Record<string, unknown>)) rememberOutput(key, schema);
-  const checkTypedPath = (dotted: string, at: string): void => {
+  const checkTypedPath = (dotted: string, at: string, node: string): void => {
     if (!reachability || reachability.unknowable) return;
     const [head, ...tail] = dotted.split(".");
     let schema: any = typedOutputs.get(head);
@@ -641,7 +677,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       } else if (schema.type === "object") {
         if (Object.hasOwn(schema.properties ?? {}, segment)) schema = schema.properties[segment];
         else {
-          if (schema.additionalProperties === false && !schema.patternProperties) errors.push(`${at}: state path "${dotted}" is excluded by the upstream schema at "${head}"; check the producer's as key and declared properties`);
+          if (schema.additionalProperties === false && !schema.patternProperties) fail("STATE_PATH_EXCLUDED", node, `${at}: state path "${dotted}" is excluded by the upstream schema at "${head}"; check the producer's as key and declared properties`);
           return;
         }
       } else return;
@@ -717,7 +753,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
         // the only difference between the two probes is the real reference data, so the node's
         // own fail-closed guard (or a structural mismatch with the actual files) fired. Code that
         // also threw under the tolerant probe is state-dependent and stands down as before.
-        if (!tolerantThrew) errors.push(`${at.path} (${at.label}): code node throws against the real reference data: ${thrown instanceof Error ? thrown.message : String(thrown)}`);
+        if (!tolerantThrew) fail("CODE_INVALID", ptrOf(at.path), `${at.path} (${at.label}): code node throws against the real reference data: ${thrown instanceof Error ? thrown.message : String(thrown)}`);
       }
     }
     return patches;
@@ -776,7 +812,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       }
       if (!missing) return;
     }
-    errors.push(`${path} (${label}): predicate path "${when.path}" is not produced by the code node that writes "${head}" (its shape has: ${missingAt && typeof missingAt === "object" ? Object.keys(missingAt).join(", ") : typeof missingAt}); the guard can never fire`);
+    fail("STATE_PATH_EXCLUDED", ptrOf(path), `${path} (${label}): predicate path "${when.path}" is not produced by the code node that writes "${head}" (its shape has: ${missingAt && typeof missingAt === "object" ? Object.keys(missingAt).join(", ") : typeof missingAt}); the guard can never fire`);
   };
   // A mechanical predicate reads one state key; when no input key or earlier node writes it, the guard can never fire.
   const checkPredicateHead = (pred: unknown, label: string, path: string, field: string, produced?: ReadonlySet<string>): void => {
@@ -786,8 +822,8 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
     const read = predicate === "no_new_items" ? key : predicate === "ask" ? undefined : at;
     if (typeof read !== "string" || !read.trim()) return;
     const head = read.split(".")[0];
-    if (!available.has(head)) errors.push(`${path} (${label}): ${field} reads "${read}" but no input key or earlier node produces "${head}"; the guard can never fire`);
-    else if (!produced) checkTypedPath(read, `${path} (${label}) ${field}`);
+    if (!available.has(head)) fail("STATE_PATH_UNPRODUCED", ptrOf(path), `${path} (${label}): ${field} reads "${read}" but no input key or earlier node produces "${head}"; the guard can never fire`);
+    else if (!produced) checkTypedPath(read, `${path} (${label}) ${field}`, ptrOf(path));
   };
   const checkInterpolations = (value: unknown, label: string, path: string): void => {
     if (!reachability || reachability.unknowable || value === undefined) return;
@@ -796,34 +832,34 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       // When both namespaces may exist, do not reject either possible resolution.
       if (m[1].startsWith("state.") && reachability.available.has("state")) continue;
       const head = (m[1].startsWith("state.") ? m[1].slice(6) : m[1]).split(".")[0];
-      if (!reachability.available.has(head)) errors.push(`${path} (${label}): interpolates {${m[1]}} but no upstream node produces "${head}"`);
-      else checkTypedPath(m[1].startsWith("state.") ? m[1].slice(6) : m[1], `${path} (${label})`);
+      if (!reachability.available.has(head)) fail("STATE_PATH_UNPRODUCED", ptrOf(path), `${path} (${label}): interpolates {${m[1]}} but no upstream node produces "${head}"`);
+      else checkTypedPath(m[1].startsWith("state.") ? m[1].slice(6) : m[1], `${path} (${label})`, ptrOf(path));
     }
   };
   const checkRequires = (node: { label: string; requires?: unknown }, path: string): void => {
     if (node.requires === undefined) return;
-    if (!Array.isArray(node.requires) || node.requires.some((p) => typeof p !== "string" || !p.trim())) { errors.push(`${path} (${node.label}): requires must be non-empty state paths`); return; }
+    if (!Array.isArray(node.requires) || node.requires.some((p) => typeof p !== "string" || !p.trim())) { fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): requires must be non-empty state paths`); return; }
     if (!reachability || reachability.unknowable) return;
     for (const required of node.requires as string[]) {
       const head = String(required).split(".")[0];
       if (!reachability.available.has(head)) {
-        errors.push(`${path} (${node.label}): requires "${required}" but no upstream node produces it; state here has only: ${[...reachability.available].join(", ")}`);
-      } else checkTypedPath(required, `${path} (${node.label}) requires`);
+        fail("STATE_PATH_UNPRODUCED", ptrOf(path), `${path} (${node.label}): requires "${required}" but no upstream node produces it; state here has only: ${[...reachability.available].join(", ")}`);
+      } else checkTypedPath(required, `${path} (${node.label}) requires`, ptrOf(path));
     }
   };
   const checkItemsPath = (node: { label: string; itemsPath: string }, path: string): void => {
     if (!reachability || reachability.unknowable || !node.itemsPath) return;
     const head = node.itemsPath.split(".")[0];
-    if (!reachability.available.has(head)) errors.push(`${path} (${node.label}): itemsPath "${node.itemsPath}" has no upstream producer; read the value under the producing node's as key (or its label when as is omitted)`);
-    else checkTypedPath(node.itemsPath, `${path} (${node.label}) itemsPath`);
+    if (!reachability.available.has(head)) fail("STATE_PATH_UNPRODUCED", ptrOf(path), `${path} (${node.label}): itemsPath "${node.itemsPath}" has no upstream producer; read the value under the producing node's as key (or its label when as is omitted)`);
+    else checkTypedPath(node.itemsPath, `${path} (${node.label}) itemsPath`, ptrOf(path));
   };
-  if (workflow?.v !== 2) errors.push("workflow.v must be 2");
-  if (!workflow?.name) errors.push("workflow.name is required");
-  if (!workflow?.schemas || typeof workflow.schemas !== "object") errors.push("workflow.schemas is required");
-  if (workflow?.input !== undefined && (!workflow.input || typeof workflow.input.schemaId !== "string" || !Object.hasOwn(workflow.schemas, workflow.input.schemaId))) errors.push("workflow.input.schemaId must name a schema");
-  if (!workflow?.output?.schemaId || !Object.hasOwn(workflow.schemas, workflow.output.schemaId)) errors.push("workflow.output.schemaId must name a schema");
+  if (workflow?.v !== 2) fail("WORKFLOW_FIELD_INVALID", "", "workflow.v must be 2");
+  if (!workflow?.name) fail("WORKFLOW_FIELD_INVALID", "", "workflow.name is required");
+  if (!workflow?.schemas || typeof workflow.schemas !== "object") fail("WORKFLOW_FIELD_INVALID", "", "workflow.schemas is required");
+  if (workflow?.input !== undefined && (!workflow.input || typeof workflow.input.schemaId !== "string" || !Object.hasOwn(workflow.schemas, workflow.input.schemaId))) fail("WORKFLOW_FIELD_INVALID", "", "workflow.input.schemaId must name a schema");
+  if (!workflow?.output?.schemaId || !Object.hasOwn(workflow.schemas, workflow.output.schemaId)) fail("WORKFLOW_FIELD_INVALID", "", "workflow.output.schemaId must name a schema");
   for (const [id, schema] of Object.entries(workflow?.schemas || {})) {
-    if (!schema || typeof schema !== "object" || Array.isArray(schema)) { errors.push(`schema "${id}" must be a JSON-schema object (got ${schema === null ? "null" : Array.isArray(schema) ? "array" : typeof schema})`); continue; }
+    if (!schema || typeof schema !== "object" || Array.isArray(schema)) { fail("SCHEMA_INVALID", `/schemas/${pointerKey(id)}`, `schema "${id}" must be a JSON-schema object (got ${schema === null ? "null" : Array.isArray(schema) ? "array" : typeof schema})`); continue; }
     // Fail closed on refs: typebox compiles an unresolvable $ref to a never-matching schema
     // (no throw), which surfaces only at case time as every submission rejected. Resolve
     // sibling refs first, then reject any ref that still points nowhere and any ref form
@@ -842,29 +878,29 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
     const definitions = (resolved.definitions as Record<string, unknown>) || {};
     for (const ref of refs) {
       const match = ref.match(/^#\/definitions\/(.+)$/);
-      if (!match) errors.push(`schema "${id}": unsupported $ref form "${ref}" — only "#/definitions/<name>" resolves (against inline definitions or a sibling schema)`);
-      else if (!Object.hasOwn(definitions, match[1])) errors.push(`schema "${id}": $ref "${ref}" resolves to no inline definition and no sibling schema`);
+      if (!match) fail("SCHEMA_INVALID", `/schemas/${pointerKey(id)}`, `schema "${id}": unsupported $ref form "${ref}" — only "#/definitions/<name>" resolves (against inline definitions or a sibling schema)`);
+      else if (!Object.hasOwn(definitions, match[1])) fail("SCHEMA_INVALID", `/schemas/${pointerKey(id)}`, `schema "${id}": $ref "${ref}" resolves to no inline definition and no sibling schema`);
     }
-    try { Compile(resolved as never); } catch (e: any) { errors.push(`schema "${id}" does not compile: ${e?.message || e}`); }
+    try { Compile(resolved as never); } catch (e: any) { fail("SCHEMA_INVALID", `/schemas/${pointerKey(id)}`, `schema "${id}" does not compile: ${e?.message || e}`); }
   }
   if (opts?.input !== undefined) {
-    if (!opts.input || typeof opts.input !== "object" || Array.isArray(opts.input)) errors.push("input must be a JSON object");
+    if (!opts.input || typeof opts.input !== "object" || Array.isArray(opts.input)) fail("INPUT_INVALID", "", "input must be a JSON object");
     else if (declaredInput) {
       try {
         const validator = Compile(declaredInput as never);
-        if (!validator.Check(opts.input)) errors.push(...schemaProblems(validator, opts.input).map(problem => `input: ${problem}`));
+        if (!validator.Check(opts.input)) for (const problem of schemaProblems(validator, opts.input)) fail("INPUT_INVALID", "", `input: ${problem}`);
       } catch { /* Schema diagnostics above retain the original compilation failure. */ }
     }
   }
   const checkStateMap = (map: unknown, label: string, path: string, field = "state"): void => {
     if (map === undefined) return;
-    if (!map || typeof map !== "object" || Array.isArray(map)) { errors.push(`${path} (${label}): ${field} must be an object map of what the questions see`); return; }
+    if (!map || typeof map !== "object" || Array.isArray(map)) { fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): ${field} must be an object map of what the questions see`); return; }
     checkInterpolations(map, label, path);
   };
   const checkQuestionSchema = (schemaId: unknown, label: string, path: string): CompiledQuestions | null => {
-    if (typeof schemaId !== "string" || !Object.hasOwn(workflow.schemas, schemaId)) { errors.push(`${path} (${label}): out schema "${String(schemaId)}" not in workflow.schemas`); return null; }
+    if (typeof schemaId !== "string" || !Object.hasOwn(workflow.schemas, schemaId)) { fail("SCHEMA_UNKNOWN", ptrOf(path), `${path} (${label}): out schema "${String(schemaId)}" not in workflow.schemas`); return null; }
     const compiled = compileQuestions(workflow.schemas[schemaId] as Record<string, unknown>, workflow.schemas as Record<string, unknown>);
-    if (compiled.ok === false) { errors.push(...compiled.errors.map((e) => `${path} (${label}): schema "${schemaId}": ${e}`)); return null; }
+    if (compiled.ok === false) { for (const e of compiled.errors) fail("SCHEMA_INVALID", `/schemas/${pointerKey(schemaId)}`, `${path} (${label}): schema "${schemaId}": ${e}`); return null; }
     return compiled.questions;
   };
   const checkPredicate = (pred: unknown, label: string, path: string, field: string, mechanicalOnly = false): boolean => {
@@ -873,37 +909,39 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
     // (GRE-2809), naming a predicate the object used as a key when it did.
     if (pred && typeof pred === "object" && !Array.isArray(pred) && name === undefined) {
       const keyed = Object.keys(pred).find((key) => PREDICATES.has(key));
-      errors.push(`${path} (${label}): ${field}: a predicate names itself in its "predicate" field beside its own fields, e.g. {"predicate": "${keyed ?? "field_true"}", "path": "..."}${keyed ? `, not {"${keyed}": {...}}` : ""}`);
+      fail("PREDICATE_INVALID", ptrOf(path), `${path} (${label}): ${field}: a predicate names itself in its "predicate" field beside its own fields, e.g. {"predicate": "${keyed ?? "field_true"}", "path": "..."}${keyed ? `, not {"${keyed}": {...}}` : ""}`);
       return false;
     }
-    if (!pred || !PREDICATES.has(name) || (mechanicalOnly && !MECHANICAL_PREDICATE_NAMES.has(name))) { errors.push(`${path} (${label}): ${field}: unknown predicate "${name}"${mechanicalOnly && name === "ask" ? " (a poll reads a value, never asks a question)" : ""}`); return false; }
-    errors.push(...predicateShapeErrors(pred as any).map((e) => `${path} (${label}): ${field}: ${e}`));
+    if (!pred || !PREDICATES.has(name) || (mechanicalOnly && !MECHANICAL_PREDICATE_NAMES.has(name))) { fail("PREDICATE_INVALID", ptrOf(path), `${path} (${label}): ${field}: unknown predicate "${name}"${mechanicalOnly && name === "ask" ? " (a poll reads a value, never asks a question)" : ""}`); return false; }
+    for (const e of predicateShapeErrors(pred as any)) fail("PREDICATE_INVALID", ptrOf(path), `${path} (${label}): ${field}: ${e}`);
     if (name === "ask") checkStateMap((pred as any).state, label, path, `${field}.state`);
     return true;
   };
-  const walk = (node: WorkflowNode, path: string): void => {
-    if (!node || typeof node !== "object" || !KINDS.has((node as any).node)) { errors.push(`${path}: unknown node kind "${(node as any)?.node}"`); return; }
+  const walk = (node: WorkflowNode, path: string, ptr: string): void => {
+    // A node that is missing (a map or loop without a body) is reported on the node that should hold it.
+    pointers.set(path, node === undefined ? ptr.slice(0, ptr.lastIndexOf("/")) : ptr);
+    if (!node || typeof node !== "object" || !KINDS.has((node as any).node)) { fail("NODE_KIND_UNKNOWN", ptrOf(path), `${path}: unknown node kind "${(node as any)?.node}"`); return; }
     {
       const allowed = KIND_KEYS[(node as any).node];
       const extraneous = Object.keys(node).filter((key) => !allowed.has(key));
-      if (extraneous.length) errors.push(`${path} (${(node as any).label || (node as any).node}): unknown key(s) for a ${(node as any).node} node: ${extraneous.join(", ")}`);
+      if (extraneous.length) fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${(node as any).label || (node as any).node}): unknown key(s) for a ${(node as any).node} node: ${extraneous.join(", ")}`);
       // `$`-prefixed state keys are engine-owned (`$host`, `<as>$verify`): no node may write one. A label
       // is the state key whenever `as` is omitted, so labels are held to the same rule.
-      if (typeof (node as any).as === "string" && (node as any).as.startsWith("$")) errors.push(`${path} (${(node as any).label || (node as any).node}): "as" must not name an engine-owned "$" state key ("${(node as any).as}")`);
+      if (typeof (node as any).as === "string" && (node as any).as.startsWith("$")) fail("STATE_KEY_RESERVED", ptrOf(path), `${path} (${(node as any).label || (node as any).node}): "as" must not name an engine-owned "$" state key ("${(node as any).as}")`);
       // Only an unaliased generative or code node writes under its label; every other label is a name, not a key.
       const labelIsKey = ((node as any).node === "agent" || (node as any).node === "decide" || (node as any).node === "extract" || (node as any).node === "code") && (node as any).as === undefined;
-      if (labelIsKey && typeof (node as any).label === "string" && (node as any).label.startsWith("$")) errors.push(`${path} (${(node as any).label}): label must not begin with "$" — an unaliased ${(node as any).node} node writes under its label, and "$" keys are engine-owned`);
+      if (labelIsKey && typeof (node as any).label === "string" && (node as any).label.startsWith("$")) fail("STATE_KEY_RESERVED", ptrOf(path), `${path} (${(node as any).label}): label must not begin with "$" — an unaliased ${(node as any).node} node writes under its label, and "$" keys are engine-owned`);
     }
     switch (node.node) {
       case "chain":
-        if (!Array.isArray(node.steps) || !node.steps.length) errors.push(`${path}: chain needs steps`);
-        (node.steps || []).forEach((s, i) => walk(s, `${path}.steps[${i}]`));
+        if (!Array.isArray(node.steps) || !node.steps.length) fail("STRUCTURE_INVALID", ptrOf(path), `${path}: chain needs steps`);
+        (node.steps || []).forEach((s, i) => walk(s, `${path}.steps[${i}]`, `${ptr}/steps/${i}`));
         return;
       case "code":
         try {
           if (opts?.executeCode === false) compileTransformSyntax(node.code);
           else compileTransform(node.code);
-        } catch (e: any) { errors.push(`${path} (${node.label}): ${e?.message || e}`); }
+        } catch (e: any) { fail("CODE_INVALID", ptrOf(path), `${path} (${node.label}): ${e?.message || e}`); }
         if (reachability) {
           const patches = probeCodePatches(node.code, { path, label: node.label });
           const keys = new Set(patches.flatMap((patch) => Object.keys(patch)));
@@ -928,23 +966,23 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       case "extract":
       case "report":
         if (node.state !== undefined) checkStateMap(node.state, node.label, path);
-        if (!node.instructions?.trim()) errors.push(`${path} (${node.label}): instructions required`);
-        if (node.node !== "report" && !Object.hasOwn(workflow.schemas, node.out)) errors.push(`${path} (${node.label}): out schema "${node.out}" not in workflow.schemas`);
-        if ((node as any).thinking !== undefined && !(THINKING_LEVELS as readonly string[]).includes(String((node as any).thinking))) errors.push(`${path} (${node.label}): thinking must be low|medium|high — thinking is never off`);
-        if ((node as any).tools !== undefined && (!Array.isArray((node as any).tools) || (node as any).tools.some((t: unknown) => typeof t !== "string" || !(t as string).trim()))) errors.push(`${path} (${node.label}): tools must be a list of non-empty tool names when present (an empty list disables tools)`);
+        if (!node.instructions?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): instructions required`);
+        if (node.node !== "report" && !Object.hasOwn(workflow.schemas, node.out)) fail("SCHEMA_UNKNOWN", ptrOf(path), `${path} (${node.label}): out schema "${node.out}" not in workflow.schemas`);
+        if ((node as any).thinking !== undefined && !(THINKING_LEVELS as readonly string[]).includes(String((node as any).thinking))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): thinking must be low|medium|high — thinking is never off`);
+        if ((node as any).tools !== undefined && (!Array.isArray((node as any).tools) || (node as any).tools.some((t: unknown) => typeof t !== "string" || !(t as string).trim()))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): tools must be a list of non-empty tool names when present (an empty list disables tools)`);
         checkRequires(node, path);
-        if ((node as any).tier !== undefined && !(MODEL_TIERS as readonly string[]).includes(String((node as any).tier))) errors.push(`${path} (${node.label}): tier must be fast|default|strong`);
-        if (node.node === "agent" && node.budget_usd !== undefined && !(typeof node.budget_usd === "number" && Number.isFinite(node.budget_usd) && node.budget_usd > 0)) errors.push(`${path} (${node.label}): budget_usd must be a number of dollars greater than 0`);
-        if (node.node === "agent" && node.context !== undefined && !(AGENT_CONTEXTS as readonly string[]).includes(String(node.context))) errors.push(`${path} (${node.label}): context must be ${AGENT_CONTEXTS.join("|")}`);
+        if ((node as any).tier !== undefined && !(MODEL_TIERS as readonly string[]).includes(String((node as any).tier))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): tier must be fast|default|strong`);
+        if (node.node === "agent" && node.budget_usd !== undefined && !(typeof node.budget_usd === "number" && Number.isFinite(node.budget_usd) && node.budget_usd > 0)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): budget_usd must be a number of dollars greater than 0`);
+        if (node.node === "agent" && node.context !== undefined && !(AGENT_CONTEXTS as readonly string[]).includes(String(node.context))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): context must be ${AGENT_CONTEXTS.join("|")}`);
         if (node.node !== "report" && (node as any).verify !== undefined) {
           const v = (node as any).verify as VerifyClause;
-          if (!v || typeof v !== "object" || typeof v.out !== "string") errors.push(`${path} (${node.label}): verify needs an out (a question schema id)`);
+          if (!v || typeof v !== "object" || typeof v.out !== "string") fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): verify needs an out (a question schema id)`);
           else {
             const qs = checkQuestionSchema(v.out, node.label, path);
-            if (qs && !Object.values(qs).some((q) => q.type === "noul")) errors.push(`${path} (${node.label}): verify.out "${v.out}" carries no yes/no question — a verifier decides by yes/no (a boolean named after a submission field verifies it; any other boolean is a requirement)`);
+            if (qs && !Object.values(qs).some((q) => q.type === "noul")) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): verify.out "${v.out}" carries no yes/no question — a verifier decides by yes/no (a boolean named after a submission field verifies it; any other boolean is a requirement)`);
             if (v.state !== undefined) checkStateMap(v.state, node.label, path, "verify.state");
-            if (v.maxDrives !== undefined && (!Number.isInteger(v.maxDrives) || v.maxDrives < 1)) errors.push(`${path} (${node.label}): verify.maxDrives must be an integer >= 1`);
-            if (v.override !== undefined && (typeof v.override?.below !== "number" || v.override.below <= 0 || v.override.below >= 1)) errors.push(`${path} (${node.label}): verify.override.below must be in (0, 1)`);
+            if (v.maxDrives !== undefined && (!Number.isInteger(v.maxDrives) || v.maxDrives < 1)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): verify.maxDrives must be an integer >= 1`);
+            if (v.override !== undefined && (typeof v.override?.below !== "number" || v.override.below <= 0 || v.override.below >= 1)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): verify.override.below must be in (0, 1)`);
           }
         }
         if (reachability && node.node === "report") { reachability.available.add("report_markdown"); typedOutputs.delete("report_markdown"); }
@@ -955,24 +993,30 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
         }
         return;
       case "map":
-        if (node.resultPath !== undefined && (typeof node.resultPath !== "string" || !node.resultPath.trim())) errors.push(`${path} (${node.label}): resultPath must be a non-empty path in the completed item state`);
-        if (node.maxConcurrency !== undefined && (!Number.isSafeInteger(node.maxConcurrency) || node.maxConcurrency < 1)) errors.push(`${path} (${node.label}): maxConcurrency must be a positive safe integer`);
-        if (!node.itemsPath) errors.push(`${path} (${node.label}): itemsPath required`);
+        if (node.resultPath !== undefined && (typeof node.resultPath !== "string" || !node.resultPath.trim())) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): resultPath must be a non-empty path in the completed item state`);
+        if (node.maxConcurrency !== undefined && (!Number.isSafeInteger(node.maxConcurrency) || node.maxConcurrency < 1)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): maxConcurrency must be a positive safe integer`);
+        if (!node.itemsPath) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): itemsPath required`);
         checkItemsPath(node, path);
-        if (!node.as) errors.push(`${path} (${node.label}): as required`);
-        if (containsReportNode(node.body)) errors.push(`${path} (${node.label}): a report node cannot live inside a map body — the report is the workflow's ONE terminal rendering (a mapped copy lands in the item results, never at state.report_markdown)`);
+        if (!node.as) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): as required`);
+        if (node.onItemFailure !== undefined && node.onItemFailure !== "stop" && node.onItemFailure !== "collect") fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): onItemFailure must be "stop" or "collect"`);
+        if (node.onItemFailure === "collect") {
+          if (typeof node.failedAs !== "string" || !node.failedAs.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): onItemFailure "collect" needs failedAs, the state key the map writes its failed items under`);
+          else if (node.failedAs.startsWith("$")) fail("STATE_KEY_RESERVED", ptrOf(path), `${path} (${node.label}): failedAs must not name an engine-owned "$" state key ("${node.failedAs}")`);
+          else if (node.failedAs === node.as) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): failedAs must differ from as: the map writes its results and its failed items under two keys`);
+        } else if (node.failedAs !== undefined) fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${node.label}): failedAs is written only with onItemFailure "collect"`);
+        if (containsReportNode(node.body)) fail("STRUCTURE_INVALID", ptrOf(path), `${path} (${node.label}): a report node cannot live inside a map body — the report is the workflow's ONE terminal rendering (a mapped copy lands in the item results, never at state.report_markdown)`);
         if (reachability) reachability.unknowable = true;
-        walk(node.body, `${path}.body`);
+        walk(node.body, `${path}.body`, `${ptr}/body`);
         return;
       case "parallel":
-        if (!Array.isArray(node.branches) || node.branches.length < 2) errors.push(`${path} (${node.label}): parallel needs at least two branches`);
-        if (containsReportNode(node)) errors.push(`${path} (${node.label}): a report node cannot live inside a parallel branch — the report is rendered once, after every branch has landed`);
+        if (!Array.isArray(node.branches) || node.branches.length < 2) fail("STRUCTURE_INVALID", ptrOf(path), `${path} (${node.label}): parallel needs at least two branches`);
+        if (containsReportNode(node)) fail("STRUCTURE_INVALID", ptrOf(path), `${path} (${node.label}): a report node cannot live inside a parallel branch — the report is rendered once, after every branch has landed`);
         {
           const writers = new Map<string, number>();
           (node.branches || []).forEach((branch, i) => {
             for (const key of declaredWrites(branch)) {
               const prior = writers.get(key);
-              if (prior !== undefined && prior !== i) errors.push(`${path} (${node.label}): branches ${prior} and ${i} both write state.${key} — parallel branches must write disjoint keys`);
+              if (prior !== undefined && prior !== i) fail("PARALLEL_WRITE_CONFLICT", ptrOf(path), `${path} (${node.label}): branches ${prior} and ${i} both write state.${key} — parallel branches must write disjoint keys`);
               writers.set(key, i);
             }
           });
@@ -984,7 +1028,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
           const after: Knowledge[] = [];
           (node.branches || []).forEach((branch, i) => {
             restoreKnowledge(before);
-            walk(branch, `${path}.branches[${i}]`);
+            walk(branch, `${path}.branches[${i}]`, `${ptr}/branches/${i}`);
             after.push(snapshotKnowledge());
           });
           if (after.length) mergeKnowledge(before, after);
@@ -992,9 +1036,9 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
         }
         return;
       case "loop":
-        if (!Number.isInteger(node.maxIters) || node.maxIters < 1) errors.push(`${path} (${node.label}): maxIters must be an integer >= 1`);
-        if (node.expect_iters !== undefined && (!Number.isInteger(node.expect_iters) || node.expect_iters < 1)) errors.push(`${path} (${node.label}): expect_iters must be an integer >= 1`);
-        if (containsReportNode(node.body)) errors.push(`${path} (${node.label}): a report node cannot live inside a loop body — the report is rendered once, after the record is final`);
+        if (!Number.isInteger(node.maxIters) || node.maxIters < 1) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): maxIters must be an integer >= 1`);
+        if (node.expect_iters !== undefined && (!Number.isInteger(node.expect_iters) || node.expect_iters < 1)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): expect_iters must be an integer >= 1`);
+        if (containsReportNode(node.body)) fail("STRUCTURE_INVALID", ptrOf(path), `${path} (${node.label}): a report node cannot live inside a loop body — the report is rendered once, after the record is final`);
         checkPredicate(node.until, node.label, path, "until");
         {
           // `until` reads the state after the body: the keys before the loop plus every key the body writes.
@@ -1002,21 +1046,21 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
           if (reachability && !reachability.unknowable && bodyWrites) checkPredicateHead(node.until, node.label, path, "until", new Set([...reachability.available, ...bodyWrites]));
         }
         if (reachability) reachability.unknowable = true;
-        walk(node.body, `${path}.body`);
+        walk(node.body, `${path}.body`, `${ptr}/body`);
         return;
       case "escalate":
         mayEscalate = true;
         checkPredicate(node.when, node.label, path, "when");
-        if (!node.kind?.trim() || !node.stage?.trim() || !node.summary?.trim()) errors.push(`${path} (${node.label}): kind, stage, summary required`);
+        if (!node.kind?.trim() || !node.stage?.trim() || !node.summary?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): kind, stage, summary required`);
         checkPredicateHead(node.when, node.label, path, "when");
         checkPredicatePath(node.when as { path?: string }, node.label, path);
         return;
       case "judge": {
         const label = node.label || "judge";
-        if (!node.state || typeof node.state !== "object" || Array.isArray(node.state) || !Object.keys(node.state).length) errors.push(`${path} (${label}): state must be a non-empty object map of what the questions see`);
+        if (!node.state || typeof node.state !== "object" || Array.isArray(node.state) || !Object.keys(node.state).length) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): state must be a non-empty object map of what the questions see`);
         else checkStateMap(node.state, label, path);
         checkQuestionSchema(node.out, label, path);
-        if (!node.as?.trim()) errors.push(`${path} (${label}): as required`);
+        if (!node.as?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): as required`);
         checkRequires({ label, requires: node.requires }, path);
         if (reachability && node.as) {
           reachability.available.add(node.as); reachability.available.add(`${node.as}$answers`);
@@ -1027,34 +1071,34 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       }
       case "pick": {
         const label = node.label || "pick";
-        if (!node.itemsPath?.trim()) errors.push(`${path} (${label}): itemsPath required`);
+        if (!node.itemsPath?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): itemsPath required`);
         checkItemsPath(node, path);
-        if (typeof node.describe !== "string" || !node.describe.trim()) errors.push(`${path} (${label}): describe (the option text per item, e.g. "{item.name}, born {item.dob}") required`);
-        if (typeof node.instructions !== "string" || !node.instructions.trim()) errors.push(`${path} (${label}): instructions (the one question) required`);
+        if (typeof node.describe !== "string" || !node.describe.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): describe (the option text per item, e.g. "{item.name}, born {item.dob}") required`);
+        if (typeof node.instructions !== "string" || !node.instructions.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): instructions (the one question) required`);
         checkStateMap(node.state, label, path);
-        if (!node.as?.trim()) errors.push(`${path} (${label}): as required`);
-        if (node.allowNone !== undefined && typeof node.allowNone !== "boolean") errors.push(`${path} (${label}): allowNone must be boolean`);
+        if (!node.as?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): as required`);
+        if (node.allowNone !== undefined && typeof node.allowNone !== "boolean") fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): allowNone must be boolean`);
         checkRequires({ label, requires: node.requires }, path);
         if (reachability && node.as) { reachability.available.add(node.as); reachability.available.add(`${node.as}$answers`); typedOutputs.delete(node.as); typedOutputs.delete(`${node.as}$answers`); probedSubtrees.set(node.as, [{ index: 0, item: "", none: false, option: "" }]); }
         return;
       }
       case "sift": {
         const label = node.label || "sift";
-        if (!node.itemsPath?.trim()) errors.push(`${path} (${label}): itemsPath required`);
+        if (!node.itemsPath?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): itemsPath required`);
         checkItemsPath(node, path);
-        if (node.describe !== undefined && (typeof node.describe !== "string" || !node.describe.trim())) errors.push(`${path} (${label}): describe must be a non-empty template when present`);
+        if (node.describe !== undefined && (typeof node.describe !== "string" || !node.describe.trim())) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): describe must be a non-empty template when present`);
         checkStateMap(node.state, label, path);
         const compiled = checkQuestionSchema(node.out, label, path);
-        if (!node.as?.trim()) errors.push(`${path} (${label}): as required`);
+        if (!node.as?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): as required`);
         if (node.keep !== undefined) {
           const k = node.keep as { path?: unknown; gte?: unknown };
-          if (!k || typeof k !== "object" || typeof k.path !== "string" || !k.path.trim()) errors.push(`${path} (${label}): keep.path must name a question id (or <id>.confidence)`);
+          if (!k || typeof k !== "object" || typeof k.path !== "string" || !k.path.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): keep.path must name a question id (or <id>.confidence)`);
           else if (compiled) {
             const [id, tail] = k.path.split(".");
-            if (!Object.hasOwn(compiled, id) || (tail !== undefined && tail !== "confidence")) errors.push(`${path} (${label}): keep.path "${k.path}" names no question of schema "${String(node.out)}"`);
-            else if (compiled[id].type === "choice" && tail !== "confidence") errors.push(`${path} (${label}): keep.path "${k.path}" is a choice — keep on a boolean or score question, or on <id>.confidence`);
+            if (!Object.hasOwn(compiled, id) || (tail !== undefined && tail !== "confidence")) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): keep.path "${k.path}" names no question of schema "${String(node.out)}"`);
+            else if (compiled[id].type === "choice" && tail !== "confidence") fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): keep.path "${k.path}" is a choice — keep on a boolean or score question, or on <id>.confidence`);
           }
-          if (k?.gte !== undefined && !(typeof k.gte === "number" && Number.isFinite(k.gte))) errors.push(`${path} (${label}): keep.gte must be a number`);
+          if (k?.gte !== undefined && !(typeof k.gte === "number" && Number.isFinite(k.gte))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): keep.gte must be a number`);
         }
         checkRequires({ label, requires: node.requires }, path);
         if (reachability && node.as) { reachability.available.add(node.as); typedOutputs.delete(node.as); probedSubtrees.set(node.as, [{ items: [], values: [], answers: [], kept: [] }]); }
@@ -1068,68 +1112,68 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
         const names = raw.branches && typeof raw.branches === "object" && !Array.isArray(raw.branches) ? Object.keys(raw.branches) : [];
         if (byValue) {
           const valuePath = raw.valuePath;
-          if (typeof valuePath !== "string" || !valuePath.trim()) errors.push(`${path} (${label}): valuePath must be the state path of the branch name`);
-          for (const key of ["state", "instructions", "unsure"] as const) if (raw[key] !== undefined) errors.push(`${path} (${label}): ${key} belongs to a route Jev chooses; a route by valuePath asks no question`);
-          if (names.length < 2) errors.push(`${path} (${label}): route needs at least two named branches`);
-          if (names.some(name => !name.trim())) errors.push(`${path} (${label}): branch names must be non-empty`);
-          if (raw.otherwise !== undefined && (typeof raw.otherwise !== "string" || !names.includes(raw.otherwise))) errors.push(`${path} (${label}): otherwise must name one of the branches`);
+          if (typeof valuePath !== "string" || !valuePath.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): valuePath must be the state path of the branch name`);
+          for (const key of ["state", "instructions", "unsure"] as const) if (raw[key] !== undefined) fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${label}): ${key} belongs to a route Jev chooses; a route by valuePath asks no question`);
+          if (names.length < 2) fail("STRUCTURE_INVALID", ptrOf(path), `${path} (${label}): route needs at least two named branches`);
+          if (names.some(name => !name.trim())) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): branch names must be non-empty`);
+          if (raw.otherwise !== undefined && (typeof raw.otherwise !== "string" || !names.includes(raw.otherwise))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): otherwise must name one of the branches`);
           if (typeof valuePath === "string" && valuePath.trim() && reachability && !reachability.unknowable) {
             const head = valuePath.split(".")[0];
-            if (!reachability.available.has(head)) errors.push(`${path} (${label}): valuePath "${valuePath}" has no upstream producer; route by the key an earlier node writes`);
-            else checkTypedPath(valuePath, `${path} (${label}) valuePath`);
+            if (!reachability.available.has(head)) fail("STATE_PATH_UNPRODUCED", ptrOf(path), `${path} (${label}): valuePath "${valuePath}" has no upstream producer; route by the key an earlier node writes`);
+            else checkTypedPath(valuePath, `${path} (${label}) valuePath`, ptrOf(path));
           }
         } else {
           const judged = node as RouteByJudgmentNode;
-          if (!judged.state || typeof judged.state !== "object" || Array.isArray(judged.state) || !Object.keys(judged.state).length) errors.push(`${path} (${label}): state must be a non-empty object map of what the question sees`);
+          if (!judged.state || typeof judged.state !== "object" || Array.isArray(judged.state) || !Object.keys(judged.state).length) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): state must be a non-empty object map of what the question sees`);
           else checkStateMap(judged.state, label, path);
-          if (typeof judged.instructions !== "string" || !judged.instructions.trim()) errors.push(`${path} (${label}): instructions (the one question) required`);
-          if (raw.otherwise !== undefined) errors.push(`${path} (${label}): otherwise belongs to a route by valuePath; a route Jev chooses takes unsure for its fallback`);
-          if (names.length < 2) errors.push(`${path} (${label}): route needs at least two named branches`);
-          if (names.length > SYSTEM_ONE_LIMITS.maxChoiceOptions) errors.push(`${path} (${label}): route takes at most ${SYSTEM_ONE_LIMITS.maxChoiceOptions} branches`);
+          if (typeof judged.instructions !== "string" || !judged.instructions.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): instructions (the one question) required`);
+          if (raw.otherwise !== undefined) fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${label}): otherwise belongs to a route by valuePath; a route Jev chooses takes unsure for its fallback`);
+          if (names.length < 2) fail("STRUCTURE_INVALID", ptrOf(path), `${path} (${label}): route needs at least two named branches`);
+          if (names.length > SYSTEM_ONE_LIMITS.maxChoiceOptions) fail("STRUCTURE_INVALID", ptrOf(path), `${path} (${label}): route takes at most ${SYSTEM_ONE_LIMITS.maxChoiceOptions} branches`);
           if (judged.unsure !== undefined) {
             const u = judged.unsure as { branch?: unknown; gte?: unknown };
-            if (!u || typeof u.branch !== "string" || !names.includes(u.branch)) errors.push(`${path} (${label}): unsure.branch must name one of the branches`);
-            if (!(typeof u?.gte === "number" && u.gte > 0 && u.gte <= 1)) errors.push(`${path} (${label}): unsure.gte must be in (0, 1]`);
+            if (!u || typeof u.branch !== "string" || !names.includes(u.branch)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): unsure.branch must name one of the branches`);
+            if (!(typeof u?.gte === "number" && u.gte > 0 && u.gte <= 1)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): unsure.gte must be in (0, 1]`);
           }
         }
-        if (containsReportNode(node)) errors.push(`${path} (${label}): a report node cannot live inside a route branch — the report is rendered once, after the record is final`);
-        if (node.as !== undefined && (typeof node.as !== "string" || !node.as.trim())) errors.push(`${path} (${label}): as must be a state key when present`);
+        if (containsReportNode(node)) fail("STRUCTURE_INVALID", ptrOf(path), `${path} (${label}): a report node cannot live inside a route branch — the report is rendered once, after the record is final`);
+        if (node.as !== undefined && (typeof node.as !== "string" || !node.as.trim())) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): as must be a state key when present`);
         checkRequires({ label, requires: node.requires }, path);
         if (reachability) { if (typeof node.as === "string" && node.as.trim()) { reachability.available.add(node.as); if (!byValue) reachability.available.add(`${node.as}$answers`); } reachability.unknowable = true; }
         for (const name of names) {
           const branch = (raw.branches as Record<string, any>)[name];
-          if (!branch || typeof branch !== "object" || !branch.body) { errors.push(`${path} (${label}): branch "${name}" needs a body`); continue; }
-          if (byValue && branch.criteria !== undefined) errors.push(`${path} (${label}): branch "${name}" criteria are for Jev; a route by valuePath matches the branch name exactly`);
-          else if (branch.criteria !== undefined && typeof branch.criteria !== "string") errors.push(`${path} (${label}): branch "${name}" criteria must be a string`);
-          walk(branch.body, `${path}.branches.${name}`);
+          if (!branch || typeof branch !== "object" || !branch.body) { fail("STRUCTURE_INVALID", ptrOf(path), `${path} (${label}): branch "${name}" needs a body`); continue; }
+          if (byValue && branch.criteria !== undefined) fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${label}): branch "${name}" criteria are for Jev; a route by valuePath matches the branch name exactly`);
+          else if (branch.criteria !== undefined && typeof branch.criteria !== "string") fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): branch "${name}" criteria must be a string`);
+          walk(branch.body, `${path}.branches.${name}`, `${ptr}/branches/${pointerKey(name)}/body`);
         }
         return;
       }
       case "artifact": {
         const label = node.label || "artifact";
         const type = typeof node.type === "string" && node.type.trim() ? node.type : null;
-        if (!type) errors.push(`${path} (${label}): artifact type must be a non-empty string`);
-        for (const key of ["instructions", "state", "sopSection", "tools", "effort", "thinking"] as const) if (node[key] !== undefined) errors.push(`${path} (${label}): ${key} is a prose-artifact field; a ${type ?? "file"} artifact has no model in the loop`);
-        if (typeof node.path !== "string" || !node.path.trim() || node.path.startsWith("/") || node.path.split("/").includes("..")) errors.push(`${path} (${label}): path must be a workspace-relative file`);
-        else if (reachability && !producedFiles.has(node.path)) errors.push(`${path} (${label}): path "${node.path}" is not produced by any earlier shell call (declare it in that call's produces)`);
+        if (!type) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): artifact type must be a non-empty string`);
+        for (const key of ["instructions", "state", "sopSection", "tools", "effort", "thinking"] as const) if (node[key] !== undefined) fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${label}): ${key} is a prose-artifact field; a ${type ?? "file"} artifact has no model in the loop`);
+        if (typeof node.path !== "string" || !node.path.trim() || node.path.startsWith("/") || node.path.split("/").includes("..")) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): path must be a workspace-relative file`);
+        else if (reachability && !producedFiles.has(node.path)) fail("STATE_PATH_UNPRODUCED", ptrOf(path), `${path} (${label}): path "${node.path}" is not produced by any earlier shell call (declare it in that call's produces)`);
         checkRequires({ label, requires: node.requires }, path);
         if (reachability) { reachability.available.add("artifact"); typedOutputs.delete("artifact"); }
         return;
       }
       case "workflow": {
         const label = typeof node.label === "string" && node.label.trim() ? node.label : "workflow";
-        if (typeof node.label !== "string" || !node.label.trim() || typeof node.as !== "string" || !node.as.trim()) errors.push(`${path} (${label}): a workflow invocation requires label and as`);
-        if (!Object.hasOwn(workflow.schemas, node.out)) errors.push(`${path} (${label}): out schema "${String(node.out)}" not in workflow.schemas`);
-        if (!node.input || typeof node.input !== "object" || Array.isArray(node.input)) errors.push(`${path} (${label}): input must be an object mapping onto the child's initial state`);
-        else if (Object.hasOwn(node.input, HOST_STATE_KEY)) errors.push(`${path} (${label}): input must not contain the reserved "${HOST_STATE_KEY}" key`);
+        if (typeof node.label !== "string" || !node.label.trim() || typeof node.as !== "string" || !node.as.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): a workflow invocation requires label and as`);
+        if (!Object.hasOwn(workflow.schemas, node.out)) fail("SCHEMA_UNKNOWN", ptrOf(path), `${path} (${label}): out schema "${String(node.out)}" not in workflow.schemas`);
+        if (!node.input || typeof node.input !== "object" || Array.isArray(node.input)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): input must be an object mapping onto the child's initial state`);
+        else if (Object.hasOwn(node.input, HOST_STATE_KEY)) fail("STATE_KEY_RESERVED", ptrOf(path), `${path} (${label}): input must not contain the reserved "${HOST_STATE_KEY}" key`);
         const child = node.workflow;
         const steps = childSteps(child);
-        if (!child || typeof child !== "object" || !steps || !steps.length) errors.push(`${path} (${label}): the child workflow must contain a root node`);
+        if (!child || typeof child !== "object" || !steps || !steps.length) fail("STRUCTURE_INVALID", ptrOf(path), `${path} (${label}): the child workflow must contain a root node`);
         else {
-          if (containsReportNode(child.root)) errors.push(`${path} (${label}): a child cannot render a report or deliver an artifact; the parent owns the terminal`);
-          if (typeof child.input?.schemaId !== "string" || !Object.hasOwn(child.schemas, child.input.schemaId)) errors.push(`${path} (${label}): the child must declare input.schemaId in its own schemas`);
+          if (containsReportNode(child.root)) fail("STRUCTURE_INVALID", ptrOf(path), `${path} (${label}): a child cannot render a report or deliver an artifact; the parent owns the terminal`);
+          if (typeof child.input?.schemaId !== "string" || !Object.hasOwn(child.schemas, child.input.schemaId)) fail("WORKFLOW_FIELD_INVALID", `${ptrOf(path)}/workflow`, `${path} (${label}): the child must declare input.schemaId in its own schemas`);
           const validated = validateWorkflow(child, { executeCode: opts?.executeCode, inputKeys: Object.keys(node.input && typeof node.input === "object" ? node.input : {}) });
-          if (!validated.ok) errors.push(...(validated as { ok: false; errors: string[] }).errors.map(error => `${path} (${label}) child: ${error}`));
+          if (!validated.ok) for (const issue of validated.issues) fail(issue.code, `${ptr}/workflow${issue.path}`, `${path} (${label}) child: ${issue.message}`);
           for (const step of steps) if (step.node === "call" && Array.isArray(step.produces)) for (const file of step.produces) producedFiles.add(String(file));
         }
         if (node.input && typeof node.input === "object") checkInterpolations(node.input, label, path);
@@ -1138,55 +1182,55 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       }
       case "call": {
         const label = node.label || "call";
-        if (!(CALL_TRANSPORTS as readonly string[]).includes(String(node.via))) errors.push(`${path} (${label}): via must be tool|executor|shell`);
+        if (!(CALL_TRANSPORTS as readonly string[]).includes(String(node.via))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): via must be tool|executor|shell`);
         if (node.via === "tool") {
-          if (!node.tool?.trim()) errors.push(`${path} (${label}): via tool needs a tool address`);
-          if (node.args !== undefined && (!node.args || typeof node.args !== "object" || Array.isArray(node.args))) errors.push(`${path} (${label}): args must be an object`);
-          for (const key of ["code", "input", "command", "env"] as const) if (node[key] !== undefined) errors.push(`${path} (${label}): ${key} is not a via tool field`);
+          if (!node.tool?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): via tool needs a tool address`);
+          if (node.args !== undefined && (!node.args || typeof node.args !== "object" || Array.isArray(node.args))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): args must be an object`);
+          for (const key of ["code", "input", "command", "env"] as const) if (node[key] !== undefined) fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${label}): ${key} is not a via tool field`);
         }
         if (node.via === "executor") {
-          if (!node.code?.trim()) errors.push(`${path} (${label}): via executor needs a code body`);
-          if (!/\breturn\b/.test(String(node.code || ""))) errors.push(`${path} (${label}): the executor body must return its JSON result`);
-          if (/\b(require|process|fetch|eval|Function|import)\s*\(?/.test(String(node.code || ""))) errors.push(`${path} (${label}): the executor body may use only tools and input (no require/process/fetch/eval/import)`);
-          if (node.input !== undefined && (!node.input || typeof node.input !== "object" || Array.isArray(node.input))) errors.push(`${path} (${label}): input must be an object`);
-          for (const key of ["tool", "args", "command", "env"] as const) if (node[key] !== undefined) errors.push(`${path} (${label}): ${key} is not a via executor field`);
+          if (!node.code?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): via executor needs a code body`);
+          if (!/\breturn\b/.test(String(node.code || ""))) fail("CODE_INVALID", ptrOf(path), `${path} (${label}): the executor body must return its JSON result`);
+          if (/\b(require|process|fetch|eval|Function|import)\s*\(?/.test(String(node.code || ""))) fail("CODE_INVALID", ptrOf(path), `${path} (${label}): the executor body may use only tools and input (no require/process/fetch/eval/import)`);
+          if (node.input !== undefined && (!node.input || typeof node.input !== "object" || Array.isArray(node.input))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): input must be an object`);
+          for (const key of ["tool", "args", "command", "env"] as const) if (node[key] !== undefined) fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${label}): ${key} is not a via executor field`);
         }
         if (node.via === "shell") {
-          if (!node.command?.trim()) errors.push(`${path} (${label}): via shell needs a command`);
-          if (node.env !== undefined && (!node.env || typeof node.env !== "object" || Array.isArray(node.env) || Object.entries(node.env).some(([k, v]) => !/^[A-Z_][A-Z0-9_]*$/.test(k) || typeof v !== "string"))) errors.push(`${path} (${label}): env must map UPPER_CASE names to strings`);
-          if (node.out !== undefined) errors.push(`${path} (${label}): a shell call's result is the fixed shell shape; drop out`);
-          for (const key of ["tool", "args", "code", "input"] as const) if (node[key] !== undefined) errors.push(`${path} (${label}): ${key} is not a via shell field`);
+          if (!node.command?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): via shell needs a command`);
+          if (node.env !== undefined && (!node.env || typeof node.env !== "object" || Array.isArray(node.env) || Object.entries(node.env).some(([k, v]) => !/^[A-Z_][A-Z0-9_]*$/.test(k) || typeof v !== "string"))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): env must map UPPER_CASE names to strings`);
+          if (node.out !== undefined) fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${label}): a shell call's result is the fixed shell shape; drop out`);
+          for (const key of ["tool", "args", "code", "input"] as const) if (node[key] !== undefined) fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${label}): ${key} is not a via shell field`);
         } else if (node.produces?.length) {
-          errors.push(`${path} (${label}): only a via shell call may declare produces`);
+          fail("NODE_KEY_UNKNOWN", ptrOf(path), `${path} (${label}): only a via shell call may declare produces`);
         }
         if (node.via !== "shell") {
-          if (!node.out) errors.push(`${path} (${label}): out schema required for a ${node.via} call`);
-          else if (!Object.hasOwn(workflow.schemas, node.out)) errors.push(`${path} (${label}): out schema "${node.out}" not in workflow.schemas`);
+          if (!node.out) fail("SCHEMA_UNKNOWN", ptrOf(path), `${path} (${label}): out schema required for a ${node.via} call`);
+          else if (!Object.hasOwn(workflow.schemas, node.out)) fail("SCHEMA_UNKNOWN", ptrOf(path), `${path} (${label}): out schema "${node.out}" not in workflow.schemas`);
         }
-        if (!node.as?.trim()) errors.push(`${path} (${label}): as required`);
-        if (node.where !== undefined && node.where !== "sandbox") errors.push(`${path} (${label}): where accepts only "sandbox"`);
-        if (!(Number.isFinite(node.deadline_s) && node.deadline_s > 0)) errors.push(`${path} (${label}): deadline_s is required and must be a finite number greater than 0 seconds`);
-        if (node.produces !== undefined && (!Array.isArray(node.produces) || !node.produces.length || node.produces.some((f) => typeof f !== "string" || !f.trim() || f.startsWith("/") || f.split("/").includes("..")))) errors.push(`${path} (${label}): produces must be non-empty workspace-relative paths`);
+        if (!node.as?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): as required`);
+        if (node.where !== undefined && node.where !== "sandbox") fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): where accepts only "sandbox"`);
+        if (!(Number.isFinite(node.deadline_s) && node.deadline_s > 0)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): deadline_s is required and must be a finite number greater than 0 seconds`);
+        if (node.produces !== undefined && (!Array.isArray(node.produces) || !node.produces.length || node.produces.some((f) => typeof f !== "string" || !f.trim() || f.startsWith("/") || f.split("/").includes("..")))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): produces must be non-empty workspace-relative paths`);
         else for (const f of node.produces || []) producedFiles.add(f);
         if (node.retry !== undefined) {
           const r = node.retry;
-          if (!r || !Number.isInteger(r.attempts) || r.attempts < 1) errors.push(`${path} (${label}): retry.attempts must be an integer >= 1`);
-          if (r?.backoff_s !== undefined && !(Number.isFinite(r.backoff_s) && r.backoff_s >= 0)) errors.push(`${path} (${label}): retry.backoff_s must be a finite number >= 0`);
-          if (r?.on !== undefined && (!Array.isArray(r.on) || r.on.some((c) => !RETRY_ON_NAMES.includes(String(c))))) errors.push(`${path} (${label}): retry.on may name only ${RETRY_ON_NAMES.join("|")}`);
+          if (!r || !Number.isInteger(r.attempts) || r.attempts < 1) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): retry.attempts must be an integer >= 1`);
+          if (r?.backoff_s !== undefined && !(Number.isFinite(r.backoff_s) && r.backoff_s >= 0)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): retry.backoff_s must be a finite number >= 0`);
+          if (r?.on !== undefined && (!Array.isArray(r.on) || r.on.some((c) => !RETRY_ON_NAMES.includes(String(c))))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): retry.on may name only ${RETRY_ON_NAMES.join("|")}`);
         }
         if (node.poll !== undefined) {
           const p = node.poll;
-          if (!p || typeof p !== "object" || Array.isArray(p)) errors.push(`${path} (${label}): poll must be an object`);
+          if (!p || typeof p !== "object" || Array.isArray(p)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): poll must be an object`);
           else {
             const resultShape = node.via === "shell" ? shapeFromSchema(SHELL_RESULT_SCHEMA) : node.out && (Object.hasOwn(workflow.schemas, node.out) ? workflow.schemas[node.out] : undefined) ? shapeFromSchema(workflow.schemas[node.out] as Record<string, unknown>) : undefined;
             for (const [name, pred] of [["until", p.until], ["fail_when", p.fail_when]] as const) {
-              if (pred === undefined) { if (name === "until") errors.push(`${path} (${label}): poll.until is required`); continue; }
+              if (pred === undefined) { if (name === "until") fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): poll.until is required`); continue; }
               if (!checkPredicate(pred, label, path, `poll.${name}`, true)) continue;
               const predPath = (pred as { path?: string }).path;
-              if (resultShape && typeof resultShape === "object" && predPath && resultPathMissing(resultShape, predPath)) errors.push(`${path} (${label}): poll.${name} path "${predPath}" is not in the declared result shape (${Object.keys(resultShape as object).join(", ")}); the poll could never settle`);
+              if (resultShape && typeof resultShape === "object" && predPath && resultPathMissing(resultShape, predPath)) fail("STATE_PATH_EXCLUDED", ptrOf(path), `${path} (${label}): poll.${name} path "${predPath}" is not in the declared result shape (${Object.keys(resultShape as object).join(", ")}); the poll could never settle`);
             }
-            if (!(Number.isFinite(p.interval_s) && p.interval_s >= 0.1)) errors.push(`${path} (${label}): poll.interval_s must be a finite number of at least 0.1 seconds`);
-            if (!(Number.isFinite(p.deadline_s) && p.deadline_s >= (Number(node.deadline_s) || 0))) errors.push(`${path} (${label}): poll.deadline_s must be a finite number at least deadline_s`);
+            if (!(Number.isFinite(p.interval_s) && p.interval_s >= 0.1)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): poll.interval_s must be a finite number of at least 0.1 seconds`);
+            if (!(Number.isFinite(p.deadline_s) && p.deadline_s >= (Number(node.deadline_s) || 0))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): poll.deadline_s must be a finite number at least deadline_s`);
           }
         }
         checkRequires({ label, requires: node.requires }, path);
@@ -1201,7 +1245,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       }
     }
   };
-  walk(workflow?.root, "root");
+  walk(workflow?.root, "root", "/root");
   {
     const countReports = (node: WorkflowNode | undefined): number => {
       if (!node || typeof node !== "object") return 0;
@@ -1213,40 +1257,41 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       return 0;
     };
     const total = countReports(workflow?.root);
-    if (total > 1) errors.push(`root: at most ONE terminal node (report or artifact) — a second rendering overwrites the first at its fixed state key`);
+    if (total > 1) fail("STRUCTURE_INVALID", "/root", `root: at most ONE terminal node (report or artifact) — a second rendering overwrites the first at its fixed state key`);
     else if (total === 1) {
       const rootSteps = workflow?.root?.node === "chain" ? (workflow.root as Extract<WorkflowNode, { node: "chain" }>).steps || [] : [workflow?.root as WorkflowNode];
       const lastStep = rootSteps[rootSteps.length - 1];
       if (!lastStep || ((lastStep as WorkflowNode).node !== "report" && (lastStep as WorkflowNode).node !== "artifact")) {
-        errors.push(`root: the terminal node (report or artifact) must be the LAST step of the root chain — rendered earlier it ships a record that later nodes still change`);
+        fail("STRUCTURE_INVALID", "/root", `root: the terminal node (report or artifact) must be the LAST step of the root chain — rendered earlier it ships a record that later nodes still change`);
       }
     }
   }
   {
-    const llmNodes: LlmNode[] = [];
-    const collect = (node: WorkflowNode): void => {
+    // Each placement with its pointer: one node object a TypeScript author placed twice is two nodes of the document.
+    const llmNodes: { node: LlmNode; ptr: string }[] = [];
+    const collect = (node: WorkflowNode, ptr: string): void => {
       if (!node || typeof node !== "object") return;
-      if (node.node === "agent" || node.node === "decide" || node.node === "extract" || node.node === "report") llmNodes.push(node);
-      if (node.node === "chain") (node.steps || []).forEach(collect);
-      if (node.node === "parallel") (node.branches || []).forEach(collect);
-      if (node.node === "map" || node.node === "loop") collect(node.body);
-      if (node.node === "route") routeBodies(node).forEach(collect);
+      if (node.node === "agent" || node.node === "decide" || node.node === "extract" || node.node === "report") llmNodes.push({ node, ptr });
+      if (node.node === "chain") (node.steps || []).forEach((step, i) => collect(step, `${ptr}/steps/${i}`));
+      if (node.node === "parallel") (node.branches || []).forEach((branch, i) => collect(branch, `${ptr}/branches/${i}`));
+      if (node.node === "map" || node.node === "loop") collect(node.body, `${ptr}/body`);
+      if (node.node === "route") for (const [name, branch] of Object.entries(node.branches || {})) if (branch?.body) collect(branch.body, `${ptr}/branches/${pointerKey(name)}/body`);
     };
-    collect(workflow?.root);
-    if (llmNodes.some((n) => n.node === "report")) {
-      for (const node of llmNodes) {
+    collect(workflow?.root, "/root");
+    if (llmNodes.some(({ node }) => node.node === "report")) {
+      for (const { node, ptr } of llmNodes) {
         if (node.node === "report" || node.node === "agent") continue;
         const properties = ((Object.hasOwn(workflow.schemas, node.out) ? workflow.schemas[node.out] : undefined) as { properties?: Record<string, unknown> } | undefined)?.properties;
         if (properties && Object.prototype.hasOwnProperty.call(properties, "report_markdown")) {
-          errors.push(`root (${node.label}): a ${node.node} node must not emit report_markdown — the report node owns the report; drop the field from schema "${node.out}"`);
+          fail("STRUCTURE_INVALID", ptr, `root (${node.label}): a ${node.node} node must not emit report_markdown — the report node owns the report; drop the field from schema "${node.out}"`);
         }
       }
     }
   }
   if (reachability && !reachability.unknowable && !mayEscalate && workflow?.output?.path) {
     const head = workflow.output.path.split(".")[0];
-    if (!reachability.available.has(head)) errors.push(`output: path "${workflow.output.path}" has no input or upstream producer; select the final node's as key (or label when as is omitted)`);
-    else checkTypedPath(workflow.output.path, "output");
+    if (!reachability.available.has(head)) fail("STATE_PATH_UNPRODUCED", "", `output: path "${workflow.output.path}" has no input or upstream producer; select the final node's as key (or label when as is omitted)`);
+    else checkTypedPath(workflow.output.path, "output", "");
   }
   // Output-completeness: when the node writing the output path is a probeable code node, its
   // probed shape must carry every REQUIRED key of the output schema. A required field added to
@@ -1277,13 +1322,13 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
         if (!bestMissing || missing.length < bestMissing.length) bestMissing = missing;
       }
       if (bestMissing?.length) {
-        errors.push(`output: the code node writing "${workflow.output.path}" never emits required field(s) ${bestMissing.join(", ")} of schema "${workflow.output.schemaId}" — every run would fail output validation`);
+        fail("STATE_PATH_EXCLUDED", "", `output: the code node writing "${workflow.output.path}" never emits required field(s) ${bestMissing.join(", ")} of schema "${workflow.output.schemaId}" — every run would fail output validation`);
       }
     }
   }
-  if (!errors.length) errors.push(...workflowShapeErrors(workflow, true));
+  if (!errors.length) for (const issue of workflowShapeIssues(workflow, true)) fail("SHAPE_INVALID", issue.path, issue.message);
   const warnings = workflowWarnings(workflow);
-  return errors.length ? { ok: false, errors, ...(warnings.length ? { warnings } : {}) } : { ok: true, ...(warnings.length ? { warnings } : {}) };
+  return errors.length ? { ok: false, errors, issues, ...(warnings.length ? { warnings } : {}) } : { ok: true, ...(warnings.length ? { warnings } : {}) };
 }
 
 function interpolate(template: string, state: Record<string, unknown>): string {
@@ -1337,7 +1382,8 @@ export function schemaProblems(validator: { Errors: (candidate: unknown) => Iter
 export class WorkflowInvalidError extends Error {
   readonly code = "workflow_invalid";
   readonly stage = "validate";
-  constructor(readonly workflowName: string, readonly problems: string[]) {
+  /** `problems` are validateWorkflow's `errors`; `issues` its issues, one per problem in the same order. */
+  constructor(readonly workflowName: string, readonly problems: string[], readonly issues: ValidationIssue[] = []) {
     super(`workflow "${workflowName}" is invalid: ${problems.join("; ")}`);
     this.name = "WorkflowInvalidError";
   }
@@ -1412,6 +1458,50 @@ export class WorkflowStateError extends Error {
     super(summary);
     this.name = "WorkflowStateError";
   }
+}
+
+/** A map item that ended on its failure (`onItemFailure: "collect"`), as `failedAs` holds it: the item's index, the
+ *  label of the node that failed, the failure's code and its message (at most 300 characters). */
+export type MapItemFailure = { item_index: number; label: string; code: string; message: string };
+
+/** Whether an item's failure is one a map with `onItemFailure: "collect"` ends the item on: one of the interpreter's own
+ *  typed node failures (a call that failed after its retries, output that does not match its schema, a state contract, a
+ *  code transform, a failed verification), or a host's failure that declares itself one, with a string `code` and
+ *  `itemFailure: true`. Never one whose cause chain holds an effect whose outcome is unknown, a recovery failure, an
+ *  escalation or an abort, never several failures at once, and nothing else: a new error class is never collected by
+ *  accident. */
+export function isItemFailure(error: unknown): boolean {
+  if (!(error instanceof Error) || error instanceof AggregateError || isRecoveryError(error)) return false;
+  for (let current: unknown = error, depth = 0; current && depth < 16; current = (current as { cause?: unknown }).cause, depth += 1) {
+    if (current instanceof EffectOutcomeUnknownError || current instanceof EscalationSignal || current instanceof AggregateError
+      || (current as { name?: unknown }).name === "AbortError") return false;
+  }
+  if (error instanceof EffectFailure || error instanceof WorkflowOutputInvalidError || error instanceof WorkflowStateError
+    || error instanceof WorkflowCodeError || error instanceof WorkflowVerificationError) return true;
+  return typeof (error as { code?: unknown }).code === "string" && (error as { itemFailure?: unknown }).itemFailure === true;
+}
+
+/** The failure a structure reports when several of its branches (a parallel's, a stopping map's items) fail at once: the
+ *  first, unless that is an item failure and another is not, whichever came first. An item failure never hides a failure a
+ *  collecting map must stop on. A sibling that ended on the structure's own stop (its reason, or an abort) is not one. */
+function reportedFailure(first: unknown, others: unknown[]): unknown {
+  if (!isItemFailure(first)) return first;
+  return others.find((error) => error !== first && (error as { name?: unknown } | null)?.name !== "AbortError" && !isItemFailure(error)) ?? first;
+}
+
+/** The label of the step an error failed in, set as the error leaves the innermost step and prefixed by every child
+ *  invocation it leaves, as the child's events are: the row of a collected item names the node that failed. */
+const failedSteps = new WeakMap<object, string>();
+
+/** A collected item's row. A failure that left no step (the map's own `resultPath` check) is the map's. */
+function itemFailureRow(index: number, error: Error, mapLabel: string): MapItemFailure {
+  const code = (error as { code?: unknown }).code;
+  return {
+    item_index: index,
+    label: failedSteps.get(error) ?? mapLabel,
+    code: typeof code === "string" ? code : "effect_failed",
+    message: String(error.message || error).slice(0, 300),
+  };
 }
 
 
@@ -2073,6 +2163,8 @@ function scopeDepsToItem(deps: WorkflowDeps, item: MapItem, signal?: AbortSignal
       pollStartedAt: (node, nestedItem, path) => recovery.pollStartedAt(node, nestedItem ?? item, path),
       wait: (node, ms, nestedItem, path) => recovery.wait(node, ms, nestedItem ?? item, path),
       ...(recovery.fail ? { fail: (node, results, error, path) => recovery.fail!(node, results, error, path) } : {}),
+      ...(recovery.failItem ? { failItem: (node, failure, path) => recovery.failItem!(node, failure, path) } : {}),
+      ...(recovery.itemFailure ? { itemFailure: (node, path) => recovery.itemFailure!(node, path) } : {}),
       ...(recovery.decision ? { decision: id => recovery.decision!(id) } : {}),
     } } : {}),
   };
@@ -2098,6 +2190,8 @@ function scopeDepsToChild(deps: WorkflowDeps, invocation: WorkflowInvocation): W
       pollStartedAt: (node, item, path) => recovery.pollStartedAt(relabel(node), item, path),
       wait: (node, ms, item, path) => recovery.wait(relabel(node), ms, item, path),
       ...(recovery.fail ? { fail: (node, results, error, path) => recovery.fail!(relabel(node), results, error, path) } : {}),
+      ...(recovery.failItem ? { failItem: (node, failure, path) => recovery.failItem!(relabel(node), failure, path) } : {}),
+      ...(recovery.itemFailure ? { itemFailure: (node, path) => recovery.itemFailure!(relabel(node), path) } : {}),
       ...(recovery.decision ? { decision: id => recovery.decision!(id) } : {}),
     } } : {}),
     ...(deps.onEvent ? { onEvent: forwardObserver(deps.onEvent, event => ({ ...event, label: `${prefix}/${event.label}` })) } : {}),
@@ -2176,6 +2270,12 @@ async function runNodeOnState(node: WorkflowNode, state: Record<string, unknown>
     return out;
   } catch (error) {
     if (isStep) deps.onEvent?.({ type: "node.end", label, detail: { kind: node.node, status: error instanceof EscalationSignal ? "escalated" : "failed", duration_ms: Date.now() - startedAt, error: String((error as any)?.message || error).slice(0, 300) } });
+    if (error !== null && typeof error === "object") {
+      const inner = failedSteps.get(error);
+      // A step names itself; so does a structural node whose own failure this is (its stage is its label).
+      if (inner === undefined && (isStep || (error as { stage?: unknown }).stage === label)) failedSteps.set(error, label);
+      else if (inner !== undefined && node.node === "workflow") failedSteps.set(error, `${label}/${inner}`);
+    }
     throw error;
   }
 }
@@ -2295,6 +2395,10 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       const items = getPath(state, node.itemsPath);
       if (!Array.isArray(items)) throw new WorkflowStateError(`map node "${node.label}": ${node.itemsPath} is not a list`, node.label, node.itemsPath, "expected_list");
       const results: unknown[] = new Array(items.length);
+      // With `collect`, an item that ends on an item failure is a row here and `null` in its slot of `as`: the slots stay
+      // aligned with the items, so a later node reads item i's result at i.
+      const collect = node.onItemFailure === "collect";
+      const rows: MapItemFailure[] = new Array(items.length);
       let cursor = 0;
       const width = Math.min(node.maxConcurrency ?? 4, Math.max(items.length, 1));
       const siblings = new AbortController();
@@ -2302,6 +2406,13 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       let failure: unknown;
       let failed = false;
       const uncertainties = new Set<EffectOutcomeUnknownError>();
+      /** Failures after the first: one the map must stop on is reported over an item failure (`reportedFailure`). */
+      const later: unknown[] = [];
+      const stop = (error: unknown) => {
+        uncertainEffects(error, uncertainties);
+        if (!failed) { failed = true; failure = error; siblings.abort(error); }
+        else later.push(error);
+      };
       await Promise.all(Array.from({ length: width }, async () => {
         while (!signal.aborted) {
           const i = cursor++;
@@ -2311,25 +2422,35 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
           // Under recovery each item is its own child: the body's session, effects and commit
           // carry the item, so a resumed map answers finished items from their rows and
           // continues the ones that were running.
+          const itemDeps = scopeDepsToItem(scopeExecution(deps, "items", i, "body"), { label: node.label, index: i }, signal);
           try {
+            // A failure an earlier process committed ends the item again: its body never runs twice.
+            const committed = collect ? await itemDeps.recovery?.itemFailure?.(node, executionPath(itemDeps)) : undefined;
+            if (committed) { rows[i] = committed; results[i] = null; continue; }
             const itemState = snapshotState({ ...state, item: items[i], item_index: i });
-            const out = await runNodeOnState(node.body, itemState, workflow, scopeDepsToItem(scopeExecution(deps, "items", i, "body"), { label: node.label, index: i }, signal));
+            const out = await runNodeOnState(node.body, itemState, workflow, itemDeps);
             if (node.resultPath !== undefined) {
               const selected = node.resultPath.split(".").reduce<unknown>((value, key) => value == null ? undefined : (value as Record<string, unknown>)[key], out);
               if (selected === undefined) throw new WorkflowStateError(`map node "${node.label}": resultPath "${node.resultPath}" is missing from item ${i}`, node.label, node.resultPath, "missing_map_result");
               results[i] = structuredClone(selected);
             } else results[i] = (node.body as any).as ? (out as any)[(node.body as any).as] : out;
           } catch (error) {
-            uncertainEffects(error, uncertainties);
-            if (!failed) { failed = true; failure = error; siblings.abort(error); }
-            return;
+            // An item failure ends its item; the map's stop and every other failure stop the map.
+            if (!collect || signal.aborted || !isItemFailure(error)) { stop(error); return; }
+            const row = itemFailureRow(i, error as Error, node.label);
+            try { await itemDeps.recovery?.failItem?.(node, row, executionPath(itemDeps)); }
+            catch (persistenceError) { stop(persistenceError); return; }
+            rows[i] = row;
+            results[i] = null;
+            deps.onEvent?.({ type: "map.item_failed", label: node.label, detail: { item_index: i, label: row.label, code: row.code } });
           }
         }
       }));
       if (failed) {
-        failure = withSiblingUncertainty(failure, uncertainties);
+        failure = withSiblingUncertainty(reportedFailure(failure, later), uncertainties);
         const escalated = failure instanceof EscalationSignal;
-        deps.onEvent?.({ type: escalated ? "map.escalated" : "map.failed", label: node.label, detail: { completed: results.reduce<number>((n, r) => n + (r === undefined ? 0 : 1), 0), of: items.length, message: String((failure as any)?.message || failure).slice(0, 300) } });
+        const collected = rows.filter(Boolean).length;
+        deps.onEvent?.({ type: escalated ? "map.escalated" : "map.failed", label: node.label, detail: { completed: results.reduce<number>((n, r) => n + (r === undefined ? 0 : 1), 0) - collected, of: items.length, ...(collect ? { collected } : {}), message: String((failure as any)?.message || failure).slice(0, 300) } });
         if (!escalated && deps.recovery?.fail) {
           try { await deps.recovery.fail(node, results, failure, executionPath(deps)); }
           catch (persistenceError) {
@@ -2338,7 +2459,7 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
         }
         throw failure;
       }
-      return { ...state, [node.as]: results };
+      return { ...state, [node.as]: results, ...(collect ? { [node.failedAs!]: rows.filter(Boolean) } : {}) };
     }
     case "parallel": {
       // Every branch starts from the same state and runs at once; what comes back is each branch's
@@ -2351,15 +2472,17 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       let failure: unknown;
       let failed = false;
       const uncertainties = new Set<EffectOutcomeUnknownError>();
+      const later: unknown[] = [];
       const outs = await Promise.all((node.branches || []).map(async (branch, i) => {
         try { return await runNodeOnState(branch, inputs[i], workflow, scopeExecution({ ...deps, signal, checkpoint: undefined }, "branches", i)); }
         catch (error) {
           uncertainEffects(error, uncertainties);
           if (!failed) { failed = true; failure = error; siblings.abort(error); }
+          else later.push(error);
           return inputs[i];
         }
       }));
-      if (failed) throw withSiblingUncertainty(failure, uncertainties);
+      if (failed) throw withSiblingUncertainty(reportedFailure(failure, later), uncertainties);
       const merged: Record<string, unknown> = { ...state };
       const writer = new Map<string, number>();
       // Host state is engine-owned and merges by delta: every branch started from the same `$host`, so an
@@ -2577,6 +2700,8 @@ export function assertWorkflowCapabilities(node: WorkflowNode, deps: WorkflowDep
   if ((["judge", "pick", "sift"].includes(node.node) || node.node === "route" && !routesByValue(node) || "verify" in node && node.verify ||
       node.node === "loop" && (node.until as AskPredicate)?.predicate === "ask" ||
       node.node === "escalate" && (node.when as AskPredicate)?.predicate === "ask") && !deps.runJudge) missing("runJudge");
+  // A store that cannot commit an item's failure would run the item again in the next process.
+  if (node.node === "map" && node.onItemFailure === "collect" && deps.recovery && !(deps.recovery.failItem && deps.recovery.itemFailure)) missing("recovery.failItem and recovery.itemFailure");
   if (node.node === "chain") node.steps.forEach(n => assertWorkflowCapabilities(n, deps, workflow));
   if (node.node === "parallel") node.branches.forEach(n => assertWorkflowCapabilities(n, deps, workflow));
   if (node.node === "map" || node.node === "loop") assertWorkflowCapabilities(node.body, deps, workflow);
@@ -2589,14 +2714,14 @@ export async function runWorkflow(workflow: Workflow, input: Record<string, unkn
   // A host that executes code nodes itself never has them executed here, not even as validation probes.
   const executeCode = deps.runCode ? false : undefined;
   const valid = validateWorkflow(workflow, { executeCode });
-  if (!valid.ok) throw new WorkflowInvalidError(String(workflow?.name), valid.errors);
+  if (!valid.ok) throw new WorkflowInvalidError(String(workflow?.name), valid.errors, valid.issues);
   workflow = desugarWorkflow(workflow);
   if (workflow.input) {
     const validator = Compile(resolveSchemaForWorkflow(workflow, workflow.schemas[workflow.input.schemaId]) as never);
     if (!validator.Check(input)) throw new WorkflowInputInvalidError(workflow.name, schemaProblems(validator, input));
   }
   const reachable = validateWorkflow(workflow, { executeCode, inputKeys: Object.keys(input) });
-  if (!reachable.ok) throw new WorkflowInvalidError(workflow.name, reachable.errors);
+  if (!reachable.ok) throw new WorkflowInvalidError(workflow.name, reachable.errors, reachable.issues);
   assertWorkflowCapabilities(workflow.root, deps, workflow);
   if (needsComposedRecovery(workflow.root)) deps = { ...deps, [SCOPED_EFFECTS]: true } as LocatedDeps;
   if (deps.recovery && !deps.recovery.supportsExecutionPaths && needsComposedRecovery(workflow.root)) throw new Error("Composed child workflows require recovery.supportsExecutionPaths: true and stores keyed by executionPath");
@@ -2627,7 +2752,7 @@ export async function runWorkflowSlice(
   deps: WorkflowDeps,
 ): Promise<{ status: "complete"; state: Record<string, unknown>; focus: { from: string; to: string } } | { status: "escalated"; state: Record<string, unknown>; escalation: Escalation }> {
   const valid = validateWorkflow(workflow, { executeCode: deps.runCode ? false : undefined });
-  if (!valid.ok) throw new WorkflowInvalidError(String(workflow?.name), valid.errors);
+  if (!valid.ok) throw new WorkflowInvalidError(String(workflow?.name), valid.errors, valid.issues);
   const desugared = desugarWorkflow(workflow);
   const root = desugared.root.node === "chain" ? desugared.root.steps : [desugared.root];
   const labels = root.map((n) => (n as { label?: string }).label ?? "");
