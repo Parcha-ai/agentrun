@@ -215,12 +215,11 @@ return Object.entries(check.answers).filter(([, a]) => a.noul > 0.5).map(([side]
 
 ## When pdftoppm or ffmpeg is missing
 
-Install them where bash runs:
+Never install a program yourself. Check which are missing, then stop and tell the user each one and how to install it:
 
 ```sh
-command -v pdftoppm || sudo apt-get install -y poppler-utils   # Debian, Ubuntu
-command -v ffmpeg || sudo apt-get install -y ffmpeg
-brew install poppler ffmpeg                                     # macOS
+for p in pdftoppm pdftotext ffmpeg ffprobe; do command -v "$p" >/dev/null || echo "missing: $p"; done
 ```
 
-Without the rights to install, tell the user which program is missing.
+`pdftoppm` and `pdftotext` come with poppler, and `ffprobe` with ffmpeg: `brew install ffmpeg poppler` on macOS, or
+`sudo apt-get install ffmpeg poppler-utils` on Debian and Ubuntu, run by the user.

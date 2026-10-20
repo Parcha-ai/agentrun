@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
-import { cost, demo } from '@parcha/agentrun-reference';
+import { cost, demo } from '@parcha/agentrun-harness';
 import { options } from './hero/run.ts';
 
 const sources = JSON.parse(readFileSync(new URL('./hero/sources.json', import.meta.url), 'utf8'));

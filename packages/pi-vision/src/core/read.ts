@@ -17,6 +17,7 @@ import type { Kind } from "./kinds.js";
 import { SOURCE_BYTES_IN_PROCESS, type Limits } from "./limits.js";
 import { firstLine, linkSafe, MISS_ACTION, refusal, reportMiss } from "./misses.js";
 import { pathSafe } from "./paths.js";
+import { sha256Hex } from "./primitives.js";
 import { lookTiming } from "./timing.js";
 import { PACKAGE_KINDS } from "./readers.js";
 import type { Fit } from "./plan.js";
@@ -237,7 +238,7 @@ async function readRecording(scheme: string, id: string, handle: string, raw: Re
   if (!source?.look) return refusal(`${handle} names a browser session's recording, and this run has no recording reviewer to answer a question about it.`);
   const ask = asked(args);
   const window = fromS !== undefined || toS !== undefined ? ` (${fromS ?? 0}s\u2013${toS !== undefined ? `${toS}s` : "end"})` : "";
-  const sha256 = createHash("sha256").update(handle).digest("hex");
+  const sha256 = sha256Hex(handle);
   const fragment = window ? formatFragment({ t: { from: fromS ?? 0, ...(toS !== undefined ? { to: toS } : {}) } }) : "";
   // When this call's request to the source began; none when the answer is read back.
   let startedAt: number | undefined;
@@ -306,7 +307,7 @@ export async function readMedia(env: VisionEnv, raw: ReadArgs, call: CallContext
   const size = data ? data.length : probe.size;
   const pixels = kind === "image" ? kinds.sizeOf(data ? data.subarray(0, HEAD_BYTES) : probe.head) : null;
   let hashed: Promise<string> | undefined;
-  const sha256 = () => (hashed ??= data ? Promise.resolve(createHash("sha256").update(data).digest("hex")) : streamed());
+  const sha256 = () => (hashed ??= data ? Promise.resolve(sha256Hex(data)) : streamed());
   const ask = asked(args);
   const temp = await env.createTempDir("pi-vision-read-", ctx);
   if (!temp.ok) throw temp.error;

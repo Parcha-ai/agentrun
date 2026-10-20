@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { codeOf } from '@parcha/agentrun-reference';
+import { codeOf } from '@parcha/agentrun-harness';
 
 const git = (dir, ...args) => {
   const ran = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'init.defaultBranch=main', '-C', dir, ...args], { encoding: 'utf8' });
@@ -18,8 +18,8 @@ function project(t) {
   const dir = mkdtempSync(join(tmpdir(), 'agentrun-code-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   writeFileSync(join(dir, 'package.json'), '{"name":"a-project","private":true}\n');
-  mkdirSync(join(dir, 'node_modules', '@parcha', 'agentrun-reference'), { recursive: true });
-  writeFileSync(join(dir, 'node_modules', '@parcha', 'agentrun-reference', 'package.json'), '{"name":"@parcha/agentrun-reference","version":"9.9.9"}\n');
+  mkdirSync(join(dir, 'node_modules', '@parcha', 'agentrun-harness'), { recursive: true });
+  writeFileSync(join(dir, 'node_modules', '@parcha', 'agentrun-harness', 'package.json'), '{"name":"@parcha/agentrun-harness","version":"9.9.9"}\n');
   return dir;
 }
 
@@ -32,7 +32,7 @@ test('a project with a GitHub origin names it as owner/name, without the token i
   const code = codeOf(dir);
   assert.equal(code.repo, 'acme/widgets');
   assert.equal(code.commit, git(dir, 'rev-parse', 'HEAD'));
-  assert.equal(code.packages['@parcha/agentrun-reference'], '9.9.9', 'the @parcha packages the project installed');
+  assert.equal(code.packages['@parcha/agentrun-harness'], '9.9.9', 'the @parcha packages the project installed');
   assert.ok(!JSON.stringify(code).includes('not-a-real-token'));
 });
 
@@ -51,7 +51,7 @@ test('a project with its own packages/ names the @parcha packages it installed, 
   mkdirSync(join(dir, 'packages', 'widget'), { recursive: true });
   writeFileSync(join(dir, 'packages', 'widget', 'package.json'), '{"name":"widget","version":"1.0.0"}\n');
   const code = codeOf(dir);
-  assert.equal(code.packages['@parcha/agentrun-reference'], '9.9.9');
+  assert.equal(code.packages['@parcha/agentrun-harness'], '9.9.9');
   assert.ok(!('widget' in code.packages));
 });
 

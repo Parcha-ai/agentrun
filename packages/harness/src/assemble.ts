@@ -1,0 +1,325 @@
+// The reference assembly: one job on pi-durable through the open packages, wired from a host's functions. It holds no
+// job and no fake. Order: install every extension, open the run on its directory (pi resumes what a killed process
+// left), reconcile the browser, start the workflow's task and wait for it, deliver, release the browser's sessions,
+// close, release the run.
+import { once } from 'node:events';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, rename, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
+import { createRegistry, defineDoc, type ConversationId, type Harness, type ToolRegistration } from '@earendil-works/pi-durable';
+import type { Workflow } from '@parcha/agentrun-dsl';
+import { withRecovery } from '@parcha/agentrun-dsl/recovery';
+import {
+  createWorkflowExtension, decisionRecovery, nodeRunner, taskScope, type WorkflowOutcome,
+} from '@parcha/agentrun-pi/durable';
+import { archilEnv, openClaimDir, openDurableRun, type AppOptions, type Claim, type DurableRun, type OpenDurableRunOptions, type RunEnv, type RunRef } from '@parcha/pi-durable-disk';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+type JsonValue = Parameters<DurableRun['setStatus']>[1] & {};
+import { DEFAULT_BROWSER_POLICY, localSites, type LocalSite } from '@parcha/pi-browser';
+import { createBrowserExtension } from '@parcha/pi-browser/durable';
+import { codeModeExtension, type CodeModeOptions } from './code-mode.ts';
+import { codingTools } from './command-env.ts';
+import { createVisionExtension, type VisionAdapterOptions } from '@parcha/pi-vision/durable';
+import type { Host, RunPlace, StatusEvent } from './host.ts';
+
+export type Job = { workflow: Workflow; input: Record<string, unknown>; files?: Record<string, Uint8Array> };
+/** How the workflow's task ended, as the task reports it, with the run's generation and what it spent. */
+export type RunResult = WorkflowOutcome & { generation: number; usage: Awaited<ReturnType<Harness['usage']>> };
+
+/** What the host says of the agent a node runs: the lead model, and the node's own thinking level, else `low` (the DSL runner's default). Thinking is never off: the DSL refuses `off` at authoring, and the host never honors it
+ *  either, so a node that somehow carries `off` runs at `low`. */
+export function nodeAgent(model: Host['models']['lead'], node: { thinking?: string | undefined }) {
+  const thinkingLevel = node.thinking && node.thinking !== 'off' ? node.thinking : 'low';
+  return { model, thinkingLevel } as { model: Host['models']['lead']; thinkingLevel: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' };
+}
+
+/** The tools a node is offered: the ones it declares (`tools`), else none named here, so every tool the run installs, as
+ *  the DSL runner does. `submit` is the node runner's to add. A declared name the run does not offer fails the node. */
+export function nodeTools(offered: readonly ToolRegistration[], node: { label: string; tools?: readonly string[] | undefined }): readonly ToolRegistration[] | undefined {
+  if (!node.tools) return undefined;
+  const byName = new Map(offered.map((tool) => [tool.name, tool]));
+  return node.tools.filter((name) => name !== 'submit').map((name) => {
+    const tool = byName.get(name);
+    if (!tool) throw new Error(`node "${node.label}" declares the tool ${name}, which this run does not offer`);
+    return tool;
+  });
+}
+
+/** The work a conversation does, which names its evidence directory for the browser and for vision alike. */
+const Label = defineDoc<{ label: string }>({ kind: 'reference.label', version: 1, scope: 'conversation', history: 'latest', fork: 'current', initial: () => ({ label: '' }) });
+
+/** The run's id when nothing names one, and the key its workflow's task and journal are kept under. A demo's run is keyed by the demo's name (the place's `paths.id`), so two demos never share a run. */
+export const RUN_KEY = 'reference';
+
+/** The paths of a place under `root`, computed: nothing is made. */
+export const pathsAt = (root: string, id: string = RUN_KEY): RunPlace => { const at = resolve(root); return { id, root: at, work: join(at, 'work'), store: join(at, 'store') }; };
+
+/** A place under `root`, or a fresh one under the temp directory. Its paths are absolute: the run's tools resolve a
+ *  relative one against their own working directory, not this process's. */
+export async function placeAt(root?: string, id: string = RUN_KEY): Promise<RunPlace> {
+  const at = resolve(root ?? await mkdtemp(join(tmpdir(), 'agentrun-harness-')));
+  await mkdir(join(at, 'work'), { recursive: true });
+  return { id, root: at, work: join(at, 'work'), store: join(at, 'store') };
+}
+
+/** A claim on a plain directory: nothing to mount, nothing to fence but this process's own mark. */
+function localClaim(ref: RunRef, place: RunPlace): Claim {
+  let fence: { cause: unknown } | undefined;
+  return {
+    ref, disk: ref.disk, root: place.root, work: place.work, store: place.store, reused: false, forced: false, timings: { mountMs: 0, verifyMs: 0 },
+    get fenced() { return fence !== undefined; },
+    markFenced(cause) { fence ??= { cause }; },
+    async barrier() { if (fence) throw new Error('fenced', { cause: fence.cause }); return { ms: 0 }; },
+    async release() { return { via: 'none' as const }; },
+  };
+}
+
+/** The disk run's environment, with temporary directories under `work/`. */
+function runEnv(claim: Claim): RunEnv {
+  const base = archilEnv(claim);
+  // pi-durable-disk gap, removed by the disk's #380: its createTempDir is under `<root>/tmp`, which its own confinement refuses
+  // to write, and a read that runs a program (a video through ffmpeg) writes there. This example's PNG read needs none.
+  const scratch = join(claim.work, '.tmp');
+  return Object.assign((target: { readonly cwd?: string }) => Object.assign(base(target), {
+    createTempDir: async (prefix: string | undefined) => {
+      await mkdir(scratch, { recursive: true });
+      return { ok: true as const, value: await mkdtemp(join(scratch, prefix ?? 'tmp-')) };
+    },
+  }), { id: base.id, cleanup: base.cleanup });
+}
+
+/** What a caller may change about the run. `env`: where the run's tools act. `vision`: options for pi-vision's extension, merged over
+ *  the example's (a member you give replaces ours, except `onLook` and `onMiss`, which run after ours). It is called once when the
+ *  extension is built, with a getter for the run's harness (undefined until the run is open). What differs per conversation is
+ *  what the options themselves take: `limits`, `eyes` and `eyesModel` are given the conversation (`{ conversationId }`). */
+/** `layout`: the recovery driver's layout for the run, `v4` for the keyed one (the map items kept as `agentrun.items` documents); the driver's default when absent. It is the host's choice, not the job's. */
+export type RunOptions = {
+  /** Notes the image a code-mode look is shown (looks.ts `shown.note`), so the look is filed with its picture. */
+  codeImages?: (conversationId: string, tool: string, path: string | undefined, bytes: Buffer, mimeType: string) => void; env?: (claim: Claim) => RunEnv; /** Code mode (code-mode.ts): installs the `code` tool, whose sandbox gets `tools.bash` and the vision handle's `vision.see`. Off by default. */ codeMode?: boolean | CodeModeOptions; /** `false`: the run has no browser. Its extension is not installed, so no node is offered a browser tool or shown the browser's prompt section, and the host's browser plane is never asked. */ browser?: boolean; /** The sites `use_website` offers: each task runs a child agent in a browser of its own, recorded under its request id. Absent: the tool is not listed. */ sites?: Record<string, LocalSite>; vision?: (context: { readonly harness: Harness | undefined }) => Partial<VisionAdapterOptions>; layout?: 'v3' | 'v4' };
+
+/** What a run is made of before its store is opened: the registry of extensions, the models, the hook that attaches the recorder, and the three steps that follow the open. `run()` opens the store
+ *  itself on a local claim; `appOf()` hands the same pieces to `pi-durable-disk run --app`, which opens it on its own claim. */
+export type Composed = {
+  registry: ReturnType<typeof createRegistry>;
+  models: Host['models']['catalog'];
+  beforeResume?: OpenDurableRunOptions['beforeResume'];
+  /** Reconciles the browser, starts the workflow's task (or reaches the one the open resumed), waits for it, delivers the record. */
+  drive(durable: Pick<DurableRun, 'harness' | 'generation'>): Promise<RunResult>;
+  /** Releases every browser session still open and closes the browser. The run itself is released by whoever opened it. */
+  cleanup(harness: Harness): Promise<void>;
+};
+
+/** `env`: where the run's tools act. Default: the claim's `work/`, through the disk package's confined environment. */
+export async function run(place: RunPlace, host: Host, job: Job, options: RunOptions = {}): Promise<RunResult> {
+  const composed = await compose(place, host, job, options);
+  const durable = await openDurableRun({ disk: 'local', region: 'local', id: place.id }, {
+    mountToken: 'unused', acquire: async ({ ref }) => localClaim(ref, place), claimDir: (root) => openClaimDir(root, { fstype: null }),
+    harness: { registry: composed.registry, models: composed.models }, env: options.env ?? runEnv,
+    ...(composed.beforeResume ? { beforeResume: composed.beforeResume } : {}),
+  });
+  try { return await composed.drive(durable); } finally {
+    await composed.cleanup(durable.harness);
+    await durable.release();
+  }
+}
+
+/** The run's pieces, before its store is open. */
+export async function compose(place: RunPlace, host: Host, job: Job, options: RunOptions = {}): Promise<Composed> {
+  // The version before this kept the store at `<root>/durable`; this one keeps it where the disk package does. Opening
+  // such a directory would start the run over, so it is refused before anything runs.
+  const earlier = join(place.root, 'durable', 'run.sqlite');
+  if (existsSync(earlier) && !existsSync(join(place.store, 'run.sqlite'))) {
+    throw Object.assign(new Error(`This run's store is at ${earlier}, and this version keeps it at ${join(place.store, 'run.sqlite')}. Resume it with the version that wrote it, or start a new directory.`), { code: 'RUN_STORE_ELSEWHERE' });
+  }
+  const status = async (event: StatusEvent) => { try { await host.status(event); } catch { /* a status row never fails the run */ } };
+  let opened: Harness | undefined;
+  const labelOf = async (id: ConversationId | undefined) => (opened && id !== undefined && (await opened.snapshot(Label, id, ctx))?.label) || 'run';
+
+  if (options.browser === false && options.sites) throw new Error('a run with no browser offers no sites: use_website runs a browser');
+  // `use_website`: the sites' listing is read once, here, as the browser extension asks.
+  const sitePort = options.sites ? localSites(options.sites) : undefined;
+  const sites = sitePort ? { port: sitePort, listing: await sitePort.list(new AbortController().signal) } : undefined;
+  const browser = options.browser === false ? undefined : createBrowserExtension({
+    ...(sites ? { sites } : {}),
+    provider: (target) => host.tools.browser.provider(target), driver: host.tools.browser.driver, evidence: host.evidence,
+    ...(host.tools.browser.prices ? { prices: host.tools.browser.prices } : {}),
+    ...(host.credentials.redact ? { redact: { values: host.credentials.redact } } : {}),
+    ...(host.decisions.browser ? { decisions: host.decisions.browser } : {}),
+    ...(host.tools.browser.createDeadlineMs ? { createDeadlineMs: host.tools.browser.createDeadlineMs } : {}),
+    // A session's live view is a full-control address: it never goes into the run's events or its recording, which anyone
+    // with the recording can read. This host shows no session to a person; one that does asks the provider (`liveView(ref)`).
+    onSession: (row, change) => status({ source: 'browser', change, row: { ...row, liveView: null } }),
+  });
+  const visionBase: VisionAdapterOptions = {
+    evidence: host.evidence,
+    scope: async (conversationId, id) => ({ label: await labelOf(id), deriveDir: `.derived/${conversationId}` }),
+    ...(host.credentials.childEnv ? { env: host.credentials.childEnv } : {}),
+    // Jev's typed answers about images (`vision.judge`) go through the host's judge seam: the crossings, the caps and the price it already has, never a key of the agent's.
+    jev: { judge: (params) => host.decisions.runJudge(params as never) as never },
+    onLook: (look) => status({ source: 'vision', look }),
+    onMiss: (miss) => status({ source: 'vision', miss }),
+  };
+  // The caller's options go over the example's; its onLook and onMiss run after the example's own, which keep recording.
+  const more = options.vision?.({ get harness() { return opened; } }) ?? {};
+  const vision = createVisionExtension({
+    ...visionBase, ...more,
+    onLook: async (look) => { await visionBase.onLook?.(look); await more.onLook?.(look); },
+    onMiss: async (miss) => { await visionBase.onMiss?.(miss); await more.onMiss?.(miss); },
+  });
+  let offered: readonly ToolRegistration[] = [];
+  const nodes = nodeRunner({
+    agent: (node) => { const tools = nodeTools(offered, node); return { ...nodeAgent(host.models.lead, node), ...(tools ? { tools } : {}) }; },
+    record: () => ({ instructions: 'Cite each source by the evidence path its tool returned.' }),
+    // The browser needs its configuration in the commit that creates the conversation; `init` is the one member that runs there.
+    init: async (node, tx, conversationId) => {
+      (await tx.doc(Label, conversationId)).label = node.label;
+      if (browser) Object.assign(await tx.doc(browser.docs.Config, conversationId), { label: node.label, run: place.id, policy: DEFAULT_BROWSER_POLICY });
+    },
+  });
+  // The workflow is one pi-durable task: a process that dies leaves it pending, and the next open resumes it.
+  // pi-durable-disk gap (F3): that open resumes the task before the host can reconcile the browser, so it waits here.
+  let reconciled!: () => void;
+  const ready = new Promise<void>((resolve) => { reconciled = resolve; });
+  const flow = createWorkflowExtension({
+    // A host settles what a killed process left unknown through the driver's own open: one generation, not two.
+    options: () => ({ ...(options.layout ? { layout: options.layout } : {}), ...(host.tools.answered || host.tools.rerun ? { reconcile: (unknown, complete) => reconcileEffects(unknown, complete, host.tools) } : {}) }),
+    run: async ({ key, runtime, context, driver }) => {
+      runtime.signal.throwIfAborted();
+      await Promise.race([ready, once(runtime.signal, 'abort').then(() => { throw runtime.signal.reason; })]);
+      // Each typed question's receipt is a row in the run's store before its answer acts, and a resumed run takes an
+      // answered one instead of asking again.
+      const decisions = decisionRecovery({ key, runtime, context });
+      const deps = withRecovery(driver, {
+        runEffect: host.tools.runEffect,
+        runNode: nodes.on(taskScope(runtime), context).runNode,
+        runJudge: host.decisions.runJudge,
+        onEvent: (event) => void status({ source: 'workflow', event }),
+        recordDecision: decisions.recordDecision,
+      }, { durableNodes: true });
+      return { deps: { ...deps, recovery: { ...deps.recovery!, decision: decisions.decision } } };
+    },
+  });
+  const registry = createRegistry();
+  // Code mode is built from the vision handle, so it is installed after it.
+  const codeMode = options.codeMode ? [codeModeExtension(vision, options.codeMode === true ? {} : options.codeMode, options.codeImages ? { note: options.codeImages, workDir: place.work } : undefined)] : [];
+  const extensions = [codingTools, ...host.tools.extensions, vision.extension, ...codeMode, ...(browser ? [browser.extension] : [])];
+  offered = extensions.flatMap((extension) => extension.tools ?? []);
+  for (const extension of [...extensions, nodes.extension, flow.extension]) registry.install(extension);
+
+  // The job's files, in `work/`: each written beside its name and renamed into place, so one a killed process left
+  // under its name is whole, and is kept.
+  for (const [name, bytes] of Object.entries(job.files ?? {})) {
+    const at = join(place.work, name);
+    if (existsSync(at)) continue;
+    await mkdir(dirname(at), { recursive: true });
+    await writeFile(`${at}.${process.pid}.partial`, bytes);
+    await rename(`${at}.${process.pid}.partial`, at);
+  }
+  // The recorder attaches between the open and the resume: it snapshots every document at the head the hook gives, then follows each commit.
+  const beforeResume: Composed['beforeResume'] | undefined = host.record?.attach ? async ({ harness, storage, head, context, generation }) => { host.record!.generation(generation); await host.record!.attach!({ session: harness, storage, head, context, gen: generation }); } : undefined;
+  return {
+    registry, models: host.models.catalog, ...(beforeResume ? { beforeResume } : {}),
+    async drive(durable) {
+      const harness = durable.harness;
+      opened = harness;
+      if (browser) await status({ source: 'browser', reconciled: await browser.reconcile(harness, () => true, ctx) });
+      // start() refuses a request that is not the run's own, with the driver's binding mismatch, and the job reports it as a
+      // refusal. The saved task stays held until start() accepts the request, so a refused job never lets it run with this host.
+      let task: Awaited<ReturnType<typeof flow.start>>;
+      try { task = await flow.start(harness, { key: place.id, workflow: job.workflow, input: job.input }, ctx); } catch (error) {
+        const refusal = error as { code?: string; message?: string; moved?: unknown };
+        if (refusal?.code !== 'RUN_STORE_BINDING_MISMATCH') throw error;
+        return { status: 'refused', code: refusal.code, message: String(refusal.message), detail: { moved: refusal.moved ?? null }, generation: durable.generation, usage: await harness.usage(ctx) } as RunResult;
+      }
+      reconciled();
+      const outcome = await task.wait(ctx);
+      if (outcome.status === 'complete') await host.deliver({ record: outcome.output });
+      return { ...outcome, generation: durable.generation, usage: await harness.usage(ctx) };
+    },
+    async cleanup(harness) {
+      if (!browser) return;
+      // pi has no conversation-end event: every session still open is released here, before the close.
+      const open = Object.values((await harness.snapshot(browser.docs.Inventory, ctx))?.rows ?? {}).filter((row) => row.state !== 'releasing');
+      for (const conversationId of new Set(open.map((row) => row.conversationId))) {
+        const conversation = await harness.conversation(conversationId as ConversationId, ctx);
+        if (conversation) await browser.release(conversation, 'close', ctx);
+      }
+      // pi-browser gap: release returns before its background task runs, and waitForIdle does not wait for background tasks.
+      for (const task of (await harness.inspect(ctx)).tasks) {
+        if (task.record.kind === `${browser.extension.name}.release`) await harness.waitForTask(task.record.id, ctx);
+      }
+      await browser.close();
+    },
+  };
+}
+
+/** What the run's final status carries in `run.json` (the one thing a box place reads): how it ended, the record, the store's hash, and what the host adds (`extra`: the models the live parts chose, so a remote recording's manifest() sees them too). */
+export function finalDetail(result: RunResult, storeSha256: string | undefined, extra: Record<string, unknown> = {}) {
+  return { status: result.status, ...(result.status === 'complete' ? { record: result.output } : {}), ...(storeSha256 ? { storeSha256 } : {}), ...extra };
+}
+
+/** The end of an app's run: the final status, the release, and only then the announcement of how it ended. A status or a release that fails rejects before anything is announced. */
+export async function finishRun(durable: Pick<DurableRun, 'setStatus' | 'release'>, status: 'done' | 'failed', detail: JsonValue, announce?: () => void | Promise<void>): Promise<void> {
+  await durable.setStatus(status, detail);
+  await durable.release();
+  await announce?.();
+}
+
+/** The same run as options for `pi-durable-disk run --app`: the instance claims the run, fences it, opens the store and resumes it; `onOpen` drives the job on it and, when it has delivered, writes the run's final
+ *  status, `done` with the record and the hash of the store, releases the run and ends the process. `report` is told how the run ended before the process does (the child prints its outcome line there). */
+export async function appOf(place: RunPlace, host: Host, job: Job, options: RunOptions, report: (outcome: { result: RunResult; storeSha256: string | undefined }) => void | (() => void | Promise<void>) | Promise<void | (() => void | Promise<void>)>, extra: Record<string, unknown> = {}, redact?: (text: string) => string): Promise<AppOptions> {
+  const composed = await compose(place, host, job, options);
+  return {
+    registry: composed.registry, models: composed.models, ...(composed.beforeResume ? { beforeResume: composed.beforeResume } : {}),
+    async onOpen(durable) {
+      // The browser sessions are released whether or not the run's drive succeeded.
+      const result = await composed.drive(durable).finally(() => composed.cleanup(durable.harness));
+      const storeFile = join(place.store, 'run.sqlite');
+      const storeSha256 = existsSync(storeFile) ? createHash('sha256').update(readFileSync(storeFile)).digest('hex') : undefined;
+      // `report` prepares the outcome (what must be written while the run is open) and may return what announces it: that is called only after the final status and the release succeeded, so a failed finish is never reported as a success.
+      const announce = await report({ result, storeSha256 });
+      // A box place has only run.json: the record, the store's hash and, when the demo shapes one, its result (the announcement's `detail`) are in the final status as well.
+      const detail = finalDetail(result, storeSha256, { ...extra, ...((announce as { detail?: Record<string, unknown> } | undefined | void)?.detail ?? {}) });
+      await finishRun(durable, result.status === 'complete' ? 'done' : 'failed', (redact ? JSON.parse(redact(JSON.stringify(detail))) : detail) as JsonValue, announce ?? undefined);
+      process.exit(0);
+    },
+  };
+}
+
+/** An effect a killed process left unknown, as the driver hands it to `reconcile`: its intent and the calls its host reported before the kill. */
+/** `args`: what the call was admitted with, which the journal keeps (absent on a record written before args were kept): a call admitted and never sent is sent again with them. */
+export type UnknownEffect = { id: string; argsHash: string; intent?: { tool: string }; args?: unknown; calls?: unknown[] };
+/** What `reconcile` is given to settle one: its value, and the receipt the driver records beside it (the calls it APPENDS to the effect's own). */
+export type Complete = (id: string, value: unknown, receipt?: { intent?: { tool: string; args?: unknown }; calls?: unknown[] }) => Promise<void>;
+
+/** The driver's `reconcile`: completes each effect a killed process left unknown that the host can answer (a kept answer, or `rerun`), and
+ *  reports the applied call it found, once, in the receipt. The driver appends receipt.calls to the calls the effect already holds, so a
+ *  call that was reported before the kill stays on record and nothing is replaced. */
+export async function reconcileEffects(unknown: UnknownEffect[], complete: Complete, { answered, rerun }: Pick<Host['tools'], 'answered' | 'rerun'>) {
+  for (const effect of unknown) {
+    if (!effect.intent) continue;
+    // The door keeps its answer by the effect's id, so one effect's answer is never another's (a poll and its next share an argsHash).
+    const kept = answered ? await answered({ id: effect.id, argsHash: effect.argsHash }) : undefined;
+    // Nothing kept: the host may run it again, when that is safe, by the effect's id (not its hash, which a retry shares).
+    const rerunAnswer = kept === undefined && rerun ? await rerun({ id: effect.id, intent: { tool: effect.intent.tool, argsHash: effect.argsHash }, args: effect.args }) : undefined;
+    const answer = kept ?? rerunAnswer;
+    if (!answer) continue;
+    // A host lists every applied call exactly once: settling from evidence finds the call applied, so when the effect's calls hold no applied
+    // entry the receipt reports one now, and when one is listed it adds none.
+    // A kept answer is evidence of a call that applied once: listed once, never twice. A rerun is a NEW execution, so it is a call of its own
+    // however many the effect already lists.
+    const record = { outcome: 'applied' as const, tool: effect.intent.tool, argsHash: effect.argsHash, via: kept ? 'evidence' : 'rerun' };
+    const listed = kept ? appliedOnce(effect.calls ?? [], record) : { calls: [...(effect.calls ?? []), record], added: true };
+    await complete(effect.id, answer.value, { intent: { tool: effect.intent.tool, args: answer.args }, ...(listed.added ? { calls: [listed.calls.at(-1)] } : {}) });
+  }
+}
+
+/** `calls` with `record` (an applied call) added, unless an applied call is already listed: a host lists each applied call exactly once. */
+export function appliedOnce(calls: unknown[], record: { outcome: 'applied' } & Record<string, unknown>): { calls: unknown[]; added: boolean } {
+  if (calls.some((call) => (call as { outcome?: unknown } | null)?.outcome === 'applied')) return { calls, added: false };
+  return { calls: [...calls, record], added: true };
+}
+

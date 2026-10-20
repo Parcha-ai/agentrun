@@ -8,9 +8,9 @@ import { frameFold, gapTitle, pictureAt, type FrameState } from './frames.ts';
 import { nextStop, playback, previousStop, reduceTo, snap, stopAt, stopsOf, linkedTime, timeParam, type Fold } from './replay.ts';
 import { citeStop } from './cite.ts';
 import { workflowMapPanel } from './workflow-map.ts';
-import { opensInPage, typeOfName } from './blobs.ts';
+import { opensInPage } from './blobs.ts';
 import { readAllEntries } from './folder.ts';
-import { sha256Paused } from './receipt-key.ts';
+import { blobsAt, blobsNamed, bundledRecordings, fromFiles, fromUrl, openBundled, type GalleryEntry, type IndexEntry } from './load.ts';
 import { finishedManifest, placeLines, tailOf } from './follow.ts';
 import { diskPanel } from './disk.ts';
 import { picturePanel } from './picture.ts';
@@ -19,13 +19,6 @@ import { transportPanel } from './transport.ts';
 import { visionPanel } from './vision.ts';
 import { documentPanel } from './document.ts';
 
-/** A bundled recording: embedded in gallery.js (its lines, and each blob as a data: URL), or, in a build that ships
- *  recordings as files, listed in `recordings/index.json` (each blob as its path in the recording's directory). */
-type GalleryEntry = { id: string; manifest: Manifest; events: string; blobs: Record<string, string> };
-type IndexEntry = { id: string; manifest: Manifest; blobs: Record<string, string> };
-declare const window: Window & { AGENTRUN_GALLERY?: GalleryEntry[]; AGENTRUN_GALLERY_INDEX?: string };
-
-const BLOB_TYPES = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'webm', 'json', 'html', 'md', 'txt', 'pdf', 'sqlite'];
 const SPEEDS = [0.5, 1, 2, 4, 10];
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, props: { class?: string; text?: string; title?: string } = {}, ...children: (globalThis.Node | string)[]) => {
@@ -54,137 +47,6 @@ function blobLink(recording: Recording, sha: string, text: string, className: st
   return link;
 }
 
-// ---- loading ---------------------------------------------------------------------------------------------------
-
-/** A recording the index lists: its lines fetched from its directory, each blob at the path the index names. */
-async function fromIndex(entry: IndexEntry, root: string): Promise<Recording> {
-  const lines = parseLines(await (await fetch(`${root}events.jsonl`)).text());
-  const urls = Object.fromEntries(Object.entries(entry.blobs).map(([sha, path]) => [sha, new URL(path, root).href]));
-  return { id: entry.id, manifest: entry.manifest, lines, blobUrl: (sha) => urls[sha], blobType: (sha) => (urls[sha] ? typeOfName(urls[sha]!) : undefined) };
-}
-
-/** The bundled recordings: embedded in gallery.js, or listed in the index a files build ships beside them, read once and
- *  only when something needs them (a gallery, a `?r=`, a bundled baseline). */
-let bundled: Promise<(GalleryEntry | IndexEntry)[]> | undefined;
-const bundledRecordings = () => (bundled ??= window.AGENTRUN_GALLERY ? Promise.resolve(window.AGENTRUN_GALLERY)
-  : window.AGENTRUN_GALLERY_INDEX ? fetch(window.AGENTRUN_GALLERY_INDEX).then((response) => {
-    if (!response.ok) throw new Error(`${window.AGENTRUN_GALLERY_INDEX} answered ${response.status}`);
-    return response.json() as Promise<IndexEntry[]>;
-  }) : Promise.resolve([]));
-const isEmbedded = (each: GalleryEntry | IndexEntry): each is GalleryEntry => 'events' in each && typeof each.events === 'string';
-/** A bundled recording, opened from gallery.js or fetched from its directory beside the page, with that directory. */
-async function openBundled(entry: GalleryEntry | IndexEntry): Promise<{ recording: Recording; dir: string }> {
-  const dir = new URL(`recordings/${entry.id}/`, location.href).href;
-  return { recording: isEmbedded(entry) ? fromGallery(entry) : await fromIndex(entry, dir), dir };
-}
-
-function fromGallery(entry: GalleryEntry): Recording {
-  return { id: entry.id, manifest: entry.manifest, lines: parseLines(entry.events), blobUrl: (sha) => entry.blobs[sha],
-    blobType: (sha) => /^data:([^;,]+)/.exec(entry.blobs[sha] ?? '')?.[1] };
-}
-
-/** Every blob a recording names: its lines', its images', its result's. */
-export function blobsNamed(manifest: Manifest, lines: Line[]): string[] {
-  const named = new Set<string>([manifest.result?.blob, manifest.job?.blob, manifest.store?.blob].filter((sha): sha is string => sha !== undefined));
-  for (const line of lines) {
-    for (const sha of line.blobs ?? []) named.add(sha);
-    for (const match of JSON.stringify(line.data).matchAll(/"blob":"([0-9a-f]{64})"/g)) named.add(match[1]!);
-  }
-  return [...named];
-}
-
-/** The blobs of a recording at a URL: blobs/<sha>.<ext>, where the line names the hash, so the extension is found by
- *  asking. A hash not found is asked again on a later `find`, after 1, 2, 4 and up to 32 of them, so a slow writer never
- *  draws a request for every type of every missing blob on every poll. `whole`: a run still being written may serve a
- *  blob half written, so each one is read and kept only when its bytes hash to its name; one that does not is not
- *  there yet. */
-/** A blob's SHA-256 without holding the page: the browser's own digest where the page has one (a secure origin), else
- *  the viewer's, a MiB at a time. */
-async function digestOf(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
-  const subtle = globalThis.crypto?.subtle;
-  if (!subtle) return sha256Paused(bytes);
-  return [...new Uint8Array(await subtle.digest('SHA-256', bytes))].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
-function blobsAt(root: string, whole = false) {
-  const urls: Record<string, string> = {};
-  const types: Record<string, string | undefined> = {};
-  const texts: Record<string, string> = {};
-  const held: Record<string, Uint8Array> = {};
-  const missing = new Map<string, { tries: number; at: number }>();
-  let round = 0;
-  const found = async (sha: string, url: string): Promise<boolean> => {
-    if (!whole) return (await fetch(url, { method: 'HEAD' }).catch(() => undefined))?.ok === true;
-    const response = await fetch(url, { cache: 'no-store' }).catch(() => undefined);
-    if (!response?.ok) return false;
-    // A body cut off midway is a blob not there yet: the lines that name it are drawn, and it is asked for again.
-    const body = await response.arrayBuffer().catch(() => undefined);
-    if (!body) return false;
-    const bytes = new Uint8Array(body);
-    if (await digestOf(bytes) !== sha) return false;
-    // A blob URL has the viewer's origin: a page in one must never render, so an active type becomes opaque bytes.
-    const type = typeOfName(url) ?? 'application/octet-stream';
-    urls[sha] = URL.createObjectURL(new Blob([bytes], { type: opensInPage(type) || type.startsWith('image/') ? type : 'application/octet-stream' }));
-    types[sha] = type;
-    // Its JSON and its PDF are kept as read: a page served with `connect-src 'self'` may not fetch the blob: URL.
-    if (type.split(';')[0] === 'application/json') texts[sha] = new TextDecoder().decode(bytes);
-    if (type.split(';')[0] === 'application/pdf') held[sha] = bytes;
-    return true;
-  };
-  return {
-    url: (sha: string) => urls[sha],
-    type: (sha: string) => (types[sha] ?? (urls[sha] ? typeOfName(urls[sha]!) : undefined)),
-    text: (sha: string): string | undefined => texts[sha],
-    bytes: (sha: string): Promise<Uint8Array> | undefined => (held[sha] ? Promise.resolve(held[sha]!.slice()) : undefined),
-    /** Looks for the blobs not found yet, and those due again; says how many it found. */
-    async find(shas: readonly string[]): Promise<number> {
-      round += 1;
-      const due = [...missing].filter(([, wait]) => wait.at <= round).map(([sha]) => sha);
-      let count = 0;
-      await Promise.all([...new Set([...shas, ...due])].filter((sha) => urls[sha] === undefined).map(async (sha) => {
-        for (const ext of BLOB_TYPES) {
-          const url = `${root}blobs/${sha}.${ext}`;
-          if (await found(sha, url)) { if (!whole) urls[sha] = url; missing.delete(sha); count += 1; return; }
-        }
-        const tries = (missing.get(sha)?.tries ?? 0) + 1;
-        missing.set(sha, { tries, at: round + Math.min(32, 2 ** (tries - 1)) });
-      }));
-      return count;
-    },
-  };
-}
-
-async function fromUrl(base: string): Promise<Recording> {
-  const root = base.endsWith('/') ? base : `${base}/`;
-  const manifest = await (await fetch(`${root}manifest.json`)).json() as Manifest;
-  const lines = parseLines(await (await fetch(`${root}events.jsonl`)).text());
-  const blobs = blobsAt(root);
-  await blobs.find(blobsNamed(manifest, lines));
-  return { id: root, manifest, lines, blobUrl: blobs.url, blobType: blobs.type, find: blobs.find, heldBytes: blobs.bytes };
-}
-
-async function fromFiles(files: File[]): Promise<Recording> {
-  const byPath = new Map(files.map((file) => [(file.webkitRelativePath || file.name).split('/').slice(-2).join('/'), file]));
-  const find = (name: string) => [...byPath].find(([path]) => path === name || path.endsWith(`/${name}`))?.[1];
-  const manifestFile = find('manifest.json');
-  const eventsFile = find('events.jsonl');
-  if (!manifestFile || !eventsFile) throw new Error('The folder needs manifest.json and events.jsonl.');
-  const urls: Record<string, string> = {};
-  const types: Record<string, string> = {};
-  const dropped: Record<string, File> = {};
-  for (const [path, file] of byPath) {
-    const name = path.split('/').at(-1)!;
-    if (!path.startsWith('blobs/')) continue;
-    const sha = name.split('.')[0]!;
-    dropped[sha] = file;
-    types[sha] = typeOfName(name) ?? (file.type || 'application/octet-stream');
-    // A blob URL has the viewer's origin: a page in one must never render, so an active type becomes opaque bytes.
-    urls[sha] = URL.createObjectURL(opensInPage(types[sha]) || types[sha]!.startsWith('image/') ? file : new Blob([file], { type: 'application/octet-stream' }));
-  }
-  return { id: 'dropped', manifest: JSON.parse(await manifestFile.text()) as Manifest, lines: parseLines(await eventsFile.text()), blobUrl: (sha) => urls[sha], blobType: (sha) => types[sha],
-    // A dropped file is read as a file: a host whose policy fetches only from its own origin refuses its blob: URL.
-    heldBytes: (sha) => (dropped[sha] ? dropped[sha]!.arrayBuffer().then((bytes) => new Uint8Array(bytes)) : undefined) };
-}
 
 // ---- the player state ------------------------------------------------------------------------------------------
 
@@ -232,11 +94,12 @@ function drawCounters(counters: Counters, measured = counters.measured, provider
     : item(label, 'not measured', 'This recording has no durable lines: nothing from the store can be counted.', extra.includes('durability') ? ' durability' : ''));
   // What a kill and a resume did (processes, kills, a repeat, a call asked twice, the journal's opens) is marked
   // `durability`, drawn only with `?debug=durability`; the payments and the cost are `receipt`s, kept under one
-  // disclosure, Receipts, unless the page shows its debug view (PANELS.md, "What a public replay shows").
+  // disclosure, Receipts, unless the page shows its debug view, and the cost is also `cost`, drawn only with `?debug=cost`
+  // or `?debug=durability` (PANELS.md, "What a public replay shows").
   const counted = [
     stored('paid calls made', String(counters.paid.total), `Workflow effects completed: ${counters.paid.workflow}. Agent receipts: ${counters.paid.agent}. Vision looks paid: ${counters.paid.vision}.`),
     stored('looks paid', `${counters.paid.vision}${counters.vision.possible ? ` + ${counters.vision.possible} possible` : ''}`,
-      `Looks the eyes answered and billed, per look key${counters.vision.native ? `; ${counters.vision.native} the lead looked at itself, which charge nothing` : ''}.${counters.vision.possible ? ` ${counters.vision.possible} more possible: a look started in a process that ended before filing it, so no durable line shows whether it was paid, and the cost is a lower bound.` : ''}`, ' receipt'),
+      `Looks the eyes answered and billed, per look key${counters.vision.native ? `; ${counters.vision.native} the lead looked at itself, which charge nothing` : ''}.${counters.vision.possible ? ` ${counters.vision.possible} more possible: a look started in a process that ended before filing it, so no durable line shows whether it was paid.` : ''}`, ' receipt'),
     stored('repeated', `${repeatedLabel(counters)}${counters.pageActions.possible ? ` + ${counters.pageActions.possible} possible` : ''}`,
       `An applied call in a later process than an earlier applied one.${counters.repeatedNotMeasured > 0 ? ` ${counters.repeatedNotMeasured} effects report no calls: their repeats are not measured, never shown as 0.` : ''}${counters.pageActions.possible ? ` ${counters.pageActions.possible} more possible: a browser page action dispatched again after one that never showed reaching the page, so no durable line says whether it was applied twice.` : ''}${counters.pageActions.measured ? '' : ' The browser\'s page actions are not measured: its session records are an export\'s, which keeps only their latest revision.'}`,
       counters.repeated > 0 ? ' alarm durability' : ' durability'),
@@ -253,7 +116,7 @@ function drawCounters(counters: Counters, measured = counters.measured, provider
     item('processes', String(counters.processes), 'From the supervisor\'s process lines.', ' durability'),
     item('kills', String(counters.kills), 'From the supervisor\'s kill lines.', ' durability'),
     item('cost', costLabel(counters.cost, counters.costLowerBound, providers, counters.costParts), following ? 'A run followed while it goes: its cost is known once it finishes.' :
-      `Unknown until a line prices a part, and when any priced part is unknown: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}${providers === 'scripted' ? ' Scripted: at least one priced part was served by a fake, a cassette or a script, so this is not a provider\'s bill, though it may include real charges for the other parts.' : ''}${counters.costParts.boxes !== undefined ? ' Boxes: each box\'s time at its provider\'s published list price, an estimate, not the provider\'s invoice; unknown while a box has no receipt or its kind has no published price.' : ''}`, ' receipt'),
+      `Unknown until a line prices a part, and when any priced part is unknown: never shown as $0.${counters.costLowerBound ? ' A lower bound: a possible look payment is not in it.' : ''}${providers === 'scripted' ? ' Scripted: at least one priced part was served by a fake, a cassette or a script, so this is not a provider\'s bill, though it may include real charges for the other parts.' : ''}${counters.costParts.boxes !== undefined ? ' Boxes: each box\'s time at its provider\'s published list price, an estimate, not the provider\'s invoice; unknown while a box has no receipt or its kind has no published price.' : ''}`, ' receipt cost'),
     stored('journal opens', String(counters.journalOpens), 'A fact of the store: agentrun.driver\'s generation. It counts journal opens, which can exceed processes.', ' fact durability'),
   ];
   if (receiptsInline) return el('div', { class: 'counters' }, ...counted);
@@ -605,6 +468,8 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   // under Receipts. `?debug=durability` shows all of it as it is: a view no public page sets.
   const debug = (params.get('debug') ?? '').split(',').map((each) => each.trim()).filter((each) => each !== '');
   const showDurability = debug.includes('durability');
+  // A dollar figure is drawn only in a debug view: `?debug=cost`, or `?debug=durability`, which draws every part.
+  const showCost = showDurability || debug.includes('cost');
 
   // The manifest's chapters when it names them; else each process start, each kill, and the end (while a run is followed,
   // its end so far). With durability hidden, the derived ones are the end alone.
@@ -633,7 +498,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
     const { manifest } = recording;
     if (following) return { header: el('header', {}, el('h1', { text: manifest.title }), el('p', { class: 'meta' }, `following ${live!.url} · `, liveStatus)), problemsNote: undefined };
     const header = el('header', {}, el('h1', { text: manifest.title }), el('p', { class: 'meta', text:
-      `${manifest.task} · ${manifest.model} · ${manifest.generations} process${manifest.generations === 1 ? '' : 'es'} · ${manifest.kills} kill${manifest.kills === 1 ? '' : 's'}${manifest.providers ? ` · ${manifest.providers} providers` : ''} · recorded ${manifest.recorded.started} · code ${manifest.code.commit.slice(0, 8)}` }));
+      `${manifest.task} · ${manifest.model}${manifest.providers ? ` · ${manifest.providers} providers` : ''} · recorded ${manifest.recorded.started} · code ${manifest.code.commit.slice(0, 8)}` }));
     if (live) header.append(el('p', { class: 'meta' }, `followed live from ${live.url} · `, liveStatus));
     const problemsNote = problems.length ? el('p', { class: 'problems', text: `This recording breaks the format: ${problems.slice(0, 3).join('; ')}` }) : undefined;
     if (problemsNote && !embedded) header.append(problemsNote);
@@ -674,6 +539,7 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
   const featuredBox = el('div', { class: 'featured' });
   if (embedded) document.documentElement.classList.add('embed');
   if (!showDurability) document.documentElement.classList.add('hide-durability');
+  if (!showCost) document.documentElement.classList.add('hide-cost');
   const layout = () => {
     const top = embedded ? (problemsNote ? [problemsNote] : []) : [header];
     if (featured) root.replaceChildren(...top, featuredBox, controls, counters, baselineRow, timeline, chapterList, focusBar, panels);
@@ -903,8 +769,9 @@ function play(recording: Recording, root: HTMLElement, params: URLSearchParams, 
 
 function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entries: readonly { id: string; manifest: Manifest }[], unread?: string) {
   const list = el('ul', { class: 'gallery' }, ...entries.map((entry) => {
-    const link = Object.assign(el('a', { text: entry.manifest.title }), { href: `?r=${encodeURIComponent(entry.id)}` });
-    return el('li', {}, link, el('span', { class: 'meta', text: ` ${entry.manifest.generations} process${entry.manifest.generations === 1 ? '' : 'es'}, ${entry.manifest.kills} kill${entry.manifest.kills === 1 ? '' : 's'}, ${entry.manifest.model}` }));
+    // A demo opens in the chat + report view; its inspection is ./?r=<id>, linked from there.
+    const link = Object.assign(el('a', { text: entry.manifest.title }), { href: `chat.html?r=${encodeURIComponent(entry.id)}` });
+    return el('li', {}, link, el('span', { class: 'meta', text: ` ${entry.manifest.model}` }));
   }));
   const picker = Object.assign(el('input'), { type: 'file', multiple: true }) as HTMLInputElement;
   picker.setAttribute('webkitdirectory', '');
@@ -929,7 +796,7 @@ function gallery(root: HTMLElement, onOpen: (recording: Recording) => void, entr
     }
     onOpen(await fromFiles(files));
   });
-  root.replaceChildren(el('header', {}, el('h1', { text: 'agentrun run viewer' }), el('p', { class: 'meta', text: 'Replays a run recorded as agentrun.recording/1: every process, every kill, every commit.' })),
+  root.replaceChildren(el('header', {}, el('h1', { text: 'agentrun run viewer' }), el('p', { class: 'meta', text: 'Replays a run recorded as agentrun.recording/1.' })),
     el('h2', { text: 'Recordings' }), unread !== undefined ? el('p', { class: 'problems', text: `The gallery could not be read (${unread}); a recording folder can still be opened below.` })
       : entries.length ? list : el('p', { class: 'empty', text: 'No recordings yet.' }), drop);
 }
