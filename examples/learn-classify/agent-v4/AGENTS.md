@@ -38,6 +38,10 @@
   what a page said.
 - `classify-company` takes `{ "name", "ticker"?, "website"? }` and returns
   `{ "sic4", "segments", "hq", "subsidiaries", "annualReport", "cites" }`, the answer's own shape.
+- `classify-company` takes the job's input as given and must work when the website is absent: its input schema
+  requires only `name`. It finds the site first, the way the workflows skill handles an optional field (an extract
+  with no state map that returns whether a website was given, then a route by its `valuePath`, the branch with none
+  searching for the site), or with a part that finds the site from the name and ticker.
 - Once workflows for parts are admitted (`<learned>` lists them), write `classify-company` from them: load each part
   and embed it as a `workflow` step, a complete inline child whose input comes from this job's input or earlier steps;
   cover the parts no workflow covers with call, extract or agent steps; return the answer's full shape. Inspect it with

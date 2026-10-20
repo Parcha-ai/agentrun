@@ -326,6 +326,8 @@ test('the v4 home: the workflows skill and the learning rules as v2 has them, th
   const v4Rules = after(text(v4, 'AGENTS.md'), '## Every run').replace(shape, '');
   for (const line of after(text(v2, 'AGENTS.md'), '## Every run').replace(shape, '').split('\n')) assert.ok(v4Rules.includes(line), line);
   for (const words of [/embed it as a `workflow` step, a complete inline child/, /cover the parts no workflow covers/, /a revised part does not\s+reach `classify-company` until then/]) assert.match(v4Rules, words);
+  // classify-company takes the job's input as given, a website or none.
+  for (const words of [/takes the job's input as given and must work when the website is absent/, /requires only `name`/, /a route by its `valuePath`/]) assert.match(v4Rules, words);
   assert.match(text(v4, 'AGENTS.md'), /`\{ "sic4", "segments", "hq", "subsidiaries", "annualReport", "cites" \}`, the answer's own shape/);
   const parameters = Object.keys(answerV4({}).parameters.properties);
   assert.deepEqual(parameters, ['sic4', 'segments', 'hq', 'subsidiaries', 'annualReport', 'cites']);
@@ -444,24 +446,27 @@ test('the host dispatches a promoted v4 workflow: its output passes the v4 answe
   assert.deepEqual(JSON.parse(readFileSync(join(out, 'progress', 'run-001.json'), 'utf8')).finished.uses.map((u) => [u.name, u.outcome]), [[WORKFLOW, 'frozen']]);
 }, { timeout: 180_000 });
 
-test('composition: the parts are admitted, then classify-company embedding them, promoted after three clean uses, then the host runs it', async (t) => {
+test('composition: the parts are admitted, then classify-company embedding them, promoted after three clean uses, then the host runs it, with a website given or not', async (t) => {
   const out = join(await scratch(t), 'out');
   const parts = scriptedParts({ set: SETS.v4 });
   const truth = readJson(join(FIXTURES_V4, 'answers.json'));
-  parts.companies = parts.companies.filter((c) => c.website);
+  // The six companies with a website, then one without (Bluefin), after classify-company is promoted.
+  parts.companies = [...parts.companies.filter((c) => c.website), { ...parts.companies.find((c) => c.split === 'run' && !c.website), order: 99 }];
   parts.modelFor = (job, run) => scriptedModel(agentScriptV4Compose({ job, offered: run.workflows.loaded.map((w) => w.name), fixtures: { truth } }));
-  const { rows } = await runLoop({ out, parts, jobs: 6, record: false });
+  const { rows } = await runLoop({ out, parts, jobs: 7, record: false });
   const names = [PART_CODE.name, PART_FIND_REPORT.name];
-  assert.equal(rows.length, 6);
+  assert.equal(rows.length, 7);
   assert.ok(rows.every((r) => r.correct), JSON.stringify(rows.map((r) => [r.company, r.correctOver])));
   // Run 1 by hand saves the two parts; run 2, offered both, composes classify-company from them.
   assert.deepEqual([...rows[0].curate.admitted].sort(), names);
   assert.deepEqual(rows[1].workflowsOffered.slice().sort(), names);
   assert.deepEqual(rows[1].curate.admitted, [WORKFLOW]);
   // Runs 3 to 5 run it on trial through the agent; the third clean use promotes it; run 6 the host runs it, no agent.
-  assert.deepEqual(rows.map((r) => [r.byWorkflow, r.dispatched]), [[false, false], [false, false], [true, false], [true, false], [true, false], [true, true]]);
-  assert.deepEqual(rows.map((r) => r.curate.promoted), [[], [], [], [], [WORKFLOW], []]);
-  assert.deepEqual(rows[5].workflowsUsed.map((u) => [u.name, u.outcome, u.classifiedBy ?? null]), [[WORKFLOW, 'complete', HOST_WORKFLOW]]);
+  // Run 7 has no website: the host runs it all the same, and it finds the site first.
+  assert.deepEqual(rows.map((r) => [r.byWorkflow, r.dispatched]), [[false, false], [false, false], [true, false], [true, false], [true, false], [true, true], [true, true]]);
+  assert.deepEqual(rows.map((r) => r.curate.promoted), [[], [], [], [], [WORKFLOW], [], []]);
+  for (const r of rows.slice(5)) assert.deepEqual(r.workflowsUsed.map((u) => [u.name, u.outcome, u.classifiedBy ?? null]), [[WORKFLOW, 'complete', HOST_WORKFLOW]]);
+  assert.equal(rows[6].websiteGiven, false);
   // As saved, classify-company embeds both parts whole, as workflow steps.
   const revision = rows[1].born.find((b) => b.name === WORKFLOW).revision;
   const record = JSON.parse(execFileSync('git', ['--git-dir', join(out, 'agent.git'), 'show', `main:.pi/agentrun/workflows/${WORKFLOW}/${revision}.json`], { encoding: 'utf8' }));
@@ -469,9 +474,12 @@ test('composition: the parts are admitted, then classify-company embedding them,
   const children = document.root.steps.filter((step) => step.node === 'workflow');
   assert.deepEqual(children.map((c) => c.workflow.name), names);
   assert.deepEqual(children.map((c) => c.workflow), [PART_CODE, PART_FIND_REPORT].map((w) => JSON.parse(JSON.stringify(w))));
-  // The host's run: the site twice (once in each part), the groups, the codes, and the report read by the composite's call.
-  assert.deepEqual(rows[5].executions.map((e) => [e.name, e.outcome, e.toolCalls]), [[WORKFLOW, 'complete', 5]]);
-  assert.deepEqual(rows[5].toolCalls, { search: 0, browse: 0, fetch: 2, read_document: 1 });
+  // It takes the job's input as given: only the name is required.
+  assert.deepEqual(document.schemas[document.input.schemaId].required, ['name']);
+  // The host's runs: the site (read once to start, once in each part), the groups, the codes, the report; without a
+  // website, a search for the site first.
+  assert.deepEqual(rows.slice(5).map((r) => r.executions.map((e) => [e.name, e.outcome, e.toolCalls])), [[[WORKFLOW, 'complete', 6]], [[WORKFLOW, 'complete', 7]]]);
+  assert.deepEqual(rows.slice(5).map((r) => r.toolCalls), [{ search: 0, browse: 0, fetch: 3, read_document: 1 }, { search: 1, browse: 0, fetch: 3, read_document: 1 }]);
 }, { timeout: 300_000 });
 
 test('rescore scores a finished v4 pass again from its own files against a truth set, beside runs.jsonl, never over it', async (t) => {

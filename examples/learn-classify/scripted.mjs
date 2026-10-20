@@ -216,6 +216,9 @@ export function agentScript({ job, offered, truth, page, workflow = CLASSIFY_WOR
   ];
 }
 
+/** A choice's probabilities: 0.9 on the choice and the rest spread over the other options; all of it when it is the only one. */
+const probabilitiesOf = (options, choice) => Object.fromEntries(options.map((o) => [o, options.length === 1 ? 1 : o === choice ? 0.9 : 0.1 / (options.length - 1)]));
+
 const CURATE = { general: 0.94, narrowsRules: 0.03, fromContent: 0.03, duplicate: 0.04, supersedes: 0.04, contradicts: 0.03, namesCase: 0.03, workflowCase: 0.03 };
 
 /**
@@ -242,7 +245,7 @@ export function scriptedJev({ truthByName = {}, groups = [], overrides = {}, seg
         const member = segments.segmentMatch?.[name];
         const choice = state.truth?.find((t) => member !== undefined && t.member === member)?.id ?? 'none_of_these';
         const options = Object.keys(question.criteria);
-        answers[key] = { type: 'choice', choice, probabilities: Object.fromEntries(options.map((o) => [o, o === choice ? 0.9 : 0.1 / (options.length - 1)])), confidence: 0.9 };
+        answers[key] = { type: 'choice', choice, probabilities: probabilitiesOf(options, choice), confidence: 0.9 };
       } else if (question.type === 'noul') {
         answers[key] = { type: 'noul', noul: overrides[key] ?? CURATE[key] ?? 0.5 };
       } else if (question.type === 'choice') {
@@ -253,7 +256,7 @@ export function scriptedJev({ truthByName = {}, groups = [], overrides = {}, seg
         const byIndex = groups.findIndex((g) => g.code === truth);
         const choice = startsWith(truth) ?? startsWith(truth.slice(0, 2)) ?? (byIndex >= 0 && options.includes(`item_${byIndex}`) ? `item_${byIndex}` : undefined)
           ?? (options.includes('none_of_these') ? 'none_of_these' : options[0]);
-        const probabilities = Object.fromEntries(options.map((o) => [o, o === choice ? 0.9 : 0.1 / (options.length - 1)]));
+        const probabilities = probabilitiesOf(options, choice);
         answers[key] = { type: 'choice', choice, probabilities, confidence: 0.9 };
       } else {
         throw new Error(`the scripted Jev has no answer for a ${question.type} question`);
@@ -509,8 +512,10 @@ function byHandV4(job, truth) {
 export function agentScriptV4({ job, offered, fixtures }) {
   const truth = fixtures.truth[job.name];
   const input = { name: job.name, ...(job.ticker ? { ticker: job.ticker } : {}), ...(job.website ? { website: job.website } : {}) };
-  // The workflow's two extracts, told apart by their state: the report's link from the site's links, then the answer.
+  // The workflows' extracts, told apart by their state: a composite's first reads the whole input (whether a website was
+  // given), then the report's link from the site's links, then the answer.
   const node = (state) => {
+    if (!('company' in state)) return { submit: { given: state.website ? 'yes' : 'no', website: state.website ?? null } };
     const t = fixtures.truth[state.company];
     if ('links' in state) return { submit: { url: t.document } };
     return { submit: answerOfV4(t, { sic4: state.code?.code ?? '', site: state.url, report: state.report }) };
@@ -573,22 +578,47 @@ export const PART_FIND_REPORT = Object.freeze({
   },
 });
 
-/** classify-company composed: the two parts embedded as workflow steps, then the part no workflow covers (the report read
- *  with a look at its segment table) as a call, then the answer. */
+/** The job's input as given: a name, and a ticker and a website when they are known. */
+const JOB_INPUT = { type: 'object', additionalProperties: false, required: ['name'], properties: { name: { type: 'string', minLength: 1 }, ticker: { type: 'string' }, website: { type: 'string' } } };
+const START = { type: 'object', additionalProperties: false, required: ['given', 'website'], properties: { given: { type: 'string', enum: ['yes', 'no'] }, website: { type: ['string', 'null'] } } };
+
+/** classify-company composed, on the job's input as given: the site (the website given, else found by a search), the two
+ *  parts embedded as workflow steps on it, the part no workflow covers (the report read with a look at its segment table)
+ *  as a call, then the answer. */
 export const CLASSIFY_COMPOSITE = Object.freeze({
   ...CLASSIFY_WORKFLOW_V4,
-  schemas: { ...CLASSIFY_WORKFLOW_V4.schemas, Picked: PART_CODE.schemas.Picked },
+  schemas: { ...CLASSIFY_WORKFLOW_V4.schemas, Company: JOB_INPUT, Start: START, Search: SEARCH_SCHEMA, Picked: PART_CODE.schemas.Picked },
   root: {
     node: 'chain',
     steps: [
-      { node: 'workflow', label: 'the code', workflow: PART_CODE, input: { name: '{name}', website: '{website}' }, out: 'Picked', as: 'code' },
-      { node: 'workflow', label: 'the annual report', workflow: PART_FIND_REPORT, input: { name: '{name}', website: '{website}' }, out: 'Report', as: 'report' },
+      // Whether a website was given, as a value every input has; then the site, read from it or found by a search.
+      { node: 'extract', label: 'the input', instructions: 'given is yes when the input has a website, else no; website is it, or null.', tools: [], out: 'Start', as: 'start' },
+      {
+        node: 'route', label: 'the site', valuePath: 'start.given', as: 'routing',
+        branches: {
+          yes: { body: { node: 'call', label: 'read the site given', via: 'tool', tool: 'fetch_page', args: { url: '{start.website}' }, out: 'Page', as: 'page', deadline_s: 30 } },
+          no: {
+            body: {
+              node: 'chain',
+              steps: [
+                { node: 'call', label: 'search for the site', via: 'tool', tool: 'search_web', args: { query: '{name} investor relations' }, out: 'Search', as: 'search', deadline_s: 60 },
+                { node: 'escalate', label: 'no results', when: { predicate: 'empty', path: 'search.results' }, kind: 'needs_input', stage: 'research', summary: 'the search found nothing' },
+                { node: 'pick', label: 'the official site', itemsPath: 'search.results', describe: '{item.title} | {item.url}', instructions: 'Which result is the company\'s own website?', state: { company: '{name}' }, as: 'site' },
+                { node: 'call', label: 'read the site found', via: 'tool', tool: 'fetch_page', args: { url: '{site.item.url}' }, out: 'Page', as: 'page', deadline_s: 30 },
+              ],
+            },
+          },
+        },
+      },
+      { node: 'escalate', label: 'no site', when: { predicate: 'empty', path: 'page.text' }, kind: 'needs_input', stage: 'research', summary: 'the site has no text to read' },
+      { node: 'workflow', label: 'the code', workflow: PART_CODE, input: { name: '{name}', website: '{page.url}' }, out: 'Picked', as: 'code' },
+      { node: 'workflow', label: 'the annual report', workflow: PART_FIND_REPORT, input: { name: '{name}', website: '{page.url}' }, out: 'Report', as: 'report' },
       { node: 'call', label: 'read the report', via: 'tool', tool: 'read_document', args: { url: '{report.url}', question: 'the segment revenue table as laid out' }, out: 'Document', as: 'document', deadline_s: 120 },
       { node: 'escalate', label: 'no report', when: { predicate: 'empty', path: 'document.text' }, kind: 'needs_input', stage: 'research', summary: 'the annual report has no text to read' },
       {
         node: 'extract', label: 'write the answer', tools: [], out: 'Answer', as: 'answer',
         instructions: 'sic4 is the picked code. segments, hq and subsidiaries are as the report states them; annualReport is the report read, with its fiscal year. cites quote the site and the report pages for each part.',
-        state: { company: '{name}', code: '{code.item}', url: '{website}', report: '{report.url}', document: '{document.text}' },
+        state: { company: '{name}', code: '{code.item}', url: '{page.url}', report: '{report.url}', document: '{document.text}' },
       },
     ],
   },
