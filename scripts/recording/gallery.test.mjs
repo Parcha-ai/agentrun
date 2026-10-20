@@ -194,6 +194,10 @@ test('a recording that names no example takes an id of its own, never an example
   assert.equal(problemsOf('utility-bills', { task: question }, ['a', 'b']), undefined, 'no example key, a free task');
   assert.equal(problemsOf('utility-bills', { example: null, task: question }, ['a']), undefined, 'example null is no example');
   assert.deepEqual(problemsOf('a', { task: question }, ['a']), ['a: is the example folder examples/a, but its manifest names no example'], 'an example\'s slot holds only its own run');
+  // A manifest that is not a JSON object names nothing, and is refused, whatever its id.
+  const broken = (data) => { const { tar, lock } = pinned([{ path: 'free/manifest.json', data: Buffer.from(data) }, { path: 'free/events.jsonl', data: Buffer.from('{"t":1}\n') }], ['free']); return galleryOf(tar, lock, { examples: new Set(['a']) }).problems; };
+  assert.deepEqual(broken('{'), ['free: its manifest is not a JSON object'], 'unparseable');
+  assert.deepEqual(broken('[]\n'), ['free: its manifest is not a JSON object'], 'an array');
   // Without the folder list, as before: the manifest's example, else its task, is the id.
   assert.deepEqual(problemsOf('utility-bills', { task: question }), [`utility-bills: its manifest names the example ${JSON.stringify(question)}, not utility-bills`]);
   assert.equal(problemsOf('a', { task: 'a' }), undefined);

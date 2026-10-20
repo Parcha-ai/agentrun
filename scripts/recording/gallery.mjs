@@ -193,9 +193,11 @@ export function galleryOf(bytes, lock, limits = {}) {
       if (!examples) {
         const named = isObject(value) ? (example ?? value.task) : undefined;
         if (named !== id) problems.push(`${id}: its manifest names the example ${JSON.stringify(named ?? null)}, not ${id}`);
+      } else if (!isObject(value)) {
+        problems.push(`${id}: its manifest is not a JSON object`);
       } else {
         // The example the run names: its `example`, else its task when that is an example folder's name.
-        const task = isObject(value) && typeof value.task === 'string' ? value.task : undefined;
+        const task = typeof value.task === 'string' ? value.task : undefined;
         const named = example ?? (task !== undefined && examples.has(task) ? task : undefined);
         if (named === undefined) {
           if (examples.has(id)) problems.push(`${id}: is the example folder examples/${id}, but its manifest names no example`);
