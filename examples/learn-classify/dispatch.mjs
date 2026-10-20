@@ -7,7 +7,7 @@
 // any other, so pi-agent-learn's uses file counts it; an output the answer refused is counted escalated there too.
 import { createHash } from 'node:crypto';
 import Ajv from 'ajv';
-import { inspectWorkflow, resolveSchemaForWorkflow } from '@parcha/agentrun-dsl';
+import { inspectWorkflow, resolveSchemaForWorkflow, validateWorkflow } from '@parcha/agentrun-dsl';
 import { WorkflowStore } from '@parcha/agentrun-pi/workflows';
 import { currentRevision, readTrial } from '@parcha/pi-agent-learn';
 
@@ -78,8 +78,9 @@ const MAX_PROBLEMS = 20;
 /**
  * Runs `dispatch` (`promotedFor`'s pick) as a durable workflow task of the run, started by the host through the run's
  * workflow extension (`createWorkflowTool(...).workflow`), on the run's open Harness. The same checks as the agentrun
- * tool's run come first: a workflow with a code node, one that needs SOP text, or one that uses a tool this host does
- * not register is not started. Returns `{ name, revision, key, outcome, output?, invalid?, detail? }`, the outcome in the
+ * tool's run come first, before any task: a workflow with a code node, one that needs SOP text, one that uses a tool this
+ * host does not register, or one the DSL refuses for this input (its schema, or a node reading a key the input does not
+ * have) is not started. Returns `{ name, revision, key, outcome, output?, invalid?, detail? }`, the outcome in the
  * DSL's words: complete (its output a valid answer), escalated (by the workflow, or with an output the answer refuses:
  * that output, and `invalid` saying why), failed or aborted; refused when this host would not start it.
  */
@@ -98,6 +99,8 @@ export async function runPromoted({ harness, workflows, dispatch, toolNames, ans
   if (inspection.requires.sopSections.length) return refuse('it needs SOP text, which this host has none of');
   const missing = inspection.requires.tools.filter((tool) => !toolNames.includes(tool));
   if (missing.length) return refuse(`it uses tools this host does not register: ${missing.join(', ')}`);
+  const forInput = validateWorkflow(workflow, { executeCode: false, input });
+  if (!forInput.ok) return refuse(`it does not take this input: ${forInput.errors.slice(0, MAX_PROBLEMS).join('; ')}`);
   const key = hostKey(name, revision, input);
   const run = await workflows.start(harness, { key, workflow, input }, context, { background: true });
   const outcome = await run.wait(context);

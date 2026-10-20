@@ -389,13 +389,14 @@ export async function runJob({ run, job, model, judge, effects, answer, text = j
       });
     }
     // A promoted workflow that answers the whole job runs first, by the host (dispatch.mjs): a complete run with a valid
-    // answer is the run's answer and the root agent is never asked; any other ending is handed to it with the job.
+    // answer is the run's answer and the root agent is never asked; any other ending is handed to it with the job. One the
+    // host refused never ran: the root agent gets the job alone.
     const hostRun = dispatch ? await runPromoted({ harness, workflows: workflowTool.workflow, dispatch, toolNames: tools.workflowTools.map((t) => t.name), answer, context: ctx }) : null;
-    const dispatched = hostRun ? { dispatch: { name: hostRun.name, revision: hostRun.revision, key: hostRun.key, outcome: hostRun.outcome, ...(hostRun.invalid ? { invalid: hostRun.invalid } : {}) } } : {};
+    const dispatched = hostRun ? { dispatch: { name: hostRun.name, revision: hostRun.revision, key: hostRun.key, outcome: hostRun.outcome, ...(hostRun.invalid ? { invalid: hostRun.invalid } : {}), ...(typeof hostRun.detail === 'string' ? { detail: hostRun.detail } : {}) } } : {};
     if (hostRun?.outcome === 'complete') {
       measured = { answer: hostRun.output, answers: 1, toolCalls: {}, status: HOST_WORKFLOW, usage: usageTotals(await harness.usage(ctx)), finalText: '', calls: [], results: new Map(), ...dispatched };
     } else {
-      const prompt = hostRun ? `${text(job)}\n\n${handoffText(hostRun)}` : text(job);
+      const prompt = hostRun && hostRun.outcome !== 'refused' ? `${text(job)}\n\n${handoffText(hostRun)}` : text(job);
       const submission = await root.submit({ type: 'input', content: prompt }, ctx);
       const settled = await submission.wait(ctx);
       const { messages } = await root.context(ctx);

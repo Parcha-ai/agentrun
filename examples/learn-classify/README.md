@@ -285,8 +285,11 @@ output validates against the answer is the run's answer, and Opus is never calle
 workflow returned: an escalation or failure of the workflow, or an output the answer refuses, with the validation errors.
 Either way the task is a use in pi-agent-learn's uses file, so promotion and demotion count it; an output the answer
 refused is counted escalated there, in the row (`dispatch`, `workflowsUsed`) and in its executions, though the store says
-the workflow completed. A workflow on trial still runs through the agent. `--no-dispatch` turns it off. A v2 or v4 row's
-`dispatched` says whether the host ran a promoted workflow first, however it ended; a row's `dispatch` says how.
+the workflow completed. Before any task, the host checks the workflow as the agentrun tool's run does, with the run's
+input (code nodes, SOP text, unregistered tools, an input it does not take, a node reading a key the input lacks): one it
+refuses never runs, makes no use, and the root agent gets the job alone. A workflow on trial still runs through the
+agent. `--no-dispatch` turns it off. A v2 or v4 row's `dispatched` says whether the host ran a promoted workflow first,
+however it ended; a row's `dispatch` says how, a refusal included.
 
 ## Files
 
