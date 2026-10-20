@@ -5,8 +5,8 @@
 // a control API that reads the run's own files.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { closeSync, constants, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Delegation } from "disk";
@@ -246,6 +246,60 @@ describe("the start mark's keeper", () => {
       assert.match(warnings[0]!.message, /is no longer the directory/);
     } finally {
       await stop();
+      process.off("warning", onWarning);
+      dir.remove();
+    }
+  });
+
+  it("a rewrite that fails because its directory moved after the keeper checked it is reported as the move, not as a failed write", { timeout: 30_000 }, async () => {
+    const dir = scratchRoot("keeper-moved-mid");
+    const warnings: Error[] = [];
+    const onWarning = (warning: Error) => void ((warning as { code?: string }).code === "PDA_START_MARK" && warnings.push(warning));
+    process.on("warning", onWarning);
+    try {
+      // What the path names once the directory has moved: nothing (the write fails ENOENT), or a file (ENOTDIR).
+      for (const [name, replace] of [["none", () => {}], ["file", (root: string) => writeFileSync(root, "")]] as const) {
+        const root = join(dir.root, name);
+        mkdirSync(root, { recursive: true });
+        // The mark is a FIFO, so the keeper's first refresh waits in its read of it, past its check of the directory, until
+        // this test writes the mark into it. Opening the write end without blocking succeeds only once the keeper holds the
+        // read end.
+        execFileSync("mkfifo", [join(root, "start.json")]);
+        warnings.length = 0;
+        const stop = keepStartMark(root, 50);
+        let fd: number | undefined;
+        try {
+          for (const t0 = Date.now(); fd === undefined && Date.now() - t0 < 20_000; await sleep(10)) {
+            try {
+              fd = openSync(join(root, "start.json"), constants.O_WRONLY | constants.O_NONBLOCK);
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== "ENXIO") throw error;
+            }
+          }
+          assert.ok(fd !== undefined, "the keeper reads the mark within 20 s");
+          renameSync(root, `${root}.old`);
+          replace(root);
+          writeSync(fd, JSON.stringify({ generation: 1, at: new Date().toISOString(), by: "sup-1", failures: 0, lastExit: null }));
+          closeSync(fd);
+          for (const t0 = Date.now(); warnings.length === 0 && Date.now() - t0 < 20_000; ) await sleep(20);
+          await sleep(200);
+          assert.equal(warnings.length, 1, `${name}: one warning: ${warnings.map((w) => w.message).join(" | ")}`);
+          assert.match(warnings[0]!.message, /is no longer the directory the keeper started on/, name);
+        } finally {
+          // A keeper still waiting in its read is let go, so its stop returns.
+          if (fd === undefined) {
+            for (const at of [root, `${root}.old`]) {
+              try {
+                closeSync(openSync(join(at, "start.json"), constants.O_WRONLY | constants.O_NONBLOCK));
+              } catch {
+                // no reader there
+              }
+            }
+          }
+          await stop();
+        }
+      }
+    } finally {
       process.off("warning", onWarning);
       dir.remove();
     }
