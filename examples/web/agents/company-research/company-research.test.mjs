@@ -456,6 +456,87 @@ test("config-page shows the prompts the home holds and the question's rule, thro
   assert.ok(html.includes(QUESTION.instructions), "the question is read from the home's prompts");
 });
 
+/** Homes made with the fake api, each with runs on disk (a prompt.json, a brief for some): { name, dir, api }. */
+async function fakeHomes(specs, base) {
+  const api = fakeApi();
+  const byDir = new Map();
+  const homes = [];
+  for (const { name, prompts = withQuestion(PROMPTS, QUESTION), definition, runs = [] } of specs) {
+    const dir = join(base, name, "agent-home");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "agent.sqlite"), "");
+    api.homes.set(dir, { definition: definition ?? json("agent.json"), prompts: Object.fromEntries(prompts.map(({ id, ...rest }) => [id, rest])) });
+    const index = {};
+    for (const { id, input, variant, brief, startedAt } of runs) {
+      mkdirSync(join(dir, "runs", id, "work"), { recursive: true });
+      writeFileSync(join(dir, "runs", id, "prompt.json"), JSON.stringify({ version: 1, question: "company_kind", input, variant, passes: [{ choice: variant, confidence: 0.9, probabilities: { [variant]: 0.9 } }], lookup: { used: false, sources: [] }, reason: "r" }));
+      if (brief) writeFileSync(join(dir, "runs", id, "work", "brief.md"), "# brief\n");
+      index[id] = { path: `runs/${id}`, startedAt, endedAt: startedAt, outcome: "completed", cost: 0.01 };
+    }
+    byDir.set(dir, index);
+    homes.push({ name, dir });
+  }
+  const read = api.readAgentHome;
+  api.readAgentHome = async (home) => ({ ...(await read(home)), runs: byDir.get(home.dir) });
+  return { homes, api };
+}
+
+test("config-page takes several homes: the first one's configuration, every home's runs, briefs linked by relative paths, and a note when a home differs", async () => {
+  const base = await fresh("many");
+  const generic = (text) => withQuestion(PROMPTS, QUESTION).map((v) => (v.id === "generic" ? { ...v, text } : v));
+  const { homes, api } = await fakeHomes([
+    { name: "a-take", runs: [{ id: "run-a", input: "Caterpillar Inc.", variant: "public", brief: true, startedAt: "2026-10-20T04:07:00Z" }] },
+    { name: "b-take", runs: [{ id: "run-b", input: "Habitat", variant: "generic", brief: false, startedAt: "2026-10-20T04:09:00Z" }] },
+    { name: "c-take", runs: [{ id: "run-c", input: "Cargill", variant: "generic", brief: true, startedAt: "2026-10-20T04:11:00Z" }] },
+  ], base);
+  const [a, b, c] = homes.map((h) => h.dir);
+  const out = join(base, "report", "config.html");
+  const same = await run(page, ["--home", a, "--home", b, "--home", c, "--out", out], api);
+  assert.equal(same.code, 0, same.err);
+  assert.equal(same.err, "", "identical homes raise no warning");
+  assert.match(same.out, /^wrote config\.html: 6 prompt variants, 3 runs from 3 homes$/);
+  const html = readFileSync(out, "utf8");
+  assert.match(html, /company-research · 6 prompt variants · 3 runs in 3 homes · read /);
+  for (const input of ["Caterpillar Inc.", "Habitat", "Cargill"]) assert.ok(html.includes(input), input);
+  assert.doesNotMatch(html, /class="warn"/);
+  assert.equal(html.match(/<h2>How a prompt is picked<\/h2>/g).length, 1, "one configuration section");
+  assert.deepEqual([...html.matchAll(/href="([^"]*)"/g)].map((m) => m[1]), ["../c-take/agent-home/runs/run-c/work/brief.md", "../a-take/agent-home/runs/run-a/work/brief.md"], "each brief is linked from the page by its own relative path, and a run with none has no link");
+  assert.ok(html.indexOf("run-c") < html.indexOf("run-b") && html.indexOf("run-b") < html.indexOf("run-a"), "newest first, across homes");
+
+  const { homes: more, api: moreApi } = await fakeHomes([
+    { name: "first", runs: [{ id: "r1", input: "One", variant: "public", startedAt: "2026-10-20T05:00:00Z" }] },
+    { name: "old-generic", prompts: generic("an older generic"), runs: [{ id: "r2", input: "Two", variant: "generic", startedAt: "2026-10-20T05:01:00Z" }] },
+    { name: "fewer", prompts: withQuestion(PROMPTS, QUESTION).filter((v) => v.id !== "ecommerce"), runs: [] },
+    { name: "other-definition", definition: { ...json("agent.json"), description: "Something else." }, runs: [] },
+    { name: "other-agent", definition: json("agent.json"), runs: [] },
+    { name: "extra", prompts: [...withQuestion(PROMPTS, QUESTION), { id: "zzz", role: "overlay", label: "zzz", text: "x" }], runs: [] },
+    { name: "reordered", prompts: withQuestion(PROMPTS, QUESTION).map((v) => Object.fromEntries(Object.entries(v).reverse())).reverse(), runs: [] },
+  ], await fresh("differ"));
+  const original = moreApi.readAgentHome;
+  moreApi.readAgentHome = async (home) => {
+    const state = await original(home);
+    return home.dir === more[4].dir ? { ...state, identity: { ...state.identity, id: "other-agent" } } : state;
+  };
+  const differ = join(await fresh("differ-out"), "config.html");
+  const result = await run(page, [...more.flatMap((h) => ["--home", h.dir]), "--out", differ], moreApi);
+  assert.equal(result.code, 0, result.err);
+  for (const line of [
+    "warning: old-generic/agent-home: prompts differ: generic (changed)",
+    "warning: fewer/agent-home: prompts differ: ecommerce (missing)",
+    "warning: other-definition/agent-home: the definition differs",
+    "warning: other-agent/agent-home: the agent is other-agent, not company-research",
+    "warning: extra/agent-home: prompts differ: zzz (extra)",
+  ]) assert.ok(result.err.split("\n").includes(line), line);
+  const note = readFileSync(differ, "utf8");
+  assert.match(note, /<div class="warn"><b>These homes do not hold the same configuration\.<\/b> The prompts above are the first home's\.<ul><li>old-generic\/agent-home: prompts differ: generic \(changed\)<\/li>/);
+  assert.equal(note.match(/<li>[^<]*(differ|agent is)[^<]*<\/li>/g).length, 5, "one line per difference, and none for the home that holds the same prompts in another order");
+  assert.equal(result.err.split("\n").filter((line) => line.startsWith("warning: reordered")).length, 0);
+  const extra = await run(page, ["--home", more[0].dir, "--home", join(await fresh("nothome"), "x"), "--out", join(await fresh("never"), "config.html")], moreApi);
+  assert.equal(extra.code, 1);
+  assert.match(extra.err, /no page written: x is not an agent home/, "one home that is not a home refuses the page");
+  assert.equal((await run(page, ["--home", a, "--home", b], api)).code, 2, "--out is still needed");
+});
+
 test("config-page: a missing argument is exit 2, a directory that is not a home is exit 1 and writes no page", async () => {
   assert.equal((await run(page, ["--home", "x"], undefined)).code, 2);
   assert.equal((await run(page, ["--out", "x"], undefined)).code, 2);

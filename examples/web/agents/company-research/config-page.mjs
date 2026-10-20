@@ -2,7 +2,9 @@
 // A static page of the agent's configuration and of which prompt each run loaded: node config-page.mjs --home DIR --out FILE.
 // One HTML file with no script and nothing from the network. It reads the agent home (its definition, its prompt variants
 // and its runs index) and, for each run, `runs/<id>/prompt.json`, the host's record of how it chose (below), and links
-// `runs/<id>/work/brief.md` when there is one. A field that is not recorded is shown as "not recorded".
+// `runs/<id>/work/brief.md` when there is one. A field that is not recorded is shown as "not recorded". With several
+// --home the configuration shown is the first home's and the runs table has every home's runs; a home whose definition or
+// prompts differ from the first's is named on the page and in a warning.
 //
 // runs/<id>/prompt.json is the host's selection plus the run's input: { version: 1, question, input, variant, passes: [{ choice,
 //   probabilities, confidence, model?, cost_usd?, latency_ms? }], lookup: { used, sources: [{ via, url, title }] }, reason,
@@ -16,7 +18,7 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { normalizePrompts, questionOf, ruleText } from "./prompts-lib.mjs";
 
-const USAGE = "usage: config-page.mjs --home DIR --out FILE";
+const USAGE = "usage: config-page.mjs --home DIR [--home DIR ...] --out FILE";
 
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const NONE = '<span class="none">not recorded</span>';
@@ -104,11 +106,12 @@ p{margin:6px 0}.lede{color:var(--muted);max-width:70ch}.none{color:var(--muted)}
 details{border:1px solid var(--line);border-radius:6px;margin:8px 0;background:var(--soft)}summary{cursor:pointer;padding:10px 12px}pre{margin:0;padding:12px;white-space:pre-wrap;overflow-wrap:anywhere;border-top:1px solid var(--line);font:13px/1.5 ui-monospace,monospace}
 .role{font:12px ui-monospace,monospace;color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:0 5px}.rule{color:var(--accent);font-size:13px}.criterion{margin:0;padding:10px 12px 0;color:var(--muted);font-size:13px}
 .scroll{overflow-x:auto;border:1px solid var(--line);border-radius:6px}table{border-collapse:collapse;width:100%;min-width:900px}th,td{text-align:left;vertical-align:top;padding:8px 10px;border-bottom:1px solid var(--line)}th{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);background:var(--soft)}tr:last-child td{border-bottom:0}
-a{color:var(--accent)}ul{margin:6px 0;padding-left:20px}`;
+a{color:var(--accent)}ul{margin:6px 0;padding-left:20px}.warn{border:1px solid var(--accent);border-radius:6px;padding:8px 12px;margin:12px 0}`;
 
 /**
  * The page as one string. `data` is `{ agent: { id, name, description }, prompts (the home's, its question row too), runs: [{ id,
- * title, index, record, briefHref }], generatedAt }`; everything in it is text and is escaped.
+ * title, index, record, briefHref }], homes (how many homes the runs come from), differences (what one home holds differently
+ * from the first), generatedAt }`; everything in it is text and is escaped.
  */
 export function renderPage(data) {
   const sorted = normalizePrompts(data.prompts).filter((variant) => variant.role !== "question");
@@ -121,6 +124,9 @@ export function renderPage(data) {
     : "";
   const criteria = question?.criteria && Object.keys(question.criteria).length
     ? `<ul>${Object.entries(question.criteria).map(([option, text]) => `<li><b>${escapeHtml(option)}</b>: ${escapeHtml(text)}</li>`).join("")}</ul>`
+    : "";
+  const differences = Array.isArray(data.differences) && data.differences.length
+    ? `<div class="warn"><b>These homes do not hold the same configuration.</b> The prompts above are the first home's.<ul>${data.differences.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul></div>\n`
     : "";
   const head = ["Input", "Jev, first pass", "Jev, second pass", "Lookup", "Prompt loaded", "Outcome", "Result"].map((name) => `<th>${name}</th>`).join("");
   const table = runs.length
@@ -139,8 +145,8 @@ export function renderPage(data) {
 <main>
 <h1>${escapeHtml(data.agent?.name ?? "Agent")}</h1>
 <p class="lede">${escapeHtml(data.agent?.description ?? "")}</p>
-<p class="none">${escapeHtml(data.agent?.id ?? "")} · ${sorted.length} prompt variant${sorted.length === 1 ? "" : "s"} · ${runs.length} run${runs.length === 1 ? "" : "s"} · read ${escapeHtml(data.generatedAt ?? "")}</p>
-<h2>How a prompt is picked</h2>
+<p class="none">${escapeHtml(data.agent?.id ?? "")} · ${sorted.length} prompt variant${sorted.length === 1 ? "" : "s"} · ${runs.length} run${runs.length === 1 ? "" : "s"}${data.homes > 1 ? ` in ${data.homes} homes` : ""} · read ${escapeHtml(data.generatedAt ?? "")}</p>
+${differences}<h2>How a prompt is picked</h2>
 ${rule || '<p class="none">No question is configured.</p>'}${criteria}
 <h2>Prompts</h2>
 ${sorted.length ? sorted.map((variant) => promptBlock(variant, question)).join("\n") : '<p class="none">No prompts are saved in this home.</p>'}
@@ -152,46 +158,71 @@ ${table}
 `;
 }
 
-/** Everything the page shows, read from the agent home at `home`: its state (the question is the home's own row), and each run's directory. */
-export async function collect(home, { api, out }) {
-  const handle = await api.openAgentHome(home);
-  const state = await api.readAgentHome(handle);
+const canonical = (value) => JSON.stringify(value, (_, v) => (isObject(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : 1))) : v));
+
+/** What `other` holds differently from `first` in the configuration the page shows: the agent's id, its definition, each prompt. */
+function differences(first, other) {
+  const found = [];
+  if (first.identity.id !== other.identity.id) found.push(`the agent is ${other.identity.id}, not ${first.identity.id}`);
+  if (canonical(first.definition) !== canonical(other.definition)) found.push("the definition differs");
+  const a = first.prompts ?? {};
+  const b = other.prompts ?? {};
+  const changed = [...new Set([...Object.keys(a), ...Object.keys(b)])].sort().filter((id) => canonical(a[id]) !== canonical(b[id]));
+  if (changed.length) found.push(`prompts differ: ${changed.map((id) => `${id} (${!(id in b) ? "missing" : !(id in a) ? "extra" : "changed"})`).join(", ")}`);
+  return found;
+}
+
+/**
+ * Everything the page shows, read from the agent home at `homes` (one path, or several: the configuration is the first
+ * home's, the runs are all of them, and a home that holds a different configuration is named in `differences`). The
+ * question is the home's own row; each run's directory supplies its prompt.json, title and brief.
+ */
+export async function collect(homes, { api, out }) {
+  const list = [].concat(homes);
   const runs = [];
-  for (const [id, index] of Object.entries(state.runs ?? {})) {
-    const dir = join(home, index.path ?? `runs/${id}`);
-    const record = await readFile(join(dir, "prompt.json"), "utf8").then(JSON.parse).catch(() => null);
-    const web = await readFile(join(dir, "web.json"), "utf8").then(JSON.parse).catch(() => null);
-    const brief = join(dir, "work", "brief.md");
-    const briefHref = existsSync(brief) && (await stat(brief)).isFile() ? relative(dirname(resolve(out)), brief).split("\\").join("/") : null;
-    runs.push({ id, title: typeof web?.title === "string" ? web.title : "", index, record: isObject(record) ? record : null, briefHref });
+  const differing = [];
+  let first;
+  for (const home of list) {
+    const state = await api.readAgentHome(await api.openAgentHome(home));
+    if (!first) first = state;
+    else for (const line of differences(first, state)) differing.push(`${basename(dirname(home))}/${basename(home)}: ${line}`);
+    for (const [id, index] of Object.entries(state.runs ?? {})) {
+      const dir = join(home, index.path ?? `runs/${id}`);
+      const record = await readFile(join(dir, "prompt.json"), "utf8").then(JSON.parse).catch(() => null);
+      const web = await readFile(join(dir, "web.json"), "utf8").then(JSON.parse).catch(() => null);
+      const brief = join(dir, "work", "brief.md");
+      const briefHref = existsSync(brief) && (await stat(brief)).isFile() ? relative(dirname(resolve(out)), brief).split("\\").join("/") : null;
+      runs.push({ id, title: typeof web?.title === "string" ? web.title : "", index, record: isObject(record) ? record : null, briefHref });
+    }
   }
-  return { agent: { id: state.identity.id, name: state.definition.name, description: state.definition.description }, prompts: state.prompts, runs, generatedAt: new Date().toISOString() };
+  return { agent: { id: first.identity.id, name: first.definition.name, description: first.definition.description }, prompts: first.prompts, runs, homes: list.length, differences: differing, generatedAt: new Date().toISOString() };
 }
 
 /** The page written whole (a temporary file renamed over `out`). Returns the exit code. */
 export async function main(argv, { api, out = (line) => console.log(line), err = (line) => console.error(line) } = {}) {
   let values;
   try {
-    ({ values } = parseArgs({ args: argv, options: { home: { type: "string" }, out: { type: "string" } }, allowPositionals: false }));
+    ({ values } = parseArgs({ args: argv, options: { home: { type: "string", multiple: true }, out: { type: "string" } }, allowPositionals: false }));
   } catch (error) {
     err(`${error.message}\n${USAGE}`);
     return 2;
   }
-  if (!values.home || !values.out) {
+  if (!values.home?.length || !values.out) {
     err(USAGE);
     return 2;
   }
   try {
     api ??= await import("@parcha/pi-durable-agent");
-    const home = resolve(values.home);
-    if (!existsSync(join(home, "agent.sqlite"))) throw new Error(`${basename(home)} is not an agent home`);
-    const data = await collect(home, { api, out: values.out });
+    const homes = values.home.map((home) => resolve(home));
+    for (const home of homes) if (!existsSync(join(home, "agent.sqlite"))) throw new Error(`${basename(home)} is not an agent home`);
+    const data = await collect(homes, { api, out: values.out });
+    for (const line of data.differences) err(`warning: ${line}`);
     const target = resolve(values.out);
     await mkdir(dirname(target), { recursive: true });
     const temp = `${target}.${process.pid}.tmp`;
     await writeFile(temp, renderPage(data));
     await rename(temp, target);
-    out(`wrote ${basename(target)}: ${normalizePrompts(data.prompts).filter((v) => v.role !== "question").length} prompt variants, ${data.runs.length} runs`);
+    out(`wrote ${basename(target)}: ${normalizePrompts(data.prompts).filter((v) => v.role !== "question").length} prompt variants, ${data.runs.length} runs${data.homes > 1 ? ` from ${data.homes} homes` : ""}`);
     return 0;
   } catch (error) {
     err(`no page written: ${error.message}`);
