@@ -19,7 +19,7 @@ Here the run starts on this machine (host A, a systemd unit) and moves to a Dayt
 - **This machine, run as an ordinary user with passwordless `sudo`:** Linux, systemd and the archil client. `localHost`
   starts the instance as a systemd unit through `sudo`, and the instance mounts through the package's own
   `bin/archil-scoped` under `sudo`. The example refuses to start as root or without passwordless `sudo`. A host locked
-  down as in [Setting up a host for production](../../README.md#setting-up-a-host-for-production) (a root supervisor, a
+  down as in [Setting up a host for production](../../docs/reference.md#setting-up-a-host-for-production) (a root supervisor, a
   dedicated run user, only the installed wrapper in sudoers) runs production runs, not this example, which runs as you
   so that both hosts share your uid.
 - **The same run user uid on both hosts.** Both incarnations write the same store and workspace, and the disk enforces

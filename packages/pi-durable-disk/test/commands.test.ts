@@ -301,9 +301,9 @@ describe("command records, from a scripted /proc", () => {
         () => assert.fail("the open was not refused"),
         (error: unknown) => (error as Error).message,
       );
-      const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+      const readme = readFileSync(new URL("../docs/reference.md", import.meta.url), "utf8");
       const quoted = refusal.replaceAll(records, "<root>/commands");
-      assert.ok(readme.includes(`\n${quoted}\n`), `the README's refusal is not the one the open writes:\n${quoted}`);
+      assert.ok(readme.includes(`\n${quoted}\n`), `the reference's refusal is not the one the open writes:\n${quoted}`);
     } finally {
       dir.remove();
     }

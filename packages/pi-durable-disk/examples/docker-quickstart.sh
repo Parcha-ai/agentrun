@@ -4,7 +4,7 @@
 # sudo, no FUSE or archil client on this machine. Every instance runs in a container of the package's image.
 #
 #   export ARCHIL_API_KEY=...            # Archil console, API keys
-#   export ARCHIL_DISK=dsk-...           # a disk for scratch runs (the free plan allows 5)
+#   export ARCHIL_DISK=dsk-...           # a disk for scratch runs
 #   export ARCHIL_REGION=aws-us-east-1   # the disk's region
 #   packages/pi-durable-disk/examples/docker-quickstart.sh   # from a clone of the repository; extra arguments go to the
 #                                                             # demo (e.g. freeze, --keep)
