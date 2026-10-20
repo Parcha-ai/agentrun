@@ -186,7 +186,7 @@ the restored generation's snapshot.
 6. **Time is for drawing.** `t` places a line on the timeline. It never orders durable facts; `commit` does.
 7. **Unknown kinds are skipped.** A panel ignores kinds it does not know; the format adds kinds without a version bump.
    A change to a field's meaning is `agentrun.recording/2`.
-8. **A conversation is placed by its record, never by a copied label (draft 54).** A conversation whose `pi.conversation`
+9. **A conversation is placed by its record, never by a copied label (draft 54).** A conversation whose `pi.conversation`
    record has a `parent` is drawn under its parent conversation at entry `parent.at`, tied to the call that made it
    through `owner.taskId` (the tool task, whose record names its call). A conversation with an `owner` and no `parent` (a
    workflow node's conversation) may be nested under its execution by `owner.taskId` the same way. In a conversation that
@@ -231,9 +231,11 @@ snapshots included. A lost branch (3.2) is events, not state: the per-generation
 - No secret, ever. Packages already keep credentials out of their documents and results; the recorder also passes
   every live line through the host's redactor before writing it.
 - A published recording uses public sources only, chosen and checked before it is recorded.
-- A `pi.conversation` line holds only `id`, `parent` and `owner`, and its `parent.conversationId`, `parent.at` (an entry
-  of that conversation) and `owner.taskId` (a task record) are in the same recording (draft 54); the validator refuses
-  one that is not, never dropping it silently.
+- A `pi.conversation` line holds only `id`, `parent` and `owner` (draft 54). Its `parent.conversationId` has lines in the
+  same recording; its `parent.at` is the id of an entry of that conversation, a `pi.user`, `pi.system`, `pi.assistant` or
+  `pi.tool-result` line whose `data.conversationId` is `parent.conversationId`; its `owner.taskId` is the id of a task
+  record, a `pi.tool`, `pi.generation` or `agentrun.workflow` line. A line of any other kind never counts, so a new kind
+  is a change to this format. The validator refuses a record that breaks this, never dropping it silently.
 - Blobs are kept whole. A recording too large for a static host replaces its `frame` lines with `frame.track` lines
   (a WebM per session), and only then drops frames; it never drops durable lines.
 

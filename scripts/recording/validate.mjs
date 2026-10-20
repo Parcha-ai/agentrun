@@ -197,6 +197,11 @@ function artifactFileProblems(artifact, dir, lookKeys, lookSources, add) {
   }
 }
 
+/** The kinds a `pi.conversation` record may point at (draft 54): `parent.at` is an entry of one of these kinds, `owner.taskId` a task
+ *  record of one of these. Any other kind is refused, so a new kind is a visible change to the format. */
+export const ENTRY_KINDS = new Set(['pi.user', 'pi.system', 'pi.assistant', 'pi.tool-result']);
+export const TASK_KINDS = new Set(['pi.tool', 'pi.generation', 'agentrun.workflow']);
+
 export function validateRecording(dir) {
   const problems = [];
   const add = (where, message, line) => problems.push({ where, ...(line === undefined ? {} : { line }), message });
@@ -250,7 +255,7 @@ export function validateRecording(dir) {
   const lookKeys = new Set();
   const lookSources = new Map();
   const liveGenerations = new Set();
-  // Draft 54: the conversations, entries (`model`) and task records (`state`) the recording holds, and its pi.conversation lines.
+  // Draft 54: the conversations, entries and task records (by kind) the recording holds, and its pi.conversation lines.
   const conversations = new Set();
   const entries = new Set();
   const tasks = new Set();
@@ -318,9 +323,9 @@ export function validateRecording(dir) {
     if (event.channel === 'durable' && event.kind === 'pi.conversation') {
       conversationRecords.push({ line, record: event.data });
       if (isInt(event.data?.id)) conversations.add(event.data.id);
-    } else if (event.channel === 'durable' && isObject(event.data) && event.data.doc === undefined) {
-      if (event.data.state !== undefined && isInt(event.data.id)) tasks.add(event.data.id);
-      else if (event.data.model !== undefined && isInt(event.data.id)) entries.add(`${event.data.conversationId ?? event.conv}\u0000${event.data.id}`);
+    } else if (event.channel === 'durable' && isObject(event.data) && isInt(event.data.id)) {
+      if (TASK_KINDS.has(event.kind)) tasks.add(event.data.id);
+      else if (ENTRY_KINDS.has(event.kind) && isInt(event.data.conversationId)) entries.add(`${event.data.conversationId}\u0000${event.data.id}`);
     }
     for (const key of lookKeysOf(event.data)) lookKeys.add(key);
     for (const [key, named] of lookSourcesOf(event.data)) lookSources.set(key, [...(lookSources.get(key) ?? []), ...named]);
@@ -335,11 +340,11 @@ export function validateRecording(dir) {
     if (parent !== undefined) {
       if (!isObject(parent) || !isInt(parent.conversationId) || !isInt(parent.at)) add('events.jsonl', `${name}: its parent is not { conversationId, at }, each an integer`, line);
       else if (!conversations.has(parent.conversationId)) add('events.jsonl', `${name}: its parent names conversation ${parent.conversationId}, which is not in this recording`, line);
-      else if (!entries.has(`${parent.conversationId}\u0000${parent.at}`)) add('events.jsonl', `${name}: its parent names entry ${parent.at}, which is no entry of conversation ${parent.conversationId}`, line);
+      else if (!entries.has(`${parent.conversationId}\u0000${parent.at}`)) add('events.jsonl', `${name}: its parent names entry ${parent.at}, which is no entry (${[...ENTRY_KINDS].join(', ')}) of conversation ${parent.conversationId}`, line);
     }
     if (owner !== undefined) {
       if (!isObject(owner) || !isInt(owner.conversationId) || !isInt(owner.taskId)) add('events.jsonl', `${name}: its owner is not { conversationId, taskId }, each an integer`, line);
-      else if (!tasks.has(owner.taskId)) add('events.jsonl', `${name}: its owner names task ${owner.taskId}, which is not in this recording`, line);
+      else if (!tasks.has(owner.taskId)) add('events.jsonl', `${name}: its owner names task ${owner.taskId}, which is no task record (${[...TASK_KINDS].join(', ')}) in this recording`, line);
     }
   }
   if (isObject(manifest?.artifact) && artifactProblems(manifest.artifact).length === 0) artifactFileProblems(manifest.artifact, dir, lookKeys, lookSources, add);
