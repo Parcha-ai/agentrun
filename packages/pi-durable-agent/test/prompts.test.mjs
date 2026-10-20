@@ -254,6 +254,11 @@ test("choosePrompt: each overlay has its own threshold, met at equality; the hig
   assert.equal(highest.variant, "private", "both meet 0.3; 0.4 is higher");
   const notTop = await choosePrompt(lowSet, "x", { judge: at({ other: 0.6, government_body: 0.32, private_company: 0.08 }) });
   assert.equal(notTop.variant, "government", "other is the top choice, and government still meets its threshold");
+  const { when: _, ...ruleless } = PROMPTS.private;
+  const asked = judgeOf(answer("private_company", 0.99));
+  const noRule = await choosePrompt({ ...PROMPTS, private: ruleless }, "x", { judge: asked.judge });
+  assert.equal(noRule.variant, "generic", "an overlay with no when is never picked, whatever the judge says");
+  assert.ok(!Object.hasOwn(asked.asked[0].questions.kind.criteria, "private_company"), "and its option is not offered");
 });
 
 test("choosePrompt: the lookup's text is cut to LOOKUP_TEXT_MAX for the second pass; a set setPrompts refuses is refused; a set with no rule is the generic, with no judge call", async () => {
