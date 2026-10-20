@@ -338,7 +338,11 @@ export async function writeCurve(out) {
   const meta = existsSync(join(out, 'meta.json')) ? JSON.parse(readFileSync(join(out, 'meta.json'), 'utf8')) : {};
   const sealed = readdirSync(out).filter((f) => /^sealed-[0-9a-f]{12}\.jsonl$/.test(f)).map((f) => {
     const label = f.slice('sealed-'.length, -'.jsonl'.length);
-    return { label, seed: meta.seedSha?.startsWith(label) ?? false, rows: readRows(join(out, f)) };
+    const rows = readRows(join(out, f));
+    // Before means nothing learned: the rows say so (a sealed-before pass may run in a take of its own, at its own seed
+    // commit of the same tree); rows from before the phase field go by this pass's seed.
+    const phases = rows.map((r) => r.phase).filter(Boolean);
+    return { label, seed: phases.length ? phases.every((p) => p === 'before') : meta.seedSha?.startsWith(label) ?? false, rows };
   });
   const conventions = existsSync(join(out, 'conventions.json')) ? JSON.parse(readFileSync(join(out, 'conventions.json'), 'utf8')) : {};
   const file = join(out, 'curve.html');

@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import Ajv from 'ajv';
 import { WorkflowStore } from '@parcha/agentrun-pi/workflows';
 import { renderSkill, renderTrial, skillPath, trialPath } from '@parcha/pi-agent-learn';
-import { renderCurve } from './curve.mjs';
+import { renderCurve, writeCurve } from './curve.mjs';
 import { HOST_WORKFLOW } from './dispatch.mjs';
 import { answerV4, textsRead } from './host.mjs';
 import { rerow } from './rerow.mjs';
@@ -545,4 +545,17 @@ test('the log names what curate held: a note by its id, the run\'s uses as uses,
   const line = lineOf(row);
   assert.match(line, /held L-1, held the run's uses, refused note 3/);
   assert.doesNotMatch(line, /undefined/);
+});
+
+test('a sealed file is "before" when its rows say so, though its seed commit is another take\'s', async (t) => {
+  const out = await scratch(t);
+  // A sealed-before pass run in its own take: its seed commit is not this pass's (another timestamp, the same tree).
+  await writeFile(join(out, 'meta.json'), JSON.stringify({ seedSha: 'a'.repeat(40), mode: 'live', set: 'v4' }));
+  await writeFile(join(out, 'runs.jsonl'), '');
+  const row = (phase) => JSON.stringify({ run: 1, split: 'sealed', phase, correct: true });
+  await writeFile(join(out, `sealed-${'b'.repeat(12)}.jsonl`), `${row('before')}\n${row('before')}\n`);
+  await writeFile(join(out, `sealed-${'c'.repeat(12)}.jsonl`), `${row('after')}\n`);
+  const html = readFileSync(await writeCurve(out), 'utf8');
+  assert.match(html, /sealed, before \(the seed\)<\/div><div class="v">2 of 2/);
+  assert.match(html, /sealed, at ccccccc<\/div><div class="v">1 of 1/);
 });
