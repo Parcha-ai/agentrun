@@ -7,8 +7,9 @@ import { createModels, createProvider } from '@earendil-works/pi-ai/models';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { typesafeProvider } from '@earendil-works/pi-ai/providers/typesafe';
 import type { Fakes } from '@parcha/agentrun-harness';
+import type { BoxProvider } from '@parcha/pi-transport';
 import { localBoxes } from '@parcha/pi-transport/box/local';
-import { ENVIRONMENTS, placedFrames } from './tools.ts';
+import { ENVIRONMENTS, type Hosting } from './tools.ts';
 
 /** The iterations at which the script calls a frame heavy. */
 export const HEAVY_ITERATIONS = 150;
@@ -75,16 +76,18 @@ export function scriptedLead(messages: readonly Message[]): AssistantMessage {
 }
 
 /** The fakes the reference entry runs the job on. */
+/** Each environment a directory of this machine; the box's PATH starts with this node's directory, so the tile program runs on the node running the demo. */
+export function localProviders(root: string): Record<string, BoxProvider> {
+  return Object.fromEntries(ENVIRONMENTS.map((environment) => [environment.id, localBoxes({ root: join(root, 'boxes', environment.id), path: `${dirname(process.execPath)}:/usr/bin:/bin` })]));
+}
+
+/** The no-key hosting over the host's (tapped) providers: the scripted classifier stands in for Jev. */
+export const fakeHosting = (providers: Record<string, BoxProvider>): Hosting => ({ providers: () => providers, models: scriptedModels(), placer: 'scripted' });
+
 export const fakes: Fakes = {
   model: scriptedLead,
   judge: async () => { throw new Error('this job asks the judge nothing'); },
   tools: {},
-  // The agent's tools, over each environment a directory of this machine; the box's PATH starts with this node's directory, so the tile program runs on the node running the demo.
-  extensions: [placedFrames({
-    providers: (place) => Object.fromEntries(ENVIRONMENTS.map((environment) => [environment.id, localBoxes({ root: join(place.root, 'boxes', environment.id), path: `${dirname(process.execPath)}:/usr/bin:/bin` })])),
-    models: scriptedModels(),
-    placer: 'scripted',
-  })],
   pages: {},
   start: 'about:blank',
   responses: 8,

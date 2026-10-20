@@ -9,11 +9,11 @@ import { createModels, createProvider, type Provider } from '@earendil-works/pi-
 import { googleProvider } from '@earendil-works/pi-ai/providers/google';
 import { typesafeProvider } from '@earendil-works/pi-ai/providers/typesafe';
 import type { LiveParts } from '@parcha/agentrun-harness';
-import type { BoxPrice } from '@parcha/pi-transport';
+import type { BoxProvider } from '@parcha/pi-transport';
 import { daytonaBoxes } from '@parcha/pi-transport/box/daytona';
 import { type ModalSdk, modalBoxes } from '@parcha/pi-transport/box/modal';
 import spec from './demo.json' with { type: 'json' };
-import { type Hosting, placedFrames } from './tools.ts';
+import type { Hosting } from './tools.ts';
 
 /** The Modal app the boxes are made in: Modal makes it when it is absent, and it stays on the account. */
 export const MODAL_APP = 'agentrun-placed-frames';
@@ -73,38 +73,45 @@ const need = (env: NodeJS.ProcessEnv, name: string): string => {
   return value;
 };
 
-/** The live hosting the tools run on: Daytona and Modal sandboxes by their providers, what each environment's boxes are made with, Jev as the placer and the rates, none. The take and a probe use this one. */
-export function hostingOf(env: NodeJS.ProcessEnv, ModalClient: new () => ModalSdk): Hosting {
-  const daytona = { apiKey: need(env, 'DAYTONA_API_KEY'), apiUrl: env.DAYTONA_API_URL?.trim() || undefined, target: env.DAYTONA_TARGET?.trim() || undefined, snapshot: env.DAYTONA_SNAPSHOT?.trim() || undefined };
+/** The live providers: Daytona sandboxes (Daytona's REST API) and Modal sandboxes (the user's own Modal SDK), by their environment's id. The host taps them and records every sandbox a tool makes on them. */
+export async function liveProviders(env: NodeJS.ProcessEnv): Promise<Record<string, BoxProvider>> {
+  const daytona = { apiKey: need(env, 'DAYTONA_API_KEY'), apiUrl: env.DAYTONA_API_URL?.trim() || undefined, target: env.DAYTONA_TARGET?.trim() || undefined };
+  need(env, 'MODAL_TOKEN_ID');
+  need(env, 'MODAL_TOKEN_SECRET');
+  // The SDK is the user's (`npm install --no-save modal@0.11.0`): a name in a variable, so nothing here depends on it.
+  const sdk = 'modal';
+  const { ModalClient } = (await import(sdk).catch(() => { throw new Error('--live needs the modal SDK: npm install --no-save modal@0.11.0'); })) as { ModalClient: new () => ModalSdk };
   return {
-    providers: () => ({
-      daytona: daytonaBoxes({ apiKey: daytona.apiKey, ...(daytona.apiUrl ? { apiUrl: daytona.apiUrl } : {}), ...(daytona.target ? { target: daytona.target } : {}) }),
-      modal: modalBoxes(new ModalClient(), { appName: MODAL_APP }),
-    }),
-    specOf: (environment) => ({
-      ...(environment.cpus === undefined ? {} : { cpus: environment.cpus }),
-      ...(environment.image === undefined ? {} : { image: environment.image }),
-      ...(environment.provider === 'daytona' && daytona.snapshot ? { snapshot: daytona.snapshot } : {}),
-    }),
-    models: jevModels(jevBaseUrl(env)),
-    placer: 'jev',
-    rates: spec.rates as readonly BoxPrice[] | null,
+    daytona: daytonaBoxes({ apiKey: daytona.apiKey, ...(daytona.apiUrl ? { apiUrl: daytona.apiUrl } : {}), ...(daytona.target ? { target: daytona.target } : {}) }),
+    modal: modalBoxes(new ModalClient(), { appName: MODAL_APP }),
   };
 }
 
+/** The live hosting the tools run on, over the providers the host tapped: what each environment's boxes are made with, and Jev as the placer. No rates: the host's receipts name none. */
+export function hostingOf(env: NodeJS.ProcessEnv, providers: Record<string, BoxProvider>): Hosting {
+  const snapshot = env.DAYTONA_SNAPSHOT?.trim() || undefined;
+  return {
+    providers: () => providers,
+    specOf: (environment) => ({
+      ...(environment.cpus === undefined ? {} : { cpus: environment.cpus }),
+      ...(environment.image === undefined ? {} : { image: environment.image }),
+      ...(environment.provider === 'daytona' && snapshot ? { snapshot } : {}),
+    }),
+    models: jevModels(jevBaseUrl(env)),
+    placer: 'jev',
+  };
+}
+
+/** The live parts: the lead's models only. The sandboxes' providers and the tools over them are `DemoOptions.providers` and `providerExtensions` (run.ts), which is how the host records every sandbox. */
 export const liveParts = async ({ env }: { env: NodeJS.ProcessEnv }): Promise<LiveParts> => {
   need(env, 'DAYTONA_API_KEY');
   need(env, 'MODAL_TOKEN_ID');
   need(env, 'MODAL_TOKEN_SECRET');
   need(env, 'TYPESAFE_API_KEY');
   const catalog = leadCatalog(env);
-  // The SDK is the user's (`npm install --no-save modal@0.11.0`): a name in a variable, so nothing here depends on it.
-  const sdk = 'modal';
-  const { ModalClient } = (await import(sdk).catch(() => { throw new Error('--live needs the modal SDK: npm install --no-save modal@0.11.0'); })) as { ModalClient: new () => ModalSdk };
-  const extension = placedFrames(hostingOf(env, ModalClient));
-  const daytonaSnapshot = env.DAYTONA_SNAPSHOT?.trim();
+  const snapshot = env.DAYTONA_SNAPSHOT?.trim();
   return {
-    host: { models: { catalog, lead: LEAD }, tools: { extensions: [extension] } } as never,
-    models: { lead: `${LEAD.provider}/${LEAD.modelId}`, placer: 'typesafe/jev-latest', daytona: daytonaSnapshot ? `snapshot ${daytonaSnapshot}` : 'the default sandbox', modal: spec.placement.environments.find((each) => each.id === 'modal')?.image ?? 'the default image' },
+    host: { models: { catalog, lead: LEAD } } as never,
+    models: { lead: `${LEAD.provider}/${LEAD.modelId}`, placer: 'typesafe/jev-latest', daytona: snapshot ? `snapshot ${snapshot}` : 'the default sandbox', modal: spec.placement.environments.find((each) => each.id === 'modal')?.image ?? 'the default image' },
   };
 };

@@ -79,11 +79,20 @@ test('the zoom on fakes: the agent asks for one placed tool call a frame, each a
     assert.ok(box.execs.every((exec) => exec.start <= exec.end && exec.exitCode === 0), `${box.box}: every command has its start, end and exit code`);
   }
   assert.equal(log.boxes.flatMap((box) => box.execs).filter((exec) => exec.what.startsWith('tile ')).length, FRAMES * 4, 'four tiles a frame');
-  // The ids stay in their own internal file at the root of the run's directory: by label, with the provider's id, never in boxes.json or the recording.
+  // The provider ids are the host's: by label, in a file at the root of the run's directory, outside the recording and outside frames/ (which a result cites and may copy).
   const ids = JSON.parse(readFileSync(join(run.dir, 'box-ids.internal.json'), 'utf8'));
-  assert.ok(!readdirSync(join(run.dir, 'work', 'frames')).some((name) => name.includes('box-ids')), 'not under frames/, which a result may cite or copy');
-  assert.deepEqual(Object.keys(ids.boxes), ['box-1', 'box-2']);
-  assert.ok(Object.values(ids.boxes).every((box) => box.provider === 'local' && /^local-[0-9a-f]{12}$/.test(box.id)), 'each label maps to its provider id');
+  assert.deepEqual(Object.keys(ids), ['box-1', 'box-2']);
+  assert.ok(Object.values(ids).every((box) => box.provider === 'local' && /^local-[0-9a-f]{12}$/.test(box.id)), 'each label maps to its provider id');
+  assert.ok(!readdirSync(join(run.dir, 'work', 'frames')).some((name) => name.includes('box-ids')), 'not under frames/');
+  // The recording holds the boxes by label: a created, each command and an ended line for both, and a receipt for each that names no rate, so the cost reads unknown.
+  const transport = events.filter((event) => event.source === 'transport');
+  const byKind = (kind) => transport.filter((event) => event.kind === kind);
+  assert.deepEqual(byKind('box.created').map((event) => event.data.box).sort(), ['box-1', 'box-2']);
+  assert.deepEqual(byKind('box.ended').map((event) => event.data.box).sort(), ['box-1', 'box-2']);
+  assert.equal(byKind('box.exec').length, log.boxes.flatMap((box) => box.execs).length, 'a box.exec line for each command the boxes took');
+  const receipts = events.filter((event) => event.kind === 'box.receipt');
+  assert.deepEqual(receipts.map((event) => event.data.box).sort(), ['box-1', 'box-2']);
+  assert.ok(receipts.every((event) => event.data.usd_per_second === null && event.data.cost_usd === null), 'a receipt names no rate');
   assert.doesNotMatch(boxesText, /local-[0-9a-f]{12}|\/home\/|\/tmp\/|\/var\/|https?:/, 'no provider id, path or address');
   // The agent's own answer says what the results say.
   assert.deepEqual(run.record, { answer: '(scripted) Drew 12 frames: 7 on daytona and 5 on modal.' });
@@ -92,6 +101,7 @@ test('the zoom on fakes: the agent asks for one placed tool call a frame, each a
   const manifest = JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8'));
   assert.equal(manifest.format, 'agentrun.recording/1');
   assert.deepEqual([manifest.kills, manifest.generations, manifest.placer, manifest.lead], [0, 1, 'a script (no Jev call)', 'a scripted lead (pi-ai faux)']);
+  assert.equal(manifest.cost.boxKnown, 0, 'the boxes are unpriced, so the cost is not a known low number');
   const cited = JSON.parse(readFileSync(join(recording, 'blobs', `${manifest.result.blob}.json`), 'utf8'));
   assert.deepEqual(cited.rows.map((row) => [row.label, row.value]), [['the zoom', `${FRAMES} frames, in order, 4 to a row`], ['daytona', 'frames 1, 2, 3, 4, 5, 6, 7'], ['modal', 'frames 8, 9, 10, 11, 12']]);
   // Grounding: every row cites what it rests on. An environment's row cites each tool call placed there, kept in the recording (its tool, arguments and answer), and the release call;
@@ -121,7 +131,7 @@ test('the zoom on fakes: the agent asks for one placed tool call a frame, each a
   assert.equal(sha256(picture), blob);
   assert.deepEqual([...picture.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 'a PNG');
   const recorded = [readFileSync(join(recording, 'events.jsonl'), 'latin1'), readFileSync(join(recording, 'manifest.json'), 'latin1'), ...texts(join(recording, 'blobs')).filter((text) => !text.startsWith('\x89PNG'))].join('\n');
-  assert.doesNotMatch(recorded, /\$\s?\d|usd_per|cost_usd"\s*:\s*\d/, 'no dollar figure');
+  assert.doesNotMatch(recorded, /\$\s?\d|usd_per_second"\s*:\s*\d|cost_usd"\s*:\s*\d/, 'no dollar figure: a receipt names no rate, so its fields are null');
   assert.doesNotMatch(recorded, /local-[0-9a-f]{12}/, 'no provider id');
   assert.doesNotMatch(recorded, /Moved to|Stays in|Back to|Jev judged the step/, 'the placer\'s own sentence is nowhere in the recording');
 });
@@ -166,24 +176,18 @@ test('the placed line is composed from the record\'s fields, whatever the placer
   assert.doesNotMatch(placedLine({ target: 'modal', moved: true, answers: answers(0.91), reason }, 'daytona', 'Jev'), /Moved to|Stays in|Back to|the step/);
 });
 
-test('rates are an option: with them each box ends with its receipt; without them there is none', async (t) => {
+test('a box the host did not label gets the next box-N, and release answers the boxes by label', async (t) => {
   const tmp = await scratch(t);
-  const run = async (rates) => {
-    const work = join(tmp, `work-${Boolean(rates)}`);
-    mkdirSync(work, { recursive: true });
-    const extension = placedFrames({ providers: () => Object.fromEntries(ENVIRONMENTS.map((environment) => [environment.id, localBoxes({ root: join(tmp, String(Boolean(rates)), environment.id), path: `${process.execPath.replace(/\/[^/]+$/, '')}:/usr/bin:/bin` })])), models: scriptedModels(), placer: 'scripted', ...(rates ? { rates } : {}) });
-    const tool = (name) => extension.tools.find((each) => each.name === name);
-    const api = { env: new NodeExecutionEnv({ cwd: work }) };
-    await tool('frame').execute({ f: 0, frames: FRAMES }, api, BACKGROUND_CONTEXT);
-    await tool('frame').execute({ f: 11, frames: FRAMES }, api, BACKGROUND_CONTEXT);
-    const released = await tool('release').execute({}, api, BACKGROUND_CONTEXT);
-    assert.deepEqual(released.content, released.output, 'the answer is in both the content and the output');
-    return JSON.parse(released.content[0].text);
-  };
-  const without = await run(undefined);
-  assert.equal(without.receipts, undefined);
-  const priced = await run([{ provider: 'local', kind: 'none', usdPerSecond: 0.001, source: 'a test', priced: '2026-10-18' }]);
-  assert.deepEqual(priced.receipts.map((receipt) => [receipt.box, receipt.provider, receipt.kind]), [['box-1', 'local', 'none'], ['box-2', 'local', 'none']]);
+  const work = join(tmp, 'work');
+  mkdirSync(work, { recursive: true });
+  const extension = placedFrames({ providers: () => Object.fromEntries(ENVIRONMENTS.map((environment) => [environment.id, localBoxes({ root: join(tmp, environment.id), path: `${process.execPath.replace(/\/[^/]+$/, '')}:/usr/bin:/bin` })])), models: scriptedModels(), placer: 'scripted' });
+  const tool = (name) => extension.tools.find((each) => each.name === name);
+  const api = { env: new NodeExecutionEnv({ cwd: work }) };
+  await tool('frame').execute({ f: 0, frames: FRAMES }, api, BACKGROUND_CONTEXT);
+  await tool('frame').execute({ f: 11, frames: FRAMES }, api, BACKGROUND_CONTEXT);
+  const released = await tool('release').execute({}, api, BACKGROUND_CONTEXT);
+  assert.deepEqual(released.content, released.output, 'the answer is in both the content and the output');
+  assert.deepEqual(JSON.parse(released.content[0].text), { boxes: [{ box: 'box-1', environment: 'daytona', provider: 'local' }, { box: 'box-2', environment: 'modal', provider: 'local' }] });
 });
 
 test('a live run without its keys is refused before any box is made, naming the key', async () => {

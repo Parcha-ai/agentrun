@@ -3,13 +3,18 @@
 import { pathToFileURL } from 'node:url';
 import { demo, type DemoOptions } from '@parcha/agentrun-harness';
 import spec from './demo.json' with { type: 'json' };
-import { fakes } from './fakes.ts';
+import { fakeHosting, fakes, localProviders } from './fakes.ts';
 import { job } from './job.ts';
-import { liveParts } from './live.ts';
+import { hostingOf, liveParts, liveProviders } from './live.ts';
 import { result } from './result.ts';
+import { placedFrames } from './tools.ts';
 
 export const options: DemoOptions = {
   self: import.meta.url, spec, job, fakes, live: liveParts, result, keepRun: true,
+  // The sandboxes' providers are the host's to tap: every box a tool makes on them is on the recording by its label, with a receipt, and its provider id goes to a file outside the recording.
+  providers: async ({ live, env, root }) => (live ? liveProviders(env) : localProviders(root)) as never,
+  // The agent's tools, over the tapped providers.
+  providerExtensions: ({ providers, live }) => [placedFrames(live ? hostingOf(process.env, providers as never) : fakeHosting(providers as never))],
   manifest: ({ input, live, models }) => ({ frames: input?.frames ?? job.input.frames, lead: live ? models?.lead ?? null : 'a scripted lead (pi-ai faux)', placer: live ? 'Jev (typesafe/jev-latest)' : 'a script (no Jev call)', boxes: live ? models ?? null : 'local boxes for both environments' }),
 };
 

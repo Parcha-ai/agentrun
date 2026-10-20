@@ -1,10 +1,9 @@
 // The agent's two tools, a pi extension over the host's sandboxes, one box per environment. `frame` asks the placer where one frame of the zoom runs, draws the frame's four tiles there with the tile
 // program, and keeps the frame on the run's disk; its answer names the environment, the box by its label (`box-1`, never the provider's id) and the line the example composes from the placement record. `release` ends
-// every box the run made and answers which; with rates (an option, off in demo.json) it also answers each box's receipt. A box is made the first time a frame is placed in its
+// every box the run made and answers which. The host taps the providers (`DemoOptions.providers`): a box it hands out carries its label (`box-N`) and is on the recording by that label. A box is made the first time a frame is placed in its
 // environment, and every later frame placed there uses it. Each call also leaves a record beside the frames (`frames/*.call.json`: the tool, its arguments and its answer), which the result cites.
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
@@ -12,7 +11,7 @@ import type { Models } from '@earendil-works/pi-ai';
 import type { ExecutionEnv } from '@earendil-works/pi-durable/env';
 import { defineExtension, defineTool, type Extension, type ToolExecutionResult } from '@earendil-works/pi-durable';
 import { Type } from 'typebox';
-import { type Box, type BoxPrice, type BoxProvider, type BoxReceipt, type BoxSpec, boxReceipts, type EnvironmentFacts, jevPlacer, type Placer, type PlacementRecord } from '@parcha/pi-transport';
+import { type Box, type BoxProvider, type BoxSpec, type EnvironmentFacts, jevPlacer, type Placer, type PlacementRecord } from '@parcha/pi-transport';
 import { boxEnv } from '@parcha/pi-transport/hands';
 import spec from './demo.json' with { type: 'json' };
 import { HEIGHT, TILES_X, TILES_Y, TILE_H, TILE_W, WIDTH, iterationsOf, window_ } from './programs/params.mjs';
@@ -31,7 +30,7 @@ export const LIFETIME_MS = 20 * 60_000;
 export const LABELS = { example: 'placed-frames' };
 const JEV = { provider: 'typesafe', modelId: 'jev-latest' };
 
-/** What the host brings: a provider for each environment, the models the placer asks, and the rates, if any. */
+/** What the host brings: a provider for each environment, and the models the placer asks. */
 export type Hosting = {
   /** Each environment's provider, by its id, made once with the run's place. */
   providers(place: { root: string; work: string }): Record<string, BoxProvider> | Promise<Record<string, BoxProvider>>;
@@ -41,8 +40,6 @@ export type Hosting = {
   models: Models;
   /** Who answers the placer: said in each frame's answer, so a scripted run never reads as Jev's. */
   placer: 'jev' | 'scripted';
-  /** Each kind of box's rate, for a receipt per box. None by default: no receipt is made. */
-  rates?: readonly BoxPrice[] | null;
 };
 
 /** What Jev reads for an environment: the author's line and the facts the config states (the provider is not shown to Jev). */
@@ -82,7 +79,7 @@ async function sh(env: ExecutionEnv, command: string, timeoutS: number): Promise
 type Made = { box: Box; env: ExecutionEnv; label: string; provider: string };
 /** What the run's boxes did, by the box's label: when it was made, each command's start and end (what it was, its exit code), and when it ended. No id, address or path. */
 type BoxLog = { box: string; provider: string; created: string; ended?: string; execs: Array<{ what: string; start: string; end: string; exitCode: number }> };
-type State = { ids: Map<string, { provider: string; id: string }>; idsWritten: Promise<unknown>; log: Map<string, BoxLog>; providers: Record<string, BoxProvider>; labelOf(provider: string, id: string): string | undefined; receipts: BoxReceipt[]; placer: Placer; boxes: Map<string, Promise<Made>> };
+type State = { log: Map<string, BoxLog>; providers: Record<string, BoxProvider>; placer: Placer; boxes: Map<string, Promise<Made>>; /** Labels for a box the host did not label (a tool run on its own): `box-N` by first appearance. */ unlabelled: number };
 
 /** A tool's answer as pi keeps it: the JSON text in both the result's `content` and its `output`, so a reader of either sees it. */
 function answered(value: unknown): ToolExecutionResult {
@@ -97,17 +94,15 @@ export function placedFrames(hosting: Hosting): Extension {
     let state = runs.get(place.work);
     if (!state) {
       state = (async () => {
-        const receipts: BoxReceipt[] = [];
-        const ledger = boxReceipts({ prices: hosting.rates ?? [], write: (receipt) => receipts.push(receipt) });
         const given = await hosting.providers(place);
         const providers = Object.fromEntries(ENVIRONMENTS.map((environment) => {
           const provider = given[environment.id];
           if (!provider) throw new Error(`no provider for the environment ${environment.id}`);
-          return [environment.id, ledger.wrap(provider)];
+          return [environment.id, provider];
         }));
         const placer = await jevPlacer(hosting.models, JEV, { rest: REST, timeoutMs: 30_000 });
         if (!placer.ok) throw placer.error;
-        return { ids: new Map(), idsWritten: Promise.resolve(), log: new Map(), providers, labelOf: (provider: string, id: string) => ledger.labelOf(provider, id), receipts, placer: placer.value, boxes: new Map() } satisfies State;
+        return { log: new Map(), providers, placer: placer.value, boxes: new Map(), unlabelled: 0 } satisfies State;
       })();
       runs.set(place.work, state);
     }
@@ -132,8 +127,8 @@ export function placedFrames(hosting: Hosting): Extension {
       if (!created.ok) throw created.error;
       const box = created.value;
       const env = boxEnv(box);
-      const made = { box, env, label: s.labelOf(provider.name, box.id) ?? 'box-?', provider: provider.name };
-      s.ids.set(made.label, { provider: made.provider, id: box.id });
+      // The host's tap labels each box it hands out; a box from a provider it did not tap gets the next `box-N` here.
+      const made = { box, env, label: (box as { label?: string }).label ?? `box-${(s.unlabelled += 1)}`, provider: provider.name };
       s.log.set(made.label, { box: made.label, provider: made.provider, created: new Date().toISOString(), execs: [] });
       const node = await logged(s, made, 'check node', () => sh(env, 'node -v', 60));
       if (node.exitCode !== 0) {
@@ -157,12 +152,6 @@ export function placedFrames(hosting: Hosting): Extension {
     if (!work.ok) throw work.error;
     return { work: work.value, root: dirname(work.value) };
   };
-  /** The provider's id of each box the run made, by label, in a file at the root of the run's directory (`box-ids.internal.json`, beside `work/`, outside `frames/`): for whoever checks the accounts after a run, never for a recording or a card, and not under anything a copy of `frames/` could take. */
-  const keepIds = (env: ExecutionEnv, s: State) => (s.idsWritten = s.idsWritten.catch(() => undefined).then(async () => hostFile(join((await placeOf(env)).root, 'box-ids.internal.json'), JSON.stringify({ format: 'placed-frames.box-ids/1', internal: true, boxes: Object.fromEntries([...s.ids].sort(([a], [b]) => a.localeCompare(b, 'en', { numeric: true }))) }))));
-
-  /** A file outside the call's environment, which is confined to the run's work directory: this host's own file, written whole or not at all. */
-  const hostFile = async (path: string, text: string) => { await writeFile(`${path}.partial`, text); await rename(`${path}.partial`, path); };
-
   /** A file in the run's work directory, written whole or not at all. */
   const keep = async (env: ExecutionEnv, path: string, bytes: Uint8Array | string) => {
     const wrote = await env.writeFile(`${path}.partial`, bytes, ctx);
@@ -203,7 +192,6 @@ export function placedFrames(hosting: Hosting): Extension {
         sha256: createHash('sha256').update(pixels).digest('hex'), iterations: iterationsOf(f),
       };
       await keep(env!, `frames/f${f}.call.json`, JSON.stringify({ tool: 'frame', args: { f, frames }, answer }));
-      await keepIds(env!, s);
       return answered(answer);
     },
   });
@@ -227,14 +215,13 @@ export function placedFrames(hosting: Hosting): Extension {
         ended.push({ box: made.label, environment, provider: made.provider });
       }
       ended.sort((a, b) => a.box.localeCompare(b.box, 'en', { numeric: true }));
-      const answer = { boxes: ended, ...(s.receipts.length > 0 ? { receipts: s.receipts } : {}) };
+      const answer = { boxes: ended };
       const made_ = await env!.exec('mkdir -p frames', undefined, ctx);
       if (!made_.ok) throw made_.error;
       await keep(env!, 'frames/release.call.json', JSON.stringify({ tool: 'release', args: {}, answer }));
       // The boxes' own log, for whoever draws the run: by label, never by the provider's id.
       const boxes = [...s.log.values()].sort((a, b) => a.box.localeCompare(b.box, 'en', { numeric: true }));
       await keep(env!, 'frames/boxes.json', JSON.stringify({ format: 'placed-frames.boxes/1', boxes }));
-      await keepIds(env!, s);
       return answered(answer);
     },
   });
