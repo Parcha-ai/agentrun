@@ -3,7 +3,7 @@
 Use this to report what a site shows, for example the pages behind a sign-in.
 
 1. Read each page you were asked about with the browser. Note its address, its title and what it says.
-   - Files a page offers as downloads land in `downloads/` in your workspace, under the names the page gives them. Your file tools cannot list a folder: before you answer, read each file you downloaded with `limit` 1 to confirm it is there.
+   - To download a file a page offers, click its link in the browser with run; never write a downloaded file yourself, and if a click saves nothing, say so. Files a page offers as downloads land in `downloads/` in your workspace, under the names the page gives them. Your file tools cannot list a folder: before you answer, read each file you downloaded with `limit` 1 to confirm it is there.
 2. Answer in the chat: what the person asked, in a few plain lines, and the name of each file you downloaded. What the person said they care about (your memory) decides what goes in.
 3. Write report files only when the person asks for a report or for files:
    - `report.md` in the workspace: a title, one short paragraph per page with what it shows, and any tool call that failed, with what its result said.
