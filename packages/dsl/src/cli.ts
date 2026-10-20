@@ -13,7 +13,7 @@ const help = `AgentRun DSL — build, test, and run agent workflows
   agentrun example [file.json]            Write the demo workflow (never overwrite)
   agentrun inspect workflow.json [--json] Show structure without executing code
   agentrun validate workflow.json [input.json] --trusted
-  agentrun dry-run workflow.json [input.json] --trusted
+  agentrun dry-run workflow.json [input.json] --trusted [--strict]
   agentrun run workflow.json input.json --trusted
 
 demo runs the real interpreter with scripted judgments, without a key or network.
@@ -23,6 +23,8 @@ during validation and running. Only use workflows you trust; this is not a sandb
 validate checks a supplied input against the workflow's input contract.
 dry-run uses supplied input, or synthesizes it from the declared input schema.
 Without an input schema, dry-run starts with an empty input object.
+dry-run exits 1 when a check fails. A check that could not run (status not_run, the
+reasons under skipped) exits 0 unless --strict is given, which makes it exit 3.
 `;
 
 async function main(args: string[]) {
@@ -72,11 +74,12 @@ async function main(args: string[]) {
   }
   if (!["validate", "dry-run", "run"].includes(command)) throw new Error(`Unknown command "${command}". Use agentrun --help.`);
   if (!args.includes("--trusted")) throw new Error("Pass --trusted only after reviewing the workflow. Authored JavaScript may execute, including during validation.");
-  const positional = args.slice(1).filter(arg => arg !== "--trusted");
+  const strict = command === "dry-run" && args.includes("--strict");
+  const positional = args.slice(1).filter(arg => arg !== "--trusted" && !(strict && arg === "--strict"));
   const unknown = positional.find(arg => arg.startsWith("--"));
   if (unknown) throw new Error(`Unknown option "${unknown}". Use agentrun --help.`);
   if (!positional[0]) throw new Error("Provide a workflow JSON file.");
-  if (positional.length > 2) throw new Error(`Usage: agentrun ${command} workflow.json ${command === "run" ? "input.json" : "[input.json]"} --trusted`);
+  if (positional.length > 2) throw new Error(`Usage: agentrun ${command} workflow.json ${command === "run" ? "input.json" : "[input.json]"} --trusted${command === "dry-run" ? " [--strict]" : ""}`);
   if (command === "run" && !positional[1]) throw new Error("Provide an input JSON file.");
   const workflow = JSON.parse(await readFile(resolve(positional[0]), "utf8")) as Workflow;
   let input: Record<string, unknown> | undefined;
@@ -95,6 +98,7 @@ async function main(args: string[]) {
     const result = await dryRunWorkflow(workflow, input === undefined ? undefined : { input });
     console.log(JSON.stringify(result, null, 2));
     if (!result.ok) process.exitCode = 1;
+    else if (strict && result.status === "not_run") process.exitCode = 3;
   } else {
     const result = await runWorkflow(workflow, input!, {});
     console.log(JSON.stringify(result, null, 2));

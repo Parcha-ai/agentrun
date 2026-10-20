@@ -19,7 +19,7 @@ export type {
   LlmNode, JudgeNode, PickNode, SiftNode, RouteNode, RouteByJudgmentNode, RouteByValueNode, WorkflowInvocation,
   ArtifactNode, ArtifactState, CallNode, CodeNode, CallRetryClass, EffectFailureCode, CallPredicate, PollClause,
   ModelTier, AgentContext, WorkflowEffort, WorkflowThinking, VerifyClause,
-  AskPredicate, MechanicalPredicate, Predicate,
+  AskPredicate, MechanicalPredicate, Predicate, ValidationCode, ValidationIssue,
 } from "./workflow.js";
 export { dryRunWorkflow, synthesizeInstance } from "./dry-run.js";
 export type { DryRunOptions, DryRunResult } from "./dry-run.js";
