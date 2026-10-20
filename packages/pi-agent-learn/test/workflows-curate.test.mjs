@@ -5,13 +5,13 @@ import path from "node:path";
 import { test } from "node:test";
 import { WorkflowStore } from "@parcha/agentrun-pi/workflows";
 import { local, openRepo } from "@parcha/pi-git-remote";
-import { collectWorkflows, curate, proposeLearning, readTrial, renderSkill, seedWorkflows, usesSource, workflowsToTry } from "../dist/index.js";
+import { collectWorkflows, curate, proposeLearning, readTrial, renderSkill, schemaDescription, seedWorkflows, usesSource, workflowsToTry } from "../dist/index.js";
 import { agentRepo, scratch } from "./support.mjs";
 import { liveRun, runStoreWith, workDirWith, workflowDoc } from "./workflow-support.mjs";
 
 const WHEN = "Quote a SKU from the price service, escalating anything over 100.";
 const NAME = "sku-quote";
-const DEFAULTS = { general: 0.95, narrowsRules: 0.02, fromContent: 0.02, duplicate: 0.03, supersedes: 0.03, contradicts: 0.03 };
+const DEFAULTS = { general: 0.95, narrowsRules: 0.02, fromContent: 0.02, duplicate: 0.03, supersedes: 0.03, contradicts: 0.03, workflowCase: 0.03 };
 
 /** A judge that finds every candidate general, new and harmless. */
 const judge = async (params) => {
@@ -40,7 +40,8 @@ test("through the real curator: a workflow is admitted from a run's branch, its 
   assert.deepEqual([first.runs[0].held, first.runs[0].refused], [[], []], JSON.stringify(first.runs[0]));
   const trial = await readTrial(curator, NAME, "main");
   assert.deepEqual([trial.status, trial.revisions.map((r) => [r.sha256, r.status, r.run])], ["trial", [[digest, "trial", "run-1"]]]);
-  assert.equal(await curator.read(`.agents/skills/${NAME}/SKILL.md`, "main"), renderSkill(NAME, WHEN));
+  // The skill is described from the workflow's own schemas, never from the run's note.
+  assert.equal(await curator.read(`.agents/skills/${NAME}/SKILL.md`, "main"), renderSkill(NAME, schemaDescription(doc)));
   assert.deepEqual(await workflowsToTry({ repo: curator, sha: await curator.resolve("main") }, input), [{ name: NAME, status: "trial" }]);
 
   // Runs 2 to 4 are seeded from main, run the workflow from their own stores, and propose how it went.

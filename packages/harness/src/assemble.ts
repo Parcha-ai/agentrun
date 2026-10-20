@@ -14,13 +14,14 @@ import { withRecovery } from '@parcha/agentrun-dsl/recovery';
 import {
   createWorkflowExtension, decisionRecovery, nodeRunner, taskScope, type WorkflowOutcome,
 } from '@parcha/agentrun-pi/durable';
-import { ArchilCodingTools, archilEnv, openClaimDir, openDurableRun, type AppOptions, type Claim, type DurableRun, type OpenDurableRunOptions, type RunEnv, type RunRef } from '@parcha/pi-durable-disk';
+import { archilEnv, openClaimDir, openDurableRun, type AppOptions, type Claim, type DurableRun, type OpenDurableRunOptions, type RunEnv, type RunRef } from '@parcha/pi-durable-disk';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 type JsonValue = Parameters<DurableRun['setStatus']>[1] & {};
 import { DEFAULT_BROWSER_POLICY, localSites, type LocalSite } from '@parcha/pi-browser';
 import { createBrowserExtension } from '@parcha/pi-browser/durable';
 import { codeModeExtension, type CodeModeOptions } from './code-mode.ts';
+import { codingTools } from './command-env.ts';
 import { createVisionExtension, type VisionAdapterOptions } from '@parcha/pi-vision/durable';
 import type { Host, RunPlace, StatusEvent } from './host.ts';
 
@@ -28,10 +29,10 @@ export type Job = { workflow: Workflow; input: Record<string, unknown>; files?: 
 /** How the workflow's task ended, as the task reports it, with the run's generation and what it spent. */
 export type RunResult = WorkflowOutcome & { generation: number; usage: Awaited<ReturnType<Harness['usage']>> };
 
-/** What the host says of the agent a node runs: the lead model, and the node's own thinking level, else `low` (the DSL runner's default). Thinking is never off: the DSL refuses `off` at authoring, and the host never honors it
- *  either, so a node that somehow carries `off` runs at `low`. */
+/** What the host says of the agent a node runs: the lead model, and the node's own thinking level, else `medium` (the DSL runner's default). Thinking is never off: the DSL refuses `off` at authoring, and the host never honors it
+ *  either, so a node that somehow carries `off` runs at `medium`. */
 export function nodeAgent(model: Host['models']['lead'], node: { thinking?: string | undefined }) {
-  const thinkingLevel = node.thinking && node.thinking !== 'off' ? node.thinking : 'low';
+  const thinkingLevel = node.thinking && node.thinking !== 'off' ? node.thinking : 'medium';
   return { model, thinkingLevel } as { model: Host['models']['lead']; thinkingLevel: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' };
 }
 
@@ -148,7 +149,9 @@ export async function compose(place: RunPlace, host: Host, job: Job, options: Ru
     ...(host.credentials.redact ? { redact: { values: host.credentials.redact } } : {}),
     ...(host.decisions.browser ? { decisions: host.decisions.browser } : {}),
     ...(host.tools.browser.createDeadlineMs ? { createDeadlineMs: host.tools.browser.createDeadlineMs } : {}),
-    onSession: (row, change) => status({ source: 'browser', change, row }),
+    // A session's live view is a full-control address: it never goes into the run's events or its recording, which anyone
+    // with the recording can read. This host shows no session to a person; one that does asks the provider (`liveView(ref)`).
+    onSession: (row, change) => status({ source: 'browser', change, row: { ...row, liveView: null } }),
   });
   const visionBase: VisionAdapterOptions = {
     evidence: host.evidence,
@@ -202,7 +205,7 @@ export async function compose(place: RunPlace, host: Host, job: Job, options: Ru
   const registry = createRegistry();
   // Code mode is built from the vision handle, so it is installed after it.
   const codeMode = options.codeMode ? [codeModeExtension(vision, options.codeMode === true ? {} : options.codeMode, options.codeImages ? { note: options.codeImages, workDir: place.work } : undefined)] : [];
-  const extensions = [ArchilCodingTools, ...host.tools.extensions, vision.extension, ...codeMode, ...(browser ? [browser.extension] : [])];
+  const extensions = [codingTools, ...host.tools.extensions, vision.extension, ...codeMode, ...(browser ? [browser.extension] : [])];
   offered = extensions.flatMap((extension) => extension.tools ?? []);
   for (const extension of [...extensions, nodes.extension, flow.extension]) registry.install(extension);
 

@@ -1,0 +1,110 @@
+{
+  "name": "issue-triage",
+  "title": "Triage a public repository's newest issues, scored against its maintainers' labels",
+  "claim": "Your agent writes the workflow: it drafts a typed workflow, checks it, dry-runs it for free, then runs it; each issue is researched, labelled by Jev with one of four types, judged as a good first issue and as actionable, and the labels are scored against the maintainers' own.",
+  "models": {
+    "lead": {
+      "needs": [
+        "text",
+        "tools"
+      ],
+      "default": "google/gemini-3.8-flash"
+    },
+    "judge": {
+      "jev": true
+    }
+  },
+  "keys": [
+    {
+      "oneOf": [
+        {
+          "env": "TYPESAFE_API_KEY",
+          "why": "Jev's typed judgments",
+          "where": "https://console.typesafe.ai/keys",
+          "required": true
+        },
+        {
+          "env": "OPENROUTER_API_KEY",
+          "why": "Jev through OpenRouter (text questions only)",
+          "where": "https://openrouter.ai/keys",
+          "required": true
+        }
+      ],
+      "why": "the judge is Jev",
+      "for": "live"
+    },
+    {
+      "env": "GITHUB_TOKEN",
+      "why": "optional: a run needs none. It makes two GitHub API requests per issue (the issue and its timeline) and reads the rest from github.com and raw.githubusercontent.com, which the API's limit (60 requests an hour without a token) does not count",
+      "where": "https://github.com/settings/tokens (a token with no scopes reads public repositories)",
+      "required": false,
+      "for": "live"
+    },
+    {
+      "oneOf": [
+        {
+          "env": "GEMINI_API_KEY",
+          "why": "The lead (google/gemini-3.8-flash).",
+          "where": "aistudio.google.com, Get API key",
+          "required": true,
+          "for": "live"
+        },
+        {
+          "env": "OPENAI_API_KEY",
+          "why": "The lead (openai/gpt-6-luna) when it is the only key.",
+          "where": "platform.openai.com, API keys",
+          "required": true,
+          "for": "live"
+        },
+        {
+          "env": "ANTHROPIC_API_KEY",
+          "why": "The lead (anthropic/claude-haiku-5-5) when it is the only key.",
+          "where": "console.anthropic.com, API keys",
+          "required": true,
+          "for": "live"
+        },
+        [
+          {
+            "env": "VIDEO_MODEL_BASE_URL",
+            "why": "An OpenAI-compatible gateway that serves the lead under its public id, instead of a provider key; Jev then goes through its /typesafe.",
+            "where": "your gateway's base URL, ending in /v1",
+            "required": true
+          },
+          {
+            "env": "VIDEO_MODEL_API_KEY",
+            "why": "The gateway's credential.",
+            "where": "your gateway",
+            "required": true
+          }
+        ]
+      ],
+      "why": "A model provider's key for --live (the run names its models by provider and public id).",
+      "for": "live"
+    },
+    {
+      "env": "TYPESAFE_BASE_URL",
+      "why": "Another address for TypeSafe's API, when you reach it through a proxy of your own; with VIDEO_MODEL_BASE_URL set, Jev goes through that gateway's /typesafe instead.",
+      "where": "your proxy's base URL",
+      "required": false,
+      "for": "live"
+    }
+  ],
+  "programs": [
+    {
+      "cmd": "node",
+      "why": "runs the demo",
+      "required": true,
+      "min": "22.19.0"
+    }
+  ],
+  "expectedCalls": 80,
+  "expectedCost": 0.5,
+  "kills": [
+    {
+      "point": "judge.asked triage",
+      "n": 10,
+      "why": "a typed question is in flight when the process dies; the resumed run asks that one question again (its answer was never recorded) and asks no answered question a second time"
+    }
+  ],
+  "browser": false
+}

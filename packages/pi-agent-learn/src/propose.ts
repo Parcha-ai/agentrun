@@ -6,16 +6,20 @@ import { COMMIT_SHA, inboxPath, inboxWorkflowDir, RUN_ID, runBranch, usesPath, W
 import { readSeed } from "./seed.js";
 import { collectCandidates } from "./tool.js";
 import type { Candidate, Refusal } from "./types.js";
-import { collectUses, collectWorkflows } from "./workflows.js";
+import { collectUses, collectWorkflows, COPIED_TEXT, copiesRead, revisionOf } from "./workflows.js";
 
 /** What `collectCandidates` reads: a pi-durable Harness or a session. */
 export type ProposeTarget = Parameters<typeof collectCandidates>[0];
 
+/** A saved workflow the step left out of the proposal, and why, in words that name nothing the run read. */
+export type Withheld = { readonly name: string; readonly reason: string };
+
 /** `proposed`: one commit made and pushed. `already`: the run's branch held a commit for this run, so none was made, and it
- *  is pushed again. `empty`: nothing to propose. `refused`: the guard objected; nothing was committed or pushed. */
+ *  is pushed again. `empty`: nothing to propose. `refused`: the guard objected; nothing was committed or pushed.
+ *  `withheld`, when there are any: the saved workflows that carry text the run read (`read`), proposed with none of it. */
 export type ProposeResult =
-  | { readonly status: "proposed" | "already"; readonly sha: string }
-  | { readonly status: "empty" }
+  | { readonly status: "proposed" | "already"; readonly sha: string; readonly withheld?: readonly Withheld[] }
+  | { readonly status: "empty"; readonly withheld?: readonly Withheld[] }
   | { readonly status: "refused"; readonly refusals: readonly Refusal[] };
 
 export type ProposeFilesOptions = {
@@ -70,6 +74,12 @@ export type ProposeOptions = Omit<ProposeFilesOptions, "files" | "candidates"> &
   /** Set when the run read untrusted content: every candidate is marked untrusted in the inbox. */
   readonly untrusted?: boolean;
   /**
+   * The untrusted texts the run read (the pages its tools fetched, say). A saved workflow any `COPIED_TEXT` characters of
+   * whose strings (case and whitespace folded) appear in one is withheld: its records stay out of the proposal and the result
+   * names it. The run's other workflows and notes are proposed as usual.
+   */
+  readonly read?: Iterable<string>;
+  /**
    * The run's working directory, where its workflow store lives. When given, the step collects what the run saved
    * (`collectWorkflows`) and how it used the workflows it had (`collectUses`, read from `target` when that is an open
    * Session) and proposes them with its candidates, so a host that passes it cannot forget the workflow pieces. An explicit
@@ -83,7 +93,7 @@ export type ProposeOptions = Omit<ProposeFilesOptions, "files" | "candidates"> &
 /** The host step at a run's terminal: collect the run's candidates (and uses), render `inbox/<run id>.md` with the run's
  *  seed commit (and `uses/<run id>.json`), add the workflow records, and propose them. */
 export async function proposeLearning(options: ProposeOptions): Promise<ProposeResult> {
-  const { target, uses: usesSource, workflows, untrusted, workDir, seedSha, ...rest } = options;
+  const { target, uses: usesSource, workflows, untrusted, read, workDir, seedSha, ...rest } = options;
   const candidates = await collectCandidates(target);
   let records = workflows;
   let uses = await usesSource?.(target);
@@ -96,8 +106,20 @@ export async function proposeLearning(options: ProposeOptions): Promise<ProposeR
       uses = await collectUses({ target: target as unknown as Pick<Session, "commit">, workDir, run: rest.runId });
     }
   }
+  const withheld: Withheld[] = [];
+  const texts = read === undefined ? [] : [...read].filter((text): text is string => typeof text === "string");
+  if (texts.length && records) {
+    const kept: Record<string, { readonly files: Readonly<Record<string, string>> }> = {};
+    for (const [name, entry] of Object.entries(records)) {
+      const revision = await revisionOf(name, entry.files);
+      if (revision && copiesRead(revision.workflow, texts)) withheld.push({ name, reason: `${COPIED_TEXT} or more characters of its text are in content the run read` });
+      else kept[name] = entry;
+    }
+    records = kept;
+  }
+  const out = <T extends object>(result: T): T => (withheld.length ? { ...result, withheld } : result);
   const pairs = Object.entries(records ?? {}).flatMap(([name, { files }]) => Object.entries(files).map(([file, content]) => [name, file, content] as const));
-  if (candidates.length === 0 && uses === undefined && pairs.length === 0) return { status: "empty" };
+  if (candidates.length === 0 && uses === undefined && pairs.length === 0) return out({ status: "empty" as const });
   if (typeof rest.runId !== "string" || !RUN_ID.test(rest.runId)) return { status: "refused", refusals: [{ reason: "invalid", detail: "the run id is not valid" }] };
   const files: Record<string, string> = {};
   // The commit the run was seeded from, which a reader stamps on what it learned; a run that was not seeded has none.
@@ -118,5 +140,6 @@ export async function proposeLearning(options: ProposeOptions): Promise<ProposeR
     if (!WORKFLOW_NAME.test(name)) return { status: "refused", refusals: [{ reason: "invalid", field: "workflows", detail: "a workflow name is not valid" }] };
     files[`${inboxWorkflowDir(rest.runId, name)}${file}`] = content;
   }
-  return proposeFiles({ ...rest, files, candidates });
+  const result = await proposeFiles({ ...rest, files, candidates });
+  return result.status === "refused" ? result : out(result);
 }

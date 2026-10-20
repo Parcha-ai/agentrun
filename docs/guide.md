@@ -7,7 +7,7 @@ AgentRun defines workflows that combine tools, code, Jev system one decisions, a
 
 Use Node 22.19+ and npm. Follow the [support example](../README.md#run-the-support-example) to install, build and run the support example without credentials. It searches for an answer, checks it, and calls an agent only when investigation is needed. [Connect your own tools and models](support-quickstart.md) after the scripted example works.
 
-For TypeScript authoring and reusable child workflows, follow the [research tutorial](authoring.md). The [standalone starter](../examples/starter/README.md) runs outside this checkout. See [all examples](examples.md) for their commands and failure paths. To watch an agent read and look at files, start at [`examples/vision-agent`](../examples/vision-agent/README.md): `npm run demo:vision -- examples/document-check` runs it on scripted models, free and with no key, and every other example folder runs the same way.
+For TypeScript authoring and reusable child workflows, follow the [research tutorial](authoring.md). The [standalone starter](../examples/starter/README.md) runs outside this checkout. See [all examples](examples.md) for their commands and failure paths. To watch an agent read and look at files, start at [`examples/vision-agent`](../examples/vision-agent/README.md): `npm run demo:vision -- examples/document-check` runs it on scripted models, free and with no key, with `ffmpeg`, `ffprobe`, `pdftoppm` and `pdftotext` on your path. `lake-mead` commits its images too; the six other vision examples fetch their files first (120 MB to 342 MB): add `--fetch-sources`.
 
 ## Inspect the smaller triage workflow
 
@@ -27,7 +27,32 @@ npx agentrun validate workflow.json input.json --trusted
 npx agentrun dry-run workflow.json input.json --trusted
 ```
 
-Structural checks, including unknown node fields, always run. Supplied inputs also check the input schema and reachable input keys. Dry-run checks synthetic execution wiring, not model quality or effect delivery. `ok` with `skipped` means a path could not be exercised (for example, a synthetic judgment escalated or a schema cannot be synthesized); read those reasons rather than treating it as execution proof.
+Structural checks, including unknown node fields, always run. Supplied inputs also check the input schema and reachable input keys. Dry-run checks synthetic execution wiring, not model quality or effect delivery. Its `status` says whether every check ran: `passed`, `failed` (`ok` is false, `problems` say why), or `not_run`: `ok` stays true, but a path could not be exercised (for example, a synthetic judgment escalated or a schema cannot be synthesized), and `skipped` gives the reasons. A `not_run` result is not execution proof. `agentrun dry-run` exits 1 on a failure and 0 otherwise; with `--strict` it exits 3 when the status is `not_run`.
+
+### Read validation errors
+
+A rejected workflow comes back as `{ ok: false, errors, issues }`. `errors` are the messages, and `issues` carries one `{ path, code, message }` per message, in the same order, with `message` the same text. `path` is a JSON Pointer (RFC 6901) into the workflow as written, naming what the rule is about: a node (`/root/steps/1`, `/root/branches/yes/body`, `/root/steps/2/workflow/root/steps/0` inside a child), the same path `inspectWorkflow` gives that node; a schema (`/schemas/Result`); a value the shape check refused; or `""` for the document's own fields and for an input supplied to validation. It never names a key that is missing: a missing field points at the node that should hold it. `WorkflowInvalidError` carries the same `issues`.
+
+`code` names the rule. The set is closed: a new code may be added later, so keep a default branch; a code is never renamed.
+
+| Code | The rule | Example message (its start) |
+|---|---|---|
+| `DOCUMENT_INVALID` | The document is plain JSON data within size and depth bounds | `workflow document contains a cycle` |
+| `SHAPE_INVALID` | A field has the wrong JSON type | `workflow.root.steps[0].instructions must be a string` |
+| `WORKFLOW_FIELD_INVALID` | `v`, `name`, `schemas`, `input` and `output` (a child's too) | `workflow.v must be 2` |
+| `SCHEMA_INVALID` | A schema is an object, its `$ref`s resolve, it compiles, and a question schema is one | `schema "B": unsupported $ref form "https://example.com/x"` |
+| `SCHEMA_UNKNOWN` | A node's `out` names a schema in `schemas` | `root.steps[1] (b): out schema "Nope" not in workflow.schemas` |
+| `INPUT_INVALID` | The input supplied to validation fits the input schema | `input: #: must have required properties doc` |
+| `NODE_KIND_UNKNOWN` | A node is one of the kinds (a missing body is none) | `root.steps[1]: unknown node kind "teleport"` |
+| `NODE_KEY_UNKNOWN` | A node holds only its kind's keys, and none of another form's (another `via`, a file artifact, the other route form) | `root.steps[0] (a): unknown key(s) for a agent node: colour` |
+| `NODE_FIELD_INVALID` | A node's required field is present and each field has an allowed value | `root.steps[1] (l): maxIters must be an integer >= 1` |
+| `STATE_KEY_RESERVED` | No node writes an engine-owned `$` key or the reserved host key | `root.steps[0] (a): "as" must not name an engine-owned "$" state key ("$mine")` |
+| `STATE_PATH_UNPRODUCED` | A read, interpolation, `requires`, `itemsPath`, `valuePath`, `output.path` or file names something an input key or an earlier node produces | `root.steps[0] (a): requires "nowhere" but no upstream node produces it` |
+| `STATE_PATH_EXCLUDED` | A path fits the shape its producer declares | `root.steps[0] (a) requires: state path "doc.b" is excluded by the upstream schema at "doc"` |
+| `PARALLEL_WRITE_CONFLICT` | Parallel branches write disjoint keys | `root.steps[0] (p): branches 0 and 1 both write state.x` |
+| `STRUCTURE_INVALID` | Branch and step counts, and where a report or artifact may stand | `root.steps[0] (p): parallel needs at least two branches` |
+| `PREDICATE_INVALID` | A predicate is a known one with its fields | `root.steps[1] (e): when: unknown predicate "phase_of_moon"` |
+| `CODE_INVALID` | Code compiles, keeps to its sandbox's rules, and does not throw on reference data | `root.steps[0] (c): code transform failed to compile: Unexpected token 'return'` |
 
 ## Use a deterministic workflow
 
@@ -177,6 +202,8 @@ Without `state`, the node receives accumulated state, with legacy `context.refer
 
 Use `map.resultPath` to select one value from each completed item state, including when the body is a chain. For example, `resultPath: "result"` collects only that item's result. A missing path rejects the map. Without it, a body's `as` selects its result; otherwise the complete item state is retained for compatibility, which can duplicate parent data across items.
 
+By default (`onItemFailure: "stop"`) the first item that fails stops the map and the run. With `onItemFailure: "collect"` and `failedAs: "failed"`, an item that ends on an item failure becomes a row `{item_index, label, code, message}` of `failed`, in item order, and the other items finish. `as` stays aligned with the items: `as[i]` is item i's result, or `null` when item i failed, so a later node reads item i at i and filters the nulls itself when it wants only the successes. The map never escalates by itself; gate on `failed` with `escalate` (`count_gte`) or a code node. An item failure is one of the interpreter's own typed node failures (an `EffectFailure` after its retries, `WorkflowOutputInvalidError`, `WorkflowStateError`, `WorkflowCodeError`, `WorkflowVerificationError`) or a host error that declares itself one with a string `code` and `itemFailure: true`; `isItemFailure(error)` is the rule. An effect whose outcome is unknown, a recovery failure, an `escalate` inside the item, a stop or cancel, and anything else stop the map as before. Each collected row emits `map.item_failed`. When several branches of a parallel, or items of a map that stops, fail at once, an item failure is reported only when every other failure is one too, so it never hides a failure the map must stop on.
+
 Mechanical predicates compare actual values; `ask` delegates a semantic question to `runJudge`. The generated `@parcha/agentrun-dsl/schema` assists editors; runtime validation also checks graph and semantic constraints.
 
 ## Verify a returned candidate
@@ -194,6 +221,7 @@ Verification questions assess the evidence given to them. They are not an indepe
 - **Cancellation.** Core adapters receive signals; effect deadlines and caller cancellation bound the core's wait for an injected effect, while Pi and Jev bound their own callers. An uncooperative tool can continue its effect after cancellation. Synchronous JavaScript can block the process. There is no general hard-kill sandbox here.
 - **Effects.** The host implements `runEffect`, enforces tools and file access, verifies promised files, and handles custody. Idempotency keys help a host deduplicate; they do not confer exactly-once delivery. Inspect uncertain outcomes before retrying. An admitted effect still pending at cutoff throws `EffectOutcomeUnknownError` (`effect_outcome_unknown`) and is never retried automatically. Its `settlement` promise retains any eventual fulfillment or rejection, and `effect.late_settled` reports that evidence to the host. Late settled results are not memoized, committed, or delivered. A result already known to be late throws `EffectDeadlineExceededError` with `lateResult`. Concurrent failures can return an `AggregateError`; inspect its `errors` recursively for every uncertain effect, with the original failure retained as `cause`.
 - **Escalation in collections.** Pure map escalation emits `map.escalated`, keeps the triggering item's local state, and does not call the failure persistence hook. Completed sibling state is not promoted as a completed map. If cancellation leaves uncertain effects, the run rejects with an `AggregateError`; inspect its `errors` and `cause` for public `EscalationSignal` and `EffectOutcomeUnknownError` instances. Reconcile effects before retrying. No escalation evidence is discarded.
+- **Failures in collections.** Under recovery a collected failure is committed with its item before the map goes on, and every later process ends the item on it without running its body; a store without `recovery.failItem` and `recovery.itemFailure` cannot hold such a map, and it is refused before any step runs. An item whose call the driver left with an unknown outcome is refused as `FROZEN_EFFECT_UNKNOWN`, never collected. A failed item's spend still counts. Run a collecting workflow only once every process that can open the run is on a release that knows `onItemFailure`: an earlier release refuses the workflow at its open, which fails its task and ends the agent nodes in flight, and they start again in new conversations at the cost of those turns (in the reference kill storm, 4.27 to 4.30 model requests per committed turn with old processes against 3.04 and 3.40 without (the medians of four 50-seed storms), about 33% more).
 - **Loop exits.** `loop.exited` reports `condition_met` or `bound_reached` and the iteration count. Reaching the bound keeps the current state; use a following gate if it should escalate.
 - **Recovery.** Checkpoint, memo, and recovery interfaces are host hooks, not a bundled durable scheduler. In legacy graphs, repeated calls with the same label, transport and resolved input share an idempotency key, including across loop iterations. A memo hit reuses the earlier result. Use `call.poll` for repeated status checks; for distinct operations, include an operation identifier in the call input. Newly composed child graphs require `recovery.supportsExecutionPaths: true` and stores keyed by the full execution path; see [host integration](host-integration.md). Required checkpoint writes can stop execution. A durable receipt may be read after poll expiry within the node deadline; the host must reject any fresh admission after the original poll deadline. A completed run alone does not prove file delivery.
 - **Observability.** `onEvent` is best effort and is not awaited; thrown errors and rejected promises from observers cannot change a workflow outcome. Use required checkpoint hooks to gate persistence. `onEvent` reports runtime events. Raw state, answers, candidate files, and error evidence may contain application data; the host controls storage, access, retention, and redaction.
@@ -207,6 +235,7 @@ These are engine rules, not provider capacity guarantees. The numeric knobs belo
 | --- | --- |
 | `loop.maxIters` | Integer >= 1, required |
 | `map.maxConcurrency` | Positive safe integer; default 4 |
+| `map.onItemFailure` | `stop` (default) or `collect`; `failedAs` is required with `collect`, refused without it, and differs from `as` |
 | `call.deadline_s` | Required; finite, greater than 0 seconds |
 | `call.retry.attempts` | Integer >= 1 when retry is declared |
 | `call.retry.backoff_s` | Finite, >= 0 seconds when declared |

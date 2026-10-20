@@ -31,7 +31,7 @@ const model = async (dir: string, edit?: (text: string) => string): Promise<Chat
 const items = (m: ChatModel): ChatItem[] => m.threads.flatMap((thread) => thread.items);
 const tools = (m: ChatModel) => items(m).filter((item): item is Extract<ChatItem, { kind: 'tool' }> => item.kind === 'tool');
 
-const referenceJob = join(here, '..', 'recordings', 'reference-job');
+const referenceJob = join(here, 'fixtures', 'reference-job');
 const hearAndFind = join(here, 'fixtures', 'chat-hear-and-find');
 const artifact = join(here, 'fixtures', 'chat-artifact');
 

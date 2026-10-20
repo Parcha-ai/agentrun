@@ -72,9 +72,14 @@ export type NodeHost = {
  *  answer: its reason (`failed`, `aborted`, ...) and detail. */
 export class NodeFailure extends Error {
   readonly code = "NODE_NOT_DELIVERED";
-  constructor(message: string, readonly node: string, readonly final: boolean, readonly executionPath?: string, readonly unanswered?: { reason: string; detail?: JsonValue }) {
+  /** The item a map that collects its items' failures ends on this (`isItemFailure`): the node's delivery attempts are
+   *  spent, or its model will not answer (`model_error`, as a provider's content filter). Never an abort, a stale or
+   *  faulted run, a missing model, or a schema no record can satisfy. */
+  readonly itemFailure: boolean;
+  constructor(message: string, readonly node: string, readonly final: boolean, readonly executionPath?: string, readonly unanswered?: { reason: string; detail?: JsonValue }, itemFailure = false) {
     super(message);
     this.name = "NodeFailure";
+    this.itemFailure = final && itemFailure;
   }
 }
 
@@ -180,7 +185,7 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
         const { review, signal, step, ...asked } = params;
         // An attempt the driver admitted is found again by its session; any other call is a conversation of its own.
         const node: NodeRequest = { ...asked, sessionId: step?.sessionId ?? `unjournaled:${randomUUID()}`, attempt: step?.attempt ?? 0, earlierSessionIds: step?.earlierSessionIds ?? [] };
-        const fail = (message: string, final: boolean, unanswered?: { reason: string; detail?: JsonValue }) => new NodeFailure(message, node.label, final, node.executionPath, unanswered);
+        const fail = (message: string, final: boolean, unanswered?: { reason: string; detail?: JsonValue }, itemFailure = false) => new NodeFailure(message, node.label, final, node.executionPath, unanswered, itemFailure);
         // Only a schema no submit call can satisfy is refused here: any other is the node's contract as its author wrote it.
         const lint = lintRecordRoot(node.schema);
         if (lint.length) throw fail(`${node.kind} node "${node.label}" cannot deliver a record of its schema: ${lint.join("; ")}`, true);
@@ -243,10 +248,11 @@ export function nodeRunner(host: NodeHost, options: { name?: string } = {}): {
           if (outcome.delivered) return outcome.delivered.record;
           if (outcome.settled?.status === "unanswered") {
             const { reason, detail } = outcome.settled;
-            throw fail(`${node.label}: the model did not answer (${reason})`, true, { reason, ...(detail !== undefined ? { detail } : {}) });
+            // Only the model's own refusal to answer is the item's: an abort, a stale or faulted run and a missing model are the run's.
+            throw fail(`${node.label}: the model did not answer (${reason})`, true, { reason, ...(detail !== undefined ? { detail } : {}) }, reason === "model_error");
           }
           const spent = ((await scope.snapshot(RecordDoc, outcome.conversationId, base))?.attempts ?? 0) >= maxAttempts;
-          throw fail(`${node.label} did not submit (${spent ? "its delivery attempts are spent" : "it ended its run without a record"})`, spent);
+          throw fail(`${node.label} did not submit (${spent ? "its delivery attempts are spent" : "it ended its run without a record"})`, spent, undefined, spent);
         } catch (error) {
           if (!signal?.aborted) throw error;
           // A pause keeps the node's work for the process that resumes it; any other stop ends that work, and a

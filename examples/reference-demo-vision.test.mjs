@@ -12,7 +12,7 @@ import { test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
 import { effectiveBoxes } from '../packages/harness/dist/demo-spec.js';
-import { BOX_CROSSINGS, localPlace, capJudge, chooseBrowser, crossings, demo, tapBox, JEV_CAPS, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
+import { BOX_CROSSINGS, localPlace, priceJudge, chooseBrowser, crossings, demo, tapBox, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
 import { ORIGINAL, FIXTURE, BASELINE, run, composeHost, destroyBoxes, meterKnown, RUN_LABEL, localBoxes, ctx, finish, lines, planFor, recordingPlace, specWith, SITES, signInHome, filesIn, killSpec, boxed } from './reference-demo-helpers.mjs';
 
 test('the vision option: each look is filed, whole, in a vision.looks document with the image the eyes saw as a blob, and the counters read the look and its cost', { timeout: 300_000 }, async (t) => {
@@ -205,9 +205,6 @@ test('code mode: vision.judge answers through the host\'s judge seam (counted ag
   const judged = JSON.parse(readFileSync(join(work, 'judged.json'), 'utf8'));
   assert.equal(judged.answers.q.noul, 0.92, 'the host\'s judge answered');
   assert.ok(judged.receipts.length >= 1 && typeof judged.costUsd === 'number', 'a receipt, and a price that is a number');
-  // It went through the capped seam: the run\'s judge count has the workflow\'s own question and this one.
-  const spent = readFileSync(join(result.dir, 'judge-spent.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)).reduce((sum, entry) => sum + entry.requests, 0);
-  assert.equal(spent, 3, 'three judge requests were counted against the cap: the workflow\'s own and the script\'s two');
   // Every look a code-mode script made carries its picture as a blob: the look is filed with the images the eyes were shown, whichever tool held them.
   const looks = readEvents(recording).filter((line) => line.data?.doc === 'vision.looks').flatMap((line) => line.data.value.looks).filter((look) => look.record.args.path === 'a.png');
   assert.ok(looks.length >= 2, `a see look and a judge look are filed: ${looks.length}`);
@@ -255,16 +252,16 @@ test('the host chooses the speech-to-text model from the keys its demo declares:
   assert.match(pick({ TRANSCRIBE_BASE_URL: 'http://127.0.0.1:1', TRANSCRIBE_API_KEY: 'k', FAL_KEY: 'other' }), /fal/);
 });
 
-test('every node thinks: its own level, else low, never off', { timeout: 120_000 }, async (t) => {
+test('every node thinks: its own level, else medium, never off', { timeout: 120_000 }, async (t) => {
   const { nodeAgent } = await import('../packages/harness/dist/assemble.js');
   const model = { id: 'lead' };
-  assert.equal(nodeAgent(model, {}).thinkingLevel, 'low', 'a node with no thinking runs at low');
+  assert.equal(nodeAgent(model, {}).thinkingLevel, 'medium', 'a node with no thinking runs at medium');
   assert.equal(nodeAgent(model, { thinking: 'high' }).thinkingLevel, 'high', 'a node\'s own level wins');
-  assert.equal(nodeAgent(model, { thinking: 'off' }).thinkingLevel, 'low', 'thinking is never off, whatever a node carries');
+  assert.equal(nodeAgent(model, { thinking: 'off' }).thinkingLevel, 'medium', 'thinking is never off, whatever a node carries');
   assert.equal(nodeAgent(model, {}).model, model);
   // In a run: the conversations the job's nodes open are recorded with the level they were given.
   const { recording } = await run(t, {}, ['--json']);
   const text = readFileSync(join(recording, 'events.jsonl'), 'utf8');
-  assert.ok(/"thinkingLevel":"low"/.test(text), 'the recording shows a conversation at low');
+  assert.ok(/"thinkingLevel":"medium"/.test(text), 'the recording shows a conversation at medium');
   assert.ok(!/"thinkingLevel":"off"/.test(text), 'and none at off');
 });

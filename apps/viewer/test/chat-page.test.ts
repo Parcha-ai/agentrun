@@ -186,7 +186,7 @@ const FAILED = 'read: the page did not come back in time';
  *  only, no thinking), `hand-said` (no result: its last words are its answer) and `hand-bare` (no result, no words). */
 function writeFixtures(dir: string) {
   for (const id of ['chat-hear-and-find', 'chat-artifact']) cpSync(join(here, 'fixtures', id), join(dir, id), { recursive: true });
-  cpSync(join(here, '..', 'recordings', 'reference-job'), join(dir, 'reference-job'), { recursive: true });
+  cpSync(join(here, 'fixtures', 'reference-job'), join(dir, 'reference-job'), { recursive: true });
   const page = join(dir, 'hand-page');
   writeRecording(page, handRun(true));
   deliverInstead(page, CITED as never);
@@ -219,7 +219,7 @@ function writeFixtures(dir: string) {
   // The reference job with no times, no workflow input and no node holding its conversation: its spans sit in file
   // order, and its first user entry is a person's, drawn.
   const plain = join(dir, 'reference-plain');
-  cpSync(join(here, '..', 'recordings', 'reference-job'), plain, { recursive: true });
+  cpSync(join(here, 'fixtures', 'reference-job'), plain, { recursive: true });
   const untimed = readFileSync(join(plain, 'events.jsonl'), 'utf8').split('\n').filter((line) => line.trim() !== '').map((line) => JSON.parse(line) as Record<string, unknown>)
     .filter((line) => line.kind !== 'agentrun.workflow' && line.kind !== 'agentrun.nodes').map(({ t: _t, t0: _t0, ...line }) => JSON.stringify(line));
   writeFileSync(join(plain, 'events.jsonl'), `${untimed.join('\n')}\n`);

@@ -23,7 +23,7 @@ export const NODE_FIELDS: { readonly [Kind in WorkflowNodeKind]: readonly string
   extract: GENERATIVE_FIELDS,
   report: ["node", "label", "state", "instructions", "sopSection", "requires", "tools", "effort", "thinking"],
   artifact: ["node", "label", "state", "type", "path", "instructions", "sopSection", "requires", "tools", "effort", "thinking"],
-  map: ["node", "label", "itemsPath", "body", "as", "resultPath", "maxConcurrency"],
+  map: ["node", "label", "itemsPath", "body", "as", "resultPath", "maxConcurrency", "onItemFailure", "failedAs"],
   parallel: ["node", "label", "branches"],
   loop: ["node", "label", "body", "until", "maxIters", "expect_iters"],
   escalate: ["node", "label", "when", "kind", "stage", "summary"],

@@ -2,6 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<!-- Only the page's own files run: no inline script, no plugin, no <base>. Styles may be inline or blob: URLs, for the
+     report frame, which holds the agent's own page (no script) and keeps this policy; pictures and videos may be data: or
+     blob: URLs (an embedded gallery, a dropped folder). -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; object-src 'none'; base-uri 'none'; style-src 'self' 'unsafe-inline' blob:; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data: blob:; connect-src 'self' data: blob:; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Agent run</title>
 <meta name="description" content="A recorded agent run as a conversation, beside the report it wrote.">

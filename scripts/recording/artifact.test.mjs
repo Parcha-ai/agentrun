@@ -9,6 +9,7 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { artifactProblems, readFile, takeArtifact } from '../../packages/harness/src/artifact.ts';
+import { build } from '../../apps/viewer/build.mjs';
 import { gateProblems } from './gate.mjs';
 import { validateRecording } from './validate.mjs';
 
@@ -50,6 +51,30 @@ test('a real report folder is taken whole: the page, the two frames it shows, an
   assert.deepEqual(gateProblemsOf(t, dir), []);
 });
 
+test('the published copy holds the report\'s page as plain text, <hash>.html.txt, its bytes unchanged; a page or an SVG published as itself is refused', (t) => {
+  const { artifact, kept } = take(join(here, 'fixtures', 'report-first-step'));
+  const keys = [...readFile('index.html', readFileSync(join(here, 'fixtures', 'report-first-step', 'index.html'), 'utf8')).looks];
+  const dir = recordingWith(t, { artifact, kept, looks: [...new Set(keys)] });
+  const dist = publish(t, dir);
+  const page = artifact.files['index.html'];
+  const blobs = join(dist, 'recordings', 'one', 'blobs');
+  const names = readdirSync(blobs);
+  assert.ok(names.includes(`${page}.html.txt`) && !names.includes(`${page}.html`), names.join(' '));
+  assert.ok(readFileSync(join(blobs, `${page}.html.txt`)).equals(readFileSync(join(dir, 'blobs', `${page}.html`))), 'the same bytes');
+  assert.ok(names.filter((name) => name.endsWith('.jpg')).length === 2, 'a picture keeps its name');
+  const index = JSON.parse(readFileSync(join(dist, 'recordings', 'index.json'), 'utf8'));
+  assert.equal(index[0].blobs[page], `blobs/${page}.html.txt`, 'the index points the viewer at it');
+  assert.deepEqual(gateOf(dist), [], 'and the gate passes it');
+  // A page put back under its own name would open as a page of the site: refused, and so is an SVG.
+  const back = (from, to) => { cpSync(join(blobs, from), join(blobs, to)); rmSync(join(blobs, from)); index[0].blobs[to.split('.')[0]] = `blobs/${to}`; writeFileSync(join(dist, 'recordings', 'index.json'), JSON.stringify(index)); };
+  back(`${page}.html.txt`, `${page}.html`);
+  const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
+  writeFileSync(join(blobs, `${sha(svg)}.svg`), svg);
+  const refused = gateOf(dist);
+  assert.ok(refused.includes(`recordings/one/blobs/${page}.html: would open as a page: an artifact page is published as ${page}.html.txt`), refused.join('\n'));
+  assert.ok(refused.some((each) => each.startsWith(`recordings/one/blobs/${sha(svg)}.svg: has the extension .svg, which a recording's blob may not have`)), refused.join('\n'));
+});
+
 test('a data-look that names no look the run filed is refused', (t) => {
   const { artifact, kept } = take(join(here, 'fixtures', 'report-first-step'));
   const dir = recordingWith(t, { artifact, kept, looks: [] });
@@ -58,14 +83,17 @@ test('a data-look that names no look the run filed is refused', (t) => {
 });
 
 /** The gate over a one-recording gallery built from `dir`. */
+/** A one-recording gallery from `dir`, published as the Pages job builds it (`build.mjs --files`). */
+function publish(t, dir) {
+  const recordings = scratch(t, 'gallery-test-');
+  cpSync(dir, join(recordings, 'one'), { recursive: true });
+  const dist = join(scratch(t, 'gate-test-'), 'dist');
+  build(dist, recordings, { files: true });
+  return dist;
+}
+const gateOf = (dist) => gateProblems(dist).map((each) => `${each.path}: ${each.message}`);
 function gateProblemsOf(t, dir) {
-  const dist = scratch(t, 'gate-test-');
-  cpSync(dir, join(dist, 'recordings', 'one'), { recursive: true });
-  const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
-  writeFileSync(join(dist, 'gallery.js'), "window.AGENTRUN_GALLERY_INDEX = 'recordings/index.json';\n");
-  const held = Object.fromEntries(readdirSync(join(dir, 'blobs')).map((name) => [name.split('.')[0], `blobs/${name}`]));
-  writeFileSync(join(dist, 'recordings', 'index.json'), JSON.stringify([{ id: 'one', manifest, blobs: held }]));
-  return gateProblems(dist).map((each) => `${each.path}: ${each.message}`);
+  return gateOf(publish(t, dir));
 }
 const PAGE = (body, head = '') => `<!doctype html><html><head><title>A page</title>${head}</head><body>${body}</body></html>`;
 
@@ -185,8 +213,8 @@ test('what a browser reads is read here: an embedded tab in a scheme, escaped CS
   };
   for (const [what, [html, message]] of Object.entries(refused)) assert.throws(() => take(report(t, { 'index.html': html })), message, what);
   // image-set candidates are files; the type() beside one is a MIME string, not a file.
-  const { artifact: set } = take(report(t, { 'index.html': PAGE('<p style="background-image:image-set(\'a.avif\' type(\'image/avif\') 1x, \'a.png\' type(\'image/png\') 2x)">x</p>'), 'a.avif': PNG, 'a.png': Buffer.from('png') }));
-  assert.deepEqual(Object.keys(set.files).sort(), ['a.avif', 'a.png', 'index.html']);
+  const { artifact: set } = take(report(t, { 'index.html': PAGE('<p style="background-image:image-set(\'a.webp\' type(\'image/webp\') 1x, \'a.png\' type(\'image/png\') 2x)">x</p>'), 'a.webp': PNG, 'a.png': Buffer.from('png') }));
+  assert.deepEqual(Object.keys(set.files).sort(), ['a.png', 'a.webp', 'index.html']);
   // A local file named through an escaped url() is followed, not missed.
   const { artifact } = take(report(t, { 'index.html': PAGE('<p style="background:u\\72l(img/a.png)">x</p>'), 'img/a.png': PNG }));
   assert.deepEqual(Object.keys(artifact.files).sort(), ['img/a.png', 'index.html']);

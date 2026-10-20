@@ -5,7 +5,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   runWorkflow, validateWorkflow, WorkflowStateError, WorkflowInvalidError, WorkflowInputInvalidError,
-  WorkflowOutputInvalidError, EscalationSignal,
+  WorkflowOutputInvalidError, EscalationSignal, EffectOutcomeUnknownError,
 } from "../dist/index.js";
 
 export const CASES_DIR = fileURLToPath(new URL("../../../spec/lean/conformance/", import.meta.url));
@@ -33,7 +33,8 @@ function errorOf(error) {
   if (error instanceof WorkflowInvalidError) return { kind: "invalid" };
   if (error instanceof WorkflowInputInvalidError) return { kind: "input_invalid" };
   if (error instanceof WorkflowOutputInvalidError) return { kind: "output_invalid" };
-  if (error instanceof ScriptedFailure || error?.name === "WorkflowCodeError" || error?.name === "SystemOneError") return { kind: "adapter" };
+  // An effect whose outcome is unknown is an adapter's failure the host did not declare an item failure.
+  if (error instanceof ScriptedFailure || error instanceof EffectOutcomeUnknownError || error?.name === "WorkflowCodeError" || error?.name === "SystemOneError") return { kind: "adapter" };
   return { kind: "engine", message: String(error?.message ?? error) };
 }
 
@@ -74,7 +75,10 @@ export async function runCase(c) {
   const need = (kind, path) => {
     const entry = at(kind, path);
     if (!entry) throw new ScriptedFailure(`no scripted ${kind} at ${path}`);
-    if (entry.throw) throw new ScriptedFailure(entry.throw);
+    // `"unknown": true`: an admitted effect that never settled. `"itemFailure": "<code>"`: a failure the host
+    // declares an item failure, as a host error with a string code and `itemFailure: true`.
+    if (entry.throw && entry.unknown) throw new EffectOutcomeUnknownError(path, "deadline", 1, path, Promise.resolve({ status: "rejected", reason: null }), undefined, path);
+    if (entry.throw) throw Object.assign(new ScriptedFailure(entry.throw), entry.itemFailure ? { code: entry.itemFailure, itemFailure: true } : {});
     return structuredClone(entry);
   };
   const events = [];
