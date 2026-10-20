@@ -103,10 +103,12 @@ function signInCard(wait: NonNullable<ChatModel['waits']>[number]): HTMLElement 
 }
 
 /** A bubble of the agent's words (a paragraph per blank line), the files it names as chips under them. */
-function agentBubble(text: string, name: string): HTMLElement {
-  const { text: words, files } = museFiles(museShorten(text));
-  return reportEl('div', { class: 'mu-row agent' }, reportEl('div', { class: 'mu-tag', text: name }), reportEl('div', { class: 'mu-bubble' }, ...reportParagraphs(words)),
-    files.length > 0 && reportEl('div', { class: 'mu-files' }, ...files.map((name) => reportEl('span', { class: 'mu-file', title: name, text: name }))));
+function agentBubble(text: string, name: string, more: string[] = []): HTMLElement {
+  // The files a text names are read from the text as written (an address such as https://host/reports/summary.pdf names one), then every address is shortened.
+  const { text: kept, files: named } = museFiles(text);
+  const files = [...named, ...more.filter((each) => !named.includes(each))];
+  return reportEl('div', { class: 'mu-row agent' }, reportEl('div', { class: 'mu-tag', text: name }), reportEl('div', { class: 'mu-bubble' }, ...reportParagraphs(museShorten(kept))),
+    files.length > 0 && reportEl('div', { class: 'mu-files' }, ...files.map((file) => reportEl('span', { class: 'mu-file', title: file, text: file }))));
 }
 
 /** The text of a blob. An embedded recording keeps its blobs as data: URLs, which a host's `connect-src 'self'` will not let a fetch() read, so those are decoded here; any other URL is fetched. */
@@ -121,12 +123,19 @@ async function pageText(url: string): Promise<string> {
   return response.text();
 }
 
-/** "What I remember": the host's artifact, read as a page and drawn as lines (its headings, lists and notes), every address shortened. When it cannot be read, the card says so. */
-function rememberCard(recording: Recording, artifact: NonNullable<ChatModel['artifact']>): HTMLElement {
+/** Layout containers a memory page may wrap its report in: walked through, so its headings, lists and notes keep their own places. */
+const CONTAINERS = new Set(['main', 'section', 'article', 'div', 'aside', 'header', 'footer', 'details']);
+const BLOCKS = ':scope > :is(h1, h2, h3, h4, ul, ol, pre, p, main, section, article, div, aside, header, footer, details)';
+
+/** "What I remember": the host's artifact, read as a page and drawn as lines (its headings, lists and notes), every address shortened. When it cannot be read, the card says so.
+ *  `settled` resolves once the card holds what it will hold (read, or said unreadable): until then it is only a line saying it is reading. */
+function rememberCard(recording: Recording, artifact: NonNullable<ChatModel['artifact']>): { card: HTMLElement; settled: Promise<void> } {
   const body = reportEl('div', { class: 'mu-remember' }, reportEl('p', { class: 'mu-quiet', text: 'Reading what the agent kept…' }));
   const sha = artifact.files[artifact.entry];
   const url = sha ? recording.blobUrl(sha) : undefined;
-  const failed = (why: string) => body.replaceChildren(reportEl('p', { class: 'mu-quiet', text: `What the agent remembers could not be read here${why ? ` (${why})` : ''}.` }));
+  let settle!: () => void;
+  const settled = new Promise<void>((resolve) => { settle = resolve; });
+  const failed = (why: string) => { body.replaceChildren(reportEl('p', { class: 'mu-quiet', text: `What the agent remembers could not be read here${why ? ` (${why})` : ''}.` })); settle(); };
   if (!url) failed('it is not in this recording');
   else {
     void pageText(url).then((html) => {
@@ -137,28 +146,40 @@ function rememberCard(recording: Recording, artifact: NonNullable<ChatModel['art
       const ended = Date.parse(recording.manifest.recorded?.ended ?? '');
       const reference = Number.isNaN(ended) ? new Date() : new Date(ended);
       const plain = (raw: string) => museWhen(museShorten(raw.replace(/\s+/g, ' ').trim()), reference);
-      for (const node of [...doc.body.children]) {
-        const tag = node.tagName.toLowerCase();
-        const text = plain(node.textContent ?? '');
-        if (tag === 'h1' && !skippedTitle) { skippedTitle = true; continue; }
-        if (tag === 'h1' || tag === 'h2') { skipping = false; parts.push(reportEl('h3', { class: 'mu-rh', text })); continue; }
-        if (tag === 'h3' || tag === 'h4') {
-          // A file's name is a heading a person reads; a host's index file has no heading and none of its lines.
-          const friendly = /\.[A-Za-z0-9]{1,5}$/.test(text) ? museFriendlyFile(text) : text;
-          skipping = friendly === undefined;
-          if (friendly !== undefined) parts.push(reportEl('div', { class: 'mu-rsub', text: friendly }));
-          continue;
+      const walk = (parent: Element) => {
+        for (const node of [...parent.children]) {
+          const tag = node.tagName.toLowerCase();
+          // A layout container is walked through, so what it wraps keeps its own heading, list or note; one with no element inside is a note.
+          if (CONTAINERS.has(tag) && node.querySelector(BLOCKS)) { walk(node); continue; }
+          const text = plain(node.textContent ?? '');
+          if (tag === 'h1' && !skippedTitle) { skippedTitle = true; continue; }
+          if (tag === 'h1' || tag === 'h2') { skipping = false; parts.push(reportEl('h3', { class: 'mu-rh', text })); continue; }
+          if (tag === 'h3' || tag === 'h4') {
+            // A file's name is a heading a person reads; a host's index file has no heading and none of its lines.
+            const friendly = /\.[A-Za-z0-9]{1,5}$/.test(text) ? museFriendlyFile(text) : text;
+            skipping = friendly === undefined;
+            if (friendly !== undefined) parts.push(reportEl('div', { class: 'mu-rsub', text: friendly }));
+            continue;
+          }
+          if (skipping) continue;
+          if (tag === 'ul' || tag === 'ol') parts.push(reportEl('ul', { class: 'mu-rlist' }, ...[...node.querySelectorAll('li')].map((li) => reportEl('li', { text: plain(li.textContent ?? '') }))));
+          // A note is its lines, plainly: one a line, not a code box.
+          else if (tag === 'pre') parts.push(reportEl('ul', { class: 'mu-rlist' }, ...(node.textContent ?? '').split('\n').map((line) => plain(line)).filter((line) => line !== '').map((line) => reportEl('li', { text: line }))));
+          else if (text !== '') parts.push(reportEl('p', { class: 'mu-rp', text }));
         }
-        if (skipping) continue;
-        if (tag === 'ul' || tag === 'ol') parts.push(reportEl('ul', { class: 'mu-rlist' }, ...[...node.querySelectorAll('li')].map((li) => reportEl('li', { text: plain(li.textContent ?? '') }))));
-        // A note is its lines, plainly: one a line, not a code box.
-        else if (tag === 'pre') parts.push(reportEl('ul', { class: 'mu-rlist' }, ...(node.textContent ?? '').split('\n').map((line) => plain(line)).filter((line) => line !== '').map((line) => reportEl('li', { text: line }))));
-        else if (text !== '') parts.push(reportEl('p', { class: 'mu-rp', text }));
-      }
-      if (parts.length === 0) failed('the page held nothing to show'); else body.replaceChildren(...parts);
+      };
+      walk(doc.body);
+      if (parts.length === 0) failed('the page held nothing to show'); else { body.replaceChildren(...parts); settle(); }
     }).catch((error: unknown) => failed(String((error as Error)?.message ?? error).slice(0, 80)));
   }
-  return card('mu-memory', 'brain', 'What I remember', 'Kept between runs', body);
+  return { card: card('mu-memory', 'brain', 'What I remember', 'Kept between runs', body), settled };
+}
+
+/** The run's saved answer (manifest.result: a cited result or a submitted record) as the agent's words: a row a line (its label, then its value), its cites as chips. */
+function savedAnswer(answer: NonNullable<ChatModel['answer']>): { text: string; chips: string[] } {
+  const text = answer.rows.map((row) => [row.label !== '' && row.text !== '' ? `${row.label}: ${row.text}` : row.label || row.text, row.note ?? ''].filter((each) => each !== '').join('\n')).filter((each) => each !== '').join('\n\n');
+  const chips = answer.rows.flatMap((row) => row.cites.map((cite) => museShorten(cite.label ?? (cite.href.split('#')[0]!.split('/').pop() || cite.href))));
+  return { text, chips: [...new Set(chips)] };
 }
 
 /** The agent's picture: one file beside the page (apps/viewer/muse-avatar.webp, copied by the build), shown in the avatar's square slot. Empty, the slot shows the agent's initial. */
@@ -212,6 +233,7 @@ export function drawMuse(root: HTMLElement, model: ChatModel, recording: Recordi
       quiet.length > 0 && reportEl('ul', { class: 'mu-steps-list' }, ...quiet.map((step) => reportEl('li', { text: museShorten(step.title).slice(0, 140) })))));
     thoughts = []; quiet = []; hidden = false;
   };
+  const said: string[] = [];
   for (const entry of entries) {
     if (entry.kind === 'browser') { if (browsing.length === 0) flushQuiet(); browsing.push(entry.item as ToolItem); continue; }
     if (entry.kind === 'quiet') { quiet.push(entry.item as ToolItem); continue; }
@@ -223,28 +245,40 @@ export function drawMuse(root: HTMLElement, model: ChatModel, recording: Recordi
       if (item.text.trim() !== '') column.append(reportEl('div', { class: 'mu-row person' }, reportEl('div', { class: 'mu-tag', text: 'You' }), reportEl('div', { class: 'mu-bubble' }, ...reportParagraphs(museShorten(item.text)))));
     } else if (entry.kind === 'agent') {
       const item = entry.item as Extract<ChatItem, { kind: 'assistant' }>;
-      if (item.text.trim() !== '') column.append(agentBubble(item.text, name));
+      if (item.text.trim() !== '') { column.append(agentBubble(item.text, name)); said.push(item.text.replace(/\s+/g, ' ')); }
     }
   }
   flushBrowser(); flushQuiet();
-  if (model.artifact) column.append(rememberCard(recording, model.artifact));
+  // A run that delivered its answer as a saved result (not as a message) has it drawn here, as the agent's last bubble, unless the conversation already said it.
+  if (model.answer && model.answer.from !== 'text') {
+    const { text, chips } = savedAnswer(model.answer);
+    const unsaid = model.answer.rows.filter((row) => row.text !== '' && !said.some((each) => each.includes(row.text.replace(/\s+/g, ' '))));
+    if (text !== '' && (unsaid.length > 0 || (chips.length > 0 && model.answer.rows.every((row) => row.text === '')))) column.append(agentBubble(text, name, chips));
+  }
+  const memory = model.artifact ? rememberCard(recording, model.artifact) : undefined;
+  if (memory) column.append(memory.card);
+  // The end of the conversation: a marker after the last card, so "Done" waits for the card's END, not its top.
+  const end = reportEl('div', { class: 'mu-end', 'aria-hidden': 'true' });
+  column.append(end);
 
   const composer = reportEl('footer', { class: 'mu-composer' }, reportEl('div', { class: 'mu-input', text: 'This is a replay of a recorded run.' }));
   root.append(header, column, composer);
 
-  // A finished run is "Done" once the end of its conversation has been in view; until then it reads as working, as it did when it ran. The observer is sticky.
-  const end = column.lastElementChild;
+  // A finished run is "Done" once the end of its conversation has been in view; until then it reads as working, as it did when it ran. The marker is watched only
+  // once the last card holds what it will hold (a card still reading is a short line), and the observer is sticky.
   const state = header.querySelector('.mu-state');
-  if (model.agent?.status === 'done' && end && state && typeof IntersectionObserver === 'function') {
+  if (model.agent?.status === 'done' && state && typeof IntersectionObserver === 'function') {
     state.className = 'mu-state working';
     state.textContent = STATE.working;
-    // The composer's fade covers the foot of the column: the end counts once it is above it.
-    const seen = new IntersectionObserver((changes) => {
-      if (!changes.some((change) => change.isIntersecting)) return;
-      seen.disconnect();
-      state.className = 'mu-state done';
-      state.textContent = STATE.done;
-    }, { root: column, rootMargin: '0px 0px -96px 0px' });
-    seen.observe(end);
+    void (memory?.settled ?? Promise.resolve()).then(() => {
+      // The composer's fade covers the foot of the column: the end counts once it is above it.
+      const seen = new IntersectionObserver((changes) => {
+        if (!changes.some((change) => change.isIntersecting)) return;
+        seen.disconnect();
+        state.className = 'mu-state done';
+        state.textContent = STATE.done;
+      }, { root: column, rootMargin: '0px 0px -96px 0px' });
+      seen.observe(end);
+    });
   }
 }

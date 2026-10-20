@@ -1,3 +1,4 @@
+// (A saved answer is read from a blob the page fetches, so those two tests ship the blobs as files, as a gallery does.)
 // The Muse layout draws what a run delivered, whichever way it delivered it, and reads its pages as they are, in a real Chrome under the docs site's policy:
 // a saved answer (manifest.result) is the agent's last bubble unless the conversation already said it; a file an answer names by its address still gets its chip;
 // the memory page's headings, lists and notes are kept when the page wraps them in layout containers; and a finished run is "Done" only when the END of the
@@ -33,7 +34,7 @@ const memoryPage = (dir: string, html: string) => {
 const bubbles = `[...d().querySelectorAll('.mu-row.agent .mu-bubble')].map((b) => b.textContent)`;
 
 test('in Chrome: an answer the run saved (manifest.result) is the agent\'s last bubble when the conversation does not already say it', IN_CHROME, async (t) => {
-  const { value, until } = await served(t, { edit: (dir) => { finalText(dir, null); savedAnswer(dir, { answer: 'The balance is 42 dollars.', flagged: true }); } });
+  const { value, until } = await served(t, { files: true, edit: (dir) => { finalText(dir, null); savedAnswer(dir, { answer: 'The balance is 42 dollars.', flagged: true }); } });
   await until(`!!d()?.querySelector('.mu-memory .mu-rh')`, 'the page drawn');
   const said = await value<string[]>(bubbles);
   assert.ok(said.some((text) => /The balance is 42 dollars\./.test(text)), `the saved answer is drawn, got ${JSON.stringify(said)}`);
@@ -41,7 +42,7 @@ test('in Chrome: an answer the run saved (manifest.result) is the agent\'s last 
 });
 
 test('in Chrome: a saved answer the conversation already said is not said twice', IN_CHROME, async (t) => {
-  const { value, until } = await served(t, { edit: (dir) => { finalText(dir, 'The balance is 42 dollars.'); savedAnswer(dir, { answer: 'The balance is 42 dollars.' }); } });
+  const { value, until } = await served(t, { files: true, edit: (dir) => { finalText(dir, 'The balance is 42 dollars.'); savedAnswer(dir, { answer: 'The balance is 42 dollars.' }); } });
   await until(`!!d()?.querySelector('.mu-memory .mu-rh')`, 'the page drawn');
   assert.equal((await value<string[]>(bubbles)).filter((text) => /The balance is 42 dollars\./.test(text)).length, 1, 'once');
 });

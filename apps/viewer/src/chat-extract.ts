@@ -486,12 +486,16 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
     .filter((item): item is Extract<ChatItem, { kind: 'tool' }> => item.kind === 'tool' && item.t0 !== undefined && item.t0 <= t)
     .reduce<Extract<ChatItem, { kind: 'tool' }> | undefined>((latest, item) => (latest === undefined || item.t0! >= latest.t0! ? item : latest), undefined));
   const browserOf = (item: Extract<ChatItem, { kind: 'tool' }>) => (item.browser ??= { frames: [], holds: [] });
+  const lastFrame = new Map<Extract<ChatItem, { kind: 'tool' }>, { t: number; session: string }>();
   for (const line of options.muse ? live('frame') : []) {
     const d = chatObj(line.data);
     const sha = chatStr(line.blobs?.[0] as Json | undefined);
     const item = stepAt(chatId(line.conv), line.t);
     if (!item || !sha || !recording.blobUrl(sha) || typeof d?.w !== 'number' || typeof d?.h !== 'number') continue;
     browserOf(item).frames.push({ t: line.t, blob: sha, w: d.w, h: d.h });
+    // The session that took the step's latest frame: the host a step names is its own session's, never another's.
+    const session = chatStr(d.session);
+    if (session && line.t >= (lastFrame.get(item)?.t ?? -1)) lastFrame.set(item, { t: line.t, session });
   }
   const handoffs = new Map<string, { condition: string; outcome?: string }>();
   for (const line of options.muse ? lines.filter((each) => each.channel === 'durable' && each.kind === 'browser.handoff') : []) {
@@ -526,17 +530,29 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
   for (const tag of [...opened.keys()]) closeHold(tag, undefined);
   // The host each session was on, row by row: a step's browser says where it was at its last frame.
   const hostOf = (address: string | undefined): string | undefined => { try { return address ? new URL(address).host || undefined : undefined; } catch { return undefined; } };
-  const sitesAt: { t: number; host: string }[] = [];
+  // Each session's addresses over time, keyed by what a frame names (the session's `resourceId`) and by its tag.
+  const sitesOf = new Map<string, { t: number; host: string }[]>();
+  const tags = new Set<string>();
+  const sitesBy = (key: string, t: number, host: string) => { const list = sitesOf.get(key) ?? []; list.push({ t, host }); sitesOf.set(key, list); };
   if (options.muse) {
     for (const line of lines.filter((each) => each.channel === 'durable' && each.kind === 'browser.sessions')) {
       for (const each of chatList(chatObj(chatObj(line.data)?.value)?.sessions)) {
-        const host = hostOf(chatStr(chatObj(each)?.lastUrl));
-        if (host) sitesAt.push({ t: line.t, host });
+        const session = chatObj(each);
+        const tag = chatStr(session?.tag);
+        const host = hostOf(chatStr(session?.lastUrl));
+        if (tag) tags.add(tag);
+        if (!host) continue;
+        const resourceId = chatStr(session?.resourceId);
+        if (resourceId) sitesBy(`resource:${resourceId}`, line.t, host);
+        if (tag) sitesBy(`tag:${tag}`, line.t, host);
       }
     }
     for (const item of toolItems.values()) {
       const last = item.browser?.frames.at(-1);
-      const seen = last ? sitesAt.filter((site) => site.t <= last.t + 2000).at(-1) : undefined;
+      const frame = lastFrame.get(item);
+      // A frame joins its own session; a recording whose frames name no session the rows know joins only when the whole run had one session.
+      const history = frame ? sitesOf.get(`resource:${frame.session}`) ?? (tags.size === 1 ? sitesOf.get(`tag:${[...tags][0]!}`) : undefined) : undefined;
+      const seen = last ? history?.filter((site) => site.t <= last.t + 2000).at(-1) : undefined;
       if (item.browser && seen) item.browser.site = seen.host;
     }
   }
