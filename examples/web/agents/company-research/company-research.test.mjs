@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import * as real from "@parcha/pi-durable-agent";
 import { main as page, renderPage, where } from "./config-page.mjs";
 import { listing, main as edit } from "./edit-prompts.mjs";
-import { checkPrompts, normalizePrompts, readQuestion, ruleText, variantsOf } from "./prompts-lib.mjs";
+import { checkPrompts, normalizePrompts, questionOf, questionRow, readQuestion, ruleText, variantsOf, withQuestion } from "./prompts-lib.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const json = (name) => JSON.parse(readFileSync(join(HERE, name), "utf8"));
@@ -121,7 +121,7 @@ test("the skill and the definition name no site, and the definition is one a hom
 
 test("the Jev question is a choice over public, nonprofit, small_retail, ecommerce and other, one line each", () => {
   const question = json("question.json");
-  assert.deepEqual([question.id, question.type], ["company_kind", "choice"]);
+  assert.deepEqual([question.id, question.label, question.type], ["company_kind", "Company kind", "choice"]);
   assert.deepEqual(Object.keys(question.criteria), ["public", "nonprofit", "small_retail", "ecommerce", "other"]);
   for (const [option, line] of Object.entries(question.criteria)) assert.ok(line.length > 20 && !line.includes("\n"), option);
   assert.ok(question.instructions.length > 10);
@@ -162,19 +162,44 @@ test("a prompts file is refused, with the reason, when it has no base, two bases
     ["a field it does not keep", edited("public", (v) => ((v.priority = 1), v)), /public: has a field it does not keep \(priority\)/],
     ["an empty text", edited("generic", (v) => ((v.text = "  "), v)), /generic: text is empty/],
     ["a bad role", edited("generic", (v) => ((v.role = "fallback"), v)), /role is one of base, overlay, generic/],
+    ["the question as a variant", [...ok, { id: "company_kind", role: "question", label: "q", text: "x", criteria: {} }], /company_kind: the question is question\.json, not a variant/],
+    ["an overlay on other", edited("ecommerce", (v) => ((v.when.option = "other"), v)), /ecommerce: "other" is the option for an input no overlay fits, so no overlay takes it/],
+    ["a variant with the question's id", edited("generic", (v) => ((v.id = "company_kind"), v)), /question\.json: the id company_kind is also a variant's/],
     ["an id that is not a URL segment", edited("generic", (v) => ((v.id = "has space"), v)), /generic|has space: id is 1 to 128/],
     ["an empty label", edited("generic", (v) => ((v.label = " "), v)), /generic: label is empty/],
   ];
   for (const [name, variants, pattern] of cases) assert.match(checkPrompts(variants, QUESTION).join("\n"), pattern, name);
   assert.deepEqual(checkPrompts([], QUESTION), ["there are no variants"]);
   assert.deepEqual(checkPrompts("no", QUESTION), ["there are no variants"]);
-  assert.deepEqual(checkPrompts(ok.filter((v) => v.label !== "ecommerce"), QUESTION), [], "fewer overlays is fine: a kind with none takes the generic prompt");
+  const withoutEcommerce = ok.filter((v) => v.label !== "ecommerce");
+  const { ecommerce, ...fewer } = QUESTION.criteria;
+  assert.deepEqual(checkPrompts(withoutEcommerce, { ...QUESTION, criteria: fewer }), [], "fewer overlays is fine when the question stops describing the option too");
+  assert.match(checkPrompts(withoutEcommerce, QUESTION).join("\n"), /question\.json: ecommerce is described but no overlay needs it: take it out of question\.json, or add an overlay for it/, "the home refuses a criterion no overlay needs, and so does the check");
+  const { other, ...noOther } = QUESTION.criteria;
+  assert.deepEqual(checkPrompts(ok, { ...QUESTION, criteria: noOther }), [], "other is implicit: a question need not describe it");
+  const questionCases = [
+    ["an id that is not a URL segment", { ...QUESTION, id: "has space" }, /question\.json: id is 1 to 128/],
+    ["no instructions", { ...QUESTION, instructions: " " }, /question\.json: instructions is empty/],
+    ["criteria that are not options to lines", { ...QUESTION, criteria: ["public"] }, /question\.json: criteria is option names to descriptions/],
+    ["an empty criterion", { ...QUESTION, criteria: { ...QUESTION.criteria, nonprofit: " " } }, /question\.json: the criterion for nonprofit is empty/],
+  ];
+  for (const [name, question, pattern] of questionCases) assert.match(checkPrompts(ok, question).join("\n"), pattern, name);
+  assert.match(checkPrompts(ok, { ...QUESTION, criteria: undefined }).join("\n"), /question\.json: criteria is option names to descriptions/, "a question with no criteria is refused, not a crash");
   assert.deepEqual(checkPrompts(edited("public", (v) => ((v.when.threshold = 0), v)), QUESTION), [], "a threshold of 0 is one the home keeps");
   assert.equal(ruleText(PROMPTS[1].when), "company_kind is public at 0.8 or more");
   assert.deepEqual(variantsOf({ variants: [1] }), [1]);
   assert.deepEqual(variantsOf([2]), [2]);
   assert.throws(() => variantsOf({ nope: 1 }), /prompts file is/);
   assert.deepEqual(normalizePrompts({ g: { role: "generic", text: "g" }, a: { role: "base", text: "t" } }), [{ id: "a", role: "base", text: "t" }, { id: "g", role: "generic", text: "g" }], "a record by id becomes a list, the base first");
+  assert.deepEqual(normalizePrompts({ q: { role: "question", text: "q" }, g: { role: "generic", text: "g" }, a: { role: "base", text: "t" } }).map((v) => v.id), ["a", "g", "q"], "the question comes last");
+  assert.deepEqual(questionRow(QUESTION), { id: "company_kind", role: "question", label: "Company kind", text: QUESTION.instructions, criteria: QUESTION.criteria });
+  assert.notEqual(questionRow(QUESTION).criteria, QUESTION.criteria, "the row holds a copy of the options");
+  const set = withQuestion(PROMPTS, QUESTION);
+  assert.deepEqual(set.map((v) => v.role), ["base", "overlay", "overlay", "overlay", "overlay", "generic", "question"]);
+  assert.deepEqual(questionOf(Object.fromEntries(set.map(({ id, ...rest }) => [id, rest]))), QUESTION, "the question a home holds is the one question.json has");
+  assert.deepEqual(questionOf(set), QUESTION);
+  assert.equal(questionOf(PROMPTS), undefined);
+  assert.equal(questionOf(undefined), undefined);
 });
 
 // ---- the edit tool --------------------------------------------------------------------------------------------------
@@ -182,22 +207,29 @@ test("a prompts file is refused, with the reason, when it has no base, two bases
 test("edit-prompts saves the file's variants with setPrompts, replacing what the home held, and says what it saved", async () => {
   const api = fakeApi();
   const home = await homeDir("save");
+  await api.setPrompts(await api.openAgentHome(home), [{ id: "old", role: "base", label: "old", text: "x" }, { id: "generic", role: "generic", label: "generic", text: "y" }]);
+  api.calls.length = 0;
   const first = await run(edit, ["--home", home], api);
   assert.equal(first.code, 0, first.err);
   const [, saved] = api.calls.find(([name]) => name === "setPrompts");
-  assert.deepEqual(saved, PROMPTS, "exactly the file's six variants, nothing added");
-  assert.match(first.out, /^saved 6 prompt variants in /);
+  assert.deepEqual(saved, [...PROMPTS, questionRow(QUESTION)], "the file's six variants and, last, the question as its own row");
+  assert.match(first.out, /^saved 6 prompt variants and the question company_kind in /);
   assert.match(first.out, /overlay\s+nonprofit\s+company_kind is nonprofit at 0\.8 or more/);
+  assert.match(first.out, /question\s+company_kind\s+options: public, nonprofit, small_retail, ecommerce, other\s+\d+ chars\s+What kind of organisation/);
   assert.doesNotMatch(first.out, new RegExp(home.replaceAll(/[/\\^$.*+?()[\]{}|]/g, "\\$&")), "the path of the home is not printed");
 
-  const smaller = join(await fresh("file"), "two.json");
-  writeFileSync(smaller, JSON.stringify([{ id: "base", role: "base", label: "base", text: "Research it." }, { id: "generic", role: "generic", label: "generic", text: "Assume nothing." }]));
-  const second = await run(edit, ["--home", home, "--file", smaller], api);
+  const afterFirst = normalizePrompts((await api.readAgentHome(await api.openAgentHome(home))).prompts).map((v) => v.id);
+  assert.deepEqual(afterFirst, ["base", "public", "nonprofit", "small_retail", "ecommerce", "generic", "company_kind"], "what the home held before is gone");
+  const changed = join(await fresh("file"), "changed.json");
+  writeFileSync(changed, JSON.stringify(PROMPTS.map((v) => (v.role === "base" ? { ...v, text: "Research it." } : v))));
+  const second = await run(edit, ["--home", home, "--file", changed], api);
   assert.equal(second.code, 0, second.err);
-  assert.deepEqual(normalizePrompts((await api.readAgentHome(await api.openAgentHome(home))).prompts).map((v) => v.label), ["base", "generic"], "the second save replaced the first");
-  const again = await run(edit, ["--home", home, "--file", smaller], api);
+  const held = normalizePrompts((await api.readAgentHome(await api.openAgentHome(home))).prompts);
+  assert.equal(held.length, 7, "the second save replaced the first, and the question stayed");
+  assert.equal(held[0].text, "Research it.");
+  const again = await run(edit, ["--home", home, "--file", changed], api);
   assert.equal(again.code, 0, again.err);
-  assert.match(again.out, /^the 2 prompt variants were already saved in .*: nothing changed/, "a save of what is there says so");
+  assert.match(again.out, /^the 6 prompt variants and the question company_kind were already saved in .*: nothing changed/, "a save of what is there says so");
 });
 
 test("edit-prompts --show prints what the home holds, as a table or as JSON", async () => {
@@ -206,14 +238,16 @@ test("edit-prompts --show prints what the home holds, as a table or as JSON", as
   const empty = await run(edit, ["--home", home, "--show"], api);
   assert.equal(empty.code, 0);
   assert.match(empty.out, /^Desk \(company-research\): 0 prompt variants$/);
+  assert.doesNotMatch(empty.out, /question/, "a home with no prompts has no question either");
   await run(edit, ["--home", home], api);
   const shown = await run(edit, ["--home", home, "--show"], api);
-  assert.match(shown.out, /^Desk \(company-research\): 6 prompt variants\n/);
+  assert.match(shown.out, /^Desk \(company-research\): 6 prompt variants and a question\n/);
+  assert.match(shown.out, /question\s+company_kind\s+options: public, nonprofit, small_retail, ecommerce, other\s/);
   assert.match(shown.out, /base\s+base\s+-\s+\d+ chars\s+You research one company/);
   assert.match(shown.out, /overlay\s+small_retail\s+company_kind is small_retail at 0\.8 or more/);
   assert.match(shown.out, /generic\s+generic\s+-/);
   const asJson = JSON.parse((await run(edit, ["--home", home, "--show", "--json"], api)).out);
-  assert.deepEqual([asJson.agent, asJson.prompts], [{ id: "company-research", name: "Desk" }, PROMPTS]);
+  assert.deepEqual([asJson.agent, asJson.prompts], [{ id: "company-research", name: "Desk" }, [...PROMPTS, questionRow(QUESTION)]]);
 });
 
 test("edit-prompts refuses a bad file with every problem and saves nothing; --check needs no home", async () => {
@@ -228,11 +262,23 @@ test("edit-prompts refuses a bad file with every problem and saves nothing; --ch
   const refusedAgain = await run(edit, ["--home", home, "--file", file], api);
   for (const reason of [/exactly one base \(found 0\)/, /exactly one generic \(found 0\)/, /an overlay needs a when/, /the id is used twice/, /"listed" is not an option/, /threshold is a number from 0 to 1/]) assert.match(refusedAgain.err, reason);
   assert.equal(api.calls.some(([name]) => name === "setPrompts"), false, "setPrompts was never called");
+  writeFileSync(file, JSON.stringify(PROMPTS.filter((v) => v.label !== "ecommerce")));
+  const fewer = await run(edit, ["--home", home, "--file", file], api);
+  assert.equal(fewer.code, 1);
+  assert.match(fewer.err, /question\.json: ecommerce is described but no overlay needs it/, "the question must follow the overlays");
+  assert.equal(api.calls.some(([name]) => name === "setPrompts"), false, "nothing was saved");
+  const bare = await fresh("no-question");
+  writeFileSync(join(bare, "prompts.json"), JSON.stringify(PROMPTS));
+  const noQuestion = await run(edit, ["--home", home], api, { dir: bare });
+  assert.equal(noQuestion.code, 1);
+  assert.match(noQuestion.err, /question\.json is missing or is not JSON/, "overlays with no question are refused, never saved without their question row");
+  assert.equal(api.calls.some(([name]) => name === "setPrompts"), false, "nothing was saved");
   const checked = await run(edit, ["--check", "--file", file], api);
   assert.equal(checked.code, 1);
   const good = await run(edit, ["--check"], api);
   assert.equal(good.code, 0, good.err);
-  assert.match(good.out, /^prompts\.json is valid: 6 variants\n/);
+  assert.match(good.out, /^prompts\.json is valid: 6 variants, and the question company_kind\n/);
+  assert.match(good.out, /question\s+company_kind\s+options: /);
   assert.equal(api.calls.length, 0, "--check opens no home");
 
   const notJson = join(await fresh("not-json"), "x.json");
@@ -250,7 +296,7 @@ test("edit-prompts needs a home: --init makes one from agent.json and its skill 
   assert.equal(existsSync(dir), false, "nothing was made");
   const made = await run(edit, ["--home", dir, "--init"], api);
   assert.equal(made.code, 0, made.err);
-  assert.match(made.out, /^made the agent home desk-home\nsaved 6 prompt variants/);
+  assert.match(made.out, /^made the agent home desk-home\nsaved 6 prompt variants and the question company_kind/);
   assert.deepEqual(api.calls[0], ["createAgentHome", dir, ["research-brief/SKILL.md"]]);
   assert.equal(readdirSync(dir).includes("agent.sqlite"), true);
 });
@@ -280,7 +326,7 @@ const RUNS = [
   { id: "run-d", title: "", index: { startedAt: "2026-10-20T04:40:00.000Z", endedAt: "2026-10-20T04:41:00.000Z", outcome: "failed" }, briefHref: null,
     record: { version: 1, input: "<script>alert(1)</script> & \"Co\"", passes: [{ pass: 1, lookup: null, choice: "<img src=x onerror=alert(2)>", confidence: 0.5, probabilities: {} }], lookup_used: false, chosen: { label: "<b>x</b>", role: "overlay", reason: "<i>why</i>" } } },
 ];
-const DATA = { agent: { id: "company-research", name: "Desk", description: "Researches one company." }, prompts: PROMPTS.map((v) => (v.id === "small_retail" ? { ...v, id: "small-retail-v2" } : v)), question: QUESTION, runs: RUNS, generatedAt: "2026-10-20T05:00:00.000Z" };
+const DATA = { agent: { id: "company-research", name: "Desk", description: "Researches one company." }, prompts: [...PROMPTS.map((v) => (v.id === "small_retail" ? { ...v, id: "small-retail-v2" } : v)), questionRow(QUESTION)], runs: RUNS, generatedAt: "2026-10-20T05:00:00.000Z" };
 
 test("the page shows the base, each overlay with its Jev rule, the generic, and a row for each run: both passes, the lookup, the prompt loaded, the outcome and the result", () => {
   const html = renderPage(DATA);
@@ -291,6 +337,11 @@ test("the page shows the base, each overlay with its Jev rule, the generic, and 
   assert.ok(html.includes("EDGAR") && html.includes("Nonprofit Explorer"), "each prompt's text is on the page");
   assert.match(html, /<li><b>nonprofit<\/b>: A charity/);
   assert.match(html, /Before its first turn the host asks Jev one question[\s\S]*company_kind[\s\S]*0\.8 or more/);
+  assert.ok(html.includes(QUESTION.instructions), "the question's text is the home's row's text");
+  assert.doesNotMatch(html, /<span class="role">question<\/span>/, "the question is not shown as a prompt that loads");
+  const without = renderPage({ ...DATA, prompts: DATA.prompts.filter((v) => v.role !== "question") });
+  assert.match(without, /No question is configured\./, "a home with no question row says so");
+  assert.ok(without.includes('<b>nonprofit</b> <span class="role">overlay</span>'), "and still shows its prompts");
   const rows = html.match(/<tr><td>[\s\S]*?<\/tr>/g);
   assert.equal(rows.length, 4);
   const byId = (id) => rows.find((row) => row.includes(`class="id">${id}<`));
@@ -376,7 +427,7 @@ test("config-page reads a real agent home and its runs' prompt.json, links the b
 
 test("config-page shows the prompts the home holds and the question's rule, through the home's own readAgentHome", async () => {
   const { dir } = await homeWithRuns();
-  const wrapped = { ...real, readAgentHome: async (home) => ({ ...(await real.readAgentHome(home)), prompts: PROMPTS }) };
+  const wrapped = { ...real, readAgentHome: async (home) => ({ ...(await real.readAgentHome(home)), prompts: withQuestion(PROMPTS, QUESTION) }) };
   const out = join(await fresh("page-prompts"), "config.html");
   const result = await run(page, ["--home", dir, "--out", out], wrapped);
   assert.equal(result.code, 0, result.err);
@@ -384,6 +435,7 @@ test("config-page shows the prompts the home holds and the question's rule, thro
   const html = readFileSync(out, "utf8");
   assert.ok(html.includes("loads when company_kind is public at 0.8 or more"));
   assert.ok(html.includes("0.8 or more) is added to the base"));
+  assert.ok(html.includes(QUESTION.instructions), "the question is read from the home's prompts");
 });
 
 test("config-page: a missing argument is exit 2, a directory that is not a home is exit 1 and writes no page", async () => {
@@ -401,9 +453,12 @@ test("with the built package's setPrompts, the edit tool and the page round-trip
   const dir = join(await fresh("real-roundtrip"), "home");
   const saved = await run(edit, ["--home", dir, "--init"], real);
   assert.equal(saved.code, 0, saved.err);
-  assert.match(saved.out, /saved 6 prompt variants/);
+  assert.match(saved.out, /saved 6 prompt variants and the question company_kind/);
   const shown = JSON.parse((await run(edit, ["--home", dir, "--show", "--json"], real)).out);
-  assert.deepEqual(normalizePrompts(shown.prompts).map((v) => v.label), PROMPTS.map((v) => v.label));
+  assert.deepEqual(normalizePrompts(shown.prompts).map((v) => v.id), [...PROMPTS.map((v) => v.id), "company_kind"]);
+  assert.deepEqual(questionOf(shown.prompts), QUESTION, "the home holds the question as question.json has it");
+  const again = await run(edit, ["--home", dir], real);
+  assert.match(again.out, /nothing changed/, "a second save of the same files writes nothing");
   const out = join(await fresh("real-page"), "config.html");
   assert.equal((await run(page, ["--home", dir, "--out", out], real)).code, 0);
   assert.ok(readFileSync(out, "utf8").includes("loads when company_kind is nonprofit at 0.8 or more"));
@@ -423,4 +478,26 @@ test("with the built package's prompts, a run started with a prompt shows its va
   const html = readFileSync(out, "utf8");
   assert.ok(html.includes("American Red Cross") && html.includes("<b>nonprofit</b> at 0.91"), "r1: its prompt.json");
   assert.ok(html.includes("<b>generic</b>") && html.includes("no overlay was sure"), "r2: no prompt.json, so the index's prompt, shown by its variant's label");
+});
+
+test("with the built package's choosePrompt, a home this tool saved is enough: the judge is asked the home's own question and the chosen overlay follows the home's rules", { skip: typeof real.choosePrompt === "function" && typeof real.setPrompts === "function" ? false : "this build of @parcha/pi-durable-agent has no choosePrompt yet (durable-agent/prompts)" }, async () => {
+  const dir = join(await fresh("real-choose"), "home");
+  assert.equal((await run(edit, ["--home", dir, "--init"], real)).code, 0);
+  const { prompts } = await real.readAgentHome(await real.openAgentHome(dir));
+  const asked = [];
+  const judge = (answer) => async (params) => {
+    asked.push(params);
+    return { answers: { company_kind: { choice: answer.choice, probabilities: answer.probabilities, confidence: answer.confidence } }, model: "fake", cost_usd: 0 };
+  };
+  const probabilities = (top, rest = 0.02) => Object.fromEntries(Object.keys(QUESTION.criteria).map((option) => [option, option === top ? 0.93 : rest]));
+  const clear = await real.choosePrompt(prompts, "American Red Cross", { judge: judge({ choice: "nonprofit", probabilities: probabilities("nonprofit"), confidence: 0.93 }) });
+  assert.equal(clear.variant, "nonprofit");
+  assert.ok(clear.instructions.startsWith(PROMPTS[0].text.trim()) && clear.instructions.includes("Nonprofit Explorer"), "the base, then the overlay");
+  const [params] = asked;
+  assert.equal(params.label, "company_kind");
+  assert.equal(params.questions.company_kind.instructions, QUESTION.instructions, "the question's text is the home's");
+  assert.deepEqual(params.questions.company_kind.criteria, QUESTION.criteria, "its options are the home's, other included");
+  const unsure = await real.choosePrompt(prompts, "Habitat", { judge: judge({ choice: "other", probabilities: probabilities("other", 0.1), confidence: 0.4 }) });
+  assert.equal(unsure.variant, "generic", "no overlay reaches 0.8 and there is no lookup");
+  assert.ok(unsure.instructions.includes("assume nothing"));
 });
