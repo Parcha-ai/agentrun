@@ -3,7 +3,7 @@
 import { CITE_QUESTION, sameUrl } from './score-v2.mjs';
 
 export const SEGMENT_PICK = 'Which of the company\'s reported segments (`truth`) is the same segment as `answer`, named in other words, by the business an abbreviated member stands for, or by a region as filed? Choose none when it is none of them.';
-export const HQ_QUESTION = 'Do `answer` and `truth` name the same headquarters city and country, counting another name or spelling of the same city or country (`truth.country` is an ISO code)?';
+export const HQ_QUESTION = 'Do `answer` and `truth` name the same headquarters: the same country, and the same city, counting another name or spelling of it and a district or area within it (`truth` is the address as filed, `truth.country` an ISO code)?';
 export const SUBSIDIARY_QUESTION = 'Is `subsidiary` one of the companies in `listed` (the company\'s own list of its subsidiaries), the same entity perhaps named a little differently?';
 /** How many subsidiaries an answer may give: recall is over at most this many of the listed ones. */
 export const MAX_SUBSIDIARIES = 15;

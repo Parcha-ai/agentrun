@@ -255,8 +255,8 @@ company lists them in a 10-K's Exhibit 21 or a 20-F's Exhibit 8), `annualReport`
   2/(n+1). No segment truth (`null`): both `null`.
 - `hqCorrect`: against the business address as filed (`hq { city, state, country }`: the city in capitals, the country
   as its ISO code). The city (folded: case, accents, punctuation; a filed city without what follows a comma or sits in
-  brackets) and the country (as its ISO code) match at once; anything else is Jev's, for another name of the same city
-  or country. No truth (no city or no country): `null`.
+  brackets) and the country (as its ISO code) match at once; anything else is Jev's: the same country, and the same
+  city by another name or spelling, or a district or area within it (Kowloon for Hong Kong). No truth (no city or no country): `null`.
 - `subsidiariesRecall` and `subsidiariesPrecision` against the exhibit (`subsidiaries { exhibit, url, count, items }`),
   one to one: a name the same as a listed one not yet taken matches it, word for word first, then once its legal form
   (Inc., GmbH, Ltd ...) is left out, so two entities named alike in two jurisdictions are two. A name whose listed

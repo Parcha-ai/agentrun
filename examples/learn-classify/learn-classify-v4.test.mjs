@@ -14,7 +14,7 @@ import { HOST_WORKFLOW } from './dispatch.mjs';
 import { answerV4, textsRead } from './host.mjs';
 import { rerow } from './rerow.mjs';
 import { openOut, readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
-import { countryCode, entityName, MAX_SUBSIDIARIES, scoreCites, scoreHq, scoreSegments, scoreSubsidiaries, scoreV4, SEGMENT_PICK } from './score-v4.mjs';
+import { countryCode, entityName, HQ_QUESTION, MAX_SUBSIDIARIES, scoreCites, scoreHq, scoreSegments, scoreSubsidiaries, scoreV4, SEGMENT_PICK } from './score-v4.mjs';
 import { CLASSIFY_WORKFLOW_V4, FIXTURES_V2, FIXTURES_V4, readJson, WORKFLOW } from './scripted.mjs';
 import { SETS } from './sets.mjs';
 
@@ -185,6 +185,12 @@ test('the headquarters: the city folded and the country as its ISO code without 
   assert.equal(j.asked.length, asked, 'no question for any of them');
   assert.deepEqual(await scoreHq({ answer: { hq: { city: 'Luxembourg', country: 'Luxembourg' } }, truth: { city: 'GRAND DUCHY OF LUXEMBOURG', state: null, country: 'LU' }, judge: j.run }), { hqCorrect: false }, 'not the same words: Jev\'s, and this judge says no');
   assert.equal(j.asked.length, asked + 1);
+  // A district or area of the filed city (Kowloon in Hong Kong) is Jev's to judge, and the question says it counts.
+  const kowloon = judge({ hq: { Kowloon: 0.9 } });
+  assert.deepEqual(await scoreHq({ answer: { hq: { city: 'Kowloon', state: 'Hong Kong', country: 'Hong Kong' } }, truth: { city: 'HONG KONG', state: null, country: 'HK' }, judge: kowloon.run }), { hqCorrect: true });
+  assert.equal(kowloon.asked[0].questions.q.instructions, HQ_QUESTION);
+  assert.match(HQ_QUESTION, /a district or area within it/);
+  assert.match(HQ_QUESTION, /same country/);
   assert.deepEqual([countryCode('U.S.A.'), countryCode('United Kingdom'), countryCode('gb'), countryCode('Atlantis')], ['US', 'GB', 'GB', 'atlantis']);
 });
 
