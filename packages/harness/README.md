@@ -253,7 +253,9 @@ them to the tools as `context.providers`; every box a tool makes on one is on th
 
 - live lines with source `transport`, each naming the box by its label (`box-1`, `box-2` by first appearance), never by the provider's id: `box.created` `{ box, provider, facts: { isolation, cpus, gpu }, role? }`
   (`role` is the create call's `labels.role`), `box.exec` `{ box }` for each command the box took (never the command, its arguments or its environment), and `box.ended` `{ box }`;
-- a host `box.receipt` when the box ends, or when the process ends with it still open (`to` and `seconds` null), also when the run or the result hook fails. It names no rate (`usd_per_second`, `cost_usd`, `source` and `priced` null), so the run's cost
+- a host `box.receipt` when the box ends, or when the process ends with it still open (`to` and `seconds` null), also when the run or the result hook fails. A process that was killed
+  (no `finally` runs) leaves its open boxes' receipts to the next process of the run, which writes them when it opens the run. It writes the receipt only: it does not end such a box.
+  The box's own `maxLifetimeMs` ends it, and a listing of the provider by the run's labels finds it. It names no rate (`usd_per_second`, `cost_usd`, `source` and `priced` null), so the run's cost
   reads unknown, never 0.
 
 A box the tool made carries its label (`box.label`): a tool puts that in its result, so the result and the lines agree. An agent's own tools (pi extension tools, not workflow call nodes) get the same
