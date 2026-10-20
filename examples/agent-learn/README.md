@@ -165,7 +165,7 @@ each get an issue with no body, so the tool's run ends `escalated` at the gate b
      ...
      uses/run-10.json: triage-crash 5046cece45f8 escalated at 2026-10-16T11:22:16.560Z
      curate: run-10: triage-crash demote, back to 2bfc0cd79680: its last 2 uses ended escalated, escalated
-     main e2f1da0 changes .agents/skills/triage-crash/SKILL.md, .agents/skills/triage-crash/trial.json, .pi/agentrun/workflows/triage-crash/latest
+     main e2f1da0 changes .agents/skills/triage-crash/trial.json, .pi/agentrun/workflows/triage-crash/latest
      trial.json: trial -> active; 2bfc0cd79680 active, 5046cece45f8 demoted; uses run-5 frozen, run-6 frozen, run-7 frozen, run-9 escalated, run-10 escalated
 ```
 
