@@ -14,7 +14,7 @@ import { HOST_WORKFLOW } from './dispatch.mjs';
 import { answerV4, textsRead } from './host.mjs';
 import { rerow } from './rerow.mjs';
 import { openOut, readRows, runLoop, runSealed, scriptedParts } from './runner.mjs';
-import { countryCode, entityName, HQ_QUESTION, MAX_SUBSIDIARIES, scoreCites, scoreHq, scoreSegments, scoreSubsidiaries, scoreV4, SEGMENT_PICK } from './score-v4.mjs';
+import { CITE_QUESTION_V4, countryCode, entityName, HQ_QUESTION, MAX_SUBSIDIARIES, scoreCites, scoreHq, scoreSegments, scoreSubsidiaries, scoreV4, SEGMENT_PICK } from './score-v4.mjs';
 import { CLASSIFY_WORKFLOW_V4, FIXTURES_V2, FIXTURES_V4, readJson, WORKFLOW } from './scripted.mjs';
 import { SETS } from './sets.mjs';
 
@@ -190,7 +190,9 @@ test('the headquarters: the city folded and the country as its ISO code without 
   assert.deepEqual(await scoreHq({ answer: { hq: { city: 'Kowloon', state: 'Hong Kong', country: 'Hong Kong' } }, truth: { city: 'HONG KONG', state: null, country: 'HK' }, judge: kowloon.run }), { hqCorrect: true });
   assert.equal(kowloon.asked[0].questions.q.instructions, HQ_QUESTION);
   assert.match(HQ_QUESTION, /a district or area within it/);
-  assert.match(HQ_QUESTION, /same country/);
+  // The place is judged on the city and the country together: Hong Kong filed under CN is the same place as Hong Kong, HK.
+  assert.match(HQ_QUESTION, /city and the country together/);
+  assert.match(HQ_QUESTION, /territory/);
   assert.deepEqual([countryCode('U.S.A.'), countryCode('United Kingdom'), countryCode('gb'), countryCode('Atlantis')], ['US', 'GB', 'GB', 'atlantis']);
 });
 
@@ -295,6 +297,10 @@ test('a cite on "pdf p. N" is judged on that page and its neighbours as read, ho
   const j = judge({ cites: { [url]: 0.9 } });
   await scoreCites({ answer, read, judge: j.run });
   const [onPage, unpaged] = j.asked.map((a) => a.state.text);
+  // Each cite is asked whether its quote is on that page and supports at least part of the claim of its kind.
+  assert.ok(j.asked.every((a) => a.questions.q.instructions === CITE_QUESTION_V4));
+  assert.match(CITE_QUESTION_V4, /on that page/);
+  assert.match(CITE_QUESTION_V4, /at least part of `claim`/);
   assert.match(onPage, /headquartered in Pittsburgh/);
   assert.match(onPage, /^\[page 60\]/, 'the page before it too');
   assert.match(onPage, /\[page 62\]\nThe next page\./);

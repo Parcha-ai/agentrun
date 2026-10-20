@@ -255,8 +255,9 @@ company lists them in a 10-K's Exhibit 21 or a 20-F's Exhibit 8), `annualReport`
   2/(n+1). No segment truth (`null`): both `null`.
 - `hqCorrect`: against the business address as filed (`hq { city, state, country }`: the city in capitals, the country
   as its ISO code). The city (folded: case, accents, punctuation; a filed city without what follows a comma or sits in
-  brackets) and the country (as its ISO code) match at once; anything else is Jev's: the same country, and the same
-  city by another name or spelling, or a district or area within it (Kowloon for Hong Kong). No truth (no city or no country): `null`.
+  brackets) and the country (as its ISO code) match at once; anything else is Jev's, on the place, city and country
+  together: the same city by another name or spelling or a district within it (Kowloon for Hong Kong), and the same
+  country, a territory named by itself or by the country that holds it. No truth (no city or no country): `null`.
 - `subsidiariesRecall` and `subsidiariesPrecision` against the exhibit (`subsidiaries { exhibit, url, count, items }`),
   one to one: a name the same as a listed one not yet taken matches it, word for word first, then once its legal form
   (Inc., GmbH, Ltd ...) is left out, so two entities named alike in two jurisdictions are two. A name whose listed
@@ -265,7 +266,8 @@ company lists them in a 10-K's Exhibit 21 or a 20-F's Exhibit 8), `annualReport`
 - `reportYearCorrect`: the fiscal year against the latest annual filing's (`latestAnnual.fy`), or the next one where
   `newerPossible` says a newer report may have been filed after the truth's pinned quarters. `reportRead`: a cite on
   the report's URL locates a page of it as "pdf p. N".
-- `evidenceSupported` as v2, each cite's claim stated for its kind.
+- `evidenceSupported`: the share of cites Jev finds on the page they name, as the run read it, supporting at least part
+  of the claim of their kind (one cite need not carry every segment or share; shares are `shareErrorMean`'s).
 - `correct`, the curve's headline: every part with truth right. The code always counts; `segmentsF1` 0.8 or better
   counts when there is segment truth, and `hqCorrect` when there is headquarters truth. A part with no truth is left
   out, never failed, and `correctOver` names the parts that counted (`["sic4", "segments", "hq"]` at most).

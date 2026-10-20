@@ -1,9 +1,11 @@
 // The v4 scorer (CLASSIFY-CONTRACT.md v4, "the dollar job"): structural where it can be, Jev where meaning is judged.
 // Nothing is fetched again: cites are checked against the text the run's own tools returned.
-import { CITE_QUESTION, sameUrl } from './score-v2.mjs';
+import { sameUrl } from './score-v2.mjs';
 
 export const SEGMENT_PICK = 'Which of the company\'s reported segments (`truth`) is the same segment as `answer`, named in other words, by the business an abbreviated member stands for, or by a region as filed? Choose none when it is none of them.';
-export const HQ_QUESTION = 'Do `answer` and `truth` name the same headquarters: the same country, and the same city, counting another name or spelling of it and a district or area within it (`truth` is the address as filed, `truth.country` an ISO code)?';
+export const HQ_QUESTION = 'Is the place `answer` names as the headquarters the place `truth` names, judged on the city and the country together: the same city by another name or spelling, or a district or area within it, and the same country, counting a territory named by itself or by the country that holds it (`truth` is the address as filed, `truth.country` an ISO code)?';
+/** A cite is one piece of evidence: it need not carry the whole of its part (every segment, every share) alone. */
+export const CITE_QUESTION_V4 = 'Is `quote` on that page of `text` (the run read it at `url`; `locator` says where), and does it support at least part of `claim`?';
 export const SUBSIDIARY_QUESTION = 'Is `subsidiary` one of the companies in `listed` (the company\'s own list of its subsidiaries), the same entity perhaps named a little differently?';
 /** How many subsidiaries an answer may give: recall is over at most this many of the listed ones. */
 export const MAX_SUBSIDIARIES = 15;
@@ -191,7 +193,7 @@ export async function scoreCites({ answer, read, codes = {}, judge }) {
     const texts = read.filter((r) => sameUrl(r.url) === sameUrl(cite.url)).map((r) => r.text);
     if (!texts.length) continue;
     const text = citeText(cite, texts);
-    if ((await noul(judge, 'score/cite', CITE_QUESTION, { claim: claimOf(cite, answer, codes), quote: cite.quote, locator: cite.locator, url: cite.url, text })) >= 0.5) supported += 1;
+    if ((await noul(judge, 'score/cite', CITE_QUESTION_V4, { claim: claimOf(cite, answer, codes), quote: cite.quote, locator: cite.locator, url: cite.url, text })) >= 0.5) supported += 1;
   }
   return { evidenceSupported: supported / cites.length };
 }
