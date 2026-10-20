@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -373,7 +373,8 @@ test('an .mp4 blob is a video, opens in place like a .webm, and is found in a re
   writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ ...manifest, artifact: { title: 'A film', entry: 'index.html', files: { 'film.mp4': sha } } }));
   const server = createServer((request, response) => {
     const file = join(dir, decodeURIComponent(new URL(request.url!, 'http://localhost').pathname));
-    if (!file.startsWith(dir) || !existsSync(file)) { response.writeHead(404).end(); return; }
+    // A directory (the recording's root, its blobs/) is a 404, not a read that throws EISDIR in the handler.
+    if (!file.startsWith(dir) || !statSync(file, { throwIfNoEntry: false })?.isFile()) { response.writeHead(404).end(); return; }
     response.writeHead(200).end(request.method === 'HEAD' ? undefined : readFileSync(file));
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
