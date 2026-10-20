@@ -267,7 +267,7 @@ describe("the start mark's keeper", () => {
         execFileSync("mkfifo", [join(root, "start.json")]);
         warnings.length = 0;
         const stop = keepStartMark(root, 50);
-        let fd: number | undefined;
+        let fd: number | undefined; // the FIFO's write end, while this test holds it
         try {
           for (const t0 = Date.now(); fd === undefined && Date.now() - t0 < 20_000; await sleep(10)) {
             try {
@@ -281,13 +281,16 @@ describe("the start mark's keeper", () => {
           replace(root);
           writeSync(fd, JSON.stringify({ generation: 1, at: new Date().toISOString(), by: "sup-1", failures: 0, lastExit: null }));
           closeSync(fd);
+          fd = undefined;
           for (const t0 = Date.now(); warnings.length === 0 && Date.now() - t0 < 20_000; ) await sleep(20);
           await sleep(200);
           assert.equal(warnings.length, 1, `${name}: one warning: ${warnings.map((w) => w.message).join(" | ")}`);
           assert.match(warnings[0]!.message, /is no longer the directory the keeper started on/, name);
         } finally {
-          // A keeper still waiting in its read is let go, so its stop returns.
-          if (fd === undefined) {
+          // A keeper still waiting in its read is let go, so its stop returns: a write end still held is closed (the read
+          // ends with nothing, which is no mark), and otherwise one is opened and closed wherever the FIFO is now.
+          if (fd !== undefined) closeSync(fd);
+          else {
             for (const at of [root, `${root}.old`]) {
               try {
                 closeSync(openSync(join(at, "start.json"), constants.O_WRONLY | constants.O_NONBLOCK));
