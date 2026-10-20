@@ -16,7 +16,7 @@ const noulQuestions = { urgent: { type: 'noul', instructions: 'Is action urgent?
 const boxQuestions = { mug: { type: 'box', instructions: 'the mug in <photo>' }, open: { type: 'noul', instructions: 'Is the lid of the mug in <photo> open?' } };
 const boxAnswers = { mug: { type: 'box', box, confidence: 0.8 }, open: { type: 'noul', noul: 0.2 } };
 const quick = { retryBaseMs: 1, retryMaxMs: 2, apiKey: 'fake-test-key' };
-// Box needs the model that answers it: jev-latest is 1.13.
+// Box needs a model that answers it, by name: jev-latest is refused whatever version it points at.
 const boxModel = { ...quick, model: 'jev-1.14.0' };
 const code = expected => error => { assert.ok(error instanceof JevError, String(error)); assert.equal(error.code, expected); return true; };
 
@@ -147,13 +147,14 @@ test('OpenRouter is not asked for images: that path is unverified, so the reques
   assert.equal(t.seen.length, 0);
 });
 
-test('a Box question is refused before any request unless the named model answers Box (jev-1.14.0, jev-preview): jev-latest is 1.13', async () => {
+test('a Box question is refused before any request unless the named model answers Box (jev-1.14.0, jev-preview), by name: jev-latest is refused whatever version it points at', async () => {
   const params = { label: 't', kind: 'judge', state: 'x <photo>', questions: boxQuestions, assets: { '<photo>': asPng(png()) } };
   for (const model of [undefined, 'jev-latest', 'jev-1.13', 'jev-1.13.2', 'typesafe/jev-1.13', 'something-else']) {
     const t = transport(ok(boxAnswers));
     await assert.rejects(createJevRunner({ ...quick, ...(model ? { model } : {}), fetch: t.fetch })(params), error => {
       code('invalid_request')(error); assert.equal(error.attempts, 0); assert.equal(error.requestDiagnostic.reason, 'unsupported_model');
-      assert.match(error.message, /jev-1\.14\.0/, 'the message names the model Box needs'); return true;
+      assert.match(error.message, /jev-1\.14\.0/, 'the message names the model Box needs');
+      assert.doesNotMatch(error.message, /jev-latest is \d/, 'the message gives the alias no version: it moves'); return true;
     }, String(model));
     assert.equal(t.seen.length, 0, `${model}: nothing was sent`);
   }

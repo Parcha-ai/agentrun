@@ -27,7 +27,7 @@ theorem eval_desugar (O : Oracle) : ∀ (n : Node) (path : ExecPath) (addr : Add
   | .report .., _, _, _, _ => rfl
   | .artifact label type fpath requires st, path, addr, lp, s => by
     simp only [desugar]; split <;> simp_all [eval]
-  | .map label itemsPath body as resultPath, path, addr, lp, s => by
+  | .map label itemsPath body as resultPath oif fa, path, addr, lp, s => by
     simp only [desugar, eval, asField_desugar, eval_desugar O body]
   | .parallel label branches, path, addr, lp, s => by
     simp only [desugar, eval, evalBranches_desugar O branches 0 path addr lp s]
@@ -83,7 +83,7 @@ theorem desugar_idem : ∀ n : Node, desugar (desugar n) = desugar n
   | .report .. => rfl
   | .artifact label type fpath requires st => by
     simp only [desugar]; split <;> simp_all [desugar]
-  | .map _ _ body _ _ => by simp only [desugar, desugar_idem body]
+  | .map _ _ body _ _ _ _ => by simp only [desugar, desugar_idem body]
   | .parallel _ bs => by simp only [desugar, desugarList_idem bs]
   | .loop _ body _ _ => by simp only [desugar, desugar_idem body]
   | .escalate .. => rfl

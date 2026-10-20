@@ -12,6 +12,7 @@ import type { CallContext, CallSetup, EyesAnswer } from "./host.js";
 import { fitImage } from "./image.js";
 import { aboutMedium, AS_IS, gatherMedia, namesMedia, once, requestedAbout, throwMiss, type About, type MediaMiss, type MediaRequest } from "./media.js";
 import { firstLine } from "./misses.js";
+import { base64Chars, toBase64 } from "./primitives.js";
 import { lookTiming } from "./timing.js";
 import { packRequests, type Part } from "./plan.js";
 
@@ -74,11 +75,11 @@ export async function see(input: unknown, env: VisionEnv | undefined, call: Call
 
   // Each image within the eyes' own limits and what one request to them carries; a video clip as it is, when they take it.
   const box = { ...eyes.limits.image, maxBytes: Math.min(eyes.limits.image.maxBytes, eyes.limits.requestBytes), imagesPerCall: eyes.limits.imagesPerCall };
-  const clipChars = Math.min(Math.ceil(eyes.limits.video.inlineBytes / 3) * 4, eyes.limits.requestBytes);
+  const clipChars = Math.min(base64Chars(eyes.limits.video.inlineBytes), eyes.limits.requestBytes);
   const items: Item[] = [];
   for (const { bytes, mimeType, fragment } of media) {
     if (isVideo({ mimeType })) {
-      const data = Buffer.from(bytes).toString("base64");
+      const data = toBase64(bytes);
       if (!eyes.accepts.video) return fail({ code: "video_unseeable", reason: `${fragment}: the vision route ${eyes.model} does not take video; cut frames with ffmpeg and pass them as images`, model: eyes.model, about: aboutMedium(fragment, "video", bytes) });
       if (data.length > clipChars) return fail({ code: "over_budget", reason: `${fragment} is ${data.length} base64 characters, over the ${clipChars} one request to ${eyes.model} carries; cut a shorter window`, model: eyes.model, about: aboutMedium(fragment, "video", bytes) });
       items.push({ data, mimeType, fragment, caption: fragment });

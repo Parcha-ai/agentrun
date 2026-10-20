@@ -53,7 +53,7 @@ export async function fakeCdp({ pages = [{ id: "PAGE1", url: "about:blank" }] } 
   const calls = [];
   const acks = [];
   const screencasts = new Map(); // flat sessionId -> startScreencast params
-  const state = { secret: false, why: "field", answers: [], unchecked: false, evaluateError: false, evaluateDelayMs: 0, flatSeq: 0 };
+  const state = { secret: false, why: "field", answers: [], unchecked: false, evaluateError: false, evaluateDelayMs: 0, flatSeq: 0, screenshot: null, screenshotError: false, screenshotDelayMs: 0 };
 
   const send = (socket, message) => { if (!socket.destroyed) socket.write(encode(JSON.stringify(message))); };
   const broadcast = (message) => { for (const socket of sockets) send(socket, message); };
@@ -81,6 +81,12 @@ export async function fakeCdp({ pages = [{ id: "PAGE1", url: "about:blank" }] } 
       case "Page.startScreencast": screencasts.set(sessionId, params); reply(); break;
       case "Page.stopScreencast": screencasts.delete(sessionId); reply(); break;
       case "Page.screencastFrameAck": acks.push({ sessionId, frame: params.sessionId }); reply(); break;
+      // A one-off screenshot (a client that asks for a frame instead of waiting for a repaint): `state.screenshot` is the JPEG it answers with; unset, the answer is empty, as for any method this fake does not know.
+      case "Page.getLayoutMetrics": reply({ cssVisualViewport: { pageX: 0, pageY: 0, clientWidth: 1280, clientHeight: 800 } }); break;
+      case "Page.captureScreenshot":
+        if (state.screenshotError) send(socket, { id, ...(sessionId ? { sessionId } : {}), error: { code: -32000, message: "Unable to capture screenshot" } });
+        else setTimeout(() => reply(state.screenshot ? { data: Buffer.from(state.screenshot).toString("base64") } : {}), state.screenshotDelayMs);
+        break;
       case "Runtime.evaluate":
         setTimeout(() => {
           if (state.evaluateError) send(socket, { id, ...(sessionId ? { sessionId } : {}), error: { code: -32000, message: "Execution context was destroyed." } });

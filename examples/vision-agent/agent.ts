@@ -6,8 +6,9 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
 import type { Workflow } from '@parcha/agentrun-dsl';
-import type { Job } from '@parcha/agentrun-reference';
+import type { Job } from '@parcha/agentrun-harness';
 
 const SKILLS = join(dirname(fileURLToPath(import.meta.resolve('@parcha/pi-vision'))), '..', 'skills');
 /** pi-vision's skills as the package ships them, each without its front matter, in name order. */
@@ -16,7 +17,7 @@ export const skills = (): { name: string; text: string }[] => readdirSync(SKILLS
   .map((name) => ({ name, text: readFileSync(join(SKILLS, name, 'SKILL.md'), 'utf8').replace(/^---[\s\S]*?---\n/, '') }));
 
 /** The report's shape, for a package whose skills do not yet include `report`. */
-const REPORT = `Write the report as \`report/report.html\`, one page with its pictures and clips beside it in \`report/\`: inline CSS, no script and no address outside the folder. The answer first, then one finding per point (its words, its picture or clip, its cites), then what you did not check. A cite is \`<a class="cite" href="../FILE#FRAGMENT" data-look="KEY">LABEL</a>\`: the file's own fragment, LABEL that number, KEY the look's key from its receipt (\`facts.key\`).`;
+const REPORT = `Write the report as \`report/index.html\`, one page with its pictures and clips beside it in \`report/\`: inline CSS, no script and no address outside the folder. The answer first, then one finding per point (its words, its picture or clip, its cites), then what you did not check. A cite is \`<a class="cite" href="../FILE#FRAGMENT" data-look="KEY">LABEL</a>\`: the file's own fragment, LABEL that number, KEY the look's key from its receipt (\`facts.key\`).`;
 
 export const INSTRUCTIONS = (skillList = skills()) => `Answer the user's question about the files in your workspace. The question is \`question\`; the files are \`files\`.
 
@@ -32,10 +33,14 @@ Find your way quickly (a file's length, a PDF's pages, a sheet of frames), then 
 
 Say only what you read, saw or heard. Cite every claim with the file's own fragment, labelled with its number: \`#t=\` seconds for a recording, \`#page=N\` for a PDF (N the page index, from 1), \`#xywh=percent:x,y,w,h\` for a region.
 
-End with the report${skillList.some((skill) => skill.name === 'report') ? ' the report skill describes' : ' (\`report/report.html\`)'}, then submit { answer, report }: answer is two or three sentences that point to the report, report the page's path in your workspace (under \`report/\`).${skillList.some((skill) => skill.name === 'report') ? '' : `\n\n${REPORT}`}
+End with the report${skillList.some((skill) => skill.name === 'report') ? ' the report skill describes' : ' (\`report/index.html\`)'}, then submit { answer, report }: answer is two or three sentences that point to the report, report the page's path in your workspace (under \`report/\`).${skillList.some((skill) => skill.name === 'report') ? '' : `\n\n${REPORT}`}
 ${skillList.map((skill) => `\nThe ${skill.name} skill:\n${skill.text}`).join('')}`;
 
-export const workflow = {
+/** The agent node's thinking levels a run may ask for (`--thinking`); a run that names none thinks at medium. */
+export const THINKING = ['low', 'medium', 'high'] as const;
+export type Thinking = (typeof THINKING)[number];
+
+export const workflowOf = (thinking: Thinking) => ({
   v: 2,
   name: 'vision-agent',
   schemas: {
@@ -45,19 +50,37 @@ export const workflow = {
         question: { type: 'string', minLength: 1, description: 'The question, in plain words.' },
         files: { type: 'array', items: { type: 'string', pattern: '^[\\w.-]+$' }, description: 'The files in the workspace the question is about.' },
         example: { type: 'string', description: 'The example folder the question and files came from, if any.' },
+        thinking: { enum: THINKING, description: 'The agent\'s thinking level for this run (--thinking); medium when absent.' },
       },
     },
     Answer: {
       type: 'object', additionalProperties: false, required: ['answer', 'report'],
-      properties: { answer: { type: 'string', minLength: 1 }, report: { type: 'string', pattern: '^report/[\\w./-]+\\.html$' } },
+      properties: { answer: { type: 'string', minLength: 1 }, report: { type: 'string', pattern: '^report/(?:[\\w-][\\w.-]*/)*[\\w-][\\w.-]*\\.html$' } },
     },
   },
   input: { schemaId: 'Input' },
   output: { schemaId: 'Answer', path: 'answer' },
   root: { node: 'chain', steps: [
-    { node: 'agent', label: 'vision-agent', out: 'Answer', as: 'answer', tools: ['code'], thinking: 'medium', state: { question: '{question}', files: '{files}' }, instructions: INSTRUCTIONS() },
+    { node: 'agent', label: 'vision-agent', out: 'Answer', as: 'answer', tools: ['code'], thinking, state: { question: '{question}', files: '{files}' }, instructions: INSTRUCTIONS() },
   ] },
-} as const satisfies Workflow;
+} as const satisfies Workflow);
+export const workflow = workflowOf('medium');
+
+/** The flags that take a value: the host's `string` options (`demo.ts` in the harness declares them, and a test holds this list to it) and
+ *  `--thinking`. The token after one is its value; every other flag is a switch and takes none. */
+const VALUE_FLAGS = new Set(['record', 'input', 'max-usd', 'cache', 'dir', 'provider', 'model', 'eyes-model', 'see-also', 'operator-kill', 'thinking']);
+
+/** The positions of the arguments that are neither a flag nor a flag's value: the example folder among them. A folder after a switch
+ *  (`--live examples/x`) is one; the token after `--max-usd` is not. */
+export function positionalAt(argv: readonly string[]): number[] {
+  const at: number[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (!arg.startsWith('-')) at.push(i);
+    else if (arg.startsWith('--') && !arg.includes('=') && VALUE_FLAGS.has(arg.slice(2))) i++;
+  }
+  return at;
+}
 
 /** A file an example reads: fetched by URL (checked by size and SHA-256), or committed beside the example (`path`). */
 export type InputItem = { id: string; title?: string; url?: string; path?: string; bytes: number; sha256: string; license?: string; source?: string };
@@ -68,6 +91,7 @@ const EXAMPLES = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export function exampleAt(where: string): Example {
   const dir = join(EXAMPLES, basename(resolve(where)));
   if (existsSync(where) && resolve(where) !== dir) throw new Error(`${where}: an example is a folder under examples/; for files elsewhere, give --input with the question and the files`);
+  if (!existsSync(join(dir, 'question.md')) || !existsSync(join(dir, 'inputs.json'))) throw new Error(`${where}: not an example folder (an example is a folder under examples/ with a question.md and an inputs.json)`);
   const question = readFileSync(join(dir, 'question.md'), 'utf8').trim();
   const { items } = JSON.parse(readFileSync(join(dir, 'inputs.json'), 'utf8')) as { items: InputItem[] };
   return { name: basename(dir), dir, question, items };
@@ -82,15 +106,42 @@ export const inputOf = (example: Example) => ({ question: example.question, file
 function filesOf(): Record<string, Uint8Array> {
   const out: Record<string, Uint8Array> = {};
   const input = (() => { try { return JSON.parse(process.env.INPUT ?? '') as { example?: string }; } catch { return undefined; } })();
-  const named = input?.example ?? process.argv.slice(2).find((arg, i, all) => !arg.startsWith('--') && !(all[i - 1] ?? '').startsWith('--'));
-  if (named && existsSync(join(EXAMPLES, basename(named), 'inputs.json'))) {
-    const example = exampleAt(named);
-    for (const item of example.items) if (item.path) out[fileName(item)] = new Uint8Array(readFileSync(join(example.dir, item.path)));
-  }
+  const raw = process.argv.slice(2);
+  const named = input?.example ?? raw[positionalAt(raw)[0] ?? -1];
+  // This runs when the module is imported, before the command line has its say: a folder the run will be refused for has no files here,
+  // and `run.ts` says why, in one line, rather than a stack from this import.
+  const example = named ? (() => { try { return exampleAt(named); } catch { return undefined; } })() : undefined;
+  for (const item of example?.items ?? []) if (item.path) out[fileName(item)] = new Uint8Array(readFileSync(join(example!.dir, item.path)));
   const extra = process.env.DEMO_FILES_DIR;
   if (extra && existsSync(extra)) for (const name of readdirSync(extra)) out[name] = new Uint8Array(readFileSync(join(extra, name)));
   return out;
 }
 
-/** The job: the one agent; its default input asks nothing until an example or --input gives the question. */
-export const job = { workflow, input: { question: 'What is in these files?', files: [] }, files: filesOf() } satisfies Job;
+/** The job: the one agent, thinking as asked; its default input asks nothing until an example or --input gives the question. */
+export const jobOf = (thinking: Thinking = 'medium') => ({ workflow: workflowOf(thinking), input: { question: 'What is in these files?', files: [] }, files: filesOf() }) satisfies Job;
+export const job = jobOf();
+
+/** The run's own input: `--input` in the arguments (the supervisor has them), else `INPUT` (the one thing the supervisor gives the
+ *  child process, which is started with `--child` alone). */
+export function runInput(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): Record<string, unknown> | undefined {
+  const { values } = parseArgs({ args: [...argv], strict: false, options: { input: { type: 'string' } } });
+  try { return JSON.parse(typeof values.input === 'string' ? values.input : env.INPUT ?? '') as Record<string, unknown>; } catch { return undefined; }
+}
+
+/** The thinking level the run asks for: its input's `thinking`, medium when it names none, and none at all when it names one
+ *  that is not low, medium or high (the command line refuses that before anything starts). */
+export function thinkingOf(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): Thinking | undefined {
+  const named = runInput(argv, env)?.thinking;
+  if (named === undefined) return 'medium';
+  return (THINKING as readonly unknown[]).includes(named) ? (named as Thinking) : undefined;
+}
+
+/** The command line's refusal of a thinking level that is not low, medium or high, or that has no inline input to go in (the flag
+ *  `argvFor` could not place is still in the arguments), said before anything starts. */
+export function thinkingRefusal(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const unplaced = argv.find((arg) => arg.startsWith('--thinking='));
+  const named = unplaced === undefined ? runInput(argv, env)?.thinking : unplaced.slice('--thinking='.length);
+  const levels = `${THINKING.slice(0, -1).join(', ')} or ${THINKING.at(-1)}`;
+  if (named !== undefined && !(THINKING as readonly unknown[]).includes(named)) return named === '' ? `--thinking needs a value: ${levels}` : `--thinking is ${levels}; ${String(named)} is not`;
+  return unplaced === undefined ? undefined : '--thinking needs an example folder or an inline JSON --input';
+}

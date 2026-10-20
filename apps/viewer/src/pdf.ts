@@ -12,7 +12,11 @@ export type PdfDrawn = { kind: 'drawn'; url: string; w: number; h: number } | { 
 
 type PdfPageProxy = { getViewport(options: { scale: number }): { width: number; height: number }; render(options: { canvas: HTMLCanvasElement; viewport: unknown }): { promise: Promise<void> } };
 type PdfDocument = { numPages: number; getPage(page: number): Promise<PdfPageProxy> };
-type PdfLibrary = { GlobalWorkerOptions: { workerSrc: string }; getDocument(options: { data: Uint8Array; enableXfa: boolean; useWasm: boolean; wasmUrl: string }): { promise: Promise<PdfDocument> } };
+type PdfLibrary = { GlobalWorkerOptions: { workerSrc: string }; getDocument(options: { data: Uint8Array; wasmUrl: string } & typeof PDF_OPTIONS): { promise: Promise<PdfDocument> } };
+
+/** How every PDF is opened: no XFA forms, no WebAssembly, and no code compiled from the file (`isEvalSupported`: PDF.js
+ *  builds no function from a font's data, a second layer past the eval fix of CVE-2024-4367). */
+export const PDF_OPTIONS = { enableXfa: false, useWasm: false, isEvalSupported: false } as const;
 
 /** How wide a page is drawn, in pixels: sharp across a wide panel on a dense screen. A very tall page is drawn smaller,
  *  so no page takes more than PDF_PIXELS. */
@@ -51,7 +55,7 @@ export function pdfDrawer(recording: Recording, drawn: () => void): (sha: string
     const library = await loadPdfLibrary().catch((error: unknown) => {
       throw new Error(location.protocol === 'file:' ? 'PDF.js cannot load in a page opened from a file; open the viewer from a web server' : `PDF.js did not load (${error instanceof Error ? error.message : String(error)})`);
     });
-    return library.getDocument({ data: await blobBytes(recording, sha), enableXfa: false, useWasm: false, wasmUrl: `${pdfAt()}wasm/` }).promise;
+    return library.getDocument({ data: await blobBytes(recording, sha), ...PDF_OPTIONS, wasmUrl: `${pdfAt()}wasm/` }).promise;
   })()).get(sha)!;
   return (sha, page) => {
     const key = `${sha}#${page}`;

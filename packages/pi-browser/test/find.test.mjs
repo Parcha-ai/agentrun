@@ -9,7 +9,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createRegistry, defineExtension, defineTool, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { findInText } from "../dist/index.js";
+import { createRedactor, findInText } from "../dist/index.js";
 import { scratchSync } from "./fixtures/scratch.mjs";
 
 const tmp = (t) => scratchSync(t, "find-");
@@ -223,4 +223,15 @@ test("a split leaf under four ancestors keeps every ancestor in its heading besi
   const heading = results[0].text.split("\n").find((line) => line.startsWith("--- under:")) ?? "";
   assert.match(results[0].text, /NEEDLE the answer is 42/);
   for (const id of ["[0-1] RootWebArea", "[0-2] main", "[0-3] region", "[0-4] link: Deal details", "[0-5] StaticText"]) assert.ok(heading.includes(id), `${id} is in the heading: ${heading.slice(0, 160)}`);
+});
+
+// The source is redacted whole before it is chunked, so a registered value across a chunk boundary is not left as two halves.
+test("a registered value across a chunk boundary reaches the ranker in neither half", async () => {
+  const token = "run-token-0123456789";
+  const source = `${"a".repeat(1_995)}${token}${"b".repeat(1_995)}`;
+  const seen = [];
+  const rank = async (_query, chunks) => { seen.push(...chunks); return chunks.map(() => 1); };
+  await findInText(source, `find ${token}`, { kind: "page", rank, maxChars: 2_000, redact: createRedactor(() => [token]) });
+  assert.ok(seen.length > 1, "the page was chunked");
+  assert.doesNotMatch(seen.join("\n"), /run-t|n-0123/);
 });

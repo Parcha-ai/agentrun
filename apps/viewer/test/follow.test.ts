@@ -11,7 +11,7 @@ import { after, test } from 'node:test';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
 import { finishedManifest, placeLines, tailOf } from '../src/follow.ts';
-import { blobsNamed } from '../src/app.ts';
+import { blobsNamed } from '../src/load.ts';
 import { fileOrder, type Line } from '../src/format.ts';
 import { stopsOf } from '../src/replay.ts';
 import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';

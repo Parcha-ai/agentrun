@@ -15,7 +15,7 @@ export {
 } from "./types.js";
 export { type Caps, createGuard, guard } from "./guard.js";
 export { type Inbox, type InboxCandidate, InboxFormatError, type InboxOptions, parseInbox, renderInbox } from "./inbox.js";
-export { type ProposeFilesOptions, type ProposeOptions, type ProposeResult, type ProposeTarget, proposeFiles, proposeLearning, type UsesSource, type WorkflowRecords } from "./propose.js";
+export { type ProposeFilesOptions, type ProposeOptions, type ProposeResult, type ProposeTarget, proposeFiles, proposeLearning, type UsesSource, type Withheld, type WorkflowRecords } from "./propose.js";
 export {
   curate, CURATE_CAPS, type CurateCaps, type CurateItem, type CurateOptions, type CurateReport, type CurateRepo, type Cut, DEFAULT_THRESHOLDS, type Judge,
   type Question, QUESTIONS, type RetireOptions, type RetireResult, retireLearning, type RunReport, type RunsRepo, type Thresholds,
@@ -30,9 +30,9 @@ export {
   type TrialStatus, type Use, USE_OUTCOMES, type UseOutcome, whenSize, workflowDir, WORKFLOW_SKILL_NAME,
 } from "./trial.js";
 export {
-  type AdmitRefusal, collectUses, collectWorkflows, type CollectedWorkflows,
+  type AdmitRefusal, collectUses, collectWorkflows, type CollectedWorkflows, COPIED_TEXT, copiesRead,
   type CollectWorkflowsOptions, type Files, type FoundWorkflow, inboxWorkflowFiles, MAX_RUN_USES, MAX_RUN_WORKFLOWS, parseRunUses, readTrialIn, readSessionUses, readUses,
   type ReadSessionUsesOptions, type ReadUses, type ReadUsesOptions, renderSkill, type RepoAt, type RunUse, type RunUses, seedWorkflows, type SeededWorkflows, sessionEntries, type SeedWorkflowsOptions,
-  schemaWhen, settleWorkflowUses, type Settled, type SettledDecision, type SettleOptions, type SkippedWorkflow, usesSettler, type UsesSettlerOptions, usesSource,
+  schemaDescription, schemaWhen, settleWorkflowUses, type Settled, type SettledDecision, type SettleOptions, type SkippedWorkflow, usesSettler, type UsesSettlerOptions, usesSource,
   workflowAdmitter, type WorkflowAdmitterOptions, workflowsToTry,
 } from "./workflows.js";

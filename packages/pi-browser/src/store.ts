@@ -1,7 +1,7 @@
 import type { Context } from "@earendil-works/chord";
-import { defineDoc, defineTask, type ConversationDocToken, type ConversationId, type DocumentReader, type Harness, type TaskRuntime, type Tx } from "@earendil-works/pi-durable";
-import { moveRecord, notices } from "./core/custody.js";
-import type { BrowserConfig, BrowserProvider, InventoryRow, ReconcileReport, ReleaseReason, SessionChange, SessionRecord, SessionsState } from "./core/host.js";
+import { defineDoc, defineTask, type ConversationDocToken, type ConversationId, type Cursor, type DocumentReader, type Harness, type TaskId, type TaskRuntime, type Tx } from "@earendil-works/pi-durable";
+import { backoffMs, moveRecord, notices } from "./core/custody.js";
+import type { BrowserConfig, BrowserProvider, HandoffOutcome, HandoffPort, InventoryRow, ReconcileReport, ReleaseReason, SessionChange, SessionRecord, SessionsState } from "./core/host.js";
 import type { LeaseRef, LeaseState } from "./core/lease.js";
 
 export const now = () => new Date().toISOString();
@@ -11,12 +11,13 @@ const cidOf = (row: InventoryRow) => row.conversationId as ConversationId;
 /** Release attempts before custody is given up as `lost`, and status polls before a release is sent again. */
 export const RELEASE_ATTEMPTS = 6;
 export const CONFIRM_POLLS = 5;
-const backoffMs = (n: number) => Math.min(30_000, 500 * 2 ** n);
 
-type Move = { state: LeaseState; resourceId?: string; reason?: ReleaseReason; at: string; notice?: "kept" | "lost" };
+type Move = { state: LeaseState; resourceId?: string; reason?: ReleaseReason; at: string; notice?: "kept" | "lost"; handoff?: string };
 type ReleaseInput = { row: InventoryRow; notBefore?: number };
 type ReleaseState = { phase: "release"; attempt: number } | { phase: "confirm"; attempt: number; ids: string[]; polls: number };
 type ReleaseRuntime = TaskRuntime<ReleaseInput, ReleaseState, { released: number }, object>;
+export type HandoffInput = { row: InventoryRow; requestId: string; interactionId: string; completionCondition: string };
+type HandoffResult = { outcome: HandoffOutcome };
 
 export type StoreDeps = {
   name: string;
@@ -27,9 +28,12 @@ export type StoreDeps = {
   meter(spent: SessionRecord["spent"], at: string, final?: boolean): { spent: SessionRecord["spent"] };
   scrubbed(error: unknown): Error;
   createDeadlineMs: number;
+  handoff?: HandoffPort;
+  /** A handoff's session came back under `fence`. */
+  handedBack?(tag: string, fence: number): void;
 };
 
-export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, scrubbed, createDeadlineMs }: StoreDeps) {
+export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, scrubbed, createDeadlineMs, handoff, handedBack }: StoreDeps) {
   const Inventory = defineDoc<{ rows: Record<string, InventoryRow> }>({ kind: `${name}.inventory`, version: 1, scope: "session", initial: () => ({ rows: {} }) });
 
   /** One state change: the record and the open-session inventory move in the same commit. */
@@ -155,6 +159,69 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
     },
   });
 
+  /** Polls the port until it answers, then gives the session back with the outcome's notice, if it is still held for
+   *  this request. */
+  const HandoffTask = defineTask<HandoffInput, { phase: "poll"; attempt: number }, HandoffResult, object>({
+    name: `${name}.handoff`,
+    version: 1,
+    initial: () => ({ phase: "poll", attempt: 0 }),
+    phases: {
+      poll: async (task, runtime, context) => {
+        const { row, requestId, interactionId, completionCondition } = task.input;
+        const { attempt } = task.state.checkpoint;
+        // A session no longer held for this request (the provider stopped it and a reconcile released it, or it was
+        // given back) leaves nothing to wait for: the wait ends at once, and the call says the handoff ended.
+        let over = false;
+        await runtime.commit(async (tx) => {
+          const record = (await tx.doc(Sessions, cidOf(row))).sessions.find((r) => r.tag === row.tag);
+          if (record?.state === "held" && record.handoff === requestId) return undefined;
+          over = true;
+          return { status: "terminal", outcome: { status: "failed", error: { code: "handoff_ended", message: `${row.tag}: no longer held for ${requestId}` } } };
+        }, context);
+        if (over) return;
+        let answer: "pending" | HandoffOutcome = "pending";
+        try { if (handoff) answer = await handoff.outcome(interactionId, runtime.signal); } catch (error) {
+          if (runtime.signal.aborted) throw error;
+          runtime.report(scrubbed(error));
+        }
+        if (answer === "pending") {
+          await runtime.sleep(runtime.now() + backoffMs(attempt), context);
+          await runtime.commit(() => ({ status: "running", checkpoint: { phase: "poll", attempt: attempt + 1 } }), context);
+          return;
+        }
+        const outcome = answer;
+        await runtime.commit(async (tx) => {
+          const state = await tx.doc(Sessions, cidOf(row));
+          const record = state.sessions.find((r) => r.tag === row.tag);
+          if (record?.state === "held" && record.handoff === requestId) {
+            await move(tx, row, { state: "live", at: iso(runtime.now()) });
+            addNotice(state, notices.handedBack(outcome, completionCondition));
+            handedBack?.(row.tag, record.fence ?? 0);
+          }
+          return { status: "terminal", outcome: { status: "completed", result: { outcome } } };
+        }, context);
+      },
+    },
+    abort: async (task, runtime, context) => {
+      await runtime.commit(async (tx) => {
+        await waitForHandoff(tx, task.input);
+        return { status: "terminal", outcome: { status: "aborted", reason: "the wait was handed to a successor task" } };
+      }, context);
+    },
+  });
+  const waitForHandoff = (tx: Tx, input: HandoffInput) => tx.createTask(HandoffTask, input, { ownership: { kind: "conversation" }, conversationId: cidOf(input.row), background: true });
+  /** A request's newest wait: a successor is newer than the task it replaced. */
+  async function findHandoff(tx: Tx, cid: ConversationId, requestId: string): Promise<TaskId<HandoffResult> | undefined> {
+    let cursor: Cursor | undefined;
+    do {
+      const page = await tx.scanTasks({ conversationId: cid, kind: `${name}.handoff`, order: "descending" }, 50, cursor);
+      const found = page.items.find((task) => (task.input as HandoffInput).requestId === requestId);
+      if (found) return found.id as TaskId<HandoffResult>;
+      cursor = page.next;
+    } while (cursor);
+    return undefined;
+  }
+
   async function reconcileAll(harness: Harness, isActive: (conversationId: ConversationId) => boolean, context: Context): Promise<ReconcileReport> {
     const report: ReconcileReport = { released: [], kept: [], lost: [], unreachable: [] };
     for (const row of Object.values((await harness.snapshot(Inventory, context))?.rows ?? {})) {
@@ -180,6 +247,7 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
         }
         const status = await provider.status({ id: live.resourceId!, tag: live.tag });
         if (status === "gone" || status === "stopped") await outcome("lost", (tx) => move(tx, live, { state: "released", reason: "ended", at, notice: "lost" }));
+        else if (row.state === "held") await outcome("kept");
         else if (isActive(cidOf(row))) await outcome("kept", (tx) => move(tx, live, { state: "live", at, notice: "kept" }));
         else await outcome("released", (tx) => requestRelease(tx, live, "lost", at));
       } catch {
@@ -189,5 +257,5 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
     return report;
   }
 
-  return { Inventory, move, addNotice, begin, requestRelease, bindByTag, emitReleased, ReleaseTask, reconcileAll };
+  return { Inventory, move, addNotice, begin, requestRelease, bindByTag, emitReleased, ReleaseTask, HandoffTask, waitForHandoff, findHandoff, reconcileAll };
 }

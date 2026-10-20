@@ -4,11 +4,11 @@
 // recordings are embedded in gallery.js and copied beside the page. With --files (off by
 // default), the recordings are shipped as files only: recordings/index.json lists each one's manifest and blob paths,
 // and the page fetches a recording when it is opened, so the page stays small; that needs a static host, not file://.
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
-import { basename, extname, join } from 'node:path';
+import { basename, dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MIME } from './src/blobs.ts';
+import { inertName, MIME } from './src/blobs.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const out = process.argv.slice(2).find((arg) => !arg.startsWith('--')) ?? join(here, 'dist');
@@ -41,9 +41,10 @@ export function checkModule(file, code) {
 
 /** `recordingsDir`: the recordings bundled into the gallery (a test passes its fixture's directory). `files`: ship them as
  *  files with `recordings/index.json` instead of embedding them in gallery.js. */
-export function build(target = out, recordingsDir = join(here, 'recordings'), { files = false } = {}) {
+/** One page's script: its entry and the modules it imports, joined in import order into one classic script. */
+function bundle(entry) {
   const names = new Map();
-  const parts = ordered('app.ts').map((file) => {
+  return ordered(entry).map((file) => {
     const code = stripTypeScriptTypes(readFileSync(join(src, file), 'utf8'));
     checkModule(file, code);
     const body = code.replace(/^import [^;]*? from '\.\/[\w-]+\.ts';$/gm, '').replace(/^export (?=(?:async )?function |const |let |class )/gm, '');
@@ -53,10 +54,19 @@ export function build(target = out, recordingsDir = join(here, 'recordings'), { 
     }
     return `// ${file}\n${body}`;
   });
+}
+
+export function build(target = out, recordingsDir = join(here, 'recordings'), { files = false } = {}) {
+  const parts = bundle('app.ts');
+  // The chat + report page (chat.html): a second script over the same loader, beside the viewer.
+  const chatParts = bundle('chat.ts');
   rmSync(target, { recursive: true, force: true });
   mkdirSync(target, { recursive: true });
   writeFileSync(join(target, 'viewer.js'), `(() => {\n'use strict';\n${parts.join('\n')}\n})();\n`);
   writeFileSync(join(target, 'index.html'), readFileSync(join(here, 'index.html')));
+  writeFileSync(join(target, 'viewer.css'), readFileSync(join(here, 'viewer.css')));
+  writeFileSync(join(target, 'chat.js'), `(() => {\n'use strict';\n${chatParts.join('\n')}\n})();\n`);
+  writeFileSync(join(target, 'chat.html'), readFileSync(join(here, 'chat.html')));
   // A `.js` name: every static host serves it as JavaScript, which a module script must be.
   mkdirSync(join(target, 'pdfjs'));
   for (const [from, to] of [['pdf.min.mjs', 'pdf.min.js'], ['pdf.worker.min.mjs', 'pdf.worker.min.js'], ['LICENSE.txt', 'LICENSE.txt']]) cpSync(join(here, 'vendor', 'pdfjs', from), join(target, 'pdfjs', to));
@@ -72,19 +82,27 @@ export function build(target = out, recordingsDir = join(here, 'recordings'), { 
     const blobs = {};
     for (const file of existsSync(join(dir, 'blobs')) ? readdirSync(join(dir, 'blobs')).filter((name) => !unfinished(name)) : []) {
       const ext = extname(file).slice(1);
-      // Embedded, a blob is a data: URL; shipped as files, its path in the recording's directory.
-      blobs[file.slice(0, -ext.length - 1)] = files ? `blobs/${file}` : `data:${MIME[ext] ?? 'application/octet-stream'};base64,${readFileSync(join(dir, 'blobs', file)).toString('base64')}`;
+      // Embedded, a blob is a data: URL; shipped as files, its path in the recording's directory, under its inert name.
+      blobs[file.slice(0, -ext.length - 1)] = files ? `blobs/${inertName(file)}` : `data:${MIME[ext] ?? 'application/octet-stream'};base64,${readFileSync(join(dir, 'blobs', file)).toString('base64')}`;
     }
     const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
     gallery.push(files ? { id, manifest, blobs } : { id, manifest, events: readFileSync(join(dir, 'events.jsonl'), 'utf8'), blobs });
-    cpSync(dir, join(target, 'recordings', id), { recursive: true, filter: (source) => !unfinished(basename(source)) });
+    // Beside the page, every blob is published under its inert name: a page, an SVG or a script in a recording (an agent's
+    // report, draft 41) is plain text when opened straight, and the viewer reads it into its sandboxed frame.
+    const copy = join(target, 'recordings', id);
+    cpSync(dir, copy, { recursive: true, filter: (source) => !unfinished(basename(source)) && dirname(source) !== join(dir, 'blobs') });
+    // Anything else in blobs/ (a directory) is copied as it is, for the gate to refuse.
+    for (const entry of existsSync(join(dir, 'blobs')) ? readdirSync(join(dir, 'blobs'), { withFileTypes: true }).filter((each) => !unfinished(each.name)) : []) {
+      if (entry.isFile()) copyFileSync(join(dir, 'blobs', entry.name), join(copy, 'blobs', inertName(entry.name)));
+      else cpSync(join(dir, 'blobs', entry.name), join(copy, 'blobs', entry.name), { recursive: true });
+    }
   }
   if (files) {
     mkdirSync(join(target, 'recordings'), { recursive: true });
     writeFileSync(join(target, 'recordings', 'index.json'), `${JSON.stringify(gallery)}\n`);
     writeFileSync(join(target, 'gallery.js'), `window.AGENTRUN_GALLERY_INDEX = 'recordings/index.json';\n`);
   } else writeFileSync(join(target, 'gallery.js'), `window.AGENTRUN_GALLERY = ${JSON.stringify(gallery)};\n`);
-  return { target, modules: parts.length, recordings: gallery.map((entry) => entry.id) };
+  return { target, modules: parts.length, chatModules: chatParts.length, recordings: gallery.map((entry) => entry.id) };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) console.log(JSON.stringify(build(out, undefined, { files: process.argv.includes('--files') })));
