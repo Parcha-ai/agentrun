@@ -46,7 +46,7 @@
       }
     ],
     "hq": {
-      "city": "CALGARY",
+      "city": "Calgary",
       "state": "AB",
       "country": "CA"
     },
@@ -76,7 +76,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "BELLEVUE",
+      "city": "Bellevue",
       "state": "WA",
       "country": "US"
     },
@@ -695,7 +695,7 @@
       }
     ],
     "hq": {
-      "city": "NEW YORK",
+      "city": "New York",
       "state": "NY",
       "country": "US"
     },
@@ -1031,9 +1031,9 @@
     "sicDescription": "RETAIL-EATING PLACES",
     "segments": null,
     "hq": {
-      "city": "KWAI CHUNG, HONG KONG",
+      "city": "Singapore",
       "state": null,
-      "country": "HK"
+      "country": "SG"
     },
     "latestAnnual": {
       "form": "20-F",
@@ -1163,7 +1163,7 @@
       }
     ],
     "hq": {
-      "city": "CALGARY",
+      "city": "Calgary",
       "state": "AB",
       "country": "CA"
     },
@@ -1206,8 +1206,8 @@
       }
     ],
     "hq": {
-      "city": "SAN CLEMENTE",
-      "state": "CA",
+      "city": "Cambridge",
+      "state": "MA",
       "country": "US"
     },
     "latestAnnual": {
@@ -1278,7 +1278,7 @@
       }
     ],
     "hq": {
-      "city": "DALLAS",
+      "city": "Dallas,",
       "state": "TX",
       "country": "US"
     },
@@ -1334,7 +1334,7 @@
       }
     ],
     "hq": {
-      "city": "CHAOYANG DISTRICT, BEIJING",
+      "city": "Beijing",
       "state": null,
       "country": "CN"
     },
@@ -1383,7 +1383,7 @@
       }
     ],
     "hq": {
-      "city": "VALDILANA (BIELLA)",
+      "city": "Trivero",
       "state": null,
       "country": "IT"
     },
@@ -1781,7 +1781,7 @@
       }
     ],
     "hq": {
-      "city": "ST PETERSBURG",
+      "city": "St. Petersburg",
       "state": "FL",
       "country": "US"
     },
@@ -2266,7 +2266,7 @@
       }
     ],
     "hq": {
-      "city": "EL MONTE",
+      "city": "El Monte",
       "state": "CA",
       "country": "US"
     },
@@ -2348,7 +2348,7 @@
       }
     ],
     "hq": {
-      "city": "PITTSFORD",
+      "city": "Pittsford,",
       "state": "NY",
       "country": "US"
     },
@@ -3374,7 +3374,7 @@
       }
     ],
     "hq": {
-      "city": "LOS ANGELES",
+      "city": "Los Angeles",
       "state": "CA",
       "country": "US"
     },
@@ -4065,7 +4065,7 @@
       }
     ],
     "hq": {
-      "city": "ARLINGTON",
+      "city": "Arlington",
       "state": "VA",
       "country": "US"
     },
@@ -5233,7 +5233,7 @@
     "sicDescription": "SERVICES-PREPACKAGED SOFTWARE",
     "segments": null,
     "hq": {
-      "city": "NESS ZIONA",
+      "city": "Ness Ziona",
       "state": null,
       "country": "IL"
     },
@@ -5281,7 +5281,7 @@
       }
     ],
     "hq": {
-      "city": "WESTERN AUSTRALIA",
+      "city": "Perth",
       "state": null,
       "country": "AU"
     },
@@ -5381,7 +5381,7 @@
       }
     ],
     "hq": {
-      "city": "FRAMINGHAM",
+      "city": "Framingham",
       "state": "MA",
       "country": "US"
     },
@@ -5824,7 +5824,7 @@
       }
     ],
     "hq": {
-      "city": "WEYBRIDGE",
+      "city": "Weybridge",
       "state": null,
       "country": "GB"
     },
@@ -5865,7 +5865,7 @@
       }
     ],
     "hq": {
-      "city": "MONROE",
+      "city": "Monroe,",
       "state": "MI",
       "country": "US"
     },
@@ -5895,7 +5895,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "SCOTTSDALE",
+      "city": "Scottsdale",
       "state": "AZ",
       "country": "US"
     },
@@ -6246,7 +6246,7 @@
       }
     ],
     "hq": {
-      "city": "CHICAGO",
+      "city": "Chicago,",
       "state": "IL",
       "country": "US"
     },
@@ -6400,7 +6400,7 @@
       }
     ],
     "hq": {
-      "city": "REDMOND",
+      "city": "Redmond",
       "state": "WA",
       "country": "US"
     },
@@ -6458,7 +6458,7 @@
       }
     ],
     "hq": {
-      "city": "CHICAGO",
+      "city": "Chicago,",
       "state": "IL",
       "country": "US"
     },
@@ -7102,7 +7102,7 @@
     "sicDescription": "RETAIL-CATALOG & MAIL-ORDER HOUSES",
     "segments": null,
     "hq": {
-      "city": "VERNON HILLS",
+      "city": "Vernon Hills",
       "state": "IL",
       "country": "US"
     },
@@ -7181,7 +7181,7 @@
       }
     ],
     "hq": {
-      "city": "HUNTSVILLE",
+      "city": "Huntsville",
       "state": "AL",
       "country": "US"
     },
@@ -7428,7 +7428,7 @@
       }
     ],
     "hq": {
-      "city": "TORONTO",
+      "city": "Toronto",
       "state": "ON",
       "country": "CA"
     },
@@ -7469,7 +7469,7 @@
       }
     ],
     "hq": {
-      "city": "WILMINGTON",
+      "city": "Wilmington",
       "state": "DE",
       "country": "US"
     },
@@ -7537,7 +7537,7 @@
       }
     ],
     "hq": {
-      "city": "TAMPA",
+      "city": "Tampa",
       "state": "FL",
       "country": "US"
     },
@@ -8289,7 +8289,7 @@
       }
     ],
     "hq": {
-      "city": "TORONTO",
+      "city": "Toronto",
       "state": "ON",
       "country": "CA"
     },
@@ -8343,7 +8343,7 @@
       }
     ],
     "hq": {
-      "city": "MILWAUKEE",
+      "city": "Milwaukee",
       "state": "WI",
       "country": "US"
     },
@@ -8522,7 +8522,7 @@
       }
     ],
     "hq": {
-      "city": "MILWAUKEE",
+      "city": "Milwaukee",
       "state": "WI",
       "country": "US"
     },
@@ -8572,7 +8572,7 @@
       }
     ],
     "hq": {
-      "city": "PEMBROKE",
+      "city": "Pembroke",
       "state": null,
       "country": "BM"
     },
@@ -8633,7 +8633,7 @@
       }
     ],
     "hq": {
-      "city": "COURBEVOIE",
+      "city": "Courbevoie",
       "state": null,
       "country": "FR"
     },
@@ -8682,7 +8682,7 @@
       }
     ],
     "hq": {
-      "city": "DURHAM",
+      "city": "Durham",
       "state": "NC",
       "country": "US"
     },
@@ -8730,7 +8730,7 @@
       }
     ],
     "hq": {
-      "city": "DURANGO",
+      "city": "Durango",
       "state": "CO",
       "country": "US"
     },
@@ -8773,7 +8773,7 @@
       }
     ],
     "hq": {
-      "city": "1 COMMONWEALTH LANE",
+      "city": "Singapore",
       "state": null,
       "country": "SG"
     },
@@ -8834,9 +8834,9 @@
       }
     ],
     "hq": {
-      "city": "XIAMEN",
+      "city": "Xiamen City",
       "state": null,
-      "country": null
+      "country": "CN"
     },
     "latestAnnual": {
       "form": "20-F",
@@ -8883,7 +8883,7 @@
       }
     ],
     "hq": {
-      "city": "TORONTO, ONTARIO",
+      "city": "Toronto",
       "state": "ON",
       "country": "CA"
     },
@@ -8925,7 +8925,7 @@
       }
     ],
     "hq": {
-      "city": "AUSTIN",
+      "city": "Austin",
       "state": "TX",
       "country": "US"
     },
@@ -9028,7 +9028,7 @@
       }
     ],
     "hq": {
-      "city": "PROVIDENCE",
+      "city": "Providence,",
       "state": "RI",
       "country": "US"
     },
@@ -9077,7 +9077,7 @@
       }
     ],
     "hq": {
-      "city": "TORONTO",
+      "city": "Toronto",
       "state": "ON",
       "country": "CA"
     },
@@ -9118,7 +9118,7 @@
       }
     ],
     "hq": {
-      "city": "BROOMFIELD",
+      "city": "Broomfield",
       "state": "CO",
       "country": "US"
     },
@@ -9403,7 +9403,7 @@
       }
     ],
     "hq": {
-      "city": "NEW YORK",
+      "city": "New York",
       "state": "NY",
       "country": "US"
     },
@@ -9435,7 +9435,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "COINTRIN",
+      "city": "Cointrin",
       "state": null,
       "country": "CH"
     },
@@ -9519,7 +9519,7 @@
       }
     ],
     "hq": {
-      "city": "SAO JOSE DOS CAMPOS",
+      "city": "Pinheiros, São Paulo, SP,",
       "state": null,
       "country": "BR"
     },
@@ -9722,7 +9722,7 @@
       }
     ],
     "hq": {
-      "city": "BAINBRIDGE ISLAND",
+      "city": "Bainbridge Island",
       "state": "WA",
       "country": "US"
     },
@@ -9782,7 +9782,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "ANKENY",
+      "city": "Ankeny",
       "state": "IA",
       "country": "US"
     },
@@ -9823,7 +9823,7 @@
       }
     ],
     "hq": {
-      "city": "SAN DIEGO",
+      "city": "San Diego",
       "state": "CA",
       "country": "US"
     },
@@ -9903,7 +9903,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "CHESAPEAKE",
+      "city": "Chesapeake,",
       "state": "VA",
       "country": "US"
     },
@@ -9982,8 +9982,8 @@
       }
     ],
     "hq": {
-      "city": "TORONTO",
-      "state": "ON",
+      "city": "Toronto",
+      "state": "NY",
       "country": "CA"
     },
     "latestAnnual": {
@@ -10023,7 +10023,7 @@
       }
     ],
     "hq": {
-      "city": "HOUSTON",
+      "city": "Houston",
       "state": "TX",
       "country": "US"
     },
@@ -10392,7 +10392,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "PITTSBURGH",
+      "city": "Pittsburgh",
       "state": "PA",
       "country": "US"
     },
@@ -10424,7 +10424,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "NASHVILLE",
+      "city": "Nashville",
       "state": "TN",
       "country": "US"
     },
@@ -10495,7 +10495,7 @@
       }
     ],
     "hq": {
-      "city": "ST GEORGE",
+      "city": "St. George",
       "state": "UT",
       "country": "US"
     },
@@ -10567,7 +10567,7 @@
       }
     ],
     "hq": {
-      "city": "SINGAPORE",
+      "city": "Millenia Tower",
       "state": null,
       "country": "SG"
     },
@@ -10647,7 +10647,7 @@
       }
     ],
     "hq": {
-      "city": "BAD HOMBURG",
+      "city": "Bad Homburg",
       "state": null,
       "country": "DE"
     },
@@ -10677,7 +10677,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "MILWAUKEE",
+      "city": "Milwaukee",
       "state": "WI",
       "country": "US"
     },
@@ -10709,7 +10709,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "TYSONS CORNER",
+      "city": "Tysons Corner",
       "state": "VA",
       "country": "US"
     },
@@ -10931,7 +10931,7 @@
       }
     ],
     "hq": {
-      "city": "WESTMINSTER",
+      "city": "Westminster",
       "state": "CO",
       "country": "US"
     },
@@ -11663,7 +11663,7 @@
       }
     ],
     "hq": {
-      "city": "WAUKESHA",
+      "city": "Waukesha",
       "state": "WI",
       "country": "US"
     },
@@ -12003,7 +12003,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "AKRON",
+      "city": "Akron",
       "state": "OH",
       "country": "US"
     },
@@ -12275,7 +12275,7 @@
       }
     ],
     "hq": {
-      "city": "STAMFORD",
+      "city": "Stamford,",
       "state": "CT",
       "country": "US"
     },
@@ -12644,7 +12644,7 @@
       }
     ],
     "hq": {
-      "city": "WEXFORD",
+      "city": "Wexford",
       "state": "PA",
       "country": "US"
     },
@@ -12724,7 +12724,7 @@
       }
     ],
     "hq": {
-      "city": "NEW YORK",
+      "city": "New York,",
       "state": "NY",
       "country": "US"
     },
@@ -13115,7 +13115,7 @@
       }
     ],
     "hq": {
-      "city": "STONY BROOK",
+      "city": "Stony Brook",
       "state": "NY",
       "country": "US"
     },
@@ -13214,7 +13214,7 @@
       }
     ],
     "hq": {
-      "city": "YAVNE",
+      "city": "Yavne",
       "state": null,
       "country": "IL"
     },
@@ -13262,7 +13262,7 @@
       }
     ],
     "hq": {
-      "city": "CALGARY",
+      "city": "Calgary",
       "state": "AB",
       "country": "CA"
     },
@@ -13322,7 +13322,7 @@
       }
     ],
     "hq": {
-      "city": "HAIFA, ISRAEL",
+      "city": "Haifa",
       "state": null,
       "country": "IL"
     },
@@ -13352,7 +13352,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "MALVERN",
+      "city": "Malvern",
       "state": "PA",
       "country": "US"
     },
@@ -13904,7 +13904,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "BOLINGBROOK",
+      "city": "Bolingbrook",
       "state": "IL",
       "country": "US"
     },
@@ -13960,7 +13960,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "INDIANAPOLIS",
+      "city": "Indianapolis",
       "state": "IN",
       "country": "US"
     },
@@ -14646,7 +14646,7 @@
       }
     ],
     "hq": {
-      "city": "HAMILTON",
+      "city": "Hamilton",
       "state": null,
       "country": "BM"
     },
@@ -14695,7 +14695,7 @@
       }
     ],
     "hq": {
-      "city": "WESTERVILLE",
+      "city": "Westerville",
       "state": "OH",
       "country": "US"
     },
@@ -14923,7 +14923,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "LOWELL",
+      "city": "Lowell",
       "state": "MA",
       "country": "US"
     },
@@ -15053,7 +15053,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "CHICAGO",
+      "city": "Chicago",
       "state": "IL",
       "country": "US"
     },
@@ -15130,7 +15130,7 @@
       }
     ],
     "hq": {
-      "city": "GRAND DUCHY OF LUXEMBOURG",
+      "city": "Luxembourg",
       "state": null,
       "country": "LU"
     },
@@ -15283,7 +15283,7 @@
       }
     ],
     "hq": {
-      "city": "NEW YORK",
+      "city": "New York",
       "state": "NY",
       "country": "US"
     },
@@ -15451,7 +15451,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "CALGARY",
+      "city": "Calgary",
       "state": "AB",
       "country": "CA"
     },
@@ -15506,7 +15506,7 @@
       }
     ],
     "hq": {
-      "city": "HOUSTON",
+      "city": "Sugar Land",
       "state": "TX",
       "country": "US"
     },
@@ -15696,7 +15696,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "CEDAR PARK",
+      "city": "Cedar Park",
       "state": "TX",
       "country": "US"
     },
@@ -15736,7 +15736,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "CHICAGO",
+      "city": "Chicago",
       "state": "IL",
       "country": "US"
     },
@@ -15883,7 +15883,7 @@
       }
     ],
     "hq": {
-      "city": "RENO,",
+      "city": "Reno",
       "state": "NV",
       "country": "US"
     },
@@ -15931,9 +15931,9 @@
       }
     ],
     "hq": {
-      "city": "MALMO",
+      "city": "Malmö",
       "state": null,
-      "country": null
+      "country": "SE"
     },
     "latestAnnual": {
       "form": "20-F",
@@ -16007,7 +16007,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "RENO",
+      "city": "Reno,",
       "state": "NV",
       "country": "US"
     },
@@ -16081,7 +16081,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "SAN DIEGO",
+      "city": "San Diego,",
       "state": "CA",
       "country": "US"
     },
@@ -16145,7 +16145,7 @@
     "sicDescription": "SERVICES-ENGINEERING SERVICES",
     "segments": null,
     "hq": {
-      "city": "BEIJING",
+      "city": "Beijing",
       "state": null,
       "country": "CN"
     },
@@ -16186,7 +16186,7 @@
       }
     ],
     "hq": {
-      "city": "ATLANTA",
+      "city": "Atlanta,",
       "state": "GA",
       "country": "US"
     },
@@ -16634,7 +16634,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "HAMDEN",
+      "city": "Hamden",
       "state": "CT",
       "country": "US"
     },
@@ -16675,9 +16675,9 @@
       }
     ],
     "hq": {
-      "city": "LEUVEN",
+      "city": "Leuven",
       "state": null,
-      "country": null
+      "country": "BE"
     },
     "latestAnnual": {
       "form": "20-F",
@@ -16724,7 +16724,7 @@
       }
     ],
     "hq": {
-      "city": "REHOVOT",
+      "city": "Rehovot",
       "state": null,
       "country": "IL"
     },
@@ -16776,7 +16776,7 @@
     "sicDescription": "SANITARY SERVICES",
     "segments": null,
     "hq": {
-      "city": "SHANDONG PROVINCE",
+      "city": "Yantai",
       "state": null,
       "country": "CN"
     },
@@ -16838,7 +16838,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "SUNBURY",
+      "city": "Sunbury",
       "state": "PA",
       "country": "US"
     },
@@ -16904,7 +16904,7 @@
       }
     ],
     "hq": {
-      "city": "CHANDLER",
+      "city": "Chandler",
       "state": "AZ",
       "country": "US"
     },
@@ -16952,7 +16952,7 @@
       }
     ],
     "hq": {
-      "city": "WILMINGTON",
+      "city": "Wilmington",
       "state": "MA",
       "country": "US"
     },
@@ -17292,7 +17292,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "NORWALK",
+      "city": "Norwalk",
       "state": "CT",
       "country": "US"
     },
@@ -17387,7 +17387,7 @@
       }
     ],
     "hq": {
-      "city": "CHARLOTTE",
+      "city": "Charlotte",
       "state": "NC",
       "country": "US"
     },
@@ -17661,7 +17661,7 @@
       }
     ],
     "hq": {
-      "city": "SAINT PAUL",
+      "city": "St. Paul",
       "state": "MN",
       "country": "US"
     },
@@ -18984,7 +18984,7 @@
       }
     ],
     "hq": {
-      "city": "MUSCATINE",
+      "city": "Muscatine",
       "state": "IA",
       "country": "US"
     },
@@ -19103,7 +19103,7 @@
       }
     ],
     "hq": {
-      "city": "DENVER",
+      "city": "Denver",
       "state": "CO",
       "country": "US"
     },
@@ -19171,7 +19171,7 @@
       }
     ],
     "hq": {
-      "city": "AURORA, ONTARIO, CAN",
+      "city": "Aurora",
       "state": "ON",
       "country": "CA"
     },
@@ -19201,7 +19201,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "VIRGINIA BEACH",
+      "city": "Virginia Beach",
       "state": "VA",
       "country": "US"
     },
@@ -19383,7 +19383,7 @@
       }
     ],
     "hq": {
-      "city": "WEST HENRIETTA",
+      "city": "Henrietta",
       "state": "NY",
       "country": "US"
     },
@@ -19563,7 +19563,7 @@
       }
     ],
     "hq": {
-      "city": "CARLSBAD",
+      "city": "Carlsbad",
       "state": "CA",
       "country": "US"
     },
@@ -19604,7 +19604,7 @@
       }
     ],
     "hq": {
-      "city": "TURNER",
+      "city": "Turner",
       "state": "OR",
       "country": "US"
     },
@@ -19633,7 +19633,7 @@
     "sicDescription": "RADIOTELEPHONE COMMUNICATIONS",
     "segments": null,
     "hq": {
-      "city": "VANCOUVER",
+      "city": "Vancouver",
       "state": "BC",
       "country": "CA"
     },
@@ -19688,7 +19688,7 @@
       }
     ],
     "hq": {
-      "city": "NEW YORK",
+      "city": "New York",
       "state": "NY",
       "country": "US"
     },
@@ -19748,7 +19748,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "GREENSBORO",
+      "city": "Greensboro",
       "state": "NC",
       "country": "US"
     },
@@ -20074,7 +20074,7 @@
     "sicDescription": "RETAIL-EATING PLACES",
     "segments": null,
     "hq": {
-      "city": "HOUSTON",
+      "city": "Houston",
       "state": "TX",
       "country": "US"
     },
@@ -20922,7 +20922,7 @@
       }
     ],
     "hq": {
-      "city": "LONDON ENGLAND",
+      "city": "London",
       "state": null,
       "country": "GB"
     },
@@ -21790,7 +21790,7 @@
       }
     ],
     "hq": {
-      "city": "BETHESDA",
+      "city": "Bethesda",
       "state": "MD",
       "country": "US"
     },
@@ -24821,7 +24821,7 @@
       }
     ],
     "hq": {
-      "city": "TEL AVIV",
+      "city": "Tel Aviv",
       "state": null,
       "country": "IL"
     },
@@ -24969,7 +24969,7 @@
       }
     ],
     "hq": {
-      "city": "YOQNEAM ILIT ISRAEL",
+      "city": "Yoqneam",
       "state": null,
       "country": "IL"
     },
@@ -25040,7 +25040,7 @@
       }
     ],
     "hq": {
-      "city": "RAPID CITY",
+      "city": "Rapid City",
       "state": "SD",
       "country": "US"
     },
@@ -25219,7 +25219,7 @@
       }
     ],
     "hq": {
-      "city": "HOUSTON",
+      "city": "Houston",
       "state": "TX",
       "country": "US"
     },
@@ -25415,7 +25415,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "ROCKVILLE",
+      "city": "Rockville",
       "state": "MD",
       "country": "US"
     },
@@ -25470,7 +25470,7 @@
       }
     ],
     "hq": {
-      "city": "DENTON",
+      "city": "Denton",
       "state": "TX",
       "country": "US"
     },
@@ -25511,7 +25511,7 @@
       }
     ],
     "hq": {
-      "city": "TAMPA",
+      "city": "Tampa",
       "state": "FL",
       "country": "US"
     },
@@ -26035,7 +26035,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "BOCA RATON",
+      "city": "Boca Raton",
       "state": "FL",
       "country": "US"
     },
@@ -26214,7 +26214,7 @@
       }
     ],
     "hq": {
-      "city": "VANCOUVER",
+      "city": "Vancouver",
       "state": "BC",
       "country": "CA"
     },
@@ -26925,7 +26925,7 @@
       }
     ],
     "hq": {
-      "city": "PARIS",
+      "city": "Paris",
       "state": null,
       "country": "FR"
     },
@@ -27063,7 +27063,7 @@
       }
     ],
     "hq": {
-      "city": "FISHERS",
+      "city": "Fishers",
       "state": "IN",
       "country": "US"
     },
@@ -27132,8 +27132,8 @@
       }
     ],
     "hq": {
-      "city": "SINGAPORE",
-      "state": null,
+      "city": "Singapore",
+      "state": "NY",
       "country": "SG"
     },
     "latestAnnual": {
@@ -27162,8 +27162,8 @@
     "sicDescription": "SERVICES-EDUCATIONAL SERVICES",
     "segments": null,
     "hq": {
-      "city": "TORONTO",
-      "state": "ON",
+      "city": "Ontario",
+      "state": null,
       "country": "CA"
     },
     "latestAnnual": {
@@ -27196,9 +27196,9 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "HONG KONG",
+      "city": "San Po Kong",
       "state": null,
-      "country": "CN"
+      "country": "HK"
     },
     "latestAnnual": {
       "form": "20-F",

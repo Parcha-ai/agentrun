@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { readSubsidiaries } from './build-truth-v4.mjs';
+import { coverAddress, readSubsidiaries } from './build-truth-v4.mjs';
 
 const read = (name) => JSON.parse(readFileSync(new URL(`./data/${name}`, import.meta.url), 'utf8'));
 const v2 = read('companies-v2.json');
@@ -49,6 +49,17 @@ test('the layouts real exhibits use: a header over two rows, numbered rows, two 
   ]);
 });
 
+test('the cover address: dei tags, a US state named or coded, a country named, no city no address', () => {
+  const ix = (name, text, format = '') => `<ix:nonNumeric contextRef="c-1" name="dei:${name}"${format}><span>${text}</span></ix:nonNumeric>`;
+  assert.deepEqual(coverAddress(ix('EntityAddressCityOrTown', 'Cambridge') + ix('EntityAddressStateOrProvince', 'MA')), { city: 'Cambridge', state: 'MA', country: 'US' });
+  assert.deepEqual(coverAddress(ix('EntityAddressCityOrTown', 'Austin') + ix('EntityAddressStateOrProvince', 'Texas', ' format="ixt-sec:stateprovnameen"')), { city: 'Austin', state: 'TX', country: 'US' });
+  assert.deepEqual(coverAddress(ix('EntityAddressCityOrTown', 'Singapore') + ix('EntityAddressCountry', 'Singapore')), { city: 'Singapore', state: null, country: 'SG', countryTag: 'Singapore' });
+  assert.deepEqual(coverAddress(ix('EntityAddressCityOrTown', 'Calgary') + ix('EntityAddressStateOrProvince', 'AB') + ix('EntityAddressCountry', 'CA')), { city: 'Calgary', state: 'AB', country: 'CA', countryTag: 'CA' });
+  assert.deepEqual(coverAddress(ix('EntityAddressCityOrTown', 'Calgary') + ix('EntityAddressStateOrProvince', 'Alberta')), { city: 'Calgary', state: 'AB', country: 'CA' });
+  assert.deepEqual(coverAddress(ix('EntityAddressCityOrTown', 'Luxembourg') + ix('EntityAddressCountry', 'Grand Duchy of Luxembourg')), { city: 'Luxembourg', state: null, country: 'LU', countryTag: 'Grand Duchy of Luxembourg' });
+  assert.equal(coverAddress(ix('EntityAddressStateOrProvince', 'MA')), null);
+});
+
 test('v4 keeps v2\'s 130 companies, split and order', () => {
   assert.deepEqual(v4.map((c) => [c.cik, c.split, c.order, c.sic]), v2.map((c) => [c.cik, c.split, c.order, c.sic]));
 });
@@ -86,6 +97,15 @@ test('every field has the v4 shape, and the coverage the report states is the se
   assert.equal(coverage.subsidiaries.truth, v4.filter((c) => c.subsidiaries).length);
   assert.equal(coverage.segments.truth + coverage.segments.oneSegment + coverage.segments.null, 130);
   for (const k of ['latestAnnual', 'hqCity', 'hqState', 'hqCountry', 'subsidiaries']) assert.equal(coverage[k].truth + coverage[k].null, 130, k);
+  // Every head office names its source; a cover one is the report's cover address.
+  for (const r of report.companies) {
+    const c = v4.find((x) => x.cik === r.cik);
+    if (!c.hq) continue;
+    assert.ok(['cover', 'sub.txt'].includes(r.hq.source), r.cik);
+    if (r.hq.source === 'cover') assert.deepEqual(c.hq, r.hq.cover, r.cik);
+    else assert.ok(r.hq.why, r.cik);
+  }
+  assert.equal(coverage.hqSource.cover + coverage.hqSource['sub.txt'], v4.filter((c) => c.hq).length);
   // A null segment truth always has its reason; oneSegment only from a one-segment report.
   for (const c of v4) if (!c.segments && c.latestAnnual) assert.ok(report.companies.find((r) => r.cik === c.cik).segments, c.cik);
   for (const c of report.companies) if (!v4.find((x) => x.cik === c.cik).subsidiaries) assert.ok(c.subsidiaries?.why || c.latestAnnual, c.cik);
