@@ -56,3 +56,11 @@ test('the CLI: --list reads the file and runs it in order; --list with --sealed 
   assert.match(bad.stderr, /--list .*missing\.json/);
   assert.ok(readFileSync(file, 'utf8'));
 }, { timeout: 180_000 });
+
+test('the committed list, data/hc-20.json: 20 run-split companies, each once, as the truth set names them', () => {
+  const list = JSON.parse(readFileSync(join(import.meta.dirname, 'data', 'hc-20.json'), 'utf8'));
+  const truth = JSON.parse(readFileSync(join(import.meta.dirname, 'data', 'companies-v4.json'), 'utf8'));
+  const queue = listQueue(truth, list);
+  assert.equal(queue.length, 20);
+  assert.deepEqual(queue.map((c) => c.cik), list.map((e) => e.cik));
+});

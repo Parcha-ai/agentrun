@@ -1,0 +1,142 @@
+[
+ {
+  "cik": "0000827054",
+  "ticker": "MCHP",
+  "cause": "host",
+  "detail": "host finished alone (dispatch complete)",
+  "lc100cRun": 12
+ },
+ {
+  "cik": "0000844551",
+  "ticker": "WDS",
+  "cause": "host",
+  "detail": "host finished alone (dispatch complete)",
+  "lc100cRun": 18
+ },
+ {
+  "cik": "0001579684",
+  "ticker": "TDAY",
+  "cause": "host",
+  "detail": "host finished alone (dispatch complete)",
+  "lc100cRun": 14
+ },
+ {
+  "cik": "0001468174",
+  "ticker": "H",
+  "cause": "host",
+  "detail": "host finished alone (dispatch complete)",
+  "lc100cRun": 25
+ },
+ {
+  "cik": "0001456346",
+  "ticker": "FNV",
+  "cause": "host",
+  "detail": "host finished alone (dispatch complete)",
+  "lc100cRun": 43
+ },
+ {
+  "cik": "0001478242",
+  "ticker": "IQV",
+  "cause": "host",
+  "detail": "host finished alone (dispatch complete)",
+  "lc100cRun": 36
+ },
+ {
+  "cik": "0001877787",
+  "ticker": "ZGN",
+  "cause": "null-field",
+  "detail": "output invalid: /hq/state must be string; /subsidiaries/*/country must be string",
+  "lc100cRun": 10
+ },
+ {
+  "cik": "0000109198",
+  "ticker": "TJX",
+  "cause": "no-subsidiaries",
+  "detail": "output invalid: /subsidiaries must NOT have fewer than 1 items",
+  "lc100cRun": 19
+ },
+ {
+  "cik": "0000880984",
+  "ticker": "ACFN",
+  "cause": "report-step",
+  "detail": "escalate find-report: No annual report found for ACORN ENERGY, INC..",
+  "lc100cRun": 29
+ },
+ {
+  "cik": "0001691221",
+  "ticker": "FRSX",
+  "cause": "null-field",
+  "detail": "output invalid: /hq/state must be string",
+  "lc100cRun": 17
+ },
+ {
+  "cik": "0000057131",
+  "ticker": "LZB",
+  "cause": "no-subsidiaries",
+  "detail": "output invalid: /subsidiaries must NOT have fewer than 1 items",
+  "lc100cRun": 21
+ },
+ {
+  "cik": "0001464790",
+  "ticker": "RILY",
+  "cause": "null-field",
+  "detail": "output invalid: /subsidiaries/*/country must be string",
+  "lc100cRun": 15
+ },
+ {
+  "cik": "0001837429",
+  "ticker": "BNT",
+  "cause": "report-step",
+  "detail": "escalate read-report: The report did not give the headquarters city.",
+  "lc100cRun": 34
+ },
+ {
+  "cik": "0000063908",
+  "ticker": "MCD",
+  "cause": "no-subsidiaries",
+  "detail": "output invalid: /subsidiaries must NOT have fewer than 1 items",
+  "lc100cRun": 23
+ },
+ {
+  "cik": "0000879764",
+  "ticker": "TTE",
+  "cause": "null-field",
+  "detail": "output invalid: /hq/state must be string; /subsidiaries/*/country must be string",
+  "lc100cRun": 35
+ },
+ {
+  "cik": "0000926282",
+  "ticker": "ADTN",
+  "cause": "no-subsidiaries",
+  "detail": "output invalid: /subsidiaries must NOT have fewer than 1 items",
+  "lc100cRun": 27
+ },
+ {
+  "cik": "0001900720",
+  "ticker": "EPWKF",
+  "cause": "report-step",
+  "detail": "escalate read-report: The report did not give the headquarters city.",
+  "lc100cRun": 39
+ },
+ {
+  "cik": "0001665300",
+  "ticker": "PHUN",
+  "cause": "null-field",
+  "detail": "output invalid: /subsidiaries/*/country must be string",
+  "lc100cRun": 41
+ },
+ {
+  "cik": "0001219601",
+  "ticker": "CCK",
+  "cause": "no-subsidiaries",
+  "detail": "output invalid: /subsidiaries must NOT have fewer than 1 items",
+  "lc100cRun": 30
+ },
+ {
+  "cik": "0001020859",
+  "ticker": "UNFI",
+  "cause": "no-subsidiaries",
+  "detail": "output invalid: /subsidiaries must NOT have fewer than 1 items",
+  "lc100cRun": 42
+ }
+]
