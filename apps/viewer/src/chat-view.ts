@@ -543,6 +543,17 @@ const evidenceSaid = (cite: AnswerCite): string | undefined => {
 };
 const evidenceClip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
 
+/** What a look found, in words a reader can use: its takeaway when that is a sentence. A typed answer ("h: yes"), the decisions as text or a
+ *  list of scores is the look's own field and says nothing to a reader, so it is no finding: fewer than four words, or mostly numbers. */
+export function evidenceFinding(source: Pick<ChatSource, 'takeaway' | 'decisions'>): string {
+  const text = source.takeaway.replace(/\s+/g, ' ').trim();
+  if (text === '' || text === sourceDecisions(source as ChatSource).join(' · ')) return '';
+  const tokens = text.split(' ');
+  const words = tokens.filter((token) => /[A-Za-z]{2,}/.test(token)).length;
+  const numbers = tokens.filter((token) => /^[\d.%·,:;-]+$/.test(token)).length;
+  return words < 4 || numbers / tokens.length >= 0.25 ? '' : evidenceClip(text, 260);
+}
+
 /** A row's cites drawn as the evidence they are: one card per cited look (or cited picture), the picture first and as wide as
  *  the pane, with the boxes the cites name over it at once (a cite's own words label its box, else "cited here"), under it what
  *  the look found, and one chip that opens the look as the cites' chips always did. A cite that names no picture stays a chip. */
@@ -575,13 +586,12 @@ function evidenceOf(recording: Recording, model: ChatModel, cites: AnswerCite[],
     for (const own of (source?.regions ?? []).flatMap((region) => sourceRegionOf(region.href, region.label) ?? [])) if (!regions.some((each) => near(each, own))) regions.push(own);
     const medium = sourceMedium(recording, sha, evidenceSaid(first) ?? (source ? threadPlace(sourceAddresses(source)) : 'The picture cited'), regions, 'evidence-pic');
     if (!medium) continue;
-    const decisions = source ? sourceDecisions(source).join(' · ') : '';
-    const found = source?.takeaway && source.takeaway !== decisions ? evidenceClip(source.takeaway, 260) : '';
+    const found = source ? evidenceFinding(source) : '';
     const chip = reportEl('button', { class: 'cite', type: 'button', 'data-look': group.look, 'data-item': first.item, title: first.href || undefined, text: evidenceSaid(first) ?? 'Open the look' });
     chip.addEventListener('click', () => open(first.href, group.look, group.blob ? { blob: group.blob, label: first.label } : undefined));
     for (const cite of group.cites) drawn.add(cite);
     cards.push(reportEl('figure', { class: 'ev-card' }, medium,
-      reportEl('figcaption', { class: 'ev-cap' }, found !== '' && reportEl('p', { class: 'ev-said', text: found }), decisions !== '' && reportEl('p', { class: 'ev-dec', text: decisions }), chip)));
+      reportEl('figcaption', { class: 'ev-cap' }, found !== '' && reportEl('p', { class: 'ev-said', text: found }), chip)));
   }
   return cards.length ? { node: reportEl('div', { class: 'evidence' }, ...cards), drawn } : undefined;
 }

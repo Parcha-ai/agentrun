@@ -12,6 +12,7 @@ import { after, test } from 'node:test';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
 import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
+import { evidenceFinding } from '../src/chat-view.ts';
 import { CITED, K, deliverInstead, writeRecording } from './vision-hand.ts';
 
 const here = new URL('.', import.meta.url).pathname;
@@ -176,5 +177,18 @@ const loaded = (id) => [...doc(id).querySelectorAll('.ev-card img')].every((imag
   const many = await value<{ cards: number; chips: number; pdfChip: boolean }>(`({ cards: doc('cited').querySelectorAll('.ev-card').length, chips: doc('cited').querySelectorAll('.report .cite').length, pdfChip: [...doc('cited').querySelectorAll('.report .cite')].some((chip) => chip.closest('.ev-card') === null) })`);
   assert.ok(many.cards >= 2, `a card for each cited look or picture, got ${many.cards}`);
   assert.equal(many.pdfChip, true, 'a cite that names no picture (the scans PDF) stays a chip');
+});
+
+// An evidence card says what the look found only when that is a sentence: a typed answer ("h: yes", "seal 0.97 · seal box 0.96") is the look's own
+// field, not a reader's words.
+test('an evidence card\'s finding is the look\'s sentence; a typed answer or a decision list is no finding', { timeout: 5_000 }, () => {
+  const prose = 'Based on the screenshot, here are the payment methods and corresponding logos shown in the Payment section:';
+  assert.equal(evidenceFinding({ takeaway: prose, decisions: [] }), prose);
+  assert.equal(evidenceFinding({ takeaway: 'h: yes', decisions: [{ name: 'h', kind: 'noul', score: 0.89 }] }), '', 'a typed answer');
+  assert.equal(evidenceFinding({ takeaway: 'seal 0.97 · seal box 0.96 · signature 0.94', decisions: [] }), '', 'scores');
+  assert.equal(evidenceFinding({ takeaway: 'yes', decisions: [] }), '', 'a bare word');
+  assert.equal(evidenceFinding({ takeaway: 'a: yes · b: no', decisions: [{ name: 'a', kind: 'noul', score: 0.9 }, { name: 'b', kind: 'noul', score: 0.1 }] }), '', 'decisions as text');
+  assert.equal(evidenceFinding({ takeaway: '', decisions: [] }), '');
+  assert.equal(evidenceFinding({ takeaway: `${'word '.repeat(80)}end`, decisions: [] }).length <= 260, true, 'clipped');
 });
 
