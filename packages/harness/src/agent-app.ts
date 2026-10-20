@@ -54,6 +54,11 @@ export async function agentApp(place: RunPlace, host: Host, agent: AgentSpec, op
     if (!tool) throw new Error(`the definition names the tool ${name}, which this host does not offer (it offers ${vocabulary.filter((entry) => !entry.unmet).map((entry) => entry.name).join(', ')})`);
     if (tool.unmet) throw new Error(`the definition names the tool ${name}, and ${tool.unmet}`);
   }
+  // use_website's child agent browses with the parent's own browser tools (pi-browser gives it the parent's tools but use_website), so it needs them named too.
+  if (named.includes('use_website')) {
+    const missing = vocabulary.filter((entry) => entry.plane === 'browser' && entry.name !== 'use_website' && !named.includes(entry.name)).map((entry) => entry.name);
+    if (missing.length) throw new Error(`the definition names the tool use_website, whose child agent browses with this agent's browser tools: name ${missing.join(', ')} too`);
+  }
   const wanted = new Set(named);
   // An extension keeps only the named tools; one whose tools are all unnamed is not installed. One that registers no tool (vision: images for `read`, `code` and the browser's results) always is.
   const keep = (extension: Extension | undefined): Extension[] => {

@@ -79,6 +79,12 @@ test('an unknown name, a browser tool on a host with no browser, and a browser t
   assert.equal(typeof browsing.root.init, 'function', 'the browser\'s configuration is in the commit that creates the conversation');
   await assert.rejects(agentApp(place, local.host, { instructions: '', tools: ['browser_read'] }, { browser: false }), { message: 'the definition names the tool browser_read, and this run has no browser (its options say browser: false)' });
   assert.equal((await agentTools(place, local.host)).find((tool) => tool.name === 'browser_read').unmet, undefined);
+  // use_website's child browses with the parent's browser tools: naming it alone is refused, naming them all is accepted.
+  const sites = { registry: { title: 'The company registry', description: 'Company records.', startUrl: 'http://registry.example/companies/01234567' } };
+  const browserTools = (await agentTools(place, local.host, { sites })).filter((tool) => tool.plane === 'browser' && tool.name !== 'use_website').map((tool) => tool.name);
+  await assert.rejects(agentApp(place, local.host, { instructions: '', tools: ['use_website'] }, { sites }), { message: `the definition names the tool use_website, whose child agent browses with this agent's browser tools: name ${browserTools.join(', ')} too` });
+  const website = await agentApp(place, local.host, { instructions: '', tools: ['use_website', ...browserTools] }, { sites });
+  assert.deepEqual(offered(website), ['use_website', ...browserTools]);
 });
 
 test('a browser tool in an agent run: its configuration is in the conversation\'s first commit, it is reconciled before the resume, and its sessions are released before the run lets go', { timeout: 120_000 }, async (t) => {
