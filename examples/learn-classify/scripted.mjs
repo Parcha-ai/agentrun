@@ -476,12 +476,13 @@ export const CLASSIFY_WORKFLOW_V4 = Object.freeze({
   },
 });
 
-/** The v4 answer for a fixture case, its cites on the site and the report as read in the run. */
-export function answerOfV4(t, { sic4 = t.sic4, site = t.site, report = t.document } = {}) {
+/** The v4 answer for a fixture case, its cites on the report as read in the run. */
+export function answerOfV4(t, { sic4 = t.sic4, report = t.document } = {}) {
   return {
     sic4, segments: t.segments, hq: t.hq, subsidiaries: t.subsidiaries, annualReport: { ...t.annualReport, url: report },
     cites: [
-      { claim: 'sic', url: site, locator: 'home page', quote: t.siteQuote },
+      // The code rests on the revenue table, and is cited there.
+      { claim: 'sic', url: report, locator: 'pdf p. 4', quote: t.segmentQuote },
       { claim: 'segment', url: report, locator: 'pdf p. 4', quote: t.segmentQuote },
       { claim: 'hq', url: report, locator: 'pdf p. 1', quote: t.hqQuote },
       { claim: 'subsidiary', url: report, locator: 'pdf p. 9', quote: t.subsidiaryQuote },
@@ -522,7 +523,7 @@ export function agentScriptV4({ job, offered, fixtures }) {
     if (!('company' in state)) return { submit: { given: state.website ? 'yes' : 'no', website: state.website ?? null } };
     const t = fixtures.truth[state.company];
     if ('links' in state) return { submit: { url: t.document } };
-    return { submit: answerOfV4(t, { sic4: state.code?.code ?? '', site: state.url, report: state.report }) };
+    return { submit: answerOfV4(t, { sic4: state.code?.code ?? '', report: state.report }) };
   };
   if (offered.includes(WORKFLOW)) {
     // Run it on the input as given; when it does not complete, the job by hand.

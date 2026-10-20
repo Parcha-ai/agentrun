@@ -341,6 +341,10 @@ test('the v4 home: the workflows skill and the learning rules as v2 has them, th
   // Parts on trial are built on now; with none, the whole job is written as a workflow after the first run.
   const flat = (body) => body.replace(/\s+/g, ' ');
   for (const words of [/Admitted includes trial/, /do not wait for them to be promoted/, /If no `classify-company` exists after your first run, write one for the whole job/, /narrow agent steps/, /Embed parts into it as they are admitted/]) assert.match(flat(v4Rules), words);
+  // The code is chosen from sic_codes by where most revenue comes from, never remembered.
+  for (const words of [/its 4-digit SIC code, from sic_codes: sic2_groups for the group/, /chosen by where most revenue comes from/, /A code you remember from EDGAR or elsewhere is a guess, never evidence/, /the revenue reading wins, and the code's cite is the revenue table it rests on/])
+    assert.match(flat(text(v4, 'AGENTS.md')), words);
+  assert.match(flat(text(v4, 'skills', 'classify', 'SKILL.md')), /When the reportable segments are regions, read the revenue split by product or service line \(the revenue disaggregation note\)/);
   // Looking at the pages is a rule of the job, not only the skill's advice.
   assert.match(flat(text(v4, 'AGENTS.md')), /look at the annual report's cover page and the page of its segment table with read_document/i);
   // classify-company takes the job's input as given, a website or none.
@@ -397,6 +401,13 @@ test('a scripted v4 pass: by hand, then the whole-job workflow on site and repor
   assert.deepEqual(rows.map((r) => r.visionPages), [2, 1, 1, 1]);
   const reads = parts.fakeCalls.filter((c) => c.tool === 'read_document');
   assert.deepEqual(reads.slice(0, 3).map((c) => [Boolean(c.find), c.pages ?? null, Boolean(c.question)]), [[true, null, false], [false, [4], true], [false, [1], true]], 'find, then look at the page it found and at the cover');
+  // By hand the code is looked up, after the revenue table was read: sic2_groups, then sic_codes with that group; and
+  // the code's cite is that revenue table, not the home page.
+  const byHand = JSON.parse(readFileSync(join(out, 'progress', 'run-001.json'), 'utf8')).measure;
+  assert.deepEqual([byHand.toolCalls.sic2_groups, byHand.toolCalls.sic_codes], [1, 1]);
+  const sicCite = byHand.answer.cites.find((c) => c.claim === 'sic');
+  assert.deepEqual([sicCite.url, sicCite.locator], [byHand.answer.annualReport.url, 'pdf p. 4']);
+  assert.match(sicCite.quote, /Revenue by reportable segment/);
   assert.deepEqual(rows.slice(1).map((r) => r.toolCalls), [{ search: 1, browse: 0, fetch: 1, read_document: 1 }, { search: 0, browse: 0, fetch: 1, read_document: 1 }, { search: 0, browse: 0, fetch: 1, read_document: 1 }], 'the workflow\'s call nodes: without a website, a search for the site first');
   assert.deepEqual(rows.slice(1).map((r) => r.executions.map((e) => [e.name, e.outcome, e.toolCalls])), [[[WORKFLOW, 'complete', 5]], [[WORKFLOW, 'complete', 4]], [[WORKFLOW, 'complete', 4]]]);
   for (const r of rows.slice(1)) assert.deepEqual([r.workflowShare, r.agentFallback], [1, false]);

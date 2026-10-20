@@ -4,7 +4,8 @@
 
 - The input is a company's name, and its ticker and website when they are known. Find the company's latest annual
   report (a 10-K, or a 20-F or 40-F for a foreign filer), read it, and answer in six parts the way the SEC files them:
-  - its 4-digit SIC code, one of sic_codes; sic2_groups names the 2-digit groups they fall in;
+  - its 4-digit SIC code, from sic_codes: sic2_groups for the group, then sic_codes with that group, the code chosen
+    by where most revenue comes from;
   - every reportable operating segment, named as the company reports it, with its share of total revenue from 0 to 1,
     from the report's segment table; a company that reports one segment says so;
   - its headquarters, the principal executive offices the report gives: the city, the state or province when there is
@@ -16,6 +17,8 @@
   headquarters, a subsidiary or the report), the page or document it comes from as you read it in this run, where on it
   (a section, or "pdf p. N" for a page of a PDF), and the words it says, at most 300 characters. Cite the annual report
   by its pages.
+- The code is chosen, not remembered. A code you remember from EDGAR or elsewhere is a guess, never evidence: when it
+  and the revenue reading disagree, the revenue reading wins, and the code's cite is the revenue table it rests on.
 - Look at the annual report's cover page and the page of its segment table with read_document `{ pages: [N],
   question }` (a vision model looks at the page), and cite the segments, the headquarters and the fiscal year from
   those looks ("pdf p. N"). A table read only as text loses its layout.
