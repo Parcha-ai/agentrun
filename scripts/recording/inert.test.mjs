@@ -103,7 +103,7 @@ test('the launch providers\' key shapes are found, and prose with their prefixes
 test('the machine-path scan takes /home/<user> with no slash, a Windows profile, /root/ and macOS temp, but not a URL path or a workflow path', () => {
   const dir = (...parts) => ['', ...parts].join('/');
   for (const text of [`at ${dir('home', 'someone')}`, `cwd=${dir('Users', 'someone')}`, `C:${'\\'}Users${'\\'}someone`, `${dir('root')}/.ssh/id`, dir('var', 'folders', 'zz', 'T')]) assert.equal(credentialIn(text), 'machine path', text);
-  for (const text of ['https://example.org/home/page', 'see /root/steps/0 and /root/items', 'a child workflow at /root/workflow/root, a loop at /root/iterations/2', 'the /rooted idea', 'a home/other relative', `${dir('home', 'web_user')}`]) assert.equal(credentialIn(text), undefined, text);
+  for (const text of ['https://example.org/home/page', 'see /root/steps/0 and /root/items', 'the /rooted idea', 'a home/other relative', `${dir('home', 'web_user')}`]) assert.equal(credentialIn(text), undefined, text);
 });
 
 test('the recorder records an svg tool output as text, never as .svg, and any other extension it is handed as txt', async (t) => {

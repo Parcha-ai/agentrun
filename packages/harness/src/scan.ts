@@ -9,7 +9,7 @@ import { join, relative } from 'node:path';
  *  shape of its own here, a backstop for the moment a run's tool result or a page carries the key itself. */
 export const FORBIDDEN: readonly (readonly [string, RegExp])[] = [
   // A home directory with or without its trailing slash, a Windows profile, root's home (not a workflow path such as `/root/steps/0`) and a macOS temp folder; the bare `/home/<user>` is not taken inside a URL's path or a longer word, nor emscripten's own `/home/web_user` (the vendored PDF reader's sandbox home).
-  ['machine path', /\/(?:home|Users)\/[A-Za-z0-9._-]+\/|(?<![\w.:/-])\/(?:home|Users)\/(?!web_user(?![\w.-]))[A-Za-z0-9._-]+(?![\w.-])|\b[A-Za-z]:\\Users\\|(?<![\w.:-])\/root\/(?!(?:steps|items|iterations|branches|then|else|cases|body|default|workflow)\b)|\/var\/folders\//],
+  ['machine path', /\/(?:home|Users)\/[A-Za-z0-9._-]+\/|(?<![\w.:/-])\/(?:home|Users)\/(?!web_user(?![\w.-]))[A-Za-z0-9._-]+(?![\w.-])|\b[A-Za-z]:\\Users\\|(?<![\w.:-])\/root\/(?!(?:steps|items|branches|then|else|cases|body|default)\b)|\/var\/folders\//],
   ['private key', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/],
   ['github token', /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})\b/],
   ['provider secret', /\bsk-(?:proj-|ant-api\d+-)?[A-Za-z0-9_-]{30,}\b/],
