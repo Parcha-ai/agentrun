@@ -108,3 +108,29 @@ test('Kernel\'s live-view path on api.onkernel.com is refused with or without a 
     assert.equal(credentialIn(url), undefined, url);
   }
 });
+
+test('a host is compared as a host: a port (the default or another), userinfo or a trailing dot does not let a capability URL escape its rule', () => {
+  const cap = 'opaque-capability-0001';
+  for (const authority of ['api.onkernel.com:443', 'api.onkernel.com:8443', 'API.onkernel.com:443', 'user@api.onkernel.com', 'api.onkernel.com.', 'api.onkernel.com.:443']) {
+    const found = credentialIn(`see https://${authority}/browser/live/${cap}?readOnly=true now`);
+    assert.equal(found, 'kernel live-view url', authority);
+    assert.ok(!found.includes(cap));
+  }
+  for (const authority of ['connect.browserbase.com:443', 'connect.browserbase.com:8443', 'user@connect.browserbase.com']) {
+    assert.equal(credentialIn(`https://${authority}/?region=us`), 'live-view, debugger or connect url with a query (region)', authority);
+  }
+  assert.equal(credentialIn('https://www.browserbase.com:443/devtools-fullscreen/inspector.html?wss=x'), 'live-view, debugger or connect url with a query (wss)');
+});
+
+test('a parameter name is compared decoded, in the query and in the fragment; a name that cannot be decoded is refused, never a crash', () => {
+  const cap = 'opaque-capability-0002';
+  assert.equal(credentialIn(`https://view.example.test/page#%74=${cap}`), 'url with a token-bearing fragment parameter (t)', 'an encoded t in the fragment');
+  assert.equal(credentialIn(`https://view.example.test/page#%74%6f%6b%65%6e=${cap}`), 'url with a token-bearing fragment parameter (token)', 'an encoded token name in the fragment');
+  assert.equal(credentialIn(`https://view.example.test/page?%74oken=${cap}`), 'url with a token-bearing query parameter (token)', 'an encoded token name in the query');
+  for (const bad of [`https://view.example.test/page#%E0%A4%A=${cap}`, `https://view.example.test/page?%ZZ=${cap}`]) {
+    const found = credentialIn(bad);
+    assert.ok(found && /parameter \(unnamed\)/.test(found), `a malformed name is refused: ${found}`);
+    assert.ok(!found.includes(cap));
+  }
+  assert.equal(credentialIn('https://media.example.test/film.mp4#%74=19,21'), undefined, 'an encoded t that is a media time still passes');
+});

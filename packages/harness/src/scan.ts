@@ -49,7 +49,29 @@ const nameOf = (raw: string): string => { let name = raw; try { name = decodeURI
 
 /** A fragment's `t` is a media time (`film.mp4#t=19,21`, `#t=npt:10,20`); a `t` that is anything else is a token (a live view's own link keeps its token there). */
 const MEDIA_TIME = /^(?:npt:)?[0-9.:]+(?:,[0-9.:]+)?$/;
-const tokenName = (raw: string): boolean => { let name = raw; try { name = decodeURIComponent(raw); } catch { /* compared as written */ } return TOKEN_PARAMETERS.has(name.toLowerCase()); };
+/** A parameter's name decoded (`%74` is `t`), or null when it cannot be decoded: such a name is never taken as harmless. */
+const decodedName = (raw: string): string | null => { try { return decodeURIComponent(raw); } catch { return null; } };
+const tokenName = (raw: string): boolean => { const name = decodedName(raw); return name === null || TOKEN_PARAMETERS.has(name.toLowerCase()); };
+/** A fragment parameter that carries a token: a token-bearing name, or a `t` (decoded) whose decoded value is not a media time. */
+const fragmentToken = (raw: string, value: string): boolean => {
+  if (tokenName(raw)) return true;
+  if (decodedName(raw)?.toLowerCase() !== 't') return false;
+  const time = decodedName(value);
+  return time === null || !MEDIA_TIME.test(time);
+};
+/** A URL's host as a host and its path: the parser's (no port, no userinfo, lower case, dot segments resolved), the trailing dot of a
+ *  fully qualified name dropped; a URL the parser refuses is split by hand the same way. */
+const hostAndPath = (base: string): { host: string; path: string } => {
+  try {
+    const url = new URL(base);
+    return { host: url.hostname.toLowerCase().replace(/\.$/, ''), path: url.pathname };
+  } catch {
+    const where = /^([a-z]+):\/\/([^/?]*)(\/.*)?$/i.exec(base);
+    const authority = (where?.[2] ?? '').replace(/^.*@/, '');
+    const host = authority.startsWith('[') ? authority.slice(0, authority.indexOf(']') + 1) : authority.replace(/:\d*$/, '');
+    return { host: host.toLowerCase().replace(/\.$/, ''), path: where?.[3] ?? '' };
+  }
+};
 /** Kernel's live view (https://www.kernel.sh/docs/browsers/live-view): api.onkernel.com/browser/live/<token>, optionally ?readOnly=true. The host is also Kernel's API base, so only this path prefix is a capability. */
 const KERNEL_LIVE = { host: 'api.onkernel.com', path: /^\/browser\/live\/./ } as const;
 /** A DevTools websocket endpoint is a capability by its path alone: /devtools/browser/<id>, /devtools/page/<id>. */
@@ -72,9 +94,7 @@ export function urlCredentialIn(text: string): string | undefined {
     const base = mark === -1 ? head : head.slice(0, mark);
     const names = (part: string): [string, string][] => part.split('&').filter((item) => item !== '').map((item) => { const at = item.indexOf('='); return at === -1 ? [item, ''] : [item.slice(0, at), item.slice(at + 1)]; });
     const queryNames = mark === -1 ? [] : names(head.slice(mark + 1));
-    const where = /^([a-z]+):\/\/([^/?]*)(\/.*)?$/i.exec(base);
-    const host = where?.[2].toLowerCase() ?? '';
-    const path = where?.[3] ?? '';
+    const { host, path } = hostAndPath(base);
     const token = queryNames.find(([name]) => tokenName(name));
     if (token) return `url with a token-bearing query parameter (${nameOf(token[0])})`;
     if (queryNames.length > 0) {
@@ -83,7 +103,7 @@ export function urlCredentialIn(text: string): string | undefined {
     }
     if (/^wss?:/i.test(base) && DEVTOOLS_PATH.test(path)) return 'websocket url to a DevTools path';
     if (host === KERNEL_LIVE.host && KERNEL_LIVE.path.test(path)) return 'kernel live-view url';
-    const inFragment = names(fragment).find(([name, value]) => tokenName(name) || (name.toLowerCase() === 't' && !MEDIA_TIME.test(value)));
+    const inFragment = names(fragment).find(([name, value]) => fragmentToken(name, value));
     if (inFragment) return `url with a token-bearing fragment parameter (${nameOf(inFragment[0])})`;
   }
   return undefined;
