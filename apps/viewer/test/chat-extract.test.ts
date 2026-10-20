@@ -379,20 +379,33 @@ test('the Muse view: a hold is read from the session rows and the handoff rows a
   assert.deepEqual(handoff.browser!.frames.map((frame) => frame.t), [4000]);
   assert.equal(browserOf(muse, 'snapshot').browser, undefined, 'a step with no frame and no hold is not a browser step');
   assert.equal(tools(muse).filter((item) => item.tool === 'run' && item.plumbing).length, 1, 'a command with no frame is still plumbing');
-  assert.deepEqual(muse.agent, { name: 'Wren', status: 'working' }, "the host's label names the agent; a run with no result is working");
+  assert.deepEqual(muse.agent, { name: 'Wren', status: 'done' }, "the host's label names the agent; a manifest that names an artifact is a run that delivered");
   // The same rows with the session never handed back: the hold is open and the run is waiting.
   const held = await model(browserFixture, (events) => events.split('\n').filter((line) => !line.includes('"t":8500')).join('\n'));
   assert.equal(held.agent, undefined, 'and without the option no agent is named');
   const open = opened(browserFixture, (events) => events.split('\n').filter((line) => !line.includes('"t":8500')).join('\n'));
-  const waiting = await extractChat(open.recording, open.readJson, { muse: true });
+  const waiting = await extractChat({ ...open.recording, manifest: { ...open.recording.manifest, artifact: undefined } as typeof open.recording.manifest }, open.readJson, { muse: true });
   assert.deepEqual(browserOf(waiting, 'browser_request_handoff').browser!.holds.map((hold) => [hold.t0, hold.t1, hold.outcome]), [[3200, undefined, undefined]]);
   assert.equal(waiting.agent!.status, 'waiting');
 });
 
 test('the Muse view: the agent is named by the host label, else the recording title, and is done when the run delivered', async () => {
   const { recording, readJson } = opened(browserFixture);
-  const unlabelled = { ...recording, lines: recording.lines.filter((line) => line.kind !== 'reference.label') };
+  const undelivered = { ...recording, manifest: { ...recording.manifest, artifact: undefined } as typeof recording.manifest };
+  assert.equal((await extractChat(recording, readJson, { muse: true })).agent!.status, 'done', 'an artifact is a delivery');
+  const unlabelled = { ...undelivered, lines: recording.lines.filter((line) => line.kind !== 'reference.label') };
   assert.deepEqual((await extractChat(unlabelled, readJson, { muse: true })).agent, { name: 'Muse fixture', status: 'working' });
-  const delivered = { ...recording, lines: [...recording.lines, { channel: 'live' as const, source: 'host' as const, kind: 'result', t: 12000, seq: 1, gen: 1, data: {} }] };
+  const delivered = { ...undelivered, lines: [...recording.lines, { channel: 'live' as const, source: 'host' as const, kind: 'result', t: 12000, seq: 1, gen: 1, data: {} }] };
   assert.equal((await extractChat(delivered, readJson, { muse: true })).agent!.status, 'done');
+});
+
+test('the Muse view: a sign-in wait is read from the browser\'s profile document (the address it gains, then its verification), and a step says the host it was on', async () => {
+  const { recording, readJson } = opened(browserFixture);
+  const muse = await extractChat(recording, readJson, { muse: true });
+  assert.deepEqual(muse.waits, [{ t0: 6000, site: 'shop.example.test', t1: 9200 }], 'asked when the profile gains the address, signed in when it is verified');
+  assert.equal(browserOf(muse, 'run').browser!.site, 'shop.example.test', 'the host of the session\'s last address, never the address');
+  // Without the verification row the run ends waiting for the person.
+  const open = opened(browserFixture, (events) => events.split('\n').filter((line) => !line.includes('verifiedAt')).join('\n'));
+  assert.deepEqual((await extractChat(open.recording, open.readJson, { muse: true })).waits, [{ t0: 6000, site: 'shop.example.test' }]);
+  assert.equal((await extractChat(recording, readJson)).waits, undefined, 'and none without the option');
 });

@@ -15,17 +15,45 @@ export function museShorten(text: string): string {
   return text.replace(/\bhttps?:\/\/[^\s"'<>)\]]+/gi, (address) => { try { return new URL(address).host || address; } catch { return address; } });
 }
 
-const FILE = /[\w][\w .-]*\.(?:pdf|csv|xlsx?|docx?|pptx?|txt|json|md|zip|png|jpe?g)\b/gi;
+/** An ISO time as a person says it: "today, 00:12", "yesterday, 00:12", else "20 Oct, 00:12" (with the year when it is not this one). `now` and `timeZone` are the viewer's own unless given. */
+export function museWhen(text: string, now = new Date(), timeZone?: string): string {
+  return text.replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?\b/g, (iso) => {
+    const at = new Date(/(?:Z|[+-]\d{2}:?\d{2})$/.test(iso) ? iso : `${iso}Z`);
+    if (Number.isNaN(at.getTime())) return iso;
+    const day = (date: Date) => date.toLocaleDateString('en-CA', { timeZone });
+    const clock = at.toLocaleTimeString('en-GB', { timeZone, hour: '2-digit', minute: '2-digit', hour12: false });
+    const yesterday = new Date(now.getTime() - 86_400_000);
+    if (day(at) === day(now)) return `today, ${clock}`;
+    if (day(at) === day(yesterday)) return `yesterday, ${clock}`;
+    const sameYear = at.toLocaleDateString('en-CA', { timeZone, year: 'numeric' }) === now.toLocaleDateString('en-CA', { timeZone, year: 'numeric' });
+    // The month by our own short names, so a runtime's locale data does not change it ("Sept" or "Sep").
+    const month = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][Number(at.toLocaleDateString('en-CA', { timeZone, month: '2-digit' })) - 1]!;
+    const dayOfMonth = Number(at.toLocaleDateString('en-CA', { timeZone, day: '2-digit' }));
+    const year = sameYear ? '' : ` ${at.toLocaleDateString('en-CA', { timeZone, year: 'numeric' })}`;
+    return `${dayOfMonth} ${month}${year}, ${clock}`;
+  });
+}
+
+/** A memory file's name as a heading a person reads: no extension, capitalised ("preferences.md" is "Preferences"); an index is the host's own table of contents and has none. */
+export function museFriendlyFile(name: string): string | undefined {
+  const base = name.replace(/\.[A-Za-z0-9]{1,5}$/, '').replace(/[-_]+/g, ' ').trim();
+  return /^index$/i.test(base) || base === '' ? undefined : base.charAt(0).toUpperCase() + base.slice(1);
+}
+
+const EXT = '(?:pdf|csv|xlsx?|docx?|pptx?|txt|json|md|zip|png|jpe?g)';
+/** A file name inside a sentence (no spaces), and a whole line that is one (spaces allowed). */
+const FILE = new RegExp(`[\\w][\\w.-]*\\.${EXT}\\b`, 'gi');
+const FILE_LINE = new RegExp(`^[\\w][\\w .-]*\\.${EXT}$`, 'i');
 
 /** The files a text names: each as a chip. A line that is only a file's name (a list item) is taken out of the text, so the chip is not said twice. */
 export function museFiles(text: string): { text: string; files: string[] } {
   const files: string[] = [];
   const kept = text.split('\n').filter((line) => {
     const bare = line.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').trim();
-    if (bare !== '' && new RegExp(`^${FILE.source}$`, 'i').test(bare)) { if (!files.includes(bare)) files.push(bare); return false; }
+    if (bare !== '' && FILE_LINE.test(bare)) { if (!files.includes(bare)) files.push(bare); return false; }
     return true;
   }).join('\n').replace(/\n{3,}/g, '\n\n').trim();
-  for (const found of kept.match(FILE) ?? []) { const name = found.trim(); if (!files.includes(name)) files.push(name); }
+  for (const found of kept.match(FILE) ?? []) if (!files.includes(found)) files.push(found);
   return { text: kept, files };
 }
 
@@ -87,14 +115,25 @@ function rememberCard(recording: Recording, artifact: NonNullable<ChatModel['art
       const doc = new DOMParser().parseFromString(html, 'text/html');
       const parts: HTMLElement[] = [];
       let skippedTitle = false;
+      let skipping = false;
+      const plain = (raw: string) => museWhen(museShorten(raw.replace(/\s+/g, ' ').trim()));
       for (const node of [...doc.body.children]) {
         const tag = node.tagName.toLowerCase();
-        const text = museShorten((node.textContent ?? '').replace(/[ \t]+/g, ' ').trim());
+        const text = plain(node.textContent ?? '');
         if (tag === 'h1' && !skippedTitle) { skippedTitle = true; continue; }
-        if (tag === 'h1' || tag === 'h2') parts.push(reportEl('h3', { class: 'mu-rh', text }));
-        else if (tag === 'h3' || tag === 'h4') parts.push(reportEl('div', { class: 'mu-rsub', text }));
-        else if (tag === 'ul' || tag === 'ol') parts.push(reportEl('ul', { class: 'mu-rlist' }, ...[...node.querySelectorAll('li')].map((li) => reportEl('li', { text: museShorten((li.textContent ?? '').replace(/\s+/g, ' ').trim()) }))));
-        else if (text !== '') parts.push(reportEl('p', { class: tag === 'pre' ? 'mu-rpre' : 'mu-rp', text }));
+        if (tag === 'h1' || tag === 'h2') { skipping = false; parts.push(reportEl('h3', { class: 'mu-rh', text })); continue; }
+        if (tag === 'h3' || tag === 'h4') {
+          // A file's name is a heading a person reads; a host's index file has no heading and none of its lines.
+          const friendly = /\.[A-Za-z0-9]{1,5}$/.test(text) ? museFriendlyFile(text) : text;
+          skipping = friendly === undefined;
+          if (friendly !== undefined) parts.push(reportEl('div', { class: 'mu-rsub', text: friendly }));
+          continue;
+        }
+        if (skipping) continue;
+        if (tag === 'ul' || tag === 'ol') parts.push(reportEl('ul', { class: 'mu-rlist' }, ...[...node.querySelectorAll('li')].map((li) => reportEl('li', { text: plain(li.textContent ?? '') }))));
+        // A note is its lines, plainly: one a line, not a code box.
+        else if (tag === 'pre') parts.push(reportEl('ul', { class: 'mu-rlist' }, ...(node.textContent ?? '').split('\n').map((line) => plain(line)).filter((line) => line !== '').map((line) => reportEl('li', { text: line }))));
+        else if (text !== '') parts.push(reportEl('p', { class: 'mu-rp', text }));
       }
       if (parts.length === 0) failed('the page held nothing to show'); else body.replaceChildren(...parts);
     }).catch((error: unknown) => failed(String((error as Error)?.message ?? error).slice(0, 80)));

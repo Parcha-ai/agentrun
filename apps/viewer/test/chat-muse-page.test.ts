@@ -12,6 +12,7 @@ import { after, test } from 'node:test';
 // @ts-expect-error: the build script is plain JavaScript
 import { build } from '../build.mjs';
 import { chrome, closeAll, closeLeftBrowsers, drivenPage } from './driven-page.ts';
+import { museFiles, museFriendlyFile, museShorten, museWhen } from '../src/chat-muse.ts';
 import { evidenceFinding } from '../src/chat-view.ts';
 import { CITED, K, deliverInstead, writeRecording } from './vision-hand.ts';
 
@@ -25,13 +26,30 @@ const HARNESS = `<!doctype html><body style="margin:0">
 <iframe id="plain" style="position:absolute;top:0;left:0;width:1440px;height:900px;border:0" src="chat.html?r=chat-browser"></iframe>
 <script>
 const doc = (id) => document.getElementById(id).contentDocument;
-const ready = (id) => !!doc(id)?.querySelector('main#chat-root > .app .thread');
-const cards = (id) => [...doc(id).querySelectorAll('.browser')];
-const loaded = (id) => { const images = [...doc(id).querySelectorAll('.bshot img')]; for (const image of images) image.scrollIntoView(); return images.length > 0 && images.every((image) => image.complete && image.naturalWidth > 0); };
+const ready = (id) => !!doc(id)?.querySelector('.muse .mu-card.mu-memory .mu-rh') || !!doc(id)?.querySelector('main#chat-root > .app .thread');
+const loaded = (id) => { const images = [...doc(id).querySelectorAll('.mu-shot img')]; for (const image of images) image.scrollIntoView(); return images.length > 0 && images.every((image) => image.complete && image.naturalWidth > 0); };
 const wider = (id) => doc(id).documentElement.scrollWidth - doc(id).documentElement.clientWidth;
 </script></body>`;
 
-test('in Chrome: the Muse header and the browser card, from the recording\'s own lines, at 1440 and 390; nothing of it without the option', IN_CHROME, async (t) => {
+test('the Muse layout shortens every web address to its host, and takes the files a text names out as chips', { timeout: 5_000 }, () => {
+  assert.equal(museShorten('Check https://shop.example.test/account/secret-path?x=1 and (see http://a.example/b).'), 'Check shop.example.test and (see a.example).');
+  assert.equal(museShorten('no address here, just parcha-ai.github.io'), 'no address here, just parcha-ai.github.io');
+  assert.deepEqual(museFiles('Amount due: $1\nDownloaded bills:\n- statement-03.pdf\n- statement-02.pdf'), { text: 'Amount due: $1\nDownloaded bills:', files: ['statement-03.pdf', 'statement-02.pdf'] });
+  assert.deepEqual(museFiles('The report is in summary.csv and it is final.'), { text: 'The report is in summary.csv and it is final.', files: ['summary.csv'] }, 'a file named inside a sentence is a chip too, the sentence kept');
+  assert.deepEqual(museFiles('Nothing to attach.'), { text: 'Nothing to attach.', files: [] });
+});
+
+test('the Muse layout says times as a person does and names memory files plainly', { timeout: 5_000 }, () => {
+  const now = new Date('2026-10-20T12:00:00Z');
+  assert.equal(museWhen('checked 2026-10-20T00:12:59.215Z', now, 'UTC'), 'checked today, 00:12');
+  assert.equal(museWhen('2026-10-19T23:05:00Z, this run', now, 'UTC'), 'yesterday, 23:05, this run');
+  assert.equal(museWhen('on 2026-09-03T08:30:00Z', now, 'UTC'), 'on 3 Sep, 08:30');
+  assert.equal(museWhen('2025-01-02T08:30:00Z', now, 'UTC'), '2 Jan 2025, 08:30');
+  assert.equal(museWhen('no time here, April 15, 2026', now, 'UTC'), 'no time here, April 15, 2026');
+  assert.deepEqual(['preferences.md', 'accounts.md', 'index.md', 'my-notes.txt', 'INDEX.md'].map(museFriendlyFile), ['Preferences', 'Accounts', undefined, 'My notes', undefined]);
+});
+
+test('in Chrome: &muse is a phone chat over the same events, at 1440 and 390: the agent\'s avatar, bubbles, the browser inline, the sign-in card, the answer with file chips, What I remember; nothing of the analyst view', IN_CHROME, async (t) => {
   const out = mkdtempSync(join(tmpdir(), 'viewer-muse-'));
   const held: { page?: Awaited<ReturnType<typeof drivenPage>>; server?: ReturnType<typeof createServer> } = {};
   t.after(() => closeAll(held.page ? [held.page] : [], () => {
@@ -52,42 +70,42 @@ test('in Chrome: the Muse header and the browser card, from the recording\'s own
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   held.server = server;
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  // The two frames of the first step are different pictures; the card shows the later one (blob 5b83de50..., the fixture's `b`).
-  const lastFrame = readFileSync(join(here, 'fixtures', 'chat-browser', 'blobs', readdirSync(join(here, 'fixtures', 'chat-browser', 'blobs')).find((name) => name.startsWith('5b83de50'))!));
   const page = await drivenPage(`${origin}/harness.html`, join(out, 'profile'), { signal: t.signal });
   held.page = page;
   const value = async <T>(expression: string) => JSON.parse(String(await page.evaluate(`JSON.stringify(${expression})`))) as T;
   const until = (expression: string, what: string) => page.once(expression, 'true', 20_000, what);
-  for (const id of ['wide', 'phone', 'plain']) await until(`ready('${id}')`, `${id} chat page drawn`);
+  for (const id of ['wide', 'phone', 'plain']) await until(`ready('${id}')`, `${id} page drawn`);
   await until(`loaded('wide')`, 'the wide page\'s frames loaded');
   await until(`loaded('phone')`, 'the phone page\'s frames loaded');
 
   for (const id of ['wide', 'phone']) {
-    // The header: an avatar, the name the host labelled the agent with, and its state.
-    assert.deepEqual(await value(`[doc('${id}').querySelector('.avatar').textContent, doc('${id}').querySelector('.agent-name').textContent, doc('${id}').querySelector('.agent-status').textContent]`), ['W', 'Wren', 'Is working'], `${id}: the header`);
-    // The cards: the step that ran code and the step that asked for a hand-over, in order; a step with no frame and no hold has none.
-    assert.deepEqual(await value(`cards('${id}').map((card) => [...card.querySelectorAll('.blabel')].map((label) => label.textContent))`), [
-      ['Your agent is driving the browser'],
-      ['Handed the browser over: An option is picked', 'Handed back · done'],
-    ], `${id}: who has the browser, said by the rows alone`);
-    // The step's last frame (its second one, between calls), in a 16:10 box, contained.
-    const shot = await value<{ ratio: number; fit: string; src: string; held: boolean[] }>(`(() => { const box = cards('${id}')[0].querySelector('.bshot'); const image = box.querySelector('img'); const b = box.getBoundingClientRect();
-      return { ratio: b.width / b.height, fit: getComputedStyle(image).objectFit, src: image.getAttribute('src'), held: cards('${id}').map((card) => card.classList.contains('held')) }; })()`);
-    assert.ok(Math.abs(shot.ratio - 1.6) < 0.02, `${id}: a 16:10 box, got ${shot.ratio}`);
-    assert.equal(shot.fit, 'contain');
-    assert.equal(shot.src, `data:image/png;base64,${lastFrame.toString('base64')}`, `${id}: the last frame the step held (its second, between calls), not the first`);
-    assert.deepEqual(shot.held, [false, false], `${id}: a hold that ended is not a card held open`);
-    // Take control: shown, disabled, and says why.
-    assert.deepEqual(await value(`cards('${id}').map((card) => { const b = card.querySelector('.take'); return [b.textContent, b.disabled, b.title]; })`), [
-      ['Take control', true, 'Replay: the run is over'], ['Take control', true, 'Replay: the run is over'],
-    ], `${id}: Take control`);
-    // Nothing the cards or the header draw names a person who drove, and no accent bar sits on a left edge.
-    assert.equal(await value<boolean>(`!/\\b(person|human|you drove|stand-in)\\b/i.test(cards('${id}')[0].textContent)`), true, `${id}: the driving card claims no person`);
-    assert.deepEqual(await value(`[...doc('${id}').querySelectorAll('.top, .top *, .browser, .browser *')].filter((node) => { const s = getComputedStyle(node); return s.borderLeftStyle !== 'none' && parseFloat(s.borderLeftWidth) > parseFloat(s.borderRightWidth); }).map((node) => node.className || node.tagName)`), [], `${id}: no left-edge accent bar`);
+    // The avatar at the top, the agent's name and its state under it.
+    assert.deepEqual(await value(`[doc('${id}').querySelector('.mu-avatar').textContent, doc('${id}').querySelector('.mu-name').textContent, doc('${id}').querySelector('.mu-state').textContent]`), ['W', 'Wren', 'Done'], `${id}: the header`);
+    assert.equal(await value<boolean>(`(() => { const a = doc('${id}').querySelector('.mu-avatar').getBoundingClientRect(); const top = doc('${id}').querySelector('.mu-top').getBoundingClientRect(); const mid = top.left + top.width / 2; return getComputedStyle(doc('${id}').querySelector('.mu-avatar')).borderRadius !== '0px' && Math.abs(a.left + a.width / 2 - mid) < 2 && a.top < top.top + 40; })()`), true, `${id}: a round avatar, centred at the top`);
+    // The person's request right-aligned, an address in it shortened; the agent's answer a bubble with its files as chips.
+    const chat = await value<{ person: { text: string; right: boolean }; answer: string; files: string[]; order: string[] }>(`(() => { const d = doc('${id}'); const col = d.querySelector('.mu-chat').getBoundingClientRect(); const p = d.querySelector('.mu-row.person .mu-bubble'); const pb = p.getBoundingClientRect();
+      const agent = d.querySelector('.mu-row.agent'); return { person: { text: p.textContent, right: pb.right > col.left + col.width * 0.85 && pb.left > col.left + 16 }, answer: agent.querySelector('.mu-bubble').textContent, files: [...agent.querySelectorAll('.mu-file')].map((f) => f.textContent),
+        order: [...d.querySelector('.mu-chat').children].map((n) => n.classList.contains('mu-row') ? (n.classList.contains('person') ? 'person' : 'agent') : n.classList.contains('mu-card') ? [...n.classList].find((c) => c !== 'mu-card') : n.tagName.toLowerCase() + '.' + n.className) }; })()`);
+    assert.equal(chat.person.right, true, `${id}: the person's words sit on the right`);
+    assert.match(chat.person.text, /^Check my account at shop\.example\.test and download my last bills\.$/, `${id}: the address is shortened to its host`);
+    assert.match(chat.answer, /^Amount due: \$112\.40\s*Due date: April 15\s*Downloaded bills:\s*Details are at shop\.example\.test$/s, `${id}: the answer as a bubble, its address shortened, the file lines taken out`);
+    assert.deepEqual(chat.files, ['statement-03.pdf', 'statement-02.pdf'], `${id}: the files as chips`);
+    assert.deepEqual(chat.order.filter((each) => /^(person|agent|mu-)/.test(each)), ['person', 'mu-browser', 'mu-signin', 'agent', 'mu-memory'], `${id}: the conversation in order: request, the browser (two steps with nothing said between them: one card), the sign-in, the answer, what it remembers`);
+    // The browser inline: the site, its frame, who has it, and Take control, shown and disabled.
+    assert.deepEqual(await value(`[...doc('${id}').querySelectorAll('.mu-browser')].map((card) => [card.querySelector('.mu-card-title').textContent, card.querySelector('.mu-card-sub').textContent, [...card.querySelectorAll('.mu-label')].map((l) => l.textContent), card.querySelector('.mu-take').disabled, card.querySelector('.mu-take').title, !!card.querySelector('.mu-shot img')])`), [
+      ['Browser', 'Browsing shop.example.test', ['Handed the browser over: An option is picked', 'Handed back · done'], true, 'Replay: the run is over', true],
+    ], `${id}: the browser cards`);
+    // The sign-in where the run waited, signed in once the browser's own profile says so.
+    assert.deepEqual(await value(`[...doc('${id}').querySelectorAll('.mu-signin')].map((card) => [card.querySelector('.mu-card-title').textContent, card.querySelector('.mu-card-sub').textContent, card.querySelector('.mu-wide').textContent, card.querySelector('.mu-wide').disabled])`), [['Secure Store', 'Sign in to shop.example.test', 'Signed in', true]], `${id}: the sign-in card`);
+    // What I remember: the host's page as a card, every address shortened, its own style (and its left bar) not used.
+    assert.deepEqual(await value(`(() => { const c = doc('${id}').querySelector('.mu-memory'); return [c.querySelector('.mu-card-title').textContent, [...c.querySelectorAll('.mu-rh')].map((h) => h.textContent), [...c.querySelectorAll('.mu-rsub')].map((h) => h.textContent), c.textContent.includes('http'), c.textContent.includes('Shop: shop.example.test'), /\\d{4}-\\d{2}-\\d{2}T/.test(c.textContent), /\\.md\\b|index/i.test(c.textContent), [...c.querySelectorAll('.mu-rlist li')].map((li) => li.textContent).filter((text) => /preferences|amount|\\$100/i.test(text)), c.querySelectorAll('pre, .mu-rpre').length]; })()`), ['What I remember', ['Signed in', 'My memory', 'Runs'], ['Accounts', 'Preferences'], false, true, false, false, ['Only care about the amount and the due date', 'Flag anything over $100'], 0], `${id}: What I remember: plain headings, plain lines, no file names, no raw time, no address`);
+    // Nothing of the analyst view, and no web address anywhere in what the page shows.
+    assert.deepEqual(await value(`[doc('${id}').querySelectorAll('.app, .report, .step, .tl, .src').length, /https?:\\/\\//.test(doc('${id}').body.innerText)]`), [0, false], `${id}: no report page, no raw address`);
+    assert.deepEqual(await value(`[...doc('${id}').querySelectorAll('.muse, .muse *')].filter((node) => { const s = getComputedStyle(node); return s.borderLeftStyle !== 'none' && parseFloat(s.borderLeftWidth) > parseFloat(s.borderRightWidth); }).map((node) => node.className || node.tagName)`), [], `${id}: no left-edge accent bar`);
     assert.ok((await value<number>(`wider('${id}')`)) <= 1, `${id}: nothing sideways`);
   }
-  // The same recording without the option reads as before: no agent header, no browser card, and the frame-bearing step stays folded as a command.
-  assert.deepEqual(await value(`[!!doc('plain').querySelector('.agent'), doc('plain').querySelectorAll('.browser').length, !!doc('plain').querySelector('.top .title')]`), [false, 0, true], 'without &muse');
+  // The same recording without the option is the analyst view, exactly as before.
+  assert.deepEqual(await value(`[!!doc('plain').querySelector('.muse'), !!doc('plain').querySelector('.app .thread'), doc('plain').querySelectorAll('.browser').length]`), [false, true, 0], 'without &muse');
 });
 
 // The docs site and any host with `connect-src 'self'` may not fetch a data: URL, and the gallery embeds a recording's blobs as
