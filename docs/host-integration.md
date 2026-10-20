@@ -25,7 +25,7 @@ Root input schemas are checked before dispatch. Completed outputs must satisfy t
 
 Adapters receive a cancellation signal. Honor it in tool and model calls and bound their execution. An admitted effect may finish after cancellation; stopping the workflow does not undo it.
 
-`EffectOutcomeUnknownError` retains a settlement promise for an effect still pending at cutoff. An `AggregateError` can contain several uncertain effects. Preserve those errors and reconcile their receipts before retrying. See the [effect and cancellation contracts](guide.md#limits).
+`EffectOutcomeUnknownError` retains a settlement promise for an effect still pending at cutoff. An `AggregateError` can contain several uncertain effects. Preserve those errors and reconcile their receipts before retrying. See the [effect and cancellation contracts](guide.md#contracts-and-limits).
 
 `onEvent` is best effort and cannot gate persistence. JSON event data is a detached snapshot: observer mutations cannot change execution state or recovery records. Accessors are never evaluated while copying; unsafe non-JSON values remain invalid for required host trace validation rather than becoming valid data or disappearing. Use required checkpoint hooks when a failed write must stop execution. The DSL provides hooks, not a durable scheduler or exactly-once delivery.
 

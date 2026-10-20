@@ -213,7 +213,7 @@ const result = await runWorkflow(workflow, input, {
 });
 ```
 
-`ctx` supplies the active model and public model registry. Tools are explicitly supplied and receive the original context; outer hooks are not copied. The captured active model remains fixed for the run. The host thinking level is inherited when provided, and a node can override it. The runner bounds turns, submissions, and time, and refuses an absent model instead of selecting a fallback. These limits do not impose token or spending caps.
+`ctx` supplies the active model and public model registry. Tools are explicitly supplied and receive the original context; outer hooks are not copied. The captured active model remains fixed for the run. A node thinks at its own `thinking` level; a node that names none thinks at medium, not at the host session's level, unless the runner's own `thinkingLevel` option sets another. Thinking is never off: a level of `off` runs at medium. The runner bounds turns, submissions, and time, and refuses an absent model instead of selecting a fallback. These limits do not impose token or spending caps.
 
 For a standalone application, `createPiRunner(options)` accepts a configured SDK `ModelRuntime` and its selected `model`. Supply `tools` explicitly. It loads no ambient filesystem tools, workspace instructions, extensions, prompt templates, or skills. `createPiHostSessionFactory(ctx)` exposes the same native child session transport for integrations that own their own runner. Factories are unnecessary for ordinary extension use.
 

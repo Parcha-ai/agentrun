@@ -240,7 +240,8 @@ test('inspect then run uses the actual native Agent, selected faux transport and
     assert.equal(result.details.calls.agent, 1); assert.equal(app.calls.length, 2);
     assert.ok(updates.some(update => /read-note/.test(update.content[0].text)));
     assert.ok(updates.some(update => /600-second/.test(update.content[0].text))); 
-    for (const call of app.calls) { assert.equal(call.model, app.ctx.model); assert.equal(call.options.reasoning, 'low'); }
+    // The host session thinks at low; a node that names no level thinks at medium.
+    for (const call of app.calls) { assert.equal(call.model, app.ctx.model); assert.equal(call.options.reasoning, 'medium'); }
     assert.doesNotMatch(JSON.stringify(app.calls[0].transcript), /Changed by caller/);
   } finally { await app.shutdown(); await rm(cwd, { recursive: true, force: true }); }
 });
@@ -859,7 +860,7 @@ test('interactive run keeps the launch model, thinking level and tool implementa
     release.resolve();
     await waitUntil(() => app.messages.some(message => message.details?.status));
     assert.equal(app.messages.at(-1).details.status, 'complete');
-    assert.equal(app.calls[0].model, selected); assert.equal(app.calls[0].options.reasoning, 'low');
+    assert.equal(app.calls[0].model, selected); assert.equal(app.calls[0].options.reasoning, 'medium');
   } finally { release.resolve(); await app.shutdown(); }
 });
 

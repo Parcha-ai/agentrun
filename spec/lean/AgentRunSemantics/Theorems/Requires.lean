@@ -56,7 +56,7 @@ theorem walk_checked : ∀ (n : Node) (addr : Addr) (env : VEnv) (a : Addr),
   | .report .., addr, env, a, h => by simp only [walk] at h; rw [checkedAt_prefix _ _ _ h]; exact List.prefix_refl _
   | .artifact _ type .., addr, env, a, h => by
     simp only [walk] at h; split at h <;> (rw [checkedAt_prefix _ _ _ h]; exact List.prefix_refl _)
-  | .map _ _ body _ _, addr, env, a, h => by
+  | .map _ _ body _ _ _ _, addr, env, a, h => by
     simp only [walk] at h; exact prefix_trans_seg (walk_checked body (addr ++ [.body]) _ a h)
   | .parallel _ bs, addr, env, a, h => by
     simp only [walk] at h
@@ -489,12 +489,21 @@ theorem req_sound (O : Oracle) (hO : ∀ id, O.schemaOk id none = false) :
         refine covers_add _ hc (fun k hk => hmono k ?_) (fun k hk => hmono k ?_)
         · simp [State.has_set_iff, hk]
         · simp at hk; subst hk; simp [State.has_set_iff]
-  | .map label itemsPath body as resultPath, path, addr, lp, env, s, herr, hc => by
+  | .map label itemsPath body as resultPath oif fa, path, addr, lp, env, s, herr, hc => by
     simp only [walk, List.append_eq_nil_iff] at herr
     refine ⟨fun l a p h => ?_, fun s' ev h => by simp only [walk]; exact covers_none _⟩
     simp only [eval] at h
     split at h
     · rename_i items _
+      split at h
+      · -- A collecting map collects a missing required input: what it reports is never one.
+        simp only [Prod.mk.injEq, collectItems] at h
+        split at h
+        · simp at h
+        · rename_i hne
+          have hmem := O.choose_mem _ (fun hnil => hne (List.isEmpty_iff.mpr hnil))
+          rw [h] at hmem
+          simp [List.mem_filter, stops, itemCode] at hmem
       split at h
       · rename_i o hg
         simp only at h; subst h

@@ -252,16 +252,16 @@ test('the host chooses the speech-to-text model from the keys its demo declares:
   assert.match(pick({ TRANSCRIBE_BASE_URL: 'http://127.0.0.1:1', TRANSCRIBE_API_KEY: 'k', FAL_KEY: 'other' }), /fal/);
 });
 
-test('every node thinks: its own level, else low, never off', { timeout: 120_000 }, async (t) => {
+test('every node thinks: its own level, else medium, never off', { timeout: 120_000 }, async (t) => {
   const { nodeAgent } = await import('../packages/harness/dist/assemble.js');
   const model = { id: 'lead' };
-  assert.equal(nodeAgent(model, {}).thinkingLevel, 'low', 'a node with no thinking runs at low');
+  assert.equal(nodeAgent(model, {}).thinkingLevel, 'medium', 'a node with no thinking runs at medium');
   assert.equal(nodeAgent(model, { thinking: 'high' }).thinkingLevel, 'high', 'a node\'s own level wins');
-  assert.equal(nodeAgent(model, { thinking: 'off' }).thinkingLevel, 'low', 'thinking is never off, whatever a node carries');
+  assert.equal(nodeAgent(model, { thinking: 'off' }).thinkingLevel, 'medium', 'thinking is never off, whatever a node carries');
   assert.equal(nodeAgent(model, {}).model, model);
   // In a run: the conversations the job's nodes open are recorded with the level they were given.
   const { recording } = await run(t, {}, ['--json']);
   const text = readFileSync(join(recording, 'events.jsonl'), 'utf8');
-  assert.ok(/"thinkingLevel":"low"/.test(text), 'the recording shows a conversation at low');
+  assert.ok(/"thinkingLevel":"medium"/.test(text), 'the recording shows a conversation at medium');
   assert.ok(!/"thinkingLevel":"off"/.test(text), 'and none at off');
 });
