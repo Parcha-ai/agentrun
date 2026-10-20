@@ -55,10 +55,11 @@ async function edgarFile(url) {
     } catch (error) {
       record = { url, copy: null, status: 0, error: String(error?.cause?.code ?? error?.message ?? error) };
     }
-    if (record.status === 200 || record.status === 404) break;
+    if (record.status === 200 || record.status === 404 || record.status === 403) break;
   }
   await mkdir(join(cache, 'edgar'), { recursive: true });
-  if (record.status === 200 || record.status === 404) {
+  // The archive's 404 (no capture) and 403 (capture withheld) are its answer; only a failed connection is asked again.
+  if (record.status === 200 || record.status === 404 || record.status === 403) {
     await writeFile(file, body);
     await writeFile(meta, JSON.stringify(record));
   }
@@ -156,21 +157,84 @@ function tidyEntries(items, { table }) {
   return table && placed.length > out.length / 2 ? placed : out;
 }
 
+// The filing's EDGAR index and its documents by type, from the archived copy.
+async function filingIndex(cik, filing) {
+  const base = `https://www.sec.gov/Archives/edgar/data/${Number(cik)}/${filing.adsh.replaceAll('-', '')}/`;
+  const index = await edgarFile(`${base}${filing.adsh}-index.htm`);
+  const documents = [];
+  if (index.status === 200) {
+    for (const row of index.body.toString('utf8').match(/<tr\b[\s\S]*?<\/tr>/gi) ?? []) {
+      const cells = (row.match(/<td\b[\s\S]*?<\/td>/gi) ?? []).map(cellText);
+      const link = /href="([^"]+)"/i.exec(row)?.[1];
+      if (cells.length >= 4 && link && cells[3]) documents.push({ type: cells[3], file: link.split('/').pop().split('?')[0] });
+    }
+  }
+  return { base, index, documents };
+}
+
+const US_STATES = {
+  AL: 'Alabama', AK: 'Alaska', AZ: 'Arizona', AR: 'Arkansas', CA: 'California', CO: 'Colorado', CT: 'Connecticut', DE: 'Delaware', DC: 'District of Columbia',
+  FL: 'Florida', GA: 'Georgia', HI: 'Hawaii', ID: 'Idaho', IL: 'Illinois', IN: 'Indiana', IA: 'Iowa', KS: 'Kansas', KY: 'Kentucky', LA: 'Louisiana', ME: 'Maine',
+  MD: 'Maryland', MA: 'Massachusetts', MI: 'Michigan', MN: 'Minnesota', MS: 'Mississippi', MO: 'Missouri', MT: 'Montana', NE: 'Nebraska', NV: 'Nevada',
+  NH: 'New Hampshire', NJ: 'New Jersey', NM: 'New Mexico', NY: 'New York', NC: 'North Carolina', ND: 'North Dakota', OH: 'Ohio', OK: 'Oklahoma', OR: 'Oregon',
+  PA: 'Pennsylvania', RI: 'Rhode Island', SC: 'South Carolina', SD: 'South Dakota', TN: 'Tennessee', TX: 'Texas', UT: 'Utah', VT: 'Vermont', VA: 'Virginia',
+  WA: 'Washington', WV: 'West Virginia', WI: 'Wisconsin', WY: 'Wyoming',
+};
+const US_STATE_CODES = new Map(Object.entries(US_STATES).map(([code, name]) => [name.toLowerCase(), code]));
+const CA_PROVINCES = {
+  AB: 'Alberta', BC: 'British Columbia', MB: 'Manitoba', NB: 'New Brunswick', NL: 'Newfoundland and Labrador', NS: 'Nova Scotia', ON: 'Ontario',
+  PE: 'Prince Edward Island', QC: 'Quebec', SK: 'Saskatchewan', NT: 'Northwest Territories', NU: 'Nunavut', YT: 'Yukon',
+};
+const CA_PROVINCE_CODES = new Map(Object.entries(CA_PROVINCES).map(([code, name]) => [name.toLowerCase(), code]));
+// ISO 3166-1 alpha-2 for a country a cover names in words.
+const ISO = Object.fromEntries((
+  'United States=US|United States of America=US|USA=US|Canada=CA|Mexico=MX|Brazil=BR|Argentina=AR|Chile=CL|Colombia=CO|Peru=PE|' +
+  'United Kingdom=GB|England=GB|Great Britain=GB|Ireland=IE|Netherlands=NL|The Netherlands=NL|Belgium=BE|Luxembourg=LU|France=FR|' +
+  'Germany=DE|Austria=AT|Switzerland=CH|Italy=IT|Spain=ES|Portugal=PT|Greece=GR|Denmark=DK|Norway=NO|Sweden=SE|Finland=FI|Iceland=IS|' +
+  'Poland=PL|Czech Republic=CZ|Hungary=HU|Romania=RO|Bulgaria=BG|Cyprus=CY|Malta=MT|Jersey=JE|Guernsey=GG|Isle of Man=IM|Israel=IL|' +
+  'Turkey=TR|United Arab Emirates=AE|Saudi Arabia=SA|Qatar=QA|South Africa=ZA|Nigeria=NG|Egypt=EG|India=IN|China=CN|' +
+  "People's Republic of China=CN|PRC=CN|Hong Kong=HK|Hong Kong SAR=HK|Macau=MO|Taiwan=TW|Japan=JP|South Korea=KR|Korea=KR|" +
+  'Republic of Korea=KR|Singapore=SG|Malaysia=MY|Thailand=TH|Vietnam=VN|Philippines=PH|Indonesia=ID|Australia=AU|New Zealand=NZ|' +
+  'Bermuda=BM|Cayman Islands=KY|British Virgin Islands=VG|Bahamas=BS|Barbados=BB|Puerto Rico=PR|Monaco=MC|Liechtenstein=LI|' +
+  'Grand Duchy of Luxembourg=LU'
+).split('|').map((pair) => { const [name, code] = pair.split('='); return [name.toLowerCase(), code]; }));
+const isoCountry = (value) => (/^[A-Z]{2}$/.test(value) ? value : ISO[value.toLowerCase()] ?? ISO[value.toLowerCase().replace(/^the /, '')] ?? null);
+
+// The cover page's address of principal executive offices, as its inline XBRL tags it (dei:EntityAddress…).
+export function coverAddress(html) {
+  const tag = (name) => {
+    const m = new RegExp(`<ix:nonNumeric\\b[^>]*\\bname="dei:${name}"[^>]*>([\\s\\S]*?)</ix:nonNumeric>`, 'i').exec(html);
+    return m ? cellText(m[1]) || null : null;
+  };
+  const city = tag('EntityAddressCityOrTown');
+  if (!city) return null;
+  const stateTag = tag('EntityAddressStateOrProvince');
+  const countryTag = tag('EntityAddressCountry');
+  const state = stateTag && (US_STATE_CODES.get(stateTag.toLowerCase()) ?? CA_PROVINCE_CODES.get(stateTag.toLowerCase()) ?? stateTag);
+  // Without a country tag, a US state or a Canadian province names the country.
+  const country = countryTag ? isoCountry(countryTag) : US_STATES[state] ? 'US' : CA_PROVINCES[state] ? 'CA' : null;
+  return { city, state, country, ...(countryTag ? { countryTag } : {}) };
+}
+
+async function hqOf(cik, filing, sub) {
+  const fromSub = sub.cityba || sub.countryba ? { city: sub.cityba || null, state: sub.stprba || null, country: sub.countryba || null } : null;
+  const { base, index, documents } = await filingIndex(cik, filing);
+  const primary = documents.find((d) => d.type === filing.form && /\.html?$/i.test(d.file));
+  if (index.status !== 200 || !primary) return { hq: fromSub, source: 'sub.txt', why: index.status !== 200 ? 'no copy of the filing index' : 'the index names no primary document' };
+  const copy = await edgarFile(base + primary.file);
+  if (copy.status !== 200) return { hq: fromSub, source: 'sub.txt', why: `no copy of ${primary.file} (${copy.status})` };
+  const cover = coverAddress(copy.body.toString('utf8'));
+  if (!cover) return { hq: fromSub, source: 'sub.txt', why: `${primary.file} tags no cover address`, document: { url: copy.url, copy: copy.copy } };
+  const { countryTag, ...hq } = cover;
+  return { hq, source: 'cover', document: { url: copy.url, copy: copy.copy }, ...(countryTag && !hq.country ? { why: `the cover's country "${countryTag}" has no ISO code here` } : {}), sub: fromSub };
+}
+
 async function subsidiariesOf(cik, filing) {
   const pattern = EXHIBIT[filing.form];
   if (!pattern) return { truth: null, why: `a ${filing.form} files no subsidiaries exhibit` };
-  const base = `https://www.sec.gov/Archives/edgar/data/${Number(cik)}/${filing.adsh.replaceAll('-', '')}/`;
-  const index = await edgarFile(`${base}${filing.adsh}-index.htm`);
+  const { base, index, documents } = await filingIndex(cik, filing);
   if (index.status !== 200) return { truth: null, why: `no copy of the filing index (${index.status})` };
-  let exhibit;
-  for (const row of index.body.toString('utf8').match(/<tr\b[\s\S]*?<\/tr>/gi) ?? []) {
-    const cells = (row.match(/<td\b[\s\S]*?<\/td>/gi) ?? []).map(cellText);
-    const link = /href="([^"]+)"/i.exec(row)?.[1];
-    if (cells.length >= 4 && link && pattern.test(cells[3])) {
-      exhibit = { type: cells[3], file: link.split('/').pop().split('?')[0] };
-      break;
-    }
-  }
+  const exhibit = documents.find((d) => pattern.test(d.type));
   if (!exhibit) return { truth: null, why: `the filing index lists no ${filing.form === '20-F' ? 'EX-8' : 'EX-21'}`, index };
   const copy = await edgarFile(base + exhibit.file);
   if (copy.status !== 200) return { truth: null, why: `no copy of ${exhibit.file} (${copy.status})`, index };
@@ -191,6 +255,23 @@ function newerPossible(period) {
   next.setUTCFullYear(next.getUTCFullYear() + 1);
   next.setUTCDate(next.getUTCDate() + 60);
   return next.toISOString().slice(0, 10) <= AS_OF;
+}
+
+// Where each head office came from, and how many cover addresses differ from sub.txt's business address.
+function hqSources(report) {
+  const plain = (text) => (text ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const counts = { cover: 0, 'sub.txt': 0, coverDiffersFromSub: 0, subTxtWhy: {} };
+  for (const r of report) {
+    if (!r.hq) continue;
+    counts[r.hq.source]++;
+    if (r.hq.source === 'sub.txt') {
+      const why = r.hq.why.replace(/^no copy of \S+ /, 'no copy of the primary document ').replace(/^\S+ tags no/, 'the primary document tags no');
+      counts.subTxtWhy[why] = (counts.subTxtWhy[why] ?? 0) + 1;
+    }
+    const { cover, sub } = r.hq;
+    if (r.hq.source === 'cover' && sub && (plain(cover.city) !== plain(sub.city) || (cover.country && sub.country && cover.country !== sub.country))) counts.coverDiffersFromSub++;
+  }
+  return counts;
 }
 
 // Why a company has no subsidiaries truth, counted by kind.
@@ -242,7 +323,12 @@ async function main() {
       notes.latestAnnual = 'no annual report in the pinned quarters';
     } else {
       row.latestAnnual = { form: f.form, fy: Number(f.fy), period: isoDate(f.period), adsh: f.adsh, filed: isoDate(f.filed), ...(newerPossible(f.period) ? { newerPossible: true } : {}) };
-      row.hq = f.cityba || f.countryba ? { city: f.cityba || null, state: f.stprba || null, country: f.countryba || null } : null;
+      const place = await hqOf(c.cik, f, f);
+      row.hq = place.hq;
+      notes.hq = {
+        source: place.source, ...(place.why ? { why: place.why } : {}), ...(place.document ? { document: place.document } : {}),
+        ...(place.source === 'cover' ? { cover: place.hq, sub: place.sub } : {}),
+      };
       notes.source = { quarter: provenance.secFiles[f.quarter]?.fetchedFrom ?? f.quarter };
       const seg = segmentTruth({ adsh: f.adsh, form: f.form, period: f.period }, facts.get(f.adsh) ?? []);
       if (!seg.truth) notes.segments = seg.why;
@@ -282,6 +368,7 @@ async function main() {
     total: companies.length,
     latestAnnual: { ...field((c) => c.latestAnnual), newerPossible: count((c) => c.latestAnnual?.newerPossible) },
     hqCity: field((c) => c.hq?.city), hqState: field((c) => c.hq?.state), hqCountry: field((c) => c.hq?.country),
+    hqSource: hqSources(report),
     segments: { truth: count((c) => Array.isArray(c.segments)), oneSegment: count((c) => c.segments?.oneSegment), null: count((c) => !c.segments) },
     subsidiaries: { ...field((c) => c.subsidiaries), byForm: byForm((c) => c.subsidiaries), nullReasons: nullReasons(report) },
   };

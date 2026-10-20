@@ -67,8 +67,17 @@
    "null": 30
   },
   "hqCountry": {
-   "truth": 127,
-   "null": 3
+   "truth": 130,
+   "null": 0
+  },
+  "hqSource": {
+   "cover": 124,
+   "sub.txt": 6,
+   "coverDiffersFromSub": 22,
+   "subTxtWhy": {
+    "no copy of the primary document (404)": 3,
+    "no copy of the primary document (403)": 3
+   }
   },
   "segments": {
    "truth": 93,
@@ -105,6 +114,23 @@
   {
    "cik": "0001144800",
    "name": "TRANSALTA CORP",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1144800/000114480026000015/tac-20251231_d2.htm",
+     "copy": "https://web.archive.org/web/20260911112117id_/https://www.sec.gov/Archives/edgar/data/1144800/000114480026000015/tac-20251231_d2.htm"
+    },
+    "cover": {
+     "city": "Calgary",
+     "state": "AB",
+     "country": "CA"
+    },
+    "sub": {
+     "city": "CALGARY",
+     "state": "AB",
+     "country": "CA"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -124,6 +150,23 @@
   {
    "cik": "0001283699",
    "name": "T-MOBILE US, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1283699/000128369926000010/tmus-20251231.htm",
+     "copy": "https://web.archive.org/web/20261003210426id_/https://www.sec.gov/Archives/edgar/data/1283699/000128369926000010/tmus-20251231.htm"
+    },
+    "cover": {
+     "city": "Bellevue",
+     "state": "WA",
+     "country": "US"
+    },
+    "sub": {
+     "city": "BELLEVUE",
+     "state": "WA",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -155,6 +198,23 @@
   {
    "cik": "0001973266",
    "name": "TKO GROUP HOLDINGS, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1973266/000119312526071651/tko-20251231.htm",
+     "copy": "https://web.archive.org/web/20260929154516id_/https://www.sec.gov/Archives/edgar/data/1973266/000119312526071651/tko-20251231.htm"
+    },
+    "cover": {
+     "city": "New York",
+     "state": "NY",
+     "country": "US"
+    },
+    "sub": {
+     "city": "NEW YORK",
+     "state": "NY",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -181,6 +241,23 @@
   {
    "cik": "0002046656",
    "name": "HAPPY CITY HOLDINGS LTD",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/2046656/000121390026004364/ea0270540-20f_happy.htm",
+     "copy": "https://web.archive.org/web/20260114222720id_/https://www.sec.gov/Archives/edgar/data/2046656/000121390026004364/ea0270540-20f_happy.htm"
+    },
+    "cover": {
+     "city": "Singapore",
+     "state": null,
+     "country": "SG"
+    },
+    "sub": {
+     "city": "KWAI CHUNG, HONG KONG",
+     "state": null,
+     "country": "HK"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -196,6 +273,10 @@
   {
    "cik": "0001968043",
    "name": "NEW CENTURY LOGISTICS (BVI) LTD",
+   "hq": {
+    "source": "sub.txt",
+    "why": "no copy of form20-f.htm (404)"
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -222,6 +303,23 @@
   {
    "cik": "0000311337",
    "name": "SUNCOR ENERGY INC",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/311337/000110465926020411/su-20251231x40f.htm",
+     "copy": "https://web.archive.org/web/20260227045456id_/https://www.sec.gov/Archives/edgar/data/311337/000110465926020411/su-20251231x40f.htm"
+    },
+    "cover": {
+     "city": "Calgary",
+     "state": "AB",
+     "country": "CA"
+    },
+    "sub": {
+     "city": "CALGARY",
+     "state": "AB",
+     "country": "CA"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -241,6 +339,23 @@
   {
    "cik": "0001427570",
    "name": "VYOME HOLDINGS, INC",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1427570/000121390026029500/ea0280821-10k_vyomehold.htm",
+     "copy": "https://web.archive.org/web/20260318112937id_/https://www.sec.gov/Archives/edgar/data/1427570/000121390026029500/ea0280821-10k_vyomehold.htm"
+    },
+    "cover": {
+     "city": "Cambridge",
+     "state": "MA",
+     "country": "US"
+    },
+    "sub": {
+     "city": "SAN CLEMENTE",
+     "state": "CA",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -267,6 +382,23 @@
   {
    "cik": "0001165002",
    "name": "WESTWOOD HOLDINGS GROUP INC",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1165002/000116500226000020/whg-20251231.htm",
+     "copy": "https://web.archive.org/web/20260304215051id_/https://www.sec.gov/Archives/edgar/data/1165002/000116500226000020/whg-20251231.htm"
+    },
+    "cover": {
+     "city": "Dallas,",
+     "state": "TX",
+     "country": "US"
+    },
+    "sub": {
+     "city": "DALLAS",
+     "state": "TX",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -296,6 +428,23 @@
   {
    "cik": "0001985139",
    "name": "LEISHEN ENERGY HOLDING CO., LTD.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1985139/000149315226004368/form20-f.htm",
+     "copy": "https://web.archive.org/web/20260130174438id_/https://www.sec.gov/Archives/edgar/data/1985139/000149315226004368/form20-f.htm"
+    },
+    "cover": {
+     "city": "Beijing",
+     "state": null,
+     "country": "CN"
+    },
+    "sub": {
+     "city": "CHAOYANG DISTRICT, BEIJING",
+     "state": null,
+     "country": "CN"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -319,6 +468,23 @@
   {
    "cik": "0001877787",
    "name": "ERMENEGILDO ZEGNA N.V.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1877787/000187778726000015/zgn-20251231.htm",
+     "copy": "https://web.archive.org/web/20260320123546id_/https://www.sec.gov/Archives/edgar/data/1877787/000187778726000015/zgn-20251231.htm"
+    },
+    "cover": {
+     "city": "Trivero",
+     "state": null,
+     "country": "IT"
+    },
+    "sub": {
+     "city": "VALDILANA (BIELLA)",
+     "state": null,
+     "country": "IT"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -345,6 +511,23 @@
   {
    "cik": "0000720005",
    "name": "RAYMOND JAMES FINANCIAL INC",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/720005/000072000525000093/rjf-20250930.htm",
+     "copy": "https://web.archive.org/web/20251125223231id_/https://www.sec.gov/Archives/edgar/data/720005/000072000525000093/rjf-20250930.htm"
+    },
+    "cover": {
+     "city": "St. Petersburg",
+     "state": "FL",
+     "country": "US"
+    },
+    "sub": {
+     "city": "ST PETERSBURG",
+     "state": "FL",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2025q4.zip"
    },
@@ -371,6 +554,10 @@
   {
    "cik": "0000827054",
    "name": "MICROCHIP TECHNOLOGY INC",
+   "hq": {
+    "source": "sub.txt",
+    "why": "no copy of mchp-20260331.htm (404)"
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q2.zip"
    },
@@ -394,6 +581,23 @@
   {
    "cik": "0001674930",
    "name": "FULGENT GENETICS, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1674930/000119312526079169/flgt-20251231.htm",
+     "copy": "https://web.archive.org/web/20260227123204id_/https://www.sec.gov/Archives/edgar/data/1674930/000119312526079169/flgt-20251231.htm"
+    },
+    "cover": {
+     "city": "El Monte",
+     "state": "CA",
+     "country": "US"
+    },
+    "sub": {
+     "city": "EL MONTE",
+     "state": "CA",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -420,6 +624,23 @@
   {
    "cik": "0001579684",
    "name": "USA TODAY CO., INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1579684/000157968426000010/tday-20251231.htm",
+     "copy": "https://web.archive.org/web/20260226152134id_/https://www.sec.gov/Archives/edgar/data/1579684/000157968426000010/tday-20251231.htm"
+    },
+    "cover": {
+     "city": "Pittsford,",
+     "state": "NY",
+     "country": "US"
+    },
+    "sub": {
+     "city": "PITTSFORD",
+     "state": "NY",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -446,6 +667,23 @@
   {
    "cik": "0001464790",
    "name": "BRC GROUP HOLDINGS, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1464790/000146479026000024/rily-20251231.htm",
+     "copy": "https://web.archive.org/web/20260331232411id_/https://www.sec.gov/Archives/edgar/data/1464790/000146479026000024/rily-20251231.htm"
+    },
+    "cover": {
+     "city": "Los Angeles",
+     "state": "CA",
+     "country": "US"
+    },
+    "sub": {
+     "city": "LOS ANGELES",
+     "state": "CA",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -472,6 +710,23 @@
   {
    "cik": "0000104889",
    "name": "GRAHAM HOLDINGS CO",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/104889/000162828026011405/ghc-20251231.htm",
+     "copy": "https://web.archive.org/web/20260225135246id_/https://www.sec.gov/Archives/edgar/data/104889/000162828026011405/ghc-20251231.htm"
+    },
+    "cover": {
+     "city": "Arlington",
+     "state": "VA",
+     "country": "US"
+    },
+    "sub": {
+     "city": "ARLINGTON",
+     "state": "VA",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -498,6 +753,23 @@
   {
    "cik": "0001691221",
    "name": "FORESIGHT AUTONOMOUS HOLDINGS LTD.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1691221/000149315226012661/form20-f.htm",
+     "copy": "https://web.archive.org/web/20260325204742id_/https://www.sec.gov/Archives/edgar/data/1691221/000149315226012661/form20-f.htm"
+    },
+    "cover": {
+     "city": "Ness Ziona",
+     "state": null,
+     "country": "IL"
+    },
+    "sub": {
+     "city": "NESS ZIONA",
+     "state": null,
+     "country": "IL"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -513,6 +785,23 @@
   {
    "cik": "0000844551",
    "name": "WOODSIDE ENERGY GROUP LTD",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/844551/000162828026010858/wds-20251231.htm",
+     "copy": "https://web.archive.org/web/20260224114613id_/https://www.sec.gov/Archives/edgar/data/844551/000162828026010858/wds-20251231.htm"
+    },
+    "cover": {
+     "city": "Perth",
+     "state": null,
+     "country": "AU"
+    },
+    "sub": {
+     "city": "WESTERN AUSTRALIA",
+     "state": null,
+     "country": "AU"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -539,6 +828,23 @@
   {
    "cik": "0000109198",
    "name": "TJX COMPANIES INC /DE/",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/109198/000010919826000008/tjx-20260131.htm",
+     "copy": "https://web.archive.org/web/20260521180819id_/https://www.sec.gov/Archives/edgar/data/109198/000010919826000008/tjx-20260131.htm"
+    },
+    "cover": {
+     "city": "Framingham",
+     "state": "MA",
+     "country": "US"
+    },
+    "sub": {
+     "city": "FRAMINGHAM",
+     "state": "MA",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -565,6 +871,23 @@
   {
    "cik": "0001900304",
    "name": "HALEON PLC",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1900304/000110465926027443/hln-20251231x20f.htm",
+     "copy": "https://web.archive.org/web/20260313150726id_/https://www.sec.gov/Archives/edgar/data/1900304/000110465926027443/hln-20251231x20f.htm"
+    },
+    "cover": {
+     "city": "Weybridge",
+     "state": null,
+     "country": "GB"
+    },
+    "sub": {
+     "city": "WEYBRIDGE",
+     "state": null,
+     "country": "GB"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -588,6 +911,23 @@
   {
    "cik": "0000057131",
    "name": "LA-Z-BOY INC",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/57131/000005713126000019/lzb-20260425.htm",
+     "copy": "https://web.archive.org/web/20261003191249id_/https://www.sec.gov/Archives/edgar/data/57131/000005713126000019/lzb-20260425.htm"
+    },
+    "cover": {
+     "city": "Monroe,",
+     "state": "MI",
+     "country": "US"
+    },
+    "sub": {
+     "city": "MONROE",
+     "state": "MI",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q2.zip"
    },
@@ -611,6 +951,23 @@
   {
    "cik": "0001627282",
    "name": "CALIBERCOS INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1627282/000162728226000015/cwd-20251231.htm",
+     "copy": "https://web.archive.org/web/20260408185630id_/https://www.sec.gov/Archives/edgar/data/1627282/000162728226000015/cwd-20251231.htm"
+    },
+    "cover": {
+     "city": "Scottsdale",
+     "state": "AZ",
+     "country": "US"
+    },
+    "sub": {
+     "city": "SCOTTSDALE",
+     "state": "AZ",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -641,6 +998,23 @@
   {
    "cik": "0000063908",
    "name": "MCDONALDS CORP",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/63908/000006390826000035/mcd-20251231.htm",
+     "copy": "https://web.archive.org/web/20260927181329id_/https://www.sec.gov/Archives/edgar/data/63908/000006390826000035/mcd-20251231.htm"
+    },
+    "cover": {
+     "city": "Chicago,",
+     "state": "IL",
+     "country": "US"
+    },
+    "sub": {
+     "city": "CHICAGO",
+     "state": "IL",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -667,6 +1041,23 @@
   {
    "cik": "0000065770",
    "name": "MICROVISION, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/65770/000149315226008898/form10-k.htm",
+     "copy": "https://web.archive.org/web/20260718222452id_/https://www.sec.gov/Archives/edgar/data/65770/000149315226008898/form10-k.htm"
+    },
+    "cover": {
+     "city": "Redmond",
+     "state": "WA",
+     "country": "US"
+    },
+    "sub": {
+     "city": "REDMOND",
+     "state": "WA",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -693,6 +1084,23 @@
   {
    "cik": "0001468174",
    "name": "HYATT HOTELS CORP",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1468174/000146817426000007/h-20251231.htm",
+     "copy": "https://web.archive.org/web/20260226152035id_/https://www.sec.gov/Archives/edgar/data/1468174/000146817426000007/h-20251231.htm"
+    },
+    "cover": {
+     "city": "Chicago,",
+     "state": "IL",
+     "country": "US"
+    },
+    "sub": {
+     "city": "CHICAGO",
+     "state": "IL",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -719,6 +1127,23 @@
   {
    "cik": "0001402057",
    "name": "CDW CORP",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1402057/000140205726000011/cdw-20251231.htm",
+     "copy": "https://web.archive.org/web/20260221014148id_/https://www.sec.gov/Archives/edgar/data/1402057/000140205726000011/cdw-20251231.htm"
+    },
+    "cover": {
+     "city": "Vernon Hills",
+     "state": "IL",
+     "country": "US"
+    },
+    "sub": {
+     "city": "VERNON HILLS",
+     "state": "IL",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -737,6 +1162,23 @@
   {
    "cik": "0000926282",
    "name": "ADTRAN HOLDINGS, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/926282/000119312526073878/adtn-20251231.htm",
+     "copy": "https://web.archive.org/web/20260226144627id_/https://www.sec.gov/Archives/edgar/data/926282/000119312526073878/adtn-20251231.htm"
+    },
+    "cover": {
+     "city": "Huntsville",
+     "state": "AL",
+     "country": "US"
+    },
+    "sub": {
+     "city": "HUNTSVILLE",
+     "state": "AL",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -763,6 +1205,23 @@
   {
    "cik": "0000913353",
    "name": "COLLIERS INTERNATIONAL GROUP INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/913353/000117184326000984/cigi20251231_40f.htm",
+     "copy": "https://web.archive.org/web/20260224092343id_/https://www.sec.gov/Archives/edgar/data/913353/000117184326000984/cigi20251231_40f.htm"
+    },
+    "cover": {
+     "city": "Toronto",
+     "state": "ON",
+     "country": "CA"
+    },
+    "sub": {
+     "city": "TORONTO",
+     "state": "ON",
+     "country": "CA"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -782,6 +1241,23 @@
   {
    "cik": "0000880984",
    "name": "ACORN ENERGY, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/880984/000149315226008937/form10-k.htm",
+     "copy": "https://web.archive.org/web/20260305133422id_/https://www.sec.gov/Archives/edgar/data/880984/000149315226008937/form10-k.htm"
+    },
+    "cover": {
+     "city": "Wilmington",
+     "state": "DE",
+     "country": "US"
+    },
+    "sub": {
+     "city": "WILMINGTON",
+     "state": "DE",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -808,6 +1284,23 @@
   {
    "cik": "0001219601",
    "name": "CROWN HOLDINGS, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1219601/000162828026012904/cck-20251231.htm",
+     "copy": "https://web.archive.org/web/20261006171829id_/https://www.sec.gov/Archives/edgar/data/1219601/000162828026012904/cck-20251231.htm"
+    },
+    "cover": {
+     "city": "Tampa",
+     "state": "FL",
+     "country": "US"
+    },
+    "sub": {
+     "city": "TAMPA",
+     "state": "FL",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -834,6 +1327,23 @@
   {
    "cik": "0001637810",
    "name": "FIRSTSERVICE CORP",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1637810/000117184326000985/fsv20251231_40f.htm",
+     "copy": "https://web.archive.org/web/20260326213323id_/https://www.sec.gov/Archives/edgar/data/1637810/000117184326000985/fsv20251231_40f.htm"
+    },
+    "cover": {
+     "city": "Toronto",
+     "state": "ON",
+     "country": "CA"
+    },
+    "sub": {
+     "city": "TORONTO",
+     "state": "ON",
+     "country": "CA"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -853,6 +1363,23 @@
   {
    "cik": "0000082811",
    "name": "REGAL REXNORD CORP",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/82811/000008281126000054/rbc-20251231.htm",
+     "copy": "https://web.archive.org/web/20260221070231id_/https://www.sec.gov/Archives/edgar/data/82811/000008281126000054/rbc-20251231.htm"
+    },
+    "cover": {
+     "city": "Milwaukee",
+     "state": "WI",
+     "country": "US"
+    },
+    "sub": {
+     "city": "MILWAUKEE",
+     "state": "WI",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -879,6 +1406,23 @@
   {
    "cik": "0000746598",
    "name": "BRADY CORP",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/746598/000074659825000045/brc-20250731.htm",
+     "copy": "https://web.archive.org/web/20250912152341id_/https://www.sec.gov/Archives/edgar/data/746598/000074659825000045/brc-20250731.htm"
+    },
+    "cover": {
+     "city": "Milwaukee",
+     "state": "WI",
+     "country": "US"
+    },
+    "sub": {
+     "city": "MILWAUKEE",
+     "state": "WI",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001838id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2025q3.zip"
    },
@@ -902,6 +1446,23 @@
   {
    "cik": "0001837429",
    "name": "BROOKFIELD WEALTH SOLUTIONS LTD.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1837429/000183742926000008/bnt-20251231.htm",
+     "copy": "https://web.archive.org/web/20260326135202id_/https://www.sec.gov/Archives/edgar/data/1837429/000183742926000008/bnt-20251231.htm"
+    },
+    "cover": {
+     "city": "Pembroke",
+     "state": null,
+     "country": "BM"
+    },
+    "sub": {
+     "city": "PEMBROKE",
+     "state": null,
+     "country": "BM"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -925,6 +1486,23 @@
   {
    "cik": "0000879764",
    "name": "TOTALENERGIES SE",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/879764/000110465926035876/tot-20251231x20f.htm",
+     "copy": "https://web.archive.org/web/20260904213254id_/https://www.sec.gov/Archives/edgar/data/879764/000110465926035876/tot-20251231x20f.htm"
+    },
+    "cover": {
+     "city": "Courbevoie",
+     "state": null,
+     "country": "FR"
+    },
+    "sub": {
+     "city": "COURBEVOIE",
+     "state": null,
+     "country": "FR"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -948,6 +1526,23 @@
   {
    "cik": "0001478242",
    "name": "IQVIA HOLDINGS INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1478242/000162828026008322/iqv-20251231.htm",
+     "copy": "https://web.archive.org/web/20261003120752id_/https://www.sec.gov/Archives/edgar/data/1478242/000162828026008322/iqv-20251231.htm"
+    },
+    "cover": {
+     "city": "Durham",
+     "state": "NC",
+     "country": "US"
+    },
+    "sub": {
+     "city": "DURHAM",
+     "state": "NC",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -971,6 +1566,23 @@
   {
    "cik": "0001616262",
    "name": "ROCKY MOUNTAIN CHOCOLATE FACTORY, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1616262/000119312526248296/rmcf-20260228.htm",
+     "copy": "https://web.archive.org/web/20260912001409id_/https://www.sec.gov/Archives/edgar/data/1616262/000119312526248296/rmcf-20260228.htm"
+    },
+    "cover": {
+     "city": "Durango",
+     "state": "CO",
+     "country": "US"
+    },
+    "sub": {
+     "city": "DURANGO",
+     "state": "CO",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q2.zip"
    },
@@ -994,6 +1606,23 @@
   {
    "cik": "0001873093",
    "name": "CYTOMED THERAPEUTICS LTD",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1873093/000149315226013813/form20-f.htm",
+     "copy": "https://web.archive.org/web/20260331121621id_/https://www.sec.gov/Archives/edgar/data/1873093/000149315226013813/form20-f.htm"
+    },
+    "cover": {
+     "city": "Singapore",
+     "state": null,
+     "country": "SG"
+    },
+    "sub": {
+     "city": "1 COMMONWEALTH LANE",
+     "state": null,
+     "country": "SG"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1017,6 +1646,23 @@
   {
    "cik": "0001900720",
    "name": "EPWK HOLDINGS LTD.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1900720/000121390026004153/ea0262757-20f_epwkhold.htm",
+     "copy": "https://web.archive.org/web/20260114151310id_/https://www.sec.gov/Archives/edgar/data/1900720/000121390026004153/ea0262757-20f_epwkhold.htm"
+    },
+    "cover": {
+     "city": "Xiamen City",
+     "state": null,
+     "country": "CN"
+    },
+    "sub": {
+     "city": "XIAMEN",
+     "state": null,
+     "country": null
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1040,6 +1686,23 @@
   {
    "cik": "0000733099",
    "name": "ROGERS COMMUNICATIONS INC",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/733099/000073309926000009/rci-20251231.htm",
+     "copy": "https://web.archive.org/web/20260306223311id_/https://www.sec.gov/Archives/edgar/data/733099/000073309926000009/rci-20251231.htm"
+    },
+    "cover": {
+     "city": "Toronto",
+     "state": "ON",
+     "country": "CA"
+    },
+    "sub": {
+     "city": "TORONTO, ONTARIO",
+     "state": "ON",
+     "country": "CA"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1059,6 +1722,23 @@
   {
    "cik": "0001665300",
    "name": "PHUNWARE, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1665300/000119312526126850/phun-20251231.htm",
+     "copy": "https://web.archive.org/web/20261009123419id_/https://www.sec.gov/Archives/edgar/data/1665300/000119312526126850/phun-20251231.htm"
+    },
+    "cover": {
+     "city": "Austin",
+     "state": "TX",
+     "country": "US"
+    },
+    "sub": {
+     "city": "AUSTIN",
+     "state": "TX",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1085,6 +1765,23 @@
   {
    "cik": "0001020859",
    "name": "UNITED NATURAL FOODS INC",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1020859/000102085925000054/unfi-20250802.htm",
+     "copy": "https://web.archive.org/web/20251118100212id_/https://www.sec.gov/Archives/edgar/data/1020859/000102085925000054/unfi-20250802.htm"
+    },
+    "cover": {
+     "city": "Providence,",
+     "state": "RI",
+     "country": "US"
+    },
+    "sub": {
+     "city": "PROVIDENCE",
+     "state": "RI",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2025q4.zip"
    },
@@ -1108,6 +1805,23 @@
   {
    "cik": "0001456346",
    "name": "FRANCO NEVADA CORP",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1456346/000110465926032133/fnv-20251231x40f.htm",
+     "copy": "https://web.archive.org/web/20260319215107id_/https://www.sec.gov/Archives/edgar/data/1456346/000110465926032133/fnv-20251231x40f.htm"
+    },
+    "cover": {
+     "city": "Toronto",
+     "state": "ON",
+     "country": "CA"
+    },
+    "sub": {
+     "city": "TORONTO",
+     "state": "ON",
+     "country": "CA"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1127,6 +1841,23 @@
   {
    "cik": "0001334036",
    "name": "CROCS, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1334036/000133403626000006/crox-20251231.htm",
+     "copy": "https://web.archive.org/web/20260829204422id_/https://www.sec.gov/Archives/edgar/data/1334036/000133403626000006/crox-20251231.htm"
+    },
+    "cover": {
+     "city": "Broomfield",
+     "state": "CO",
+     "country": "US"
+    },
+    "sub": {
+     "city": "BROOMFIELD",
+     "state": "CO",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1153,6 +1884,23 @@
   {
    "cik": "0001599407",
    "name": "1847 HOLDINGS LLC",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1599407/000121390026036917/ea0282883-10k_1847hold.htm",
+     "copy": "https://web.archive.org/web/20260415123548id_/https://www.sec.gov/Archives/edgar/data/1599407/000121390026036917/ea0282883-10k_1847hold.htm"
+    },
+    "cover": {
+     "city": "New York",
+     "state": "NY",
+     "country": "US"
+    },
+    "sub": {
+     "city": "NEW YORK",
+     "state": "NY",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1176,6 +1924,23 @@
   {
    "cik": "0001951222",
    "name": "SEALSQ CORP",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1951222/000110465926037706/laes-20251231x20f.htm",
+     "copy": "https://web.archive.org/web/20260331213251id_/https://www.sec.gov/Archives/edgar/data/1951222/000110465926037706/laes-20251231x20f.htm"
+    },
+    "cover": {
+     "city": "Cointrin",
+     "state": null,
+     "country": "CH"
+    },
+    "sub": {
+     "city": "COINTRIN",
+     "state": null,
+     "country": "CH"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1206,6 +1971,23 @@
   {
    "cik": "0001355444",
    "name": "EMBRAER S.A.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1355444/000162828026021824/erj-20251231.htm",
+     "copy": "https://web.archive.org/web/20260330123341id_/https://www.sec.gov/Archives/edgar/data/1355444/000162828026021824/erj-20251231.htm"
+    },
+    "cover": {
+     "city": "Pinheiros, São Paulo, SP,",
+     "state": null,
+     "country": "BR"
+    },
+    "sub": {
+     "city": "SAO JOSE DOS CAMPOS",
+     "state": null,
+     "country": "BR"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1232,6 +2014,23 @@
   {
    "cik": "0001826011",
    "name": "BANZAI INTERNATIONAL, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1826011/000119312526134714/bnzi-20251231.htm",
+     "copy": "https://web.archive.org/web/20260416090029id_/https://www.sec.gov/Archives/edgar/data/1826011/000119312526134714/bnzi-20251231.htm"
+    },
+    "cover": {
+     "city": "Bainbridge Island",
+     "state": "WA",
+     "country": "US"
+    },
+    "sub": {
+     "city": "BAINBRIDGE ISLAND",
+     "state": "WA",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1258,6 +2057,23 @@
   {
    "cik": "0000726958",
    "name": "CASEYS GENERAL STORES INC",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/726958/000072695826000046/casy-20260430.htm",
+     "copy": "https://web.archive.org/web/20260623123055id_/https://www.sec.gov/Archives/edgar/data/726958/000072695826000046/casy-20260430.htm"
+    },
+    "cover": {
+     "city": "Ankeny",
+     "state": "IA",
+     "country": "US"
+    },
+    "sub": {
+     "city": "ANKENY",
+     "state": "IA",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q2.zip"
    },
@@ -1285,6 +2101,23 @@
   {
    "cik": "0001823239",
    "name": "MARAVAI LIFESCIENCES HOLDINGS, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1823239/000182323926000011/mrvi-20251231.htm",
+     "copy": "https://web.archive.org/web/20260226211836id_/https://www.sec.gov/Archives/edgar/data/1823239/000182323926000011/mrvi-20251231.htm"
+    },
+    "cover": {
+     "city": "San Diego",
+     "state": "CA",
+     "country": "US"
+    },
+    "sub": {
+     "city": "SAN DIEGO",
+     "state": "CA",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1311,6 +2144,23 @@
   {
    "cik": "0000935703",
    "name": "DOLLAR TREE, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/935703/000093570326000025/dltr-20260131.htm",
+     "copy": "https://web.archive.org/web/20260316104758id_/https://www.sec.gov/Archives/edgar/data/935703/000093570326000025/dltr-20260131.htm"
+    },
+    "cover": {
+     "city": "Chesapeake,",
+     "state": "VA",
+     "country": "US"
+    },
+    "sub": {
+     "city": "CHESAPEAKE",
+     "state": "VA",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1342,6 +2192,23 @@
   {
    "cik": "0001286973",
    "name": "AMERICAS GOLD & SILVER CORP",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1286973/000106299326001679/form40f.htm",
+     "copy": "https://web.archive.org/web/20260331022849id_/https://www.sec.gov/Archives/edgar/data/1286973/000106299326001679/form40f.htm"
+    },
+    "cover": {
+     "city": "Toronto",
+     "state": "NY",
+     "country": "CA"
+    },
+    "sub": {
+     "city": "TORONTO",
+     "state": "ON",
+     "country": "CA"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1361,6 +2228,23 @@
   {
    "cik": "0001581990",
    "name": "PLAINS GP HOLDINGS LP",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1581990/000158199026000012/pagp-20251231.htm",
+     "copy": "https://web.archive.org/web/20260227222911id_/https://www.sec.gov/Archives/edgar/data/1581990/000158199026000012/pagp-20251231.htm"
+    },
+    "cover": {
+     "city": "Houston",
+     "state": "TX",
+     "country": "US"
+    },
+    "sub": {
+     "city": "HOUSTON",
+     "state": "TX",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1387,6 +2271,23 @@
   {
    "cik": "0001828108",
    "name": "AURORA INNOVATION, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1828108/000182810826000016/aur-20251231.htm",
+     "copy": "https://web.archive.org/web/20260830095431id_/https://www.sec.gov/Archives/edgar/data/1828108/000182810826000016/aur-20251231.htm"
+    },
+    "cover": {
+     "city": "Pittsburgh",
+     "state": "PA",
+     "country": "US"
+    },
+    "sub": {
+     "city": "PITTSBURGH",
+     "state": "PA",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1414,6 +2315,23 @@
   {
    "cik": "0001648087",
    "name": "AMERICAN REBEL HOLDINGS INC",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1648087/000149315226014291/form10-k.htm",
+     "copy": "https://web.archive.org/web/20260920142740id_/https://www.sec.gov/Archives/edgar/data/1648087/000149315226014291/form10-k.htm"
+    },
+    "cover": {
+     "city": "Nashville",
+     "state": "TN",
+     "country": "US"
+    },
+    "sub": {
+     "city": "NASHVILLE",
+     "state": "TN",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1444,6 +2362,23 @@
   {
    "cik": "0000793733",
    "name": "SKYWEST INC",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/793733/000110465926016358/skyw-20251231x10k.htm",
+     "copy": "https://web.archive.org/web/20260221221639id_/https://www.sec.gov/Archives/edgar/data/793733/000110465926016358/skyw-20251231x10k.htm"
+    },
+    "cover": {
+     "city": "St. George",
+     "state": "UT",
+     "country": "US"
+    },
+    "sub": {
+     "city": "ST GEORGE",
+     "state": "UT",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1470,6 +2405,23 @@
   {
    "cik": "0001611005",
    "name": "KENON HOLDINGS LTD.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1611005/000117891326001842/zk2634883.htm",
+     "copy": "https://web.archive.org/web/20261005052156id_/https://www.sec.gov/Archives/edgar/data/1611005/000117891326001842/zk2634883.htm"
+    },
+    "cover": {
+     "city": "Millenia Tower",
+     "state": null,
+     "country": "SG"
+    },
+    "sub": {
+     "city": "SINGAPORE",
+     "state": null,
+     "country": "SG"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1496,6 +2448,23 @@
   {
    "cik": "0001333141",
    "name": "FRESENIUS MEDICAL CARE AG",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1333141/000110465926019005/fms-20251231x20f.htm",
+     "copy": "https://web.archive.org/web/20260224182640id_/https://www.sec.gov/Archives/edgar/data/1333141/000110465926019005/fms-20251231x20f.htm"
+    },
+    "cover": {
+     "city": "Bad Homburg",
+     "state": null,
+     "country": "DE"
+    },
+    "sub": {
+     "city": "BAD HOMBURG",
+     "state": null,
+     "country": "DE"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1519,6 +2488,23 @@
   {
    "cik": "0000056701",
    "name": "KOSS CORP",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/56701/000005670125000044/koss-20250630x10k.htm",
+     "copy": "https://web.archive.org/web/20251112030412id_/https://www.sec.gov/Archives/edgar/data/56701/000005670125000044/koss-20250630x10k.htm"
+    },
+    "cover": {
+     "city": "Milwaukee",
+     "state": "WI",
+     "country": "US"
+    },
+    "sub": {
+     "city": "MILWAUKEE",
+     "state": "WI",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001838id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2025q3.zip"
    },
@@ -1547,6 +2533,23 @@
   {
    "cik": "0001050446",
    "name": "STRATEGY INC",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1050446/000105044626000020/mstr-20251231.htm",
+     "copy": "https://web.archive.org/web/20260416212957id_/https://www.sec.gov/Archives/edgar/data/1050446/000105044626000020/mstr-20251231.htm"
+    },
+    "cover": {
+     "city": "Tysons Corner",
+     "state": "VA",
+     "country": "US"
+    },
+    "sub": {
+     "city": "TYSONS CORNER",
+     "state": "VA",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1578,6 +2581,23 @@
   {
    "cik": "0000009389",
    "name": "BALL CORP",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/9389/000110465926017410/ball-20251231x10k.htm",
+     "copy": "https://web.archive.org/web/20260410122849id_/https://www.sec.gov/Archives/edgar/data/9389/000110465926017410/ball-20251231x10k.htm"
+    },
+    "cover": {
+     "city": "Westminster",
+     "state": "CO",
+     "country": "US"
+    },
+    "sub": {
+     "city": "WESTMINSTER",
+     "state": "CO",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1604,6 +2624,10 @@
   {
    "cik": "0000849399",
    "name": "GEN DIGITAL INC.",
+   "hq": {
+    "source": "sub.txt",
+    "why": "no copy of gen-20260403.htm (404)"
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q2.zip"
    },
@@ -1627,6 +2651,23 @@
   {
    "cik": "0001474735",
    "name": "GENERAC HOLDINGS INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1474735/000143774926004568/gnrc20251231_10k.htm",
+     "copy": "https://web.archive.org/web/20260304121436id_/https://www.sec.gov/Archives/edgar/data/1474735/000143774926004568/gnrc20251231_10k.htm"
+    },
+    "cover": {
+     "city": "Waukesha",
+     "state": "WI",
+     "country": "US"
+    },
+    "sub": {
+     "city": "WAUKESHA",
+     "state": "WI",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1653,6 +2694,23 @@
   {
    "cik": "0001630805",
    "name": "BABCOCK & WILCOX ENTERPRISES, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1630805/000163080526000018/bw-20251231.htm",
+     "copy": "https://web.archive.org/web/20260316201453id_/https://www.sec.gov/Archives/edgar/data/1630805/000163080526000018/bw-20251231.htm"
+    },
+    "cover": {
+     "city": "Akron",
+     "state": "OH",
+     "country": "US"
+    },
+    "sub": {
+     "city": "AKRON",
+     "state": "OH",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1684,6 +2742,23 @@
   {
    "cik": "0000749251",
    "name": "GARTNER INC",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/749251/000074925126000112/it-20251231.htm",
+     "copy": "https://web.archive.org/web/20261006233619id_/https://www.sec.gov/Archives/edgar/data/749251/000074925126000112/it-20251231.htm"
+    },
+    "cover": {
+     "city": "Stamford,",
+     "state": "CT",
+     "country": "US"
+    },
+    "sub": {
+     "city": "STAMFORD",
+     "state": "CT",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1710,6 +2785,23 @@
   {
    "cik": "0001759186",
    "name": "COEPTIS THERAPEUTICS HOLDINGS, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1759186/000168316826002026/coeptis_i10k-123125.htm",
+     "copy": "https://web.archive.org/web/20260320025342id_/https://www.sec.gov/Archives/edgar/data/1759186/000168316826002026/coeptis_i10k-123125.htm"
+    },
+    "cover": {
+     "city": "Wexford",
+     "state": "PA",
+     "country": "US"
+    },
+    "sub": {
+     "city": "WEXFORD",
+     "state": "PA",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1736,6 +2828,23 @@
   {
    "cik": "0000078239",
    "name": "PVH CORP. /DE/",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/78239/000007823926000021/pvh-20260201.htm",
+     "copy": "https://web.archive.org/web/20261001092615id_/https://www.sec.gov/Archives/edgar/data/78239/000007823926000021/pvh-20260201.htm"
+    },
+    "cover": {
+     "city": "New York,",
+     "state": "NY",
+     "country": "US"
+    },
+    "sub": {
+     "city": "NEW YORK",
+     "state": "NY",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1762,6 +2871,23 @@
   {
    "cik": "0000744452",
    "name": "BNB PLUS CORP.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/744452/000110465925123342/tmb-20250930x10k.htm",
+     "copy": "https://web.archive.org/web/20251229190224id_/https://www.sec.gov/Archives/edgar/data/744452/000110465925123342/tmb-20250930x10k.htm"
+    },
+    "cover": {
+     "city": "Stony Brook",
+     "state": "NY",
+     "country": "US"
+    },
+    "sub": {
+     "city": "STONY BROOK",
+     "state": "NY",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2025q4.zip"
    },
@@ -1788,6 +2914,23 @@
   {
    "cik": "0001593984",
    "name": "MEDIWOUND LTD.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1593984/000117891326000749/zk2634458.htm",
+     "copy": "https://web.archive.org/web/20260305124714id_/https://www.sec.gov/Archives/edgar/data/1593984/000117891326000749/zk2634458.htm"
+    },
+    "cover": {
+     "city": "Yavne",
+     "state": null,
+     "country": "IL"
+    },
+    "sub": {
+     "city": "YAVNE",
+     "state": null,
+     "country": "IL"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1811,6 +2954,23 @@
   {
    "cik": "0001847409",
    "name": "HIGH TIDE INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1847409/000162828026004157/hiti-20251031.htm",
+     "copy": "https://web.archive.org/web/20260130004359id_/https://www.sec.gov/Archives/edgar/data/1847409/000162828026004157/hiti-20251031.htm"
+    },
+    "cover": {
+     "city": "Calgary",
+     "state": "AB",
+     "country": "CA"
+    },
+    "sub": {
+     "city": "CALGARY",
+     "state": "AB",
+     "country": "CA"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1830,6 +2990,23 @@
   {
    "cik": "0001027664",
    "name": "ELBIT SYSTEMS LTD",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1027664/000102766426000005/eslt-20251231.htm",
+     "copy": "https://web.archive.org/web/20260317201543id_/https://www.sec.gov/Archives/edgar/data/1027664/000102766426000005/eslt-20251231.htm"
+    },
+    "cover": {
+     "city": "Haifa",
+     "state": null,
+     "country": "IL"
+    },
+    "sub": {
+     "city": "HAIFA, ISRAEL",
+     "state": null,
+     "country": "IL"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1853,6 +3030,23 @@
   {
    "cik": "0001298675",
    "name": "CUBESMART",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1298675/000129867526000010/cube-20251231x10k.htm",
+     "copy": "https://web.archive.org/web/20260831212116id_/https://www.sec.gov/Archives/edgar/data/1298675/000129867526000010/cube-20251231x10k.htm"
+    },
+    "cover": {
+     "city": "Malvern",
+     "state": "PA",
+     "country": "US"
+    },
+    "sub": {
+     "city": "MALVERN",
+     "state": "PA",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1884,6 +3078,23 @@
   {
    "cik": "0001403568",
    "name": "ULTA BEAUTY, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1403568/000110465926035243/ulta-20260131x10k.htm",
+     "copy": "https://web.archive.org/web/20260327071916id_/https://www.sec.gov/Archives/edgar/data/1403568/000110465926035243/ulta-20260131x10k.htm"
+    },
+    "cover": {
+     "city": "Bolingbrook",
+     "state": "IL",
+     "country": "US"
+    },
+    "sub": {
+     "city": "BOLINGBROOK",
+     "state": "IL",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1914,6 +3125,23 @@
   {
    "cik": "0000059478",
    "name": "ELI LILLY & CO",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/59478/000005947826000013/lly-20251231.htm",
+     "copy": "https://web.archive.org/web/20261012205550id_/https://www.sec.gov/Archives/edgar/data/59478/000005947826000013/lly-20251231.htm"
+    },
+    "cover": {
+     "city": "Indianapolis",
+     "state": "IN",
+     "country": "US"
+    },
+    "sub": {
+     "city": "INDIANAPOLIS",
+     "state": "IN",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1944,6 +3172,23 @@
   {
    "cik": "0001545772",
    "name": "BROOKFIELD PROPERTY PARTNERS L.P.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1545772/000154577226000006/bpy-20251231.htm",
+     "copy": "https://web.archive.org/web/20260227225127id_/https://www.sec.gov/Archives/edgar/data/1545772/000154577226000006/bpy-20251231.htm"
+    },
+    "cover": {
+     "city": "Hamilton",
+     "state": null,
+     "country": "BM"
+    },
+    "sub": {
+     "city": "HAMILTON",
+     "state": null,
+     "country": "BM"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1967,6 +3212,23 @@
   {
    "cik": "0001674101",
    "name": "VERTIV HOLDINGS CO",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1674101/000167410126000008/vrt-20251231.htm",
+     "copy": "https://web.archive.org/web/20261007013818id_/https://www.sec.gov/Archives/edgar/data/1674101/000167410126000008/vrt-20251231.htm"
+    },
+    "cover": {
+     "city": "Westerville",
+     "state": "OH",
+     "country": "US"
+    },
+    "sub": {
+     "city": "WESTERVILLE",
+     "state": "OH",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -1993,6 +3255,10 @@
   {
    "cik": "0000018498",
    "name": "GENESCO INC",
+   "hq": {
+    "source": "sub.txt",
+    "why": "no copy of gco-20260131.htm (403)"
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2019,6 +3285,23 @@
   {
    "cik": "0001493594",
    "name": "MACOM TECHNOLOGY SOLUTIONS HOLDINGS, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1493594/000149359425000054/mtsi-20251003.htm",
+     "copy": "https://web.archive.org/web/20251118193700id_/https://www.sec.gov/Archives/edgar/data/1493594/000149359425000054/mtsi-20251003.htm"
+    },
+    "cover": {
+     "city": "Lowell",
+     "state": "MA",
+     "country": "US"
+    },
+    "sub": {
+     "city": "LOWELL",
+     "state": "MA",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2025q4.zip"
    },
@@ -2049,6 +3332,23 @@
   {
    "cik": "0001870144",
    "name": "CARDIO DIAGNOSTICS HOLDINGS, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1870144/000155335026000023/cdio_10k-123125.htm",
+     "copy": "https://web.archive.org/web/20260402180242id_/https://www.sec.gov/Archives/edgar/data/1870144/000155335026000023/cdio_10k-123125.htm"
+    },
+    "cover": {
+     "city": "Chicago",
+     "state": "IL",
+     "country": "US"
+    },
+    "sub": {
+     "city": "CHICAGO",
+     "state": "IL",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2079,6 +3379,23 @@
   {
    "cik": "0001243429",
    "name": "ARCELORMITTAL",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1243429/000124342926000020/mt-20251231.htm",
+     "copy": "https://web.archive.org/web/20260306175314id_/https://www.sec.gov/Archives/edgar/data/1243429/000124342926000020/mt-20251231.htm"
+    },
+    "cover": {
+     "city": "Luxembourg",
+     "state": null,
+     "country": "LU"
+    },
+    "sub": {
+     "city": "GRAND DUCHY OF LUXEMBOURG",
+     "state": null,
+     "country": "LU"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2105,6 +3422,23 @@
   {
    "cik": "0001835856",
    "name": "BETTER HOME & FINANCE HOLDING CO",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1835856/000162828026017747/aurcu-20251231.htm",
+     "copy": "https://web.archive.org/web/20260314001546id_/https://www.sec.gov/Archives/edgar/data/1835856/000162828026017747/aurcu-20251231.htm"
+    },
+    "cover": {
+     "city": "New York",
+     "state": "NY",
+     "country": "US"
+    },
+    "sub": {
+     "city": "NEW YORK",
+     "state": "NY",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2131,6 +3465,23 @@
   {
    "cik": "0001293135",
    "name": "VERMILION ENERGY INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1293135/000110465926023553/vet-20251231x40f.htm",
+     "copy": "https://web.archive.org/web/20260304223844id_/https://www.sec.gov/Archives/edgar/data/1293135/000110465926023553/vet-20251231x40f.htm"
+    },
+    "cover": {
+     "city": "Calgary",
+     "state": "AB",
+     "country": "CA"
+    },
+    "sub": {
+     "city": "CALGARY",
+     "state": "AB",
+     "country": "CA"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2154,6 +3505,23 @@
   {
    "cik": "0001048268",
    "name": "IES HOLDINGS, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1048268/000104826825000174/iesc-20250930.htm",
+     "copy": "https://web.archive.org/web/20251121165412id_/https://www.sec.gov/Archives/edgar/data/1048268/000104826825000174/iesc-20250930.htm"
+    },
+    "cover": {
+     "city": "Sugar Land",
+     "state": "TX",
+     "country": "US"
+    },
+    "sub": {
+     "city": "HOUSTON",
+     "state": "TX",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2025q4.zip"
    },
@@ -2180,6 +3548,23 @@
   {
    "cik": "0001759631",
    "name": "HYLIION HOLDINGS CORP.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1759631/000162828026011278/hyln-20251231.htm",
+     "copy": "https://web.archive.org/web/20260923220859id_/https://www.sec.gov/Archives/edgar/data/1759631/000162828026011278/hyln-20251231.htm"
+    },
+    "cover": {
+     "city": "Cedar Park",
+     "state": "TX",
+     "country": "US"
+    },
+    "sub": {
+     "city": "CEDAR PARK",
+     "state": "TX",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2210,6 +3595,23 @@
   {
    "cik": "0001818502",
    "name": "OPPFI INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1818502/000181850226000019/opfi-20251231.htm",
+     "copy": "https://web.archive.org/web/20260829173301id_/https://www.sec.gov/Archives/edgar/data/1818502/000181850226000019/opfi-20251231.htm"
+    },
+    "cover": {
+     "city": "Chicago",
+     "state": "IL",
+     "country": "US"
+    },
+    "sub": {
+     "city": "CHICAGO",
+     "state": "IL",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2240,6 +3642,23 @@
   {
    "cik": "0001847986",
    "name": "DRAGONFLY ENERGY HOLDINGS CORP.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1847986/000149315226013635/form10-k.htm",
+     "copy": "https://web.archive.org/web/20260607175729id_/https://www.sec.gov/Archives/edgar/data/1847986/000149315226013635/form10-k.htm"
+    },
+    "cover": {
+     "city": "Reno",
+     "state": "NV",
+     "country": "US"
+    },
+    "sub": {
+     "city": "RENO,",
+     "state": "NV",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2263,6 +3682,23 @@
   {
    "cik": "0001843586",
    "name": "OATLY GROUP AB",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1843586/000184358626000004/otly-20251231.htm",
+     "copy": "https://web.archive.org/web/20260315094136id_/https://www.sec.gov/Archives/edgar/data/1843586/000184358626000004/otly-20251231.htm"
+    },
+    "cover": {
+     "city": "Malmö",
+     "state": null,
+     "country": "SE"
+    },
+    "sub": {
+     "city": "MALMO",
+     "state": null,
+     "country": null
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2289,6 +3725,23 @@
   {
    "cik": "0001379041",
    "name": "EMPLOYERS HOLDINGS, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1379041/000137904126000011/eig-20251231.htm",
+     "copy": "https://web.archive.org/web/20260226221813id_/https://www.sec.gov/Archives/edgar/data/1379041/000137904126000011/eig-20251231.htm"
+    },
+    "cover": {
+     "city": "Reno,",
+     "state": "NV",
+     "country": "US"
+    },
+    "sub": {
+     "city": "RENO",
+     "state": "NV",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2320,6 +3773,23 @@
   {
    "cik": "0001836875",
    "name": "NUVVE HOLDING CORP.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1836875/000183687526000026/nvve-20251231.htm",
+     "copy": "https://web.archive.org/web/20260415174034id_/https://www.sec.gov/Archives/edgar/data/1836875/000183687526000026/nvve-20251231.htm"
+    },
+    "cover": {
+     "city": "San Diego,",
+     "state": "CA",
+     "country": "US"
+    },
+    "sub": {
+     "city": "SAN DIEGO",
+     "state": "CA",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2350,6 +3820,23 @@
   {
    "cik": "0002007846",
    "name": "JULONG HOLDING LTD",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/2007846/000149315226006699/form20-f.htm",
+     "copy": "https://web.archive.org/web/20260213211717id_/https://www.sec.gov/Archives/edgar/data/2007846/000149315226006699/form20-f.htm"
+    },
+    "cover": {
+     "city": "Beijing",
+     "state": null,
+     "country": "CN"
+    },
+    "sub": {
+     "city": "BEIJING",
+     "state": null,
+     "country": "CN"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2365,6 +3852,23 @@
   {
    "cik": "0001408075",
    "name": "GRAPHIC PACKAGING HOLDING CO",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1408075/000140807526000009/gpk-20251231.htm",
+     "copy": "https://web.archive.org/web/20261004111913id_/https://www.sec.gov/Archives/edgar/data/1408075/000140807526000009/gpk-20251231.htm"
+    },
+    "cover": {
+     "city": "Atlanta,",
+     "state": "GA",
+     "country": "US"
+    },
+    "sub": {
+     "city": "ATLANTA",
+     "state": "GA",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2391,6 +3895,23 @@
   {
    "cik": "0001017303",
    "name": "TRANSACT TECHNOLOGIES INC",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1017303/000114036126009238/ef20064326_10k.htm",
+     "copy": "https://web.archive.org/web/20260312214903id_/https://www.sec.gov/Archives/edgar/data/1017303/000114036126009238/ef20064326_10k.htm"
+    },
+    "cover": {
+     "city": "Hamden",
+     "state": "CT",
+     "country": "US"
+    },
+    "sub": {
+     "city": "HAMDEN",
+     "state": "CT",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2419,6 +3940,23 @@
   {
    "cik": "0001668717",
    "name": "ANHEUSER-BUSCH INBEV SA/NV",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1668717/000119312526088105/d65314d20f.htm",
+     "copy": "https://web.archive.org/web/20261006145107id_/https://www.sec.gov/Archives/edgar/data/1668717/000119312526088105/d65314d20f.htm"
+    },
+    "cover": {
+     "city": "Leuven",
+     "state": null,
+     "country": "BE"
+    },
+    "sub": {
+     "city": "LEUVEN",
+     "state": null,
+     "country": null
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2442,6 +3980,23 @@
   {
    "cik": "0001574565",
    "name": "EVOGENE LTD.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1574565/000117891326001767/zk2634882.htm",
+     "copy": "https://web.archive.org/web/20260327014603id_/https://www.sec.gov/Archives/edgar/data/1574565/000117891326001767/zk2634882.htm"
+    },
+    "cover": {
+     "city": "Rehovot",
+     "state": null,
+     "country": "IL"
+    },
+    "sub": {
+     "city": "REHOVOT",
+     "state": null,
+     "country": "IL"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2468,6 +4023,23 @@
   {
    "cik": "0001958133",
    "name": "DECENT HOLDING INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1958133/000118518526000710/dxst20f103125.htm",
+     "copy": "https://web.archive.org/web/20260302162706id_/https://www.sec.gov/Archives/edgar/data/1958133/000118518526000710/dxst20f103125.htm"
+    },
+    "cover": {
+     "city": "Yantai",
+     "state": null,
+     "country": "CN"
+    },
+    "sub": {
+     "city": "SHANDONG PROVINCE",
+     "state": null,
+     "country": "CN"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2483,6 +4055,10 @@
   {
    "cik": "0001844505",
    "name": "QT IMAGING HOLDINGS, INC.",
+   "hq": {
+    "source": "sub.txt",
+    "why": "no copy of qti-20251231.htm (403)"
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2510,6 +4086,23 @@
   {
    "cik": "0000105418",
    "name": "WEIS MARKETS INC",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/105418/000010541826000024/wmk-20251227x10k.htm",
+     "copy": "https://web.archive.org/web/20260312213727id_/https://www.sec.gov/Archives/edgar/data/105418/000010541826000024/wmk-20251227x10k.htm"
+    },
+    "cover": {
+     "city": "Sunbury",
+     "state": "PA",
+     "country": "US"
+    },
+    "sub": {
+     "city": "SUNBURY",
+     "state": "PA",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2541,6 +4134,23 @@
   {
    "cik": "0000932696",
    "name": "INSIGHT ENTERPRISES INC",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/932696/000093269626000007/nsit-20251231.htm",
+     "copy": "https://web.archive.org/web/20261011114240id_/https://www.sec.gov/Archives/edgar/data/932696/000093269626000007/nsit-20251231.htm"
+    },
+    "cover": {
+     "city": "Chandler",
+     "state": "AZ",
+     "country": "US"
+    },
+    "sub": {
+     "city": "CHANDLER",
+     "state": "AZ",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2568,6 +4178,23 @@
   {
    "cik": "0001100682",
    "name": "CHARLES RIVER LABORATORIES INTERNATIONAL, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1100682/000110068226000022/crl-20251227.htm",
+     "copy": "https://web.archive.org/web/20260529094113id_/https://www.sec.gov/Archives/edgar/data/1100682/000110068226000022/crl-20251227.htm"
+    },
+    "cover": {
+     "city": "Wilmington",
+     "state": "MA",
+     "country": "US"
+    },
+    "sub": {
+     "city": "WILMINGTON",
+     "state": "MA",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2594,6 +4221,23 @@
   {
    "cik": "0001075531",
    "name": "BOOKING HOLDINGS INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1075531/000107553126000009/bkng-20251231.htm",
+     "copy": "https://web.archive.org/web/20261013072833id_/https://www.sec.gov/Archives/edgar/data/1075531/000107553126000009/bkng-20251231.htm"
+    },
+    "cover": {
+     "city": "Norwalk",
+     "state": "CT",
+     "country": "US"
+    },
+    "sub": {
+     "city": "NORWALK",
+     "state": "CT",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2624,6 +4268,23 @@
   {
    "cik": "0000018255",
    "name": "CATO CORP",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/18255/000156276226000041/cato-20260131.htm",
+     "copy": "https://web.archive.org/web/20260325210539id_/https://www.sec.gov/Archives/edgar/data/18255/000156276226000041/cato-20260131.htm"
+    },
+    "cover": {
+     "city": "Charlotte",
+     "state": "NC",
+     "country": "US"
+    },
+    "sub": {
+     "city": "CHARLOTTE",
+     "state": "NC",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2650,6 +4311,23 @@
   {
    "cik": "0000031462",
    "name": "ECOLAB INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/31462/000110465926018357/ecl-20251231x10k.htm",
+     "copy": "https://web.archive.org/web/20260223153651id_/https://www.sec.gov/Archives/edgar/data/31462/000110465926018357/ecl-20251231x10k.htm"
+    },
+    "cover": {
+     "city": "St. Paul",
+     "state": "MN",
+     "country": "US"
+    },
+    "sub": {
+     "city": "SAINT PAUL",
+     "state": "MN",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2676,6 +4354,23 @@
   {
    "cik": "0000048287",
    "name": "HNI CORP",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/48287/000004828726000084/hni-20260103.htm",
+     "copy": "https://web.archive.org/web/20260303150318id_/https://www.sec.gov/Archives/edgar/data/48287/000004828726000084/hni-20260103.htm"
+    },
+    "cover": {
+     "city": "Muscatine",
+     "state": "IA",
+     "country": "US"
+    },
+    "sub": {
+     "city": "MUSCATINE",
+     "state": "IA",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2702,6 +4397,23 @@
   {
    "cik": "0000746210",
    "name": "TAOWEAVE, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/746210/000143774926009237/oblg20251231_10k.htm",
+     "copy": "https://web.archive.org/web/20260321000514id_/https://www.sec.gov/Archives/edgar/data/746210/000143774926009237/oblg20251231_10k.htm"
+    },
+    "cover": {
+     "city": "Denver",
+     "state": "CO",
+     "country": "US"
+    },
+    "sub": {
+     "city": "DENVER",
+     "state": "CO",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2728,6 +4440,23 @@
   {
    "cik": "0000749098",
    "name": "MAGNA INTERNATIONAL INC",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/749098/000119312526128771/d20215d40f.htm",
+     "copy": "https://web.archive.org/web/20260327203238id_/https://www.sec.gov/Archives/edgar/data/749098/000119312526128771/d20215d40f.htm"
+    },
+    "cover": {
+     "city": "Aurora",
+     "state": "ON",
+     "country": "CA"
+    },
+    "sub": {
+     "city": "AURORA, ONTARIO, CAN",
+     "state": "ON",
+     "country": "CA"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2747,6 +4476,23 @@
   {
    "cik": "0000761648",
    "name": "CEDAR REALTY TRUST, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/761648/000076164826000008/cdr-20251231.htm",
+     "copy": "https://web.archive.org/web/20260305212025id_/https://www.sec.gov/Archives/edgar/data/761648/000076164826000008/cdr-20251231.htm"
+    },
+    "cover": {
+     "city": "Virginia Beach",
+     "state": "VA",
+     "country": "US"
+    },
+    "sub": {
+     "city": "VIRGINIA BEACH",
+     "state": "VA",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2777,6 +4523,23 @@
   {
    "cik": "0000771999",
    "name": "DSS, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/771999/000149315226014231/form10-k.htm",
+     "copy": "https://web.archive.org/web/20260331234211id_/https://www.sec.gov/Archives/edgar/data/771999/000149315226014231/form10-k.htm"
+    },
+    "cover": {
+     "city": "Henrietta",
+     "state": "NY",
+     "country": "US"
+    },
+    "sub": {
+     "city": "WEST HENRIETTA",
+     "state": "NY",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2803,6 +4566,23 @@
   {
    "cik": "0000837465",
    "name": "CALLAWAY GOLF CO",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/837465/000083746526000010/modg-20251231.htm",
+     "copy": "https://web.archive.org/web/20260921232357id_/https://www.sec.gov/Archives/edgar/data/837465/000083746526000010/modg-20251231.htm"
+    },
+    "cover": {
+     "city": "Carlsbad",
+     "state": "CA",
+     "country": "US"
+    },
+    "sub": {
+     "city": "CARLSBAD",
+     "state": "CA",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2826,6 +4606,23 @@
   {
    "cik": "0000838875",
    "name": "WILLAMETTE VALLEY VINEYARDS INC",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/838875/000119983526000061/wvvi-10k.htm",
+     "copy": "https://web.archive.org/web/20260324235753id_/https://www.sec.gov/Archives/edgar/data/838875/000119983526000061/wvvi-10k.htm"
+    },
+    "cover": {
+     "city": "Turner",
+     "state": "OR",
+     "country": "US"
+    },
+    "sub": {
+     "city": "TURNER",
+     "state": "OR",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2849,6 +4646,23 @@
   {
    "cik": "0000868675",
    "name": "TELUS CORP",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/868675/000110465926013854/tu-20251231x40f.htm",
+     "copy": "https://web.archive.org/web/20260212123455id_/https://www.sec.gov/Archives/edgar/data/868675/000110465926013854/tu-20251231x40f.htm"
+    },
+    "cover": {
+     "city": "Vancouver",
+     "state": "BC",
+     "country": "CA"
+    },
+    "sub": {
+     "city": "VANCOUVER",
+     "state": "BC",
+     "country": "CA"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2860,6 +4674,23 @@
   {
    "cik": "0000894871",
    "name": "ARENA GROUP HOLDINGS, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/894871/000162828026018153/aren-20251231.htm",
+     "copy": "https://web.archive.org/web/20260606054046id_/https://www.sec.gov/Archives/edgar/data/894871/000162828026018153/aren-20251231.htm"
+    },
+    "cover": {
+     "city": "New York",
+     "state": "NY",
+     "country": "US"
+    },
+    "sub": {
+     "city": "NEW YORK",
+     "state": "NY",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2886,6 +4717,23 @@
   {
    "cik": "0000899715",
    "name": "TANGER INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/899715/000162828026012252/skt-20251231.htm",
+     "copy": "https://web.archive.org/web/20260226213127id_/https://www.sec.gov/Archives/edgar/data/899715/000162828026012252/skt-20251231.htm"
+    },
+    "cover": {
+     "city": "Greensboro",
+     "state": "NC",
+     "country": "US"
+    },
+    "sub": {
+     "city": "GREENSBORO",
+     "state": "NC",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2916,6 +4764,23 @@
   {
    "cik": "0000935419",
    "name": "RCI HOSPITALITY HOLDINGS, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/935419/000162828026019804/rick-20250930.htm",
+     "copy": "https://web.archive.org/web/20261011144610id_/https://www.sec.gov/Archives/edgar/data/935419/000162828026019804/rick-20250930.htm"
+    },
+    "cover": {
+     "city": "Houston",
+     "state": "TX",
+     "country": "US"
+    },
+    "sub": {
+     "city": "HOUSTON",
+     "state": "TX",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2934,6 +4799,23 @@
   {
    "cik": "0000938323",
    "name": "PEARSON PLC",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/938323/000119312526104945/d33885d20f.htm",
+     "copy": "https://web.archive.org/web/20260313125411id_/https://www.sec.gov/Archives/edgar/data/938323/000119312526104945/d33885d20f.htm"
+    },
+    "cover": {
+     "city": "London",
+     "state": null,
+     "country": "GB"
+    },
+    "sub": {
+     "city": "LONDON ENGLAND",
+     "state": null,
+     "country": "GB"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2960,6 +4842,23 @@
   {
    "cik": "0001048286",
    "name": "MARRIOTT INTERNATIONAL INC /MD/",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1048286/000104828626000007/mar-20251231.htm",
+     "copy": "https://web.archive.org/web/20261002100732id_/https://www.sec.gov/Archives/edgar/data/1048286/000104828626000007/mar-20251231.htm"
+    },
+    "cover": {
+     "city": "Bethesda",
+     "state": "MD",
+     "country": "US"
+    },
+    "sub": {
+     "city": "BETHESDA",
+     "state": "MD",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -2986,6 +4885,23 @@
   {
    "cik": "0001094366",
    "name": "RADWARE LTD",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1094366/000117891326001923/zk2634899.htm",
+     "copy": "https://web.archive.org/web/20260331130054id_/https://www.sec.gov/Archives/edgar/data/1094366/000117891326001923/zk2634899.htm"
+    },
+    "cover": {
+     "city": "Tel Aviv",
+     "state": null,
+     "country": "IL"
+    },
+    "sub": {
+     "city": "TEL AVIV",
+     "state": null,
+     "country": "IL"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -3012,6 +4928,23 @@
   {
    "cik": "0001119083",
    "name": "MIND CTI LTD",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1119083/000117891326001091/zk2634570.htm",
+     "copy": "https://web.archive.org/web/20260318140709id_/https://www.sec.gov/Archives/edgar/data/1119083/000117891326001091/zk2634570.htm"
+    },
+    "cover": {
+     "city": "Yoqneam",
+     "state": null,
+     "country": "IL"
+    },
+    "sub": {
+     "city": "YOQNEAM ILIT ISRAEL",
+     "state": null,
+     "country": "IL"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -3038,6 +4971,23 @@
   {
    "cik": "0001130464",
    "name": "BLACK HILLS CORP /SD/",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1130464/000119312526046028/bkh-20251231.htm",
+     "copy": "https://web.archive.org/web/20260410100745id_/https://www.sec.gov/Archives/edgar/data/1130464/000119312526046028/bkh-20251231.htm"
+    },
+    "cover": {
+     "city": "Rapid City",
+     "state": "SD",
+     "country": "US"
+    },
+    "sub": {
+     "city": "RAPID CITY",
+     "state": "SD",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -3064,6 +5014,23 @@
   {
    "cik": "0001262823",
    "name": "WESTLAKE CORP",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1262823/000126282326000016/wlk-20251231.htm",
+     "copy": "https://web.archive.org/web/20260226190409id_/https://www.sec.gov/Archives/edgar/data/1262823/000126282326000016/wlk-20251231.htm"
+    },
+    "cover": {
+     "city": "Houston",
+     "state": "TX",
+     "country": "US"
+    },
+    "sub": {
+     "city": "HOUSTON",
+     "state": "TX",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -3090,6 +5057,23 @@
   {
    "cik": "0001287098",
    "name": "MAXCYTE, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1287098/000110465926034557/mxct-20251231x10k.htm",
+     "copy": "https://web.archive.org/web/20260326001133id_/https://www.sec.gov/Archives/edgar/data/1287098/000110465926034557/mxct-20251231x10k.htm"
+    },
+    "cover": {
+     "city": "Rockville",
+     "state": "MD",
+     "country": "US"
+    },
+    "sub": {
+     "city": "ROCKVILLE",
+     "state": "MD",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -3121,6 +5105,23 @@
   {
    "cik": "0001368458",
    "name": "SALLY BEAUTY HOLDINGS, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1368458/000119312525280122/sbh-20250930.htm",
+     "copy": "https://web.archive.org/web/20260407193752id_/https://www.sec.gov/Archives/edgar/data/1368458/000119312525280122/sbh-20250930.htm"
+    },
+    "cover": {
+     "city": "Denton",
+     "state": "TX",
+     "country": "US"
+    },
+    "sub": {
+     "city": "DENTON",
+     "state": "TX",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2025q4.zip"
    },
@@ -3144,6 +5145,23 @@
   {
    "cik": "0001546417",
    "name": "BLOOMIN' BRANDS, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1546417/000154641726000009/blmn-20251228.htm",
+     "copy": "https://web.archive.org/web/20260225213057id_/https://www.sec.gov/Archives/edgar/data/1546417/000154641726000009/blmn-20251228.htm"
+    },
+    "cover": {
+     "city": "Tampa",
+     "state": "FL",
+     "country": "US"
+    },
+    "sub": {
+     "city": "TAMPA",
+     "state": "FL",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -3170,6 +5188,23 @@
   {
    "cik": "0001679688",
    "name": "DIGITALBRIDGE GROUP, INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1679688/000167968826000021/dbrg-20251231.htm",
+     "copy": "https://web.archive.org/web/20260226215056id_/https://www.sec.gov/Archives/edgar/data/1679688/000167968826000021/dbrg-20251231.htm"
+    },
+    "cover": {
+     "city": "Boca Raton",
+     "state": "FL",
+     "country": "US"
+    },
+    "sub": {
+     "city": "BOCA RATON",
+     "state": "FL",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -3200,6 +5235,23 @@
   {
    "cik": "0001722387",
    "name": "INTEGRA RESOURCES CORP.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1722387/000172238726000004/itrg-20251231_d2.htm",
+     "copy": "https://web.archive.org/web/20260325164752id_/https://www.sec.gov/Archives/edgar/data/1722387/000172238726000004/itrg-20251231_d2.htm"
+    },
+    "cover": {
+     "city": "Vancouver",
+     "state": "BC",
+     "country": "CA"
+    },
+    "sub": {
+     "city": "VANCOUVER",
+     "state": "BC",
+     "country": "CA"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -3219,6 +5271,10 @@
   {
    "cik": "0001747079",
    "name": "BALLY'S CORP",
+   "hq": {
+    "source": "sub.txt",
+    "why": "no copy of baly-20251231.htm (403)"
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -3245,6 +5301,23 @@
   {
    "cik": "0001809691",
    "name": "AMTD DIGITAL INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1809691/000121390026021555/ea0276786-20f_amtd.htm",
+     "copy": "https://web.archive.org/web/20260227214643id_/https://www.sec.gov/Archives/edgar/data/1809691/000121390026021555/ea0276786-20f_amtd.htm"
+    },
+    "cover": {
+     "city": "Paris",
+     "state": null,
+     "country": "FR"
+    },
+    "sub": {
+     "city": "PARIS",
+     "state": null,
+     "country": "FR"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -3271,6 +5344,23 @@
   {
    "cik": "0001843656",
    "name": "ROYALTY MANAGEMENT HOLDING CORP",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1843656/000147793226001737/rmco_10k.htm",
+     "copy": "https://web.archive.org/web/20260331124834id_/https://www.sec.gov/Archives/edgar/data/1843656/000147793226001737/rmco_10k.htm"
+    },
+    "cover": {
+     "city": "Fishers",
+     "state": "IN",
+     "country": "US"
+    },
+    "sub": {
+     "city": "FISHERS",
+     "state": "IN",
+     "country": "US"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -3297,6 +5387,23 @@
   {
    "cik": "0001847806",
    "name": "GENIUS GROUP LTD",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1847806/000149315226009371/form20-f.htm",
+     "copy": "https://web.archive.org/web/20260309211039id_/https://www.sec.gov/Archives/edgar/data/1847806/000149315226009371/form20-f.htm"
+    },
+    "cover": {
+     "city": "Singapore",
+     "state": "NY",
+     "country": "SG"
+    },
+    "sub": {
+     "city": "SINGAPORE",
+     "state": null,
+     "country": "SG"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -3320,6 +5427,23 @@
   {
    "cik": "0001892274",
    "name": "VISIONARY HOLDINGS INC.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/1892274/000157587226000048/vedu-20250331.htm",
+     "copy": "https://web.archive.org/web/20260128205452id_/https://www.sec.gov/Archives/edgar/data/1892274/000157587226000048/vedu-20250331.htm"
+    },
+    "cover": {
+     "city": "Ontario",
+     "state": null,
+     "country": "CA"
+    },
+    "sub": {
+     "city": "TORONTO",
+     "state": "ON",
+     "country": "CA"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
@@ -3335,6 +5459,23 @@
   {
    "cik": "0002018222",
    "name": "707 CAYMAN HOLDINGS LTD.",
+   "hq": {
+    "source": "cover",
+    "document": {
+     "url": "https://www.sec.gov/Archives/edgar/data/2018222/000149315226002647/form20-f.htm",
+     "copy": "https://web.archive.org/web/20260116225311id_/https://www.sec.gov/Archives/edgar/data/2018222/000149315226002647/form20-f.htm"
+    },
+    "cover": {
+     "city": "San Po Kong",
+     "state": null,
+     "country": "HK"
+    },
+    "sub": {
+     "city": "HONG KONG",
+     "state": null,
+     "country": "CN"
+    }
+   },
    "source": {
     "quarter": "https://web.archive.org/web/20261005001837id_/https://www.sec.gov/files/dera/data/financial-statement-data-sets/2026q1.zip"
    },
