@@ -1,13 +1,17 @@
-// What a recording (record.ts) and a replay (../replay.mjs) take out of a run's lines and rows, one set of rules for both:
-// the browser profile's id (a context id, or a Chrome profile's path) becomes `[redacted]`; a browser session's id a
-// label of its hash, so a session's lines, frames and rows still go together; any `token=` value `[redacted]`; and every
-// `liveView` null (a live view is a token for the browser). The ids are the ones a run's browser documents hold. It loads
-// node's own modules only: a replay is written where pi's packages are not installed.
+// What a recording (record.ts) and a replay (../replay.mjs) take out of a run's lines and rows, one set of rules for
+// both: the browser profile's id (a context id, or a Chrome profile's path) becomes `[redacted]`; a browser session's
+// id a label of its hash, so a session's lines, frames and rows still go together; any `token=` value `[redacted]`; any
+// email address `[email]` (a page the agent read names people, and the recording is not where their addresses go); and
+// every `liveView` null (a live view is a token for the browser). The ids are the ones a run's browser documents hold.
+// It loads node's own modules only: a replay is written where pi's packages are not installed.
 import { createHash } from "node:crypto";
 
 export const REDACTED = "[redacted]";
 /** Any `token=` value, a live view's or a debugger's, whatever site wrote it. */
 const TOKEN = /([?&;]token=)[^&#\s"'\\]+/gi;
+/** An email address, as a page or a filing prints one. */
+const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+export const EMAIL_REDACTED = "[email]";
 
 /** How a recording or a replay shows a browser session's id: a label of its hash. */
 export const sessionLabel = (id: string): string => `session-${createHash("sha256").update(id).digest("hex").slice(0, 12)}`;
@@ -35,7 +39,7 @@ export function idsRedaction(ids: BrowserIds): (text: string) => string {
     }
     let out = text;
     for (const [id, label] of pairs) if (out.includes(id)) out = out.split(id).join(label);
-    return out.replace(TOKEN, `$1${REDACTED}`);
+    return out.replace(TOKEN, `$1${REDACTED}`).replace(EMAIL, EMAIL_REDACTED);
   };
 }
 

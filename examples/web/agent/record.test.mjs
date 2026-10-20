@@ -29,6 +29,8 @@ const CHROME = { ...MODEL, AGENT_BROWSER: 'chrome', AGENT_CHROME_ENDPOINT: 'http
 const ACCOUNT = ['tomsmith', 'SuperSecretPassword!'];
 /** A Browserbase project id, which the page prints here so a recording on Browserbase must take it out. */
 const PROJECT = '0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b';
+/** A person's address a page prints, as a filing names its press contact. */
+const EMAIL = 'pat.contact@example.com';
 const HAVE_FFMPEG = spawnSync('ffmpeg', ['-version']).status === 0;
 const PAGE = '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Secure area</title><style>:root { color-scheme: light dark; }</style></head><body><h1>Secure area</h1><p>The run started signed in: the secure page says so.</p><p><a href="https://the-internet.herokuapp.com/secure">the-internet.herokuapp.com/secure</a></p></body></html>\n';
 
@@ -60,7 +62,7 @@ async function recordedRun(t, { env: base, plant = false, record = true }) {
   const cdp = await fakeCdp();
   t.after(() => cdp.close());
   const sentinels = { ...makeSentinels(), bbConnectUrl: `${cdp.url}?sessionId=none` };
-  const backend = new FakeBackend({ sentinels, start: SECURE, pages: { [SECURE]: fixturePage(SECURE, `Secure Area. Welcome to the Secure Area. Signed in as ${ACCOUNT[0]}; the login page said to use ${ACCOUNT[1]}. Project ${PROJECT}.`, 'The Internet') } });
+  const backend = new FakeBackend({ sentinels, start: SECURE, pages: { [SECURE]: fixturePage(SECURE, `Secure Area. Welcome to the Secure Area. Signed in as ${ACCOUNT[0]}; the login page said to use ${ACCOUNT[1]}. Project ${PROJECT}. Press: ${EMAIL}.`, 'The Internet') } });
   const contextId = randomUUID();
   const env = { ...base, ...(record ? { RECORD_DIR: dir, RECORD_REDACT: JSON.stringify(ACCOUNT) } : {}), ...(base.AGENT_BROWSER === 'chrome' ? {} : { BROWSERBASE_API_KEY: sentinels.bbApiKey, BROWSERBASE_PROJECT_ID: PROJECT }) };
   const agent = await createAgent(where, env, { makeContext: async () => contextId, provider: backend.provider, driver: fakeDriver(backend) });
@@ -147,7 +149,7 @@ test('a recorded run on the agent\'s own Chrome: valid, its report the artifact,
   }
 
   assert.deepEqual(liveViews(lines), [], 'no line holds a live view');
-  assertAbsent(dir, { 'the account name': ACCOUNT[0], 'the account password': ACCOUNT[1], 'the profile id': 'chrome/local-chrome', ...Object.fromEntries(values.sessions.map((id, n) => [`session ${n + 1}`, id])), 'the live view': values.liveView, 'its token': values.liveToken, 'the planted token': values.planted.split('token=')[1], 'the connect URL': values.connect });
+  assertAbsent(dir, { 'the email address': EMAIL, 'the account name': ACCOUNT[0], 'the account password': ACCOUNT[1], 'the profile id': 'chrome/local-chrome', ...Object.fromEntries(values.sessions.map((id, n) => [`session ${n + 1}`, id])), 'the live view': values.liveView, 'its token': values.liveToken, 'the planted token': values.planted.split('token=')[1], 'the connect URL': values.connect });
   assert.ok(!existsSync(join(dir, '.spool')), 'the spool is gone');
 
   const out = process.env.RECORDING_OUT;
@@ -171,7 +173,7 @@ test('a recorded run on Browserbase: the context id, the key and the project id 
   const config = lines.filter((line) => line.kind === 'browser.config').at(-1);
   assert.equal(config.data.value.policy.contextId, REDACTED);
   assert.deepEqual(lines.filter((line) => line.kind === 'browser.profiles').at(-1).data.value, { provider: 'browserbase', ref: REDACTED, state: 'ready' });
-  assertAbsent(dir, { 'the context id': values.contextId, 'the key': values.key, 'the project id': PROJECT, ...Object.fromEntries(values.sessions.map((id, n) => [`session ${n + 1}`, id])), 'the live view': values.liveView, 'its token': values.liveToken, 'the planted live view': values.planted, 'the planted token': values.planted.split('token=')[1], 'the planted session': values.plantedSession, 'the connect URL': values.connect });
+  assertAbsent(dir, { 'the email address': EMAIL, 'the context id': values.contextId, 'the key': values.key, 'the project id': PROJECT, ...Object.fromEntries(values.sessions.map((id, n) => [`session ${n + 1}`, id])), 'the live view': values.liveView, 'its token': values.liveToken, 'the planted live view': values.planted, 'the planted token': values.planted.split('token=')[1], 'the planted session': values.plantedSession, 'the connect URL': values.connect });
 });
 
 test('a replay of a run takes out what the recording does: no session id, token or live view in timeline.json or any file, each session under its label', { timeout: 60_000 }, async (t) => {
@@ -179,7 +181,7 @@ test('a replay of a run takes out what the recording does: no session id, token 
   const { tmp, run, values } = await recordedRun(t, { env: { ...CHROME, AGENT_CHROME_PROFILE: 'own' }, plant: true, record: false });
   const out = join(tmp, 'replay');
   await writeReplay(out, [{ id: 'run-1', store: join(run.dir, 'store', 'run.sqlite'), files: run.workspace }, { id: 'given', rows: [{ kind: 'tool_result', liveView: { fullscreen: values.planted } }], files: { 'view.json': JSON.stringify({ url: values.planted }) } }]);
-  assertAbsent(out, { ...Object.fromEntries([...values.sessions, values.plantedSession].map((id, n) => [`session ${n + 1}`, id])), 'the planted live view': values.planted, 'the planted token': values.planted.split('token=')[1], 'the live view': values.liveView, 'its token': values.liveToken });
+  assertAbsent(out, { 'the email address': EMAIL, ...Object.fromEntries([...values.sessions, values.plantedSession].map((id, n) => [`session ${n + 1}`, id])), 'the planted live view': values.planted, 'the planted token': values.planted.split('token=')[1], 'the live view': values.liveView, 'its token': values.liveToken });
   const timeline = readFileSync(join(out, 'runs', 'run-1', 'timeline.json'), 'utf8');
   assert.ok(timeline.includes(sessionLabel(values.sessions[0])), 'browser_release\'s session id is its label');
   assert.ok(timeline.includes(`token=${REDACTED}`), 'the answer\'s token is redacted where it stood');
