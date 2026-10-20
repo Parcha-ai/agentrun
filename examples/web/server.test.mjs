@@ -15,7 +15,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { carryBack, durableProfileStore, readAgentHome, startRun } from "@parcha/pi-durable-agent";
+import { carryBack, durableProfileStore, readAgentHome, setPrompts, startRun } from "@parcha/pi-durable-agent";
 import { foldCalls, groupTimeline } from "@parcha/pi-durable-agent/timeline";
 import { PROFILE } from "./agent/app.ts";
 import { ensureAgentHome } from "./agent/home.mjs";
@@ -444,6 +444,47 @@ setInterval(() => {}, 1000);
   await server.close();
   assert.throws(() => process.kill(pid, 0), { code: "ESRCH" }, "the run's process is gone");
   assert.doesNotThrow(() => process.kill(bystander.pid, 0), "a process that is not a run is left alone");
+});
+
+test("a home with prompt variants: each new run's prompt is chosen before it starts, recorded on its entry and in prompt.json; a home without any asks nobody", async (t) => {
+  const door = await fakeDoor();
+  t.after(() => door.close());
+  const dir = await mkdtemp(join(tmpdir(), "web-prompt-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const script = join(dir, "start.mjs");
+  writeFileSync(script, `import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const [door, dir] = process.argv.slice(2);
+mkdirSync(join(dir, "work"), { recursive: true });
+writeFileSync(join(dir, "run.json"), JSON.stringify({ run: "x", status: "running", generation: 1, sealedSeq: null, wakeAt: null, holder: { driver: "local", host: "h", bootId: null, pid: process.pid, since: new Date().toISOString(), serve: door }, heartbeatAt: new Date().toISOString(), updatedAt: new Date().toISOString(), detail: null }));
+process.on("SIGTERM", () => process.exit(0));
+setInterval(() => {}, 1000);
+`);
+  const asked = [];
+  const answers = [{ choice: "nonprofit", probabilities: { public: 0.1, nonprofit: 0.53, other: 0.37 }, confidence: 0.41 }, { choice: "nonprofit", probabilities: { public: 0, nonprofit: 0.95, other: 0.05 }, confidence: 0.95 }];
+  const judge = async (params) => (asked.push(params.state), { answers: { kind: { type: "choice", ...answers.shift() } }, model: "jev-test", cost_usd: 0.00002 });
+  const sources = [{ via: "wikipedia", url: "https://en.wikipedia.org/wiki/Habitat_for_Humanity", title: "Habitat for Humanity" }];
+  const { home, root, post } = await app(t, { start: [process.execPath, script, door.url], prompting: { judge, lookup: async () => ({ text: "A housing charity.", sources }) } });
+
+  const plain = await (await post("/runs", { content: "Do the thing" })).json();
+  assert.equal(existsSync(join(root, plain.id, "prompt.json")), false, "a home with no variants writes no prompt.json");
+  assert.deepEqual([asked.length, (await readAgentHome(home)).runs[plain.id].prompt], [0, undefined], "and asks Jev nothing");
+
+  await setPrompts(home, [
+    { id: "kind", role: "question", label: "Kind", text: "What kind of organisation is it?", criteria: { public: "listed", nonprofit: "charity", other: "anything else" } },
+    { id: "base", role: "base", label: "Base", text: "Research it." },
+    { id: "public", role: "overlay", label: "Public company", text: "Start at EDGAR.", when: { question: "kind", option: "public", threshold: 0.8 } },
+    { id: "nonprofit", role: "overlay", label: "Non-profit", text: "Start at the 990s.", when: { question: "kind", option: "nonprofit", threshold: 0.8 } },
+    { id: "generic", role: "generic", label: "Not sure", text: "Start at its own site." },
+  ]);
+  const { id } = await (await post("/runs", { content: "  Habitat " })).json();
+  const record = JSON.parse(readFileSync(join(root, id, "prompt.json"), "utf8"));
+  assert.deepEqual([record.version, record.question, record.input, record.variant, record.passes.length, record.lookup.used, record.lookup.sources], [1, "kind", "Habitat", "nonprofit", 2, true, sources]);
+  assert.deepEqual(asked, [{ input: "Habitat" }, { input: "Habitat", lookup: "A housing charity." }], "Jev was asked about the first message, then with what the lookup read");
+  assert.deepEqual((await readAgentHome(home)).runs[id].prompt, { id: "nonprofit", reason: record.reason }, "startRun recorded the choice on the run's entry");
+  assert.equal(statSync(join(root, id, "prompt.json")).mode & 0o777, 0o600);
+  for (let i = 0; i < 100 && door.submits.length < 2; i++) await new Promise((r) => setTimeout(r, 100));
+  assert.deepEqual(door.submits.map((s) => s.content), ["Do the thing", "  Habitat "], "the run still gets the message as it was sent");
 });
 
 /**

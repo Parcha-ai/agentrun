@@ -39,7 +39,7 @@ import { ArchilCodingTools, type AppContext, type AppOptions } from "@parcha/pi-
 import { browserOf, CHROME_PROFILE, listsBrowser, type BrowserKind } from "./chrome.ts";
 import { frameStore } from "./frames.ts";
 import { openRunRecording } from "./record.ts";
-import { composePrompt, variantsOf, type PromptVariant } from "./select.ts";
+import { composePrompt } from "./select.ts";
 import { writeRememberPage } from "./remember.ts";
 
 const THINKING: readonly ModelThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
@@ -60,14 +60,11 @@ const Profiles = defineDocFamily<JsonObject, null>({ kind: "browser.profiles", v
  *  agent's name. */
 const Label = defineDoc<{ label: string }>({ kind: "reference.label", version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => ({ label: "" }) });
 
-/** The home's prompt variants (`agent.prompts`, by id) and the variant each run's host chose for it (`agent.runs`). */
-type Prompted = { prompts?: Record<string, Omit<PromptVariant, "id">>; runs?: Record<string, { prompt?: { id: string } }> };
-
 /** The definition's instructions; then the run's guide, the home's base prompt and the variant the host chose for run
  *  `runId` (none when it chose none); then each skill the definition names (`<name>/SKILL.md` in the home), in order. */
-export function promptOf(state: Pick<AgentHomeState, "definition" | "skills"> & Prompted, runId?: string): string {
+export function promptOf(state: Pick<AgentHomeState, "definition" | "skills"> & Partial<Pick<AgentHomeState, "prompts" | "runs">>, runId?: string): string {
   const chosen = runId ? state.runs?.[runId]?.prompt?.id : undefined;
-  const guide = chosen && state.prompts ? [composePrompt({ variants: variantsOf(state.prompts) }, chosen)] : [];
+  const guide = chosen && state.prompts ? [composePrompt(state.prompts, chosen)] : [];
   const skills = state.definition.skills.map((name) => {
     const file = state.skills[`${name}/SKILL.md`];
     if (!file) throw new Error(`the definition names the skill ${name}, and the agent home has no ${name}/SKILL.md`);
@@ -283,7 +280,7 @@ export async function createAgent(where: AppContext, env: NodeJS.ProcessEnv = pr
   const { definition } = state;
   const browsing = listsBrowser(definition);
   const chosen = browsing ? browserOptions(env) : ({ kind: "chrome", options: { endpoint: NO_CHROME } } as const);
-  const instructions = promptOf(state as typeof state & Prompted, where.ref.id);
+  const instructions = promptOf(state, where.ref.id);
   const { models, model, thinking } = modelsOf(env);
   // Resolved before the run serves: the root conversation's creating commit carries it.
   let contextId: string | undefined;

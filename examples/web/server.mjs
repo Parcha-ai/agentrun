@@ -127,9 +127,9 @@ function doorOf(record) {
 /**
  * `home` is an agent home (`ensureAgentHome`); `watchMs` is how often a run this server started is checked for its answer.
  * `origin` is the address people open the page at (default: the address it binds), which a local Chrome's live view
- * allows to frame it and checks its WebSockets against. With `prompting` ({ question, judge, lookup }: the agent's Jev
- * question, Jev and the lookup, agent/select.ts) and prompt variants in the home, each run's prompt is chosen before it
- * starts: `startRun` records it, and `prompt.json` beside the run says how.
+ * allows to frame it and checks its WebSockets against. With `prompting` ({ judge, lookup }: Jev and the lookup,
+ * agent/select.ts) and prompt variants in the home, each run's prompt is chosen before it starts (`choosePrompt`):
+ * `startRun` records it, and `prompt.json` beside the run says how.
  */
 export async function startServer({ home, host = "127.0.0.1", port = 0, start = [], allowHosts = [], watchMs = 2_000, origin, prompting }) {
   const root = join(home.dir, "runs");
@@ -475,7 +475,7 @@ export async function startServer({ home, host = "127.0.0.1", port = 0, start = 
     const state = await homeState();
     const { profiles } = state;
     // Before the run exists: Jev on the input, a lookup when it is unsure, and the variant it gets (null: no variants).
-    const chosen = prompting ? await promptForRun({ stored: state.prompts, question: prompting.question, input: content.trim(), judge: prompting.judge, lookup: prompting.lookup }) : null;
+    const chosen = prompting ? await promptForRun({ stored: state.prompts, input: content.trim(), judge: prompting.judge, lookup: prompting.lookup }) : null;
     const run = await startRun(home, { runId: id, host: HOST, ...(chosen ? { prompt: chosen.prompt } : {}) });
     reread();
     if (chosen) {
@@ -758,15 +758,11 @@ async function main() {
       origin: { type: "string" },
     },
   });
-  // The agent the home is made from (agent.json and skills/); its question.json, when it has one, is the Jev question
-  // that picks each run's prompt from the home's variants.
-  const agentDir = resolve(values.agent);
-  const home = await ensureAgentHome(values.home, agentDir);
-  const questionFile = join(agentDir, "question.json");
+  // The agent a new home is made from (agent.json and skills/). A home that keeps prompt variants gets each run's chosen
+  // by Jev, with a Browserbase web search (on a key) and Wikipedia's summary as the lookup.
+  const home = await ensureAgentHome(values.home, resolve(values.agent));
   const search = process.env.BROWSERBASE_API_KEY ? browserbaseProvider({ env: process.env }) : null;
-  const prompting = existsSync(questionFile)
-    ? { question: JSON.parse(await readFile(questionFile, "utf8")), judge: judgeOf(process.env), lookup: lookups(...(search ? [searchLookup((request, signal) => search.search(request, signal))] : []), wikipediaLookup()) }
-    : undefined;
+  const prompting = { judge: judgeOf(process.env), lookup: lookups(...(search ? [searchLookup((request, signal) => search.search(request, signal))] : []), wikipediaLookup()) };
   const launcher = join(HERE, "agent", "start-run.mjs");
   const start = values.start.trim() ? values.start.split(/\s+/).filter(Boolean) : existsSync(launcher) ? [process.execPath, launcher] : [];
   const server = await startServer({ home, host: values.host, port: Number(values.port), start, allowHosts: values["allow-host"], prompting, ...(values.origin ? { origin: values.origin } : {}) });
