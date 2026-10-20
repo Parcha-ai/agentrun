@@ -15,16 +15,16 @@ In your project, install the core and save the complete triage workflow:
 
 ```sh
 npm install @parcha/agentrun-dsl@beta
-npx @parcha/agentrun-dsl@RELEASE_VERSION example workflow.json
-npx @parcha/agentrun-dsl@RELEASE_VERSION validate workflow.json --trusted
-npx @parcha/agentrun-dsl@RELEASE_VERSION dry-run workflow.json --trusted
+npx @parcha/agentrun-dsl@beta example workflow.json
+npx @parcha/agentrun-dsl@beta validate workflow.json --trusted
+npx @parcha/agentrun-dsl@beta dry-run workflow.json --trusted
 ```
 
 `example` refuses to overwrite a file. `--trusted` acknowledges that JavaScript in a workflow may execute during validation. Dry-run synthesizes the declared input schema; a workflow without one starts from `{}`. Supply your own JSON object when needed:
 
 ```sh
-npx @parcha/agentrun-dsl@RELEASE_VERSION validate workflow.json input.json --trusted
-npx @parcha/agentrun-dsl@RELEASE_VERSION dry-run workflow.json input.json --trusted
+npx @parcha/agentrun-dsl@beta validate workflow.json input.json --trusted
+npx @parcha/agentrun-dsl@beta dry-run workflow.json input.json --trusted
 ```
 
 Structural checks, including unknown node fields, always run. Supplied inputs also check the input schema and reachable input keys. Dry-run checks synthetic execution wiring, not model quality or effect delivery. `ok` with `skipped` means a path could not be exercised (for example, a synthetic judgment escalated or a schema cannot be synthesized); read those reasons rather than treating it as execution proof.
@@ -111,7 +111,7 @@ Pi then takes five steps, and you can step in at each one:
 
 1. **Draft.** Pi asks the `agentrun` tool to describe the tools this session offers and the workflow language, then drafts a workflow from them. It is typed: each step that asks a model names the JSON Schema its answer must match.
 2. **Check.** Pi inspects the complete draft with its input. Inspection checks the structure, the schemas, the state paths between steps and the tools each step calls, and runs no code. Pi repairs what it reports and inspects again.
-3. **Dry-run.** Pi dry-runs the inspected workflow on synthetic values, or on the input you gave, with no model, Jev or tool call, so it costs nothing. `passed` means every check ran, `failed` lists the problems, and `not_run` names a check that could not run and proves nothing. Run one yourself with `/agentrun dry-run`; a workflow with code nodes needs `/agentrun dry-run --trusted`.
+3. **Dry-run.** Pi dry-runs the inspected workflow on synthetic values, or on the input you gave, with no model, Jev or tool call, so it costs nothing. `passed` means every check ran, `failed` lists the problems, and `not_run` names a check that could not run and proves nothing. Every synthetic boolean is `false`, so an `escalate` on a boolean being `false` always fires in a dry run, and the dry run reports `not_run` with that escalation in `skipped`; the steps after it are not exercised. Run one yourself with `/agentrun dry-run`; a workflow with code nodes needs `/agentrun dry-run --trusted`.
 4. **Run.** Pi runs the workflow when you ask it to, or you run it with `/agentrun run`. Agent steps use Pi's current model. Code nodes and the `bash`, `edit` and `write` tools run only after you issue `/agentrun run --trusted`, and only for that run.
 5. **Graph.** `/agentrun` opens the graph. Every node is on it with its state: planned before a run, then running, succeeded, failed or interrupted, and skipped when a route chose another branch. These are the moments `nodeStatus` from `@parcha/agentrun-dsl/graph` reads from a durable run, named for a person: planned and skipped are `not-run`, running is `working`, succeeded is `done`, failed is `failed`, and interrupted is a node still `working` when the run stopped. Select a node for its contract, its instructions or criteria, and what the run observed. Closing the view does not stop the run; `/agentrun stop` asks it to stop.
 

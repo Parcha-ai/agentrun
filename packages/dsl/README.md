@@ -6,7 +6,7 @@ Beta, on npm under the `beta` dist-tag (`npm view @parcha/agentrun-dsl dist-tags
 
 ```sh
 npm install @parcha/agentrun-dsl@beta
-npx @parcha/agentrun-dsl@RELEASE_VERSION demo
+npx @parcha/agentrun-dsl@beta demo
 ```
 
 For the JavaScript API, save this as `demo.mjs` and run `node demo.mjs`:
@@ -33,16 +33,16 @@ The same checks from a shell, in the project where you installed the package, on
 
 ```sh
 cp node_modules/@parcha/agentrun-dsl/skills/author/examples/review-release-notes.json workflow.json
-npx @parcha/agentrun-dsl@RELEASE_VERSION inspect workflow.json
-npx @parcha/agentrun-dsl@RELEASE_VERSION validate workflow.json --trusted
-npx @parcha/agentrun-dsl@RELEASE_VERSION dry-run workflow.json --trusted
+npx @parcha/agentrun-dsl@beta inspect workflow.json
+npx @parcha/agentrun-dsl@beta validate workflow.json --trusted
+npx @parcha/agentrun-dsl@beta dry-run workflow.json --trusted
 ```
 
-Its dry run is `passed`: every node ran on synthetic values, with no model call. The demo's workflow (`npx @parcha/agentrun-dsl@RELEASE_VERSION example demo.json`) comes back `not_run` instead: its confidence check escalates on a synthetic answer, so the queue choice after it is not exercised, and `skipped` says so. `dry-run --strict` exits 3 on `not_run`, for a script that must stop there; a failure exits 1.
+Its dry run is `passed`: every node ran on synthetic values, with no model call. The demo's workflow (`npx @parcha/agentrun-dsl@beta example demo.json`) comes back `not_run` instead: its confidence check escalates on a synthetic answer, so the queue choice after it is not exercised, and `skipped` says so. `dry-run --strict` exits 3 on `not_run`, for a script that must stop there; a failure exits 1.
 
 The `agentrun` CLI provides `demo`, `example`, `inspect`, `validate`, `dry-run`, and deterministic `run`. `inspect workflow.json [--json]` displays structure without executing code. Validation/run require `--trusted` because workflow JavaScript can execute, including during validation. This package is not an isolation boundary.
 
-`runWorkflow(workflow, input, deps)` returns a complete schema-validated output or an escalation; its TypeScript output type is `unknown`. `defineWorkflow` binds Standard JSON Schema contracts, including supported Zod schemas, to a frozen v2 document; `runTypedWorkflow` infers those input/output types and delegates to the same interpreter. Intermediate state paths remain runtime-validated. Execution and verification failures throw. Hosts own tools, durable storage, file delivery, idempotency, recovery, and activation.
+`runWorkflow(workflow, input, deps)` returns a complete schema-validated output or an escalation; its TypeScript output type is `unknown`. `defineWorkflow` binds Standard JSON Schema contracts, including supported Zod schemas, to a frozen v2 document; `runTypedWorkflow` infers those input/output types and delegates to the same interpreter. Intermediate state paths remain runtime-validated. Execution and verification failures throw. Hosts own tools, durable storage, file delivery, idempotency, recovery, and activation. A durable run's store keeps each effect's arguments as given, so redact secrets before they reach an effect.
 
 Raw JSON schemas retain `unknown` boundary types. Zod transforms, refinements, defaults and coercion are rejected rather than silently dropped. The core does not depend on Zod at runtime. Other Standard JSON Schema providers must faithfully represent their contracts. Typed execution accepts the original `defineWorkflow` result; copied or deserialized documents use `runWorkflow`.
 
