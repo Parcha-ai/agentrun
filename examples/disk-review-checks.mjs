@@ -27,6 +27,11 @@ export function citesOf(html) {
   return { cites, unreadable };
 }
 
+/** The report's table rows that hold data: each `<tr>` (with or without attributes) up to its end, keeping only rows with a `<td>` cell, so a header row of `<th>` cells is not read as an invoice. */
+export function reportRows(html) {
+  return html.split(/<tr\b[^>]*>/i).slice(1).map((row) => row.split(/<\/tr>/i)[0]).filter((row) => /<td\b/i.test(row));
+}
+
 const rowsOf = (file) => (existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []);
 const lineCount = (text) => { const parts = text.split('\n'); if (parts.at(-1) === '') parts.pop(); return parts.length; };
 
@@ -81,7 +86,7 @@ export function reviewProblems({ recording, dir, record, live = false }) {
     const html = readFileSync(reportFile, 'utf8');
     if (/<script/i.test(html)) problems.push('the report holds a script');
     for (const [invoice] of [...PAID, ...HELD.map((held) => [held])]) if (!html.includes(invoice)) problems.push(`the report has no row for ${invoice}`);
-    const rows = html.split(/<tr>/i).slice(1);
+    const rows = reportRows(html);
     for (const row of rows) if (citesOf(row).cites.length === 0) problems.push(`a row of the report has no cite: ${row.replace(/<[^>]+>/g, ' ').trim().slice(0, 60)}`);
     const byReceipt = new Map(reads.map((read) => [read.receipt, read]));
     const { cites, unreadable } = citesOf(html);

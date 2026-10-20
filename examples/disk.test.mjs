@@ -271,3 +271,12 @@ test('the by-code checks read a cite in any attribute order and quoting, and nev
   assert.equal(unreadable.length, 1, 'a cite with no window is reported, not skipped');
   assert.match(unreadable[0], /rl-d/);
 });
+
+test('the by-code checks read only the report rows that hold data: a header row of <th> cells is not an invoice', async () => {
+  const { reportRows } = await import('./disk-review-checks.mjs');
+  const html = '<table><tr><th>Invoice</th><th>Decision</th></tr><tr class="paid"><td>INV-001</td><td>paid <a href="policy.md#line=2,3" data-receipt="rl-a">line 3</a></td></tr>\n<tr><td>INV-004</td><td>held</td></tr></table>';
+  const rows = reportRows(html);
+  assert.equal(rows.length, 2, 'the header row is skipped, both data rows are read');
+  assert.match(rows[0], /INV-001/);
+  assert.match(rows[1], /INV-004/);
+});
