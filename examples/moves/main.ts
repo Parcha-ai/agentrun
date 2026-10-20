@@ -1,7 +1,7 @@
 // The live run: one session, three hosts. Needs, in this process's environment (from your own wrappers): ARCHIL_API_KEY, PDA_LIVE_DISK and
 // PDA_LIVE_REGION for a scratch disk; MODAL_TOKEN_ID and MODAL_TOKEN_SECRET for the account that starts the VM; ANTHROPIC_API_KEY for the two
-// local generations. The Modal workspace must hold the Secrets named by --secret (the model key, and the token pair the VM's session uses).
-//   node examples/moves/main.ts --out DIR --secret NAME [--secret NAME ...]
+// local generations. The Modal workspace must hold the Secrets named by --secret (default: moves-take-anthropic, the model key; moves-take-modal, the token pair the VM's session uses).
+//   node examples/moves/main.ts --out DIR [--secret NAME ...]     (default Secrets: moves-take-anthropic, moves-take-modal)
 // Writes to DIR: moves-log.txt (what happened, as it happened), ledger.jsonl (every exact id it created and ended), run-json-after-<n>.json,
 // threads.json, result.json, answer.txt and report.json. It then searches everything in DIR for the secrets' values and fails if one is there.
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -16,9 +16,10 @@ import { appTarball, packTarball } from "./vm.ts";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const { values } = parseArgs({ options: { out: { type: "string" }, secret: { type: "string", multiple: true }, "app-name": { type: "string", default: "agentrun-moves" } } });
 const out = values.out;
-const secrets = values.secret ?? [];
-if (!out || secrets.length === 0) {
-  console.error("usage: node examples/moves/main.ts --out DIR --secret NAME [--secret NAME ...]");
+// The two Modal Secrets the take's workspace holds: the model key (ANTHROPIC_API_KEY) and the token pair the VM's session uses (MODAL_TOKEN_ID, MODAL_TOKEN_SECRET).
+const secrets = values.secret?.length ? values.secret : ["moves-take-anthropic", "moves-take-modal"];
+if (!out) {
+  console.error("usage: node examples/moves/main.ts --out DIR [--secret NAME ...]   (default secrets: moves-take-anthropic, moves-take-modal)");
   process.exit(2);
 }
 mkdirSync(out, { recursive: true });

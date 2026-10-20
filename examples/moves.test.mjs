@@ -1,6 +1,7 @@
 // examples/moves, offline: the three generations of one session through the real CLI (`run --dir` on a local directory, the run's
 // disk stood in for by that directory), with the scripted model and stand-in sandboxes. No network, no key.
 import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -122,7 +123,9 @@ function filesContaining(dir, needle) {
 }
 
 test('no secret reaches a tool, a sandbox, a file, the store or a log: the values are in the instance and nowhere else', async (t) => {
-  const secrets = { ANTHROPIC_API_KEY: 'sk-ant-TESTKEY-0123456789', MODAL_TOKEN_ID: 'ak-TESTID-0123456789', MODAL_TOKEN_SECRET: 'as-TESTSECRET-0123456789' };
+  // Values made for this test, so they look like nothing real and appear nowhere else.
+  const made = () => `value-${randomBytes(12).toString('hex')}`;
+  const secrets = { ANTHROPIC_API_KEY: made(), MODAL_TOKEN_ID: made(), MODAL_TOKEN_SECRET: made() };
   const base = mkdtempSync(join(tmpdir(), 'moves-secrets-'));
   t.after(() => rmSync(base, { recursive: true, force: true }));
   const dir = join(base, 'run');
