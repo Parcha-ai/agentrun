@@ -1278,7 +1278,7 @@
       }
     ],
     "hq": {
-      "city": "Dallas,",
+      "city": "Dallas",
       "state": "TX",
       "country": "US"
     },
@@ -1383,7 +1383,7 @@
       }
     ],
     "hq": {
-      "city": "Trivero",
+      "city": "Valdilana",
       "state": null,
       "country": "IT"
     },
@@ -2348,7 +2348,7 @@
       }
     ],
     "hq": {
-      "city": "Pittsford,",
+      "city": "Pittsford",
       "state": "NY",
       "country": "US"
     },
@@ -5865,7 +5865,7 @@
       }
     ],
     "hq": {
-      "city": "Monroe,",
+      "city": "Monroe",
       "state": "MI",
       "country": "US"
     },
@@ -6246,7 +6246,7 @@
       }
     ],
     "hq": {
-      "city": "Chicago,",
+      "city": "Chicago",
       "state": "IL",
       "country": "US"
     },
@@ -6458,7 +6458,7 @@
       }
     ],
     "hq": {
-      "city": "Chicago,",
+      "city": "Chicago",
       "state": "IL",
       "country": "US"
     },
@@ -9028,7 +9028,7 @@
       }
     ],
     "hq": {
-      "city": "Providence,",
+      "city": "Providence",
       "state": "RI",
       "country": "US"
     },
@@ -9903,7 +9903,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "Chesapeake,",
+      "city": "Chesapeake",
       "state": "VA",
       "country": "US"
     },
@@ -12275,7 +12275,7 @@
       }
     ],
     "hq": {
-      "city": "Stamford,",
+      "city": "Stamford",
       "state": "CT",
       "country": "US"
     },
@@ -12724,7 +12724,7 @@
       }
     ],
     "hq": {
-      "city": "New York,",
+      "city": "New York",
       "state": "NY",
       "country": "US"
     },
@@ -16007,7 +16007,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "Reno,",
+      "city": "Reno",
       "state": "NV",
       "country": "US"
     },
@@ -16081,7 +16081,7 @@
       "oneSegment": true
     },
     "hq": {
-      "city": "San Diego,",
+      "city": "San Diego",
       "state": "CA",
       "country": "US"
     },
@@ -16186,7 +16186,7 @@
       }
     ],
     "hq": {
-      "city": "Atlanta,",
+      "city": "Atlanta",
       "state": "GA",
       "country": "US"
     },

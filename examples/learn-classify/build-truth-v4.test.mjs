@@ -57,6 +57,7 @@ test('the cover address: dei tags, a US state named or coded, a country named, n
   assert.deepEqual(coverAddress(ix('EntityAddressCityOrTown', 'Calgary') + ix('EntityAddressStateOrProvince', 'AB') + ix('EntityAddressCountry', 'CA')), { city: 'Calgary', state: 'AB', country: 'CA', countryTag: 'CA' });
   assert.deepEqual(coverAddress(ix('EntityAddressCityOrTown', 'Calgary') + ix('EntityAddressStateOrProvince', 'Alberta')), { city: 'Calgary', state: 'AB', country: 'CA' });
   assert.deepEqual(coverAddress(ix('EntityAddressCityOrTown', 'Luxembourg') + ix('EntityAddressCountry', 'Grand Duchy of Luxembourg')), { city: 'Luxembourg', state: null, country: 'LU', countryTag: 'Grand Duchy of Luxembourg' });
+  assert.deepEqual(coverAddress(ix('EntityAddressCityOrTown', 'Dallas,') + ix('EntityAddressStateOrProvince', 'TX')), { city: 'Dallas', state: 'TX', country: 'US' });
   assert.equal(coverAddress(ix('EntityAddressStateOrProvince', 'MA')), null);
 });
 
@@ -111,8 +112,11 @@ test('every field has the v4 shape, and the coverage the report states is the se
   for (const c of report.companies) if (!v4.find((x) => x.cik === c.cik).subsidiaries) assert.ok(c.subsidiaries?.why || c.latestAnnual, c.cik);
 });
 
-test('the three reviewed cover tags are overridden, each with its reason, and nothing else is', () => {
-  const pinned = { '0001611005': ['Singapore', 'Millenia Tower', 'SG'], '0001892274': ['Toronto', 'Ontario', 'CA'], '0001355444': ['São Paulo', 'Pinheiros, São Paulo, SP,', 'BR'] };
+test('the reviewed cover tags are overridden, each with its reason, and nothing else is', () => {
+  const pinned = {
+    '0001611005': ['Singapore', 'Millenia Tower', 'SG'], '0001892274': ['Toronto', 'Ontario', 'CA'], '0001355444': ['São Paulo', 'Pinheiros, São Paulo, SP', 'BR'],
+    '0001877787': ['Valdilana', 'Trivero', 'IT'],
+  };
   assert.deepEqual(Object.keys(HQ_OVERRIDES).sort(), Object.keys(pinned).sort());
   for (const [cik, [city, tagged, country]] of Object.entries(pinned)) {
     assert.deepEqual([v4.find((c) => c.cik === cik).hq.city, v4.find((c) => c.cik === cik).hq.country], [city, country], cik);
@@ -121,5 +125,7 @@ test('the three reviewed cover tags are overridden, each with its reason, and no
     assert.equal(r.override.taggedCity, tagged, cik);
     assert.ok(r.override.reason.length > 20, cik);
   }
-  assert.equal(report.companies.filter((c) => c.hq?.source === 'cover+override').length, 3);
+  assert.equal(report.companies.filter((c) => c.hq?.source === 'cover+override').length, 4);
+  // A cover city never ends in the comma that separates it from the state.
+  for (const c of v4) if (c.hq?.city) assert.doesNotMatch(c.hq.city, /[,\s]$/, c.cik);
 });

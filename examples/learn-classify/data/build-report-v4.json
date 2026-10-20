@@ -71,8 +71,8 @@
    "null": 0
   },
   "hqSource": {
-   "cover": 121,
-   "cover+override": 3,
+   "cover": 120,
+   "cover+override": 4,
    "sub.txt": 6,
    "coverDiffersFromSub": 20,
    "subTxtWhy": {
@@ -390,7 +390,7 @@
      "copy": "https://web.archive.org/web/20260304215051id_/https://www.sec.gov/Archives/edgar/data/1165002/000116500226000020/whg-20251231.htm"
     },
     "cover": {
-     "city": "Dallas,",
+     "city": "Dallas",
      "state": "TX",
      "country": "US"
     },
@@ -470,13 +470,13 @@
    "cik": "0001877787",
    "name": "ERMENEGILDO ZEGNA N.V.",
    "hq": {
-    "source": "cover",
+    "source": "cover+override",
     "document": {
      "url": "https://www.sec.gov/Archives/edgar/data/1877787/000187778726000015/zgn-20251231.htm",
      "copy": "https://web.archive.org/web/20260320123546id_/https://www.sec.gov/Archives/edgar/data/1877787/000187778726000015/zgn-20251231.htm"
     },
     "cover": {
-     "city": "Trivero",
+     "city": "Valdilana",
      "state": null,
      "country": "IT"
     },
@@ -484,6 +484,10 @@
      "city": "VALDILANA (BIELLA)",
      "state": null,
      "country": "IT"
+    },
+    "override": {
+     "reason": "cover tags the former comune Trivero, merged into Valdilana in 2019",
+     "taggedCity": "Trivero"
     }
    },
    "source": {
@@ -632,7 +636,7 @@
      "copy": "https://web.archive.org/web/20260226152134id_/https://www.sec.gov/Archives/edgar/data/1579684/000157968426000010/tday-20251231.htm"
     },
     "cover": {
-     "city": "Pittsford,",
+     "city": "Pittsford",
      "state": "NY",
      "country": "US"
     },
@@ -919,7 +923,7 @@
      "copy": "https://web.archive.org/web/20261003191249id_/https://www.sec.gov/Archives/edgar/data/57131/000005713126000019/lzb-20260425.htm"
     },
     "cover": {
-     "city": "Monroe,",
+     "city": "Monroe",
      "state": "MI",
      "country": "US"
     },
@@ -1006,7 +1010,7 @@
      "copy": "https://web.archive.org/web/20260927181329id_/https://www.sec.gov/Archives/edgar/data/63908/000006390826000035/mcd-20251231.htm"
     },
     "cover": {
-     "city": "Chicago,",
+     "city": "Chicago",
      "state": "IL",
      "country": "US"
     },
@@ -1092,7 +1096,7 @@
      "copy": "https://web.archive.org/web/20260226152035id_/https://www.sec.gov/Archives/edgar/data/1468174/000146817426000007/h-20251231.htm"
     },
     "cover": {
-     "city": "Chicago,",
+     "city": "Chicago",
      "state": "IL",
      "country": "US"
     },
@@ -1773,7 +1777,7 @@
      "copy": "https://web.archive.org/web/20251118100212id_/https://www.sec.gov/Archives/edgar/data/1020859/000102085925000054/unfi-20250802.htm"
     },
     "cover": {
-     "city": "Providence,",
+     "city": "Providence",
      "state": "RI",
      "country": "US"
     },
@@ -1990,7 +1994,7 @@
     },
     "override": {
      "reason": "the cover tag reads \"Pinheiros, São Paulo, SP,\"; Pinheiros is a district of São Paulo",
-     "taggedCity": "Pinheiros, São Paulo, SP,"
+     "taggedCity": "Pinheiros, São Paulo, SP"
     }
    },
    "source": {
@@ -2156,7 +2160,7 @@
      "copy": "https://web.archive.org/web/20260316104758id_/https://www.sec.gov/Archives/edgar/data/935703/000093570326000025/dltr-20260131.htm"
     },
     "cover": {
-     "city": "Chesapeake,",
+     "city": "Chesapeake",
      "state": "VA",
      "country": "US"
     },
@@ -2758,7 +2762,7 @@
      "copy": "https://web.archive.org/web/20261006233619id_/https://www.sec.gov/Archives/edgar/data/749251/000074925126000112/it-20251231.htm"
     },
     "cover": {
-     "city": "Stamford,",
+     "city": "Stamford",
      "state": "CT",
      "country": "US"
     },
@@ -2844,7 +2848,7 @@
      "copy": "https://web.archive.org/web/20261001092615id_/https://www.sec.gov/Archives/edgar/data/78239/000007823926000021/pvh-20260201.htm"
     },
     "cover": {
-     "city": "New York,",
+     "city": "New York",
      "state": "NY",
      "country": "US"
     },
@@ -3741,7 +3745,7 @@
      "copy": "https://web.archive.org/web/20260226221813id_/https://www.sec.gov/Archives/edgar/data/1379041/000137904126000011/eig-20251231.htm"
     },
     "cover": {
-     "city": "Reno,",
+     "city": "Reno",
      "state": "NV",
      "country": "US"
     },
@@ -3789,7 +3793,7 @@
      "copy": "https://web.archive.org/web/20260415174034id_/https://www.sec.gov/Archives/edgar/data/1836875/000183687526000026/nvve-20251231.htm"
     },
     "cover": {
-     "city": "San Diego,",
+     "city": "San Diego",
      "state": "CA",
      "country": "US"
     },
@@ -3868,7 +3872,7 @@
      "copy": "https://web.archive.org/web/20261004111913id_/https://www.sec.gov/Archives/edgar/data/1408075/000140807526000009/gpk-20251231.htm"
     },
     "cover": {
-     "city": "Atlanta,",
+     "city": "Atlanta",
      "state": "GA",
      "country": "US"
     },

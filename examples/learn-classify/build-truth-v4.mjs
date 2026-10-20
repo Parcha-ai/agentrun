@@ -206,7 +206,8 @@ export function coverAddress(html) {
     const m = new RegExp(`<ix:nonNumeric\\b[^>]*\\bname="dei:${name}"[^>]*>([\\s\\S]*?)</ix:nonNumeric>`, 'i').exec(html);
     return m ? cellText(m[1]) || null : null;
   };
-  const city = tag('EntityAddressCityOrTown');
+  // A cover often tags "Dallas," with the comma that separates it from the state.
+  const city = tag('EntityAddressCityOrTown')?.replace(/[\s,]+$/, '') || null;
   if (!city) return null;
   const stateTag = tag('EntityAddressStateOrProvince');
   const countryTag = tag('EntityAddressCountry');
@@ -221,6 +222,7 @@ export const HQ_OVERRIDES = Object.freeze({
   '0001611005': { city: 'Singapore', reason: 'the cover tags a building, "Millenia Tower", as the city; sub.txt gives Singapore' },
   '0001892274': { city: 'Toronto', reason: 'the cover tags a province, "Ontario", as the city; sub.txt gives Toronto' },
   '0001355444': { city: 'São Paulo', reason: 'the cover tag reads "Pinheiros, São Paulo, SP,"; Pinheiros is a district of São Paulo' },
+  '0001877787': { city: 'Valdilana', reason: 'cover tags the former comune Trivero, merged into Valdilana in 2019' },
 });
 
 async function hqOf(cik, filing, sub) {
