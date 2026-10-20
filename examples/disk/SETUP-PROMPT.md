@@ -19,6 +19,7 @@ before anything starts.
 
 | Env name | What | Where to create it |
 |---|---|---|
+| `GEMINI_API_KEY` | A Gemini API key, for the review and report agents (google/gemini-3.8-flash). In a Daytona sandbox, give the sandbox a Daytona secret instead and this variable holds its placeholder, so the box never holds the key. | aistudio.google.com: Get API key; for the sandbox, the Daytona dashboard: Secrets, allowed for `generativelanguage.googleapis.com` only. |
 | `ARCHIL_API_KEY` | An API key of a **scratch** Archil organisation, never a production one: the demo creates and deletes run directories and token users on the disk it is given. | The Archil console, in the scratch organisation: API keys. |
 | `PDA_LIVE_DISK` | The disk the run lives on (`dsk-...`), in that organisation, holding nothing else. | The Archil console: create a disk. |
 | `PDA_LIVE_REGION` | Optional: the disk's region. Unset means `aws-us-east-1`. | The disk's page in the Archil console. |

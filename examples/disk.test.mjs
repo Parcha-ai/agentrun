@@ -234,3 +234,20 @@ test('handoff.failed, "not released": a record that says sleeping without the re
   assert.deepEqual(failedOf(lines), [{ gen: 1, point: 'effect.kept charge', n: 5, reason: 'not released' }]);
   assert.equal(lines.filter((line) => line.kind === 'handoff').length, 0);
 });
+
+test('the live part: each process is held to its model calls and its answer size, and it refuses without a key', async () => {
+  const { boundedApi, live } = await import('./disk/model.ts');
+  const seen = [];
+  const inner = { stream: (_model, _context, options) => { seen.push(options); return 'stream'; }, streamSimple: (_model, _context, options) => { seen.push(options); return 'simple'; } };
+  const api = boundedApi(inner, 2, 100);
+  assert.equal(api.stream({}, {}, { maxTokens: 500 }), 'stream');
+  assert.equal(api.streamSimple({}, {}, undefined), 'simple');
+  api.stream({}, {}, { maxTokens: 50 });
+  assert.equal(api.calls(), 3);
+  assert.deepEqual(seen.map((options) => options.maxTokens), [100, 100, 50], 'an answer is held to the cap, and a smaller ask is kept');
+  assert.deepEqual(seen.map((options) => options.signal?.aborted ?? false), [false, false, true], 'a call past the cap goes out already aborted');
+  assert.throws(() => live({ env: {} }), /GEMINI_API_KEY/);
+  const parts = live({ env: { GEMINI_API_KEY: 'a-placeholder' } });
+  assert.deepEqual(parts.models, { lead: 'google/gemini-3.8-flash' });
+  assert.deepEqual(parts.host.models.lead, { provider: 'google', modelId: 'gemini-3.8-flash' });
+});

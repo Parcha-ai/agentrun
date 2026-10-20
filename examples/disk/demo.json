@@ -1,16 +1,24 @@
 {
   "name": "disk",
-  "title": "Run outlives its box",
-  "claim": "An agent's run lives on an Archil disk: delete its sandbox mid-job and a new one takes over in seconds, with every paid tool call made once.",
+  "title": "A run changes hosts",
+  "claim": "An agent reviews ten invoices in its workspace on an Archil disk. Midway, the run is released and a second sandbox opens it from the disk and finishes, with every payment made once.",
   "models": {
     "lead": {
       "needs": [
         "text",
         "tools"
-      ]
+      ],
+      "default": "google/gemini-3.8-flash"
     }
   },
   "keys": [
+    {
+      "env": "GEMINI_API_KEY",
+      "why": "the review and report agents (google/gemini-3.8-flash at medium thinking); in a Daytona sandbox, the placeholder of a Daytona secret that holds the key, so the box never holds it",
+      "where": "aistudio.google.com, Get API key; for the sandbox, a Daytona secret (Daytona dashboard: Secrets) allowed for generativelanguage.googleapis.com only",
+      "required": true,
+      "for": "live"
+    },
     {
       "env": "ARCHIL_API_KEY",
       "why": "the run's directory and its claim live on an Archil disk; the demo mounts it, and creates and deletes run directories and token users on it",
@@ -74,8 +82,8 @@
       "for": "live"
     }
   ],
-  "expectedCalls": 11,
-  "expectedCost": 0.15,
+  "expectedCalls": 50,
+  "expectedCost": 0.5,
   "kills": [
     {
       "point": "effect.kept charge",
