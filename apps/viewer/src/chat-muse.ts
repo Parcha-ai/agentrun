@@ -85,12 +85,21 @@ function browserCard(recording: Recording, steps: ToolItem[]): HTMLElement {
     reportEl('div', { class: 'mu-strip' }, reportEl('div', { class: 'mu-labels' }, ...labels.map((label) => reportEl('span', { class: `mu-label${label.held ? ' held' : ''}`, text: label.text })))));
 }
 
-/** Where the run waited for a person to sign in: asked, and signed in once the browser's own profile says so. */
+/** A small glyph for a status line (a state, not a control): a check for signed in, a lock while it waits. */
+const mark = (name: 'check' | 'lock'): HTMLElement => {
+  const span = document.createElement('span');
+  span.className = 'mu-mark';
+  const path = name === 'check' ? 'M5 12.5l4.5 4.5L19 7.5' : 'M7 11V8a5 5 0 0 1 10 0v3m-11 0h12v9H6v-9Z';
+  span.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${path}"/></svg>`;
+  return span;
+};
+
+/** Where the run waited for a person to sign in: asked, and signed in once the browser's own profile says so. Its state is a status line (a glyph and words), never a box that reads as a button. */
 function signInCard(wait: NonNullable<ChatModel['waits']>[number]): HTMLElement {
-  const text = wait.remembered ? 'Signed in · remembered' : wait.t1 === undefined ? 'Waiting for you' : 'Signed in';
-  // A state, not a control: a plain status element (a replay has nothing to press, and a dimmed button would be announced as one).
-  const state = reportEl('div', { class: 'mu-wide', role: 'status', text });
-  return card(`mu-signin${wait.remembered ? ' mu-remembered' : ''}`, 'shield', 'Secure Store', wait.remembered ? `Signed in to ${wait.site}` : `Sign in to ${wait.site}`, state);
+  const waiting = !wait.remembered && wait.t1 === undefined;
+  const text = waiting ? 'Waiting for you' : wait.remembered ? `Signed in to ${wait.site} · remembered` : `Signed in to ${wait.site}`;
+  const state = reportEl('div', { class: 'mu-status', role: 'status' }, mark(waiting ? 'lock' : 'check'), reportEl('span', { text }));
+  return card(`mu-signin${wait.remembered ? ' mu-remembered' : ''}`, 'shield', 'Secure Store', waiting ? `Sign in to ${wait.site}` : '', state);
 }
 
 /** A bubble of the agent's words (a paragraph per blank line), the files it names as chips under them. */
