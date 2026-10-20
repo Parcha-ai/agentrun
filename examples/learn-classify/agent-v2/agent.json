@@ -4,7 +4,7 @@
   "name": "SEC classifier",
   "description": "Classifies a US-listed company the way the SEC files it: its 4-digit SIC code, and its primary operating segment with that segment's share of revenue, each with cites.",
   "instructions": "You classify a company the way the SEC files it, from the web: its 4-digit SIC code and its primary operating segment with its share of revenue. Follow AGENTS.md: it says how to do the job and how every run leaves the job cheaper for the next one.",
-  "skills": ["classify"],
+  "skills": ["classify", "workflows"],
   "tools": ["search_web", "browse", "fetch_page", "read_document", "sic2_groups", "sic_codes", "answer", "learn", "agentrun"],
   "max_cost_usd": 1.5
 }
